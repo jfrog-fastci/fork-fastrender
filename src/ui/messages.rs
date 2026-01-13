@@ -668,6 +668,51 @@ pub enum UiToWorker {
     tab_id: TabId,
     key: KeyAction,
   },
+  /// Accessibility action: set accessibility focus to a DOM node.
+  ///
+  /// `node_id` is a DOM pre-order traversal id (matching `InteractionState`), not the element's
+  /// `"id"` attribute.
+  ///
+  /// UI front-ends should translate platform accessibility action requests (e.g. AccessKit) into
+  /// this internal protocol message. This keeps the UI↔worker protocol independent of any specific
+  /// accessibility backend types.
+  A11ySetFocus {
+    tab_id: TabId,
+    node_id: usize,
+  },
+  /// Accessibility action: activate the node's default action (e.g. click a link/button).
+  ///
+  /// `node_id` is a DOM pre-order traversal id (matching `InteractionState`).
+  A11yActivate {
+    tab_id: TabId,
+    node_id: usize,
+  },
+  /// Accessibility action: scroll the node into view without changing focus.
+  ///
+  /// `node_id` is a DOM pre-order traversal id (matching `InteractionState`).
+  A11yScrollIntoView {
+    tab_id: TabId,
+    node_id: usize,
+  },
+  /// Accessibility action: set the value for a node (typically an `<input>` or `<textarea>`).
+  ///
+  /// `node_id` is a DOM pre-order traversal id (matching `InteractionState`).
+  A11ySetValue {
+    tab_id: TabId,
+    node_id: usize,
+    value: String,
+  },
+  /// Accessibility action: update the text selection for a focused text control.
+  ///
+  /// `anchor` and `focus` are character indices (not bytes).
+  ///
+  /// `node_id` is a DOM pre-order traversal id (matching `InteractionState`).
+  A11ySetTextSelection {
+    tab_id: TabId,
+    node_id: usize,
+    anchor: usize,
+    focus: usize,
+  },
   /// Send a user action to a media element (play/pause, seek, volume, mute).
   MediaCommand {
     tab_id: TabId,

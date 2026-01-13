@@ -2786,6 +2786,30 @@ impl BrowserRuntime {
           line: format!("MediaCommand node_id={node_id} command={command:?}"),
         });
       }
+      UiToWorker::A11ySetFocus { tab_id, node_id } => {
+        self.handle_a11y_set_focus(tab_id, node_id);
+      }
+      UiToWorker::A11yActivate { tab_id, node_id } => {
+        self.handle_a11y_activate(tab_id, node_id);
+      }
+      UiToWorker::A11yScrollIntoView { tab_id, node_id } => {
+        self.handle_a11y_scroll_into_view(tab_id, node_id);
+      }
+      UiToWorker::A11ySetValue {
+        tab_id,
+        node_id,
+        value,
+      } => {
+        self.handle_a11y_set_value(tab_id, node_id, &value);
+      }
+      UiToWorker::A11ySetTextSelection {
+        tab_id,
+        node_id,
+        anchor,
+        focus,
+      } => {
+        self.handle_a11y_set_text_selection(tab_id, node_id, anchor, focus);
+      }
       UiToWorker::SetDownloadDirectory { path } => {
         self.set_download_directory(path);
       }
@@ -6260,6 +6284,261 @@ impl BrowserRuntime {
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
     }
+  }
+
+  fn handle_a11y_set_focus(&mut self, tab_id: TabId, node_id: usize) {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    let Some(doc) = tab.document.as_mut() else {
+      return;
+    };
+
+    let scroll_snapshot = tab.scroll_state.clone();
+
+    let (changed, next_scroll) = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+      let exists_and_element =
+        match crate::dom::find_node_mut_by_preorder_id(dom, node_id) {
+          Some(node) => node.is_element(),
+          None => false,
+        };
+      if !exists_and_element {
+        // Screen readers can act on stale ids; treat as a no-op and do not clear the current focus.
+        return (false, (false, None));
+      }
+
+      let (dom_changed, _) = tab.interaction.focus_node_id(dom, Some(node_id), true);
+      let focus_scroll = crate::interaction::focus_scroll::scroll_state_for_focus(
+        box_tree,
+        fragment_tree,
+        &scroll_snapshot,
+        node_id,
+      );
+      (dom_changed, (dom_changed, focus_scroll))
+    }) {
+      Ok((changed, scroll)) => (changed, scroll),
+      Err(_) => {
+        // No cached layout yet; focus without attempting focus scroll.
+        let changed = doc.mutate_dom(|dom| {
+          let exists_and_element =
+            match crate::dom::find_node_mut_by_preorder_id(dom, node_id) {
+              Some(node) => node.is_element(),
+              None => false,
+            };
+          if !exists_and_element {
+            return false;
+          }
+          tab.interaction.focus_node_id(dom, Some(node_id), true).0
+        });
+        (changed, None)
+      }
+    };
+
+    let mut scroll_changed = false;
+    if let Some(next_scroll) = next_scroll {
+      if next_scroll != tab.scroll_state {
+        tab.scroll_state = next_scroll;
+        doc.set_scroll_state(tab.scroll_state.clone());
+        scroll_changed = true;
+        let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
+          tab_id,
+          scroll: tab.scroll_state.clone(),
+        });
+      }
+    }
+
+    if changed || scroll_changed {
+      tab.cancel.bump_paint();
+      tab.needs_repaint = true;
+      if scroll_changed {
+        tab.scroll_coalesce = true;
+      }
+    }
+  }
+
+  fn handle_a11y_scroll_into_view(&mut self, tab_id: TabId, node_id: usize) {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    let Some(doc) = tab.document.as_mut() else {
+      return;
+    };
+
+    let scroll_snapshot = tab.scroll_state.clone();
+    let next_scroll = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+      let exists_and_element =
+        match crate::dom::find_node_mut_by_preorder_id(dom, node_id) {
+          Some(node) => node.is_element(),
+          None => false,
+        };
+      if !exists_and_element {
+        return (false, None);
+      }
+      let next = crate::interaction::focus_scroll::scroll_state_for_focus(
+        box_tree,
+        fragment_tree,
+        &scroll_snapshot,
+        node_id,
+      );
+      (false, next)
+    }) {
+      Ok(scroll) => scroll,
+      Err(_) => None,
+    };
+
+    if let Some(next) = next_scroll {
+      if next != tab.scroll_state {
+        tab.scroll_state = next;
+        doc.set_scroll_state(tab.scroll_state.clone());
+        let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
+          tab_id,
+          scroll: tab.scroll_state.clone(),
+        });
+        tab.cancel.bump_paint();
+        tab.needs_repaint = true;
+        tab.scroll_coalesce = true;
+      }
+    }
+  }
+
+  fn handle_a11y_set_value(&mut self, tab_id: TabId, node_id: usize, value: &str) {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    let Some(doc) = tab.document.as_mut() else {
+      return;
+    };
+
+    let base_url = base_url_for_links(tab).to_string();
+    let document_url = tab
+      .last_committed_url
+      .as_deref()
+      .unwrap_or(about_pages::ABOUT_BASE_URL)
+      .to_string();
+
+    let parse_bool_like = |v: &str| -> Option<bool> {
+      let v = v.trim();
+      if v.eq_ignore_ascii_case("true")
+        || v.eq_ignore_ascii_case("on")
+        || v.eq_ignore_ascii_case("checked")
+        || v == "1"
+      {
+        Some(true)
+      } else if v.eq_ignore_ascii_case("false")
+        || v.eq_ignore_ascii_case("off")
+        || v.eq_ignore_ascii_case("unchecked")
+        || v == "0"
+      {
+        Some(false)
+      } else {
+        None
+      }
+    };
+
+    let changed = doc.mutate_dom(|dom| {
+      let (is_text_control, is_checkbox, is_radio, currently_checked) = match crate::dom::find_node_mut_by_preorder_id(dom, node_id) {
+        Some(node) if node.is_element() => {
+          let is_text_control = dom_is_text_input(node) || dom_is_textarea(node);
+          let is_checkbox = dom_is_input(node) && dom_input_type(node).eq_ignore_ascii_case("checkbox");
+          let is_radio = dom_is_input(node) && dom_input_type(node).eq_ignore_ascii_case("radio");
+          let checked = node.get_attribute_ref("checked").is_some();
+          (is_text_control, is_checkbox, is_radio, checked)
+        }
+        _ => return false,
+      };
+
+      if is_text_control {
+        let mut changed = tab.interaction.focus_node_id(dom, Some(node_id), true).0;
+        // Replace the entire value rather than inserting at the caret.
+        changed |= tab.interaction.clipboard_select_all(dom);
+        changed |= tab.interaction.text_input(dom, value);
+        return changed;
+      }
+
+      if is_checkbox || is_radio {
+        let Some(desired) = parse_bool_like(value) else {
+          return false;
+        };
+        // Radio buttons cannot be programmatically "unset" via activation, so only handle the
+        // checked=true transition for radios.
+        let can_toggle_off = is_checkbox;
+        let should_toggle = (desired && !currently_checked) || (!desired && currently_checked && can_toggle_off);
+        if !should_toggle {
+          return false;
+        }
+
+        let mut changed = tab.interaction.focus_node_id(dom, Some(node_id), true).0;
+        let (dom_changed, _) = tab.interaction.key_activate(
+          dom,
+          crate::interaction::KeyAction::Enter,
+          &document_url,
+          &base_url,
+        );
+        changed |= dom_changed;
+        return changed;
+      }
+
+      false
+    });
+
+    if changed {
+      tab.cancel.bump_paint();
+      tab.needs_repaint = true;
+    }
+  }
+
+  fn handle_a11y_set_text_selection(
+    &mut self,
+    tab_id: TabId,
+    node_id: usize,
+    anchor: usize,
+    focus: usize,
+  ) {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    let Some(doc) = tab.document.as_mut() else {
+      return;
+    };
+
+    let changed = doc.mutate_dom(|dom| {
+      let is_text_control = match crate::dom::find_node_mut_by_preorder_id(dom, node_id) {
+        Some(node) if node.is_element() => dom_is_text_input(node) || dom_is_textarea(node),
+        _ => false,
+      };
+      if !is_text_control {
+        return false;
+      }
+
+      let _ = tab.interaction.focus_node_id(dom, Some(node_id), true);
+      tab.interaction.set_text_selection_range(node_id, anchor, focus);
+
+      // `set_text_selection_range` updates internal text edit state and syncs DOM paint attributes,
+      // but it does not report whether those attributes changed. Conservatively mark the DOM dirty.
+      true
+    });
+
+    if changed {
+      tab.cancel.bump_paint();
+      tab.needs_repaint = true;
+    }
+  }
+
+  fn handle_a11y_activate(&mut self, tab_id: TabId, node_id: usize) {
+    self.handle_a11y_set_focus(tab_id, node_id);
+
+    // Avoid accidentally activating a different element when the requested node id is stale.
+    let focused = self
+      .tabs
+      .get(&tab_id)
+      .and_then(|tab| tab.interaction.focused_node_id());
+    if focused != Some(node_id) {
+      return;
+    }
+
+    // Reuse the existing keyboard activation path so navigation/form submission/toggling stays
+    // consistent (including JS event dispatch).
+    self.handle_key_action(tab_id, crate::interaction::KeyAction::Enter);
   }
 
   fn handle_key_action(&mut self, tab_id: TabId, key: crate::interaction::KeyAction) {
