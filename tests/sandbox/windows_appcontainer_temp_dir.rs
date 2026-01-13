@@ -69,6 +69,14 @@ fn collect_stdio_handles_for_inheritance() -> (Vec<RawHandle>, HandleInheritGuar
 
 #[test]
 fn appcontainer_temp_dir_is_writable() {
+  let support = win_sandbox::SandboxSupport::detect();
+  if support != win_sandbox::SandboxSupport::Full {
+    eprintln!(
+      "skipping AppContainer temp dir test: Windows sandbox is unavailable ({support})"
+    );
+    return;
+  }
+
   // Simulate a "normal" browser process environment where TEMP/TMP point at a user-profile
   // directory. AppContainers frequently cannot access that location, so the sandbox spawn path
   // must override TEMP/TMP to an AppContainer-writable directory.
@@ -79,6 +87,7 @@ fn appcontainer_temp_dir_is_writable() {
     let _guard = crate::common::EnvVarsGuard::remove(&[
       "FASTR_DISABLE_RENDERER_SANDBOX",
       "FASTR_WINDOWS_RENDERER_SANDBOX",
+      "FASTR_ALLOW_UNSANDBOXED_RENDERER",
       "FASTR_WINDOWS_SANDBOX_INHERIT_ENV",
     ]);
     let _temp_guard = crate::common::EnvVarGuard::set("TEMP", forced_parent_temp.path());

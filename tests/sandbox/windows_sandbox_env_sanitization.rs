@@ -45,6 +45,11 @@ fn sandboxed_child_does_not_inherit_parent_environment_by_default() {
     cmd.env(CHILD_ENV, "1")
       .env(MODE_ENV, mode)
       .env(SECRET_ENV, "1")
+      // Keep this test runnable even on Windows hosts where AppContainer is unavailable: we only
+      // care about environment inheritance behavior, which is enforced for all spawn modes.
+      .env("FASTR_DISABLE_RENDERER_SANDBOX", "1")
+      .env_remove("FASTR_WINDOWS_RENDERER_SANDBOX")
+      .env_remove("FASTR_ALLOW_UNSANDBOXED_RENDERER")
       // Keep the subprocess deterministic.
       .env("RUST_TEST_THREADS", "1");
     match mode {
@@ -71,4 +76,3 @@ fn sandboxed_child_does_not_inherit_parent_environment_by_default() {
     );
   }
 }
-

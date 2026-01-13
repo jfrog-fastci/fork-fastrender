@@ -4,9 +4,8 @@
 //! `INTERNET_CLIENT`), which should deny outbound networking. This test validates that a sandboxed
 //! child cannot establish a TCP connection to a localhost listener owned by the parent.
 //!
-//! If the sandbox falls back to a restricted token (or AppContainer APIs are unavailable), the test
-//! prints a skip message instead of failing the suite. The restricted-token fallback is documented
-//! as potentially allowing network access.
+//! If AppContainer sandboxing is unavailable on the current host (older Windows versions / stripped
+//! Server configs), this test prints a clear skip message rather than failing the suite.
 
 #![cfg(windows)]
 
@@ -319,6 +318,18 @@ fn appcontainer_denies_outbound_tcp_connect() {
     .unwrap_or(0);
   assert!(port != 0, "expected listener to have a non-zero port");
 
+  // Ensure developer environment overrides don't silently change test semantics.
+  //
+  // We explicitly test the *default* "fail-closed" behavior: this test should only run when the
+  // host supports the full Windows sandbox.
+  let support = win_sandbox::SandboxSupport::detect();
+  if support != win_sandbox::SandboxSupport::Full {
+    eprintln!(
+      "skipping AppContainer network denial test: Windows sandbox is unavailable ({support})"
+    );
+    return;
+  }
+
   let exe = std::env::current_exe().expect("current test exe path");
   let test_name = "sandbox::windows_network_denial::appcontainer_network_denied_child";
   let args = vec![
@@ -330,9 +341,15 @@ fn appcontainer_denies_outbound_tcp_connect() {
 
   let port_str = port.to_string();
   let (inherit, _inherit_guard) = collect_stdio_handles_for_inheritance();
-  let child = crate::common::with_env_vars(&[(ENV_PORT, &port_str)], || {
+  let child = {
+    let _env_guard = crate::common::EnvVarsGuard::new(&[
+      ("FASTR_DISABLE_RENDERER_SANDBOX", None),
+      ("FASTR_WINDOWS_RENDERER_SANDBOX", None),
+      ("FASTR_ALLOW_UNSANDBOXED_RENDERER", None),
+      (ENV_PORT, Some(port_str.as_str())),
+    ]);
     spawn_sandboxed(&exe, &args, &inherit).expect("spawn sandboxed child")
-  });
+  };
 
   let handle = child.process.as_raw_handle() as HANDLE;
   let timeout_ms: u32 = 20_000;
@@ -379,22 +396,14 @@ fn appcontainer_network_denied_child() {
     .unwrap_or_else(|err| panic!("failed to query sandbox token state in child: {err}"));
   eprintln!("sandbox: token_state={token:?}");
 
-  if token.is_app_container {
-    assert!(
-      !token.has_internet_client_capability(),
-      "SECURITY BUG: AppContainer token has internetClient capability ({INTERNET_CLIENT_CAPABILITY_SID}): {token:?}"
-    );
-  } else {
-    if token.is_low_or_untrusted_integrity() {
-      eprintln!(
-        "skipping AppContainer network denial check: child is not running in an AppContainer token (sandbox fallback?): {token:?}"
-      );
-      return;
-    }
-    panic!(
-      "sandbox fallback did not produce a low/untrusted integrity token; expected restricted-token fallback, got token_state={token:?}"
-    );
-  }
+  assert!(
+    token.is_app_container,
+    "expected sandbox child to run in an AppContainer token (no silent fallback); token_state={token:?}"
+  );
+  assert!(
+    !token.has_internet_client_capability(),
+    "SECURITY BUG: AppContainer token has internetClient capability ({INTERNET_CLIENT_CAPABILITY_SID}): {token:?}"
+  );
 
   let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
   match TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {

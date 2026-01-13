@@ -19,7 +19,6 @@ use std::io;
 use std::os::windows::io::{AsRawHandle, RawHandle};
 
 use fastrender::sandbox::windows::{spawn_sandboxed, WindowsSandboxLevel};
-use fastrender::sandbox::windows::appcontainer::appcontainer_apis;
 use win_sandbox::mitigations;
 use windows_sys::Win32::Foundation::{
   CloseHandle, GetHandleInformation, SetHandleInformation, ERROR_INSUFFICIENT_BUFFER, HANDLE,
@@ -361,7 +360,20 @@ fn collect_stdio_handles_for_inheritance() -> (Vec<RawHandle>, HandleInheritGuar
 
 #[test]
 fn appcontainer_renderer_can_render_minimal_html() {
-  let appcontainer_supported = appcontainer_apis().is_ok();
+  // Ensure developer environment overrides don't silently change test semantics.
+  let _env_guard = crate::common::EnvVarsGuard::remove(&[
+    "FASTR_DISABLE_RENDERER_SANDBOX",
+    "FASTR_WINDOWS_RENDERER_SANDBOX",
+    "FASTR_ALLOW_UNSANDBOXED_RENDERER",
+  ]);
+
+  let support = win_sandbox::SandboxSupport::detect();
+  if support != win_sandbox::SandboxSupport::Full {
+    eprintln!(
+      "skipping appcontainer renderer smoke test: Windows sandbox is unavailable ({support})"
+    );
+    return;
+  }
 
   let exe = std::env::current_exe().expect("current test exe path");
   let test_name = "sandbox::windows_renderer_smoke::appcontainer_renderer_smoke_child";
@@ -384,21 +396,11 @@ fn appcontainer_renderer_can_render_minimal_html() {
     "sandboxed child exited with code {exit_code} (sandbox_level={:?})",
     child.level
   );
-
-  if appcontainer_supported {
-    assert_eq!(
-      child.level,
-      WindowsSandboxLevel::AppContainer,
-      "expected AppContainer sandboxing to be available on this host; spawn_sandboxed fell back to {:?}. \
-See stderr for the AppContainer spawn warning emitted by spawn_sandboxed().",
-      child.level
-    );
-  } else if child.level != WindowsSandboxLevel::AppContainer {
-    eprintln!(
-      "skipping AppContainer-specific assertion: sandbox spawn fell back to {:?}",
-      child.level
-    );
-  }
+  assert_eq!(
+    child.level,
+    WindowsSandboxLevel::AppContainer,
+    "expected AppContainer sandboxing (no silent fallback)"
+  );
 }
 
 #[test]
@@ -413,9 +415,8 @@ fn appcontainer_renderer_smoke_child() {
           "expected AppContainer token to NOT have internetClient capability ({INTERNET_CLIENT_CAPABILITY_SID}); token_state={state:?}"
         );
       } else {
-        assert!(
-          state.is_low_or_untrusted_integrity(),
-          "expected restricted-token fallback to run at Low/Untrusted integrity; token_state={state:?}"
+        panic!(
+          "expected sandbox child to run in an AppContainer token (no silent fallback); token_state={state:?}"
         );
       }
     }

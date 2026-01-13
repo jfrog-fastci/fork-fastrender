@@ -36,7 +36,17 @@ fn sandbox_job_kill_on_close_terminates_child_process() {
     OsString::from("--nocapture"),
   ];
 
-  let child = spawn_sandboxed(&exe, &args, &[]).expect("spawn sandboxed child");
+  let child = {
+    // This regression test is about JobObject `KILL_ON_JOB_CLOSE`, which should be applied even if
+    // token/AppContainer sandboxing is disabled (debug escape hatch). Disable AppContainer so the
+    // test can still run on hosts where AppContainer is unavailable.
+    let _env_guard = crate::common::EnvVarsGuard::new(&[
+      ("FASTR_DISABLE_RENDERER_SANDBOX", Some("1")),
+      ("FASTR_WINDOWS_RENDERER_SANDBOX", None),
+      ("FASTR_ALLOW_UNSANDBOXED_RENDERER", None),
+    ]);
+    spawn_sandboxed(&exe, &args, &[]).expect("spawn sandboxed child")
+  };
 
   // Keep the process handle alive so we can observe termination after closing the job handle.
   let fastrender::sandbox::windows::SandboxedChild {
@@ -101,4 +111,3 @@ fn sandbox_job_kill_on_close_child() {
   // this child will run for a long time and the parent will time out + fail.
   std::thread::sleep(Duration::from_secs(120));
 }
-

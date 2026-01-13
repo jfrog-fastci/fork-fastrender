@@ -431,10 +431,11 @@ fn appcontainer_denies_filesystem_and_network() {
     return;
   }
 
-  // Ensure the sandbox isn't disabled by a developer's env overrides.
+  // Ensure developer environment overrides don't silently change test semantics.
   let _sandbox_env_guard = crate::common::EnvVarsGuard::remove(&[
     "FASTR_DISABLE_RENDERER_SANDBOX",
     "FASTR_WINDOWS_RENDERER_SANDBOX",
+    "FASTR_ALLOW_UNSANDBOXED_RENDERER",
     "FASTR_WINDOWS_SANDBOX_INHERIT_ENV",
   ]);
 
@@ -498,6 +499,21 @@ fn job_object_kill_on_close_terminates_child() {
       std::thread::sleep(Duration::from_secs(1));
     }
   }
+
+  let support = win_sandbox::SandboxSupport::detect();
+  if support != win_sandbox::SandboxSupport::Full {
+    eprintln!(
+      "skipping JobObject kill-on-close test: Windows sandbox is unavailable ({support})"
+    );
+    return;
+  }
+
+  // Ensure developer environment overrides don't silently change test semantics.
+  let _env_guard = crate::common::EnvVarsGuard::remove(&[
+    "FASTR_DISABLE_RENDERER_SANDBOX",
+    "FASTR_WINDOWS_RENDERER_SANDBOX",
+    "FASTR_ALLOW_UNSANDBOXED_RENDERER",
+  ]);
 
   let exe = std::env::current_exe().expect("current test executable path");
   let args = vec![
