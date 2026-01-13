@@ -439,7 +439,7 @@ impl ShardedGridMeasureCache {
 
     let contains = shard.map.contains_key(&key);
 
-    let mut evict_override_keys = |shard: &mut GridMeasureCacheShard, count: usize| {
+    let evict_override_keys = |shard: &mut GridMeasureCacheShard, count: usize| {
       if count == 0 || shard.override_entries == 0 {
         return;
       }
