@@ -107,3 +107,60 @@ fn split_tostring_separator_occurs_before_limit_zero_early_return() -> Result<()
   Ok(())
 }
 
+#[test]
+fn match_search_dispatch_happens_before_tostring_receiver_and_uses_original_receiver() -> Result<(), VmError> {
+  let mut agent = new_agent();
+
+  let value = agent.run_script(
+    "match_search_dispatch_ordering.js",
+    r#"
+      function makeThrowingReceiver() {
+        return {
+          [Symbol.toPrimitive]: function() { throw 999; }
+        };
+      }
+
+      // `String.prototype.match` should invoke @@match before ToString(this) and pass the original
+      // receiver `O` to the matcher.
+      var receiver = makeThrowingReceiver();
+      var matchThis, matchArg, matchCalled = false;
+      var matcher = {
+        [Symbol.match]: function(o) {
+          matchCalled = true;
+          matchThis = this;
+          matchArg = o;
+          return 123;
+        }
+      };
+      var matchRes = String.prototype.match.call(receiver, matcher);
+
+      // `String.prototype.search` should invoke @@search before ToString(this) and pass the
+      // original receiver `O` to the searcher.
+      var receiver2 = makeThrowingReceiver();
+      var searchThis, searchArg, searchCalled = false;
+      var searcher = {
+        [Symbol.search]: function(o) {
+          searchCalled = true;
+          searchThis = this;
+          searchArg = o;
+          return 456;
+        }
+      };
+      var searchRes = String.prototype.search.call(receiver2, searcher);
+
+      matchRes === 123 &&
+        matchCalled &&
+        matchThis === matcher &&
+        matchArg === receiver &&
+        searchRes === 456 &&
+        searchCalled &&
+        searchThis === searcher &&
+        searchArg === receiver2;
+    "#,
+    Budget::unlimited(1),
+    None,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+
+  Ok(())
+}
