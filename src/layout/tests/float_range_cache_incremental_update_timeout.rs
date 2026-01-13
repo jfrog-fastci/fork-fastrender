@@ -1,6 +1,8 @@
 use crate::error::{RenderError, RenderStage};
 use crate::layout::float_context::{FloatContext, FloatSide};
-use crate::render_control::{check_active, set_test_render_delay_ms, with_deadline, RenderDeadline};
+use crate::render_control::{
+  check_active, check_active_periodic, set_test_render_delay_ms, with_deadline, RenderDeadline,
+};
 use std::time::Duration;
 
 struct TestRenderDelayGuard;
@@ -61,7 +63,11 @@ fn float_range_cache_incremental_updates_complete_before_deadline() {
   let _ = ctx.available_width_in_range(0.0, BASE_SEGMENTS as f32);
 
   let result = with_deadline(Some(&deadline), || {
+    let mut deadline_counter = 0usize;
     for i in 0..UPDATE_COUNT {
+      if let Err(err) = check_active_periodic(&mut deadline_counter, 1, RenderStage::Layout) {
+        return Some(err);
+      }
       let y = (i * WINDOW) as f32;
       // Match the current maximum left edge at `y` so the update is pure coalescing of the
       // existing segments in the span (clamps all narrower constraints up to the current max).
@@ -82,4 +88,3 @@ fn float_range_cache_incremental_updates_complete_before_deadline() {
     Some(other) => panic!("unexpected render error: {other:?}"),
   }
 }
-

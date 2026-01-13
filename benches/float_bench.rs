@@ -128,30 +128,37 @@ fn bench_range_cache_incremental_updates(c: &mut Criterion) {
   // 1) Building a large cached segment list via a wide range query.
   // 2) Inserting many floats that each cause many cached segments to merge.
   c.bench_function("float_range_cache_incremental_updates", |b| {
-    b.iter(|| {
-      const BASE_SEGMENTS: usize = 20_000;
-      const WINDOW: usize = 100;
-      const UPDATE_COUNT: usize = 180;
+    b.iter_batched(
+      || {
+        const BASE_SEGMENTS: usize = 20_000;
 
-      let mut ctx = FloatContext::new(10_000.0);
-      for i in 0..BASE_SEGMENTS {
-        let width = (BASE_SEGMENTS - i) as f32;
-        let height = (i + 1) as f32;
-        ctx.add_float_at(FloatSide::Left, 0.0, 0.0, width, height);
-      }
+        let mut ctx = FloatContext::new(10_000.0);
+        for i in 0..BASE_SEGMENTS {
+          let width = (BASE_SEGMENTS - i) as f32;
+          let height = (i + 1) as f32;
+          ctx.add_float_at(FloatSide::Left, 0.0, 0.0, width, height);
+        }
 
-      // Populate the range cache with many distinct segments.
-      black_box(ctx.available_width_in_range(0.0, BASE_SEGMENTS as f32));
+        // Populate the range cache with many distinct segments.
+        black_box(ctx.available_width_in_range(0.0, BASE_SEGMENTS as f32));
+        ctx
+      },
+      |mut ctx| {
+        const BASE_SEGMENTS: usize = 20_000;
+        const WINDOW: usize = 100;
+        const UPDATE_COUNT: usize = 180;
 
-      // Trigger incremental cache updates that perform heavy coalescing.
-      for i in 0..UPDATE_COUNT {
-        let y = (i * WINDOW) as f32;
-        let width = (BASE_SEGMENTS - i * WINDOW) as f32;
-        ctx.add_float_at(FloatSide::Left, 0.0, y, width, WINDOW as f32);
-      }
+        // Trigger incremental cache updates that perform heavy coalescing.
+        for i in 0..UPDATE_COUNT {
+          let y = (i * WINDOW) as f32;
+          let width = (BASE_SEGMENTS - i * WINDOW) as f32;
+          ctx.add_float_at(FloatSide::Left, 0.0, y, width, WINDOW as f32);
+        }
 
-      black_box(ctx.float_count());
-    })
+        black_box(ctx.float_count());
+      },
+      BatchSize::LargeInput,
+    )
   });
 }
 
