@@ -435,6 +435,69 @@ impl SharedMemoryPool {
     self.buffers.len()
   }
 
+  /// Acquire a shared-memory buffer of `len` bytes, creating a new one if needed.
+  ///
+  /// When the pool is configured with [`ScrubPolicy::OnAcquire`], this method scrubs (zeros) the
+  /// buffer before returning it.
+  pub fn acquire(&mut self, len: u64) -> Result<SharedMemory, SharedMemoryError> {
+    while let Some(buffer) = self.buffers.pop() {
+      if buffer.len() != len {
+        continue;
+      }
+
+      if self.scrub_policy == ScrubPolicy::OnAcquire {
+        buffer.zero()?;
+      }
+
+      return Ok(buffer);
+    }
+
+    let buffer = SharedMemory::create_with_seals(len, 0, true)?;
+    if self.scrub_policy == ScrubPolicy::OnAcquire {
+      buffer.zero()?;
+    }
+    Ok(buffer)
+  }
+
+  /// Release a shared-memory buffer back to the pool for reuse.
+  ///
+  /// Buffers are pooled only when:
+  /// - the seal set is locked (`F_SEAL_SEAL`), and
+  /// - the buffer is not write-sealed (`F_SEAL_WRITE`).
+  ///
+  /// This prevents untrusted peers from permanently breaking reuse by mutating seals.
+  ///
+  /// When the pool is configured with [`ScrubPolicy::OnRelease`], this method scrubs (zeros) the
+  /// buffer before pooling it.
+  pub fn release(&mut self, buffer: SharedMemory) -> Result<(), SharedMemoryError> {
+    if self.scrub_policy == ScrubPolicy::OnRelease {
+      buffer.zero()?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+      let seals = buffer.seals()?;
+      if (seals & libc::F_SEAL_WRITE) != 0 {
+        // Never pool write-sealed buffers; they cannot be safely reused.
+        return Ok(());
+      }
+      if (seals & libc::F_SEAL_SEAL) == 0 {
+        // Never pool buffers with an unlocked seal set; an untrusted peer could mutate seals and
+        // persistently break reuse.
+        return Ok(());
+      }
+
+      self.buffers.push(buffer);
+      return Ok(());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+      let _ = buffer;
+      Ok(())
+    }
+  }
+
   pub fn take(&mut self) -> Option<SharedMemory> {
     while let Some(buffer) = self.buffers.pop() {
       if self.scrub_policy == ScrubPolicy::OnAcquire {
@@ -456,34 +519,7 @@ impl SharedMemoryPool {
   /// write-sealed (`F_SEAL_WRITE`). This prevents untrusted peers from permanently breaking reuse
   /// by mutating seals.
   pub fn put(&mut self, buffer: SharedMemory) {
-    #[cfg(target_os = "linux")]
-    {
-      let Ok(seals) = buffer.seals() else {
-        return;
-      };
-
-      if (seals & libc::F_SEAL_WRITE) != 0 {
-        return;
-      }
-
-      if (seals & libc::F_SEAL_SEAL) == 0 {
-        return;
-      }
-
-      if self.scrub_policy == ScrubPolicy::OnRelease {
-        if buffer.zero().is_err() {
-          return;
-        }
-      }
-
-      self.buffers.push(buffer);
-      return;
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-      let _ = buffer;
-    }
+    let _ = self.release(buffer);
   }
 }
 
@@ -606,12 +642,12 @@ mod tests {
   fn shm_scrub_on_release_zeroes_reused_buffer() {
     let mut pool = SharedMemoryPool::with_scrub_policy(ScrubPolicy::OnRelease);
 
-    // Use a locked, writable buffer so it is eligible for reuse.
-    let shm = SharedMemory::create_with_seals(4096, 0, true).unwrap();
+    // Acquire a locked, writable buffer so it is eligible for reuse.
+    let shm = pool.acquire(4096).unwrap();
     shm.write_from_slice(0, &[0xA5; 4096]).unwrap();
-    pool.put(shm);
+    pool.release(shm).unwrap();
 
-    let shm2 = pool.take().expect("pooled buffer");
+    let shm2 = pool.acquire(4096).unwrap();
 
     let mut readback = vec![0xFFu8; 4096];
     let rc = unsafe {
