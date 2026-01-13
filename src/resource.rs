@@ -420,22 +420,114 @@ fn trim_http_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, ' ' | '\t'))
 }
 
-fn sanitize_request_header_value(value: &str) -> String {
-  let sanitized = value
-    .chars()
-    .map(|c| match c {
-      '\r' | '\n' | '\0' => ' ',
-      other => other,
-    })
-    .collect::<String>();
-  trim_http_whitespace(&sanitized).to_string()
+// ============================================================================
+// IPC / network-service request limits
+// ============================================================================
+
+/// Maximum accepted URL length (in bytes) for Browser → Network IPC messages.
+///
+/// This is intentionally small (8KiB) to avoid pathological allocations if a compromised Browser
+/// process starts fuzzing the Network service with huge strings.
+const IPC_FETCH_MAX_URL_BYTES: usize = 8 * 1024;
+/// Maximum number of user-specified header pairs accepted for Browser → Network IPC messages.
+const IPC_FETCH_MAX_HEADER_COUNT: usize = 256;
+/// Maximum accepted header name length (in bytes) for Browser → Network IPC messages.
+const IPC_FETCH_MAX_HEADER_NAME_BYTES: usize = 1024;
+/// Maximum accepted header value length (in bytes) for Browser → Network IPC messages.
+const IPC_FETCH_MAX_HEADER_VALUE_BYTES: usize = 1024;
+/// Maximum accepted request body size (in bytes) for Browser → Network IPC messages.
+const IPC_FETCH_MAX_REQUEST_BODY_BYTES: usize = 10 * 1024 * 1024;
+
+fn diagnostic_clone_str(value: &str) -> String {
+  const MAX: usize = 1024;
+  if value.len() <= MAX {
+    return value.to_string();
+  }
+  let mut end = 0usize;
+  for (idx, ch) in value.char_indices() {
+    if idx >= MAX {
+      break;
+    }
+    end = idx + ch.len_utf8();
+  }
+  format!("{}…(len={})", &value[..end], value.len())
+}
+
+fn protocol_error(url: &str, reason: impl Into<String>) -> Error {
+  Error::Resource(ResourceError::new(
+    diagnostic_clone_str(url),
+    format!("protocol error: {}", reason.into()),
+  ))
+}
+
+fn is_http_or_https_url(url: &str) -> bool {
+  starts_with_ignore_ascii_case(url, "http://") || starts_with_ignore_ascii_case(url, "https://")
+}
+
+fn validate_ipc_url_field(request_url: &str, field: &str, value: &str) -> Result<()> {
+  let len = value.len();
+  if len > IPC_FETCH_MAX_URL_BYTES {
+    return Err(protocol_error(
+      request_url,
+      format!("{field} exceeds IPC max URL length (len={len}, limit={IPC_FETCH_MAX_URL_BYTES})"),
+    ));
+  }
+  if value
+    .as_bytes()
+    .iter()
+    .any(|&b| b == 0x00 || b == b'\r' || b == b'\n')
+  {
+    return Err(protocol_error(
+      request_url,
+      format!("{field} contains NUL/newline bytes"),
+    ));
+  }
+  Ok(())
+}
+
+fn validate_ipc_request_body(url: &str, body: Option<&[u8]>) -> Result<()> {
+  let Some(body) = body else {
+    return Ok(());
+  };
+  let len = body.len();
+  if len > IPC_FETCH_MAX_REQUEST_BODY_BYTES {
+    return Err(protocol_error(
+      url,
+      format!(
+        "request body exceeds IPC max size (len={len}, limit={IPC_FETCH_MAX_REQUEST_BODY_BYTES})"
+      ),
+    ));
+  }
+  Ok(())
+}
+
+fn normalize_request_header_value(url: &str, value: &str) -> Result<String> {
+  if value
+    .as_bytes()
+    .iter()
+    .any(|&b| b == 0x00 || b == b'\r' || b == b'\n')
+  {
+    return Err(protocol_error(url, "invalid request header value: contains NUL/newline bytes"));
+  }
+  Ok(trim_http_whitespace(value).to_string())
+}
+
+fn validate_ipc_final_url(request_url: &str, resource: &FetchedResource) -> Result<()> {
+  let Some(final_url) = resource.final_url.as_deref() else {
+    return Ok(());
+  };
+  if is_http_or_https_url(final_url) {
+    validate_ipc_url_field(request_url, "final_url", final_url)?;
+  }
+  Ok(())
 }
 
 /// Merge user-specified header pairs into the outbound request header list.
 ///
 /// Semantics:
 /// - Forbidden Fetch request headers (e.g. `Cookie`, `Host`, `Origin`) are dropped.
-/// - User header names are validated and values are sanitized to avoid header injection.
+/// - User header names are validated and values are normalized (HTTP OWS trimming); values
+///   containing NUL/CR/LF bytes are rejected to avoid header injection.
 /// - User headers override any existing headers with the same name (case-insensitive).
 fn merge_user_request_headers(
   url: &str,
@@ -447,23 +539,51 @@ fn merge_user_request_headers(
     return Ok(());
   }
 
+  let header_count = user_headers.len();
+  if header_count > IPC_FETCH_MAX_HEADER_COUNT {
+    return Err(protocol_error(
+      url,
+      format!(
+        "too many request headers (count={header_count}, limit={IPC_FETCH_MAX_HEADER_COUNT})"
+      ),
+    ));
+  }
+
   let mut removed_defaults: HashSet<String> = HashSet::new();
   for (name, value) in user_headers {
-    if fetch_http_request_header_forbidden(method, name, value) {
-      continue;
-    }
-    if http::header::HeaderName::from_bytes(name.as_bytes()).is_err() {
-      return Err(Error::Resource(ResourceError::new(
+    let name_len = name.len();
+    if name_len > IPC_FETCH_MAX_HEADER_NAME_BYTES {
+      return Err(protocol_error(
         url,
-        format!("invalid request header name: {name:?}"),
-      )));
+        format!(
+          "request header name exceeds IPC max bytes (len={name_len}, limit={IPC_FETCH_MAX_HEADER_NAME_BYTES})"
+        ),
+      ));
+    }
+    let value_len = value.len();
+    if value_len > IPC_FETCH_MAX_HEADER_VALUE_BYTES {
+      return Err(protocol_error(
+        url,
+        format!(
+          "request header value exceeds IPC max bytes (len={value_len}, limit={IPC_FETCH_MAX_HEADER_VALUE_BYTES})"
+        ),
+      ));
+    }
+
+    if http::header::HeaderName::from_bytes(name.as_bytes()).is_err() {
+      return Err(protocol_error(url, "invalid request header name"));
+    }
+    let value = normalize_request_header_value(url, value)?;
+
+    if fetch_http_request_header_forbidden(method, name, &value) {
+      continue;
     }
 
     let key = name.to_ascii_lowercase();
     if removed_defaults.insert(key) {
       headers.retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
     }
-    headers.push((name.clone(), sanitize_request_header_value(value)));
+    headers.push((name.clone(), value));
   }
   Ok(())
 }
@@ -480,17 +600,15 @@ fn merge_system_request_headers(
   let mut removed_defaults: HashSet<String> = HashSet::new();
   for (name, value) in system_headers {
     if http::header::HeaderName::from_bytes(name.as_bytes()).is_err() {
-      return Err(Error::Resource(ResourceError::new(
-        url,
-        format!("invalid request header name: {name:?}"),
-      )));
+      return Err(protocol_error(url, "invalid request header name"));
     }
 
+    let value = normalize_request_header_value(url, value)?;
     let key = name.to_ascii_lowercase();
     if removed_defaults.insert(key) {
       headers.retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
     }
-    headers.push((name.clone(), sanitize_request_header_value(value)));
+    headers.push((name.clone(), value));
   }
   Ok(())
 }
@@ -5787,11 +5905,22 @@ impl HttpFetcher {
     deadline: &Option<render_control::RenderDeadline>,
     started: Instant,
   ) -> Result<FetchedResource> {
+    if is_http_or_https_url(url) {
+      validate_ipc_url_field(url, "url", url)?;
+    }
+    if let Some(referrer_url) = referrer_url.filter(|url| is_http_or_https_url(url)) {
+      validate_ipc_url_field(url, "referrer_url", referrer_url)?;
+    }
+    validate_ipc_request_body(url, body)?;
+
     let mut effective_url = Cow::Borrowed(url);
     let mut attempted_www_fallback = false;
     let mut www_fallback_error: Option<Error> = None;
 
     loop {
+      if is_http_or_https_url(effective_url.as_ref()) {
+        validate_ipc_url_field(effective_url.as_ref(), "url", effective_url.as_ref())?;
+      }
       render_control::check_active(render_stage_hint_for_context(kind, effective_url.as_ref()))
         .map_err(Error::Render)?;
 
@@ -5995,14 +6124,16 @@ impl HttpFetcher {
 
       match result {
         Ok(res) => {
-          return enforce_cors_on_network_response(
+          let res = enforce_cors_on_network_response(
             destination,
             effective_url.as_ref(),
             client_origin,
             referrer_url,
             credentials_mode,
             res,
-          );
+          )?;
+          validate_ipc_final_url(effective_url.as_ref(), &res)?;
+          return Ok(res);
         }
         Err(err) => {
           if attempted_www_fallback {
@@ -6332,12 +6463,22 @@ impl HttpFetcher {
     deadline: &Option<render_control::RenderDeadline>,
     started: Instant,
   ) -> Result<FetchedResource> {
+    if is_http_or_https_url(url) {
+      validate_ipc_url_field(url, "url", url)?;
+    }
+    if let Some(referrer_url) = referrer_url.filter(|url| is_http_or_https_url(url)) {
+      validate_ipc_url_field(url, "referrer_url", referrer_url)?;
+    }
+
     let mut effective_url = Cow::Borrowed(url);
 
     let mut attempted_www_fallback = false;
     let mut www_fallback_error: Option<Error> = None;
 
     loop {
+      if is_http_or_https_url(effective_url.as_ref()) {
+        validate_ipc_url_field(effective_url.as_ref(), "url", effective_url.as_ref())?;
+      }
       render_control::check_active(render_stage_hint_for_context(kind, effective_url.as_ref()))
         .map_err(Error::Render)?;
       let result = match http_backend_mode() {
@@ -6498,14 +6639,16 @@ impl HttpFetcher {
 
       match result {
         Ok(res) => {
-          return enforce_cors_on_network_response(
+          let res = enforce_cors_on_network_response(
             destination,
             effective_url.as_ref(),
             client_origin,
             referrer_url,
             credentials_mode,
             res,
-          );
+          )?;
+          validate_ipc_final_url(effective_url.as_ref(), &res)?;
+          return Ok(res);
         }
         Err(err) => {
           if attempted_www_fallback {
@@ -9494,8 +9637,14 @@ impl ResourceFetcher for HttpFetcher {
   }
 
   fn fetch_with_context(&self, kind: FetchContextKind, url: &str) -> Result<FetchedResource> {
+    if is_http_or_https_url(url) {
+      validate_ipc_url_field(url, "url", url)?;
+    }
     let normalized = normalize_http_url_for_fetch(url);
     let url = normalized.as_deref().unwrap_or(url);
+    if is_http_or_https_url(url) {
+      validate_ipc_url_field(url, "url", url)?;
+    }
     render_control::check_root(render_stage_hint_for_context(kind, url)).map_err(Error::Render)?;
     match self.policy.ensure_url_allowed(url)? {
       ResourceScheme::Data => self.fetch_data(kind, url),
@@ -9508,8 +9657,17 @@ impl ResourceFetcher for HttpFetcher {
 
   fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
     let kind: FetchContextKind = req.destination.into();
+    if is_http_or_https_url(req.url) {
+      validate_ipc_url_field(req.url, "url", req.url)?;
+    }
+    if let Some(referrer_url) = req.referrer_url.filter(|url| is_http_or_https_url(url)) {
+      validate_ipc_url_field(req.url, "referrer_url", referrer_url)?;
+    }
     let normalized = normalize_http_url_for_fetch(req.url);
     let url = normalized.as_deref().unwrap_or(req.url);
+    if is_http_or_https_url(url) {
+      validate_ipc_url_field(url, "url", url)?;
+    }
     render_control::check_root(render_stage_hint_for_context(kind, url)).map_err(Error::Render)?;
     match self.policy.ensure_url_allowed(url)? {
       ResourceScheme::Data => self.fetch_data(kind, url),
@@ -9532,8 +9690,22 @@ impl ResourceFetcher for HttpFetcher {
 
   fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
     let kind: FetchContextKind = req.fetch.destination.into();
+    if is_http_or_https_url(req.fetch.url) {
+      validate_ipc_url_field(req.fetch.url, "url", req.fetch.url)?;
+    }
+    if let Some(referrer_url) = req
+      .fetch
+      .referrer_url
+      .filter(|url| is_http_or_https_url(url))
+    {
+      validate_ipc_url_field(req.fetch.url, "referrer_url", referrer_url)?;
+    }
+    validate_ipc_request_body(req.fetch.url, req.body)?;
     let normalized = normalize_http_url_for_fetch(req.fetch.url);
     let url = normalized.as_deref().unwrap_or(req.fetch.url);
+    if is_http_or_https_url(url) {
+      validate_ipc_url_field(url, "url", url)?;
+    }
     render_control::check_root(render_stage_hint_for_context(kind, url)).map_err(Error::Render)?;
     validate_http_method(url, req.method)?;
     let scheme = self.policy.ensure_url_allowed(url)?;
@@ -14818,14 +14990,34 @@ mod tests {
   }
 
   #[test]
-  fn merge_user_request_headers_sanitizes_values_and_overrides() {
+  fn merge_user_request_headers_rejects_values_with_newlines_or_nul() {
     let mut headers = vec![
       ("X-Test".to_string(), "old".to_string()),
       ("Other".to_string(), "keep".to_string()),
     ];
     let user_headers = vec![
-      // Should override the existing X-Test, sanitize newlines/NUL, and trim HTTP whitespace.
+      // Newlines / NUL bytes must be rejected (protocol error).
       ("x-test".to_string(), "  hello\rworld\0\t".to_string()),
+    ];
+
+    let err =
+      merge_user_request_headers("https://example.com/", "GET", &mut headers, &user_headers)
+        .unwrap_err();
+    assert!(
+      err.to_string().contains("protocol error"),
+      "unexpected error: {err}"
+    );
+  }
+
+  #[test]
+  fn merge_user_request_headers_trims_and_overrides() {
+    let mut headers = vec![
+      ("X-Test".to_string(), "old".to_string()),
+      ("Other".to_string(), "keep".to_string()),
+    ];
+    let user_headers = vec![
+      // Should override the existing X-Test and trim HTTP whitespace.
+      ("x-test".to_string(), "  hello\t".to_string()),
       // Additional entries with the same name should be preserved (duplicates allowed).
       ("X-Test".to_string(), "second".to_string()),
     ];
@@ -14838,8 +15030,104 @@ mod tests {
       .filter(|(name, _)| name.eq_ignore_ascii_case("x-test"))
       .map(|(_, value)| value.as_str())
       .collect();
-    assert_eq!(x_test_values, vec!["hello world", "second"]);
+    assert_eq!(x_test_values, vec!["hello", "second"]);
     assert_eq!(header_value(&headers, "Other"), Some("keep"));
+  }
+
+  #[test]
+  fn merge_user_request_headers_rejects_too_many_headers() {
+    let mut headers = Vec::new();
+    let mut user_headers = Vec::new();
+    for idx in 0..=IPC_FETCH_MAX_HEADER_COUNT {
+      user_headers.push((format!("x-test-{idx}"), "a".to_string()));
+    }
+    let err = merge_user_request_headers("https://example.com/", "GET", &mut headers, &user_headers)
+      .unwrap_err();
+    assert!(
+      err.to_string().contains("too many request headers"),
+      "unexpected error: {err}"
+    );
+  }
+
+  #[test]
+  fn merge_user_request_headers_rejects_overlong_header_value() {
+    let mut headers = Vec::new();
+    let value = "a".repeat(IPC_FETCH_MAX_HEADER_VALUE_BYTES + 1);
+    let user_headers = vec![("x-test".to_string(), value)];
+    let err = merge_user_request_headers("https://example.com/", "GET", &mut headers, &user_headers)
+      .unwrap_err();
+    assert!(
+      err.to_string().contains("request header value exceeds IPC max bytes"),
+      "unexpected error: {err}"
+    );
+  }
+
+  #[test]
+  fn ipc_fetch_rejects_overlong_url() {
+    let base = "https://example.com/";
+    let pad = "a".repeat(IPC_FETCH_MAX_URL_BYTES - base.len() + 1);
+    let url = format!("{base}{pad}");
+    assert!(url.len() > IPC_FETCH_MAX_URL_BYTES);
+
+    let fetcher = HttpFetcher::new();
+    let err = fetcher
+      .fetch_with_context(FetchContextKind::Other, &url)
+      .unwrap_err();
+    assert!(
+      err.to_string().contains("exceeds IPC max URL length"),
+      "unexpected error: {err}"
+    );
+  }
+
+  #[test]
+  fn ipc_fetch_rejects_overlong_referrer_url() {
+    let base = "https://ref.example/";
+    let pad = "a".repeat(IPC_FETCH_MAX_URL_BYTES - base.len() + 1);
+    let referrer_url = format!("{base}{pad}");
+    assert!(referrer_url.len() > IPC_FETCH_MAX_URL_BYTES);
+
+    let fetcher = HttpFetcher::new();
+    let req = FetchRequest::new("https://example.com/", FetchDestination::Fetch)
+      .with_referrer_url(&referrer_url);
+    let err = fetcher.fetch_with_request(req).unwrap_err();
+    assert!(
+      err.to_string().contains("referrer_url exceeds IPC max URL length"),
+      "unexpected error: {err}"
+    );
+  }
+
+  #[test]
+  fn ipc_fetch_rejects_overlong_request_body() {
+    let fetcher = HttpFetcher::new();
+    let body = vec![0u8; IPC_FETCH_MAX_REQUEST_BODY_BYTES + 1];
+    let req = HttpRequest {
+      fetch: FetchRequest::new("https://example.com/", FetchDestination::Fetch),
+      method: "POST",
+      redirect: web_fetch::RequestRedirect::Follow,
+      headers: &[],
+      body: Some(&body),
+    };
+    let err = fetcher.fetch_http_request(req).unwrap_err();
+    assert!(
+      err.to_string().contains("request body exceeds IPC max size"),
+      "unexpected error: {err}"
+    );
+  }
+
+  #[test]
+  fn ipc_fetch_rejects_overlong_final_url() {
+    let base = "https://final.example/";
+    let pad = "a".repeat(IPC_FETCH_MAX_URL_BYTES - base.len() + 1);
+    let final_url = format!("{base}{pad}");
+    assert!(final_url.len() > IPC_FETCH_MAX_URL_BYTES);
+
+    let mut resource = FetchedResource::new(Vec::new(), None);
+    resource.final_url = Some(final_url);
+    let err = validate_ipc_final_url("https://example.com/", &resource).unwrap_err();
+    assert!(
+      err.to_string().contains("final_url exceeds IPC max URL length"),
+      "unexpected error: {err}"
+    );
   }
 
   #[test]
