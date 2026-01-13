@@ -3828,7 +3828,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           if let Some(win) = windows.get_mut(&window_id) {
             // Skip windows with no pending worker work; the bridge thread sets this flag before
             // requesting the global wake.
-            if !win.worker_wake_pending.swap(false, Ordering::AcqRel) {
+            //
+            // Note: we keep the per-window flag set while draining so that bursts of worker messages
+            // don't enqueue redundant wakes while the UI thread is already awake and processing
+            // messages. The flag is cleared after draining below.
+            if !win.worker_wake_pending.load(Ordering::Acquire) && win.worker_msg_backlog.is_empty()
+            {
               continue;
             }
 
@@ -3895,10 +3900,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               history_snapshot = Some(win.app.browser_state.history.clone());
             }
 
-            if needs_follow_up_wake {
-              // We ran out of budget for this window; mark it as pending again and request another
-              // global wake after returning control to the event loop.
-              if !win.worker_wake_pending.swap(true, Ordering::AcqRel) {
+            // Clear the per-window pending bit now that we've drained the current batch, then
+            // re-check the queue for any messages that arrived during the drain.
+            //
+            // This ensures:
+            // - At most one wake is queued per window while we're draining (messages arriving during
+            //   the drain won't schedule an extra wake).
+            // - We don't miss a wake when messages arrive after the last dequeue but before we
+            //   clear the flag (we immediately re-drain after clearing).
+            win.worker_wake_pending.store(false, Ordering::Release);
+
+            let mut drained = win.worker_msgs.drain();
+            win.worker_msg_backlog.append(&mut drained);
+
+            if !win.worker_msg_backlog.is_empty() {
+              win.worker_wake_pending.store(true, Ordering::Release);
+              if needs_follow_up_wake {
                 needs_follow_up_wake_any = true;
                 if hud_enabled {
                   if let Some(hud) = win.app.hud.as_mut() {
