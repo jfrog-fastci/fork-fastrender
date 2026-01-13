@@ -8075,7 +8075,6 @@ impl BrowserTab {
     self.host.document.set_viewport(width, height);
     self.sync_window_media_context_and_geometry();
   }
-
   /// Returns the current viewport size in CSS px, if explicitly set.
   pub fn viewport_size_css(&self) -> Option<(u32, u32)> {
     self.host.document.options().viewport

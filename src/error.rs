@@ -293,11 +293,9 @@ impl Error {
 impl From<MediaError> for Error {
   fn from(err: MediaError) -> Self {
     match err {
+      MediaError::LoadFailed { url, reason } => Error::Resource(ResourceError::new(url, reason)),
       MediaError::Render(render_err) => Error::Render(render_err),
       MediaError::Io(io_err) => Error::Io(io_err),
-      MediaError::LoadFailed { url, reason } => {
-        Error::Other(format!("[media] failed to load '{url}': {reason}"))
-      }
       MediaError::Unsupported(message) => Error::Other(format!("[media] unsupported: {message}")),
       MediaError::Demux(message) => Error::Other(format!("[media] demux error: {message}")),
       MediaError::Decode(message) => Error::Other(format!("[media] decode error: {message}")),
