@@ -3298,6 +3298,140 @@ mod tests {
   }
 
   #[test]
+  fn host_load_imported_module_finishes_all_waiters_even_when_finish_errors() -> crate::error::Result<()> {
+    use vm_js::ExecutionContext;
+
+    fn vm_err(err: VmError) -> crate::error::Error {
+      crate::error::Error::Other(err.to_string())
+    }
+
+    let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
+    let mut opts = JsExecutionOptions::default();
+    opts.supports_module_scripts = true;
+    // Give the networking task just enough fuel to:
+    // 1) pass the task-level `vm.tick()`, and
+    // 2) parse the fetched module,
+    // but not enough fuel for `finish_loading_imported_module*` (which ticks again).
+    //
+    // This forces `finish_loading_imported_module*` to return an error for the *first* waiter,
+    // exercising the "finish all waiters even if one finish errors" invariant.
+    opts.max_instruction_count = Some(2);
+    let mut host = crate::js::WindowHost::new_with_options(dom, "https://example.com/", opts)?;
+
+    // `data:` URL so we can fetch/parse without requiring a network fetcher.
+    const MODULE_URL: &str = "data:,";
+
+    host.queue_task(TaskSource::Script, |host_state, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<crate::js::WindowHostState>::new_with_host(host_state)?;
+      hooks.set_event_loop(event_loop);
+
+      let (vm_host, window_realm) = host_state.vm_host_and_window_realm()?;
+      window_realm.reset_interrupt();
+
+      let global_obj = window_realm.global_object();
+      let realm_id = window_realm.realm().id();
+
+      let (vm, heap) = window_realm.vm_and_heap_mut();
+      let Some(modules_ptr) = vm.module_graph_ptr() else {
+        return Err(crate::error::Error::Other(
+          "expected module graph to be installed when supports_module_scripts=true".to_string(),
+        ));
+      };
+      // SAFETY: `WindowRealm::enable_module_loader` installs a stable pointer to a realm-owned boxed
+      // `ModuleGraph`, cleared during teardown.
+      let modules = unsafe { &mut *(modules_ptr as *mut ModuleGraph) };
+
+      // Ensure `start_dynamic_import*` sees a current realm (it requires an active execution
+      // context).
+      struct ExecCtxGuard {
+        vm: *mut Vm,
+        ctx: ExecutionContext,
+      }
+
+      impl ExecCtxGuard {
+        fn new(vm: &mut Vm, ctx: ExecutionContext) -> Result<Self, VmError> {
+          vm.push_execution_context(ctx)?;
+          Ok(Self { vm: vm as *mut Vm, ctx })
+        }
+      }
+
+      impl Drop for ExecCtxGuard {
+        fn drop(&mut self) {
+          // SAFETY: `ExecCtxGuard` is created from a live `&mut Vm` and dropped before that VM is
+          // dropped.
+          let vm = unsafe { &mut *self.vm };
+          let popped = vm.pop_execution_context();
+          debug_assert_eq!(popped, Some(self.ctx));
+        }
+      }
+
+      let _ctx = ExecCtxGuard::new(
+        vm,
+        ExecutionContext {
+          realm: realm_id,
+          script_or_module: None,
+        },
+      )
+      .map_err(vm_err)?;
+
+      {
+        let mut scope = heap.scope();
+        // Root handles across `start_dynamic_import*`: the algorithm may allocate and GC.
+        scope.push_root(Value::Object(global_obj)).map_err(vm_err)?;
+
+        let spec_s = scope.alloc_string(MODULE_URL).map_err(vm_err)?;
+        scope.push_root(Value::String(spec_s)).map_err(vm_err)?;
+        let specifier = Value::String(spec_s);
+
+        // Trigger *two* dynamic imports for the same module URL. The first call starts an in-flight
+        // fetch; the second call attaches as a waiter to the same in-flight entry.
+        vm_js::start_dynamic_import_with_host_and_hooks(
+          vm,
+          &mut scope,
+          modules,
+          vm_host,
+          &mut hooks,
+          global_obj,
+          specifier,
+          Value::Undefined,
+        )
+        .map_err(vm_err)?;
+        vm_js::start_dynamic_import_with_host_and_hooks(
+          vm,
+          &mut scope,
+          modules,
+          vm_host,
+          &mut hooks,
+          global_obj,
+          specifier,
+          Value::Undefined,
+        )
+        .map_err(vm_err)?;
+      }
+
+      if let Some(err) = hooks.finish(heap) {
+        return Err(err);
+      }
+      Ok(())
+    })?;
+
+    // Running the event loop will execute the queued networking task. With the low VM fuel limit
+    // above, `finish_loading_imported_module*` should fail (out-of-fuel), but the host hook must
+    // still finish *all* waiter payloads so their roots are released.
+    let err = host
+      .run_until_idle(RunLimits::unbounded())
+      .expect_err("expected module-load completion to fail under tiny VM fuel budget");
+
+    let msg = err.to_string();
+    assert!(
+      msg.contains("OutOfFuel") || msg.to_ascii_lowercase().contains("out of fuel"),
+      "expected out-of-fuel error, got: {msg}"
+    );
+
+    Ok(())
+  }
+
+  #[test]
   fn request_idle_callback_is_exposed_and_runs_when_idle() -> crate::error::Result<()> {
     let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
     let mut host = make_window_host(dom, "https://example.com/")?;
