@@ -18,7 +18,10 @@ pub struct JsArgs {
 enum JsCommand {
   /// Run a curated subset of tc39/test262 language semantics tests.
   Test262(test262::Test262Args),
-  /// Run only negative parse SyntaxError tests from the curated suite and list parse-vs-runtime mismatches.
+  /// Rebuild and run only negative parse SyntaxError tests from the curated suite and list parse-vs-runtime mismatches.
+  ///
+  /// Note: this command always rebuilds the `test262-semantic` runner first to avoid stale-binary
+  /// false negatives when iterating on the JS engine.
   #[command(name = "test262-negative-parse", alias = "test262_negative_parse")]
   Test262NegativeParse(test262_negative_parse::Test262NegativeParseArgs),
   /// Run the tc39/test262-parser-tests harness (via ecma-rs `test262`).

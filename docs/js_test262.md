@@ -198,8 +198,9 @@ Running the full curated suite can take several minutes, so `xtask` provides a f
 1. Expands the curated suite globs to concrete ids
 2. Filters to tests with `negative: { phase: parse, type: SyntaxError }`
 3. Writes a temporary suite TOML under `target/js/`
-4. Runs `test262-semantic` under `timeout -k 10 600` and writes a JSON report
-5. Prints a deterministic list of mismatching ids
+4. Rebuilds `test262-semantic` under `timeout -k 10 600` (to avoid stale results)
+5. Executes the built `vendor/ecma-rs/target/debug/test262-semantic` binary directly under `timeout -k 10 600` and writes a JSON report
+6. Prints a deterministic list of mismatching ids
 
 From the FastRender repo root:
 

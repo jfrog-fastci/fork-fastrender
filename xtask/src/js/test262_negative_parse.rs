@@ -151,18 +151,54 @@ pub fn run_test262_negative_parse(args: Test262NegativeParseArgs) -> Result<()> 
   write_negative_parse_suite(&out_suite_path, &negative_parse_ids)?;
   println!("Generated suite: {}", out_suite_path.display());
 
-  // 4) Run test262-semantic on the generated suite under a hard timeout and write a JSON report.
+  // 4) Rebuild test262-semantic before running the suite.
+  //
+  // We execute the binary directly (faster than `cargo run`), so we must ensure it's rebuilt on
+  // every invocation to avoid stale-binary false negatives (where a previously-built runner is
+  // executed after the JS engine has changed).
+  println!();
+  println!(
+    "Rebuilding test262-semantic to avoid stale results (timeout -k {} {})...",
+    TIMEOUT_KILL_SECS, TIMEOUT_TOTAL_SECS
+  );
+  let mut build_cmd = Command::new("timeout");
+  build_cmd
+    .args(["-k", TIMEOUT_KILL_SECS, TIMEOUT_TOTAL_SECS])
+    .arg("bash")
+    .arg(repo_root.join("scripts/cargo_agent.sh"))
+    .arg("build")
+    .args(["-p", "test262-semantic"]);
+  build_cmd.current_dir(&repo_root);
+  // Ensure the binary is built into `vendor/ecma-rs/target/` so we can execute it directly.
+  build_cmd.env_remove("CARGO_TARGET_DIR");
+
+  crate::print_command(&build_cmd);
+  let build_status = build_cmd
+    .status()
+    .with_context(|| "failed to spawn `timeout` (coreutils) for building test262-semantic")?;
+  if !build_status.success() {
+    bail!("test262-semantic build failed with status {build_status}");
+  }
+
+  let exe_suffix = if cfg!(windows) { ".exe" } else { "" };
+  let runner_rel_path = PathBuf::from(format!("target/debug/test262-semantic{exe_suffix}"));
+  let runner_abs_path = ecma_rs_root.join(&runner_rel_path);
+  if !runner_abs_path.is_file() {
+    bail!(
+      "test262-semantic binary not found at {} after rebuilding",
+      runner_abs_path.display()
+    );
+  }
+
+  // 5) Run test262-semantic on the generated suite under a hard timeout and write a JSON report.
   let jobs = crate::cpu_budget().min(DEFAULT_JOBS_CAP).max(1);
 
   let mut cmd = Command::new("timeout");
   cmd
     .args(["-k", TIMEOUT_KILL_SECS, TIMEOUT_TOTAL_SECS])
-    .arg("bash")
-    .arg(repo_root.join("scripts/cargo_agent.sh"))
-    .arg("run")
-    .arg("--release")
-    .args(["-p", "test262-semantic"])
-    .arg("--")
+    // Run from `vendor/ecma-rs/` so `test262-semantic`'s default `--test262-dir
+    // test262-semantic/data` works.
+    .arg(&runner_rel_path)
     .arg("--test262-dir")
     .arg(&test262_dir)
     .args(["--harness", "test262"])
@@ -177,8 +213,6 @@ pub fn run_test262_negative_parse(args: Test262NegativeParseArgs) -> Result<()> 
     .arg("--report-path")
     .arg(&report_path)
     .args(["--fail-on", "none"]);
-  // Keep build artifacts in the repo's top-level `target/` dir (avoid `vendor/ecma-rs/target/`).
-  cmd.env("CARGO_TARGET_DIR", repo_root.join("target"));
   cmd.current_dir(&ecma_rs_root);
 
   println!();
