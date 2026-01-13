@@ -4254,6 +4254,35 @@ impl InteractionEngine {
       }
     }
 
+    // Reset `<input type="file">` selections.
+    //
+    // File input state lives outside markup:
+    // - selected files are stored in `InteractionState.form_state.file_inputs` so form submission
+    //   can include file bytes without leaking paths/bytes into the DOM, and
+    // - a synthetic `data-fastr-file-value` attribute mirrors the "value string" for validation /
+    //   accessibility (`C:\fakepath\...`), matching browser behavior where markup `value=` is ignored.
+    for node_id in 1..index.id_to_node.len() {
+      if node_or_ancestor_is_template(index, node_id) {
+        continue;
+      }
+      let Some(node) = index.node(node_id) else {
+        continue;
+      };
+      if !is_file_input(node) {
+        continue;
+      }
+      if resolve_form_owner(index, node_id) != Some(form_id) {
+        continue;
+      }
+
+      if self.state.form_state.file_inputs.remove(&node_id).is_some() {
+        changed = true;
+      }
+      if let Some(node_mut) = index.node_mut(node_id) {
+        changed |= remove_node_attr(node_mut, "data-fastr-file-value");
+      }
+    }
+
     // Clear text undo history for controls in this form.
     {
       let mut ids_in_form = std::collections::HashSet::<usize>::new();
