@@ -40,7 +40,36 @@ fn rejects_unicode_property_of_strings_in_p_negated_in_v() {
 #[test]
 fn rejects_unicode_sets_breaking_change_patterns() {
   let opts = ecma_script_opts();
-  for pat in ["[(]", "[)]", "[[]", "[{]", "[}]", "[/]", "[-]", "[|]", "[**]", "[&&]"] {
+  for pat in [
+    "[(]",
+    "[)]",
+    "[[]",
+    "[{]",
+    "[}]",
+    "[/]",
+    "[-]",
+    "[|]",
+    "[&&]",
+    "[!!]",
+    "[##]",
+    "[$$]",
+    "[%%]",
+    "[**]",
+    "[++]",
+    "[,,]",
+    "[..]",
+    "[::]",
+    "[;;]",
+    "[<<]",
+    "[==]",
+    "[>>]",
+    "[??]",
+    "[@@]",
+    "[``]",
+    "[~~]",
+    "[^^^]",
+    "[_^^]",
+  ] {
     let src = format!("let r = /{pat}/v;");
     assert!(parse_with_options(&src, opts).is_err(), "expected {src} to fail");
   }
@@ -53,4 +82,3 @@ fn accepts_unicode_sets_examples() {
   assert!(parse_with_options("let r = /^[\\q{0|2|4|9\\uFE0F\\u20E3}_]+$/v;", opts).is_ok());
   assert!(parse_with_options("let r = /^[\\p{ASCII_Hex_Digit}_]+$/v;", opts).is_ok());
 }
-

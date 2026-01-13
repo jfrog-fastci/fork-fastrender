@@ -1376,6 +1376,7 @@ fn validate_regex_pattern(
           | Some(b">>")
           | Some(b"??")
           | Some(b"@@")
+          | Some(b"^^")
           | Some(b"``")
           | Some(b"~~")
       )
