@@ -1,6 +1,39 @@
 // META: script=/resources/testharness.js
 
 test(() => {
+  assert_true(typeof DocumentFragment.prototype.querySelector === "function");
+  assert_true(typeof DocumentFragment.prototype.querySelectorAll === "function");
+  assert_true(
+    Object.prototype.hasOwnProperty.call(
+      DocumentFragment.prototype,
+      "querySelector"
+    )
+  );
+  assert_true(
+    Object.prototype.hasOwnProperty.call(
+      DocumentFragment.prototype,
+      "querySelectorAll"
+    )
+  );
+
+  const frag = document.createDocumentFragment();
+  assert_false(Object.prototype.hasOwnProperty.call(frag, "querySelector"));
+  assert_false(Object.prototype.hasOwnProperty.call(frag, "querySelectorAll"));
+
+  assert_true(typeof ShadowRoot.prototype.querySelector === "function");
+  assert_true(typeof ShadowRoot.prototype.querySelectorAll === "function");
+  assert_true(
+    Object.prototype.hasOwnProperty.call(ShadowRoot.prototype, "querySelector")
+  );
+  assert_true(
+    Object.prototype.hasOwnProperty.call(
+      ShadowRoot.prototype,
+      "querySelectorAll"
+    )
+  );
+}, "DocumentFragment/ShadowRoot expose querySelector(All) on their interface prototypes");
+
+test(() => {
   const frag = document.createDocumentFragment();
 
   const a = document.createElement("span");

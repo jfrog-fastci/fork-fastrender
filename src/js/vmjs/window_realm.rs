@@ -52203,6 +52203,66 @@ fn init_window_globals(
     }
   }
 
+  // ParentNode mixin selector traversal APIs (DocumentFragment / ShadowRoot).
+  //
+  // Historically, FastRender only exposed selector methods on Element wrappers and installed
+  // querySelector(All) per-instance on other node types as a best-effort shim. The DOM Standard,
+  // however, defines querySelector(All) on `DocumentFragment.prototype` (and by extension on
+  // `ShadowRoot`), so we ensure the methods exist on the interface prototypes.
+  let document_fragment_proto = dom_platform
+    .as_ref()
+    .map(|platform| platform.prototype_for(DomInterface::DocumentFragment));
+  let shadow_root_proto = dom_platform
+    .as_ref()
+    .map(|platform| platform.prototype_for(DomInterface::ShadowRoot));
+
+  if let Some(document_fragment_proto) = document_fragment_proto {
+    let mut define_method_if_missing =
+      |name: &str, func: GcObject| -> Result<(), VmError> {
+        let key = alloc_key(&mut scope, name)?;
+        if scope
+          .heap()
+          .object_get_own_property(document_fragment_proto, &key)?
+          .is_none()
+        {
+          scope.define_property(document_fragment_proto, key, data_desc(Value::Object(func)))?;
+        }
+        Ok(())
+      };
+
+    define_method_if_missing("querySelector", element_query_selector_func)?;
+    define_method_if_missing("querySelectorAll", element_query_selector_all_func)?;
+  }
+
+  if let (Some(document_fragment_proto), Some(shadow_root_proto)) =
+    (document_fragment_proto, shadow_root_proto)
+  {
+    let mut define_method_if_missing =
+      |name: &str| -> Result<(), VmError> {
+        let key = alloc_key(&mut scope, name)?;
+        if scope
+          .heap()
+          .object_get_own_property(shadow_root_proto, &key)?
+          .is_none()
+        {
+          // Prefer the value from `DocumentFragment.prototype` so the WebIDL backend (when active)
+          // keeps using its generated implementation. In the handwritten backend we just installed
+          // the shared Element-native functions above, so this still reuses those.
+          let Some(desc) = scope.heap().get_property(document_fragment_proto, &key)? else {
+            return Ok(());
+          };
+          let PropertyKind::Data { value, .. } = desc.kind else {
+            return Ok(());
+          };
+          scope.define_property(shadow_root_proto, key, data_desc(value))?;
+        }
+        Ok(())
+      };
+
+    define_method_if_missing("querySelector")?;
+    define_method_if_missing("querySelectorAll")?;
+  }
+
   // HTMLElement global attributes (`title`/`lang`/`dir`/`hidden`) must be defined on
   // `HTMLElement.prototype` (not per-instance) and enforce a strict brand check.
   if let Some(html_element_proto) = html_element_proto {
