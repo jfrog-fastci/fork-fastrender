@@ -19,12 +19,32 @@ fn assert_path_in_download_dir(path: &Path, download_dir: &Path) {
       download_dir.display()
     )
   });
-  let path = std::fs::canonicalize(path).unwrap_or_else(|err| {
-    panic!(
-      "failed to canonicalize download path {}: {err}",
-      path.display()
-    )
-  });
+  let path = if path.exists() {
+    std::fs::canonicalize(path).unwrap_or_else(|err| {
+      panic!(
+        "failed to canonicalize download path {}: {err}",
+        path.display()
+      )
+    })
+  } else {
+    // During cancellation tests we may assert the final path before the download is finalized
+    // (since the worker writes to a sibling `*.part` file). In that case the final file may not
+    // exist, so canonicalize the existing parent directory instead.
+    let parent = path.parent().unwrap_or_else(|| {
+      panic!(
+        "download path {} has no parent; expected it to live under {}",
+        path.display(),
+        download_dir.display()
+      )
+    });
+    std::fs::canonicalize(parent).unwrap_or_else(|err| {
+      panic!(
+        "failed to canonicalize download parent dir {} (for {}): {err}",
+        parent.display(),
+        path.display()
+      )
+    })
+  };
   assert!(
     path.starts_with(&download_dir),
     "expected download path {} to be inside download dir {}",
@@ -163,8 +183,8 @@ fn ui_worker_download_cancel_cleans_up() {
     other => panic!("unexpected worker message: {other:?}"),
   }
 
-  let final_path = download_dir.path().join("payload.bin");
-  let part_path = download_dir.path().join("payload.bin.part");
+  let final_path = &path;
+  let part_path = fastrender::ui::downloads::part_path_for_final(final_path);
   assert!(
     !final_path.exists(),
     "expected no final file after cancel, but {} exists",
