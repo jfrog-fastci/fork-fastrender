@@ -84,6 +84,7 @@ pub mod loading_overlay;
 // Viewport-change throttling is used only by the windowed browser UI.
 pub mod viewport_throttle;
 pub mod notifications;
+pub mod clear_browsing_data_toast;
 pub mod async_scroll;
 pub mod chrome_dynamic_asset_fetcher;
 pub mod multiprocess;
@@ -288,6 +289,7 @@ pub use notifications::{
   classify_warning_toast, Toast, ToastKind, ToastState, WarningToast, WarningToastIcon,
   WarningToastPresentation, WarningToastState, TOAST_DEFAULT_TTL, WARNING_TOAST_DEFAULT_TTL,
 };
+pub use clear_browsing_data_toast::format_clear_browsing_data_toast;
 
 pub use frame_upload::{FrameUploadCoalescer, FrameUploadCoalescerStats};
 pub use worker_wake::WorkerWakeCoalescer;

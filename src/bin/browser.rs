@@ -19093,8 +19093,13 @@ impl App {
   }
 
   fn clear_browsing_data(&mut self, range: fastrender::ui::ClearBrowsingDataRange) {
+    let before = self.browser_state.history.len();
     self.browser_state.history.clear_browsing_data_range(range);
+    let after = self.browser_state.history.len();
+    let removed = before.saturating_sub(after);
     self.sync_history_after_mutation(true);
+    let toast = fastrender::ui::format_clear_browsing_data_toast(range, Some(removed));
+    self.show_chrome_toast(&toast);
   }
 
   fn clear_history(&mut self) {
