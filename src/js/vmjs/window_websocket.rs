@@ -28,10 +28,12 @@ use std::borrow::Cow;
 use std::char::decode_utf16;
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tungstenite::client::IntoClientRequest;
 use tungstenite::protocol::{CloseFrame, Message};
 use vm_js::iterator::{self, CloseCompletionKind};
 use vm_js::{
@@ -86,15 +88,51 @@ const WS_CLOSE_EVENT_QUEUE_OVERFLOW_REASON: &str = "event queue overflow";
 // WebSockets that leave behind Rust-side state.
 const MAX_WEBSOCKETS_PER_ENV: usize = 1_024;
 
+const MAX_QUEUED_DNS_LOOKUPS: usize = 128;
+
+/// Hard timeouts used while establishing a WebSocket connection.
+///
+/// These are enforced in the I/O thread so a hostile network cannot hang the host indefinitely in
+/// DNS/TCP/TLS/WebSocket handshakes.
+#[derive(Clone, Copy, Debug)]
+pub struct WindowWebSocketTimeouts {
+  /// DNS lookup + TCP connect.
+  pub dns_tcp_connect: Duration,
+  /// TLS handshake (for `wss://`).
+  pub tls_handshake: Duration,
+  /// WebSocket (HTTP upgrade) handshake.
+  pub websocket_handshake: Duration,
+}
+
+impl Default for WindowWebSocketTimeouts {
+  fn default() -> Self {
+    Self {
+      dns_tcp_connect: Duration::from_secs(10),
+      tls_handshake: Duration::from_secs(10),
+      websocket_handshake: Duration::from_secs(10),
+    }
+  }
+}
+
 #[derive(Clone)]
 pub struct WindowWebSocketEnv {
   pub fetcher: Arc<dyn ResourceFetcher>,
   pub document_url: Option<String>,
+  pub timeouts: WindowWebSocketTimeouts,
 }
 
 impl WindowWebSocketEnv {
   pub fn for_document(fetcher: Arc<dyn ResourceFetcher>, document_url: Option<String>) -> Self {
-    Self { fetcher, document_url }
+    Self {
+      fetcher,
+      document_url,
+      timeouts: WindowWebSocketTimeouts::default(),
+    }
+  }
+
+  pub fn with_timeouts(mut self, timeouts: WindowWebSocketTimeouts) -> Self {
+    self.timeouts = timeouts;
+    self
   }
 }
 
@@ -257,6 +295,46 @@ enum QueueWsTaskOutcome {
 
 static NEXT_ENV_ID: AtomicU64 = AtomicU64::new(1);
 static ENVS: OnceLock<Mutex<HashMap<u64, EnvState>>> = OnceLock::new();
+
+struct DnsLookupRequest {
+  host: String,
+  port: u16,
+  resp: mpsc::Sender<Result<Vec<SocketAddr>, std::io::Error>>,
+}
+
+static DNS_LOOKUP_TX: OnceLock<mpsc::SyncSender<DnsLookupRequest>> = OnceLock::new();
+
+fn dns_lookup_tx() -> mpsc::SyncSender<DnsLookupRequest> {
+  DNS_LOOKUP_TX
+    .get_or_init(|| {
+      // DNS resolution can block inside system resolvers. Run it on a dedicated worker thread so
+      // the WebSocket I/O thread can remain responsive to shutdown and enforce a hard connect
+      // timeout.
+      let (tx, rx) = mpsc::sync_channel::<DnsLookupRequest>(MAX_QUEUED_DNS_LOOKUPS);
+      std::thread::Builder::new()
+        .name("websocket-dns".to_string())
+        .spawn(move || {
+          while let Ok(req) = rx.recv() {
+            let result = (req.host.as_str(), req.port)
+              .to_socket_addrs()
+              .map(|iter| iter.collect::<Vec<_>>());
+            let _ = req.resp.send(result);
+          }
+        })
+        .expect("spawn websocket DNS worker");
+      tx
+    })
+    .clone()
+}
+
+#[cfg(test)]
+static ACTIVE_WEBSOCKET_THREADS: std::sync::atomic::AtomicUsize =
+  std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+fn active_websocket_threads() -> usize {
+  ACTIVE_WEBSOCKET_THREADS.load(Ordering::Relaxed)
+}
 
 fn envs() -> &'static Mutex<HashMap<u64, EnvState>> {
   ENVS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -1724,6 +1802,386 @@ fn validate_ws_subprotocol_handshake_response(
   Ok(value.to_string())
 }
 
+fn poll_connect_abort(cmd_rx: &mpsc::Receiver<WsCommand>) -> Option<WsCommand> {
+  loop {
+    match cmd_rx.try_recv() {
+      Ok(cmd @ WsCommand::Shutdown) => return Some(cmd),
+      Ok(cmd @ WsCommand::Close { .. }) => return Some(cmd),
+      Ok(_) => continue,
+      Err(mpsc::TryRecvError::Empty) => return None,
+      Err(mpsc::TryRecvError::Disconnected) => return Some(WsCommand::Shutdown),
+    }
+  }
+}
+
+struct WsConnectFailure {
+  close_code: u16,
+  close_reason: String,
+  dispatch_error: bool,
+}
+
+fn ws_fail_timeout(stage: &'static str) -> WsConnectFailure {
+  WsConnectFailure {
+    close_code: 1006,
+    close_reason: format!("{stage} timeout"),
+    dispatch_error: true,
+  }
+}
+
+fn ws_fail_io(stage: &'static str, err: std::io::Error) -> WsConnectFailure {
+  let msg = format!("{stage} failed: {}", err);
+  WsConnectFailure {
+    close_code: 1006,
+    close_reason: msg,
+    dispatch_error: true,
+  }
+}
+
+fn ws_fail_ws(stage: &'static str, err: tungstenite::Error) -> WsConnectFailure {
+  WsConnectFailure {
+    close_code: 1006,
+    close_reason: format!("{stage} failed: {err}"),
+    dispatch_error: true,
+  }
+}
+
+fn resolve_socket_addrs_with_deadline(
+  host: &str,
+  port: u16,
+  connect_deadline: Instant,
+  cmd_rx: &mpsc::Receiver<WsCommand>,
+) -> Result<Vec<SocketAddr>, WsConnectFailure> {
+  if let Ok(ip) = host.parse::<IpAddr>() {
+    return Ok(vec![SocketAddr::new(ip, port)]);
+  }
+
+  let (resp_tx, resp_rx) = mpsc::channel::<Result<Vec<SocketAddr>, std::io::Error>>();
+  match dns_lookup_tx().try_send(DnsLookupRequest {
+    host: host.to_string(),
+    port,
+    resp: resp_tx,
+  }) {
+    Ok(()) => {}
+    Err(mpsc::TrySendError::Full(_)) => {
+      return Err(WsConnectFailure {
+        close_code: 1006,
+        close_reason: "DNS resolution queue is full".to_string(),
+        dispatch_error: true,
+      })
+    }
+    Err(mpsc::TrySendError::Disconnected(_)) => {
+      return Err(WsConnectFailure {
+        close_code: 1006,
+        close_reason: "DNS resolver is unavailable".to_string(),
+        dispatch_error: true,
+      })
+    }
+  }
+
+  // Use a small poll interval so `Shutdown` can abort quickly.
+  const DNS_POLL: Duration = Duration::from_millis(50);
+  loop {
+    if let Some(cmd) = poll_connect_abort(cmd_rx) {
+      return Err(match cmd {
+        WsCommand::Shutdown => WsConnectFailure {
+          close_code: 1001,
+          close_reason: "shutdown".to_string(),
+          dispatch_error: false,
+        },
+        WsCommand::Close { code, reason } => WsConnectFailure {
+          close_code: code.unwrap_or(1000),
+          close_reason: reason.unwrap_or_default(),
+          dispatch_error: false,
+        },
+        _ => WsConnectFailure {
+          close_code: 1001,
+          close_reason: "shutdown".to_string(),
+          dispatch_error: false,
+        },
+      });
+    }
+    let now = Instant::now();
+    if now >= connect_deadline {
+      return Err(ws_fail_timeout("connect"));
+    }
+    let wait = connect_deadline.saturating_duration_since(now).min(DNS_POLL);
+    match resp_rx.recv_timeout(wait) {
+      Ok(Ok(addrs)) => return Ok(addrs),
+      Ok(Err(err)) => return Err(ws_fail_io("DNS resolution", err)),
+      Err(mpsc::RecvTimeoutError::Timeout) => {}
+      Err(mpsc::RecvTimeoutError::Disconnected) => {
+        return Err(ws_fail_io(
+          "DNS resolution",
+          std::io::Error::new(std::io::ErrorKind::Other, "DNS worker disconnected"),
+        ))
+      }
+    }
+  }
+}
+
+fn connect_websocket_with_timeouts(
+  request: http::Request<()>,
+  url: &url::Url,
+  timeouts: WindowWebSocketTimeouts,
+  cmd_rx: &mpsc::Receiver<WsCommand>,
+) -> Result<
+  (
+    tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
+    tungstenite::handshake::client::Response,
+  ),
+  WsConnectFailure,
+> {
+  // Cancellation granularity for TCP connect. Keep this reasonably small so `Shutdown` can abort a
+  // stalled connect quickly, but large enough to tolerate real-world RTT during the SYN handshake.
+  const CONNECT_POLL: Duration = Duration::from_secs(1);
+  const HANDSHAKE_POLL: Duration = Duration::from_millis(50);
+
+  if let Some(cmd) = poll_connect_abort(cmd_rx) {
+    return Err(match cmd {
+      WsCommand::Shutdown => WsConnectFailure {
+        close_code: 1001,
+        close_reason: "shutdown".to_string(),
+        dispatch_error: false,
+      },
+      WsCommand::Close { code, reason } => WsConnectFailure {
+        close_code: code.unwrap_or(1000),
+        close_reason: reason.unwrap_or_default(),
+        dispatch_error: false,
+      },
+      _ => WsConnectFailure {
+        close_code: 1001,
+        close_reason: "shutdown".to_string(),
+        dispatch_error: false,
+      },
+    });
+  }
+
+  let host = url
+    .host_str()
+    .ok_or_else(|| WsConnectFailure {
+      close_code: 1006,
+      close_reason: "WebSocket URL is missing a host".to_string(),
+      dispatch_error: true,
+    })?;
+  let port = url
+    .port_or_known_default()
+    .ok_or_else(|| WsConnectFailure {
+      close_code: 1006,
+      close_reason: "WebSocket URL is missing a port".to_string(),
+      dispatch_error: true,
+    })?;
+
+  // -------------------------------------------------------------------------
+  // DNS + TCP connect
+  // -------------------------------------------------------------------------
+  let connect_deadline = Instant::now() + timeouts.dns_tcp_connect;
+  let addrs = resolve_socket_addrs_with_deadline(host, port, connect_deadline, cmd_rx)?;
+  if addrs.is_empty() {
+    return Err(WsConnectFailure {
+      close_code: 1006,
+      close_reason: "DNS resolution returned no addresses".to_string(),
+      dispatch_error: true,
+    });
+  }
+
+  let mut last_connect_err: Option<std::io::Error> = None;
+  let mut addr_index: usize = 0;
+  let mut tcp_stream = loop {
+    if let Some(cmd) = poll_connect_abort(cmd_rx) {
+      return Err(match cmd {
+        WsCommand::Shutdown => WsConnectFailure {
+          close_code: 1001,
+          close_reason: "shutdown".to_string(),
+          dispatch_error: false,
+        },
+        WsCommand::Close { code, reason } => WsConnectFailure {
+          close_code: code.unwrap_or(1000),
+          close_reason: reason.unwrap_or_default(),
+          dispatch_error: false,
+        },
+        _ => WsConnectFailure {
+          close_code: 1001,
+          close_reason: "shutdown".to_string(),
+          dispatch_error: false,
+        },
+      });
+    }
+    let now = Instant::now();
+    if now >= connect_deadline {
+      if let Some(err) = last_connect_err.take() {
+        return Err(ws_fail_io("connect", err));
+      }
+      return Err(ws_fail_timeout("connect"));
+    }
+    let remaining = connect_deadline.saturating_duration_since(now);
+    let attempt_timeout = remaining.min(CONNECT_POLL);
+    let addr = addrs[addr_index];
+    addr_index = (addr_index + 1) % addrs.len();
+    match std::net::TcpStream::connect_timeout(&addr, attempt_timeout) {
+      Ok(stream) => break stream,
+      Err(err) => {
+        last_connect_err = Some(err);
+      }
+    }
+  };
+
+  let _ = tcp_stream.set_nodelay(true);
+
+  // -------------------------------------------------------------------------
+  // TLS handshake (wss://)
+  // -------------------------------------------------------------------------
+  let stream: tungstenite::stream::MaybeTlsStream<std::net::TcpStream> = match url.scheme() {
+    "ws" => tungstenite::stream::MaybeTlsStream::Plain(tcp_stream),
+    "wss" => {
+      use std::sync::Arc;
+
+      static TLS_CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
+      let config = TLS_CONFIG
+        .get_or_init(|| {
+          let mut roots = rustls::RootCertStore::empty();
+          roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+          Arc::new(
+            rustls::ClientConfig::builder()
+              .with_root_certificates(roots)
+              .with_no_client_auth(),
+          )
+        })
+        .clone();
+
+      let server_name = rustls::pki_types::ServerName::try_from(host.to_string()).map_err(|_| WsConnectFailure {
+        close_code: 1006,
+        close_reason: format!("invalid TLS server name: {host:?}"),
+        dispatch_error: true,
+      })?;
+      let mut conn =
+        rustls::ClientConnection::new(config, server_name).map_err(|err| WsConnectFailure {
+          close_code: 1006,
+          close_reason: format!("TLS setup failed: {err}"),
+          dispatch_error: true,
+        })?;
+
+      let tls_deadline = Instant::now() + timeouts.tls_handshake;
+      let _ = tcp_stream.set_read_timeout(Some(HANDSHAKE_POLL));
+      let _ = tcp_stream.set_write_timeout(Some(HANDSHAKE_POLL));
+      while conn.is_handshaking() {
+        if let Some(cmd) = poll_connect_abort(cmd_rx) {
+          return Err(match cmd {
+            WsCommand::Shutdown => WsConnectFailure {
+              close_code: 1001,
+              close_reason: "shutdown".to_string(),
+              dispatch_error: false,
+            },
+            WsCommand::Close { code, reason } => WsConnectFailure {
+              close_code: code.unwrap_or(1000),
+              close_reason: reason.unwrap_or_default(),
+              dispatch_error: false,
+            },
+            _ => WsConnectFailure {
+              close_code: 1001,
+              close_reason: "shutdown".to_string(),
+              dispatch_error: false,
+            },
+          });
+        }
+        if Instant::now() >= tls_deadline {
+          return Err(ws_fail_timeout("TLS handshake"));
+        }
+        match conn.complete_io(&mut tcp_stream) {
+          Ok(_) => {}
+          Err(ref err)
+            if matches!(err.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => {}
+          Err(err) => return Err(ws_fail_io("TLS handshake", err)),
+        }
+      }
+
+      let tls_stream = rustls::StreamOwned::new(conn, tcp_stream);
+      tungstenite::stream::MaybeTlsStream::Rustls(tls_stream)
+    }
+    other => {
+      return Err(WsConnectFailure {
+        close_code: 1006,
+        close_reason: format!("unsupported WebSocket scheme {other:?}"),
+        dispatch_error: true,
+      })
+    }
+  };
+
+  // -------------------------------------------------------------------------
+  // WebSocket (HTTP upgrade) handshake
+  // -------------------------------------------------------------------------
+  match &stream {
+    tungstenite::stream::MaybeTlsStream::Plain(s) => {
+      let _ = s.set_nonblocking(true);
+    }
+    tungstenite::stream::MaybeTlsStream::Rustls(s) => {
+      let _ = s.get_ref().set_nonblocking(true);
+    }
+    #[allow(unreachable_patterns)]
+    _ => {}
+  }
+
+  let ws_deadline = Instant::now() + timeouts.websocket_handshake;
+
+  // Tungstenite's handshake state machine supports non-blocking streams via `HandshakeError::Interrupted`.
+  let mut hs = tungstenite::handshake::client::ClientHandshake::start(stream, request, None)
+    .map_err(|err| ws_fail_ws("WebSocket handshake", err))?;
+
+  loop {
+    if let Some(cmd) = poll_connect_abort(cmd_rx) {
+      return Err(match cmd {
+        WsCommand::Shutdown => WsConnectFailure {
+          close_code: 1001,
+          close_reason: "shutdown".to_string(),
+          dispatch_error: false,
+        },
+        WsCommand::Close { code, reason } => WsConnectFailure {
+          close_code: code.unwrap_or(1000),
+          close_reason: reason.unwrap_or_default(),
+          dispatch_error: false,
+        },
+        _ => WsConnectFailure {
+          close_code: 1001,
+          close_reason: "shutdown".to_string(),
+          dispatch_error: false,
+        },
+      });
+    }
+    if Instant::now() >= ws_deadline {
+      return Err(ws_fail_timeout("WebSocket handshake"));
+    }
+
+    match hs.handshake() {
+      Ok((socket, response)) => {
+        // Restore blocking mode for the main I/O loop (which uses read timeouts instead of
+        // non-blocking sockets for responsiveness).
+        match socket.get_ref() {
+          tungstenite::stream::MaybeTlsStream::Plain(s) => {
+            let _ = s.set_nonblocking(false);
+            let _ = s.set_read_timeout(None);
+            let _ = s.set_write_timeout(None);
+          }
+          tungstenite::stream::MaybeTlsStream::Rustls(s) => {
+            let tcp = s.get_ref();
+            let _ = tcp.set_nonblocking(false);
+            let _ = tcp.set_read_timeout(None);
+            let _ = tcp.set_write_timeout(None);
+          }
+          #[allow(unreachable_patterns)]
+          _ => {}
+        }
+        return Ok((socket, response));
+      }
+      Err(tungstenite::handshake::HandshakeError::Interrupted(mid)) => {
+        hs = mid;
+        std::thread::sleep(HANDSHAKE_POLL);
+      }
+      Err(tungstenite::handshake::HandshakeError::Failure(err)) => {
+        return Err(ws_fail_ws("WebSocket handshake", err))
+      }
+    }
+  }
+}
+
 fn ensure_ipc_event_thread_started<Host: WindowRealmHost + 'static>(
   env_id: u64,
   task_queue: ExternalTaskQueueHandle<Host>,
@@ -2053,71 +2511,28 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
   cmd_rx: mpsc::Receiver<WsCommand>,
   task_queue: ExternalTaskQueueHandle<Host>,
 ) {
-  // Defense in depth: the renderer is untrusted in multiprocess mode.
-  // If the browser/network side marks the document as secure, refuse insecure ws:// targets.
-  if document_is_secure {
-    if let Ok(parsed) = url::Url::parse(&url) {
-      if parsed.scheme() == "ws" {
-        with_env_state_mut(env_id, |state| {
-          if let Some(ws) = state.sockets.get_mut(&ws_id) {
-            ws.ready_state = WS_CLOSED;
-            ws.buffered_amount = 0;
-          }
-          Ok(())
-        })
-        .ok();
-        queue_ws_task::<Host>(
-          &task_queue,
-          env_id,
-          ws_id,
-          WsTaskKind::Close,
-          move |vm_host, heap, vm, hooks, ws_obj| {
-            let (url_snapshot, protocol_snapshot) = with_env_state(env_id, |state| {
-              Ok(
-                state
-                  .sockets
-                  .get(&ws_id)
-                  .map(|ws| (ws.url.clone(), ws.protocol.clone()))
-                  .unwrap_or_else(|| (url.clone(), String::new())),
-              )
-            })
-            .unwrap_or_else(|_| (url.clone(), String::new()));
-            let mut scope = heap.scope();
-            let ev = make_simple_event(&mut scope, "error")?;
-            dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onerror")?;
-            let close_ev = make_simple_event(&mut scope, "close")?;
-            dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(close_ev), "onclose")?;
-
-            let _ = set_ws_tombstone_props(
-              &mut scope,
-              ws_obj,
-              &url_snapshot,
-              &protocol_snapshot,
-              WS_CLOSED,
-              0,
-            );
-            let _ = with_env_state_mut(env_id, |state| Ok(state.sockets.remove(&ws_id)));
-            Ok(())
-          },
-        );
-        return;
+  #[cfg(test)]
+  {
+    ACTIVE_WEBSOCKET_THREADS.fetch_add(1, Ordering::Relaxed);
+  }
+  struct ThreadGuard;
+  impl Drop for ThreadGuard {
+    fn drop(&mut self) {
+      #[cfg(test)]
+      {
+        ACTIVE_WEBSOCKET_THREADS.fetch_sub(1, Ordering::Relaxed);
       }
     }
   }
+  let _thread_guard = ThreadGuard;
 
-  let protocols_header = if requested_protocols.is_empty() {
-    None
-  } else {
-    Some(requested_protocols.join(", "))
-  };
-  let connect_result = crate::resource::websocket::connect_websocket_with_cookies(
-    fetcher.as_ref(),
-    &url,
-    protocols_header.as_deref(),
-  );
-  let (mut socket, response) = match connect_result {
-    Ok(pair) => pair,
-    Err(_err) => {
+  let timeouts = with_env_state(env_id, |state| Ok(state.env.timeouts)).unwrap_or_default();
+
+  // Treat renderer-supplied URLs as untrusted: re-validate and normalize here.
+  let parsed_url = match crate::ipc::websocket::validate_and_normalize_url(&url) {
+    Ok(url) => url,
+    Err(err) => {
+      let close_reason = err.to_string();
       with_env_state_mut(env_id, |state| {
         if let Some(ws) = state.sockets.get_mut(&ws_id) {
           ws.ready_state = WS_CLOSED;
@@ -2142,11 +2557,68 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
             )
           })
           .unwrap_or_else(|_| (url.clone(), String::new()));
-         let mut scope = heap.scope();
-         let ev = make_simple_event(&mut scope, "error")?;
-         dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onerror")?;
-         let close_ev = make_simple_event(&mut scope, "close")?;
-         dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(close_ev), "onclose")?;
+
+          let mut scope = heap.scope();
+          let err_ev = make_simple_event(&mut scope, "error")?;
+          dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(err_ev), "onerror")?;
+
+          let close_ev = make_simple_event(&mut scope, "close")?;
+          let code_key = alloc_key(&mut scope, "code")?;
+          scope.define_property(close_ev, code_key, data_desc(Value::Number(1006.0), false))?;
+          let reason_key = alloc_key(&mut scope, "reason")?;
+          let reason_s = scope.alloc_string(&close_reason)?;
+          scope.push_root(Value::String(reason_s))?;
+          scope.define_property(close_ev, reason_key, data_desc(Value::String(reason_s), false))?;
+          dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(close_ev), "onclose")?;
+
+          let _ = set_ws_tombstone_props(
+            &mut scope,
+            ws_obj,
+            &url_snapshot,
+            &protocol_snapshot,
+            WS_CLOSED,
+            0,
+          );
+          let _ = with_env_state_mut(env_id, |state| Ok(state.sockets.remove(&ws_id)));
+          Ok(())
+        },
+      );
+      return;
+    }
+  };
+
+  // Defense in depth: the renderer is untrusted in multiprocess mode.
+  // If the browser/network side marks the document as secure, refuse insecure ws:// targets.
+  if document_is_secure && parsed_url.scheme() == "ws" {
+    with_env_state_mut(env_id, |state| {
+      if let Some(ws) = state.sockets.get_mut(&ws_id) {
+        ws.ready_state = WS_CLOSED;
+        ws.buffered_amount = 0;
+      }
+      Ok(())
+    })
+    .ok();
+    queue_ws_task::<Host>(
+      &task_queue,
+      env_id,
+      ws_id,
+      WsTaskKind::Close,
+      move |vm_host, heap, vm, hooks, ws_obj| {
+        let (url_snapshot, protocol_snapshot) = with_env_state(env_id, |state| {
+          Ok(
+            state
+              .sockets
+              .get(&ws_id)
+              .map(|ws| (ws.url.clone(), ws.protocol.clone()))
+              .unwrap_or_else(|| (url.clone(), String::new())),
+          )
+        })
+        .unwrap_or_else(|_| (url.clone(), String::new()));
+        let mut scope = heap.scope();
+        let ev = make_simple_event(&mut scope, "error")?;
+        dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onerror")?;
+        let close_ev = make_simple_event(&mut scope, "close")?;
+        dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(close_ev), "onclose")?;
 
         let _ = set_ws_tombstone_props(
           &mut scope,
@@ -2159,10 +2631,175 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
         let _ = with_env_state_mut(env_id, |state| Ok(state.sockets.remove(&ws_id)));
         Ok(())
       },
+    );
+    return;
+  }
+
+  let cookie_url = {
+    let mut cookie_url = parsed_url.clone();
+    cookie_url.set_fragment(None);
+    match parsed_url.scheme() {
+      "ws" => {
+        cookie_url.set_scheme("http").ok();
+        Some(cookie_url)
+      }
+      "wss" => {
+        cookie_url.set_scheme("https").ok();
+        Some(cookie_url)
+      }
+      // Should be normalized by validate_and_normalize_url.
+      _ => None,
+    }
+  };
+
+  let mut request = match parsed_url.clone().into_client_request() {
+    Ok(req) => req,
+    Err(err) => {
+      let close_reason = format!("invalid url: {err}");
+      with_env_state_mut(env_id, |state| {
+        if let Some(ws) = state.sockets.get_mut(&ws_id) {
+          ws.ready_state = WS_CLOSED;
+          ws.buffered_amount = 0;
+        }
+        Ok(())
+      })
+      .ok();
+      queue_ws_task::<Host>(
+        &task_queue,
+        env_id,
+        ws_id,
+        WsTaskKind::Close,
+        move |vm_host, heap, vm, hooks, ws_obj| {
+          let (url_snapshot, protocol_snapshot) = with_env_state(env_id, |state| {
+            Ok(
+              state
+                .sockets
+                .get(&ws_id)
+                .map(|ws| (ws.url.clone(), ws.protocol.clone()))
+                .unwrap_or_else(|| (url.clone(), String::new())),
+            )
+          })
+          .unwrap_or_else(|_| (url.clone(), String::new()));
+
+          let mut scope = heap.scope();
+          let err_ev = make_simple_event(&mut scope, "error")?;
+          dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(err_ev), "onerror")?;
+          let close_ev = make_simple_event(&mut scope, "close")?;
+          let code_key = alloc_key(&mut scope, "code")?;
+          scope.define_property(close_ev, code_key, data_desc(Value::Number(1006.0), false))?;
+          let reason_key = alloc_key(&mut scope, "reason")?;
+          let reason_s = scope.alloc_string(&close_reason)?;
+          scope.push_root(Value::String(reason_s))?;
+          scope.define_property(close_ev, reason_key, data_desc(Value::String(reason_s), false))?;
+          dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(close_ev), "onclose")?;
+
+          let _ = set_ws_tombstone_props(
+            &mut scope,
+            ws_obj,
+            &url_snapshot,
+            &protocol_snapshot,
+            WS_CLOSED,
+            0,
+          );
+          let _ = with_env_state_mut(env_id, |state| Ok(state.sockets.remove(&ws_id)));
+          Ok(())
+        },
       );
       return;
     }
   };
+
+  // Cookie header integration (best-effort).
+  if let Some(cookie_url) = cookie_url.as_ref() {
+    if let Some(cookie_header_value) = fetcher.cookie_header_value(cookie_url.as_str()) {
+      if !cookie_header_value.is_empty() {
+        if let Ok(value) = http::HeaderValue::from_str(&cookie_header_value) {
+          request.headers_mut().insert(http::header::COOKIE, value);
+        }
+      }
+    }
+  }
+
+  // Requested subprotocols.
+  if !requested_protocols.is_empty() {
+    let joined = requested_protocols.join(", ");
+    if let Ok(value) = http::HeaderValue::from_str(&joined) {
+      request
+        .headers_mut()
+        .insert("Sec-WebSocket-Protocol", value);
+    }
+  }
+
+  let (mut socket, response) = match connect_websocket_with_timeouts(request, &parsed_url, timeouts, &cmd_rx) {
+    Ok(pair) => pair,
+    Err(failure) => {
+      with_env_state_mut(env_id, |state| {
+        if let Some(ws) = state.sockets.get_mut(&ws_id) {
+          ws.ready_state = WS_CLOSED;
+          ws.buffered_amount = 0;
+        }
+        Ok(())
+      })
+      .ok();
+
+      let dispatch_error = failure.dispatch_error;
+      let close_code = failure.close_code;
+      let close_reason = failure.close_reason;
+      queue_ws_task::<Host>(
+        &task_queue,
+        env_id,
+        ws_id,
+        WsTaskKind::Close,
+        move |vm_host, heap, vm, hooks, ws_obj| {
+          let (url_snapshot, protocol_snapshot) = with_env_state(env_id, |state| {
+            Ok(
+              state
+                .sockets
+                .get(&ws_id)
+                .map(|ws| (ws.url.clone(), ws.protocol.clone()))
+                .unwrap_or_else(|| (url.clone(), String::new())),
+            )
+          })
+          .unwrap_or_else(|_| (url.clone(), String::new()));
+
+          let mut scope = heap.scope();
+          if dispatch_error {
+            let err_ev = make_simple_event(&mut scope, "error")?;
+            dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(err_ev), "onerror")?;
+          }
+          let close_ev = make_simple_event(&mut scope, "close")?;
+          let code_key = alloc_key(&mut scope, "code")?;
+          scope.define_property(close_ev, code_key, data_desc(Value::Number(close_code as f64), false))?;
+          let reason_key = alloc_key(&mut scope, "reason")?;
+          let reason_s = scope.alloc_string(&close_reason)?;
+          scope.push_root(Value::String(reason_s))?;
+          scope.define_property(close_ev, reason_key, data_desc(Value::String(reason_s), false))?;
+          dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(close_ev), "onclose")?;
+
+          let _ = set_ws_tombstone_props(
+            &mut scope,
+            ws_obj,
+            &url_snapshot,
+            &protocol_snapshot,
+            WS_CLOSED,
+            0,
+          );
+          let _ = with_env_state_mut(env_id, |state| Ok(state.sockets.remove(&ws_id)));
+          Ok(())
+        },
+      );
+      return;
+    }
+  };
+
+  // Persist any cookies set by the handshake response.
+  if let Some(cookie_url) = cookie_url.as_ref() {
+    for value in response.headers().get_all(http::header::SET_COOKIE) {
+      if let Ok(raw) = value.to_str() {
+        fetcher.store_cookie_from_document(cookie_url.as_str(), raw);
+      }
+    }
+  }
 
   let selected_protocol =
     match validate_ws_subprotocol_handshake_response(&requested_protocols, response.headers()) {
@@ -2763,6 +3400,8 @@ mod tests {
   use crate::resource::{FetchedResource, HttpFetcher};
   use crate::testing::{net_test_lock, try_bind_localhost};
   use selectors::context::QuirksMode;
+  use std::io::Read;
+  use std::net::TcpListener;
   use std::sync::Arc;
   use std::time::Instant;
 
@@ -3043,6 +3682,127 @@ mod tests {
       Some("0"),
       "ping/pong frames must not surface as JS message events"
     );
+
+    server.join().expect("server thread panicked");
+    Ok(())
+  }
+
+  #[test]
+  fn websocket_handshake_timeout_emits_error_and_cleans_up_threads() -> Result<()> {
+    let _lock = net_test_lock();
+    let Some(listener) = try_bind_localhost("websocket_handshake_timeout_emits_error_and_cleans_up_threads") else {
+      return Ok(());
+    };
+    listener.set_nonblocking(true).expect("set_nonblocking");
+    let addr = listener.local_addr().expect("local_addr");
+
+    // Accept the TCP connection but never send a WebSocket handshake response.
+    let server = std::thread::spawn(move || {
+      let deadline = Instant::now() + Duration::from_secs(5);
+      let (mut stream, _) = loop {
+        match listener.accept() {
+          Ok(pair) => break pair,
+          Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            if Instant::now() >= deadline {
+              panic!("accept timed out");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+          }
+          Err(e) => panic!("accept failed: {e}"),
+        }
+      };
+
+      // Best-effort: read the request bytes so the client isn't backpressured.
+      let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
+      let mut buf = [0u8; 1024];
+      let _ = stream.read(&mut buf);
+
+      // Keep the socket open long enough for the client to hit its handshake timeout.
+      std::thread::sleep(Duration::from_secs(1));
+    });
+
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = make_host(dom, "http://example.invalid/")?;
+
+    // Tighten timeouts so the test is fast + deterministic.
+    let env_id = host.host().websocket_env_id();
+    with_env_state_mut(env_id, |state| {
+      state.env.timeouts = WindowWebSocketTimeouts {
+        dns_tcp_connect: Duration::from_millis(200),
+        tls_handshake: Duration::from_millis(200),
+        websocket_handshake: Duration::from_millis(200),
+      };
+      Ok(())
+    })
+    .expect("mutate websocket timeouts");
+
+    let before_threads = active_websocket_threads();
+
+    host.exec_script(&format!(
+      r#"
+      globalThis.__done = false;
+      globalThis.__err = "";
+      globalThis.__close_code = 0;
+      globalThis.__close_reason = "";
+      globalThis.__ws = new WebSocket("ws://{addr}/");
+      const ws = globalThis.__ws;
+      ws.onopen = function () {{
+        globalThis.__err = "opened";
+        globalThis.__done = true;
+      }};
+      ws.onerror = function () {{
+        globalThis.__err = "error";
+      }};
+      ws.onclose = function (e) {{
+        globalThis.__close_code = Number(e && e.code) || 0;
+        globalThis.__close_reason = String(e && e.reason);
+        globalThis.__done = true;
+      }};
+      "#,
+    ))?;
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+      let _ = host.run_until_idle(RunLimits {
+        max_tasks: 100,
+        max_microtasks: 1000,
+        max_wall_time: Some(Duration::from_millis(50)),
+      })?;
+
+      let done = get_global_prop_utf8(&mut host, "__done").unwrap_or_default();
+      if done == "true" {
+        break;
+      }
+      if Instant::now() >= deadline {
+        break;
+      }
+      std::thread::sleep(Duration::from_millis(10));
+    }
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__err").unwrap_or_default(),
+      "error",
+      "expected websocket error event before close"
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__close_code").unwrap_or_default(),
+      "1006",
+      "expected abnormal closure on handshake timeout"
+    );
+    let reason = get_global_prop_utf8(&mut host, "__close_reason").unwrap_or_default();
+    assert!(
+      reason.contains("timeout"),
+      "expected close reason to mention timeout, got {reason:?}"
+    );
+
+    drop(host);
+
+    // Ensure the underlying websocket thread fully terminates.
+    let thread_deadline = Instant::now() + Duration::from_secs(2);
+    while active_websocket_threads() != before_threads && Instant::now() < thread_deadline {
+      std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(active_websocket_threads(), before_threads, "websocket thread leaked");
 
     server.join().expect("server thread panicked");
     Ok(())

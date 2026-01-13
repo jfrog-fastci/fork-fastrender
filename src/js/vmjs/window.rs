@@ -634,6 +634,11 @@ impl WindowHostState {
     ))
   }
 
+  #[cfg(test)]
+  pub fn websocket_env_id(&self) -> u64 {
+    self._websocket_bindings.env_id()
+  }
+
   pub fn new_with_fetcher(
     dom: dom2::Document,
     document_url: impl Into<String>,
