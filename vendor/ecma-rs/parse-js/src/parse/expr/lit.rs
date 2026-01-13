@@ -40,6 +40,8 @@ use crate::num::JsNumber;
 use crate::operator::OperatorName;
 use crate::token::TT;
 use num_bigint::BigInt;
+use unicode_ident::is_xid_continue;
+use unicode_ident::is_xid_start;
 pub fn normalise_literal_number(raw: &str) -> Option<JsNumber> {
   JsNumber::from_literal(raw)
 }
@@ -781,6 +783,254 @@ fn count_regex_capturing_groups(pattern: &str, unicode_sets_mode: bool) -> usize
   count
 }
 
+fn regex_is_other_id_start(c: char) -> bool {
+  // ECMAScript augments `ID_Start`/`XID_Start` with a small, fixed set of additional characters
+  // (`Other_ID_Start`).
+  matches!(
+    c,
+    '\u{1885}' | '\u{1886}' | '\u{2118}' | '\u{212e}' | '\u{309b}' | '\u{309c}'
+  )
+}
+
+fn regex_is_other_id_continue(c: char) -> bool {
+  // ECMAScript augments `ID_Continue`/`XID_Continue` with `Other_ID_Continue`.
+  matches!(
+    c,
+    '\u{00b7}' | '\u{0387}' | '\u{1369}'..='\u{1371}' | '\u{19da}'
+  )
+}
+
+fn regex_is_identifier_start(c: char) -> bool {
+  if c.is_ascii() {
+    matches!(c, '$' | '_' | 'a'..='z' | 'A'..='Z')
+  } else {
+    is_xid_start(c) || regex_is_other_id_start(c)
+  }
+}
+
+fn regex_is_identifier_continue(c: char) -> bool {
+  if c.is_ascii() {
+    matches!(c, '$' | '_' | '0'..='9' | 'a'..='z' | 'A'..='Z')
+  } else {
+    is_xid_continue(c) || regex_is_other_id_continue(c) || c == '\u{200c}' || c == '\u{200d}'
+  }
+}
+
+fn regex_parse_unicode_escape_in_identifier(
+  pattern: &str,
+  escape_start: usize,
+) -> Result<(char, usize /* consumed */), RegexError> {
+  debug_assert_eq!(pattern.as_bytes()[escape_start], b'\\');
+  let bytes = pattern.as_bytes();
+  let after_backslash = escape_start + 1;
+  if after_backslash >= bytes.len() {
+    return Err(RegexError {
+      kind: RegexErrorKind::InvalidPattern,
+      offset: escape_start,
+      len: 1,
+    });
+  }
+  if bytes[after_backslash] != b'u' {
+    return Err(RegexError {
+      kind: RegexErrorKind::InvalidPattern,
+      offset: escape_start,
+      len: 1,
+    });
+  }
+  let after_u = after_backslash + 1;
+  if after_u >= bytes.len() {
+    return Err(RegexError {
+      kind: RegexErrorKind::InvalidPattern,
+      offset: escape_start,
+      len: after_u.saturating_sub(escape_start),
+    });
+  }
+
+  let value: u32;
+  let end: usize;
+  if bytes[after_u] == b'{' {
+    // `\u{HexDigits}` (always permitted in identifier names).
+    let mut j = after_u + 1;
+    let mut saw_digit = false;
+    // Overflow-safe parse allowing arbitrarily many leading zeros.
+    let mut started = false;
+    let mut significant_digits: usize = 0;
+    let mut v: u32 = 0;
+    while j < bytes.len() && bytes[j] != b'}' {
+      let b = bytes[j];
+      if !(b as char).is_ascii_hexdigit() {
+        return Err(RegexError {
+          kind: RegexErrorKind::InvalidPattern,
+          offset: escape_start,
+          len: j + 1 - escape_start,
+        });
+      }
+      saw_digit = true;
+      let digit: u32 = match b {
+        b'0'..=b'9' => (b - b'0') as u32,
+        b'a'..=b'f' => (b - b'a' + 10) as u32,
+        b'A'..=b'F' => (b - b'A' + 10) as u32,
+        _ => unreachable!(),
+      };
+
+      if !started {
+        if digit != 0 {
+          started = true;
+          significant_digits = 1;
+          v = digit;
+        }
+      } else {
+        significant_digits += 1;
+        // 0x10FFFF fits in 6 hex digits; any additional significant digit is definitely out of
+        // range.
+        if significant_digits > 6 {
+          return Err(RegexError {
+            kind: RegexErrorKind::InvalidPattern,
+            offset: escape_start,
+            len: j + 1 - escape_start,
+          });
+        }
+        v = (v << 4) | digit;
+        if v > 0x10FFFF {
+          return Err(RegexError {
+            kind: RegexErrorKind::InvalidPattern,
+            offset: escape_start,
+            len: j + 1 - escape_start,
+          });
+        }
+      }
+
+      j += 1;
+    }
+
+    if j >= bytes.len() || !saw_digit {
+      return Err(RegexError {
+        kind: RegexErrorKind::InvalidPattern,
+        offset: escape_start,
+        len: j.saturating_sub(escape_start),
+      });
+    }
+    debug_assert_eq!(bytes[j], b'}');
+    value = if started { v } else { 0 };
+    end = j + 1;
+  } else {
+    // `\uXXXX`
+    let mut v: u32 = 0;
+    let mut j = after_u;
+    for _ in 0..4 {
+      if j >= bytes.len() || !(bytes[j] as char).is_ascii_hexdigit() {
+        return Err(RegexError {
+          kind: RegexErrorKind::InvalidPattern,
+          offset: escape_start,
+          len: j.saturating_sub(escape_start),
+        });
+      }
+      v = (v << 4) | (bytes[j] as char).to_digit(16).unwrap();
+      j += 1;
+    }
+    value = v;
+    end = j;
+  }
+
+  if value > 0x10FFFF {
+    return Err(RegexError {
+      kind: RegexErrorKind::InvalidPattern,
+      offset: escape_start,
+      len: end - escape_start,
+    });
+  }
+
+  let Some(c) = char::from_u32(value) else {
+    // Surrogate code points are not valid Unicode scalar values and cannot appear in identifier
+    // names.
+    return Err(RegexError {
+      kind: RegexErrorKind::InvalidPattern,
+      offset: escape_start,
+      len: end - escape_start,
+    });
+  };
+  Ok((c, end - escape_start))
+}
+
+fn regex_parse_group_name(
+  pattern: &str,
+  start: usize,
+) -> Result<usize /* index after `>` */, RegexError> {
+  let bytes = pattern.as_bytes();
+  let mut i = start;
+  if i >= bytes.len() {
+    return Err(RegexError {
+      kind: RegexErrorKind::InvalidPattern,
+      offset: start,
+      len: 0,
+    });
+  }
+
+  // Parse the first IdentifierStart.
+  let ch = pattern[i..].chars().next().unwrap();
+  if ch == '>' {
+    return Err(RegexError {
+      kind: RegexErrorKind::InvalidPattern,
+      offset: start,
+      len: 1,
+    });
+  }
+  if ch == '\\' {
+    let (c, consumed) = regex_parse_unicode_escape_in_identifier(pattern, i)?;
+    if !regex_is_identifier_start(c) {
+      return Err(RegexError {
+        kind: RegexErrorKind::InvalidPattern,
+        offset: i,
+        len: consumed,
+      });
+    }
+    i += consumed;
+  } else if regex_is_identifier_start(ch) {
+    i += ch.len_utf8();
+  } else {
+    return Err(RegexError {
+      kind: RegexErrorKind::InvalidPattern,
+      offset: i,
+      len: ch.len_utf8(),
+    });
+  }
+
+  // Parse IdentifierContinue until `>`.
+  loop {
+    if i >= bytes.len() {
+      return Err(RegexError {
+        kind: RegexErrorKind::InvalidPattern,
+        offset: start,
+        len: i.saturating_sub(start),
+      });
+    }
+    let ch = pattern[i..].chars().next().unwrap();
+    if ch == '>' {
+      return Ok(i + ch.len_utf8());
+    }
+    if ch == '\\' {
+      let (c, consumed) = regex_parse_unicode_escape_in_identifier(pattern, i)?;
+      if !regex_is_identifier_continue(c) {
+        return Err(RegexError {
+          kind: RegexErrorKind::InvalidPattern,
+          offset: i,
+          len: consumed,
+        });
+      }
+      i += consumed;
+    } else {
+      if !regex_is_identifier_continue(ch) {
+        return Err(RegexError {
+          kind: RegexErrorKind::InvalidPattern,
+          offset: i,
+          len: ch.len_utf8(),
+        });
+      }
+      i += ch.len_utf8();
+    }
+  }
+}
+
 fn regex_group_prefix_info(
   pattern: &str,
   start: usize,
@@ -819,14 +1069,8 @@ fn regex_group_prefix_info(
         _ => {
           // Named capturing group: (?<name>...)
           let after_prefix = start + 3;
-          let Some(end_name) = pattern[after_prefix..].find('>') else {
-            return Err(RegexError {
-              kind: RegexErrorKind::InvalidPattern,
-              offset: start,
-              len: 1,
-            });
-          };
-          Ok((true, after_prefix + end_name + 1 - start))
+          let end = regex_parse_group_name(pattern, after_prefix)?;
+          Ok((true, end - start))
         }
       }
     }
