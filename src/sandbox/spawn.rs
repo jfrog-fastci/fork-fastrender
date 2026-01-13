@@ -943,13 +943,13 @@ mod tests {
     // Parent: spawn a copy of the test binary and install the sandbox via `pre_exec`.
     let exe = std::env::current_exe().expect("current test exe path");
 
-    // Pick limits that are guaranteed not to raise the inherited hard maximum.
-    let (_cur_as, max_as) = get_rlimit(libc::RLIMIT_AS);
-    let desired_as = std::cmp::min(max_as, 1024_u64 * 1024 * 1024);
+    // Pick limits that are guaranteed not to raise inherited limits.
+    let (cur_as, max_as) = get_rlimit(libc::RLIMIT_AS);
+    let desired_as = std::cmp::min(std::cmp::min(cur_as, max_as), 1024_u64 * 1024 * 1024);
     assert!(desired_as > 0, "expected a non-zero address-space max");
 
-    let (_cur_nofile, max_nofile) = get_rlimit(libc::RLIMIT_NOFILE);
-    let desired_nofile = std::cmp::min(max_nofile, 256_u64);
+    let (cur_nofile, max_nofile) = get_rlimit(libc::RLIMIT_NOFILE);
+    let desired_nofile = std::cmp::min(std::cmp::min(cur_nofile, max_nofile), 256_u64);
     assert!(desired_nofile > 0, "expected a non-zero nofile max");
 
     let (cur_nproc, max_nproc) = get_rlimit(libc::RLIMIT_NPROC);
