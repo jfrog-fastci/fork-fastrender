@@ -13,13 +13,15 @@ The goal is to prevent “slow drift” and “mysterious desync” bugs by bein
 Implementation map (keep these modules aligned with this doc):
 
 * `src/media/timebase.rs` — container timebase/tick ↔ `Duration` conversions (PTS normalization)
-* `src/media/clock.rs` — `MediaClock` abstraction + per-stream timeline mapping (`AudioStreamClock`)
-* `src/media/audio/mod.rs` — `AudioBackend` trait + `AudioClock` (audio device time exposure)
+* `src/media/audio_clock.rs` — `InterpolatedAudioClock` (smooth audio clock derived from callback frame counts)
+* `src/media/audio/mod.rs` — `AudioBackend` + `AudioClock` + `AudioOutputInfo` (backend time + output-latency estimate)
+* `src/media/master_clock.rs` — `MasterClock` (chooses audio vs system master clock, keeps time continuous)
+* `src/media/clock.rs` — `MediaClock` abstraction + `PlaybackClock` (play/pause/seek/rate timeline mapping)
+  + `AudioStreamClock` (map a shared device clock into a per-element timeline)
 * `src/media/audio/drift.rs` — audio drift correction (target-buffer controller + drift-aware resampling helper)
 * `src/media/audio/null_backend.rs` — `NullAudioBackend` (silence / CI fallback)
 * `src/media/audio/cpal_backend.rs` — CPAL output backend (feature = `audio_cpal`)
-* `src/media/av_sync.rs` — video scheduling + correction policy (drop/hold/delay) (**intended module
-  path**)
+* `src/media/av_sync.rs` — video scheduling + correction policy (drop/hold/delay)
 * `src/js/clock.rs` — existing `Clock` + `VirtualClock` pattern used for deterministic time in tests
   (media clocking should mirror this pattern)
 
@@ -35,6 +37,10 @@ hosts don't need system audio development packages.
 - `audio_cpal`: real-time audio output via [`cpal`](https://crates.io/crates/cpal).
   - Linux note: typically requires system packages (e.g. ALSA headers).
 - `audio_wav`: pure-Rust WAV debug backend (writes PCM samples into a `.wav` file).
+
+CI note: the `ci` feature umbrella intentionally avoids enabling `audio_cpal` by default (to keep
+Linux CI/agent builds free of system audio development dependencies). Developers can opt in locally
+with `--features audio_cpal`.
 
 Example (desktop browser UI with real audio output):
 
@@ -146,24 +152,28 @@ FastRender should expose an **audio clock** to the rest of the media pipeline th
 
 This clock is the **master** when audio is present (see below).
 
-In code today, audio time is surfaced in two layers:
+In code today, audio time is surfaced in a few layers:
 
-1. [`AudioClock`](../src/media/audio/mod.rs) — raw “device time” as exposed by the audio backend.
+1. [`InterpolatedAudioClock`](../src/media/audio_clock.rs) — a smooth clock derived from callback
+   frame counts (and optional backend timestamps). This avoids “stair-stepping” when callers query
+   between audio callbacks.
 
-* `AudioClock::OutputFrames { .. }` — derived from a backend playhead counter (preferred when output
-  is active, e.g. CPAL).
-* `AudioClock::Instant { .. }` — derived from wall-clock time (used by `NullAudioBackend`).
+2. [`AudioClock`](../src/media/audio/mod.rs) — raw backend time.
 
-2. [`MediaClock`](../src/media/clock.rs) + [`AudioStreamClock`](../src/media/clock.rs) — the
-   clocking abstraction intended for A/V sync + `HTMLMediaElement.currentTime`.
-   * `MediaClock` is the “master clock” interface (audio device time when audio is present).
-   * `AudioStreamClock` maps a shared device clock into a per-element media timeline and applies
-     pause/seek/rate changes without accumulating drift (see `AudioStreamClock::seek` /
-     `AudioStreamClock::set_rate`).
+   * `AudioClock::OutputFrames { .. }` is typically derived from “frames written” in the output
+     callback (via `InterpolatedAudioClock`).
+   * `AudioClock::Instant { .. }` is a wall-clock fallback (used by `NullAudioBackend`).
 
-At the time of writing, these layers are not yet fully wired together for real playback; when they
-are, prefer driving `MediaClock` from the audio backend’s `AudioClock::OutputFrames` (plus an output
-latency estimate) rather than from `Instant`.
+   **Important:** `AudioClock::time()` is not guaranteed to mean “time heard”. For
+   output-frame-derived clocks it often means “time of frames written/committed to the backend”, which
+   can be ahead of the speakers by a roughly constant buffer duration. When you need “time heard”,
+   subtract [`AudioOutputInfo::estimated_output_latency`](../src/media/audio/mod.rs).
+
+3. [`MasterClock`](../src/media/master_clock.rs) — selects audio vs system clock domains and keeps
+   time continuous across source changes (e.g. during startup/buffering audio may not be started yet).
+
+4. [`PlaybackClock`](../src/media/clock.rs) — maps the chosen master clock onto the media timeline and
+   implements play/pause/seek/rate without accumulating drift.
 
 ---
 
@@ -310,8 +320,9 @@ else:
 
 Seeking updates `base_timeline_time` (and usually resets `base_master_time`).
 
-This mapping lives in `src/media/clock.rs` today as `AudioStreamClock`, so *every* subsystem (audio
-submission, video presentation, JS APIs) can consume the same “timeline now”.
+This mapping lives in `src/media/clock.rs` today as `PlaybackClock`, so *every* subsystem (audio
+submission, video presentation, JS APIs) can consume the same “timeline now” without accumulating
+tick-derived drift.
 
 ---
 
@@ -351,6 +362,17 @@ like audio leading the picture). Also, dropping is a harsher action than delayin
 
 If/when we implement frame-time-aware tolerances (e.g. based on measured FPS), keep the above as a
 cap/floor so behavior stays predictable.
+
+### Tuning tolerances via environment variables
+
+The A/V sync thresholds can be overridden at runtime via environment variables (values are integer
+milliseconds; underscores are allowed):
+
+* `FASTR_AV_SYNC_TOLERANCE_MS` — in-sync window (`|video_pts - now| <= tolerance` ⇒ present)
+* `FASTR_AV_SYNC_MAX_LATE_MS` — drop threshold (`now - video_pts > max_late` ⇒ drop)
+* `FASTR_AV_SYNC_MAX_EARLY_MS` — hold threshold (`video_pts - now > max_early` ⇒ hold + wake later)
+
+Defaults are 20ms / 80ms / 40ms respectively (see `src/media/av_sync.rs`).
 
 ---
 
