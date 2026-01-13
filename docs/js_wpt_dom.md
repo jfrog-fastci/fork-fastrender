@@ -51,6 +51,27 @@ Run `bash scripts/cargo_agent.sh xtask js wpt-dom --help` for the full CLI. Comm
   - Choose which JS backend to execute with.
   - Note: `xtask js wpt-dom` currently builds the runner with the `vmjs` backend only.
 
+## DOM bindings backend selection (vm-js)
+
+FastRender currently has two DOM bindings backends for the `vm-js` host runtime:
+
+- `handwritten` (default): legacy handwritten bindings.
+- `webidl`: WebIDL-generated bindings (useful for end-to-end testing/benchmarking the WebIDL path).
+
+To run the WPT DOM runner using the WebIDL DOM bindings backend:
+
+```bash
+FASTERENDER_WPT_DOM_BINDINGS_BACKEND=webidl \
+  bash scripts/cargo_agent.sh xtask js wpt-dom
+```
+
+When invoking `wpt_dom` directly, you can also use the CLI flag:
+
+```bash
+timeout -k 10 600 bash scripts/cargo_agent.sh run -p js-wpt-dom-runner --features vmjs --bin wpt_dom -- \
+  --backend vmjs --dom-bindings-backend webidl --filter 'dom/**'
+```
+
 ## QuickJS backend (optional)
 
 `js-wpt-dom-runner` also supports an optional `quickjs` backend feature. This backend runs the corpus

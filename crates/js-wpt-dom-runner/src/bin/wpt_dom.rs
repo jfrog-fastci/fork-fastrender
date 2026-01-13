@@ -14,6 +14,26 @@ const DEFAULT_TIMEOUT_SECS: u64 = 5;
 const DEFAULT_LONG_TIMEOUT_SECS: u64 = 30;
 
 const BACKEND_ENV_VAR: &str = "FASTERENDER_WPT_DOM_BACKEND";
+const DOM_BINDINGS_BACKEND_ENV_VAR: &str = "FASTERENDER_WPT_DOM_BINDINGS_BACKEND";
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+#[clap(rename_all = "kebab-case")]
+enum DomBindingsBackend {
+  /// Use FastRender's handwritten DOM bindings (default).
+  Handwritten,
+  /// Use the WebIDL-generated DOM bindings backend.
+  #[value(alias = "webidl", alias = "web_idl")]
+  WebIdl,
+}
+
+impl DomBindingsBackend {
+  fn as_env_value(self) -> &'static str {
+    match self {
+      DomBindingsBackend::Handwritten => "handwritten",
+      DomBindingsBackend::WebIdl => "webidl",
+    }
+  }
+}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 #[clap(rename_all = "lowercase")]
@@ -118,6 +138,12 @@ struct Cli {
   /// Select which JS backend to use.
   #[arg(long, value_enum, default_value_t = Backend::Auto)]
   backend: Backend,
+
+  /// Select which DOM bindings backend to use for vm-js backends.
+  ///
+  /// Equivalent env var: `FASTERENDER_WPT_DOM_BINDINGS_BACKEND=handwritten|webidl`.
+  #[arg(long, value_enum)]
+  dom_bindings_backend: Option<DomBindingsBackend>,
 }
 
 fn main() -> Result<()> {
@@ -134,6 +160,12 @@ fn main() -> Result<()> {
     // The runner reads this env var only when `BackendSelection::Auto` is used. Set it anyway so
     // callers can force a backend from the CLI without needing to plumb another config layer.
     std::env::set_var(BACKEND_ENV_VAR, cli.backend.as_env_value());
+  }
+  if let Some(dom_bindings_backend) = cli.dom_bindings_backend {
+    std::env::set_var(
+      DOM_BINDINGS_BACKEND_ENV_VAR,
+      dom_bindings_backend.as_env_value(),
+    );
   }
 
   let filter = cli

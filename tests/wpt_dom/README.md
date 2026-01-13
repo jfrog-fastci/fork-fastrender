@@ -13,6 +13,12 @@ The underlying runner (`crates/js-wpt-dom-runner`) also supports an optional Qui
 with QuickJS, build the `wpt_dom` binary with `--features quickjs` and select the backend via
 `--backend quickjs` (or `FASTERENDER_WPT_DOM_BACKEND=quickjs`).
 
+To exercise the WebIDL-generated DOM bindings backend end-to-end on the vm-js runner:
+
+```bash
+FASTERENDER_WPT_DOM_BINDINGS_BACKEND=webidl bash scripts/cargo_agent.sh xtask js wpt-dom
+```
+
 By default, this writes a JSON report to:
 
 ```text
