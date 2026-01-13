@@ -4,6 +4,10 @@
 //! launches a child test process wrapped in `/usr/bin/sandbox-exec` so the sandbox is applied
 //! *before* the Rust test harness starts.
 
+#![cfg(target_os = "macos")]
+
+mod common;
+
 use std::io;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -142,4 +146,3 @@ fn sandbox_exec_wrapper_enforces_sandbox() {
     String::from_utf8_lossy(&output.stderr)
   );
 }
-
