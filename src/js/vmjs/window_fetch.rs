@@ -125,6 +125,7 @@ impl WindowFetchEnv {
 enum StreamConsumeKind {
   Text,
   ArrayBuffer,
+  Bytes,
   Json,
   Blob { blob_type: String },
   FormData { content_type: Option<String> },
@@ -1418,6 +1419,23 @@ fn stream_consume_fulfilled_native(
           .heap_mut()
           .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
         Ok(Value::Object(ab))
+      }
+      StreamConsumeKind::Bytes => {
+        let bytes = std::mem::take(&mut state.bytes);
+        let byte_len = bytes.len();
+        let intr = vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+        let ab = scope.alloc_array_buffer_from_u8_vec(bytes)?;
+        scope.push_root(Value::Object(ab))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+        let view = scope.alloc_uint8_array(ab, 0, byte_len)?;
+        scope
+          .heap_mut()
+          .object_set_prototype(view, Some(intr.uint8_array_prototype()))?;
+        Ok(Value::Object(view))
       }
       StreamConsumeKind::Json => {
         let bytes = std::mem::take(&mut state.bytes);
@@ -4510,6 +4528,153 @@ fn request_array_buffer_native(
   Ok(cap.promise)
 }
 
+fn request_bytes_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(req_obj) = this else {
+    return Err(VmError::TypeError("Request: illegal invocation"));
+  };
+  let (env_id, request_id) = request_info_from_this(scope, Value::Object(req_obj))?;
+
+  // Stream-backed body.
+  let has_core_body = with_env_state(env_id, scope.heap(), |state| {
+    let req = state
+      .requests
+      .get(&request_id)
+      .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+    Ok(req.body.is_some())
+  })?;
+  if !has_core_body {
+    let cached = get_data_prop(scope, req_obj, REQUEST_BODY_STREAM_KEY)?;
+    if let Value::Object(stream_obj) = cached {
+      if readable_stream_is_locked(vm, scope, host, host_hooks, stream_obj)? {
+        let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+        let err_value =
+          create_type_error(vm, scope, &mut *host, host_hooks, "Request body is locked")?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
+        return Ok(cap.promise);
+      }
+      if body_stream_is_used(scope, stream_obj)? {
+        let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+        let err_value = create_type_error(
+          vm,
+          scope,
+          &mut *host,
+          host_hooks,
+          "Request body is already used",
+        )?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
+        return Ok(cap.promise);
+      }
+      let max_bytes = with_env_state(env_id, scope.heap(), |state| {
+        let req = state
+          .requests
+          .get(&request_id)
+          .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+        Ok(req.headers.limits().max_request_body_bytes)
+      })?;
+      return start_consuming_body_stream(
+        vm,
+        scope,
+        host,
+        host_hooks,
+        env_id,
+        stream_obj,
+        None,
+        max_bytes,
+        StreamConsumeKind::Bytes,
+      );
+    }
+  }
+
+  let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+
+  if request_wrapper_cached_body_stream_is_locked(vm, scope, &mut *host, host_hooks, req_obj)? {
+    let err_value = create_type_error(vm, scope, &mut *host, host_hooks, "Request body is locked")?;
+    vm.call_with_host_and_hooks(
+      &mut *host,
+      scope,
+      host_hooks,
+      cap.reject,
+      Value::Undefined,
+      &[err_value],
+    )?;
+    return Ok(cap.promise);
+  }
+
+  let result: std::result::Result<Vec<u8>, WebFetchError> =
+    with_env_state_mut(env_id, scope.heap(), |state| {
+      let req = state
+        .requests
+        .get_mut(&request_id)
+        .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+      let result = match req.body.as_mut() {
+        Some(body) => body.consume_bytes(),
+        None => Ok(Vec::new()),
+      };
+      Ok(result)
+    })?;
+
+  match result {
+    Ok(bytes) => {
+      let byte_len = bytes.len();
+      let intr = vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+      let ab = scope.alloc_array_buffer_from_u8_vec(bytes)?;
+      scope.push_root(Value::Object(ab))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+      let view = scope.alloc_uint8_array(ab, 0, byte_len)?;
+      scope
+        .heap_mut()
+        .object_set_prototype(view, Some(intr.uint8_array_prototype()))?;
+      vm.call_with_host_and_hooks(
+        &mut *host,
+        scope,
+        host_hooks,
+        cap.resolve,
+        Value::Undefined,
+        &[Value::Object(view)],
+      )?;
+    }
+    Err(err) => {
+      let err_value = create_type_error(vm, scope, &mut *host, host_hooks, &err.to_string())?;
+      vm.call_with_host_and_hooks(
+        &mut *host,
+        scope,
+        host_hooks,
+        cap.reject,
+        Value::Undefined,
+        &[err_value],
+      )?;
+    }
+  }
+
+  Ok(cap.promise)
+}
+
 fn request_blob_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -5741,6 +5906,154 @@ fn response_array_buffer_native(
         cap.resolve,
         Value::Undefined,
         &[Value::Object(ab)],
+      )?;
+    }
+    Err(err) => {
+      let err_value = create_type_error(vm, scope, &mut *host, host_hooks, &err.to_string())?;
+      vm.call_with_host_and_hooks(
+        &mut *host,
+        scope,
+        host_hooks,
+        cap.reject,
+        Value::Undefined,
+        &[err_value],
+      )?;
+    }
+  }
+
+  Ok(cap.promise)
+}
+
+fn response_bytes_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(resp_obj) = this else {
+    return Err(VmError::TypeError("Response: illegal invocation"));
+  };
+  let (env_id, response_id) = response_info_from_this(scope, Value::Object(resp_obj))?;
+
+  // Stream-backed body.
+  let has_core_body = with_env_state(env_id, scope.heap(), |state| {
+    let res = state
+      .responses
+      .get(&response_id)
+      .ok_or(VmError::TypeError("Response: invalid backing response"))?;
+    Ok(res.body.is_some())
+  })?;
+
+  if !has_core_body {
+    let cached = get_data_prop(scope, resp_obj, RESPONSE_BODY_STREAM_KEY)?;
+    if let Value::Object(stream_obj) = cached {
+      if readable_stream_is_locked(vm, scope, host, host_hooks, stream_obj)? {
+        let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+        let err_value =
+          create_type_error(vm, scope, &mut *host, host_hooks, "Response body is locked")?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
+        return Ok(cap.promise);
+      }
+      if body_stream_is_used(scope, stream_obj)? {
+        let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+        let err_value = create_type_error(
+          vm,
+          scope,
+          &mut *host,
+          host_hooks,
+          "Response body is already used",
+        )?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[err_value],
+        )?;
+        return Ok(cap.promise);
+      }
+      let max_bytes = with_env_state(env_id, scope.heap(), |state| {
+        let res = state
+          .responses
+          .get(&response_id)
+          .ok_or(VmError::TypeError("Response: invalid backing response"))?;
+        Ok(res.headers.limits().max_response_body_bytes)
+      })?;
+      return start_consuming_body_stream(
+        vm,
+        scope,
+        host,
+        host_hooks,
+        env_id,
+        stream_obj,
+        None,
+        max_bytes,
+        StreamConsumeKind::Bytes,
+      );
+    }
+  }
+
+  let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+
+  if response_wrapper_cached_body_stream_is_locked(vm, scope, &mut *host, host_hooks, resp_obj)? {
+    let err_value = create_type_error(vm, scope, &mut *host, host_hooks, "Response body is locked")?;
+    vm.call_with_host_and_hooks(
+      &mut *host,
+      scope,
+      host_hooks,
+      cap.reject,
+      Value::Undefined,
+      &[err_value],
+    )?;
+    return Ok(cap.promise);
+  }
+
+  let result: std::result::Result<Vec<u8>, WebFetchError> =
+    with_env_state_mut(env_id, scope.heap(), |state| {
+      let res = state
+        .responses
+        .get_mut(&response_id)
+        .ok_or(VmError::TypeError("Response: invalid backing response"))?;
+      let result = match res.body.as_mut() {
+        Some(body) => body.consume_bytes(),
+        None => Ok(Vec::new()),
+      };
+      Ok(result)
+    })?;
+
+  match result {
+    Ok(bytes) => {
+      let byte_len = bytes.len();
+      let intr = vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+      let ab = scope.alloc_array_buffer_from_u8_vec(bytes)?;
+      scope.push_root(Value::Object(ab))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+      let view = scope.alloc_uint8_array(ab, 0, byte_len)?;
+      scope
+        .heap_mut()
+        .object_set_prototype(view, Some(intr.uint8_array_prototype()))?;
+      vm.call_with_host_and_hooks(
+        &mut *host,
+        scope,
+        host_hooks,
+        cap.resolve,
+        Value::Undefined,
+        &[Value::Object(view)],
       )?;
     }
     Err(err) => {
@@ -8618,6 +8931,15 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
       true,
     )?;
 
+    let bytes_id = vm.register_native_call(request_bytes_native)?;
+    let bytes_name = scope.alloc_string("bytes")?;
+    scope.push_root(Value::String(bytes_name))?;
+    let bytes_fn = scope.alloc_native_function(bytes_id, None, bytes_name, 0)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(bytes_fn, Some(func_proto))?;
+    set_data_prop(&mut scope, proto, "bytes", Value::Object(bytes_fn), true)?;
+
     let blob_id = vm.register_native_call(request_blob_native)?;
     let blob_name = scope.alloc_string("blob")?;
     scope.push_root(Value::String(blob_name))?;
@@ -8764,6 +9086,15 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
       Value::Object(array_buffer_fn),
       true,
     )?;
+
+    let bytes_id = vm.register_native_call(response_bytes_native)?;
+    let bytes_name = scope.alloc_string("bytes")?;
+    scope.push_root(Value::String(bytes_name))?;
+    let bytes_fn = scope.alloc_native_function(bytes_id, None, bytes_name, 0)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(bytes_fn, Some(func_proto))?;
+    set_data_prop(&mut scope, proto, "bytes", Value::Object(bytes_fn), true)?;
 
     let blob_id = vm.register_native_call(response_blob_native)?;
     let blob_name = scope.alloc_string("blob")?;
@@ -14371,6 +14702,242 @@ mod tests {
     scope.push_root(Value::Object(ab_obj))?;
     assert!(scope.heap().is_array_buffer_object(ab_obj));
     assert_eq!(scope.heap().array_buffer_data(ab_obj)?, &[65, 66]);
+
+    Ok(())
+  }
+
+  #[test]
+  fn response_bytes_resolves_to_uint8_array_for_uint8_array_body() -> Result<(), VmError> {
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)?
+    };
+
+    let promise = host
+      .window
+      .exec_script("new Response(new Uint8Array([1,2,3])).bytes()")?;
+    let Value::Object(promise_obj) = promise else {
+      return Err(VmError::InvariantViolation(
+        "Response.bytes must return a Promise object",
+      ));
+    };
+    assert_eq!(
+      host.window.heap().promise_state(promise_obj)?,
+      PromiseState::Fulfilled
+    );
+    let Some(result) = host.window.heap().promise_result(promise_obj)? else {
+      return Err(VmError::InvariantViolation(
+        "Response.bytes promise missing result",
+      ));
+    };
+    let Value::Object(u8_obj) = result else {
+      return Err(VmError::InvariantViolation(
+        "Response.bytes must resolve to a Uint8Array object",
+      ));
+    };
+
+    let (_vm, _realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(u8_obj))?;
+    assert!(scope.heap().is_uint8_array_object(u8_obj));
+    assert_eq!(scope.heap().uint8_array_data(u8_obj)?, &[1, 2, 3]);
+
+    Ok(())
+  }
+
+  #[test]
+  fn request_bytes_resolves_to_uint8_array_for_uint8_array_body() -> Result<(), VmError> {
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)?
+    };
+
+    let promise = host.window.exec_script(
+      "new Request('https://x/', {method:'POST', body:new Uint8Array([4,5])}).bytes()",
+    )?;
+    let Value::Object(promise_obj) = promise else {
+      return Err(VmError::InvariantViolation(
+        "Request.bytes must return a Promise object",
+      ));
+    };
+    assert_eq!(
+      host.window.heap().promise_state(promise_obj)?,
+      PromiseState::Fulfilled
+    );
+    let Some(result) = host.window.heap().promise_result(promise_obj)? else {
+      return Err(VmError::InvariantViolation(
+        "Request.bytes promise missing result",
+      ));
+    };
+    let Value::Object(u8_obj) = result else {
+      return Err(VmError::InvariantViolation(
+        "Request.bytes must resolve to a Uint8Array object",
+      ));
+    };
+
+    let (_vm, _realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(u8_obj))?;
+    assert!(scope.heap().is_uint8_array_object(u8_obj));
+    assert_eq!(scope.heap().uint8_array_data(u8_obj)?, &[4, 5]);
+
+    Ok(())
+  }
+
+  #[test]
+  fn response_bytes_accepts_js_created_byte_stream_body() -> Result<(), VmError> {
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)?
+    };
+
+    let promise = host.window.exec_script(
+      "(function(){\
+         const stream = new ReadableStream({\
+           start(c) {\
+             c.enqueue(new Uint8Array([7, 8]));\
+             c.close();\
+           }\
+         });\
+         return new Response(stream).bytes();\
+       })()",
+    )?;
+    let promise_root = host.window.heap_mut().add_root(promise)?;
+
+    // Stream-backed body consumers resolve asynchronously via Promise jobs.
+    host.window.perform_microtask_checkpoint()?;
+
+    let promise_val = host
+      .window
+      .heap()
+      .get_root(promise_root)
+      .unwrap_or(Value::Undefined);
+    let Value::Object(promise_obj) = promise_val else {
+      return Err(VmError::InvariantViolation(
+        "Response.bytes must return a Promise object",
+      ));
+    };
+    assert_eq!(
+      host.window.heap().promise_state(promise_obj)?,
+      PromiseState::Fulfilled
+    );
+    let Some(result) = host.window.heap().promise_result(promise_obj)? else {
+      return Err(VmError::InvariantViolation(
+        "Response.bytes promise missing result",
+      ));
+    };
+    let Value::Object(u8_obj) = result else {
+      return Err(VmError::InvariantViolation(
+        "Response.bytes must resolve to a Uint8Array object",
+      ));
+    };
+
+    {
+      let (_vm, _realm, heap) = host.window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      scope.push_root(Value::Object(u8_obj))?;
+      assert!(scope.heap().is_uint8_array_object(u8_obj));
+      assert_eq!(scope.heap().uint8_array_data(u8_obj)?, &[7, 8]);
+    }
+
+    host.window.heap_mut().remove_root(promise_root);
+    Ok(())
+  }
+
+  #[test]
+  fn bytes_sets_body_used_and_rejects_on_second_read() -> Result<(), VmError> {
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)?
+    };
+
+    let result_val = host.window.exec_script(
+      "(function(){\
+         const resp = new Response(new Uint8Array([1,2,3]));\
+         const usedBefore = resp.bodyUsed;\
+         const p1 = resp.bytes();\
+         const usedAfter = resp.bodyUsed;\
+         const p2 = resp.bytes();\
+         return { usedBefore, usedAfter, p1, p2 };\
+       })()",
+    )?;
+
+    let Value::Object(result_obj) = result_val else {
+      return Err(VmError::InvariantViolation(
+        "expected bytes bodyUsed test script to return an object",
+      ));
+    };
+
+    let (vm, _realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(result_obj))?;
+
+    let used_before_key = alloc_key(&mut scope, "usedBefore")?;
+    assert_eq!(vm.get(&mut scope, result_obj, used_before_key)?, Value::Bool(false));
+
+    let used_after_key = alloc_key(&mut scope, "usedAfter")?;
+    assert_eq!(vm.get(&mut scope, result_obj, used_after_key)?, Value::Bool(true));
+
+    let p1_key = alloc_key(&mut scope, "p1")?;
+    let p1_val = vm.get(&mut scope, result_obj, p1_key)?;
+    let Value::Object(p1_obj) = p1_val else {
+      return Err(VmError::InvariantViolation(
+        "expected bytes bodyUsed test script to return p1 as a Promise object",
+      ));
+    };
+    assert_eq!(scope.heap().promise_state(p1_obj)?, PromiseState::Fulfilled);
+    let Some(p1_result) = scope.heap().promise_result(p1_obj)? else {
+      return Err(VmError::InvariantViolation("bytes p1 promise missing result"));
+    };
+    let Value::Object(p1_u8_obj) = p1_result else {
+      return Err(VmError::InvariantViolation(
+        "bytes p1 promise must resolve to a Uint8Array object",
+      ));
+    };
+    scope.push_root(Value::Object(p1_u8_obj))?;
+    assert!(scope.heap().is_uint8_array_object(p1_u8_obj));
+    assert_eq!(scope.heap().uint8_array_data(p1_u8_obj)?, &[1, 2, 3]);
+
+    let p2_key = alloc_key(&mut scope, "p2")?;
+    let p2_val = vm.get(&mut scope, result_obj, p2_key)?;
+    let Value::Object(p2_obj) = p2_val else {
+      return Err(VmError::InvariantViolation(
+        "expected bytes bodyUsed test script to return p2 as a Promise object",
+      ));
+    };
+    assert_eq!(scope.heap().promise_state(p2_obj)?, PromiseState::Rejected);
+    let Some(reason) = scope.heap().promise_result(p2_obj)? else {
+      return Err(VmError::InvariantViolation("bytes p2 rejected promise missing reason"));
+    };
+    let Value::Object(err_obj) = reason else {
+      return Err(VmError::InvariantViolation(
+        "bytes p2 rejected promise reason must be an object",
+      ));
+    };
+    scope.push_root(Value::Object(err_obj))?;
+    let message_key = alloc_key(&mut scope, "message")?;
+    let message_val = vm.get(&mut scope, err_obj, message_key)?;
+    let msg = get_string(scope.heap(), message_val);
+    assert!(
+      msg.contains("body is already used"),
+      "expected bytes second call rejection to mention BodyUsed, got {msg:?}"
+    );
 
     Ok(())
   }
