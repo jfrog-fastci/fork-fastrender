@@ -635,6 +635,10 @@ glob = "built-ins/Array/S15.4.1*.js"
 status = "pass"
 
 [[expectations]]
+glob = "built-ins/Array/length/**"
+status = "pass"
+
+[[expectations]]
 id = "built-ins/Array/S15.4.1_A1.1_T3.js"
 status = "xfail"
 reason = "vm-js: Array.prototype does not correctly inherit Object.prototype.isPrototypeOf yet (prototype chain incomplete)."

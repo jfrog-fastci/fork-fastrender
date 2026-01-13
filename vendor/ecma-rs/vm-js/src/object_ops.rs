@@ -330,6 +330,62 @@ impl<'a> Scope<'a> {
     if self.heap().is_proxy_object(obj) {
       return proxy_define_own_property_with_tick(vm, self, host, hooks, obj, key, desc);
     }
+
+    // Array exotic `length` definitions require full spec `ToNumber` coercion when `[[Value]]` is
+    // an object. `ArraySetLength` applies `ToUint32(Desc.[[Value]])` and `ToNumber(Desc.[[Value]])`
+    // separately, so `ToPrimitive` can run twice and invoke user code.
+    //
+    // The existing array `[[DefineOwnProperty]]` implementation (`array_set_length_with_tick`)
+    // cannot call user code (it lacks a `Vm` + host context), so perform the coercions here and
+    // replace `desc.value` with the computed numeric length before dispatching to the regular array
+    // machinery.
+    if self.heap().object_is_array(obj)? && self.heap().property_key_is_length(&key) {
+      if let Some(value) = desc.value {
+        // Ensure descriptor patch invariants hold before invoking user code via `ToNumber`.
+        desc.validate()?;
+
+        if matches!(value, Value::Object(_)) {
+          fn to_uint32(n: f64) -> u32 {
+            if !n.is_finite() || n == 0.0 {
+              return 0;
+            }
+            // ECMA-262 `ToUint32`: truncate then compute modulo 2^32.
+            let int = n.trunc();
+            const TWO_32: f64 = 4_294_967_296.0;
+            let mut int = int % TWO_32;
+            if int < 0.0 {
+              int += TWO_32;
+            }
+            int as u32
+          }
+
+          // Root the target and value across potential GC + user-code invocation in `ToNumber`.
+          let mut scope = self.reborrow();
+          let key_value = match key {
+            PropertyKey::String(s) => Value::String(s),
+            PropertyKey::Symbol(s) => Value::Symbol(s),
+          };
+          scope.push_roots(&[Value::Object(obj), key_value, value])?;
+
+          // `ArraySetLength` step 3: `ToUint32(Desc.[[Value]])`.
+          let n1 = scope.to_number(vm, host, hooks, value)?;
+          let new_len = to_uint32(n1);
+          // `ArraySetLength` step 4: `ToNumber(Desc.[[Value]])`.
+          let number_len = scope.to_number(vm, host, hooks, value)?;
+
+          // `ArraySetLength` step 5: `newLen ≠ numberLen` -> RangeError.
+          if new_len as f64 != number_len {
+            return Err(VmError::RangeError("Invalid array length"));
+          }
+
+          let mut new_desc = desc;
+          new_desc.value = Some(Value::Number(new_len as f64));
+
+          let mut tick0 = || tick(vm);
+          return scope.define_own_property_with_tick(obj, key, new_desc, &mut tick0);
+        }
+      }
+    }
     let mut tick0 = || tick(vm);
     self.define_own_property_with_tick(obj, key, desc, &mut tick0)
   }
@@ -2242,6 +2298,21 @@ impl<'a> Scope<'a> {
     desc: PropertyDescriptorPatch,
   ) -> Result<bool, VmError> {
     desc.validate()?;
+    let mut desc = desc;
+
+    fn to_uint32(n: f64) -> u32 {
+      if !n.is_finite() || n == 0.0 {
+        return 0;
+      }
+      // ECMA-262 `ToUint32`: truncate then compute modulo 2^32.
+      let int = n.trunc();
+      const TWO_32: f64 = 4_294_967_296.0;
+      let mut int = int % TWO_32;
+      if int < 0.0 {
+        int += TWO_32;
+      }
+      int as u32
+    }
 
     let key_value = match key {
       PropertyKey::String(s) => Value::String(s),
@@ -2270,6 +2341,24 @@ impl<'a> Scope<'a> {
     self.push_roots(&roots[..root_count])?;
 
     if !self.heap().is_proxy_object(obj) {
+      // Array exotic `length` coercion: see `define_own_property_with_host_and_hooks_with_tick`.
+      if self.heap().object_is_array(obj)? && self.heap().property_key_is_length(&key) {
+        let Some(value) = desc.value else {
+          return self.define_own_property_with_tick(obj, key, desc, || vm.tick());
+        };
+        if matches!(value, Value::Object(_)) {
+          // `ArraySetLength` step 3: `ToUint32(Desc.[[Value]])`.
+          let n1 = self.to_number(vm, host, hooks, value)?;
+          let new_len = to_uint32(n1);
+          // `ArraySetLength` step 4: `ToNumber(Desc.[[Value]])`.
+          let number_len = self.to_number(vm, host, hooks, value)?;
+          // `ArraySetLength` step 5: `newLen ≠ numberLen` -> RangeError.
+          if new_len as f64 != number_len {
+            return Err(VmError::RangeError("Invalid array length"));
+          }
+          desc.value = Some(Value::Number(new_len as f64));
+        }
+      }
       return self.define_own_property_with_tick(obj, key, desc, || vm.tick());
     }
 
@@ -2288,6 +2377,24 @@ impl<'a> Scope<'a> {
       steps += 1;
 
       if !self.heap().is_proxy_object(current) {
+        // Array exotic `length` coercion: see `define_own_property_with_host_and_hooks_with_tick`.
+        if self.heap().object_is_array(current)? && self.heap().property_key_is_length(&key) {
+          let Some(value) = desc.value else {
+            return self.define_own_property_with_tick(current, key, desc, || vm.tick());
+          };
+          if matches!(value, Value::Object(_)) {
+            // `ArraySetLength` step 3: `ToUint32(Desc.[[Value]])`.
+            let n1 = self.to_number(vm, host, hooks, value)?;
+            let new_len = to_uint32(n1);
+            // `ArraySetLength` step 4: `ToNumber(Desc.[[Value]])`.
+            let number_len = self.to_number(vm, host, hooks, value)?;
+            // `ArraySetLength` step 5: `newLen ≠ numberLen` -> RangeError.
+            if new_len as f64 != number_len {
+              return Err(VmError::RangeError("Invalid array length"));
+            }
+            desc.value = Some(Value::Number(new_len as f64));
+          }
+        }
         return self.define_own_property_with_tick(current, key, desc, || vm.tick());
       }
 
