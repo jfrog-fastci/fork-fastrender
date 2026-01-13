@@ -6,18 +6,15 @@
 //!
 //! For the intended A/V clocking model (audio master clock, UI tick as wake-up only), see
 //! `docs/media_clocking.md`.
-
+use crate::geometry::Size;
+use crate::paint::display_list::ImageData;
+use std::sync::Arc;
 pub mod audio;
 pub mod clock;
 pub mod timebase;
 
 pub use clock::{AudioDeviceClock, AudioStreamClock, MediaClock, RealAudioDeviceClock};
 pub use timebase::{duration_to_ticks, ticks_to_duration, Timebase};
-
-use crate::geometry::Size;
-use crate::paint::display_list::ImageData;
-use std::sync::Arc;
-
 /// Size information that can help a [`MediaFrameProvider`] choose an appropriate decode/scale
 /// strategy.
 #[derive(Debug, Clone, Copy, PartialEq)]
