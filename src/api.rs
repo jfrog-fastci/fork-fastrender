@@ -20712,13 +20712,26 @@ fn build_pre_layout_container_query_context(
     Some(content_width)
   }
 
-  fn walk(
-    node: &StyledNode,
+  let mut containers: HashMap<usize, ContainerQueryInfo> = HashMap::new();
+  // Start from the layout viewport width, which corresponds to the root element's containing block
+  // for percentage resolution. This matches the `layout_viewport_size` used by layout itself.
+  struct Frame<'a> {
+    node: &'a StyledNode,
     parent_content_width: f32,
-    viewport: Size,
-    include_style_containers: bool,
-    containers: &mut HashMap<usize, ContainerQueryInfo>,
-  ) -> f32 {
+  }
+
+  // Styled trees can be arbitrarily deep; avoid recursion to prevent stack overflow on degenerate
+  // inputs.
+  let mut stack = vec![Frame {
+    node: styled_tree,
+    parent_content_width: layout_viewport.width,
+  }];
+
+  while let Some(Frame {
+    node,
+    parent_content_width,
+  }) = stack.pop()
+  {
     let style = node.styles.as_ref();
     let content_width = resolve_content_width(style, parent_content_width, viewport)
       .filter(|v| v.is_finite())
@@ -20726,9 +20739,27 @@ fn build_pre_layout_container_query_context(
 
     if include_style_containers || style.container_type.supports_size_queries() {
       if include_style_containers {
-        containers
-          .entry(node.node_id)
-          .or_insert_with(|| ContainerQueryInfo {
+        containers.entry(node.node_id).or_insert_with(|| ContainerQueryInfo {
+          box_id: None,
+          width: 0.0,
+          height: 0.0,
+          inline_size: 0.0,
+          block_size: 0.0,
+          container_type: style.container_type,
+          names: style.container_name.clone(),
+          font_size: style.font_size,
+          styles: Arc::clone(&node.styles),
+          scroll_offset: Point::ZERO,
+          scroll_bounds: None,
+          stuck_mask: 0,
+          snapped_mask: 0,
+          scrolled_delta: Point::ZERO,
+        });
+      }
+
+      if style.container_type.supports_size_queries() {
+        if style.writing_mode == WritingMode::HorizontalTb && content_width.is_finite() {
+          let entry = containers.entry(node.node_id).or_insert_with(|| ContainerQueryInfo {
             box_id: None,
             width: 0.0,
             height: 0.0,
@@ -20744,28 +20775,6 @@ fn build_pre_layout_container_query_context(
             snapped_mask: 0,
             scrolled_delta: Point::ZERO,
           });
-      }
-
-      if style.container_type.supports_size_queries() {
-        if style.writing_mode == WritingMode::HorizontalTb && content_width.is_finite() {
-          let entry = containers
-            .entry(node.node_id)
-            .or_insert_with(|| ContainerQueryInfo {
-              box_id: None,
-              width: 0.0,
-              height: 0.0,
-              inline_size: 0.0,
-              block_size: 0.0,
-              container_type: style.container_type,
-              names: style.container_name.clone(),
-              font_size: style.font_size,
-              styles: Arc::clone(&node.styles),
-              scroll_offset: Point::ZERO,
-              scroll_bounds: None,
-              stuck_mask: 0,
-              snapped_mask: 0,
-              scrolled_delta: Point::ZERO,
-            });
           entry.width = content_width;
           entry.inline_size = content_width;
           entry.container_type = style.container_type;
@@ -20776,29 +20785,13 @@ fn build_pre_layout_container_query_context(
       }
     }
 
-    for child in node.children.iter() {
-      walk(
-        child,
-        content_width,
-        viewport,
-        include_style_containers,
-        containers,
-      );
+    for child in node.children.iter().rev() {
+      stack.push(Frame {
+        node: child,
+        parent_content_width: content_width,
+      });
     }
-
-    content_width
   }
-
-  let mut containers: HashMap<usize, ContainerQueryInfo> = HashMap::new();
-  // Start from the layout viewport width, which corresponds to the root element's containing block
-  // for percentage resolution. This matches the `layout_viewport_size` used by layout itself.
-  walk(
-    styled_tree,
-    layout_viewport.width,
-    viewport,
-    include_style_containers,
-    &mut containers,
-  );
 
   if containers.is_empty() {
     return None;
@@ -20877,57 +20870,74 @@ fn build_container_query_context(
       has_fixed_cb_ancestor: bool,
       out: &mut HashMap<usize, crate::scroll::ScrollBounds>,
     ) {
-      if let Some(state) = crate::scroll::ScrollChainState::from_fragment(
+      struct Frame<'a> {
+        fragment: &'a FragmentNode,
+        origin: Point,
+        viewport: Size,
+        treat_as_root: bool,
+        has_fixed_cb_ancestor: bool,
+      }
+
+      // Fragment trees can be arbitrarily deep (nested scrolling + anchors), so avoid recursion.
+      let mut stack: Vec<Frame<'_>> = vec![Frame {
         fragment,
         origin,
         viewport,
-        viewport_for_units,
         treat_as_root,
         has_fixed_cb_ancestor,
-      ) {
-        if let Some(box_id) = fragment.box_id() {
-          out
-            .entry(box_id)
-            .and_modify(|existing| merge_scroll_bounds(existing, state.bounds))
-            .or_insert(state.bounds);
-        }
-      }
+      }];
 
-      let establishes_fixed_cb = fragment
-        .style
-        .as_deref()
-        .is_some_and(|style| style.establishes_fixed_containing_block());
-      let has_fixed_cb_ancestor_for_children = has_fixed_cb_ancestor || establishes_fixed_cb;
-
-      match &fragment.content {
-        FragmentContent::RunningAnchor { snapshot, .. }
-        | FragmentContent::FootnoteAnchor { snapshot, .. } => {
-          let viewport = Size::new(snapshot.bounds.width(), snapshot.bounds.height());
-          collect_scroll_bounds(
-            snapshot,
-            origin,
-            viewport,
-            viewport_for_units,
-            false,
-            has_fixed_cb_ancestor_for_children,
-            out,
-          );
-        }
-        _ => {}
-      }
-
-      for child in fragment.children.iter() {
-        let child_origin = Point::new(origin.x + child.bounds.x(), origin.y + child.bounds.y());
-        let child_viewport = Size::new(child.bounds.width(), child.bounds.height());
-        collect_scroll_bounds(
-          child,
-          child_origin,
-          child_viewport,
+      while let Some(frame) = stack.pop() {
+        let fragment = frame.fragment;
+        if let Some(state) = crate::scroll::ScrollChainState::from_fragment(
+          fragment,
+          frame.origin,
+          frame.viewport,
           viewport_for_units,
-          false,
-          has_fixed_cb_ancestor_for_children,
-          out,
-        );
+          frame.treat_as_root,
+          frame.has_fixed_cb_ancestor,
+        ) {
+          if let Some(box_id) = fragment.box_id() {
+            out
+              .entry(box_id)
+              .and_modify(|existing| merge_scroll_bounds(existing, state.bounds))
+              .or_insert(state.bounds);
+          }
+        }
+
+        let establishes_fixed_cb = fragment
+          .style
+          .as_deref()
+          .is_some_and(|style| style.establishes_fixed_containing_block());
+        let has_fixed_cb_ancestor_for_children = frame.has_fixed_cb_ancestor || establishes_fixed_cb;
+
+        match &fragment.content {
+          FragmentContent::RunningAnchor { snapshot, .. }
+          | FragmentContent::FootnoteAnchor { snapshot, .. } => {
+            let viewport = Size::new(snapshot.bounds.width(), snapshot.bounds.height());
+            stack.push(Frame {
+              fragment: snapshot,
+              origin: frame.origin,
+              viewport,
+              treat_as_root: false,
+              has_fixed_cb_ancestor: has_fixed_cb_ancestor_for_children,
+            });
+          }
+          _ => {}
+        }
+
+        for child in fragment.children.iter().rev() {
+          let child_origin =
+            Point::new(frame.origin.x + child.bounds.x(), frame.origin.y + child.bounds.y());
+          let child_viewport = Size::new(child.bounds.width(), child.bounds.height());
+          stack.push(Frame {
+            fragment: child,
+            origin: child_origin,
+            viewport: child_viewport,
+            treat_as_root: false,
+            has_fixed_cb_ancestor: has_fixed_cb_ancestor_for_children,
+          });
+        }
       }
     }
 
@@ -20959,15 +20969,19 @@ fn build_container_query_context(
   let mut stuck_by_box_id: HashMap<usize, u8> = HashMap::new();
   if include_scroll_state {
     fn box_tree_contains_sticky(node: &BoxNode) -> bool {
-      if node.style.position.is_sticky() {
-        return true;
-      }
-      if let Some(body) = node.footnote_body.as_deref() {
-        if box_tree_contains_sticky(body) {
+      let mut stack: Vec<&BoxNode> = vec![node];
+      while let Some(node) = stack.pop() {
+        if node.style.position.is_sticky() {
           return true;
         }
+        if let Some(body) = node.footnote_body.as_deref() {
+          stack.push(body);
+        }
+        for child in node.children.iter() {
+          stack.push(child);
+        }
       }
-      node.children.iter().any(box_tree_contains_sticky)
+      false
     }
 
     if box_tree_contains_sticky(&box_tree.root) {
@@ -20994,61 +21008,65 @@ fn build_container_query_context(
         adjusted: &FragmentNode,
         out: &mut HashMap<usize, u8>,
       ) {
-        if let Some(box_id) = original.box_id() {
-          let dx = adjusted.bounds.x() - original.bounds.x();
-          let dy = adjusted.bounds.y() - original.bounds.y();
-          let eps = 1e-6;
-          let mut mask = 0u8;
-          if dy > eps {
-            mask |= crate::style::cascade::CQ_STUCK_TOP;
+        // Avoid recursion: fragment trees can be arbitrarily deep.
+        let mut stack: Vec<(&FragmentNode, &FragmentNode)> = vec![(original, adjusted)];
+        while let Some((original, adjusted)) = stack.pop() {
+          if let Some(box_id) = original.box_id() {
+            let dx = adjusted.bounds.x() - original.bounds.x();
+            let dy = adjusted.bounds.y() - original.bounds.y();
+            let eps = 1e-6;
+            let mut mask = 0u8;
+            if dy > eps {
+              mask |= crate::style::cascade::CQ_STUCK_TOP;
+            }
+            if dy < -eps {
+              mask |= crate::style::cascade::CQ_STUCK_BOTTOM;
+            }
+            if dx > eps {
+              mask |= crate::style::cascade::CQ_STUCK_LEFT;
+            }
+            if dx < -eps {
+              mask |= crate::style::cascade::CQ_STUCK_RIGHT;
+            }
+            if mask != 0 {
+              out
+                .entry(box_id)
+                .and_modify(|existing| *existing |= mask)
+                .or_insert(mask);
+            }
           }
-          if dy < -eps {
-            mask |= crate::style::cascade::CQ_STUCK_BOTTOM;
-          }
-          if dx > eps {
-            mask |= crate::style::cascade::CQ_STUCK_LEFT;
-          }
-          if dx < -eps {
-            mask |= crate::style::cascade::CQ_STUCK_RIGHT;
-          }
-          if mask != 0 {
-            out
-              .entry(box_id)
-              .and_modify(|existing| *existing |= mask)
-              .or_insert(mask);
-          }
-        }
 
-        match (&original.content, &adjusted.content) {
-          (
-            FragmentContent::RunningAnchor {
-              snapshot: original_snapshot,
-              ..
-            },
-            FragmentContent::RunningAnchor {
-              snapshot: adjusted_snapshot,
-              ..
-            },
-          )
-          | (
-            FragmentContent::FootnoteAnchor {
-              snapshot: original_snapshot,
-              ..
-            },
-            FragmentContent::FootnoteAnchor {
-              snapshot: adjusted_snapshot,
-              ..
-            },
-          ) => {
-            collect_stuck_masks(original_snapshot, adjusted_snapshot, out);
+          match (&original.content, &adjusted.content) {
+            (
+              FragmentContent::RunningAnchor {
+                snapshot: original_snapshot,
+                ..
+              },
+              FragmentContent::RunningAnchor {
+                snapshot: adjusted_snapshot,
+                ..
+              },
+            )
+            | (
+              FragmentContent::FootnoteAnchor {
+                snapshot: original_snapshot,
+                ..
+              },
+              FragmentContent::FootnoteAnchor {
+                snapshot: adjusted_snapshot,
+                ..
+              },
+            ) => {
+              stack.push((original_snapshot, adjusted_snapshot));
+            }
+            _ => {}
           }
-          _ => {}
-        }
 
-        for (child_original, child_adjusted) in
-          original.children.iter().zip(adjusted.children.iter())
-        {
-          collect_stuck_masks(child_original, child_adjusted, out);
+          for (child_original, child_adjusted) in
+            original.children.iter().zip(adjusted.children.iter()).rev()
+          {
+            stack.push((child_original, child_adjusted));
+          }
         }
       }
 
@@ -21764,6 +21782,31 @@ mod build_styled_lookup_tests {
         assert_eq!(scope.len(), depth);
         assert!(scope.contains(&0));
         assert!(scope.contains(&(depth - 1)));
+      })
+      .expect("spawn thread");
+    handle.join().expect("thread should complete without panic");
+  }
+
+  #[test]
+  fn build_pre_layout_container_query_context_does_not_overflow_stack_on_deep_trees() {
+    // `build_pre_layout_container_query_context` is used to seed container query sizes before the
+    // initial layout pass. Ensure the traversal does not recurse and overflow on deep trees.
+    let handle = std::thread::Builder::new()
+      .name("build_pre_layout_container_ctx_deep".into())
+      .stack_size(64 * 1024)
+      .spawn(|| {
+        let depth = 10_000;
+        let tree = deep_styled_chain(depth);
+        let media_ctx = MediaContext::screen(800.0, 600.0);
+        let layout_viewport = Size::new(800.0, 600.0);
+        let ctx = build_pre_layout_container_query_context(
+          &tree,
+          &media_ctx,
+          layout_viewport,
+          /* include_style_containers */ true,
+        )
+        .expect("expected pre-layout container query context");
+        assert_eq!(ctx.containers.len(), depth);
       })
       .expect("spawn thread");
     handle.join().expect("thread should complete without panic");
