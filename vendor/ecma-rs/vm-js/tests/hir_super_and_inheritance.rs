@@ -102,3 +102,28 @@ fn compiled_derived_constructor_missing_super_throws_reference_error() -> Result
   Ok(())
 }
 
+#[test]
+fn compiled_derived_constructor_arrow_before_super_captures_initialized_this() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+    (function() {
+      var out;
+      class A {}
+      class B extends A {
+        constructor() {
+          const f = () => this;
+          super();
+          out = (f() === this);
+        }
+      }
+      new B();
+      return out;
+    })()
+    "#,
+  )?;
+
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}

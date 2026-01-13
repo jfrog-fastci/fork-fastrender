@@ -146,6 +146,9 @@ fn compiled_constructor_body_construct(
   } else {
     // Derived ctor: run body with an uninitialized `this` value.
     //
+    // Represent `this` as a heap-owned shared state object so nested arrow functions and direct
+    // eval code can observe initialization when `super()` is called.
+    //
     // Root inputs across env creation and body execution in case either triggers GC.
     let mut scope = scope.reborrow();
     scope.push_roots(&[Value::Object(body_func), new_target])?;
@@ -156,9 +159,8 @@ fn compiled_constructor_body_construct(
     //
     // Represent `this` as a shared heap state object so nested arrow functions and direct eval code
     // can observe initialization when `super()` is called (even across the compiled/AST boundary).
-    let state = scope.alloc_derived_constructor_state(class_ctor)?;
-    let this_root_idx = scope.heap().root_stack.len();
-    scope.push_root(Value::Object(state))?;
+    let state_obj = scope.alloc_derived_constructor_state(class_ctor)?;
+    scope.push_root(Value::Object(state_obj))?;
 
     let func_env = scope.env_create(outer)?;
     let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
@@ -171,14 +173,14 @@ fn compiled_constructor_body_construct(
       &mut env,
       func_ref,
       is_strict,
-      Value::Object(state),
+      Value::Object(state_obj),
       /* this_initialized */ false,
       new_target,
       home_object,
       args,
       class_constructor,
       /* derived_constructor */ true,
-      Some(this_root_idx),
+      /* this_root_idx */ None,
     );
 
     env.teardown(scope.heap_mut());
@@ -186,15 +188,14 @@ fn compiled_constructor_body_construct(
     match result? {
       Value::Object(o) => Ok(Value::Object(o)),
       _ => {
-        let state = scope.heap().get_derived_constructor_state(state)?;
-        if let Some(this_obj) = state.this_value {
-          Ok(Value::Object(this_obj))
-        } else {
-          Err(throw_reference_error(
+        let state = scope.heap().get_derived_constructor_state(state_obj)?;
+        match state.this_value {
+          Some(this_obj) => Ok(Value::Object(this_obj)),
+          None => Err(throw_reference_error(
             vm,
             &mut scope,
             "Derived constructor did not initialize `this` via super()",
-          )?)
+          )?),
         }
       }
     }
@@ -8214,6 +8215,7 @@ impl<'vm> HirEvaluator<'vm> {
             ));
           };
 
+          // Initialize the enclosing derived constructor's `this` binding exactly once.
           call_scope
             .heap_mut()
             .get_derived_constructor_state_mut(state_obj)?
