@@ -608,8 +608,8 @@ const DOM_SHIM: &str = r##"
       var node = stack.pop();
       if (!(node instanceof Element)) continue;
       visit(node);
-      // Treat `<template>` contents as inert.
-      if (String(node.tagName).toUpperCase() === "TEMPLATE") continue;
+      // Treat inert HTML `<template>` contents as inert.
+      if (g.__fastrender_dom_is_inert_template(nodeIdFromThis(node))) continue;
       var children = node.childNodes || [];
       for (var j = children.length - 1; j >= 0; j--) stack.push(children[j]);
     }
@@ -1919,6 +1919,10 @@ impl Dom {
     Ok(!self.node_checked(node)?.children.is_empty())
   }
 
+  fn is_inert_template(&self, node: NodeId) -> Result<bool, DomShimError> {
+    Ok(self.node_checked(node)?.is_inert_template)
+  }
+
   fn get_node_type(&self, node: NodeId) -> Result<i32, DomShimError> {
     self.node_checked(node)?;
     let value = match &self.nodes[node.0].kind {
@@ -3058,6 +3062,19 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
     }
   })?;
 
+  let is_inert_template = Function::new(ctx.clone(), {
+    let dom = Rc::clone(&dom);
+    move |node_id: i32| -> JsResult<bool> {
+      if node_id < 0 {
+        return Err(dom_error_to_js_error(DomShimError::NotFoundError));
+      }
+      dom
+        .borrow()
+        .is_inert_template(NodeId(node_id as usize))
+        .map_err(dom_error_to_js_error)
+    }
+  })?;
+
   let get_node_type = Function::new(ctx.clone(), {
     let dom = Rc::clone(&dom);
     move |node_id: i32| -> JsResult<i32> {
@@ -3187,6 +3204,7 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
   globals.set("__fastrender_dom_replace_child", replace_child)?;
   globals.set("__fastrender_dom_remove_child", remove_child)?;
   globals.set("__fastrender_dom_has_child_nodes", has_child_nodes)?;
+  globals.set("__fastrender_dom_is_inert_template", is_inert_template)?;
   globals.set("__fastrender_dom_get_node_type", get_node_type)?;
   globals.set("__fastrender_dom_get_parent_node", get_parent_node)?;
   globals.set("__fastrender_dom_get_child_nodes", get_child_nodes)?;
@@ -3419,6 +3437,60 @@ mod tests {
 
       assert_eq!(v["len"], 2);
       assert_eq!(v["ids"], "inside,outside");
+    });
+  }
+
+  #[test]
+  fn query_selector_skips_inert_template_contents() {
+    let rt = Runtime::new().unwrap();
+    let context = Context::full(&rt).unwrap();
+    context.with(|ctx| {
+      install_dom_shims(ctx.clone(), &ctx.globals()).unwrap();
+      let v = eval_json(
+        ctx.clone(),
+        r##"
+        (function () {
+          document.body.innerHTML = "<template><div id='inside'></div></template><div id='outside'></div>";
+          var inside = document.querySelector("#inside");
+          var outside = document.querySelector("#outside");
+          return JSON.stringify({
+            insideIsNull: inside === null,
+            outsideId: outside ? outside.id : null,
+          });
+        })()
+        "##,
+      );
+
+      assert_eq!(v["insideIsNull"], true);
+      assert_eq!(v["outsideId"], "outside");
+    });
+  }
+
+  #[test]
+  fn query_selector_traverses_svg_template_contents() {
+    let rt = Runtime::new().unwrap();
+    let context = Context::full(&rt).unwrap();
+    context.with(|ctx| {
+      install_dom_shims(ctx.clone(), &ctx.globals()).unwrap();
+      let v = eval_json(
+        ctx.clone(),
+        r##"
+        (function () {
+          // `<template>` in SVG namespace is not an inert HTML template; selector traversal should
+          // still walk its descendants.
+          document.body.innerHTML = "<svg><template><div id='inside'></div></template></svg><div id='outside'></div>";
+          var inside = document.querySelector("#inside");
+          var outside = document.querySelector("#outside");
+          return JSON.stringify({
+            insideId: inside ? inside.id : null,
+            outsideId: outside ? outside.id : null,
+          });
+        })()
+        "##,
+      );
+
+      assert_eq!(v["insideId"], "inside");
+      assert_eq!(v["outsideId"], "outside");
     });
   }
 
