@@ -800,8 +800,8 @@ pub(super) fn resolve_item_baselines(
     return;
   }
 
-  // (item_index, other_axis_start_index, baseline_value)
-  let mut baseline_entries: Vec<(usize, u16, f32)> = Vec::with_capacity(baseline_entries_capacity);
+  // (item_index, baseline_value)
+  let mut baseline_entries: Vec<(usize, f32)> = Vec::with_capacity(baseline_entries_capacity);
 
   for (idx, item) in items.iter_mut().enumerate() {
     check_layout_abort();
@@ -840,21 +840,26 @@ pub(super) fn resolve_item_baselines(
     }
 
     let value = measure_item_baseline_value(item);
-    baseline_entries.push((idx, key, value));
+    baseline_entries.push((idx, value));
     if let Some(entry) = group_stats.get_mut(key as usize) {
       entry.max_baseline = f32_max(entry.max_baseline, value);
     }
   }
 
-  for (idx, key, value) in baseline_entries {
+  for (idx, value) in baseline_entries {
+    let item = &mut items[idx];
+    let key = match other_axis {
+      AbstractAxis::Inline => item.column_indexes.start,
+      AbstractAxis::Block => item.row_indexes.start,
+    };
     let Some(group_max) = group_stats.get(key as usize).map(|s| s.max_baseline) else {
       continue;
     };
     let shim = group_max - value;
     let shim = if shim.is_finite() { shim } else { 0.0 };
     match axis {
-      AbstractAxis::Inline => items[idx].baseline_shim.y = shim,
-      AbstractAxis::Block => items[idx].baseline_shim.x = shim,
+      AbstractAxis::Inline => item.baseline_shim.y = shim,
+      AbstractAxis::Block => item.baseline_shim.x = shim,
     }
   }
 }
