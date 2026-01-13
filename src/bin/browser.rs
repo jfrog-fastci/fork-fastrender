@@ -6156,7 +6156,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 || win.app.history_panel_open
                 || omnibox_has_visited_suggestions
                 || about_history_visible;
-              if needs_redraw_due_to_history {
+              if needs_redraw_due_to_history
+                && !(win.app.window_occluded || win.app.window_minimized)
+              {
                 win.app.window.request_redraw();
               }
             }
@@ -6969,7 +6971,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           || star_state_changed
           || omnibox_has_bookmark_suggestions
           || about_bookmarks_visible;
-        if needs_redraw_due_to_bookmarks {
+        if needs_redraw_due_to_bookmarks && !(win.app.window_occluded || win.app.window_minimized) {
           win.app.window.request_redraw();
         }
       }
@@ -7102,7 +7104,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           || win.app.history_panel_open
           || omnibox_has_visited_suggestions
           || about_history_visible;
-        if needs_redraw_due_to_history {
+        if needs_redraw_due_to_history && !(win.app.window_occluded || win.app.window_minimized) {
           win.app.window.request_redraw();
         }
       }
