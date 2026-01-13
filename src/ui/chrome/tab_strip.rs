@@ -2475,11 +2475,7 @@ pub(super) fn tab_strip_ui(
             || i.events.iter().any(|event| {
               matches!(
                 event,
-                egui::Event::MouseWheel {
-                  unit: egui::MouseWheelUnit::Point,
-                  delta,
-                  ..
-                } if delta.y.abs() > 0.0
+                egui::Event::MouseWheel { delta, .. } if delta.y.abs() > 0.0
               )
             })
         });
@@ -2489,12 +2485,7 @@ pub(super) fn tab_strip_ui(
             i.scroll_delta = Vec2::new(i.scroll_delta.x + i.scroll_delta.y, 0.0);
             let mut wheel_deltas: Vec<Vec2> = Vec::new();
             for event in &mut i.events {
-              if let egui::Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Point,
-                delta,
-                ..
-              } = event
-              {
+              if let egui::Event::MouseWheel { delta, .. } = event {
                 wheel_deltas.push(*delta);
                 let d = *delta;
                 *delta = Vec2::new(d.x + d.y, 0.0);
@@ -2702,12 +2693,7 @@ pub(super) fn tab_strip_ui(
           if let Some(wheel_deltas) = restore_wheel_deltas {
             let mut deltas = wheel_deltas.into_iter();
             for event in &mut i.events {
-              if let egui::Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Point,
-                delta,
-                ..
-              } = event
-              {
+              if let egui::Event::MouseWheel { delta, .. } = event {
                 if let Some(saved) = deltas.next() {
                   *delta = saved;
                 }
@@ -2771,11 +2757,7 @@ pub(super) fn tab_strip_ui(
             || i.events.iter().any(|event| {
               matches!(
                 event,
-                egui::Event::MouseWheel {
-                  unit: egui::MouseWheelUnit::Point,
-                  delta,
-                  ..
-                } if delta.y.abs() > 0.0
+                egui::Event::MouseWheel { delta, .. } if delta.y.abs() > 0.0
               )
             })
         });
@@ -2785,12 +2767,7 @@ pub(super) fn tab_strip_ui(
             i.scroll_delta = Vec2::new(i.scroll_delta.x + i.scroll_delta.y, 0.0);
             let mut wheel_deltas: Vec<Vec2> = Vec::new();
             for event in &mut i.events {
-              if let egui::Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Point,
-                delta,
-                ..
-              } = event
-              {
+              if let egui::Event::MouseWheel { delta, .. } = event {
                 wheel_deltas.push(*delta);
                 let d = *delta;
                 *delta = Vec2::new(d.x + d.y, 0.0);
@@ -3254,12 +3231,7 @@ pub(super) fn tab_strip_ui(
           if let Some(wheel_deltas) = restore_wheel_deltas {
             let mut deltas = wheel_deltas.into_iter();
             for event in &mut i.events {
-              if let egui::Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Point,
-                delta,
-                ..
-              } = event
-              {
+              if let egui::Event::MouseWheel { delta, .. } = event {
                 if let Some(saved) = deltas.next() {
                   *delta = saved;
                 }
