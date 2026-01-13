@@ -199,6 +199,8 @@ Additional (important) size limits that sit *on top* of framing:
 | File input / drag-and-drop max files per message (browser→renderer) | 16 | `FILE_INPUT_MAX_FILES` in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) |
 | File input / drag-and-drop file name bytes (browser→renderer) | 256 bytes | `FILE_INPUT_MAX_NAME_BYTES` in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) |
 | File input / drag-and-drop total file size metadata (browser→renderer) | 512 MiB | `FILE_INPUT_MAX_TOTAL_BYTES_META` in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) |
+| Browser↔network URL string max | 1 MiB | `MAX_URL_BYTES` in [`src/ipc/protocol/network.rs`](../src/ipc/protocol/network.rs) |
+| Browser↔network cookie string max | 4 KiB | `MAX_COOKIE_STRING_BYTES` in [`src/ipc/protocol/network.rs`](../src/ipc/protocol/network.rs) |
 | Linux shared memory hard ceiling | 256 MiB | `MAX_SHM_SIZE` in [`src/ipc/shm.rs`](../src/ipc/shm.rs) |
 | WebSocket URL bytes (renderer→network) | 8 KiB | `MAX_WEBSOCKET_URL_BYTES` in [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) |
 | WebSocket protocol count (renderer→network) | 32 | `MAX_WEBSOCKET_PROTOCOLS` in [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) |
@@ -221,6 +223,10 @@ Network IPC (renderer↔network process) also enforces per-field caps via
 Important: these are **semantic** limits; the outer `MAX_IPC_MESSAGE_BYTES` framing cap still applies
 (8 MiB today). If a field-level limit exceeds the frame cap, the data must be chunked or moved to
 shared memory; do not “just raise the frame cap” without security review.
+
+Prefer enforcing this invariant mechanically. Repo reality example:
+`src/ipc/protocol/network.rs` has a compile-time guard that panics if `MAX_URL_BYTES` /
+`MAX_COOKIE_STRING_BYTES` exceed `crate::ipc::MAX_IPC_MESSAGE_BYTES`.
 
 ### Framing with `SOCK_SEQPACKET` (target)
 
