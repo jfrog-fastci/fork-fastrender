@@ -217,6 +217,48 @@ fn p0_external_classic_scripts_set_document_current_script_during_execution_and_
 }
 
 #[test]
+fn p0_current_script_shadow_root() -> Result<()> {
+  let js_options = JsExecutionOptions::default();
+  let mut h = Harness::new("https://example.invalid/p0_current_script_shadow_root.html", js_options)?;
+
+  // HTML "execute the script block" only sets `document.currentScript` for classic scripts when the
+  // script element is in the *document tree*. Scripts that execute from inside a shadow tree must
+  // observe `document.currentScript === null`.
+  //
+  // This test uses a parser-inserted outer script that dynamically creates and appends an inline
+  // classic script into a shadow root. Dynamic scripts are async-by-default, so the outer script's
+  // log should come first.
+  h.register_html_source(
+    r#"<!doctype html><body>
+      <script>
+        const host = document.createElement("div");
+        document.body.appendChild(host);
+        const shadow = host.attachShadow({ mode: "open" });
+
+        const s = document.createElement("script");
+        // The appended inline script executes immediately on insertion, so defer the log to a
+        // microtask to make the log ordering deterministic (outer script first) while still
+        // capturing `document.currentScript` at script evaluation time.
+        s.textContent =
+          'const isNull = (document.currentScript === null); queueMicrotask(() => console.log("cs:" + isNull));';
+        shadow.appendChild(s);
+
+        console.log("after");
+      </script>
+    </body>"#,
+  );
+
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  assert_eq!(
+    console_logs(&h.tab),
+    vec!["after".to_string(), "cs:true".to_string()]
+  );
+  Ok(())
+}
+
+#[test]
 fn p0_external_classic_script_parse_errors_do_not_break_parsing() -> Result<()> {
   let js_options = JsExecutionOptions::default();
   let mut h = Harness::new("https://example.invalid/p0_external_error.html", js_options)?;
