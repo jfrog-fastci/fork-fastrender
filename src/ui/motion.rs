@@ -52,6 +52,8 @@ pub struct UiMotionDurations {
   pub tab_underline: f32,
   /// Transition duration for pin/unpin tab-strip animations (seconds).
   pub tab_pin: f32,
+  /// Close animation duration for tabs (fade/width shrink) (seconds).
+  pub tab_close: f32,
   /// Collapse/expand duration for tab groups in the tab strip (seconds).
   pub tab_group_collapse: f32,
   /// Fade/scale duration for popup menus (context menus, `<select>` dropdowns) (seconds).
@@ -72,6 +74,7 @@ impl Default for UiMotionDurations {
       hover_fade: 0.12,
       tab_underline: 0.16,
       tab_pin: 0.18,
+      tab_close: 0.16,
       tab_group_collapse: 0.18,
       popup_open: 0.14,
       focus_ring: 0.14,

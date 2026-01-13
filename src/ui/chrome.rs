@@ -3555,6 +3555,18 @@ mod tests {
     ctx.begin_frame(raw);
   }
 
+  fn begin_frame_with_time(ctx: &egui::Context, time: f64, events: Vec<egui::Event>) {
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::Pos2::new(0.0, 0.0),
+      egui::vec2(800.0, 600.0),
+    ));
+    raw.time = Some(time);
+    raw.focused = true;
+    raw.events = events;
+    ctx.begin_frame(raw);
+  }
+
   fn begin_frame_with_screen_size(
     ctx: &egui::Context,
     screen_size: egui::Vec2,
@@ -3578,6 +3590,28 @@ mod tests {
       pressed: true,
       repeat: false,
       modifiers: egui::Modifiers::default(),
+    }
+  }
+
+  fn apply_close_tab_actions_for_test(
+    ctx: &egui::Context,
+    app: &mut BrowserAppState,
+    actions: Vec<ChromeAction>,
+  ) {
+    for action in actions {
+      let ChromeAction::CloseTab(tab_id) = action else {
+        continue;
+      };
+
+      if app.tabs.len() <= 1 || app.tab(tab_id).is_none() {
+        app.chrome.clear_tab_close(tab_id);
+        continue;
+      }
+
+      if app.chrome.request_close_tab(ctx, tab_id) {
+        app.remove_tab(tab_id);
+        app.chrome.clear_tab_close(tab_id);
+      }
     }
   }
 
@@ -4234,6 +4268,94 @@ mod tests {
         .any(|action| matches!(action, ChromeAction::FocusAddressBar)),
       "expected ChromeAction::FocusAddressBar, got {actions:?}"
     );
+  }
+
+  #[test]
+  fn close_tab_shortcut_animates_then_closes() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), true);
+    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), false);
+
+    let ctx = egui::Context::default();
+    let modifiers = egui::Modifiers {
+      command: true,
+      ..Default::default()
+    };
+
+    // Frame 1: Ctrl/Cmd+W should request a close, but the tab should remain while the animation
+    // runs (motion enabled).
+    begin_frame_with_time(
+      &ctx,
+      0.0,
+      vec![egui::Event::Key {
+        key: egui::Key::W,
+        pressed: true,
+        repeat: false,
+        modifiers,
+      }],
+    );
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    apply_close_tab_actions_for_test(&ctx, &mut app, actions);
+    let _ = ctx.end_frame();
+
+    assert!(
+      app.tab(tab_a).is_some(),
+      "tab should still exist immediately after a close request when motion is enabled"
+    );
+    assert!(
+      app.chrome.closing_tabs.contains_key(&tab_a),
+      "expected tab to be marked as closing"
+    );
+
+    // Frame 2: advance past the close duration; the tab strip should emit another CloseTab request
+    // and the tab should be closed.
+    let duration = crate::ui::motion::UiMotion::from_ctx(&ctx).durations.tab_close as f64;
+    begin_frame_with_time(&ctx, duration + 0.05, Vec::new());
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    apply_close_tab_actions_for_test(&ctx, &mut app, actions);
+    let _ = ctx.end_frame();
+
+    assert!(app.tab(tab_a).is_none(), "expected tab to be closed after animation completes");
+    assert_eq!(app.tabs.len(), 1);
+    assert!(app.tab(tab_b).is_some(), "expected remaining tab to still exist");
+  }
+
+  #[test]
+  fn close_tab_shortcut_is_immediate_when_reduced_motion() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), true);
+    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), false);
+
+    let ctx = egui::Context::default();
+    let modifiers = egui::Modifiers {
+      command: true,
+      ..Default::default()
+    };
+    begin_frame_with_time(
+      &ctx,
+      0.0,
+      vec![egui::Event::Key {
+        key: egui::Key::W,
+        pressed: true,
+        repeat: false,
+        modifiers,
+      }],
+    );
+    crate::ui::motion::UiMotion::set_ctx_reduced_motion(&ctx, true);
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    apply_close_tab_actions_for_test(&ctx, &mut app, actions);
+    let _ = ctx.end_frame();
+
+    assert!(
+      app.tab(tab_a).is_none(),
+      "expected reduced-motion close to remove the tab immediately"
+    );
+    assert_eq!(app.tabs.len(), 1);
+    assert!(app.tab(tab_b).is_some());
   }
 
   #[test]

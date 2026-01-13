@@ -723,6 +723,31 @@ pub struct ChromeState {
   pub link_drag_start_pos: Option<egui::Pos2>,
   #[cfg(feature = "browser_ui")]
   pub link_drag_active: bool,
+  /// Per-tab close animation state, keyed by tab id.
+  ///
+  /// This lives in UI-only state so tab closes can be animated consistently regardless of how they
+  /// were initiated (tab strip, keyboard shortcut, menu bar, etc).
+  #[cfg(feature = "browser_ui")]
+  pub closing_tabs: HashMap<TabId, ClosingTabState>,
+}
+
+/// Close animation state for a tab.
+#[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClosingTabState {
+  pub start_time: f64,
+  pub duration: f32,
+}
+
+#[cfg(feature = "browser_ui")]
+impl ClosingTabState {
+  pub fn progress(&self, now: f64) -> f32 {
+    if self.duration <= 0.0 {
+      return 1.0;
+    }
+    let dt = (now - self.start_time).max(0.0);
+    (dt as f32 / self.duration).clamp(0.0, 1.0)
+  }
 }
 
 impl ChromeState {
@@ -739,6 +764,56 @@ impl ChromeState {
     self.link_drag_url = None;
     self.link_drag_start_pos = None;
     self.link_drag_active = false;
+  }
+
+  /// Clear any close-animation state for `tab_id`.
+  #[cfg(feature = "browser_ui")]
+  pub fn clear_tab_close(&mut self, tab_id: TabId) {
+    self.closing_tabs.remove(&tab_id);
+  }
+
+  /// Returns the close animation progress for `tab_id` (0.0..=1.0), if the tab is currently
+  /// closing.
+  #[cfg(feature = "browser_ui")]
+  pub fn tab_close_progress(&self, tab_id: TabId, now: f64) -> Option<f32> {
+    self.closing_tabs.get(&tab_id).map(|s| s.progress(now))
+  }
+
+  /// Handle a close-tab request, returning `true` if the caller should perform the actual close.
+  ///
+  /// When motion is enabled, the first request starts an animation and returns `false`; a later
+  /// request (after the animation duration has elapsed) returns `true`.
+  ///
+  /// When motion is disabled (reduced motion or egui animations disabled), this returns `true`
+  /// immediately.
+  #[cfg(feature = "browser_ui")]
+  pub fn request_close_tab(&mut self, ctx: &egui::Context, tab_id: TabId) -> bool {
+    let motion = crate::ui::motion::UiMotion::from_ctx(ctx);
+    let duration = motion.durations.tab_close;
+    let motion_enabled = motion.enabled && duration > 0.0 && ctx.style().animation_time > 0.0;
+    if !motion_enabled {
+      return true;
+    }
+
+    let now = ctx.input(|i| i.time);
+    match self.closing_tabs.get(&tab_id).copied() {
+      None => {
+        self.closing_tabs.insert(
+          tab_id,
+          ClosingTabState {
+            start_time: now,
+            duration,
+          },
+        );
+        // If the user is currently dragging this tab, cancel the drag so the tab strip doesn't try
+        // to reorder a tab that is disappearing.
+        if self.dragging_tab_id == Some(tab_id) {
+          self.clear_tab_drag();
+        }
+        false
+      }
+      Some(state) => state.progress(now) >= 1.0,
+    }
   }
 }
 
@@ -1416,6 +1491,14 @@ impl BrowserAppState {
       };
     }
 
+    #[cfg(feature = "browser_ui")]
+    {
+      self.chrome.clear_tab_close(tab_id);
+      if self.chrome.dragging_tab_id == Some(tab_id) {
+        self.chrome.clear_tab_drag();
+      }
+    }
+
     let closed = self.tabs.remove(idx);
     self.prune_empty_tab_groups();
     self.bump_session_revision();
@@ -1482,6 +1565,8 @@ impl BrowserAppState {
 
     let mut closed_ids = Vec::new();
     for closed in tabs {
+      #[cfg(feature = "browser_ui")]
+      self.chrome.clear_tab_close(closed.id);
       closed_ids.push(closed.id);
       self.push_closed_tab_state(ClosedTabState {
         url: closed
@@ -1525,6 +1610,8 @@ impl BrowserAppState {
     let drained = self.tabs.drain((idx + 1)..).collect::<Vec<_>>();
     let mut closed_ids = Vec::new();
     for closed in drained {
+      #[cfg(feature = "browser_ui")]
+      self.chrome.clear_tab_close(closed.id);
       closed_ids.push(closed.id);
       self.push_closed_tab_state(ClosedTabState {
         url: closed

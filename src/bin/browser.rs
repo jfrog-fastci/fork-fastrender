@@ -8554,6 +8554,30 @@ impl App {
         }
         ChromeAction::CloseTab(tab_id) => {
           if self.browser_state.tabs.len() <= 1 || self.browser_state.tab(tab_id).is_none() {
+            // If the tab disappeared (or became the last remaining tab) while an animation was
+            // pending, ensure we don't keep it in a permanently "closing" visual state.
+            let had_closing = self.browser_state.chrome.closing_tabs.contains_key(&tab_id);
+            self.browser_state.chrome.clear_tab_close(tab_id);
+            if had_closing {
+              self.window.request_redraw();
+            }
+            continue;
+          }
+
+          // `ChromeAction::CloseTab` is treated as "request close". When motion is enabled, the
+          // first request starts the close animation and we return without closing. The tab strip
+          // re-emits `CloseTab` once the animation finishes.
+          let was_closing = self.browser_state.chrome.closing_tabs.contains_key(&tab_id);
+          let should_close_now = self
+            .browser_state
+            .chrome
+            .request_close_tab(&self.egui_ctx, tab_id);
+          if !should_close_now {
+            if !was_closing {
+              // Chrome UI has already been built for this frame; request another redraw so the tab
+              // strip can render the closing state.
+              self.window.request_redraw();
+            }
             continue;
           }
 
@@ -8571,6 +8595,7 @@ impl App {
           self.send_worker_msg(UiToWorker::CloseTab { tab_id });
 
           let close_result = self.browser_state.remove_tab(tab_id);
+          self.browser_state.chrome.clear_tab_close(tab_id);
 
           if was_active {
             self.viewport_cache_tab = None;
@@ -8616,6 +8641,10 @@ impl App {
               reason: RepaintReason::Explicit,
             });
           }
+
+          // Chrome UI was already built for this frame. Request another redraw so the tab strip and
+          // address bar reflect the updated tab list immediately after the close completes.
+          self.window.request_redraw();
         }
         ChromeAction::CloseOtherTabs(tab_id) => {
           if self.browser_state.tabs.len() <= 1 || self.browser_state.tab(tab_id).is_none() {

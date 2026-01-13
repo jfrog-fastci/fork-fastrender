@@ -7,6 +7,7 @@ use crate::ui::motion::UiMotion;
 use crate::ui::{icon_button, BrowserIcon};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Response, Sense, Stroke, Vec2};
 use std::collections::HashMap;
+use std::time::Duration;
 
 use super::ChromeAction;
 use super::FocusRingStyle;
@@ -486,7 +487,7 @@ fn unpinned_tab_preview_ui(
     let uv = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0));
     ui.painter().image(tex_id, icon_rect, uv, Color32::WHITE);
   } else {
-    placeholder_favicon(ui.painter(), icon_rect, &visuals);
+    placeholder_favicon(ui.painter(), icon_rect, &visuals, 1.0);
     let glyph = title
       .trim()
       .chars()
@@ -615,7 +616,7 @@ fn pinned_tab_preview_ui(
     let uv = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0));
     ui.painter().image(tex_id, icon_rect, uv, Color32::WHITE);
   } else {
-    placeholder_favicon(ui.painter(), icon_rect, &visuals);
+    placeholder_favicon(ui.painter(), icon_rect, &visuals, 1.0);
     let glyph = title
       .trim()
       .chars()
@@ -959,10 +960,13 @@ fn paint_spinner(painter: &egui::Painter, rect: Rect, time: f64, color: Color32)
   // 12 spoke spinner.
   let n = 12;
   let angle = (time as f32) * 6.0; // ~1 rotation per second.
+  let base_alpha = (color.a() as f32 / 255.0).clamp(0.0, 1.0);
   for i in 0..n {
     let t = i as f32 / n as f32;
     // Newest segment is brightest.
-    let alpha = (255.0 * (1.0 - t).powf(2.0)).round().clamp(0.0, 255.0) as u8;
+    let alpha = (255.0 * base_alpha * (1.0 - t).powf(2.0))
+      .round()
+      .clamp(0.0, 255.0) as u8;
     let a = angle + t * std::f32::consts::TAU;
     let dir = egui::vec2(a.cos(), a.sin());
     let start = center + dir * (radius * 0.55);
@@ -977,11 +981,13 @@ fn paint_spinner(painter: &egui::Painter, rect: Rect, time: f64, color: Color32)
   }
 }
 
-fn placeholder_favicon(painter: &egui::Painter, rect: Rect, visuals: &egui::Visuals) {
-  let fill = visuals.widgets.inactive.bg_fill;
-  let stroke = visuals.widgets.inactive.bg_stroke;
+fn placeholder_favicon(painter: &egui::Painter, rect: Rect, visuals: &egui::Visuals, alpha: f32) {
+  let fill = with_alpha(visuals.widgets.inactive.bg_fill, alpha);
+  let mut stroke = visuals.widgets.inactive.bg_stroke;
+  stroke.color = with_alpha(stroke.color, alpha);
   // Keep favicon placeholders subtly rounded without looking fully pill-shaped.
-  let rounding = egui::Rounding::same((visuals.widgets.inactive.rounding.nw * 0.5).clamp(2.0, 4.0));
+  let rounding =
+    egui::Rounding::same((visuals.widgets.inactive.rounding.nw * 0.5).clamp(2.0, 4.0));
   painter.rect_filled(rect, rounding, fill);
   painter.rect_stroke(rect, rounding, stroke);
 }
@@ -1194,8 +1200,18 @@ fn tab_ui(
   chrome: &mut ChromeState,
   focus_ring: FocusRingStyle,
   group_color: Option<Color32>,
+  close_t: Option<f32>,
 ) -> (Rect, Response, Option<ChromeAction>) {
-  let (_, tab_rect) = ui.allocate_space(Vec2::new(tab_width, TAB_HEIGHT));
+  let closing = close_t.is_some();
+  let close_t = close_t.unwrap_or(0.0).clamp(0.0, 1.0);
+  let close_opacity = if closing {
+    (1.0 - close_t).clamp(0.0, 1.0)
+  } else {
+    1.0
+  };
+  let interactive = interactive && !closing;
+
+  let (_, tab_rect) = ui.allocate_space(Vec2::new(tab_width.max(0.0), TAB_HEIGHT));
   let tab_id = ui.make_persistent_id(("tab_strip_tab", tab.id));
   let title = tab.display_title();
   let (err, warn) = tab_status_messages(tab);
@@ -1235,7 +1251,9 @@ fn tab_ui(
     let a11y_label = a11y_label.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
   });
-  super::show_tooltip_on_focus(ui, &response, title.as_str());
+  if interactive {
+    super::show_tooltip_on_focus(ui, &response, title.as_str());
+  }
 
   let visuals = ui.style().visuals.clone();
   let mut paint_ui = ui.child_ui(tab_rect, egui::Layout::left_to_right(egui::Align::Center));
@@ -1273,10 +1291,14 @@ fn tab_ui(
   let rounding = visuals.widgets.inactive.rounding;
   {
     let painter = paint_ui.painter();
-    painter.rect_filled(tab_rect, rounding, bg);
+    painter.rect_filled(tab_rect, rounding, with_alpha(bg, close_opacity));
 
     if let Some(color) = group_color {
-      painter.rect_stroke(tab_rect.shrink(0.5), rounding, Stroke::new(1.0, color));
+      painter.rect_stroke(
+        tab_rect.shrink(0.5),
+        rounding,
+        Stroke::new(1.0, with_alpha(color, close_opacity)),
+      );
     }
 
     if pressed {
@@ -1285,7 +1307,9 @@ fn tab_ui(
       } else {
         tab_rect.shrink(0.5)
       };
-      painter.rect_stroke(stroke_rect, rounding, visuals.widgets.active.bg_stroke);
+      let mut stroke = visuals.widgets.active.bg_stroke;
+      stroke.color = with_alpha(stroke.color, close_opacity);
+      painter.rect_stroke(stroke_rect, rounding, stroke);
     }
   }
 
@@ -1300,10 +1324,10 @@ fn tab_ui(
       let uv = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0));
       paint_ui
         .painter()
-        .image(tex_id, icon_rect, uv, Color32::WHITE);
+        .image(tex_id, icon_rect, uv, with_alpha(Color32::WHITE, close_opacity));
     }
   } else {
-    placeholder_favicon(paint_ui.painter(), icon_rect, &visuals);
+    placeholder_favicon(paint_ui.painter(), icon_rect, &visuals, close_opacity);
     // Show a small deterministic glyph so blank favicons are still distinguishable at a glance.
     let glyph = title
       .trim()
@@ -1316,7 +1340,7 @@ fn tab_ui(
       Align2::CENTER_CENTER,
       glyph,
       FontId::proportional(12.0),
-      with_alpha(visuals.text_color(), 0.75),
+      with_alpha(visuals.text_color(), 0.75 * close_opacity),
     );
   }
 
@@ -1333,7 +1357,7 @@ fn tab_ui(
       paint_ui.painter(),
       icon_rect.expand(2.0),
       time,
-      visuals.text_color(),
+      with_alpha(visuals.text_color(), close_opacity),
     );
   }
 
@@ -1349,7 +1373,13 @@ fn tab_ui(
     warn.is_some(),
     motion.durations.progress_fade,
   );
-  paint_tab_status_badges(paint_ui.painter(), icon_rect, &visuals, err_t, warn_t);
+  paint_tab_status_badges(
+    paint_ui.painter(),
+    icon_rect,
+    &visuals,
+    err_t * close_opacity,
+    warn_t * close_opacity,
+  );
 
   // Close button (only when more than one tab exists).
   let mut close_clicked = false;
@@ -1470,9 +1500,16 @@ fn tab_ui(
       if is_active {
         text = text.strong();
       }
+      if closing {
+        text = text.color(with_alpha(visuals.text_color(), close_opacity));
+      }
       egui::Label::new(text).truncate(true).wrap(false)
     };
     let _ = paint_ui.put(title_rect, label);
+  }
+
+  if closing {
+    return (tab_rect, response, None);
   }
 
   // Input semantics.
@@ -1517,16 +1554,34 @@ fn pinned_tab_ui(
   tab: &BrowserTabState,
   is_active: bool,
   can_close_tabs: bool,
+  tab_width: f32,
   favicon_tex: Option<egui::TextureId>,
   chrome: &mut ChromeState,
   focus_ring: FocusRingStyle,
+  close_t: Option<f32>,
 ) -> (Rect, Response, Option<ChromeAction>) {
-  let (_, tab_rect) = ui.allocate_space(Vec2::new(PINNED_TAB_WIDTH, TAB_HEIGHT));
+  let closing = close_t.is_some();
+  let close_t = close_t.unwrap_or(0.0).clamp(0.0, 1.0);
+  let close_opacity = if closing {
+    (1.0 - close_t).clamp(0.0, 1.0)
+  } else {
+    1.0
+  };
+
+  let (_, tab_rect) = ui.allocate_space(Vec2::new(tab_width.max(0.0), TAB_HEIGHT));
   let tab_id = ui.make_persistent_id(("tab_strip_tab", tab.id));
   let title = tab.display_title();
   let (err, warn) = tab_status_messages(tab);
-  let mut response = ui.interact(tab_rect, tab_id, Sense::click_and_drag());
-  if response.hovered() {
+  let mut response = ui.interact(
+    tab_rect,
+    tab_id,
+    if closing {
+      Sense::hover()
+    } else {
+      Sense::click_and_drag()
+    },
+  );
+  if !closing && response.hovered() {
     if err.is_none() && warn.is_none() {
       response = response.on_hover_text(title.as_str());
     } else {
@@ -1552,7 +1607,9 @@ fn pinned_tab_ui(
     let a11y_label = a11y_label.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
   });
-  super::show_tooltip_on_focus(ui, &response, title.as_str());
+  if !closing {
+    super::show_tooltip_on_focus(ui, &response, title.as_str());
+  }
 
   let visuals = ui.style().visuals.clone();
 
@@ -1560,10 +1617,10 @@ fn pinned_tab_ui(
   let hover_t = motion.animate_bool(
     ui.ctx(),
     tab_id.with("hover"),
-    response.hovered() && !is_active,
+    !closing && response.hovered() && !is_active,
     motion.durations.hover_fade,
   );
-  let pressed = ui.is_enabled() && response.is_pointer_button_down_on();
+  let pressed = !closing && ui.is_enabled() && response.is_pointer_button_down_on();
 
   // Micro-interaction: fade the active tab background in/out instead of snapping.
   let active_t = motion.animate_bool(
@@ -1583,13 +1640,13 @@ fn pinned_tab_ui(
     bg = visuals.widgets.active.bg_fill;
   }
   let rounding = visuals.widgets.inactive.rounding;
-  ui.painter().rect_filled(tab_rect, rounding, bg);
+  ui
+    .painter()
+    .rect_filled(tab_rect, rounding, with_alpha(bg, close_opacity));
   if pressed {
-    ui.painter().rect_stroke(
-      tab_rect.shrink(0.5),
-      rounding,
-      visuals.widgets.active.bg_stroke,
-    );
+    let mut stroke = visuals.widgets.active.bg_stroke;
+    stroke.color = with_alpha(stroke.color, close_opacity);
+    ui.painter().rect_stroke(tab_rect.shrink(0.5), rounding, stroke);
   }
 
   // Favicon (centered).
@@ -1601,10 +1658,12 @@ fn pinned_tab_ui(
   if let Some(tex_id) = favicon_tex {
     if ui.is_rect_visible(icon_rect) {
       let uv = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0));
-      ui.painter().image(tex_id, icon_rect, uv, Color32::WHITE);
+      ui
+        .painter()
+        .image(tex_id, icon_rect, uv, with_alpha(Color32::WHITE, close_opacity));
     }
   } else {
-    placeholder_favicon(ui.painter(), icon_rect, &visuals);
+    placeholder_favicon(ui.painter(), icon_rect, &visuals, close_opacity);
     let glyph = title
       .trim()
       .chars()
@@ -1616,7 +1675,7 @@ fn pinned_tab_ui(
       Align2::CENTER_CENTER,
       glyph,
       FontId::proportional(14.0),
-      visuals.text_color(),
+      with_alpha(visuals.text_color(), close_opacity),
     );
   }
 
@@ -1633,7 +1692,7 @@ fn pinned_tab_ui(
       ui.painter(),
       icon_rect.expand(2.0),
       time,
-      visuals.text_color(),
+      with_alpha(visuals.text_color(), close_opacity),
     );
   }
 
@@ -1649,7 +1708,11 @@ fn pinned_tab_ui(
     warn.is_some(),
     motion.durations.progress_fade,
   );
-  paint_tab_status_badges(ui.painter(), icon_rect, &visuals, err_t, warn_t);
+  paint_tab_status_badges(ui.painter(), icon_rect, &visuals, err_t * close_opacity, warn_t * close_opacity);
+
+  if closing {
+    return (tab_rect, response, None);
+  }
 
   // Input semantics.
   if response.clicked_by(egui::PointerButton::Secondary) {
@@ -1689,11 +1752,41 @@ pub(super) fn tab_strip_ui(
   focus_ring: FocusRingStyle,
 ) -> Vec<ChromeAction> {
   let mut actions = Vec::new();
+  let now = ui.input(|i| i.time);
 
   // Defensive: if the dragged tab was closed mid-drag, clear the drag state.
   if let Some(dragging_tab_id) = app.chrome.dragging_tab_id {
     if app.tab(dragging_tab_id).is_none() {
       app.chrome.clear_tab_drag();
+    }
+  }
+
+  // Track close animations stored in chrome UI state so tab closes can be animated consistently
+  // regardless of trigger (tab strip, keyboard shortcut, menu bar, etc).
+  let mut close_progress: HashMap<TabId, f32> = HashMap::new();
+  let mut any_closing_tab_animating = false;
+  {
+    let (tabs, chrome) = (&app.tabs, &mut app.chrome);
+    let closing_ids: Vec<TabId> = chrome.closing_tabs.keys().copied().collect();
+    for tab_id in closing_ids {
+      let exists = tabs.iter().any(|t| t.id == tab_id);
+      if !exists {
+        chrome.closing_tabs.remove(&tab_id);
+        continue;
+      }
+
+      let t = chrome
+        .tab_close_progress(tab_id, now)
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0);
+      close_progress.insert(tab_id, t);
+
+      if t < 1.0 - 1e-4 {
+        any_closing_tab_animating = true;
+      } else {
+        // Animation finished: request the actual close via the shared action path.
+        actions.push(ChromeAction::CloseTab(tab_id));
+      }
     }
   }
 
@@ -1815,7 +1908,17 @@ pub(super) fn tab_strip_ui(
   let pinned_content_width = if pinned_count == 0 {
     0.0
   } else {
-    (pinned_count as f32) * PINNED_TAB_WIDTH + (pinned_count.saturating_sub(1) as f32) * TAB_GAP
+    let mut width = 0.0_f32;
+    for idx in 0..pinned_count {
+      let tab_id = app.tabs[idx].id;
+      let close_t = close_progress.get(&tab_id).copied().unwrap_or(0.0);
+      let frac = (1.0 - close_t).clamp(0.0, 1.0);
+      width += PINNED_TAB_WIDTH * frac;
+      if idx + 1 < pinned_count {
+        width += TAB_GAP;
+      }
+    }
+    width
   };
   let (pinned_viewport_width_final, reserved_unpinned_viewport_width_final) =
     compute_pinned_viewport_width(
@@ -1932,24 +2035,36 @@ pub(super) fn tab_strip_ui(
     while idx < app.tabs.len() {
       let tab = &app.tabs[idx];
       let Some(group_id) = tab.group else {
+        let close_scale = close_progress
+          .get(&tab.id)
+          .copied()
+          .map(|t| (1.0 - t).clamp(0.0, 1.0))
+          .unwrap_or(1.0);
         if !first_item {
           total_gap_width += TAB_GAP * prev_gap_scale.unwrap_or(1.0).clamp(0.0, 1.0);
         }
         first_item = false;
-        tab_units += 1.0;
-        prev_gap_scale = None;
+        tab_units += close_scale;
+        // Normal tabs leave a full-sized gap after them, but closing tabs should shrink their
+        // trailing gap so we don't leave behind fixed `TAB_GAP` holes during the collapse.
+        prev_gap_scale = close_progress.contains_key(&tab.id).then_some(close_scale);
         idx += 1;
         continue;
       };
 
       // If the group metadata is missing, treat the tab as ungrouped so we stay robust.
       let Some(group) = app.tab_groups.get(&group_id) else {
+        let close_scale = close_progress
+          .get(&tab.id)
+          .copied()
+          .map(|t| (1.0 - t).clamp(0.0, 1.0))
+          .unwrap_or(1.0);
         if !first_item {
           total_gap_width += TAB_GAP * prev_gap_scale.unwrap_or(1.0).clamp(0.0, 1.0);
         }
         first_item = false;
-        tab_units += 1.0;
-        prev_gap_scale = None;
+        tab_units += close_scale;
+        prev_gap_scale = close_progress.contains_key(&tab.id).then_some(close_scale);
         idx += 1;
         continue;
       };
@@ -1983,12 +2098,19 @@ pub(super) fn tab_strip_ui(
         continue;
       }
 
+      let close_scale = close_progress
+        .get(&tab.id)
+        .copied()
+        .map(|t| (1.0 - t).clamp(0.0, 1.0))
+        .unwrap_or(1.0);
+      let scale = (group_t * close_scale).clamp(0.0, 1.0);
+
       if !first_item {
         total_gap_width += TAB_GAP * prev_gap_scale.unwrap_or(1.0).clamp(0.0, 1.0);
       }
       first_item = false;
-      tab_units += group_t;
-      prev_gap_scale = Some(group_t);
+      tab_units += scale;
+      prev_gap_scale = Some(scale);
       idx += 1;
     }
   }
@@ -2189,11 +2311,15 @@ pub(super) fn tab_strip_ui(
               }
 
               let is_active = active_id == Some(tab_id);
+              let close_t = close_progress.get(&tab_id).copied();
+              let tab_width = close_t
+                .map(|t| PINNED_TAB_WIDTH * (1.0 - t).clamp(0.0, 1.0))
+                .unwrap_or(PINNED_TAB_WIDTH);
               let favicon_tex = favicon_for_tab(tab_id);
               let is_dragged = chrome.dragging_tab_id == Some(tab_id);
               let (tab_rect, tab_response, maybe_action) = if is_dragged {
                 // While dragging, keep layout stable but don't paint the tab in-flow.
-                let (_, rect) = ui.allocate_space(Vec2::new(PINNED_TAB_WIDTH, TAB_HEIGHT));
+                let (_, rect) = ui.allocate_space(Vec2::new(tab_width, TAB_HEIGHT));
                 (rect, None, None)
               } else {
                 let (rect, resp, action) = pinned_tab_ui(
@@ -2202,9 +2328,11 @@ pub(super) fn tab_strip_ui(
                   tab,
                   is_active,
                   can_close_tabs,
+                  tab_width,
                   favicon_tex,
                   chrome,
                   focus_ring,
+                  close_t,
                 );
                 (rect, Some(resp), action)
               };
@@ -2615,6 +2743,12 @@ pub(super) fn tab_strip_ui(
                   continue;
                 }
 
+                let close_t = close_progress.get(&tab_id).copied();
+                let close_scale = close_t
+                  .map(|t| (1.0 - t).clamp(0.0, 1.0))
+                  .unwrap_or(1.0);
+                let scale = (group_t * close_scale).clamp(0.0, 1.0);
+
                 maybe_insert_source_placeholder!(false);
                 add_gap(
                   ui,
@@ -2624,8 +2758,8 @@ pub(super) fn tab_strip_ui(
                   GapKind::Normal,
                   false,
                 );
-                let interactive = !collapsed && group_t > 0.95;
-                let tab_width = sizing.tab_width * group_t;
+                let interactive = !collapsed && group_t > 0.95 && close_t.is_none();
+                let tab_width = sizing.tab_width * scale;
                 let is_active = active_id == Some(tab_id);
                 let favicon_tex = favicon_for_tab(tab_id);
                 let is_dragged = app.chrome.dragging_tab_id == Some(tab_id);
@@ -2650,6 +2784,7 @@ pub(super) fn tab_strip_ui(
                     &mut app.chrome,
                     focus_ring,
                     group_border,
+                    close_t,
                   );
                   (rect, Some(resp), action)
                 };
@@ -2695,7 +2830,7 @@ pub(super) fn tab_strip_ui(
                 }
 
                 prev_kind = GapKind::Normal;
-                prev_gap_scale = Some(group_t);
+                prev_gap_scale = Some(scale);
                 idx += 1;
                 continue;
               }
@@ -2736,6 +2871,10 @@ pub(super) fn tab_strip_ui(
                 continue;
               }
 
+              let close_t = close_progress.get(&tab_id).copied();
+              let close_scale = close_t
+                .map(|t| (1.0 - t).clamp(0.0, 1.0))
+                .unwrap_or(1.0);
               add_gap(
                 ui,
                 &mut first_item,
@@ -2744,14 +2883,13 @@ pub(super) fn tab_strip_ui(
                 GapKind::Normal,
                 false,
               );
-              prev_kind = GapKind::Normal;
-              prev_gap_scale = None;
               let is_active = active_id == Some(tab_id);
+              let tab_width = sizing.tab_width * close_scale;
               let favicon_tex = favicon_for_tab(tab_id);
               let is_dragged = app.chrome.dragging_tab_id == Some(tab_id);
               let (tab_rect, tab_response, maybe_action) = if is_dragged {
                 // While dragging, keep layout stable but don't paint the tab in-flow.
-                let (_, rect) = ui.allocate_space(Vec2::new(sizing.tab_width, TAB_HEIGHT));
+                let (_, rect) = ui.allocate_space(Vec2::new(tab_width, TAB_HEIGHT));
                 (rect, None, None)
               } else {
                 let tab = &app.tabs[idx];
@@ -2763,13 +2901,14 @@ pub(super) fn tab_strip_ui(
                   motion,
                   tab,
                   is_active,
-                  true,
+                  close_t.is_none(),
                   can_close_tabs,
-                  sizing.tab_width,
+                  tab_width,
                   favicon_tex,
                   &mut app.chrome,
                   focus_ring,
                   group_border,
+                  close_t,
                 );
                 (rect, Some(resp), action)
               };
@@ -2813,6 +2952,9 @@ pub(super) fn tab_strip_ui(
               if let Some(action) = maybe_action {
                 actions.push(action);
               }
+
+              prev_kind = GapKind::Normal;
+              prev_gap_scale = close_progress.contains_key(&tab_id).then_some(close_scale);
 
               idx += 1;
             }
@@ -3380,6 +3522,11 @@ pub(super) fn tab_strip_ui(
   });
   if new_tab_resp.clicked() {
     actions.push(ChromeAction::NewTab);
+  }
+
+  if any_closing_tab_animating {
+    // Keep repainting while at least one tab is actively animating closed.
+    ui.ctx().request_repaint_after(Duration::from_millis(16));
   }
 
   #[cfg(test)]
