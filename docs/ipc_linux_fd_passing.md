@@ -216,6 +216,11 @@ Always set `MSG_CMSG_CLOEXEC` so received FDs are **atomically** marked close-on
 
 Reason: setting `FD_CLOEXEC` with a later `fcntl()` is a TOCTOU footgun (a different thread could `execve()` between the receive and the `fcntl()`).
 
+Practical note: some older kernels and some sandboxed environments reject `MSG_CMSG_CLOEXEC` with `EINVAL`.
+If you *must* support that, you can retry without `MSG_CMSG_CLOEXEC` and then set `FD_CLOEXEC` via
+`fcntl(F_SETFD)` on the received fds. Treat that as **best-effort** and prefer to avoid `execve()` in
+the receiving process entirely, otherwise you reintroduce the exec-race this flag is designed to prevent.
+
 Reference: `recvmsg(2)` https://man7.org/linux/man-pages/man2/recvmsg.2.html
 
 ### 2) Reject truncation (`MSG_TRUNC` / `MSG_CTRUNC`)
