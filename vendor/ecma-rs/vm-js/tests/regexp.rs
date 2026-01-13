@@ -661,6 +661,12 @@ fn regexp_unicode_mode_escape_validation() {
     .unwrap();
   assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
 
+  // UnicodeMode rejects invalid decimal escapes/backreferences.
+  let value = rt
+    .exec_script(r#"try { new RegExp("\\1", "u"); "no"; } catch (e) { e.name }"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+
   // Escaping a SyntaxCharacter is valid under UnicodeMode.
   let value = rt
     .exec_script(r#"try { new RegExp("\\{", "u"); "ok"; } catch (e) { e.name }"#)
