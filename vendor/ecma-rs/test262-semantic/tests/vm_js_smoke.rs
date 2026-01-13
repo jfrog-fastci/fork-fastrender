@@ -59,6 +59,7 @@ fn vm_js_executor_smoke_pass_and_timeout() {
     &pass_cases,
     &expectations,
     executor.as_ref(),
+    false,
     Duration::from_millis(500),
     &timeout_manager,
   );
@@ -69,6 +70,7 @@ fn vm_js_executor_smoke_pass_and_timeout() {
     &timeout_cases,
     &expectations,
     executor.as_ref(),
+    false,
     Duration::from_millis(100),
     &timeout_manager,
   ));
@@ -174,6 +176,7 @@ assert.sameValue(y, 1);
     &cases,
     &expectations,
     executor.as_ref(),
+    false,
     Duration::from_secs(1),
     &timeout_manager,
   );
@@ -239,6 +242,7 @@ if (!import.meta.url.includes("import_meta_url.js")) {
     &cases,
     &expectations,
     executor.as_ref(),
+    false,
     Duration::from_secs(1),
     &timeout_manager,
   );

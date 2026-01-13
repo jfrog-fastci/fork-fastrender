@@ -70,6 +70,7 @@ import('./dep.js').then(ns => { assert.sameValue(ns.x, 1); });
     &cases,
     &expectations,
     executor.as_ref(),
+    false,
     Duration::from_secs(1),
     &timeout_manager,
   );
@@ -80,4 +81,3 @@ import('./dep.js').then(ns => { assert.sameValue(ns.x, 1); });
   assert_eq!(by_variant[&Variant::NonStrict].outcome, TestOutcome::Passed);
   assert_eq!(by_variant[&Variant::Strict].outcome, TestOutcome::Passed);
 }
-

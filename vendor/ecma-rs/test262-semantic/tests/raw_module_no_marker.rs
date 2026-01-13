@@ -63,6 +63,7 @@ fn raw_module_is_executed_verbatim_without_injected_module_separator() {
     &cases,
     &expectations,
     &executor,
+    false,
     Duration::from_secs(1),
     &timeout_manager,
   );

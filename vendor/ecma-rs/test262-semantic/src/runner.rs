@@ -11,6 +11,7 @@ use conformance_harness::{
 };
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use regex::Regex;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -168,6 +169,7 @@ pub fn run_cases(
   cases: &[TestCase],
   expectations: &Expectations,
   executor: &dyn Executor,
+  trace_cases: bool,
   timeout: Duration,
   timeout_manager: &TimeoutManager,
 ) -> Vec<TestResult> {
@@ -181,6 +183,7 @@ pub fn run_cases(
         case,
         expectation,
         executor,
+        trace_cases,
         timeout,
         timeout_manager,
       )
@@ -194,6 +197,7 @@ fn run_single_case(
   case: &TestCase,
   expectation: AppliedExpectation,
   executor: &dyn Executor,
+  trace_cases: bool,
   timeout: Duration,
   timeout_manager: &TimeoutManager,
 ) -> TestResult {
@@ -251,6 +255,11 @@ fn run_single_case(
   let cancel = Arc::new(AtomicBool::new(false));
   let deadline = Instant::now() + timeout;
   let _timeout_guard = timeout_manager.register(deadline, Arc::clone(&cancel));
+
+  if trace_cases {
+    eprintln!("RUN {}#{}", case.id, case.variant);
+    let _ = std::io::stderr().flush();
+  }
 
   let executed = executor.execute(case, &source, &cancel);
 
@@ -631,6 +640,7 @@ status = "skip"
       &case,
       expectation,
       &executor,
+      false,
       Duration::from_secs(1),
       &timeout_manager,
     )

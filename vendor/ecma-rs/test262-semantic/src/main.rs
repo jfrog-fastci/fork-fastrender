@@ -129,6 +129,13 @@ struct RunArgs {
   /// Glob or regex to filter tests by id (after suite selection).
   #[arg(long)]
   filter: Option<String>,
+
+  /// Print each test id+variant to stderr immediately before running it.
+  ///
+  /// This is useful when the process aborts (e.g. Rust stack overflow) before it can emit a full
+  /// JSON report: the last `RUN ...` line identifies the most recently started case.
+  #[arg(long)]
+  trace_cases: bool,
 }
 
 fn main() -> ExitCode {
@@ -202,6 +209,7 @@ fn run_cli(cli: RunArgs) -> Result<ExitCode> {
     &cases,
     &expectations,
     executor.as_ref(),
+    cli.trace_cases,
     timeout,
     &timeout_manager,
   );

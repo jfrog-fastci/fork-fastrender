@@ -29,6 +29,12 @@ impl Variant {
   }
 }
 
+impl fmt::Display for Variant {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.write_str(self.as_str())
+  }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ExpectedOutcome {
@@ -177,7 +183,7 @@ impl ResultKey {
 
 impl fmt::Display for ResultKey {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    write!(f, "{}#{}", self.id, self.variant.as_str())
+    write!(f, "{}#{}", self.id, self.variant)
   }
 }
 

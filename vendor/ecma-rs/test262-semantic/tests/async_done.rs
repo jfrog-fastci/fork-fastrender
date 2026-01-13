@@ -64,6 +64,7 @@ Promise.resolve()
     &cases,
     &expectations,
     executor.as_ref(),
+    false,
     Duration::from_secs(1),
     &timeout_manager,
   );
@@ -106,6 +107,7 @@ Promise.resolve().then(() => $DONE(new Error("boom")));
     &cases,
     &expectations,
     executor.as_ref(),
+    false,
     Duration::from_secs(1),
     &timeout_manager,
   );
@@ -155,6 +157,7 @@ Promise.resolve()
     &cases,
     &expectations,
     executor.as_ref(),
+    false,
     Duration::from_secs(1),
     &timeout_manager,
   );
@@ -199,6 +202,7 @@ Promise.resolve().then(() => $DONE(new Error("boom")));
     &cases,
     &expectations,
     executor.as_ref(),
+    false,
     Duration::from_secs(1),
     &timeout_manager,
   );
@@ -258,6 +262,7 @@ import("./dep_FIXTURE.js").then(
     &cases,
     &expectations,
     executor.as_ref(),
+    false,
     Duration::from_secs(1),
     &timeout_manager,
   );

@@ -47,6 +47,7 @@ fn raw_flag_disables_harness_injection_even_in_test262_mode() {
     &cases,
     &expectations,
     executor.as_ref(),
+    false,
     Duration::from_secs(1),
     &timeout_manager,
   );
@@ -59,4 +60,3 @@ fn raw_flag_disables_harness_injection_even_in_test262_mode() {
     results[0]
   );
 }
-

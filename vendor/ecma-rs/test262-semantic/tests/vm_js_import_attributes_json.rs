@@ -72,6 +72,7 @@ Test262Error.prototype.toString = function () {
     &cases,
     &expectations,
     executor.as_ref(),
+    false,
     Duration::from_secs(1),
     &timeout_manager,
   );
