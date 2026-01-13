@@ -104,6 +104,15 @@ impl CompiledScript {
     .map_err(|_| VmError::InvariantViolation("parse-js panicked while compiling a module"))?
     .map_err(|err| VmError::Syntax(vec![err.to_diagnostic(FileId(0))]))?;
 
+    {
+      let mut tick = || Ok(());
+      crate::early_errors::validate_top_level(
+        &parsed.stx.body,
+        crate::early_errors::EarlyErrorOptions::module(),
+        &mut tick,
+      )?;
+    }
+
     let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed)
     }))
@@ -178,6 +187,14 @@ impl CompiledScript {
     };
 
     let parsed = vm.parse_top_level_with_budget(&source.text, opts)?;
+    {
+      let mut tick = || vm.tick();
+      crate::early_errors::validate_top_level(
+        &parsed.stx.body,
+        crate::early_errors::EarlyErrorOptions::module(),
+        &mut tick,
+      )?;
+    }
     let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
     let external_memory = heap.charge_external(estimated_hir_bytes)?;
