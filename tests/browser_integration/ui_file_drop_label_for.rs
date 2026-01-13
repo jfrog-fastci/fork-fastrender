@@ -1,6 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
+use fastrender::tree::box_tree::{BoxNode, BoxType, FormControlKind, ReplacedType};
 use fastrender::ui::messages::{RepaintReason, TabId, UiToWorker};
 use fastrender::ui::BrowserTabController;
 use fastrender::{dom::DomNode, Result};
@@ -16,6 +17,36 @@ fn find_element_by_id<'a>(dom: &'a DomNode, element_id: &str) -> &'a DomNode {
     }
   }
   panic!("expected element with id={element_id:?}");
+}
+
+fn find_file_control_value(node: &BoxNode) -> Option<Option<String>> {
+  if let Some(control) = node.form_control.as_deref() {
+    if let FormControlKind::File { value } = &control.control {
+      return Some(value.clone());
+    }
+  }
+
+  if let BoxType::Replaced(replaced) = &node.box_type {
+    if let ReplacedType::FormControl(control) = &replaced.replaced_type {
+      if let FormControlKind::File { value } = &control.control {
+        return Some(value.clone());
+      }
+    }
+  }
+
+  if let Some(body) = node.footnote_body.as_deref() {
+    if let Some(found) = find_file_control_value(body) {
+      return Some(found);
+    }
+  }
+
+  for child in &node.children {
+    if let Some(found) = find_file_control_value(child) {
+      return Some(found);
+    }
+  }
+
+  None
 }
 
 #[test]
@@ -78,6 +109,17 @@ fn dropped_file_on_label_for_selects_associated_file_input() -> Result<()> {
     "expected stored file value to be non-empty after file drop on label"
   );
 
+  let prepared = controller
+    .document()
+    .prepared()
+    .expect("expected controller to have a prepared document");
+  let boxed_value =
+    find_file_control_value(&prepared.box_tree().root).expect("expected file control in box tree");
+  let boxed_value = boxed_value.expect("expected file control value to be present");
+  assert!(
+    boxed_value.contains("hello.txt"),
+    "expected box generation to surface selected file name, got {boxed_value:?}"
+  );
+
   Ok(())
 }
-
