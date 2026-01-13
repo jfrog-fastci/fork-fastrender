@@ -761,6 +761,15 @@ fn trim_ascii_whitespace_start(value: &str) -> &str {
   })
 }
 
+fn split_at_char_idx(text: &str, char_idx: usize) -> (&str, &str) {
+  let byte_idx = text
+    .char_indices()
+    .nth(char_idx)
+    .map(|(idx, _)| idx)
+    .unwrap_or(text.len());
+  text.split_at(byte_idx)
+}
+
 impl DisplayListBuilder {
   fn viewport_rect(&self) -> Option<Rect> {
     self
@@ -12571,6 +12580,9 @@ impl DisplayListBuilder {
         let preedit = control.ime_preedit.as_deref().filter(|t| !t.is_empty());
         let committed_is_empty = value.is_empty();
         let display_is_empty = committed_is_empty && preedit.is_none();
+        let committed_len = value.chars().count();
+        let caret_committed = (*caret).min(committed_len);
+        let preedit_len = preedit.map(|t| t.chars().count()).unwrap_or(0);
         let mut paint_text_owned: Option<String> = None;
         let mut paint_text: Option<&str> = None;
         let mut is_placeholder = false;
@@ -12578,8 +12590,6 @@ impl DisplayListBuilder {
         match kind {
           TextControlKind::Password => {
             if !display_is_empty {
-              let committed_len = value.chars().count();
-              let preedit_len = preedit.map(|t| t.chars().count()).unwrap_or(0);
               let mask_len = committed_len.saturating_add(preedit_len).clamp(3, 50);
               paint_text_owned = Some("•".repeat(mask_len));
               paint_text = paint_text_owned.as_deref();
@@ -12593,8 +12603,12 @@ impl DisplayListBuilder {
               if committed_is_empty {
                 paint_text = Some(preedit);
               } else {
-                let mut combined = value.clone();
+                let (prefix, suffix) = split_at_char_idx(value, caret_committed);
+                let mut combined =
+                  String::with_capacity(prefix.len() + preedit.len() + suffix.len());
+                combined.push_str(prefix);
                 combined.push_str(preedit);
+                combined.push_str(suffix);
                 paint_text_owned = Some(combined);
                 paint_text = paint_text_owned.as_deref();
               }
@@ -12683,9 +12697,22 @@ impl DisplayListBuilder {
 
         let mut overlays = TextEditOverlays::default();
 
-        if let Some((sel_start, sel_end)) = *selection {
-          let sel_start = sel_start.min(max_chars);
-          let sel_end = sel_end.min(max_chars);
+        let selection = (*selection).map(|(start, end)| {
+          let map_endpoint = |idx: usize| {
+            let idx = idx.min(committed_len);
+            if preedit_len > 0 && idx >= caret_committed {
+              idx.saturating_add(preedit_len)
+            } else {
+              idx
+            }
+          };
+          (
+            map_endpoint(start).min(max_chars),
+            map_endpoint(end).min(max_chars),
+          )
+        });
+
+        if let Some((sel_start, sel_end)) = selection {
           if sel_start != sel_end {
             let segments = if text_runs.is_empty() {
               let x1 = fallback_char_advance * sel_start as f32;
@@ -12724,12 +12751,10 @@ impl DisplayListBuilder {
           CaretColor::Auto => style.color,
         };
         if !caret_color.is_transparent() {
-          let caret_idx = if preedit.is_some() {
-            max_chars
-          } else {
-            (*caret).min(max_chars)
-          };
-          let caret_affinity_for_paint = if preedit.is_some() {
+          let caret_idx = caret_committed
+            .saturating_add(preedit_len)
+            .min(max_chars);
+          let caret_affinity_for_paint = if preedit_len > 0 {
             CaretAffinity::Downstream
           } else {
             *caret_affinity
@@ -12764,6 +12789,9 @@ impl DisplayListBuilder {
       } => {
         let preedit = control.ime_preedit.as_deref().filter(|t| !t.is_empty());
         let committed_is_empty = value.is_empty();
+        let committed_len = value.chars().count();
+        let caret_committed = (*caret).min(committed_len);
+        let preedit_len = preedit.map(|t| t.chars().count()).unwrap_or(0);
 
         let mut paint_text_owned: Option<String> = None;
         let mut paint_text: Option<&str> = None;
@@ -12772,8 +12800,12 @@ impl DisplayListBuilder {
           if committed_is_empty {
             paint_text = Some(preedit);
           } else {
-            let mut combined = value.clone();
+            let (prefix, suffix) = split_at_char_idx(value, caret_committed);
+            let mut combined =
+              String::with_capacity(prefix.len() + preedit.len() + suffix.len());
+            combined.push_str(prefix);
             combined.push_str(preedit);
+            combined.push_str(suffix);
             paint_text_owned = Some(combined);
             paint_text = paint_text_owned.as_deref();
           }
@@ -12816,17 +12848,26 @@ impl DisplayListBuilder {
 
         let display_text = paint_text.unwrap_or("");
         let max_chars = display_text.chars().count();
-        let caret_idx = if preedit.is_some() {
-          max_chars
-        } else {
-          (*caret).min(max_chars)
-        };
-        let caret_affinity_for_paint = if preedit.is_some() {
+        let caret_idx = caret_committed.saturating_add(preedit_len).min(max_chars);
+        let caret_affinity_for_paint = if preedit_len > 0 {
           CaretAffinity::Downstream
         } else {
           *caret_affinity
         };
-        let selection = (*selection).map(|(start, end)| (start.min(max_chars), end.min(max_chars)));
+        let selection = (*selection).map(|(start, end)| {
+          let map_endpoint = |idx: usize| {
+            let idx = idx.min(committed_len);
+            if preedit_len > 0 && idx >= caret_committed {
+              idx.saturating_add(preedit_len)
+            } else {
+              idx
+            }
+          };
+          (
+            map_endpoint(start).min(max_chars),
+            map_endpoint(end).min(max_chars),
+          )
+        });
         let caret_color = match style.caret_color {
           CaretColor::Color(c) => c,
           CaretColor::Auto => style.color,
@@ -13172,6 +13213,9 @@ impl DisplayListBuilder {
         // - suppress placeholder rendering
         // - draw the caret after the preedit text
         let display_is_empty = committed_is_empty && preedit.is_none();
+        let committed_len = value.chars().count();
+        let caret_committed = (*caret).min(committed_len);
+        let preedit_len = preedit.map(|t| t.chars().count()).unwrap_or(0);
         let mut paint_text_owned: Option<String> = None;
         let mut paint_text: Option<&str> = None;
         let mut fallback_color = base_color;
@@ -13180,8 +13224,6 @@ impl DisplayListBuilder {
         match kind {
           TextControlKind::Password => {
             if !display_is_empty {
-              let committed_len = value.chars().count();
-              let preedit_len = preedit.map(|t| t.chars().count()).unwrap_or(0);
               let mask_len = committed_len.saturating_add(preedit_len).clamp(3, 50);
               paint_text_owned = Some("•".repeat(mask_len));
               paint_text = paint_text_owned.as_deref();
@@ -13197,8 +13239,12 @@ impl DisplayListBuilder {
               if committed_is_empty {
                 paint_text = Some(preedit);
               } else {
-                let mut combined = value.clone();
+                let (prefix, suffix) = split_at_char_idx(value, caret_committed);
+                let mut combined =
+                  String::with_capacity(prefix.len() + preedit.len() + suffix.len());
+                combined.push_str(prefix);
                 combined.push_str(preedit);
+                combined.push_str(suffix);
                 paint_text_owned = Some(combined);
                 paint_text = paint_text_owned.as_deref();
               }
@@ -13217,8 +13263,12 @@ impl DisplayListBuilder {
               if committed_is_empty {
                 paint_text = Some(preedit);
               } else {
-                let mut combined = value.clone();
+                let (prefix, suffix) = split_at_char_idx(value, caret_committed);
+                let mut combined =
+                  String::with_capacity(prefix.len() + preedit.len() + suffix.len());
+                combined.push_str(prefix);
                 combined.push_str(preedit);
+                combined.push_str(suffix);
                 paint_text_owned = Some(combined);
                 paint_text = paint_text_owned.as_deref();
               }
@@ -13241,8 +13291,12 @@ impl DisplayListBuilder {
               if committed_is_empty {
                 paint_text = Some(preedit);
               } else {
-                let mut combined = value.clone();
+                let (prefix, suffix) = split_at_char_idx(value, caret_committed);
+                let mut combined =
+                  String::with_capacity(prefix.len() + preedit.len() + suffix.len());
+                combined.push_str(prefix);
                 combined.push_str(preedit);
+                combined.push_str(suffix);
                 paint_text_owned = Some(combined);
                 paint_text = paint_text_owned.as_deref();
               }
@@ -13373,27 +13427,23 @@ impl DisplayListBuilder {
           };
           let caret_stops = caret_stops_for_runs(display_text, &text_runs, total_advance);
 
-          if preedit.is_some()
+          if preedit_len > 0
             && !matches!(kind, TextControlKind::Password)
             && text_style.color.a > f32::EPSILON
           {
-            let committed_len = value.chars().count();
-            let preedit_start = if committed_is_empty {
-              0
-            } else {
-              committed_len.min(max_chars)
-            };
+            let preedit_start = caret_committed.min(max_chars);
+            let preedit_end = caret_committed.saturating_add(preedit_len).min(max_chars);
             let underline_y = (bottom - 1.0).max(top);
             let segments = if text_runs.is_empty() {
               let x1 = fallback_char_advance * preedit_start as f32;
-              let x2 = fallback_char_advance * max_chars as f32;
+              let x2 = fallback_char_advance * preedit_end as f32;
               vec![(x1.min(x2), x1.max(x2))]
             } else {
               crate::text::caret::selection_segments_for_char_range(
                 display_text,
                 &text_runs,
                 preedit_start,
-                max_chars,
+                preedit_end,
               )
             };
             for (seg_start, seg_end) in segments {
@@ -13411,9 +13461,22 @@ impl DisplayListBuilder {
             }
           }
 
-          if let Some((sel_start, sel_end)) = *selection {
-            let sel_start = sel_start.min(max_chars);
-            let sel_end = sel_end.min(max_chars);
+          let selection = (*selection).map(|(start, end)| {
+            let map_endpoint = |idx: usize| {
+              let idx = idx.min(committed_len);
+              if preedit_len > 0 && idx >= caret_committed {
+                idx.saturating_add(preedit_len)
+              } else {
+                idx
+              }
+            };
+            (
+              map_endpoint(start).min(max_chars),
+              map_endpoint(end).min(max_chars),
+            )
+          });
+
+          if let Some((sel_start, sel_end)) = selection {
             if sel_start != sel_end {
               let segments = if text_runs.is_empty() {
                 let x1 = fallback_char_advance * sel_start as f32;
@@ -13448,12 +13511,8 @@ impl DisplayListBuilder {
             CaretColor::Auto => style.color,
           };
           if !caret_color.is_transparent() {
-            let caret_idx = if preedit.is_some() {
-              max_chars
-            } else {
-              (*caret).min(max_chars)
-            };
-            let caret_affinity_for_paint = if preedit.is_some() {
+            let caret_idx = caret_committed.saturating_add(preedit_len).min(max_chars);
+            let caret_affinity_for_paint = if preedit_len > 0 {
               CaretAffinity::Downstream
             } else {
               *caret_affinity
@@ -13542,6 +13601,9 @@ impl DisplayListBuilder {
 
         let preedit = control.ime_preedit.as_deref().filter(|t| !t.is_empty());
         let committed_is_empty = value.is_empty();
+        let committed_len = value.chars().count();
+        let caret_committed = (*caret).min(committed_len);
+        let preedit_len = preedit.map(|t| t.chars().count()).unwrap_or(0);
         let rect = inset_rect(content_rect, 2.0);
 
         let mut paint_text_owned: Option<String> = None;
@@ -13552,8 +13614,12 @@ impl DisplayListBuilder {
           if committed_is_empty {
             paint_text = Some(preedit);
           } else {
-            let mut combined = value.clone();
+            let (prefix, suffix) = split_at_char_idx(value, caret_committed);
+            let mut combined =
+              String::with_capacity(prefix.len() + preedit.len() + suffix.len());
+            combined.push_str(prefix);
             combined.push_str(preedit);
+            combined.push_str(suffix);
             paint_text_owned = Some(combined);
             paint_text = paint_text_owned.as_deref();
           }
@@ -13604,27 +13670,39 @@ impl DisplayListBuilder {
         };
         let display_text = paint_text.unwrap_or("");
         let max_chars = display_text.chars().count();
-        let caret_idx = if preedit.is_some() {
-          max_chars
-        } else {
-          (*caret).min(max_chars)
-        };
-        let caret_affinity_for_paint = if preedit.is_some() {
+        let caret_idx = caret_committed.saturating_add(preedit_len).min(max_chars);
+        let caret_affinity_for_paint = if preedit_len > 0 {
           CaretAffinity::Downstream
         } else {
           *caret_affinity
         };
-        let selection = (*selection).map(|(start, end)| (start.min(max_chars), end.min(max_chars)));
+        let selection = (*selection).map(|(start, end)| {
+          let map_endpoint = |idx: usize| {
+            let idx = idx.min(committed_len);
+            if preedit_len > 0 && idx >= caret_committed {
+              idx.saturating_add(preedit_len)
+            } else {
+              idx
+            }
+          };
+          (
+            map_endpoint(start).min(max_chars),
+            map_endpoint(end).min(max_chars),
+          )
+        });
         let caret_color = match style.caret_color {
           CaretColor::Color(c) => c,
           CaretColor::Auto => style.color,
         };
         let mut caret_rect: Option<Rect> = None;
-        let preedit_range = preedit.map(|_| {
-          let committed_len = value.chars().count();
-          let start = if committed_is_empty { 0 } else { committed_len };
-          (start.min(max_chars), max_chars)
-        });
+        let preedit_range = if preedit_len > 0 {
+          Some((
+            caret_committed.min(max_chars),
+            caret_committed.saturating_add(preedit_len).min(max_chars),
+          ))
+        } else {
+          None
+        };
 
         let mut metrics_sample = display_text;
         if trim_ascii_whitespace(metrics_sample).is_empty() {

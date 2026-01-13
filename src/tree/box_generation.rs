@@ -5986,55 +5986,62 @@ fn build_appearance_none_form_control_fallback(
     );
   };
 
+  fn split_at_char_idx(text: &str, char_idx: usize) -> (&str, &str) {
+    let byte_idx = text
+      .char_indices()
+      .nth(char_idx)
+      .map(|(idx, _)| idx)
+      .unwrap_or(text.len());
+    text.split_at(byte_idx)
+  }
+
   match &form_control.control {
     FormControlKind::Text {
       value,
       placeholder,
       placeholder_style,
       kind,
+      caret,
       ..
     } => {
       let preedit = form_control
         .ime_preedit
         .as_deref()
         .filter(|t| !t.is_empty());
-      let mut text: Option<String> = None;
-      let mut style = Arc::clone(&styled.styles);
-      let mut pseudo = None;
-
-      if !value.is_empty() {
-        text = Some(value.clone());
-      } else if preedit.is_none() {
-        if let Some(ph) = placeholder.as_ref().filter(|p| !p.is_empty()) {
-          text = Some(ph.clone());
-          if let Some(ph_style) = placeholder_style
-            .as_ref()
-            .or(form_control.placeholder_style.as_ref())
-          {
-            style = Arc::clone(ph_style);
-            pseudo = Some(GeneratedPseudoElement::Placeholder);
-          }
-        }
-      }
+      let committed_len = value.chars().count();
+      let caret_committed = (*caret).min(committed_len);
+      let preedit_len = preedit.map(|t| t.chars().count()).unwrap_or(0);
 
       if matches!(kind, TextControlKind::Password) {
         // Password fields are rendered as a bullet mask. Approximate preedit by including it in the
         // masked character count (without underlining).
-        let committed_len = value.chars().count();
-        let preedit_len = preedit.map(|t| t.chars().count()).unwrap_or(0);
         let total_len = committed_len.saturating_add(preedit_len);
         if total_len > 0 {
           let mask_len = total_len.clamp(3, 50);
-          push_text(&mut children, style, "•".repeat(mask_len), pseudo);
-        } else if let Some(text) = text {
-          push_text(&mut children, style, text, pseudo);
+          push_text(
+            &mut children,
+            Arc::clone(&styled.styles),
+            "•".repeat(mask_len),
+            None,
+          );
+        } else if let Some(ph) = placeholder.as_ref().filter(|p| !p.is_empty()) {
+          let (style, pseudo) = if let Some(ph_style) = placeholder_style
+            .as_ref()
+            .or(form_control.placeholder_style.as_ref())
+          {
+            (Arc::clone(ph_style), Some(GeneratedPseudoElement::Placeholder))
+          } else {
+            (Arc::clone(&styled.styles), None)
+          };
+          push_text(&mut children, style, ph.clone(), pseudo);
         }
-      } else if preedit.is_some() {
-        // Render committed value (if any) followed by an underlined preedit string.
-        if let Some(text) = text.filter(|t| !t.is_empty()) {
-          push_text(&mut children, Arc::clone(&style), text, pseudo);
+      } else if let Some(preedit) = preedit {
+        // Render committed value split at the caret, then insert the underlined preedit text.
+        let (prefix, suffix) = split_at_char_idx(value, caret_committed);
+        if !prefix.is_empty() {
+          push_text(&mut children, Arc::clone(&styled.styles), prefix.to_string(), None);
         }
-        let mut underline_style = (*style).clone();
+        let mut underline_style = (*styled.styles).clone();
         underline_style
           .text_decoration
           .lines
@@ -6042,11 +6049,24 @@ fn build_appearance_none_form_control_fallback(
         push_text(
           &mut children,
           Arc::new(underline_style),
-          preedit.unwrap_or_default().to_string(),
+          preedit.to_string(),
           None,
         );
-      } else if let Some(text) = text {
-        push_text(&mut children, style, text, pseudo);
+        if !suffix.is_empty() {
+          push_text(&mut children, Arc::clone(&styled.styles), suffix.to_string(), None);
+        }
+      } else if !value.is_empty() {
+        push_text(&mut children, Arc::clone(&styled.styles), value.clone(), None);
+      } else if let Some(ph) = placeholder.as_ref().filter(|p| !p.is_empty()) {
+        let (style, pseudo) = if let Some(ph_style) = placeholder_style
+          .as_ref()
+          .or(form_control.placeholder_style.as_ref())
+        {
+          (Arc::clone(ph_style), Some(GeneratedPseudoElement::Placeholder))
+        } else {
+          (Arc::clone(&styled.styles), None)
+        };
+        push_text(&mut children, style, ph.clone(), pseudo);
       }
 
       push_line_height_strut(&mut children);
@@ -6055,6 +6075,7 @@ fn build_appearance_none_form_control_fallback(
       value,
       placeholder,
       placeholder_style,
+      caret,
       ..
     } => {
       suppress_dom_children = true;
@@ -6062,29 +6083,15 @@ fn build_appearance_none_form_control_fallback(
         .ime_preedit
         .as_deref()
         .filter(|t| !t.is_empty());
-      let mut text: Option<String> = None;
-      let mut style = Arc::clone(&styled.styles);
-      let mut pseudo = None;
-      if !value.is_empty() {
-        text = Some(value.clone());
-      } else if preedit.is_none() {
-        if let Some(ph) = placeholder.as_ref().filter(|p| !p.is_empty()) {
-          text = Some(ph.clone());
-          if let Some(ph_style) = placeholder_style
-            .as_ref()
-            .or(form_control.placeholder_style.as_ref())
-          {
-            style = Arc::clone(ph_style);
-            pseudo = Some(GeneratedPseudoElement::Placeholder);
-          }
-        }
-      }
+      let committed_len = value.chars().count();
+      let caret_committed = (*caret).min(committed_len);
 
-      if preedit.is_some() {
-        if let Some(text) = text.filter(|t| !t.is_empty()) {
-          push_text(&mut children, Arc::clone(&style), text, pseudo);
+      if let Some(preedit) = preedit {
+        let (prefix, suffix) = split_at_char_idx(value, caret_committed);
+        if !prefix.is_empty() {
+          push_text(&mut children, Arc::clone(&styled.styles), prefix.to_string(), None);
         }
-        let mut underline_style = (*style).clone();
+        let mut underline_style = (*styled.styles).clone();
         underline_style
           .text_decoration
           .lines
@@ -6092,11 +6099,24 @@ fn build_appearance_none_form_control_fallback(
         push_text(
           &mut children,
           Arc::new(underline_style),
-          preedit.unwrap_or_default().to_string(),
+          preedit.to_string(),
           None,
         );
-      } else if let Some(text) = text {
-        push_text(&mut children, style, text, pseudo);
+        if !suffix.is_empty() {
+          push_text(&mut children, Arc::clone(&styled.styles), suffix.to_string(), None);
+        }
+      } else if !value.is_empty() {
+        push_text(&mut children, Arc::clone(&styled.styles), value.clone(), None);
+      } else if let Some(ph) = placeholder.as_ref().filter(|p| !p.is_empty()) {
+        let (style, pseudo) = if let Some(ph_style) = placeholder_style
+          .as_ref()
+          .or(form_control.placeholder_style.as_ref())
+        {
+          (Arc::clone(ph_style), Some(GeneratedPseudoElement::Placeholder))
+        } else {
+          (Arc::clone(&styled.styles), None)
+        };
+        push_text(&mut children, style, ph.clone(), pseudo);
       }
 
       push_line_height_strut(&mut children);

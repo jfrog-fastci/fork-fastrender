@@ -82,6 +82,7 @@ mod form_control_overflow_clip_padding_box;
 mod form_control_overflow_clip_regression;
 mod form_control_placeholder_style_variant;
 mod form_control_rtl_affordances;
+mod form_control_ime_preedit_inserts_at_caret;
 mod form_control_text_align;
 mod form_invalid_placeholder_shown_fixture;
 mod fragmented_root_paint;

@@ -20911,8 +20911,6 @@ mod tests {
   use crate::style::types::TransformBox;
   use crate::style::values::Length;
   use crate::style::ComputedStyle;
-  // `CaretAffinity` is used by selection/caret layout tests below.
-  use crate::text::caret::CaretAffinity;
   use crate::text::font_loader::FontContext;
   use crate::tree::box_tree::CrossOriginAttribute;
   use crate::tree::box_tree::ForeignObjectInfo;
