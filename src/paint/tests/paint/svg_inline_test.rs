@@ -1241,6 +1241,187 @@ fn inline_svg_preserves_stop_color_when_document_css_injection_disabled() {
 }
 
 #[test]
+fn inline_svg_serializes_vector_effect_non_scaling_stroke_from_document_css_when_css_injection_disabled(
+) {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { position: absolute; top: 0; display: block; }
+        #scaled { left: 0; }
+        #non_scaling { left: 60px; }
+        /* The test relies on `vector-effect` being inlined into the SVG markup when document CSS
+           injection is disabled. */
+        #non_scaling line { vector-effect: non-scaling-stroke; }
+      </style>
+      <svg id="scaled" width="50" height="50" viewBox="0 0 10 10">
+        <line x1="0" y1="5" x2="10" y2="5" stroke="black" stroke-width="1" />
+      </svg>
+      <svg id="non_scaling" width="50" height="50" viewBox="0 0 10 10">
+        <line x1="0" y1="5" x2="10" y2="5" stroke="black" stroke-width="1" />
+      </svg>
+      "#;
+
+      let pixmap =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 120, 60);
+
+      // Sample a pixel offset from the centerline: inside the scaled (5px) stroke, but outside
+      // the non-scaling (1px) stroke.
+      let thick = pixel(&pixmap, 25, 23);
+      let thin = pixel(&pixmap, 60 + 25, 23);
+      assert!(
+        thick[0] < 50 && thick[1] < 50 && thick[2] < 50,
+        "expected thick scaled stroke pixel to be dark, got {thick:?}"
+      );
+      assert!(
+        thin[0] > 240 && thin[1] > 240 && thin[2] > 240,
+        "expected non-scaling stroke pixel to remain white, got {thin:?}"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn inline_svg_serializes_mask_type_alpha_from_document_css_when_css_injection_disabled() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        /* With alpha masks, opaque black has alpha=1 and should not hide the masked content. */
+        #m { mask-type: alpha; }
+      </style>
+      <svg width="20" height="20" viewBox="0 0 20 20">
+        <defs>
+          <mask id="m" maskUnits="userSpaceOnUse" x="0" y="0" width="20" height="20">
+            <rect x="0" y="0" width="20" height="20" fill="black" />
+          </mask>
+        </defs>
+        <rect x="0" y="0" width="20" height="20" fill="rgb(255, 0, 0)" mask="url(#m)" />
+      </svg>
+      "#;
+
+      let pixmap =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
+
+      let sample = pixel(&pixmap, 10, 10);
+      assert!(
+        sample[0] > 200 && sample[1] < 50 && sample[2] < 50 && sample[3] == 255,
+        "expected masked rect to remain visible (mask-type:alpha), got {sample:?}"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn inline_svg_serializes_color_interpolation_linearrgb_from_document_css_when_css_injection_disabled(
+) {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        #g2 { color-interpolation: linearRGB; }
+      </style>
+      <svg width="100" height="20" viewBox="0 0 100 20">
+        <defs>
+          <linearGradient id="g1" x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0%" stop-color="black" />
+            <stop offset="100%" stop-color="white" />
+          </linearGradient>
+          <linearGradient id="g2" x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0%" stop-color="black" />
+            <stop offset="100%" stop-color="white" />
+          </linearGradient>
+        </defs>
+        <rect x="0" y="0" width="50" height="20" fill="url(#g1)" />
+        <rect x="50" y="0" width="50" height="20" fill="url(#g2)" />
+      </svg>
+      "#;
+
+      let pixmap =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 100, 20);
+
+      let g1_mid = pixel(&pixmap, 25, 10);
+      let g2_mid = pixel(&pixmap, 75, 10);
+      let g1_r = g1_mid[0] as i16;
+      let g2_r = g2_mid[0] as i16;
+      assert!(
+        g2_r > g1_r + 30,
+        "expected linearRGB interpolation to be noticeably lighter (g1={g1_mid:?}, g2={g2_mid:?})"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn inline_svg_serializes_color_interpolation_filters_srgb_from_document_css_when_css_injection_disabled(
+) {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        #f2 { color-interpolation-filters: sRGB; }
+      </style>
+      <svg width="100" height="20" viewBox="0 0 100 20">
+        <defs>
+          <filter id="f1" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur stdDeviation="4" />
+          </filter>
+          <filter id="f2" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur stdDeviation="4" />
+          </filter>
+        </defs>
+
+        <g filter="url(#f1)">
+          <rect x="0" y="0" width="25" height="20" fill="black" />
+          <rect x="25" y="0" width="25" height="20" fill="white" />
+        </g>
+
+        <g filter="url(#f2)" transform="translate(50 0)">
+          <rect x="0" y="0" width="25" height="20" fill="black" />
+          <rect x="25" y="0" width="25" height="20" fill="white" />
+        </g>
+      </svg>
+      "#;
+
+      let pixmap =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 100, 20);
+
+      // Sample the blurred edge. The default linearRGB filter interpolation should be lighter
+      // than sRGB interpolation.
+      let linear_edge = pixel(&pixmap, 25, 10);
+      let srgb_edge = pixel(&pixmap, 75, 10);
+      assert!(
+        (srgb_edge[0] as i16) + 20 < (linear_edge[0] as i16),
+        "expected sRGB blur to be darker than linearRGB (linear={linear_edge:?}, srgb={srgb_edge:?})"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn inline_svg_renders_foreign_object_html() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
