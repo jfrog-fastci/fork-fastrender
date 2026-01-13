@@ -2364,6 +2364,20 @@ impl BrowserDocumentDom2 {
       }
     }
 
+    // Form control state changes (e.g. `.value`, `.checked`) are render-affecting but should not be
+    // treated as style-affecting attribute mutations. Conservatively mark layout+paint dirty so the
+    // next render takes a fresh renderer DOM snapshot and projects live form state into it.
+    //
+    // Note: `dom2::MutationLog` models these separately so hosts can add future incremental paths
+    // (e.g. repainting replaced form controls) without forcing a full restyle.
+    for node in mutations.form_state_changed {
+      if self.dom.is_connected_for_scripting(node) {
+        render_affecting = true;
+        self.layout_dirty = true;
+        self.paint_dirty = true;
+      }
+    }
+
     for node in mutations.composed_tree_changed {
       if self.dom.is_connected_for_scripting(node) {
         render_affecting = true;
@@ -3549,6 +3563,75 @@ mod tests {
       after, before,
       "paint-only invalidation should reuse cached style/layout artifacts"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn form_state_mutations_trigger_rerender_for_out_of_band_dom2_updates() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = "<!doctype html><html><body><input id=i value=foo></body></html>";
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      html,
+      RenderOptions::new().with_viewport(80, 32),
+    )?;
+    // Prime layout caches.
+    doc.render_frame()?;
+    assert!(
+      doc.render_if_needed()?.is_none(),
+      "expected document to be clean after initial render"
+    );
+
+    let input = doc.dom().get_element_by_id("i").expect("input element");
+    let styled_node_id = doc
+      .last_dom_mapping()
+      .expect("dom mapping")
+      .preorder_for_node_id(input)
+      .expect("input preorder id");
+
+    fn input_text_value(root: &BoxNode, styled_node_id: usize) -> Option<String> {
+      let mut stack: Vec<&BoxNode> = vec![root];
+      while let Some(node) = stack.pop() {
+        if node.generated_pseudo.is_none() && node.styled_node_id == Some(styled_node_id) {
+          if let BoxType::Replaced(replaced) = &node.box_type {
+            if let ReplacedType::FormControl(control) = &replaced.replaced_type {
+              if let FormControlKind::Text { value, .. } = &control.control {
+                return Some(value.clone());
+              }
+            }
+          }
+        }
+        if let Some(body) = node.footnote_body.as_deref() {
+          stack.push(body);
+        }
+        for child in node.children.iter().rev() {
+          stack.push(child);
+        }
+      }
+      None
+    }
+
+    let value0 = input_text_value(&doc.prepared.as_ref().unwrap().box_tree.root, styled_node_id)
+      .expect("missing input form control");
+    assert_eq!(value0, "foo");
+
+    // Simulate JS shims mutating the live `dom2::Document` through a raw pointer (bypassing
+    // `BrowserDocumentDom2::mutate_dom`).
+    let dom_ptr = doc.dom_non_null();
+    // SAFETY: `dom_ptr` is valid for the duration of the test and we don't move `doc.dom` while the
+    // mutable reference is live.
+    unsafe { dom_ptr.as_ptr().as_mut() }
+      .expect("dom pointer")
+      .set_input_value(input, "bar")
+      .expect("set_input_value");
+
+    assert!(
+      doc.render_if_needed()?.is_some(),
+      "expected out-of-band form state change to invalidate and repaint"
+    );
+    let value1 = input_text_value(&doc.prepared.as_ref().unwrap().box_tree.root, styled_node_id)
+      .expect("missing input form control");
+    assert_eq!(value1, "bar");
     Ok(())
   }
 
