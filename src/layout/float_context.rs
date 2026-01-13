@@ -355,6 +355,25 @@ impl ActiveEdgeSet {
     }
   }
 
+  /// Returns the current most-constraining edge and its relaxation bottom *as of `current_y`*,
+  /// without pruning.
+  ///
+  /// This mirrors [`Self::peek_constraining`], but does not mutate the set. Intended for debug
+  /// output where we don't want to perturb cache state.
+  fn peek_constraining_at(&self, current_y: f32) -> Option<(f32, f32)> {
+    match self.kind {
+      ActiveEdgeSetKind::Left => self
+        .edges
+        .iter()
+        .rev()
+        .find_map(|(k, v)| (*v > current_y).then_some((k.0, *v))),
+      ActiveEdgeSetKind::Right => self
+        .edges
+        .iter()
+        .find_map(|(k, v)| (*v > current_y).then_some((k.0, *v))),
+    }
+  }
+
   fn insert(&mut self, edge: f32, bottom: f32) {
     let key = FloatKey(edge);
     match self.edges.get_mut(&key) {
@@ -1290,9 +1309,10 @@ impl FloatContext {
     let log_sweep_state = |state: &FloatSweepState| {
       let active_left_edges = state.active_left.len();
       let active_right_edges = state.active_right.len();
+      let current_y = state.current_y;
       eprintln!(
         "  sweep_state: current_y={:.2} pending_events={} pending_start_events={} active_edges=(left={}, right={}) active_shapes=(left={}, right={})",
-        state.current_y,
+        current_y,
         state.pending_events.len(),
         state.pending_start_events.len(),
         active_left_edges,
@@ -1301,13 +1321,13 @@ impl FloatContext {
         state.active_shape_right.len()
       );
 
-      if let Some((edge, bottom)) = state.active_left.peek_constraining_unpruned() {
+      if let Some((edge, bottom)) = state.active_left.peek_constraining_at(current_y) {
         eprintln!("    constraining_left: edge={:.2} bottom={:.2}", edge, bottom);
       } else {
         eprintln!("    constraining_left: none");
       }
 
-      if let Some((edge, bottom)) = state.active_right.peek_constraining_unpruned() {
+      if let Some((edge, bottom)) = state.active_right.peek_constraining_at(current_y) {
         eprintln!("    constraining_right: edge={:.2} bottom={:.2}", edge, bottom);
       } else {
         eprintln!("    constraining_right: none");
