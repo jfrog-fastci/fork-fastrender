@@ -6,9 +6,12 @@
 //! Like timers, string handlers are rejected to avoid string-eval and keep behavior deterministic.
 
 use crate::js::event_loop::AnimationFrameId;
+use crate::js::vm_error_format;
 use crate::js::window_realm::WindowRealmHost;
 use crate::js::window_timers::{
-  event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks,
+  event_loop_mut_from_hooks, queue_uncaught_error_event_task,
+  vm_error_to_event_loop_error, vm_error_to_uncaught_error_event_task_payload,
+  UncaughtErrorEventTaskPayload, VmJsEventLoopHooks,
 };
 use vm_js::{
   Heap, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm, VmError, VmHost,
@@ -224,9 +227,30 @@ fn request_animation_frame_native<Host: WindowRealmHost + 'static>(
         call_result
       });
 
-      let result: crate::error::Result<()> = call_result
-        .map_err(|err| vm_error_to_event_loop_error(heap, err))
-        .map(|_| ());
+      let mut uncaught_error_payload: Option<UncaughtErrorEventTaskPayload> = None;
+      let mut result: crate::error::Result<()> = match call_result {
+        Ok(()) => Ok(()),
+        Err(err) => {
+          if vm_error_format::vm_error_is_js_exception(&err) {
+            uncaught_error_payload =
+              Some(vm_error_to_uncaught_error_event_task_payload(&mut *vm, heap, err));
+            Ok(())
+          } else {
+            Err(vm_error_to_event_loop_error(heap, err))
+          }
+        }
+      };
+
+      if let Some(payload) = uncaught_error_payload {
+        let host_error = payload.host_error.clone();
+        let error_root = payload.error_root;
+        if queue_uncaught_error_event_task::<Host>(event_loop, payload).is_err() {
+          if let Some(root) = error_root {
+            heap.remove_root(root);
+          }
+          result = Err(crate::error::Error::Other(host_error));
+        }
+      }
 
       let finish_err = hooks.finish(heap);
       {
@@ -721,6 +745,194 @@ mod tests {
     Ok(())
   }
 
+  #[test]
+  fn uncaught_animation_frame_exception_dispatches_error_event_and_onerror_can_cancel(
+  ) -> RenderResult<()> {
+    let clock = Arc::new(VirtualClock::new());
+    clock.set_now(Duration::from_millis(10));
+    let clock_for_loop: Arc<dyn crate::js::Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+    let mut host = Host::new();
+ 
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_animation_frame_bindings::<Host>(vm, realm, heap)
+        .map_err(|e| Error::Other(e.to_string()))?;
+    }
+ 
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
+      window_realm.reset_interrupt();
+ 
+      let script = r#"
+        globalThis.__raf_error_is_instance = false;
+        globalThis.__raf_error_message = "";
+        globalThis.__raf_onerror_called = false;
+        globalThis.__raf_onerror_message = "";
+ 
+        addEventListener("error", (e) => {
+          globalThis.__raf_error_is_instance = (e instanceof ErrorEvent);
+          globalThis.__raf_error_message = String(e && e.message);
+        });
+ 
+        globalThis.onerror = function (message) {
+          globalThis.__raf_onerror_called = true;
+          globalThis.__raf_onerror_message = String(message);
+          return true; // cancel default reporting
+        };
+ 
+        requestAnimationFrame(() => { throw new Error("boom"); });
+      "#;
+ 
+      let result = window_realm.exec_script_with_host_and_hooks(vm_host, &mut hooks, script);
+      if let Some(err) = hooks.finish(window_realm.heap_mut()) {
+        return Err(err);
+      }
+      result
+        .map(|_| ())
+        .map_err(|err| vm_error_to_event_loop_error(window_realm.heap_mut(), err))
+    })?;
+ 
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+ 
+    // The callback throws, but should not abort the animation frame.
+    assert_eq!(
+      event_loop.run_animation_frame(&mut host)?,
+      crate::js::RunAnimationFrameOutcome::Ran { callbacks: 1 }
+    );
+ 
+    // Drain the queued `error` event task and ensure cancellation suppresses host errors.
+    let mut errors: Vec<String> = Vec::new();
+    assert_eq!(
+      event_loop.run_until_idle_handling_errors(&mut host, RunLimits::unbounded(), |err| {
+        errors.push(err.to_string());
+      })?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert!(
+      errors.is_empty(),
+      "expected onerror cancellation to suppress host error reporting, got errors={errors:?}"
+    );
+ 
+    let (error_is_instance, error_message, onerror_called, onerror_message) = {
+      let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      let error_is_instance = matches!(
+        get_prop(&mut scope, global, "__raf_error_is_instance"),
+        Value::Bool(true)
+      );
+      let error_message = match get_prop(&mut scope, global, "__raf_error_message") {
+        Value::String(s) => scope.heap().get_string(s).unwrap().to_utf8_lossy(),
+        _ => String::new(),
+      };
+      let onerror_called = matches!(
+        get_prop(&mut scope, global, "__raf_onerror_called"),
+        Value::Bool(true)
+      );
+      let onerror_message = match get_prop(&mut scope, global, "__raf_onerror_message") {
+        Value::String(s) => scope.heap().get_string(s).unwrap().to_utf8_lossy(),
+        _ => String::new(),
+      };
+      (error_is_instance, error_message, onerror_called, onerror_message)
+    };
+ 
+    assert!(
+      error_is_instance,
+      "expected `error` listener to see an ErrorEvent instance"
+    );
+    assert!(
+      error_message.contains("boom"),
+      "expected ErrorEvent.message to contain thrown message, got {error_message:?}"
+    );
+    assert!(onerror_called, "expected window.onerror to run");
+    assert!(
+      onerror_message.contains("boom"),
+      "expected onerror message arg to contain thrown message, got {onerror_message:?}"
+    );
+ 
+    Ok(())
+  }
+ 
+  #[test]
+  fn animation_frame_exception_does_not_abort_frame_or_prevent_other_callbacks() -> RenderResult<()> {
+    let clock = Arc::new(VirtualClock::new());
+    clock.set_now(Duration::from_millis(10));
+    let clock_for_loop: Arc<dyn crate::js::Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+    let mut host = Host::new();
+ 
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_animation_frame_bindings::<Host>(vm, realm, heap)
+        .map_err(|e| Error::Other(e.to_string()))?;
+    }
+ 
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
+      window_realm.reset_interrupt();
+ 
+      let script = r#"
+        globalThis.__raf_log = "";
+        globalThis.onerror = () => true;
+ 
+        requestAnimationFrame(() => { globalThis.__raf_log += "a"; throw new Error("boom"); });
+        requestAnimationFrame(() => { globalThis.__raf_log += "b"; });
+      "#;
+      let result = window_realm.exec_script_with_host_and_hooks(vm_host, &mut hooks, script);
+      if let Some(err) = hooks.finish(window_realm.heap_mut()) {
+        return Err(err);
+      }
+      result
+        .map(|_| ())
+        .map_err(|err| vm_error_to_event_loop_error(window_realm.heap_mut(), err))
+    })?;
+ 
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+ 
+    assert_eq!(
+      event_loop.run_animation_frame(&mut host)?,
+      crate::js::RunAnimationFrameOutcome::Ran { callbacks: 2 }
+    );
+ 
+    let mut errors: Vec<String> = Vec::new();
+    assert_eq!(
+      event_loop.run_until_idle_handling_errors(&mut host, RunLimits::unbounded(), |err| {
+        errors.push(err.to_string());
+      })?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert!(
+      errors.is_empty(),
+      "expected onerror cancellation to suppress host error reporting, got errors={errors:?}"
+    );
+ 
+    let raf_log = {
+      let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      match get_prop(&mut scope, global, "__raf_log") {
+        Value::String(s) => scope.heap().get_string(s).unwrap().to_utf8_lossy(),
+        _ => String::new(),
+      }
+    };
+    assert_eq!(
+      raf_log, "ab",
+      "expected both rAF callbacks to run despite exception, got {raf_log:?}"
+    );
+    Ok(())
+  }
+ 
   #[test]
   fn scheduled_animation_frame_respects_max_instruction_count() -> RenderResult<()> {
     let clock = Arc::new(VirtualClock::new());

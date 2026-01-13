@@ -333,16 +333,16 @@ fn dispatch_window_error_event(
 }
 
 #[derive(Debug)]
-struct UncaughtErrorEventTaskPayload {
-  message: String,
-  filename: String,
-  lineno: u32,
-  colno: u32,
-  error_root: Option<RootId>,
-  host_error: String,
+pub(crate) struct UncaughtErrorEventTaskPayload {
+  pub(crate) message: String,
+  pub(crate) filename: String,
+  pub(crate) lineno: u32,
+  pub(crate) colno: u32,
+  pub(crate) error_root: Option<RootId>,
+  pub(crate) host_error: String,
 }
 
-fn vm_error_to_uncaught_error_event_task_payload(
+pub(crate) fn vm_error_to_uncaught_error_event_task_payload(
   vm: &mut Vm,
   heap: &mut Heap,
   err: VmError,
@@ -1707,7 +1707,7 @@ fn promise_rejection_microtask_checkpoint_hook<Host: WindowRealmHost + 'static>(
   Ok(())
 }
 
-fn queue_uncaught_error_event_task<Host: WindowRealmHost + 'static>(
+pub(crate) fn queue_uncaught_error_event_task<Host: WindowRealmHost + 'static>(
   event_loop: &mut EventLoop<Host>,
   payload: UncaughtErrorEventTaskPayload,
 ) -> crate::error::Result<()> {
