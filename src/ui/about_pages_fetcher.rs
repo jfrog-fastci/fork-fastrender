@@ -1,19 +1,20 @@
 use crate::error::{Error, ResourceError, Result};
 use crate::resource::{FetchRequest, FetchedResource, HttpRequest, ResourceFetcher};
+use crate::ui::chrome_assets::ChromeAssetsFetcher;
 use std::sync::Arc;
 use url::Url;
 
 #[derive(Clone)]
 pub(crate) struct AboutPagesCompositeFetcher {
   default: Arc<dyn ResourceFetcher>,
-  chrome: ChromeAssetFetcher,
+  chrome: ChromeAssetsFetcher,
 }
 
 impl AboutPagesCompositeFetcher {
   pub(crate) fn new(default: Arc<dyn ResourceFetcher>) -> Self {
     Self {
       default,
-      chrome: ChromeAssetFetcher,
+      chrome: ChromeAssetsFetcher::new(),
     }
   }
 
@@ -156,51 +157,6 @@ impl ResourceFetcher for AboutPagesCompositeFetcher {
       return Ok(res);
     }
     self.default.fetch_http_request(req)
-  }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct ChromeAssetFetcher;
-
-impl ChromeAssetFetcher {
-  fn resolve_asset(&self, url: &str) -> Result<(&'static [u8], &'static str)> {
-    let parsed = Url::parse(url).map_err(|err| {
-      Error::Resource(ResourceError::new(
-        url,
-        format!("invalid chrome:// URL {url:?}: {err}"),
-      ))
-    })?;
-
-    if !parsed.scheme().eq_ignore_ascii_case("chrome") {
-      return Err(Error::Resource(ResourceError::new(
-        url,
-        format!("expected chrome:// URL, got scheme={}", parsed.scheme()),
-      )));
-    }
-
-    let host = parsed.host_str().unwrap_or_default();
-    let path = parsed.path();
-    match (host, path) {
-      ("styles", "/about.css") => Ok((
-        include_bytes!("../../assets/chrome/about.css"),
-        "text/css",
-      )),
-      _ => Err(Error::Resource(ResourceError::new(
-        url,
-        format!("unknown chrome:// asset chrome://{host}{path}"),
-      ))),
-    }
-  }
-}
-
-impl ResourceFetcher for ChromeAssetFetcher {
-  fn fetch(&self, url: &str) -> Result<FetchedResource> {
-    let (bytes, mime) = self.resolve_asset(url)?;
-    Ok(FetchedResource::with_final_url(
-      bytes.to_vec(),
-      Some(mime.to_string()),
-      Some(url.to_string()),
-    ))
   }
 }
 
