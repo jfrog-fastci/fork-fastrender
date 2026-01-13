@@ -41,6 +41,12 @@ impl TinyRng {
     let span = max_inclusive - min + 1;
     min + (self.next_u32() as usize % span)
   }
+
+  fn i32_range(&mut self, min: i32, max_inclusive: i32) -> i32 {
+    debug_assert!(min <= max_inclusive);
+    let span = (max_inclusive - min + 1) as u32;
+    min + (self.next_u32() % span) as i32
+  }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -280,12 +286,15 @@ fn float_context_rectangular_naive_equivalence() {
         FloatSide::Right
       };
 
-      let y = rng.f32_range(-60.0, 320.0);
-      let height = rng.f32_range(1.0, 80.0);
+      // Quantize float geometry so we frequently hit identical edges/boundaries (important for
+      // exercising ActiveEdgeSet coalescing and dense start-event scenarios).
+      let y = (rng.i32_range(-12, 64) as f32) * 5.0; // [-60, 320] step 5
+      let height = (rng.i32_range(1, 16) as f32) * 5.0; // [5, 80] step 5
 
       // Allow coordinates slightly outside the containing block to exercise offset-context logic.
-      let x = rng.f32_range(-container_width * 0.4, container_width * 1.2);
-      let width = rng.f32_range(1.0, container_width * 1.2);
+      let x_step = container_width / 16.0;
+      let x = (rng.i32_range(-8, 24) as f32) * x_step; // [-0.5cw, 1.5cw] step cw/16
+      let width = (rng.i32_range(1, 24) as f32) * x_step; // [cw/16, 1.5cw] step cw/16
 
       ctx.add_float_at(side, x, y, width, height);
       floats.push(RectFloat {
