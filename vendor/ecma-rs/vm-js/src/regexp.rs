@@ -4406,6 +4406,41 @@ mod tests {
 
     Ok(())
   }
+
+  #[test]
+  fn regexp_unicode_escape_sequence_parsing_matches_ecma262() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    // In non-unicode mode, `\u{...}` is parsed as an identity escape (`u`) followed by `{...}`,
+    // which can be interpreted as a quantifier.
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { const m = /\u{41}/.exec("ABC" + "u".repeat(41)); return m !== null && m[0] === "u".repeat(41); })()"#,
+    )?);
+
+    // If the `{...}` does not form a valid quantifier, it is treated as literals in non-unicode
+    // mode (Annex B behavior).
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { const m = /\u{4A}/.exec("JKLu{4A}"); return m !== null && m[0] === "u{4A}"; })()"#,
+    )?);
+
+    // In unicode mode (`u` or `v`), braced escapes are parsed as full Unicode code points.
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { const s = "\uD83D\uDC38"; const m = /\u{1F438}/u.exec(s); return m !== null && m[0] === s; })()"#,
+    )?);
+
+    // In unicode mode, surrogate pair escapes are merged into a single code point.
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { const s = "\uD83D\uDC38"; const m = /\uD83D\uDC38/u.exec(s); return m !== null && m[0] === s; })()"#,
+    )?);
+
+    Ok(())
+  }
 }
 
 #[cfg(test)]
