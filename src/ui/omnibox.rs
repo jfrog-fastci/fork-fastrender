@@ -554,16 +554,14 @@ fn build_omnibox_suggestions_with_provider_iter_at_time<'a>(
 
       // De-dupe by primary key (case-insensitive), matching the previous behaviour of using
       // `to_ascii_lowercase` keys.
-      if let Some(existing_idx) = selected
-        .iter()
-        .position(|s| primary_raw.eq_ignore_ascii_case(&s.sort_key.primary))
-      {
+      if let Some(existing_idx) = selected.iter().position(|s| {
+        primary_raw.eq_ignore_ascii_case(suggestion_primary_key_raw(&s.suggestion))
+      }) {
         if score < selected[existing_idx].score {
           continue;
         }
 
         let candidate = ScoredSuggestion {
-          sort_key: suggestion_sort_key(&suggestion),
           suggestion,
           score,
         };
@@ -574,7 +572,6 @@ fn build_omnibox_suggestions_with_provider_iter_at_time<'a>(
       }
 
       let candidate = ScoredSuggestion {
-        sort_key: suggestion_sort_key(&suggestion),
         suggestion,
         score,
       };
@@ -596,7 +593,6 @@ fn build_omnibox_suggestions_with_provider_iter_at_time<'a>(
 
 #[derive(Debug)]
 struct ScoredSuggestion {
-  sort_key: SuggestionSortKey,
   suggestion: OmniboxSuggestion,
   score: i64,
 }
@@ -936,7 +932,7 @@ fn compare_scored_suggestions(a: &ScoredSuggestion, b: &ScoredSuggestion) -> Ord
 
   // Tertiary: prefer URL/title lexicographically for deterministic ordering (independent of
   // provider order).
-  a.sort_key.cmp(&b.sort_key)
+  compare_suggestion_sort_keys(&a.suggestion, &b.suggestion)
 }
 
 fn worst_scored_suggestion_index(scored: &[ScoredSuggestion]) -> usize {
@@ -962,15 +958,6 @@ fn suggestion_source_rank(source: OmniboxSuggestionSource) -> i64 {
   }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct SuggestionSortKey {
-  // Lowercase for deterministic, case-insensitive ordering.
-  primary: String,
-  secondary: String,
-  // Include TabId when relevant so multiple open-tab suggestions for the same URL are stable.
-  tab_id: u64,
-}
-
 fn suggestion_primary_key_raw(s: &OmniboxSuggestion) -> &str {
   match &s.action {
     OmniboxAction::ActivateTab(_) => s.url.as_deref().unwrap_or_default(),
@@ -979,7 +966,22 @@ fn suggestion_primary_key_raw(s: &OmniboxSuggestion) -> &str {
   }
 }
 
-fn suggestion_sort_key(s: &OmniboxSuggestion) -> SuggestionSortKey {
+fn compare_suggestion_sort_keys(a: &OmniboxSuggestion, b: &OmniboxSuggestion) -> Ordering {
+  let (a_primary, a_secondary, a_tab_id) = suggestion_sort_key_parts(a);
+  let (b_primary, b_secondary, b_tab_id) = suggestion_sort_key_parts(b);
+
+  match cmp_ascii_lowercase(a_primary, b_primary) {
+    Ordering::Equal => {}
+    ord => return ord,
+  }
+  match cmp_ascii_lowercase(a_secondary, b_secondary) {
+    Ordering::Equal => {}
+    ord => return ord,
+  }
+  a_tab_id.cmp(&b_tab_id)
+}
+
+fn suggestion_sort_key_parts(s: &OmniboxSuggestion) -> (&str, &str, u64) {
   let (primary, secondary, tab_id) = match &s.action {
     OmniboxAction::ActivateTab(tab_id) => (
       s.url.as_deref().unwrap_or_default(),
@@ -990,11 +992,19 @@ fn suggestion_sort_key(s: &OmniboxSuggestion) -> SuggestionSortKey {
     OmniboxAction::Search(query) => (query.as_str(), "", 0),
   };
 
-  SuggestionSortKey {
-    primary: primary.to_ascii_lowercase(),
-    secondary: secondary.to_ascii_lowercase(),
-    tab_id,
+  (primary, secondary, tab_id)
+}
+
+fn cmp_ascii_lowercase(a: &str, b: &str) -> Ordering {
+  for (&a_byte, &b_byte) in a.as_bytes().iter().zip(b.as_bytes().iter()) {
+    let a_lower = a_byte.to_ascii_lowercase();
+    let b_lower = b_byte.to_ascii_lowercase();
+    match a_lower.cmp(&b_lower) {
+      Ordering::Equal => {}
+      ord => return ord,
+    }
   }
+  a.len().cmp(&b.len())
 }
 
 fn tokenize_lower<'a>(input_lower: &'a str) -> Vec<&'a str> {
