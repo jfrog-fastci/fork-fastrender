@@ -33185,7 +33185,7 @@ fn gen_binary_after_left(
       // additional computation to perform after the RHS completes.
       let _ = left;
       gen_eval_expr(evaluator, scope, &expr.right)
-    }
+    },
     _ => Err(VmError::Unimplemented("yield in binary operator")),
   }
 }
