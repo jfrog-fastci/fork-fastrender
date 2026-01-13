@@ -3842,6 +3842,12 @@ impl<'a> Parser<'a> {
                           }
                         }
                       }
+                      if p.is_strict_ecmascript()
+                        && p.is_strict_mode()
+                        && Parser::is_strict_mode_reserved_word(&direct_key.stx.key)
+                      {
+                        return Err(direct_key.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+                      }
                       if p.consume_if(TT::Equals).is_match() {
                         let key_name = direct_key.stx.key.clone();
                         let key_loc = direct_key.loc;

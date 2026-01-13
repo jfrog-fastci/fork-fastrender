@@ -272,4 +272,20 @@ mod tests {
     parse_with_options(r"let re = /\]/u;", opts).unwrap();
     parse_with_options(r"let re = /\]/v;", opts).unwrap();
   }
+
+  #[test]
+  fn strict_mode_disallows_reserved_words_in_object_shorthand_properties() {
+    let opts = ecma_script_opts();
+
+    // Strict mode reserved words (e.g. `yield`, `let`) are not valid `IdentifierReference`s in
+    // object literal shorthand properties.
+    let err = parse_with_options("'use strict'; ({ yield })", opts).unwrap_err();
+    assert_eq!(err.typ, SyntaxErrorType::ExpectedSyntax("identifier"));
+    let err = parse_with_options("'use strict'; ({ let })", opts).unwrap_err();
+    assert_eq!(err.typ, SyntaxErrorType::ExpectedSyntax("identifier"));
+
+    // `eval` and `arguments` are restricted in binding positions, but remain valid identifier
+    // references (and therefore valid shorthand property names).
+    parse_with_options("'use strict'; ({ eval, arguments })", opts).unwrap();
+  }
 }
