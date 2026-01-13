@@ -525,6 +525,16 @@ fn main() {
 }
 
 const ENV_BROWSER_HUD: &str = "FASTR_BROWSER_HUD";
+const ENV_BROWSER_RENDERER_WATCHDOG: &str = "FASTR_BROWSER_RENDERER_WATCHDOG";
+const ENV_BROWSER_RENDERER_WATCHDOG_TIMEOUT_MS: &str = "FASTR_BROWSER_RENDERER_WATCHDOG_TIMEOUT_MS";
+const ENV_BROWSER_ALLOW_CRASH_URLS: &str = "FASTR_BROWSER_ALLOW_CRASH_URLS";
+
+// Default renderer watchdog timeout for the browser's headless smoke harness.
+//
+// `run_headless_smoke_mode` historically used a hard-coded 60s timeout while waiting for the first
+// frame. Keep the same default so existing CI runs stay stable unless explicitly overridden.
+#[cfg(feature = "browser_ui")]
+const DEFAULT_BROWSER_RENDERER_WATCHDOG_TIMEOUT_MS: u64 = 60_000;
 
 #[cfg(feature = "browser_ui")]
 const ENV_BROWSER_RESIZE_DPR_SCALE: &str = "FASTR_BROWSER_RESIZE_DPR_SCALE";
@@ -572,6 +582,66 @@ fn browser_hud_enabled_from_env() -> bool {
       false
     }
   }
+}
+
+fn parse_env_bool_override(key: &str, raw: Option<&str>) -> Result<Option<bool>, String> {
+  let Some(raw) = raw else {
+    return Ok(None);
+  };
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return Ok(None);
+  }
+
+  if raw == "1"
+    || raw.eq_ignore_ascii_case("true")
+    || raw.eq_ignore_ascii_case("yes")
+    || raw.eq_ignore_ascii_case("on")
+  {
+    return Ok(Some(true));
+  }
+
+  if raw == "0"
+    || raw.eq_ignore_ascii_case("false")
+    || raw.eq_ignore_ascii_case("no")
+    || raw.eq_ignore_ascii_case("off")
+  {
+    return Ok(Some(false));
+  }
+
+  Err(format!("{key}: invalid value {raw:?}; expected 0|1|true|false"))
+}
+
+fn parse_env_u64_override(key: &str, raw: Option<&str>) -> Result<Option<u64>, String> {
+  let Some(raw) = raw else {
+    return Ok(None);
+  };
+  let raw_trimmed = raw.trim();
+  if raw_trimmed.is_empty() {
+    return Ok(None);
+  }
+
+  // Accept underscore separators for convenience (e.g. 60_000).
+  let cleaned = raw_trimmed.replace('_', "");
+  let parsed = cleaned
+    .parse::<u64>()
+    .map_err(|_| format!("{key}: invalid value {raw_trimmed:?}; expected u64"))?;
+  Ok(Some(parsed))
+}
+
+fn parse_renderer_watchdog_enabled_env(raw: Option<&str>) -> Result<Option<bool>, String> {
+  parse_env_bool_override(ENV_BROWSER_RENDERER_WATCHDOG, raw)
+}
+
+fn parse_renderer_watchdog_timeout_ms_env(raw: Option<&str>) -> Result<Option<u64>, String> {
+  parse_env_u64_override(ENV_BROWSER_RENDERER_WATCHDOG_TIMEOUT_MS, raw)
+}
+
+fn parse_allow_crash_urls_env(raw: Option<&str>) -> Result<bool, String> {
+  Ok(
+    parse_env_bool_override(ENV_BROWSER_ALLOW_CRASH_URLS, raw)?
+      .unwrap_or(false),
+  )
 }
 
 #[cfg(feature = "browser_ui")]
@@ -640,6 +710,58 @@ mod browser_hud_env_tests {
     assert_eq!(parse_browser_hud_env(Some("no")), Ok(false));
     assert_eq!(parse_browser_hud_env(Some("off")), Ok(false));
     assert!(parse_browser_hud_env(Some("maybe")).is_err());
+  }
+}
+
+#[cfg(test)]
+mod browser_renderer_watchdog_env_tests {
+  use super::*;
+
+  #[test]
+  fn parse_renderer_watchdog_enabled_env_values() {
+    assert_eq!(parse_renderer_watchdog_enabled_env(None), Ok(None));
+    assert_eq!(parse_renderer_watchdog_enabled_env(Some("")), Ok(None));
+    assert_eq!(parse_renderer_watchdog_enabled_env(Some("   ")), Ok(None));
+
+    assert_eq!(parse_renderer_watchdog_enabled_env(Some("1")), Ok(Some(true)));
+    assert_eq!(parse_renderer_watchdog_enabled_env(Some("true")), Ok(Some(true)));
+    assert_eq!(parse_renderer_watchdog_enabled_env(Some("TrUe")), Ok(Some(true)));
+    assert_eq!(parse_renderer_watchdog_enabled_env(Some("yes")), Ok(Some(true)));
+    assert_eq!(parse_renderer_watchdog_enabled_env(Some("on")), Ok(Some(true)));
+
+    assert_eq!(parse_renderer_watchdog_enabled_env(Some("0")), Ok(Some(false)));
+    assert_eq!(parse_renderer_watchdog_enabled_env(Some("false")), Ok(Some(false)));
+    assert_eq!(parse_renderer_watchdog_enabled_env(Some("no")), Ok(Some(false)));
+    assert_eq!(parse_renderer_watchdog_enabled_env(Some("off")), Ok(Some(false)));
+
+    assert!(parse_renderer_watchdog_enabled_env(Some("maybe")).is_err());
+  }
+
+  #[test]
+  fn parse_renderer_watchdog_timeout_ms_env_values() {
+    assert_eq!(parse_renderer_watchdog_timeout_ms_env(None), Ok(None));
+    assert_eq!(parse_renderer_watchdog_timeout_ms_env(Some("")), Ok(None));
+    assert_eq!(parse_renderer_watchdog_timeout_ms_env(Some("   ")), Ok(None));
+    assert_eq!(parse_renderer_watchdog_timeout_ms_env(Some("0")), Ok(Some(0)));
+    assert_eq!(parse_renderer_watchdog_timeout_ms_env(Some("1000")), Ok(Some(1000)));
+    assert_eq!(parse_renderer_watchdog_timeout_ms_env(Some("1_000")), Ok(Some(1000)));
+    assert!(parse_renderer_watchdog_timeout_ms_env(Some("wat")).is_err());
+  }
+
+  #[test]
+  fn parse_allow_crash_urls_env_values() {
+    assert_eq!(parse_allow_crash_urls_env(None), Ok(false));
+    assert_eq!(parse_allow_crash_urls_env(Some("")), Ok(false));
+    assert_eq!(parse_allow_crash_urls_env(Some("   ")), Ok(false));
+    assert_eq!(parse_allow_crash_urls_env(Some("0")), Ok(false));
+    assert_eq!(parse_allow_crash_urls_env(Some("1")), Ok(true));
+    assert_eq!(parse_allow_crash_urls_env(Some("true")), Ok(true));
+    assert_eq!(parse_allow_crash_urls_env(Some("yes")), Ok(true));
+    assert_eq!(parse_allow_crash_urls_env(Some("on")), Ok(true));
+    assert_eq!(parse_allow_crash_urls_env(Some("false")), Ok(false));
+    assert_eq!(parse_allow_crash_urls_env(Some("no")), Ok(false));
+    assert_eq!(parse_allow_crash_urls_env(Some("off")), Ok(false));
+    assert!(parse_allow_crash_urls_env(Some("maybe")).is_err());
   }
 }
 
@@ -1232,6 +1354,38 @@ struct BrowserCliArgs {
   )]
   wgpu_backends: Option<Vec<CliWgpuBackend>>,
 
+  /// Enable the renderer watchdog (unresponsive/crash-smoke timeout).
+  ///
+  /// When unset, defaults to `FASTR_BROWSER_RENDERER_WATCHDOG`.
+  #[arg(
+    long = "renderer-watchdog",
+    action = clap::ArgAction::SetTrue,
+    overrides_with = "no_renderer_watchdog"
+  )]
+  renderer_watchdog: bool,
+
+  /// Disable the renderer watchdog.
+  ///
+  /// When unset, defaults to `FASTR_BROWSER_RENDERER_WATCHDOG`.
+  #[arg(
+    long = "no-renderer-watchdog",
+    action = clap::ArgAction::SetTrue,
+    overrides_with = "renderer_watchdog"
+  )]
+  no_renderer_watchdog: bool,
+
+  /// Renderer watchdog timeout in milliseconds.
+  ///
+  /// When unset, defaults to `FASTR_BROWSER_RENDERER_WATCHDOG_TIMEOUT_MS`.
+  #[arg(long = "renderer-watchdog-timeout-ms", value_name = "MS", value_parser = parse_u64_ms)]
+  renderer_watchdog_timeout_ms: Option<u64>,
+
+  /// Allow navigating to `crash://` URLs (testing hook).
+  ///
+  /// Equivalent env: `FASTR_BROWSER_ALLOW_CRASH_URLS=1`.
+  #[arg(long = "allow-crash-urls", action = clap::ArgAction::SetTrue)]
+  allow_crash_urls: bool,
+
   /// Run a minimal headless startup smoke test (no window / wgpu init)
   #[arg(long = "headless-smoke", action = clap::ArgAction::SetTrue)]
   headless_smoke: bool,
@@ -1315,6 +1469,11 @@ fn parse_u64_mb(raw: &str) -> Result<u64, String> {
     .replace('_', "")
     .parse::<u64>()
     .map_err(|_| format!("invalid integer: {raw:?}"))
+}
+
+#[cfg(feature = "browser_ui")]
+fn parse_u64_ms(raw: &str) -> Result<u64, String> {
+  parse_u64_mb(raw)
 }
 
 #[cfg(feature = "browser_ui")]
@@ -2015,6 +2174,63 @@ fn update_renderer_media_prefs_runtime_toggles(
 #[cfg(feature = "browser_ui")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
   let cli = BrowserCliArgs::parse();
+
+  // ---------------------------------------------------------------------------
+  // Crash/unresponsive testing knobs (CLI/env)
+  // ---------------------------------------------------------------------------
+
+  let allow_crash_urls = if cli.allow_crash_urls {
+    true
+  } else {
+    let raw = std::env::var(ENV_BROWSER_ALLOW_CRASH_URLS).ok();
+    match parse_allow_crash_urls_env(raw.as_deref()) {
+      Ok(enabled) => enabled,
+      Err(err) => {
+        eprintln!("warning: {err}; ignoring");
+        false
+      }
+    }
+  };
+  // Enable/disable crash:// scheme validation across the process (worker + browser thread).
+  fastrender::ui::url::set_allow_crash_urls(allow_crash_urls);
+
+  let renderer_watchdog_enabled = if cli.renderer_watchdog {
+    true
+  } else if cli.no_renderer_watchdog {
+    false
+  } else {
+    let raw = std::env::var(ENV_BROWSER_RENDERER_WATCHDOG).ok();
+    match parse_renderer_watchdog_enabled_env(raw.as_deref()) {
+      Ok(Some(enabled)) => enabled,
+      Ok(None) => true,
+      Err(err) => {
+        eprintln!("warning: {err}; ignoring");
+        true
+      }
+    }
+  };
+
+  let renderer_watchdog_timeout_ms = if let Some(ms) = cli.renderer_watchdog_timeout_ms {
+    Some(ms)
+  } else {
+    let raw = std::env::var(ENV_BROWSER_RENDERER_WATCHDOG_TIMEOUT_MS).ok();
+    match parse_renderer_watchdog_timeout_ms_env(raw.as_deref()) {
+      Ok(ms) => ms,
+      Err(err) => {
+        eprintln!("warning: {err}; ignoring");
+        None
+      }
+    }
+  };
+
+  let renderer_watchdog_timeout = if renderer_watchdog_enabled {
+    Some(std::time::Duration::from_millis(
+      renderer_watchdog_timeout_ms.unwrap_or(DEFAULT_BROWSER_RENDERER_WATCHDOG_TIMEOUT_MS),
+    ))
+  } else {
+    None
+  };
+
   let download_dir = resolve_download_directory(cli.download_dir.as_ref());
 
   // When the user provides `<url>`, normalize + apply an allowlist (same as the address bar).
@@ -2118,7 +2334,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       _ => determine_startup_session(cli_url, restore, &session_path),
     };
 
-    return run_headless_smoke_mode(startup_session, source, session_path, download_dir);
+    return run_headless_smoke_mode(
+      startup_session,
+      source,
+      session_path,
+      download_dir,
+      renderer_watchdog_timeout,
+    );
   }
 
   if cli.js_enabled {
@@ -3192,11 +3414,12 @@ fn run_headless_smoke_mode(
   source: StartupSessionSource,
   session_path: std::path::PathBuf,
   download_dir: std::path::PathBuf,
+  renderer_watchdog_timeout: Option<std::time::Duration>,
 ) -> Result<(), Box<dyn std::error::Error>> {
   use fastrender::ui::cancel::CancelGens;
   use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
   use std::sync::mpsc::RecvTimeoutError;
-  use std::time::{Duration, Instant};
+  use std::time::Instant;
 
   let mut session = session.sanitized();
   let source_label = match source {
@@ -3280,10 +3503,6 @@ fn run_headless_smoke_mode(
   const VIEWPORT_CSS: (u32, u32) = (200, 120);
   // Use a DPR != 1.0 so the smoke test validates viewport↔device-pixel scaling.
   const DPR: f32 = 2.0;
-  // First-frame rendering can be slow in debug builds / under CI resource limits (initial font
-  // parsing, CSS selector caches, etc). Keep this generous so the headless smoke tests remain
-  // robust rather than flaky.
-  const TIMEOUT: Duration = Duration::from_secs(60);
 
   let expected_pixmap_w = ((VIEWPORT_CSS.0 as f32) * DPR).round().max(1.0) as u32;
   let expected_pixmap_h = ((VIEWPORT_CSS.1 as f32) * DPR).round().max(1.0) as u32;
@@ -3334,35 +3553,62 @@ fn run_headless_smoke_mode(
   // Close the channel so the worker thread exits after completing the above messages.
   drop(ui_to_worker_tx);
 
-  let deadline = Instant::now() + TIMEOUT;
   let mut smoke_summary: Option<(u32, u32, (u32, u32), f32)> = None;
   let mut last_frame_meta: Option<(u32, u32, (u32, u32), f32)> = None;
   let mut frames_seen: u32 = 0;
 
-  while Instant::now() < deadline {
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    match worker_to_ui_rx.recv_timeout(remaining) {
-      Ok(WorkerToUi::FrameReady {
-        tab_id: msg_tab,
-        frame,
-      }) if msg_tab == active_tab_id => {
-        let pixmap_px = (frame.pixmap.width(), frame.pixmap.height());
-        frames_seen += 1;
-        last_frame_meta = Some((pixmap_px.0, pixmap_px.1, frame.viewport_css, frame.dpr));
-        if frame.viewport_css == VIEWPORT_CSS
-          && (frame.dpr - DPR).abs() <= 0.01
-          && pixmap_px == (expected_pixmap_w, expected_pixmap_h)
-        {
-          smoke_summary = last_frame_meta;
-          break;
+  match renderer_watchdog_timeout {
+    Some(timeout) => {
+      let deadline = Instant::now() + timeout;
+      while Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match worker_to_ui_rx.recv_timeout(remaining) {
+          Ok(WorkerToUi::FrameReady {
+            tab_id: msg_tab,
+            frame,
+          }) if msg_tab == active_tab_id => {
+            let pixmap_px = (frame.pixmap.width(), frame.pixmap.height());
+            frames_seen += 1;
+            last_frame_meta = Some((pixmap_px.0, pixmap_px.1, frame.viewport_css, frame.dpr));
+            if frame.viewport_css == VIEWPORT_CSS
+              && (frame.dpr - DPR).abs() <= 0.01
+              && pixmap_px == (expected_pixmap_w, expected_pixmap_h)
+            {
+              smoke_summary = last_frame_meta;
+              break;
+            }
+          }
+          Ok(_) => {}
+          Err(RecvTimeoutError::Timeout) => break,
+          Err(RecvTimeoutError::Disconnected) => {
+            return Err("headless smoke worker disconnected before FrameReady".into());
+          }
         }
       }
-      Ok(_) => {}
-      Err(RecvTimeoutError::Timeout) => break,
-      Err(RecvTimeoutError::Disconnected) => {
-        return Err("headless smoke worker disconnected before FrameReady".into());
-      }
     }
+    None => loop {
+      match worker_to_ui_rx.recv() {
+        Ok(WorkerToUi::FrameReady {
+          tab_id: msg_tab,
+          frame,
+        }) if msg_tab == active_tab_id => {
+          let pixmap_px = (frame.pixmap.width(), frame.pixmap.height());
+          frames_seen += 1;
+          last_frame_meta = Some((pixmap_px.0, pixmap_px.1, frame.viewport_css, frame.dpr));
+          if frame.viewport_css == VIEWPORT_CSS
+            && (frame.dpr - DPR).abs() <= 0.01
+            && pixmap_px == (expected_pixmap_w, expected_pixmap_h)
+          {
+            smoke_summary = last_frame_meta;
+            break;
+          }
+        }
+        Ok(_) => {}
+        Err(_) => {
+          return Err("headless smoke worker disconnected before FrameReady".into());
+        }
+      }
+    },
   }
 
   let Some((pixmap_w, pixmap_h, viewport_css, dpr)) = smoke_summary else {
@@ -3372,10 +3618,17 @@ fn run_headless_smoke_mode(
       ),
       None => " (saw no FrameReady messages)".to_string(),
     };
-    return Err(format!(
-      "timed out after {TIMEOUT:?} waiting for WorkerToUi::FrameReady matching viewport_css={VIEWPORT_CSS:?} dpr={DPR} pixmap_px={expected_pixmap_w}x{expected_pixmap_h}{hint}"
-    )
-    .into());
+    return Err(
+      match renderer_watchdog_timeout {
+        Some(timeout) => format!(
+          "timed out after {timeout:?} waiting for WorkerToUi::FrameReady matching viewport_css={VIEWPORT_CSS:?} dpr={DPR} pixmap_px={expected_pixmap_w}x{expected_pixmap_h}{hint}"
+        ),
+        None => format!(
+          "headless smoke worker exited before producing a matching WorkerToUi::FrameReady (watchdog disabled){hint}"
+        ),
+      }
+      .into(),
+    );
   };
 
   if viewport_css != VIEWPORT_CSS {

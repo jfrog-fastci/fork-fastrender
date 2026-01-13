@@ -1,9 +1,33 @@
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::str::FromStr;
 use std::path::{Path, PathBuf};
 use url::Url;
 
 pub const DEFAULT_SEARCH_ENGINE_TEMPLATE: &str = "https://duckduckgo.com/?q={query}";
+
+// -----------------------------------------------------------------------------
+// Crash URL testing hooks
+// -----------------------------------------------------------------------------
+//
+// The multiprocess/security workstream uses `crash://` URLs as deterministic smoke tests for
+// renderer crash/unresponsive handling. These URLs are **disabled by default** so they are not
+// reachable during normal browsing sessions.
+//
+// The windowed/headless `browser` binary can opt into allowing the scheme via CLI/env knobs and
+// sets this flag at startup.
+static ALLOW_CRASH_URLS: AtomicBool = AtomicBool::new(false);
+
+/// Allow (or disallow) navigation to `crash://` URLs.
+///
+/// Disabled by default. Intended for CI/testing harnesses.
+pub fn set_allow_crash_urls(enabled: bool) {
+  ALLOW_CRASH_URLS.store(enabled, Ordering::Relaxed);
+}
+
+fn crash_urls_allowed() -> bool {
+  ALLOW_CRASH_URLS.load(Ordering::Relaxed)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OmniboxInputResolution {
@@ -37,6 +61,7 @@ pub fn validate_user_navigation_url_scheme(url: &str) -> Result<(), String> {
   let scheme = parsed.scheme().to_ascii_lowercase();
   match scheme.as_str() {
     "http" | "https" | "file" | "about" => Ok(()),
+    "crash" if crash_urls_allowed() => Ok(()),
     "javascript" => Err("navigation to javascript: URLs is not supported".to_string()),
     _ => Err(format!("unsupported URL scheme: {scheme}")),
   }
