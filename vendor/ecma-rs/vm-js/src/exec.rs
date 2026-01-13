@@ -24810,6 +24810,9 @@ fn async_apply_binary_operator(
     // Assignment operators are handled separately (they require reference semantics).
     OperatorName::Assignment
     | OperatorName::AssignmentAddition
+    | OperatorName::AssignmentBitwiseLeftShift
+    | OperatorName::AssignmentBitwiseRightShift
+    | OperatorName::AssignmentBitwiseUnsignedRightShift
     | OperatorName::AssignmentSubtraction
     | OperatorName::AssignmentMultiplication
     | OperatorName::AssignmentDivision
