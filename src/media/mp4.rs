@@ -48,6 +48,7 @@ pub struct Mp4Sample {
 
 #[derive(Debug, Clone)]
 pub struct Mp4Track {
+  id: u32,
   timescale: u32,
   samples: Vec<Mp4Sample>,
   pts_ns_by_sample: Vec<u64>,
@@ -58,6 +59,11 @@ pub struct Mp4Track {
 }
 
 impl Mp4Track {
+  #[must_use]
+  pub fn id(&self) -> u32 {
+    self.id
+  }
+
   #[must_use]
   pub fn timescale(&self) -> u32 {
     self.timescale
@@ -203,6 +209,7 @@ struct StszBox {
 
 #[derive(Debug, Default)]
 struct TrackBoxes {
+  id: Option<u32>,
   timescale: Option<u32>,
   stts: Option<Vec<SttsEntry>>,
   ctts: Option<Vec<CttsEntry>>,
@@ -213,6 +220,7 @@ struct TrackBoxes {
 }
 
 fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
+  let id = t.id.ok_or(Mp4Error::MissingBox("tkhd"))?;
   let timescale = t.timescale.ok_or(Mp4Error::MissingBox("mdhd"))?;
   if timescale == 0 {
     return Err(Mp4Error::Invalid("mdhd timescale must be > 0"));
@@ -226,6 +234,7 @@ fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
   let sample_count = stsz.sample_count as usize;
   if sample_count == 0 {
     return Ok(Mp4Track {
+      id,
       timescale,
       samples: Vec::new(),
       pts_ns_by_sample: Vec::new(),
@@ -366,6 +375,7 @@ fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
   };
 
   Ok(Mp4Track {
+    id,
     timescale,
     samples,
     pts_ns_by_sample,
@@ -592,8 +602,14 @@ fn parse_trak(bytes: &[u8], trak: Range<usize>) -> Result<TrackBoxes> {
     let Some(b) = next_box(&mut cur, trak.end)? else {
       break;
     };
-    if b.typ == fourcc(b"mdia") {
-      parse_mdia(bytes, b.content, &mut t)?;
+    match b.typ {
+      typ if typ == fourcc(b"tkhd") => {
+        t.id = Some(parse_tkhd(bytes, b.content)?);
+      }
+      typ if typ == fourcc(b"mdia") => {
+        parse_mdia(bytes, b.content, &mut t)?;
+      }
+      _ => {}
     }
     cur.pos = b.end;
   }
@@ -699,6 +715,34 @@ fn parse_mdhd(bytes: &[u8], mdhd: Range<usize>) -> Result<u32> {
       version: v,
     }),
   }
+}
+
+fn parse_tkhd(bytes: &[u8], tkhd: Range<usize>) -> Result<u32> {
+  let mut cur = Cursor::new(bytes, tkhd.start);
+  let version = read_fullbox_version(&mut cur, tkhd.end)?;
+
+  let track_id = match version {
+    0 => {
+      cur.skip(tkhd.end, 8)?; // creation + modification
+      cur.read_u32(tkhd.end)?
+    }
+    1 => {
+      cur.skip(tkhd.end, 16)?; // creation + modification
+      cur.read_u32(tkhd.end)?
+    }
+    v => {
+      return Err(Mp4Error::UnsupportedBoxVersion {
+        box_name: "tkhd",
+        version: v,
+      })
+    }
+  };
+
+  if track_id == 0 {
+    return Err(Mp4Error::Invalid("tkhd track_id must be > 0"));
+  }
+
+  Ok(track_id)
 }
 
 fn parse_stts(bytes: &[u8], stts: Range<usize>) -> Result<Vec<SttsEntry>> {
@@ -998,6 +1042,7 @@ mod tests {
     ];
 
     let mut track = Mp4Track {
+      id: 1,
       timescale: 1,
       samples,
       pts_ns_by_sample,
