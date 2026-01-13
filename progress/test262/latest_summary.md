@@ -29,6 +29,32 @@ CARGO_TARGET_DIR=../../target timeout -k 10 600 bash scripts/cargo_agent.sh run 
     --fail-on new
   ```
 
+- RegExp `/v` Unicode sets suite (large generated corpus; kept separate from `regexp.toml`):
+  ```bash
+  # from repo root
+  CARGO_TARGET_DIR=../../target timeout -k 10 600 bash scripts/cargo_agent.sh run -p test262-semantic --release -- \
+    --harness test262 \
+    --suite-path ../../tests/js/test262_suites/regexp_unicode_sets.toml \
+    --manifest ../../tests/js/test262_manifest.toml \
+    --timeout-secs 10 \
+    --jobs 4 \
+    --report-path ../../target/js/test262_regexp_unicode_sets.json \
+    --fail-on new
+  ```
+
+- RegExp Unicode property escapes (generated) suite (large; some known slow cases are excluded in the suite file):
+  ```bash
+  # from repo root
+  CARGO_TARGET_DIR=../../target timeout -k 10 600 bash scripts/cargo_agent.sh run -p test262-semantic --release -- \
+    --harness test262 \
+    --suite-path ../../tests/js/test262_suites/regexp_property_escapes_generated.toml \
+    --manifest ../../tests/js/test262_manifest.toml \
+    --timeout-secs 10 \
+    --jobs 4 \
+    --report-path ../../target/js/test262_regexp_property_escapes_generated.json \
+    --fail-on new
+  ```
+
 - JSON report (not committed): `target/js/test262.json`
 - Note: `scripts/cargo_agent.sh` runs the vendored `test262-semantic` workspace from `vendor/ecma-rs/`,
   so the `../../...` paths above are relative to that directory.
