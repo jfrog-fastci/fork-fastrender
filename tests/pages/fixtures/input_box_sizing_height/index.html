@@ -1,0 +1,86 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Input box-sizing height semantics</title>
+<style>
+  body {
+    margin: 0;
+    background: white;
+  }
+
+  .row {
+    display: flex;
+    gap: 24px;
+    padding: 24px;
+  }
+
+  /* Clip horizontally so input intrinsic width differences don't distract from the height/box-sizing check. */
+  .case {
+    position: relative;
+    width: 90px;
+    height: 70px;
+    overflow: hidden;
+    background: rgb(240, 240, 240);
+  }
+
+  .marker {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: rgb(0, 120, 255);
+  }
+
+  input {
+    height: 22px;
+    padding: 14px 16px;
+    border: 1px solid black;
+    border-radius: 0;
+  }
+
+  #a {
+    background: rgb(255, 200, 200);
+  }
+
+  #b {
+    background: rgb(200, 255, 200);
+    appearance: none;
+  }
+
+  #c {
+    background: rgb(200, 200, 255);
+    box-sizing: border-box;
+  }
+
+  #d {
+    background: rgb(255, 255, 200);
+    appearance: none;
+    box-sizing: border-box;
+  }
+</style>
+
+<div class="row">
+  <!-- Default text input: Chrome uses `box-sizing: content-box`, so padding/border expand the border box. -->
+  <div class="case">
+    <div class="marker" style="top: 52px"></div>
+    <input id="a" value="" />
+  </div>
+
+  <!-- Same, but `appearance: none` (should not change box-sizing semantics). -->
+  <div class="case">
+    <div class="marker" style="top: 52px"></div>
+    <input id="b" value="" />
+  </div>
+
+  <!-- Explicit `box-sizing: border-box`: border-box height clamps to the padding+border sum (30px). -->
+  <div class="case">
+    <div class="marker" style="top: 30px"></div>
+    <input id="c" value="" />
+  </div>
+
+  <!-- `appearance: none` + explicit `box-sizing: border-box` (author override should win). -->
+  <div class="case">
+    <div class="marker" style="top: 30px"></div>
+    <input id="d" value="" />
+  </div>
+</div>
+

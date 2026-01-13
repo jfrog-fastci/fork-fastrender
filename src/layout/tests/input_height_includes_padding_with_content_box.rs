@@ -62,3 +62,48 @@ fn input_height_includes_padding_with_content_box_box_sizing() {
     input_fragment.bounds,
   );
 }
+
+#[test]
+fn input_height_includes_padding_with_border_box_when_appearance_none() {
+  // Authors can still opt into `box-sizing: border-box` even when `appearance: none` disables the
+  // native form-control replacement. Chromium clamps the border-box size to at least the
+  // padding+border sum when the specified `height` is smaller.
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          input {
+            -webkit-appearance: none;
+            appearance: none;
+            box-sizing: border-box;
+            height: 22px;
+            padding: 14px 16px;
+            border: 1px solid black;
+            background: rgb(1, 2, 3);
+          }
+        </style>
+      </head>
+      <body>
+        <div><input value=""></div>
+      </body>
+    </html>
+  "#;
+
+  let target_color = Rgba::rgb(1, 2, 3);
+  let mut renderer = FastRender::new().expect("renderer");
+  let dom = renderer.parse_html(html).expect("parse HTML");
+  let fragments = renderer.layout_document(&dom, 240, 180).expect("layout");
+
+  let input_fragment =
+    find_fragment_by_background(&fragments.root, target_color).expect("input fragment");
+
+  // Specified height (22px) is smaller than the vertical padding+border sum (14*2 + 1*2 = 30px),
+  // so the border box clamps to 30px.
+  let height = input_fragment.bounds.height();
+  assert!(
+    (height - 30.0).abs() <= 0.5,
+    "expected border-box sized input height to clamp to padding+border; got {height:?} in fragment {:?}",
+    input_fragment.bounds,
+  );
+}
