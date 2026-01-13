@@ -274,8 +274,8 @@ What the tick must **not** do:
   * Accumulating `dt` from ticks is a classic way to create drift.
 * **Do not** advance media time by a fixed amount per tick (e.g. “+16ms each tick”).
   * This is a tempting pattern because it is deterministic, and FastRender currently uses a fixed
-    tick step for **CSS animation sampling** (see `TICK_ANIMATION_STEP_MS` in
-    `src/ui/render_worker.rs`), but that approach is not suitable for audio/video because the audio
+    tick step for **CSS animation sampling** (see `TICK_ANIMATION_STEP` in `src/ui/render_worker.rs`),
+    but that approach is not suitable for audio/video because the audio
     device continues advancing in real time regardless of UI tick delivery.
 
 Correct model:
