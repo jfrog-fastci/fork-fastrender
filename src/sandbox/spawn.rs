@@ -54,6 +54,7 @@ struct LinuxPreExecConfig {
   rlimit_as: Option<libc::rlim_t>,
   rlimit_nofile: Option<libc::rlim_t>,
   rlimit_core: Option<libc::rlim_t>,
+  rlimit_nproc: Option<libc::rlim_t>,
   network_policy: crate::sandbox::NetworkPolicy,
   landlock: crate::sandbox::RendererLandlockPolicy,
   seccomp: crate::sandbox::RendererSeccompPolicy,
@@ -74,6 +75,10 @@ impl LinuxPreExecConfig {
       rlimit_core: config
         .core_limit_bytes
         .map(|value| to_rlim_t(value, "RLIMIT_CORE"))
+        .transpose()?,
+      rlimit_nproc: config
+        .nproc_limit
+        .map(|value| to_rlim_t(value, "RLIMIT_NPROC"))
         .transpose()?,
       network_policy: config.network_policy,
       landlock: config.landlock,
@@ -108,6 +113,9 @@ fn linux_pre_exec(cfg: LinuxPreExecConfig) -> std::io::Result<()> {
   }
   if let Some(limit) = cfg.rlimit_core {
     apply_rlimit_hard_ceiling(libc::RLIMIT_CORE, limit)?;
+  }
+  if let Some(limit) = cfg.rlimit_nproc {
+    apply_rlimit_hard_ceiling(libc::RLIMIT_NPROC, limit)?;
   }
 
   // 2) no_new_privs is required before installing seccomp/landlock without caps.
@@ -548,6 +556,7 @@ mod tests {
     const CHILD_ENV: &str = "FASTR_TEST_SANDBOX_CHILD";
     const EXPECT_AS_ENV: &str = "FASTR_TEST_SANDBOX_EXPECT_AS";
     const EXPECT_NOFILE_ENV: &str = "FASTR_TEST_SANDBOX_EXPECT_NOFILE";
+    const EXPECT_NPROC_ENV: &str = "FASTR_TEST_SANDBOX_EXPECT_NPROC";
 
     let is_child = std::env::var_os(CHILD_ENV).is_some();
     if is_child {
@@ -560,6 +569,10 @@ mod tests {
         .expect("expected nofile env")
         .parse()
         .expect("parse expected nofile");
+      let expected_nproc: u64 = std::env::var(EXPECT_NPROC_ENV)
+        .expect("expected nproc env")
+        .parse()
+        .expect("parse expected nproc");
 
       let (cur_as, max_as) = get_rlimit(libc::RLIMIT_AS);
       assert_eq!(cur_as, expected_as, "RLIMIT_AS.cur should match");
@@ -578,6 +591,16 @@ mod tests {
       let (cur_core, max_core) = get_rlimit(libc::RLIMIT_CORE);
       assert_eq!(cur_core, 0, "core dumps should be disabled");
       assert_eq!(max_core, 0, "core dumps should be disabled");
+
+      let (cur_nproc, max_nproc) = get_rlimit(libc::RLIMIT_NPROC);
+      assert_eq!(
+        cur_nproc, expected_nproc,
+        "RLIMIT_NPROC.cur should match"
+      );
+      assert_eq!(
+        max_nproc, expected_nproc,
+        "RLIMIT_NPROC.max should match"
+      );
 
       // Validate no_new_privs is set.
       let no_new_privs = unsafe { libc::prctl(libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) };
@@ -628,10 +651,14 @@ mod tests {
     let desired_nofile = std::cmp::min(max_nofile, 256_u64);
     assert!(desired_nofile > 0, "expected a non-zero nofile max");
 
+    let (cur_nproc, max_nproc) = get_rlimit(libc::RLIMIT_NPROC);
+    let desired_nproc = std::cmp::min(std::cmp::min(cur_nproc, max_nproc), 1024_u64);
+
     let config = RendererSandboxConfig {
       address_space_limit_bytes: Some(desired_as),
       nofile_limit: Some(desired_nofile),
       core_limit_bytes: Some(0),
+      nproc_limit: Some(desired_nproc),
       landlock: RendererLandlockPolicy::Disabled,
       seccomp: RendererSeccompPolicy::RendererDefault,
       ..RendererSandboxConfig::default()
@@ -643,6 +670,7 @@ mod tests {
       .env(CHILD_ENV, "1")
       .env(EXPECT_AS_ENV, desired_as.to_string())
       .env(EXPECT_NOFILE_ENV, desired_nofile.to_string())
+      .env(EXPECT_NPROC_ENV, desired_nproc.to_string())
       .arg("--exact")
       .arg(test_name)
       .arg("--nocapture");
