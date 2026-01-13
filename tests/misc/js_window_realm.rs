@@ -2804,11 +2804,12 @@ fn promise_rejection_event_tasks_can_mutate_dom() -> Result<()> {
   host.exec_script_in_event_loop(
     &mut event_loop,
     r#"
-window.addEventListener('unhandledrejection', () => {
+window.addEventListener('unhandledrejection', (e) => {
   __fastrender_assert_vm_host();
   const d = document.createElement('div');
   d.id = 'ur';
   document.body.appendChild(d);
+  e.preventDefault(); // suppress default host reporting
 });
 
 // Keep the rejected promise alive so the host can still dispatch the notification task.
@@ -2819,22 +2820,81 @@ globalThis.__ur = Promise.reject('boom');
   // HTML dispatches unhandledrejection after a microtask checkpoint; drive one to enqueue the
   // notification task, then run tasks.
   event_loop.perform_microtask_checkpoint(&mut host)?;
+  let mut errors: Vec<String> = Vec::new();
   assert_eq!(
-    event_loop.run_until_idle(
+    event_loop.run_until_idle_handling_errors(
       &mut host,
       RunLimits {
         max_tasks: 10,
         max_microtasks: 100,
         max_wall_time: None,
       },
+      |err| {
+        errors.push(err.to_string());
+      },
     )?,
     RunUntilIdleOutcome::Idle,
     "expected event loop to go idle after dispatching the unhandledrejection task"
+  );
+  assert!(
+    errors.is_empty(),
+    "expected preventDefault() to suppress host error reporting, got errors={errors:?}"
   );
 
   assert!(
     host.dom().get_element_by_id("ur").is_some(),
     "expected unhandledrejection event listener to mutate the host DOM"
+  );
+  Ok(())
+}
+
+#[test]
+fn unhandledrejection_surfaces_host_error_by_default() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+
+  // Trigger an unhandled rejection with no listeners to cancel default reporting.
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+// Keep the rejected promise alive so the host can still dispatch the notification task.
+globalThis.__ur_default = Promise.reject('boom');
+"#,
+  )?;
+
+  event_loop.perform_microtask_checkpoint(&mut host)?;
+  let mut errors: Vec<String> = Vec::new();
+  assert_eq!(
+    event_loop.run_until_idle_handling_errors(
+      &mut host,
+      RunLimits {
+        max_tasks: 10,
+        max_microtasks: 100,
+        max_wall_time: None,
+      },
+      |err| {
+        errors.push(err.to_string());
+      },
+    )?,
+    RunUntilIdleOutcome::Idle,
+    "expected event loop to go idle after dispatching the unhandledrejection task"
+  );
+  assert_eq!(
+    errors.len(),
+    1,
+    "expected exactly one host error for an unhandled promise rejection, got errors={errors:?}"
+  );
+  assert!(
+    errors[0].contains("Unhandled promise rejection"),
+    "unexpected host error message: {:?}",
+    errors[0]
+  );
+  assert!(
+    errors[0].contains("boom"),
+    "expected host error message to include rejection reason, got {:?}",
+    errors[0]
   );
   Ok(())
 }
@@ -2851,6 +2911,7 @@ fn rejectionhandled_event_tasks_can_mutate_dom_and_receive_real_vm_host() -> Res
   host.exec_script_in_event_loop(
     &mut event_loop,
     r#"
+window.addEventListener('unhandledrejection', (e) => e.preventDefault());
 window.addEventListener('rejectionhandled', () => {
   __fastrender_assert_vm_host();
   const d = document.createElement('div');

@@ -1495,15 +1495,15 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
     let budget = window_realm.vm_budget_now();
     let (vm, heap) = window_realm.vm_and_heap_mut();
 
-    let result: crate::error::Result<bool> = (|| {
+    let result: crate::error::Result<(bool, bool, Option<String>)> = (|| {
       let mut vm = vm.push_budget(budget);
       vm.tick()
         .map_err(|err| vm_error_to_event_loop_error(heap, err))?;
-      let handled_after_dispatch = (|| -> Result<bool, VmError> {
+      let dispatch_outcome = (|| -> Result<(bool, bool, Option<String>), VmError> {
         let promise_value = heap.get_root(root).unwrap_or(Value::Undefined);
         let Value::Object(promise_obj) = promise_value else {
           // Root slot should always contain the promise object, but be defensive in release builds.
-          return Ok(true);
+          return Ok((true, true, None));
         };
 
         let reason = heap
@@ -1599,7 +1599,7 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
         let dispatch_key = alloc_key(&mut scope, "dispatchEvent")?;
         let dispatch =
           vm.get_with_host_and_hooks(vm_host, &mut scope, &mut hooks, global_obj, dispatch_key)?;
-        let _ = vm.call_with_host_and_hooks(
+        let dispatch_result = vm.call_with_host_and_hooks(
           vm_host,
           &mut scope,
           &mut hooks,
@@ -1608,10 +1608,24 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
           &[Value::Object(event_obj)],
         )?;
 
-        Ok(scope.heap().promise_is_handled(promise_obj)?)
+        let not_canceled = matches!(dispatch_result, Value::Bool(true));
+        let handled_after_dispatch = scope.heap().promise_is_handled(promise_obj)?;
+
+        let host_error = if event_type == "unhandledrejection"
+          && not_canceled
+          && !handled_after_dispatch
+        {
+          let formatted_reason =
+            vm_error_format::format_console_arguments_limited(scope.heap_mut(), &[reason]);
+          Some(format!("Unhandled promise rejection: {formatted_reason}"))
+        } else {
+          None
+        };
+
+        Ok((handled_after_dispatch, not_canceled, host_error))
       })();
 
-      handled_after_dispatch.map_err(|err| vm_error_to_event_loop_error(heap, err))
+      dispatch_outcome.map_err(|err| vm_error_to_event_loop_error(heap, err))
     })();
 
     let finish_err = hooks.finish(heap);
@@ -1622,7 +1636,7 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
       return Err(err);
     }
 
-    let handled_after_dispatch = result?;
+    let (handled_after_dispatch, _not_canceled, host_error) = result?;
 
     // Only promises that remain unhandled after `unhandledrejection` dispatch should be eligible
     // for `rejectionhandled` later.
@@ -1634,7 +1648,11 @@ fn queue_promise_rejection_event_task<Host: WindowRealmHost + 'static>(
       }
     }
 
-    Ok(())
+    if let Some(host_error) = host_error {
+      Err(crate::error::Error::Other(host_error))
+    } else {
+      Ok(())
+    }
   });
 
   if let Err(err) = queue_result {
