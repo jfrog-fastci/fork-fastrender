@@ -679,4 +679,32 @@ mod tests {
     assert!(matches!(err, Error::Other(_)), "unexpected error: {err:?}");
     Ok(())
   }
+
+  #[test]
+  fn shared_memory_slots_are_sealed_against_resize_when_supported() -> Result<(), Error> {
+    let shm = SharedMemory::new(1024)?;
+
+    let seals = unsafe { libc::fcntl(shm.as_raw_fd(), libc::F_GET_SEALS) };
+    if seals == -1 {
+      let err = std::io::Error::last_os_error();
+      match err.raw_os_error() {
+        Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EPERM) => return Ok(()),
+        _ => return Err(Error::Io(err)),
+      }
+    }
+
+    let required = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW;
+    // Older kernels create memfds without `MFD_ALLOW_SEALING` in a permanently unsealable state
+    // (`F_SEAL_SEAL` only). Treat that as "sealing unsupported" for this test.
+    if (seals & libc::F_SEAL_SEAL) != 0 && (seals & required) != required {
+      return Ok(());
+    }
+
+    assert_eq!(
+      seals & required,
+      required,
+      "expected frame-slot memfd to have shrink/grow seals (got seals=0x{seals:x})"
+    );
+    Ok(())
+  }
 }
