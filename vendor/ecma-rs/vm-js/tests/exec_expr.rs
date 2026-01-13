@@ -952,6 +952,32 @@ fn string_prototype_to_lower_upper_case_works() {
 }
 
 #[test]
+fn string_prototype_locale_methods_work_minimally() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok =
+          "AbC".toLocaleLowerCase("en") === "abc"
+          && "abC".toLocaleUpperCase("en") === "ABC"
+          && "\u00df".toLocaleUpperCase() === "SS"
+          && String.prototype.toLocaleLowerCase.call(123) === "123"
+          && String.prototype.toLocaleUpperCase.call(123) === "123"
+          && ("a".localeCompare("b") < 0)
+          && ("b".localeCompare("a") > 0)
+          && ("a".localeCompare("a") === 0);
+
+        var threw = false;
+        try { String.prototype.localeCompare.call(null, "x"); } catch (e) { threw = e && e.name === "TypeError"; }
+
+        ok && threw
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn json_parse_works_with_objects_arrays_and_reviver() {
   let mut rt = new_runtime();
   let value = rt
