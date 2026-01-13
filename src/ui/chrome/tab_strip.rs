@@ -933,11 +933,10 @@ fn group_chip_ui(
       Pos2::new(title_start_x, chip_rect.min.y),
       Pos2::new(title_end_x, chip_rect.max.y),
     );
-    let label = egui::Label::new(
-      egui::RichText::new(title.clone()).text_style(egui::TextStyle::Button),
-    )
-      .truncate(true)
-      .wrap(false);
+    let label =
+      egui::Label::new(egui::RichText::new(title.clone()).text_style(egui::TextStyle::Button))
+        .truncate(true)
+        .wrap(false);
     let _ = ui.put(title_rect, label);
   }
 
@@ -2709,6 +2708,41 @@ mod tests {
     // dt should scale the delta linearly.
     let dx_half_dt = drag_autoscroll_delta_x(Pos2::new(x, 5.0), rect, 0.5);
     assert!((dx_half_dt - dx * 0.5).abs() < 0.01);
+  }
+
+  #[test]
+  fn drag_autoscroll_delta_x_is_zero_when_pointer_outside_viewport_y() {
+    let rect = Rect::from_min_max(Pos2::new(100.0, 0.0), Pos2::new(200.0, 10.0));
+    assert_eq!(
+      drag_autoscroll_delta_x(Pos2::new(rect.left(), rect.top() - 5.0), rect, 1.0),
+      0.0
+    );
+    assert_eq!(
+      drag_autoscroll_delta_x(Pos2::new(rect.left(), rect.bottom() + 5.0), rect, 1.0),
+      0.0
+    );
+  }
+
+  #[test]
+  fn drag_autoscroll_delta_x_is_zero_when_pointer_far_outside_viewport_x() {
+    let rect = Rect::from_min_max(Pos2::new(100.0, 0.0), Pos2::new(200.0, 10.0));
+    let zone = DRAG_AUTOSCROLL_EDGE_ZONE_PX.min(rect.width() * 0.5);
+    assert_eq!(
+      drag_autoscroll_delta_x(
+        Pos2::new(rect.left() - zone - 1.0, rect.center().y),
+        rect,
+        1.0
+      ),
+      0.0
+    );
+    assert_eq!(
+      drag_autoscroll_delta_x(
+        Pos2::new(rect.right() + zone + 1.0, rect.center().y),
+        rect,
+        1.0
+      ),
+      0.0
+    );
   }
 
   #[test]
