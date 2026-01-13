@@ -90,18 +90,19 @@ pub(crate) fn coerce_error_to_throw(vm: &Vm, scope: &mut Scope<'_>, err: VmError
           Ok(m) => m,
           Err(err) => return err,
         };
-      match crate::error_object::new_error(
+      let value = match crate::error_object::new_error(
         scope,
         intr.error_prototype(),
         "Error",
         message.as_str(),
       ) {
-        Ok(value) => VmError::ThrowWithStack {
-          value,
-          stack: vm.capture_stack(),
-        },
-        Err(err) => err,
-      }
+        Ok(value) => value,
+        Err(err) => return err,
+      };
+
+      let stack = vm.capture_stack();
+      crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+      VmError::ThrowWithStack { value, stack }
     }
     VmError::TypeError(message) => crate::throw_type_error(scope, intr, message),
     VmError::RangeError(message) => crate::throw_range_error(scope, intr, message),
