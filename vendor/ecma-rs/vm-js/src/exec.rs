@@ -21294,9 +21294,15 @@ fn async_eval_expr_chain(
         binary.stx.operator,
         OperatorName::Assignment
           | OperatorName::AssignmentAddition
+          | OperatorName::AssignmentBitwiseAnd
           | OperatorName::AssignmentBitwiseLeftShift
+          | OperatorName::AssignmentBitwiseOr
           | OperatorName::AssignmentBitwiseRightShift
           | OperatorName::AssignmentBitwiseUnsignedRightShift
+          | OperatorName::AssignmentBitwiseXor
+          | OperatorName::AssignmentLogicalAnd
+          | OperatorName::AssignmentLogicalOr
+          | OperatorName::AssignmentNullishCoalescing
           | OperatorName::AssignmentSubtraction
           | OperatorName::AssignmentMultiplication
           | OperatorName::AssignmentDivision
@@ -22224,9 +22230,15 @@ fn async_eval_assignment_expr(
     | OperatorName::AssignmentMultiplication
     | OperatorName::AssignmentDivision
     | OperatorName::AssignmentRemainder => async_eval_assignment_arithmetic_compound(evaluator, scope, expr),
+    OperatorName::AssignmentBitwiseAnd
+    | OperatorName::AssignmentBitwiseOr
+    | OperatorName::AssignmentBitwiseXor => async_eval_assignment_bitwise(evaluator, scope, expr),
     OperatorName::AssignmentBitwiseLeftShift
     | OperatorName::AssignmentBitwiseRightShift
     | OperatorName::AssignmentBitwiseUnsignedRightShift => async_eval_assignment_shift(evaluator, scope, expr),
+    OperatorName::AssignmentLogicalAnd
+    | OperatorName::AssignmentLogicalOr
+    | OperatorName::AssignmentNullishCoalescing => async_eval_assignment_logical(evaluator, scope, expr),
     _ => Err(VmError::InvariantViolation(
       "async assignment evaluator called for non-assignment operator",
     )),
@@ -22241,6 +22253,62 @@ fn async_eval_assignment_arithmetic_compound(
   if matches!(&*expr.left.stx, Expr::ObjPat(_) | Expr::ArrPat(_)) {
     return Err(VmError::Unimplemented(
       "arithmetic compound assignment to destructuring patterns",
+    ));
+  }
+
+  match &*expr.left.stx {
+    Expr::Id(id) => {
+      let reference = Reference::Binding(&id.stx.name);
+      async_eval_assignment_apply_reference(evaluator, scope, expr, reference)
+    }
+    Expr::IdPat(id) => {
+      let reference = Reference::Binding(&id.stx.name);
+      async_eval_assignment_apply_reference(evaluator, scope, expr, reference)
+    }
+    Expr::Member(member) => async_eval_assignment_to_member(evaluator, scope, expr, &member.stx),
+    Expr::ComputedMember(member) => {
+      async_eval_assignment_to_computed_member(evaluator, scope, expr, &member.stx)
+    }
+    _ => Err(VmError::Unimplemented("expression is not a reference")),
+  }
+}
+
+fn async_eval_assignment_bitwise(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &BinaryExpr,
+) -> Result<AsyncEval<Value>, VmError> {
+  if matches!(&*expr.left.stx, Expr::ObjPat(_) | Expr::ArrPat(_)) {
+    return Err(VmError::Unimplemented(
+      "assignment bitwise to destructuring patterns",
+    ));
+  }
+
+  match &*expr.left.stx {
+    Expr::Id(id) => {
+      let reference = Reference::Binding(&id.stx.name);
+      async_eval_assignment_apply_reference(evaluator, scope, expr, reference)
+    }
+    Expr::IdPat(id) => {
+      let reference = Reference::Binding(&id.stx.name);
+      async_eval_assignment_apply_reference(evaluator, scope, expr, reference)
+    }
+    Expr::Member(member) => async_eval_assignment_to_member(evaluator, scope, expr, &member.stx),
+    Expr::ComputedMember(member) => {
+      async_eval_assignment_to_computed_member(evaluator, scope, expr, &member.stx)
+    }
+    _ => Err(VmError::Unimplemented("expression is not a reference")),
+  }
+}
+
+fn async_eval_assignment_logical(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &BinaryExpr,
+) -> Result<AsyncEval<Value>, VmError> {
+  if matches!(&*expr.left.stx, Expr::ObjPat(_) | Expr::ArrPat(_)) {
+    return Err(VmError::Unimplemented(
+      "logical assignment to destructuring patterns",
     ));
   }
 
@@ -22836,6 +22904,152 @@ fn async_eval_assignment_apply_reference(
               base_root,
               key_root,
               left_root,
+            },
+          )?;
+          Ok(AsyncEval::Suspend(suspend))
+        }
+      }
+    }
+    OperatorName::AssignmentBitwiseAnd
+    | OperatorName::AssignmentBitwiseOr
+    | OperatorName::AssignmentBitwiseXor => {
+      let mut op_scope = scope.reborrow();
+      evaluator.root_reference(&mut op_scope, &reference)?;
+
+      let left = evaluator
+        .get_value_from_reference(&mut op_scope, &reference)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
+      op_scope.push_root(left)?;
+
+      match async_eval_expr(evaluator, &mut op_scope, &expr.right)? {
+        AsyncEval::Complete(right) => {
+          let mut bit_scope = op_scope.reborrow();
+          bit_scope.push_root(right)?;
+
+          let bit_op = match expr.operator {
+            OperatorName::AssignmentBitwiseAnd => OperatorName::BitwiseAnd,
+            OperatorName::AssignmentBitwiseOr => OperatorName::BitwiseOr,
+            OperatorName::AssignmentBitwiseXor => OperatorName::BitwiseXor,
+            _ => unreachable!(),
+          };
+
+          let value = async_apply_binary_operator(evaluator, &mut bit_scope, bit_op, left, right)?;
+          bit_scope.push_root(value)?;
+          evaluator
+            .put_value_to_reference(&mut bit_scope, &reference, value)
+            .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut bit_scope, err))?;
+          Ok(AsyncEval::Complete(value))
+        }
+        AsyncEval::Suspend(mut suspend) => {
+          let (base_root, key_root) = match reference {
+            Reference::Binding(_) => (None, None),
+            Reference::Property { base, key } => {
+              let mut root_scope = op_scope.reborrow();
+              root_scope.push_root(base)?;
+              let base_root = root_scope.heap_mut().add_root(base)?;
+
+              let key_value = match key {
+                PropertyKey::String(s) => Value::String(s),
+                PropertyKey::Symbol(s) => Value::Symbol(s),
+              };
+              root_scope.push_root(key_value)?;
+              let key_root = root_scope.heap_mut().add_root(key_value)?;
+
+              (Some(base_root), Some(key_root))
+            }
+            Reference::Private { base, sym, .. } => {
+              let mut root_scope = op_scope.reborrow();
+              root_scope.push_root(base)?;
+              let base_root = root_scope.heap_mut().add_root(base)?;
+
+              let key_value = Value::Symbol(sym);
+              root_scope.push_root(key_value)?;
+              let key_root = root_scope.heap_mut().add_root(key_value)?;
+
+              (Some(base_root), Some(key_root))
+            }
+          };
+
+          let mut root_scope = op_scope.reborrow();
+          root_scope.push_root(left)?;
+          let left_root = root_scope.heap_mut().add_root(left)?;
+
+          async_frames_push(
+            &mut suspend.frames,
+            AsyncFrame::AssignAddAfterRhs {
+              expr: expr as *const BinaryExpr,
+              base_root,
+              key_root,
+              left_root,
+            },
+          )?;
+          Ok(AsyncEval::Suspend(suspend))
+        }
+      }
+    }
+    OperatorName::AssignmentLogicalAnd
+    | OperatorName::AssignmentLogicalOr
+    | OperatorName::AssignmentNullishCoalescing => {
+      let mut op_scope = scope.reborrow();
+      evaluator.root_reference(&mut op_scope, &reference)?;
+
+      let left = evaluator
+        .get_value_from_reference(&mut op_scope, &reference)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
+
+      let should_assign = match expr.operator {
+        OperatorName::AssignmentLogicalAnd => to_boolean(op_scope.heap(), left)?,
+        OperatorName::AssignmentLogicalOr => !to_boolean(op_scope.heap(), left)?,
+        OperatorName::AssignmentNullishCoalescing => is_nullish(left),
+        _ => unreachable!(),
+      };
+      if !should_assign {
+        return Ok(AsyncEval::Complete(left));
+      }
+
+      match async_eval_expr(evaluator, &mut op_scope, &expr.right)? {
+        AsyncEval::Complete(value) => {
+          op_scope.push_root(value)?;
+          evaluator
+            .put_value_to_reference(&mut op_scope, &reference, value)
+            .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
+          Ok(AsyncEval::Complete(value))
+        }
+        AsyncEval::Suspend(mut suspend) => {
+          let (base_root, key_root) = match reference {
+            Reference::Binding(_) => (None, None),
+            Reference::Property { base, key } => {
+              let mut root_scope = op_scope.reborrow();
+              root_scope.push_root(base)?;
+              let base_root = root_scope.heap_mut().add_root(base)?;
+
+              let key_value = match key {
+                PropertyKey::String(s) => Value::String(s),
+                PropertyKey::Symbol(s) => Value::Symbol(s),
+              };
+              root_scope.push_root(key_value)?;
+              let key_root = root_scope.heap_mut().add_root(key_value)?;
+
+              (Some(base_root), Some(key_root))
+            }
+            Reference::Private { base, sym, .. } => {
+              let mut root_scope = op_scope.reborrow();
+              root_scope.push_root(base)?;
+              let base_root = root_scope.heap_mut().add_root(base)?;
+
+              let key_value = Value::Symbol(sym);
+              root_scope.push_root(key_value)?;
+              let key_root = root_scope.heap_mut().add_root(key_value)?;
+              (Some(base_root), Some(key_root))
+            }
+          };
+
+          async_frames_push(
+            &mut suspend.frames,
+            AsyncFrame::AssignAfterRhs {
+              expr: expr as *const BinaryExpr,
+              base_root,
+              key_root,
             },
           )?;
           Ok(AsyncEval::Suspend(suspend))
@@ -27832,6 +28046,17 @@ fn async_resume_from_frames(
                         "Cannot mix BigInt and other types",
                       )?),
                     }?
+                  }
+                  OperatorName::AssignmentBitwiseAnd
+                  | OperatorName::AssignmentBitwiseOr
+                  | OperatorName::AssignmentBitwiseXor => {
+                    let bit_op = match expr.operator {
+                      OperatorName::AssignmentBitwiseAnd => OperatorName::BitwiseAnd,
+                      OperatorName::AssignmentBitwiseOr => OperatorName::BitwiseOr,
+                      OperatorName::AssignmentBitwiseXor => OperatorName::BitwiseXor,
+                      _ => unreachable!(),
+                    };
+                    async_apply_binary_operator(evaluator, &mut compound_scope, bit_op, left, right)?
                   }
                   OperatorName::AssignmentBitwiseLeftShift
                   | OperatorName::AssignmentBitwiseRightShift
