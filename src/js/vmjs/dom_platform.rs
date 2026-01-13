@@ -23,6 +23,11 @@ pub type DocumentId = u64;
 /// and throws `DataCloneError` (HTML structured clone algorithm).
 pub const DOM_WRAPPER_HOST_TAG: u64 = 0x444F_4D57_5241_5050; // "DOMWRAPP"
 
+/// HostSlots tag used to brand CSSStyleDeclaration-like objects cached on element wrappers.
+///
+/// Must match `window_realm::CSS_STYLE_DECL_HOST_TAG`.
+const CSS_STYLE_DECL_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMCSS");
+
 #[inline]
 fn document_id_from_key(document_key: WeakGcObject) -> DocumentId {
   (document_key.index() as u64) | ((document_key.generation() as u64) << 32)
@@ -1047,6 +1052,7 @@ impl DomPlatform {
     heap: &mut Heap,
     node_id_key: &PropertyKey,
     wrapper_document_key: &PropertyKey,
+    style_key: &PropertyKey,
     new_document_obj: Option<GcObject>,
     old: DomNodeKey,
     new: DomNodeKey,
@@ -1147,6 +1153,102 @@ impl DomPlatform {
       Err(err) => return Err(err),
     }
 
+    // Keep any cached Element.style object (CSSStyleDeclaration-like shim) in sync.
+    //
+    // WebIDL host dispatch may cache `el.style` as an own data property on the element wrapper.
+    // When wrapper identity is preserved across clone+mapping operations, the wrapper's own node id
+    // updates are not sufficient: the nested style object can still point at the old node id.
+    //
+    // Best-effort: scripts can overwrite `el.style`; only touch objects that look like our shim.
+    if let Ok(Some(Value::Object(style_obj))) =
+      heap.object_get_own_data_property_value(wrapper, style_key)
+    {
+      if let Ok(Some(slots)) = heap.object_host_slots(style_obj) {
+        if slots.b == CSS_STYLE_DECL_HOST_TAG {
+          // Update host slots used by `VmHostHooks::host_exotic_*`.
+          let _ = heap.object_set_host_slots(
+            style_obj,
+            HostSlots {
+              a: new.node_id.index() as u64,
+              b: CSS_STYLE_DECL_HOST_TAG,
+            },
+          );
+
+          // Update `__fastrender_node_id` on the style object so native shims that read it directly
+          // continue to work.
+          match heap.object_set_existing_data_property_value(
+            style_obj,
+            node_id_key,
+            Value::Number(new.node_id.index() as f64),
+          ) {
+            Ok(()) => {}
+            Err(VmError::PropertyNotFound | VmError::PropertyNotData) => {
+              let mut scope = heap.scope();
+              scope.push_root(Value::Object(style_obj))?;
+              match *node_id_key {
+                PropertyKey::String(s) => scope.push_root(Value::String(s))?,
+                PropertyKey::Symbol(s) => scope.push_root(Value::Symbol(s))?,
+              };
+              scope.define_property(
+                style_obj,
+                *node_id_key,
+                PropertyDescriptor {
+                  enumerable: false,
+                  configurable: true,
+                  kind: PropertyKind::Data {
+                    value: Value::Number(new.node_id.index() as f64),
+                    writable: true,
+                  },
+                },
+              )?;
+            }
+            Err(_) => {
+              // Ignore unexpected errors to avoid breaking remap operations when user code tampers
+              // with `el.style`.
+            }
+          }
+
+          // Keep the style object's document back-reference in sync when moving between documents.
+          if old.document_id != new.document_id {
+            if let Some(new_document_obj) = new_document_obj {
+              match heap.object_set_existing_data_property_value(
+                style_obj,
+                wrapper_document_key,
+                Value::Object(new_document_obj),
+              ) {
+                Ok(()) => {}
+                Err(VmError::PropertyNotFound | VmError::PropertyNotData) => {
+                  let mut scope = heap.scope();
+                  scope.push_root(Value::Object(style_obj))?;
+                  match *wrapper_document_key {
+                    PropertyKey::String(s) => scope.push_root(Value::String(s))?,
+                    PropertyKey::Symbol(s) => scope.push_root(Value::Symbol(s))?,
+                  };
+                  scope.push_root(Value::Object(new_document_obj))?;
+                  scope.define_property(
+                    style_obj,
+                    *wrapper_document_key,
+                    PropertyDescriptor {
+                      enumerable: false,
+                      configurable: false,
+                      kind: PropertyKind::Data {
+                        value: Value::Object(new_document_obj),
+                        writable: true,
+                      },
+                    },
+                  )?;
+                }
+                Err(_) => {
+                  // Ignore unexpected errors to avoid breaking remap operations when user code
+                  // tampers with `el.style`.
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
     Ok(())
   }
 
@@ -1161,20 +1263,29 @@ impl DomPlatform {
     old: DomNodeKey,
     new: DomNodeKey,
   ) -> Result<(), VmError> {
-    // Allocate the property key once. `PropertyKey` string comparisons are by content, so it will
+    // Allocate the property keys once. `PropertyKey` string comparisons are by content, so it will
     // match existing keys even if wrappers were created using a different `GcString` handle.
-    let node_id_key = {
-      let mut scope = heap.scope();
-      PropertyKey::from_string(scope.alloc_string(INTERNAL_NODE_ID_KEY)?)
-    };
-    let wrapper_document_key = {
-      let mut scope = heap.scope();
-      PropertyKey::from_string(scope.alloc_string(INTERNAL_WRAPPER_DOCUMENT_KEY)?)
-    };
+    //
+    // Root the strings for the duration of the operation so GC during subsequent allocations can't
+    // collect them (these keys are not stored on any object graph).
+    let mut scope = heap.scope();
+    let node_id_s = scope.alloc_string(INTERNAL_NODE_ID_KEY)?;
+    scope.push_root(Value::String(node_id_s))?;
+    let node_id_key = PropertyKey::from_string(node_id_s);
+    let wrapper_document_s = scope.alloc_string(INTERNAL_WRAPPER_DOCUMENT_KEY)?;
+    scope.push_root(Value::String(wrapper_document_s))?;
+    let wrapper_document_key = PropertyKey::from_string(wrapper_document_s);
+    let style_s = scope.alloc_string("style")?;
+    scope.push_root(Value::String(style_s))?;
+    let style_key = PropertyKey::from_string(style_s);
+
     let new_document_obj = if old.document_id != new.document_id {
       Some(
         self
-          .get_existing_wrapper_for_node_key(heap, DomNodeKey::new(new.document_id, NodeId::from_index(0)))
+          .get_existing_wrapper_for_node_key(
+            scope.heap(),
+            DomNodeKey::new(new.document_id, NodeId::from_index(0)),
+          )
           .ok_or(VmError::InvariantViolation(
             "missing wrapper for destination document node",
           ))?,
@@ -1183,9 +1294,10 @@ impl DomPlatform {
       None
     };
     self.rebind_wrapper_impl(
-      heap,
+      scope.heap_mut(),
       &node_id_key,
       &wrapper_document_key,
+      &style_key,
       new_document_obj,
       old,
       new,
@@ -1209,19 +1321,23 @@ impl DomPlatform {
       return Ok(());
     }
 
-    let node_id_key = {
-      let mut scope = heap.scope();
-      PropertyKey::from_string(scope.alloc_string(INTERNAL_NODE_ID_KEY)?)
-    };
-    let wrapper_document_key = {
-      let mut scope = heap.scope();
-      PropertyKey::from_string(scope.alloc_string(INTERNAL_WRAPPER_DOCUMENT_KEY)?)
-    };
+    // Root strings for the duration of the remap: they are not stored on the object graph.
+    let mut scope = heap.scope();
+    let node_id_s = scope.alloc_string(INTERNAL_NODE_ID_KEY)?;
+    scope.push_root(Value::String(node_id_s))?;
+    let node_id_key = PropertyKey::from_string(node_id_s);
+    let wrapper_document_s = scope.alloc_string(INTERNAL_WRAPPER_DOCUMENT_KEY)?;
+    scope.push_root(Value::String(wrapper_document_s))?;
+    let wrapper_document_key = PropertyKey::from_string(wrapper_document_s);
+    let style_s = scope.alloc_string("style")?;
+    scope.push_root(Value::String(style_s))?;
+    let style_key = PropertyKey::from_string(style_s);
     for (&old_id, &new_id) in mapping {
       self.rebind_wrapper_impl(
-        heap,
+        scope.heap_mut(),
         &node_id_key,
         &wrapper_document_key,
+        &style_key,
         None,
         DomNodeKey::new(document_id, old_id),
         DomNodeKey::new(document_id, new_id),
@@ -1243,24 +1359,32 @@ impl DomPlatform {
       return Ok(());
     }
 
-    let node_id_key = {
-      let mut scope = heap.scope();
-      PropertyKey::from_string(scope.alloc_string(INTERNAL_NODE_ID_KEY)?)
-    };
-    let wrapper_document_key = {
-      let mut scope = heap.scope();
-      PropertyKey::from_string(scope.alloc_string(INTERNAL_WRAPPER_DOCUMENT_KEY)?)
-    };
+    // Root strings for the duration of the remap: they are not stored on the object graph.
+    let mut scope = heap.scope();
+    let node_id_s = scope.alloc_string(INTERNAL_NODE_ID_KEY)?;
+    scope.push_root(Value::String(node_id_s))?;
+    let node_id_key = PropertyKey::from_string(node_id_s);
+    let wrapper_document_s = scope.alloc_string(INTERNAL_WRAPPER_DOCUMENT_KEY)?;
+    scope.push_root(Value::String(wrapper_document_s))?;
+    let wrapper_document_key = PropertyKey::from_string(wrapper_document_s);
+    let style_s = scope.alloc_string("style")?;
+    scope.push_root(Value::String(style_s))?;
+    let style_key = PropertyKey::from_string(style_s);
+
     let new_document_obj = self
-      .get_existing_wrapper_for_node_key(heap, DomNodeKey::new(new_document_id, NodeId::from_index(0)))
+      .get_existing_wrapper_for_node_key(
+        scope.heap(),
+        DomNodeKey::new(new_document_id, NodeId::from_index(0)),
+      )
       .ok_or(VmError::InvariantViolation(
         "missing wrapper for destination document node",
       ))?;
     for (&old_id, &new_id) in mapping {
       self.rebind_wrapper_impl(
-        heap,
+        scope.heap_mut(),
         &node_id_key,
         &wrapper_document_key,
+        &style_key,
         Some(new_document_obj),
         DomNodeKey::new(old_document_id, old_id),
         DomNodeKey::new(new_document_id, new_id),
@@ -1444,8 +1568,8 @@ mod tests {
   use crate::dom2::{NodeId, NodeKind};
   use std::collections::HashMap;
   use vm_js::{
-    GcObject, Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Value, Vm,
-    VmError, VmOptions, WeakGcObject,
+    GcObject, Heap, HeapLimits, HostSlots, PropertyDescriptor, PropertyKey, PropertyKind, Realm,
+    Value, Vm, VmError, VmOptions, WeakGcObject,
   };
 
   fn split_runtime_realm(runtime: &mut vm_js::JsRuntime) -> (&Realm, &mut Heap) {
@@ -1872,6 +1996,171 @@ mod tests {
     assert_eq!(wrapper_doc_value, Value::Object(document_b));
 
     scope.heap_mut().remove_root(root);
+    Ok(())
+  }
+
+  #[test]
+  fn remap_updates_cached_style_object_between_documents() -> Result<(), VmError> {
+    let mut runtime = make_runtime()?;
+    let (realm, heap) = split_runtime_realm(&mut runtime);
+    let mut scope = heap.scope();
+    let mut platform = DomPlatform::new(&mut scope, realm)?;
+
+    let document_a = scope.alloc_object()?;
+    let document_b = scope.alloc_object()?;
+    let document_key_a = WeakGcObject::from(document_a);
+    let document_key_b = WeakGcObject::from(document_b);
+    let document_id_a = super::document_id_from_key(document_key_a);
+    let document_id_b = super::document_id_from_key(document_key_b);
+    let _doc_a_root = scope.heap_mut().add_root(Value::Object(document_a))?;
+    let _doc_b_root = scope.heap_mut().add_root(Value::Object(document_b))?;
+
+    // Register document-node wrappers so `remap_node_ids_between_documents` can resolve the target
+    // document object when updating `__fastrender_wrapper_document`.
+    platform.register_wrapper(
+      scope.heap(),
+      document_a,
+      document_key_a,
+      NodeId::from_index(0),
+      DomInterface::Document,
+    );
+    platform.register_wrapper(
+      scope.heap(),
+      document_b,
+      document_key_b,
+      NodeId::from_index(0),
+      DomInterface::Document,
+    );
+
+    let old_id = NodeId::from_index(5);
+    let wrapper =
+      platform.get_or_create_wrapper(&mut scope, document_key_a, old_id, DomInterface::Element)?;
+    let _wrapper_root = scope.heap_mut().add_root(Value::Object(wrapper))?;
+
+    // Mirror real `window_realm` wrappers by associating the wrapper with its originating document.
+    {
+      let mut scope = scope.reborrow();
+      scope.push_root(Value::Object(wrapper))?;
+      let key = alloc_key(&mut scope, super::INTERNAL_WRAPPER_DOCUMENT_KEY)?;
+      scope.define_property(
+        wrapper,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Object(document_a),
+            writable: true,
+          },
+        },
+      )?;
+    }
+
+    // Create and cache a CSSStyleDeclaration-like shim on the element wrapper.
+    let style_obj = scope.alloc_object()?;
+    {
+      let mut scope = scope.reborrow();
+      scope.push_root(Value::Object(wrapper))?;
+      scope.push_root(Value::Object(style_obj))?;
+
+      scope.heap_mut().object_set_host_slots(
+        style_obj,
+        HostSlots {
+          a: old_id.index() as u64,
+          b: super::CSS_STYLE_DECL_HOST_TAG,
+        },
+      )?;
+
+      let node_id_key = alloc_key(&mut scope, super::INTERNAL_NODE_ID_KEY)?;
+      scope.define_property(
+        style_obj,
+        node_id_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Number(old_id.index() as f64),
+            writable: true,
+          },
+        },
+      )?;
+
+      let wrapper_document_key = alloc_key(&mut scope, super::INTERNAL_WRAPPER_DOCUMENT_KEY)?;
+      scope.define_property(
+        style_obj,
+        wrapper_document_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Object(document_a),
+            writable: false,
+          },
+        },
+      )?;
+
+      let style_key = alloc_key(&mut scope, "style")?;
+      scope.define_property(
+        wrapper,
+        style_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Object(style_obj),
+            writable: true,
+          },
+        },
+      )?;
+    }
+
+    let new_id = NodeId::from_index(9);
+    let mut mapping: HashMap<NodeId, NodeId> = HashMap::new();
+    mapping.insert(old_id, new_id);
+    platform.remap_node_ids_between_documents(
+      scope.heap_mut(),
+      document_id_a,
+      document_id_b,
+      &mapping,
+    )?;
+
+    // Element wrapper identity is preserved and the cached style object stays attached.
+    let wrapper2 =
+      platform.get_or_create_wrapper(&mut scope, document_key_b, new_id, DomInterface::Element)?;
+    assert_eq!(wrapper, wrapper2);
+    let style_key = PropertyKey::from_string(scope.alloc_string("style")?);
+    let style_val = scope
+      .heap()
+      .object_get_own_data_property_value(wrapper, &style_key)?
+      .unwrap_or(Value::Undefined);
+    let Value::Object(style_obj2) = style_val else {
+      return Err(VmError::InvariantViolation("expected element wrapper to have cached style object"));
+    };
+    assert_eq!(style_obj2, style_obj);
+
+    // The style object now points at the new node id + destination document.
+    let slots = scope
+      .heap()
+      .object_host_slots(style_obj2)?
+      .ok_or(VmError::InvariantViolation("expected style object to have host slots"))?;
+    assert_eq!(slots.b, super::CSS_STYLE_DECL_HOST_TAG);
+    assert_eq!(slots.a, new_id.index() as u64);
+
+    let node_id_key = PropertyKey::from_string(scope.alloc_string(super::INTERNAL_NODE_ID_KEY)?);
+    let node_id_val = scope
+      .heap()
+      .object_get_own_data_property_value(style_obj2, &node_id_key)?
+      .unwrap_or(Value::Undefined);
+    assert_eq!(node_id_val, Value::Number(new_id.index() as f64));
+
+    let wrapper_document_key =
+      PropertyKey::from_string(scope.alloc_string(super::INTERNAL_WRAPPER_DOCUMENT_KEY)?);
+    let wrapper_document_val = scope
+      .heap()
+      .object_get_own_data_property_value(style_obj2, &wrapper_document_key)?
+      .unwrap_or(Value::Undefined);
+    assert_eq!(wrapper_document_val, Value::Object(document_b));
+
     Ok(())
   }
 
