@@ -287,6 +287,31 @@ mod browser_hud_env_tests {
   }
 }
 
+#[cfg(all(test, feature = "browser_ui"))]
+mod browser_show_menu_bar_env_tests {
+  use super::*;
+
+  #[test]
+  fn parse_browser_show_menu_bar_env_values() {
+    assert_eq!(parse_browser_show_menu_bar_env(None), Ok(None));
+    assert_eq!(parse_browser_show_menu_bar_env(Some("")), Ok(None));
+    assert_eq!(parse_browser_show_menu_bar_env(Some("   ")), Ok(None));
+
+    assert_eq!(parse_browser_show_menu_bar_env(Some("1")), Ok(Some(true)));
+    assert_eq!(parse_browser_show_menu_bar_env(Some("true")), Ok(Some(true)));
+    assert_eq!(parse_browser_show_menu_bar_env(Some("TrUe")), Ok(Some(true)));
+    assert_eq!(parse_browser_show_menu_bar_env(Some("yes")), Ok(Some(true)));
+    assert_eq!(parse_browser_show_menu_bar_env(Some("on")), Ok(Some(true)));
+
+    assert_eq!(parse_browser_show_menu_bar_env(Some("0")), Ok(Some(false)));
+    assert_eq!(parse_browser_show_menu_bar_env(Some("false")), Ok(Some(false)));
+    assert_eq!(parse_browser_show_menu_bar_env(Some("no")), Ok(Some(false)));
+    assert_eq!(parse_browser_show_menu_bar_env(Some("off")), Ok(Some(false)));
+
+    assert!(parse_browser_show_menu_bar_env(Some("maybe")).is_err());
+  }
+}
+
 #[cfg(test)]
 mod open_typed_in_new_tab_tests {
   use super::open_typed_in_new_tab_state;
