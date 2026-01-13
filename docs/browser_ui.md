@@ -192,9 +192,9 @@ do not block the UI thread:
 - **Crash marker:** on startup, the browser immediately persists `did_exit_cleanly=false`. If the
   process is terminated unexpectedly, this marker remains false on disk and the next launch can
   detect the unclean exit (the entrypoint prints a warning when restoring).
-- **Background autosave:** while the browser is running, it periodically snapshots the current
-  session and schedules a debounced background save on “significant” state changes (for example tab
-  navigations, tab/window creation/closure, zoom/appearance changes, and window geometry changes).
+- **Background autosave:** while the browser is running, it snapshots the current session and
+  schedules a debounced background save on “significant” state changes (for example tab navigations,
+  tab/window creation/closure, zoom/appearance changes, and window geometry changes).
 - **Clean shutdown:** on a normal exit the final snapshot is written with `did_exit_cleanly=true`.
 
 ## Platform polish (window icon, sizing, system theme)
@@ -327,14 +327,11 @@ The windowed `browser` UI includes a browser-style menu bar for discoverability 
 - **Help**
 
 Implemented items are wired up to existing browser UI actions (tabs, navigation, reload, zoom,
-clipboard, panels). The following previously-disabled menu items are now enabled:
+clipboard, panels).
 
-- **Window → New Window** — opens an additional browser window (same profile/session).
-- **Window → Show Downloads…** — opens the downloads UI.
-- **Bookmarks → Bookmark manager…** — opens the bookmarks manager UI.
-- **View → Toggle Full Screen** — toggles native fullscreen for the current window.
-
-Some menu entries are still placeholders (for example Undo/Redo).
+Some menu entries are still placeholders and remain disabled (for example Undo/Redo, **View → Toggle
+Full Screen**, **Bookmarks → Bookmark manager…**, **Window → New Window**, **Window → Show
+Downloads…**).
 
 Help/About items open `about:help` / `about:version` in a new tab.
 
