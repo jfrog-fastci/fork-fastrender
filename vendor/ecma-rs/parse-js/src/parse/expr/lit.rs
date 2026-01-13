@@ -3121,16 +3121,22 @@ mod regex_validation_tests {
     assert_valid(r"/\p{Script=Han}/v");
     assert_valid(r"/[\q{}]/v");
     assert_valid(r"/[\q{|a}]/v");
+    assert_valid(r"/[\q{a||b}]/v"); // empty disjunction arm is allowed outside negated classes
     assert_valid(r"/[\q{a\|b}]/v");
     assert_valid(r"/[\q{a\}b}]/v");
+    assert_valid(r"/[\q{a\\b}]/v");
+    assert_valid(r"/[\q{a\{b}]/v");
+    assert_valid(r"/[\q{\u{41}}]/v");
     assert_valid(r"/[\q{\&\&}]/v");
   }
 
   #[test]
   fn unicode_sets_mode_allows_non_string_disjunction_in_negated_class() {
     assert_valid(r"/[^\q{a|b}]/v");
+    assert_valid(r"/[^\q{\u{41}}]/v"); // braced unicode escape counts as a single ClassSetCharacter
     assert_valid(r"/[^\q{\uD83D\uDE00}]/v"); // surrogate pair counts as a single ClassSetCharacter
     assert_invalid(r"/[^\q{ab}]/v");
+    assert_invalid(r"/[^\q{a||b}]/v");
     assert_invalid(r"/[^\q{}]/v");
   }
 
