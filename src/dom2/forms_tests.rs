@@ -25,6 +25,16 @@ fn find_dom_by_id<'a>(root: &'a DomNode, id: &str) -> Option<&'a DomNode> {
   None
 }
 
+fn find_shadow_root_for_host(doc: &Document, host: NodeId) -> Option<NodeId> {
+  let host_node = doc.nodes().get(host.index())?;
+  host_node.children.iter().copied().find(|&child| {
+    let Some(child_node) = doc.nodes().get(child.index()) else {
+      return false;
+    };
+    child_node.parent == Some(host) && matches!(child_node.kind, NodeKind::ShadowRoot { .. })
+  })
+}
+
 #[test]
 fn input_value_and_checked_use_internal_state_with_dirty_flags() {
   let html =
@@ -179,6 +189,156 @@ fn form_control_property_setters_record_form_state_mutations() {
   assert!(mutations.attribute_changed.is_empty());
   assert!(mutations.text_changed.is_empty());
   assert!(mutations.child_list_changed.is_empty());
+}
+
+#[test]
+fn radio_group_exclusivity_same_name() {
+  let html = concat!(
+    "<!doctype html><html><body>",
+    "<input id=a type=radio name=g checked>",
+    "<input id=b type=radio name=g>",
+    "</body></html>",
+  );
+  let mut doc = crate::dom2::parse_html(html).unwrap();
+  let a = doc.get_element_by_id("a").expect("radio a");
+  let b = doc.get_element_by_id("b").expect("radio b");
+
+  assert!(doc.input_checked(a).unwrap());
+  assert!(!doc.input_checked(b).unwrap());
+
+  doc.set_input_checked(b, true).unwrap();
+  assert!(
+    !doc.input_checked(a).unwrap(),
+    "other radio must be unchecked"
+  );
+  assert!(doc.input_checked(b).unwrap());
+
+  // IDL property setters must not mutate attributes.
+  assert!(doc.has_attribute(a, "checked").unwrap());
+
+  // Unchecked radios become dirty when unchecked due to another radio being checked.
+  assert!(
+    doc
+      .input_states
+      .get(a.index())
+      .and_then(|s| s.as_ref())
+      .is_some_and(|s| s.dirty_checkedness),
+    "unchecked radio should be dirty"
+  );
+  assert!(
+    doc
+      .input_states
+      .get(b.index())
+      .and_then(|s| s.as_ref())
+      .is_some_and(|s| s.dirty_checkedness),
+    "checked radio should be dirty after IDL setter"
+  );
+}
+
+#[test]
+fn radio_group_exclusivity_different_names_no_cross_effects() {
+  let html = concat!(
+    "<!doctype html><html><body>",
+    "<input id=a type=radio name=g checked>",
+    "<input id=b type=radio name=h>",
+    "</body></html>",
+  );
+  let mut doc = crate::dom2::parse_html(html).unwrap();
+  let a = doc.get_element_by_id("a").expect("radio a");
+  let b = doc.get_element_by_id("b").expect("radio b");
+
+  doc.set_input_checked(b, true).unwrap();
+  assert!(
+    doc.input_checked(a).unwrap(),
+    "different name must not be unchecked"
+  );
+  assert!(doc.input_checked(b).unwrap());
+
+  assert!(
+    doc
+      .input_states
+      .get(a.index())
+      .and_then(|s| s.as_ref())
+      .is_some_and(|s| !s.dirty_checkedness),
+    "unaffected radios should not become dirty"
+  );
+}
+
+#[test]
+fn radio_group_exclusivity_different_tree_roots_no_cross_effects() {
+  let html = concat!(
+    "<!doctype html><html><body>",
+    "<div id=host>",
+    "<template shadowroot=open>",
+    "<input id=inner type=radio name=g>",
+    "</template>",
+    "</div>",
+    "<input id=outer type=radio name=g checked>",
+    "</body></html>",
+  );
+  let mut doc = crate::dom2::parse_html(html).unwrap();
+
+  let host = doc.get_element_by_id("host").expect("shadow host");
+  let shadow_root = find_shadow_root_for_host(&doc, host).expect("shadow root");
+  let inner = doc
+    .get_element_by_id_from(shadow_root, "inner")
+    .expect("inner radio");
+  let outer = doc.get_element_by_id("outer").expect("outer radio");
+
+  assert!(!doc.input_checked(inner).unwrap());
+  assert!(doc.input_checked(outer).unwrap());
+
+  doc.set_input_checked(inner, true).unwrap();
+  assert!(doc.input_checked(inner).unwrap());
+  assert!(
+    doc.input_checked(outer).unwrap(),
+    "shadow tree root must not affect light DOM radio group"
+  );
+}
+
+#[test]
+fn radio_group_exclusivity_form_reset_restores_last_default_checked() {
+  let html = concat!(
+    "<!doctype html><html><body>",
+    "<form id=f>",
+    "<input id=r1 type=radio name=g checked>",
+    "<input id=r2 type=radio name=g checked>",
+    "</form>",
+    "</body></html>",
+  );
+  let mut doc = crate::dom2::parse_html(html).unwrap();
+  let form = doc.get_element_by_id("f").expect("form");
+  let r1 = doc.get_element_by_id("r1").expect("r1");
+  let r2 = doc.get_element_by_id("r2").expect("r2");
+
+  // User/runtime selection makes r1 the checked one.
+  doc.set_input_checked(r1, true).unwrap();
+  assert!(doc.input_checked(r1).unwrap());
+  assert!(!doc.input_checked(r2).unwrap());
+
+  // Reset returns to defaults. When multiple `checked` attributes exist, only the last-in-tree-order
+  // radio should end up checked (legacy behavior).
+  doc.form_reset(form).unwrap();
+  assert!(!doc.input_checked(r1).unwrap());
+  assert!(doc.input_checked(r2).unwrap());
+
+  // Reset clears dirty flags.
+  assert!(
+    doc
+      .input_states
+      .get(r1.index())
+      .and_then(|s| s.as_ref())
+      .is_some_and(|s| !s.dirty_checkedness),
+    "reset should clear dirty_checkedness"
+  );
+  assert!(
+    doc
+      .input_states
+      .get(r2.index())
+      .and_then(|s| s.as_ref())
+      .is_some_and(|s| !s.dirty_checkedness),
+    "reset should clear dirty_checkedness"
+  );
 }
 
 #[test]

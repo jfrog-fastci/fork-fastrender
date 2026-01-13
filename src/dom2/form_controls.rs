@@ -63,11 +63,205 @@ fn input_default_value(type_attr: Option<&str>, value_attr: Option<&str>) -> Str
   String::new()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RadioGroupKey {
+  root: NodeId,
+  form_owner: Option<NodeId>,
+  name: String,
+}
+
 impl Document {
+  fn is_html_form_element(&self, node: NodeId) -> bool {
+    let Some(node) = self.nodes.get(node.index()) else {
+      return false;
+    };
+    match &node.kind {
+      NodeKind::Element {
+        tag_name,
+        namespace,
+        ..
+      } if self.is_html_case_insensitive_namespace(namespace)
+        && tag_name.eq_ignore_ascii_case("form") =>
+      {
+        true
+      }
+      _ => false,
+    }
+  }
+
+  fn input_radio_group_name(&self, input: NodeId) -> Option<&str> {
+    let Some(node) = self.nodes.get(input.index()) else {
+      return None;
+    };
+    let NodeKind::Element {
+      tag_name,
+      namespace,
+      attributes,
+      ..
+    } = &node.kind
+    else {
+      return None;
+    };
+    if !self.is_html_case_insensitive_namespace(namespace)
+      || !tag_name.eq_ignore_ascii_case("input")
+    {
+      return None;
+    }
+
+    let ty = attrs_get_ci(attributes, "type")
+      .map(trim_ascii_whitespace)
+      .filter(|v| !v.is_empty())
+      .unwrap_or("text");
+    if !ty.eq_ignore_ascii_case("radio") {
+      return None;
+    }
+
+    // Radio group semantics apply only when `name` is present and non-empty after ASCII trimming.
+    let name = attrs_get_ci(attributes, "name")?;
+    let name = trim_ascii_whitespace(name);
+    (!name.is_empty()).then_some(name)
+  }
+
+  fn resolve_form_owner_for_radio_group(&self, control: NodeId, root: NodeId) -> Option<NodeId> {
+    let node = self.nodes.get(control.index())?;
+    let NodeKind::Element {
+      namespace,
+      attributes,
+      ..
+    } = &node.kind
+    else {
+      return None;
+    };
+    if !self.is_html_case_insensitive_namespace(namespace) {
+      return None;
+    }
+
+    if let Some(form_attr) = attrs_get_ci(attributes, "form")
+      .map(trim_ascii_whitespace)
+      .filter(|v| !v.is_empty())
+    {
+      let referenced = self.get_element_by_id_from(root, form_attr)?;
+      return self.is_html_form_element(referenced).then_some(referenced);
+    }
+
+    for ancestor in self.ancestors(control).skip(1) {
+      if self.is_html_form_element(ancestor) {
+        return Some(ancestor);
+      }
+      if ancestor == root {
+        break;
+      }
+    }
+
+    None
+  }
+
+  fn radio_group_key(&self, input: NodeId) -> Option<RadioGroupKey> {
+    let name = self.input_radio_group_name(input)?.to_string();
+    let root = self.event_tree_root(input);
+    let form_owner = self.resolve_form_owner_for_radio_group(input, root);
+    Some(RadioGroupKey {
+      root,
+      form_owner,
+      name,
+    })
+  }
+
+  /// Enforce HTML radio-group mutual exclusivity for `input`.
+  ///
+  /// This is invoked after `input` becomes checked, and clears checkedness from other radios in the
+  /// same group (tree root + form owner + name).
+  ///
+  /// Returns `true` iff any other radio's internal state was modified.
+  fn uncheck_other_radios_in_group(
+    &mut self,
+    input: NodeId,
+    set_dirty_checkedness_on_others: bool,
+  ) -> bool {
+    // Only enforce exclusivity for checked radios.
+    let input_checked = self
+      .input_states
+      .get(input.index())
+      .and_then(|s| s.as_ref())
+      .is_some_and(|s| s.checkedness);
+    if !input_checked {
+      return false;
+    }
+
+    let Some(group) = self.radio_group_key(input) else {
+      return false;
+    };
+
+    // Gather candidates first using immutable borrows so we can mutate in a second phase without
+    // fighting borrow-checker aliasing.
+    let mut to_uncheck: Vec<NodeId> = Vec::new();
+    for idx in 0..self.nodes.len() {
+      if idx == input.index() {
+        continue;
+      }
+
+      let other = NodeId::from_index(idx);
+
+      // Fast path: only consider currently checked inputs.
+      let other_checked = self
+        .input_states
+        .get(idx)
+        .and_then(|s| s.as_ref())
+        .is_some_and(|s| s.checkedness);
+      if !other_checked {
+        continue;
+      }
+
+      if self.event_tree_root(other) != group.root {
+        continue;
+      }
+
+      let Some(other_name) = self.input_radio_group_name(other) else {
+        continue;
+      };
+      if other_name != group.name.as_str() {
+        continue;
+      }
+
+      let other_owner = self.resolve_form_owner_for_radio_group(other, group.root);
+      if other_owner != group.form_owner {
+        continue;
+      }
+
+      to_uncheck.push(other);
+    }
+
+    let mut changed = false;
+    for other in to_uncheck {
+      let Some(state) = self
+        .input_states
+        .get_mut(other.index())
+        .and_then(|s| s.as_mut())
+      else {
+        continue;
+      };
+
+      if state.checkedness {
+        state.checkedness = false;
+        if set_dirty_checkedness_on_others {
+          state.dirty_checkedness = true;
+        }
+        self.record_form_state_mutation(other);
+        changed = true;
+      }
+    }
+
+    changed
+  }
+
   pub(crate) fn init_form_control_state_for_node_kind(
     &self,
     kind: &NodeKind,
-  ) -> (Option<InputState>, Option<TextareaState>, Option<OptionState>) {
+  ) -> (
+    Option<InputState>,
+    Option<TextareaState>,
+    Option<OptionState>,
+  ) {
     let NodeKind::Element {
       tag_name,
       namespace,
@@ -210,7 +404,9 @@ impl Document {
       // flag" is false.
       //
       // Checkedness depends on the input type, so also recompute when `type` changes.
-      if (name.eq_ignore_ascii_case("checked") || name.eq_ignore_ascii_case("type")) && !dirty_checkedness {
+      if (name.eq_ignore_ascii_case("checked") || name.eq_ignore_ascii_case("type"))
+        && !dirty_checkedness
+      {
         let checkable = is_input_checkable(self.get_attribute(node, "type")?);
         let checked_attr = self.has_attribute(node, "checked")?;
         let checkedness = checkable && checked_attr;
@@ -222,6 +418,28 @@ impl Document {
           if !state.dirty_checkedness {
             state.checkedness = checkedness;
           }
+        }
+      }
+
+      // Radio-group checkedness normalization:
+      // When an input's checkedness is *not* dirty, mutations to attributes that affect radio-group
+      // membership (`checked`/`type`/`name`/`form`) must still preserve the group invariant that at
+      // most one radio is checked.
+      if !dirty_checkedness
+        && (name.eq_ignore_ascii_case("checked")
+          || name.eq_ignore_ascii_case("type")
+          || name.eq_ignore_ascii_case("name")
+          || name.eq_ignore_ascii_case("form"))
+      {
+        let checked_now = self
+          .input_states
+          .get(node.index())
+          .and_then(|s| s.as_ref())
+          .is_some_and(|s| s.checkedness);
+        if checked_now {
+          // Attribute mutations are runtime actions; other radios that get unchecked become dirty so
+          // their checkedness no longer tracks their `checked` content attribute.
+          self.uncheck_other_radios_in_group(node, /* set_dirty_checkedness_on_others */ true);
         }
       }
     }
@@ -275,9 +493,14 @@ impl Document {
 
   pub fn set_input_checked(&mut self, input: NodeId, checked: bool) -> Result<(), DomError> {
     let _ = self.node_checked(input)?;
-    let state = self.input_state_mut(input)?;
-    state.dirty_checkedness = true;
-    state.checkedness = checked;
+    {
+      let state = self.input_state_mut(input)?;
+      state.dirty_checkedness = true;
+      state.checkedness = checked;
+    }
+    if checked {
+      self.uncheck_other_radios_in_group(input, /* set_dirty_checkedness_on_others */ true);
+    }
     self.record_form_state_mutation(input);
     self.bump_mutation_generation_classified();
     Ok(())
@@ -315,20 +538,17 @@ impl Document {
 
   pub fn set_option_selected(&mut self, option: NodeId, selected: bool) -> Result<(), DomError> {
     let _ = self.node_checked(option)?;
-    let select_owner = self
-      .ancestors(option)
-      .skip(1)
-      .find(|&ancestor| {
-        let NodeKind::Element {
-          tag_name,
-          namespace,
-          ..
-        } = &self.node(ancestor).kind
-        else {
-          return false;
-        };
-        self.is_html_case_insensitive_namespace(namespace) && tag_name.eq_ignore_ascii_case("select")
-      });
+    let select_owner = self.ancestors(option).skip(1).find(|&ancestor| {
+      let NodeKind::Element {
+        tag_name,
+        namespace,
+        ..
+      } = &self.node(ancestor).kind
+      else {
+        return false;
+      };
+      self.is_html_case_insensitive_namespace(namespace) && tag_name.eq_ignore_ascii_case("select")
+    });
     let repaint_target = select_owner.unwrap_or(option);
 
     {
@@ -410,11 +630,18 @@ impl Document {
     let checkable = is_input_checkable(type_attr);
     let checked_attr = self.has_attribute(input, "checked")?;
     let default_checkedness = checkable && checked_attr;
-    let state = self.input_state_mut(input)?;
-    state.dirty_value = false;
-    state.value = default_value;
-    state.dirty_checkedness = false;
-    state.checkedness = default_checkedness;
+    {
+      let state = self.input_state_mut(input)?;
+      state.dirty_value = false;
+      state.value = default_value;
+      state.dirty_checkedness = false;
+      state.checkedness = default_checkedness;
+    }
+    if default_checkedness {
+      // Reset operations restore default checkedness and clear dirty flags, so other radios that get
+      // unchecked must not become dirty.
+      self.uncheck_other_radios_in_group(input, /* set_dirty_checkedness_on_others */ false);
+    }
     self.record_form_state_mutation(input);
     self.bump_mutation_generation_classified();
     Ok(())
@@ -444,9 +671,12 @@ impl Document {
   fn textarea_default_value(&self, textarea: NodeId) -> Result<String, DomError> {
     let node = self.node_checked(textarea)?;
     match &node.kind {
-      NodeKind::Element { tag_name, namespace, .. }
-        if self.is_html_case_insensitive_namespace(namespace)
-          && tag_name.eq_ignore_ascii_case("textarea") => {}
+      NodeKind::Element {
+        tag_name,
+        namespace,
+        ..
+      } if self.is_html_case_insensitive_namespace(namespace)
+        && tag_name.eq_ignore_ascii_case("textarea") => {}
       _ => return Err(DomError::InvalidNodeTypeError),
     }
 
@@ -460,7 +690,11 @@ impl Document {
         _ => {}
       }
       for &child in node.children.iter().rev() {
-        if self.nodes.get(child.index()).is_some_and(|child_node| child_node.parent == Some(node_id)) {
+        if self
+          .nodes
+          .get(child.index())
+          .is_some_and(|child_node| child_node.parent == Some(node_id))
+        {
           stack.push(child);
         }
       }
@@ -473,9 +707,12 @@ impl Document {
   pub fn form_reset(&mut self, form: NodeId) -> Result<(), DomError> {
     let node = self.node_checked(form)?;
     match &node.kind {
-      NodeKind::Element { tag_name, namespace, .. }
-        if self.is_html_case_insensitive_namespace(namespace)
-          && tag_name.eq_ignore_ascii_case("form") => {}
+      NodeKind::Element {
+        tag_name,
+        namespace,
+        ..
+      } if self.is_html_case_insensitive_namespace(namespace)
+        && tag_name.eq_ignore_ascii_case("form") => {}
       _ => return Err(DomError::InvalidNodeTypeError),
     }
 
@@ -495,17 +732,26 @@ impl Document {
         let checkable = is_input_checkable(type_attr);
         let checked_attr = self.has_attribute(node_id, "checked")?;
         let default_checkedness = checkable && checked_attr;
-        if let Some(state) = self
-          .input_states
-          .get_mut(node_id.index())
-          .and_then(|s| s.as_mut())
         {
-          state.dirty_value = false;
-          state.value = default_value;
-          state.dirty_checkedness = false;
-          state.checkedness = default_checkedness;
-          self.record_form_state_mutation(node_id);
-          any = true;
+          if let Some(state) = self
+            .input_states
+            .get_mut(node_id.index())
+            .and_then(|s| s.as_mut())
+          {
+            state.dirty_value = false;
+            state.value = default_value;
+            state.dirty_checkedness = false;
+            state.checkedness = default_checkedness;
+            self.record_form_state_mutation(node_id);
+            any = true;
+          }
+        }
+        if default_checkedness {
+          // Form reset clears dirty flags, so other radios that get unchecked should stay not-dirty.
+          let changed = self.uncheck_other_radios_in_group(
+            node_id, /* set_dirty_checkedness_on_others */ false,
+          );
+          any |= changed;
         }
       }
 
@@ -550,7 +796,11 @@ impl Document {
       // Descend.
       let children = self.node(node_id).children.clone();
       for child in children.into_iter().rev() {
-        if self.nodes.get(child.index()).is_some_and(|child_node| child_node.parent == Some(node_id)) {
+        if self
+          .nodes
+          .get(child.index())
+          .is_some_and(|child_node| child_node.parent == Some(node_id))
+        {
           stack.push(child);
         }
       }
@@ -602,7 +852,11 @@ impl Document {
 
       // Apply only to HTML elements in the HTML namespace.
       let (tag_name, namespace) = match &node.node_type {
-        DomNodeType::Element { tag_name, namespace, .. } => (tag_name.as_str(), namespace.as_str()),
+        DomNodeType::Element {
+          tag_name,
+          namespace,
+          ..
+        } => (tag_name.as_str(), namespace.as_str()),
         _ => {
           let len = node.children.len();
           let children_ptr = node.children.as_mut_ptr();
