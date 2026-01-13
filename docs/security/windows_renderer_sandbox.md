@@ -110,6 +110,8 @@ spawn.
 ## Windows version constraints
 
 - **AppContainer requires Windows 8+**.
+- Some hardened Windows environments expose the AppContainer exports but still refuse profile creation
+  (e.g. `CreateAppContainerProfile` fails due to system policy); treat this as “AppContainer unavailable”.
 - For best results and modern sandbox behavior, **Windows 10+ is recommended**.
 
 ---
