@@ -549,6 +549,14 @@ pub fn apply_renderer_sandbox_with_report(
 
   #[cfg(target_os = "linux")]
   {
+    // Ensure the renderer is killed if its parent disappears.
+    //
+    // `linux_seccomp::apply_renderer_sandbox_linux` also sets this, but we apply it here so the
+    // hardening layers still get PDEATHSIG even when `seccomp` is disabled.
+    linux_set_parent_death_signal().map_err(|source| SandboxError::SetParentDeathSignalFailed {
+      source,
+    })?;
+
     // Best-effort defense-in-depth: isolate networking via a new network namespace when permitted.
     // This must run before seccomp, since the seccomp filter may block `unshare(2)`.
     let _ = linux_namespaces::apply_namespaces(config.linux_namespaces);
@@ -568,7 +576,10 @@ pub fn apply_renderer_sandbox_with_report(
       }
     }
 
-    let status = linux_seccomp::apply_renderer_sandbox_linux(config)?;
+    let status = match config.seccomp {
+      RendererSeccompPolicy::Disabled => SandboxStatus::Applied,
+      RendererSeccompPolicy::RendererDefault => linux_seccomp::apply_renderer_sandbox_linux(config)?,
+    };
     return Ok((status, report));
   }
 
