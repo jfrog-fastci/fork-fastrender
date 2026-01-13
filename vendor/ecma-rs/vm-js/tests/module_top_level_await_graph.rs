@@ -256,6 +256,88 @@ fn tla_in_dependency_makes_importer_evaluation_async() -> Result<(), VmError> {
 }
 
 #[test]
+fn tla_evaluate_is_idempotent_for_importer_without_tla() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+  let mut promise_root: Option<RootId> = None;
+  let mut graph = ModuleGraph::new();
+
+  let result = (|| -> Result<(), VmError> {
+    graph.add_module_with_specifier(
+      "dep.js",
+      SourceTextModuleRecord::parse(&mut heap, "export const v = await Promise.resolve(1);")?,
+    );
+    let main = graph.add_module_with_specifier(
+      "main.js",
+      SourceTextModuleRecord::parse(
+        &mut heap,
+        "import { v } from 'dep.js'; export const out = v + 1;",
+      )?,
+    );
+    graph.link_all_by_specifier();
+
+    let promise1 = graph.evaluate(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      main,
+      &mut host,
+      &mut hooks,
+    )?;
+    let promise1_obj = expect_promise_object(promise1);
+
+    promise_root = Some(root_value(&mut heap, promise1)?);
+    assert_eq!(heap.promise_state(promise1_obj)?, PromiseState::Pending);
+
+    let promise2 = graph.evaluate(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      main,
+      &mut host,
+      &mut hooks,
+    )?;
+    let promise2_obj = expect_promise_object(promise2);
+
+    assert_eq!(
+      promise1_obj, promise2_obj,
+      "evaluating the importer module twice should return the same Promise object"
+    );
+
+    drain_microtasks(&mut vm, &mut heap, &mut hooks)?;
+
+    let promise = heap
+      .get_root(promise_root.ok_or_else(|| VmError::InvariantViolation("promise root missing"))?)
+      .ok_or_else(VmError::invalid_handle)?;
+    let promise_obj = expect_promise_object(promise);
+    assert_eq!(heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+    let mut scope = heap.scope();
+    let ns = graph.get_module_namespace(main, &mut vm, &mut scope)?;
+    assert_eq!(
+      ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "out")?,
+      Value::Number(2.0)
+    );
+
+    drop(scope);
+    graph.teardown(&mut vm, &mut heap);
+    Ok(())
+  })();
+
+  graph.teardown(&mut vm, &mut heap);
+  if let Some(root) = promise_root {
+    heap.remove_root(root);
+  }
+  graph.teardown(&mut vm, &mut heap);
+  teardown_jobs(&mut vm, &mut heap, &mut hooks);
+  realm.teardown(&mut heap);
+  result
+}
+
+#[test]
 fn tla_async_cycle_evaluates_without_deadlock() -> Result<(), VmError> {
   let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
   let mut hooks = MicrotaskQueue::new();
