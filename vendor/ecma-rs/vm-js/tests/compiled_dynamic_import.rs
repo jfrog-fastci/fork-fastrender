@@ -658,3 +658,69 @@ fn compiled_dynamic_import_rejects_when_options_not_object() -> Result<(), VmErr
   hooks.teardown_jobs(&mut rt);
   Ok(())
 }
+
+#[test]
+fn compiled_dynamic_import_roots_specifier_across_options_eval_under_gc_stress() -> Result<(), VmError> {
+  // Force a GC on every allocation so an unrooted specifier Value would be collected while
+  // evaluating the second argument.
+  let vm = Vm::new(VmOptions::default());
+  let heap = vm_js::Heap::new(HeapLimits::new(8 * 1024 * 1024, 0));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      // Specifier expression allocates a new string.
+      // Options expression allocates enough to trigger GC.
+      var p = import(
+        ('m' + '.js'),
+        (function () {
+          let i = 0;
+          while (i < 25) {
+            ({});
+            i = i + 1;
+          }
+          return 1;
+        })()
+      );
+    "#,
+  )?;
+
+  let mut hooks = TestHostHooks::new();
+  let mut dummy_host = ();
+  rt.exec_compiled_script_with_host_and_hooks(&mut dummy_host, &mut hooks, script)?;
+
+  assert!(rt.heap.gc_runs() > 0, "expected at least one GC cycle to run");
+
+  // Read `p` off the global object.
+  let promise_obj = {
+    let global = rt.realm().global_object();
+    let mut scope = rt.heap.scope();
+    let key = PropertyKey::from_string(scope.alloc_string("p")?);
+    let promise_value = scope.get_with_host_and_hooks(
+      &mut rt.vm,
+      &mut dummy_host,
+      &mut hooks,
+      global,
+      key,
+      Value::Object(global),
+    )?;
+    let Value::Object(obj) = promise_value else {
+      panic!("import() should assign a Promise object to global `p`");
+    };
+    obj
+  };
+
+  // The import should reject due to the invalid options value, but it should not crash due to an
+  // invalid/unrooted specifier handle.
+  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Rejected);
+  assert_eq!(
+    hooks.pending_count(),
+    0,
+    "host loader should not be invoked"
+  );
+
+  hooks.teardown_jobs(&mut rt);
+  Ok(())
+}
