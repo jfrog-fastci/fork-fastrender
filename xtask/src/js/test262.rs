@@ -71,16 +71,22 @@ pub enum Test262Suite {
   #[value(aliases = ["regexplookbehind"])]
   RegexpLookbehind,
   /// Statement/control-flow focused subset of the curated suite.
+  #[value(aliases = ["language-statements"])]
   LanguageStatements,
   /// Function-focused subset of the curated suite.
+  #[value(aliases = ["language-functions"])]
   LanguageFunctions,
   /// Class-focused subset of the curated suite.
+  #[value(aliases = ["language-classes"])]
   LanguageClasses,
   /// Lexical scope + directive prologue focused subset of the curated suite.
+  #[value(aliases = ["language-scopes"])]
   LanguageScopes,
   /// Core built-ins subset of the curated suite (Object/Array/String/Number/Boolean/Symbol).
+  #[value(aliases = ["builtins-core"])]
   BuiltinsCore,
   /// JSON + Math built-ins subset of the curated suite.
+  #[value(aliases = ["builtins-json-math"])]
   BuiltinsJsonMath,
 }
 

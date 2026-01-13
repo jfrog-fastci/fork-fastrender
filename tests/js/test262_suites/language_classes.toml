@@ -5,6 +5,29 @@
 # once budgets and engine support are proven.
 #
 # Test IDs are paths relative to `test/` in the tc39/test262 checkout.
+#
+# This suite intentionally avoids globbing `language/statements/class/elements/**` (huge), but we
+# do include a small hand-picked set of class-fields/private-names tests to prevent regressions.
+tests = [
+  # --- Public fields (instance + static) ---
+  "language/statements/class/elements/field-declaration.js",
+  "language/statements/class/elements/static-field-declaration.js",
+  # Computed names + evaluation ordering across static/instance field lists.
+  "language/statements/class/elements/intercalated-static-non-static-computed-fields.js",
+
+  # --- Private names ---
+  # Brand checks (accessing with the wrong receiver throws).
+  "language/statements/class/elements/privatefieldget-typeerror-4.js",
+  # Private method access + call (`this.#m()`).
+  "language/statements/class/elements/private-methods/prod-private-method.js",
+
+  # --- `#x in obj` private-brand-check operator ---
+  "language/expressions/in/private-field-presence-field.js",
+  "language/expressions/in/private-field-rhs-non-object.js",
+
+  # --- `static {}` blocks (ordering vs static fields) ---
+  "language/statements/class/static-init-sequence.js",
+]
 include = [
   "language/statements/class/definition/**/*.js",
   "language/statements/class/method/**/*.js",
@@ -25,4 +48,3 @@ exclude = [
   "language/export/**",
   "language/module-code/**",
 ]
-

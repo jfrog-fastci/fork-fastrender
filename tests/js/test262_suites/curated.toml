@@ -96,6 +96,18 @@ include = [
   "language/statements/class/arguments/**/*.js",
   "language/statements/class/accessor-name-inst/**/*.js",
   "language/statements/class/accessor-name-static/**/*.js",
+  # Targeted class-elements coverage (fields/private names/static blocks). The full
+  # `language/statements/class/elements/**` corpus is very large.
+  "language/statements/class/elements/field-declaration.js",
+  "language/statements/class/elements/static-field-declaration.js",
+  "language/statements/class/elements/intercalated-static-non-static-computed-fields.js",
+  "language/statements/class/elements/privatefieldget-typeerror-4.js",
+  "language/statements/class/elements/private-methods/prod-private-method.js",
+  # `#x in obj` private-brand-check operator.
+  "language/expressions/in/private-field-presence-field.js",
+  "language/expressions/in/private-field-rhs-non-object.js",
+  # `static {}` blocks.
+  "language/statements/class/static-init-sequence.js",
 
   # --- Language: scope/directive prologue ---
   "language/block-scope/**/*.js",
