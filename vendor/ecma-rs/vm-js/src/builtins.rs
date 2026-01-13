@@ -8503,18 +8503,14 @@ fn regexp_exec_array(
           vm.tick()?;
         }
 
-        let (group_name_units, selected) = {
+        // Snapshot the group metadata first so we can preflight heap limits before allocating any
+        // large off-heap buffers. (The preflight can GC, so avoid holding heap borrows across it.)
+        let (group_name_len, selected) = {
           let program = scope.heap().regexp_program(rx)?;
           let group = program
             .named_capture_groups
             .get(i)
             .ok_or(VmError::InvariantViolation("RegExpProgram named group index out of range"))?;
-
-          let mut group_name_units: Vec<u16> = Vec::new();
-          group_name_units
-            .try_reserve_exact(group.name.len())
-            .map_err(|_| VmError::OutOfMemory)?;
-          group_name_units.extend_from_slice(&group.name);
 
           // Find the last matched capture among duplicate indices for this name.
           let mut selected: Option<(usize, usize)> = None;
@@ -8535,12 +8531,14 @@ fn regexp_exec_array(
             selected = Some((start, end));
             break;
           }
-          (group_name_units, selected)
+          (group.name.len(), selected)
         };
 
         let value = match selected {
           None => Value::Undefined,
           Some((start, end)) => {
+            let cap_len = end.saturating_sub(start);
+            scope.ensure_can_alloc_string_units(cap_len)?;
             let units: Vec<u16> = {
               let s = scope.heap().get_string(input)?;
               let slice = &s.as_code_units()[start..end];
@@ -8548,13 +8546,29 @@ fn regexp_exec_array(
               buf
                 .try_reserve_exact(slice.len())
                 .map_err(|_| VmError::OutOfMemory)?;
-              buf.extend_from_slice(slice);
+              vec_try_extend_from_slice_u16_with_ticks(vm, &mut buf, slice)?;
               buf
             };
             let s = scope.alloc_string_from_u16_vec(units)?;
             scope.push_root(Value::String(s))?;
             Value::String(s)
           }
+        };
+
+        // Group name key.
+        scope.ensure_can_alloc_string_units(group_name_len)?;
+        let group_name_units: Vec<u16> = {
+          let program = scope.heap().regexp_program(rx)?;
+          let group = program
+            .named_capture_groups
+            .get(i)
+            .ok_or(VmError::InvariantViolation("RegExpProgram named group index out of range"))?;
+          let mut buf: Vec<u16> = Vec::new();
+          buf
+            .try_reserve_exact(group.name.len())
+            .map_err(|_| VmError::OutOfMemory)?;
+          vec_try_extend_from_slice_u16_with_ticks(vm, &mut buf, &group.name)?;
+          buf
         };
 
         let key_s = scope.alloc_string_from_u16_vec(group_name_units)?;
@@ -14466,7 +14480,7 @@ pub fn regexp_prototype_symbol_replace(
       buf
         .try_reserve_exact(units.len())
         .map_err(|_| VmError::OutOfMemory)?;
-      buf.extend_from_slice(units);
+      vec_try_extend_from_slice_u16_with_ticks(vm, &mut buf, units)?;
       buf
     } else {
       let replace_s = scope.to_string(vm, host, hooks, replace_value)?;
@@ -14569,7 +14583,7 @@ pub fn regexp_prototype_symbol_split(
     buf
       .try_reserve_exact(units.len())
       .map_err(|_| VmError::OutOfMemory)?;
-    buf.extend_from_slice(units);
+    vec_try_extend_from_slice_u16_with_ticks(vm, &mut buf, units)?;
     buf
   };
   let len = input_units.len();
