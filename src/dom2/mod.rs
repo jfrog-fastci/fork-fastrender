@@ -1186,6 +1186,116 @@ impl Document {
   ///
   /// This is used for tests and incremental adoption (e.g. import into `dom2`, mutate, then render
   /// via existing code that consumes `DomNode`).
+  fn snapshot_element_attributes(
+    &self,
+    node_id: NodeId,
+    tag_name: &str,
+    namespace: &str,
+    attributes: &[(String, String)],
+  ) -> Vec<(String, String)> {
+    fn trim_ascii_whitespace_html(value: &str) -> &str {
+      // HTML attribute parsing ignores leading/trailing ASCII whitespace (TAB/LF/FF/CR/SPACE) but
+      // does not treat all Unicode whitespace as ignorable (e.g. NBSP).
+      value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+    }
+
+    fn attr_value_ci<'a>(attrs: &'a [(String, String)], name: &str) -> Option<&'a str> {
+      attrs
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.as_str())
+    }
+
+    fn remove_attr_ci(attrs: &mut Vec<(String, String)>, name: &str) {
+      attrs.retain(|(k, _)| !k.eq_ignore_ascii_case(name));
+    }
+
+    fn upsert_attr_ci(attrs: &mut Vec<(String, String)>, name: &str, value: String) {
+      if let Some((_, v)) = attrs.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(name)) {
+        *v = value;
+      } else {
+        attrs.push((name.to_string(), value));
+      }
+    }
+
+    fn ensure_bool_attr_ci(attrs: &mut Vec<(String, String)>, name: &str, present: bool) {
+      if present {
+        if !attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case(name)) {
+          attrs.push((name.to_string(), String::new()));
+        }
+      } else {
+        remove_attr_ci(attrs, name);
+      }
+    }
+
+    fn is_input_checkable(type_attr: Option<&str>) -> bool {
+      let ty = type_attr.unwrap_or("text");
+      ty.eq_ignore_ascii_case("checkbox") || ty.eq_ignore_ascii_case("radio")
+    }
+
+    let mut attrs = attributes.to_vec();
+
+    if !self.is_html_case_insensitive_namespace(namespace) {
+      return attrs;
+    }
+
+    if tag_name.eq_ignore_ascii_case("input") {
+      let Some(state) = self
+        .input_states
+        .get(node_id.index())
+        .and_then(|state| state.as_ref())
+      else {
+        return attrs;
+      };
+
+      let type_attr = attr_value_ci(&attrs, "type");
+      let is_file_input =
+        type_attr.is_some_and(|t| trim_ascii_whitespace_html(t).eq_ignore_ascii_case("file"));
+      if !is_file_input {
+        // Mirror the *current value* for rendering/selector semantics. Avoid injecting `value=""`
+        // when the input has no value attribute and the current value is the empty string: the
+        // renderer treats missing `value` as `""` anyway, and preserving authored presence avoids
+        // breaking selectors like `[value]`.
+        let has_value_attr = attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("value"));
+        if has_value_attr || !state.value.is_empty() || state.dirty_value {
+          upsert_attr_ci(&mut attrs, "value", state.value.clone());
+        }
+      }
+
+      if is_input_checkable(type_attr) {
+        ensure_bool_attr_ci(&mut attrs, "checked", state.checkedness);
+      }
+    } else if tag_name.eq_ignore_ascii_case("textarea") {
+      let Some(state) = self
+        .textarea_states
+        .get(node_id.index())
+        .and_then(|state| state.as_ref())
+      else {
+        return attrs;
+      };
+
+      // Mirror the textarea's *current value* using the renderer's dynamic override attribute,
+      // matching `crate::dom::textarea_current_value` semantics.
+      if state.dirty_value {
+        upsert_attr_ci(&mut attrs, "data-fastr-value", state.value.clone());
+      } else {
+        remove_attr_ci(&mut attrs, "data-fastr-value");
+      }
+    } else if tag_name.eq_ignore_ascii_case("option") {
+      let Some(state) = self
+        .option_states
+        .get(node_id.index())
+        .and_then(|state| state.as_ref())
+      else {
+        return attrs;
+      };
+
+      ensure_bool_attr_ci(&mut attrs, "selected", state.selectedness);
+    }
+
+    attrs
+  }
+
   pub fn to_renderer_dom(&self) -> DomNode {
     struct Frame {
       src: NodeId,
@@ -1196,6 +1306,8 @@ impl Document {
     let scripting_enabled = self.scripting_enabled;
     let is_html_document = self.is_html_document();
     fn node_kind_to_dom_node_type(
+      doc: &Document,
+      node_id: NodeId,
       kind: &NodeKind,
       scripting_enabled: bool,
       is_html_document: bool,
@@ -1242,7 +1354,7 @@ impl Document {
         } => DomNodeType::Element {
           tag_name: tag_name.clone(),
           namespace: namespace.clone(),
-          attributes: attributes.clone(),
+          attributes: doc.snapshot_element_attributes(node_id, tag_name, namespace, attributes),
         },
         NodeKind::Text { content } => DomNodeType::Text {
           content: content.clone(),
@@ -1257,7 +1369,7 @@ impl Document {
     let root_id = self.root;
     let root_src = self.node(root_id);
     let mut root = DomNode {
-      node_type: node_kind_to_dom_node_type(&root_src.kind, scripting_enabled, is_html_document)
+      node_type: node_kind_to_dom_node_type(self, root_id, &root_src.kind, scripting_enabled, is_html_document)
         .unwrap_or_else(
         || {
           debug_assert!(
@@ -1300,7 +1412,7 @@ impl Document {
         }
 
         let Some(child_node_type) =
-          node_kind_to_dom_node_type(&child_src.kind, scripting_enabled, is_html_document)
+          node_kind_to_dom_node_type(self, child_id, &child_src.kind, scripting_enabled, is_html_document)
         else {
           continue;
         };
@@ -1346,6 +1458,8 @@ impl Document {
     let scripting_enabled = self.scripting_enabled;
     let is_html_document = self.is_html_document();
     fn node_kind_to_dom_node_type(
+      doc: &Document,
+      node_id: NodeId,
       kind: &NodeKind,
       scripting_enabled: bool,
       is_html_document: bool,
@@ -1389,7 +1503,7 @@ impl Document {
         } => DomNodeType::Element {
           tag_name: tag_name.clone(),
           namespace: namespace.clone(),
-          attributes: attributes.clone(),
+          attributes: doc.snapshot_element_attributes(node_id, tag_name, namespace, attributes),
         },
         NodeKind::Text { content } => DomNodeType::Text {
           content: content.clone(),
@@ -1403,7 +1517,8 @@ impl Document {
 
     let root_src = self.nodes.get(root_id.index())?;
     let fragment_root = matches!(root_src.kind, NodeKind::DocumentFragment);
-    let root_type = node_kind_to_dom_node_type(&root_src.kind, scripting_enabled, is_html_document)?;
+    let root_type =
+      node_kind_to_dom_node_type(self, root_id, &root_src.kind, scripting_enabled, is_html_document)?;
     let mut root = DomNode {
       node_type: root_type,
       children: Vec::with_capacity(root_src.children.len()),
@@ -1434,7 +1549,7 @@ impl Document {
           continue;
         }
         let Some(child_node_type) =
-          node_kind_to_dom_node_type(&child_src.kind, scripting_enabled, is_html_document)
+          node_kind_to_dom_node_type(self, child_id, &child_src.kind, scripting_enabled, is_html_document)
         else {
           continue;
         };

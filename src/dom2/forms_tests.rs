@@ -7,12 +7,9 @@ use crate::dom::DomNode;
 use super::{Document, NodeId, NodeKind};
 
 fn find_first_text_child(doc: &Document, parent: NodeId) -> Option<NodeId> {
-  doc
-    .node(parent)
-    .children
-    .iter()
-    .copied()
-    .find(|&child| doc.node(child).parent == Some(parent) && matches!(doc.node(child).kind, NodeKind::Text { .. }))
+  doc.node(parent).children.iter().copied().find(|&child| {
+    doc.node(child).parent == Some(parent) && matches!(doc.node(child).kind, NodeKind::Text { .. })
+  })
 }
 
 fn find_dom_by_id<'a>(root: &'a DomNode, id: &str) -> Option<&'a DomNode> {
@@ -30,7 +27,8 @@ fn find_dom_by_id<'a>(root: &'a DomNode, id: &str) -> Option<&'a DomNode> {
 
 #[test]
 fn input_value_and_checked_use_internal_state_with_dirty_flags() {
-  let html = "<!doctype html><html><body><input id=i type=checkbox value=foo checked></body></html>";
+  let html =
+    "<!doctype html><html><body><input id=i type=checkbox value=foo checked></body></html>";
   let mut doc = crate::dom2::parse_html(html).unwrap();
   let input = doc.get_element_by_id("i").expect("input element");
 
@@ -232,4 +230,95 @@ fn renderer_dom_snapshot_projects_runtime_form_control_state() {
     None,
     "non-dirty textarea should not carry `data-fastr-value` override"
   );
+}
+
+#[test]
+fn renderer_snapshot_reflects_form_control_internal_state_and_mapping_remains_aligned() {
+  let html = concat!(
+    "<!doctype html><html><body>",
+    "<input id=i>",
+    "<input id=c type=checkbox>",
+    "<textarea id=t>hello</textarea>",
+    "<select><option id=o>One</option></select>",
+    "</body></html>",
+  );
+  let mut doc = crate::dom2::parse_html(html).unwrap();
+  let input = doc.get_element_by_id("i").expect("input element");
+  let checkbox = doc.get_element_by_id("c").expect("checkbox element");
+  let textarea = doc.get_element_by_id("t").expect("textarea element");
+  let option = doc.get_element_by_id("o").expect("option element");
+
+  // Mutate internal (IDL) state without touching content attributes.
+  doc.set_input_value(input, "bar").unwrap();
+  doc.set_input_checked(checkbox, true).unwrap();
+  doc.set_textarea_value(textarea, "dirty").unwrap();
+  doc.set_option_selected(option, true).unwrap();
+
+  assert_eq!(
+    doc.get_attribute(input, "value").unwrap(),
+    None,
+    "set_input_value must not mutate content attributes"
+  );
+  assert!(
+    !doc.has_attribute(checkbox, "checked").unwrap(),
+    "set_input_checked must not mutate content attributes"
+  );
+  assert!(
+    !doc.has_attribute(option, "selected").unwrap(),
+    "set_option_selected must not mutate content attributes"
+  );
+
+  let mut snapshot = doc.to_renderer_dom_with_mapping();
+
+  // Helper: round-trip a dom2 NodeId to a renderer preorder id and back, then find the snapshot
+  // node and assert we got the expected element.
+  let mut get_snapshot_node = |node_id: NodeId, expected_id: &str| {
+    let preorder = snapshot
+      .mapping
+      .preorder_for_node_id(node_id)
+      .expect("missing preorder id for connected node");
+    assert_eq!(
+      snapshot.mapping.node_id_for_preorder(preorder),
+      Some(node_id),
+      "reverse renderer mapping mismatch"
+    );
+
+    let node = crate::dom::find_node_mut_by_preorder_id(&mut snapshot.dom, preorder)
+      .expect("missing renderer node for preorder id");
+    assert_eq!(node.get_attribute_ref("id"), Some(expected_id));
+    node
+  };
+
+  // <input>: current value must be reflected into the snapshot.
+  {
+    let input_node = get_snapshot_node(input, "i");
+    assert_eq!(input_node.get_attribute_ref("value"), Some("bar"));
+  }
+
+  // <input type=checkbox>: checkedness must be reflected into the snapshot.
+  {
+    let checkbox_node = get_snapshot_node(checkbox, "c");
+    assert!(
+      checkbox_node.get_attribute_ref("checked").is_some(),
+      "expected checked attribute on snapshot checkbox"
+    );
+  }
+
+  // <textarea>: current value must be reflected via `data-fastr-value`.
+  {
+    let textarea_node = get_snapshot_node(textarea, "t");
+    assert_eq!(
+      textarea_node.get_attribute_ref("data-fastr-value"),
+      Some("dirty")
+    );
+  }
+
+  // <option>: selectedness must be reflected into the snapshot.
+  {
+    let option_node = get_snapshot_node(option, "o");
+    assert!(
+      option_node.get_attribute_ref("selected").is_some(),
+      "expected selected attribute on snapshot option"
+    );
+  }
 }
