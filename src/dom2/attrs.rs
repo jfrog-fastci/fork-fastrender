@@ -131,6 +131,27 @@ impl Document {
       self.record_attribute_mutation(node_id);
       self.bump_mutation_generation_classified();
       let _ = self.queue_mutation_record_attributes(node_id, name, old_value);
+
+      // Slot-related attributes can affect shadow DOM distribution without changing the DOM tree
+      // structure. Recompute derived slotting state and record a composed-tree mutation so
+      // incremental hosts can invalidate correctly.
+      if self.is_html_document() {
+        if name.eq_ignore_ascii_case("slot") {
+          if let Some(parent) = self.node(node_id).parent {
+            if let Some(shadow_root) = self.shadow_root_for_host(parent) {
+              self.assign_slottables_for_tree(shadow_root);
+              self.record_composed_tree_mutation(shadow_root);
+            }
+          }
+        }
+
+        if matches!(self.node(node_id).kind, NodeKind::Slot { .. }) && name.eq_ignore_ascii_case("name") {
+          if let Some(shadow_root) = self.shadow_root_ancestor(node_id) {
+            self.assign_slottables_for_tree(shadow_root);
+            self.record_composed_tree_mutation(shadow_root);
+          }
+        }
+      }
     }
 
     Ok(changed)
@@ -172,6 +193,24 @@ impl Document {
       self.record_attribute_mutation(node_id);
       self.bump_mutation_generation_classified();
       let _ = self.queue_mutation_record_attributes(node_id, name, old_value);
+
+      if self.is_html_document() {
+        if name.eq_ignore_ascii_case("slot") {
+          if let Some(parent) = self.node(node_id).parent {
+            if let Some(shadow_root) = self.shadow_root_for_host(parent) {
+              self.assign_slottables_for_tree(shadow_root);
+              self.record_composed_tree_mutation(shadow_root);
+            }
+          }
+        }
+
+        if matches!(self.node(node_id).kind, NodeKind::Slot { .. }) && name.eq_ignore_ascii_case("name") {
+          if let Some(shadow_root) = self.shadow_root_ancestor(node_id) {
+            self.assign_slottables_for_tree(shadow_root);
+            self.record_composed_tree_mutation(shadow_root);
+          }
+        }
+      }
     }
 
     Ok(changed)

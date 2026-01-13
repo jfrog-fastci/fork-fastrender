@@ -2289,6 +2289,13 @@ impl BrowserDocumentDom2 {
       }
     }
 
+    for node in mutations.composed_tree_changed {
+      if self.dom.is_connected_for_scripting(node) {
+        render_affecting = true;
+        self.dirty_structure_nodes.insert(node);
+      }
+    }
+
     // Upgrade to the minimal set of coarse invalidation flags we can currently satisfy.
     if !self.dirty_structure_nodes.is_empty() || !self.dirty_style_nodes.is_empty() {
       self.style_dirty = true;
@@ -3886,6 +3893,64 @@ mod tests {
     });
     assert_eq!(updated_label, Some("Updated"));
     Ok(())
+  }
+
+  #[test]
+  fn slot_assign_records_composed_tree_mutation_invalidation() {
+    let renderer = renderer_for_tests();
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body>\
+        <div id=\"host\">\
+          <span id=\"a\">A</span>\
+          <span id=\"b\">B</span>\
+        </div>\
+      </body></html>",
+      RenderOptions::new().with_viewport(32, 32),
+    )
+    .expect("document");
+
+    let (shadow_root, slot, a, b) = {
+      let dom = doc.dom_mut();
+      let host = dom.get_element_by_id("host").expect("host");
+      let a = dom.get_element_by_id("a").expect("slottable a");
+      let b = dom.get_element_by_id("b").expect("slottable b");
+      let shadow_root = dom
+        .attach_shadow_root(
+          host,
+          crate::dom::ShadowRootMode::Open,
+          /* clonable */ false,
+          /* serializable */ false,
+          /* delegates_focus */ false,
+          crate::dom2::SlotAssignmentMode::Manual,
+        )
+        .expect("attach shadow root");
+      let slot = dom.create_element("slot", "");
+      dom.append_child(shadow_root, slot).expect("append slot");
+      (shadow_root, slot, a, b)
+    };
+
+    // Clear dirtiness from `dom_mut` setup.
+    doc.render_frame().expect("render");
+
+    let changed = doc.mutate_dom(|dom| {
+      dom.slot_assign(slot, &[a, b]).expect("slot assign");
+      true
+    });
+    assert!(changed);
+
+    // Without structured mutation logging, `BrowserDocumentDom2::mutate_dom` would fall back to
+    // `invalidate_all()`, clearing per-node dirty sets. We expect a structured invalidation marker.
+    assert!(
+      doc.dirty_structure_nodes.contains(&shadow_root),
+      "slot_assign should mark the shadow root as structurally dirty via composed-tree mutation log"
+    );
+    assert!(
+      !doc.dirty_structure_nodes.is_empty(),
+      "slot_assign should not fall back to unstructured invalidate_all()"
+    );
+    assert!(doc.dirty_style_nodes.is_empty());
+    assert!(doc.dirty_text_nodes.is_empty());
   }
 
   #[test]

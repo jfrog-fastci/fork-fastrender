@@ -320,7 +320,16 @@ impl Document {
       .insert(slot, new_list);
 
     // Manual assignments affect slot distribution/composed tree; treat as a render-affecting mutation.
-    self.bump_mutation_generation_unclassified();
+    self.bump_mutation_generation_classified();
+    // Slot assignment changes the composed tree even when the DOM tree structure is unchanged.
+    //
+    // Record a structured mutation so `BrowserDocumentDom2` can invalidate without falling back to
+    // `invalidate_all()` (which would discard the reason for the change).
+    if let Some(shadow_root) = self.shadow_root_ancestor(slot) {
+      self.record_composed_tree_mutation(shadow_root);
+    } else {
+      self.record_composed_tree_mutation(slot);
+    }
 
     // Run "assign slottables for a tree" for this slot's root (HTML).
     if let Some(shadow_root) = self.shadow_root_ancestor(slot) {

@@ -234,6 +234,13 @@ pub(crate) struct MutationLog {
   /// affecting content-attribute changes. Hosts can use this to trigger incremental repaint of
   /// form controls without falling back to full restyle/layout.
   pub(crate) form_state_changed: FxHashSet<NodeId>,
+  /// Shadow DOM slot distribution / composed tree structure changed.
+  ///
+  /// This is distinct from `child_list_changed`: slot distribution can change without any DOM tree
+  /// structural mutations (e.g. `HTMLSlotElement.assign(..)` or attribute changes that affect
+  /// assignment). Hosts must treat this as a structural invalidation because the renderer's
+  /// composed-tree snapshot and selector matching depend on slot assignment.
+  pub(crate) composed_tree_changed: FxHashSet<NodeId>,
   /// Some render-affecting mutation occurred without structured classification.
   ///
   /// Hosts should conservatively fall back to a full pipeline run / fresh renderer-DOM snapshot when
@@ -247,6 +254,7 @@ impl MutationLog {
       && self.text_changed.is_empty()
       && self.child_list_changed.is_empty()
       && self.form_state_changed.is_empty()
+      && self.composed_tree_changed.is_empty()
       && !self.unclassified
   }
 
@@ -255,6 +263,7 @@ impl MutationLog {
     self.text_changed.clear();
     self.child_list_changed.clear();
     self.form_state_changed.clear();
+    self.composed_tree_changed.clear();
     self.unclassified = false;
   }
 }
@@ -918,6 +927,11 @@ impl Document {
   #[inline]
   fn record_form_state_mutation(&mut self, node: NodeId) {
     self.mutations.form_state_changed.insert(node);
+  }
+
+  #[inline]
+  fn record_composed_tree_mutation(&mut self, node: NodeId) {
+    self.mutations.composed_tree_changed.insert(node);
   }
 
   fn node_checked(&self, id: NodeId) -> Result<&Node, DomError> {
