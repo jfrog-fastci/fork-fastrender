@@ -3,6 +3,10 @@
 FastRender tracks DOM + event-loop JavaScript conformance via a **curated**, fully-offline subset of
 WPT `testharness.js` tests under [`tests/wpt_dom/`](../tests/wpt_dom/).
 
+For the `vmjs` backend, tests are executed inside the `vm-js`-backed [`api::BrowserTab`](../src/api/browser_tab.rs)
+embedding (DOM + event loop + script scheduling). For context on which public containers include JS +
+an event loop, see [`docs/runtime_stacks.md`](runtime_stacks.md).
+
 ## Run the suite
 
 From the FastRender repo root:
