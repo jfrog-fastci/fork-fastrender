@@ -64,8 +64,6 @@ at most one “turn” of work and returns pixels if that turn invalidated rende
 
 - if microtasks are pending: run a **microtask checkpoint** only,
 - otherwise: run exactly **one task turn** (one task + its post-task microtask checkpoint),
-- after the task turn (HTML “step 10”), if a frame is due, run at most **one rAF turn** and then
-  the **microtask checkpoint after rAF**,
 - commit any pending navigation,
 - render *if needed* and return `Some(Pixmap)` when a new frame is produced.
 
@@ -130,25 +128,24 @@ loop {
         present(frame);
     }
 
-    // `next_wake_time` is the missing “sleep hint” API: it should return the earliest time at
-    // which *something* becomes runnable:
+    // `next_wake_time` below is a *hypothetical* “sleep hint” API (it is not currently exposed on
+    // `BrowserTab`). If/when such an API exists, it would ideally return the earliest time at which
+    // something becomes runnable:
     // - the next due timer, or
     // - the next animation frame deadline when rAF/animations are active.
-    if let Some(t) = tab.next_wake_time()? {
-        sleep_until(t);
-    } else {
-        // Nothing scheduled. The embedder can block on external inputs, or just idle.
-        break;
-    }
+    //
+    // Today, embedders need to decide their own sleep/wake strategy (e.g. fixed frame cadence,
+    // external wakeups from input/network, etc).
+    if let Some(t) = tab.next_wake_time()? { sleep_until(t) } else { break; }
 }
 ```
 
-### What `next_wake_time()` should mean
+### What a hypothetical `next_wake_time()` would mean
 
 The event loop clock is monotonic (`js::Clock::now() -> Duration`). A practical `next_wake_time()`
-API should return an **absolute timestamp on that clock** (not “sleep for X”).
+API would return an **absolute timestamp on that clock** (not “sleep for X”).
 
-It should consider:
+It would need to consider:
 
 - **timers**: the earliest `EventLoop::next_timer_due_time()`,
 - **frame callbacks**: if rAF callbacks are queued, the next frame deadline based on the
@@ -157,7 +154,7 @@ It should consider:
   deadline (otherwise CSS animations will never advance),
 - **immediate runnable work**: if tasks/microtasks are queued, it can return “now”.
 
-If nothing is scheduled (no tasks/microtasks, no pending timers, no pending rAF), it should return
+If nothing is scheduled (no tasks/microtasks, no pending timers, no pending rAF), it would return
 `None`.
 
 ---
@@ -199,11 +196,9 @@ Real-time sampling does not schedule frames by itself; the embedder still needs 
 (typically via `tick_frame()` + `next_wake_time()`), otherwise the document will paint once and then
 stay visually frozen.
 
-`BrowserTab` forwards the document-level animation controls from `BrowserDocumentDom2`, including:
-
-- `BrowserTab::set_realtime_animations_enabled(true)`
-- `BrowserTab::set_animation_clock(...)`
-- `BrowserTab::set_animation_time(...)` / `set_animation_time_ms(...)`
+> Note: `set_realtime_animations_enabled` currently exists on `BrowserDocumentDom2` (and the older
+> `BrowserDocument*` containers), but `BrowserTab` does not currently expose these animation controls
+> through its public API.
 
 For deterministic tests, you generally want **both** clocks (event loop timers + CSS animation
 timeline) to be driven by the same injected clock.
@@ -241,11 +236,9 @@ fn main() -> Result<()> {
         event_loop,
     )?;
 
-    // If you're sampling CSS animations in real time, you generally want the document timeline to
-    // use the same clock as timers/rAF too:
-    //
-    // tab.set_animation_clock(clock_for_loop.clone());
-    // tab.set_realtime_animations_enabled(true);
+    // Note: `BrowserTab` does not currently expose a public API to enable real-time CSS animation
+    // sampling or to override the document animation clock. Internally, `BrowserTab` sets the
+    // document animation clock to the event loop clock at construction time.
 
     // In a real deterministic harness you'd:
     // - run some steps,
@@ -258,7 +251,7 @@ fn main() -> Result<()> {
 }
 ```
 
-If/when `BrowserTab::next_wake_time()` is available, a deterministic harness can “jump” time:
+If a `BrowserTab::next_wake_time()` API is ever added, a deterministic harness could “jump” time:
 
 - `clock.set_now(next_wake_time)`
 - drive one tick/frame
