@@ -31548,6 +31548,8 @@ mod tests {
         if (first.value !== 0 || first.done !== false) return false;
 
         const res = it.throw(42);
+        // ECMA-262 `yield*` protocol violation: if the delegate iterator lacks a `throw` method,
+        // the iterator is closed (via `return`) and a TypeError is thrown.
         return res.value instanceof TypeError && res.done === true && closed;
       })()
     "#,

@@ -144,14 +144,14 @@ fn iterator_close_on_error(
     return err;
   }
 
-  // `IteratorClose` error precedence (ECMA-262):
-  // - When closing on a throw completion, abrupt completions from getting/calling `iterator.return`
-  //   are ignored and the incoming completion is preserved.
-  // - When closing on a non-throw completion, errors from getting/calling `iterator.return`
-  //   override the incoming completion.
+  // `IteratorClose` (ECMA-262) error precedence:
+  // - Always performs `GetMethod(iterator, "return")` + `Call(return, iterator)` when present.
+  // - Any abrupt completion while getting/calling `iterator.return` overrides the incoming
+  //   completion (even when the incoming completion is itself a throw completion).
   //
-  // `vm-js` also has non-catchable VM failures (termination, OOM, etc). These must always
-  // propagate, even when iterator closing is otherwise specified to ignore a JavaScript exception.
+  // `vm-js` also has non-catchable VM failures (termination, OOM, etc). These must never be
+  // replaced by iterator-closing errors, so we only allow `IteratorClose` to override when the
+  // incoming error is itself a throw completion.
   let original_is_throw = err.is_throw_completion();
 
   // Root the pending thrown value across `IteratorClose`, which can allocate and trigger GC.
@@ -2422,10 +2422,14 @@ pub fn array_constructor_from(
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
-  _this: Value,
+  this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+
+  // ECMA-262: `C` is the `this` value passed to `Array.from`.
+  let c = this;
+  scope.push_root(c)?;
 
   let items = args.get(0).copied().unwrap_or(Value::Undefined);
   scope.push_root(items)?;
@@ -2456,11 +2460,23 @@ pub fn array_constructor_from(
     PropertyKey::from_symbol(iterator_sym),
   )?;
 
+  let is_constructor = scope.heap().is_constructor(c)?;
+  // Shared `"length"` key for the final `Set(A, "length", ...)` step (both iterator + array-like
+  // paths).
+  let length_key = string_key(&mut scope, "length")?;
+
   // If `items` is iterable, follow the iterator protocol.
   if let Some(method) = using_iterator {
     scope.push_root(method)?;
 
-    let out = create_array_object(vm, &mut scope, 0)?;
+    // Spec: if `IsConstructor(C)` is true, allocate via `Construct(C)` so `GetPrototypeFromConstructor`
+    // consults `GetFunctionRealm(C)` when needed (cross-realm correctness).
+    let out = if is_constructor {
+      let out = vm.construct_with_host_and_hooks(host, &mut scope, hooks, c, &[], c)?;
+      require_object(out)?
+    } else {
+      create_array_object(vm, &mut scope, 0)?
+    };
     scope.push_root(Value::Object(out))?;
 
     let mut iterator_record =
@@ -2474,9 +2490,28 @@ pub fn array_constructor_from(
           vm.tick()?;
         }
 
+        // ECMA-262: `k ≥ 2^53 - 1` throws and closes the iterator.
+        const MAX_SAFE_INTEGER: usize = (1usize << 53) - 1;
+        if k >= MAX_SAFE_INTEGER {
+          return Err(VmError::TypeError("Array.from result exceeds MAX_SAFE_INTEGER"));
+        }
+
         let next_value =
           crate::iterator::iterator_step_value(vm, host, hooks, &mut scope, &mut iterator_record)?;
         let Some(next_value) = next_value else {
+          // `Perform ? Set(A, "length", 𝔽(k), true)`.
+          let ok = scope.set_with_host_and_hooks(
+            vm,
+            host,
+            hooks,
+            out,
+            length_key,
+            Value::Number(k as f64),
+            Value::Object(out),
+          )?;
+          if !ok {
+            return Err(VmError::TypeError("Array.from failed to set length"));
+          }
           return Ok(Value::Object(out));
         };
 
@@ -2503,55 +2538,35 @@ pub fn array_constructor_from(
     match result {
       Ok(v) => Ok(v),
       Err(err) => {
-        // IteratorClose on abrupt completion, matching other iterator-consuming builtins.
-        if !iterator_record.done {
-          // Per ECMA-262 `IteratorClose`:
-          // - Errors thrown while getting/calling `iterator.return` override the incoming
-          //   completion (even when the incoming completion is a throw completion).
-          // - For throw completions, the return-result type check is skipped.
-          // - vm-js also has non-catchable VM failures (termination, OOM, etc) which must never be
-          //   replaced by a catchable iterator-closing error.
-          let original_is_throw = err.is_throw_completion();
-          let completion_kind = if original_is_throw {
-            crate::iterator::CloseCompletionKind::Throw
-          } else {
-            crate::iterator::CloseCompletionKind::NonThrow
-          };
-          let pending_root = err
-            .thrown_value()
-            .map(|v| scope.heap_mut().add_root(v))
-            .transpose()?;
-          let close_res = crate::iterator::iterator_close(
-            vm,
-            host,
-            hooks,
-            &mut scope,
-            &iterator_record,
-            completion_kind,
-          );
-          if let Some(root) = pending_root {
-            scope.heap_mut().remove_root(root);
-          }
-          if let Err(close_err) = close_res {
-            if original_is_throw {
-              return Err(close_err);
-            }
-          }
-        }
-        Err(err)
+        Err(iterator_close_on_error(
+          vm,
+          &mut scope,
+          host,
+          hooks,
+          &iterator_record,
+          err,
+        ))
       }
     }
   } else {
-    // Array-like path: `obj = ToObject(items)` then `len = ToLength(Get(obj, "length"))`.
+    // Array-like path: `arrayLike = ToObject(items)` then `len = LengthOfArrayLike(arrayLike)`.
     let obj = scope.to_object(vm, host, hooks, items)?;
     scope.push_root(Value::Object(obj))?;
 
-    let out = create_array_object(vm, &mut scope, 0)?;
-    scope.push_root(Value::Object(out))?;
+    let len = crate::spec_ops::length_of_array_like_with_host_and_hooks(vm, &mut scope, host, hooks, obj)?;
 
-    let length_key = string_key(&mut scope, "length")?;
-    let len_value = scope.get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
-    let len = scope.to_length(vm, host, hooks, len_value)?;
+    let out = if is_constructor {
+      let args = [Value::Number(len as f64)];
+      let out = vm.construct_with_host_and_hooks(host, &mut scope, hooks, c, &args, c)?;
+      require_object(out)?
+    } else {
+      let len_u32 = u32::try_from(len).map_err(|_| {
+        // `ArrayCreate(len)` throws a RangeError when `len > 2^32 - 1`.
+        VmError::RangeError("Invalid array length")
+      })?;
+      create_array_object(vm, &mut scope, len_u32)?
+    };
+    scope.push_root(Value::Object(out))?;
 
     for k in 0..len {
       if k % 1024 == 0 {
@@ -2573,7 +2588,22 @@ pub fn array_constructor_from(
         let args = [value, Value::Number(k as f64)];
         mapped = vm.call_with_host_and_hooks(host, &mut step_scope, hooks, mapfn, this_arg, &args)?;
       }
+      step_scope.push_root(mapped)?;
       step_scope.create_data_property_or_throw(out, idx_key, mapped)?;
+    }
+
+    // `Perform ? Set(A, "length", 𝔽(len), true)`.
+    let ok = scope.set_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      out,
+      length_key,
+      Value::Number(len as f64),
+      Value::Object(out),
+    )?;
+    if !ok {
+      return Err(VmError::TypeError("Array.from failed to set length"));
     }
 
     Ok(Value::Object(out))

@@ -1639,6 +1639,9 @@ impl ModuleGraph {
         // Async module evaluation is in progress; per spec, `Evaluate()` is idempotent and must
         // return the existing evaluation promise (stored on the SCC root module record via
         // `[[TopLevelCapability]]`).
+        //
+        // Note: modules can be in `EvaluatingAsync` even without top-level await when they are in
+        // the same async SCC as (or have async dependencies on) a module that does.
         let scc_root = record.cycle_root.unwrap_or(module);
         let root_idx = module_index(scc_root);
         let Some(roots) = self

@@ -16,7 +16,7 @@ fn value_to_string(rt: &JsRuntime, value: Value) -> String {
 }
 
 #[test]
-fn for_await_of_sync_iterator_close_error_is_ignored_on_promise_resolve_throw() -> Result<(), VmError> {
+fn for_await_of_sync_iterator_close_error_overrides_promise_resolve_throw() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   let value = rt.exec_script(
@@ -53,7 +53,7 @@ fn for_await_of_sync_iterator_close_error_is_ignored_on_promise_resolve_throw() 
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
   let value = rt.exec_script("out")?;
-  assert_eq!(value_to_string(&rt, value), "then");
+  assert_eq!(value_to_string(&rt, value), "close");
 
   let closed = rt.exec_script("closed")?;
   assert_eq!(closed, Value::Bool(true));
@@ -61,7 +61,7 @@ fn for_await_of_sync_iterator_close_error_is_ignored_on_promise_resolve_throw() 
 }
 
 #[test]
-fn for_await_of_sync_iterator_close_error_is_ignored_on_awaited_value_rejection() -> Result<(), VmError> {
+fn for_await_of_sync_iterator_close_error_overrides_awaited_value_rejection() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   let value = rt.exec_script(
@@ -93,7 +93,7 @@ fn for_await_of_sync_iterator_close_error_is_ignored_on_awaited_value_rejection(
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
   let value = rt.exec_script("out")?;
-  assert_eq!(value_to_string(&rt, value), "reason");
+  assert_eq!(value_to_string(&rt, value), "close");
 
   let closed = rt.exec_script("closed")?;
   assert_eq!(closed, Value::Bool(true));
