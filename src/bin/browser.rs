@@ -152,7 +152,11 @@ fn is_resize_burst_active(
   last_resize_event_at: Option<std::time::Instant>,
   now: std::time::Instant,
 ) -> bool {
-  last_resize_event_at.is_some_and(|t| now.saturating_duration_since(t) < RESIZE_BURST_TTL)
+  last_resize_event_at.is_some_and(|t| {
+    now
+      .checked_duration_since(t)
+      .is_some_and(|dt| dt < RESIZE_BURST_TTL)
+  })
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
@@ -2168,6 +2172,16 @@ mod resize_burst_detector_tests {
     assert!(
       !is_resize_burst_active(Some(t0), after_end),
       "expected burst to end after ttl"
+    );
+  }
+
+  #[test]
+  fn resize_burst_inactive_when_last_event_is_in_the_future() {
+    let t0 = Instant::now();
+    let future = t0 + Duration::from_millis(10);
+    assert!(
+      !is_resize_burst_active(Some(future), t0),
+      "expected future timestamps to be treated as inactive"
     );
   }
 
