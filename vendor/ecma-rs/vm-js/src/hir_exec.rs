@@ -11,8 +11,8 @@ use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, 
 use crate::tick::vec_try_extend_from_slice_with_ticks;
 use crate::vm::EcmaFunctionKind;
 use crate::{
-  EnvBinding, GcBigInt, GcEnv, GcObject, Scope, ScriptOrModule, StackFrame, Value, Vm, VmError, VmHost,
-  VmHostHooks,
+  EnvBinding, ExecutionContext, GcBigInt, GcEnv, GcObject, ModuleId, RealmId, Scope, ScriptOrModule,
+  StackFrame, Value, Vm, VmError, VmHost, VmHostHooks,
 };
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -8539,6 +8539,110 @@ pub(crate) fn run_compiled_script(
     Flow::Break(..) => Err(VmError::Unimplemented("break outside of loop")),
     Flow::Continue(..) => Err(VmError::Unimplemented("continue outside of loop")),
   }
+}
+
+/// Execute a pre-compiled module body (HIR) in an already-instantiated module environment.
+///
+/// This is analogous to `exec::run_module` for the compiled executor: it evaluates the module's
+/// statement list in strict mode with `this = undefined` and an active `ScriptOrModule::Module`
+/// execution context so `import.meta` and dynamic `import()` can resolve module-scoped state.
+///
+/// Note: the compiled executor does **not** currently support top-level await; callers must fall
+/// back to the AST async evaluator for modules with `[[HasTLA]] = true`.
+pub(crate) fn run_compiled_module(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  global_object: GcObject,
+  realm_id: RealmId,
+  module_id: ModuleId,
+  module_env: GcEnv,
+  script: Arc<CompiledScript>,
+) -> Result<(), VmError> {
+  let exec_ctx = ExecutionContext {
+    realm: realm_id,
+    script_or_module: Some(ScriptOrModule::Module(module_id)),
+  };
+  vm.push_execution_context(exec_ctx)?;
+
+  let result = (|| -> Result<(), VmError> {
+    let mut env =
+      RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, module_env, module_env)?;
+    env.set_source_info(script.source.clone(), 0, 0);
+
+    let result = (|| -> Result<(), VmError> {
+      let source = script.source.clone();
+      let (line, col) = source.line_col(0);
+      let frame = StackFrame {
+        function: None,
+        source: source.name.clone(),
+        line,
+        col,
+      };
+      let mut vm_frame = vm.enter_frame(frame)?;
+
+      let mut evaluator = HirEvaluator {
+        vm: &mut *vm_frame,
+        host,
+        hooks,
+        env: &mut env,
+        // Modules are always strict mode.
+        strict: true,
+        // Per ECMA-262, module top-level `this` is `undefined`.
+        this: Value::Undefined,
+        this_initialized: true,
+        class_constructor: None,
+        derived_constructor: false,
+        this_root_idx: None,
+        new_target: Value::Undefined,
+        home_object: None,
+        script: script.clone(),
+      };
+
+      let hir = script.hir.as_ref();
+      let body = hir
+        .body(hir.root_body())
+        .ok_or(VmError::InvariantViolation("compiled module root body not found"))?;
+
+      let eval_res = evaluator.eval_stmt_list(scope, body, body.root_stmts.as_slice());
+      match eval_res {
+        Ok(Flow::Normal(_)) => Ok(()),
+        Ok(Flow::Return(_)) => Err(VmError::InvariantViolation(
+          "module evaluation produced Return completion (early errors should prevent this)",
+        )),
+        Ok(Flow::Break(..)) => Err(VmError::InvariantViolation(
+          "module evaluation produced Break completion (early errors should prevent this)",
+        )),
+        Ok(Flow::Continue(..)) => Err(VmError::InvariantViolation(
+          "module evaluation produced Continue completion (early errors should prevent this)",
+        )),
+        Err(err) if err.is_throw_completion() => {
+          // Coerce internal helper errors into a JS throw value when intrinsics exist, so module
+          // evaluation failures can be represented as thrown values with a captured stack.
+          let err = crate::vm::coerce_error_to_throw(&*vm_frame, scope, err);
+          match err {
+            VmError::Throw(value) => Err(VmError::ThrowWithStack {
+              value,
+              stack: vm_frame.capture_stack(),
+            }),
+            VmError::ThrowWithStack { .. } => Err(err),
+            other => Err(other),
+          }
+        }
+        Err(err) => Err(err),
+      }
+    })();
+
+    env.teardown(scope.heap_mut());
+    result
+  })();
+
+  let popped = vm.pop_execution_context();
+  debug_assert_eq!(popped, Some(exec_ctx));
+  debug_assert!(popped.is_some(), "module execution popped no execution context");
+
+  result
 }
 
 #[cfg(test)]

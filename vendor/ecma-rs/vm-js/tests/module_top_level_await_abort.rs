@@ -1,6 +1,6 @@
 use vm_js::{
-  Heap, HeapLimits, MicrotaskQueue, ModuleGraph, PromiseState, PropertyKey, Realm, RootId, Scope,
-  SourceTextModuleRecord, Value, Vm, VmError, VmHostHooks, VmJobContext, VmOptions,
+  CompiledScript, Heap, HeapLimits, MicrotaskQueue, ModuleGraph, PromiseState, PropertyKey, Realm,
+  RootId, Scope, SourceTextModuleRecord, Value, Vm, VmError, VmHostHooks, VmJobContext, VmOptions,
 };
 
 fn new_vm_heap_realm() -> Result<(Vm, Heap, Realm), VmError> {
@@ -206,7 +206,7 @@ fn evaluate_returns_same_promise_while_tla_pending() -> Result<(), VmError> {
   graph.abort_tla_evaluation(&mut vm, &mut heap, entry);
 
   {
-    let mut scope = heap.scope();
+    let scope = heap.scope();
     let promise1_value = scope
       .heap()
       .get_root(promise1_root)
@@ -220,6 +220,95 @@ fn evaluate_returns_same_promise_while_tla_pending() -> Result<(), VmError> {
   assert_eq!(vm.async_continuation_count(), 0);
 
   heap.remove_root(promise1_root);
+  graph.teardown(&mut vm, &mut heap);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
+fn abort_tla_evaluation_tears_down_compiled_module_state() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+
+  let mut graph = ModuleGraph::new();
+
+  let script = CompiledScript::compile_module(&mut heap, "m.js", "await new Promise(() => {}); export {};")?;
+  let mut record = SourceTextModuleRecord::parse_source(script.source.clone())?;
+  record.compiled = Some(script);
+
+  let entry = graph.add_module(record)?;
+
+  // Link once so instantiation can use the parse tree, then discard the AST to ensure top-level
+  // await evaluation parses on demand and retains the AST across suspension.
+  graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), entry)?;
+  graph.module_mut(entry).ast = None;
+
+  let promise = graph.evaluate(
+    &mut vm,
+    &mut heap,
+    realm.global_object(),
+    realm.id(),
+    entry,
+    &mut host,
+    &mut hooks,
+  )?;
+
+  let Value::Object(promise_obj) = promise else {
+    panic!("ModuleGraph::evaluate should return a Promise object");
+  };
+
+  {
+    let mut scope = heap.scope();
+    scope.push_root(promise)?;
+    assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Pending);
+  }
+
+  // Drain a microtask checkpoint; the awaited promise never resolves, so evaluation should still be
+  // pending.
+  {
+    let mut ctx = JobCtx {
+      vm: &mut vm,
+      heap: &mut heap,
+    };
+    let errors = hooks.perform_microtask_checkpoint(&mut ctx);
+    assert!(errors.is_empty(), "unexpected microtask errors: {errors:?}");
+  }
+
+  {
+    let mut scope = heap.scope();
+    scope.push_root(promise)?;
+    assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Pending);
+  }
+
+  assert_eq!(vm.async_continuation_count(), 1);
+
+  graph.abort_tla_evaluation(&mut vm, &mut heap, entry);
+
+  assert_eq!(vm.async_continuation_count(), 0);
+
+  {
+    let mut scope = heap.scope();
+    scope.push_root(promise)?;
+
+    assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Rejected);
+    let reason = scope.heap().promise_result(promise_obj)?.unwrap_or(Value::Undefined);
+    let Value::Object(err_obj) = reason else {
+      panic!("expected abort_tla_evaluation to reject with an Error object, got {reason:?}");
+    };
+
+    let msg = get_error_message(&mut scope, err_obj)?
+      .unwrap_or_else(|| "<non-string message>".to_string());
+    assert!(
+      msg.contains("asynchronous module loading/evaluation is not supported"),
+      "unexpected rejection message: {msg:?}"
+    );
+  }
+
+  assert!(hooks.is_empty());
+  assert!(vm.microtask_queue().is_empty());
+  assert!(vm.module_graph_ptr().is_none());
+
   graph.teardown(&mut vm, &mut heap);
   realm.teardown(&mut heap);
   Ok(())

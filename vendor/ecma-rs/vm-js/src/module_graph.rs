@@ -2458,37 +2458,49 @@ impl ModuleGraph {
       let idx = module_index(module);
 
       // Execute the module body.
-      let env_root = self.modules[idx]
-        .environment
-        .ok_or(VmError::InvariantViolation("module environment missing"))?;
+      let (has_tla, env_root, source, ast, compiled) = {
+        let record = self
+          .modules
+          .get(idx)
+          .ok_or_else(|| VmError::invalid_handle())?;
+        (
+          record.has_tla,
+          record.environment,
+          record.source.clone(),
+          record.ast.clone(),
+          record.compiled.clone(),
+        )
+      };
+
+      let env_root = env_root.ok_or(VmError::InvariantViolation("module environment missing"))?;
       let module_env = scope
         .heap()
         .get_env_root(env_root)
         .ok_or_else(|| VmError::invalid_handle())?;
-      let source = self.modules[idx]
-        .source
-        .clone()
-        .ok_or(VmError::Unimplemented("module source missing"))?;
-      let mut tla_fallback_ast: Option<Arc<Node<TopLevel>>> = None;
-      let mut tla_fallback_ast_memory: Option<ExternalMemoryToken> = None;
-      let ast = if self.modules[idx].has_tla && self.modules[idx].ast.is_none() {
-        // Compiled-module TLA fallback: parse a `parse-js` AST on demand and retain it across async
-        // suspension (async frames store raw pointers into the AST).
-        //
-        // The AST lives outside the GC heap, so we must charge it against heap limits to prevent
-        // hostile modules from bypassing `HeapLimits` via enormous off-heap ASTs.
-        let (ast, token) = parse_module_ast_for_tla_fallback(vm, scope.heap_mut(), &source)?;
-        tla_fallback_ast = Some(ast.clone());
-        tla_fallback_ast_memory = Some(token);
-        ast
-      } else {
-        self.modules[idx]
-          .ast
-          .clone()
-          .ok_or(VmError::Unimplemented("module AST missing"))?
-      };
+      let source = source.ok_or(VmError::Unimplemented("module source missing"))?;
 
-      if self.modules[idx].has_tla {
+      if has_tla {
+        let mut tla_fallback_ast: Option<Arc<Node<TopLevel>>> = None;
+        let mut tla_fallback_ast_memory: Option<ExternalMemoryToken> = None;
+
+        // Top-level await is not supported by the compiled executor. Even if the module has a
+        // pre-compiled HIR body, fall back to the async AST evaluator.
+        //
+        // If the module record does not retain an AST (e.g. compiled modules that discard parse
+        // trees after linking), parse it on demand and retain it across async suspension. The async
+        // evaluator stores raw pointers into the AST statement list (`AsyncFrame::StmtList`), so the
+        // backing `Arc<Node<TopLevel>>` must remain alive until the continuation completes or is
+        // aborted.
+        let ast = match ast {
+          Some(ast) => ast,
+          None => {
+            let (ast, token) = parse_module_ast_for_tla_fallback(vm, scope.heap_mut(), &source)?;
+            tla_fallback_ast = Some(ast.clone());
+            tla_fallback_ast_memory = Some(token);
+            ast
+          }
+        };
+
         match start_module_tla_evaluation(
           vm,
           scope,
@@ -2519,6 +2531,7 @@ impl ModuleGraph {
               continuation_id,
               global_object: state.global_object,
               realm_id: state.realm_id,
+              ast: None,
               async_continuation_ids,
               tla_fallback_ast,
               tla_fallback_ast_memory,
@@ -2565,6 +2578,40 @@ impl ModuleGraph {
           }
         }
       } else {
+        // Non-TLA modules can execute via either:
+        // - the compiled executor (HIR), if present, or
+        // - the AST interpreter (fallback).
+        if let Some(compiled) = compiled {
+          match crate::hir_exec::run_compiled_module(
+            vm,
+            scope,
+            host,
+            hooks,
+            state.global_object,
+            state.realm_id,
+            module,
+            module_env,
+            compiled,
+          ) {
+            Ok(()) => {
+              state.next_member_index = state.next_member_index.saturating_add(1);
+              continue;
+            }
+            Err(err) => {
+              let reason = if let Some(thrown) = err.thrown_value() {
+                thrown
+              } else {
+                self.cache_module_error_from_err(vm, scope, idx, &err)?;
+                self.module_errored_value(vm, scope, idx)?
+              };
+              self.scc_eval_states[root_idx] = None;
+              self.fail_scc(vm, scope, scc_root, host, hooks, reason, Some(&err))?;
+              return Ok(());
+            }
+          }
+        }
+
+        let ast = ast.ok_or(VmError::Unimplemented("module AST missing"))?;
         match run_module(
           vm,
           scope,
@@ -2962,27 +3009,40 @@ impl ModuleGraph {
         .get_env_root(env_root)
         .ok_or_else(|| VmError::invalid_handle())?;
 
-      let source = self.modules[idx]
-        .source
-        .clone()
-        .ok_or(VmError::Unimplemented("module source missing"))?;
-      let ast = self.modules[idx]
-        .ast
-        .clone()
-        .ok_or(VmError::Unimplemented("module AST missing"))?;
-
-      run_module(
-        vm,
-        scope,
-        host,
-        hooks,
-        global_object,
-        realm_id,
-        module,
-        module_env,
-        source,
-        &ast.stx.body,
-      )?;
+      if let Some(compiled) = self.modules[idx].compiled.clone() {
+        crate::hir_exec::run_compiled_module(
+          vm,
+          scope,
+          host,
+          hooks,
+          global_object,
+          realm_id,
+          module,
+          module_env,
+          compiled,
+        )?;
+      } else {
+        let source = self.modules[idx]
+          .source
+          .clone()
+          .ok_or(VmError::Unimplemented("module source missing"))?;
+        let ast = self.modules[idx]
+          .ast
+          .clone()
+          .ok_or(VmError::Unimplemented("module AST missing"))?;
+        run_module(
+          vm,
+          scope,
+          host,
+          hooks,
+          global_object,
+          realm_id,
+          module,
+          module_env,
+          source,
+          &ast.stx.body,
+        )?;
+      }
       Ok(())
     })();
     match eval_result {
@@ -3194,6 +3254,14 @@ struct TlaEvaluationState {
   continuation_id: u32,
   global_object: GcObject,
   realm_id: RealmId,
+  /// Parsed AST kept alive for the duration of async module evaluation.
+  ///
+  /// The async evaluator stores raw pointers into the AST statement list (`AsyncFrame::StmtList`),
+  /// so when a compiled module falls back to AST evaluation for top-level await we must retain the
+  /// backing `Arc<Node<TopLevel>>` across async suspension until the continuation completes or is
+  /// aborted.
+  #[allow(dead_code)]
+  ast: Option<Arc<Node<TopLevel>>>,
   /// Async continuation ids created solely for this module's top-level await evaluation.
   ///
   /// When an embedding aborts async module evaluation, these continuations must be torn down so
@@ -3254,6 +3322,14 @@ fn parse_module_ast_for_tla_fallback(
   };
   let top = vm.parse_top_level_with_budget(&source.text, opts)?;
 
+  {
+    let mut tick = || vm.tick();
+    crate::early_errors::validate_top_level(
+      &top.stx.body,
+      crate::early_errors::EarlyErrorOptions::module(),
+      &mut tick,
+    )?;
+  }
   Ok((arc_try_new_vm(top)?, token))
 }
 

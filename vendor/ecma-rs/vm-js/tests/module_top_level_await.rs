@@ -2,9 +2,10 @@ use std::any::Any;
 use std::collections::HashMap;
 
 use vm_js::{
-  Heap, HeapLimits, HostDefined, ImportMetaProperty, Job, JsString, MicrotaskQueue, ModuleGraph,
-  ModuleId, ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, PropertyKey, Realm,
-  Scope, SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, VmOptions,
+  CompiledScript, Heap, HeapLimits, HostDefined, ImportMetaProperty, Job, JsString, MicrotaskQueue,
+  ModuleGraph, ModuleId, ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, PropertyKey,
+  Realm, Scope, SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext,
+  VmOptions,
 };
 
 fn new_vm_heap_realm() -> Result<(Vm, Heap, Realm), VmError> {
@@ -12,6 +13,18 @@ fn new_vm_heap_realm() -> Result<(Vm, Heap, Realm), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let realm = Realm::new(&mut vm, &mut heap)?;
   Ok((vm, heap, realm))
+}
+
+fn add_compiled_module_with_specifier(
+  graph: &mut ModuleGraph,
+  heap: &mut Heap,
+  specifier: &str,
+  source: &str,
+) -> Result<ModuleId, VmError> {
+  let script = CompiledScript::compile_module(heap, specifier, source)?;
+  let mut record = SourceTextModuleRecord::parse_source(script.source.clone())?;
+  record.compiled = Some(script);
+  graph.add_module_with_specifier(specifier, record)
 }
 
 fn ns_get(
@@ -358,6 +371,154 @@ fn import_meta_works_after_top_level_await() -> Result<(), VmError> {
   // `import.meta` must be cached per module even across top-level await resumption.
   assert_eq!(hooks.import_meta_get_calls, 1);
   assert_eq!(hooks.import_meta_finalize_calls, 1);
+
+  drop(scope);
+  heap.remove_root(eval_promise_root);
+  graph.abort_tla_evaluation(&mut vm, &mut heap, m);
+  hooks.teardown_jobs(&mut vm, &mut heap);
+  graph.teardown(&mut vm, &mut heap);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
+fn import_meta_works_after_top_level_await_in_compiled_module() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = TestHostHooks::new("https://example.invalid/m.js");
+  let mut host = ();
+
+  let mut graph = ModuleGraph::new();
+  let m = add_compiled_module_with_specifier(
+    &mut graph,
+    &mut heap,
+    "m.js",
+    r#"
+      export const before = import.meta.url;
+      await Promise.resolve();
+      export const after = import.meta.url;
+    "#,
+  )?;
+  graph.link_all_by_specifier();
+
+  // Link once so instantiation can use the parse tree, then discard the AST to ensure top-level
+  // await evaluation parses on demand and retains the AST across suspension.
+  graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), m)?;
+  graph.module_mut(m).ast = None;
+
+  let eval_promise = graph.evaluate(
+    &mut vm,
+    &mut heap,
+    realm.global_object(),
+    realm.id(),
+    m,
+    &mut host,
+    &mut hooks,
+  )?;
+  let eval_promise_root = heap.add_root(eval_promise)?;
+
+  let eval_promise_obj = match eval_promise {
+    Value::Object(obj) => obj,
+    _ => return Err(VmError::InvariantViolation("module evaluation must return a promise object")),
+  };
+  assert_eq!(heap.promise_state(eval_promise_obj)?, PromiseState::Pending);
+
+  hooks.perform_microtask_checkpoint(&mut vm, &mut heap)?;
+
+  let mut scope = heap.scope();
+  let eval_promise_value = scope
+    .heap()
+    .get_root(eval_promise_root)
+    .ok_or_else(|| VmError::invalid_handle())?;
+  let Value::Object(eval_promise_obj) = eval_promise_value else {
+    return Err(VmError::InvariantViolation("evaluation promise root must reference an object"));
+  };
+  assert_eq!(scope.heap().promise_state(eval_promise_obj)?, PromiseState::Fulfilled);
+
+  let ns = graph.get_module_namespace(m, &mut vm, &mut scope)?;
+  let Value::String(before) = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "before")? else {
+    return Err(VmError::InvariantViolation(
+      "expected `before` export to be a string",
+    ));
+  };
+  let Value::String(after) = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "after")? else {
+    return Err(VmError::InvariantViolation(
+      "expected `after` export to be a string",
+    ));
+  };
+  let before_s = scope.heap().get_string(before)?.to_utf8_lossy();
+  let after_s = scope.heap().get_string(after)?.to_utf8_lossy();
+  assert_eq!(before_s, "https://example.invalid/m.js");
+  assert_eq!(after_s, "https://example.invalid/m.js");
+
+  // `import.meta` must be cached per module even across top-level await resumption.
+  assert_eq!(hooks.import_meta_get_calls, 1);
+  assert_eq!(hooks.import_meta_finalize_calls, 1);
+
+  drop(scope);
+  heap.remove_root(eval_promise_root);
+  graph.abort_tla_evaluation(&mut vm, &mut heap, m);
+  hooks.teardown_jobs(&mut vm, &mut heap);
+  graph.teardown(&mut vm, &mut heap);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
+fn compiled_module_top_level_await_falls_back_to_ast() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = TestHostHooks::new("https://example.invalid/m.js");
+  let mut host = ();
+
+  let mut graph = ModuleGraph::new();
+  let m = add_compiled_module_with_specifier(
+    &mut graph,
+    &mut heap,
+    "m.js",
+    r#"
+      await Promise.resolve(1);
+      export const x = 2;
+    "#,
+  )?;
+  graph.link_all_by_specifier();
+
+  graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), m)?;
+  graph.module_mut(m).ast = None;
+
+  let eval_promise = graph.evaluate(
+    &mut vm,
+    &mut heap,
+    realm.global_object(),
+    realm.id(),
+    m,
+    &mut host,
+    &mut hooks,
+  )?;
+  let eval_promise_root = heap.add_root(eval_promise)?;
+
+  // Top-level await should suspend module evaluation (promise starts pending).
+  let eval_promise_obj = match eval_promise {
+    Value::Object(obj) => obj,
+    _ => return Err(VmError::InvariantViolation("module evaluation must return a promise object")),
+  };
+  assert_eq!(heap.promise_state(eval_promise_obj)?, PromiseState::Pending);
+
+  hooks.perform_microtask_checkpoint(&mut vm, &mut heap)?;
+
+  let mut scope = heap.scope();
+  let eval_promise_value = scope
+    .heap()
+    .get_root(eval_promise_root)
+    .ok_or_else(|| VmError::invalid_handle())?;
+  let Value::Object(eval_promise_obj) = eval_promise_value else {
+    return Err(VmError::InvariantViolation("evaluation promise root must reference an object"));
+  };
+  assert_eq!(scope.heap().promise_state(eval_promise_obj)?, PromiseState::Fulfilled);
+
+  let ns = graph.get_module_namespace(m, &mut vm, &mut scope)?;
+  assert_eq!(
+    ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "x")?,
+    Value::Number(2.0)
+  );
 
   drop(scope);
   heap.remove_root(eval_promise_root);
@@ -896,8 +1057,9 @@ fn throw_await_error_object_attaches_throw_site_stack() -> Result<(), VmError> {
 
   // The `throw await` statement is the 3rd line of the module and starts at column 1.
   let stack = scope.heap().get_string(stack_s)?.to_utf8_lossy();
+  let first_frame = stack.lines().find(|line| line.starts_with("at ")).unwrap_or("");
   assert!(
-    stack.starts_with("at <inline>:3:1"),
+    first_frame.starts_with("at <inline>:3:1"),
     "unexpected stack trace: {stack:?}"
   );
 

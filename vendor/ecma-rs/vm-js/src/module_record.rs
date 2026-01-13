@@ -1,3 +1,4 @@
+use crate::code::CompiledScript;
 use crate::execution_context::ModuleId;
 use crate::fallible_alloc::arc_try_new_vm;
 use crate::module_graph::ModuleGraph;
@@ -246,9 +247,15 @@ pub struct SourceTextModuleRecord {
   pub ast: Option<Arc<Node<TopLevel>>>,
   /// Compiled module code (source text + lowered HIR).
   ///
+  /// When present, module bodies may be executed via the compiled (HIR) executor instead of the
+  /// AST interpreter.
+  ///
+  /// Note: the compiled executor does **not** currently support top-level await, so async module
+  /// evaluation may fall back to parsing the AST on demand.
+  ///
   /// When executing via the HIR path, `source`/`ast` may be `None` as the compiled script already
   /// owns its own [`SourceText`] reference.
-  pub compiled: Option<Arc<crate::CompiledScript>>,
+  pub compiled: Option<Arc<CompiledScript>>,
   pub requested_modules: Vec<ModuleRequest>,
   pub import_entries: Vec<ImportEntry>,
   pub status: ModuleStatus,
