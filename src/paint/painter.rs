@@ -13145,6 +13145,57 @@ impl Painter {
     }
   }
 
+  fn paint_ui_svg_icon(
+    &mut self,
+    svg: &str,
+    rect: Rect,
+    opacity: f32,
+    clip_mask: Option<&Mask>,
+  ) -> bool {
+    let w = rect.width().max(0.0);
+    let h = rect.height().max(0.0);
+    if w <= 0.0 || h <= 0.0 || svg.trim().is_empty() {
+      return false;
+    }
+    let dest_w_device = self.device_length(w);
+    let dest_h_device = self.device_length(h);
+    if dest_w_device <= 0.0 || dest_h_device <= 0.0 {
+      return false;
+    }
+    let render_w = dest_w_device.ceil().max(1.0) as u32;
+    let render_h = dest_h_device.ceil().max(1.0) as u32;
+    let pixmap = match self.image_cache.render_svg_pixmap_at_size(
+      svg,
+      render_w,
+      render_h,
+      "browser-ui-icon",
+      self.scale,
+    ) {
+      Ok(pixmap) => pixmap,
+      Err(_) => return false,
+    };
+    let scale_x = dest_w_device / render_w as f32;
+    let scale_y = dest_h_device / render_h as f32;
+    if !scale_x.is_finite() || !scale_y.is_finite() {
+      return false;
+    }
+    let mut paint = PixmapPaint::default();
+    paint.quality = FilterQuality::Bilinear;
+    paint.opacity = opacity.clamp(0.0, 1.0);
+    let transform = Transform::from_row(
+      scale_x,
+      0.0,
+      0.0,
+      scale_y,
+      self.device_x(rect.x()),
+      self.device_y(rect.y()),
+    );
+    self
+      .pixmap
+      .draw_pixmap(0, 0, pixmap.as_ref().as_ref(), &paint, transform, clip_mask);
+    true
+  }
+
   fn paint_video_controls_placeholder_ui(&mut self, content_rect: Rect, clip_mask: Option<&Mask>) {
     let w = content_rect.width().max(0.0);
     let h = content_rect.height().max(0.0);
@@ -13204,20 +13255,27 @@ impl Painter {
       }
     }
 
+    const PLAY_SVG: &str = include_str!("../../assets/browser_icons/play.svg");
+    const VOLUME_SVG: &str = include_str!("../../assets/browser_icons/volume.svg");
+    const MUTE_SVG: &str = include_str!("../../assets/browser_icons/mute.svg");
+    const FULLSCREEN_SVG: &str = include_str!("../../assets/browser_icons/fullscreen.svg");
+
     let play_rect = Rect::from_xywh(track_x, icon_y, icon_size, icon_size);
-    self.paint_play_triangle_icon(play_rect, Rgba::WHITE.with_alpha(0.85), clip_mask);
+    if !self.paint_ui_svg_icon(PLAY_SVG, play_rect, 0.85, clip_mask) {
+      self.paint_play_triangle_icon(play_rect, Rgba::WHITE.with_alpha(0.85), clip_mask);
+    }
 
     let icon_count = 3;
     let total_w = icon_count as f32 * icon_size + (icon_count as f32 - 1.0) * icon_gap;
     let start_x = content_rect.max_x() - inset - total_w;
     if start_x.is_finite() && start_x >= play_rect.max_x() + icon_gap {
-      for i in 0..icon_count {
+      let icons = [VOLUME_SVG, MUTE_SVG, FULLSCREEN_SVG];
+      for (i, svg) in icons.iter().enumerate() {
         let x = start_x + i as f32 * (icon_size + icon_gap);
-        self.paint_solid_rect_simple(
-          Rect::from_xywh(x, icon_y, icon_size, icon_size),
-          Rgba::WHITE.with_alpha(0.6),
-          clip_mask,
-        );
+        let rect = Rect::from_xywh(x, icon_y, icon_size, icon_size);
+        if !self.paint_ui_svg_icon(svg, rect, 0.6, clip_mask) {
+          self.paint_solid_rect_simple(rect, Rgba::WHITE.with_alpha(0.6), clip_mask);
+        }
       }
     }
   }

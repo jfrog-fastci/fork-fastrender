@@ -42,6 +42,11 @@ pub enum BrowserIcon {
   Plus,
   BookmarkOutline,
   BookmarkFilled,
+  Play,
+  Pause,
+  Volume,
+  Mute,
+  Fullscreen,
 }
 
 impl BrowserIcon {
@@ -81,6 +86,11 @@ impl BrowserIcon {
       Self::Plus => "plus",
       Self::BookmarkOutline => "bookmark_outline",
       Self::BookmarkFilled => "bookmark_filled",
+      Self::Play => "play",
+      Self::Pause => "pause",
+      Self::Volume => "volume",
+      Self::Mute => "mute",
+      Self::Fullscreen => "fullscreen",
     }
   }
 
@@ -122,6 +132,11 @@ impl BrowserIcon {
       Self::Plus => "Add",
       Self::BookmarkOutline => "Bookmark",
       Self::BookmarkFilled => "Bookmark",
+      Self::Play => "Play",
+      Self::Pause => "Pause",
+      Self::Volume => "Volume",
+      Self::Mute => "Mute",
+      Self::Fullscreen => "Fullscreen",
     }
   }
 
@@ -159,6 +174,11 @@ impl BrowserIcon {
       Self::Plus => include_bytes!("../../assets/browser_icons/plus.svg"),
       Self::BookmarkOutline => include_bytes!("../../assets/browser_icons/bookmark_outline.svg"),
       Self::BookmarkFilled => include_bytes!("../../assets/browser_icons/bookmark_filled.svg"),
+      Self::Play => include_bytes!("../../assets/browser_icons/play.svg"),
+      Self::Pause => include_bytes!("../../assets/browser_icons/pause.svg"),
+      Self::Volume => include_bytes!("../../assets/browser_icons/volume.svg"),
+      Self::Mute => include_bytes!("../../assets/browser_icons/mute.svg"),
+      Self::Fullscreen => include_bytes!("../../assets/browser_icons/fullscreen.svg"),
     }
   }
 }
@@ -596,6 +616,11 @@ mod tests {
       BrowserIcon::Plus,
       BrowserIcon::BookmarkOutline,
       BrowserIcon::BookmarkFilled,
+      BrowserIcon::Play,
+      BrowserIcon::Pause,
+      BrowserIcon::Volume,
+      BrowserIcon::Mute,
+      BrowserIcon::Fullscreen,
     ] {
       let label = icon.a11y_label();
       assert!(
@@ -747,6 +772,11 @@ mod tests {
       BrowserIcon::Plus,
       BrowserIcon::BookmarkOutline,
       BrowserIcon::BookmarkFilled,
+      BrowserIcon::Play,
+      BrowserIcon::Pause,
+      BrowserIcon::Volume,
+      BrowserIcon::Mute,
+      BrowserIcon::Fullscreen,
     ];
 
     for icon in icons {
