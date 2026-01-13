@@ -27,6 +27,7 @@ include = [
   "built-ins/RegExp/prototype/exec/**/*.js",
   "built-ins/RegExp/prototype/source/**/*.js",
   "built-ins/RegExp/unicode_restricted_octal_escape.js",
+  "built-ins/RegExp/S15.10.2.11_A1_T5.js",
 
   # --- Named capture groups (`(?<name>...)`, match result `.groups`) ---
   "built-ins/RegExp/named-groups/**/*.js",

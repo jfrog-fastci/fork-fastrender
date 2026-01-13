@@ -3066,6 +3066,9 @@ pub(crate) fn compile_regexp_with_budget(
   // execution.
   ctx.tick()?;
 
+  // Annex B disambiguation for DecimalEscape/backreferences in non-UnicodeMode depends on the total
+  // number of capturing groups in the pattern (forward references are allowed), so compute it
+  // up-front.
   let total_capture_count = count_total_capturing_groups(&mut ctx, pattern, flags)?;
   let mut parser = Parser::new(pattern, flags, total_capture_count);
   let disj = parser.parse_disjunction(&mut ctx, None)?;
@@ -4702,7 +4705,6 @@ impl<'a> Parser<'a> {
           self.idx = digit_start.saturating_add(1);
           return Ok(Atom::Literal(x as u32));
         }
-
         self.idx = digit_start.saturating_add(1);
         let v = self.parse_legacy_octal_escape_after_first(x)?;
         Ok(Atom::Literal(v as u32))

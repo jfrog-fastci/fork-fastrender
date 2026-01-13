@@ -518,6 +518,18 @@ fn regexp_unicode_mode_allows_high_index_backreferences_when_in_range() {
 }
 
 #[test]
+fn regexp_non_unicode_mode_allows_forward_numeric_escape_backreference() {
+  // In non-UnicodeMode, Annex B disambiguation uses the total number of capturing groups in the
+  // pattern, so forward numeric backreferences (e.g. `\1(A)`) are treated as backreferences rather
+  // than legacy octal escapes.
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#"new RegExp("\\1(A)").exec("AA")[0]"#).unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "A");
+  let value = rt.exec_script(r#"new RegExp("\\1(A)").exec("AA")[1]"#).unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "A");
+}
+
+#[test]
 fn regexp_unicode_mode_rejects_legacy_octal_escape_sequence_00() {
   let mut rt = new_runtime();
   let value = rt
