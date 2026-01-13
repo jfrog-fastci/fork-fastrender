@@ -687,6 +687,10 @@ fn resolve_for_csp(
   document_url: Option<&str>,
   document_origin: Option<&DocumentOrigin>,
 ) -> Option<Url> {
+  let candidate = trim_ascii_whitespace(candidate);
+  if candidate.is_empty() {
+    return None;
+  }
   Url::parse(candidate)
     .ok()
     .or_else(|| {
