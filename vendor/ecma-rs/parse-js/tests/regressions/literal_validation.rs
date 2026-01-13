@@ -204,6 +204,15 @@ fn regex_duplicate_named_captures_are_allowed() {
 }
 
 #[test]
+fn regex_duplicate_named_captures_are_allowed_in_disjoint_alternatives() {
+  // Duplicate named capture groups are permitted if they occur in disjoint alternation branches
+  // (see `regexp-duplicate-named-groups`).
+  for src in ["/(?<a>a)|(?<a>b)/", "/(?<a>a)|(?<a>b)/u", "/(?<a>a)|(?<a>b)/v"] {
+    parse(src).unwrap();
+  }
+}
+
+#[test]
 fn regex_duplicate_named_captures_in_disjoint_alternatives_are_allowed() {
   for src in [
     "/(?:(?<a>a)|(?<a>b))/",
