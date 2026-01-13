@@ -83,7 +83,7 @@ impl<'a> Parser<'a> {
         Node::new(
           t.loc,
           ClassOrFuncName {
-            name: self.string(t.loc),
+            name: self.identifier_name(t.loc),
           },
         )
       })
@@ -96,23 +96,18 @@ impl<'a> Parser<'a> {
       if !is_valid_pattern_identifier(t.typ, ctx.rules) {
         return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
       }
-      let name = p.string(t.loc);
-      let Some(string_value) = p.identifier_name_string_value(&name) else {
-        return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
-      };
+      let name = p.identifier_name(t.loc);
 
       // `await`/`yield` are reserved words when the corresponding grammar parameter is present.
       // Unicode escape sequences in identifiers must not bypass this restriction.
-      if (!ctx.rules.await_allowed && string_value.as_ref() == "await")
-        || (!ctx.rules.yield_allowed && string_value.as_ref() == "yield")
+      if (!ctx.rules.await_allowed && name == "await") || (!ctx.rules.yield_allowed && name == "yield")
       {
         return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
       }
-
       if p.is_strict_ecmascript()
         && p.is_strict_mode()
-        && (Parser::is_strict_mode_reserved_word(string_value.as_ref())
-          || Parser::is_strict_mode_restricted_binding_identifier(string_value.as_ref()))
+        && (Parser::is_strict_mode_reserved_word(&name)
+          || Parser::is_strict_mode_restricted_binding_identifier(&name))
       {
         return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
       }

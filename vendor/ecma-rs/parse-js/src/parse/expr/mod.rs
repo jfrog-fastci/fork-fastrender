@@ -827,21 +827,17 @@ impl<'a> Parser<'a> {
     if !is_valid_pattern_identifier(t.typ, ctx.rules) {
       return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
     };
-    let name = self.string(t.loc);
-    let Some(string_value) = self.identifier_name_string_value(&name) else {
-      return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
-    };
+    let name = self.identifier_name(t.loc);
 
-    // `await`/`yield` are reserved words when the corresponding grammar parameter is present
-    // (ECMA-262 `StringValue` early errors). Unicode escape sequences in the source spelling do
-    // not bypass these restrictions (e.g. `\u0061wait`).
-    if (!ctx.rules.await_allowed && string_value.as_ref() == "await")
-      || (!ctx.rules.yield_allowed && string_value.as_ref() == "yield")
-    {
+    // `await`/`yield` are reserved words when the corresponding grammar parameter is present.
+    // Unicode escape sequences in the source spelling must not bypass this restriction
+    // (e.g. `\u0061wait`).
+    if (!ctx.rules.await_allowed && name == "await") || (!ctx.rules.yield_allowed && name == "yield") {
       return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
     }
 
-    if self.is_strict_ecmascript() && self.is_strict_mode() && Parser::is_strict_mode_reserved_word(string_value.as_ref()) {
+    if self.is_strict_ecmascript() && self.is_strict_mode() && Parser::is_strict_mode_reserved_word(&name)
+    {
       return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
     }
     Ok(name)

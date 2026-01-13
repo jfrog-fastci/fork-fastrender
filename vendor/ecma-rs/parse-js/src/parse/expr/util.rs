@@ -31,14 +31,6 @@ pub fn lit_to_pat(node: Node<Expr>) -> SyntaxResult<Node<Pat>> {
 pub(crate) fn lit_to_pat_with_recover(node: Node<Expr>, recover: bool) -> SyntaxResult<Node<Pat>> {
   let loc = node.loc;
 
-  // Strict ECMAScript: parenthesized expressions are not valid assignment targets.
-  //
-  // This includes simple identifiers and member expressions: `for ((a) of b) {}` and `(obj.a) = 1`
-  // must be rejected under conformance parsing.
-  if !recover && node.assoc.get::<ParenthesizedExpr>().is_some() {
-    return Err(loc.error(SyntaxErrorType::InvalidAssigmentTarget, None));
-  }
-
   // TypeScript: Accept member expressions for error recovery, even with optional chaining.
   // Check for member expressions first (without moving the value).
   let is_member = match node.stx.as_ref() {
@@ -266,10 +258,6 @@ pub(crate) fn lhs_expr_to_assign_target_with_recover(
   recover: bool,
 ) -> SyntaxResult<Node<Expr>> {
   if !recover {
-    // Strict ECMAScript: parenthesized expressions are not valid assignment targets.
-    if lhs.assoc.get::<ParenthesizedExpr>().is_some() {
-      return Err(lhs.error(SyntaxErrorType::InvalidAssigmentTarget));
-    }
     return match lhs.stx.as_ref() {
       e @ (Expr::LitArr(_) | Expr::LitObj(_) | Expr::Id(_)) => {
         if operator_name != OperatorName::Assignment && !matches!(e, Expr::Id(_)) {

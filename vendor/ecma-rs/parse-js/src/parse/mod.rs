@@ -518,6 +518,73 @@ impl<'a> Parser<'a> {
     self.str(loc).to_string()
   }
 
+  /// Returns the *decoded* identifier text for the given token span.
+  ///
+  /// ECMAScript identifiers may contain Unicode escape sequences (e.g.
+  /// `\\u0061sync`). The lexer validates these escapes when tokenising, but it
+  /// only records the token span. Downstream consumers (AST/VM) expect the
+  /// decoded identifier name.
+  fn identifier_name(&self, loc: Loc) -> String {
+    let raw = self.str(loc);
+    if !raw.as_bytes().contains(&b'\\') {
+      return raw.to_string();
+    }
+
+    let bytes = raw.as_bytes();
+    let mut out = String::with_capacity(raw.len());
+    let mut i = 0;
+    while i < bytes.len() {
+      if bytes[i] != b'\\' {
+        // Safe: `i` is always kept on a UTF-8 codepoint boundary.
+        let ch = raw[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+        continue;
+      }
+
+      // Identifier escapes are always Unicode escapes: `\uXXXX` or `\u{X...}`.
+      // The lexer already validated the escape sequence, so fall back to the raw
+      // text on any unexpected shape.
+      if bytes.get(i + 1) != Some(&b'u') {
+        return raw.to_string();
+      }
+      i += 2; // skip `\u`
+
+      if bytes.get(i) == Some(&b'{') {
+        i += 1; // skip `{`
+        let start = i;
+        while i < bytes.len() && bytes[i] != b'}' {
+          i += 1;
+        }
+        if i >= bytes.len() {
+          return raw.to_string();
+        }
+        let hex = &raw[start..i];
+        let value = u32::from_str_radix(hex, 16).ok();
+        let ch = value.and_then(char::from_u32);
+        let Some(ch) = ch else {
+          return raw.to_string();
+        };
+        out.push(ch);
+        i += 1; // skip `}`
+      } else {
+        if i + 4 > bytes.len() {
+          return raw.to_string();
+        }
+        let hex = &raw[i..i + 4];
+        let value = u32::from_str_radix(hex, 16).ok();
+        let ch = value.and_then(char::from_u32);
+        let Some(ch) = ch else {
+          return raw.to_string();
+        };
+        out.push(ch);
+        i += 4;
+      }
+    }
+
+    out
+  }
+
   pub fn checkpoint(&self) -> ParserCheckpoint {
     ParserCheckpoint {
       next_tok_i: self.next_tok_i,
@@ -852,7 +919,7 @@ impl<'a> Parser<'a> {
     if t.typ != TT::Identifier {
       return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
     }
-    Ok(self.string(t.loc))
+    Ok(self.identifier_name(t.loc))
   }
 
   /// Require an identifier, but allow TypeScript type keywords as identifiers
@@ -867,7 +934,7 @@ impl<'a> Parser<'a> {
       // NOTE: `yield` is treated as an identifier outside generator contexts for parse recovery.
       || t.typ == TT::KeywordYield
     {
-      return Ok(self.string(t.loc));
+      return Ok(self.identifier_name(t.loc));
     }
     // Allow TypeScript type keywords as identifiers
     match t.typ {
@@ -881,7 +948,7 @@ impl<'a> Parser<'a> {
       | TT::KeywordUndefinedType
       | TT::KeywordUnknown
       | TT::KeywordObjectType
-      | TT::KeywordBigIntType => Ok(self.string(t.loc)),
+      | TT::KeywordBigIntType => Ok(self.identifier_name(t.loc)),
       _ => Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier"))),
     }
   }
