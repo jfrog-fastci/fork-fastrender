@@ -4874,6 +4874,14 @@ struct App {
   /// can display multi-frame animations without busy-polling the event loop.
   animation_tick_tab: Option<fastrender::ui::TabId>,
   next_animation_tick: Option<std::time::Instant>,
+
+  /// Worker-requested "tickless" wakeups for media/A-V timing (e.g. video frame presentation).
+  ///
+  /// Stored per tab so multiple tabs can request independent wakeups (e.g. background audio, future
+  /// features).
+  next_media_wakeup: std::collections::HashMap<fastrender::ui::TabId, std::time::Instant>,
+  /// Last time we sent a worker-driven tick due to `next_media_wakeup` (rate limiting).
+  last_media_wakeup_tick: std::collections::HashMap<fastrender::ui::TabId, std::time::Instant>,
 }
 
 #[cfg(feature = "browser_ui")]
@@ -5450,6 +5458,8 @@ impl App {
       last_egui_redraw_request: None,
       animation_tick_tab: None,
       next_animation_tick: None,
+      next_media_wakeup: std::collections::HashMap::new(),
+      last_media_wakeup_tick: std::collections::HashMap::new(),
     })
   }
 
@@ -5622,6 +5632,7 @@ impl App {
     self.update_resize_burst_state(std::time::Instant::now());
     self.drain_expired_closing_tab_favicons();
     self.drive_animation_tick();
+    self.drive_media_wakeups();
     self.drive_viewport_throttle();
     self.drive_egui_repaint();
     self.drive_page_upload_redraw();
@@ -5647,6 +5658,63 @@ impl App {
     if now >= deadline {
       self.send_worker_msg(fastrender::ui::UiToWorker::Tick { tab_id });
       self.next_animation_tick = Some(now + Self::ANIMATION_TICK_INTERVAL);
+    }
+  }
+
+  fn drive_media_wakeups(&mut self) {
+    // Keep behaviour consistent with the existing tick driver: don't run worker ticks when the
+    // window is not in a state where we expect animations to be active (avoids surprising "background"
+    // ticking when a window is unfocused/occluded).
+    if self.window_occluded || self.window_minimized || !self.window_focused {
+      return;
+    }
+
+    if self.next_media_wakeup.is_empty() {
+      return;
+    }
+
+    let now = std::time::Instant::now();
+
+    let mut due: Vec<fastrender::ui::TabId> = Vec::new();
+    for (tab_id, deadline) in &self.next_media_wakeup {
+      if now >= *deadline {
+        due.push(*tab_id);
+      }
+    }
+
+    if due.is_empty() {
+      return;
+    }
+
+    for tab_id in due {
+      self.next_media_wakeup.remove(&tab_id);
+      // Ignore stale wakeups for tabs that have already been closed.
+      if self.browser_state.tab(tab_id).is_none() {
+        continue;
+      }
+      self.send_worker_msg(fastrender::ui::UiToWorker::Tick { tab_id });
+      self.last_media_wakeup_tick.insert(tab_id, now);
+    }
+  }
+
+  fn schedule_media_wakeup(&mut self, tab_id: fastrender::ui::TabId, after: std::time::Duration) {
+    if self.browser_state.tab(tab_id).is_none() {
+      // Ignore stale requests for tabs that have already been closed.
+      return;
+    }
+    let now = std::time::Instant::now();
+    let last = self.last_media_wakeup_tick.get(&tab_id).copied();
+    let plan = fastrender::ui::repaint_scheduler::plan_worker_wake_after(now, after, last);
+
+    if plan.wake_now {
+      // Store as an immediate deadline so `drive_media_wakeups` can deliver the tick in a single
+      // place (and apply window-state gating consistently).
+      self.next_media_wakeup.insert(tab_id, now);
+    } else if let Some(deadline) = plan.next_deadline {
+      self.next_media_wakeup.insert(tab_id, deadline);
+    } else {
+      // `Duration::MAX` (or overflow) is treated as "cancel wakeup".
+      self.next_media_wakeup.remove(&tab_id);
     }
   }
 
@@ -5756,6 +5824,16 @@ impl App {
         Some(existing) => existing.min(tick_deadline),
         None => tick_deadline,
       });
+    }
+
+    // Worker-requested media wakeups (tickless scheduling).
+    if !(self.window_occluded || self.window_minimized || !self.window_focused) {
+      if let Some(media_deadline) = self.next_media_wakeup.values().copied().min() {
+        deadline = Some(match deadline {
+          Some(existing) => existing.min(media_deadline),
+          None => media_deadline,
+        });
+      }
     }
 
     // Egui repaint scheduling (focus changes, animated widgets like spinners, etc).
@@ -6675,6 +6753,10 @@ impl App {
         }
       }
       _ => {}
+    }
+
+    if let fastrender::ui::WorkerToUi::RequestWakeAfter { tab_id, after, .. } = &msg {
+      self.schedule_media_wakeup(*tab_id, *after);
     }
 
     // Navigations reset a tab's favicon; drop any cached favicon textures eagerly so GPU resources
@@ -11637,6 +11719,8 @@ impl App {
           // Close the tab in the source window.
           session_dirty = true;
           self.pending_frame_uploads.remove_tab(tab_id);
+          self.next_media_wakeup.remove(&tab_id);
+          self.last_media_wakeup_tick.remove(&tab_id);
           if let Some(tex) = self.tab_textures.remove(&tab_id) {
             tex.destroy(&mut self.egui_renderer);
           }
@@ -11729,12 +11813,14 @@ impl App {
             continue;
           }
 
-          session_dirty = true;
-          self.pending_frame_uploads.remove_tab(tab_id);
-          if let Some(tex) = self.tab_textures.remove(&tab_id) {
-            tex.destroy(&mut self.egui_renderer);
-          }
-          self.move_tab_favicon_into_delayed_destroy(tab_id);
+           session_dirty = true;
+           self.pending_frame_uploads.remove_tab(tab_id);
+           self.next_media_wakeup.remove(&tab_id);
+           self.last_media_wakeup_tick.remove(&tab_id);
+           if let Some(tex) = self.tab_textures.remove(&tab_id) {
+             tex.destroy(&mut self.egui_renderer);
+           }
+           self.move_tab_favicon_into_delayed_destroy(tab_id);
 
           let was_active = self.browser_state.active_tab_id() == Some(tab_id);
           if let Some(cancel) = self.tab_cancel.remove(&tab_id) {
@@ -11809,6 +11895,8 @@ impl App {
 
           for closed_tab_id in closed {
             self.pending_frame_uploads.remove_tab(closed_tab_id);
+            self.next_media_wakeup.remove(&closed_tab_id);
+            self.last_media_wakeup_tick.remove(&closed_tab_id);
             if let Some(tex) = self.tab_textures.remove(&closed_tab_id) {
               tex.destroy(&mut self.egui_renderer);
             }
@@ -11857,6 +11945,8 @@ impl App {
 
           for closed_tab_id in closed {
             self.pending_frame_uploads.remove_tab(closed_tab_id);
+            self.next_media_wakeup.remove(&closed_tab_id);
+            self.last_media_wakeup_tick.remove(&closed_tab_id);
             if let Some(tex) = self.tab_textures.remove(&closed_tab_id) {
               tex.destroy(&mut self.egui_renderer);
             }

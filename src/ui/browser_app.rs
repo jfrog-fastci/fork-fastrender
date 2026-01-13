@@ -1911,6 +1911,9 @@ impl BrowserAppState {
           }
         }
       }
+      WorkerToUi::RequestWakeAfter { .. } => {
+        // Wakeup scheduling is handled by the host UI event loop (e.g. `src/bin/browser.rs`).
+      }
       WorkerToUi::OpenSelectDropdown {
         tab_id,
         select_node_id,

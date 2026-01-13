@@ -7,6 +7,7 @@ use crate::tree::box_tree::SelectControl;
 use crate::ui::cancel::CancelGens;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 #[cfg(test)]
 use std::sync::Mutex;
 
@@ -85,6 +86,14 @@ pub enum RepaintReason {
   Scroll,
   Input,
   Navigation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WakeReason {
+  /// Media playback / A-V timing (video frame presentation, audio scheduling, etc).
+  Media,
+  /// Generic wakeup reason (future expansion point).
+  Other,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -649,6 +658,18 @@ pub enum WorkerToUi {
     tab_id: TabId,
     frame: RenderedFrame,
   },
+  /// Request that the UI wake up after `after` to drive media/time-based updates for `tab_id`.
+  ///
+  /// This is primarily intended for tickless media playback scheduling (e.g. video frame
+  /// presentation) so the UI can sleep in `ControlFlow::WaitUntil` instead of relying on a fixed
+  /// 16ms tick.
+  ///
+  /// `after == Duration::MAX` means "cancel / no wakeup requested".
+  RequestWakeAfter {
+    tab_id: TabId,
+    after: Duration,
+    reason: WakeReason,
+  },
   OpenSelectDropdown {
     tab_id: TabId,
     select_node_id: usize,
@@ -954,6 +975,18 @@ mod tests {
       active_match_index: Some(1),
     };
     let formatted = format!("{worker_msg:?}");
+    assert!(!formatted.is_empty());
+  }
+
+  #[test]
+  fn request_wake_after_message_is_debug_constructible() {
+    let tab_id = TabId(1);
+    let msg = WorkerToUi::RequestWakeAfter {
+      tab_id,
+      after: Duration::from_millis(10),
+      reason: WakeReason::Media,
+    };
+    let formatted = format!("{msg:?}");
     assert!(!formatted.is_empty());
   }
 }

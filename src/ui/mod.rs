@@ -135,7 +135,7 @@ pub mod browser_cli;
 
 pub use messages::{
   BrowserMediaPreferences, CursorKind, DownloadId, DownloadOutcome, NavigationReason, PointerButton,
-  PointerModifiers, RenderedFrame, RepaintReason, TabId, UiToWorker, WorkerToUi,
+  PointerModifiers, RenderedFrame, RepaintReason, TabId, UiToWorker, WakeReason, WorkerToUi,
 };
 
 // `input_mapping` depends on the optional egui/winit stack, so keep it behind the

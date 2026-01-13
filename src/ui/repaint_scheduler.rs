@@ -7,11 +7,26 @@ use std::time::{Duration, Instant};
 /// clamp to a 60fps-ish cadence by default.
 pub const MIN_EGUI_REPAINT_INTERVAL: Duration = Duration::from_millis(16);
 
+/// Minimum interval between worker-driven wakeups when `after == Duration::ZERO`.
+///
+/// Render workers may request "immediate" wakeups for time-based updates like video frame
+/// presentation. Scheduling zero-delay wakeups in a tight loop can turn into a busy loop on some
+/// platforms, so we clamp to a small minimum interval.
+pub const MIN_WORKER_WAKE_INTERVAL: Duration = Duration::from_millis(4);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RepaintSchedule {
   /// Whether the caller should request a redraw immediately (e.g. `window.request_redraw()`).
   pub request_redraw_now: bool,
   /// When to wake up next to request a redraw.
+  pub next_deadline: Option<Instant>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WakeSchedule {
+  /// Whether the caller should wake/run immediately.
+  pub wake_now: bool,
+  /// When to wake up next (if not waking immediately).
   pub next_deadline: Option<Instant>,
 }
 
@@ -81,6 +96,63 @@ pub fn plan_egui_repaint(
   )
 }
 
+/// Plan the next wakeup request based on a worker-provided `after` duration.
+///
+/// - `after == Duration::ZERO` means "as soon as possible".
+/// - `after == Duration::MAX` is treated as "no wakeup requested".
+///
+/// The returned plan is rate-limited by `min_interval` relative to the last time we woke due to a
+/// worker request (`last_wake`), preventing tight-loop busy waits when a buggy worker keeps
+/// requesting immediate wakeups.
+pub fn plan_worker_wake_after_with_min_interval(
+  now: Instant,
+  after: Duration,
+  last_wake: Option<Instant>,
+  min_interval: Duration,
+) -> WakeSchedule {
+  if after == Duration::MAX {
+    return WakeSchedule {
+      wake_now: false,
+      next_deadline: None,
+    };
+  }
+
+  let desired_deadline = if after == Duration::ZERO {
+    Some(now)
+  } else {
+    now.checked_add(after)
+  };
+
+  let Some(desired_deadline) = desired_deadline else {
+    return WakeSchedule {
+      wake_now: false,
+      next_deadline: None,
+    };
+  };
+
+  let earliest_allowed = last_wake
+    .and_then(|last| last.checked_add(min_interval))
+    .unwrap_or(now);
+
+  let effective_deadline = desired_deadline.max(earliest_allowed);
+
+  if effective_deadline <= now {
+    WakeSchedule {
+      wake_now: true,
+      next_deadline: None,
+    }
+  } else {
+    WakeSchedule {
+      wake_now: false,
+      next_deadline: Some(effective_deadline),
+    }
+  }
+}
+
+pub fn plan_worker_wake_after(now: Instant, after: Duration, last_wake: Option<Instant>) -> WakeSchedule {
+  plan_worker_wake_after_with_min_interval(now, after, last_wake, MIN_WORKER_WAKE_INTERVAL)
+}
+
 pub fn earliest_deadline(a: Option<Instant>, b: Option<Instant>) -> Option<Instant> {
   match (a, b) {
     (Some(a), Some(b)) => Some(a.min(b)),
@@ -121,6 +193,15 @@ mod tests {
   }
 
   #[test]
+  fn earliest_deadline_handles_none() {
+    let now = Instant::now();
+    let deadline = Some(now + Duration::from_millis(5));
+    assert_eq!(earliest_deadline(None, None), None);
+    assert_eq!(earliest_deadline(deadline, None), deadline);
+    assert_eq!(earliest_deadline(None, deadline), deadline);
+  }
+
+  #[test]
   fn duration_max_means_no_repaint() {
     let now = Instant::now();
     let plan = plan_egui_repaint_with_min_interval(now, Duration::MAX, None, Duration::from_millis(16));
@@ -135,5 +216,33 @@ mod tests {
     let plan = plan_egui_repaint_with_min_interval(now, delay, None, Duration::from_millis(16));
     assert!(!plan.request_redraw_now);
     assert_eq!(plan.next_deadline, Some(now + delay));
+  }
+
+  #[test]
+  fn worker_wake_immediate_is_rate_limited() {
+    let now = Instant::now();
+    let min = Duration::from_millis(4);
+    let plan = plan_worker_wake_after_with_min_interval(now, Duration::ZERO, Some(now), min);
+    assert!(!plan.wake_now);
+    assert_eq!(plan.next_deadline, Some(now + min));
+  }
+
+  #[test]
+  fn worker_wake_duration_max_means_no_wake() {
+    let now = Instant::now();
+    let plan = plan_worker_wake_after_with_min_interval(now, Duration::MAX, None, Duration::from_millis(4));
+    assert!(!plan.wake_now);
+    assert_eq!(plan.next_deadline, None);
+  }
+
+  #[test]
+  fn worker_wake_overflow_is_treated_as_no_wake() {
+    let now = Instant::now();
+    // Extremely large duration that should overflow `Instant::checked_add` on all practical
+    // platforms.
+    let huge = Duration::from_secs(u64::MAX);
+    let plan = plan_worker_wake_after_with_min_interval(now, huge, None, Duration::from_millis(4));
+    assert!(!plan.wake_now);
+    assert_eq!(plan.next_deadline, None);
   }
 }
