@@ -22,7 +22,7 @@ use fastrender::layout::taffy_integration::{
 };
 use fastrender::style::display::Display;
 use fastrender::style::float::Float;
-use fastrender::style::types::{BorderCollapse, BorderStyle, FlexWrap, TableLayout};
+use fastrender::style::types::{BorderCollapse, BorderStyle, FlexWrap, TableLayout, TextWrap, WhiteSpace};
 use fastrender::style::values::Length;
 use fastrender::{
   BoxNode, BoxTree, ComputedStyle, FormattingContext, FormattingContextFactory,
@@ -106,6 +106,50 @@ fn build_block_intrinsic_tree(span_count: usize) -> BoxTree {
 
   let mut text_style = ComputedStyle::default();
   text_style.display = Display::Inline;
+  let text_style = Arc::new(text_style);
+
+  let mut children = Vec::with_capacity(span_count * 2);
+  for idx in 0..span_count {
+    let payload = if idx % 8 == 0 {
+      format!("{WORD} {FILL} {FILL}")
+    } else {
+      format!("{FILL} {FILL}")
+    };
+    let text = BoxNode::new_text(text_style.clone(), payload);
+    let span = BoxNode::new_inline(span_style.clone(), vec![text]);
+    children.push(span);
+    // Explicit separator so max-content width includes multiple segments.
+    children.push(BoxNode::new_text(text_style.clone(), " ".to_string()));
+  }
+
+  let root = BoxNode::new_block(root_style, FormattingContextType::Block, children);
+  BoxTree::new(root)
+}
+
+fn build_block_intrinsic_tree_nowrap(span_count: usize) -> BoxTree {
+  // Regression protected:
+  // - Inline intrinsic sizing runs `find_break_opportunities` (UAX#14) to locate soft wrap points.
+  //   When wrapping is disabled (e.g. `white-space: nowrap`), we should be able to skip the scan.
+  //
+  // This mirrors `build_block_intrinsic_tree` but forces `allow_soft_wrap_for_style == false` on
+  // the inline spans/text nodes so it becomes a targeted guardrail for the nowrap fast path.
+  const WORD: &str = "supercalifragilisticexpialidocious";
+  const FILL: &str = "the quick brown fox jumps over the lazy dog";
+
+  let mut root_style = ComputedStyle::default();
+  root_style.display = Display::Block;
+  let root_style = Arc::new(root_style);
+
+  let mut span_style = ComputedStyle::default();
+  span_style.display = Display::Inline;
+  span_style.white_space = WhiteSpace::Nowrap;
+  span_style.text_wrap = TextWrap::NoWrap;
+  let span_style = Arc::new(span_style);
+
+  let mut text_style = ComputedStyle::default();
+  text_style.display = Display::Inline;
+  text_style.white_space = WhiteSpace::Nowrap;
+  text_style.text_wrap = TextWrap::NoWrap;
   let text_style = Arc::new(text_style);
 
   let mut children = Vec::with_capacity(span_count * 2);
@@ -466,6 +510,38 @@ fn bench_block_intrinsic_sizing(c: &mut Criterion) {
   group.finish();
 }
 
+fn bench_block_intrinsic_sizing_nowrap(c: &mut Criterion) {
+  common::bench_print_config_once("layout_hotspots", &[]);
+  let viewport = Size::new(800.0, 600.0);
+  let font_ctx = common::fixed_font_context();
+  let factory = FormattingContextFactory::with_font_context_and_viewport(font_ctx, viewport)
+    .with_parallelism(LayoutParallelism::disabled());
+  let bfc = BlockFormattingContext::with_factory(factory);
+  let mut tree = build_block_intrinsic_tree_nowrap(64);
+  // Disable global intrinsic caching for the root so each iteration recomputes the intrinsic width.
+  tree.root.id = 0;
+  let node = &tree.root;
+
+  let mut group = c.benchmark_group("layout_hotspots_block_intrinsic_nowrap");
+  group.bench_function("min_content", |b| {
+    b.iter(|| {
+      let width = bfc
+        .compute_intrinsic_inline_size(black_box(node), IntrinsicSizingMode::MinContent)
+        .expect("intrinsic sizing should succeed");
+      black_box(width);
+    })
+  });
+  group.bench_function("max_content", |b| {
+    b.iter(|| {
+      let width = bfc
+        .compute_intrinsic_inline_size(black_box(node), IntrinsicSizingMode::MaxContent)
+        .expect("intrinsic sizing should succeed");
+      black_box(width);
+    })
+  });
+  group.finish();
+}
+
 fn bench_block_intrinsic_many_inline_runs(c: &mut Criterion) {
   common::bench_print_config_once("layout_hotspots", &[]);
   let viewport = Size::new(800.0, 600.0);
@@ -604,6 +680,7 @@ criterion_group!(
     bench_flex_measure_hot_path,
     bench_float_shrink_to_fit_intrinsic_cache_reuse,
     bench_block_intrinsic_sizing,
+    bench_block_intrinsic_sizing_nowrap,
     bench_block_intrinsic_many_inline_runs,
     bench_float_shrink_to_fit_sizing,
     bench_table_cell_intrinsic_and_distribution,
