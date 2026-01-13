@@ -24422,6 +24422,49 @@ mod tests {
   }
 
   #[test]
+  fn text_item_text_wrap_nowrap_skips_line_break_scanning() {
+    let ifc = InlineFormattingContext::new();
+    let mut style = ComputedStyle::default();
+    style.font_size = 16.0;
+    style.white_space = WhiteSpace::Normal;
+    style.text_wrap = TextWrap::NoWrap;
+    let style = Arc::new(style);
+
+    let NormalizedText {
+      text,
+      forced_breaks,
+      allow_soft_wrap,
+      ..
+    } = normalize_text_for_white_space("hello world", style.white_space, style.text_wrap);
+    assert!(!allow_soft_wrap, "text-wrap: nowrap should disable soft wrapping");
+
+    crate::text::line_break::debug_reset_find_break_opportunity_calls();
+
+    let bidi_stack = [(style.unicode_bidi, style.direction)];
+    let item = ifc
+      .create_text_item_from_normalized_owned(
+        &style,
+        text,
+        forced_breaks,
+        allow_soft_wrap,
+        false,
+        style.direction,
+        &bidi_stack,
+      )
+      .expect("text item");
+
+    assert_eq!(
+      crate::text::line_break::debug_find_break_opportunity_calls(),
+      0,
+      "text-wrap: nowrap fast-path should not call find_break_opportunities"
+    );
+    assert!(
+      item.break_opportunities.is_empty(),
+      "text-wrap: nowrap should not emit soft wrap break opportunities"
+    );
+  }
+
+  #[test]
   fn text_item_pre_uses_forced_breaks_without_line_break_scanning() {
     let ifc = InlineFormattingContext::new();
     let mut style = ComputedStyle::default();
