@@ -1,15 +1,16 @@
 use crate::dom::{DomNode, DomNodeType};
 use crate::geometry::Point;
 use crate::style::computed::Visibility;
-use crate::style::types::PointerEvents;
-use crate::tree::box_tree::{BoxNode, BoxTree};
-use crate::tree::fragment_tree::FragmentTree;
+use crate::style::types::{CursorKeyword, PointerEvents};
+use crate::tree::box_tree::{BoxNode, BoxTree, BoxType};
+use crate::tree::fragment_tree::{FragmentContent, FragmentTree};
 use crate::ui::messages::CursorKind;
 #[cfg(feature = "browser_ui")]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::ptr;
 
 use super::image_maps;
+use super::engine::box_is_selectable_for_document_selection;
 
 // -----------------------------------------------------------------------------
 // Test hooks
@@ -57,6 +58,11 @@ fn trim_ascii_whitespace(value: &str) -> &str {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HitTestResult {
   pub box_id: usize,
+  /// The computed CSS `cursor` keyword for the hit box.
+  pub css_cursor: CursorKeyword,
+  /// True when the hit corresponds to a selectable text fragment, meaning a document selection can
+  /// start at this location and the UI should show an I-beam cursor.
+  pub is_selectable_text: bool,
   pub styled_node_id: usize,
   pub dom_node_id: usize,
   pub kind: HitTestKind,
@@ -437,6 +443,11 @@ pub fn hit_test_dom(
       continue;
     }
 
+    let css_cursor = box_node.style.cursor;
+    let is_selectable_text = matches!(&fragment.content, FragmentContent::Text { is_marker, .. } if !*is_marker)
+      && matches!(&box_node.box_type, BoxType::Text(_))
+      && box_is_selectable_for_document_selection(box_node);
+
     let Some(styled_node_id) = resolve_styled_node_id_from_box_ancestors(&box_index, box_id) else {
       continue;
     };
@@ -491,6 +502,8 @@ pub fn hit_test_dom(
 
     return Some(HitTestResult {
       box_id,
+      css_cursor,
+      is_selectable_text,
       styled_node_id,
       dom_node_id: resolved_dom_node_id,
       kind,
@@ -526,6 +539,11 @@ pub fn hit_test_dom_all(
     if !box_is_interactive(box_node) {
       continue;
     }
+
+    let css_cursor = box_node.style.cursor;
+    let is_selectable_text = matches!(&fragment.content, FragmentContent::Text { is_marker, .. } if !*is_marker)
+      && matches!(&box_node.box_type, BoxType::Text(_))
+      && box_is_selectable_for_document_selection(box_node);
 
     let Some(styled_node_id) = resolve_styled_node_id_from_box_ancestors(&box_index, box_id) else {
       continue;
@@ -582,6 +600,8 @@ pub fn hit_test_dom_all(
 
     results.push(HitTestResult {
       box_id,
+      css_cursor,
+      is_selectable_text,
       styled_node_id,
       dom_node_id: resolved_dom_node_id,
       kind,
@@ -636,6 +656,8 @@ pub fn resolve_label_associated_control(dom: &DomNode, label_node_id: usize) -> 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::geometry::Point;
+  use crate::style::types::CursorKeyword;
 
   fn find_element_node_id(dom: &DomNode, tag: &str) -> usize {
     let index = DomIndex::new(dom);
@@ -691,6 +713,8 @@ mod tests {
     let a_id = find_element_node_id(&dom, "a");
     let hit = HitTestResult {
       box_id: 1,
+      css_cursor: CursorKeyword::Auto,
+      is_selectable_text: false,
       styled_node_id: a_id,
       dom_node_id: a_id,
       kind: HitTestKind::Link,
@@ -705,6 +729,8 @@ mod tests {
     let input_id = find_element_node_id(&dom, "input");
     let hit = HitTestResult {
       box_id: 1,
+      css_cursor: CursorKeyword::Auto,
+      is_selectable_text: false,
       styled_node_id: input_id,
       dom_node_id: input_id,
       kind: HitTestKind::FormControl,
@@ -720,6 +746,8 @@ mod tests {
     let input_id = find_element_node_id(&dom, "input");
     let hit = HitTestResult {
       box_id: 1,
+      css_cursor: CursorKeyword::Auto,
+      is_selectable_text: false,
       styled_node_id: input_id,
       dom_node_id: input_id,
       kind: HitTestKind::FormControl,
@@ -735,12 +763,100 @@ mod tests {
     let textarea_id = find_element_node_id(&dom, "textarea");
     let hit = HitTestResult {
       box_id: 1,
+      css_cursor: CursorKeyword::Auto,
+      is_selectable_text: false,
       styled_node_id: textarea_id,
       dom_node_id: textarea_id,
       kind: HitTestKind::FormControl,
       href: None,
     };
     assert_eq!(cursor_kind_for_hover(&dom, Some(&hit)), CursorKind::Text);
+  }
+
+  fn prepare_for_hit_testing(html: &str) -> crate::api::PreparedDocument {
+    let mut renderer = crate::api::FastRender::new().expect("renderer");
+    let options = crate::api::RenderOptions::new().with_viewport(256, 128);
+    renderer.prepare_html(html, options).expect("prepare html")
+  }
+
+  #[test]
+  fn hit_test_reports_selectable_text_for_document_cursor() {
+    let prepared = prepare_for_hit_testing(
+      r#"
+        <style>
+          html, body { margin: 0; padding: 0; }
+          p { margin: 0; }
+          #text { position: absolute; top: 10px; left: 10px; }
+        </style>
+        <p id="text">Plain text</p>
+      "#,
+    );
+
+    let hit = hit_test_dom(
+      prepared.dom(),
+      prepared.box_tree(),
+      prepared.fragment_tree(),
+      Point::new(15.0, 15.0),
+    )
+    .expect("hit");
+
+    assert!(hit.is_selectable_text, "expected selectable text hit");
+    let cursor = if hit.is_selectable_text {
+      CursorKind::Text
+    } else {
+      CursorKind::Default
+    };
+    assert_eq!(cursor, CursorKind::Text);
+  }
+
+  #[test]
+  fn hit_test_does_not_report_text_cursor_when_user_select_none() {
+    let prepared = prepare_for_hit_testing(
+      r#"
+        <style>
+          html, body { margin: 0; padding: 0; }
+          p { margin: 0; }
+          #text { position: absolute; top: 10px; left: 10px; user-select: none; }
+        </style>
+        <p id="text">Unselectable</p>
+      "#,
+    );
+
+    let hit = hit_test_dom(
+      prepared.dom(),
+      prepared.box_tree(),
+      prepared.fragment_tree(),
+      Point::new(15.0, 15.0),
+    )
+    .expect("hit");
+
+    assert!(!hit.is_selectable_text, "user-select:none must not be selectable");
+  }
+
+  #[test]
+  fn hit_test_does_not_report_text_cursor_for_non_text_boxes() {
+    let prepared = prepare_for_hit_testing(
+      r#"
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #box { position: absolute; top: 10px; left: 10px; width: 100px; height: 20px; background: rgb(0, 0, 0); }
+        </style>
+        <div id="box"></div>
+      "#,
+    );
+
+    let hit = hit_test_dom(
+      prepared.dom(),
+      prepared.box_tree(),
+      prepared.fragment_tree(),
+      Point::new(15.0, 15.0),
+    )
+    .expect("hit");
+
+    assert!(
+      !hit.is_selectable_text,
+      "non-text boxes must not be treated as selectable text"
+    );
   }
 }
 

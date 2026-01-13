@@ -23,10 +23,8 @@ use crate::render_control::{
 };
 use crate::scroll::ScrollState;
 use crate::style::color::Rgba;
-use crate::style::computed::Visibility;
 use crate::style::types::OrientationTransform;
 use crate::style::types::CursorKeyword;
-use crate::style::types::UserSelect;
 use crate::text::font_db::FontConfig;
 use crate::tree::box_tree::{BoxNode, BoxType, ImageSelectionContext, ReplacedType};
 use crate::ui::about_pages;
@@ -733,49 +731,6 @@ fn cursor_kind_from_css_cursor(cursor: CursorKeyword) -> Option<CursorKind> {
     _ => Some(CursorKind::Default),
   }
 }
-
-fn box_node_by_id<'a>(box_tree: &'a crate::BoxTree, target_box_id: usize) -> Option<&'a crate::BoxNode> {
-  let mut stack: Vec<&crate::BoxNode> = vec![&box_tree.root];
-  while let Some(node) = stack.pop() {
-    if node.id == target_box_id {
-      return Some(node);
-    }
-    if let Some(body) = node.footnote_body.as_deref() {
-      stack.push(body);
-    }
-    for child in node.children.iter().rev() {
-      stack.push(child);
-    }
-  }
-  None
-}
-
-fn box_is_selectable_for_document_text_cursor(box_node: &crate::BoxNode) -> bool {
-  // Keep this aligned with `interaction::engine::box_is_selectable_for_document_selection` so we
-  // only show the I-beam cursor when document selection can start at this box.
-  let style = box_node.style.as_ref();
-  if style.visibility != Visibility::Visible {
-    return false;
-  }
-  if style.user_select == UserSelect::None {
-    return false;
-  }
-  if style.inert {
-    return false;
-  }
-  true
-}
-
-fn box_id_is_selectable_text_for_document_cursor(box_tree: &crate::BoxTree, box_id: usize) -> bool {
-  let Some(box_node) = box_node_by_id(box_tree, box_id) else {
-    return false;
-  };
-  if !box_is_selectable_for_document_text_cursor(box_node) {
-    return false;
-  }
-  matches!(box_node.box_type, crate::BoxType::Text(_))
-}
-
 fn compute_scroll_metrics(
   doc: Option<&BrowserDocument>,
   viewport_css: (u32, u32),
@@ -3426,11 +3381,10 @@ impl BrowserRuntime {
                     None => (None, false, CursorKind::Default),
                   };
 
-                // Prefer the computed `cursor` property (including UA stylesheet defaults) so hover
-                // behaviour matches the platform. Only fall back to legacy heuristics when the computed
-                // cursor is `auto`.
-                let css_cursor_kind = box_node_by_id(box_tree, hit.box_id)
-                  .and_then(|node| cursor_kind_from_css_cursor(node.style.cursor));
+                 // Prefer the computed `cursor` property (including UA stylesheet defaults) so hover
+                 // behaviour matches the platform. Only fall back to legacy heuristics when the computed
+                 // cursor is `auto`.
+                 let css_cursor_kind = cursor_kind_from_css_cursor(hit.css_cursor);
 
                 // `hovered_url` remains a semantic link property even when CSS overrides the cursor.
                 let hovered_url = match hit.kind {
@@ -3441,22 +3395,22 @@ impl BrowserRuntime {
                   _ => None,
                 };
 
-                let cursor = match css_cursor_kind {
-                  Some(cursor) => cursor,
-                  None => match hit.kind {
+                 let cursor = match css_cursor_kind {
+                   Some(cursor) => cursor,
+                   None => match hit.kind {
                     HitTestKind::Link => {
                       // Keep showing the hand cursor over links even when we reject the URL scheme
                       // (e.g. `javascript:`).
                       CursorKind::Pointer
-                    }
-                    HitTestKind::FormControl => form_control_cursor,
-                    _ => {
-                      if box_id_is_selectable_text_for_document_cursor(box_tree, hit.box_id) {
-                        CursorKind::Text
-                      } else {
-                        CursorKind::Default
-                      }
-                    }
+                     }
+                     HitTestKind::FormControl => form_control_cursor,
+                     _ => {
+                       if hit.is_selectable_text {
+                         CursorKind::Text
+                       } else {
+                         CursorKind::Default
+                       }
+                     }
                   },
                 };
 
@@ -3464,13 +3418,13 @@ impl BrowserRuntime {
                   hovered_url,
                   cursor,
                   Some(hit.dom_node_id),
-                  element_id,
-                  is_drop_target,
-                )
-              }
-              None => (None, CursorKind::Default, None, None, false),
-            }
-          };
+                   element_id,
+                   is_drop_target,
+                 )
+               }
+               None => (None, CursorKind::Default, None, None, false),
+             }
+           };
 
         if pointer_in_page && engine.drag_drop_active_kind().is_some() {
           cursor = if hover_is_drop_target {

@@ -3055,7 +3055,7 @@ fn caret_index_for_text_control_point(
   None
 }
 
-fn box_is_selectable_for_document_selection(box_node: &BoxNode) -> bool {
+pub(crate) fn box_is_selectable_for_document_selection(box_node: &BoxNode) -> bool {
   // Keep this aligned with `interaction::selection_serialize::box_is_selectable` so painting and
   // clipboard serialization see the same selectable content.
   let style = box_node.style.as_ref();
