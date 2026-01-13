@@ -354,7 +354,11 @@ impl CpalAudioBackend {
           }
         }
 
-        if errors.pending.swap(false, Ordering::AcqRel) {
+        // Stream error callback can fire repeatedly even after we request a restart; don't reset the
+        // restart backoff state while we're already in the middle of restarting.
+        if errors.pending.swap(false, Ordering::AcqRel)
+          && matches!(manager.state(), RestartState::Running)
+        {
           manager.request_restart(now);
           last_progress_at = now;
         }
