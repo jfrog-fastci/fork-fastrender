@@ -25,11 +25,12 @@ Code lives in:
     [`instructions/multiprocess_security.md`](../instructions/multiprocess_security.md) and
     [`docs/network_process.md`](network_process.md) and should be treated as security-critical and
     still-evolving.
-- A JavaScript-capable browser (yet): the `browser` binary does not currently execute author
-  JavaScript (`<script>` does not run in the GUI today). See [javascript.md](javascript.md) and
-  [html_script_processing.md](html_script_processing.md) for the in-tree JS workstream, and
-  [runtime_stacks.md](runtime_stacks.md) for which public API containers currently include JS +
-  an event loop.
+- A fully JavaScript-capable browser: author JS execution in the windowed UI is still experimental
+  and incomplete. The UI worker currently maintains a JS-capable `api::BrowserTab` and best-effort
+  syncs its `dom2` snapshot into the rendered document before painting, but many Web APIs and
+  web-compat behaviors are still missing. See [javascript.md](javascript.md),
+  [html_script_processing.md](html_script_processing.md), and [runtime_stacks.md](runtime_stacks.md)
+  for context on the JS stacks and containers.
 - A renderer-chrome browser UI (yet): the `browser` chrome is currently rendered via egui. The
   renderer-chrome workstream aims to render the chrome UI using FastRender; trusted chrome pages
   would then use the privileged JS bridge documented in [chrome_js_bridge.md](chrome_js_bridge.md).
@@ -111,9 +112,10 @@ Startup note:
   (showing bookmarks + recently visited pages when available). Use `--no-restore` to disable session
   restore.
 
-### DOM interaction (non-JS)
+### DOM interaction (host-driven; works without JS)
 
-FastRender also has a small DOM interaction layer intended to support basic “no-JS” browsing:
+FastRender also has a small DOM interaction layer intended to support basic browsing even without
+JS (and still used heavily by the browser UI for hit-testing and form interactions):
 
 - hit-testing + link activation (`<a href=...>`, including same-document `#fragment` scrolling)
 - basic form interactions (text inputs, checkboxes, radios, select controls, file inputs, date/time

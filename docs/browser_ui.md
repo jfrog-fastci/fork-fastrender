@@ -989,17 +989,18 @@ details and metric mapping.
 
 ## Known limitations (as of now)
 
-- **No author JavaScript in the browser UI yet**: `<script>` does not run in the windowed `browser`
-  app today. (See [javascript.md](javascript.md) and
-  [html_script_processing.md](html_script_processing.md) for the in-tree JS workstream, and
-  [runtime_stacks.md](runtime_stacks.md) for which public API containers currently include JS +
-  an event loop.)
-  - Note: `browser --js` is currently supported only for `--headless-smoke` (a vm-js `BrowserTab`
-    smoke test); the windowed UI does not execute author scripts yet.
-- **Interaction gaps** (non-JS): the windowed UI forwards pointer/keyboard input to the browser
+- **JavaScript execution is experimental:** the windowed UI worker maintains a JS-capable
+  [`api::BrowserTab`](../src/api/browser_tab.rs) (vm-js executor) alongside the rendered
+  `BrowserDocument`, runs bounded JS pumps (post-navigation, after DOM event dispatch, and on
+  `Tick`), and best-effort syncs the JS tab’s `dom2` snapshot into the renderer DOM before painting.
+  This is still incomplete (many Web APIs missing, lots of web-compat gaps). See
+  [runtime_stacks.md](runtime_stacks.md) and [live_rendering_loop.md](live_rendering_loop.md).
+  - Note: the `browser --js` CLI flag currently only affects `--headless-smoke` (a vm-js
+    `BrowserTab` smoke test); the windowed UI has no stable CLI toggle to disable JS today.
+- **Interaction gaps:** the windowed UI forwards pointer/keyboard input to the browser
   worker, which applies basic hit-testing + form interactions. Some interactions are still
   incomplete (e.g. rich text editing, complex focus traversal).
-- **Limited form support** (non-JS):
+- **Limited form support:**
   - text input is intentionally minimal
     - basic caret movement + selection are supported for focused `<input>`/`<textarea>` (arrow keys,
       Home/End, Shift+Arrow, Ctrl/Cmd+A)

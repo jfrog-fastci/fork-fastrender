@@ -2252,8 +2252,9 @@ struct BrowserCliArgs {
 
   /// Enable JavaScript execution (experimental)
   ///
-  /// Note: the windowed browser UI worker does not execute author scripts yet. Today this flag is
-  /// supported only for `--headless-smoke --js` (a vm-js `BrowserTab` smoke test).
+  /// Note: today this flag is only meaningful for `--headless-smoke --js` (a vm-js `BrowserTab`
+  /// smoke test). The windowed UI worker maintains a JS-capable tab runtime independently (see
+  /// `src/ui/render_worker.rs` and `docs/runtime_stacks.md`).
   #[arg(long = "js", action = clap::ArgAction::SetTrue)]
   js_enabled: bool,
 
@@ -3333,7 +3334,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
   if cli.js_enabled {
     eprintln!(
-      "warning: --js is currently supported only with --headless-smoke (windowed UI script execution is not wired yet)"
+      "note: --js currently only affects --headless-smoke; the windowed UI worker maintains its own JS-capable tab runtime (see docs/runtime_stacks.md)"
     );
   }
 
