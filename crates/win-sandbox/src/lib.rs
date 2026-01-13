@@ -123,6 +123,12 @@ pub enum WinSandboxError {
 
   #[error("{func} returned a null pointer")]
   NullPointer { func: &'static str },
+
+  /// A runtime check failed while asserting process mitigations are active.
+  ///
+  /// This is intended for tests and defense-in-depth verification.
+  #[error("mitigation verification failed: {message}")]
+  MitigationVerificationFailed { message: String },
 }
 
 impl WinSandboxError {
@@ -282,3 +288,51 @@ mod appcontainer;
 
 #[cfg(windows)]
 pub use appcontainer::{derive_appcontainer_sid, AppContainerProfile};
+
+pub mod mitigations;
+
+#[cfg(windows)]
+mod spawn;
+
+#[cfg(windows)]
+pub use spawn::{spawn_sandboxed, SandboxedChild};
+
+#[cfg(test)]
+mod tests {
+  #[cfg(windows)]
+  use std::{env, time::Duration};
+
+  #[cfg(windows)]
+  use crate::{mitigations, spawn_sandboxed};
+
+  // This is a helper entrypoint that runs inside the sandboxed child process.
+  //
+  // It's `#[ignore]` so the normal test run doesn't execute it in-process; the parent test spawns a
+  // new copy of the test binary and runs this ignored test explicitly.
+  #[cfg(windows)]
+  #[test]
+  #[ignore]
+  fn verify_child_renderer_mitigations() {
+    mitigations::verify_renderer_mitigations_current_process()
+      .expect("child mitigation verification");
+  }
+
+  #[cfg(windows)]
+  #[test]
+  fn sandboxed_child_has_renderer_mitigations_enabled() {
+    let exe = env::current_exe().unwrap();
+
+    let test_name = "tests::verify_child_renderer_mitigations";
+    let args = ["--ignored", "--exact", test_name];
+
+    let mut child =
+      spawn_sandboxed(&exe, &args, mitigations::renderer_mitigation_policy()).unwrap();
+
+    let exit_code = child
+      .wait(Duration::from_secs(30))
+      .expect("wait for sandboxed child")
+      .expect("sandboxed child exit code");
+
+    assert_eq!(exit_code, 0, "sandboxed child exited with non-zero status");
+  }
+}

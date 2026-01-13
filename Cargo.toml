@@ -21,6 +21,7 @@ default-members = [
   ".",
   "xtask",
   "crates/js-wpt-dom-runner",
+  "crates/win-sandbox",
 ]
 # `vendor/ecma-rs` is a nested workspace (vendored). Exclude it so Cargo can build `vm-js`
 # and friends using their own workspace-inherited metadata.
