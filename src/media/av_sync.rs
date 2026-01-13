@@ -1,5 +1,13 @@
 use std::time::Duration;
 
+/// Maximum wake-up delay returned by [`suggest_wake_after`].
+///
+/// This intentionally caps the delay to a fairly small value so the UI/event-loop layer does not
+/// sleep for an excessively long time (e.g. when PTS jumps far ahead due to buffering, seeking, or
+/// timestamp discontinuities). Waking periodically ensures we can observe state changes like
+/// pause/seek even when there is no other activity.
+pub const AV_SYNC_WAKE_AFTER_MAX: Duration = Duration::from_millis(250);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VideoSyncAction {
   /// Present the frame immediately.
@@ -20,6 +28,42 @@ pub struct AvSyncConfig {
   pub max_late: Duration,
   /// If a frame is this far ahead of the master clock, the scheduler should wait.
   pub max_early: Duration,
+}
+
+/// Suggest when the UI/event-loop should wake up to try presenting the next video frame.
+///
+/// This helper is intended for **tickless media playback** scheduling: the worker/media pipeline can
+/// provide a best-effort "wake me up in ~X" hint, and the UI thread can translate it into a system
+/// timer (e.g. winit `ControlFlow::WaitUntil`).
+///
+/// This value is a **hint** only:
+/// - Callers must always re-sample their authoritative clock on wake (audio device time when audio
+///   is present; system monotonic time otherwise).
+/// - The UI/event-loop layer may ignore, coalesce, rate-limit, or further clamp the returned delay.
+///
+/// Returns `None` when no wake-up is recommended (e.g. the next frame should be presented/dropped
+/// immediately, or `next_frame_pts` is unknown). When a wake-up is returned, it is:
+/// - clamped to `0` for extremely small values, and
+/// - capped to [`AV_SYNC_WAKE_AFTER_MAX`] to avoid sleeping through state changes.
+pub fn suggest_wake_after(
+  master_time: Duration,
+  next_frame_pts: Option<Duration>,
+  cfg: &AvSyncConfig,
+) -> Option<Duration> {
+  let frame_pts = next_frame_pts?;
+  match decide(master_time, frame_pts, cfg) {
+    VideoSyncAction::WaitUntil(wait) => {
+      // Clamp extremely small values to 0, then cap large values so we don't sleep for a long time
+      // and miss state changes (pause/seek, buffering events, etc).
+      let wake_after = if wait <= Duration::from_millis(1) {
+        Duration::ZERO
+      } else {
+        wait
+      };
+      Some(wake_after.min(AV_SYNC_WAKE_AFTER_MAX))
+    }
+    VideoSyncAction::PresentNow | VideoSyncAction::Drop => None,
+  }
 }
 
 /// Decide what to do with a decoded video frame (identified by `frame_pts`) given the current
@@ -57,6 +101,52 @@ pub fn decide(master_time: Duration, frame_pts: Duration, cfg: &AvSyncConfig) ->
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  fn ms(ms: u64) -> Duration {
+    Duration::from_millis(ms)
+  }
+
+  #[test]
+  fn av_sync_wake_early_frames_are_capped_to_reasonable_max() {
+    let cfg = AvSyncConfig {
+      tolerance: ms(20),
+      max_late: ms(80),
+      max_early: ms(40),
+    };
+    let now = ms(0);
+
+    // Extremely early frame (e.g. due to discontinuity/buffering). The wake suggestion should be
+    // capped so we still wake periodically and can observe state changes.
+    let wake =
+      suggest_wake_after(now, Some(ms(5_000)), &cfg).expect("expected wake suggestion");
+    assert_eq!(wake, AV_SYNC_WAKE_AFTER_MAX);
+  }
+
+  #[test]
+  fn av_sync_wake_early_frame_just_past_threshold_returns_small_wake_after() {
+    let cfg = AvSyncConfig {
+      tolerance: ms(20),
+      max_late: ms(80),
+      max_early: ms(40),
+    };
+    let now = ms(1_000);
+    let pts = now + ms(41);
+
+    assert_eq!(suggest_wake_after(now, Some(pts), &cfg), Some(ms(41)));
+  }
+
+  #[test]
+  fn av_sync_wake_in_sync_frames_return_none() {
+    let cfg = AvSyncConfig {
+      tolerance: ms(20),
+      max_late: ms(80),
+      max_early: ms(40),
+    };
+    let now = ms(1_000);
+
+    assert_eq!(suggest_wake_after(now, Some(now), &cfg), None);
+    assert_eq!(suggest_wake_after(now, Some(now + ms(10)), &cfg), None);
+  }
 
   #[test]
   fn drops_frames_strictly_later_than_max_late() {
