@@ -3194,13 +3194,21 @@ pub fn chrome_ui_with_bookmarks(
               ui.painter().rect_stroke(rect, swatch_rounding, stroke);
             }
             resp.widget_info({
-              let label = format!("Set accent color: {label}");
+              let label = if selected {
+                format!("Set accent color: {label} (selected)")
+              } else {
+                format!("Set accent color: {label}")
+              };
               move || egui::WidgetInfo::selected(egui::WidgetType::Button, selected, label.clone())
             });
             resp = resp.on_hover_text(label);
             show_tooltip_on_focus(ui, &resp, label);
             paint_focus_ring(ui, &resp, focus_ring);
             popup_focus_ids.push(resp.id);
+            #[cfg(test)]
+            if label == "Blue" {
+              store_test_id(ctx, "appearance_accent_swatch_blue_id", resp.id);
+            }
             // `Sense::click` widgets don't automatically activate on keyboard (Enter/Space), so wire
             // it up explicitly for keyboard-only workflows.
             let mut choose_requested = resp.clicked();
@@ -4365,6 +4373,42 @@ mod tests {
         .iter()
         .any(|n| n.name == crate::ui::a11y::ADDRESS_BAR_LABEL && n.role == "TextField"),
       "expected address bar to appear as a TextField when editing.\n\nsnapshot:\n{snapshot}"
+    );
+  }
+
+  #[test]
+  fn accent_color_swatch_activates_via_keyboard() {
+    let mut app = BrowserAppState::new();
+    app.push_tab(BrowserTabState::new(TabId(1), "about:newtab".to_string()), true);
+    app.chrome.appearance_popup_open = true;
+
+    let ctx = egui::Context::default();
+
+    // Frame 0: capture the swatch id via `store_test_id`.
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = ctx.end_frame();
+    let blue_id = expect_temp_id(&ctx, "appearance_accent_swatch_blue_id");
+
+    // Frame 1: focus the swatch.
+    ctx.memory_mut(|mem| mem.request_focus(blue_id));
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = ctx.end_frame();
+    assert!(
+      ctx.memory(|mem| mem.has_focus(blue_id)),
+      "expected focus on the Blue accent swatch"
+    );
+
+    // Frame 2: activate via keyboard.
+    begin_frame(&ctx, vec![key_press(egui::Key::Enter)]);
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = ctx.end_frame();
+
+    assert_eq!(
+      app.appearance.accent_color.as_deref(),
+      Some("#3b82f6"),
+      "expected keyboard activation to set accent color"
     );
   }
 
