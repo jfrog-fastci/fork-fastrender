@@ -23221,11 +23221,20 @@ pub fn math_round(
     if !n.is_finite() || n == 0.0 {
       return n;
     }
-    let r = (n + 0.5).floor();
-    if r == 0.0 && n.is_sign_negative() {
-      -0.0
+    // Spec: https://tc39.es/ecma262/#sec-math.round
+    //
+    // Avoid `(n + 0.5).floor()` because the intermediate `n + 0.5` can double-round to an integer
+    // in IEEE-754 binary64, producing incorrect results for values just below a half-integer
+    // boundary (e.g. `0.5 - Number.EPSILON/4`).
+    let t = n.trunc();
+    let f = n - t;
+    if f >= 0.5 {
+      t + 1.0
+    } else if f < -0.5 {
+      t - 1.0
     } else {
-      r
+      // Preserve `-0.0` when `n` is negative but rounds to zero: `(-0.5..0.0).trunc() == -0.0`.
+      t
     }
   })
 }

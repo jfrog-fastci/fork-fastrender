@@ -2011,6 +2011,10 @@ status = "xfail"
 reason = "vm-js: built-in coverage is still incomplete; tracked via curated test262 progress."
 
 [[expectations]]
+id = "built-ins/Math/round/S15.8.2.15_A7.js"
+status = "pass"
+
+[[expectations]]
 glob = "built-ins/Math/**"
 status = "xfail"
 reason = "vm-js: built-in coverage is still incomplete; tracked via curated test262 progress."

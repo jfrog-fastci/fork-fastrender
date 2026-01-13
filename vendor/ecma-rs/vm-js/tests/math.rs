@@ -89,6 +89,42 @@ fn max_min_and_sign_handle_negative_zero() -> Result<(), VmError> {
 }
 
 #[test]
+fn round_is_spec_correct_for_half_ulp_edges() -> Result<(), VmError> {
+  // Regression test for IEEE-754 double-rounding:
+  // `0.5 - Number.EPSILON/4` must round down to +0.
+  let mut rt = TestRt::new(VmOptions::default())?;
+  let intr = *rt.realm.intrinsics();
+  let mut scope = rt.heap.scope();
+  let math = intr.math();
+  let round = get_data_property(&mut scope, math, "round")?.unwrap();
+
+  let x = 0.5 - f64::EPSILON / 4.0;
+  let out = rt
+    .vm
+    .call_without_host(&mut scope, round, Value::Object(math), &[Value::Number(x)])?;
+  let Value::Number(n) = out else {
+    return Err(VmError::Unimplemented("Math.round did not return number"));
+  };
+  assert_is_pos_zero(n);
+  assert_eq!(1.0 / n, f64::INFINITY);
+
+  // Tie-breaking goes toward +∞, so `Math.round(-0.5)` must preserve negative zero.
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    round,
+    Value::Object(math),
+    &[Value::Number(-0.5)],
+  )?;
+  let Value::Number(n) = out else {
+    return Err(VmError::Unimplemented("Math.round did not return number"));
+  };
+  assert_is_neg_zero(n);
+  assert_eq!(1.0 / n, f64::NEG_INFINITY);
+
+  Ok(())
+}
+
+#[test]
 fn unary_math_functions_preserve_negative_zero() -> Result<(), VmError> {
   // Many `%Math%` unary methods are specified to preserve the sign of zero.
   //
