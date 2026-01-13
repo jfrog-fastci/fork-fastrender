@@ -418,7 +418,8 @@ fn ipc_fetcher_http_request_redirect_error_does_not_follow() {
   let (ipc_tx, ipc_rx) = mpsc::channel::<IpcRequest>();
   let ipc_handle = spawn_ipc_server(ipc_listener, ipc_tx);
 
-  let fetcher = IpcResourceFetcher::new(ipc_addr.to_string()).expect("connect ipc fetcher");
+  let fetcher =
+    IpcResourceFetcher::new_with_auth_token(ipc_addr.to_string(), TEST_AUTH_TOKEN).expect("connect ipc fetcher");
   let url = format!("http://{addr}/redirect");
   let fetch = FetchRequest::new(&url, FetchDestination::Fetch);
   let req = HttpRequest {
