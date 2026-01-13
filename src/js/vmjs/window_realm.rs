@@ -48579,6 +48579,49 @@ mod tests {
   }
 
   #[test]
+  fn shadow_root_inner_html_round_trips_and_does_not_affect_host_light_dom_webidl(
+  ) -> Result<(), VmError> {
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let document = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let window = new_realm(
+      WindowRealmConfig::new("https://example.com/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let mut host = WebIdlTestHost::new(document, window);
+
+    let result = host.exec_script(
+      r#"(() => {
+        const host = document.createElement('div');
+        host.innerHTML = '<i id="light">light</i>';
+        const sr = host.attachShadow({ mode: 'open' });
+        sr.innerHTML = '<span id=a>hi</span>';
+        if (!sr.innerHTML.includes('<span id="a">hi</span>')) return 'open_roundtrip:' + sr.innerHTML;
+        if (host.shadowRoot !== sr) return 'open_shadowRoot_identity';
+        if (host.innerHTML !== '<i id="light">light</i>') return 'open_host:' + host.innerHTML;
+
+        sr.innerHTML = '';
+        if (sr.innerHTML !== '') return 'open_clear:' + sr.innerHTML;
+        if (host.innerHTML !== '<i id="light">light</i>') return 'open_host_after:' + host.innerHTML;
+
+        const host2 = document.createElement('div');
+        host2.appendChild(document.createTextNode('light'));
+        const sr2 = host2.attachShadow({ mode: 'closed' });
+        if (host2.shadowRoot !== null) return 'closed_shadowRoot_exposed';
+        sr2.innerHTML = '<span id=a>hi</span>';
+        if (!sr2.innerHTML.includes('<span id="a">hi</span>')) return 'closed_roundtrip:' + sr2.innerHTML;
+        sr2.innerHTML = '';
+        if (sr2.innerHTML !== '') return 'closed_clear:' + sr2.innerHTML;
+        if (host2.textContent !== 'light') return 'closed_host_text:' + host2.textContent;
+        return 'ok';
+      })()"#,
+    )?;
+
+    assert_eq!(get_string(host.window.heap(), result), "ok");
+    Ok(())
+  }
+
+  #[test]
   fn node_text_content_set_queues_mutation_records_and_keeps_live_node_lists_in_sync(
   ) -> Result<(), VmError> {
     let renderer_dom =
