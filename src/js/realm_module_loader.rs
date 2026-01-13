@@ -245,6 +245,7 @@ impl ModuleLoader {
     module_id: ModuleId,
     depth: usize,
     loaded_bytes_total: usize,
+    effective_url: String,
   ) -> Result<ModuleId, VmError> {
     self
       .module_map
@@ -259,9 +260,8 @@ impl ModuleLoader {
       .try_reserve(1)
       .map_err(|_| VmError::OutOfMemory)?;
 
-    let url = key.url.clone();
     self.module_map.insert(key, module_id);
-    self.module_id_to_url.insert(module_id, url);
+    self.module_id_to_url.insert(module_id, effective_url);
     self.module_depths.insert(module_id, depth);
     self.loaded_bytes_total = loaded_bytes_total;
     Ok(module_id)
@@ -395,13 +395,19 @@ impl ModuleLoader {
       }
     }
 
+    let effective_url = fetched.final_url.clone().unwrap_or_else(|| key.url.clone());
+
     let source_text = String::from_utf8(fetched.bytes)
       .map_err(|_| VmError::TypeError(MODULE_FETCH_INVALID_UTF8_TYPE_ERROR))?;
 
-    let source = Arc::new(SourceText::new_charged(heap, key.url.clone(), source_text)?);
+    let source = Arc::new(SourceText::new_charged(
+      heap,
+      effective_url.clone(),
+      source_text,
+    )?);
     let record = SourceTextModuleRecord::parse_source(source)?;
     let module_id = modules.add_module(record)?;
-    self.register_module(key, module_id, 0, next_total)
+    self.register_module(key, module_id, 0, next_total, effective_url)
   }
 
   /// Parse and register a module provided as inline text.
@@ -468,7 +474,8 @@ impl ModuleLoader {
     )?);
     let record = SourceTextModuleRecord::parse_source(source)?;
     let module_id = modules.add_module(record)?;
-    self.register_module(key, module_id, 0, next_total)
+    let effective_url = key.url.clone();
+    self.register_module(key, module_id, 0, next_total, effective_url)
   }
 
   fn resolve_request_url(
@@ -784,14 +791,16 @@ impl ModuleLoader {
         }
       }
 
+      let effective_url = fetched.final_url.clone().unwrap_or_else(|| key.url.clone());
+
       let source = String::from_utf8(fetched.bytes)
         .map_err(|_| VmError::TypeError(MODULE_FETCH_INVALID_UTF8_TYPE_ERROR))?;
 
-      let source = Arc::new(SourceText::new_charged(heap, key.url.clone(), source)?);
+      let source = Arc::new(SourceText::new_charged(heap, effective_url.clone(), source)?);
       let record = SourceTextModuleRecord::parse_source(source)?;
 
       let module_id = modules.add_module(record)?;
-      self.register_module(key, module_id, depth, next_total)
+      self.register_module(key, module_id, depth, next_total, effective_url)
     })();
 
     Some((waiters, result))

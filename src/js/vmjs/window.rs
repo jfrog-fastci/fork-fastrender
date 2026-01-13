@@ -1186,6 +1186,7 @@ mod tests {
   #[derive(Default)]
   struct MapResourceFetcher {
     entries: Mutex<HashMap<String, FetchedResource>>,
+    calls: Mutex<Vec<String>>,
   }
 
   impl MapResourceFetcher {
@@ -1196,10 +1197,23 @@ mod tests {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .insert(url.to_string(), resource);
     }
+
+    fn calls(&self) -> Vec<String> {
+      self
+        .calls
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+    }
   }
 
   impl ResourceFetcher for MapResourceFetcher {
     fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      self
+        .calls
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(url.to_string());
       self
         .entries
         .lock()
@@ -3015,6 +3029,68 @@ mod tests {
       get_global_prop_utf8(&mut host, "__url").as_deref(),
       Some("https://example.invalid/scripts/mod.js")
     );
+    Ok(())
+  }
+
+  #[test]
+  fn window_host_dynamic_import_honors_fetch_redirects_for_import_meta_url_and_relative_imports(
+  ) -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let fetcher = Arc::new(MapResourceFetcher::default());
+
+    let start_url = "https://example.invalid/start.js";
+    // Use a different directory to ensure relative imports resolve against the redirect target.
+    let final_url = "https://example.invalid/dir/final.js";
+    let dep_url = "https://example.invalid/dir/dep.js";
+
+    let mut start_res = FetchedResource::new(
+      "import './dep.js'; export const url = import.meta.url;"
+        .as_bytes()
+        .to_vec(),
+      Some("application/javascript".to_string()),
+    );
+    start_res.final_url = Some(final_url.to_string());
+    fetcher.insert(start_url, start_res);
+    fetcher.insert(
+      dep_url,
+      FetchedResource::new(
+        "globalThis.__depLoaded = true;".as_bytes().to_vec(),
+        Some("application/javascript".to_string()),
+      ),
+    );
+
+    let mut options = JsExecutionOptions::default();
+    options.supports_module_scripts = true;
+    let mut host =
+      WindowHost::new_with_fetcher_and_options(dom, "https://example.invalid/", fetcher.clone(), options)?;
+
+    host.exec_script(&format!(
+      r#"
+      globalThis.__url = "";
+      globalThis.__depLoaded = false;
+      globalThis.__err = "";
+      import("{start_url}")
+        .then(m => {{ globalThis.__url = m.url; }})
+        .catch(e => {{ globalThis.__err = String(e && e.message || e); }});
+      "#
+    ))?;
+
+    let _ = host.run_until_idle(RunLimits {
+      max_tasks: 10,
+      max_microtasks: 100,
+      max_wall_time: Some(Duration::from_secs(5)),
+    })?;
+
+    assert_eq!(get_global_prop_utf8(&mut host, "__err").unwrap_or_default(), "");
+    assert_eq!(get_global_prop_utf8(&mut host, "__url").as_deref(), Some(final_url));
+    assert_eq!(get_global_prop(&mut host, "__depLoaded"), Value::Bool(true));
+
+    assert_eq!(
+      fetcher.calls(),
+      vec![start_url.to_string(), dep_url.to_string()],
+      "expected dependency fetch to resolve against redirect final_url"
+    );
+
     Ok(())
   }
 
