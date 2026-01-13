@@ -4797,7 +4797,7 @@ fn recompose_transform_matrix2d(decomp: &DecomposedTransform2D) -> Option<Transf
   matrix.m[12] = decomp.translation[0] * decomp.m11 + decomp.translation[1] * decomp.m21;
   matrix.m[13] = decomp.translation[0] * decomp.m12 + decomp.translation[1] * decomp.m22;
 
-  // Rotate matrix: matrix = rotateMatrix * matrix.
+  // Rotate matrix.
   let angle = decomp.angle_degrees.to_radians();
   let cos_angle = angle.cos();
   let sin_angle = angle.sin();
@@ -4809,9 +4809,10 @@ fn recompose_transform_matrix2d(decomp: &DecomposedTransform2D) -> Option<Transf
       0.0, 0.0, 0.0, 1.0, // column 4
     ],
   };
-  // CSS Transforms 1 recomposition uses `matrix = post-multiply(rotateMatrix, matrix)`, meaning
-  // the existing matrix is post-multiplied by the rotation matrix: `matrix = matrix * rotateMatrix`.
-  // This preserves the expected translation semantics for column-vector transforms.
+  // CSS Transforms 1 specifies this as `matrix = post-multiply(rotateMatrix, matrix)`. With this
+  // codebase's column-vector `Transform3D` convention (and `Transform3D::multiply` composing as
+  // `self * other`), that corresponds to post-multiplying the current matrix by the rotation
+  // matrix so translation is not spuriously rotated.
   matrix = matrix.multiply(&rotate);
 
   // Scale matrix.
