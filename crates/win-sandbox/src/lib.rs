@@ -6,6 +6,19 @@
 //!
 //! The public API is intentionally safe; internal Win32 calls are wrapped so
 //! callers never need to use `unsafe` directly.
+//!
+//! ## Job objects
+//!
+//! [`Job`] is a small RAII wrapper around a Windows Job object handle. It can
+//! enforce common renderer guardrails:
+//!
+//! - kill-on-close (`KILL_ON_JOB_CLOSE`)
+//! - no child processes (`ActiveProcessLimit = 1`)
+//! - optional job-wide committed memory limits
+//! - headless UI restrictions
+//!
+//! When updating extended job limits, the wrapper clears breakaway flags so
+//! sandboxed processes cannot escape via `CREATE_BREAKAWAY_FROM_JOB`.
 
 #[cfg(windows)]
 mod job;
