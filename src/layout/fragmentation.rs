@@ -1188,7 +1188,11 @@ pub(crate) fn parallel_flow_content_extent(
         original_extent = 0.0;
       }
 
-      if bbox_extent.is_finite() && bbox_extent > 0.0 && bounds_extent.is_finite() && bounds_extent > 0.0 {
+      if bbox_extent.is_finite()
+        && bbox_extent > 0.0
+        && bounds_extent.is_finite()
+        && bounds_extent > 0.0
+      {
         bbox_extent = bbox_extent.min(bounds_extent);
       } else if !bbox_extent.is_finite() || bbox_extent < 0.0 {
         bbox_extent = 0.0;
@@ -2758,9 +2762,13 @@ pub(crate) fn clip_node(
     node_block_size = node_block_size.max(required);
     node_flow_end = node_flow_start + node_block_size;
   }
-  if let Some(required) =
-    abspos_parallel_flow_required_block_size(node, node_flow_start, axis, fragmentainer_size, context)
-  {
+  if let Some(required) = abspos_parallel_flow_required_block_size(
+    node,
+    node_flow_start,
+    axis,
+    fragmentainer_size,
+    context,
+  ) {
     node_block_size = node_block_size.max(required);
     node_flow_end = node_flow_start + node_block_size;
   }
@@ -2803,11 +2811,20 @@ pub(crate) fn clip_node(
   // whose text has a 1px descent overflow). Including such overflow in the overlap test can produce
   // tiny continuation fragments that duplicate `box_id`s across columns/pages, which in turn breaks
   // the paginator's stable break-token mapping.
-  let (overlap_start, overlap_end, overlap_is_zero) = if matches!(context, FragmentationContext::Column) {
-    (node_flow_start, node_flow_end, node_block_size <= BREAK_EPSILON)
-  } else {
-    (node_bbox_flow_start, node_bbox_flow_end, node_bbox_block_size <= BREAK_EPSILON)
-  };
+  let (overlap_start, overlap_end, overlap_is_zero) =
+    if matches!(context, FragmentationContext::Column) {
+      (
+        node_flow_start,
+        node_flow_end,
+        node_block_size <= BREAK_EPSILON,
+      )
+    } else {
+      (
+        node_bbox_flow_start,
+        node_bbox_flow_end,
+        node_bbox_block_size <= BREAK_EPSILON,
+      )
+    };
   if overlap_end < fragment_start
     || (overlap_end <= fragment_start && !overlap_is_zero)
     || overlap_start >= fragment_end
@@ -4032,8 +4049,8 @@ fn collect_break_opportunities(
     .grid_tracks
     .as_deref()
     .map(|tracks| grid_tracks_in_fragmentation_axis(tracks, axis));
-  let grid_item_break_hints_use_tracks = grid_item_count_parallel_flow > 0
-    && grid_tracks.is_some_and(|tracks| !tracks.is_empty());
+  let grid_item_break_hints_use_tracks =
+    grid_item_count_parallel_flow > 0 && grid_tracks.is_some_and(|tracks| !tracks.is_empty());
   let grid_item_break_hints_fallback_to_edges =
     grid_item_count_parallel_flow > 0 && !grid_item_break_hints_use_tracks;
 
@@ -4064,8 +4081,7 @@ fn collect_break_opportunities(
         } else {
           child_style.break_before
         };
-        let mut before_strength =
-          combine_breaks(BreakBetween::Auto, child_break_before, context);
+        let mut before_strength = combine_breaks(BreakBetween::Auto, child_break_before, context);
         if suppress_forced_breaks && matches!(before_strength, BreakStrength::Forced) {
           before_strength = BreakStrength::Auto;
         }
@@ -4081,8 +4097,7 @@ fn collect_break_opportunities(
         } else {
           child_style.break_after
         };
-        let mut after_strength =
-          combine_breaks(child_break_after, BreakBetween::Auto, context);
+        let mut after_strength = combine_breaks(child_break_after, BreakBetween::Auto, context);
         if suppress_forced_breaks && matches!(after_strength, BreakStrength::Forced) {
           after_strength = BreakStrength::Auto;
         }
@@ -4440,7 +4455,8 @@ fn collect_break_opportunities(
     // In pagination, treat in-flow grid items as parallel fragmentation flows so their internal
     // break opportunities (including forced breaks) do not affect sibling items (CSS Grid 2
     // §Fragmenting Grid Layout).
-    let is_in_flow_grid_item = idx < grid_item_count_parallel_flow && child_style.position.is_in_flow();
+    let is_in_flow_grid_item =
+      idx < grid_item_count_parallel_flow && child_style.position.is_in_flow();
     let parallel_grid_item = grid_items
       .and_then(|info| info.items.get(idx))
       .is_some_and(|placement| grid_item_spans_single_track(placement, axis));
@@ -4487,7 +4503,9 @@ fn collect_break_opportunities(
     } else {
       child_break_after_value
     };
-    let next_break_before = if next_in_flow_idx.is_some_and(|next_idx| next_idx < grid_item_count_break_hint_suppression) {
+    let next_break_before = if next_in_flow_idx
+      .is_some_and(|next_idx| next_idx < grid_item_count_break_hint_suppression)
+    {
       BreakBetween::Auto
     } else {
       if next_style.position.is_absolutely_positioned() {
@@ -4742,16 +4760,17 @@ fn collect_forced_boundaries_with_axes_internal(
       .as_ref()
       .map(|grid_items| grid_items.items.len().min(node.children.len()))
       .unwrap_or(0);
-    let grid_track_ranges_in_axis = if matches!(node_style.display, Display::Grid | Display::InlineGrid) {
-      node
-        .grid_tracks
-        .as_deref()
-        .map(|tracks| grid_tracks_in_fragmentation_axis(tracks, axis))
-    } else {
-      None
-    };
-    let grid_item_break_hints_fallback_to_edges =
-      in_flow_grid_item_count > 0 && !grid_track_ranges_in_axis.is_some_and(|tracks| !tracks.is_empty());
+    let grid_track_ranges_in_axis =
+      if matches!(node_style.display, Display::Grid | Display::InlineGrid) {
+        node
+          .grid_tracks
+          .as_deref()
+          .map(|tracks| grid_tracks_in_fragmentation_axis(tracks, axis))
+      } else {
+        None
+      };
+    let grid_item_break_hints_fallback_to_edges = in_flow_grid_item_count > 0
+      && !grid_track_ranges_in_axis.is_some_and(|tracks| !tracks.is_empty());
 
     let mut grid_item_count = 0usize;
     if matches!(node_style.display, Display::Grid | Display::InlineGrid) {
@@ -5002,7 +5021,9 @@ fn collect_forced_boundaries_with_axes_internal(
         child_style.break_after
       };
 
-      if Some(idx) == first_in_flow_child && is_forced_page_break(child_break_before, include_always) {
+      if Some(idx) == first_in_flow_child
+        && is_forced_page_break(child_break_before, include_always)
+      {
         let break_from_flex = flex_line_map
           .as_ref()
           .and_then(|map| map.get(idx))
@@ -5043,12 +5064,14 @@ fn collect_forced_boundaries_with_axes_internal(
       }
       if break_after || break_before {
         let next_idx_for_break = next_in_flow_idx.unwrap_or(idx.saturating_add(1));
-        let break_from_grid =
-          (break_after && idx < grid_item_count) || (break_before && next_idx_for_break < grid_item_count);
+        let break_from_grid = (break_after && idx < grid_item_count)
+          || (break_before && next_idx_for_break < grid_item_count);
         let break_from_flex = flex_line_map.as_ref().is_some_and(|map| {
           let current_is_flex = break_after && map.get(idx).is_some_and(|slot| slot.is_some());
-          let next_is_flex =
-            break_before && map.get(next_idx_for_break).is_some_and(|slot| slot.is_some());
+          let next_is_flex = break_before
+            && map
+              .get(next_idx_for_break)
+              .is_some_and(|slot| slot.is_some());
           current_is_flex || next_is_flex
         });
         if !break_from_grid && !break_from_flex {
@@ -5907,8 +5930,10 @@ mod tests {
 
     // Starts far before the 100px fragmentainer limit (at 50px) but extends past it (to 110px). The
     // element itself is only 60px tall, so it would fit on the next fragmentainer.
-    let mut replaced =
-      FragmentNode::new_replaced(Rect::from_xywh(0.0, 50.0, 100.0, 60.0), ReplacedType::Canvas);
+    let mut replaced = FragmentNode::new_replaced(
+      Rect::from_xywh(0.0, 50.0, 100.0, 60.0),
+      ReplacedType::Canvas,
+    );
     replaced.style = Some(replaced_style);
 
     let root = FragmentNode::new_block(
@@ -5959,8 +5984,10 @@ mod tests {
 
     // Inline replaced content positioned within the line box. It intentionally overflows the line's
     // own bounds so that (incorrect) atomic handling would clamp the first boundary to 60px.
-    let mut inline_replaced =
-      FragmentNode::new_replaced(Rect::from_xywh(0.0, 60.0, 100.0, 60.0), ReplacedType::Canvas);
+    let mut inline_replaced = FragmentNode::new_replaced(
+      Rect::from_xywh(0.0, 60.0, 100.0, 60.0),
+      ReplacedType::Canvas,
+    );
     inline_replaced.style = Some(inline_style);
 
     let line = FragmentNode::new_line(
@@ -5988,7 +6015,10 @@ mod tests {
       "expected the first fragmentainer to contain content (inline replaced must not force an early atomic boundary)"
     );
     assert!(
-      matches!(fragments[0].children[0].content, FragmentContent::Line { .. }),
+      matches!(
+        fragments[0].children[0].content,
+        FragmentContent::Line { .. }
+      ),
       "expected the first fragmentainer to contain the line box"
     );
   }
@@ -6082,8 +6112,10 @@ mod tests {
     // replaced box.
     let leading = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 80.0), vec![]);
 
-    let mut replaced =
-      FragmentNode::new_replaced(Rect::from_xywh(0.0, 80.0, 100.0, 30.0), ReplacedType::Canvas);
+    let mut replaced = FragmentNode::new_replaced(
+      Rect::from_xywh(0.0, 80.0, 100.0, 30.0),
+      ReplacedType::Canvas,
+    );
     let mut replaced_style = ComputedStyle::default();
     replaced_style.display = Display::Block;
     replaced.style = Some(Arc::new(replaced_style));
@@ -6492,11 +6524,8 @@ mod tests {
     );
     item1.content = FragmentContent::Block { box_id: Some(1) };
 
-    let mut item2 = FragmentNode::new_block_styled(
-      Rect::from_xywh(0.0, 60.0, 100.0, 50.0),
-      vec![],
-      item_style,
-    );
+    let mut item2 =
+      FragmentNode::new_block_styled(Rect::from_xywh(0.0, 60.0, 100.0, 50.0), vec![], item_style);
     item2.content = FragmentContent::Block { box_id: Some(2) };
 
     let mut grid = FragmentNode::new_block_styled(
@@ -6563,11 +6592,8 @@ mod tests {
       );
       item1.content = FragmentContent::Block { box_id: Some(1) };
 
-      let mut item2 = FragmentNode::new_block_styled(
-        Rect::from_xywh(0.0, 60.0, 100.0, 50.0),
-        vec![],
-        item_style,
-      );
+      let mut item2 =
+        FragmentNode::new_block_styled(Rect::from_xywh(0.0, 60.0, 100.0, 50.0), vec![], item_style);
       item2.content = FragmentContent::Block { box_id: Some(2) };
 
       let mut grid = FragmentNode::new_block_styled(
@@ -6603,10 +6629,7 @@ mod tests {
 
     let recto = make_grid(BreakBetween::Recto);
     let forced_ltr = collect_forced_boundaries_for_pagination_with_axes_and_page_progression(
-      &recto,
-      0.0,
-      axes,
-      true,
+      &recto, 0.0, axes, true,
     );
     assert_eq!(forced_ltr.len(), 1, "forced_ltr={forced_ltr:?}");
     assert!(
@@ -6616,10 +6639,7 @@ mod tests {
     assert_eq!(forced_ltr[0].page_side, Some(PageSide::Right));
 
     let forced_rtl = collect_forced_boundaries_for_pagination_with_axes_and_page_progression(
-      &recto,
-      0.0,
-      axes,
-      false,
+      &recto, 0.0, axes, false,
     );
     assert_eq!(forced_rtl.len(), 1, "forced_rtl={forced_rtl:?}");
     assert!(
@@ -6630,10 +6650,7 @@ mod tests {
 
     let verso = make_grid(BreakBetween::Verso);
     let forced_ltr = collect_forced_boundaries_for_pagination_with_axes_and_page_progression(
-      &verso,
-      0.0,
-      axes,
-      true,
+      &verso, 0.0, axes, true,
     );
     assert_eq!(forced_ltr.len(), 1, "forced_ltr={forced_ltr:?}");
     assert!(
@@ -6643,10 +6660,7 @@ mod tests {
     assert_eq!(forced_ltr[0].page_side, Some(PageSide::Left));
 
     let forced_rtl = collect_forced_boundaries_for_pagination_with_axes_and_page_progression(
-      &verso,
-      0.0,
-      axes,
-      false,
+      &verso, 0.0, axes, false,
     );
     assert_eq!(forced_rtl.len(), 1, "forced_rtl={forced_rtl:?}");
     assert!(
@@ -6672,11 +6686,7 @@ mod tests {
       Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
       vec![
         // Line 1: full-width item.
-        FragmentNode::new_block_styled(
-          Rect::from_xywh(0.0, 0.0, 100.0, 40.0),
-          vec![],
-          break_style,
-        ),
+        FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 100.0, 40.0), vec![], break_style),
         // Line 2: wrap resets main-axis start to 0 (x=0).
         FragmentNode::new_block(Rect::from_xywh(0.0, 40.0, 100.0, 60.0), vec![]),
       ],
@@ -6750,11 +6760,8 @@ mod tests {
     item2.content = FragmentContent::Block { box_id: Some(2) };
 
     // Second line: a wrapped item whose main-axis start resets, placed after a 10px gap.
-    let mut item3 = FragmentNode::new_block_styled(
-      Rect::from_xywh(0.0, 30.0, 100.0, 20.0),
-      vec![],
-      item_style,
-    );
+    let mut item3 =
+      FragmentNode::new_block_styled(Rect::from_xywh(0.0, 30.0, 100.0, 20.0), vec![], item_style);
     item3.content = FragmentContent::Block { box_id: Some(3) };
 
     let flex = FragmentNode::new_block_styled(
@@ -7389,8 +7396,11 @@ mod tests {
     second_style.display = Display::Block;
     let second_style = Arc::new(second_style);
 
-    let mut second =
-      FragmentNode::new_block_styled(Rect::from_xywh(0.0, 20.0, 100.0, 20.0), vec![], second_style);
+    let mut second = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 20.0, 100.0, 20.0),
+      vec![],
+      second_style,
+    );
     second.content = FragmentContent::Block { box_id: Some(2) };
 
     let mut grid = FragmentNode::new_block_styled(
@@ -7425,7 +7435,9 @@ mod tests {
       Some(fragmentainer_size),
     );
     let total_extent = analyzer.content_extent().max(fragmentainer_size);
-    let boundaries = analyzer.boundaries(fragmentainer_size, total_extent).unwrap();
+    let boundaries = analyzer
+      .boundaries(fragmentainer_size, total_extent)
+      .unwrap();
 
     assert!(
       analyzer.is_forced_break_at(20.0),
@@ -7534,11 +7546,8 @@ mod tests {
 
     // Leave a large gap before item2 so pagination would normally prefer the fragmentainer limit
     // over the between-sibling boundary; the forced break must still win.
-    let mut item2 = FragmentNode::new_block_styled(
-      Rect::from_xywh(0.0, 40.0, 100.0, 10.0),
-      vec![],
-      break_style,
-    );
+    let mut item2 =
+      FragmentNode::new_block_styled(Rect::from_xywh(0.0, 40.0, 100.0, 10.0), vec![], break_style);
     item2.content = FragmentContent::Block { box_id: Some(2) };
 
     let mut grid = FragmentNode::new_block_styled(
@@ -7579,7 +7588,9 @@ mod tests {
       "expected a forced break opportunity at {expected}px when `grid_fragmentation` is present without grid tracks"
     );
     let total_extent = analyzer.content_extent().max(fragmentainer_size);
-    let boundaries = analyzer.boundaries(fragmentainer_size, total_extent).unwrap();
+    let boundaries = analyzer
+      .boundaries(fragmentainer_size, total_extent)
+      .unwrap();
     let forced = collect_forced_boundaries_for_pagination_with_axes(&grid, 0.0, axes);
 
     assert!(
@@ -7687,7 +7698,9 @@ mod tests {
         Some(fragmentainer_size),
       );
       let total_extent = analyzer.content_extent().max(fragmentainer_size);
-      let boundaries = analyzer.boundaries(fragmentainer_size, total_extent).unwrap();
+      let boundaries = analyzer
+        .boundaries(fragmentainer_size, total_extent)
+        .unwrap();
       assert!(
         boundaries
           .iter()
@@ -8564,16 +8577,8 @@ mod tests {
     let fragmentainer_size = 100.0;
     let options = FragmentationOptions::new(fragmentainer_size).with_columns(2, 0.0);
 
-    let a = FragmentNode::new_block_with_id(
-      Rect::from_xywh(0.0, 0.0, 100.0, 60.0),
-      1,
-      vec![],
-    );
-    let b = FragmentNode::new_block_with_id(
-      Rect::from_xywh(0.0, 80.0, 100.0, 40.0),
-      2,
-      vec![],
-    );
+    let a = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 100.0, 60.0), 1, vec![]);
+    let b = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 80.0, 100.0, 40.0), 2, vec![]);
     let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 120.0), vec![a, b]);
 
     let fragments = fragment_tree(&root, &options).expect("fragment tree");
@@ -8720,7 +8725,11 @@ mod tests {
 
     let options = FragmentationOptions::new(fragmentainer_size).with_columns(2, 0.0);
     let fragments = fragment_tree(&root, &options).expect("fragment tree");
-    assert_eq!(fragments.len(), 2, "expected two column fragments, got {fragments:?}");
+    assert_eq!(
+      fragments.len(),
+      2,
+      "expected two column fragments, got {fragments:?}"
+    );
 
     let col0 = &fragments[0];
     let col1 = &fragments[1];

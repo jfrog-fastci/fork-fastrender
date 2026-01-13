@@ -190,19 +190,12 @@ struct LiveHtmlCollection {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct RangeState {
-  document_id: DocumentId,
-  range_id: RangeId,
-}
-
-#[derive(Debug, Clone, Copy)]
 struct StaticRangeState {
   start_container: RootedValue,
   start_offset: usize,
   end_container: RootedValue,
   end_offset: usize,
 }
-
 enum DomHostAdapter<'a, Host: DomHost + 'static> {
   Embedder(&'a mut Host),
   DocumentHost(&'a mut DocumentHostState),
@@ -1124,7 +1117,6 @@ pub struct VmJsWebIdlBindingsHostDispatch<Host: WindowRealmHost + 'static> {
   limits: UrlLimits,
   urls: HashMap<WeakGcObject, Url>,
   params: HashMap<WeakGcObject, UrlSearchParams>,
-  ranges: HashMap<WeakGcObject, RangeState>,
   static_ranges: HashMap<WeakGcObject, StaticRangeState>,
   event_targets: HashMap<WeakGcObject, EventTargetState>,
   live_html_collections: Vec<LiveHtmlCollection>,
@@ -1143,7 +1135,6 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       limits: UrlLimits::default(),
       urls: HashMap::new(),
       params: HashMap::new(),
-      ranges: HashMap::new(),
       static_ranges: HashMap::new(),
       event_targets: HashMap::new(),
       live_html_collections: Vec::new(),
@@ -1162,7 +1153,6 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       limits: UrlLimits::default(),
       urls: HashMap::new(),
       params: HashMap::new(),
-      ranges: HashMap::new(),
       static_ranges: HashMap::new(),
       event_targets: HashMap::new(),
       live_html_collections: Vec::new(),
@@ -1180,7 +1170,6 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     self.global = Some(global);
     self.urls.clear();
     self.params.clear();
-    self.ranges.clear();
     self.static_ranges.clear();
     self.event_targets.clear();
     self.live_html_collections.clear();
@@ -1258,7 +1247,6 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
 
     self.urls.retain(|k, _| k.upgrade(heap).is_some());
     self.params.retain(|k, _| k.upgrade(heap).is_some());
-    self.ranges.retain(|k, _| k.upgrade(heap).is_some());
     self
       .live_html_collections
       .retain(|coll| coll.weak_obj.upgrade(heap).is_some());
@@ -1655,26 +1643,6 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       .get(&WeakGcObject::from(obj))
       .cloned()
       .ok_or(VmError::TypeError("Illegal invocation"))
-  }
-
-  fn require_range_state(
-    &self,
-    vm: &mut Vm,
-    scope: &mut Scope<'_>,
-    receiver: Option<Value>,
-  ) -> Result<RangeState, VmError> {
-    // Backwards compatibility: older bindings stored per-wrapper range state in `self.ranges`.
-    if let Some(Value::Object(obj)) = receiver {
-      if let Some(state) = self.ranges.get(&WeakGcObject::from(obj)).copied() {
-        return Ok(state);
-      }
-    }
-
-    let (range_id, document_id) = require_range_receiver(vm, scope, receiver)?;
-    Ok(RangeState {
-      document_id,
-      range_id,
-    })
   }
 
   fn dom_error_to_vm_error(
@@ -7330,7 +7298,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         Ok(Value::Object(walker_obj))
       },
       ("Range", "selectNodeContents", 0) => {
-        let state = self.require_range_state(vm, scope, receiver)?;
+        let (range_id, document_id) = require_range_receiver(vm, scope, receiver)?;
 
         let node_val = args.get(0).copied().unwrap_or(Value::Undefined);
         let node_handle = {
@@ -7339,15 +7307,15 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         };
 
         // Spec: Range.selectNodeContents requires the node to be in the same document/root.
-        if node_handle.document_id != state.document_id {
+        if node_handle.document_id != document_id {
           return Err(self.dom_error_to_vm_error(vm, scope, DomError::WrongDocumentError));
         }
 
         let owned_result: Option<Result<(), DomError>> = vm
           .user_data_mut::<WindowRealmUserData>()
           .and_then(|data| {
-            data.with_owned_dom2_document_mut(state.document_id, |dom| {
-              dom.range_select_node_contents(state.range_id, node_handle.node_id)
+            data.with_owned_dom2_document_mut(document_id, |dom| {
+              dom.range_select_node_contents(range_id, node_handle.node_id)
             })
           });
         let result = if let Some(result) = owned_result {
@@ -7355,7 +7323,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         } else {
           self.with_dom_host(vm, |host| {
             Ok(host.mutate_dom(|dom| {
-              let result = dom.range_select_node_contents(state.range_id, node_handle.node_id);
+              let result = dom.range_select_node_contents(range_id, node_handle.node_id);
               (result, false)
             }))
           })?
@@ -7370,16 +7338,16 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       },
 
       ("Range", "toString", 0) => {
-        let state = self.require_range_state(vm, scope, receiver)?;
+        let (range_id, document_id) = require_range_receiver(vm, scope, receiver)?;
 
         let owned_result: Option<Result<String, DomError>> = vm
           .user_data_mut::<WindowRealmUserData>()
-          .and_then(|data| data.with_owned_dom2_document(state.document_id, |dom| dom.range_to_string(state.range_id)));
+          .and_then(|data| data.with_owned_dom2_document(document_id, |dom| dom.range_to_string(range_id)));
 
         let result = if let Some(result) = owned_result {
           result
         } else {
-          self.with_dom_host(vm, |host| Ok(host.with_dom(|dom| dom.range_to_string(state.range_id))))?
+          self.with_dom_host(vm, |host| Ok(host.with_dom(|dom| dom.range_to_string(range_id))))?
         };
         match result {
           Ok(s) => Ok(Value::String(scope.alloc_string(&s)?)),
@@ -7405,8 +7373,8 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             .document_id
         };
 
-        // Like the handwritten vm-js Range bindings, store a back-reference to the owning Document
-        // wrapper so subsequent Range operations can resolve the correct `dom2::Document` arena.
+        // Range wrappers store a back-reference to their owning Document wrapper so we can resolve
+        // the correct `dom2::Document` arena and wrap returned Nodes.
         let wrapper_doc_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
         scope.define_property(
           range_obj,
@@ -7416,22 +7384,15 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             configurable: false,
             kind: PropertyKind::Data {
               value: Value::Object(document_obj),
-              writable: false,
+              writable: true,
             },
           },
         )?;
 
-        // Allocate the `dom2` live range id and register the wrapper so the document can later sweep
-        // range state when the JS object is collected.
-        //
-        // Range creation should not trigger renderer invalidation.
-        let owned_range_id: Option<RangeId> = vm
-          .user_data_mut::<WindowRealmUserData>()
-          .and_then(|data| {
-            data.with_owned_dom2_document_mut(document_id, |dom| {
-              dom.register_live_range(scope.heap(), range_obj)
-            })
-          });
+        // Ranges are document-owned state and should not trigger renderer invalidation.
+        let owned_range_id: Option<RangeId> = vm.user_data_mut::<WindowRealmUserData>().and_then(|data| {
+          data.with_owned_dom2_document_mut(document_id, |dom| dom.register_live_range(scope.heap(), range_obj))
+        });
         let range_id = if let Some(range_id) = owned_range_id {
           range_id
         } else {
@@ -7453,7 +7414,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       }
 
       ("Range", "compareBoundaryPoints", 0) => {
-        let state = self.require_range_state(vm, scope, receiver)?;
+        let (range_id, document_id) = require_range_receiver(vm, scope, receiver)?;
 
         let how_value = args.get(0).copied().unwrap_or(Value::Number(0.0));
         let how_n = match how_value {
@@ -7463,17 +7424,18 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let how = to_uint16_f64(how_n);
 
         let other_value = args.get(1).copied().unwrap_or(Value::Undefined);
-        let other_state = self.require_range_state(vm, scope, Some(other_value))?;
+        let (other_range_id, other_document_id) =
+          require_range_receiver(vm, scope, Some(other_value))?;
 
-        if other_state.document_id != state.document_id {
+        if other_document_id != document_id {
           return Err(self.dom_error_to_vm_error(vm, scope, DomError::WrongDocumentError));
         }
 
         let owned_result: Option<Result<i16, DomError>> = vm
           .user_data_mut::<WindowRealmUserData>()
           .and_then(|data| {
-            data.with_owned_dom2_document(state.document_id, |dom| {
-              dom.range_compare_boundary_points(state.range_id, how, other_state.range_id)
+            data.with_owned_dom2_document(document_id, |dom| {
+              dom.range_compare_boundary_points(range_id, how, other_range_id)
             })
           });
 
@@ -7482,7 +7444,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         } else {
           self.with_dom_host(vm, |host| {
             Ok(host.with_dom(|dom| {
-              dom.range_compare_boundary_points(state.range_id, how, other_state.range_id)
+              dom.range_compare_boundary_points(range_id, how, other_range_id)
             }))
           })?
         };
@@ -10203,13 +10165,13 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       }
 
       ("Range", "commonAncestorContainer", 0) => {
-        let state = self.require_range_state(vm, scope, receiver)?;
+        let (range_id, document_id) = require_range_receiver(vm, scope, receiver)?;
 
         let owned_result: Option<Result<(NodeId, DomInterface), DomError>> = vm
           .user_data_mut::<WindowRealmUserData>()
           .and_then(|data| {
-            data.with_owned_dom2_document(state.document_id, |dom| {
-              let node_id = dom.range_common_ancestor_container(state.range_id)?;
+            data.with_owned_dom2_document(document_id, |dom| {
+              let node_id = dom.range_common_ancestor_container(range_id)?;
               let primary = DomInterface::primary_for_node_kind(&dom.node(node_id).kind);
               Ok((node_id, primary))
             })
@@ -10220,7 +10182,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         } else {
           self.with_dom_host(vm, |host| {
             Ok(host.with_dom(|dom| {
-              let node_id = dom.range_common_ancestor_container(state.range_id)?;
+              let node_id = dom.range_common_ancestor_container(range_id)?;
               let primary = DomInterface::primary_for_node_kind(&dom.node(node_id).kind);
               Ok((node_id, primary))
             }))
@@ -10231,7 +10193,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           Ok((node_id, primary_interface)) => {
             let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
               scope,
-              state.document_id,
+              document_id,
               node_id,
               primary_interface,
             )?;
@@ -10255,19 +10217,31 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           .require_document_handle(scope.heap(), Value::Object(document_obj))?
           .document_id;
 
+        // Store a back-reference to the owning Document wrapper so receiver brand checks and node
+        // wrapping can resolve the correct document.
         let wrapper_doc_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
-        scope.define_property(
+        match scope.heap_mut().object_set_existing_data_property_value(
           range_obj,
-          wrapper_doc_key,
-          PropertyDescriptor {
-            enumerable: false,
-            configurable: false,
-            kind: PropertyKind::Data {
-              value: Value::Object(document_obj),
-              writable: false,
-            },
-          },
-        )?;
+          &wrapper_doc_key,
+          Value::Object(document_obj),
+        ) {
+          Ok(()) => {}
+          Err(VmError::PropertyNotFound | VmError::PropertyNotData) => {
+            scope.define_property(
+              range_obj,
+              wrapper_doc_key,
+              PropertyDescriptor {
+                enumerable: false,
+                configurable: false,
+                kind: PropertyKind::Data {
+                  value: Value::Object(document_obj),
+                  writable: true,
+                },
+              },
+            )?;
+          }
+          Err(err) => return Err(err),
+        }
 
         // Allocate and register the `dom2` live range state for this wrapper.
         let owned_range_id: Option<RangeId> = vm
@@ -10430,7 +10404,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       }
 
       ("Range", "setStart", 0) | ("Range", "setEnd", 0) => {
-        let state = self.require_range_state(vm, scope, receiver)?;
+        let (range_id, document_id) = require_range_receiver(vm, scope, receiver)?;
 
         let node_val = args.get(0).copied().unwrap_or(Value::Undefined);
         let node_handle = {
@@ -10439,7 +10413,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         };
 
         // Spec: Range.setStart/setEnd requires the node to be in the same document/root.
-        if node_handle.document_id != state.document_id {
+        if node_handle.document_id != document_id {
           return Err(self.dom_error_to_vm_error(vm, scope, DomError::WrongDocumentError));
         }
 
@@ -10451,11 +10425,11 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let owned_result: Option<Result<(), DomError>> = vm
           .user_data_mut::<WindowRealmUserData>()
           .and_then(|data| {
-            data.with_owned_dom2_document_mut(state.document_id, |dom| {
+            data.with_owned_dom2_document_mut(document_id, |dom| {
               if is_start {
-                dom.range_set_start(state.range_id, node_handle.node_id, offset)
+                dom.range_set_start(range_id, node_handle.node_id, offset)
               } else {
-                dom.range_set_end(state.range_id, node_handle.node_id, offset)
+                dom.range_set_end(range_id, node_handle.node_id, offset)
               }
             })
           });
@@ -10466,9 +10440,9 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           self.with_dom_host(vm, |host| {
             Ok(host.mutate_dom(|dom| {
               let result = if is_start {
-                dom.range_set_start(state.range_id, node_handle.node_id, offset)
+                dom.range_set_start(range_id, node_handle.node_id, offset)
               } else {
-                dom.range_set_end(state.range_id, node_handle.node_id, offset)
+                dom.range_set_end(range_id, node_handle.node_id, offset)
               };
               (result, false)
             }))
@@ -10632,17 +10606,17 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       }
 
       ("Range", "deleteContents", 0) => {
-        let state = self.require_range_state(vm, scope, receiver)?;
+        let (range_id, document_id) = require_range_receiver(vm, scope, receiver)?;
 
         // Gather a conservative set of ancestor nodes whose `childNodes` live NodeLists may need to
         // be synced after the mutation.
         let owned_ancestors: Option<Result<Vec<NodeId>, DomError>> = vm
           .user_data_mut::<WindowRealmUserData>()
           .and_then(|data| {
-            data.with_owned_dom2_document(state.document_id, |dom| {
-              let start = dom.range_start_container(state.range_id)?;
-              let end = dom.range_end_container(state.range_id)?;
-              let common = dom.range_common_ancestor_container(state.range_id)?;
+            data.with_owned_dom2_document(document_id, |dom| {
+              let start = dom.range_start_container(range_id)?;
+              let end = dom.range_end_container(range_id)?;
+              let common = dom.range_common_ancestor_container(range_id)?;
 
               let mut out: HashSet<NodeId> = HashSet::new();
               let mut n = start;
@@ -10680,9 +10654,9 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         } else {
           self.with_dom_host(vm, |host| {
             Ok(host.with_dom(|dom| {
-              let start = dom.range_start_container(state.range_id)?;
-              let end = dom.range_end_container(state.range_id)?;
-              let common = dom.range_common_ancestor_container(state.range_id)?;
+              let start = dom.range_start_container(range_id)?;
+              let end = dom.range_end_container(range_id)?;
+              let common = dom.range_common_ancestor_container(range_id)?;
 
               let mut out: HashSet<NodeId> = HashSet::new();
               let mut n = start;
@@ -10724,8 +10698,8 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let owned_result: Option<Result<(), DomError>> = vm
           .user_data_mut::<WindowRealmUserData>()
           .and_then(|data| {
-            data.with_owned_dom2_document_mut(state.document_id, |dom| {
-              dom.range_delete_contents(state.range_id)
+            data.with_owned_dom2_document_mut(document_id, |dom| {
+              dom.range_delete_contents(range_id)
             })
           });
 
@@ -10733,7 +10707,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           result
         } else {
           self.with_dom_host(vm, |host| {
-            Ok(host.mutate_dom(|dom| match dom.range_delete_contents(state.range_id) {
+            Ok(host.mutate_dom(|dom| match dom.range_delete_contents(range_id) {
               Ok(()) => (Ok(()), true),
               Err(err) => (Err(err), false),
             }))
@@ -10745,10 +10719,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             for node_id in ancestors {
               let wrapper = {
                 let platform = require_dom_platform_mut(vm)?;
-                platform.get_existing_wrapper_for_document_id(scope.heap(), state.document_id, node_id)
+                platform.get_existing_wrapper_for_document_id(scope.heap(), document_id, node_id)
               };
               if let Some(wrapper) = wrapper {
-                self.sync_cached_child_nodes_for_wrapper(vm, scope, wrapper, node_id, state.document_id)?;
+                self.sync_cached_child_nodes_for_wrapper(vm, scope, wrapper, node_id, document_id)?;
               }
             }
             self.sync_live_html_collections(vm, scope)?;
@@ -10759,15 +10733,15 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       }
 
       ("Range", "extractContents", 0) => {
-        let state = self.require_range_state(vm, scope, receiver)?;
+        let (range_id, document_id) = require_range_receiver(vm, scope, receiver)?;
 
         let owned_ancestors: Option<Result<Vec<NodeId>, DomError>> = vm
           .user_data_mut::<WindowRealmUserData>()
           .and_then(|data| {
-            data.with_owned_dom2_document(state.document_id, |dom| {
-              let start = dom.range_start_container(state.range_id)?;
-              let end = dom.range_end_container(state.range_id)?;
-              let common = dom.range_common_ancestor_container(state.range_id)?;
+            data.with_owned_dom2_document(document_id, |dom| {
+              let start = dom.range_start_container(range_id)?;
+              let end = dom.range_end_container(range_id)?;
+              let common = dom.range_common_ancestor_container(range_id)?;
 
               let mut out: HashSet<NodeId> = HashSet::new();
               let mut n = start;
@@ -10805,9 +10779,9 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         } else {
           self.with_dom_host(vm, |host| {
             Ok(host.with_dom(|dom| {
-              let start = dom.range_start_container(state.range_id)?;
-              let end = dom.range_end_container(state.range_id)?;
-              let common = dom.range_common_ancestor_container(state.range_id)?;
+              let start = dom.range_start_container(range_id)?;
+              let end = dom.range_end_container(range_id)?;
+              let common = dom.range_common_ancestor_container(range_id)?;
 
               let mut out: HashSet<NodeId> = HashSet::new();
               let mut n = start;
@@ -10849,8 +10823,8 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let owned_result: Option<Result<NodeId, DomError>> = vm
           .user_data_mut::<WindowRealmUserData>()
           .and_then(|data| {
-            data.with_owned_dom2_document_mut(state.document_id, |dom| {
-              dom.range_extract_contents(state.range_id)
+            data.with_owned_dom2_document_mut(document_id, |dom| {
+              dom.range_extract_contents(range_id)
             })
           });
 
@@ -10858,7 +10832,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           result
         } else {
           self.with_dom_host(vm, |host| {
-            Ok(host.mutate_dom(|dom| match dom.range_extract_contents(state.range_id) {
+            Ok(host.mutate_dom(|dom| match dom.range_extract_contents(range_id) {
               Ok(fragment) => (Ok(fragment), true),
               Err(err) => (Err(err), false),
             }))
@@ -10870,17 +10844,17 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             for node_id in ancestors {
               let wrapper = {
                 let platform = require_dom_platform_mut(vm)?;
-                platform.get_existing_wrapper_for_document_id(scope.heap(), state.document_id, node_id)
+                platform.get_existing_wrapper_for_document_id(scope.heap(), document_id, node_id)
               };
               if let Some(wrapper) = wrapper {
-                self.sync_cached_child_nodes_for_wrapper(vm, scope, wrapper, node_id, state.document_id)?;
+                self.sync_cached_child_nodes_for_wrapper(vm, scope, wrapper, node_id, document_id)?;
               }
             }
             self.sync_live_html_collections(vm, scope)?;
 
             let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
               scope,
-              state.document_id,
+              document_id,
               fragment_id,
               DomInterface::DocumentFragment,
             )?;
@@ -10892,19 +10866,19 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       }
 
       ("Range", "cloneContents", 0) => {
-        let state = self.require_range_state(vm, scope, receiver)?;
+        let (range_id, document_id) = require_range_receiver(vm, scope, receiver)?;
 
         let owned_result: Option<Result<NodeId, DomError>> = vm
           .user_data_mut::<WindowRealmUserData>()
           .and_then(|data| {
-            data.with_owned_dom2_document_mut(state.document_id, |dom| dom.range_clone_contents(state.range_id))
+            data.with_owned_dom2_document_mut(document_id, |dom| dom.range_clone_contents(range_id))
           });
 
         let result = if let Some(result) = owned_result {
           result
         } else {
           self.with_dom_host(vm, |host| {
-            Ok(host.mutate_dom(|dom| match dom.range_clone_contents(state.range_id) {
+            Ok(host.mutate_dom(|dom| match dom.range_clone_contents(range_id) {
               Ok(fragment) => (Ok(fragment), /* changed */ false),
               Err(err) => (Err(err), false),
             }))
@@ -10915,7 +10889,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           Ok(fragment_id) => {
             let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
               scope,
-              state.document_id,
+              document_id,
               fragment_id,
               DomInterface::DocumentFragment,
             )?;
@@ -10927,7 +10901,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       }
 
       ("Range", "insertNode", 0) => {
-        let state = self.require_range_state(vm, scope, receiver)?;
+        let (range_id, document_id) = require_range_receiver(vm, scope, receiver)?;
 
         let node_val = args.get(0).copied().unwrap_or(Value::Undefined);
         let node_handle = {
@@ -10939,13 +10913,13 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         // between wrappers that share the same underlying host `dom2::Document` allocation: if
         // either document id corresponds to an owned `dom2::Document`, require them to match to
         // avoid mixing distinct arenas.
-        if node_handle.document_id != state.document_id {
+        if node_handle.document_id != document_id {
           let (range_is_owned, node_is_owned) = {
             let mut range_is_owned = false;
             let mut node_is_owned = false;
             if let Some(data) = vm.user_data::<WindowRealmUserData>() {
               range_is_owned = data
-                .with_owned_dom2_document(state.document_id, |_| ())
+                .with_owned_dom2_document(document_id, |_| ())
                 .is_some();
               node_is_owned = data
                 .with_owned_dom2_document(node_handle.document_id, |_| ())
@@ -10962,10 +10936,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let owned_ancestors: Option<Result<Vec<NodeId>, DomError>> = vm
           .user_data_mut::<WindowRealmUserData>()
           .and_then(|data| {
-            data.with_owned_dom2_document(state.document_id, |dom| {
-              let start = dom.range_start_container(state.range_id)?;
-              let end = dom.range_end_container(state.range_id)?;
-              let common = dom.range_common_ancestor_container(state.range_id)?;
+            data.with_owned_dom2_document(document_id, |dom| {
+              let start = dom.range_start_container(range_id)?;
+              let end = dom.range_end_container(range_id)?;
+              let common = dom.range_common_ancestor_container(range_id)?;
 
               let mut out: HashSet<NodeId> = HashSet::new();
               // Range.insertNode() can split Text nodes, which mutates the parent even when the
@@ -11012,9 +10986,9 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         } else {
           self.with_dom_host(vm, |host| {
             Ok(host.with_dom(|dom| {
-              let start = dom.range_start_container(state.range_id)?;
-              let end = dom.range_end_container(state.range_id)?;
-              let common = dom.range_common_ancestor_container(state.range_id)?;
+              let start = dom.range_start_container(range_id)?;
+              let end = dom.range_end_container(range_id)?;
+              let common = dom.range_common_ancestor_container(range_id)?;
 
               let mut out: HashSet<NodeId> = HashSet::new();
               if let Some(parent) = dom.tree_parent_node(start) {
@@ -11061,7 +11035,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         // Snapshot adoption mappings for inserted nodes created by an alias Document wrapper.
         let mut adopt_mappings: Vec<(DocumentId, HashMap<NodeId, NodeId>)> = Vec::new();
-        if node_handle.document_id != state.document_id {
+        if node_handle.document_id != document_id {
           let adopt_roots: Vec<DomNodeKey> = self.with_dom_host(vm, |host| {
             Ok(host.with_dom(|dom| {
               if node_handle.node_id.index() >= dom.nodes_len() {
@@ -11126,7 +11100,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let owned_parent_info: Option<Result<(Option<DomNodeKey>, bool), DomError>> = vm
           .user_data_mut::<WindowRealmUserData>()
           .and_then(|data| {
-            data.with_owned_dom2_document(state.document_id, |dom| {
+            data.with_owned_dom2_document(document_id, |dom| {
               let old_parent = dom.parent(node_handle.node_id)?;
               let node_is_fragment_like = node_handle.node_id.index() < dom.nodes_len()
                 && matches!(
@@ -11163,8 +11137,8 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let owned_result: Option<Result<(), DomError>> = vm
           .user_data_mut::<WindowRealmUserData>()
           .and_then(|data| {
-            data.with_owned_dom2_document_mut(state.document_id, |dom| {
-              dom.range_insert_node(state.range_id, node_handle.node_id)
+            data.with_owned_dom2_document_mut(document_id, |dom| {
+              dom.range_insert_node(range_id, node_handle.node_id)
             })
           });
 
@@ -11172,7 +11146,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           result
         } else {
           self.with_dom_host(vm, |host| {
-            Ok(host.mutate_dom(|dom| match dom.range_insert_node(state.range_id, node_handle.node_id) {
+            Ok(host.mutate_dom(|dom| match dom.range_insert_node(range_id, node_handle.node_id) {
               Ok(()) => (Ok(()), true),
               Err(err) => (Err(err), false),
             }))
@@ -11186,7 +11160,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               require_dom_platform_mut(vm)?.remap_node_ids_between_documents(
                 scope.heap_mut(),
                 old_document_id,
-                state.document_id,
+                document_id,
                 &mapping,
               )?;
             }
@@ -11194,7 +11168,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             let owned_new_parent: Option<Result<Option<NodeId>, DomError>> = vm
               .user_data_mut::<WindowRealmUserData>()
               .and_then(|data| {
-                data.with_owned_dom2_document(state.document_id, |dom| dom.parent(node_handle.node_id))
+                data.with_owned_dom2_document(document_id, |dom| dom.parent(node_handle.node_id))
               });
             let new_parent: Result<Option<NodeId>, DomError> = if let Some(result) = owned_new_parent {
               result
@@ -11211,14 +11185,14 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             if let Some(parent_id) = new_parent {
               let parent_wrapper = {
                 let platform = require_dom_platform_mut(vm)?;
-                platform.get_existing_wrapper_for_document_id(scope.heap(), state.document_id, parent_id)
+                platform.get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
               };
               if let Some(parent_wrapper) = parent_wrapper {
-                self.sync_cached_child_nodes_for_wrapper(vm, scope, parent_wrapper, parent_id, state.document_id)?;
+                self.sync_cached_child_nodes_for_wrapper(vm, scope, parent_wrapper, parent_id, document_id)?;
               }
             }
             if let Some(old_parent_id) = old_parent {
-              if !(old_parent_id.document_id == state.document_id && Some(old_parent_id.node_id) == new_parent) {
+              if !(old_parent_id.document_id == document_id && Some(old_parent_id.node_id) == new_parent) {
                 let wrapper = {
                   let platform = require_dom_platform_mut(vm)?;
                   platform.get_existing_wrapper_for_document_id(
@@ -11260,10 +11234,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             for node_id in ancestors {
               let wrapper = {
                 let platform = require_dom_platform_mut(vm)?;
-                platform.get_existing_wrapper_for_document_id(scope.heap(), state.document_id, node_id)
+                platform.get_existing_wrapper_for_document_id(scope.heap(), document_id, node_id)
               };
               if let Some(wrapper) = wrapper {
-                self.sync_cached_child_nodes_for_wrapper(vm, scope, wrapper, node_id, state.document_id)?;
+                self.sync_cached_child_nodes_for_wrapper(vm, scope, wrapper, node_id, document_id)?;
               }
             }
             self.sync_live_html_collections(vm, scope)?;
@@ -11274,20 +11248,20 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       }
 
       ("Range", "surroundContents", 0) => {
-        let state = self.require_range_state(vm, scope, receiver)?;
+        let (range_id, document_id) = require_range_receiver(vm, scope, receiver)?;
 
         let new_parent_val = args.get(0).copied().unwrap_or(Value::Undefined);
         let new_parent_handle = {
           let platform = require_dom_platform_mut(vm)?;
           platform.require_node_handle(scope.heap(), new_parent_val)?
         };
-        if new_parent_handle.document_id != state.document_id {
+        if new_parent_handle.document_id != document_id {
           let (range_is_owned, node_is_owned) = {
             let mut range_is_owned = false;
             let mut node_is_owned = false;
             if let Some(data) = vm.user_data::<WindowRealmUserData>() {
               range_is_owned = data
-                .with_owned_dom2_document(state.document_id, |_| ())
+                .with_owned_dom2_document(document_id, |_| ())
                 .is_some();
               node_is_owned = data
                 .with_owned_dom2_document(new_parent_handle.document_id, |_| ())
@@ -11303,10 +11277,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let owned_ancestors: Option<Result<Vec<NodeId>, DomError>> = vm
           .user_data_mut::<WindowRealmUserData>()
           .and_then(|data| {
-            data.with_owned_dom2_document(state.document_id, |dom| {
-              let start = dom.range_start_container(state.range_id)?;
-              let end = dom.range_end_container(state.range_id)?;
-              let common = dom.range_common_ancestor_container(state.range_id)?;
+            data.with_owned_dom2_document(document_id, |dom| {
+              let start = dom.range_start_container(range_id)?;
+              let end = dom.range_end_container(range_id)?;
+              let common = dom.range_common_ancestor_container(range_id)?;
 
               let mut out: HashSet<NodeId> = HashSet::new();
               let mut n = start;
@@ -11344,9 +11318,9 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         } else {
           self.with_dom_host(vm, |host| {
             Ok(host.with_dom(|dom| {
-              let start = dom.range_start_container(state.range_id)?;
-              let end = dom.range_end_container(state.range_id)?;
-              let common = dom.range_common_ancestor_container(state.range_id)?;
+              let start = dom.range_start_container(range_id)?;
+              let end = dom.range_end_container(range_id)?;
+              let common = dom.range_common_ancestor_container(range_id)?;
 
               let mut out: HashSet<NodeId> = HashSet::new();
               let mut n = start;
@@ -11390,7 +11364,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let owned_old_parent: Option<Result<Option<DomNodeKey>, DomError>> = vm
           .user_data_mut::<WindowRealmUserData>()
           .and_then(|data| {
-            data.with_owned_dom2_document(state.document_id, |dom| {
+            data.with_owned_dom2_document(document_id, |dom| {
               let old_parent = dom.parent(new_parent_handle.node_id)?;
               Ok(old_parent.map(|id| DomNodeKey::new(new_parent_handle.document_id, id)))
             })
@@ -11411,7 +11385,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         };
 
         let adopt_mapping: Option<(DocumentId, HashMap<NodeId, NodeId>)> =
-          if new_parent_handle.document_id == state.document_id {
+          if new_parent_handle.document_id == document_id {
             None
           } else {
             let mut mapping: HashMap<NodeId, NodeId> = HashMap::new();
@@ -11422,8 +11396,8 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let owned_result: Option<Result<(), DomError>> = vm
           .user_data_mut::<WindowRealmUserData>()
           .and_then(|data| {
-            data.with_owned_dom2_document_mut(state.document_id, |dom| {
-              dom.range_surround_contents(state.range_id, new_parent_handle.node_id)
+            data.with_owned_dom2_document_mut(document_id, |dom| {
+              dom.range_surround_contents(range_id, new_parent_handle.node_id)
             })
           });
 
@@ -11431,7 +11405,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           result
         } else {
           self.with_dom_host(vm, |host| {
-            Ok(host.mutate_dom(|dom| match dom.range_surround_contents(state.range_id, new_parent_handle.node_id) {
+            Ok(host.mutate_dom(|dom| match dom.range_surround_contents(range_id, new_parent_handle.node_id) {
               Ok(()) => (Ok(()), true),
               Err(err) => (Err(err), false),
             }))
@@ -11444,7 +11418,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               require_dom_platform_mut(vm)?.remap_node_ids_between_documents(
                 scope.heap_mut(),
                 old_document_id,
-                state.document_id,
+                document_id,
                 &mapping,
               )?;
             }
@@ -11460,14 +11434,14 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                 scope,
                 wrapper_obj,
                 new_parent_handle.node_id,
-                state.document_id,
+                document_id,
               )?;
             }
 
             let owned_new_parent_parent: Option<Result<Option<NodeId>, DomError>> = vm
               .user_data_mut::<WindowRealmUserData>()
               .and_then(|data| {
-                data.with_owned_dom2_document(state.document_id, |dom| dom.parent(new_parent_handle.node_id))
+                data.with_owned_dom2_document(document_id, |dom| dom.parent(new_parent_handle.node_id))
               });
             let new_parent_parent: Result<Option<NodeId>, DomError> = if let Some(result) = owned_new_parent_parent {
               result
@@ -11484,15 +11458,15 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             if let Some(parent_id) = new_parent_parent {
               let parent_wrapper = {
                 let platform = require_dom_platform_mut(vm)?;
-                platform.get_existing_wrapper_for_document_id(scope.heap(), state.document_id, parent_id)
+                platform.get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
               };
               if let Some(parent_wrapper) = parent_wrapper {
-                self.sync_cached_child_nodes_for_wrapper(vm, scope, parent_wrapper, parent_id, state.document_id)?;
+                self.sync_cached_child_nodes_for_wrapper(vm, scope, parent_wrapper, parent_id, document_id)?;
               }
             }
 
             if let Some(old_parent_id) = old_parent {
-              if !(old_parent_id.document_id == state.document_id && Some(old_parent_id.node_id) == new_parent_parent) {
+              if !(old_parent_id.document_id == document_id && Some(old_parent_id.node_id) == new_parent_parent) {
                 let wrapper = {
                   let platform = require_dom_platform_mut(vm)?;
                   platform.get_existing_wrapper_for_document_id(
@@ -11516,10 +11490,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             for node_id in ancestors {
               let wrapper = {
                 let platform = require_dom_platform_mut(vm)?;
-                platform.get_existing_wrapper_for_document_id(scope.heap(), state.document_id, node_id)
+                platform.get_existing_wrapper_for_document_id(scope.heap(), document_id, node_id)
               };
               if let Some(wrapper) = wrapper {
-                self.sync_cached_child_nodes_for_wrapper(vm, scope, wrapper, node_id, state.document_id)?;
+                self.sync_cached_child_nodes_for_wrapper(vm, scope, wrapper, node_id, document_id)?;
               }
             }
             self.sync_live_html_collections(vm, scope)?;
@@ -11579,8 +11553,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           };
         }
 
-        let state = self.require_range_state(vm, scope, receiver)?;
-        let (range_id, document_id) = (state.range_id, state.document_id);
+        let (range_id, document_id) = require_range_receiver(vm, scope, receiver)?;
 
         // Fast path: offsets/collapsed do not require allocating node wrappers.
         if op == "startOffset" || op == "endOffset" || op == "collapsed" {

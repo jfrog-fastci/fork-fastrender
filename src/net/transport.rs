@@ -4,8 +4,8 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
 use crate::ipc::framing::{read_frame, write_frame};
-use crate::ipc::MAX_IPC_MESSAGE_BYTES;
 use crate::ipc::IpcError;
+use crate::ipc::MAX_IPC_MESSAGE_BYTES;
 use http::{header::HeaderName, Method};
 use serde::{Deserialize, Serialize};
 
@@ -604,10 +604,11 @@ fn decode_headers(
       return Err(DecodeError::InvalidHeaderName);
     }
 
-    let value_str = std::str::from_utf8(value_bytes).map_err(|source| DecodeError::InvalidUtf8 {
-      field: "header_value",
-      source,
-    })?;
+    let value_str =
+      std::str::from_utf8(value_bytes).map_err(|source| DecodeError::InvalidUtf8 {
+        field: "header_value",
+        source,
+      })?;
     if !is_valid_header_value(value_bytes) {
       return Err(DecodeError::InvalidHeaderValue);
     }
@@ -634,10 +635,11 @@ fn decode_message(
           attempted: method_bytes.len(),
         });
       }
-      let method_str = std::str::from_utf8(method_bytes).map_err(|source| DecodeError::InvalidUtf8 {
-        field: "method",
-        source,
-      })?;
+      let method_str =
+        std::str::from_utf8(method_bytes).map_err(|source| DecodeError::InvalidUtf8 {
+          field: "method",
+          source,
+        })?;
       if Method::from_bytes(method_bytes).is_err() {
         return Err(DecodeError::InvalidMethod);
       }
@@ -1343,7 +1345,10 @@ mod tests {
     // Give the receiver thread time to fill the bounded channel.
     thread::sleep(Duration::from_millis(100));
 
-    let got = client.events().recv_timeout(Duration::from_secs(1)).unwrap();
+    let got = client
+      .events()
+      .recv_timeout(Duration::from_secs(1))
+      .unwrap();
     assert!(matches!(got, NetworkEvent::WebSocketFrame { .. }));
     let err = client
       .events()
@@ -1358,19 +1363,13 @@ mod tests {
   #[test]
   fn malformed_messages_never_panic() {
     let limits = NetworkMessageLimits::default();
-    let cases: Vec<Vec<u8>> = vec![
-      vec![],
-      vec![0],
-      vec![1],
-      vec![1, 0, 0, 0],
-      {
-        let mut payload = Vec::new();
-        payload.push(1);
-        // request_id only partially present
-        payload.extend_from_slice(&[0, 0, 0]);
-        payload
-      },
-    ];
+    let cases: Vec<Vec<u8>> = vec![vec![], vec![0], vec![1], vec![1, 0, 0, 0], {
+      let mut payload = Vec::new();
+      payload.push(1);
+      // request_id only partially present
+      payload.extend_from_slice(&[0, 0, 0]);
+      payload
+    }];
 
     for payload in cases {
       let outcome = std::panic::catch_unwind(|| decode_message(&payload, &limits));

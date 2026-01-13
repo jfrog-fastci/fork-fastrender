@@ -1,6 +1,6 @@
 use crate::dom::{is_valid_shadow_host_name, ShadowRootMode};
 
-use super::{Attribute, DomError, Document, NodeId, NodeKind, SlotAssignmentMode, NULL_NAMESPACE};
+use super::{Attribute, Document, DomError, NodeId, NodeKind, SlotAssignmentMode, NULL_NAMESPACE};
 
 fn node_is_element_like(kind: &NodeKind) -> bool {
   matches!(kind, NodeKind::Element { .. } | NodeKind::Slot { .. })

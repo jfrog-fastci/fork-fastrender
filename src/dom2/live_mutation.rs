@@ -153,6 +153,10 @@ impl LiveMutation {
     id
   }
 
+  pub(crate) fn unregister_live_range(&mut self, id: LiveRangeId) {
+    self.live_ranges.remove(&id);
+  }
+
   /// Register a JS `NodeIterator` wrapper object for an existing `NodeIteratorId`.
   ///
   /// The id itself is allocated by `Document::create_node_iterator`, which also creates the

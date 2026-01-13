@@ -15,9 +15,9 @@ use common::args::{
 use common::render_pipeline::{
   append_timeout_stderr_note, apply_test_render_delay, apply_worker_common_args,
   build_http_fetcher, build_render_configs, compute_soft_timeout_ms, configure_worker_stdio,
-  decode_html_resource, follow_client_redirects_resource, format_error_with_chain,
-  log_diagnostics, read_cached_document, render_fetched_document_with_artifacts, RenderConfigBundle,
-  RenderSurface, WorkerCommonArgs, CLI_RENDER_STACK_SIZE,
+  decode_html_resource, follow_client_redirects_resource, format_error_with_chain, log_diagnostics,
+  read_cached_document, render_fetched_document_with_artifacts, RenderConfigBundle, RenderSurface,
+  WorkerCommonArgs, CLI_RENDER_STACK_SIZE,
 };
 use fastrender::api::{BrowserTab, FastRenderPool, FastRenderPoolConfig};
 use fastrender::debug::runtime::RuntimeToggles;
@@ -28,6 +28,9 @@ use fastrender::image_output::encode_image;
 use fastrender::js::JsExecutionOptions;
 use fastrender::pageset::{pageset_stem, PagesetFilter, CACHE_HTML_DIR};
 use fastrender::paint::display_list::DisplayItem;
+use fastrender::process_supervision::{
+  format_exit_status, summarize_exit_status, ExitStatusSummary, RunningChild as SupervisedChild,
+};
 use fastrender::render_control::{DeadlineGuard, RenderDeadline};
 use fastrender::resource::normalize_user_agent_for_log;
 #[cfg(not(feature = "disk_cache"))]
@@ -46,9 +49,6 @@ use fastrender::style::media::MediaType;
 use fastrender::tree::box_tree::{BoxNode, BoxType};
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use fastrender::OutputFormat;
-use fastrender::process_supervision::{
-  format_exit_status, summarize_exit_status, ExitStatusSummary, RunningChild as SupervisedChild,
-};
 use fastrender::{
   snapshot_pipeline, BoxTree, DisplayList, FragmentTree, PipelineSnapshot, RenderArtifactRequest,
   RenderArtifacts,
@@ -1175,7 +1175,10 @@ fn render_entry_inner(shared: &RenderShared, entry: &CachedEntry) -> PageResult 
       .unwrap_or_else(|| requested_url.clone());
     let doc = decode_html_resource(&resource, &base_hint);
     let _ = writeln!(log, "Final resource base: {}", doc.base_url);
-    RenderJob::Static { resource, base_hint }
+    RenderJob::Static {
+      resource,
+      base_hint,
+    }
   };
 
   let worker_name = name.clone();
@@ -1192,7 +1195,10 @@ fn render_entry_inner(shared: &RenderShared, entry: &CachedEntry) -> PageResult 
     move || -> Result<RenderOutcome, Status> {
       let render_work = move || -> Result<RenderOutcome, fastrender::Error> {
         match render_job {
-          RenderJob::Static { resource, base_hint } => {
+          RenderJob::Static {
+            resource,
+            base_hint,
+          } => {
             let report = render_pool.with_renderer(|renderer| {
               render_fetched_document_with_artifacts(
                 renderer,
@@ -1545,7 +1551,9 @@ fn build_worker_command(
       .arg(max_pending_timers.to_string());
   }
   if let Some(max_tasks_per_spin) = args.js.max_tasks_per_spin {
-    cmd.arg("--js-max-tasks").arg(max_tasks_per_spin.to_string());
+    cmd
+      .arg("--js-max-tasks")
+      .arg(max_tasks_per_spin.to_string());
   }
   if let Some(max_microtasks_per_spin) = args.js.max_microtasks_per_spin {
     cmd
@@ -1693,10 +1701,7 @@ fn run_workers(
         soft_timeout_ms,
         rayon_threads_per_worker,
       )?;
-      running.push(RunningWorker {
-        entry,
-        child,
-      });
+      running.push(RunningWorker { entry, child });
     }
 
     let mut i = 0usize;
@@ -1707,10 +1712,7 @@ fn run_workers(
       if timed_out {
         let RunningWorker { entry, child } = running.swap_remove(i);
         let _ = child.kill_and_wait();
-        append_timeout_stderr_note(
-          &stderr_path_for(&args.out_dir, &entry.cache_stem),
-          elapsed,
-        );
+        append_timeout_stderr_note(&stderr_path_for(&args.out_dir, &entry.cache_stem), elapsed);
         let message = format!("hard timeout after {:.2}s", hard_timeout.as_secs_f64());
         write_timeout_artifacts(
           &args.out_dir,
@@ -2411,11 +2413,7 @@ mod tests {
     let _guard = ENV_LOCK.lock().unwrap();
 
     let mut cmd = Command::new("render_pages");
-    maybe_set_worker_rayon_threads_with_parent_env(
-      &mut cmd,
-      1,
-      Some(OsStr::new("99")),
-    );
+    maybe_set_worker_rayon_threads_with_parent_env(&mut cmd, 1, Some(OsStr::new("99")));
 
     let has_override = cmd
       .get_envs()
@@ -2442,11 +2440,7 @@ mod tests {
 
     // Empty should be treated as unset (Rayon will reject it if left unmodified).
     let mut cmd = Command::new("render_pages");
-    maybe_set_worker_rayon_threads_with_parent_env(
-      &mut cmd,
-      2,
-      Some(OsStr::new("")),
-    );
+    maybe_set_worker_rayon_threads_with_parent_env(&mut cmd, 2, Some(OsStr::new("")));
     let value = cmd
       .get_envs()
       .find(|(key, _)| *key == OsStr::new(WORKER_RAYON_THREADS_ENV))

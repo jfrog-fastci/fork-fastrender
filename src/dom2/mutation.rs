@@ -1125,6 +1125,7 @@ impl Document {
     Ok(true)
   }
 
+
   pub fn set_comment_data(&mut self, node: NodeId, data: &str) -> Result<bool, DomError> {
     let node_id = node;
     // Drive live Range/NodeIterator updates via the DOM "replace data" primitive.

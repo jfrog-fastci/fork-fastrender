@@ -6,7 +6,9 @@ use fastrender::ui::browser_app::BrowserAppState;
 use fastrender::ui::chrome_action_url::ChromeActionUrl;
 use fastrender::ui::chrome_assets::ChromeAssetsFetcher;
 use fastrender::ui::chrome_frame::chrome_frame_html_from_state;
-use fastrender::ui::omnibox::{OmniboxAction, OmniboxSuggestion, OmniboxSuggestionSource, OmniboxUrlSource};
+use fastrender::ui::omnibox::{
+  OmniboxAction, OmniboxSuggestion, OmniboxSuggestionSource, OmniboxUrlSource,
+};
 use fastrender::ui::{PointerButton, PointerModifiers, TabId};
 use fastrender::{BoxNode, BoxTree, FastRender, FontConfig, Point, RenderOptions, Result};
 
@@ -76,7 +78,10 @@ fn clicking_omnibox_suggestion_emits_chrome_action_url() -> Result<()> {
   let box_id = find_box_id_for_styled_node_id(prepared.box_tree(), node_id)
     .expect("expected omnibox item to produce at least one box");
   let rect = absolute_bounds_for_box_id(prepared.fragment_tree(), box_id).expect("box bounds");
-  let click_point = Point::new(rect.x() + rect.width() * 0.5, rect.y() + rect.height() * 0.5);
+  let click_point = Point::new(
+    rect.x() + rect.width() * 0.5,
+    rect.y() + rect.height() * 0.5,
+  );
 
   let scroll_state = doc.scroll_state();
   let mut engine = InteractionEngine::new();

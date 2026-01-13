@@ -107,9 +107,7 @@ impl BookmarksIoJob {
           result,
         });
       })
-      .map_err(|err| {
-        format!("Failed to export bookmarks: failed to spawn worker thread: {err}")
-      })?;
+      .map_err(|err| format!("Failed to export bookmarks: failed to spawn worker thread: {err}"))?;
 
     *self = Self::Exporting { path, rx };
     Ok(())
@@ -162,9 +160,7 @@ impl BookmarksIoJob {
           result,
         });
       })
-      .map_err(|err| {
-        format!("Failed to import bookmarks: failed to spawn worker thread: {err}")
-      })?;
+      .map_err(|err| format!("Failed to import bookmarks: failed to spawn worker thread: {err}"))?;
 
     *self = Self::Importing { path, rx };
     Ok(())
@@ -204,7 +200,10 @@ impl BookmarksIoJob {
     match state {
       Self::Exporting { path, rx } => match rx.try_recv() {
         Ok(update) => {
-          if let BookmarksIoJobUpdate::ExportFinished { result: Err(err), .. } = &update {
+          if let BookmarksIoJobUpdate::ExportFinished {
+            result: Err(err), ..
+          } = &update
+          {
             *self = Self::Error { error: err.clone() };
           } else {
             *self = Self::Done;
@@ -227,7 +226,10 @@ impl BookmarksIoJob {
       },
       Self::Importing { path, rx } => match rx.try_recv() {
         Ok(update) => {
-          if let BookmarksIoJobUpdate::ImportFinished { result: Err(err), .. } = &update {
+          if let BookmarksIoJobUpdate::ImportFinished {
+            result: Err(err), ..
+          } = &update
+          {
             *self = Self::Error { error: err.clone() };
           } else {
             *self = Self::Done;
@@ -360,7 +362,9 @@ mod tests {
 
     let update = wait_for_update(&mut job);
     match update {
-      BookmarksIoJobUpdate::ExportFinished { result: Err(err), .. } => {
+      BookmarksIoJobUpdate::ExportFinished {
+        result: Err(err), ..
+      } => {
         assert!(err.contains("Failed to export bookmarks"));
       }
       other => panic!("expected export error, got {other:?}"),
@@ -379,7 +383,9 @@ mod tests {
     std::fs::write(&path, serde_json::to_string_pretty(&expected).unwrap()).unwrap();
 
     let mut job = BookmarksIoJob::default();
-    job.start_import(path.to_string_lossy().to_string()).unwrap();
+    job
+      .start_import(path.to_string_lossy().to_string())
+      .unwrap();
 
     let update = wait_for_update(&mut job);
     let (imported, migration) = match update {
@@ -407,11 +413,15 @@ mod tests {
     std::fs::write(&path, "not valid json").unwrap();
 
     let mut job = BookmarksIoJob::default();
-    job.start_import(path.to_string_lossy().to_string()).unwrap();
+    job
+      .start_import(path.to_string_lossy().to_string())
+      .unwrap();
 
     let update = wait_for_update(&mut job);
     match update {
-      BookmarksIoJobUpdate::ImportFinished { result: Err(err), .. } => {
+      BookmarksIoJobUpdate::ImportFinished {
+        result: Err(err), ..
+      } => {
         assert!(err.contains("Failed to import bookmarks"));
       }
       other => panic!("expected import error, got {other:?}"),

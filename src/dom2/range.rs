@@ -357,6 +357,7 @@ impl Document {
 
   pub(crate) fn remove_range(&mut self, id: RangeId) {
     self.ranges.remove(&id);
+    self.live_mutation.unregister_live_range(id);
   }
 
   /// Remap `NodeId` references stored in all live ranges.

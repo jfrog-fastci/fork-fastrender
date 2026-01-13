@@ -1,5 +1,5 @@
+use fastrender::chrome_frame::{ChromeFrameDocument, ChromeFrameEvent};
 use fastrender::text::font_db::FontConfig;
-use fastrender::ui::{ChromeFrameDocument, ChromeFrameEvent};
 use fastrender::{FastRender, LayoutParallelism, PaintParallelism, RenderOptions};
 
 #[test]

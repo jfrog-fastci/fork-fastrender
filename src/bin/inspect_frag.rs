@@ -1855,7 +1855,8 @@ mod tests {
     .expect("parse args");
     let err = run(args).err().expect("expected invalid-args error");
     assert!(
-      err.to_string()
+      err
+        .to_string()
         .contains("--filter-id and --filter-selector are mutually exclusive"),
       "unexpected error: {err}"
     );

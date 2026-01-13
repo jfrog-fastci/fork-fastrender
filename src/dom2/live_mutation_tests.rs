@@ -548,3 +548,47 @@ fn node_iterator_state_is_pruned_on_subsequent_registration() -> Result<(), vm_j
   assert_eq!(doc.node_iterator_root(id2), Some(doc.root()));
   Ok(())
 }
+
+#[test]
+fn live_range_state_is_swept_and_does_not_grow_unbounded() -> Result<(), vm_js::VmError> {
+  use vm_js::{Heap, HeapLimits, Value};
+
+  let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024));
+  let mut scope = heap.scope();
+
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+
+  // Keep one live range around across multiple GC cycles to ensure sweeping does not break
+  // still-live range state.
+  let live_wrapper = scope.alloc_object()?;
+  let live_root = scope.heap_mut().add_root(Value::Object(live_wrapper))?;
+  let live_range = doc.register_live_range(scope.heap(), live_wrapper);
+
+  let base = doc.range_state_len_for_test();
+  assert_eq!(base, 1, "expected only the persistent live range to be registered");
+
+  for cycle in 0..3usize {
+    // Allocate a batch of short-lived ranges whose wrappers become unreachable immediately.
+    for _ in 0..1000usize {
+      let wrapper = scope.alloc_object()?;
+      let root = scope.heap_mut().add_root(Value::Object(wrapper))?;
+      let _range = doc.register_live_range(scope.heap(), wrapper);
+      scope.heap_mut().remove_root(root);
+    }
+
+    scope.heap_mut().collect_garbage();
+    doc.sweep_dead_live_traversals_if_needed(scope.heap());
+
+    // The persistent range should remain usable.
+    assert_eq!(doc.range_start_container(live_range).unwrap(), doc.root());
+
+    assert_eq!(
+      doc.range_state_len_for_test(),
+      base,
+      "live range state should be reclaimed after GC+sweep (cycle {cycle})"
+    );
+  }
+
+  scope.heap_mut().remove_root(live_root);
+  Ok(())
+}
