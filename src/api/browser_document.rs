@@ -57,6 +57,7 @@ pub struct BrowserDocument {
   realtime_animations_enabled: bool,
   animation_clock: Arc<dyn Clock>,
   animation_timeline_origin: Option<Duration>,
+  last_painted_animation_clock: Option<Duration>,
 }
 
 fn hash_usize_set(hasher: &mut DefaultHasher, set: &FxHashSet<usize>) {
@@ -89,11 +90,7 @@ fn interaction_state_fingerprint(state: Option<&InteractionState>) -> u64 {
           if let Some(files) = state.form_state.file_inputs.get(&node_id) {
             files.len().hash(&mut hasher);
             for file in files {
-              file
-                .path
-                .to_string_lossy()
-                .as_ref()
-                .hash(&mut hasher);
+              file.path.to_string_lossy().as_ref().hash(&mut hasher);
               file.filename.hash(&mut hasher);
               file.bytes.len().hash(&mut hasher);
               file.content_type.hash(&mut hasher);
@@ -170,6 +167,7 @@ impl BrowserDocument {
       realtime_animations_enabled: false,
       animation_clock: Arc::new(RealClock::default()),
       animation_timeline_origin: None,
+      last_painted_animation_clock: None,
     })
   }
 
@@ -199,6 +197,7 @@ impl BrowserDocument {
       realtime_animations_enabled: false,
       animation_clock: Arc::new(RealClock::default()),
       animation_timeline_origin: None,
+      last_painted_animation_clock: None,
     })
   }
 
@@ -210,6 +209,8 @@ impl BrowserDocument {
     self.animation_clock = clock;
     self.animation_timeline_origin = None;
     self.animation_state_store = crate::animation::AnimationStateStore::new();
+    self.last_painted_animation_clock = None;
+    self.paint_dirty = true;
   }
 
   /// Enables/disables real-time animation sampling based on this document's timeline.
@@ -221,11 +222,25 @@ impl BrowserDocument {
       self.realtime_animations_enabled = true;
       self.animation_timeline_origin = None;
       self.animation_state_store = crate::animation::AnimationStateStore::new();
+      self.last_painted_animation_clock = None;
+      self.paint_dirty = true;
     } else if !enabled && self.realtime_animations_enabled {
       self.realtime_animations_enabled = false;
       self.animation_timeline_origin = None;
       self.animation_state_store = crate::animation::AnimationStateStore::new();
+      self.last_painted_animation_clock = None;
+      self.paint_dirty = true;
     }
+  }
+
+  pub fn needs_animation_frame(&self) -> bool {
+    if self.options.animation_time.is_some() || !self.realtime_animations_enabled {
+      return false;
+    }
+    let Some(last) = self.last_painted_animation_clock else {
+      return self.prepared.is_some();
+    };
+    self.animation_clock.now() != last
   }
 
   /// Updates the renderer's document/base URL hints for the current navigation.
@@ -444,6 +459,7 @@ impl BrowserDocument {
     self.renderer.document_csp = None;
     self.animation_timeline_origin = None;
     self.animation_state_store = crate::animation::AnimationStateStore::new();
+    self.last_painted_animation_clock = None;
     self.invalidate_all();
   }
 
@@ -460,6 +476,7 @@ impl BrowserDocument {
     self.paint_dirty = true;
     self.animation_timeline_origin = None;
     self.animation_state_store = crate::animation::AnimationStateStore::new();
+    self.last_painted_animation_clock = None;
   }
 
   /// Parses HTML using the internal renderer and resets the document state.
@@ -945,6 +962,7 @@ impl BrowserDocument {
     if !self.is_dirty()
       && self.prepared.is_some()
       && interaction_hash == self.interaction_state_hash
+      && !self.needs_animation_frame()
     {
       return Ok(None);
     }
@@ -963,6 +981,7 @@ impl BrowserDocument {
     if !self.is_dirty()
       && self.prepared.is_some()
       && interaction_hash == self.interaction_state_hash
+      && !self.needs_animation_frame()
     {
       return Ok(None);
     }
@@ -1114,6 +1133,11 @@ impl BrowserDocument {
     // A successful paint always satisfies any outstanding paint invalidation, but must not clear
     // pending style/layout dirtiness.
     self.paint_dirty = false;
+    if self.realtime_animations_enabled && self.options.animation_time.is_none() {
+      self.last_painted_animation_clock = Some(self.animation_clock.now());
+    } else {
+      self.last_painted_animation_clock = None;
+    }
 
     Ok(frame)
   }
@@ -2039,6 +2063,47 @@ mod tests {
     let pixmap_override = document.render_frame()?;
     let c2 = pixmap_override.pixel(5, 5).expect("pixel 5,5");
     assert_rgb_close(c2, 0, 0);
+
+    Ok(())
+  }
+
+  #[test]
+  fn render_if_needed_rerenders_for_realtime_animation_progress() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = r#"
+      <style>
+        html, body { margin: 0; background: white; }
+        #box {
+          width: 10px;
+          height: 10px;
+          background: black;
+          animation: fade 1000ms linear forwards;
+        }
+        @keyframes fade {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+      </style>
+      <div id="box"></div>
+    "#;
+    let mut document =
+      BrowserDocument::new(renderer, html, RenderOptions::new().with_viewport(20, 20))?;
+
+    let clock = Arc::new(crate::js::clock::VirtualClock::new());
+    document.set_animation_clock(clock.clone());
+    document.set_realtime_animations_enabled(true);
+
+    let pixmap0 = document.render_frame()?;
+    assert!(
+      document.render_if_needed()?.is_none(),
+      "expected render_if_needed to return None before time advances"
+    );
+
+    clock.advance(Duration::from_millis(500));
+    let pixmap1 = document
+      .render_if_needed()?
+      .expect("expected render_if_needed to repaint after clock advance");
+    assert_ne!(pixmap1.data(), pixmap0.data());
 
     Ok(())
   }

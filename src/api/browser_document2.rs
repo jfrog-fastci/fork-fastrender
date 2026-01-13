@@ -29,6 +29,7 @@ pub struct BrowserDocument2 {
   animation_clock: Arc<dyn Clock>,
   realtime_animations_enabled: bool,
   animation_timeline_origin: Option<Duration>,
+  last_painted_animation_clock: Option<Duration>,
   animation_state_store: crate::animation::AnimationStateStore,
   style_dirty: bool,
   layout_dirty: bool,
@@ -67,6 +68,7 @@ impl BrowserDocument2 {
       animation_clock: Arc::new(RealClock::default()),
       realtime_animations_enabled: false,
       animation_timeline_origin: None,
+      last_painted_animation_clock: None,
       animation_state_store: crate::animation::AnimationStateStore::default(),
       // First frame needs a full pipeline run.
       style_dirty: true,
@@ -110,6 +112,7 @@ impl BrowserDocument2 {
     self.layout_dirty = false;
     self.paint_dirty = true;
     self.animation_timeline_origin = None;
+    self.last_painted_animation_clock = None;
     self.animation_state_store = crate::animation::AnimationStateStore::default();
 
     Ok(super::BrowserNavigationReport {
@@ -127,6 +130,7 @@ impl BrowserDocument2 {
     self.animation_clock = clock;
     self.animation_timeline_origin = None;
     self.animation_state_store = crate::animation::AnimationStateStore::default();
+    self.last_painted_animation_clock = None;
     self.paint_dirty = true;
   }
 
@@ -142,8 +146,19 @@ impl BrowserDocument2 {
     }
     if enabled != self.realtime_animations_enabled {
       self.paint_dirty = true;
+      self.last_painted_animation_clock = None;
     }
     self.realtime_animations_enabled = enabled;
+  }
+
+  pub fn needs_animation_frame(&self) -> bool {
+    if self.options.animation_time.is_some() || !self.realtime_animations_enabled {
+      return false;
+    }
+    let Some(last) = self.last_painted_animation_clock else {
+      return self.prepared.is_some();
+    };
+    self.animation_clock.now() != last
   }
 
   /// Returns an immutable reference to the live `dom2` document.
@@ -211,7 +226,7 @@ impl BrowserDocument2 {
     &mut self,
     paint_deadline: Option<&crate::render_control::RenderDeadline>,
   ) -> Result<Option<super::PaintedFrame>> {
-    if !self.is_dirty() && self.prepared.is_some() {
+    if !self.is_dirty() && self.prepared.is_some() && !self.needs_animation_frame() {
       return Ok(None);
     }
     let frame = self.render_frame_with_deadlines(paint_deadline)?;
@@ -384,6 +399,11 @@ impl BrowserDocument2 {
     self.options.scroll_delta = frame.scroll_state.viewport_delta;
     self.options.element_scroll_deltas = frame.scroll_state.elements_delta.clone();
     self.paint_dirty = false;
+    if self.realtime_animations_enabled && self.options.animation_time.is_none() {
+      self.last_painted_animation_clock = Some(self.animation_clock.now());
+    } else {
+      self.last_painted_animation_clock = None;
+    }
 
     Ok(frame)
   }
@@ -534,6 +554,38 @@ mod tests {
     clock.advance(Duration::from_millis(500));
     let pixmap_500 = doc.render_frame()?;
     let (r, g, b, a) = pixel(&pixmap_500, 0, 0);
+    assert!(
+      (120..=135).contains(&r),
+      "expected ~50% blended red at 500ms, got rgba=({r},{g},{b},{a})"
+    );
+    assert_eq!((g, b, a), (0, 0, 255));
+
+    Ok(())
+  }
+
+  #[test]
+  fn render_if_needed_rerenders_for_realtime_animation_progress() -> Result<()> {
+    let options = RenderOptions::new()
+      .with_viewport(2, 2)
+      .with_layout_parallelism(crate::LayoutParallelism::disabled())
+      .with_paint_parallelism(crate::PaintParallelism::disabled());
+    let mut doc = BrowserDocument2::from_html(fixture_html(), options)?;
+
+    let clock = Arc::new(VirtualClock::new());
+    doc.set_animation_clock(clock.clone());
+    doc.set_realtime_animations_enabled(true);
+
+    let _ = doc.render_frame()?;
+    assert!(
+      doc.render_if_needed()?.is_none(),
+      "expected render_if_needed to return None before time advances"
+    );
+
+    clock.advance(Duration::from_millis(500));
+    let pixmap = doc
+      .render_if_needed()?
+      .expect("expected a new frame after advancing the animation clock");
+    let (r, g, b, a) = pixel(&pixmap, 0, 0);
     assert!(
       (120..=135).contains(&r),
       "expected ~50% blended red at 500ms, got rgba=({r},{g},{b},{a})"
