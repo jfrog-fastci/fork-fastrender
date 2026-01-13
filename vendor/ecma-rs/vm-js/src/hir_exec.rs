@@ -6586,3 +6586,55 @@ pub(crate) fn run_compiled_script(
     Flow::Continue(..) => Err(VmError::Unimplemented("continue outside of loop")),
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+
+  fn new_runtime() -> JsRuntime {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    JsRuntime::new(vm, heap).unwrap()
+  }
+
+  fn exec_compiled(rt: &mut JsRuntime, source: &str) -> Result<Value, VmError> {
+    let script = CompiledScript::compile_script(rt.heap_mut(), "<test>", source)?;
+    rt.exec_compiled_script(script)
+  }
+
+  #[test]
+  fn compiled_try_catches_thrown_value() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = exec_compiled(
+      &mut rt,
+      "function f(){ try { throw 1; } catch(e) { return e; } } f();",
+    )?;
+    assert_eq!(v, Value::Number(1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn compiled_try_catches_internal_type_error() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = exec_compiled(
+      &mut rt,
+      "function f(){ try { null.x; return 0; } catch(e) { return 1; } } f();",
+    )?;
+    assert_eq!(v, Value::Number(1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn compiled_finally_runs_on_return() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = exec_compiled(
+      &mut rt,
+      "function f(){ try { return 1; } finally { globalThis._ran = 1; } } f();",
+    )?;
+    assert_eq!(v, Value::Number(1.0));
+
+    let ran = exec_compiled(&mut rt, "globalThis._ran")?;
+    assert_eq!(ran, Value::Number(1.0));
+    Ok(())
+  }
+}
