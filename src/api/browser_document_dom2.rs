@@ -6392,7 +6392,9 @@ mod tests {
          document.createAttributeNS(null, 'data-y');\n\
          document.createTextNode('x');\n\
          document.createComment('x');\n\
-         document.createDocumentFragment();",
+         document.createDocumentFragment();\n\
+         document.body.cloneNode(true);\n\
+         document.importNode(document.body, true);",
       )
       .expect("execute detached node creation script");
 

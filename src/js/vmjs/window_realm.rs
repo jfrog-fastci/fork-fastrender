@@ -16022,22 +16022,74 @@ fn document_import_node_native(
   let src_dom_ptr = dom_ptr_for_document_id_read(vm, host, node_key.document_id).ok_or(
     VmError::TypeError("Document.importNode requires a DOM-backed source document"),
   )?;
-  let mut dst_dom_ptr = dom_ptr_for_document_id_mut(vm, host, target_document_id).ok_or(
+  let dst_dom_ptr = dom_ptr_for_document_id_read(vm, host, target_document_id).ok_or(
     VmError::TypeError("Document.importNode requires a DOM-backed target document"),
   )?;
 
-  // SAFETY: `dom_ptr_*` are valid for the duration of this native call.
-  let src_dom = unsafe { src_dom_ptr.as_ref() };
-  let dst_dom = unsafe { dst_dom_ptr.as_mut() };
+  // `Document.importNode` produces a detached clone, so it must not invalidate rendering caches on
+  // host-backed documents.
+  //
+  // Note: Some JS `Document` wrappers can alias the same underlying `dom2::Document` arena (e.g.
+  // `DOMParser.parseFromString`). Use pointer equality to treat those cases like same-document
+  // imports.
+  let imported = if src_dom_ptr == dst_dom_ptr {
+    let node_id = node_key.node_id;
 
-  let imported = match dst_dom.import_node_from(src_dom, node_key.node_id, deep) {
-    Ok(imported) => imported,
-    Err(err) => {
-      let exc = make_dom_exception(vm, scope, err.code(), "")?;
-      return Err(VmError::Throw(exc));
+    if let Some(mut dom_ptr) = owned_dom_ptr_for_document_id_mut(vm, target_document_id) {
+      // SAFETY: `dom_ptr` points at a realm-owned `dom2::Document` and is valid for the duration of
+      // this native call.
+      let dom = unsafe { dom_ptr.as_mut() };
+      let kind = &dom.node(node_id).kind;
+      if node_id == dom.root() || matches!(kind, NodeKind::Document { .. } | NodeKind::ShadowRoot { .. }) {
+        return Err(VmError::Throw(make_dom_exception(vm, scope, "NotSupportedError", "")?));
+      }
+      match dom.clone_node(node_id, deep) {
+        Ok(cloned) => cloned,
+        Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
+      }
+    } else {
+      let cloned = mutate_dom_for_vm_host(host, |dom| {
+        let kind = &dom.node(node_id).kind;
+        if node_id == dom.root() || matches!(kind, NodeKind::Document { .. } | NodeKind::ShadowRoot { .. }) {
+          return (Err(dom2::DomError::NotSupportedError), false);
+        }
+        (dom.clone_node(node_id, deep), false)
+      })
+      .ok_or(VmError::TypeError(
+        "Document.importNode requires a DOM-backed target document",
+      ))?;
+      match cloned {
+        Ok(cloned) => cloned,
+        Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
+      }
+    }
+  } else {
+    // SAFETY: `src_dom_ptr` and `dst_dom_ptr` refer to distinct underlying documents in this branch.
+    let src_dom = unsafe { src_dom_ptr.as_ref() };
+    let node_id = node_key.node_id;
+
+    if let Some(mut dom_ptr) = owned_dom_ptr_for_document_id_mut(vm, target_document_id) {
+      // SAFETY: `dom_ptr` points at a realm-owned `dom2::Document` and is valid for the duration of
+      // this native call.
+      let dom = unsafe { dom_ptr.as_mut() };
+      match dom.import_node_from(src_dom, node_id, deep) {
+        Ok(imported) => imported,
+        Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
+      }
+    } else {
+      let imported = mutate_dom_for_vm_host(host, |dom| (dom.import_node_from(src_dom, node_id, deep), false))
+        .ok_or(VmError::TypeError(
+          "Document.importNode requires a DOM-backed target document",
+        ))?;
+      match imported {
+        Ok(imported) => imported,
+        Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
+      }
     }
   };
 
+  // SAFETY: `dst_dom_ptr` is valid for the duration of this native call.
+  let dst_dom = unsafe { dst_dom_ptr.as_ref() };
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dst_dom), imported)
 }
 
@@ -29309,23 +29361,29 @@ fn node_clone_node_native(
   let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_id)
     .map_err(|_| VmError::TypeError("Node.cloneNode must be called on a DOM-backed node"))?;
 
-  let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, document_id) else {
-    return Err(VmError::TypeError(
-      "Node.cloneNode must be called on a DOM-backed node",
-    ));
-  };
-
-  let cloned = {
-    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let cloned = if let Some(mut dom_ptr) = owned_dom_ptr_for_document_id_mut(vm, document_id) {
+    // SAFETY: `dom_ptr` points at a realm-owned `dom2::Document` and is valid for the duration of
+    // this native call.
     let dom = unsafe { dom_ptr.as_mut() };
     match dom.clone_node(node_id, deep) {
       Ok(cloned) => cloned,
       Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
     }
+  } else {
+    let cloned = mutate_dom_for_vm_host(host, |dom| (dom.clone_node(node_id, deep), false)).ok_or(VmError::TypeError(
+      "Node.cloneNode must be called on a DOM-backed node",
+    ))?;
+    match cloned {
+      Ok(cloned) => cloned,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
+    }
   };
 
-  // SAFETY: `dom_ptr` is valid for the duration of this native call.
-  let dom = unsafe { dom_ptr.as_ref() };
+  let dom = dom_ptr_for_document_id_read(vm, host, document_id)
+    .map(|ptr| unsafe { ptr.as_ref() })
+    .ok_or(VmError::TypeError(
+      "Node.cloneNode must be called on a DOM-backed node",
+    ))?;
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), cloned)
 }
 
