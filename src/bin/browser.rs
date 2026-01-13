@@ -872,6 +872,50 @@ mod worker_msg_queue_tests {
     let expected: Vec<String> = (0..10).map(|idx| format!("msg-{idx}")).collect();
     assert_eq!(lines, expected);
   }
+
+  #[test]
+  fn worker_wake_pending_redrain_avoids_lost_wake() {
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let queue = WorkerMsgQueue::new();
+    let pusher = queue.pusher();
+    let worker_wake_pending = AtomicBool::new(true);
+    let mut backlog: VecDeque<fastrender::ui::WorkerToUi> = VecDeque::new();
+
+    // Simulate the UI thread draining a window's worker queue (finding it empty) while the window's
+    // wake flag is still set.
+    backlog = queue.drain();
+    assert!(backlog.is_empty());
+
+    // A worker message arrives *before* the UI clears the wake flag. The bridge thread sets the
+    // flag again, but since it was already true it won't queue another wake event.
+    pusher
+      .push(fastrender::ui::WorkerToUi::DebugLog {
+        tab_id: fastrender::ui::TabId(1),
+        line: "hello".to_string(),
+      })
+      .expect("queue should accept message");
+    assert!(
+      worker_wake_pending.swap(true, Ordering::AcqRel),
+      "expected wake flag to already be set"
+    );
+
+    // The UI clears the wake flag only after draining, then immediately drains again and re-arms
+    // the flag if any messages arrived during the drain window.
+    worker_wake_pending.store(false, Ordering::Release);
+    let mut drained = queue.drain();
+    backlog.append(&mut drained);
+    if !backlog.is_empty() {
+      worker_wake_pending.store(true, Ordering::Release);
+    }
+
+    assert!(
+      worker_wake_pending.load(Ordering::Acquire),
+      "expected wake flag to remain armed for follow-up draining"
+    );
+    assert_eq!(backlog.len(), 1);
+  }
 }
 
 /// UI-side scroll coalescing for high-frequency wheel/scrollbar events.
