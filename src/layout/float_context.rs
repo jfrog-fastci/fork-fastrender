@@ -1939,21 +1939,22 @@ impl FloatContext {
     //   FASTR_LOG_FLOAT_CONTEXT_LOG_SCANNED_OVER=<N>
     // to dump whenever `scanned > N`.
     let toggles = runtime::runtime_toggles();
-    let log_scanned_over = toggles
-      .usize("FASTR_LOG_FLOAT_CONTEXT_LOG_SCANNED_OVER")
-      .filter(|v| *v > 0);
-    if toggles.truthy("FASTR_LOG_FLOAT_CONTEXT")
-      && log_scanned_over.is_some_and(|threshold| scanned > threshold as u64)
-    {
-      // Drop the range-cache borrow so the dump can borrow and print segments.
-      drop(cache);
-      let threshold = log_scanned_over.unwrap();
-      self.debug_dump_with_sweep_state(
-        &format!(
-          "range_scan start={start:.2} end={end:.2} scanned={scanned} threshold={threshold}"
-        ),
-        state,
-      );
+    if toggles.truthy("FASTR_LOG_FLOAT_CONTEXT") {
+      if let Some(threshold) = toggles
+        .usize("FASTR_LOG_FLOAT_CONTEXT_LOG_SCANNED_OVER")
+        .filter(|v| *v > 0)
+      {
+        if scanned > threshold as u64 {
+          // Drop the range-cache borrow so the dump can borrow and print segments.
+          drop(cache);
+          self.debug_dump_with_sweep_state(
+            &format!(
+              "range_scan start={start:.2} end={end:.2} scanned={scanned} threshold={threshold}"
+            ),
+            state,
+          );
+        }
+      }
     }
 
     (best_left, best_right, next_boundary)
