@@ -879,6 +879,23 @@ fn location_assign_and_replace_request_navigation() -> Result<()> {
 }
 
 #[test]
+fn document_location_aliases_window_location_for_normal_documents() -> Result<()> {
+  let mut realm = WindowRealm::new_with_js_execution_options(
+    WindowRealmConfig::new("https://example.com/"),
+    js_opts_for_test(),
+  )
+  .map_err(|e| Error::Other(e.to_string()))?;
+
+  let ok = realm
+    .exec_script(
+      "document.location === window.location && document.location.href === location.href",
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(ok, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn window_and_document_location_assignment_requests_navigation() -> Result<()> {
   let mut realm = WindowRealm::new_with_js_execution_options(
     WindowRealmConfig::new("https://example.com/"),
@@ -928,6 +945,63 @@ fn window_and_document_location_assignment_requests_navigation() -> Result<()> {
   assert_eq!(req.url, "https://example.com/c");
   assert!(!req.replace);
 
+  Ok(())
+}
+
+#[test]
+fn document_location_fragment_assignment_updates_url_without_navigation_request_and_fires_hashchange(
+) -> Result<()> {
+  let dom = Dom2Document::new(QuirksMode::NoQuirks);
+  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
+
+  let value = host.exec_script(
+    r#"
+globalThis.__hashchange_count = 0;
+globalThis.__hashchange_oldURL = '';
+globalThis.__hashchange_newURL = '';
+window.addEventListener('hashchange', (e) => {
+  globalThis.__hashchange_count++;
+  globalThis.__hashchange_oldURL = e.oldURL;
+  globalThis.__hashchange_newURL = e.newURL;
+});
+
+const beforeHref = location.href;
+const beforeLen = history.length;
+document.location = '#a';
+const afterHref = location.href;
+const afterLen = history.length;
+
+// Hashchange must be queued as a task (not fired synchronously).
+const firedSync = globalThis.__hashchange_count;
+[beforeHref, afterHref, beforeLen, afterLen, firedSync].join('|')
+"#,
+  )?;
+
+  assert_eq!(
+    get_string(host.host().window().heap(), value),
+    "https://example.com/|https://example.com/#a|1|2|0"
+  );
+  assert!(
+    host
+      .host_mut()
+      .window_mut()
+      .take_pending_navigation_request()
+      .is_none(),
+    "fragment navigation must not create a pending navigation request"
+  );
+
+  assert_eq!(
+    host.run_until_idle(RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+
+  let value = host.exec_script(
+    "globalThis.__hashchange_count + '|' + globalThis.__hashchange_oldURL + '|' + globalThis.__hashchange_newURL",
+  )?;
+  assert_eq!(
+    get_string(host.host().window().heap(), value),
+    "1|https://example.com/|https://example.com/#a"
+  );
   Ok(())
 }
 
