@@ -278,27 +278,33 @@ if [[ "${has_manifest_path}" -eq 0 ]]; then
         fi
 
         # `cargo-fuzz` generates a standalone workspace under `fuzz/` (package name:
-        # `fastrender-fuzz`). Our CI/agent docs frequently refer to it as `-p fuzz`, so accept that
-        # as a convenient alias and automatically scope the invocation to `fuzz/Cargo.toml`.
-        if [[ "${pkg}" == "fuzz" ]]; then
-         case "${argv[$i]}" in
-           -p|--package)
-             argv[$((i + 1))]="fastrender-fuzz"
-             ;;
-           --package=*)
-             argv[$i]="--package=fastrender-fuzz"
-             ;;
-         esac
+        # `fastrender-fuzz`). Allow selecting it as either:
+        # - `-p fuzz` (convenient alias used in docs), or
+        # - `-p fastrender-fuzz` (its real Cargo package name),
+        #
+        # and automatically scope the invocation to `fuzz/Cargo.toml` so it can be built from the
+        # monorepo root.
+        if [[ "${pkg}" == "fuzz" || "${pkg}" == "fastrender-fuzz" ]]; then
+          if [[ "${pkg}" == "fuzz" ]]; then
+            case "${argv[$i]}" in
+              -p|--package)
+                argv[$((i + 1))]="fastrender-fuzz"
+                ;;
+              --package=*)
+                argv[$i]="--package=fastrender-fuzz"
+                ;;
+            esac
+          fi
 
-         insert_pos=$((subcmd_pos + 1))
-         argv=(
-           "${argv[@]:0:${insert_pos}}"
-           --manifest-path "${repo_root}/fuzz/Cargo.toml"
-           "${argv[@]:${insert_pos}}"
-         )
-         set -- "${argv[@]}"
-         break
-       fi
+          insert_pos=$((subcmd_pos + 1))
+          argv=(
+            "${argv[@]:0:${insert_pos}}"
+            --manifest-path "${repo_root}/fuzz/Cargo.toml"
+            "${argv[@]:${insert_pos}}"
+          )
+          set -- "${argv[@]}"
+          break
+        fi
 
        if [[ -n "${pkg}" ]]; then
          # Prefer monorepo workspace packages when there is a name collision with
