@@ -763,6 +763,36 @@ pub(super) fn resolve_item_baselines(
     value
   };
 
+  // If there are no groups with multiple baseline-aligned items, there is no shimming work to do.
+  // In the row sizing pass this means baseline processing is a complete no-op. In the column
+  // sizing pass we may still need to measure the baseline-aligned item in the first row in order
+  // to compute the grid container baseline.
+  if baseline_entries_capacity == 0 {
+    if axis == AbstractAxis::Inline {
+      let first_group_baseline_count = group_stats
+        .get(first_group_key as usize)
+        .map(|s| s.count)
+        .unwrap_or(0);
+      if first_group_baseline_count > 0 {
+        for item in items.iter_mut() {
+          check_layout_abort();
+          if !is_baseline_aligned(item) {
+            continue;
+          }
+          let key = match other_axis {
+            AbstractAxis::Inline => item.column_indexes.start,
+            AbstractAxis::Block => item.row_indexes.start,
+          };
+          if key == first_group_key {
+            let _ = measure_item_baseline_value(item);
+            break;
+          }
+        }
+      }
+    }
+    return;
+  }
+
   // (item_index, other_axis_start_index, baseline_value)
   let mut baseline_entries: Vec<(usize, u16, f32)> = Vec::with_capacity(baseline_entries_capacity);
 
