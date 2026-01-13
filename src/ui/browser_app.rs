@@ -72,17 +72,6 @@ impl TabGroupId {
   }
 }
 
-impl SiteKey {
-  /// Derive a site key from a parsed URL.
-  ///
-  /// This is a thin wrapper around [`crate::site_isolation::site_key_for_navigation`] to make it
-  /// convenient for UI state to derive best-effort `SiteKey` snapshots after validating URLs with
-  /// `url::Url`.
-  pub fn from_url(url: &Url) -> Self {
-    crate::site_isolation::site_key_for_navigation(url.as_str(), None)
-  }
-}
-
 /// Opaque focus token used to restore focus to a UI element after dismissing a popup/context menu.
 ///
 /// This is intentionally UI-backend-agnostic: egui-based front-ends can convert from/to egui ids,
@@ -3486,7 +3475,7 @@ mod browser_app_tests {
     });
 
     let tab = app.active_tab().unwrap();
-    let expected = SiteKey::from_url(&Url::parse("https://example.com/").unwrap());
+    let expected = site("https://example.com/");
     assert_eq!(tab.renderer_site_key, Some(expected));
 
     app.apply_worker_msg(WorkerToUi::NavigationCommitted {
