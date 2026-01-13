@@ -2027,6 +2027,17 @@ fn data_desc(value: Value) -> PropertyDescriptor {
   }
 }
 
+fn enumerable_data_desc(value: Value) -> PropertyDescriptor {
+  PropertyDescriptor {
+    enumerable: true,
+    configurable: true,
+    kind: PropertyKind::Data {
+      value,
+      writable: true,
+    },
+  }
+}
+
 fn read_only_data_desc(value: Value) -> PropertyDescriptor {
   PropertyDescriptor {
     enumerable: false,
@@ -3337,6 +3348,11 @@ const RANGE_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMRNG"); // Range
 
 const NODE_LIST_ITERATOR_LIST_KEY: &str = "__fastrender_node_list_iterator_list";
 const NODE_LIST_ITERATOR_INDEX_KEY: &str = "__fastrender_node_list_iterator_index";
+const NODE_LIST_ITERATOR_KIND_KEY: &str = "__fastrender_node_list_iterator_kind";
+
+const NODE_LIST_ITERATOR_KIND_VALUES: u8 = 0;
+const NODE_LIST_ITERATOR_KIND_KEYS: u8 = 1;
+const NODE_LIST_ITERATOR_KIND_ENTRIES: u8 = 2;
 
 const INTERSECTION_OBSERVER_ID_KEY: &str = "__fastrender_intersection_observer_id";
 const INTERSECTION_OBSERVER_CALLBACK_KEY: &str = "__fastrender_intersection_observer_callback";
@@ -20218,6 +20234,14 @@ fn node_list_iterator_native(
       ))
     }
   };
+  let kind = match slots.get(1).copied().unwrap_or(Value::Number(0.0)) {
+    Value::Number(n) if n.is_finite() && n >= 0.0 => match n.trunc() as u8 {
+      NODE_LIST_ITERATOR_KIND_KEYS => NODE_LIST_ITERATOR_KIND_KEYS,
+      NODE_LIST_ITERATOR_KIND_ENTRIES => NODE_LIST_ITERATOR_KIND_ENTRIES,
+      _ => NODE_LIST_ITERATOR_KIND_VALUES,
+    },
+    _ => NODE_LIST_ITERATOR_KIND_VALUES,
+  };
 
   let iter_obj = scope.alloc_object()?;
   scope
@@ -20232,6 +20256,9 @@ fn node_list_iterator_native(
 
   let index_key = alloc_key(scope, NODE_LIST_ITERATOR_INDEX_KEY)?;
   scope.define_property(iter_obj, index_key, data_desc(Value::Number(0.0)))?;
+
+  let kind_key = alloc_key(scope, NODE_LIST_ITERATOR_KIND_KEY)?;
+  scope.define_property(iter_obj, kind_key, data_desc(Value::Number(kind as f64)))?;
 
   let next_key = alloc_key(scope, "next")?;
   scope.define_property(iter_obj, next_key, data_desc(Value::Object(next_func)))?;
@@ -20277,6 +20304,22 @@ fn node_list_iterator_next_native(
   } else {
     0usize
   };
+  let mut idx_buf = [0u8; 20];
+
+  let kind_key = alloc_key(scope, NODE_LIST_ITERATOR_KIND_KEY)?;
+  let kind_value = scope
+    .heap()
+    .object_get_own_data_property_value(iter_obj, &kind_key)?
+    .unwrap_or(Value::Number(0.0));
+  let kind_n = match kind_value {
+    Value::Number(n) => n,
+    _ => 0.0,
+  };
+  let kind = match kind_n.trunc() as u8 {
+    NODE_LIST_ITERATOR_KIND_KEYS => NODE_LIST_ITERATOR_KIND_KEYS,
+    NODE_LIST_ITERATOR_KIND_ENTRIES => NODE_LIST_ITERATOR_KIND_ENTRIES,
+    _ => NODE_LIST_ITERATOR_KIND_VALUES,
+  };
 
   let length_key = alloc_key(scope, "length")?;
   let len_value =
@@ -20294,189 +20337,49 @@ fn node_list_iterator_next_native(
   let (done, value) = if idx >= len {
     (true, Value::Undefined)
   } else {
-    let key = alloc_key(scope, &idx.to_string())?;
-    let value = vm.get_with_host_and_hooks(host, scope, hooks, list_obj, key)?;
-    idx = idx.saturating_add(1);
-    let idx_key = alloc_key(scope, NODE_LIST_ITERATOR_INDEX_KEY)?;
-    scope.define_property(iter_obj, idx_key, data_desc(Value::Number(idx as f64)))?;
-    (false, value)
-  };
-
-  let result_obj = scope.alloc_object()?;
-  scope.push_root(Value::Object(result_obj))?;
-  let value_key = alloc_key(scope, "value")?;
-  scope.define_property(result_obj, value_key, data_desc(value))?;
-  let done_key = alloc_key(scope, "done")?;
-  scope.define_property(result_obj, done_key, data_desc(Value::Bool(done)))?;
-  Ok(Value::Object(result_obj))
-}
-
-fn node_list_iterator_next_keys_native(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
-  let Value::Object(iter_obj) = this else {
-    return Err(VmError::TypeError("Illegal invocation"));
-  };
-
-  scope.push_root(Value::Object(iter_obj))?;
-
-  let list_key = alloc_key(scope, NODE_LIST_ITERATOR_LIST_KEY)?;
-  let list_value = scope
-    .heap()
-    .object_get_own_data_property_value(iter_obj, &list_key)?
-    .unwrap_or(Value::Undefined);
-  let Value::Object(list_obj) = list_value else {
-    return Err(VmError::TypeError("Illegal invocation"));
-  };
-
-  let idx_key = alloc_key(scope, NODE_LIST_ITERATOR_INDEX_KEY)?;
-  let idx_value = scope
-    .heap()
-    .object_get_own_data_property_value(iter_obj, &idx_key)?
-    .unwrap_or(Value::Number(0.0));
-  let idx_n = match idx_value {
-    Value::Number(n) => n,
-    other => scope.to_number(vm, host, hooks, other)?,
-  };
-  let mut idx = if idx_n.is_finite() && idx_n >= 0.0 {
-    idx_n.trunc() as usize
-  } else {
-    0usize
-  };
-
-  let length_key = alloc_key(scope, "length")?;
-  let len_value = vm.get_with_host_and_hooks(host, scope, hooks, list_obj, length_key)?;
-  let len_n = match len_value {
-    Value::Number(n) => n,
-    other => scope.to_number(vm, host, hooks, other)?,
-  };
-  let len = if len_n.is_finite() && len_n >= 0.0 {
-    len_n.trunc() as usize
-  } else {
-    0usize
-  };
-
-  let (done, value) = if idx >= len {
-    (true, Value::Undefined)
-  } else {
-    let value = Value::Number(idx as f64);
-    idx = idx.saturating_add(1);
-    let idx_key = alloc_key(scope, NODE_LIST_ITERATOR_INDEX_KEY)?;
-    scope.define_property(iter_obj, idx_key, data_desc(Value::Number(idx as f64)))?;
-    (false, value)
-  };
-
-  let result_obj = scope.alloc_object()?;
-  scope.push_root(Value::Object(result_obj))?;
-  let value_key = alloc_key(scope, "value")?;
-  scope.define_property(result_obj, value_key, data_desc(value))?;
-  let done_key = alloc_key(scope, "done")?;
-  scope.define_property(result_obj, done_key, data_desc(Value::Bool(done)))?;
-  Ok(Value::Object(result_obj))
-}
-
-fn node_list_iterator_next_entries_native(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
-  let Value::Object(iter_obj) = this else {
-    return Err(VmError::TypeError("Illegal invocation"));
-  };
-
-  scope.push_root(Value::Object(iter_obj))?;
-
-  let list_key = alloc_key(scope, NODE_LIST_ITERATOR_LIST_KEY)?;
-  let list_value = scope
-    .heap()
-    .object_get_own_data_property_value(iter_obj, &list_key)?
-    .unwrap_or(Value::Undefined);
-  let Value::Object(list_obj) = list_value else {
-    return Err(VmError::TypeError("Illegal invocation"));
-  };
-
-  let idx_key = alloc_key(scope, NODE_LIST_ITERATOR_INDEX_KEY)?;
-  let idx_value = scope
-    .heap()
-    .object_get_own_data_property_value(iter_obj, &idx_key)?
-    .unwrap_or(Value::Number(0.0));
-  let idx_n = match idx_value {
-    Value::Number(n) => n,
-    other => scope.to_number(vm, host, hooks, other)?,
-  };
-  let mut idx = if idx_n.is_finite() && idx_n >= 0.0 {
-    idx_n.trunc() as usize
-  } else {
-    0usize
-  };
-
-  let length_key = alloc_key(scope, "length")?;
-  let len_value = vm.get_with_host_and_hooks(host, scope, hooks, list_obj, length_key)?;
-  let len_n = match len_value {
-    Value::Number(n) => n,
-    other => scope.to_number(vm, host, hooks, other)?,
-  };
-  let len = if len_n.is_finite() && len_n >= 0.0 {
-    len_n.trunc() as usize
-  } else {
-    0usize
-  };
-
-  let (done, value) = if idx >= len {
-    (true, Value::Undefined)
-  } else {
-    let mut idx_buf = [0u8; 20];
-    let idx_str = decimal_str_for_usize(idx, &mut idx_buf);
-    let key = alloc_key(scope, idx_str)?;
-    let entry_value = vm.get_with_host_and_hooks(host, scope, hooks, list_obj, key)?;
-
-    let pair = scope.alloc_array(0)?;
-    scope.push_root(Value::Object(pair))?;
-    if let Some(intrinsics) = vm.intrinsics() {
-      scope
-        .heap_mut()
-        .object_set_prototype(pair, Some(intrinsics.array_prototype()))?;
-    }
-    let key0 = alloc_key(scope, "0")?;
-    scope.define_property(pair, key0, data_desc(Value::Number(idx as f64)))?;
-    let key1 = alloc_key(scope, "1")?;
-    scope.define_property(pair, key1, data_desc(entry_value))?;
-    let length_key = alloc_key(scope, "length")?;
-    scope.define_property(
-      pair,
-      length_key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: false,
-        kind: PropertyKind::Data {
-          value: Value::Number(2.0),
-          writable: true,
-        },
-      },
-    )?;
+    let out_value = match kind {
+      NODE_LIST_ITERATOR_KIND_KEYS => Value::Number(idx as f64),
+      NODE_LIST_ITERATOR_KIND_ENTRIES => {
+        let idx_str = decimal_str_for_usize(idx, &mut idx_buf);
+        let key = alloc_key(scope, idx_str)?;
+        let value = vm.get_with_host_and_hooks(host, scope, hooks, list_obj, key)?;
+        let pair = scope.alloc_array(2)?;
+        scope.push_root(Value::Object(pair))?;
+        if let Some(intrinsics) = vm.intrinsics() {
+          scope
+            .heap_mut()
+            .object_set_prototype(pair, Some(intrinsics.array_prototype()))?;
+        }
+        let k0 = alloc_key(scope, "0")?;
+        scope.define_property(pair, k0, enumerable_data_desc(Value::Number(idx as f64)))?;
+        let k1 = alloc_key(scope, "1")?;
+        scope.define_property(pair, k1, enumerable_data_desc(value))?;
+        Value::Object(pair)
+      }
+      _ => {
+        let idx_str = decimal_str_for_usize(idx, &mut idx_buf);
+        let key = alloc_key(scope, idx_str)?;
+        vm.get_with_host_and_hooks(host, scope, hooks, list_obj, key)?
+      }
+    };
 
     idx = idx.saturating_add(1);
     let idx_key = alloc_key(scope, NODE_LIST_ITERATOR_INDEX_KEY)?;
     scope.define_property(iter_obj, idx_key, data_desc(Value::Number(idx as f64)))?;
-    (false, Value::Object(pair))
+    (false, out_value)
   };
 
   let result_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(result_obj))?;
+  if let Some(intrinsics) = vm.intrinsics() {
+    scope
+      .heap_mut()
+      .object_set_prototype(result_obj, Some(intrinsics.object_prototype()))?;
+  }
   let value_key = alloc_key(scope, "value")?;
-  scope.define_property(result_obj, value_key, data_desc(value))?;
+  scope.define_property(result_obj, value_key, enumerable_data_desc(value))?;
   let done_key = alloc_key(scope, "done")?;
-  scope.define_property(result_obj, done_key, data_desc(Value::Bool(done)))?;
+  scope.define_property(result_obj, done_key, enumerable_data_desc(Value::Bool(done)))?;
   Ok(Value::Object(result_obj))
 }
 
@@ -41533,28 +41436,31 @@ fn ensure_webidl_html_collection_iterable(
     (existing_func, has_keys, has_entries, has_for_each)
   };
 
+  let iter_call_id = vm.register_native_call(node_list_iterator_native)?;
+  let next_call_id = vm.register_native_call(node_list_iterator_next_native)?;
+  let next_name = scope.alloc_string("next")?;
+  scope.push_root(Value::String(next_name))?;
+  let next_func = scope.alloc_native_function(next_call_id, None, next_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    next_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(next_func))?;
+
   let func_value = if let Some(func_value) = existing_func {
     func_value
   } else {
-    let next_call_id = vm.register_native_call(node_list_iterator_next_native)?;
-    let next_name = scope.alloc_string("next")?;
-    scope.push_root(Value::String(next_name))?;
-    let next_func = scope.alloc_native_function(next_call_id, None, next_name, 0)?;
-    scope.heap_mut().object_set_prototype(
-      next_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
-    scope.push_root(Value::Object(next_func))?;
-
-    let values_call_id = vm.register_native_call(node_list_iterator_native)?;
     let values_name = scope.alloc_string("values")?;
     scope.push_root(Value::String(values_name))?;
     let values_func = scope.alloc_native_function_with_slots(
-      values_call_id,
+      iter_call_id,
       None,
       values_name,
       0,
-      &[Value::Object(next_func)],
+      &[
+        Value::Object(next_func),
+        Value::Number(NODE_LIST_ITERATOR_KIND_VALUES as f64),
+      ],
     )?;
     scope.heap_mut().object_set_prototype(
       values_func,
@@ -41576,20 +41482,7 @@ fn ensure_webidl_html_collection_iterable(
   //
   // The WebIDL snapshot does not declare HTMLCollection as `iterable<>`, so the generated bindings
   // omit these helpers; patch them in here using the same iterator implementation as NodeList.
-  let iter_call_id = vm.register_native_call(node_list_iterator_native)?;
-
-  let next_name = scope.alloc_string("next")?;
-  scope.push_root(Value::String(next_name))?;
-
   if !has_keys {
-    let keys_next_call_id = vm.register_native_call(node_list_iterator_next_keys_native)?;
-    let keys_next_func = scope.alloc_native_function(keys_next_call_id, None, next_name, 0)?;
-    scope.heap_mut().object_set_prototype(
-      keys_next_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
-    scope.push_root(Value::Object(keys_next_func))?;
-
     let keys_name = scope.alloc_string("keys")?;
     scope.push_root(Value::String(keys_name))?;
     let keys_func = scope.alloc_native_function_with_slots(
@@ -41597,7 +41490,10 @@ fn ensure_webidl_html_collection_iterable(
       None,
       keys_name,
       0,
-      &[Value::Object(keys_next_func)],
+      &[
+        Value::Object(next_func),
+        Value::Number(NODE_LIST_ITERATOR_KIND_KEYS as f64),
+      ],
     )?;
     scope.heap_mut().object_set_prototype(
       keys_func,
@@ -41608,14 +41504,6 @@ fn ensure_webidl_html_collection_iterable(
   }
 
   if !has_entries {
-    let entries_next_call_id = vm.register_native_call(node_list_iterator_next_entries_native)?;
-    let entries_next_func = scope.alloc_native_function(entries_next_call_id, None, next_name, 0)?;
-    scope.heap_mut().object_set_prototype(
-      entries_next_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
-    scope.push_root(Value::Object(entries_next_func))?;
-
     let entries_name = scope.alloc_string("entries")?;
     scope.push_root(Value::String(entries_name))?;
     let entries_func = scope.alloc_native_function_with_slots(
@@ -41623,7 +41511,10 @@ fn ensure_webidl_html_collection_iterable(
       None,
       entries_name,
       0,
-      &[Value::Object(entries_next_func)],
+      &[
+        Value::Object(next_func),
+        Value::Number(NODE_LIST_ITERATOR_KIND_ENTRIES as f64),
+      ],
     )?;
     scope.heap_mut().object_set_prototype(
       entries_func,
@@ -46626,7 +46517,10 @@ fn init_window_globals(
       None,
       node_list_iter_name,
       0,
-      &[Value::Object(node_list_iter_next_func)],
+      &[
+        Value::Object(node_list_iter_next_func),
+        Value::Number(NODE_LIST_ITERATOR_KIND_VALUES as f64),
+      ],
     )?;
     scope.heap_mut().object_set_prototype(
       node_list_iter_func,
@@ -46634,106 +46528,54 @@ fn init_window_globals(
     )?;
     scope.push_root(Value::Object(node_list_iter_func))?;
     let iterator_sym = realm.intrinsics().well_known_symbols().iterator;
-    scope.define_property(
-      node_list_proto,
-      PropertyKey::from_symbol(iterator_sym),
-      data_desc(Value::Object(node_list_iter_func)),
-    )?;
     let node_list_values_key = alloc_key(&mut scope, "values")?;
     scope.define_property(
       node_list_proto,
       node_list_values_key,
       data_desc(Value::Object(node_list_iter_func)),
     )?;
+    scope.define_property(
+      node_list_proto,
+      PropertyKey::from_symbol(iterator_sym),
+      data_desc(Value::Object(node_list_iter_func)),
+    )?;
 
-    // NodeList/HTMLCollection iterable helpers (`keys`/`entries`/`forEach`).
-    let node_list_iter_next_keys_call_id =
-      vm.register_native_call(node_list_iterator_next_keys_native)?;
-    let node_list_iter_next_keys_func = scope.alloc_native_function(
-      node_list_iter_next_keys_call_id,
-      None,
-      node_list_iter_next_name,
-      0,
-    )?;
-    scope.heap_mut().object_set_prototype(
-      node_list_iter_next_keys_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
-    scope.push_root(Value::Object(node_list_iter_next_keys_func))?;
-
-    let node_list_iter_next_entries_call_id =
-      vm.register_native_call(node_list_iterator_next_entries_native)?;
-    let node_list_iter_next_entries_func = scope.alloc_native_function(
-      node_list_iter_next_entries_call_id,
-      None,
-      node_list_iter_next_name,
-      0,
-    )?;
-    scope.heap_mut().object_set_prototype(
-      node_list_iter_next_entries_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
-    scope.push_root(Value::Object(node_list_iter_next_entries_func))?;
-
-    let node_list_iter_keys_name = scope.alloc_string("keys")?;
-    scope.push_root(Value::String(node_list_iter_keys_name))?;
-    let node_list_iter_keys_func = scope.alloc_native_function_with_slots(
+    // NodeList / HTMLCollection keys() + entries() iterators.
+    let node_list_keys_name = scope.alloc_string("keys")?;
+    scope.push_root(Value::String(node_list_keys_name))?;
+    let node_list_keys_func = scope.alloc_native_function_with_slots(
       node_list_iter_call_id,
       None,
-      node_list_iter_keys_name,
+      node_list_keys_name,
       0,
-      &[Value::Object(node_list_iter_next_keys_func)],
+      &[
+        Value::Object(node_list_iter_next_func),
+        Value::Number(NODE_LIST_ITERATOR_KIND_KEYS as f64),
+      ],
     )?;
     scope.heap_mut().object_set_prototype(
-      node_list_iter_keys_func,
+      node_list_keys_func,
       Some(realm.intrinsics().function_prototype()),
     )?;
-    scope.push_root(Value::Object(node_list_iter_keys_func))?;
+    scope.push_root(Value::Object(node_list_keys_func))?;
 
-    let node_list_iter_entries_name = scope.alloc_string("entries")?;
-    scope.push_root(Value::String(node_list_iter_entries_name))?;
-    let node_list_iter_entries_func = scope.alloc_native_function_with_slots(
+    let node_list_entries_name = scope.alloc_string("entries")?;
+    scope.push_root(Value::String(node_list_entries_name))?;
+    let node_list_entries_func = scope.alloc_native_function_with_slots(
       node_list_iter_call_id,
       None,
-      node_list_iter_entries_name,
+      node_list_entries_name,
       0,
-      &[Value::Object(node_list_iter_next_entries_func)],
+      &[
+        Value::Object(node_list_iter_next_func),
+        Value::Number(NODE_LIST_ITERATOR_KIND_ENTRIES as f64),
+      ],
     )?;
     scope.heap_mut().object_set_prototype(
-      node_list_iter_entries_func,
+      node_list_entries_func,
       Some(realm.intrinsics().function_prototype()),
     )?;
-    scope.push_root(Value::Object(node_list_iter_entries_func))?;
-
-    let node_list_for_each_call_id = vm.register_native_call(node_list_for_each_native)?;
-    let node_list_for_each_name = scope.alloc_string("forEach")?;
-    scope.push_root(Value::String(node_list_for_each_name))?;
-    let node_list_for_each_func =
-      scope.alloc_native_function(node_list_for_each_call_id, None, node_list_for_each_name, 1)?;
-    scope.heap_mut().object_set_prototype(
-      node_list_for_each_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
-    scope.push_root(Value::Object(node_list_for_each_func))?;
-
-    let node_list_keys_key = alloc_key(&mut scope, "keys")?;
-    scope.define_property(
-      node_list_proto,
-      node_list_keys_key,
-      data_desc(Value::Object(node_list_iter_keys_func)),
-    )?;
-    let node_list_entries_key = alloc_key(&mut scope, "entries")?;
-    scope.define_property(
-      node_list_proto,
-      node_list_entries_key,
-      data_desc(Value::Object(node_list_iter_entries_func)),
-    )?;
-    let node_list_for_each_key = alloc_key(&mut scope, "forEach")?;
-    scope.define_property(
-      node_list_proto,
-      node_list_for_each_key,
-      data_desc(Value::Object(node_list_for_each_func)),
-    )?;
+    scope.push_root(Value::Object(node_list_entries_func))?;
 
     // HTMLCollection iterator (`for..of`, spread, etc).
     //
@@ -46750,17 +46592,31 @@ fn init_window_globals(
       PropertyKey::from_symbol(iterator_sym),
       data_desc(Value::Object(node_list_iter_func)),
     )?;
-    let html_collection_keys_key = alloc_key(&mut scope, "keys")?;
+
+    let keys_key = alloc_key(&mut scope, "keys")?;
     scope.define_property(
-      html_collection_proto,
-      html_collection_keys_key,
-      data_desc(Value::Object(node_list_iter_keys_func)),
+      node_list_proto,
+      keys_key,
+      data_desc(Value::Object(node_list_keys_func)),
     )?;
-    let html_collection_entries_key = alloc_key(&mut scope, "entries")?;
+    let keys_key = alloc_key(&mut scope, "keys")?;
     scope.define_property(
       html_collection_proto,
-      html_collection_entries_key,
-      data_desc(Value::Object(node_list_iter_entries_func)),
+      keys_key,
+      data_desc(Value::Object(node_list_keys_func)),
+    )?;
+
+    let entries_key = alloc_key(&mut scope, "entries")?;
+    scope.define_property(
+      node_list_proto,
+      entries_key,
+      data_desc(Value::Object(node_list_entries_func)),
+    )?;
+    let entries_key = alloc_key(&mut scope, "entries")?;
+    scope.define_property(
+      html_collection_proto,
+      entries_key,
+      data_desc(Value::Object(node_list_entries_func)),
     )?;
     let html_collection_for_each_key = alloc_key(&mut scope, "forEach")?;
     scope.define_property(
