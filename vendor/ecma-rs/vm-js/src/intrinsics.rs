@@ -3457,7 +3457,20 @@ impl Intrinsics {
       let key = PropertyKey::from_string(key_s);
 
       let get_name = scope.alloc_string("get hasIndices")?;
-      let get = scope.alloc_native_function(regexp_prototype_has_indices_get, None, get_name, 0)?;
+      // The RegExp flag getters need access to the realm's `%RegExp.prototype%` and
+      // `%TypeError.prototype%` to implement `RegExpHasFlag` cross-realm semantics.
+      //
+      // `%TypeError.prototype%` is initialized later in this function (as part of error intrinsic
+      // setup), so we temporarily store `undefined` in the slot and patch it once the real
+      // `%TypeError.prototype%` object is available.
+      let get_slots = [Value::Object(regexp_prototype), Value::Undefined];
+      let get = scope.alloc_native_function_with_slots(
+        regexp_prototype_has_indices_get,
+        None,
+        get_name,
+        0,
+        &get_slots,
+      )?;
       scope.push_root(Value::Object(get))?;
       scope
         .heap_mut()
@@ -3484,7 +3497,9 @@ impl Intrinsics {
       let key = PropertyKey::from_string(key_s);
 
       let get_name = scope.alloc_string("get global")?;
-      let get = scope.alloc_native_function(regexp_prototype_global_get, None, get_name, 0)?;
+      let get_slots = [Value::Object(regexp_prototype), Value::Undefined];
+      let get =
+        scope.alloc_native_function_with_slots(regexp_prototype_global_get, None, get_name, 0, &get_slots)?;
       scope.push_root(Value::Object(get))?;
       scope
         .heap_mut()
@@ -3511,8 +3526,14 @@ impl Intrinsics {
       let key = PropertyKey::from_string(key_s);
 
       let get_name = scope.alloc_string("get ignoreCase")?;
-      let get =
-        scope.alloc_native_function(regexp_prototype_ignore_case_get, None, get_name, 0)?;
+      let get_slots = [Value::Object(regexp_prototype), Value::Undefined];
+      let get = scope.alloc_native_function_with_slots(
+        regexp_prototype_ignore_case_get,
+        None,
+        get_name,
+        0,
+        &get_slots,
+      )?;
       scope.push_root(Value::Object(get))?;
       scope
         .heap_mut()
@@ -3539,7 +3560,14 @@ impl Intrinsics {
       let key = PropertyKey::from_string(key_s);
 
       let get_name = scope.alloc_string("get multiline")?;
-      let get = scope.alloc_native_function(regexp_prototype_multiline_get, None, get_name, 0)?;
+      let get_slots = [Value::Object(regexp_prototype), Value::Undefined];
+      let get = scope.alloc_native_function_with_slots(
+        regexp_prototype_multiline_get,
+        None,
+        get_name,
+        0,
+        &get_slots,
+      )?;
       scope.push_root(Value::Object(get))?;
       scope
         .heap_mut()
@@ -3566,7 +3594,14 @@ impl Intrinsics {
       let key = PropertyKey::from_string(key_s);
 
       let get_name = scope.alloc_string("get dotAll")?;
-      let get = scope.alloc_native_function(regexp_prototype_dot_all_get, None, get_name, 0)?;
+      let get_slots = [Value::Object(regexp_prototype), Value::Undefined];
+      let get = scope.alloc_native_function_with_slots(
+        regexp_prototype_dot_all_get,
+        None,
+        get_name,
+        0,
+        &get_slots,
+      )?;
       scope.push_root(Value::Object(get))?;
       scope
         .heap_mut()
@@ -3593,7 +3628,9 @@ impl Intrinsics {
       let key = PropertyKey::from_string(key_s);
 
       let get_name = scope.alloc_string("get unicode")?;
-      let get = scope.alloc_native_function(regexp_prototype_unicode_get, None, get_name, 0)?;
+      let get_slots = [Value::Object(regexp_prototype), Value::Undefined];
+      let get =
+        scope.alloc_native_function_with_slots(regexp_prototype_unicode_get, None, get_name, 0, &get_slots)?;
       scope.push_root(Value::Object(get))?;
       scope
         .heap_mut()
@@ -3620,8 +3657,14 @@ impl Intrinsics {
       let key = PropertyKey::from_string(key_s);
 
       let get_name = scope.alloc_string("get unicodeSets")?;
-      let get =
-        scope.alloc_native_function(regexp_prototype_unicode_sets_get, None, get_name, 0)?;
+      let get_slots = [Value::Object(regexp_prototype), Value::Undefined];
+      let get = scope.alloc_native_function_with_slots(
+        regexp_prototype_unicode_sets_get,
+        None,
+        get_name,
+        0,
+        &get_slots,
+      )?;
       scope.push_root(Value::Object(get))?;
       scope
         .heap_mut()
@@ -3648,7 +3691,9 @@ impl Intrinsics {
       let key = PropertyKey::from_string(key_s);
 
       let get_name = scope.alloc_string("get sticky")?;
-      let get = scope.alloc_native_function(regexp_prototype_sticky_get, None, get_name, 0)?;
+      let get_slots = [Value::Object(regexp_prototype), Value::Undefined];
+      let get =
+        scope.alloc_native_function_with_slots(regexp_prototype_sticky_get, None, get_name, 0, &get_slots)?;
       scope.push_root(Value::Object(get))?;
       scope
         .heap_mut()
@@ -6543,6 +6588,48 @@ impl Intrinsics {
       "TypeError",
       1,
     )?;
+
+    // Now that `%TypeError.prototype%` exists, patch the RegExp prototype flag getter native slots.
+    //
+    // These getters need to construct TypeError instances from their own realm when called with
+    // cross-realm receivers (test262 `built-ins/RegExp/prototype/*/cross-realm.js`).
+    {
+      let mut patch_getter = |name: &str| -> Result<(), VmError> {
+        let key_s = scope.alloc_string(name)?;
+        scope.push_root(Value::String(key_s))?;
+        let key = PropertyKey::from_string(key_s);
+        let Some(desc) = scope.heap().object_get_own_property(regexp_prototype, &key)? else {
+          return Err(VmError::InvariantViolation(
+            "missing RegExp.prototype flag getter during intrinsics initialization",
+          ));
+        };
+        let PropertyKind::Accessor { get, .. } = desc.kind else {
+          return Err(VmError::InvariantViolation(
+            "RegExp.prototype flag getter is not an accessor property",
+          ));
+        };
+        let Value::Object(getter) = get else {
+          return Err(VmError::InvariantViolation(
+            "RegExp.prototype flag getter accessor is not a function",
+          ));
+        };
+        scope.heap_mut().set_function_native_slot(
+          getter,
+          1,
+          Value::Object(type_error_prototype),
+        )?;
+        Ok(())
+      };
+
+      patch_getter("hasIndices")?;
+      patch_getter("global")?;
+      patch_getter("ignoreCase")?;
+      patch_getter("multiline")?;
+      patch_getter("dotAll")?;
+      patch_getter("unicode")?;
+      patch_getter("unicodeSets")?;
+      patch_getter("sticky")?;
+    }
 
     let (range_error, range_error_prototype) = init_native_error(
       vm,

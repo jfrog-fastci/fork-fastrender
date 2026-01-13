@@ -13820,131 +13820,164 @@ pub fn regexp_prototype_source_get(
 }
 
 fn regexp_prototype_flag_get(
-  vm: &mut Vm,
   scope: &mut Scope<'_>,
+  callee: GcObject,
   this: Value,
   flag: u16,
 ) -> Result<Value, VmError> {
-  let obj = require_object(this)?;
-  let intr = require_intrinsics(vm)?;
-  if obj == intr.regexp_prototype() {
+  // RegExpHasFlag (ECMA-262): https://tc39.es/ecma262/#sec-regexphasflag
+  //
+  // Note: vm-js does not yet switch `vm.intrinsics()` when calling cross-realm intrinsic functions.
+  // Instead, the RegExp prototype flag getters capture their realm's `%RegExp.prototype%` and
+  // `%TypeError.prototype%` in native slots so this operation can:
+  // - special-case its own realm's `%RegExp.prototype%` (return `undefined`), and
+  // - throw a TypeError instance from the getter's realm when the receiver is invalid.
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let Some(Value::Object(regexp_prototype)) = slots.get(0).copied() else {
+    return Err(VmError::InvariantViolation(
+      "RegExp flag getter missing %RegExp.prototype% native slot",
+    ));
+  };
+  let Some(Value::Object(type_error_prototype)) = slots.get(1).copied() else {
+    return Err(VmError::InvariantViolation(
+      "RegExp flag getter missing %TypeError.prototype% native slot",
+    ));
+  };
+
+  // 1. Let R be the this value.
+  // 2. If Type(R) is not Object, throw a TypeError exception.
+  let Value::Object(obj) = this else {
+    let err =
+      crate::error_object::new_error(scope, type_error_prototype, "TypeError", "expected object")?;
+    return Err(VmError::Throw(err));
+  };
+
+  // 3. If R does not have an [[OriginalFlags]] internal slot, then
+  //   a. If SameValue(R, %RegExpPrototype%) is true, return undefined.
+  //   b. Otherwise, throw a TypeError exception.
+  if obj == regexp_prototype {
     return Ok(Value::Undefined);
   }
-  let rx = require_regexp_object(scope, this)?;
-  let flags_s = scope.heap().regexp_original_flags(rx)?;
-  let flags = scope.heap().get_string(flags_s)?.as_code_units();
-  let mut contains = false;
-  for &u in flags {
-    if u == flag {
-      contains = true;
-      break;
-    }
+  if !scope.heap().is_regexp_object(obj) {
+    let err = crate::error_object::new_error(
+      scope,
+      type_error_prototype,
+      "TypeError",
+      "RegExp method called on incompatible receiver",
+    )?;
+    return Err(VmError::Throw(err));
   }
-  Ok(Value::Bool(contains))
+
+  // 4. Let flags be R.[[OriginalFlags]].
+  // 5. If flags contains the given code unit, return true.
+  // 6. Return false.
+  let flags_s = scope.heap().regexp_original_flags(obj)?;
+  let flags = scope.heap().get_string(flags_s)?.as_code_units();
+  Ok(Value::Bool(flags.contains(&flag)))
 }
 
 /// `get RegExp.prototype.hasIndices` (ECMA-262).
 pub fn regexp_prototype_has_indices_get(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
+  callee: GcObject,
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  regexp_prototype_flag_get(vm, scope, this, b'd' as u16)
+  regexp_prototype_flag_get(scope, callee, this, b'd' as u16)
 }
 
 /// `get RegExp.prototype.global` (ECMA-262).
 pub fn regexp_prototype_global_get(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
+  callee: GcObject,
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  regexp_prototype_flag_get(vm, scope, this, b'g' as u16)
+  regexp_prototype_flag_get(scope, callee, this, b'g' as u16)
 }
 
 /// `get RegExp.prototype.ignoreCase` (ECMA-262).
 pub fn regexp_prototype_ignore_case_get(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
+  callee: GcObject,
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  regexp_prototype_flag_get(vm, scope, this, b'i' as u16)
+  regexp_prototype_flag_get(scope, callee, this, b'i' as u16)
 }
 
 /// `get RegExp.prototype.multiline` (ECMA-262).
 pub fn regexp_prototype_multiline_get(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
+  callee: GcObject,
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  regexp_prototype_flag_get(vm, scope, this, b'm' as u16)
+  regexp_prototype_flag_get(scope, callee, this, b'm' as u16)
 }
 
 /// `get RegExp.prototype.dotAll` (ECMA-262).
 pub fn regexp_prototype_dot_all_get(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
+  callee: GcObject,
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  regexp_prototype_flag_get(vm, scope, this, b's' as u16)
+  regexp_prototype_flag_get(scope, callee, this, b's' as u16)
 }
 
 /// `get RegExp.prototype.unicode` (ECMA-262 21.2.5.15).
 pub fn regexp_prototype_unicode_get(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
+  callee: GcObject,
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  regexp_prototype_flag_get(vm, scope, this, b'u' as u16)
+  regexp_prototype_flag_get(scope, callee, this, b'u' as u16)
 }
 
 /// `get RegExp.prototype.unicodeSets` (ECMA-262).
 pub fn regexp_prototype_unicode_sets_get(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
+  callee: GcObject,
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  regexp_prototype_flag_get(vm, scope, this, b'v' as u16)
+  regexp_prototype_flag_get(scope, callee, this, b'v' as u16)
 }
 
 /// `get RegExp.prototype.sticky` (ECMA-262).
 pub fn regexp_prototype_sticky_get(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
+  callee: GcObject,
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  regexp_prototype_flag_get(vm, scope, this, b'y' as u16)
+  regexp_prototype_flag_get(scope, callee, this, b'y' as u16)
 }
 
 /// `get RegExp.prototype.flags` (ECMA-262).
@@ -26025,7 +26058,8 @@ mod array_at_tests {
 
 #[cfg(test)]
 mod regexp_unicode_sets_tests {
-  use crate::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+  use crate::property::PropertyKind;
+  use crate::{GcObject, Heap, HeapLimits, JsRuntime, PropertyKey, Realm, Value, Vm, VmError, VmOptions};
 
   fn new_runtime() -> JsRuntime {
     let vm = Vm::new(VmOptions::default());
@@ -26072,6 +26106,109 @@ mod regexp_unicode_sets_tests {
       "#,
     )?;
     assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  fn regexp_unicode_sets_getter(heap: &Heap, regexp_prototype: GcObject) -> Result<GcObject, VmError> {
+    let keys = heap.own_property_keys(regexp_prototype)?;
+    for key in keys {
+      let PropertyKey::String(s) = key else {
+        continue;
+      };
+      if heap.get_string(s)?.to_utf8_lossy() != "unicodeSets" {
+        continue;
+      }
+      let Some(desc) = heap.object_get_own_property(regexp_prototype, &key)? else {
+        continue;
+      };
+      let PropertyKind::Accessor { get, .. } = desc.kind else {
+        return Err(VmError::InvariantViolation(
+          "RegExp.prototype.unicodeSets is not an accessor property",
+        ));
+      };
+      let Value::Object(getter) = get else {
+        return Err(VmError::InvariantViolation(
+          "RegExp.prototype.unicodeSets getter is not a function object",
+        ));
+      };
+      return Ok(getter);
+    }
+    Err(VmError::InvariantViolation(
+      "RegExp.prototype.unicodeSets getter not found",
+    ))
+  }
+
+  #[test]
+  fn regexp_prototype_unicode_sets_cross_realm_uses_getter_realm() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+
+    // Create two realms on the same heap; this mimics `$262.createRealm()` by sharing a symbol
+    // registry but requiring builtins to remain realm-correct.
+    let mut realm_a = Realm::new(&mut vm, &mut heap).unwrap();
+    let intr_a = *realm_a.intrinsics();
+    let getter_a = regexp_unicode_sets_getter(&heap, intr_a.regexp_prototype()).unwrap();
+
+    let mut realm_b = Realm::new(&mut vm, &mut heap).unwrap();
+    let intr_b = *realm_b.intrinsics();
+    let getter_b = regexp_unicode_sets_getter(&heap, intr_b.regexp_prototype()).unwrap();
+
+    // Same-realm receiver: returns undefined.
+    {
+      let mut scope = heap.scope();
+      let v = vm.call_without_host(
+        &mut scope,
+        Value::Object(getter_a),
+        Value::Object(intr_a.regexp_prototype()),
+        &[],
+      ).unwrap();
+      assert_eq!(v, Value::Undefined);
+    }
+
+    // Cross-realm receiver: throws a TypeError from the getter's realm (prototype check).
+    {
+      let mut scope = heap.scope();
+      let err = vm.call_without_host(
+        &mut scope,
+        Value::Object(getter_a),
+        Value::Object(intr_b.regexp_prototype()),
+        &[],
+      );
+      let VmError::ThrowWithStack { value, .. } = err.unwrap_err() else {
+        panic!("expected cross-realm unicodeSets getter call to throw");
+      };
+      let Value::Object(err_obj) = value else {
+        panic!("thrown value is not an object");
+      };
+      assert_eq!(
+        scope.heap().object_prototype(err_obj).unwrap(),
+        Some(intr_a.type_error_prototype())
+      );
+    }
+
+    // Reverse direction: other realm getter throws other realm TypeError.
+    {
+      let mut scope = heap.scope();
+      let err = vm.call_without_host(
+        &mut scope,
+        Value::Object(getter_b),
+        Value::Object(intr_a.regexp_prototype()),
+        &[],
+      );
+      let VmError::ThrowWithStack { value, .. } = err.unwrap_err() else {
+        panic!("expected cross-realm unicodeSets getter call to throw");
+      };
+      let Value::Object(err_obj) = value else {
+        panic!("thrown value is not an object");
+      };
+      assert_eq!(
+        scope.heap().object_prototype(err_obj).unwrap(),
+        Some(intr_b.type_error_prototype())
+      );
+    }
+
+    realm_a.teardown(&mut heap);
+    realm_b.teardown(&mut heap);
     Ok(())
   }
 }
