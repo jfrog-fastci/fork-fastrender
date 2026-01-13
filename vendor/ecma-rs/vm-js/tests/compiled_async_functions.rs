@@ -24,6 +24,39 @@ fn find_function_body(script: &Arc<CompiledScript>, name: &str) -> hir_js::BodyI
   panic!("function body not found for name={name:?}");
 }
 
+fn is_unimplemented_async_compiled_error(rt: &mut JsRuntime, err: &VmError) -> Result<bool, VmError> {
+  match err {
+    VmError::Unimplemented(msg) if msg.contains("async functions (hir-js compiled path)") => return Ok(true),
+    _ => {}
+  }
+
+  let Some(thrown) = err.thrown_value() else {
+    return Ok(false);
+  };
+  let Value::Object(err_obj) = thrown else {
+    return Ok(false);
+  };
+
+  // `VmError::Unimplemented` is surfaced to host boundaries as a generic `Error` with an
+  // `"unimplemented: ..."` message; detect that so this test can skip until async HIR execution is
+  // implemented.
+  let error_proto = rt.realm().intrinsics().error_prototype();
+  if rt.heap().object_prototype(err_obj)? != Some(error_proto) {
+    return Ok(false);
+  }
+
+  let mut scope = rt.heap_mut().scope();
+  scope.push_root(Value::Object(err_obj))?;
+  let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
+  let Some(Value::String(message_s)) =
+    scope.heap().object_get_own_data_property_value(err_obj, &message_key)?
+  else {
+    return Ok(false);
+  };
+  let message = scope.heap().get_string(message_s)?.to_utf8_lossy();
+  Ok(message.contains("async functions (hir-js compiled path)"))
+}
+
 #[test]
 fn compiled_async_function_suspension_does_not_teardown_env() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
@@ -83,7 +116,7 @@ fn compiled_async_function_suspension_does_not_teardown_env() -> Result<(), VmEr
   // `Vm::call_user_function` plumbing once async HIR execution exists.
   match rt.exec_script("var out = 0; f().then(v => { out = v; });") {
     Ok(_) => {}
-    Err(VmError::Unimplemented(msg)) if msg.contains("async functions (hir-js compiled path)") => {
+    Err(err) if is_unimplemented_async_compiled_error(&mut rt, &err)? => {
       return Ok(());
     }
     Err(err) => return Err(err),
