@@ -727,6 +727,9 @@ fn search_bar(
     &mut state.request_focus_search,
     a11y::BOOKMARKS_MANAGER_SEARCH_LABEL,
   );
+  if search_out.request_close {
+    out.close_requested = true;
+  }
 
   if search_out.focus_requested
     || search_out.response.has_focus()
@@ -2060,6 +2063,54 @@ mod tests {
       node.is_expanded(),
       Some(true),
       "expected Expand to win when both Expand and Collapse are requested in the same frame"
+    );
+  }
+
+  fn key_press(key: egui::Key) -> egui::Event {
+    egui::Event::Key {
+      key,
+      pressed: true,
+      repeat: false,
+      modifiers: egui::Modifiers::default(),
+    }
+  }
+
+  #[test]
+  fn escape_clears_search_then_requests_close() {
+    let ctx = egui::Context::default();
+    let mut state = BookmarksManagerState::default();
+    let mut store = BookmarkStore::default();
+
+    state.request_focus_search();
+
+    // Frame 1: open panel and focus the search field.
+    begin_frame(&ctx, Vec::new());
+    let out = bookmarks_manager_side_panel(&ctx, &mut state, &mut store);
+    let _ = ctx.end_frame();
+    assert!(
+      !out.close_requested,
+      "focusing the search field should not request closing the panel"
+    );
+
+    // Frame 2: with a non-empty query, Escape clears the search but keeps the panel open.
+    state.search = "example".to_string();
+    begin_frame(&ctx, vec![key_press(egui::Key::Escape)]);
+    let out = bookmarks_manager_side_panel(&ctx, &mut state, &mut store);
+    let _ = ctx.end_frame();
+    assert_eq!(state.search, "");
+    assert!(
+      !out.close_requested,
+      "Escape should clear a non-empty query before closing the panel"
+    );
+
+    // Frame 3: with an empty query, Escape requests panel close.
+    begin_frame(&ctx, vec![key_press(egui::Key::Escape)]);
+    let out = bookmarks_manager_side_panel(&ctx, &mut state, &mut store);
+    let _ = ctx.end_frame();
+    assert_eq!(state.search, "");
+    assert!(
+      out.close_requested,
+      "Escape with an empty query should request closing the panel"
     );
   }
 }

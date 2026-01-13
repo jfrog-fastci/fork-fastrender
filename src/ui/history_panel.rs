@@ -80,6 +80,9 @@ pub fn history_panel_ui(
         request_focus_search,
         a11y::HISTORY_PANEL_SEARCH_LABEL,
       );
+      if search_out.request_close {
+        out.close_requested = true;
+      }
       if search_out.focus_requested
         || search_out.response.has_focus()
         || search_out.response.clicked()
@@ -303,7 +306,7 @@ mod tests {
   use super::history_panel_ui;
   use crate::ui::{a11y_labels, a11y_test_util, GlobalHistoryStore};
 
-  fn begin_frame(ctx: &egui::Context) {
+  fn begin_frame_with_events(ctx: &egui::Context, events: Vec<egui::Event>) {
     let mut raw = egui::RawInput::default();
     raw.screen_rect = Some(egui::Rect::from_min_size(
       egui::Pos2::new(0.0, 0.0),
@@ -312,7 +315,21 @@ mod tests {
     // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
     raw.time = Some(0.0);
     raw.focused = true;
+    raw.events = events;
     ctx.begin_frame(raw);
+  }
+
+  fn begin_frame(ctx: &egui::Context) {
+    begin_frame_with_events(ctx, Vec::new());
+  }
+
+  fn key_press(key: egui::Key) -> egui::Event {
+    egui::Event::Key {
+      key,
+      pressed: true,
+      repeat: false,
+      modifiers: egui::Modifiers::default(),
+    }
   }
 
   fn accesskit_button_id_by_name(output: &egui::FullOutput, name: &str) -> String {
@@ -377,6 +394,45 @@ mod tests {
     assert_eq!(
       id1, id2,
       "expected AccessKit node id for {delete_label:?} to remain stable across history reorder.\n\nbefore:\n{snapshot1}\n\nafter:\n{snapshot2}"
+    );
+  }
+
+  #[test]
+  fn escape_clears_search_then_requests_close() {
+    let ctx = egui::Context::default();
+    let history = GlobalHistoryStore::default();
+
+    let mut search_text = String::new();
+    let mut request_focus_search = true;
+
+    // Frame 1: open panel and focus the search field.
+    begin_frame_with_events(&ctx, Vec::new());
+    let out = history_panel_ui(&ctx, &history, &mut search_text, &mut request_focus_search);
+    let _ = ctx.end_frame();
+    assert!(
+      !out.close_requested,
+      "focusing the search field should not request closing the panel"
+    );
+
+    // Frame 2: with a non-empty query, Escape clears the search but keeps the panel open.
+    search_text = "example".to_string();
+    begin_frame_with_events(&ctx, vec![key_press(egui::Key::Escape)]);
+    let out = history_panel_ui(&ctx, &history, &mut search_text, &mut request_focus_search);
+    let _ = ctx.end_frame();
+    assert_eq!(search_text, "");
+    assert!(
+      !out.close_requested,
+      "Escape should clear a non-empty query before closing the panel"
+    );
+
+    // Frame 3: with an empty query, Escape requests panel close.
+    begin_frame_with_events(&ctx, vec![key_press(egui::Key::Escape)]);
+    let out = history_panel_ui(&ctx, &history, &mut search_text, &mut request_focus_search);
+    let _ = ctx.end_frame();
+    assert_eq!(search_text, "");
+    assert!(
+      out.close_requested,
+      "Escape with an empty query should request closing the panel"
     );
   }
 }

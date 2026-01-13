@@ -79,6 +79,12 @@ pub struct SearchFieldOutput {
   pub clear_response: Option<egui::Response>,
   /// True when the search text was cleared this frame (via the clear button or Escape key).
   pub cleared: bool,
+  /// True when Escape was pressed while the search field had focus and the query was already empty.
+  ///
+  /// Panels can use this to implement standard browser UX:
+  /// - Escape clears a non-empty query.
+  /// - Escape again (with an empty query) closes the panel.
+  pub request_close: bool,
   /// True when this helper consumed the `request_focus` flag and called `Response::request_focus`.
   pub focus_requested: bool,
 }
@@ -133,6 +139,7 @@ pub fn panel_search_field(
     response: dummy_response,
     clear_response: None,
     cleared: false,
+    request_close: false,
     focus_requested: false,
   };
 
@@ -197,19 +204,21 @@ pub fn panel_search_field(
     );
   }
 
-  // Support Escape-to-clear while focused, similar to many browser UIs.
-  //
-  // Important: consume the Escape key when we clear so outer surfaces (e.g. "Escape closes panel")
-  // can still run when the query is already empty, but won't preempt the clear-on-first-Escape
-  // interaction.
-  if output.response.has_focus()
-    && !text.is_empty()
-    && ui.input_mut(|i| i.consume_key(Default::default(), egui::Key::Escape))
-  {
-    text.clear();
-    output.cleared = true;
-    // Keep focus on the input so keyboard users can continue typing.
-    output.response.request_focus();
+  // Support standard browser Escape semantics while focused:
+  // - If the query is non-empty, Escape clears it (consuming the key so outer surfaces don't also
+  //   interpret it as "close the panel").
+  // - If the query is already empty, Escape requests that the surrounding panel close.
+  if output.response.has_focus() {
+    if !text.is_empty() {
+      if ui.input_mut(|i| i.consume_key(Default::default(), egui::Key::Escape)) {
+        text.clear();
+        output.cleared = true;
+        // Keep focus on the input so keyboard users can continue typing.
+        output.response.request_focus();
+      }
+    } else if ui.input_mut(|i| i.consume_key(Default::default(), egui::Key::Escape)) {
+      output.request_close = true;
+    }
   }
 
   if let Some(clear_resp) = output.clear_response.as_ref() {
