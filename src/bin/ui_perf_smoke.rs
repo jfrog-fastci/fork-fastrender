@@ -149,6 +149,12 @@ struct ScenarioSummary {
   viewport_css: (u32, u32),
   dpr: f32,
   #[serde(default)]
+  rss_bytes_start: Option<u64>,
+  #[serde(default)]
+  rss_bytes_end: Option<u64>,
+  #[serde(default)]
+  rss_bytes_peak: Option<u64>,
+  #[serde(default)]
   status: ScenarioStatus,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   error: Option<String>,
@@ -806,6 +812,90 @@ fn format_status(status: ScenarioStatus) -> &'static str {
   }
 }
 
+#[derive(Debug)]
+struct RssPeakSampler {
+  stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+  peak: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
+  has_sample: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+  join: Option<std::thread::JoinHandle<()>>,
+}
+
+impl RssPeakSampler {
+  const SAMPLE_INTERVAL: Duration = Duration::from_millis(200);
+
+  fn new(initial: Option<u64>) -> Self {
+    let Some(initial) = initial else {
+      return Self {
+        stop: None,
+        peak: None,
+        has_sample: None,
+        join: None,
+      };
+    };
+
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let peak = std::sync::Arc::new(AtomicU64::new(initial));
+    let has_sample = std::sync::Arc::new(AtomicBool::new(true));
+
+    let stop_thread = stop.clone();
+    let peak_thread = peak.clone();
+    let has_sample_thread = has_sample.clone();
+    let interval = Self::SAMPLE_INTERVAL;
+
+    let join = std::thread::Builder::new()
+      .name("ui-perf-smoke-rss".to_string())
+      .spawn(move || {
+        while !stop_thread.load(Ordering::Relaxed) {
+          if let Some(rss_bytes) = fastrender::memory::current_rss_bytes() {
+            has_sample_thread.store(true, Ordering::Relaxed);
+            let mut prev = peak_thread.load(Ordering::Relaxed);
+            while rss_bytes > prev {
+              match peak_thread.compare_exchange(
+                prev,
+                rss_bytes,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+              ) {
+                Ok(_) => break,
+                Err(next) => prev = next,
+              }
+            }
+          }
+          std::thread::sleep(interval);
+        }
+      })
+      .ok();
+
+    Self {
+      stop: Some(stop),
+      peak: Some(peak),
+      has_sample: Some(has_sample),
+      join,
+    }
+  }
+
+  fn finish(mut self) -> Option<u64> {
+    use std::sync::atomic::Ordering;
+
+    if let Some(stop) = &self.stop {
+      stop.store(true, Ordering::Relaxed);
+    }
+
+    if let Some(join) = self.join.take() {
+      let _ = join.join();
+    }
+
+    match (&self.has_sample, &self.peak) {
+      (Some(has_sample), Some(peak)) if has_sample.load(Ordering::Relaxed) => {
+        Some(peak.load(Ordering::Relaxed))
+      }
+      _ => None,
+    }
+  }
+}
+
 fn run_named_scenario(
   name: &str,
   tx: &Sender<UiToWorker>,
@@ -813,7 +903,19 @@ fn run_named_scenario(
   run_config: &RunConfig,
   verbose: bool,
 ) -> ScenarioSummary {
-  match name {
+  fn max_opt(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+      (Some(a), Some(b)) => Some(a.max(b)),
+      (Some(a), None) => Some(a),
+      (None, Some(b)) => Some(b),
+      (None, None) => None,
+    }
+  }
+
+  let rss_bytes_start = fastrender::memory::current_rss_bytes();
+  let rss_sampler = RssPeakSampler::new(rss_bytes_start);
+
+  let mut summary = match name {
     "ttfp_newtab" => run_ttfp_newtab(tx, rx, run_config, verbose),
     "scroll_fixture" => run_scroll_fixture(tx, rx, run_config, verbose),
     "resize_fixture" => run_resize_fixture(tx, rx, run_config, verbose),
@@ -825,12 +927,25 @@ fn run_named_scenario(
       url: String::new(),
       viewport_css: DEFAULT_VIEWPORT_CSS,
       dpr: DEFAULT_DPR,
+      rss_bytes_start: None,
+      rss_bytes_end: None,
+      rss_bytes_peak: None,
       status: ScenarioStatus::Error,
       error: Some(format!("unsupported scenario {other:?}")),
       samples_ms: Vec::new(),
       metrics_ms: BTreeMap::new(),
     },
-  }
+  };
+
+  let rss_bytes_end = fastrender::memory::current_rss_bytes();
+  let rss_bytes_peak = max_opt(
+    max_opt(rss_bytes_start, rss_bytes_end),
+    rss_sampler.finish(),
+  );
+  summary.rss_bytes_start = rss_bytes_start;
+  summary.rss_bytes_end = rss_bytes_end;
+  summary.rss_bytes_peak = rss_bytes_peak;
+  summary
 }
 
 fn run_ttfp_newtab(
@@ -850,6 +965,9 @@ fn run_ttfp_newtab(
     url: url.clone(),
     viewport_css,
     dpr,
+    rss_bytes_start: None,
+    rss_bytes_end: None,
+    rss_bytes_peak: None,
     status: ScenarioStatus::Ok,
     error: None,
     samples_ms: Vec::new(),
@@ -918,6 +1036,9 @@ fn run_scroll_fixture(
     url: url.clone(),
     viewport_css,
     dpr,
+    rss_bytes_start: None,
+    rss_bytes_end: None,
+    rss_bytes_peak: None,
     status: ScenarioStatus::Ok,
     error: None,
     samples_ms: Vec::new(),
@@ -1038,6 +1159,9 @@ fn run_resize_fixture(
     url: url.clone(),
     viewport_css: DEFAULT_VIEWPORT_CSS,
     dpr,
+    rss_bytes_start: None,
+    rss_bytes_end: None,
+    rss_bytes_peak: None,
     status: ScenarioStatus::Ok,
     error: None,
     samples_ms: Vec::new(),
@@ -1124,6 +1248,9 @@ fn run_input_text_fixture(
         url: fixture_path.display().to_string(),
         viewport_css: DEFAULT_VIEWPORT_CSS,
         dpr: DEFAULT_DPR,
+        rss_bytes_start: None,
+        rss_bytes_end: None,
+        rss_bytes_peak: None,
         status: ScenarioStatus::Error,
         error: Some(err.to_string()),
         samples_ms: Vec::new(),
@@ -1141,6 +1268,9 @@ fn run_input_text_fixture(
     url: url.clone(),
     viewport_css,
     dpr,
+    rss_bytes_start: None,
+    rss_bytes_end: None,
+    rss_bytes_peak: None,
     status: ScenarioStatus::Ok,
     error: None,
     samples_ms: Vec::new(),
@@ -1295,6 +1425,9 @@ fn run_tab_switch(
     url: format!("{tab_a_url} | {tab_b_url}"),
     viewport_css,
     dpr,
+    rss_bytes_start: None,
+    rss_bytes_end: None,
+    rss_bytes_peak: None,
     status: ScenarioStatus::Ok,
     error: None,
     samples_ms: Vec::new(),
@@ -1772,5 +1905,37 @@ mod tests {
     .expect("collect");
 
     assert_eq!(measured, vec![10.0, 20.0, 30.0]);
+  }
+
+  #[test]
+  fn scenario_summary_includes_nullable_rss_fields() {
+    let scenario = ScenarioSummary {
+      name: "scenario".to_string(),
+      url: "about:blank".to_string(),
+      viewport_css: DEFAULT_VIEWPORT_CSS,
+      dpr: DEFAULT_DPR,
+      rss_bytes_start: None,
+      rss_bytes_end: None,
+      rss_bytes_peak: None,
+      status: ScenarioStatus::Ok,
+      error: None,
+      samples_ms: Vec::new(),
+      metrics_ms: BTreeMap::new(),
+    };
+
+    let summary = UiPerfSmokeSummary {
+      schema_version: UI_PERF_SMOKE_SCHEMA_VERSION,
+      run_config: RunConfig::default(),
+      scenarios: vec![scenario],
+    };
+
+    let value = serde_json::to_value(&summary).expect("serialize JSON");
+    let scenario_value = &value["scenarios"][0];
+    assert!(scenario_value.get("rss_bytes_start").is_some());
+    assert!(scenario_value["rss_bytes_start"].is_null());
+    assert!(scenario_value.get("rss_bytes_end").is_some());
+    assert!(scenario_value["rss_bytes_end"].is_null());
+    assert!(scenario_value.get("rss_bytes_peak").is_some());
+    assert!(scenario_value["rss_bytes_peak"].is_null());
   }
 }

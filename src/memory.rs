@@ -3,6 +3,9 @@
 //! Currently this module focuses on Linux where `/proc/self/status` provides a stable RSS
 //! (resident set size) snapshot without external dependencies.
 
+/// Bytes per MiB (mebibyte, 1024×1024).
+pub const BYTES_PER_MIB: u64 = 1024 * 1024;
+
 /// Returns the current process RSS (resident set size) in bytes when available.
 ///
 /// This is best-effort and must never panic: if sampling is unsupported or parsing fails, this
@@ -19,6 +22,12 @@ pub fn current_rss_bytes() -> Option<u64> {
   {
     None
   }
+}
+
+/// Convert a byte count to megabytes (MiB) as a floating-point value.
+#[inline]
+pub fn bytes_to_mb(bytes: u64) -> f64 {
+  bytes as f64 / BYTES_PER_MIB as f64
 }
 
 #[cfg(target_os = "linux")]
@@ -56,6 +65,12 @@ fn parse_proc_status_kb(contents: &[u8], key: &[u8]) -> Option<u64> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn bytes_to_mb_is_stable() {
+    assert_eq!(bytes_to_mb(0), 0.0);
+    assert_eq!(bytes_to_mb(BYTES_PER_MIB), 1.0);
+  }
 
   #[cfg(target_os = "linux")]
   #[test]

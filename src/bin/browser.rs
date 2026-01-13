@@ -307,6 +307,13 @@ mod perf_log {
       dropped_total: u64,
       drained_total: u64,
     },
+    MemorySummary {
+      schema_version: u32,
+      ts_ms: u64,
+      window_id: &'a str,
+      rss_bytes: Option<u64>,
+      rss_mb: Option<f64>,
+    },
   }
 
   pub fn write_jsonl<W: Write, T: Serialize>(writer: &mut W, value: &T) -> io::Result<()> {
@@ -6425,6 +6432,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   };
 
   let mut cpu_sampler = ProcessCpuSampler::new(perf_log_writer.clone(), hud_enabled);
+  let mut rss_sampler = ProcessRssSampler::new(perf_log_writer.clone(), hud_enabled);
 
   // Keep a single profile autosave worker (bookmarks/history) across all windows.
   let (
@@ -8599,8 +8607,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       }
     }
 
+    // Process-wide RSS sampling (1Hz) for memory growth diagnostics.
+    let rss_sampled = rss_sampler.sample_if_due(now);
+    let rss_bytes = rss_sampler.rss_bytes();
+    for win in windows.values_mut() {
+      if let Some(hud) = win.app.hud.as_mut() {
+        hud.process_rss_bytes = rss_bytes;
+        if rss_sampled && !win.app.window_occluded && !win.app.window_minimized {
+          win.app.window.request_redraw();
+        }
+      }
+    }
+
     // Ensure the event loop wakes up to flush pending autosaves (profile/session), if any, and to
-    // keep process-level CPU sampling armed even when no frames are being drawn.
+    // keep process-level CPU/RSS sampling armed even when no frames are being drawn.
     let mut next_deadline = session_save_scheduler.next_deadline(now);
     if let Some(deadline) = pending_window_state_autosave_deadline {
       next_deadline = Some(match next_deadline {
@@ -8627,6 +8647,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       }
     }
     if let Some(deadline) = cpu_sampler.next_deadline() {
+      next_deadline = Some(match next_deadline {
+        Some(existing) => existing.min(deadline),
+        None => deadline,
+      });
+    }
+    if let Some(deadline) = rss_sampler.next_deadline() {
       next_deadline = Some(match next_deadline {
         Some(existing) => existing.min(deadline),
         None => deadline,
@@ -10037,6 +10063,7 @@ struct BrowserHud {
   frame_upload_stats: fastrender::ui::FrameUploadCoalescerStats,
   process_cpu_time_ms_total: Option<u64>,
   process_cpu_percent_recent: Option<f64>,
+  process_rss_bytes: Option<u64>,
   /// When set, measure keyboard→present latency for the next present.
   pending_keyboard_input_at: Option<std::time::Instant>,
   /// When set, measure scroll (wheel/scrollbar drag)→present latency for the next present.
@@ -10101,6 +10128,7 @@ impl BrowserHud {
       frame_upload_stats: fastrender::ui::FrameUploadCoalescerStats::default(),
       process_cpu_time_ms_total: None,
       process_cpu_percent_recent: None,
+      process_rss_bytes: None,
       pending_keyboard_input_at: None,
       pending_scroll_input_at: None,
       pending_resize_input_at: None,
@@ -10898,6 +10926,104 @@ struct UiFrameBreakdownMs {
 #[cfg(any(test, feature = "browser_ui"))]
 fn duration_to_ms(duration: std::time::Duration) -> f64 {
   sanitize_json_number_f64(duration.as_secs_f64() * 1000.0)
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(Debug)]
+struct ProcessRssSampler {
+  enabled: bool,
+  perf_log_writer: Option<
+    std::rc::Rc<
+      std::cell::RefCell<perf_log::JsonlPerfWriter<std::io::BufWriter<Box<dyn std::io::Write>>>>,
+    >,
+  >,
+  next_sample_deadline: Option<std::time::Instant>,
+  rss_bytes: Option<u64>,
+}
+
+#[cfg(feature = "browser_ui")]
+impl ProcessRssSampler {
+  const SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+  fn new(
+    perf_log_writer: Option<
+      std::rc::Rc<
+        std::cell::RefCell<
+          perf_log::JsonlPerfWriter<std::io::BufWriter<Box<dyn std::io::Write>>>,
+        >,
+      >,
+    >,
+    hud_enabled: bool,
+  ) -> Self {
+    let enabled = hud_enabled || perf_log_writer.is_some();
+    let now = std::time::Instant::now();
+
+    let mut sampler = Self {
+      enabled,
+      perf_log_writer,
+      next_sample_deadline: None,
+      rss_bytes: None,
+    };
+
+    if enabled {
+      sampler.prime(now);
+    }
+
+    sampler
+  }
+
+  fn prime(&mut self, now: std::time::Instant) {
+    self.rss_bytes = fastrender::memory::current_rss_bytes();
+    self.next_sample_deadline = now.checked_add(Self::SAMPLE_INTERVAL);
+  }
+
+  fn next_deadline(&self) -> Option<std::time::Instant> {
+    if !self.enabled {
+      return None;
+    }
+    self.next_sample_deadline
+  }
+
+  fn rss_bytes(&self) -> Option<u64> {
+    self.rss_bytes
+  }
+
+  /// Sample process RSS if the 1Hz interval has elapsed.
+  ///
+  /// Returns `true` when a sample was taken (and a `memory_summary` event may have been emitted).
+  fn sample_if_due(&mut self, now: std::time::Instant) -> bool {
+    if !self.enabled {
+      return false;
+    }
+
+    let Some(deadline) = self.next_sample_deadline else {
+      return false;
+    };
+    if now < deadline {
+      return false;
+    }
+
+    // Schedule the next sample first so a failed sample doesn't cause a tight loop.
+    self.next_sample_deadline = now.checked_add(Self::SAMPLE_INTERVAL);
+
+    let rss_bytes = fastrender::memory::current_rss_bytes();
+    self.rss_bytes = rss_bytes;
+
+    if let Some(writer) = self.perf_log_writer.as_ref() {
+      let rss_mb = rss_bytes.map(fastrender::memory::bytes_to_mb);
+      let mut writer = writer.borrow_mut();
+      let event = perf_log::PerfEvent::MemorySummary {
+        schema_version: perf_log::SCHEMA_VERSION,
+        ts_ms: writer.ms_since_start(now),
+        window_id: "process",
+        rss_bytes,
+        rss_mb,
+      };
+      writer.emit(&event);
+    }
+
+    true
+  }
 }
 
 #[cfg(feature = "browser_ui")]
@@ -17539,6 +17665,16 @@ impl App {
       }
       _ => {
         let _ = writeln!(&mut hud.text_buf, "cpu: -%  total: -ms");
+      }
+    }
+
+    match hud.process_rss_bytes {
+      Some(bytes) => {
+        let mb = fastrender::memory::bytes_to_mb(bytes);
+        let _ = writeln!(&mut hud.text_buf, "rss: {mb:.1} MB");
+      }
+      None => {
+        let _ = writeln!(&mut hud.text_buf, "rss: - MB");
       }
     }
 
@@ -26473,6 +26609,26 @@ mod perf_log_tests {
     assert_eq!(value["window_id"], "WindowId(9)");
     assert_eq!(value["rolling_window_ms"], 2000);
     assert_eq!(value["idle_frames_per_sec"], 12.5);
+  }
+
+  #[test]
+  fn memory_summary_includes_nullable_rss_fields() {
+    let event = perf_log::PerfEvent::MemorySummary {
+      schema_version: perf_log::SCHEMA_VERSION,
+      ts_ms: 100,
+      window_id: "process",
+      rss_bytes: None,
+      rss_mb: None,
+    };
+
+    let value = serde_json::to_value(&event).expect("serialize to value");
+    assert_eq!(value["event"], "memory_summary");
+    assert_eq!(value["schema_version"], perf_log::SCHEMA_VERSION);
+    assert_eq!(value["ts_ms"], 100);
+    assert!(value.get("rss_bytes").is_some());
+    assert!(value["rss_bytes"].is_null());
+    assert!(value.get("rss_mb").is_some());
+    assert!(value["rss_mb"].is_null());
   }
 }
 

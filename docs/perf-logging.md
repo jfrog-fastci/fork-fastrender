@@ -79,13 +79,16 @@ When enabled, you should expect events covering at least:
 - **Frame upload/coalescing** samples: `event=frame_upload` reports wgpu upload timing and
   `FrameUploadCoalescer` counters (push/overwrite/drain/pending) to help diagnose scroll/resize
   jank caused by dropped frames or expensive texture uploads.
+- **Memory summary** samples (`event=memory_summary`) with `rss_bytes` and `rss_mb` to spot RSS growth
+  during workloads (Linux-only; fields are nullable elsewhere).
 
 The exact schema evolves, but each JSON line is intended to be self-describing. Common fields
 include:
 
 - `schema_version` (integer) — currently `2` (omitted on some legacy/diagnostic events).
 - `event` (string) — event kind (current: `frame`, `input`, `resize`, `navigation`, `ttfp`, `stage`; plus
-  periodic diagnostics like `idle_sample` (legacy alias: `idle_summary`) / `worker_wake_summary` / `cpu_summary`).
+  periodic diagnostics like `idle_sample` (legacy alias: `idle_summary`) / `worker_wake_summary` / `cpu_summary` /
+  `memory_summary`).
 - `t_ms` (integer) — monotonic timestamp in milliseconds since process start (some events use `ts_ms`).
 - `window_id` (string) — identifier for the window instance (or `"process"` for process-wide
   summaries).
@@ -114,6 +117,9 @@ Filtering options (see `browser_perf_log_summary --help`):
 
 For automated/regression-friendly measurements, use the headless harness `ui_perf_smoke`. It runs a
 small scripted set of UI scenarios and writes a single JSON summary.
+
+On Linux, each per-scenario summary also includes RSS snapshots to help catch memory growth:
+`rss_bytes_start`, `rss_bytes_end`, and `rss_bytes_peak` (nullable elsewhere).
 
 Via `xtask` (recommended):
 
@@ -195,7 +201,6 @@ in [Perfetto UI](https://ui.perfetto.dev):
 - `FASTR_DISPLAY_LIST_PARALLEL_MIN=<N>` — lowers the display list parallel fan-out threshold when debugging determinism or forcing rayon paths in tests.
 
 All profiling logs are best run in release builds to reflect real performance.
-
 ## Interactive profiling (windowed browser UI)
 
 To capture a CPU profile while interacting with the windowed `browser` UI (resize/scroll, etc.), use
