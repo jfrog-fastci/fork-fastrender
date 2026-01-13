@@ -408,12 +408,15 @@ When hidden, the menu bar does not reserve any vertical space; keyboard shortcut
 - **Help**
 
 Implemented items are wired up to existing browser UI actions (tabs, navigation, reload, zoom,
-clipboard, panels).
+clipboard, panels, find-in-page).
+
+Some menu entries are still placeholders and remain disabled (for example **File → Save Page…** and
+**File → Print…**).
 
 Enabled items (as of now):
 
-- **File:** New Tab, Close Tab, Quit
-- **Edit:** Cut/Copy/Paste (Undo/Redo are still disabled)
+- **File:** New Tab, Close Tab, Quit (Save Page… / Print… are present but disabled placeholders)
+- **Edit:** Undo/Redo (chrome text inputs), Cut/Copy/Paste, Select All, Find in Page
 - **View:** Reload, Zoom In/Out/Reset, Debug log toggle, Toggle Full Screen
 - **History:** Back/Forward, Reopen Closed Tab, toggle History panel
 - **Bookmarks:** Bookmark This Page / Remove Bookmark, toggle Bookmarks panel, Bookmark manager…
