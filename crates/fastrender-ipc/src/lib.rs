@@ -2,6 +2,16 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Maximum size (in bytes) for a single IPC message payload.
+///
+/// This is a hard safety cap to prevent untrusted peers from forcing unbounded allocations in the
+/// browser/renderer IPC layer.
+///
+/// Note: pixel buffers can be large (e.g. 1080p RGBA8 is ~8.3 MiB). The long-term plan is to move
+/// large frame transfers to shared memory, but for early development we allow moderately-sized
+/// inline buffers.
+pub const MAX_IPC_MESSAGE_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
+
 /// Identifier for a frame (tab/iframe) hosted inside a renderer process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FrameId(pub u64);

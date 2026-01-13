@@ -7,8 +7,10 @@ const DEFAULT_VIEWPORT: (u32, u32) = (800, 600);
 const DEFAULT_DPR: f32 = 1.0;
 
 // Keep allocations bounded even if the browser sends a pathological `Resize`.
-// 256 MiB per frame is plenty for now: 4096*4096*4 = 64 MiB.
-const MAX_FRAME_BYTES: usize = 256 * 1024 * 1024;
+//
+// This is also constrained by the IPC transport, since we currently send the pixel buffer inline
+// in the `FrameReady` message.
+const MAX_FRAME_BYTES: usize = fastrender_ipc::MAX_IPC_MESSAGE_BYTES - 256;
 
 #[derive(Debug, Clone)]
 pub struct FrameState {

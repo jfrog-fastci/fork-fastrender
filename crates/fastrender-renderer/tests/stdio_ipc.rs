@@ -1,5 +1,6 @@
-use fastrender_ipc::{BrowserToRenderer, FrameId, RendererToBrowser};
-use std::io::Write;
+use bincode::Options;
+use fastrender_ipc::{BrowserToRenderer, FrameId, RendererToBrowser, MAX_IPC_MESSAGE_BYTES};
+use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -43,7 +44,32 @@ fn multiplex_two_frames_over_stdio() {
   let (msg_tx, msg_rx) = mpsc::channel::<RendererToBrowser>();
   let reader = std::thread::spawn(move || {
     let mut stdout = stdout;
-    while let Ok(msg) = bincode::deserialize_from::<_, RendererToBrowser>(&mut stdout) {
+    loop {
+      let mut len_prefix = [0u8; 4];
+      match stdout.read_exact(&mut len_prefix) {
+        Ok(()) => {}
+        Err(err) => {
+          if err.kind() == std::io::ErrorKind::UnexpectedEof {
+            break;
+          }
+          break;
+        }
+      }
+
+      let len = u32::from_le_bytes(len_prefix) as usize;
+      if len == 0 || len > MAX_IPC_MESSAGE_BYTES {
+        break;
+      }
+
+      let mut limited = stdout.by_ref().take(len as u64);
+      let msg = match bincode::DefaultOptions::new()
+        .with_limit(len as u64)
+        .deserialize_from::<_, RendererToBrowser>(&mut limited)
+      {
+        Ok(msg) => msg,
+        Err(_) => break,
+      };
+      let _ = std::io::copy(&mut limited, &mut std::io::sink());
       if msg_tx.send(msg).is_err() {
         break;
       }
@@ -71,7 +97,17 @@ fn multiplex_two_frames_over_stdio() {
     BrowserToRenderer::RequestRepaint { frame_id: frame_a },
     BrowserToRenderer::RequestRepaint { frame_id: frame_b },
   ] {
-    bincode::serialize_into(&mut stdin, &msg).expect("write message");
+    let opts = bincode::DefaultOptions::new();
+    let len = opts.serialized_size(&msg).expect("size message");
+    assert!(len > 0);
+    assert!(len <= (u32::MAX as u64));
+    assert!(len <= (MAX_IPC_MESSAGE_BYTES as u64));
+    stdin
+      .write_all(&(len as u32).to_le_bytes())
+      .expect("write length prefix");
+    opts
+      .serialize_into(&mut stdin, &msg)
+      .expect("write message payload");
   }
   stdin.flush().expect("flush stdin");
 
@@ -81,7 +117,11 @@ fn multiplex_two_frames_over_stdio() {
       .recv_timeout(Duration::from_secs(2))
       .unwrap_or_else(|_| panic!("timed out waiting for FrameReady from renderer"));
     match msg {
-      RendererToBrowser::FrameReady { frame_id, buffer } => ready.push((frame_id, buffer)),
+      RendererToBrowser::FrameReady {
+        frame_id,
+        buffer,
+        ..
+      } => ready.push((frame_id, buffer)),
       other => panic!("unexpected message: {other:?}"),
     }
   }
@@ -95,7 +135,17 @@ fn multiplex_two_frames_over_stdio() {
   assert_eq!(ready[1].1.height, 1);
 
   // Request graceful shutdown.
-  bincode::serialize_into(&mut stdin, &BrowserToRenderer::Shutdown).expect("write shutdown");
+  {
+    let msg = BrowserToRenderer::Shutdown;
+    let opts = bincode::DefaultOptions::new();
+    let len = opts.serialized_size(&msg).expect("size shutdown");
+    stdin
+      .write_all(&(len as u32).to_le_bytes())
+      .expect("write shutdown length");
+    opts
+      .serialize_into(&mut stdin, &msg)
+      .expect("write shutdown payload");
+  }
   stdin.flush().expect("flush shutdown");
   drop(stdin);
 
@@ -106,7 +156,7 @@ fn multiplex_two_frames_over_stdio() {
     "renderer exited with {status:?} (stderr={})",
     {
       let mut buf = String::new();
-      let _ = std::io::Read::read_to_string(&mut stderr, &mut buf);
+      let _ = stderr.read_to_string(&mut buf);
       buf
     }
   );
