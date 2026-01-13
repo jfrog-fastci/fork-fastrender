@@ -545,6 +545,10 @@ impl DebugConfig {
       truthy(raw.get("FASTR_LOG_FRAG_BOUNDS"), false),
     );
     config.insert_bool(
+      "FASTR_LOG_SCROLL_ANCHORING",
+      truthy(raw.get("FASTR_LOG_SCROLL_ANCHORING"), false),
+    );
+    config.insert_bool(
       "FASTR_LOG_INTERACTION_INVALIDATION",
       truthy(raw.get("FASTR_LOG_INTERACTION_INVALIDATION"), false),
     );

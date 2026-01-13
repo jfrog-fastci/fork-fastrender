@@ -15,6 +15,8 @@ use crate::style::{
 };
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 
+pub(crate) mod anchoring_debug;
+
 /// Viewport and element scroll offsets used when applying scroll snap.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScrollState {
