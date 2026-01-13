@@ -19,6 +19,16 @@ use url::Url;
 /// inline buffers.
 pub const MAX_IPC_MESSAGE_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 
+/// Hard cap on navigation URL string length (in bytes) when deriving site keys.
+///
+/// This is a defense-in-depth limit: even though IPC framing already caps message sizes, a
+/// compromised peer could still send multi-megabyte URL strings that would be expensive to parse
+/// with the `url` crate and could lead to unbounded CPU usage.
+///
+/// When a URL exceeds this length, FastRender treats it as having an opaque origin for site
+/// isolation purposes.
+pub const MAX_SITE_KEY_URL_BYTES: usize = 8 * 1024;
+
 /// Hard cap on how many subframes (iframes) a single frame may report for browser-side composition
 /// or hit testing.
 ///
@@ -525,6 +535,11 @@ impl SiteKeyFactory {
   /// - `data:`: always opaque.
   /// - Unparseable/unsupported URLs: opaque.
   pub fn site_key_for_navigation(&self, url: &str, parent: Option<&SiteKey>) -> SiteKey {
+    // Avoid pathological URL strings causing expensive parsing work.
+    if url.len() > MAX_SITE_KEY_URL_BYTES {
+      return self.new_opaque();
+    }
+
     // `blob:` URLs (e.g. `blob:https://example.com/uuid`) inherit their origin from the embedded
     // URL. Treat same-origin blob navigations as the same `SiteKey` to avoid unnecessary process
     // churn for `URL.createObjectURL()` results.
@@ -677,6 +692,25 @@ mod tests {
     let a = factory.site_key_for_navigation(url.as_str(), None);
     let b = factory.site_key_for_navigation(url.as_str(), None);
     assert_eq!(a, b);
+  }
+
+  #[test]
+  fn overly_long_url_maps_to_opaque_site_key() {
+    let factory = SiteKeyFactory::new_with_seed(1);
+    let long_url = format!(
+      "https://example.com/{}",
+      "a".repeat(MAX_SITE_KEY_URL_BYTES)
+    );
+    assert!(
+      long_url.len() > MAX_SITE_KEY_URL_BYTES,
+      "test URL should exceed the cap"
+    );
+    let key = factory.site_key_for_navigation(&long_url, None);
+    assert_eq!(
+      key,
+      SiteKey::Opaque(1),
+      "expected oversized URL to be treated as opaque"
+    );
   }
 
   #[test]
@@ -2489,6 +2523,7 @@ mod frame_hit_testing_tests {
         referrer_policy: None,
         sandbox_flags: SandboxFlags::NONE,
         opaque_origin: false,
+        effects: SubframeEffects::default(),
       });
     }
 
