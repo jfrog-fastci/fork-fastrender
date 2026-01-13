@@ -11664,9 +11664,11 @@ impl FastRender {
         options.scroll_delta,
         options.element_scroll_deltas.clone(),
       );
-      let scroll_result =
-        crate::scroll::apply_scroll_snap(&mut intermediates.fragment_tree, &scroll_state);
-      let scroll_state = scroll_result.state;
+      let scroll_state = crate::scroll::resolve_effective_scroll_state_for_paint_mut(
+        &mut intermediates.fragment_tree,
+        scroll_state,
+        viewport_size,
+      );
 
       self.apply_sticky_offsets_to_tree_with_scroll_state(
         &mut intermediates.fragment_tree,
