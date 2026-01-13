@@ -1017,6 +1017,16 @@ fn best_effort_site_for_url(url: &str) -> String {
   }
 }
 
+fn best_effort_site_key_for_url(url: &str) -> String {
+  let trimmed = url.trim();
+  if trimmed.is_empty() {
+    return "unknown".to_string();
+  }
+  crate::ui::SiteKey::from_url(trimmed)
+    .map(|key| key.to_string())
+    .unwrap_or_else(|_| "unknown".to_string())
+}
+
 fn processes_html(full_url: &str) -> String {
   let snapshot = about_page_snapshot();
 
@@ -1119,22 +1129,20 @@ fn processes_html(full_url: &str) -> String {
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-      let site = tab
+      let site_display = best_effort_site_for_url(&tab.url);
+      let site_key = tab
         .site_key
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| best_effort_site_for_url(&tab.url));
-      let site_cell = if site == "unknown" {
+        .unwrap_or_else(|| best_effort_site_key_for_url(&tab.url));
+      let site_cell = if site_display == "unknown" {
         "<span class=\"muted\">unknown</span>".to_string()
       } else {
-        format!("<code>{}</code>", escape_html(&site))
+        format!("<code>{}</code>", escape_html(&site_display))
       };
-      let renderer = match tab.renderer_process {
-        Some(id) => format!("<code>{id}</code>"),
-        None => "<span class=\"muted\">(unassigned)</span>".to_string(),
-      };
+      let renderer = "<span class=\"muted\">(not implemented)</span>".to_string();
       let url_cell = match title {
         Some(title) => format!(
           "<div class=\"tab-title\">{}</div>\
@@ -1145,11 +1153,7 @@ fn processes_html(full_url: &str) -> String {
         ),
         None => format!("<a href=\"{}\"><code>{}</code></a>", safe_url, safe_url),
       };
-      let network_cell = if cfg!(feature = "direct_network") {
-        "<span class=\"muted\">in-process</span>".to_string()
-      } else {
-        "<span class=\"muted\">(not implemented)</span>".to_string()
-      };
+      let network_cell = "<span class=\"muted\">(not implemented)</span>".to_string();
       if !tokens.is_empty() {
         use std::fmt::Write;
         let mut searchable = String::new();
@@ -1159,19 +1163,21 @@ fn processes_html(full_url: &str) -> String {
           .unwrap_or_else(|| "unassigned".to_string());
         let _ = write!(
           searchable,
-          "{} {} {} {} {} {}",
+          "{} {} {} {} {} {} {}",
           tab.window_id.as_deref().unwrap_or(""),
           tab.tab_id,
           tab.url,
-          site,
+          site_key,
+          site_display,
           renderer_id,
           title.unwrap_or(""),
         );
         searchable.push_str(&format!(
-          " window:{} tab:{} site:{} renderer:{}",
+          " window:{} tab:{} site:{} site_display:{} renderer:{}",
           tab.window_id.as_deref().unwrap_or(""),
           tab.tab_id,
-          site,
+          site_key,
+          site_display,
           renderer_id
         ));
         for (enabled, label) in [
@@ -1298,8 +1304,8 @@ fn processes_html(full_url: &str) -> String {
         Some(process) => {
           let group = renderer_processes.entry(process).or_default();
           group.tabs.push((tab.window_id.clone(), tab.tab_id));
-          if site != "unknown" {
-            group.sites.insert(site.clone());
+          if site_key != "unknown" {
+            group.sites.insert(site_key.clone());
           }
         }
         None => {
@@ -1308,7 +1314,7 @@ fn processes_html(full_url: &str) -> String {
       }
 
       {
-        let group = site_groups.entry(site.clone()).or_default();
+        let group = site_groups.entry(site_key.clone()).or_default();
         group.tabs.push((tab.window_id.clone(), tab.tab_id));
         match tab.renderer_process {
           Some(process) => {
@@ -1319,7 +1325,7 @@ fn processes_html(full_url: &str) -> String {
           }
         }
       }
-      if site == "unknown" {
+      if site_key == "unknown" {
         unknown_sites += 1;
       }
     }
