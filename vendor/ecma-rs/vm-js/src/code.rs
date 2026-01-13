@@ -45,9 +45,9 @@ pub struct CompiledScript {
   pub contains_async_functions: bool,
   /// True if the compiled (HIR) execution path must fall back to the AST interpreter.
   ///
-  /// The HIR executor does not currently support async/generator function bodies, so any script
-  /// containing them must be re-run from source to avoid mid-execution `VmError::Unimplemented`
-  /// failures.
+  /// The HIR executor does not currently support generator / async-generator function bodies
+  /// (`yield`/`yield*`), so any script containing them must be re-run from source to avoid
+  /// mid-execution `VmError::Unimplemented` failures.
   pub requires_ast_fallback: bool,
   #[allow(dead_code)]
   source_type: SourceType,
@@ -93,7 +93,7 @@ impl CompiledScript {
     let contains_async_generators = feature_flags.contains_async_generators;
     let contains_generators = feature_flags.contains_generators;
     let contains_async_functions = feature_flags.contains_async_functions;
-    let requires_ast_fallback = contains_generators || contains_async_functions;
+    let requires_ast_fallback = contains_generators;
 
     let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed)
@@ -147,7 +147,7 @@ impl CompiledScript {
     let contains_async_generators = feature_flags.contains_async_generators;
     let contains_generators = feature_flags.contains_generators;
     let contains_async_functions = feature_flags.contains_async_functions;
-    let requires_ast_fallback = contains_generators || contains_async_functions;
+    let requires_ast_fallback = contains_generators;
 
     let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed)
@@ -208,7 +208,7 @@ impl CompiledScript {
     let contains_async_generators = feature_flags.contains_async_generators;
     let contains_generators = feature_flags.contains_generators;
     let contains_async_functions = feature_flags.contains_async_functions;
-    let requires_ast_fallback = contains_generators || contains_async_functions;
+    let requires_ast_fallback = contains_generators;
 
     let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
@@ -253,7 +253,7 @@ impl CompiledScript {
     let contains_async_generators = feature_flags.contains_async_generators;
     let contains_generators = feature_flags.contains_generators;
     let contains_async_functions = feature_flags.contains_async_functions;
-    let requires_ast_fallback = contains_generators || contains_async_functions;
+    let requires_ast_fallback = contains_generators;
     let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
     let external_memory = heap.charge_external(estimated_hir_bytes)?;

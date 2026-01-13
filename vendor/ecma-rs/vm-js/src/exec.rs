@@ -1962,10 +1962,11 @@ impl JsRuntime {
     script: Arc<crate::CompiledScript>,
   ) -> Result<Value, VmError> {
     if script.requires_ast_fallback {
-      // Async/generator function bodies are not yet supported by the compiled (HIR) execution path.
+      // Generator / async-generator function bodies are not yet supported by the compiled (HIR)
+      // execution path.
       //
       // Fall back to the AST interpreter path using the original `SourceText`. This ensures scripts
-      // containing `async function`, `function*`, or `async function*` can still execute correctly
+      // containing `function*` or `async function*` can still execute correctly
       // without partially executing any HIR code (which could introduce side effects before a
       // retry).
       let source = script.source.clone();
@@ -2072,7 +2073,7 @@ impl JsRuntime {
     script: Arc<crate::CompiledScript>,
   ) -> Result<Value, VmError> {
     if script.requires_ast_fallback {
-      // See `exec_compiled_script_with_host`: async/generator functions are not yet supported in the
+      // See `exec_compiled_script_with_host`: generator functions are not yet supported in the
       // compiled (HIR) executor.
       let source = script.source.clone();
       return self.exec_script_source_with_host_and_hooks(host, hooks, source);
