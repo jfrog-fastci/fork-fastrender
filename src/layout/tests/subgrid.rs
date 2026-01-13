@@ -1321,6 +1321,13 @@ fn subgrid_column_gap_difference_resolves_percentage_gap() {
   assert_approx(right_width, 170.0, "normal gap right width");
   assert_approx(right_end, 300.0, "normal gap right end");
 
+  // Explicitly setting `column-gap: normal` should also inherit the parent's resolved gap.
+  let (left_width, right_x, right_width, right_end) = run(Some((Length::px(0.0), true)));
+  assert_approx(left_width, 100.0, "explicit normal gap left width");
+  assert_approx(right_x, 130.0, "explicit normal gap right x");
+  assert_approx(right_width, 170.0, "explicit normal gap right width");
+  assert_approx(right_end, 300.0, "explicit normal gap right end");
+
   // `column-gap: 0` shrinks the visual gutter by half-delta margins: (0px - 30px) / 2 = -15px.
   let (left_width, right_x, right_width, right_end) = run(Some((Length::px(0.0), false)));
   assert_approx(left_width, 115.0, "0px gap left width");
@@ -1408,6 +1415,13 @@ fn subgrid_column_gap_difference_resolves_calc_gap() {
   assert_approx(right_x, 125.0, "normal gap right x");
   assert_approx(right_width, 175.0, "normal gap right width");
   assert_approx(right_end, 300.0, "normal gap right end");
+
+  // Explicitly setting `column-gap: normal` should also inherit the parent's resolved gap.
+  let (left_width, right_x, right_width, right_end) = run(Some((Length::px(0.0), true)));
+  assert_approx(left_width, 100.0, "explicit normal gap left width");
+  assert_approx(right_x, 125.0, "explicit normal gap right x");
+  assert_approx(right_width, 175.0, "explicit normal gap right width");
+  assert_approx(right_end, 300.0, "explicit normal gap right end");
 
   // `column-gap: 0` => (0px - 25px) / 2 = -12.5px.
   let (left_width, right_x, right_width, right_end) = run(Some((Length::px(0.0), false)));
@@ -1653,6 +1667,13 @@ fn subgrid_row_gap_difference_resolves_percentage_gap() {
   assert_approx(bottom_height, 170.0, "normal gap bottom height");
   assert_approx(bottom_end, 300.0, "normal gap bottom end");
 
+  // Explicitly setting `row-gap: normal` should also inherit the parent's resolved gap.
+  let (top_height, bottom_y, bottom_height, bottom_end) = run(Some((Length::px(0.0), true)));
+  assert_approx(top_height, 100.0, "explicit normal gap top height");
+  assert_approx(bottom_y, 130.0, "explicit normal gap bottom y");
+  assert_approx(bottom_height, 170.0, "explicit normal gap bottom height");
+  assert_approx(bottom_end, 300.0, "explicit normal gap bottom end");
+
   // `row-gap: 0` => (0px - 30px) / 2 = -15px.
   let (top_height, bottom_y, bottom_height, bottom_end) = run(Some((Length::px(0.0), false)));
   assert_approx(top_height, 115.0, "0px gap top height");
@@ -1741,6 +1762,13 @@ fn subgrid_row_gap_difference_resolves_calc_gap() {
   assert_approx(bottom_y, 125.0, "normal gap bottom y");
   assert_approx(bottom_height, 175.0, "normal gap bottom height");
   assert_approx(bottom_end, 300.0, "normal gap bottom end");
+
+  // Explicitly setting `row-gap: normal` should also inherit the parent's resolved gap.
+  let (top_height, bottom_y, bottom_height, bottom_end) = run(Some((Length::px(0.0), true)));
+  assert_approx(top_height, 100.0, "explicit normal gap top height");
+  assert_approx(bottom_y, 125.0, "explicit normal gap bottom y");
+  assert_approx(bottom_height, 175.0, "explicit normal gap bottom height");
+  assert_approx(bottom_end, 300.0, "explicit normal gap bottom end");
 
   // `row-gap: 0` => (0px - 25px) / 2 = -12.5px.
   let (top_height, bottom_y, bottom_height, bottom_end) = run(Some((Length::px(0.0), false)));
