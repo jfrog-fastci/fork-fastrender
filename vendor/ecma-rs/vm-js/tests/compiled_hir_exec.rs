@@ -4724,6 +4724,44 @@ fn compiled_class_length_stops_at_rest_param() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_function_length_scan_consumes_fuel_budget() -> Result<(), VmError> {
+  // The compiled-HIR function allocation path scans parameter metadata to compute `function.length`.
+  // That scan must call `vm.tick()` periodically so pathological parameter lists cannot consume
+  // unbounded fuel within a single statement.
+  const PARAM_COUNT: usize = 8192;
+
+  let mut source = String::new();
+  // Approximate length: "function f(" + each param name (e.g. "a1234") + commas + "){}; f.length;"
+  source.reserve(PARAM_COUNT * 8);
+  source.push_str("function f(");
+  for i in 0..PARAM_COUNT {
+    if i > 0 {
+      source.push(',');
+    }
+    source.push('a');
+    source.push_str(&i.to_string());
+  }
+  source.push_str("){}; f.length;");
+
+  let heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+  let mut vm = Vm::new(VmOptions::default());
+  vm.set_budget(Budget {
+    fuel: Some(200),
+    deadline: None,
+    check_time_every: 1,
+  });
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(rt.heap_mut(), "test.js", source)?;
+  let err = rt.exec_compiled_script(script).unwrap_err();
+  match err {
+    VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::OutOfFuel),
+    other => panic!("expected OutOfFuel termination, got {other:?}"),
+  }
+  Ok(())
+}
+
+#[test]
 fn compiled_arguments_object_exists_and_has_length() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
