@@ -33,6 +33,13 @@ test(() => {
 }, "assert_throws_dom(INDEX_SIZE_ERR) maps to IndexSizeError");
 
 test(() => {
+  const err = assert_throws_dom("IndexSizeError", () => {
+    throw { name: "INDEX_SIZE_ERR" };
+  });
+  assert_equals(err.name, "INDEX_SIZE_ERR", "returns the thrown exception");
+}, "assert_throws_dom(IndexSizeError) matches INDEX_SIZE_ERR (legacy thrown name)");
+
+test(() => {
   const err = assert_throws_dom("HIERARCHY_REQUEST_ERR", () => {
     throw { name: "HierarchyRequestError" };
   });
