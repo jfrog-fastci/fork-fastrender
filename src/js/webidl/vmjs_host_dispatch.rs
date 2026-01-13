@@ -5592,9 +5592,13 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         )? {
           Ok(value)
         } else {
-          Err(VmError::Unimplemented(
-            "WebIDL binding dispatch not implemented for operation",
-          ))
+          let has_receiver = receiver.is_some();
+          Err(VmError::Unimplemented(Box::leak(
+            format!(
+              "WebIDL binding dispatch not implemented: {interface}.{operation} (overload {overload}, receiver={has_receiver})"
+            )
+            .into_boxed_str(),
+          )))
         }
       }
     }
@@ -5602,16 +5606,20 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
   fn call_constructor(
     &mut self,
-    _vm: &mut Vm,
-    _scope: &mut Scope<'_>,
-    _interface: &'static str,
-    _overload: usize,
-    _args: &[Value],
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    interface: &'static str,
+    overload: usize,
+    args: &[Value],
     _new_target: Value,
   ) -> Result<Value, VmError> {
-    Err(VmError::Unimplemented(
-      "vm-js WebIDL bindings use call_operation(\"constructor\") dispatch",
-    ))
+    // Compatibility shim: generated vm-js WebIDL bindings historically dispatched constructors via
+    // `call_operation(interface, "constructor", ...)`. Forward `call_constructor` to that path so
+    // newer bindings can call into the same host implementation.
+    //
+    // Note: `new_target` is currently ignored because the existing host dispatch does not use it
+    // (and older generated bindings never supplied it).
+    self.call_operation(vm, scope, None, interface, "constructor", overload, args)
   }
 
   fn iterable_snapshot(
@@ -5674,7 +5682,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         {
           Ok(values)
         } else {
-          Err(VmError::TypeError("unimplemented host iterable snapshot"))
+          Err(VmError::TypeError(Box::leak(
+            format!("unimplemented host iterable snapshot: {interface} ({kind:?})")
+              .into_boxed_str(),
+          )))
         }
       }
     }
@@ -7384,6 +7395,69 @@ mod tests {
       )
     })?;
     assert_eq!(delegated, None);
+
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_dispatch_call_constructor_is_shim_for_call_operation() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut vm = Vm::new(VmOptions::default());
+    let mut scope = heap.scope();
+
+    let mut dispatch = VmJsWebIdlBindingsHostDispatch::<DummyWindowRealmHost>::new_without_global();
+
+    let err = dispatch
+      .call_constructor(
+        &mut vm,
+        &mut scope,
+        "BogusInterface",
+        2,
+        &[],
+        Value::Undefined,
+      )
+      .expect_err("expected unimplemented constructor dispatch to error");
+
+    match err {
+      VmError::Unimplemented(msg) => {
+        assert!(msg.contains("BogusInterface.constructor"));
+        assert!(msg.contains("overload 2"));
+        assert!(msg.contains("receiver=false"));
+      }
+      other => panic!("expected VmError::Unimplemented, got {other:?}"),
+    }
+
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_dispatch_unimplemented_fallback_error_includes_context() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut vm = Vm::new(VmOptions::default());
+    let mut scope = heap.scope();
+
+    let mut dispatch = VmJsWebIdlBindingsHostDispatch::<DummyWindowRealmHost>::new_without_global();
+
+    let err = dispatch
+      .call_operation(
+        &mut vm,
+        &mut scope,
+        Some(Value::Undefined),
+        "BogusInterface",
+        "bogusOperation",
+        3,
+        &[],
+      )
+      .expect_err("expected unimplemented operation dispatch to error");
+
+    match err {
+      VmError::Unimplemented(msg) => {
+        assert!(msg.contains("BogusInterface.bogusOperation"));
+        assert!(msg.contains("overload 3"));
+        assert!(msg.contains("receiver=true"));
+      }
+      other => panic!("expected VmError::Unimplemented, got {other:?}"),
+    }
 
     Ok(())
   }
