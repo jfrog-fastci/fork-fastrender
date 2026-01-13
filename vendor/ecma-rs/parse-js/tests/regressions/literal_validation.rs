@@ -291,6 +291,44 @@ fn unicode_mode_invalid_regex_escapes_are_rejected() {
 }
 
 #[test]
+fn unicode_mode_escape_edge_cases() {
+  // `\\c` must be followed by an ASCII letter (including in character classes).
+  for src in ["/\\c/u", "/\\c/v", "/[\\c]/u", "/[\\c]/v"] {
+    let err = parse(src).unwrap_err();
+    assert_eq!(
+      err.typ,
+      SyntaxErrorType::ExpectedSyntax("valid regular expression"),
+      "{src}"
+    );
+  }
+
+  // `\\-` is only a valid identity escape inside character classes; outside it is a SyntaxError in
+  // unicode mode.
+  for src in ["/\\-/u", "/\\-/v"] {
+    let err = parse(src).unwrap_err();
+    assert_eq!(
+      err.typ,
+      SyntaxErrorType::ExpectedSyntax("valid regular expression"),
+      "{src}"
+    );
+  }
+  assert!(parse("/-/u").is_ok());
+  assert!(parse("/-/v").is_ok());
+
+  // Decimal escapes must not reference more groups than exist.
+  for src in ["/\\1/u", "/\\1/v", "/(a)\\2/u", "/(a)\\2/v"] {
+    let err = parse(src).unwrap_err();
+    assert_eq!(
+      err.typ,
+      SyntaxErrorType::ExpectedSyntax("valid regular expression"),
+      "{src}"
+    );
+  }
+  assert!(parse("/(a)\\1/u").is_ok());
+  assert!(parse("/(a)\\1/v").is_ok());
+}
+
+#[test]
 fn unicode_mode_character_class_ranges_reject_property_escape_endpoints() {
   for src in [
     "/[\\p{Hex}--]/u",
