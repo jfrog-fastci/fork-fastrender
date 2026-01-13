@@ -14,7 +14,7 @@
     "layout": 8.769792835868717,
     "paint": 105.5244302602172
   },
-  "notes": "Medium is behind Cloudflare bot protection (the committed fixture is the Cloudflare interstitial rather than the real homepage). Live captures can vary (homepage vs bot-check content), so the progress accuracy is intentionally computed from the committed offline fixture (`tests/pages/fixtures/medium.com/index.html`) and a Chrome baseline render of that fixture (JS disabled) to keep the metrics stable. Remaining diffs vs Chrome are primarily due to non-critical rendering gaps: text rasterization parity with Chrome/Skia (hinting/AA/metrics) and rounded-corner anti-aliasing (e.g. the \"Get started\" button edge).",
+  "notes": "Medium is behind Cloudflare bot protection; live captures can vary (real homepage vs bot-check/interstitial content), which can make cached HTML/baselines unreliable. Progress accuracy is intentionally computed from the committed offline fixture (`tests/pages/fixtures/medium.com/index.html`, which currently contains the homepage HTML with Cloudflare scripts) and a Chrome baseline render of that fixture (JS disabled) to keep the metrics stable. Remaining diffs vs Chrome are primarily due to non-critical rendering gaps: text rasterization parity with Chrome/Skia (hinting/AA/metrics) and rounded-corner anti-aliasing (e.g. the \"Get started\" button edge).",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 66376,
