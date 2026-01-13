@@ -32,6 +32,8 @@ pub mod search_suggest;
 pub mod messages;
 pub mod media_prefs;
 pub mod downloads;
+pub mod protocol_limits;
+pub mod untrusted;
 pub mod render_worker;
 pub mod scrollbars;
 pub mod shortcuts;

@@ -7,6 +7,11 @@ use crate::ui::messages::{
   CursorKind, DownloadId, DownloadOutcome, NavigationReason, RenderedFrame, ScrollMetrics, TabId,
   UiToWorker, WorkerToUi,
 };
+use crate::ui::protocol_limits::{
+  MAX_DEBUG_LOG_BYTES, MAX_DOWNLOAD_FILE_NAME_BYTES, MAX_ERROR_BYTES, MAX_FIND_QUERY_BYTES,
+  MAX_TITLE_BYTES, MAX_URL_BYTES, MAX_WARNING_BYTES,
+};
+use crate::ui::untrusted::{sanitize_untrusted_text, validate_untrusted_navigation_url};
 use crate::ui::{
   resolve_omnibox_input, validate_user_navigation_url_scheme, GlobalHistoryStore,
   OmniboxSuggestion, VisitedUrlStore,
@@ -1838,8 +1843,11 @@ impl BrowserAppState {
         }
       }
       WorkerToUi::NavigationStarted { tab_id, url } => {
+        let safe_url = validate_untrusted_navigation_url(&url).ok();
         if let Some(tab) = self.tab_mut(tab_id) {
-          tab.current_url = Some(url.clone());
+          if let Some(url) = safe_url.as_ref() {
+            tab.current_url = Some(url.clone());
+          }
           tab.loading = true;
           tab.error = None;
           tab.stage = None;
@@ -1848,8 +1856,10 @@ impl BrowserAppState {
           tab.hovered_url = None;
           tab.cursor = CursorKind::Default;
         }
-        if self.active_tab_id() == Some(tab_id) && !self.chrome.address_bar_editing {
-          self.chrome.address_bar_text = url;
+        if let Some(url) = safe_url {
+          if self.active_tab_id() == Some(tab_id) && !self.chrome.address_bar_editing {
+            self.chrome.address_bar_text = url;
+          }
         }
         update.request_redraw = true;
       }
@@ -1860,9 +1870,17 @@ impl BrowserAppState {
         can_go_back,
         can_go_forward,
       } => {
-        // Record global history. This is the single canonical source of truth for what counts as a
-        // "visit" (scheme allowlist, fragment stripping, `about:` filtering, etc).
-        update.history_changed = self.history.record(url.clone(), title.clone());
+        let safe_url = validate_untrusted_navigation_url(&url).ok();
+        let safe_title = title
+          .as_deref()
+          .map(|t| sanitize_untrusted_text(t, MAX_TITLE_BYTES))
+          .filter(|t| !t.is_empty());
+
+        if let Some(url) = safe_url.as_ref() {
+          // Record global history. This is the single canonical source of truth for what counts as a
+          // "visit" (scheme allowlist, fragment stripping, `about:` filtering, etc).
+          update.history_changed = self.history.record(url.clone(), safe_title.clone());
+        }
 
         // Keep the omnibox visited store consistent with the global history store by recording the
         // normalized URL (e.g. fragment stripped).
@@ -1871,16 +1889,17 @@ impl BrowserAppState {
         // record a small allowlist of useful `about:` pages so they remain discoverable via omnibox
         // autocomplete. The visited store enforces the policy (see
         // `ui::visited::should_record_visit_in_history`).
-        if update.history_changed {
+        if update.history_changed && safe_url.is_some() {
+          let url = safe_url.as_ref().unwrap();
           let normalized_url = self
             .history
-            .get(&url)
+            .get(url)
             .map(|entry| entry.url.clone())
             // `record` returned true, so this should be unreachable, but keep a safe fallback to
             // avoid losing visited entries in release builds if invariants change.
             .unwrap_or_else(|| url.clone());
-          self.visited.record_visit(normalized_url, title.clone());
-        } else if about_pages::is_about_url(&url) {
+          self.visited.record_visit(normalized_url, safe_title.clone());
+        } else if let Some(url) = safe_url.as_ref().filter(|u| about_pages::is_about_url(u)) {
           // Normalize internal pages by stripping any query/fragment so e.g. `about:help#foo` and
           // `about:history?q=rust` do not create separate visited entries.
           let normalized_about = url
@@ -1888,14 +1907,17 @@ impl BrowserAppState {
             .next()
             .unwrap_or(url.as_str())
             .to_string();
-          self.visited.record_visit(normalized_about, title.clone());
+          self.visited.record_visit(normalized_about, safe_title.clone());
         }
         if let Some(tab) = self.tab_mut(tab_id) {
-          tab.current_url = Some(url.clone());
-          tab.committed_url = Some(url.clone());
-          let committed_title = title.clone();
-          tab.title = title;
-          tab.committed_title = committed_title;
+          if let Some(url) = safe_url.as_ref() {
+            tab.current_url = Some(url.clone());
+            tab.committed_url = Some(url.clone());
+          }
+          if safe_url.is_some() {
+            tab.title = safe_title.clone();
+            tab.committed_title = safe_title.clone();
+          }
           tab.loading = false;
           tab.error = None;
           tab.stage = None;
@@ -1905,8 +1927,10 @@ impl BrowserAppState {
           tab.hovered_url = None;
           tab.cursor = CursorKind::Default;
         }
-        if self.active_tab_id() == Some(tab_id) && !self.chrome.address_bar_editing {
-          self.chrome.address_bar_text = url;
+        if let Some(url) = safe_url {
+          if self.active_tab_id() == Some(tab_id) && !self.chrome.address_bar_editing {
+            self.chrome.address_bar_text = url;
+          }
         }
         update.request_redraw = true;
       }
@@ -1917,11 +1941,17 @@ impl BrowserAppState {
         can_go_back,
         can_go_forward,
       } => {
+        let safe_url = validate_untrusted_navigation_url(&url).ok();
+        let safe_error = sanitize_untrusted_text(&error, MAX_ERROR_BYTES);
         // Do not record failed navigations in global omnibox history.
         if let Some(tab) = self.tab_mut(tab_id) {
-          tab.current_url = Some(url.clone());
+          if let Some(url) = safe_url.as_ref() {
+            tab.current_url = Some(url.clone());
+          }
           tab.loading = false;
-          tab.error = Some(error);
+          if safe_url.is_some() {
+            tab.error = Some(safe_error);
+          }
           tab.stage = None;
           tab.clear_load_progress();
           tab.can_go_back = can_go_back;
@@ -1931,8 +1961,10 @@ impl BrowserAppState {
           tab.hovered_url = None;
           tab.cursor = CursorKind::Default;
         }
-        if self.active_tab_id() == Some(tab_id) && !self.chrome.address_bar_editing {
-          self.chrome.address_bar_text = url;
+        if let Some(url) = safe_url {
+          if self.active_tab_id() == Some(tab_id) && !self.chrome.address_bar_editing {
+            self.chrome.address_bar_text = url;
+          }
         }
         update.request_redraw = true;
       }
@@ -1981,14 +2013,18 @@ impl BrowserAppState {
         update.request_redraw = true;
       }
       WorkerToUi::Warning { tab_id, text } => {
+        let safe = sanitize_untrusted_text(&text, MAX_WARNING_BYTES);
         if let Some(tab) = self.tab_mut(tab_id) {
-          tab.warning = Some(text);
+          tab.warning = (!safe.is_empty()).then_some(safe);
         }
         update.request_redraw = self.active_tab_id() == Some(tab_id);
       }
       WorkerToUi::DebugLog { tab_id, line } => {
+        let safe = sanitize_untrusted_text(&line, MAX_DEBUG_LOG_BYTES);
         if let Some(tab) = self.tab_mut(tab_id) {
-          tab.push_debug_log(line);
+          if !safe.is_empty() {
+            tab.push_debug_log(safe);
+          }
         }
         update.request_redraw = self.active_tab_id() == Some(tab_id);
       }
@@ -2002,8 +2038,9 @@ impl BrowserAppState {
         hovered_url,
         cursor,
       } => {
+        let safe_hovered = hovered_url.and_then(|url| validate_untrusted_navigation_url(&url).ok());
         if let Some(tab) = self.tab_mut(tab_id) {
-          tab.hovered_url = hovered_url;
+          tab.hovered_url = safe_hovered;
           tab.cursor = cursor;
         }
         update.request_redraw = self.active_tab_id() == Some(tab_id);
@@ -2015,8 +2052,9 @@ impl BrowserAppState {
         match_count,
         active_match_index,
       } => {
+        let safe_query = sanitize_untrusted_text(&query, MAX_FIND_QUERY_BYTES);
         if let Some(tab) = self.tab_mut(tab_id) {
-          tab.find.query = query;
+          tab.find.query = safe_query;
           tab.find.case_sensitive = case_sensitive;
           tab.find.match_count = match_count;
           tab.find.active_match_index = if match_count == 0 {
@@ -2040,11 +2078,13 @@ impl BrowserAppState {
         path,
         total_bytes,
       } => {
+        let safe_url = sanitize_untrusted_text(&url, MAX_URL_BYTES);
+        let safe_file_name = sanitize_untrusted_text(&file_name, MAX_DOWNLOAD_FILE_NAME_BYTES);
         self.downloads.insert_or_update(DownloadEntry {
           download_id,
           tab_id,
-          url,
-          file_name,
+          url: safe_url,
+          file_name: safe_file_name,
           path,
           status: DownloadStatus::InProgress {
             received_bytes: 0,
@@ -2078,7 +2118,9 @@ impl BrowserAppState {
           entry.status = match outcome {
             DownloadOutcome::Completed => DownloadStatus::Completed,
             DownloadOutcome::Cancelled => DownloadStatus::Cancelled,
-            DownloadOutcome::Failed { error } => DownloadStatus::Failed { error },
+            DownloadOutcome::Failed { error } => DownloadStatus::Failed {
+              error: sanitize_untrusted_text(&error, MAX_ERROR_BYTES),
+            },
           };
           update.request_redraw = true;
         }
@@ -2300,6 +2342,106 @@ mod browser_app_tests {
     assert!(tab.can_go_back);
     assert!(!tab.can_go_forward);
     assert_eq!(app.chrome.address_bar_text, "https://example.com/");
+  }
+
+  #[test]
+  fn worker_disallowed_scheme_does_not_update_tab_url_or_address_bar() {
+    let mut app = BrowserAppState::new_with_initial_tab("https://example.com/".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    let before_tab_url = app.active_tab().and_then(|t| t.current_url()).map(str::to_string);
+    let before_address_bar = app.chrome.address_bar_text.clone();
+
+    let update = app.apply_worker_msg(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: "javascript:alert(1)".to_string(),
+      title: Some("Bad".to_string()),
+      can_go_back: false,
+      can_go_forward: false,
+    });
+
+    assert!(
+      !update.history_changed,
+      "disallowed worker URL should not be recorded in history"
+    );
+    assert_eq!(
+      app.active_tab().and_then(|t| t.current_url()).map(str::to_string),
+      before_tab_url,
+      "current_url must not be clobbered by disallowed scheme"
+    );
+    assert_eq!(
+      app.chrome.address_bar_text, before_address_bar,
+      "address bar must not be clobbered by disallowed scheme"
+    );
+  }
+
+  #[test]
+  fn worker_strings_are_sanitized_and_truncated() {
+    use crate::ui::protocol_limits::{MAX_DEBUG_LOG_BYTES, MAX_TITLE_BYTES, MAX_URL_BYTES};
+
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    let long_url = format!("https://example.com/{}", "a".repeat(MAX_URL_BYTES * 2));
+    let long_title = "t".repeat(MAX_TITLE_BYTES * 2);
+
+    app.apply_worker_msg(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: long_url,
+      title: Some(long_title),
+      can_go_back: false,
+      can_go_forward: false,
+    });
+
+    let tab = app.active_tab().unwrap();
+    let stored_url = tab.current_url().unwrap();
+    assert!(
+      stored_url.len() <= MAX_URL_BYTES,
+      "expected URL to be clamped (len={}, max={})",
+      stored_url.len(),
+      MAX_URL_BYTES
+    );
+    assert!(
+      tab.title.as_deref().is_some_and(|t| t.len() <= MAX_TITLE_BYTES),
+      "expected title to be clamped"
+    );
+
+    let long_log = "x".repeat(MAX_DEBUG_LOG_BYTES * 2);
+    app.apply_worker_msg(WorkerToUi::DebugLog {
+      tab_id,
+      line: long_log,
+    });
+    let log_line = app
+      .active_tab()
+      .unwrap()
+      .debug_log()
+      .last()
+      .expect("expected a debug log line");
+    assert!(
+      log_line.len() <= MAX_DEBUG_LOG_BYTES,
+      "expected debug log line to be clamped"
+    );
+  }
+
+  #[test]
+  fn worker_control_chars_are_stripped() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    app.apply_worker_msg(WorkerToUi::Warning {
+      tab_id,
+      text: "a\u{0000}b\u{001f}c\u{007f}d".to_string(),
+    });
+
+    let warning = app
+      .active_tab()
+      .and_then(|t| t.warning.as_deref())
+      .expect("expected warning to be set");
+    assert_eq!(warning, "abcd");
+    assert!(
+      !warning.chars().any(|c| c.is_ascii_control()),
+      "sanitized warning must not contain ASCII control characters"
+    );
   }
 
   #[test]

@@ -4880,6 +4880,14 @@ impl App {
     url: String,
     reason: fastrender::ui::NavigationReason,
   ) -> bool {
+    let url = match fastrender::ui::untrusted::validate_untrusted_navigation_url(&url) {
+      Ok(url) => url,
+      Err(_) => {
+        self.show_chrome_toast("Blocked attempt to open an invalid URL");
+        return false;
+      }
+    };
+
     // Close any transient UI state before switching tabs.
     if self.open_select_dropdown.is_some() {
       self.cancel_select_dropdown();
@@ -4908,6 +4916,16 @@ impl App {
     use fastrender::ui::cancel::CancelGens;
     use fastrender::ui::messages::{NavigationReason, RepaintReason, UiToWorker};
     use fastrender::ui::{BrowserTabState, PointerButton, TabId};
+
+    let mut request = request;
+    let safe_url = match fastrender::ui::untrusted::validate_untrusted_navigation_url(&request.url) {
+      Ok(url) => url,
+      Err(_) => {
+        self.show_chrome_toast("Blocked attempt to open an invalid URL");
+        return false;
+      }
+    };
+    request.url = safe_url;
 
     // Close any transient UI state before switching tabs.
     if self.open_select_dropdown.is_some() {
@@ -5036,16 +5054,21 @@ impl App {
     let mut history_changed = false;
 
     if let fastrender::ui::WorkerToUi::DebugLog { tab_id, line } = &msg {
-      eprintln!("[worker:{tab_id:?}] {line}");
+      let safe = fastrender::ui::untrusted::sanitize_untrusted_text(
+        line,
+        fastrender::ui::protocol_limits::MAX_DEBUG_LOG_BYTES,
+      );
+      if !safe.is_empty() {
+        eprintln!("[worker:{tab_id:?}] {safe}");
+      }
       if self.debug_log_ui_enabled {
-        let line = line.trim_end();
-        if !line.is_empty() {
+        if !safe.is_empty() {
           if self.debug_log.len() >= Self::DEBUG_LOG_MAX_LINES {
             self.debug_log.pop_front();
           }
           self
             .debug_log
-            .push_back(format!("[tab {}] {}", tab_id.0, line));
+            .push_back(format!("[tab {}] {}", tab_id.0, safe));
           request_redraw = true;
         }
       }
@@ -5078,12 +5101,18 @@ impl App {
         // is still active.
         if !*default_prevented && self.browser_state.active_tab_id() == Some(*tab_id) {
           if let Some(pending) = pending {
+            let link_url = link_url
+              .as_deref()
+              .and_then(|url| fastrender::ui::untrusted::validate_untrusted_navigation_url(url).ok());
+            let image_url = image_url
+              .as_deref()
+              .and_then(|url| fastrender::ui::untrusted::validate_untrusted_navigation_url(url).ok());
             self.open_context_menu = Some(OpenContextMenu {
               tab_id: *tab_id,
               pos_css: *pos_css,
               anchor_points: pending.anchor_points,
-              link_url: link_url.clone(),
-              image_url: image_url.clone(),
+              link_url,
+              image_url,
               can_copy: *can_copy,
               can_cut: *can_cut,
               can_paste: *can_paste,
@@ -5106,6 +5135,10 @@ impl App {
     } = &msg
     {
       if self.browser_state.active_tab_id() == Some(*tab_id) {
+        let safe_value = fastrender::ui::untrusted::sanitize_untrusted_text(
+          value,
+          fastrender::ui::protocol_limits::MAX_TITLE_BYTES,
+        );
         let focus_before_open = self
           .open_date_time_picker
           .as_ref()
@@ -5126,7 +5159,7 @@ impl App {
 
         let state = match kind {
           fastrender::ui::messages::DateTimeInputKind::Date => {
-            let parsed = fastrender::dom::parse_input_date_value(value)
+            let parsed = fastrender::dom::parse_input_date_value(&safe_value)
               .and_then(chrono::NaiveDate::from_num_days_from_ce_opt);
             let year = parsed
               .as_ref()
@@ -5145,7 +5178,7 @@ impl App {
           }
           fastrender::ui::messages::DateTimeInputKind::Time => {
             let (mut hour, mut minute) = (0u32, 0u32);
-            if let Some(ms) = fastrender::dom::parse_input_time_value(value) {
+            if let Some(ms) = fastrender::dom::parse_input_time_value(&safe_value) {
               if ms >= 0 {
                 let total_minutes = (ms / 60_000) as u32;
                 hour = (total_minutes / 60) % 24;
@@ -5157,7 +5190,7 @@ impl App {
           fastrender::ui::messages::DateTimeInputKind::DateTimeLocal
           | fastrender::ui::messages::DateTimeInputKind::Month
           | fastrender::ui::messages::DateTimeInputKind::Week => DateTimePickerState::Text {
-            draft: value.clone(),
+            draft: safe_value.clone(),
           },
         };
 
@@ -5200,7 +5233,15 @@ impl App {
           tab_id: *tab_id,
           input_node_id: *input_node_id,
           multiple: *multiple,
-          accept: accept.clone(),
+          accept: accept
+            .as_deref()
+            .map(|a| {
+              fastrender::ui::untrusted::sanitize_untrusted_text(
+                a,
+                fastrender::ui::protocol_limits::MAX_TITLE_BYTES,
+              )
+            })
+            .filter(|s| !s.is_empty()),
           anchor_css: *anchor_css,
           anchor_points,
           draft: String::new(),
@@ -5213,7 +5254,10 @@ impl App {
     if let fastrender::ui::WorkerToUi::SetClipboardText { text, .. } = &msg {
       // Defer OS clipboard writes to the next egui frame so we can use egui-winit's platform output
       // plumbing.
-      self.pending_clipboard_text = Some(text.clone());
+      self.pending_clipboard_text = Some(fastrender::ui::untrusted::clamp_untrusted_utf8(
+        text,
+        fastrender::ui::protocol_limits::MAX_CLIPBOARD_TEXT_BYTES,
+      ));
       request_redraw = true;
     }
 
