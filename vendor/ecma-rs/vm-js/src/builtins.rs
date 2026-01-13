@@ -8588,9 +8588,155 @@ fn regexp_exec_array(
     )?;
   }
 
+  // indices
+  if flags.has_indices {
+    // https://tc39.es/ecma262/#sec-regexpbuiltinexec
+    // https://tc39.es/ecma262/#sec-makeindicesarray
+    //
+    // Note: test262 asserts `indices`/`groups` are created via `CreateDataProperty` (writable,
+    // enumerable, configurable) and bypass prototype setters.
+    let indices_array = create_array_object(vm, &mut scope, array_len_u32)?;
+    scope.push_root(Value::Object(indices_array))?;
+
+    // Reuse the same `"0"` / `"1"` property keys for every index pair array.
+    let key0_s = alloc_string_from_usize(&mut scope, 0)?;
+    scope.push_root(Value::String(key0_s))?;
+    let key0 = PropertyKey::from_string(key0_s);
+    let key1_s = alloc_string_from_usize(&mut scope, 1)?;
+    scope.push_root(Value::String(key1_s))?;
+    let key1 = PropertyKey::from_string(key1_s);
+
+    // Track the per-capture index-pair arrays so `indices.groups` can reference the same objects.
+    let mut pairs: Vec<Option<GcObject>> = Vec::new();
+    pairs
+      .try_reserve_exact(capture_count)
+      .map_err(|_| VmError::OutOfMemory)?;
+    pairs.resize(capture_count, None);
+
+    for i in 0..capture_count {
+      if i % 64 == 0 {
+        vm.tick()?;
+      }
+      let start_slot = i.saturating_mul(2);
+      let end_slot = start_slot.saturating_add(1);
+      let (start, end) = (
+        raw.m.captures.get(start_slot).copied().unwrap_or(usize::MAX),
+        raw.m.captures.get(end_slot).copied().unwrap_or(usize::MAX),
+      );
+
+      let value = if start == usize::MAX || end == usize::MAX || end < start {
+        Value::Undefined
+      } else {
+        let pair = create_array_object(vm, &mut scope, 2)?;
+        scope.push_root(Value::Object(pair))?;
+        scope.define_property(
+          pair,
+          key0,
+          data_desc(Value::Number(start as f64), true, true, true),
+        )?;
+        scope.define_property(pair, key1, data_desc(Value::Number(end as f64), true, true, true))?;
+        pairs[i] = Some(pair);
+        Value::Object(pair)
+      };
+
+      let key_s = alloc_string_from_usize(&mut scope, i)?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+      scope.define_property(indices_array, key, data_desc(value, true, true, true))?;
+    }
+
+    // indices.groups (always present; `undefined` when no named groups)
+    let indices_groups_value = if named_group_count == 0 {
+      Value::Undefined
+    } else {
+      // Like `result.groups`, this is `ObjectCreate(null)` in the spec.
+      let groups_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(groups_obj))?;
+
+      for i in 0..named_group_count {
+        if i % 64 == 0 {
+          vm.tick()?;
+        }
+
+        // Snapshot the group metadata first so we can preflight heap limits before allocating any
+        // large off-heap buffers. (The preflight can GC, so avoid holding heap borrows across it.)
+        let (group_name_len, selected) = {
+          let program = scope.heap().regexp_program(rx)?;
+          let group = program
+            .named_capture_groups
+            .get(i)
+            .ok_or(VmError::InvariantViolation("RegExpProgram named group index out of range"))?;
+
+          // Find the last matched capture among duplicate indices for this name.
+          let mut selected: Option<usize> = None;
+          for (j, &cap_idx) in group.capture_indices.iter().rev().enumerate() {
+            if j % 64 == 0 {
+              vm.tick()?;
+            }
+            let idx = cap_idx as usize;
+            let start_slot = idx.saturating_mul(2);
+            let end_slot = start_slot.saturating_add(1);
+            let (start, end) = (
+              raw.m.captures.get(start_slot).copied().unwrap_or(usize::MAX),
+              raw.m.captures.get(end_slot).copied().unwrap_or(usize::MAX),
+            );
+            if start == usize::MAX || end == usize::MAX || end < start {
+              continue;
+            }
+            selected = Some(idx);
+            break;
+          }
+          (group.name.len(), selected)
+        };
+
+        let value = match selected.and_then(|idx| pairs.get(idx).copied().flatten()) {
+          None => Value::Undefined,
+          Some(pair) => Value::Object(pair),
+        };
+
+        // Group name key.
+        scope.ensure_can_alloc_string_units(group_name_len)?;
+        let group_name_units: Vec<u16> = {
+          let program = scope.heap().regexp_program(rx)?;
+          let group = program
+            .named_capture_groups
+            .get(i)
+            .ok_or(VmError::InvariantViolation("RegExpProgram named group index out of range"))?;
+          let mut buf: Vec<u16> = Vec::new();
+          buf
+            .try_reserve_exact(group.name.len())
+            .map_err(|_| VmError::OutOfMemory)?;
+          vec_try_extend_from_slice_u16_with_ticks(vm, &mut buf, &group.name)?;
+          buf
+        };
+
+        let key_s = scope.alloc_string_from_u16_vec(group_name_units)?;
+        scope.push_root(Value::String(key_s))?;
+        let key = PropertyKey::from_string(key_s);
+        scope.define_property(groups_obj, key, data_desc(value, true, true, true))?;
+      }
+
+      Value::Object(groups_obj)
+    };
+
+    let groups_key = string_key(&mut scope, "groups")?;
+    scope.define_property(
+      indices_array,
+      groups_key,
+      data_desc(indices_groups_value, true, true, true),
+    )?;
+
+    let indices_key = string_key(&mut scope, "indices")?;
+    scope.define_property(
+      array,
+      indices_key,
+      data_desc(Value::Object(indices_array), true, true, true),
+    )?;
+  }
+
   // If this is a sticky regexp, ECMAScript sets `lastIndex` based on match end; our exec already did.
   // Preserve the `u`/`v` flags for callers implementing `AdvanceStringIndex`.
-  let _ = flags;
+  let _ = (flags.unicode, flags.unicode_sets);
 
   Ok(Some(RegExpExecArray {
     array,
@@ -26474,6 +26620,8 @@ mod regexp_prototype_tests {
     let mut rt = new_runtime();
     let v = rt.exec_script(
       r#"
+        (/a/d).hasIndices === true &&
+        (/a/).hasIndices === false &&
         (/a/g).global === true &&
         (/a/).global === false &&
         (/a/i).ignoreCase === true &&
@@ -26500,6 +26648,7 @@ mod regexp_prototype_tests {
     let v = rt.exec_script(
       r#"
         // All of the flag getters should return `undefined` when invoked on RegExp.prototype.
+        RegExp.prototype.hasIndices === undefined &&
         RegExp.prototype.global === undefined &&
         RegExp.prototype.ignoreCase === undefined &&
         RegExp.prototype.multiline === undefined &&
@@ -26511,7 +26660,7 @@ mod regexp_prototype_tests {
         // But they should throw TypeError for non-RegExp objects.
         (function() {
           var obj = Object.create(RegExp.prototype);
-          var keys = ["global", "ignoreCase", "multiline", "dotAll", "unicode", "unicodeSets", "sticky"];
+          var keys = ["hasIndices", "global", "ignoreCase", "multiline", "dotAll", "unicode", "unicodeSets", "sticky"];
           for (var i = 0; i < keys.length; i++) {
             try {
               // Getter is found on RegExp.prototype and invoked with `this = obj`.
@@ -26522,6 +26671,49 @@ mod regexp_prototype_tests {
             }
           }
           return true;
+        })()
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn regexp_match_indices_basic() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        // Basic indices array shape + values.
+        (function() {
+          var m = /b(c)/d.exec("abcd");
+          return (
+            Array.isArray(m.indices) &&
+            m.indices.length === 2 &&
+            m.indices[0][0] === 1 && m.indices[0][1] === 3 &&
+            m.indices[1][0] === 2 && m.indices[1][1] === 3 &&
+            // `groups` is always present on the indices array.
+            ("groups" in m.indices) && m.indices.groups === undefined &&
+            // `indices` and `indices.groups` are enumerable (CreateDataProperty).
+            m.propertyIsEnumerable("indices") === true &&
+            Object.prototype.propertyIsEnumerable.call(m.indices, "groups") === true
+          );
+        })() &&
+
+        // Named capture groups map to the same index-pair array objects.
+        (function() {
+          var m = /(?<x>b)(c)/d.exec("abc");
+          return (
+            Object.getPrototypeOf(m.indices.groups) === null &&
+            Array.isArray(m.indices.groups.x) &&
+            m.indices.groups.x[0] === 1 && m.indices.groups.x[1] === 2 &&
+            m.indices.groups.x === m.indices[1]
+          );
+        })() &&
+
+        // Unmatched groups produce `undefined` entries.
+        (function() {
+          var m = /(a)?b/d.exec("b");
+          return m.indices.length === 2 && m.indices[1] === undefined && ("1" in m.indices);
         })()
       "#,
     )?;
