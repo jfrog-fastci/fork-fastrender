@@ -10,12 +10,11 @@ use crate::scroll::ScrollState;
 use crate::style::cascade::StyledNode;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::fragment_tree::FragmentTree;
-use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
+use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
-use rustc_hash::FxHashMap;
 
 use super::{
   resolve_viewport, LayoutDocumentOptions, PreparedDocument, PreparedPaintOptions, RenderOptions,
