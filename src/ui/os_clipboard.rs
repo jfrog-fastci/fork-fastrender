@@ -13,18 +13,27 @@ use arboard::Clipboard;
 /// Read UTF-8 text from the OS clipboard.
 ///
 /// Returns `None` on any error (clipboard unavailable, non-text content, etc).
+///
+/// Security/perf: the OS clipboard can contain arbitrarily large text. We clamp the returned string
+/// to `ui::clipboard::MAX_CLIPBOARD_TEXT_BYTES` so UI→worker paste messages cannot allocate or ship
+/// unbounded data.
 pub fn read_text() -> Option<String> {
   let mut clipboard = Clipboard::new().ok()?;
-  clipboard.get_text().ok()
+  let mut text = clipboard.get_text().ok()?;
+  crate::ui::clipboard::clamp_clipboard_text_in_place(&mut text);
+  Some(text)
 }
 
 /// Write UTF-8 text to the OS clipboard.
 ///
 /// Best-effort: errors are ignored so callers don't have to special-case headless platforms.
+///
+/// Security/perf: clamp text to `ui::clipboard::MAX_CLIPBOARD_TEXT_BYTES` so callers never pass
+/// attacker-controlled huge strings into OS clipboard APIs.
 pub fn write_text(text: &str) {
+  let text = crate::ui::clipboard::clamp_clipboard_text(text);
   let Ok(mut clipboard) = Clipboard::new() else {
     return;
   };
   let _ = clipboard.set_text(text.to_string());
 }
-
