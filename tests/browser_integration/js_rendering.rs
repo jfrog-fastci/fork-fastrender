@@ -113,22 +113,18 @@ fn js_element_slot_property_updates_shadow_dom_slotting() -> Result<()> {
   let _lock = super::stage_listener_test_lock();
   let options = RenderOptions::new().with_viewport(64, 64);
 
-  let mut harness = JsFixtureHarness::from_fixture("shadow_dom_slot_property.html")?;
-  let html = read_fixture("shadow_dom_slot_property.html")?;
-  harness.push_str(&html);
-  harness.set_eof();
-  harness.pump_to_completion()?;
+  // Use a large parse budget so parsing completes during tab construction, leaving only the timer
+  // task pending (scheduled via `setTimeout(..., 0)`).
+  let mut js_opts = JsExecutionOptions::default();
+  js_opts.dom_parse_budget = ParseBudget::new(1024);
+  let mut tab = tab_from_fixture("shadow_dom_slot_property.html", options.clone(), js_opts)?;
 
-  harness.finish_parsing()?;
-
-  let light_id = harness
-    .host
+  let light_id = tab
     .dom()
     .get_element_by_id("light")
     .ok_or_else(|| Error::Other("missing #light in fixture".to_string()))?;
   assert!(
-    harness
-      .host
+    tab
       .dom()
       .get_attribute(light_id, "slot")
       .ok()
@@ -139,7 +135,7 @@ fn js_element_slot_property_updates_shadow_dom_slotting() -> Result<()> {
 
   // Render before the event-loop task runs; the slot should be unassigned and the fallback should
   // paint (blue).
-  let before = harness.render(options.clone())?;
+  let before = render_dom_snapshot(tab.dom(), options.clone())?;
   {
     let data = before.data();
     let x = 5usize;
@@ -154,18 +150,18 @@ fn js_element_slot_property_updates_shadow_dom_slotting() -> Result<()> {
   }
 
   assert_eq!(
-    harness.run_event_loop_until_idle()?,
+    tab.run_event_loop_until_idle(tab.js_execution_options().event_loop_run_limits)?,
     RunUntilIdleOutcome::Idle,
     "fixture scripts should run deterministically"
   );
 
   assert_eq!(
-    harness.host.dom().get_attribute(light_id, "slot").ok().flatten(),
+    tab.dom().get_attribute(light_id, "slot").ok().flatten(),
     Some("a"),
     "Element.slot setter should reflect to the slot content attribute"
   );
 
-  let actual = harness.render(options.clone())?;
+  let actual = render_dom_snapshot(tab.dom(), options.clone())?;
   let expected = render_static_fixture("shadow_dom_slot_property_static.html", options)?;
   assert_eq!(
     actual.data(),

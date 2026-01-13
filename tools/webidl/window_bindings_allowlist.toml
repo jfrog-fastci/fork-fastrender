@@ -88,6 +88,9 @@ attributes = [
   "scrollLeft",
 ]
 operations = [
+  "append",
+  "prepend",
+  "remove",
   "getAttribute",
   "setAttribute",
   "removeAttribute",

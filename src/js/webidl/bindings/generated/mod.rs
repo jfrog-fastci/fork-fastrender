@@ -1375,6 +1375,51 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn element_append(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      for v in args.iter().copied().skip(0) {
+        let converted = {
+          let v = v;
+          if false {
+            Value::Undefined
+          } else if let Value::Object(_) = v {
+            v
+          } else if matches!(v, Value::String(_)) {
+            Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+          } else {
+            Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+          }
+        };
+        let converted = rt.scope.push_root(converted)?;
+        converted_args.push(converted);
+      }
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Element",
+        "append",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
   fn element_closest(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -1638,6 +1683,51 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn element_prepend(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      for v in args.iter().copied().skip(0) {
+        let converted = {
+          let v = v;
+          if false {
+            Value::Undefined
+          } else if let Value::Object(_) = v {
+            v
+          } else if matches!(v, Value::String(_)) {
+            Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+          } else {
+            Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+          }
+        };
+        let converted = rt.scope.push_root(converted)?;
+        converted_args.push(converted);
+      }
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Element",
+        "prepend",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
   fn element_query_selector(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -1705,6 +1795,35 @@ pub mod window {
         receiver,
         "Element",
         "querySelectorAll",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn element_remove(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Element",
+        "remove",
         0,
         &converted_args,
       )
@@ -6142,6 +6261,23 @@ pub mod window {
     }
 
     {
+      let key = rt.property_key("append")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_element, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(element_append, None, "append", 0)?;
+        rt.define_data_property_str(
+          proto_element,
+          "append",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
       let key = rt.property_key("closest")?;
       if rt
         .scope
@@ -6281,6 +6417,23 @@ pub mod window {
       }
     }
     {
+      let key = rt.property_key("prepend")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_element, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(element_prepend, None, "prepend", 0)?;
+        rt.define_data_property_str(
+          proto_element,
+          "prepend",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
       let key = rt.property_key("querySelector")?;
       if rt
         .scope
@@ -6310,6 +6463,23 @@ pub mod window {
         rt.define_data_property_str(
           proto_element,
           "querySelectorAll",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("remove")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_element, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(element_remove, None, "remove", 0)?;
+        rt.define_data_property_str(
+          proto_element,
+          "remove",
           Value::Object(func),
           DataPropertyAttributes::METHOD,
         )?;

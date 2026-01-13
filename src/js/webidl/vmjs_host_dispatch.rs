@@ -4813,6 +4813,122 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         }
       }
 
+      ("Element", op @ ("append" | "prepend"), 0) => {
+        let prepend = op == "prepend";
+        let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+
+        #[derive(Debug)]
+        enum NodeOrDomString {
+          Node(NodeId),
+          Text(String),
+        }
+
+        let nodes: Vec<NodeOrDomString> =
+          with_active_vm_host_and_hooks(vm, |vm, host, hooks| -> Result<_, VmError> {
+            let mut nodes = Vec::with_capacity(args.len());
+            for &value in args {
+              // Per WebIDL `(Node or DOMString)`: try Node wrapper conversion first, then fall back
+              // to stringification (full ECMAScript `ToString`, which can invoke user code).
+              let node_id = match value {
+                Value::Object(_) => {
+                  let platform = require_dom_platform_mut(vm)?;
+                  platform.require_node_id(scope.heap(), value).ok()
+                }
+                _ => None,
+              };
+              if let Some(node_id) = node_id {
+                nodes.push(NodeOrDomString::Node(node_id));
+                continue;
+              }
+
+              let s = scope.to_string(vm, host, hooks, value)?;
+              let s = scope.heap().get_string(s)?.to_utf8_lossy();
+              nodes.push(NodeOrDomString::Text(s));
+            }
+            Ok(nodes)
+          })?
+          .ok_or(VmError::TypeError(DOM_HOST_NOT_AVAILABLE_ERROR))?;
+
+        // Fast path: no args.
+        if nodes.is_empty() {
+          return Ok(Value::Undefined);
+        }
+
+        let result: Result<(), DomError> = self.with_dom_host(vm, |host| {
+          Ok(host.mutate_dom(|dom| {
+            // Minimal WHATWG "convert nodes into a node" algorithm:
+            // - If 1 item, use it directly (string => Text).
+            // - If >1 items, build a DocumentFragment and insert once.
+            let node_to_insert = if nodes.len() == 1 {
+              match &nodes[0] {
+                NodeOrDomString::Node(id) => *id,
+                NodeOrDomString::Text(s) => dom.create_text(s),
+              }
+            } else {
+              let fragment = dom.create_document_fragment();
+              for item in &nodes {
+                let child = match item {
+                  NodeOrDomString::Node(id) => *id,
+                  NodeOrDomString::Text(s) => dom.create_text(s),
+                };
+                if let Err(err) = dom.append_child(fragment, child) {
+                  return (Err(err), false);
+                }
+              }
+              fragment
+            };
+
+            // `prepend` inserts before the (current) first child. For the multi-arg path, this is
+            // computed after moving nodes into the temporary fragment, matching the DOM Standard.
+            let reference = if prepend {
+              dom.first_child(element_id)
+            } else {
+              None
+            };
+
+            let inserted = if prepend {
+              dom.insert_before(element_id, node_to_insert, reference)
+            } else {
+              dom.append_child(element_id, node_to_insert)
+            };
+            match inserted {
+              Ok(changed) => (Ok(()), changed),
+              Err(err) => (Err(err), false),
+            }
+          }))
+        })?;
+
+        match result {
+          Ok(()) => Ok(Value::Undefined),
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      }
+
+      ("Element", "remove", 0) => {
+        let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+
+        let result: Result<(), DomError> = self.with_dom_host(vm, |host| {
+          Ok(host.mutate_dom(|dom| {
+            let parent = match dom.parent(element_id) {
+              Ok(v) => v,
+              Err(err) => return (Err(err), false),
+            };
+            let Some(parent_id) = parent else {
+              return (Ok(()), false);
+            };
+            match dom.remove_child(parent_id, element_id) {
+              Ok(changed) => (Ok(()), changed),
+              Err(err) => (Err(err), false),
+            }
+          }))
+        })?;
+
+        match result {
+          Ok(()) => Ok(Value::Undefined),
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      }
+
       ("Window", "alert", _) => Ok(Value::Undefined),
       ("Window", "queueMicrotask", 0) => {
         let callback = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -6524,6 +6640,7 @@ mod element_dispatch_tests {
   use crate::dom2;
   use crate::js::dom_platform::DomInterface;
   use crate::js::realm_module_loader::{ModuleLoader, ModuleLoaderHandle};
+  use crate::js::window_realm::DomBindingsBackend;
   use crate::js::{WindowHostState, WindowRealm, WindowRealmConfig};
   use selectors::context::QuirksMode;
   use std::any::Any;
@@ -6834,7 +6951,7 @@ mod element_dispatch_tests {
     let mut doc_host = DocumentHostState::new(dom);
     let mut realm = WindowRealm::new(
       WindowRealmConfig::new("https://example.com/")
-        .with_dom_bindings_backend(crate::js::window_realm::DomBindingsBackend::WebIdl),
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
     )?;
 
     let mut dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(realm.global_object());
@@ -6855,6 +6972,112 @@ mod element_dispatch_tests {
        })()",
     )?;
     assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn element_append_inserts_text_node_in_webidl_dom_backend() -> Result<(), VmError> {
+    let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>").expect("parse_html");
+    let mut doc_host = DocumentHostState::new(dom);
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let global = realm.global_object();
+
+    let mut host_dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(global);
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut doc_host,
+      &mut realm,
+      Some(&mut host_dispatch),
+    );
+
+    let payload = VmHostHooks::as_any_mut(&mut hooks)
+      .and_then(|any| any.downcast_mut::<VmJsHostHooksPayload>())
+      .expect("hooks should expose VmJsHostHooksPayload");
+    assert!(
+      payload.embedder_state_any_mut().is_none(),
+      "expected borrow-split hooks to not set embedder_state"
+    );
+
+    let out = realm.exec_script_with_host_and_hooks(
+      &mut doc_host,
+      &mut hooks,
+      "(() => { document.body.append({ toString: function() { return 'x'; } }); return true; })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+
+    doc_host.with_dom(|dom| {
+      let body = dom.body().expect("body");
+      let children = dom.children(body).expect("body children");
+      assert_eq!(children.len(), 1);
+      match &dom.node(children[0]).kind {
+        NodeKind::Text { content } => assert_eq!(content, "x"),
+        other => panic!("expected Text child, got {other:?}"),
+      }
+    });
+
+    Ok(())
+  }
+
+  #[test]
+  fn element_prepend_append_and_remove_work_in_webidl_dom_backend() -> Result<(), VmError> {
+    let dom = crate::dom2::parse_html("<!doctype html><html><body><div id=\"a\"></div></body></html>")
+      .expect("parse_html");
+    let mut doc_host = DocumentHostState::new(dom);
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let global = realm.global_object();
+
+    let mut host_dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(global);
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut doc_host,
+      &mut realm,
+      Some(&mut host_dispatch),
+    );
+
+    let out = realm.exec_script_with_host_and_hooks(
+      &mut doc_host,
+      &mut hooks,
+      "(() => {\n\
+         const a = document.getElementById('a');\n\
+         a.prepend('1');\n\
+         a.append('2');\n\
+         return true;\n\
+       })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+
+    doc_host.with_dom(|dom| {
+      let a = dom.get_element_by_id("a").expect("expected #a to exist");
+      let children = dom.children(a).expect("#a children");
+      let mut s = String::new();
+      for &child in children {
+        match &dom.node(child).kind {
+          NodeKind::Text { content } => s.push_str(content),
+          other => panic!("expected only Text children, got {other:?}"),
+        }
+      }
+      assert_eq!(s, "12");
+    });
+
+    let out = realm.exec_script_with_host_and_hooks(
+      &mut doc_host,
+      &mut hooks,
+      "(() => {\n\
+         const el = document.getElementById('a');\n\
+         el.remove();\n\
+         return true;\n\
+       })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+
+    doc_host.with_dom(|dom| {
+      assert!(dom.get_element_by_id("a").is_none());
+    });
+
     Ok(())
   }
 }
