@@ -945,6 +945,32 @@ fn location_stringification_matches_href() -> Result<()> {
 }
 
 #[test]
+fn string_locale_methods_exist_and_behave() -> Result<()> {
+  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let ok = realm
+    .exec_script(
+      r#"(function () {
+  return (
+    typeof ''.toLocaleLowerCase === 'function' &&
+    typeof ''.toLocaleUpperCase === 'function' &&
+    typeof ''.localeCompare === 'function' &&
+    'A'.toLocaleLowerCase() === 'a' &&
+    'a'.toLocaleUpperCase() === 'A' &&
+    'a'.localeCompare('a') === 0 &&
+    'a'.localeCompare('b') < 0 &&
+    'b'.localeCompare('a') > 0
+  );
+})()"#,
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  assert_eq!(ok, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn history_and_location_constructors_exist() -> Result<()> {
   let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))
     .map_err(|e| Error::Other(e.to_string()))?;
