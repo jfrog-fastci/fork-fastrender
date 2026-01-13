@@ -38,6 +38,7 @@ impl<'a> Dom2GeometryContext<'a> {
 
     renderer.apply_sticky_offsets_to_tree_with_scroll_state(&mut fragment_tree, &scroll_state);
     crate::scroll::apply_scroll_offsets(&mut fragment_tree, &scroll_state);
+    crate::scroll::apply_viewport_scroll_cancel(&mut fragment_tree, &scroll_state);
 
     Self {
       prepared,

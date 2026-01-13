@@ -2,8 +2,8 @@ use crate::geometry::{Point, Rect, Size};
 use crate::html::title::find_document_title;
 use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
 use crate::interaction::{
-  fragment_tree_with_scroll, DateTimeInputKind, FormSubmission, FormSubmissionMethod, InteractionAction,
-  InteractionEngine, InteractionState,
+  DateTimeInputKind, FormSubmission, FormSubmissionMethod, InteractionAction, InteractionEngine,
+  InteractionState,
 };
 use crate::paint::rasterize::fill_rect;
 use crate::scroll::ScrollState;
@@ -486,9 +486,9 @@ impl BrowserTabController {
       return;
     };
 
-    // Apply element scroll offsets so matches inside scroll containers highlight in the same
-    // coordinate space used for hit testing and painting.
-    let tree = fragment_tree_with_scroll(prepared.fragment_tree(), &self.scroll_state);
+    // Mirror paint-time geometry (sticky + element scroll offsets + viewport-fixed scroll cancel)
+    // so highlight rects stay aligned with what the user sees after scrolling.
+    let tree = prepared.fragment_tree_for_geometry(&self.scroll_state);
     let index = FindIndex::build(&tree);
     self.find_matches = index.find(
       &self.find_query,
@@ -707,21 +707,22 @@ impl BrowserTabController {
 
   fn handle_pointer_move(&mut self, pos_css: (f32, f32)) -> Result<Vec<WorkerToUi>> {
     self.last_pointer_pos_css = Some(pos_css);
-    let (box_tree_ptr, fragment_tree_ptr) = {
+    let (box_tree_ptr, fragment_tree_ptr, hit_tree) = {
       let Some(prepared) = self.document.prepared() else {
         return Ok(Vec::new());
       };
       let box_tree_ptr = prepared.box_tree() as *const crate::BoxTree;
       let fragment_tree_ptr =
         prepared.fragment_tree() as *const crate::tree::fragment_tree::FragmentTree;
-      (box_tree_ptr, fragment_tree_ptr)
+      let hit_tree = (self.scroll_state.viewport != Point::ZERO
+        || !self.scroll_state.elements.is_empty())
+        .then(|| prepared.fragment_tree_for_geometry(&self.scroll_state));
+      (box_tree_ptr, fragment_tree_ptr, hit_tree)
     };
 
     let viewport_point = Point::new(pos_css.0, pos_css.1);
     let fragment_tree = unsafe { &*fragment_tree_ptr };
-    let scrolled = (!self.scroll_state.elements.is_empty())
-      .then(|| fragment_tree_with_scroll(fragment_tree, &self.scroll_state));
-    let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+    let fragment_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
 
     let changed = self.document.mutate_dom(|dom| {
       self.interaction.pointer_move(
@@ -745,21 +746,22 @@ impl BrowserTabController {
     paths: Vec<PathBuf>,
   ) -> Result<Vec<WorkerToUi>> {
     self.last_pointer_pos_css = Some(pos_css);
-    let (box_tree_ptr, fragment_tree_ptr) = {
+    let (box_tree_ptr, fragment_tree_ptr, hit_tree) = {
       let Some(prepared) = self.document.prepared() else {
         return Ok(Vec::new());
       };
       let box_tree_ptr = prepared.box_tree() as *const crate::BoxTree;
       let fragment_tree_ptr =
         prepared.fragment_tree() as *const crate::tree::fragment_tree::FragmentTree;
-      (box_tree_ptr, fragment_tree_ptr)
+      let hit_tree = (self.scroll_state.viewport != Point::ZERO
+        || !self.scroll_state.elements.is_empty())
+        .then(|| prepared.fragment_tree_for_geometry(&self.scroll_state));
+      (box_tree_ptr, fragment_tree_ptr, hit_tree)
     };
 
     let viewport_point = Point::new(pos_css.0, pos_css.1);
     let fragment_tree = unsafe { &*fragment_tree_ptr };
-    let scrolled = (!self.scroll_state.elements.is_empty())
-      .then(|| fragment_tree_with_scroll(fragment_tree, &self.scroll_state));
-    let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+    let fragment_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
 
     let changed = self.document.mutate_dom(|dom| {
       self.interaction.drop_files_with_scroll(
@@ -791,21 +793,22 @@ impl BrowserTabController {
       return Ok(Vec::new());
     }
 
-    let (box_tree_ptr, fragment_tree_ptr) = {
+    let (box_tree_ptr, fragment_tree_ptr, hit_tree) = {
       let Some(prepared) = self.document.prepared() else {
         return Ok(Vec::new());
       };
       let box_tree_ptr = prepared.box_tree() as *const crate::BoxTree;
       let fragment_tree_ptr =
         prepared.fragment_tree() as *const crate::tree::fragment_tree::FragmentTree;
-      (box_tree_ptr, fragment_tree_ptr)
+      let hit_tree = (self.scroll_state.viewport != Point::ZERO
+        || !self.scroll_state.elements.is_empty())
+        .then(|| prepared.fragment_tree_for_geometry(&self.scroll_state));
+      (box_tree_ptr, fragment_tree_ptr, hit_tree)
     };
 
     let viewport_point = Point::new(pos_css.0, pos_css.1);
     let fragment_tree = unsafe { &*fragment_tree_ptr };
-    let scrolled = (!self.scroll_state.elements.is_empty())
-      .then(|| fragment_tree_with_scroll(fragment_tree, &self.scroll_state));
-    let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+    let fragment_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
 
     let changed = self.document.mutate_dom(|dom| {
       self.interaction.pointer_down_with_click_count(
@@ -837,21 +840,22 @@ impl BrowserTabController {
       return Ok(Vec::new());
     }
 
-    let (box_tree_ptr, fragment_tree_ptr) = {
+    let (box_tree_ptr, fragment_tree_ptr, hit_tree) = {
       let Some(prepared) = self.document.prepared() else {
         return Ok(Vec::new());
       };
       let box_tree_ptr = prepared.box_tree() as *const crate::BoxTree;
       let fragment_tree_ptr =
         prepared.fragment_tree() as *const crate::tree::fragment_tree::FragmentTree;
-      (box_tree_ptr, fragment_tree_ptr)
+      let hit_tree = (self.scroll_state.viewport != Point::ZERO
+        || !self.scroll_state.elements.is_empty())
+        .then(|| prepared.fragment_tree_for_geometry(&self.scroll_state));
+      (box_tree_ptr, fragment_tree_ptr, hit_tree)
     };
 
     let viewport_point = Point::new(pos_css.0, pos_css.1);
     let fragment_tree = unsafe { &*fragment_tree_ptr };
-    let scrolled = (!self.scroll_state.elements.is_empty())
-      .then(|| fragment_tree_with_scroll(fragment_tree, &self.scroll_state));
-    let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+    let fragment_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
 
     let mut action = InteractionAction::None;
     let mut picker_value: Option<String> = None;
@@ -1111,8 +1115,7 @@ impl BrowserTabController {
       found
     }?;
 
-    let mut fragment_tree_scrolled = prepared.fragment_tree().clone();
-    crate::scroll::apply_scroll_offsets(&mut fragment_tree_scrolled, &self.scroll_state);
+    let fragment_tree_scrolled = prepared.fragment_tree_for_geometry(&self.scroll_state);
     let page_rect =
       crate::interaction::absolute_bounds_for_box_id(&fragment_tree_scrolled, select_box_id)?;
 

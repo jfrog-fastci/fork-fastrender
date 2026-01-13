@@ -46,6 +46,7 @@ pub fn union_scrolled_absolute_bounds_for_box_ids(
 ) -> Option<Rect> {
   let mut tree = fragment_tree.clone();
   crate::scroll::apply_scroll_offsets(&mut tree, scroll);
+  crate::scroll::apply_viewport_scroll_cancel(&mut tree, scroll);
   union_absolute_bounds_for_box_ids(&tree, box_ids)
 }
 

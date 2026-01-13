@@ -2806,18 +2806,22 @@ impl PreparedDocument {
   /// Layout produces fragment trees in a coordinate space that does not include:
   /// - element scroll offsets (`scrollLeft`/`scrollTop` for scroll containers), or
   /// - scroll-driven `position: sticky` adjustments.
+  /// - viewport scroll cancel semantics for viewport-fixed (`position: fixed`) elements.
   ///
   /// This helper mirrors the transformations applied during painting so geometry queries
   /// (IntersectionObserver/ResizeObserver, DOMRect APIs, etc.) can operate on the same coordinate
   /// space that is ultimately painted.
   ///
-  /// Note: viewport scroll is **not** applied. The returned tree remains in page coordinates;
-  /// callers should subtract `scroll_state.viewport` to convert page → viewport coordinates
-  /// (mirroring hit-testing conventions).
+  /// Note: viewport scroll is **not** applied globally. The returned tree remains in page
+  /// coordinates (content doesn't move). However, viewport-fixed fragments are translated by
+  /// `scroll_state.viewport` so a page-space hit test using
+  /// `page_point = viewport_point + scroll_state.viewport` matches paint-time geometry. Callers
+  /// should subtract `scroll_state.viewport` to convert page → viewport coordinates.
   pub fn fragment_tree_for_geometry(&self, scroll_state: &ScrollState) -> FragmentTree {
     let mut tree = self.fragment_tree.clone();
-    crate::scroll::apply_scroll_offsets(&mut tree, scroll_state);
     self.apply_sticky_offsets_to_tree_with_scroll_state(&mut tree, scroll_state);
+    crate::scroll::apply_scroll_offsets(&mut tree, scroll_state);
+    crate::scroll::apply_viewport_scroll_cancel(&mut tree, scroll_state);
     tree
   }
 

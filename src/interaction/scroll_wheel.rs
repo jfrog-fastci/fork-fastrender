@@ -308,6 +308,7 @@ pub fn apply_wheel_scroll_at_point(
     .collect();
   let sanitized_scroll_state = ScrollState::from_parts(original_viewport, sanitized_elements);
   crate::scroll::apply_scroll_offsets(&mut scrolled_tree, &sanitized_scroll_state);
+  crate::scroll::apply_viewport_scroll_cancel(&mut scrolled_tree, &sanitized_scroll_state);
 
   let Some((root_kind, path)) = scrolled_tree.hit_test_path(page_point) else {
     let mut next = scroll_state.clone();

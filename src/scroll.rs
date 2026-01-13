@@ -1455,6 +1455,63 @@ pub fn apply_scroll_offsets(tree: &mut FragmentTree, scroll: &ScrollState) {
   }
 }
 
+fn apply_viewport_scroll_cancel_to_fixed(
+  node: &mut FragmentNode,
+  viewport_scroll: Point,
+  skip_viewport_scroll_cancel: bool,
+) {
+  let establishes_fixed_cb = node
+    .style
+    .as_deref()
+    .is_some_and(|style| style.establishes_fixed_containing_block());
+  let needs_viewport_scroll_cancel = node
+    .style
+    .as_deref()
+    .is_some_and(|style| matches!(style.position, Position::Fixed))
+    && !skip_viewport_scroll_cancel;
+
+  if needs_viewport_scroll_cancel {
+    node.translate_root_in_place(viewport_scroll);
+  }
+
+  // Mirror paint-time `skip_viewport_scroll_cancel` propagation:
+  // - Once a viewport-scroll cancel has been applied to a fixed subtree, descendants should not
+  //   apply it again (nested fixed elements would otherwise cancel twice).
+  // - Descendants of a fixed-containing-block establish their own coordinate space, so fixed
+  //   elements within that subtree are not viewport-fixed and must not cancel viewport scroll.
+  let skip_for_children =
+    skip_viewport_scroll_cancel || establishes_fixed_cb || needs_viewport_scroll_cancel;
+  for child in node.children_mut() {
+    apply_viewport_scroll_cancel_to_fixed(child, viewport_scroll, skip_for_children);
+  }
+}
+
+/// Applies viewport-scroll cancel semantics to `position: fixed` fragments.
+///
+/// Layout positions viewport-fixed fragments in viewport-relative coordinates. When hit-testing in
+/// page coordinates (i.e. `page_point = viewport_point + scroll.viewport`), those fixed fragments
+/// must be translated into page space so hit testing mirrors paint-time geometry.
+///
+/// This mirrors the painter's `needs_viewport_scroll_cancel` / `skip_viewport_scroll_cancel` logic
+/// to respect fixed-containing-block semantics and to avoid double-applying the viewport scroll
+/// offset for nested fixed elements.
+pub fn apply_viewport_scroll_cancel(tree: &mut FragmentTree, scroll: &ScrollState) {
+  let viewport_scroll = if scroll.viewport.x.is_finite() && scroll.viewport.y.is_finite() {
+    scroll.viewport
+  } else {
+    Point::ZERO
+  };
+
+  if viewport_scroll == Point::ZERO {
+    return;
+  }
+
+  apply_viewport_scroll_cancel_to_fixed(&mut tree.root, viewport_scroll, false);
+  for fragment in tree.additional_fragments.iter_mut() {
+    apply_viewport_scroll_cancel_to_fixed(fragment, viewport_scroll, false);
+  }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScrollBounds {
   pub min_x: f32,

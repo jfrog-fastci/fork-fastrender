@@ -14,8 +14,8 @@ use crate::geometry::{Point, Rect, Size};
 use crate::html::{find_document_favicon_url, find_document_title};
 use crate::interaction::anchor_scroll::scroll_offset_for_fragment_target;
 use crate::interaction::{
-  fragment_tree_with_scroll, hit_test_dom, FormSubmission, FormSubmissionMethod, HitTestKind,
-  InteractionAction, InteractionEngine,
+  hit_test_dom, FormSubmission, FormSubmissionMethod, HitTestKind, InteractionAction,
+  InteractionEngine,
 };
 use crate::js::RunLimits;
 use crate::paint::rasterize::fill_rect;
@@ -586,6 +586,18 @@ fn viewport_point_for_pos_css(scroll: &ScrollState, pos_css: (f32, f32)) -> Poin
     };
     Point::new(-sx - 1.0, -sy - 1.0)
   }
+}
+
+fn fragment_tree_for_hit_testing(
+  doc: &BrowserDocument,
+  scroll: &ScrollState,
+) -> Option<crate::FragmentTree> {
+  if scroll.viewport == Point::ZERO && scroll.elements.is_empty() {
+    return None;
+  }
+  doc
+    .prepared()
+    .map(|prepared| prepared.fragment_tree_for_geometry(scroll))
 }
 
 fn trim_ascii_whitespace(value: &str) -> &str {
@@ -1365,9 +1377,7 @@ fn styled_node_anchor_css(
   };
 
   // FragmentTree: compute absolute page-space bounds for the box.
-  let mut fragment_tree_scrolled = fragment_tree.clone();
-  crate::scroll::apply_scroll_offsets(&mut fragment_tree_scrolled, scroll_state);
-  let page_rect = crate::interaction::absolute_bounds_for_box_id(&fragment_tree_scrolled, box_id)?;
+  let page_rect = crate::interaction::absolute_bounds_for_box_id(fragment_tree, box_id)?;
 
   // Convert page-space bounds to viewport-local coords for UI positioning.
   Some(page_rect.translate(Point::new(
@@ -2312,23 +2322,20 @@ impl BrowserRuntime {
             // gesture for numeric stepping (instead of scrolling the page).
             let scroll_snapshot = tab.scroll_state.clone();
             let engine = &mut tab.interaction;
-            if let Ok(step_result) =
-              doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-                let scrolled = (!scroll_snapshot.elements.is_empty())
-                  .then(|| fragment_tree_with_scroll(fragment_tree, &scroll_snapshot));
-                let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
-                let step_result = engine.wheel_step_number_input(
-                  dom,
-                  box_tree,
-                  hit_tree,
-                  &scroll_snapshot,
-                  Point::new(pointer_css.0, pointer_css.1),
-                  delta_y,
-                );
-                let changed = step_result.unwrap_or(false);
-                (changed, step_result)
-              })
-            {
+            let hit_tree = fragment_tree_for_hit_testing(doc, &scroll_snapshot);
+            if let Ok(step_result) = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+              let hit_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
+              let step_result = engine.wheel_step_number_input(
+                dom,
+                box_tree,
+                hit_tree,
+                &scroll_snapshot,
+                Point::new(pointer_css.0, pointer_css.1),
+                delta_y,
+              );
+              let changed = step_result.unwrap_or(false);
+              (changed, step_result)
+            }) {
               if let Some(dom_changed) = step_result {
                 wheel_handled = true;
                 changed |= dom_changed;
@@ -3639,7 +3646,7 @@ impl BrowserRuntime {
       return;
     };
 
-    let tree = fragment_tree_with_scroll(prepared.fragment_tree(), scroll);
+    let tree = prepared.fragment_tree_for_geometry(scroll);
     let index = FindIndex::build(&tree);
     find.matches = index.find(
       &find.query,
@@ -3898,89 +3905,96 @@ impl BrowserRuntime {
         return;
       };
       let engine = &mut tab.interaction;
+      let hit_tree = fragment_tree_for_hit_testing(doc, scroll);
       match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-        let scrolled =
-          (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
-        let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+        let fragment_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
         let (changed, hit) =
           engine.pointer_move_and_hit(dom, box_tree, fragment_tree, scroll, viewport_point);
         let drag_drop_active = engine.drag_drop_active_kind().is_some();
-        let (hovered_url, mut cursor, hovered_dom_node_id, hovered_dom_element_id, hover_is_drop_target) =
-          if !pointer_in_page {
-            (None, CursorKind::Default, None, None, false)
-          } else {
-            match hit.as_ref() {
-              Some(hit) => {
-                let (element_id, drop_candidate, form_control_cursor) =
-                  match crate::dom::find_node_mut_by_preorder_id(dom, hit.dom_node_id) {
-                    Some(node) => {
-                      let element_id = node.get_attribute_ref("id").map(|id| id.to_string());
-                      (
-                        element_id,
-                        dom_is_editable_text_drop_target_candidate(node),
-                        cursor_for_form_control(node),
-                      )
-                    }
-                    None => (None, false, CursorKind::Default),
-                  };
-                let is_drop_target = if drag_drop_active && drop_candidate {
-                  let node_id = hit.dom_node_id;
-                  let dom_index = crate::interaction::dom_index::DomIndex::build(dom);
-                  let disabled =
-                    crate::interaction::effective_disabled::is_effectively_disabled(node_id, &dom_index);
-                  let inert_or_hidden = crate::interaction::effective_disabled::is_effectively_inert_or_hidden(
+        let (
+          hovered_url,
+          mut cursor,
+          hovered_dom_node_id,
+          hovered_dom_element_id,
+          hover_is_drop_target,
+        ) = if !pointer_in_page {
+          (None, CursorKind::Default, None, None, false)
+        } else {
+          match hit.as_ref() {
+            Some(hit) => {
+              let (element_id, drop_candidate, form_control_cursor) =
+                match crate::dom::find_node_mut_by_preorder_id(dom, hit.dom_node_id) {
+                  Some(node) => {
+                    let element_id = node.get_attribute_ref("id").map(|id| id.to_string());
+                    (
+                      element_id,
+                      dom_is_editable_text_drop_target_candidate(node),
+                      cursor_for_form_control(node),
+                    )
+                  }
+                  None => (None, false, CursorKind::Default),
+                };
+              let is_drop_target = if drag_drop_active && drop_candidate {
+                let node_id = hit.dom_node_id;
+                let dom_index = crate::interaction::dom_index::DomIndex::build(dom);
+                let disabled = crate::interaction::effective_disabled::is_effectively_disabled(
+                  node_id,
+                  &dom_index,
+                );
+                let inert_or_hidden =
+                  crate::interaction::effective_disabled::is_effectively_inert_or_hidden(
                     node_id,
                     &dom_index,
                   );
-                  !(disabled || inert_or_hidden)
-                } else {
-                  false
-                };
+                !(disabled || inert_or_hidden)
+              } else {
+                false
+              };
 
-                 // Prefer the computed `cursor` property (including UA stylesheet defaults) so hover
-                 // behaviour matches the platform. Only fall back to legacy heuristics when the computed
-                 // cursor is `auto`.
-                 let css_cursor_kind = cursor_kind_from_css_cursor(hit.css_cursor);
+              // Prefer the computed `cursor` property (including UA stylesheet defaults) so hover
+              // behaviour matches the platform. Only fall back to legacy heuristics when the computed
+              // cursor is `auto`.
+              let css_cursor_kind = cursor_kind_from_css_cursor(hit.css_cursor);
 
-                // `hovered_url` remains a semantic link property even when CSS overrides the cursor.
-                let hovered_url = match hit.kind {
-                  HitTestKind::Link => hit
-                    .href
-                    .as_deref()
-                    .and_then(|href| resolve_link_url(base_url, href)),
-                  _ => None,
-                };
+              // `hovered_url` remains a semantic link property even when CSS overrides the cursor.
+              let hovered_url = match hit.kind {
+                HitTestKind::Link => hit
+                  .href
+                  .as_deref()
+                  .and_then(|href| resolve_link_url(base_url, href)),
+                _ => None,
+              };
 
-                 let cursor = match css_cursor_kind {
-                   Some(cursor) => cursor,
-                   None => match hit.kind {
-                    HitTestKind::Link => {
-                      // Keep showing the hand cursor over links even when we reject the URL scheme
-                      // (e.g. `javascript:`).
-                      CursorKind::Pointer
-                     }
-                     HitTestKind::FormControl => form_control_cursor,
-                     _ => {
-                       if hit.is_selectable_text {
-                         CursorKind::Text
-                       } else {
-                         CursorKind::Default
-                       }
-                     }
-                  },
-                };
+              let cursor = match css_cursor_kind {
+                Some(cursor) => cursor,
+                None => match hit.kind {
+                  HitTestKind::Link => {
+                    // Keep showing the hand cursor over links even when we reject the URL scheme
+                    // (e.g. `javascript:`).
+                    CursorKind::Pointer
+                  }
+                  HitTestKind::FormControl => form_control_cursor,
+                  _ => {
+                    if hit.is_selectable_text {
+                      CursorKind::Text
+                    } else {
+                      CursorKind::Default
+                    }
+                  }
+                },
+              };
 
-                (
-                  hovered_url,
-                  cursor,
-                  Some(hit.dom_node_id),
-                  element_id,
-                  is_drop_target,
-                )
-              }
-              None => (None, CursorKind::Default, None, None, false),
+              (
+                hovered_url,
+                cursor,
+                Some(hit.dom_node_id),
+                element_id,
+                is_drop_target,
+              )
             }
-          };
+            None => (None, CursorKind::Default, None, None, false),
+          }
+        };
 
         if pointer_in_page && drag_drop_active {
           cursor = if hover_is_drop_target {
@@ -4305,12 +4319,11 @@ impl BrowserRuntime {
     let scroll = &tab.scroll_state;
     let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
     let engine = &mut tab.interaction;
+    let hit_tree = fragment_tree_for_hit_testing(doc, scroll);
 
     let (changed, target_id, target_element_id) =
       match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-        let scrolled =
-          (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
-        let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+        let fragment_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
 
          let (changed, hit) = if matches!(button, PointerButton::Primary | PointerButton::Middle) {
            engine.pointer_down_with_click_count_and_hit(
@@ -4425,6 +4438,7 @@ impl BrowserRuntime {
       let js_mutation_generation_before_dispatch =
         tab.js_tab.as_ref().map(|js_tab| js_tab.dom().mutation_generation());
       let mut dispatched_dom_event = false;
+      let hit_tree = fragment_tree_for_hit_testing(doc, scroll);
 
       let (target_id, target_element_id) = if tab.last_pointer_pos_css == Some(pos_css) {
         (
@@ -4433,9 +4447,7 @@ impl BrowserRuntime {
         )
       } else {
         match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-          let scrolled =
-            (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
-          let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+          let fragment_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
 
           let page_point = viewport_point.translate(scroll.viewport);
           let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
@@ -4531,6 +4543,7 @@ impl BrowserRuntime {
         return;
       };
       let engine = &mut tab.interaction;
+      let hit_tree = fragment_tree_for_hit_testing(doc, &scroll_snapshot);
       let (
         dom_changed,
         action,
@@ -4544,9 +4557,7 @@ impl BrowserRuntime {
         form_submitter,
         form_submitter_element_id,
       ) = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-        let scrolled = (!scroll_snapshot.elements.is_empty())
-          .then(|| fragment_tree_with_scroll(fragment_tree, &scroll_snapshot));
-        let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+        let hit_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
         let (dom_changed, action, up_hit) = engine.pointer_up_with_scroll_and_hit(
           dom,
           box_tree,
@@ -4560,11 +4571,11 @@ impl BrowserRuntime {
           base_url,
         );
 
-         let mouseup_target = up_hit.as_ref().map(|hit| hit.dom_node_id);
-         let mouseup_target_element_id = mouseup_target.and_then(|target_id| {
-           crate::dom::find_node_mut_by_preorder_id(dom, target_id)
-             .and_then(|node| node.get_attribute_ref("id"))
-             .map(|id| id.to_string())
+        let mouseup_target = up_hit.as_ref().map(|hit| hit.dom_node_id);
+        let mouseup_target_element_id = mouseup_target.and_then(|target_id| {
+          crate::dom::find_node_mut_by_preorder_id(dom, target_id)
+            .and_then(|node| node.get_attribute_ref("id"))
+            .map(|id| id.to_string())
         });
 
         let click_target = engine.take_last_click_target();
@@ -4583,15 +4594,13 @@ impl BrowserRuntime {
 
         let anchor_css = match &action {
           InteractionAction::OpenSelectDropdown { select_node_id, .. } => {
-            // `select_anchor_css` expects an unscrolled fragment tree and applies element scroll
-            // offsets internally.
-            select_anchor_css(box_tree, fragment_tree, &scroll_snapshot, *select_node_id)
+            select_anchor_css(box_tree, hit_tree, &scroll_snapshot, *select_node_id)
           }
           InteractionAction::OpenDateTimePicker { input_node_id, .. }
           | InteractionAction::OpenColorPicker { input_node_id }
           | InteractionAction::OpenFilePicker { input_node_id, .. } => styled_node_anchor_css(
             box_tree,
-            fragment_tree,
+            hit_tree,
             &scroll_snapshot,
             *input_node_id,
           ),
@@ -5211,11 +5220,10 @@ impl BrowserRuntime {
     let scroll = &tab.scroll_state;
     let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
     let engine = &mut tab.interaction;
+    let hit_tree = fragment_tree_for_hit_testing(doc, scroll);
 
     let changed = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-      let scrolled =
-        (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
-      let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+      let fragment_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
 
       let changed =
         engine.drop_files_with_scroll(dom, box_tree, fragment_tree, scroll, viewport_point, &paths);
@@ -5275,11 +5283,10 @@ impl BrowserRuntime {
     }
 
     let engine = &mut tab.interaction;
+    let hit_tree = fragment_tree_for_hit_testing(doc, scroll);
     let (changed, hit_info) =
       match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-        let scrolled =
-          (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
-        let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+        let hit_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
         let hit = hit_test_dom(dom, box_tree, hit_tree, page_point);
         // `hit_test_dom` resolves `dom_node_id` to a *semantic* target (e.g. link ancestor). For JS
         // `contextmenu` dispatch, we want the deepest element under the cursor so listeners on nested
@@ -6469,12 +6476,8 @@ impl BrowserRuntime {
           let anchor_css = doc
             .prepared()
             .and_then(|prepared| {
-              select_anchor_css(
-                prepared.box_tree(),
-                prepared.fragment_tree(),
-                &tab.scroll_state,
-                select_node_id,
-              )
+              let tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
+              select_anchor_css(prepared.box_tree(), &tree, &tab.scroll_state, select_node_id)
             })
             .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
             .unwrap_or(Rect::from_xywh(0.0, 0.0, 1.0, 1.0));
@@ -6493,12 +6496,8 @@ impl BrowserRuntime {
           let anchor_css = doc
             .prepared()
             .and_then(|prepared| {
-              styled_node_anchor_css(
-                prepared.box_tree(),
-                prepared.fragment_tree(),
-                &tab.scroll_state,
-                input_node_id,
-              )
+              let tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
+              styled_node_anchor_css(prepared.box_tree(), &tree, &tab.scroll_state, input_node_id)
             })
             .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
             .unwrap_or(Rect::from_xywh(0.0, 0.0, 1.0, 1.0));
@@ -6544,12 +6543,8 @@ impl BrowserRuntime {
           let anchor_css = doc
             .prepared()
             .and_then(|prepared| {
-              styled_node_anchor_css(
-                prepared.box_tree(),
-                prepared.fragment_tree(),
-                &tab.scroll_state,
-                input_node_id,
-              )
+              let tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
+              styled_node_anchor_css(prepared.box_tree(), &tree, &tab.scroll_state, input_node_id)
             })
             .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
             .unwrap_or(Rect::from_xywh(0.0, 0.0, 1.0, 1.0));
@@ -6582,12 +6577,8 @@ impl BrowserRuntime {
           let anchor_css = doc
             .prepared()
             .and_then(|prepared| {
-              styled_node_anchor_css(
-                prepared.box_tree(),
-                prepared.fragment_tree(),
-                &tab.scroll_state,
-                input_node_id,
-              )
+              let tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
+              styled_node_anchor_css(prepared.box_tree(), &tree, &tab.scroll_state, input_node_id)
             })
             .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
             .unwrap_or(Rect::from_xywh(0.0, 0.0, 1.0, 1.0));
