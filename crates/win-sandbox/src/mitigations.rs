@@ -142,6 +142,12 @@ fn is_policy_supported<T>(policy: PROCESS_MITIGATION_POLICY) -> bool {
 /// - Set `FASTR_DISABLE_WIN_MITIGATIONS=1` to disable applying these mitigation policies during
 ///   process spawn (but *not* other sandboxing layers like AppContainer / job objects).
 pub fn renderer_mitigation_policy() -> u64 {
+  // Escape hatch: allow users to disable *mitigation policies* (but not the higher-level sandbox
+  // primitives like job objects / AppContainer) if a particular Windows build breaks.
+  if std::env::var_os("FASTR_DISABLE_WIN_MITIGATIONS").is_some() {
+    return 0;
+  }
+
   #[cfg(not(windows))]
   {
     0
@@ -236,8 +242,9 @@ pub fn verify_renderer_mitigations_current_process() -> Result<()> {
         get_mitigation_policy(ProcessSystemCallDisablePolicy)?;
       if (policy.Flags & SYSTEM_CALL_DISABLE_WIN32K) == 0 {
         return Err(WinSandboxError::MitigationVerificationFailed {
-          message: "PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY.DisallowWin32kSystemCalls not enabled"
-            .to_string(),
+          message:
+            "PROCESS_MITIGATION_SYSTEM_CALL_DISABLE_POLICY.DisallowWin32kSystemCalls not enabled"
+              .to_string(),
         });
       }
     }
@@ -260,9 +267,8 @@ pub fn verify_renderer_mitigations_current_process() -> Result<()> {
         && (policy.Flags & IMAGE_LOAD_NO_LOW_LABEL) == 0
       {
         return Err(WinSandboxError::MitigationVerificationFailed {
-          message:
-            "PROCESS_MITIGATION_IMAGE_LOAD_POLICY.NoLowMandatoryLabelImages not enabled"
-              .to_string(),
+          message: "PROCESS_MITIGATION_IMAGE_LOAD_POLICY.NoLowMandatoryLabelImages not enabled"
+            .to_string(),
         });
       }
     }

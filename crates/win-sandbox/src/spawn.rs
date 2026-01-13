@@ -128,6 +128,34 @@ pub fn spawn_sandboxed<A: AsRef<OsStr>>(
     mitigation_policy
   };
 
+  match spawn_sandboxed_inner(program, args, mitigation_policy) {
+    Ok(child) => Ok(child),
+    Err(err) if mitigation_policy != 0 && should_fallback_without_mitigations(&err) => {
+      // Best-effort compatibility: if the OS doesn't recognize the mitigation policy attribute,
+      // retry without it instead of failing process creation.
+      spawn_sandboxed_inner(program, args, 0)
+    }
+    Err(err) => Err(err),
+  }
+}
+
+fn should_fallback_without_mitigations(err: &WinSandboxError) -> bool {
+  const ERROR_INVALID_PARAMETER: u32 = 87;
+  const ERROR_NOT_SUPPORTED: u32 = 50;
+
+  match err {
+    WinSandboxError::Win32 { code, .. } => {
+      *code == ERROR_INVALID_PARAMETER || *code == ERROR_NOT_SUPPORTED
+    }
+    _ => false,
+  }
+}
+
+fn spawn_sandboxed_inner<A: AsRef<OsStr>>(
+  program: &Path,
+  args: &[A],
+  mitigation_policy: u64,
+) -> Result<SandboxedChild> {
   let application_name = encode_wide_nul(program.as_os_str());
   let mut command_line = build_command_line(program, args);
 
