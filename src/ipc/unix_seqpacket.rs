@@ -541,6 +541,28 @@ mod tests {
   }
 
   #[test]
+  fn unix_seqpacket_send_rejects_fd_only_messages() {
+    let (tx, _rx) = UnixSeqpacket::pair().expect("socketpair");
+
+    let mut fds = [0i32; 2];
+    // SAFETY: `pipe2` initializes `fds` on success.
+    let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
+    assert_eq!(rc, 0, "pipe2 failed: {}", io::Error::last_os_error());
+
+    // SAFETY: `pipe2` returns owned fds.
+    let read = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+    let write = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+
+    let err = tx.send_msg(&[], &[read.as_fd()]).unwrap_err();
+    assert!(
+      matches!(err, FdPassingError::InvalidInput { .. }),
+      "unexpected error: {err:?}"
+    );
+
+    drop(write);
+  }
+
+  #[test]
   fn unix_seqpacket_recv_too_many_fds_closes_and_errors() {
     let _guard = TEST_LOCK.lock().unwrap();
 
