@@ -2954,14 +2954,10 @@ fn validate_regex_pattern(
             err
           })?;
         if let Some(name) = capture_name {
-          // Named capture group names must be unique.
-          if !named_capture_groups.insert(name) {
-            return Err(RegexError {
-              kind: RegexErrorKind::InvalidPattern,
-              offset: base_offset + i,
-              len: consumed,
-            });
-          }
+          // Duplicate named capture groups are supported by the runtime (and are observable through
+          // `groups`/`indices.groups` ordering rules). Keep only the set membership needed for
+          // validating named backreferences.
+          named_capture_groups.insert(name);
         }
         group_stack.push(quantifiable);
         prev_can_be_quantified = false;
