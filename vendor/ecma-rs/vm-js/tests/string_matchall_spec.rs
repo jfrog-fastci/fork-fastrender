@@ -48,11 +48,13 @@ fn matchall_does_not_box_primitive_arguments_for_symbol_dispatch() -> Result<(),
       Object.defineProperty(Boolean.prototype, Symbol.matchAll, { configurable: true, get: thrower });
       Object.defineProperty(Number.prototype,  Symbol.matchAll, { configurable: true, get: thrower });
       Object.defineProperty(String.prototype,  Symbol.matchAll, { configurable: true, get: thrower });
+      Object.defineProperty(BigInt.prototype,  Symbol.matchAll, { configurable: true, get: thrower });
 
       "a,b,c".matchAll(",");
       "abc".matchAll(true);
       "abc".matchAll(1);
       "abc".matchAll("a");
+      Array.from("a1b1c".matchAll(1n));
 
       true;
     "#,
@@ -108,4 +110,3 @@ fn matchall_dispatch_and_flags_checks_happen_before_tostring_receiver() -> Resul
 
   Ok(())
 }
-

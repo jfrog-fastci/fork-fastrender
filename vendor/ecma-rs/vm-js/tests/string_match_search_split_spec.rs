@@ -52,26 +52,32 @@ fn match_search_split_do_not_box_primitive_arguments_for_symbol_dispatch() -> Re
       Object.defineProperty(Boolean.prototype, Symbol.match, { configurable: true, get: thrower });
       Object.defineProperty(Number.prototype,  Symbol.match, { configurable: true, get: thrower });
       Object.defineProperty(String.prototype,  Symbol.match, { configurable: true, get: thrower });
+      Object.defineProperty(BigInt.prototype,  Symbol.match, { configurable: true, get: thrower });
 
       Object.defineProperty(Boolean.prototype, Symbol.search, { configurable: true, get: thrower });
       Object.defineProperty(Number.prototype,  Symbol.search, { configurable: true, get: thrower });
       Object.defineProperty(String.prototype,  Symbol.search, { configurable: true, get: thrower });
+      Object.defineProperty(BigInt.prototype,  Symbol.search, { configurable: true, get: thrower });
 
       Object.defineProperty(Boolean.prototype, Symbol.split, { configurable: true, get: thrower });
       Object.defineProperty(Number.prototype,  Symbol.split, { configurable: true, get: thrower });
       Object.defineProperty(String.prototype,  Symbol.split, { configurable: true, get: thrower });
+      Object.defineProperty(BigInt.prototype,  Symbol.split, { configurable: true, get: thrower });
 
       "abc".match(true);
       "abc".match(1);
       "abc".match("a");
+      "a1b".match(1n);
 
       "abc".search(true);
       "abc".search(1);
       "abc".search("a");
+      "a1b".search(1n);
 
       "abc".split(true);
       "abc".split(1);
       "abc".split("b");
+      "a1b1c".split(1n);
 
       true;
     "#,
