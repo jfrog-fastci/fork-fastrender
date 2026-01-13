@@ -353,7 +353,8 @@ src/js/
   streaming.rs               — Parse-time script handling
   event_loop.rs              — Task/microtask queues
   import_maps/               — Import map parsing and resolution
-  realm_module_loader.rs     — Module loading (resolution + fetch + budgets; vm-js ModuleGraph)
+  realm_module_loader.rs     — Module loading (resolution + fetch + budgets; BrowserTab + vm-js ModuleGraph)
+  vmjs/module_loader.rs      — vm-js embedding glue (`VmJsModuleLoader`)
 
 vendor/ecma-rs/
   vm-js/src/host.rs          — VmHostHooks trait
