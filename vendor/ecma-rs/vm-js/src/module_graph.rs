@@ -3895,6 +3895,111 @@ mod tests {
   }
 
   #[test]
+  fn tla_fallback_ast_charge_is_retained_until_tla_state_dropped() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    // Ensure module environments created by the graph have the correct outer.
+    let mut graph = ModuleGraph::new();
+    graph.set_global_lexical_env(realm.global_lexical_env());
+
+    // Create a module record that is already `Linked` but has no stored AST; this forces the
+    // compiled-module TLA fallback path to parse + retain a `parse-js` AST during evaluation.
+    let env_root = {
+      let mut scope = heap.scope();
+      let env = scope.env_create(Some(realm.global_lexical_env()))?;
+      scope.push_env_root(env)?;
+      scope.heap_mut().add_env_root(env)?
+    };
+
+    let filler = ";".repeat(1024);
+    let source = SourceText::new_charged_arc(&mut heap, "m", format!("await 0;{filler}"))?;
+    let expected_bytes = source.text.len().saturating_mul(4);
+
+    let module = graph.add_module(SourceTextModuleRecord {
+      source: Some(source.clone()),
+      ast: None,
+      status: ModuleStatus::Linked,
+      has_tla: true,
+      environment: Some(env_root),
+      ..Default::default()
+    })?;
+
+    let mut host = ();
+    let mut hooks = MicrotaskQueue::new();
+    let _promise = graph.evaluate(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      module,
+      &mut host,
+      &mut hooks,
+    )?;
+
+    let idx = module_index(module);
+    let state = graph.tla_states[idx]
+      .as_ref()
+      .expect("expected module evaluation to suspend and store TLA state");
+
+    assert!(state.tla_fallback_ast.is_some());
+    let token = state
+      .tla_fallback_ast_memory
+      .as_ref()
+      .expect("expected external memory token for retained fallback AST");
+    assert_eq!(token.bytes(), expected_bytes);
+
+    // Dropping the state should release exactly the bytes charged for the retained AST.
+    let before = heap.estimated_total_bytes();
+    let token_bytes = token.bytes();
+    let state = graph.tla_states[idx]
+      .take()
+      .expect("expected TLA evaluation state to exist");
+    state.teardown(&mut vm, &mut heap);
+    let after = heap.estimated_total_bytes();
+    assert_eq!(before.saturating_sub(after), token_bytes);
+
+    // Clean up graph roots and discard queued Promise jobs (which may reference the aborted
+    // continuation).
+    graph.teardown(&mut vm, &mut heap);
+    struct TeardownCtx<'a> {
+      heap: &'a mut Heap,
+    }
+    impl crate::VmJobContext for TeardownCtx<'_> {
+      fn call(
+        &mut self,
+        _host: &mut dyn VmHostHooks,
+        _callee: Value,
+        _this: Value,
+        _args: &[Value],
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("microtask teardown ctx call"))
+      }
+      fn construct(
+        &mut self,
+        _host: &mut dyn VmHostHooks,
+        _callee: Value,
+        _args: &[Value],
+        _new_target: Value,
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("microtask teardown ctx construct"))
+      }
+      fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+        self.heap.add_root(value)
+      }
+      fn remove_root(&mut self, id: RootId) {
+        self.heap.remove_root(id)
+      }
+    }
+    let mut ctx = TeardownCtx { heap: &mut heap };
+    hooks.teardown(&mut ctx);
+
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
   fn tla_resume_callbacks_are_cached_per_vm() -> Result<(), VmError> {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
