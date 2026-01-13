@@ -25064,6 +25064,61 @@ impl App {
         self.record_bookmark_deltas(deltas, output.request_flush);
       }
 
+      for request in output.requests {
+        match request {
+          fastrender::ui::bookmarks_manager::BookmarksManagerRequest::RequestOpenImportDialog => {
+            let selection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+              rfd::FileDialog::new()
+                .add_filter("Bookmarks JSON", &["json"])
+                .pick_file()
+            }));
+            match selection {
+              Ok(path) => {
+                if self.bookmarks_manager.apply_import_dialog_selection(path) {
+                  ctx.request_repaint();
+                }
+              }
+              Err(panic_payload) => {
+                let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                  (*s).to_string()
+                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                  s.clone()
+                } else {
+                  "unknown panic".to_string()
+                };
+                eprintln!("rfd import file dialog panicked: {msg}");
+                self.show_chrome_toast("Failed to open native file dialog");
+              }
+            }
+          }
+          fastrender::ui::bookmarks_manager::BookmarksManagerRequest::RequestOpenExportDialog => {
+            let selection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+              rfd::FileDialog::new()
+                .add_filter("Bookmarks JSON", &["json"])
+                .save_file()
+            }));
+            match selection {
+              Ok(path) => {
+                if self.bookmarks_manager.apply_export_dialog_selection(path) {
+                  ctx.request_repaint();
+                }
+              }
+              Err(panic_payload) => {
+                let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                  (*s).to_string()
+                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                  s.clone()
+                } else {
+                  "unknown panic".to_string()
+                };
+                eprintln!("rfd export file dialog panicked: {msg}");
+                self.show_chrome_toast("Failed to open native file dialog");
+              }
+            }
+          }
+        }
+      }
+
       for action in output.actions {
         match action {
           fastrender::ui::bookmarks_manager::BookmarksManagerAction::Open(url) => {

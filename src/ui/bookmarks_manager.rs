@@ -25,6 +25,16 @@ pub enum BookmarksManagerAction {
   OpenInNewTab(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BookmarksManagerRequest {
+  /// Request that the windowed browser open a native file picker dialog and, on success, populate
+  /// [`BookmarksManagerState::import_path`].
+  RequestOpenImportDialog,
+  /// Request that the windowed browser open a native save-file dialog and, on success, populate
+  /// [`BookmarksManagerState::export_path`].
+  RequestOpenExportDialog,
+}
+
 #[derive(Debug, Default)]
 pub struct BookmarksManagerState {
   pub search: String,
@@ -51,6 +61,36 @@ pub struct BookmarksManagerState {
 impl BookmarksManagerState {
   pub fn request_focus_search(&mut self) {
     self.request_focus_search = true;
+  }
+
+  /// Apply the result of a native file picker dialog for the import path.
+  ///
+  /// Returns `true` if `import_path` changed.
+  pub fn apply_import_dialog_selection(&mut self, path: Option<std::path::PathBuf>) -> bool {
+    let Some(path) = path else {
+      return false;
+    };
+    let new_value = path.display().to_string();
+    if self.import_path == new_value {
+      return false;
+    }
+    self.import_path = new_value;
+    true
+  }
+
+  /// Apply the result of a native save-file dialog for the export path.
+  ///
+  /// Returns `true` if `export_path` changed.
+  pub fn apply_export_dialog_selection(&mut self, path: Option<std::path::PathBuf>) -> bool {
+    let Some(path) = path else {
+      return false;
+    };
+    let new_value = path.display().to_string();
+    if self.export_path == new_value {
+      return false;
+    }
+    self.export_path = new_value;
+    true
   }
 
   pub fn clear_transient(&mut self) {
@@ -191,6 +231,7 @@ struct EditBookmarkState {
 #[derive(Debug, Default)]
 pub struct BookmarksManagerOutput {
   pub actions: Vec<BookmarksManagerAction>,
+  pub requests: Vec<BookmarksManagerRequest>,
   pub changed: bool,
   pub bookmark_deltas: Vec<BookmarkDelta>,
   /// Whether this change is destructive enough to justify a best-effort immediate flush.
@@ -350,6 +391,19 @@ pub fn bookmarks_manager_side_panel(
           }
 
           ui.horizontal_wrapped(|ui| {
+            let choose_resp = ui.button("Choose save location…");
+            choose_resp.widget_info(|| {
+              egui::WidgetInfo::labeled(
+                egui::WidgetType::Button,
+                "Choose export save location",
+              )
+            });
+            if choose_resp.clicked() {
+              out
+                .requests
+                .push(BookmarksManagerRequest::RequestOpenExportDialog);
+            }
+
             if ui.button("Use profile path").clicked() {
               state.export_path = profile_path.display().to_string();
             }
@@ -423,6 +477,16 @@ pub fn bookmarks_manager_side_panel(
           }
 
           ui.horizontal_wrapped(|ui| {
+            let choose_resp = ui.button("Choose file…");
+            choose_resp.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Choose import file")
+            });
+            if choose_resp.clicked() {
+              out
+                .requests
+                .push(BookmarksManagerRequest::RequestOpenImportDialog);
+            }
+
             if ui.button("Use profile path").clicked() {
               state.import_path = profile_path.display().to_string();
             }
@@ -1511,12 +1575,12 @@ fn list_row(
 // Tests (AccessKit / a11y labels)
 // -----------------------------------------------------------------------------
 
-#[cfg(all(test, feature = "browser_ui"))]
+#[cfg(test)]
 mod tests {
-  use super::{bookmarks_manager_side_panel, BookmarksManagerState};
+  use super::{bookmarks_manager_side_panel, BookmarksManagerRequest, BookmarksManagerState};
   use crate::ui::{a11y_test_util, BookmarkStore};
 
-  fn begin_frame(ctx: &egui::Context) {
+  fn begin_frame(ctx: &egui::Context, events: Vec<egui::Event>) {
     let mut raw = egui::RawInput::default();
     raw.screen_rect = Some(egui::Rect::from_min_size(
       egui::Pos2::new(0.0, 0.0),
@@ -1525,6 +1589,7 @@ mod tests {
     // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
     raw.time = Some(0.0);
     raw.focused = true;
+    raw.events = events;
     ctx.begin_frame(raw);
   }
 
@@ -1533,7 +1598,7 @@ mod tests {
     state: &mut BookmarksManagerState,
     store: &mut BookmarkStore,
   ) -> egui::FullOutput {
-    begin_frame(ctx);
+    begin_frame(ctx, Vec::new());
     let _ = bookmarks_manager_side_panel(ctx, state, store);
     ctx.end_frame()
   }
@@ -1616,7 +1681,7 @@ mod tests {
       .expect("bookmark add should succeed");
 
     let mut state = BookmarksManagerState::default();
-    begin_frame(&ctx);
+    begin_frame(&ctx, Vec::new());
     let _out = bookmarks_manager_side_panel(&ctx, &mut state, &mut store);
     let output = ctx.end_frame();
 
@@ -1639,5 +1704,145 @@ mod tests {
       !names.iter().any(|n| n == "Open bookmark in new tab"),
       "expected open-in-new-tab buttons to use contextual labels, not a generic-only label.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
     );
+  }
+
+  fn left_click_at(pos: egui::Pos2) -> Vec<egui::Event> {
+    vec![
+      egui::Event::PointerMoved(pos),
+      egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::default(),
+      },
+      egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::default(),
+      },
+    ]
+  }
+
+  fn bm_frame(
+    ctx: &egui::Context,
+    state: &mut BookmarksManagerState,
+    store: &mut BookmarkStore,
+    events: Vec<egui::Event>,
+  ) -> (super::BookmarksManagerOutput, egui::FullOutput) {
+    begin_frame(ctx, events);
+    let out = bookmarks_manager_side_panel(ctx, state, store);
+    let output = ctx.end_frame();
+    (out, output)
+  }
+
+  fn find_text_center(shapes: &[egui::epaint::ClippedShape], needle: &str) -> Option<egui::Pos2> {
+    fn in_shape(shape: &egui::epaint::Shape, needle: &str) -> Option<egui::Pos2> {
+      match shape {
+        egui::epaint::Shape::Text(text) => {
+          if text.galley.text().contains(needle) {
+            Some(text.pos + text.galley.size() / 2.0)
+          } else {
+            None
+          }
+        }
+        egui::epaint::Shape::Vec(shapes) => shapes.iter().find_map(|s| in_shape(s, needle)),
+        _ => None,
+      }
+    }
+
+    shapes.iter().find_map(|clipped| in_shape(&clipped.shape, needle))
+  }
+
+  fn ensure_import_export_open(
+    ctx: &egui::Context,
+    state: &mut BookmarksManagerState,
+    store: &mut BookmarkStore,
+  ) {
+    let (_out, output) = bm_frame(ctx, state, store, Vec::new());
+    if find_text_center(&output.shapes, "Choose file…").is_some() {
+      return;
+    }
+
+    let header_pos = find_text_center(&output.shapes, "Import / Export")
+      .expect("failed to find Import / Export collapsing header");
+    let (_out, _output) = bm_frame(ctx, state, store, left_click_at(header_pos));
+    // `CollapsingHeader` state can update after processing input; render an additional frame so we
+    // can reliably locate the contents in the painted shapes.
+    let (_out, output) = bm_frame(ctx, state, store, Vec::new());
+    assert!(
+      find_text_center(&output.shapes, "Choose file…").is_some(),
+      "expected Import / Export to be open after clicking the header"
+    );
+  }
+
+  #[test]
+  fn choose_file_button_emits_import_dialog_request() {
+    let ctx = egui::Context::default();
+    let mut state = BookmarksManagerState::default();
+    let mut store = BookmarkStore::default();
+    ensure_import_export_open(&ctx, &mut state, &mut store);
+
+    let (_out, output) = bm_frame(&ctx, &mut state, &mut store, Vec::new());
+    let choose_pos = find_text_center(&output.shapes, "Choose file…")
+      .expect("failed to find Choose file… button");
+
+    let (out, _output) = bm_frame(&ctx, &mut state, &mut store, left_click_at(choose_pos));
+    assert!(
+      out
+        .requests
+        .iter()
+        .any(|r| *r == BookmarksManagerRequest::RequestOpenImportDialog),
+      "expected clicking Choose file… to emit RequestOpenImportDialog, got {:?}",
+      out.requests
+    );
+  }
+
+  #[test]
+  fn choose_save_location_button_emits_export_dialog_request() {
+    let ctx = egui::Context::default();
+    let mut state = BookmarksManagerState::default();
+    let mut store = BookmarkStore::default();
+    ensure_import_export_open(&ctx, &mut state, &mut store);
+
+    let (_out, output) = bm_frame(&ctx, &mut state, &mut store, Vec::new());
+    let choose_pos = find_text_center(&output.shapes, "Choose save location…")
+      .expect("failed to find Choose save location… button");
+
+    let (out, _output) = bm_frame(&ctx, &mut state, &mut store, left_click_at(choose_pos));
+    assert!(
+      out
+        .requests
+        .iter()
+        .any(|r| *r == BookmarksManagerRequest::RequestOpenExportDialog),
+      "expected clicking Choose save location… to emit RequestOpenExportDialog, got {:?}",
+      out.requests
+    );
+  }
+
+  #[test]
+  fn dialog_selection_updates_state_paths() {
+    let mut state = BookmarksManagerState::default();
+    state.import_path = "old_import.json".to_string();
+    state.export_path = "old_export.json".to_string();
+
+    let import_changed = state.apply_import_dialog_selection(Some(std::path::PathBuf::from(
+      "/tmp/import.json",
+    )));
+    assert!(import_changed);
+    assert_eq!(state.import_path, "/tmp/import.json");
+
+    let export_changed = state.apply_export_dialog_selection(Some(std::path::PathBuf::from(
+      "/tmp/export.json",
+    )));
+    assert!(export_changed);
+    assert_eq!(state.export_path, "/tmp/export.json");
+
+    let before_import = state.import_path.clone();
+    let before_export = state.export_path.clone();
+    assert!(!state.apply_import_dialog_selection(None));
+    assert!(!state.apply_export_dialog_selection(None));
+    assert_eq!(state.import_path, before_import);
+    assert_eq!(state.export_path, before_export);
   }
 }
