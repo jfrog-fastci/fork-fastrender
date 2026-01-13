@@ -55,6 +55,11 @@ const DOM_TOKEN_LIST_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMDTL");
 const RANGE_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMRNG");
 const DOM_HOST_NOT_AVAILABLE_ERROR: &str = "DOM host not available";
 const CSS_STYLE_DECL_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMCSS");
+// Must match `window_realm::NODE_LIST_ROOT_KEY`.
+//
+// Note: `dom_internal_keys` intentionally centralises most `__fastrender_*` keys, but the NodeList
+// root back-reference is currently only needed by the vm-js DOM shims and the WebIDL host dispatch.
+const NODE_LIST_ROOT_KEY: &str = "__fastrender_node_list_root";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UrlSearchParamsIteratorKind {
@@ -1739,7 +1744,7 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     // Root the list object while allocating keys and wrappers.
     scope.push_root(Value::Object(list_obj))?;
 
-    let length_key = key_from_str(scope, "length")?;
+    let length_key = key_from_str(scope, COLLECTION_LENGTH_KEY)?;
     let old_len = match scope
       .heap()
       .object_get_own_data_property_value(list_obj, &length_key)?
@@ -1770,8 +1775,8 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       scope.heap_mut().delete_property_or_throw(list_obj, idx_key)?;
     }
 
-    // Keep `length` non-configurable; make it writable so we can update the value in-place on each
-    // DOM mutation.
+    // Update internal length storage. Public `length` is exposed as a readonly accessor on
+    // `NodeList.prototype`.
     scope.define_property(
       list_obj,
       length_key,
@@ -2026,7 +2031,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           )?;
         }
 
-        let length_key = key_from_str(scope, "length")?;
+        let length_key = key_from_str(scope, COLLECTION_LENGTH_KEY)?;
         scope.define_property(
           list_obj,
           length_key,
@@ -3088,6 +3093,14 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             };
             scope.heap_mut().object_set_prototype(list_obj, Some(proto))?;
 
+            // Keep the root wrapper alive even if the caller only holds the NodeList object.
+            let root_key = key_from_str(scope, NODE_LIST_ROOT_KEY)?;
+            scope.define_property(
+              list_obj,
+              root_key,
+              data_property(Value::Object(wrapper_obj), false, false, false),
+            )?;
+
             scope.define_property(
               wrapper_obj,
               child_nodes_key,
@@ -3470,7 +3483,13 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       }
       ("Node", "textContent", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
-        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+        let Value::Object(wrapper_obj) = receiver else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+        let handle =
+          require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), Value::Object(wrapper_obj))?;
+        let node_id = handle.node_id;
+        let document_id = handle.document_id;
         if args.is_empty() {
           let text = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
             Ok(host.with_dom(|dom| {
@@ -3510,7 +3529,18 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             }))
           })?;
           match result {
-            Ok(()) => Ok(Value::Undefined),
+            Ok(()) => {
+              // Keep cached `childNodes` live NodeLists updated: `textContent` can replace/remove
+              // all children.
+              self.sync_cached_child_nodes_for_wrapper(
+                vm,
+                scope,
+                wrapper_obj,
+                node_id,
+                document_id,
+              )?;
+              Ok(Value::Undefined)
+            }
             Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
           }
         }
@@ -3904,12 +3934,19 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       }
       ("Node", "insertBefore", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
+        let Value::Object(parent_wrapper_obj) = receiver else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
         let platform = require_dom_platform_mut(vm)?;
-        let parent_handle = platform.require_node_handle(scope.heap(), receiver)?;
+        let parent_handle =
+          platform.require_node_handle(scope.heap(), Value::Object(parent_wrapper_obj))?;
         let parent_id = parent_handle.node_id;
         let document_id = parent_handle.document_id;
         let child_value = args.get(0).copied().unwrap_or(Value::Undefined);
         let child_id = platform.require_node_id(scope.heap(), child_value)?;
+        let Value::Object(child_wrapper_obj) = child_value else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
         let reference = match args.get(1).copied() {
           None | Some(Value::Undefined) | Some(Value::Null) => None,
           Some(v) => Some(platform.require_node_id(scope.heap(), v)?),
@@ -3917,6 +3954,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
           Ok(host.mutate_dom(|dom| {
+            let old_parent = match dom.parent(child_id) {
+              Ok(v) => v,
+              Err(err) => return (Err(err), false),
+            };
             if reference.is_some_and(|reference| {
               reference.index() < dom.nodes_len()
                 && matches!(dom.node(reference).kind, NodeKind::ShadowRoot { .. })
@@ -3934,13 +3975,43 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               dom.insert_before(parent_id, child_id, reference)
             };
             match res {
-              Ok(changed) => (Ok(()), changed),
+              Ok(changed) => (Ok(old_parent), changed),
               Err(err) => (Err(err), false),
             }
           }))
         })?;
         match result {
-          Ok(()) => {
+          Ok(old_parent_id) => {
+            self.sync_cached_child_nodes_for_wrapper(
+              vm,
+              scope,
+              parent_wrapper_obj,
+              parent_id,
+              document_id,
+            )?;
+            self.sync_cached_child_nodes_for_wrapper(
+              vm,
+              scope,
+              child_wrapper_obj,
+              child_id,
+              document_id,
+            )?;
+            if let Some(old_parent_id) = old_parent_id {
+              if old_parent_id != parent_id {
+                if let Some(old_parent_wrapper) = require_dom_platform_mut(vm)?
+                  .get_existing_wrapper_for_document_id(scope.heap(), document_id, old_parent_id)
+                {
+                  self.sync_cached_child_nodes_for_wrapper(
+                    vm,
+                    scope,
+                    old_parent_wrapper,
+                    old_parent_id,
+                    document_id,
+                  )?;
+                }
+              }
+            }
+
             let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
               Ok(host.with_dom(|dom| {
                 if child_id.index() >= dom.nodes_len() {
@@ -4014,17 +4085,28 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       }
       ("Node", "replaceChild", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
+        let Value::Object(parent_wrapper_obj) = receiver else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
         let platform = require_dom_platform_mut(vm)?;
-        let parent_handle = platform.require_node_handle(scope.heap(), receiver)?;
+        let parent_handle =
+          platform.require_node_handle(scope.heap(), Value::Object(parent_wrapper_obj))?;
         let parent_id = parent_handle.node_id;
         let document_id = parent_handle.document_id;
         let new_child_value = args.get(0).copied().unwrap_or(Value::Undefined);
         let new_child_id = platform.require_node_id(scope.heap(), new_child_value)?;
+        let Value::Object(new_child_wrapper_obj) = new_child_value else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
         let old_child_value = args.get(1).copied().unwrap_or(Value::Undefined);
         let old_child_id = platform.require_node_id(scope.heap(), old_child_value)?;
 
         let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
           Ok(host.mutate_dom(|dom| {
+            let old_parent = match dom.parent(new_child_id) {
+              Ok(v) => v,
+              Err(err) => return (Err(err), false),
+            };
             // ShadowRoot is never a tree child in the DOM Standard, so it cannot be replaced (even
             // though dom2 stores it as a child of its host element).
             if old_child_id.index() < dom.nodes_len()
@@ -4042,13 +4124,43 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               dom.replace_child(parent_id, new_child_id, old_child_id)
             };
             match res {
-              Ok(changed) => (Ok(()), changed),
+              Ok(changed) => (Ok(old_parent), changed),
               Err(err) => (Err(err), false),
             }
           }))
         })?;
         match result {
-          Ok(()) => {
+          Ok(old_parent_id) => {
+            self.sync_cached_child_nodes_for_wrapper(
+              vm,
+              scope,
+              parent_wrapper_obj,
+              parent_id,
+              document_id,
+            )?;
+            self.sync_cached_child_nodes_for_wrapper(
+              vm,
+              scope,
+              new_child_wrapper_obj,
+              new_child_id,
+              document_id,
+            )?;
+            if let Some(old_parent_id) = old_parent_id {
+              if old_parent_id != parent_id {
+                if let Some(old_parent_wrapper) = require_dom_platform_mut(vm)?
+                  .get_existing_wrapper_for_document_id(scope.heap(), document_id, old_parent_id)
+                {
+                  self.sync_cached_child_nodes_for_wrapper(
+                    vm,
+                    scope,
+                    old_parent_wrapper,
+                    old_parent_id,
+                    document_id,
+                  )?;
+                }
+              }
+            }
+
             let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
               Ok(host.with_dom(|dom| {
                 if old_child_id.index() >= dom.nodes_len() {
@@ -4101,29 +4213,50 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       }
       ("Node", "remove", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
-        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
-        let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let Value::Object(wrapper_obj) = receiver else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+        let handle =
+          require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), Value::Object(wrapper_obj))?;
+        let node_id = handle.node_id;
+        let document_id = handle.document_id;
+
+        let result: Result<Option<NodeId>, DomError> = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
           Ok(host.mutate_dom(|dom| {
             if node_id.index() < dom.nodes_len()
               && matches!(dom.node(node_id).kind, NodeKind::ShadowRoot { .. })
             {
               // ShadowRoot is not a tree child per the DOM Standard. It must not be removable via
               // `Node.remove()` even though `dom2` stores it as a child of its host element.
-              return (Ok(()), false);
+              return (Ok(None), false);
             }
             let parent = match dom.parent(node_id) {
               Ok(Some(p)) => p,
-              Ok(None) => return (Ok(()), false),
+              Ok(None) => return (Ok(None), false),
               Err(err) => return (Err(err), false),
             };
             match dom.remove_child(parent, node_id) {
-              Ok(changed) => (Ok(()), changed),
+              Ok(changed) => (Ok(Some(parent)), changed),
               Err(err) => (Err(err), false),
             }
           }))
         })?;
         match result {
-          Ok(()) => Ok(Value::Undefined),
+          Ok(Some(parent_id)) => {
+            if let Some(parent_wrapper) = require_dom_platform_mut(vm)?
+              .get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
+            {
+              self.sync_cached_child_nodes_for_wrapper(
+                vm,
+                scope,
+                parent_wrapper,
+                parent_id,
+                document_id,
+              )?;
+            }
+            Ok(Value::Undefined)
+          }
+          Ok(None) => Ok(Value::Undefined),
           Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
         }
       }
@@ -4899,7 +5032,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           )?;
         }
 
-        let length_key = key_from_str(scope, "length")?;
+        let length_key = key_from_str(scope, COLLECTION_LENGTH_KEY)?;
         scope.define_property(
           list_obj,
           length_key,
@@ -5362,7 +5495,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           }))
         })?;
 
-        let length_key = key_from_str(scope, "length")?;
+        let length_key = key_from_str(scope, COLLECTION_LENGTH_KEY)?;
         let old_len = match scope
           .heap()
           .object_get_own_data_property_value(collection_obj, &length_key)?
@@ -5393,8 +5526,8 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           scope.heap_mut().delete_property_or_throw(collection_obj, idx_key)?;
         }
 
-        // Keep the `length` property non-configurable like the handwritten shim; make it writable so
-        // we can update it after each DOM mutation without redefining the property shape.
+        // Update internal length storage. Public `length` is exposed as a readonly accessor on
+        // `HTMLCollection.prototype`.
         scope.define_property(
           collection_obj,
           length_key,
@@ -5560,13 +5693,13 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         )
       }
       ("NodeList", "length", 0) => {
-        // NodeList.length: return own numeric "length" data property if present; else 0.
+        // NodeList.length: return internal length slot if present; else 0.
         let Some(Value::Object(list_obj)) = receiver else {
           return Err(VmError::TypeError("Illegal invocation"));
         };
         scope.push_root(Value::Object(list_obj))?;
 
-        let length_key = key_from_str(scope, "length")?;
+        let length_key = key_from_str(scope, COLLECTION_LENGTH_KEY)?;
         let len = match scope
           .heap()
           .object_get_own_data_property_value(list_obj, &length_key)?
@@ -6002,7 +6135,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         Ok(Value::Object(style_obj))
       }
       ("Element", "innerHTML", 0) => {
-        let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        let (element_id, obj) = require_element_receiver(vm, scope, receiver)?;
+        let document_id = require_dom_platform_mut(vm)?
+          .require_element_handle(scope.heap(), Value::Object(obj))?
+          .document_id;
         if args.is_empty() {
           let result: Result<String, DomError> =
             self.with_dom_host(vm, |host| Ok(host.with_dom(|dom| dom.inner_html(element_id))))?;
@@ -6038,7 +6174,11 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             }))
           })?;
           match result {
-            Ok(()) => Ok(Value::Undefined),
+            Ok(()) => {
+              // `innerHTML` replaces children; keep cached `childNodes` live NodeLists updated.
+              self.sync_cached_child_nodes_for_wrapper(vm, scope, obj, element_id, document_id)?;
+              Ok(Value::Undefined)
+            }
             Err(err) => {
               let class = self.dom_exception_class_for_realm(vm, scope)?;
               Err(throw_dom_error(scope, class, err))
@@ -6047,7 +6187,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         }
       }
       ("Element", "outerHTML", 0) => {
-        let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        let (element_id, obj) = require_element_receiver(vm, scope, receiver)?;
+        let document_id = require_dom_platform_mut(vm)?
+          .require_element_handle(scope.heap(), Value::Object(obj))?
+          .document_id;
         if args.is_empty() {
           let result: Result<String, DomError> =
             self.with_dom_host(vm, |host| Ok(host.with_dom(|dom| dom.outer_html(element_id))))?;
@@ -6074,16 +6217,40 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             }
           };
 
-          let result: Result<(), DomError> = self.with_dom_host(vm, |host| {
+          let result: Result<Option<NodeId>, DomError> = self.with_dom_host(vm, |host| {
             Ok(host.mutate_dom(|dom| {
               let before = dom.mutation_generation();
+              let parent = match dom.parent(element_id) {
+                Ok(v) => v,
+                Err(err) => return (Err(err), false),
+              };
               let res = dom.set_outer_html(element_id, &html);
               let changed = dom.mutation_generation() != before;
-              (res, changed)
+              match res {
+                Ok(()) => (Ok(parent), changed),
+                Err(err) => (Err(err), false),
+              }
             }))
           })?;
           match result {
-            Ok(()) => Ok(Value::Undefined),
+            Ok(parent_id) => {
+              // `outerHTML` replaces this element in its parent; keep cached `childNodes` live
+              // NodeLists updated for the parent if it is wrapped.
+              if let Some(parent_id) = parent_id {
+                if let Some(parent_wrapper) = require_dom_platform_mut(vm)?
+                  .get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
+                {
+                  self.sync_cached_child_nodes_for_wrapper(
+                    vm,
+                    scope,
+                    parent_wrapper,
+                    parent_id,
+                    document_id,
+                  )?;
+                }
+              }
+              Ok(Value::Undefined)
+            }
             Err(err) => {
               let class = self.dom_exception_class_for_realm(vm, scope)?;
               Err(throw_dom_error(scope, class, err))
@@ -6276,7 +6443,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         }
       }
       ("Element", "insertAdjacentHTML", 0) => {
-        let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        let (element_id, obj) = require_element_receiver(vm, scope, receiver)?;
+        let document_id = require_dom_platform_mut(vm)?
+          .require_element_handle(scope.heap(), Value::Object(obj))?
+          .document_id;
         let position =
           js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
         let html_value = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -6301,7 +6471,36 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         })?;
 
         match result {
-          Ok(()) => Ok(Value::Undefined),
+          Ok(()) => {
+            // Keep cached `childNodes` live NodeLists updated.
+            match position.to_ascii_lowercase().as_str() {
+              "afterbegin" | "beforeend" => {
+                // Insertion inside the element mutates its child list.
+                self.sync_cached_child_nodes_for_wrapper(vm, scope, obj, element_id, document_id)?;
+              }
+              "beforebegin" | "afterend" => {
+                // Insertion as a sibling mutates the parent's child list.
+                let parent_id: Result<Option<NodeId>, DomError> = self.with_dom_host(vm, |host| {
+                  Ok(host.with_dom(|dom| dom.parent(element_id)))
+                })?;
+                if let Ok(Some(parent_id)) = parent_id {
+                  if let Some(parent_wrapper) = require_dom_platform_mut(vm)?
+                    .get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
+                  {
+                    self.sync_cached_child_nodes_for_wrapper(
+                      vm,
+                      scope,
+                      parent_wrapper,
+                      parent_id,
+                      document_id,
+                    )?;
+                  }
+                }
+              }
+              _ => {}
+            }
+            Ok(Value::Undefined)
+          }
           Err(err) => {
             let class = self.dom_exception_class_for_realm(vm, scope)?;
             Err(throw_dom_error(scope, class, err))
@@ -6309,7 +6508,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         }
       }
       ("Element", "insertAdjacentElement", 0) => {
-        let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        let (element_id, obj) = require_element_receiver(vm, scope, receiver)?;
+        let document_id = require_dom_platform_mut(vm)?
+          .require_element_handle(scope.heap(), Value::Object(obj))?
+          .document_id;
         let where_ =
           js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
         let new_element_val = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -6326,7 +6528,34 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         })?;
 
         match result {
-          Ok(Some(_)) => Ok(new_element_val),
+          Ok(Some(_)) => {
+            // Keep cached `childNodes` live NodeLists updated.
+            match where_.to_ascii_lowercase().as_str() {
+              "afterbegin" | "beforeend" => {
+                self.sync_cached_child_nodes_for_wrapper(vm, scope, obj, element_id, document_id)?;
+              }
+              "beforebegin" | "afterend" => {
+                let parent_id: Result<Option<NodeId>, DomError> = self.with_dom_host(vm, |host| {
+                  Ok(host.with_dom(|dom| dom.parent(element_id)))
+                })?;
+                if let Ok(Some(parent_id)) = parent_id {
+                  if let Some(parent_wrapper) = require_dom_platform_mut(vm)?
+                    .get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
+                  {
+                    self.sync_cached_child_nodes_for_wrapper(
+                      vm,
+                      scope,
+                      parent_wrapper,
+                      parent_id,
+                      document_id,
+                    )?;
+                  }
+                }
+              }
+              _ => {}
+            }
+            Ok(new_element_val)
+          }
           Ok(None) => Ok(Value::Null),
           Err(err) => {
             let class = self.dom_exception_class_for_realm(vm, scope)?;
@@ -6335,7 +6564,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         }
       }
       ("Element", "insertAdjacentText", 0) => {
-        let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        let (element_id, obj) = require_element_receiver(vm, scope, receiver)?;
+        let document_id = require_dom_platform_mut(vm)?
+          .require_element_handle(scope.heap(), Value::Object(obj))?
+          .document_id;
         let where_ =
           js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
         let data = js_string_to_rust_string(scope, args.get(1).copied().unwrap_or(Value::Undefined))?;
@@ -6350,7 +6582,34 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         })?;
 
         match result {
-          Ok(()) => Ok(Value::Undefined),
+          Ok(()) => {
+            // Keep cached `childNodes` live NodeLists updated.
+            match where_.to_ascii_lowercase().as_str() {
+              "afterbegin" | "beforeend" => {
+                self.sync_cached_child_nodes_for_wrapper(vm, scope, obj, element_id, document_id)?;
+              }
+              "beforebegin" | "afterend" => {
+                let parent_id: Result<Option<NodeId>, DomError> = self.with_dom_host(vm, |host| {
+                  Ok(host.with_dom(|dom| dom.parent(element_id)))
+                })?;
+                if let Ok(Some(parent_id)) = parent_id {
+                  if let Some(parent_wrapper) = require_dom_platform_mut(vm)?
+                    .get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
+                  {
+                    self.sync_cached_child_nodes_for_wrapper(
+                      vm,
+                      scope,
+                      parent_wrapper,
+                      parent_id,
+                      document_id,
+                    )?;
+                  }
+                }
+              }
+              _ => {}
+            }
+            Ok(Value::Undefined)
+          }
           Err(err) => {
             let class = self.dom_exception_class_for_realm(vm, scope)?;
             Err(throw_dom_error(scope, class, err))
@@ -9282,14 +9541,16 @@ mod dom_dispatch_tests {
 
   fn child_list_len(scope: &mut Scope<'_>, array: GcObject) -> Result<usize, VmError> {
     scope.push_root(Value::Object(array))?;
-    let length_key = key_from_str(scope, "length")?;
+    let length_key = key_from_str(scope, COLLECTION_LENGTH_KEY)?;
     match scope
       .heap()
       .object_get_own_data_property_value(array, &length_key)?
       .unwrap_or(Value::Undefined)
     {
       Value::Number(n) if n.is_finite() && n >= 0.0 => Ok(n as usize),
-      _ => Err(VmError::TypeError("expected array.length to be a number")),
+      _ => Err(VmError::TypeError(
+        "expected collection length slot to be a number",
+      )),
     }
   }
 
