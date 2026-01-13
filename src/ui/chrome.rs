@@ -3105,11 +3105,15 @@ pub fn chrome_ui_with_bookmarks(
           let mut custom = current_accent
             .map(|c| c.to_color32())
             .unwrap_or(ui.visuals().hyperlink_color);
-          let mut resp = egui::color_picker::color_edit_button_srgba(
-            ui,
-            &mut custom,
-            egui::color_picker::Alpha::BlendOrAdditive,
-          );
+          let mut resp = ui
+            .push_id("custom_accent_color_picker", |ui| {
+              egui::color_picker::color_edit_button_srgba(
+                ui,
+                &mut custom,
+                egui::color_picker::Alpha::BlendOrAdditive,
+              )
+            })
+            .inner;
           resp.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, "Custom accent color")
           });
