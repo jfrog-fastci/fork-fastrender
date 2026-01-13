@@ -15,7 +15,9 @@ use std::time::Duration;
 
 use fastrender::sandbox::windows::spawn_sandboxed;
 use windows_sys::Win32::Foundation::HANDLE;
-use windows_sys::Win32::System::Threading::{GetExitCodeProcess, TerminateProcess, WaitForSingleObject};
+use windows_sys::Win32::System::Threading::{
+  GetExitCodeProcess, TerminateProcess, WaitForSingleObject,
+};
 
 const WAIT_OBJECT_0: u32 = 0x0000_0000;
 const WAIT_TIMEOUT: u32 = 0x0000_0102;
@@ -55,6 +57,11 @@ fn sandbox_job_kill_on_close_terminates_child_process() {
     pid,
     level,
   } = child;
+  let Some(job) = job else {
+    panic!(
+      "sandboxed child was not assigned to a JobObject (pid={pid}, level={level:?}); cannot validate KILL_ON_JOB_CLOSE semantics"
+    );
+  };
 
   let handle = process.as_raw_handle() as HANDLE;
 

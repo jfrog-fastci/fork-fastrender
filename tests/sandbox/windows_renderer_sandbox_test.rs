@@ -389,9 +389,13 @@ fn appcontainer_denies_filesystem_and_network() {
         len = contents.len()
       ),
       Err(err) => {
+        let raw = err.raw_os_error();
         assert!(
-          err.kind() == std::io::ErrorKind::PermissionDenied || err.raw_os_error() == Some(5),
-          "expected read_to_string({path:?}) to fail with PermissionDenied/ERROR_ACCESS_DENIED(5), got {err:?}"
+          matches!(
+            err.kind(),
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound
+          ) || matches!(raw, Some(2 | 3 | 5)),
+          "expected read_to_string({path:?}) to fail with PermissionDenied/NotFound (common for AppContainer) or ERROR_ACCESS_DENIED(5)/PATH_NOT_FOUND(3)/FILE_NOT_FOUND(2), got {err:?} (raw_os_error={raw:?})"
         );
       }
     }
