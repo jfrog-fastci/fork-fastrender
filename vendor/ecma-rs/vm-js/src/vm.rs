@@ -4044,7 +4044,7 @@ impl Vm {
       .and_then(|body| body.function.as_ref())
       .is_some_and(|f| f.async_ && !f.generator);
 
-    let (this_mode, is_strict, realm, outer, bound_this, bound_new_target) = {
+    let (this_mode, is_strict, realm, outer, bound_this, bound_new_target, func_data) = {
       let f = scope.heap().get_function(callee)?;
       (
         f.this_mode,
@@ -4053,6 +4053,7 @@ impl Vm {
         f.closure_env,
         f.bound_this,
         f.bound_new_target,
+        f.data,
       )
     };
 
@@ -4110,6 +4111,14 @@ impl Vm {
         }
       }
     };
+
+    // Some compiled functions are executed via the AST interpreter (currently async functions).
+    // These are still allocated as compiled user functions (CallHandler::User) so compiled script
+    // execution can proceed without falling back to the interpreter for the entire script.
+    if let FunctionData::EcmaFallback { code_id } = func_data {
+      // Ensure the function has a realm/global object set (see `global_object` synthesis above).
+      return self.call_ecma_function(scope, host, hooks, code_id, callee, this, args);
+    }
 
     let this = match this_mode {
       ThisMode::Lexical => bound_this.ok_or(VmError::Unimplemented(

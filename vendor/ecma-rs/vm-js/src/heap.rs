@@ -809,7 +809,7 @@ impl Heap {
 
           // FunctionData slots are internal strong edges.
           match f.data {
-            FunctionData::None | FunctionData::PromiseCapabilityExecutor => {}
+            FunctionData::None | FunctionData::EcmaFallback { .. } | FunctionData::PromiseCapabilityExecutor => {}
             FunctionData::ClassConstructorBody { class_constructor } => {
               self.debug_validate_heap_id_expected(
                 owner_kind,

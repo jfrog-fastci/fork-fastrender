@@ -879,6 +879,24 @@ impl<'vm> HirEvaluator<'vm> {
         .env_initialize_binding(env, name, Value::Object(func_obj))?;
     }
 
+    // Async functions are not yet supported by the compiled/HIR executor. However, we still
+    // allocate them as compiled user functions so surrounding code can execute in the compiled
+    // path and so call sites can observe `CallHandler::User`.
+    //
+    // When an async function is invoked, `Vm::call_user_function` consults this metadata and
+    // delegates execution to the AST interpreter via the cached `EcmaFunctionId`.
+    if is_async && !is_generator {
+      let code_id = self.vm.register_ecma_function(
+        self.env.source(),
+        def_span.start,
+        def_span.end,
+        kind,
+      )?;
+      scope
+        .heap_mut()
+        .set_function_data(func_obj, FunctionData::EcmaFallback { code_id })?;
+    }
+
     // Arrow functions capture lexical `this`/`new.target`.
     if is_arrow {
       scope.heap_mut().set_function_bound_this(func_obj, self.this)?;

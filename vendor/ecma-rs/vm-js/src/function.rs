@@ -61,6 +61,15 @@ pub(crate) enum ConstructHandler {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum FunctionData {
   None,
+  /// A compiled HIR function whose body is executed via the AST interpreter.
+  ///
+  /// This is currently used for `async` functions:
+  /// - Compiled/HIR execution does not yet support async/await semantics.
+  /// - We still allocate async functions as compiled user functions so the surrounding compiled
+  ///   script can execute without falling back entirely.
+  /// - When the async function is invoked, the VM delegates execution to the AST interpreter using
+  ///   this cached [`EcmaFunctionId`].
+  EcmaFallback { code_id: EcmaFunctionId },
   /// ECMAScript function object that represents the user-written `constructor(...) { ... }` body
   /// for a class definition.
   ///
@@ -380,6 +389,7 @@ impl Trace for JsFunction {
 
     match self.data {
       FunctionData::None => {}
+      FunctionData::EcmaFallback { .. } => {}
       FunctionData::ClassConstructorBody { class_constructor } => {
         tracer.trace_value(Value::Object(class_constructor));
       }
