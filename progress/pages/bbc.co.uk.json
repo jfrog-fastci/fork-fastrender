@@ -14,15 +14,16 @@
     "layout": 244.1365536768916,
     "paint": 23.012871862985687
   },
-  "notes": "Visually close to Chrome overall. Remaining ~29% pixel diffs (perceptual ~0.13) appear primarily raster-level: widespread glyph-edge differences from text rasterization/hinting/subpixel snapping, plus minor per-channel differences in decoded/scaled WebP/JPEG imagery (hero + thumbnails). Layout/structure (header/nav + grid-based promo blocks) looks correct in the fixture render; no obvious missing layout primitives identified.",
+  "notes": "Visually close to Chrome overall. Remaining ~22% pixel diffs (perceptual ~0.12) appear primarily raster-level: widespread glyph-edge differences from text rasterization/hinting/subpixel snapping (especially in the text-heavy lower half), plus minor per-channel differences in decoded/scaled WebP/JPEG imagery (hero + thumbnails). Layout/structure (header/nav + grid-based promo blocks) looks correct in the fixture render; no obvious missing layout primitives identified.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 378543,
-    "diff_percent": 29.3535,
-    "perceptual": 0.1265,
+    "diff_pixels": 284947,
+    "diff_percent": 22.0958,
+    "perceptual": 0.1172,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 32,
-      "y": 16,
+      "y": 15,
       "baseline_rgba": [
         0,
         0,
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "4cf8b949629b5c2044d5abef3f7f46b9017ee11b"
+    "computed_at_commit": "fea3eca2146904246687806a399ff0a7f6f733f6"
   },
   "hotspot": "layout",
   "failure_stage": null,
