@@ -4226,18 +4226,54 @@ impl App {
                 egui::WidgetInfo::labeled(egui::WidgetType::Label, icon_a11y_label.clone())
               });
 
-              let title_label = title_text.clone();
+              // Make the title an explicit, focusable control so it is discoverable by both
+              // keyboard navigation and screen readers (AccessKit).
               let title_resp = ui
-                .add(
-                  egui::Label::new(egui::RichText::new(&title_label).strong().color(title_color))
+                .push_id(toast_id.with("toggle_details"), |ui| {
+                  ui.add(
+                    egui::Label::new(
+                      egui::RichText::new(&title_text).strong().color(title_color),
+                    )
                     .sense(egui::Sense::click()),
-                )
+                  )
+                })
+                .inner
                 .on_hover_text(&toast_text);
-              title_resp.widget_info(move || {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, title_label.clone())
+
+              // Communicate the current expanded/collapsed state via the accessible label.
+              let title_a11y_label = if expanded {
+                format!("Hide warning details: {title_text}")
+              } else {
+                format!("Show warning details: {title_text}")
+              };
+              title_resp.widget_info({
+                let label = title_a11y_label.clone();
+                move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
               });
-              if title_resp.clicked() {
+
+              let mut toggle_requested = title_resp.clicked();
+              if title_resp.has_focus() {
+                toggle_requested |= ui.input_mut(|i| {
+                  i.consume_key(Default::default(), egui::Key::Enter)
+                    || i.consume_key(Default::default(), egui::Key::Space)
+                });
+              }
+              if toggle_requested {
                 expanded = !expanded;
+                title_resp.request_focus();
+              }
+
+              if title_resp.has_focus() {
+                let focus_stroke = ui.visuals().selection.stroke;
+                let focus_stroke = egui::Stroke::new(
+                  focus_stroke.width,
+                  Self::with_alpha(focus_stroke.color, open_opacity),
+                );
+                let rounding =
+                  egui::Rounding::same((theme_sizing.corner_radius * 0.5).clamp(2.0, 6.0));
+                ui
+                  .painter()
+                  .rect_stroke(title_resp.rect.expand(2.0), rounding, focus_stroke);
               }
 
               ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -4256,12 +4292,12 @@ impl App {
               });
             });
 
-            if let Some(summary) = summary_text.as_deref().filter(|s| !s.trim().is_empty()) {
-              ui.add_space(2.0);
-              ui.add(
-                egui::Label::new(egui::RichText::new(summary).color(summary_color)).wrap(true),
-              );
-            }
+              if let Some(summary) = summary_text.as_deref().filter(|s| !s.trim().is_empty()) {
+                ui.add_space(2.0);
+                ui.add(
+                  egui::Label::new(egui::RichText::new(summary).color(summary_color)).wrap(true),
+                );
+              }
 
             if expanded {
               ui.add_space(6.0);
