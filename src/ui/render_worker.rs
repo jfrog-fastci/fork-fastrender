@@ -7275,6 +7275,47 @@ impl BrowserRuntime {
     debug_log_enabled: bool,
     msgs: &mut Vec<WorkerToUi>,
   ) {
+    fn prewarm_js_tab_renderer_preorder_mapping(
+      tab_id: TabId,
+      js_tab: &mut BrowserTab,
+      debug_log_enabled: bool,
+      msgs: &mut Vec<WorkerToUi>,
+    ) {
+      // Pointer events can arrive immediately after a navigation commits. Ensure the JS tab's
+      // renderer-preorder → dom2 NodeId mapping cache is populated so the first event can be routed
+      // to the correct target even when elements lack `id=` attributes.
+      //
+      // This is a cheap, paint-free operation: it only traverses the dom2 tree to build the mapping.
+      let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // Preorder id 1 corresponds to the document root in the renderer's traversal.
+        js_tab.dom2_node_for_renderer_preorder(1)
+      }));
+      match res {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+          if debug_log_enabled {
+            msgs.push(WorkerToUi::DebugLog {
+              tab_id,
+              line: "JS tab renderer preorder mapping prewarm returned None".to_string(),
+            });
+          }
+        }
+        Err(payload) => {
+          if debug_log_enabled {
+            let msg = payload
+              .downcast_ref::<&str>()
+              .map(|s| (*s).to_string())
+              .or_else(|| payload.downcast_ref::<String>().cloned())
+              .unwrap_or_else(|| "unknown panic".to_string());
+            msgs.push(WorkerToUi::DebugLog {
+              tab_id,
+              line: format!("panic while prewarming JS tab renderer preorder mapping: {msg}"),
+            });
+          }
+        }
+      }
+    }
+
     // `BrowserTab` navigations are powered by the resource fetcher (http/file/data); it does not
     // know how to fetch internal `about:` pages rendered by the UI worker.
     if about_pages::is_about_url(committed_url) {
@@ -7321,6 +7362,7 @@ impl BrowserRuntime {
       } else {
         tab.js_dom_dirty = false;
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
+        prewarm_js_tab_renderer_preorder_mapping(tab_id, js_tab, debug_log_enabled, msgs);
       }
       // Navigation replaces the JS document, invalidating any preorder→NodeId mapping cache.
       tab.js_dom_mapping_generation = 0;
@@ -7357,6 +7399,7 @@ impl BrowserRuntime {
       }
       return;
     }
+    prewarm_js_tab_renderer_preorder_mapping(tab_id, &mut js_tab, debug_log_enabled, msgs);
     let generation = js_tab.dom().mutation_generation();
     tab.js_tab = Some(js_tab);
     tab.js_dom_mapping_generation = 0;
