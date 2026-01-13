@@ -47,9 +47,50 @@ impl CanPlayType {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MediaElementKind {
+pub enum MediaKind {
   Video,
   Audio,
+}
+
+/// Backwards compatible alias; older call sites used `MediaElementKind`.
+pub type MediaElementKind = MediaKind;
+
+/// Selection inputs describing the rendering environment.
+///
+/// This struct is intentionally extendable; the selection algorithm may need
+/// additional information in the future (e.g. platform decoder capabilities).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MediaSelectionContext<'a> {
+  pub media_context: Option<&'a MediaContext>,
+}
+
+/// Result of selecting a media source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectedMediaSource<'a> {
+  pub url: &'a str,
+  pub mime: Option<String>,
+  pub codecs: Vec<String>,
+  /// True when the selection came from a `<source>` element.
+  pub from_source: bool,
+}
+
+impl<'a> SelectedMediaSource<'a> {
+  fn empty() -> Self {
+    Self {
+      url: "",
+      mime: None,
+      codecs: Vec::new(),
+      from_source: false,
+    }
+  }
+}
+
+/// A `<source>` candidate for media selection.
+#[derive(Clone, Copy, Debug)]
+pub struct MediaSourceCandidate<'a> {
+  pub src: &'a str,
+  pub type_attr: Option<&'a str>,
+  pub media_attr: Option<&'a str>,
 }
 
 // HTML defines "ASCII whitespace" as: U+0009 TAB, U+000A LF, U+000C FF, U+000D CR, U+0020 SPACE.
@@ -296,8 +337,72 @@ pub fn media_src_is_unusable(src: &str) -> bool {
   false
 }
 
-fn source_media_matches(source: &StyledNode, media_context: Option<&MediaContext>) -> bool {
-  let Some(raw) = source.node.get_attribute_ref("media") else {
+fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
+  value
+    .as_bytes()
+    .get(..prefix.len())
+    .is_some_and(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
+}
+
+fn infer_mime_from_src(kind: MediaKind, src: &str) -> Option<String> {
+  let trimmed = trim_ascii_whitespace(src);
+  if trimmed.is_empty() {
+    return None;
+  }
+
+  // Infer from data URLs.
+  if starts_with_ignore_ascii_case(trimmed, "data:") {
+    let rest = &trimmed["data:".len()..];
+    let (metadata, _payload) = rest.split_once(',')?;
+    let mediatype = trim_ascii_whitespace(metadata.split(';').next().unwrap_or(""));
+    let mediatype = if mediatype.is_empty() { "text/plain" } else { mediatype };
+    return Some(mediatype.to_ascii_lowercase());
+  }
+
+  // Strip query/fragment before extension checks.
+  let cut = trimmed
+    .find(|c| matches!(c, '?' | '#'))
+    .unwrap_or(trimmed.len());
+  let path = &trimmed[..cut];
+  let ext = path.rsplit_once('.')?.1.to_ascii_lowercase();
+
+  let inferred = match ext.as_str() {
+    "mp4" => match kind {
+      MediaKind::Video => "video/mp4",
+      MediaKind::Audio => "audio/mp4",
+    },
+    "m4v" => "video/mp4",
+    "m4a" => "audio/mp4",
+    "webm" => match kind {
+      MediaKind::Video => "video/webm",
+      MediaKind::Audio => "audio/webm",
+    },
+    "ogg" => match kind {
+      MediaKind::Video => "video/ogg",
+      MediaKind::Audio => "audio/ogg",
+    },
+    "ogv" => "video/ogg",
+    "oga" => "audio/ogg",
+    "mp3" => "audio/mpeg",
+    "wav" => "audio/wav",
+    "aac" => "audio/aac",
+    "flac" => "audio/flac",
+    "opus" => "audio/opus",
+    _ => return None,
+  };
+
+  Some(inferred.to_string())
+}
+
+fn mime_matches_kind(kind: MediaKind, mime: &str) -> bool {
+  match kind {
+    MediaKind::Video => mime.starts_with("video/"),
+    MediaKind::Audio => mime.starts_with("audio/"),
+  }
+}
+
+fn media_attribute_matches(media_attr: Option<&str>, ctx: MediaSelectionContext<'_>) -> bool {
+  let Some(raw) = media_attr else {
     return true;
   };
 
@@ -311,12 +416,86 @@ fn source_media_matches(source: &StyledNode, media_context: Option<&MediaContext
     return true;
   };
 
-  let Some(ctx) = media_context else {
+  let Some(media_ctx) = ctx.media_context else {
     // Caller cannot evaluate media queries yet. Treat as match-all for now.
     return true;
   };
 
-  ctx.evaluate_list(&list)
+  media_ctx.evaluate_list(&list)
+}
+
+/// Selects a media source for `<video>`/`<audio>`.
+///
+/// This is a shared (box-generation + JS) subset of the HTML media element source selection
+/// algorithm; see the module-level docs for ordering rules.
+pub fn select_media_source<'a>(
+  kind: MediaKind,
+  element_src: Option<&'a str>,
+  sources: impl IntoIterator<Item = MediaSourceCandidate<'a>>,
+  ctx: MediaSelectionContext<'_>,
+) -> SelectedMediaSource<'a> {
+  if let Some(src) = element_src {
+    let trimmed = trim_ascii_whitespace(src);
+    if !media_src_is_unusable(trimmed) {
+      return SelectedMediaSource {
+        url: trimmed,
+        mime: None,
+        codecs: Vec::new(),
+        from_source: false,
+      };
+    }
+  }
+
+  let mut fallback: Option<SelectedMediaSource<'a>> = None;
+
+  for candidate in sources {
+    let src_trimmed = trim_ascii_whitespace(candidate.src);
+    if media_src_is_unusable(src_trimmed) {
+      continue;
+    }
+    if !media_attribute_matches(candidate.media_attr, ctx) {
+      continue;
+    }
+
+    let type_trimmed = candidate
+      .type_attr
+      .map(trim_ascii_whitespace)
+      .filter(|t| !t.is_empty());
+    let parsed = type_trimmed.and_then(parse_type_attribute);
+
+    let (mime, codecs, playability) = if let (Some(type_str), Some(parsed)) = (type_trimmed, parsed)
+    {
+      (Some(parsed.mime), parsed.codecs, can_play_type(type_str))
+    } else {
+      let mime = infer_mime_from_src(kind, src_trimmed);
+      let playability = mime
+        .as_deref()
+        .map(can_play_type)
+        .unwrap_or(CanPlayType::No);
+      (mime, Vec::new(), playability)
+    };
+
+    let selected = SelectedMediaSource {
+      url: src_trimmed,
+      mime,
+      codecs,
+      from_source: true,
+    };
+
+    let preferred = selected
+      .mime
+      .as_deref()
+      .is_some_and(|mime| mime_matches_kind(kind, mime) && playability.is_playable());
+    if preferred {
+      return selected;
+    }
+
+    if fallback.is_none() {
+      fallback = Some(selected);
+    }
+  }
+
+  fallback.unwrap_or_else(SelectedMediaSource::empty)
 }
 
 /// Compute the effective media source URL for a `<video>`/`<audio>` element during box generation.
@@ -327,69 +506,39 @@ pub fn effective_media_src(
   kind: MediaElementKind,
   media_context: Option<&MediaContext>,
 ) -> String {
-  let src = styled
-    .node
-    .get_attribute_ref("src")
-    .map(trim_ascii_whitespace)
-    .unwrap_or("");
-  if !media_src_is_unusable(src) {
-    return src.to_string();
-  }
-
-  let preferred_prefix = match kind {
-    MediaElementKind::Video => "video/",
-    MediaElementKind::Audio => "audio/",
-  };
-
-  let mut first_any: Option<String> = None;
-  for child in &styled.children {
-    let Some(tag) = child.node.tag_name() else {
-      continue;
-    };
+  let element_src = styled.node.get_attribute_ref("src");
+  let sources = styled.children.iter().filter_map(|child| {
+    let tag = child.node.tag_name()?;
     if !tag.eq_ignore_ascii_case("source") {
-      continue;
+      return None;
     }
-    if !source_media_matches(child, media_context) {
-      continue;
-    }
+    let src = child.node.get_attribute_ref("src")?;
+    Some(MediaSourceCandidate {
+      src,
+      type_attr: child.node.get_attribute_ref("type"),
+      media_attr: child.node.get_attribute_ref("media"),
+    })
+  });
 
-    let Some(src_attr) = child.node.get_attribute_ref("src") else {
-      continue;
-    };
-    let src_trimmed = trim_ascii_whitespace(src_attr);
-    if src_trimmed.is_empty() {
-      continue;
-    }
-    if first_any.is_none() {
-      first_any = Some(src_trimmed.to_string());
-    }
-
-    let Some(type_attr) = child.node.get_attribute_ref("type") else {
-      continue;
-    };
-    let type_trimmed = trim_ascii_whitespace(type_attr);
-    if type_trimmed.is_empty() {
-      continue;
-    }
-
-    let Some(parsed) = parse_type_attribute(type_trimmed) else {
-      continue;
-    };
-    if !parsed.mime.starts_with(preferred_prefix) {
-      continue;
-    }
-
-    if can_play_type(type_trimmed).is_playable() {
-      return src_trimmed.to_string();
-    }
-  }
-
-  first_any.unwrap_or_default()
+  select_media_source(
+    kind,
+    element_src,
+    sources,
+    MediaSelectionContext {
+      media_context: media_context,
+    },
+  )
+  .url
+  .to_string()
 }
 
 #[cfg(test)]
 mod tests {
-  use super::{can_play_type, parse_type_attribute, CanPlayType};
+  use super::{
+    can_play_type, parse_type_attribute, select_media_source, CanPlayType, MediaKind,
+    MediaSelectionContext, MediaSourceCandidate,
+  };
+  use crate::style::media::MediaContext;
 
   #[test]
   fn type_attribute_parses_single_quoted_codecs_mp4() {
@@ -438,5 +587,75 @@ mod tests {
   #[test]
   fn rejects_bogus_codecs() {
     assert_eq!(can_play_type("video/webm; codecs=bogus"), CanPlayType::No);
+  }
+
+  #[test]
+  fn media_src_attribute_wins_over_source_children() {
+    let selected = select_media_source(
+      MediaKind::Video,
+      Some("parent.mp4"),
+      [MediaSourceCandidate {
+        src: "child.mp4",
+        type_attr: Some("video/mp4"),
+        media_attr: None,
+      }],
+      MediaSelectionContext { media_context: None },
+    );
+
+    assert_eq!(selected.url, "parent.mp4");
+    assert!(!selected.from_source);
+    assert!(selected.mime.is_none());
+    assert!(selected.codecs.is_empty());
+  }
+
+  #[test]
+  fn media_attribute_filters_sources_when_context_available() {
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+    let selected = select_media_source(
+      MediaKind::Video,
+      None,
+      [
+        MediaSourceCandidate {
+          src: "small.mp4",
+          type_attr: Some("video/mp4"),
+          media_attr: Some("(max-width: 500px)"),
+        },
+        MediaSourceCandidate {
+          src: "large.mp4",
+          type_attr: Some("video/mp4"),
+          media_attr: None,
+        },
+      ],
+      MediaSelectionContext {
+        media_context: Some(&media_ctx),
+      },
+    );
+
+    assert_eq!(selected.url, "large.mp4");
+    assert!(selected.from_source);
+  }
+
+  #[test]
+  fn selection_prefers_playable_codec_over_unplayable() {
+    let selected = select_media_source(
+      MediaKind::Video,
+      None,
+      [
+        MediaSourceCandidate {
+          src: "bad.mp4",
+          type_attr: Some("video/mp4; codecs=badcodec"),
+          media_attr: None,
+        },
+        MediaSourceCandidate {
+          src: "good.mp4",
+          type_attr: Some("video/mp4; codecs=avc1.42E01E"),
+          media_attr: None,
+        },
+      ],
+      MediaSelectionContext { media_context: None },
+    );
+
+    assert_eq!(selected.url, "good.mp4");
+    assert!(selected.from_source);
   }
 }
