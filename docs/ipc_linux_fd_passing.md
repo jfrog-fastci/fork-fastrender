@@ -4,6 +4,9 @@ This note documents **how to safely combine shared memory and file-descriptor (F
 
 Assumption: the **renderer is untrusted / potentially compromised**. Anything that crosses the IPC boundary (bytes, FDs, sizes) must be treated as attacker-controlled.
 
+Related:
+- IPC transport invariants (framing, message size caps, shared memory policy): [`docs/ipc.md`](ipc.md)
+
 ---
 
 ## Use `memfd_create` (not `shm_open`) for shared memory
