@@ -7,7 +7,8 @@
 //! mutations must go through [`crate::js::DomHost`] so the host can coalesce invalidation and avoid
 //! re-rendering when an operation is a no-op.
 
-use crate::dom2::{DomError, NodeId, NodeKind};
+use crate::dom::HTML_NAMESPACE;
+use crate::dom2::{DomError, NodeId, NodeKind, NULL_NAMESPACE};
 use crate::js::DomHost;
 use crate::web::dom::DomException;
 
@@ -187,6 +188,191 @@ pub fn tag_name<Host: DomHost + ?Sized>(host: &Host, element: NodeId) -> String 
       _ => String::new(),
     }
   })
+}
+
+// -----------------------------------------------------------------------------------------------
+// Node.isEqualNode / concept-node-equals.
+//
+// Implements WHATWG DOM's `concept-node-equals` for the subset of node kinds supported by `dom2`.
+// This is shared by both the handwritten and WebIDL-backed `vm-js` DOM bindings.
+//
+// Note: `dom2` stores a `ShadowRoot` as a child of its host element so renderer code can traverse
+// the composed tree. `Node.isEqualNode()` must compare light-DOM children, so shadow roots are
+// filtered out when comparing children of non-shadow-root nodes.
+pub(crate) fn is_equal_node_from_dom(
+  dom_a: &crate::dom2::Document,
+  a_id: NodeId,
+  dom_b: &crate::dom2::Document,
+  b_id: NodeId,
+) -> bool {
+  fn normalize_namespace(ns: &str) -> Option<&str> {
+    if ns == NULL_NAMESPACE {
+      return None;
+    }
+    if ns.is_empty() || ns == HTML_NAMESPACE {
+      return Some(HTML_NAMESPACE);
+    }
+    Some(ns)
+  }
+
+  fn element_like<'a>(
+    kind: &'a NodeKind,
+  ) -> Option<(&'a str, Option<&'a str>, &'a str, &'a [(String, String)])> {
+    match kind {
+      NodeKind::Element {
+        tag_name,
+        namespace,
+        prefix,
+        attributes,
+      } => Some((
+        namespace.as_str(),
+        prefix.as_deref(),
+        tag_name.as_str(),
+        attributes.as_slice(),
+      )),
+      NodeKind::Slot {
+        namespace,
+        attributes,
+        ..
+      } => Some((namespace.as_str(), None, "slot", attributes.as_slice())),
+      _ => None,
+    }
+  }
+
+  fn attrs_equal(a: &[(String, String)], b: &[(String, String)]) -> bool {
+    if a.len() != b.len() {
+      return false;
+    }
+    let mut matched = vec![false; b.len()];
+    'outer: for (name_a, value_a) in a.iter() {
+      for (idx, (name_b, value_b)) in b.iter().enumerate() {
+        if matched[idx] {
+          continue;
+        }
+        if name_a == name_b && value_a == value_b {
+          matched[idx] = true;
+          continue 'outer;
+        }
+      }
+      return false;
+    }
+    true
+  }
+
+  fn light_tree_children(dom: &crate::dom2::Document, node_id: NodeId) -> Vec<NodeId> {
+    let Some(node) = dom.nodes().get(node_id.index()) else {
+      return Vec::new();
+    };
+    let filter_shadow_roots = !matches!(&node.kind, NodeKind::ShadowRoot { .. });
+
+    let mut children: Vec<NodeId> = Vec::with_capacity(node.children.len());
+    for &child in node.children.iter() {
+      if child.index() >= dom.nodes_len() {
+        continue;
+      }
+      let Some(child_node) = dom.nodes().get(child.index()) else {
+        continue;
+      };
+      if child_node.parent != Some(node_id) {
+        continue;
+      }
+      if filter_shadow_roots && matches!(&child_node.kind, NodeKind::ShadowRoot { .. }) {
+        continue;
+      }
+      children.push(child);
+    }
+    children
+  }
+
+  if a_id.index() >= dom_a.nodes_len() || b_id.index() >= dom_b.nodes_len() {
+    return false;
+  }
+
+  let mut stack: Vec<(NodeId, NodeId)> = vec![(a_id, b_id)];
+  while let Some((a_id, b_id)) = stack.pop() {
+    if a_id.index() >= dom_a.nodes_len() || b_id.index() >= dom_b.nodes_len() {
+      return false;
+    }
+    let a_node = &dom_a.nodes()[a_id.index()];
+    let b_node = &dom_b.nodes()[b_id.index()];
+
+    match (&a_node.kind, &b_node.kind) {
+      (NodeKind::Document { .. }, NodeKind::Document { .. }) => {}
+      (NodeKind::DocumentFragment, NodeKind::DocumentFragment) => {}
+      (NodeKind::ShadowRoot { .. }, NodeKind::ShadowRoot { .. }) => {}
+      (
+        NodeKind::Doctype {
+          name: a_name,
+          public_id: a_public_id,
+          system_id: a_system_id,
+        },
+        NodeKind::Doctype {
+          name: b_name,
+          public_id: b_public_id,
+          system_id: b_system_id,
+        },
+      ) => {
+        if a_name != b_name || a_public_id != b_public_id || a_system_id != b_system_id {
+          return false;
+        }
+      }
+      (NodeKind::Text { content: a_text }, NodeKind::Text { content: b_text }) => {
+        if a_text != b_text {
+          return false;
+        }
+      }
+      (NodeKind::Comment { content: a_text }, NodeKind::Comment { content: b_text }) => {
+        if a_text != b_text {
+          return false;
+        }
+      }
+      (
+        NodeKind::ProcessingInstruction {
+          target: a_target,
+          data: a_data,
+        },
+        NodeKind::ProcessingInstruction {
+          target: b_target,
+          data: b_data,
+        },
+      ) => {
+        if a_target != b_target || a_data != b_data {
+          return false;
+        }
+      }
+      (a_kind, b_kind) => {
+        let Some((a_ns, a_prefix, a_local, a_attrs)) = element_like(a_kind) else {
+          return false;
+        };
+        let Some((b_ns, b_prefix, b_local, b_attrs)) = element_like(b_kind) else {
+          return false;
+        };
+        if normalize_namespace(a_ns) != normalize_namespace(b_ns) {
+          return false;
+        }
+        if a_prefix != b_prefix {
+          return false;
+        }
+        if a_local != b_local {
+          return false;
+        }
+        if !attrs_equal(a_attrs, b_attrs) {
+          return false;
+        }
+      }
+    }
+
+    let a_children = light_tree_children(dom_a, a_id);
+    let b_children = light_tree_children(dom_b, b_id);
+    if a_children.len() != b_children.len() {
+      return false;
+    }
+    for idx in (0..a_children.len()).rev() {
+      stack.push((a_children[idx], b_children[idx]));
+    }
+  }
+
+  true
 }
 
 /// `ParentNode.querySelector(selectors)` for a `dom2` document.

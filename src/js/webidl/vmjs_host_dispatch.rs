@@ -19,8 +19,7 @@ use crate::js::dom_platform::{DocumentId, DomInterface, DomPlatform};
 use crate::js::window_realm::{
   abort_signal_listener_cleanup_native, event_target_add_event_listener_dom2,
   dom_ptr_for_document_id_read, event_target_dispatch_event_dom2, event_target_remove_event_listener_dom2,
-  WindowRealmUserData,
-  EVENT_TARGET_HOST_TAG,
+  WindowRealmUserData, EVENT_TARGET_HOST_TAG,
 };
 use crate::js::window_timers::{
   event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks,
@@ -3278,6 +3277,38 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         };
 
         Ok(Value::Number(mask as f64))
+      }
+      ("Node", "isEqualNode", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let this_handle = require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), receiver)?;
+
+        let other_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        if matches!(other_value, Value::Null | Value::Undefined) {
+          return Ok(Value::Bool(false));
+        }
+        let other_handle = require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), other_value)?;
+
+        let result = with_active_vm_host_and_hooks(vm, |vm, host, _hooks| {
+          let dom_a_ptr = dom_ptr_for_document_id_read(vm, host, this_handle.document_id)
+            .ok_or(VmError::TypeError(DOM_HOST_NOT_AVAILABLE_ERROR))?;
+          let dom_b_ptr = dom_ptr_for_document_id_read(vm, host, other_handle.document_id)
+            .ok_or(VmError::TypeError(DOM_HOST_NOT_AVAILABLE_ERROR))?;
+          // SAFETY: pointers returned by `dom_ptr_for_document_id_read` are valid for the duration of
+          // this host call.
+          let dom_a = unsafe { dom_a_ptr.as_ref() };
+          let dom_b = unsafe { dom_b_ptr.as_ref() };
+          Ok(dom2_bindings::is_equal_node_from_dom(
+            dom_a,
+            this_handle.node_id,
+            dom_b,
+            other_handle.node_id,
+          ))
+        })?;
+
+        match result {
+          Some(value) => Ok(Value::Bool(value)),
+          None => Err(VmError::TypeError(DOM_HOST_NOT_AVAILABLE_ERROR)),
+        }
       }
       ("Node", "textContent", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);

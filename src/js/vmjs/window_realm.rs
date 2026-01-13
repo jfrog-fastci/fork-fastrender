@@ -29991,6 +29991,48 @@ fn node_compare_document_position_native(
   Ok(Value::Number(mask as f64))
 }
 
+fn node_is_equal_node_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let this_handle = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_handle(scope.heap(), Value::Object(wrapper_obj))?;
+
+  let other_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  if matches!(other_value, Value::Null | Value::Undefined) {
+    return Ok(Value::Bool(false));
+  }
+
+  let other_handle = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_handle(scope.heap(), other_value)?;
+
+  let dom_a_ptr = dom_ptr_for_document_id_read(vm, host, this_handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  let dom_b_ptr = dom_ptr_for_document_id_read(vm, host, other_handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: pointers returned by `dom_ptr_for_document_id_read` outlive this native call.
+  let dom_a = unsafe { dom_a_ptr.as_ref() };
+  let dom_b = unsafe { dom_b_ptr.as_ref() };
+
+  Ok(Value::Bool(crate::js::dom2_bindings::is_equal_node_from_dom(
+    dom_a,
+    this_handle.node_id,
+    dom_b,
+    other_handle.node_id,
+  )))
+}
+
 fn node_child_nodes_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -47403,6 +47445,23 @@ fn init_window_globals(
       node_proto,
       compare_document_position_key,
       data_desc(Value::Object(compare_document_position_func)),
+    )?;
+
+    let is_equal_node_call_id = vm.register_native_call(node_is_equal_node_native)?;
+    let is_equal_node_name = scope.alloc_string("isEqualNode")?;
+    scope.push_root(Value::String(is_equal_node_name))?;
+    let is_equal_node_func =
+      scope.alloc_native_function(is_equal_node_call_id, None, is_equal_node_name, 1)?;
+    scope.heap_mut().object_set_prototype(
+      is_equal_node_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(is_equal_node_func))?;
+    let is_equal_node_key = alloc_key(&mut scope, "isEqualNode")?;
+    scope.define_property(
+      node_proto,
+      is_equal_node_key,
+      data_desc(Value::Object(is_equal_node_func)),
     )?;
 
     let has_child_nodes_call_id = vm.register_native_call(node_has_child_nodes_native)?;
