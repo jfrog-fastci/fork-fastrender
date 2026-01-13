@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use vm_js::{
-  GcObject, HostSlots, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm,
-  Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
+  promise_resolve_with_host_and_hooks, GcObject, HostSlots, NativeFunctionId, PropertyDescriptor,
+  PropertyKey, PropertyKind, Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 use webidl_js_runtime::JsRuntime as _;
 
@@ -29,6 +29,7 @@ const MAX_SEND_BEACON_URL_CODE_UNITS: usize = 8192;
 //
 // These are only used for branding: structuredClone must reject them as platform objects.
 const NAVIGATOR_HOST_TAG: u64 = 0x4E41_5649_4741_5452; // "NAVIGATR"
+const USER_AGENT_DATA_HOST_TAG: u64 = 0x5541_4441_5441_5F5F; // "UADATA__"
 const SCREEN_HOST_TAG: u64 = 0x5343_5245_454E_5F5F; // "SCREEN__"
 const MEDIA_QUERY_LIST_HOST_TAG: u64 = 0x4D45_4449_4151_5259; // "MEDIAQRY"
 
@@ -50,6 +51,79 @@ const MQL_ONCHANGE_KEY: &str = "__fastrender_mql_onchange";
 const MQL_MATCHES_GET_SLOT_ENV_ID: usize = 0;
 const MQL_MATCHES_GET_SLOT_TOO_LONG: usize = 1;
 const MQL_MATCHES_GET_SLOT_QUERY_STRING: usize = 2;
+
+const UA_DATA_GET_HIGH_ENTROPY_VALUES_SLOT_MAJOR_VERSION: usize = 0;
+const UA_DATA_GET_HIGH_ENTROPY_VALUES_SLOT_FULL_VERSION: usize = 1;
+
+const MAX_UA_DATA_STRING_CHARS: usize = 64;
+const MAX_UA_DATA_VERSION_CHARS: usize = 32;
+
+#[derive(Debug, Clone)]
+struct UaDataInfo {
+  major_version: String,
+  full_version: String,
+  platform: String,
+  mobile: bool,
+}
+
+fn clamp_str_chars(s: &str, max_chars: usize) -> String {
+  let mut out = String::new();
+  if max_chars == 0 {
+    return out;
+  }
+  for (idx, ch) in s.chars().enumerate() {
+    if idx >= max_chars {
+      break;
+    }
+    out.push(ch);
+  }
+  out
+}
+
+fn chrome_version_from_user_agent(user_agent: &str) -> Option<&str> {
+  let start = user_agent.find("Chrome/")? + "Chrome/".len();
+  let tail = user_agent.get(start..)?;
+  let end = tail
+    .find(|c: char| c.is_whitespace() || matches!(c, ';' | ')')) // typical UA token terminators
+    .unwrap_or(tail.len());
+  let token = tail.get(..end)?;
+  if token.is_empty() {
+    None
+  } else {
+    Some(token)
+  }
+}
+
+fn ua_data_info_from_env(env: &WindowEnv) -> UaDataInfo {
+  let full_version_raw = chrome_version_from_user_agent(env.user_agent).unwrap_or("0.0.0.0");
+  let full_version = clamp_str_chars(full_version_raw, MAX_UA_DATA_VERSION_CHARS);
+  let major_version_raw = full_version
+    .split('.')
+    .next()
+    .filter(|s| !s.is_empty())
+    .unwrap_or("0");
+  let major_version = clamp_str_chars(major_version_raw, MAX_UA_DATA_VERSION_CHARS);
+
+  let platform_raw = match env.platform {
+    // `navigator.platform` reports `"Win32"` in our default env, but `NavigatorUAData.platform`
+    // uses `"Windows"` in Chromium.
+    "Win32" => "Windows",
+    "MacIntel" => "macOS",
+    "Linux" => "Linux",
+    other => other,
+  };
+  let platform = clamp_str_chars(platform_raw, MAX_UA_DATA_STRING_CHARS);
+
+  // Deterministic heuristic derived solely from the provided env.
+  let mobile = env.user_agent.contains("Mobile");
+
+  UaDataInfo {
+    major_version,
+    full_version,
+    platform,
+    mobile,
+  }
+}
 
 /// Window-like environment configuration used to install browser shims.
 #[derive(Debug, Clone)]
@@ -271,6 +345,31 @@ fn define_read_only_vm_js(
   scope.push_root(value)?;
   let key = alloc_key_vm_js(&mut scope, name)?;
   scope.define_property(obj, key, read_only_data_desc(value))
+}
+
+fn define_enumerable_read_only_vm_js(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  name: &str,
+  value: Value,
+) -> Result<(), VmError> {
+  // Root `obj` and `value` while allocating the property key: `alloc_key_vm_js` can trigger GC.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+  scope.push_root(value)?;
+  let key = alloc_key_vm_js(&mut scope, name)?;
+  scope.define_property(
+    obj,
+    key,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value,
+        writable: false,
+      },
+    },
+  )
 }
 
 fn env_id_from_match_media_callee(scope: &Scope<'_>, callee: GcObject) -> Result<u64, VmError> {
@@ -1246,6 +1345,124 @@ fn navigator_send_beacon_native(
   Ok(Value::Bool(true))
 }
 
+fn navigator_ua_data_get_high_entropy_values_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("getHighEntropyValues requires intrinsics"))?;
+
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let major_version = slots
+    .get(UA_DATA_GET_HIGH_ENTROPY_VALUES_SLOT_MAJOR_VERSION)
+    .copied()
+    .unwrap_or(Value::Undefined);
+  let full_version = slots
+    .get(UA_DATA_GET_HIGH_ENTROPY_VALUES_SLOT_FULL_VERSION)
+    .copied()
+    .unwrap_or(Value::Undefined);
+  let major_version_s = match major_version {
+    Value::String(s) => s,
+    _ => {
+      let s = scope.alloc_string("0")?;
+      scope.push_root(Value::String(s))?;
+      s
+    }
+  };
+  let full_version_s = match full_version {
+    Value::String(s) => s,
+    _ => {
+      let s = scope.alloc_string("0.0.0.0")?;
+      scope.push_root(Value::String(s))?;
+      s
+    }
+  };
+
+  // Always return `fullVersionList`; this keeps the shim forgiving for real-world usage which may
+  // probe without validating supported hints.
+  let full_version_list = scope.alloc_array(3)?;
+  scope.push_root(Value::Object(full_version_list))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(full_version_list, Some(intr.array_prototype()))?;
+
+  for (idx, (brand, version)) in [
+    ("Not.A/Brand", "99.0.0.0"),
+    ("Chromium", ""),
+    ("Google Chrome", ""),
+  ]
+  .into_iter()
+  .enumerate()
+  {
+    let entry = scope.alloc_object()?;
+    scope.push_root(Value::Object(entry))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(entry, Some(intr.object_prototype()))?;
+
+    let brand_s = scope.alloc_string(brand)?;
+    scope.push_root(Value::String(brand_s))?;
+    define_enumerable_read_only_vm_js(scope, entry, "brand", Value::String(brand_s))?;
+
+    let version_s = if version.is_empty() {
+      full_version_s
+    } else {
+      let s = scope.alloc_string(version)?;
+      scope.push_root(Value::String(s))?;
+      s
+    };
+    define_enumerable_read_only_vm_js(scope, entry, "version", Value::String(version_s))?;
+
+    let idx_key = alloc_key_vm_js(scope, &idx.to_string())?;
+    scope.define_property(
+      full_version_list,
+      idx_key,
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Object(entry),
+          writable: false,
+        },
+      },
+    )?;
+  }
+
+  // Ensure "0" major-version string is referenced (helps keep slot contents live even if the host
+  // passes only a full version).
+  let _ = major_version_s;
+
+  let result = scope.alloc_object()?;
+  scope.push_root(Value::Object(result))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(result, Some(intr.object_prototype()))?;
+
+  let full_version_list_key = alloc_key_vm_js(scope, "fullVersionList")?;
+  scope.define_property(
+    result,
+    full_version_list_key,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::Object(full_version_list),
+        writable: false,
+      },
+    },
+  )?;
+
+  // Resolve synchronously.
+  let promise = promise_resolve_with_host_and_hooks(vm, scope, host, hooks, Value::Object(result))?;
+  Ok(promise)
+}
+
 /// Installs basic browser-environment shims onto a `vm-js` Window realm global object.
 ///
 /// Returns a host-side environment ID that must be unregistered with
@@ -1263,6 +1480,7 @@ pub(crate) fn install_window_shims_vm_js(
   let device_width = sanitize_f32_as_f64(env.media.device_width, viewport_width);
   let device_height = sanitize_f32_as_f64(env.media.device_height, viewport_height);
   let dpr = sanitize_f32_as_f64(env.media.device_pixel_ratio, 1.0);
+  let ua_data_info = ua_data_info_from_env(&env);
 
   define_read_only_vm_js(scope, window, "devicePixelRatio", Value::Number(dpr))?;
   define_read_only_vm_js(scope, window, "innerWidth", Value::Number(viewport_width))?;
@@ -1337,6 +1555,119 @@ pub(crate) fn install_window_shims_vm_js(
     )?;
   }
   define_read_only_vm_js(scope, navigator, "languages", Value::Object(languages))?;
+
+  // UA Client Hints: `navigator.userAgentData` (NavigatorUAData).
+  //
+  // Many real-world sites probe this surface unguarded; keep it deterministic and forgiving.
+  let user_agent_data = scope.alloc_object()?;
+  scope.push_root(Value::Object(user_agent_data))?;
+  scope.heap_mut().object_set_host_slots(
+    user_agent_data,
+    HostSlots {
+      a: USER_AGENT_DATA_HOST_TAG,
+      b: 0,
+    },
+  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(user_agent_data, Some(realm.intrinsics().object_prototype()))?;
+
+  let ua_platform_s = scope.alloc_string(&ua_data_info.platform)?;
+  scope.push_root(Value::String(ua_platform_s))?;
+  define_read_only_vm_js(
+    scope,
+    user_agent_data,
+    "platform",
+    Value::String(ua_platform_s),
+  )?;
+  define_read_only_vm_js(scope, user_agent_data, "mobile", Value::Bool(ua_data_info.mobile))?;
+
+  let major_version_s = scope.alloc_string(&ua_data_info.major_version)?;
+  scope.push_root(Value::String(major_version_s))?;
+  let full_version_s = scope.alloc_string(&ua_data_info.full_version)?;
+  scope.push_root(Value::String(full_version_s))?;
+
+  let brands = scope.alloc_array(3)?;
+  scope.push_root(Value::Object(brands))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(brands, Some(realm.intrinsics().array_prototype()))?;
+
+  for (idx, (brand, version)) in [
+    ("Not.A/Brand", "99"),
+    ("Chromium", ""),
+    ("Google Chrome", ""),
+  ]
+  .into_iter()
+  .enumerate()
+  {
+    let entry = scope.alloc_object()?;
+    scope.push_root(Value::Object(entry))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(entry, Some(realm.intrinsics().object_prototype()))?;
+
+    let brand_s = scope.alloc_string(brand)?;
+    scope.push_root(Value::String(brand_s))?;
+    define_enumerable_read_only_vm_js(scope, entry, "brand", Value::String(brand_s))?;
+
+    let version_s = if version.is_empty() {
+      major_version_s
+    } else {
+      let s = scope.alloc_string(version)?;
+      scope.push_root(Value::String(s))?;
+      s
+    };
+    define_enumerable_read_only_vm_js(scope, entry, "version", Value::String(version_s))?;
+
+    let idx_key = alloc_key_vm_js(scope, &idx.to_string())?;
+    scope.define_property(
+      brands,
+      idx_key,
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Object(entry),
+          writable: false,
+        },
+      },
+    )?;
+  }
+
+  define_read_only_vm_js(scope, user_agent_data, "brands", Value::Object(brands))?;
+
+  let ghev_call_id = vm.register_native_call(navigator_ua_data_get_high_entropy_values_native)?;
+  let ghev_name = scope.alloc_string("getHighEntropyValues")?;
+  scope.push_root(Value::String(ghev_name))?;
+  let ghev_func = scope.alloc_native_function_with_slots(
+    ghev_call_id,
+    None,
+    ghev_name,
+    1,
+    &[
+      Value::String(major_version_s),
+      Value::String(full_version_s),
+    ],
+  )?;
+  scope.heap_mut().object_set_prototype(
+    ghev_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(ghev_func))?;
+  define_read_only_vm_js(
+    scope,
+    user_agent_data,
+    "getHighEntropyValues",
+    Value::Object(ghev_func),
+  )?;
+
+  define_read_only_vm_js(
+    scope,
+    navigator,
+    "userAgentData",
+    Value::Object(user_agent_data),
+  )?;
 
   let send_beacon_call_id = vm.register_native_call(navigator_send_beacon_native)?;
   let send_beacon_name = scope.alloc_string("sendBeacon")?;
@@ -1414,6 +1745,7 @@ pub fn install_window_shims(
   let device_width = sanitize_f32_as_f64(env.media.device_width, viewport_width);
   let device_height = sanitize_f32_as_f64(env.media.device_height, viewport_height);
   let dpr = sanitize_f32_as_f64(env.media.device_pixel_ratio, 1.0);
+  let ua_data_info = ua_data_info_from_env(&env);
 
   define_read_only_number(rt, window, "devicePixelRatio", dpr)?;
 
@@ -1440,6 +1772,107 @@ pub fn install_window_shims(
   define_read_only_bool(rt, navigator, "cookieEnabled", true)?;
   define_read_only_number(rt, navigator, "hardwareConcurrency", 4.0)?;
   define_read_only_number(rt, navigator, "deviceMemory", 8.0)?;
+
+  // UA Client Hints: `navigator.userAgentData` (NavigatorUAData).
+  //
+  // The legacy `VmJsRuntime` shim does not provide a full JS execution environment, but we still
+  // expose a spec-ish shape so host-driven callers and fixture scripts that probe this field can
+  // run against both runtimes.
+  let user_agent_data = rt.alloc_object_value()?;
+  define_read_only_string(rt, user_agent_data, "platform", &ua_data_info.platform)?;
+  define_read_only_bool(rt, user_agent_data, "mobile", ua_data_info.mobile)?;
+
+  // `brands`: an Array of `{ brand, version }` objects.
+  let brands = rt.alloc_array()?;
+  for (idx, (brand, version)) in [
+    ("Not.A/Brand", "99"),
+    ("Chromium", ua_data_info.major_version.as_str()),
+    ("Google Chrome", ua_data_info.major_version.as_str()),
+  ]
+  .into_iter()
+  .enumerate()
+  {
+    let entry = rt.alloc_object_value()?;
+    let brand_value = rt.alloc_string_value(brand)?;
+    define_read_only_data_property(
+      rt,
+      entry,
+      "brand",
+      brand_value,
+      true,
+    )?;
+    let version_value = rt.alloc_string_value(version)?;
+    define_read_only_data_property(
+      rt,
+      entry,
+      "version",
+      version_value,
+      true,
+    )?;
+    let idx_key = prop_key(rt, &idx.to_string())?;
+    rt.define_data_property(brands, idx_key, entry, true)?;
+  }
+  let brands_key = prop_key(rt, "brands")?;
+  rt.define_data_property(user_agent_data, brands_key, brands, false)?;
+
+  // `getHighEntropyValues(hints)`: return a thenable that resolves to `{ fullVersionList: [...] }`.
+  // (We cannot create a real `%Promise%` without a Realm.)
+  let full_version = ua_data_info.full_version.clone();
+  let get_high_entropy_values = rt.alloc_function_value(move |rt, _this, _args| {
+    let thenable = rt.alloc_object_value()?;
+    let full_version = full_version.clone();
+    let then_fn = rt.alloc_function_value(move |rt, _this, args| {
+      let on_fulfilled = args.get(0).copied().unwrap_or(Value::Undefined);
+
+      let result = rt.alloc_object_value()?;
+      let full_version_list = rt.alloc_array()?;
+      for (idx, (brand, version)) in [
+        ("Not.A/Brand", "99.0.0.0".to_string()),
+        ("Chromium", full_version.clone()),
+        ("Google Chrome", full_version.clone()),
+      ]
+      .into_iter()
+      .enumerate()
+      {
+        let entry = rt.alloc_object_value()?;
+        let brand_value = rt.alloc_string_value(brand)?;
+        define_read_only_data_property(
+          rt,
+          entry,
+          "brand",
+          brand_value,
+          true,
+        )?;
+        let version_value = rt.alloc_string_value(&version)?;
+        define_read_only_data_property(
+          rt,
+          entry,
+          "version",
+          version_value,
+          true,
+        )?;
+        let idx_key = prop_key(rt, &idx.to_string())?;
+        rt.define_data_property(full_version_list, idx_key, entry, true)?;
+      }
+      let full_version_list_key = prop_key(rt, "fullVersionList")?;
+      rt.define_data_property(result, full_version_list_key, full_version_list, true)?;
+
+      // If `on_fulfilled` is callable, invoke it with the resolved value.
+      if rt.is_callable(on_fulfilled) {
+        let _ = rt.call_function(on_fulfilled, Value::Undefined, &[result]);
+      }
+
+      Ok(Value::Undefined)
+    })?;
+    let then_key = prop_key(rt, "then")?;
+    rt.define_data_property(thenable, then_key, then_fn, false)?;
+    Ok(thenable)
+  })?;
+  let ghev_key = prop_key(rt, "getHighEntropyValues")?;
+  rt.define_data_property(user_agent_data, ghev_key, get_high_entropy_values, false)?;
+
+  let user_agent_data_key = prop_key(rt, "userAgentData")?;
+  rt.define_data_property(navigator, user_agent_data_key, user_agent_data, false)?;
 
   let send_beacon = rt.alloc_function_value(|rt, _this, args| {
     let url_value = match args.get(0).copied() {
@@ -1594,6 +2027,9 @@ mod tests {
 
     let device_memory = get_prop(&mut rt, navigator, "deviceMemory");
     assert_eq!(device_memory, Value::Number(8.0));
+
+    let ua_data = get_prop(&mut rt, navigator, "userAgentData");
+    assert!(matches!(ua_data, Value::Object(_)));
   }
 
   #[test]
@@ -1781,6 +2217,82 @@ mod tests {
       .exec_script(r#"navigator.sendBeacon(new URL("https://example.invalid/beacon"), '{"a":1}')"#)
       .unwrap();
     assert_eq!(with_url_object, Value::Bool(true));
+
+    let missing_url = host.exec_script("navigator.sendBeacon()").unwrap();
+    assert_eq!(missing_url, Value::Bool(false));
+
+    let overlong_url = host
+      .exec_script(&format!(
+        r#"navigator.sendBeacon("a".repeat({}))"#,
+        MAX_SEND_BEACON_URL_CODE_UNITS + 1
+      ))
+      .unwrap();
+    assert_eq!(overlong_url, Value::Bool(false));
+
+    let throwing_to_string = host
+      .exec_script(
+        r#"navigator.sendBeacon({ toString() { throw new Error("nope"); } })"#,
+      )
+      .unwrap();
+    assert_eq!(throwing_to_string, Value::Bool(false));
+  }
+
+  #[test]
+  fn navigator_user_agent_data_is_present_and_resolves_high_entropy_values() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+
+    assert_eq!(
+      host
+        .exec_script("typeof navigator.userAgentData === 'object' && navigator.userAgentData !== null")
+        .unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host
+        .exec_script("Array.isArray(navigator.userAgentData.brands) && navigator.userAgentData.brands.length > 0")
+        .unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host
+        .exec_script("typeof navigator.userAgentData.brands[0].brand === 'string' && typeof navigator.userAgentData.brands[0].version === 'string'")
+        .unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host
+        .exec_script("typeof navigator.userAgentData.getHighEntropyValues === 'function'")
+        .unwrap(),
+      Value::Bool(true)
+    );
+
+    host
+      .exec_script(
+        r#"
+        globalThis.__ua_ch_done = false;
+        globalThis.__ua_ch_list = null;
+        (async () => {
+          const r = await navigator.userAgentData.getHighEntropyValues(["fullVersionList"]);
+          globalThis.__ua_ch_list = r.fullVersionList;
+          globalThis.__ua_ch_done = true;
+        })();
+        "#,
+      )
+      .unwrap();
+    host.perform_microtask_checkpoint().unwrap();
+
+    assert_eq!(host.exec_script("globalThis.__ua_ch_done").unwrap(), Value::Bool(true));
+    assert_eq!(
+      host.exec_script("Array.isArray(globalThis.__ua_ch_list)").unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host
+        .exec_script("globalThis.__ua_ch_list.length > 0 && typeof globalThis.__ua_ch_list[0].brand === 'string' && typeof globalThis.__ua_ch_list[0].version === 'string'")
+        .unwrap(),
+      Value::Bool(true)
+    );
   }
 
   #[test]

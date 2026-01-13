@@ -91,6 +91,7 @@ fn serialized_inline_svg_content_from_html(html: &str, width: f32, height: f32) 
   find_svg(&box_tree.root)
 }
 
+// Backwards-compatible helper for older inline-SVG tests.
 fn serialized_inline_svg(html: &str, width: f32, height: f32) -> Option<SvgContent> {
   serialized_inline_svg_content_from_html(html, width, height)
 }
