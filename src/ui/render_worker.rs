@@ -868,6 +868,188 @@ fn dom_node_by_preorder_id<'a>(
   None
 }
 
+fn mirror_dom1_radio_group_state_into_dom2(
+  js_tab: &mut BrowserTab,
+  dom_mapping: Option<&crate::dom2::RendererDomMapping>,
+  dom: &crate::dom::DomNode,
+  active_preorder_id: usize,
+) {
+  use crate::dom::DomNodeType;
+
+  // Prefer the renderer↔dom2 mapping cached from the last dom2→dom1 snapshot: it remains valid
+  // across dom2 form-state mutations (which don't restructure the DOM) and avoids rebuilding the
+  // preorder map on every user interaction.
+  let mut owned_mapping: Option<crate::dom2::RendererDomMapping> = None;
+  let mapping = match dom_mapping {
+    Some(mapping) => mapping,
+    None => {
+      owned_mapping = Some(js_tab.dom().build_renderer_preorder_mapping());
+      owned_mapping.as_ref().unwrap()
+    }
+  };
+
+  // Build a lightweight 1-based preorder index for form-owner resolution. This mirrors
+  // `interaction::dom_index::DomIndex::build`, but works on an immutable `DomNode` tree.
+  let mut nodes_by_id: Vec<&crate::dom::DomNode> = vec![dom];
+  let mut parent_by_id: Vec<usize> = vec![0];
+  let mut id_by_element_id: std::collections::HashMap<String, usize> =
+    std::collections::HashMap::new();
+  let mut stack: Vec<(&crate::dom::DomNode, usize, bool)> = vec![(dom, 0, false)];
+  while let Some((node, parent_id, in_template_contents)) = stack.pop() {
+    let id = nodes_by_id.len();
+    nodes_by_id.push(node);
+    parent_by_id.push(parent_id);
+
+    if !in_template_contents {
+      if let Some(element_id) = node.get_attribute_ref("id") {
+        // Keep the first occurrence to match `getElementById`.
+        id_by_element_id.entry(element_id.to_string()).or_insert(id);
+      }
+    }
+
+    let child_in_template_contents = in_template_contents || node.is_template_element();
+    for child in node.children.iter().rev() {
+      stack.push((child, id, child_in_template_contents));
+    }
+  }
+
+  let Some(active) = nodes_by_id.get(active_preorder_id).copied() else {
+    return;
+  };
+  if !active
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+    || !dom_input_type(active).eq_ignore_ascii_case("radio")
+  {
+    return;
+  }
+
+  fn is_root_boundary(node: &crate::dom::DomNode) -> bool {
+    matches!(
+      node.node_type,
+      DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. }
+    )
+  }
+
+  fn is_form_element(node: &crate::dom::DomNode) -> bool {
+    node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("form"))
+      && matches!(node.namespace(), Some(ns) if ns.is_empty() || ns == crate::dom::HTML_NAMESPACE)
+  }
+
+  fn tree_root_boundary(
+    nodes_by_id: &[&crate::dom::DomNode],
+    parent_by_id: &[usize],
+    node_id: usize,
+  ) -> usize {
+    let mut current = node_id;
+    while current != 0 {
+      if nodes_by_id
+        .get(current)
+        .is_some_and(|node| is_root_boundary(node))
+      {
+        return current;
+      }
+      current = parent_by_id.get(current).copied().unwrap_or(0);
+    }
+    node_id
+  }
+
+  fn form_owner(
+    nodes_by_id: &[&crate::dom::DomNode],
+    parent_by_id: &[usize],
+    id_by_element_id: &std::collections::HashMap<String, usize>,
+    node_id: usize,
+  ) -> Option<usize> {
+    let root_boundary = tree_root_boundary(nodes_by_id, parent_by_id, node_id);
+
+    // Prefer the element's explicit `form=` association.
+    let form_attr = nodes_by_id
+      .get(node_id)
+      .and_then(|node| node.get_attribute_ref("form").map(trim_ascii_whitespace))
+      .filter(|v| !v.is_empty());
+    if let Some(form_attr) = form_attr {
+      if let Some(&id) = id_by_element_id.get(form_attr) {
+        if nodes_by_id.get(id).is_some_and(|node| is_form_element(node))
+          && tree_root_boundary(nodes_by_id, parent_by_id, id) == root_boundary
+        {
+          return Some(id);
+        }
+      }
+    }
+
+    // Otherwise, walk ancestors to find the nearest `<form>`, stopping at the tree-root boundary.
+    let mut current = node_id;
+    while current != 0 {
+      let parent = parent_by_id.get(current).copied().unwrap_or(0);
+      if parent == 0 {
+        break;
+      }
+      current = parent;
+      if current == root_boundary {
+        break;
+      }
+      if nodes_by_id.get(current).is_some_and(|node| is_form_element(node)) {
+        return Some(current);
+      }
+    }
+
+    None
+  }
+
+  let group_name = active.get_attribute_ref("name").unwrap_or("");
+  let active_form =
+    form_owner(&nodes_by_id, &parent_by_id, &id_by_element_id, active_preorder_id);
+  let active_root = if active_form.is_none() {
+    tree_root_boundary(&nodes_by_id, &parent_by_id, active_preorder_id)
+  } else {
+    0
+  };
+
+  for node_id in 1..nodes_by_id.len() {
+    let Some(node) = nodes_by_id.get(node_id).copied() else {
+      continue;
+    };
+    if !node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+      || !dom_input_type(node).eq_ignore_ascii_case("radio")
+    {
+      continue;
+    }
+    if node.get_attribute_ref("name").unwrap_or("") != group_name {
+      continue;
+    }
+
+    let owner = form_owner(&nodes_by_id, &parent_by_id, &id_by_element_id, node_id);
+    if let Some(active_form) = active_form {
+      if owner != Some(active_form) {
+        continue;
+      }
+    } else {
+      if owner.is_some() {
+        continue;
+      }
+      if tree_root_boundary(&nodes_by_id, &parent_by_id, node_id) != active_root {
+        continue;
+      }
+    }
+
+    let desired_checked = node.get_attribute_ref("checked").is_some();
+    let Some(dom2_node) = mapping.node_id_for_preorder(node_id) else {
+      continue;
+    };
+    let should_set = match js_tab.dom().input_checked(dom2_node) {
+      Ok(current) => current != desired_checked,
+      Err(_) => true,
+    };
+    if should_set {
+      let _ = js_tab.dom_mut().set_input_checked(dom2_node, desired_checked);
+    }
+  }
+}
+
 fn mirror_dom1_form_control_state_into_dom2(
   js_tab: &mut BrowserTab,
   dom_mapping: Option<&crate::dom2::RendererDomMapping>,
@@ -879,9 +1061,10 @@ fn mirror_dom1_form_control_state_into_dom2(
     return;
   };
 
-  let dom2_node = element_id
-    .and_then(|id| js_tab.dom().get_element_by_id(id))
-    .or_else(|| dom_mapping.and_then(|mapping| mapping.node_id_for_preorder(preorder_id)));
+  let dom2_node_by_id = element_id.and_then(|id| js_tab.dom().get_element_by_id(id));
+  let dom2_node = dom2_node_by_id
+    .or_else(|| dom_mapping.and_then(|mapping| mapping.node_id_for_preorder(preorder_id)))
+    .or_else(|| js_tab.dom2_node_for_renderer_preorder(preorder_id));
   let Some(dom2_node) = dom2_node else {
     return;
   };
@@ -895,29 +1078,50 @@ fn mirror_dom1_form_control_state_into_dom2(
   // - dom2→dom1 resync doesn't clobber UI-driven state stored only in dom1.
   if tag.eq_ignore_ascii_case("input") {
     let ty = dom_input_type(dom_node);
-    if ty.eq_ignore_ascii_case("checkbox") || ty.eq_ignore_ascii_case("radio") {
+    if ty.eq_ignore_ascii_case("checkbox") {
       let checked = dom_node.get_attribute_ref("checked").is_some();
-      let _ = js_tab.dom_mut().set_input_checked(dom2_node, checked);
+      let should_set = match js_tab.dom().input_checked(dom2_node) {
+        Ok(current) => current != checked,
+        Err(_) => true,
+      };
+      if should_set {
+        let _ = js_tab.dom_mut().set_input_checked(dom2_node, checked);
+      }
+      return;
+    }
+    if ty.eq_ignore_ascii_case("radio") {
+      // Activating a radio in dom1 can uncheck other radios in the same group. Mirror the whole
+      // group into dom2 so JS doesn't observe stale checkedness.
+      mirror_dom1_radio_group_state_into_dom2(js_tab, dom_mapping, dom, preorder_id);
       return;
     }
     if ty.eq_ignore_ascii_case("file") {
-      let dom2 = js_tab.dom_mut();
-      match dom_node.get_attribute_ref("data-fastr-file-value") {
-        Some(v) if !v.is_empty() => {
-          let _ = dom2.set_attribute(dom2_node, "data-fastr-file-value", v);
+      let sync_attr = |js_tab: &mut BrowserTab,
+                       node_id: crate::dom2::NodeId,
+                       name: &'static str,
+                       desired: Option<&str>| {
+        let current = js_tab.dom().get_attribute(node_id, name).ok().flatten();
+        match desired {
+          Some(desired) => {
+            if current.as_deref() != Some(desired) {
+              let _ = js_tab.dom_mut().set_attribute(node_id, name, desired);
+            }
+          }
+          None => {
+            if current.is_some() {
+              let _ = js_tab.dom_mut().remove_attribute(node_id, name);
+            }
+          }
         }
-        _ => {
-          let _ = dom2.remove_attribute(dom2_node, "data-fastr-file-value");
-        }
-      }
-      match dom_node.get_attribute_ref("data-fastr-files") {
-        Some(v) if !v.is_empty() => {
-          let _ = dom2.set_attribute(dom2_node, "data-fastr-files", v);
-        }
-        _ => {
-          let _ = dom2.remove_attribute(dom2_node, "data-fastr-files");
-        }
-      }
+      };
+      let desired_file_value = dom_node
+        .get_attribute_ref("data-fastr-file-value")
+        .filter(|v| !v.is_empty());
+      sync_attr(js_tab, dom2_node, "data-fastr-file-value", desired_file_value);
+      let desired_files = dom_node
+        .get_attribute_ref("data-fastr-files")
+        .filter(|v| !v.is_empty());
+      sync_attr(js_tab, dom2_node, "data-fastr-files", desired_files);
       return;
     }
 
@@ -934,19 +1138,37 @@ fn mirror_dom1_form_control_state_into_dom2(
     }
 
     let value = dom_node.get_attribute_ref("value").unwrap_or("");
-    let _ = js_tab.dom_mut().set_input_value(dom2_node, value);
+    let should_set = match js_tab.dom().input_value(dom2_node) {
+      Ok(current) => current != value,
+      Err(_) => true,
+    };
+    if should_set {
+      let _ = js_tab.dom_mut().set_input_value(dom2_node, value);
+    }
     return;
   }
 
   if tag.eq_ignore_ascii_case("textarea") {
     let value = crate::dom::textarea_current_value(dom_node);
-    let _ = js_tab.dom_mut().set_textarea_value(dom2_node, &value);
+    let should_set = match js_tab.dom().textarea_value(dom2_node) {
+      Ok(current) => current != value,
+      Err(_) => true,
+    };
+    if should_set {
+      let _ = js_tab.dom_mut().set_textarea_value(dom2_node, &value);
+    }
     return;
   }
 
   if tag.eq_ignore_ascii_case("option") {
     let selected = dom_node.get_attribute_ref("selected").is_some();
-    let _ = js_tab.dom_mut().set_option_selected(dom2_node, selected);
+    let should_set = match js_tab.dom().option_selected(dom2_node) {
+      Ok(current) => current != selected,
+      Err(_) => true,
+    };
+    if should_set {
+      let _ = js_tab.dom_mut().set_option_selected(dom2_node, selected);
+    }
     return;
   }
 }
@@ -5556,6 +5778,20 @@ impl BrowserRuntime {
     };
 
     if changed {
+      if let (Some(focused), Some(js_tab)) = (tab.interaction.focused_node_id(), tab.js_tab.as_mut())
+      {
+        let dom_snapshot = doc.dom();
+        let element_id = dom_node_by_preorder_id(dom_snapshot, focused)
+          .and_then(|node| node.get_attribute_ref("id"));
+        mirror_dom1_form_control_state_into_dom2(
+          js_tab,
+          tab.js_dom_mapping.as_ref(),
+          dom_snapshot,
+          focused,
+          element_id,
+        );
+        tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
+      }
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
     }
@@ -6007,6 +6243,19 @@ impl BrowserRuntime {
     let dom_changed =
       doc.mutate_dom(|dom| engine.activate_datalist_option(dom, input_node_id, option_node_id));
     if dom_changed {
+      if let Some(js_tab) = tab.js_tab.as_mut() {
+        let dom_snapshot = doc.dom();
+        let element_id = dom_node_by_preorder_id(dom_snapshot, input_node_id)
+          .and_then(|node| node.get_attribute_ref("id"));
+        mirror_dom1_form_control_state_into_dom2(
+          js_tab,
+          tab.js_dom_mapping.as_ref(),
+          dom_snapshot,
+          input_node_id,
+          element_id,
+        );
+        tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
+      }
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
     }
@@ -6232,6 +6481,19 @@ impl BrowserRuntime {
     let engine = &mut tab.interaction;
     let dom_changed = doc.mutate_dom(|dom| engine.set_color_input_value(dom, input_node_id, &value));
     if dom_changed {
+      if let Some(js_tab) = tab.js_tab.as_mut() {
+        let dom_snapshot = doc.dom();
+        let element_id = dom_node_by_preorder_id(dom_snapshot, input_node_id)
+          .and_then(|node| node.get_attribute_ref("id"));
+        mirror_dom1_form_control_state_into_dom2(
+          js_tab,
+          tab.js_dom_mapping.as_ref(),
+          dom_snapshot,
+          input_node_id,
+          element_id,
+        );
+        tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
+      }
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
     }
