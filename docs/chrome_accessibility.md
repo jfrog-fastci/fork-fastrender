@@ -374,7 +374,8 @@ into viewport-local scroll deltas in CSS px).
 
 ### `dump_a11y` (FastRender semantics)
 
-`dump_a11y` prints FastRender’s computed accessibility tree as JSON (no OS integration, no bounds):
+`dump_a11y` prints FastRender’s computed accessibility tree as JSON (semantics only; not an
+OS-facing AccessKit tree, and no bounds):
 
 ```bash
 bash scripts/run_limited.sh --as 64G -- \
