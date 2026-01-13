@@ -34,10 +34,18 @@ After creation, set the size with `ftruncate(2)` *before* `mmap(2)`, and treat s
 
 If you *cannot* pass an FD (no authenticated UNIX domain socket, unrelated processes), then `shm_open()` may be required. That’s not our architecture: browser and renderer already have a parent-established IPC channel, so **FD passing is available**.
 
+If `shm_open()` is ever used anyway, treat it as a last-resort and apply the usual hardening:
+
+- Use `O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC` (avoid races and FD leaks).
+- Use restrictive permissions (e.g. `0600`) and a hard-to-guess name.
+- Call `shm_unlink()` as soon as both sides have opened the object (so it can’t be reopened later).
+- Still `ftruncate()` to a validated size and validate `st_size` before `mmap()`.
+
 References:
 - `memfd_create(2)`: https://man7.org/linux/man-pages/man2/memfd_create.2.html
 - `ftruncate(2)`: https://man7.org/linux/man-pages/man2/ftruncate.2.html
 - `shm_open(3)`: https://man7.org/linux/man-pages/man3/shm_open.3.html
+- `shm_unlink(3)`: https://man7.org/linux/man-pages/man3/shm_unlink.3.html
 
 ---
 
@@ -66,6 +74,15 @@ Important footgun from `memfd_create(2)`:
 ### Don’t set `F_SEAL_SEAL` too early
 
 `F_SEAL_SEAL` prevents adding additional seals later. If there’s any chance you’ll want to add `F_SEAL_WRITE` in a later phase, **do not** apply `F_SEAL_SEAL` at creation time.
+
+### If you don’t use `F_SEAL_WRITE`, assume the contents are mutable
+
+With only size-stability seals (`F_SEAL_SHRINK|F_SEAL_GROW`), the peer can still modify the file
+contents at any time. That’s fine for designs like ring buffers, but it means:
+
+- shared memory contents are **attacker-controlled bytes**, and
+- any structured data read from shared memory must be validated and/or copied out to avoid
+  time-of-check-to-time-of-use issues.
 
 References:
 - `fcntl(2)` seals (`F_ADD_SEALS`, `F_GET_SEALS`): https://man7.org/linux/man-pages/man2/fcntl.2.html
