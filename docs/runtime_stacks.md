@@ -24,6 +24,26 @@ All types below are exported as `fastrender::api::*` and also re-exported at the
 - **Legacy JS host harness (manual script execution, no HTML script scheduler):**
   `api::BrowserDocumentJs`.
 
+## Composition sketch (how the types stack)
+
+This is not a full architecture diagram; it’s a “what does this object own?” map:
+
+- `BrowserDocument`
+  - `FastRender` + live renderer DOM (`dom::DomNode`) + render caching/dirty flags
+- `BrowserDocumentDom2`
+  - `FastRender` + live spec-ish DOM (`dom2::Document`) + render caching/dirty tracking
+- `BrowserDocument2`
+  - `FastRender` + live `dom2::Document` + render caching (coarse full invalidation)
+- `BrowserTab`
+  - `BrowserDocumentDom2`
+  - `EventLoop<BrowserTabHost>` (tasks + microtasks + timers + rAF queue)
+  - `BrowserTabJsExecutor` (e.g. `VmJsBrowserTabExecutor`)
+  - navigation/history state
+- `BrowserDocumentJs`
+  - `BrowserDocumentDom2`
+  - `EventLoop<BrowserDocumentJs>` (tasks + microtasks)
+  - legacy `VmJsRuntime` + `ScriptOrchestrator` (manual script execution; no HTML `<script>` scheduling)
+
 ## Capability matrix (repo reality)
 
 | Type | DOM representation | Live DOM mutation + rerender | JS execution | Event loop | HTML `<script>` processing | Navigation/history |
