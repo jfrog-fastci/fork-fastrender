@@ -337,6 +337,9 @@ Not all builds implement all of these toggles yet; unsupported values are expect
   - Primary use case: tests/integration harnesses that need an isolated session file.
   - CLI equivalent: `browser --session-path /path/to/fastrender_session.json` (takes precedence over the env var).
   - The default is a per-user config path (via `directories`) with a fallback to `./fastrender_session.json` in the current working directory.
+  - Note: the browser may create sidecar files next to the session path:
+    - a lock file (same path with `.lock` extension) to prevent multiple `browser` instances from writing the same session, and
+    - a last-known-good backup (typically `*.json.bak`, e.g. `fastrender_session.json.bak`) used to recover if the primary session file is corrupted/unparseable.
 
 ### Browser bookmarks file
 

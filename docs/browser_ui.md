@@ -231,13 +231,19 @@ CI note: the main GitHub Actions workflow (`ci.yml`) compiles the `browser` bina
 `--features browser_ui` on Linux/macOS/Windows; Linux additionally runs the headless smoke mode
 (and may run crash-smoke as multiprocess isolation work lands).
 
-Note: by default, when run **without** a URL, the windowed `browser` app tries to restore the
-previous session (windows + tabs + per-tab zoom + best-effort scroll restoration). When run **with**
-a URL, it opens that URL and does not restore unless `--restore` is provided.
+Note: startup/session restore:
+
+- When run **without** a URL, the windowed `browser` app tries to restore the previous session
+  (windows + tabs + per-tab zoom + best-effort scroll restoration).
+- When run **with** a URL, it opens that URL and does not restore tabs unless `--restore` is
+  provided.
+- `--no-restore` disables tab/session restore even when no URL is provided.
+- Even when tabs are not restored (CLI URL or `--no-restore`), the browser may still reuse persisted
+  **configuration** from the previous session (appearance/UI scale, menu bar visibility, and window
+  geometry) when available.
 
 If no session file exists yet, it falls back to `about:newtab`, which acts as a basic start page
-(showing bookmarks + recently visited pages when available). Use `--no-restore` to disable session
-restore.
+(showing bookmarks + recently visited pages when available).
 
 ## Appearance
 
@@ -341,6 +347,14 @@ See [perf-logging.md#browser-responsiveness](perf-logging.md#browser-responsiven
 
 The browser persists a lightweight session file for restoring state across restarts.
 
+This file acts as both:
+
+- **Session restore** (tabs/windows), and
+- **Persisted configuration** (appearance/UI scale, menu bar visibility, home page, window geometry).
+
+Even when the browser starts with *fresh* tabs (for example because you launched with a CLI URL or
+`--no-restore`), it may still reuse these persisted configuration fields from the last session.
+
 - Default location: a per-user config directory (via `directories`), e.g.
   `~/.config/fastrender/fastrender_session.json` on Linux.
 - Override:
@@ -348,10 +362,15 @@ The browser persists a lightweight session file for restoring state across resta
   - Env: `FASTR_BROWSER_SESSION_PATH=/path/to/fastrender_session.json` (CLI takes precedence)
 - Fallback (if the OS config directory cannot be determined): `./fastrender_session.json`.
 
-To avoid corrupting the session file, the `browser` process also acquires a lock file for the
-session path. If another `browser` process is already running with the same session path, a second
-instance will refuse to start. Use `--session-path` (or `FASTR_BROWSER_SESSION_PATH`) to run multiple
-isolated instances.
+Sidecar files:
+
+- **Lock file:** to avoid corrupting the session file, the `browser` process also acquires a lock
+  file for the session path. If another `browser` process is already running with the same session
+  path, a second instance will refuse to start. Use `--session-path` (or `FASTR_BROWSER_SESSION_PATH`)
+  to run multiple isolated instances.
+- **Backup file (`*.json.bak`):** the browser retains a last-known-good backup of the session file
+  (for example `fastrender_session.json.bak` next to `fastrender_session.json`). If the primary
+  session file is corrupted/unparseable, the backup can be used to recover.
 
 The session file format is versioned (currently v2) and includes:
 
@@ -362,6 +381,10 @@ The session file format is versioned (currently v2) and includes:
 - Per-window menu bar visibility (`show_menu_bar`)
 - The configured home page URL
 - Best-effort window geometry (position/size/maximized) when available
+  - When a window is maximized, the persisted **width/height** represent the last *normal* (restored)
+    size so “unmaximize” returns to the expected size.
+  - When a window is minimized, the browser avoids writing meaningless `0×0` window sizes (it keeps
+    the last known non-zero geometry).
 - A crash marker (`did_exit_cleanly`) for detecting unclean exits
 - Appearance settings (theme mode, accent color, high contrast, reduced motion, UI scale)
 
@@ -371,7 +394,9 @@ The windowed `browser` app uses a background autosave helper (`SessionAutosave` 
 
 - **Crash marker:** on startup, the browser immediately persists `did_exit_cleanly=false`. If the
   process is terminated unexpectedly, this marker remains false on disk and the next launch can
-  detect the unclean exit (the entrypoint prints a warning when restoring).
+  detect the unclean exit.
+  - UX: the next launch shows a crash-recovery infobar/toast (including a **Start new session**
+    option).
 - **Background autosave:** while the browser is running, it snapshots the current session and
   schedules a debounced background save on “significant” state changes (for example tab navigations,
   tab/window creation/closure, zoom/appearance changes, and window geometry changes).

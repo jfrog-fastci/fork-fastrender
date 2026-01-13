@@ -123,9 +123,16 @@ Startup note:
 
 - When run **without** a URL, the windowed `browser` app tries to restore the previous session
   (windows + tabs + per-tab zoom + best-effort scroll restoration).
-- When run **with** a URL, it opens that URL and does not restore unless `--restore` is provided.
+- If the previous run ended unexpectedly (unclean exit), the UI shows a crash-recovery infobar/toast
+  on startup (including a **Start new session** option).
+- When run **with** a URL, it opens that URL and does not restore tabs unless `--restore` is provided.
+  - Even when tabs are not restored (CLI URL or `--no-restore`), the browser may still reuse persisted
+    **configuration** from the previous session (appearance/UI scale, menu bar visibility, and window
+    geometry) when available.
+- If the primary session file is corrupted/unparseable, the browser can fall back to a retained
+  last-known-good backup (typically `*.json.bak` next to the session file).
 - If no session exists yet, it falls back to `about:newtab`, which acts as a basic start page
-  (showing bookmarks + recently visited pages when available). Use `--no-restore` to disable session
+  (showing bookmarks + recently visited pages when available). Use `--no-restore` to disable tab
   restore.
 
 ### DOM interaction (host-driven; works without JS)
