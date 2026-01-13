@@ -362,10 +362,15 @@ impl ShmemRegion {
 
       // If mapping fails, ensure the named object doesn't leak.
       let mut unlink_guard = PosixUnlinkGuard::new(name);
-      let mmap = match map_file_mut(&file, len) {
+      let mut mmap = match map_file_mut(&file, len) {
         Ok(m) => m,
         Err(err) => return Err(err),
       };
+      // Security: make it explicit that newly created shared-memory regions begin zeroed. Even
+      // though most OS APIs provide zeroed pages for new mappings, keeping the invariant explicit
+      // avoids leaking previous-process memory (or stale named-shm contents if an ID is ever reused
+      // accidentally) to an untrusted renderer.
+      mmap.fill(0);
       unlink_guard.disarm();
 
       let handle = ShmemHandle::PosixShm { id: id.clone(), len };
@@ -390,7 +395,10 @@ impl ShmemRegion {
   fn create_linux_memfd(len: usize) -> io::Result<(Self, ShmemHandle)> {
     ensure_nonzero_len(len)?;
     let file = create_linux_memfd_file(len)?;
-    let mmap = map_file_mut(&file, len)?;
+    let mut mmap = map_file_mut(&file, len)?;
+    // Security: explicitly zero the mapping to avoid leaking stale bytes if the kernel ever
+    // provides non-zeroed pages (or if the backing fd/name is accidentally reused).
+    mmap.fill(0);
     let handle = ShmemHandle::LinuxMemfd {
       fd: file.as_raw_fd(),
       len,
@@ -813,6 +821,27 @@ mod tests {
 
     other.as_mut_slice()[1] = b'!';
     assert_eq!(&region.as_slice()[0..4], b"F!SH");
+  }
+
+  #[cfg(target_os = "linux")]
+  #[test]
+  fn linux_memfd_create_zero_initializes_mapping() {
+    let (region, _handle) =
+      ShmemRegion::create(ShmemBackend::LinuxMemfd, 128).expect("create memfd shmem");
+    assert!(
+      region.as_slice().iter().all(|b| *b == 0),
+      "newly created shared-memory region should be zero-initialized"
+    );
+  }
+
+  #[cfg(all(unix, not(target_os = "linux")))]
+  #[test]
+  fn posix_shm_create_zero_initializes_mapping() {
+    let (region, _handle) = ShmemRegion::create(ShmemBackend::PosixShm, 128).expect("create shmem");
+    assert!(
+      region.as_slice().iter().all(|b| *b == 0),
+      "newly created shared-memory region should be zero-initialized"
+    );
   }
 
   #[cfg(target_os = "linux")]
