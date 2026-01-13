@@ -38,6 +38,29 @@ fn assert_compiled_script_bigint(source: &str, expected: i128) -> Result<(), VmE
   Ok(())
 }
 
+fn compile_and_call0(source: &str, func_name: &str) -> Result<Value, VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(&mut heap, "test.js", source)?;
+  let f_body = find_function_body(&script, func_name);
+  let mut vm = Vm::new(VmOptions::default());
+  let mut realm = vm_js::Realm::new(&mut vm, &mut heap)?;
+  let result: Result<Value, VmError> = (|| {
+    let mut scope = heap.scope();
+    let name = scope.alloc_string(func_name)?;
+    let f = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script,
+        body: f_body,
+      },
+      name,
+      0,
+    )?;
+    vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])
+  })();
+  realm.teardown(&mut heap);
+  result
+}
+
 #[test]
 fn compiled_closure_capture_semantics() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
@@ -4331,5 +4354,65 @@ fn compiled_named_function_expr_recursion_works() -> Result<(), VmError> {
 
   let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
   assert_eq!(result, Value::Number(120.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_var_decl_object_destructuring_default() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f(){ let {a,b=2} = {a:1}; return a + b; }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_var_decl_array_destructuring_elision() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f(){ let [a,,b] = [1,2,3]; return a + b; }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(4.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_assignment_object_destructuring() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f(){ let a=0; ({a} = {a:5}); return a; }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(5.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_array_destructuring_rest() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f(){ let [a,...rest] = [1,2,3]; return rest.length; }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(2.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_object_destructuring_rest() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f(){ let {a, ...rest} = {a:1,b:2,c:3}; return ("b" in rest) && !("a" in rest); }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(true));
   Ok(())
 }

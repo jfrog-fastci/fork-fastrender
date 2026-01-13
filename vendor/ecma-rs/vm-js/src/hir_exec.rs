@@ -244,6 +244,57 @@ fn vec_try_extend_utf16_from_str_with_ticks(
   Ok(())
 }
 
+fn maybe_set_anonymous_function_name(
+  scope: &mut Scope<'_>,
+  value: Value,
+  name: &str,
+) -> Result<(), VmError> {
+  let Value::Object(func_obj) = value else {
+    return Ok(());
+  };
+
+  // `SetFunctionName` only applies to actual Function objects. Callable Proxies are callable, but
+  // they are not function objects and should not have their `name` mutated.
+  let (current_name, is_native_non_constructable) = match scope.heap().get_function(func_obj) {
+    Ok(f) => (
+      f.name,
+      matches!(f.call, crate::function::CallHandler::Native(_)) && f.construct.is_none(),
+    ),
+    Err(VmError::NotCallable) => return Ok(()),
+    Err(err) => return Err(err),
+  };
+
+  // Name inference only applies to "anonymous function definitions" (ECMA-262) which excludes
+  // anonymous built-in/native functions like Promise combinator element callbacks.
+  //
+  // `vm-js` represents user-defined class constructors as native functions (so they can throw when
+  // called without `new`), so keep name inference enabled for constructable native functions.
+  if is_native_non_constructable {
+    return Ok(());
+  }
+  if !scope
+    .heap()
+    .get_string(current_name)?
+    .as_code_units()
+    .is_empty()
+  {
+    return Ok(());
+  }
+
+  // Root the function object while allocating the new name string and redefining `name`.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(func_obj))?;
+
+  let name_s = scope.alloc_string(name)?;
+  crate::function_properties::set_function_name(
+    &mut scope,
+    func_obj,
+    PropertyKey::String(name_s),
+    None,
+  )?;
+  Ok(())
+}
+
 #[derive(Clone, Copy, Debug)]
 enum PatBindingKind {
   Var,
@@ -1717,17 +1768,16 @@ impl<'vm> HirEvaluator<'vm> {
 
             let catch_result = (|| -> Result<Flow, VmError> {
               if let Some(param_pat_id) = catch_clause.param {
-                let pat = self.get_pat(body, param_pat_id)?;
-                let hir_js::PatKind::Ident(name_id) = pat.kind else {
-                  return Err(VmError::Unimplemented(
-                    "catch parameter pattern (hir-js compiled path)",
-                  ));
-                };
-                let name = self.resolve_name(name_id)?;
-                catch_scope.env_create_mutable_binding(catch_env, name.as_str())?;
-                catch_scope
-                  .heap_mut()
-                  .env_initialize_binding(catch_env, name.as_str(), thrown_value)?;
+                // Catch bindings accept any binding pattern (identifier, object/array destructuring,
+                // rest, etc). Bind into the catch environment we just installed as the current
+                // lexical environment.
+                self.bind_pattern(
+                  &mut catch_scope,
+                  body,
+                  param_pat_id,
+                  thrown_value,
+                  PatBindingKind::Let,
+                )?;
               }
 
               self.eval_stmt(&mut catch_scope, body, catch_clause.body)
@@ -1965,6 +2015,9 @@ impl<'vm> HirEvaluator<'vm> {
     kind: PatBindingKind,
   ) -> Result<(), VmError> {
     let name = self.resolve_name(name_id)?;
+    // `SetFunctionName`-like behaviour: when binding an anonymous function/class to an identifier,
+    // infer its `name` from the identifier.
+    maybe_set_anonymous_function_name(scope, value, name.as_str())?;
     match kind {
       PatBindingKind::Var => self.env.set_var(
         self.vm,
@@ -2285,6 +2338,7 @@ impl<'vm> HirEvaluator<'vm> {
 
         let key_s = elem_scope.alloc_u32_index_string(rest_idx)?;
         let key = PropertyKey::from_string(key_s);
+        root_property_key(&mut elem_scope, key)?;
         elem_scope.create_data_property_or_throw(rest_arr, key, v)
       };
       if let Err(err) = create_res {
@@ -4203,6 +4257,7 @@ impl<'vm> HirEvaluator<'vm> {
     match pat.kind {
       hir_js::PatKind::Ident(name_id) => {
         let name = self.resolve_name(name_id)?;
+        maybe_set_anonymous_function_name(scope, value, name.as_str())?;
         self.env.set(
           self.vm,
           &mut *self.host,
@@ -4218,6 +4273,7 @@ impl<'vm> HirEvaluator<'vm> {
         match &target_expr.kind {
           hir_js::ExprKind::Ident(name_id) => {
             let name = self.resolve_name(*name_id)?;
+            maybe_set_anonymous_function_name(scope, value, name.as_str())?;
             self.env.set(
               self.vm,
               &mut *self.host,
@@ -4247,7 +4303,7 @@ impl<'vm> HirEvaluator<'vm> {
     key: PropertyKey,
     value: Value,
   ) -> Result<(), VmError> {
-    // Root inputs across key allocation and `[[Set]]`, which can allocate and invoke user code.
+    // Root inputs across `ToObject` + `[[Set]]`, which can allocate and invoke user code.
     let mut set_scope = scope.reborrow();
     let key_root = match key {
       PropertyKey::String(s) => Value::String(s),
@@ -4255,12 +4311,12 @@ impl<'vm> HirEvaluator<'vm> {
     };
     set_scope.push_roots(&[base, key_root, value])?;
 
-    let Value::Object(obj) = base else {
-      return Err(VmError::TypeError("member assignment requires object"));
-    };
+    // Spec: `PutValue` uses `ToObject` and then calls `[[Set]]` with the *original* base value as
+    // the receiver.
+    let obj = set_scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
     set_scope.push_root(Value::Object(obj))?;
 
-    let receiver = Value::Object(obj);
+    let receiver = base;
     let ok = crate::spec_ops::internal_set_with_host_and_hooks(
       self.vm,
       &mut set_scope,
@@ -4595,6 +4651,7 @@ impl<'vm> HirEvaluator<'vm> {
         elem_scope.push_roots(&[Value::Object(rest_arr), v])?;
         let key_s = elem_scope.alloc_u32_index_string(rest_idx)?;
         let key = PropertyKey::from_string(key_s);
+        root_property_key(&mut elem_scope, key)?;
         elem_scope.create_data_property_or_throw(rest_arr, key, v)
       };
       if let Err(err) = create_res {
