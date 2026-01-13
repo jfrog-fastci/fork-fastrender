@@ -297,11 +297,6 @@ fn compute_tab_insertion_index(
   insertion_index
 }
 
-#[cfg(feature = "browser_ui")]
-fn drag_offset_id() -> egui::Id {
-  egui::Id::new("tab_strip_drag_offset")
-}
-
 fn paint_popup_shadow(
   painter: &egui::Painter,
   rect: Rect,
@@ -1787,10 +1782,7 @@ pub(super) fn tab_strip_ui(
                     chrome.dragging_tab_id = Some(tab_id);
                     let pointer_pos = ui.input(|i| i.pointer.interact_pos());
                     chrome.drag_start_pointer_pos = pointer_pos;
-                    if let Some(pointer_pos) = pointer_pos {
-                      ui.ctx()
-                        .data_mut(|d| d.insert_temp(drag_offset_id(), tab_rect.min - pointer_pos));
-                    }
+                    chrome.drag_start_tab_rect = Some(tab_rect);
                   }
                 }
               }
@@ -2070,11 +2062,7 @@ pub(super) fn tab_strip_ui(
                         app.chrome.dragging_tab_id = Some(tab_id);
                         let pointer_pos = ui.input(|i| i.pointer.interact_pos());
                         app.chrome.drag_start_pointer_pos = pointer_pos;
-                        if let Some(pointer_pos) = pointer_pos {
-                          ui.ctx().data_mut(|d| {
-                            d.insert_temp(drag_offset_id(), tab_rect.min - pointer_pos)
-                          });
-                        }
+                        app.chrome.drag_start_tab_rect = Some(tab_rect);
                       }
                     }
                   }
@@ -2147,10 +2135,7 @@ pub(super) fn tab_strip_ui(
                     app.chrome.dragging_tab_id = Some(tab_id);
                     let pointer_pos = ui.input(|i| i.pointer.interact_pos());
                     app.chrome.drag_start_pointer_pos = pointer_pos;
-                    if let Some(pointer_pos) = pointer_pos {
-                      ui.ctx()
-                        .data_mut(|d| d.insert_temp(drag_offset_id(), tab_rect.min - pointer_pos));
-                    }
+                    app.chrome.drag_start_tab_rect = Some(tab_rect);
                   }
                 }
               }
@@ -2476,23 +2461,36 @@ pub(super) fn tab_strip_ui(
     }
 
     // Floating preview.
-    let preview_size = dragged_tab_rect.map(|r| r.size()).unwrap_or_else(|| {
-      Vec2::new(
-        if dragging_is_pinned {
-          PINNED_TAB_WIDTH
-        } else {
-          sizing.tab_width
-        },
-        TAB_HEIGHT,
-      )
-    });
-    let drag_offset = ui
-      .ctx()
-      .data(|d| d.get_temp::<Vec2>(drag_offset_id()))
-      .or_else(|| dragged_tab_rect.map(|r| r.min - pos))
-      .unwrap_or(Vec2::new(-preview_size.x * 0.5, -preview_size.y * 0.5));
+    let preview_size = app
+      .chrome
+      .drag_start_tab_rect
+      .map(|r| r.size())
+      .or_else(|| dragged_tab_rect.map(|r| r.size()))
+      .unwrap_or_else(|| {
+        Vec2::new(
+          if dragging_is_pinned {
+            PINNED_TAB_WIDTH
+          } else {
+            sizing.tab_width
+          },
+          TAB_HEIGHT,
+        )
+      });
+
+    let delta = app
+      .chrome
+      .drag_start_pointer_pos
+      .map(|start| pos - start)
+      .unwrap_or_default();
+    let mut preview_rect = app
+      .chrome
+      .drag_start_tab_rect
+      .or(dragged_tab_rect)
+      .map(|rect| rect.translate(delta))
+      .unwrap_or_else(|| Rect::from_center_size(pos, preview_size));
+
     let lift = Vec2::new(0.0, -DRAG_PREVIEW_LIFT_Y);
-    let mut preview_rect = Rect::from_min_size(pos + drag_offset + lift, preview_size);
+    preview_rect = preview_rect.translate(lift);
     if motion.enabled {
       preview_rect = Rect::from_center_size(
         preview_rect.center(),
