@@ -157,6 +157,8 @@ pub struct AccessibilityRelations {
 pub struct AccessibilityDebugInfo {
   #[serde(skip_serializing_if = "Option::is_none")]
   pub text_selection: Option<AccessibilityTextSelection>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub document_selection: Option<AccessibilityDocumentSelection>,
   #[serde(skip_serializing_if = "is_false")]
   pub document_has_selection: bool,
 }
@@ -170,6 +172,79 @@ pub struct AccessibilityTextSelection {
   pub selection_start: Option<usize>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub selection_end: Option<usize>,
+}
+
+#[cfg(any(debug_assertions, feature = "a11y_debug"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct AccessibilityDocumentSelectionPoint {
+  pub node_id: usize,
+  pub char_offset: usize,
+}
+
+#[cfg(any(debug_assertions, feature = "a11y_debug"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct AccessibilityDocumentSelectionRange {
+  pub start: AccessibilityDocumentSelectionPoint,
+  pub end: AccessibilityDocumentSelectionPoint,
+}
+
+#[cfg(any(debug_assertions, feature = "a11y_debug"))]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum AccessibilityDocumentSelection {
+  All,
+  Ranges {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    ranges: Vec<AccessibilityDocumentSelectionRange>,
+    primary: usize,
+    anchor: AccessibilityDocumentSelectionPoint,
+    focus: AccessibilityDocumentSelectionPoint,
+  },
+}
+
+#[cfg(any(debug_assertions, feature = "a11y_debug"))]
+fn debug_document_selection(
+  selection: &crate::interaction::state::DocumentSelectionState,
+) -> AccessibilityDocumentSelection {
+  use crate::interaction::state::DocumentSelectionState;
+
+  match selection {
+    DocumentSelectionState::All => AccessibilityDocumentSelection::All,
+    DocumentSelectionState::Ranges(ranges) => {
+      let mut ranges = ranges.clone();
+      ranges.normalize();
+
+      AccessibilityDocumentSelection::Ranges {
+        ranges: ranges
+          .ranges
+          .iter()
+          .copied()
+          .map(|range| {
+            let range = range.normalized();
+            AccessibilityDocumentSelectionRange {
+              start: AccessibilityDocumentSelectionPoint {
+                node_id: range.start.node_id,
+                char_offset: range.start.char_offset,
+              },
+              end: AccessibilityDocumentSelectionPoint {
+                node_id: range.end.node_id,
+                char_offset: range.end.char_offset,
+              },
+            }
+          })
+          .collect(),
+        primary: ranges.primary,
+        anchor: AccessibilityDocumentSelectionPoint {
+          node_id: ranges.anchor.node_id,
+          char_offset: ranges.anchor.char_offset,
+        },
+        focus: AccessibilityDocumentSelectionPoint {
+          node_id: ranges.focus.node_id,
+          char_offset: ranges.focus.char_offset,
+        },
+      }
+    }
+  }
 }
 
 /// A node in the exported accessibility tree.
@@ -360,17 +435,15 @@ pub fn build_accessibility_tree(
     states: AccessibilityState::default(),
     children,
     #[cfg(any(debug_assertions, feature = "a11y_debug"))]
-    debug: interaction_state
-      .is_some_and(|state| {
-        state
-          .document_selection
-          .as_ref()
-          .is_some_and(|sel| sel.has_highlight())
+    debug: interaction_state.and_then(|state| {
+      state.document_selection.as_ref().map(|selection| {
+        AccessibilityDebugInfo {
+          text_selection: None,
+          document_selection: Some(debug_document_selection(selection)),
+          document_has_selection: selection.has_highlight(),
+        }
       })
-      .then_some(AccessibilityDebugInfo {
-        text_selection: None,
-        document_has_selection: true,
-      }),
+    }),
   })
 }
 
@@ -1592,6 +1665,10 @@ fn debug_info_for_node(node: &StyledNode, ctx: &BuildContext<'_, '_>) -> Option<
       selection_start,
       selection_end,
     }),
+    document_selection: state
+      .document_selection
+      .as_ref()
+      .map(debug_document_selection),
     document_has_selection: state
       .document_selection
       .as_ref()

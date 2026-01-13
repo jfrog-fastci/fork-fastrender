@@ -1,7 +1,10 @@
 use fastrender::accessibility::{AccessibilityNode, CheckState};
 use fastrender::api::FastRender;
-use fastrender::dom::{enumerate_dom_ids, DomNode};
-use fastrender::interaction::state::{DocumentSelectionState, FileSelection, TextEditPaintState};
+use fastrender::dom::{enumerate_dom_ids, DomNode, DomNodeType};
+use fastrender::interaction::selection_serialize::{DocumentSelectionPoint, DocumentSelectionRange};
+use fastrender::interaction::state::{
+  DocumentSelectionRanges, DocumentSelectionState, FileSelection, TextEditPaintState,
+};
 use fastrender::interaction::InteractionState;
 use fastrender::text::caret::CaretAffinity;
 use rustc_hash::FxHashSet;
@@ -118,6 +121,7 @@ fn accessibility_exports_selection_debug_fields() {
   let html = r##"
     <html>
       <body>
+        <p id="p">hello world</p>
         <input id="text" type="text" value="abcdef" />
       </body>
     </html>
@@ -125,14 +129,41 @@ fn accessibility_exports_selection_debug_fields() {
 
   let dom = renderer.parse_html(html).expect("parse");
   let ids = enumerate_dom_ids(&dom);
+  let p_node = find_dom_by_id(&dom, "p").expect("p element");
+  let p_text_node = p_node
+    .children
+    .iter()
+    .find(|child| matches!(child.node_type, DomNodeType::Text { .. }))
+    .expect("p text node");
+  let p_text_id = *ids
+    .get(&(p_text_node as *const DomNode))
+    .expect("p text id");
   let text_node = find_dom_by_id(&dom, "text").expect("text input");
   let text_id = *ids.get(&(text_node as *const DomNode)).expect("text id");
+
+  let anchor = DocumentSelectionPoint {
+    node_id: p_text_id,
+    char_offset: 11,
+  };
+  let focus = DocumentSelectionPoint {
+    node_id: p_text_id,
+    char_offset: 6,
+  };
+  let ranges = DocumentSelectionRanges {
+    ranges: vec![DocumentSelectionRange {
+      start: anchor,
+      end: focus,
+    }],
+    primary: 0,
+    anchor,
+    focus,
+  };
 
   let mut state = InteractionState::default();
   state.focused = Some(text_id);
   state.focus_visible = true;
   state.set_focus_chain(vec![text_id]);
-  state.document_selection = Some(DocumentSelectionState::All);
+  state.document_selection = Some(DocumentSelectionState::Ranges(ranges));
   state.text_edit = Some(TextEditPaintState {
     node_id: text_id,
     caret: 3,
@@ -152,6 +183,63 @@ fn accessibility_exports_selection_debug_fields() {
       .and_then(|v| v.as_bool()),
     Some(true),
     "document node should surface document selection presence"
+  );
+
+  let document_selection = json
+    .get("debug")
+    .and_then(|debug| debug.get("document_selection"))
+    .expect("document_selection debug");
+  assert_eq!(
+    document_selection
+      .get("kind")
+      .and_then(|v| v.as_str()),
+    Some("ranges")
+  );
+  let ranges_json = document_selection
+    .get("ranges")
+    .and_then(|v| v.as_array())
+    .expect("ranges array");
+  assert_eq!(ranges_json.len(), 1);
+  let range = &ranges_json[0];
+  assert_eq!(
+    range
+      .get("start")
+      .and_then(|p| p.get("node_id"))
+      .and_then(|v| v.as_u64()),
+    Some(p_text_id as u64)
+  );
+  // Ensure the exported range is normalized (start <= end), even when anchor/focus were reversed.
+  assert_eq!(
+    range
+      .get("start")
+      .and_then(|p| p.get("char_offset"))
+      .and_then(|v| v.as_u64()),
+    Some(6)
+  );
+  assert_eq!(
+    range
+      .get("end")
+      .and_then(|p| p.get("char_offset"))
+      .and_then(|v| v.as_u64()),
+    Some(11)
+  );
+  assert_eq!(
+    document_selection.get("primary").and_then(|v| v.as_u64()),
+    Some(0)
+  );
+  assert_eq!(
+    document_selection
+      .get("anchor")
+      .and_then(|p| p.get("char_offset"))
+      .and_then(|v| v.as_u64()),
+    Some(11)
+  );
+  assert_eq!(
+    document_selection
+      .get("focus")
+      .and_then(|p| p.get("char_offset"))
+      .and_then(|v| v.as_u64()),
+    Some(6)
   );
 
   let node = find_json_node(&json, "text").expect("text node");
