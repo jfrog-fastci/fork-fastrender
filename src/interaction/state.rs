@@ -805,8 +805,11 @@ impl Clone for InteractionState {
       user_validity: self.user_validity.clone(),
       cached_css_hash: AtomicU64::new(self.cached_css_hash.load(AtomicOrdering::Relaxed)),
       cached_paint_hash: AtomicU64::new(self.cached_paint_hash.load(AtomicOrdering::Relaxed)),
-      css_hash_dirty: AtomicBool::new(self.css_hash_dirty.load(AtomicOrdering::Relaxed)),
-      paint_hash_dirty: AtomicBool::new(self.paint_hash_dirty.load(AtomicOrdering::Relaxed)),
+      // `InteractionState` is frequently cloned for "build a slightly modified state" patterns in
+      // tests and embedder code. Mark hashes dirty so callers can safely mutate public fields on the
+      // clone without needing to remember to call `mark_*_hash_dirty()`.
+      css_hash_dirty: AtomicBool::new(true),
+      paint_hash_dirty: AtomicBool::new(true),
     }
   }
 }

@@ -637,6 +637,25 @@ mod tests {
   }
 
   #[test]
+  fn interaction_hash_clone_is_dirty_by_default() {
+    let state = InteractionState::default();
+    // Force the original state to compute and cache hashes (clearing dirty flags).
+    let css_before = state.interaction_css_hash();
+    let paint_before = state.interaction_paint_hash();
+
+    // Clone + mutate a paint-only field directly (simulating embedder/test code that doesn't go
+    // through `InteractionEngine` APIs).
+    let mut cloned = state.clone();
+    cloned.document_selection = Some(DocumentSelectionState::All);
+
+    let css_after = cloned.interaction_css_hash();
+    let paint_after = cloned.interaction_paint_hash();
+
+    assert_eq!(css_before, css_after, "paint-only mutations must not affect css hash");
+    assert_ne!(paint_before, paint_after, "paint-only mutations must affect paint hash");
+  }
+
+  #[test]
   fn style_for_styled_node_id_ignores_pseudo_boxes() {
     let styled_node_id = 42;
 
