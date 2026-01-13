@@ -39,14 +39,24 @@ impl DomExceptionClass {
       }
 
       let name = rt.get(this, key_name)?;
-      let name = rt.to_string(name)?;
+      let name = if matches!(name, Value::Undefined) {
+        rt.alloc_string_value("Error")?
+      } else {
+        rt.to_string(name)?
+      };
       let name = value_to_rust_string(rt, name)?;
 
       let message = rt.get(this, key_message)?;
-      let message = rt.to_string(message)?;
+      let message = if matches!(message, Value::Undefined) {
+        rt.alloc_string_value("")?
+      } else {
+        rt.to_string(message)?
+      };
       let message = value_to_rust_string(rt, message)?;
 
-      let formatted = if message.is_empty() {
+      let formatted = if name.is_empty() {
+        message
+      } else if message.is_empty() {
         name
       } else {
         format!("{name}: {message}")
