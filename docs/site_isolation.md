@@ -69,7 +69,7 @@ If FastRender later needs Chrome-like opener/session-history semantics, we may n
 Site isolation is a **security boundary**. Assume:
 
 - A renderer process can be compromised by hostile content.
-- Compromised renderer A **must not** read memory/state belonging to site B.
+- Compromised renderer A **must not** read memory/state belonging to a different origin / `SiteKey`.
 - The browser process is trusted and is responsible for:
   - navigation decisions,
   - process creation/lifecycle,
