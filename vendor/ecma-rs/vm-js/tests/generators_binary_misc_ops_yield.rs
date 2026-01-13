@@ -223,6 +223,48 @@ fn instanceof_operator_with_yield_in_both_operands() {
 }
 
 #[test]
+fn in_operator_rhs_non_object_throws_type_error_under_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          try { return "a" in (yield 0); }
+          catch (e) { return e && e.name === "TypeError"; }
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(null);
+        r1.value === 0 && r1.done === false &&
+        r2.done === true && r2.value === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn instanceof_operator_rhs_non_object_throws_type_error_under_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          try { return ({}) instanceof (yield 0); }
+          catch (e) { return e && e.name === "TypeError"; }
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(null);
+        r1.value === 0 && r1.done === false &&
+        r2.done === true && r2.value === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn bigint_mixing_error_is_catchable_under_yield() {
   let mut rt = new_runtime();
   let value = rt
