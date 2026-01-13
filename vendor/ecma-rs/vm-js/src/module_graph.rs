@@ -327,9 +327,9 @@ impl ModuleGraph {
   /// (stored in each module record's `loaded_modules` list), not just the static
   /// `[[RequestedModules]]` list.
   ///
-  /// Any mutation of `loaded_modules` must call this method (e.g. during host-driven module
-  /// loading/`FinishLoadingImportedModule`) so cached SCC structure is recomputed before module
-  /// evaluation.
+  /// Any mutation of `loaded_modules` / `[[LoadedModules]]` edges must call this method (e.g.
+  /// during host-driven module loading / `FinishLoadingImportedModule`) so cached SCC structure is
+  /// recomputed before module evaluation.
   pub(crate) fn mark_scc_dirty(&mut self) {
     self.scc_dirty = true;
   }
@@ -462,7 +462,7 @@ impl ModuleGraph {
     self.scc_members.push(Vec::new());
     self.scc_deps.push(Vec::new());
     self.scc_parents.push(Vec::new());
-    self.scc_dirty = true;
+    self.mark_scc_dirty();
     self.async_eval_states.push(AsyncModuleEvalState::default());
     Ok(id)
   }
