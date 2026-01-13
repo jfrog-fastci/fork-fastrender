@@ -979,8 +979,8 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     if let Some(param) = &catch.parameter {
       // Collect BoundNames(CatchParameter) and report duplicates.
       let mut param_names = HashMap::<String, LexicalNameKind>::new();
-      let empty = HashSet::<String>::new();
-      self.collect_lexical_decl_names_from_pat(ctx, &param.stx.pat, param.loc, &mut param_names, &empty)?;
+      let empty_var_names = HashSet::<String>::new();
+      self.collect_lexical_decl_names_from_pat(ctx, &param.stx.pat, param.loc, &mut param_names, &empty_var_names)?;
 
       // Collect LexicallyDeclaredNames(CatchBlock) from the top-level statement list.
       let mut lexical_names = HashSet::<String>::new();

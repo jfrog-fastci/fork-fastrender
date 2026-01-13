@@ -2666,6 +2666,50 @@ fn compiled_catch_restores_outer_lexical_env() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_try_catch_coerces_internal_range_error() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let ok = 0;
+      try { BigInt(1.1) } catch (e) { ok = (e.name === 'RangeError') ? 1 : 0; }
+      ok
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_uncaught_range_error_is_coerced_to_throw_with_stack() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(rt.heap_mut(), "test.js", r#"BigInt(1.1)"#)?;
+  let err = rt.exec_compiled_script(script).unwrap_err();
+
+  let VmError::ThrowWithStack { value, .. } = err else {
+    panic!("expected ThrowWithStack, got {err:?}");
+  };
+  let Value::Object(obj) = value else {
+    panic!("expected thrown object, got {value:?}");
+  };
+
+  let range_error_proto = rt.realm().intrinsics().range_error_prototype();
+
+  let mut scope = rt.heap_mut().scope();
+  scope.push_root(Value::Object(obj))?;
+  assert_eq!(scope.heap().object_prototype(obj)?, Some(range_error_proto));
+  Ok(())
+}
+
+#[test]
 fn compiled_lexical_tdz_shadowing_throws() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
