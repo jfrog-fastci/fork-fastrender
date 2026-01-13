@@ -1,4 +1,4 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+use vm_js::{Heap, HeapLimits, JsRuntime, SourceTextModuleRecord, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -125,6 +125,20 @@ fn escaped_eval_as_function_name_in_strict_mode_is_syntax_error() {
 fn escaped_eval_assignment_target_in_strict_mode_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script(r#""use strict"; \u0065val = 1;"#).unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn escaped_await_as_import_binding_identifier_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = SourceTextModuleRecord::parse(&mut rt.heap, r#"import { \u0061wait } from "m";"#).unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn escaped_eval_as_import_binding_identifier_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = SourceTextModuleRecord::parse(&mut rt.heap, r#"import { \u0065val } from "m";"#).unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
 

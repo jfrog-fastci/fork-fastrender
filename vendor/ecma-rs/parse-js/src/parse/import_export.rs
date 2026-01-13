@@ -131,13 +131,30 @@ impl<'a> Parser<'a> {
         },
       )
     };
-    if !is_export
-      && self.is_strict_ecmascript()
-      && self.is_strict_mode()
-      && (Parser::is_strict_mode_reserved_word(&alias.stx.name)
-        || Parser::is_strict_mode_restricted_binding_identifier(&alias.stx.name))
-    {
-      return Err(alias.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+    if !is_export && self.is_strict_ecmascript() {
+      // Import local names are `BindingIdentifier`s, so they must respect:
+      // - `await`/`yield` grammar parameter restrictions (via `StringValue`), and
+      // - strict-mode reserved/restricted identifiers.
+      //
+      // Note: the shorthand `{ x }` path constructs `alias` without calling `id_pat`, so we must
+      // perform these StringValue-based checks here to ensure escapes like `\u0061wait` or
+      // `\u0065val` do not bypass early errors.
+      let Some(string_value) = self.identifier_name_string_value(&alias.stx.name) else {
+        return Err(alias.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+      };
+
+      if (!ctx.rules.await_allowed && string_value.as_ref() == "await")
+        || (!ctx.rules.yield_allowed && string_value.as_ref() == "yield")
+      {
+        return Err(alias.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+      }
+
+      if self.is_strict_mode()
+        && (Parser::is_strict_mode_reserved_word(string_value.as_ref())
+          || Parser::is_strict_mode_restricted_binding_identifier(string_value.as_ref()))
+      {
+        return Err(alias.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+      }
     }
     if let Some(target_escape) = target_escape {
       if alias.assoc.get::<LegacyOctalEscapeSequence>().is_none() {
