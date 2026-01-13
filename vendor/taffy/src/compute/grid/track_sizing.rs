@@ -1869,14 +1869,112 @@ fn find_size_of_fr(tracks: &[GridTrack], space_to_fill: f32) -> f32 {
     return 0.0;
   }
 
-  // If the product of the hypothetical fr size (computed below) and any flexible track’s flex factor
-  // is less than the track’s base size, then we must restart this algorithm treating all such tracks as inflexible.
-  // We therefore wrap the entire algorithm in a loop, with an hypothetical_fr_size of INFINITY such that the above
-  // condition can never be true for the first iteration.
+  // The spec describes this algorithm in a way that can "restart" multiple times as tracks become
+  // inflexible. A direct implementation can devolve into O(n^2) behaviour on large track sets.
+  //
+  // Observations:
+  // - For an `fr` track with base size `b` and flex factor `f`, the track remains "flexible" iff
+  //   `f * fr_size >= b`, i.e. `fr_size >= b / f`.
+  // - Therefore the set of flexible tracks at the fixed point is a prefix when the tracks are
+  //   sorted by `threshold = base_size / flex_factor`.
+  //
+  // We exploit this by sorting the flex tracks by threshold and iteratively "peeling off" the
+  // highest-threshold tracks until the computed fr_size satisfies all remaining thresholds.
+  // This yields O(n log n) time dominated by the sort.
+
+  #[derive(Clone, Copy)]
+  struct FlexTrackInfo {
+    threshold: f32,
+    base_size: f32,
+    flex_factor: f32,
+  }
+
+  let mut fixed_used_space = 0.0;
+  let mut flex_tracks: Vec<FlexTrackInfo> = Vec::new();
+  let mut flex_factor_sum = 0.0;
+
+  for track in tracks.iter() {
+    if track.max_track_sizing_function.is_fr() {
+      let flex_factor = track.max_track_sizing_function.0.value();
+
+      // CSS spec expects non-negative flex factors, but handle <= 0 defensively to avoid NaNs and
+      // infinite loops. Treat such tracks as inflexible.
+      if flex_factor > 0.0 && flex_factor.is_finite() {
+        let threshold = track.base_size / flex_factor;
+        flex_tracks.push(FlexTrackInfo {
+          threshold,
+          base_size: track.base_size,
+          flex_factor,
+        });
+        flex_factor_sum += flex_factor;
+      } else {
+        fixed_used_space += track.base_size;
+      }
+    } else {
+      fixed_used_space += track.base_size;
+    }
+  }
+
+  // If there are no usable flex tracks, then the fr size is just the leftover space.
+  if flex_tracks.is_empty() {
+    return space_to_fill - fixed_used_space;
+  }
+
+  // Sort by threshold ascending so we can efficiently move tracks from "flexible" to "inflexible"
+  // by popping from the end.
+  flex_tracks.sort_unstable_by(|a, b| a.threshold.total_cmp(&b.threshold));
+
+  // `flexible_len` is the number of tracks still considered flexible (prefix length).
+  let mut flexible_len = flex_tracks.len();
+  let mut flexible_flex_factor_sum = flex_factor_sum;
+
+  loop {
+    // `find_size_of_fr` is on the hot path for grids with many tracks. Ensure we periodically check
+    // for cooperative abort requests so render deadlines can surface as structured timeouts rather
+    // than hard kills.
+    check_layout_abort();
+
+    let denominator = f32_max(flexible_flex_factor_sum, 1.0);
+    let fr_size = (space_to_fill - fixed_used_space) / denominator;
+
+    if flexible_len == 0 {
+      return fr_size;
+    }
+
+    // If the current fr size satisfies the largest remaining threshold then it satisfies all.
+    if fr_size >= flex_tracks[flexible_len - 1].threshold {
+      return fr_size;
+    }
+
+    // Otherwise, peel off all tracks whose thresholds exceed the fr_size. These tracks are treated
+    // as inflexible in the fixed point.
+    let mut removed_this_pass = 0usize;
+    while flexible_len > 0 && fr_size < flex_tracks[flexible_len - 1].threshold {
+      flexible_len -= 1;
+      let track = flex_tracks[flexible_len];
+      fixed_used_space += track.base_size;
+      flexible_flex_factor_sum -= track.flex_factor;
+
+      removed_this_pass += 1;
+      if removed_this_pass % 64 == 0 {
+        check_layout_abort();
+      }
+    }
+  }
+}
+
+#[cfg(all(test, feature = "taffy_tree"))]
+fn find_size_of_fr_reference(tracks: &[GridTrack], space_to_fill: f32) -> f32 {
+  // Handle the trivial case where there is no space to fill
+  // Do not remove as otherwise the loop below will loop infinitely
+  if space_to_fill == 0.0 {
+    return 0.0;
+  }
+
+  // Reference implementation (the previous "restart" loop approach).
   let mut hypothetical_fr_size = f32::INFINITY;
   let mut previous_iter_hypothetical_fr_size;
   loop {
-    check_layout_abort();
     // Let leftover space be the space to fill minus the base sizes of the non-flexible grid tracks.
     // Let flex factor sum be the sum of the flex factors of the flexible tracks. If this value is less than 1, set it to 1 instead.
     // We compute both of these in a single loop to avoid iterating over the data twice
@@ -1901,7 +1999,6 @@ fn find_size_of_fr(tracks: &[GridTrack], space_to_fill: f32) -> f32 {
 
     // If the product of the hypothetical fr size and a flexible track’s flex factor is less than the track’s base size,
     // restart this algorithm treating all such tracks as inflexible.
-    // We keep track of the hypothetical_fr_size
     let hypothetical_fr_size_is_valid = tracks.iter().all(|track| {
       if track.max_track_sizing_function.is_fr() {
         let flex_factor = track.max_track_sizing_function.0.value();
@@ -1916,7 +2013,6 @@ fn find_size_of_fr(tracks: &[GridTrack], space_to_fill: f32) -> f32 {
     }
   }
 
-  // Return the hypothetical fr size.
   hypothetical_fr_size
 }
 
@@ -2792,5 +2888,151 @@ mod tests {
       assert!((layout.size.width - expected_col_width).abs() < 0.01);
     }
     assert!((width_sum - 1000.0).abs() < 0.01);
+  }
+
+  fn make_fixed_track(base_size: f32) -> super::GridTrack {
+    let mut track =
+      super::GridTrack::new(MinTrackSizingFunction::ZERO, MaxTrackSizingFunction::ZERO);
+    track.base_size = base_size;
+    track
+  }
+
+  fn make_fr_track(base_size: f32, flex_factor: f32) -> super::GridTrack {
+    let mut track =
+      super::GridTrack::new(MinTrackSizingFunction::ZERO, MaxTrackSizingFunction::fr(flex_factor));
+    track.base_size = base_size;
+    track
+  }
+
+  #[test]
+  fn find_size_of_fr_matches_reference_implementation() {
+    const EPS: f32 = 1e-5;
+
+    // A set of deterministic scenarios to compare the optimised implementation against the
+    // previous loop+restart algorithm.
+    //
+    // Note: while these tests don't assert runtime directly, they include cases (including a 512
+    // track stress-case) that previously exhibited O(n^2) behaviour.
+    let mut track_sets: Vec<Vec<super::GridTrack>> = Vec::new();
+
+    // Hand-crafted mixtures of fixed and fr tracks.
+    track_sets.push(vec![
+      make_fixed_track(10.0),
+      make_fr_track(30.0, 1.0),
+      make_fr_track(5.0, 2.0),
+      make_fixed_track(7.0),
+    ]);
+
+    track_sets.push(vec![
+      make_fr_track(0.0, 1.0),
+      make_fr_track(100.0, 0.25),
+      make_fr_track(50.0, 3.0),
+    ]);
+
+    track_sets.push(vec![
+      make_fixed_track(1000.0),
+      make_fr_track(1_000_000.0, 2.0),
+      make_fr_track(250.0, 0.5),
+      make_fixed_track(5.0),
+    ]);
+
+    track_sets.push(vec![
+      make_fixed_track(0.0),
+      make_fixed_track(10.0),
+      make_fixed_track(25.0),
+    ]);
+
+    // Deterministic pseudo-random-ish generation to cover more combinations without relying on RNG.
+    for seed in 0..32usize {
+      let track_count = 1 + (seed % 12);
+      let mut tracks: Vec<super::GridTrack> = Vec::with_capacity(track_count);
+      for i in 0..track_count {
+        let is_fr = ((seed * 31 + i * 17) % 5) < 3;
+        let mut base_size = ((seed * 7 + i * 13) % 23) as f32 * 3.25 + (i as f32) * 0.5;
+        // Add a few very large values to exercise threshold sorting with large magnitudes.
+        if seed % 11 == 0 && i == 0 {
+          base_size += 1_000_000.0;
+        }
+
+        if is_fr {
+          let flex_factor_bucket = (seed * 13 + i * 3) % 6;
+          let flex_factor = match flex_factor_bucket {
+            0 => 0.25,
+            1 => 0.5,
+            2 => 1.0,
+            3 => 2.0,
+            4 => 5.0,
+            _ => 10.0,
+          };
+          tracks.push(make_fr_track(base_size, flex_factor));
+        } else {
+          tracks.push(make_fixed_track(base_size));
+        }
+      }
+      track_sets.push(tracks);
+    }
+
+    // Compare results across a variety of fill sizes for each set of tracks.
+    for tracks in track_sets.iter() {
+      let sum_base_sizes: f32 = tracks.iter().map(|t| t.base_size).sum();
+      let spaces_to_fill = [
+        0.0,
+        sum_base_sizes - 10.0,
+        sum_base_sizes,
+        sum_base_sizes + 10.0,
+        sum_base_sizes + 1000.0,
+        12345.0,
+      ];
+
+      for &space_to_fill in spaces_to_fill.iter() {
+        let reference = super::find_size_of_fr_reference(tracks, space_to_fill);
+        let optimised = super::find_size_of_fr(tracks, space_to_fill);
+
+        if reference.is_finite() {
+          assert!(
+            optimised.is_finite(),
+            "optimised result is not finite when reference is finite (space_to_fill: {space_to_fill}, reference: {reference}, optimised: {optimised})"
+          );
+          assert!(
+            (reference - optimised).abs() <= EPS,
+            "mismatch (space_to_fill: {space_to_fill}, reference: {reference}, optimised: {optimised})"
+          );
+        } else if reference.is_nan() {
+          assert!(optimised.is_nan());
+        } else {
+          assert!(optimised.is_infinite());
+          assert_eq!(reference.is_sign_positive(), optimised.is_sign_positive());
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn find_size_of_fr_matches_reference_stress_case() {
+    const EPS: f32 = 1e-5;
+
+    // Stress-shaped case: many flex tracks with ascending thresholds.
+    let mut tracks: Vec<super::GridTrack> = Vec::new();
+    tracks.reserve(512);
+    for i in 1..=512 {
+      // Vary flex factors slightly while keeping thresholds strictly increasing.
+      let flex_factor = if i % 2 == 0 { 1.0 } else { 0.5 };
+      let threshold = i as f32;
+      let base_size = threshold * flex_factor;
+      tracks.push(make_fr_track(base_size, flex_factor));
+    }
+
+    // Choose a fill size that causes a non-trivial number of tracks to become inflexible.
+    let space_to_fill = 300.5 * (256.0 * 1.0 + 256.0 * 0.5);
+
+    let reference = super::find_size_of_fr_reference(&tracks, space_to_fill);
+    let optimised = super::find_size_of_fr(&tracks, space_to_fill);
+
+    assert!(reference.is_finite());
+    assert!(optimised.is_finite());
+    assert!(
+      (reference - optimised).abs() <= EPS,
+      "mismatch (reference: {reference}, optimised: {optimised})"
+    );
   }
 }
