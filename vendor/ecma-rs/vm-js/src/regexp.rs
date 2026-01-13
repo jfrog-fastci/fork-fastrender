@@ -1136,6 +1136,14 @@ impl RegExpProgram {
       Ok(())
     }
 
+    #[inline]
+    fn reset_repeat_state(state: &mut ExecState<'_>, id: usize) {
+      if let Some(rep) = state.repeats.get_mut(id) {
+        rep.count = 0;
+        rep.last_pos = UNSET;
+      }
+    }
+
     let init = ExecState::new(self, start, initial_captures, exec_mem)?;
     stack_try_push(&mut stack, &mut stack_mem, exec_mem, init)?;
 
@@ -1818,6 +1826,9 @@ impl RegExpProgram {
             // we've satisfied the minimum, don't enter the body again (avoids infinite loops for
             // patterns like `(?:)*` and `(a*)*`).
             if count >= *min && last_pos == state.pos && count != 0 {
+              // Leaving the quantifier: reset per-quantifier runtime state so a later entry to the
+              // same `RepeatStart` (e.g. due to an enclosing quantifier) starts fresh.
+              reset_repeat_state(&mut state, id);
               state.pc = *exit;
               continue;
             }
@@ -1835,6 +1846,7 @@ impl RegExpProgram {
             }
             if let Some(max) = max {
               if count >= *max {
+                reset_repeat_state(&mut state, id);
                 state.pc = *exit;
                 continue;
               }
@@ -1844,6 +1856,7 @@ impl RegExpProgram {
               // Try the body first, but keep the "stop" continuation on the backtracking stack.
               let mut stop = state.try_clone(exec_mem)?;
               stop.pc = *exit;
+              reset_repeat_state(&mut stop, id);
               stack_try_push(&mut stack, &mut stack_mem, exec_mem, stop)?;
               if let Some(rep) = state.repeats.get_mut(id) {
                 rep.last_pos = state.pos;
@@ -1861,6 +1874,7 @@ impl RegExpProgram {
               clear_capture_slots(&mut body, *clear_from_slot, *clear_to_slot, tick)?;
               body.pc += 1;
               stack_try_push(&mut stack, &mut stack_mem, exec_mem, body)?;
+              reset_repeat_state(&mut state, id);
               state.pc = *exit;
             }
           }
