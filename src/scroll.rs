@@ -1365,6 +1365,61 @@ pub fn apply_scroll_snap(tree: &mut FragmentTree, scroll: &ScrollState) -> Scrol
   ScrollSnapResult { state, updates }
 }
 
+/// Resolve the scroll state that the paint pipeline will actually apply for a given request.
+///
+/// Painting performs some scroll adjustments before any rasterization happens:
+/// - CSS scroll snap may shift the viewport or element scroll offsets.
+/// - Viewport scroll is sanitized and clamped to the root scroll bounds.
+///
+/// This helper mirrors that logic without applying scroll translations or rasterizing, so callers
+/// (e.g. scroll-blit fast paths) can compute the *effective* scroll offset and resulting integer
+/// device-pixel deltas.
+///
+/// Note: this currently mirrors the pre-paint adjustments performed in
+/// `paint_fragment_tree_with_state` (see `src/api.rs`).
+pub fn resolve_effective_scroll_state_for_paint(
+  fragment_tree: &FragmentTree,
+  scroll_state: ScrollState,
+  scrollport_viewport: Size,
+) -> ScrollState {
+  let mut tree = fragment_tree.clone();
+  resolve_effective_scroll_state_for_paint_mut(&mut tree, scroll_state, scrollport_viewport)
+}
+
+pub(crate) fn resolve_effective_scroll_state_for_paint_mut(
+  fragment_tree: &mut FragmentTree,
+  scroll_state: ScrollState,
+  scrollport_viewport: Size,
+) -> ScrollState {
+  let scroll_result = apply_scroll_snap(fragment_tree, &scroll_state);
+  let mut scroll_state = scroll_result.state;
+
+  // Clamp/sanitize viewport scroll offsets even when they were set programmatically. This keeps the
+  // paint pipeline consistent with user-driven scrolling (wheel/anchor), and prevents
+  // viewport-fixed descendants from incorrectly inflating the scroll range.
+  scroll_state.viewport = Point::new(
+    if scroll_state.viewport.x.is_finite() {
+      scroll_state.viewport.x
+    } else {
+      0.0
+    },
+    if scroll_state.viewport.y.is_finite() {
+      scroll_state.viewport.y
+    } else {
+      0.0
+    },
+  );
+
+  if let Some(bounds) = build_scroll_chain(&fragment_tree.root, scrollport_viewport, &[])
+    .first()
+    .map(|state| state.bounds)
+  {
+    scroll_state.viewport = bounds.clamp(scroll_state.viewport);
+  }
+
+  scroll_state
+}
+
 fn apply_element_scroll_offsets(
   node: &mut FragmentNode,
   scroll: &ScrollState,
@@ -2452,6 +2507,7 @@ mod tests {
   use crate::tree::fragment_tree::ScrollbarReservation;
   use std::sync::Arc;
 
+  mod effective_scroll_state_test;
   mod offset_translates_promoted_fragments_test;
   mod overflow_clipping_test;
 
