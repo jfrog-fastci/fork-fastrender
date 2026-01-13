@@ -3118,14 +3118,19 @@ pub(super) fn tab_strip_ui(
       .map(|rect| rect.translate(delta))
       .unwrap_or_else(|| Rect::from_center_size(pos, preview_size));
 
-    let lift = Vec2::new(0.0, -DRAG_PREVIEW_LIFT_Y);
+    // Animate the lift/scale-in so the dragged tab feels like it's being "picked up". When reduced
+    // motion is enabled this snaps to the final state.
+    let lift_t = motion.animate_bool(
+      ui.ctx(),
+      egui::Id::new("tab_strip_drag_lift"),
+      true,
+      motion.durations.tab_drag_lift,
+    );
+    let lift = Vec2::new(0.0, -DRAG_PREVIEW_LIFT_Y * lift_t);
     preview_rect = preview_rect.translate(lift);
-    if motion.enabled {
-      preview_rect = Rect::from_center_size(
-        preview_rect.center(),
-        preview_rect.size() * DRAG_PREVIEW_SCALE,
-      );
-    }
+    let scale = 1.0 + (DRAG_PREVIEW_SCALE - 1.0) * lift_t;
+    preview_rect =
+      Rect::from_center_size(preview_rect.center(), preview_rect.size() * scale.max(0.01));
 
     let preview_favicon_tex = favicon_for_tab(dragging_tab_id);
     let preview_is_active = active_id == Some(dragging_tab_id);
