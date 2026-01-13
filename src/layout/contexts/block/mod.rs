@@ -16070,17 +16070,45 @@ mod tests {
     text_style.display = Display::Inline;
     let text_style = Arc::new(text_style);
 
-    let children = (0..CHILD_COUNT)
-      .map(|idx| {
-        let payload = if idx % 7 == 0 {
-          format!("child-{idx} {LONG_WORD} {FILL} {FILL}")
-        } else {
-          format!("child-{idx} {FILL} {FILL}")
-        };
-        let text = BoxNode::new_text(text_style.clone(), payload);
-        BoxNode::new_block(child_style.clone(), FormattingContextType::Block, vec![text])
-      })
-      .collect::<Vec<_>>();
+    // Insert a few floats with `clear` so the intrinsic float-line accumulation is order-dependent.
+    // This helps guard against regressions where parallel segment results are combined out of DOM
+    // order (e.g. missing/incorrect sort), which would otherwise be masked when only commutative
+    // reductions (like `max`) are involved.
+    let make_float = |float: Float, clear: Clear, width: f32, label: &str| {
+      let mut style = ComputedStyle::default();
+      style.display = Display::Block;
+      style.float = float;
+      style.clear = clear;
+      style.width = Some(Length::px(width));
+      style.width_keyword = None;
+      style.margin_left = Some(Length::px(1.0));
+      style.margin_right = Some(Length::px(2.0));
+      let _ = label;
+      BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![])
+    };
+
+    let mut children = Vec::with_capacity(CHILD_COUNT + 16);
+    for idx in 0..CHILD_COUNT {
+      let payload = if idx % 7 == 0 {
+        format!("child-{idx} {LONG_WORD} {FILL} {FILL}")
+      } else {
+        format!("child-{idx} {FILL} {FILL}")
+      };
+      let text = BoxNode::new_text(text_style.clone(), payload);
+      children.push(BoxNode::new_block(
+        child_style.clone(),
+        FormattingContextType::Block,
+        vec![text],
+      ));
+
+      // Every 16 blocks, inject a float "line" where the 3rd float clears, forcing a flush.
+      if idx % 16 == 15 {
+        children.push(make_float(Float::Left, Clear::None, 40.0, "float-left"));
+        children.push(make_float(Float::Right, Clear::None, 60.0, "float-right"));
+        children.push(make_float(Float::Left, Clear::Both, 55.0, "float-clear"));
+        children.push(make_float(Float::Right, Clear::None, 35.0, "float-right-2"));
+      }
+    }
 
     let root = BoxNode::new_block(root_style, FormattingContextType::Block, children);
 
