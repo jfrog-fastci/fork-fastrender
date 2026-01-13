@@ -238,7 +238,12 @@ fn build_environment_block(overrides: Vec<(OsString, OsString)>) -> Vec<u16> {
     block.extend(v.encode_wide());
     block.push(0);
   }
+  // Environment blocks are double-NUL terminated. When there are no variables, this must still be
+  // two NULs (not one).
   block.push(0);
+  if block.len() == 1 {
+    block.push(0);
+  }
   block
 }
 
