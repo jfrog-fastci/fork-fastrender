@@ -289,16 +289,6 @@ status = "xfail"
 reason = "Range/StaticRange APIs are not implemented yet."
 
 [[expectations]]
-id = "dom/intersection-observer-basic.window.js"
-status = "xfail"
-reason = "IntersectionObserver is not implemented yet."
-
-[[expectations]]
-id = "dom/resize-observer-basic.window.js"
-status = "xfail"
-reason = "ResizeObserver is not implemented yet."
-
-[[expectations]]
 id = "html_integration/module_script_importmap_before_domcontentloaded.html"
 backend = "vmjs"
 status = "xfail"

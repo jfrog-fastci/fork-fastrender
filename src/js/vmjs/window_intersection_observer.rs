@@ -119,6 +119,24 @@ fn require_intersection_observer(scope: &Scope<'_>, this: Value, err: &'static s
   }
 }
 
+fn is_dom_element(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<bool, VmError> {
+  let Value::Object(obj) = value else {
+    return Ok(false);
+  };
+  // Root the object while allocating the property key and performing the lookup.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+  let node_type_key = alloc_key(&mut scope, "nodeType")?;
+  let node_type = vm.get_with_host_and_hooks(host, &mut scope, hooks, obj, node_type_key)?;
+  Ok(matches!(node_type, Value::Number(n) if n == 1.0))
+}
+
 fn observe_global_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<GcObject, VmError> {
   let slots = scope.heap().get_function_native_slots(callee)?;
   match slots
@@ -598,7 +616,7 @@ fn intersection_observer_observe_native(
     require_intersection_observer(scope, this, "IntersectionObserver.observe: illegal invocation")?;
 
   let target = args.get(0).copied().unwrap_or(Value::Undefined);
-  if !matches!(target, Value::Object(_)) {
+  if !is_dom_element(vm, scope, host, hooks, target)? {
     return Err(VmError::TypeError(
       "IntersectionObserver.observe expects an Element",
     ));
@@ -741,8 +759,8 @@ fn intersection_observer_take_records_native(
 fn intersection_observer_unobserve_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -751,7 +769,7 @@ fn intersection_observer_unobserve_native(
     require_intersection_observer(scope, this, "IntersectionObserver.unobserve: illegal invocation")?;
 
   let target = args.get(0).copied().unwrap_or(Value::Undefined);
-  if !matches!(target, Value::Object(_)) {
+  if !is_dom_element(vm, scope, host, hooks, target)? {
     return Err(VmError::TypeError(
       "IntersectionObserver.unobserve expects an Element",
     ));

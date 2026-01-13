@@ -119,6 +119,24 @@ fn require_resize_observer(scope: &Scope<'_>, this: Value, err: &'static str) ->
   }
 }
 
+fn is_dom_element(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<bool, VmError> {
+  let Value::Object(obj) = value else {
+    return Ok(false);
+  };
+  // Root the object while allocating the property key and performing the lookup.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+  let node_type_key = alloc_key(&mut scope, "nodeType")?;
+  let node_type = vm.get_with_host_and_hooks(host, &mut scope, hooks, obj, node_type_key)?;
+  Ok(matches!(node_type, Value::Number(n) if n == 1.0))
+}
+
 fn observe_global_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<GcObject, VmError> {
   let slots = scope.heap().get_function_native_slots(callee)?;
   match slots
@@ -624,8 +642,31 @@ fn resize_observer_observe_native(
   let observer_obj = require_resize_observer(scope, this, "ResizeObserver.observe: illegal invocation")?;
 
   let target = args.get(0).copied().unwrap_or(Value::Undefined);
-  if !matches!(target, Value::Object(_)) {
+  if !is_dom_element(vm, scope, host, hooks, target)? {
     return Err(VmError::TypeError("ResizeObserver.observe expects an Element"));
+  }
+
+  // WebIDL dictionary validation: `ResizeObserver.observe(target, { box })`
+  let options = args.get(1).copied().unwrap_or(Value::Undefined);
+  if !matches!(options, Value::Undefined) {
+    let Value::Object(options_obj) = options else {
+      return Err(VmError::TypeError("ResizeObserver.observe: options must be an object"));
+    };
+    scope.push_root(Value::Object(options_obj))?;
+    let box_key = alloc_key(scope, "box")?;
+    let box_value = vm.get_with_host_and_hooks(host, scope, hooks, options_obj, box_key)?;
+    if !matches!(box_value, Value::Undefined) {
+      let box_s = scope.heap_mut().to_string(box_value)?;
+      let box_text = scope.heap().get_string(box_s)?.to_utf8_lossy();
+      match box_text.as_ref() {
+        "content-box" | "border-box" | "device-pixel-content-box" => {}
+        _ => {
+          return Err(VmError::TypeError(
+            "ResizeObserver.observe: options.box must be 'content-box', 'border-box', or 'device-pixel-content-box'",
+          ))
+        }
+      }
+    }
   }
 
   let pending_targets = get_or_create_pending_targets(vm, scope, observer_obj)?;
@@ -753,8 +794,8 @@ fn resize_observer_take_records_native(
 fn resize_observer_unobserve_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -763,7 +804,7 @@ fn resize_observer_unobserve_native(
     require_resize_observer(scope, this, "ResizeObserver.unobserve: illegal invocation")?;
 
   let target = args.get(0).copied().unwrap_or(Value::Undefined);
-  if !matches!(target, Value::Object(_)) {
+  if !is_dom_element(vm, scope, host, hooks, target)? {
     return Err(VmError::TypeError("ResizeObserver.unobserve expects an Element"));
   }
 
