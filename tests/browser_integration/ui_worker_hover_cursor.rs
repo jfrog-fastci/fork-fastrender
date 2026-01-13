@@ -245,7 +245,10 @@ fn hover_changed_respects_computed_css_cursor_keywords() {
             #grab { top: 40px; cursor: grab; }
             #grabbing { top: 70px; cursor: grabbing; }
             #disabled { position: absolute; top: 100px; left: 10px; width: 140px; height: 24px; border: 1px solid #000; }
-            #details { position: absolute; top: 130px; left: 10px; margin: 0; }
+            /* Explicitly override UA `cursor: default` back to `auto` to ensure disabled controls still
+               avoid the I-beam cursor under our fallback heuristics. */
+            #disabled_auto { position: absolute; top: 130px; left: 10px; width: 140px; height: 24px; border: 1px solid #000; cursor: auto; }
+            #details { position: absolute; top: 160px; left: 10px; margin: 0; }
             #summary { display: block; width: 140px; height: 24px; background: rgb(180, 180, 255); }
           </style>
         </head>
@@ -254,6 +257,7 @@ fn hover_changed_respects_computed_css_cursor_keywords() {
           <div id="grab" class="box">grab</div>
           <div id="grabbing" class="box">grabbing</div>
           <input id="disabled" type="text" disabled value="disabled">
+          <input id="disabled_auto" type="text" disabled value="disabled cursor auto">
           <details id="details" open>
             <summary id="summary">Summary</summary>
             <div>Details content</div>
@@ -323,12 +327,25 @@ fn hover_changed_respects_computed_css_cursor_keywords() {
   assert_eq!(cursor, CursorKind::Grabbing);
   assert_eq!(hovered_url, None);
 
+  // UA stylesheet cursor: disabled text inputs should use `cursor: default`.
+  worker
+    .ui_tx
+    .send(support::pointer_move(
+      tab_id,
+      (15.0, 110.0),
+      PointerButton::None,
+    ))
+    .unwrap();
+  let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
+  assert_eq!(cursor, CursorKind::Default);
+  assert_eq!(hovered_url, None);
+
   // UA stylesheet cursor: `<summary>` should use `cursor: pointer`.
   worker
     .ui_tx
     .send(support::pointer_move(
       tab_id,
-      (15.0, 135.0),
+      (15.0, 165.0),
       PointerButton::None,
     ))
     .unwrap();
@@ -336,12 +353,12 @@ fn hover_changed_respects_computed_css_cursor_keywords() {
   assert_eq!(cursor, CursorKind::Pointer);
   assert_eq!(hovered_url, None);
 
-  // UA stylesheet cursor: disabled text inputs should use `cursor: default`.
+  // Explicit `cursor: auto` override should still avoid the I-beam for disabled text inputs.
   worker
     .ui_tx
     .send(support::pointer_move(
       tab_id,
-      (15.0, 110.0),
+      (15.0, 140.0),
       PointerButton::None,
     ))
     .unwrap();

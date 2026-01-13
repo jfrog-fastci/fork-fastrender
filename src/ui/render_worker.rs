@@ -540,6 +540,16 @@ fn cursor_for_form_control(node: &crate::dom::DomNode) -> CursorKind {
     return CursorKind::Default;
   };
 
+  // Even when `cursor: auto` is in effect, disabled controls should not show an I-beam: they are
+  // not editable/interactive.
+  //
+  // Note: for the common case we now prefer the computed CSS cursor (including UA styles). This
+  // check keeps the legacy cursor heuristic robust when authors explicitly override the cursor back
+  // to `auto` on disabled controls.
+  if node.get_attribute_ref("disabled").is_some() {
+    return CursorKind::Default;
+  }
+
   if tag.eq_ignore_ascii_case("textarea") {
     return CursorKind::Text;
   }
