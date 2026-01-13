@@ -299,8 +299,8 @@ fn aria_state_does_not_negate_native_semantics() {
 fn role_inference_and_heading_levels() {
   let mut renderer = FastRender::new().expect("renderer");
   let html = r##"
-    <html>
-      <body>
+     <html>
+       <body>
         <button id="btn">Button text</button>
         <a id="link" href="#">Link text</a>
         <input id="checkbox" type="checkbox" />
@@ -413,6 +413,50 @@ fn role_inference_and_heading_levels() {
   assert_eq!(page_footer.role, "contentinfo");
   let article_footer = find_by_id(&tree, "article-footer").expect("article footer");
   assert_eq!(article_footer.role, "generic");
+}
+
+#[test]
+fn input_list_exposes_combobox_role_and_popup() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r##"
+    <html>
+      <body>
+        <input id="q" list="dl" />
+        <input id="search" type="search" list="dl" />
+        <input id="url" type="url" list="dl" />
+        <input id="email" type="email" list="dl" />
+        <input id="tel" type="tel" list="dl" />
+        <input id="plain-search" type="search" />
+        <input id="chk" type="checkbox" list="dl" />
+        <datalist id="dl">
+          <option value="One"></option>
+          <option value="Two"></option>
+        </datalist>
+      </body>
+    </html>
+  "##;
+
+  let dom = renderer.parse_html(html).expect("parse");
+  let tree = renderer
+    .accessibility_tree(&dom, 800, 600)
+    .expect("accessibility tree");
+
+  for id in ["q", "search", "url", "email", "tel"] {
+    let node = find_by_id(&tree, id).unwrap_or_else(|| panic!("missing {id} input"));
+    assert_eq!(node.role, "combobox", "{id} should expose combobox role");
+    assert_eq!(
+      node.states.has_popup.as_deref(),
+      Some("listbox"),
+      "{id} should expose listbox popup"
+    );
+  }
+
+  let plain_search = find_by_id(&tree, "plain-search").expect("plain search input");
+  assert_eq!(plain_search.role, "searchbox");
+
+  let checkbox = find_by_id(&tree, "chk").expect("checkbox input");
+  assert_eq!(checkbox.role, "checkbox");
+  assert_eq!(checkbox.states.has_popup, None);
 }
 
 #[test]

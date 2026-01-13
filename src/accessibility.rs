@@ -1834,7 +1834,22 @@ fn build_nodes<'a, 'state>(node: &'a StyledNode, ctx: &BuildContext<'a, 'state>)
           let modal = compute_modal(&node.node);
           let current = parse_aria_current(&node.node);
           let expanded = compute_expanded(node, role.as_deref(), dom_ancestors.as_slice());
-          let has_popup = parse_has_popup(&node.node);
+          let mut has_popup = parse_has_popup(&node.node);
+          if has_popup.is_none()
+            && node
+              .node
+              .tag_name()
+              .is_some_and(|t| t.eq_ignore_ascii_case("input"))
+            && role.as_deref() == Some("combobox")
+            && node.node.get_attribute_ref("aria-haspopup").is_none()
+            && node
+              .node
+              .get_attribute_ref("list")
+              .map(trim_ascii_whitespace)
+              .is_some_and(|v| !v.is_empty())
+          {
+            has_popup = Some("listbox".to_string());
+          }
           let multiline = compute_multiline(node, role.as_deref());
           let live = parse_aria_live(&node.node);
           let atomic = parse_bool_attr(&node.node, "aria-atomic");
@@ -2882,10 +2897,29 @@ fn input_role(node: &DomNode) -> Option<String> {
   let input_type = node
     .get_attribute_ref("type")
     .map(|t| t.to_ascii_lowercase())
+    .filter(|t| !t.is_empty())
     .unwrap_or_else(|| "text".to_string());
 
+  if input_type == "hidden" {
+    return None;
+  }
+
+  let has_list = node
+    .get_attribute_ref("list")
+    .map(trim_ascii_whitespace)
+    .is_some_and(|v| !v.is_empty());
+
+  if has_list
+    && matches!(
+      input_type.as_str(),
+      "text" | "search" | "url" | "email" | "tel"
+    )
+  {
+    // HTML-AAM: `<input list=...>` is exposed as a combobox-like control.
+    return Some("combobox".to_string());
+  }
+
   match input_type.as_str() {
-    "hidden" => None,
     "checkbox" => Some("checkbox".to_string()),
     "radio" => Some("radio".to_string()),
     "range" => Some("slider".to_string()),
