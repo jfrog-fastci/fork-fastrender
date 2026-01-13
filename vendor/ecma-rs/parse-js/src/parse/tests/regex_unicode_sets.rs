@@ -285,6 +285,13 @@ fn accepts_unicode_sets_examples() {
 }
 
 #[test]
+fn rejects_q_escape_outside_unicode_sets_class() {
+  // `\q{...}` is only defined within `[...]` when using the `v` flag.
+  let opts = ecma_script_opts();
+  assert!(parse_with_options("let r = /\\q{a}/v;", opts).is_err());
+}
+
+#[test]
 fn rejects_unicode_sets_and_operator_lookahead_early_errors() {
   let opts = ecma_script_opts();
   assert!(parse_with_options("let r = /[(a)]/v;", opts).is_err());
