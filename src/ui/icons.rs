@@ -42,11 +42,13 @@ pub enum BrowserIcon {
   Plus,
   BookmarkOutline,
   BookmarkFilled,
+  // Media controls (windowed browser overlay / HTMLMediaElement UI).
   Play,
   Pause,
   Volume,
   Mute,
   Fullscreen,
+  ExitFullscreen,
 }
 
 impl BrowserIcon {
@@ -91,6 +93,7 @@ impl BrowserIcon {
       Self::Volume => "volume",
       Self::Mute => "mute",
       Self::Fullscreen => "fullscreen",
+      Self::ExitFullscreen => "fullscreen_exit",
     }
   }
 
@@ -137,6 +140,7 @@ impl BrowserIcon {
       Self::Volume => "Volume",
       Self::Mute => "Mute",
       Self::Fullscreen => "Fullscreen",
+      Self::ExitFullscreen => "Exit fullscreen",
     }
   }
 
@@ -179,6 +183,7 @@ impl BrowserIcon {
       Self::Volume => include_bytes!("../../assets/browser_icons/volume.svg"),
       Self::Mute => include_bytes!("../../assets/browser_icons/mute.svg"),
       Self::Fullscreen => include_bytes!("../../assets/browser_icons/fullscreen.svg"),
+      Self::ExitFullscreen => include_bytes!("../../assets/browser_icons/fullscreen_exit.svg"),
     }
   }
 }
@@ -621,6 +626,7 @@ mod tests {
       BrowserIcon::Volume,
       BrowserIcon::Mute,
       BrowserIcon::Fullscreen,
+      BrowserIcon::ExitFullscreen,
     ] {
       let label = icon.a11y_label();
       assert!(
@@ -777,6 +783,7 @@ mod tests {
       BrowserIcon::Volume,
       BrowserIcon::Mute,
       BrowserIcon::Fullscreen,
+      BrowserIcon::ExitFullscreen,
     ];
 
     for icon in icons {
