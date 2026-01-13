@@ -43,6 +43,13 @@ const SLOT_ENV_ID: usize = 0;
 
 const ENV_ID_KEY: &str = "__fastrender_websocket_env_id";
 const WS_ID_KEY: &str = "__fastrender_websocket_id";
+// Internal tombstone properties used after the backing Rust socket entry is removed.
+//
+// These must not collide with any spec-defined instance properties.
+const WS_TOMBSTONE_URL_KEY: &str = "__fastrender_websocket_tombstone_url";
+const WS_TOMBSTONE_PROTOCOL_KEY: &str = "__fastrender_websocket_tombstone_protocol";
+const WS_TOMBSTONE_READY_STATE_KEY: &str = "__fastrender_websocket_tombstone_ready_state";
+const WS_TOMBSTONE_BUFFERED_AMOUNT_KEY: &str = "__fastrender_websocket_tombstone_buffered_amount";
 
 // Brand WebSocket wrappers as platform objects via HostSlots so structuredClone rejects them.
 const WEBSOCKET_HOST_TAG: u64 = 0x5745_4253_4F43_4B54; // "WEBSOCKT"
@@ -70,6 +77,9 @@ const MAX_QUEUED_WEBSOCKET_EVENTS_PER_SOCKET: usize = 4;
 //   with the incoming event stream and would otherwise drop events.
 const WS_CLOSE_EVENT_QUEUE_OVERFLOW_CODE: u16 = 1009;
 const WS_CLOSE_EVENT_QUEUE_OVERFLOW_REASON: &str = "event queue overflow";
+// Defensive cap to prevent untrusted JS from exhausting renderer memory by repeatedly constructing
+// WebSockets that leave behind Rust-side state.
+const MAX_WEBSOCKETS_PER_ENV: usize = 1_024;
 
 #[derive(Clone)]
 pub struct WindowWebSocketEnv {
@@ -99,6 +109,7 @@ struct EnvState {
   ipc: Option<IpcEnvState>,
   next_id: u64,
   sockets: HashMap<u64, WebSocketState>,
+  last_gc_runs: u64,
 }
 
 impl EnvState {
@@ -108,6 +119,7 @@ impl EnvState {
       ipc: None,
       next_id: 1,
       sockets: HashMap::new(),
+      last_gc_runs: 0,
     }
   }
 
@@ -117,6 +129,7 @@ impl EnvState {
       ipc: Some(ipc),
       next_id: 1,
       sockets: HashMap::new(),
+      last_gc_runs: 0,
     }
   }
 
@@ -321,6 +334,56 @@ fn with_env_state_mut<R>(env_id: u64, f: impl FnOnce(&mut EnvState) -> Result<R,
   f(state)
 }
 
+fn shutdown_ws_state_locked(state: &EnvState, ws_id: u64, ws: WebSocketState) {
+  // Best-effort shutdown:
+  // - In-process backend: send Shutdown on the per-socket channel.
+  // - IPC backend: send a Shutdown request to the network process.
+  if let Some(ipc) = state.ipc.as_ref() {
+    let _ = ipc.cmd_tx.try_send(WebSocketIpcCommand::WebSocket {
+      conn_id: ws_id,
+      cmd: WebSocketCommand::Shutdown,
+    });
+  }
+  if let Some(cmd_tx) = ws.cmd_tx.as_ref() {
+    let _ = cmd_tx.try_send(WsCommand::Shutdown);
+  }
+  // Dropping the JoinHandle detaches the thread; OS resources are reclaimed once it exits.
+  drop(ws);
+}
+
+fn sweep_env_state_if_gc_ran_locked(state: &mut EnvState, heap: &Heap) {
+  let gc_runs = heap.gc_runs();
+  if gc_runs == state.last_gc_runs {
+    return;
+  }
+  state.last_gc_runs = gc_runs;
+
+  // Drop Rust-side state for sockets whose JS wrapper is no longer reachable.
+  //
+  // The `WeakGcObject` only stops upgrading after a heap GC, so we only sweep when `gc_runs`
+  // changes to avoid O(n) scans on every accessor call.
+  let mut dead_ws_ids: Vec<u64> = Vec::new();
+  for (&ws_id, ws) in state.sockets.iter() {
+    if ws.weak_obj.upgrade(heap).is_none() {
+      dead_ws_ids.push(ws_id);
+    }
+  }
+  for ws_id in dead_ws_ids {
+    if let Some(ws) = state.sockets.remove(&ws_id) {
+      shutdown_ws_state_locked(state, ws_id, ws);
+    }
+  }
+}
+
+fn sweep_env_state_if_gc_ran(env_id: u64, heap: &Heap) -> Result<(), VmError> {
+  let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+  let state = lock
+    .get_mut(&env_id)
+    .ok_or(VmError::Unimplemented("WebSocket env id not registered"))?;
+  sweep_env_state_if_gc_ran_locked(state, heap);
+  Ok(())
+}
+
 fn data_desc(value: Value, writable: bool) -> PropertyDescriptor {
   PropertyDescriptor {
     enumerable: false,
@@ -365,6 +428,62 @@ fn set_data_prop(
   scope.push_root(value)?;
   let key = alloc_key(&mut scope, name)?;
   scope.define_property(obj, key, data_desc(value, writable))
+}
+
+fn set_internal_prop(scope: &mut Scope<'_>, obj: GcObject, name: &str, value: Value) -> Result<(), VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+  scope.push_root(value)?;
+  let key = alloc_key(&mut scope, name)?;
+  scope.define_property(
+    obj,
+    key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value,
+        writable: false,
+      },
+    },
+  )
+}
+
+fn set_ws_tombstone_props(
+  scope: &mut Scope<'_>,
+  ws_obj: GcObject,
+  url: &str,
+  protocol: &str,
+  ready_state: u16,
+  buffered_amount: usize,
+) -> Result<(), VmError> {
+  // Idempotent: if the tombstone keys already exist (e.g. if cleanup runs twice), skip.
+  if !matches!(get_data_prop(scope, ws_obj, WS_TOMBSTONE_READY_STATE_KEY)?, Value::Undefined) {
+    return Ok(());
+  }
+
+  let url_s = scope.alloc_string(url)?;
+  set_internal_prop(scope, ws_obj, WS_TOMBSTONE_URL_KEY, Value::String(url_s))?;
+  let protocol_s = scope.alloc_string(protocol)?;
+  set_internal_prop(
+    scope,
+    ws_obj,
+    WS_TOMBSTONE_PROTOCOL_KEY,
+    Value::String(protocol_s),
+  )?;
+  set_internal_prop(
+    scope,
+    ws_obj,
+    WS_TOMBSTONE_READY_STATE_KEY,
+    Value::Number(ready_state as f64),
+  )?;
+  set_internal_prop(
+    scope,
+    ws_obj,
+    WS_TOMBSTONE_BUFFERED_AMOUNT_KEY,
+    Value::Number(buffered_amount as f64),
+  )?;
+  Ok(())
 }
 
 fn env_id_from_callee(scope: &mut Scope<'_>, callee: GcObject) -> Result<u64, VmError> {
@@ -683,6 +802,19 @@ fn websocket_ctor_construct<Host: WindowRealmHost + 'static>(
   };
   let task_queue: ExternalTaskQueueHandle<Host> = event_loop.external_task_queue_handle();
 
+  // Sweep unreachable sockets (after GC) and enforce a hard per-env cap before allocating the JS
+  // wrapper / spawning the I/O thread.
+  {
+    let heap = scope.heap();
+    with_env_state_mut(env_id, |state| {
+      sweep_env_state_if_gc_ran_locked(state, heap);
+      if state.sockets.len() >= MAX_WEBSOCKETS_PER_ENV {
+        return Err(VmError::TypeError("Too many WebSocket connections"));
+      }
+      Ok(())
+    })?;
+  }
+
   // Create the JS wrapper object with `newTarget.prototype`.
   let ctor = match new_target {
     Value::Object(obj) => obj,
@@ -867,14 +999,23 @@ fn websocket_ready_state_get(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let (env_id, ws_id, _obj) = parse_env_and_ws_id(scope, this)?;
-  with_env_state(env_id, |state| {
+  let (env_id, ws_id, obj) = parse_env_and_ws_id(scope, this)?;
+  let _ = sweep_env_state_if_gc_ran(env_id, scope.heap());
+  if let Ok(value) = with_env_state(env_id, |state| {
     let ws = state
       .sockets
       .get(&ws_id)
       .ok_or(VmError::TypeError("WebSocket is not initialized"))?;
     Ok(Value::Number(ws.ready_state as f64))
-  })
+  }) {
+    return Ok(value);
+  }
+
+  // Fallback to tombstone values after the backing socket entry is removed.
+  match get_data_prop(scope, obj, WS_TOMBSTONE_READY_STATE_KEY)? {
+    Value::Number(n) => Ok(Value::Number(n)),
+    _ => Ok(Value::Number(WS_CLOSED as f64)),
+  }
 }
 
 fn websocket_url_get(
@@ -886,8 +1027,9 @@ fn websocket_url_get(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let (env_id, ws_id, _obj) = parse_env_and_ws_id(scope, this)?;
-  with_env_state(env_id, |state| {
+  let (env_id, ws_id, obj) = parse_env_and_ws_id(scope, this)?;
+  let _ = sweep_env_state_if_gc_ran(env_id, scope.heap());
+  if let Ok(value) = with_env_state(env_id, |state| {
     let ws = state
       .sockets
       .get(&ws_id)
@@ -895,7 +1037,21 @@ fn websocket_url_get(
     let s = scope.alloc_string(&ws.url)?;
     scope.push_root(Value::String(s))?;
     Ok(Value::String(s))
-  })
+  }) {
+    return Ok(value);
+  }
+
+  match get_data_prop(scope, obj, WS_TOMBSTONE_URL_KEY)? {
+    Value::String(s) => {
+      scope.push_root(Value::String(s))?;
+      Ok(Value::String(s))
+    }
+    _ => {
+      let s = scope.alloc_string("")?;
+      scope.push_root(Value::String(s))?;
+      Ok(Value::String(s))
+    }
+  }
 }
 
 fn websocket_protocol_get(
@@ -907,8 +1063,9 @@ fn websocket_protocol_get(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let (env_id, ws_id, _obj) = parse_env_and_ws_id(scope, this)?;
-  with_env_state(env_id, |state| {
+  let (env_id, ws_id, obj) = parse_env_and_ws_id(scope, this)?;
+  let _ = sweep_env_state_if_gc_ran(env_id, scope.heap());
+  if let Ok(value) = with_env_state(env_id, |state| {
     let ws = state
       .sockets
       .get(&ws_id)
@@ -916,7 +1073,21 @@ fn websocket_protocol_get(
     let s = scope.alloc_string(&ws.protocol)?;
     scope.push_root(Value::String(s))?;
     Ok(Value::String(s))
-  })
+  }) {
+    return Ok(value);
+  }
+
+  match get_data_prop(scope, obj, WS_TOMBSTONE_PROTOCOL_KEY)? {
+    Value::String(s) => {
+      scope.push_root(Value::String(s))?;
+      Ok(Value::String(s))
+    }
+    _ => {
+      let s = scope.alloc_string("")?;
+      scope.push_root(Value::String(s))?;
+      Ok(Value::String(s))
+    }
+  }
 }
 
 fn websocket_buffered_amount_get(
@@ -928,14 +1099,22 @@ fn websocket_buffered_amount_get(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let (env_id, ws_id, _obj) = parse_env_and_ws_id(scope, this)?;
-  with_env_state(env_id, |state| {
+  let (env_id, ws_id, obj) = parse_env_and_ws_id(scope, this)?;
+  let _ = sweep_env_state_if_gc_ran(env_id, scope.heap());
+  if let Ok(value) = with_env_state(env_id, |state| {
     let ws = state
       .sockets
       .get(&ws_id)
       .ok_or(VmError::TypeError("WebSocket is not initialized"))?;
     Ok(Value::Number(ws.buffered_amount as f64))
-  })
+  }) {
+    return Ok(value);
+  }
+
+  match get_data_prop(scope, obj, WS_TOMBSTONE_BUFFERED_AMOUNT_KEY)? {
+    Value::Number(n) => Ok(Value::Number(n)),
+    _ => Ok(Value::Number(0.0)),
+  }
 }
 
 fn websocket_send<Host: WindowRealmHost + 'static>(
@@ -948,6 +1127,7 @@ fn websocket_send<Host: WindowRealmHost + 'static>(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let (env_id, ws_id, _obj) = parse_env_and_ws_id(scope, this)?;
+  let _ = sweep_env_state_if_gc_ran(env_id, scope.heap());
   let data = args.get(0).copied().unwrap_or(Value::Undefined);
   if matches!(data, Value::Undefined) {
     return Err(VmError::TypeError("WebSocket.send requires an argument"));
@@ -998,7 +1178,7 @@ fn websocket_send<Host: WindowRealmHost + 'static>(
     Ipc(mpsc::SyncSender<WebSocketIpcCommand>),
   }
 
-  let queue = with_env_state_mut(env_id, |state| {
+  let queue = match with_env_state_mut(env_id, |state| {
     let ws = state
       .sockets
       .get_mut(&ws_id)
@@ -1025,7 +1205,16 @@ fn websocket_send<Host: WindowRealmHost + 'static>(
         ))?;
       Ok(SendQueue::InProcess(cmd_tx))
     }
-  })?;
+  }) {
+    Ok(queue) => queue,
+    Err(err) => match err {
+      // If the backing socket entry has already been cleaned up, treat it as closed.
+      VmError::TypeError(_) | VmError::Unimplemented(_) => {
+        return Err(VmError::TypeError("WebSocket is not open"))
+      }
+      other => return Err(other),
+    },
+  };
 
   let revert_buffered = |byte_len: usize| {
     let _ = with_env_state_mut(env_id, |state| {
@@ -1087,6 +1276,7 @@ fn websocket_close<Host: WindowRealmHost + 'static>(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let (env_id, ws_id, _obj) = parse_env_and_ws_id(scope, this)?;
+  let _ = sweep_env_state_if_gc_ran(env_id, scope.heap());
 
   let code_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let reason_value = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -1129,11 +1319,10 @@ fn websocket_close<Host: WindowRealmHost + 'static>(
     Ipc(mpsc::SyncSender<WebSocketIpcCommand>),
   }
 
-  let queue = with_env_state_mut(env_id, |state| {
-    let ws = state
-      .sockets
-      .get_mut(&ws_id)
-      .ok_or(VmError::TypeError("WebSocket is not initialized"))?;
+  let queue: Option<CloseQueue> = match with_env_state_mut(env_id, |state| {
+    let Some(ws) = state.sockets.get_mut(&ws_id) else {
+      return Ok(None);
+    };
     if ws.ready_state == WS_CLOSING || ws.ready_state == WS_CLOSED {
       return Ok(None);
     }
@@ -1150,7 +1339,11 @@ fn websocket_close<Host: WindowRealmHost + 'static>(
         ))?;
       Ok(Some(CloseQueue::InProcess(cmd_tx)))
     }
-  })?;
+  }) {
+    Ok(queue) => queue,
+    Err(VmError::Unimplemented(_)) => None,
+    Err(other) => return Err(other),
+  };
 
   let Some(queue) = queue else {
     return Ok(Value::Undefined);
@@ -1310,12 +1503,23 @@ fn queue_ws_task<Host: WindowRealmHost + 'static>(
       vm.tick()
         .map_err(|err| vm_error_to_event_loop_error(heap, err))?;
 
+      // If a GC ran since the last time we touched this env, sweep any unreachable WebSocket
+      // wrappers and shut down their backing threads.
+      let _ = sweep_env_state_if_gc_ran(env_id, heap);
+
       // Resolve WS object. If the wrapper is no longer reachable, skip dispatch.
       let ws_obj: Option<GcObject> = with_env_state(env_id, |state| {
         Ok(state.sockets.get(&ws_id).and_then(|ws| ws.weak_obj.upgrade(heap)))
       })
       .unwrap_or(None);
       let Some(ws_obj) = ws_obj else {
+        // Wrapper is no longer alive: best-effort shutdown and drop Rust-side state.
+        let _ = with_env_state_mut(env_id, |state| {
+          if let Some(ws) = state.sockets.remove(&ws_id) {
+            shutdown_ws_state_locked(state, ws_id, ws);
+          }
+          Ok(())
+        });
         return Ok(());
       };
 
@@ -1630,12 +1834,33 @@ fn handle_ipc_event<Host: WindowRealmHost + 'static>(
         env_id,
         ws_id,
         WsTaskKind::Close,
-        |vm_host, heap, vm, hooks, ws_obj| {
+        move |vm_host, heap, vm, hooks, ws_obj| {
+        let (url_snapshot, protocol_snapshot) = with_env_state(env_id, |state| {
+          Ok(
+            state
+              .sockets
+              .get(&ws_id)
+              .map(|ws| (ws.url.clone(), ws.protocol.clone()))
+              .unwrap_or_default(),
+          )
+        })
+        .unwrap_or_default();
+
         let mut scope = heap.scope();
         let ev = make_simple_event(&mut scope, "error")?;
         dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onerror")?;
         let close_ev = make_simple_event(&mut scope, "close")?;
         dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(close_ev), "onclose")?;
+
+        let _ = set_ws_tombstone_props(
+          &mut scope,
+          ws_obj,
+          &url_snapshot,
+          &protocol_snapshot,
+          WS_CLOSED,
+          0,
+        );
+        let _ = with_env_state_mut(env_id, |state| Ok(state.sockets.remove(&ws_id)));
         Ok(())
       },
       );
@@ -1648,13 +1873,22 @@ fn handle_ipc_event<Host: WindowRealmHost + 'static>(
         }
         Ok(())
       });
-
       queue_ws_task::<Host>(
         task_queue,
         env_id,
         ws_id,
         WsTaskKind::Close,
         move |vm_host, heap, vm, hooks, ws_obj| {
+        let (url_snapshot, protocol_snapshot) = with_env_state(env_id, |state| {
+          Ok(
+            state
+              .sockets
+              .get(&ws_id)
+              .map(|ws| (ws.url.clone(), ws.protocol.clone()))
+              .unwrap_or_default(),
+          )
+        })
+        .unwrap_or_default();
         let mut scope = heap.scope();
         let ev = make_simple_event(&mut scope, "close")?;
         let code_key = alloc_key(&mut scope, "code")?;
@@ -1664,6 +1898,16 @@ fn handle_ipc_event<Host: WindowRealmHost + 'static>(
         scope.push_root(Value::String(reason_s))?;
         scope.define_property(ev, reason_key, data_desc(Value::String(reason_s), false))?;
         dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onclose")?;
+
+        let _ = set_ws_tombstone_props(
+          &mut scope,
+          ws_obj,
+          &url_snapshot,
+          &protocol_snapshot,
+          WS_CLOSED,
+          0,
+        );
+        let _ = with_env_state_mut(env_id, |state| Ok(state.sockets.remove(&ws_id)));
         Ok(())
       },
       );
@@ -1689,6 +1933,7 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
         with_env_state_mut(env_id, |state| {
           if let Some(ws) = state.sockets.get_mut(&ws_id) {
             ws.ready_state = WS_CLOSED;
+            ws.buffered_amount = 0;
           }
           Ok(())
         })
@@ -1698,12 +1943,32 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
           env_id,
           ws_id,
           WsTaskKind::Close,
-          |vm_host, heap, vm, hooks, ws_obj| {
+          move |vm_host, heap, vm, hooks, ws_obj| {
+            let (url_snapshot, protocol_snapshot) = with_env_state(env_id, |state| {
+              Ok(
+                state
+                  .sockets
+                  .get(&ws_id)
+                  .map(|ws| (ws.url.clone(), ws.protocol.clone()))
+                  .unwrap_or_else(|| (url.clone(), String::new())),
+              )
+            })
+            .unwrap_or_else(|_| (url.clone(), String::new()));
             let mut scope = heap.scope();
             let ev = make_simple_event(&mut scope, "error")?;
             dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onerror")?;
             let close_ev = make_simple_event(&mut scope, "close")?;
             dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(close_ev), "onclose")?;
+
+            let _ = set_ws_tombstone_props(
+              &mut scope,
+              ws_obj,
+              &url_snapshot,
+              &protocol_snapshot,
+              WS_CLOSED,
+              0,
+            );
+            let _ = with_env_state_mut(env_id, |state| Ok(state.sockets.remove(&ws_id)));
             Ok(())
           },
         );
@@ -1738,12 +2003,32 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
         env_id,
         ws_id,
         WsTaskKind::Close,
-        |vm_host, heap, vm, hooks, ws_obj| {
-        let mut scope = heap.scope();
-        let ev = make_simple_event(&mut scope, "error")?;
-        dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onerror")?;
-        let close_ev = make_simple_event(&mut scope, "close")?;
-        dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(close_ev), "onclose")?;
+        move |vm_host, heap, vm, hooks, ws_obj| {
+          let (url_snapshot, protocol_snapshot) = with_env_state(env_id, |state| {
+            Ok(
+              state
+                .sockets
+                .get(&ws_id)
+                .map(|ws| (ws.url.clone(), ws.protocol.clone()))
+                .unwrap_or_else(|| (url.clone(), String::new())),
+            )
+          })
+          .unwrap_or_else(|_| (url.clone(), String::new()));
+         let mut scope = heap.scope();
+         let ev = make_simple_event(&mut scope, "error")?;
+         dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onerror")?;
+         let close_ev = make_simple_event(&mut scope, "close")?;
+         dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(close_ev), "onclose")?;
+
+        let _ = set_ws_tombstone_props(
+          &mut scope,
+          ws_obj,
+          &url_snapshot,
+          &protocol_snapshot,
+          WS_CLOSED,
+          0,
+        );
+        let _ = with_env_state_mut(env_id, |state| Ok(state.sockets.remove(&ws_id)));
         Ok(())
       },
       );
@@ -1770,12 +2055,32 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
           env_id,
           ws_id,
           WsTaskKind::Close,
-          |vm_host, heap, vm, hooks, ws_obj| {
+          move |vm_host, heap, vm, hooks, ws_obj| {
+            let (url_snapshot, protocol_snapshot) = with_env_state(env_id, |state| {
+              Ok(
+                state
+                  .sockets
+                  .get(&ws_id)
+                  .map(|ws| (ws.url.clone(), ws.protocol.clone()))
+                  .unwrap_or_else(|| (url.clone(), String::new())),
+              )
+            })
+            .unwrap_or_else(|_| (url.clone(), String::new()));
             let mut scope = heap.scope();
             let ev = make_simple_event(&mut scope, "error")?;
             dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onerror")?;
             let close_ev = make_simple_event(&mut scope, "close")?;
             dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(close_ev), "onclose")?;
+
+            let _ = set_ws_tombstone_props(
+              &mut scope,
+              ws_obj,
+              &url_snapshot,
+              &protocol_snapshot,
+              WS_CLOSED,
+              0,
+            );
+            let _ = with_env_state_mut(env_id, |state| Ok(state.sockets.remove(&ws_id)));
             Ok(())
           },
         );
@@ -2043,6 +2348,16 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
     ws_id,
     WsTaskKind::Close,
     move |vm_host, heap, vm, hooks, ws_obj| {
+      let (url_snapshot, protocol_snapshot) = with_env_state(env_id, |state| {
+        Ok(
+          state
+            .sockets
+            .get(&ws_id)
+            .map(|ws| (ws.url.clone(), ws.protocol.clone()))
+            .unwrap_or_default(),
+        )
+      })
+      .unwrap_or_default();
     let mut scope = heap.scope();
     let ev = make_simple_event(&mut scope, "close")?;
     let code_key = alloc_key(&mut scope, "code")?;
@@ -2052,6 +2367,16 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
     scope.push_root(Value::String(reason_s))?;
     scope.define_property(ev, reason_key, data_desc(Value::String(reason_s), false))?;
     dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onclose")?;
+
+    let _ = set_ws_tombstone_props(
+      &mut scope,
+      ws_obj,
+      &url_snapshot,
+      &protocol_snapshot,
+      WS_CLOSED,
+      0,
+    );
+    let _ = with_env_state_mut(env_id, |state| Ok(state.sockets.remove(&ws_id)));
     Ok(())
   },
   );
@@ -2370,7 +2695,8 @@ mod tests {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = make_host(dom, "https://example.invalid/")?;
     let err = host
-      .exec_script(r#"new WebSocket("ws://example.invalid/", "");"#)
+      // Use wss:// so mixed content checks do not mask protocol validation.
+      .exec_script(r#"new WebSocket("wss://example.invalid/", "");"#)
       .expect_err("expected invalid protocols argument to throw");
     assert!(
       err.to_string().contains("WebSocket protocol must not be empty"),
@@ -3492,7 +3818,8 @@ mod tests {
     });
 
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = make_host(dom, "https://example.invalid/")?;
+    // Use an insecure document URL so `ws://` is allowed (secure contexts block mixed content).
+    let mut host = make_host(dom, "http://example.invalid/")?;
 
     let oversize = MAX_WEBSOCKET_MESSAGE_BYTES + 1;
 
@@ -3724,6 +4051,106 @@ mod tests {
   }
 
   #[test]
+  fn websocket_entries_removed_after_close_and_properties_tombstoned() -> Result<()> {
+    let _lock = net_test_lock();
+    // Pick a port that is very likely to be closed so connections fail quickly without requiring us
+    // to run a WebSocket server.
+    let Some(listener) = try_bind_localhost("websocket_entries_removed_after_close_and_properties_tombstoned") else {
+      return Ok(());
+    };
+    let port = listener.local_addr().expect("local_addr").port();
+    drop(listener);
+
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    // Use an insecure document URL so `ws://` is allowed (mixed content is blocked for secure
+    // contexts).
+    let mut host = WindowHost::new(dom, "http://example.invalid/__ws_cleanup_test")?;
+
+    let mut env_id: u64 = 0;
+    let resolved_url = format!("ws://127.0.0.1:{port}/");
+
+    for _ in 0..64 {
+      host.exec_script(&format!(
+        r#"
+        globalThis.__done = false;
+        globalThis.__ws = new WebSocket({resolved_url:?});
+        globalThis.__env_id = globalThis.__ws.__fastrender_websocket_env_id;
+        globalThis.__ws.onerror = function () {{}};
+        globalThis.__ws.onclose = function () {{
+          globalThis.__done = true;
+        }};
+        "#,
+      ))?;
+
+      let deadline = Instant::now() + Duration::from_secs(5);
+      loop {
+        let _ = host.run_until_idle(RunLimits {
+          max_tasks: 100,
+          max_microtasks: 1000,
+          max_wall_time: Some(Duration::from_millis(50)),
+        })?;
+
+        if get_global_prop_utf8(&mut host, "__done").as_deref() == Some("true") {
+          break;
+        }
+        if Instant::now() >= deadline {
+          panic!("websocket close timed out");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+      }
+
+      if env_id == 0 {
+        let raw = get_global_prop_utf8(&mut host, "__env_id").unwrap_or_default();
+        env_id = raw.parse::<f64>().unwrap_or(0.0) as u64;
+        assert!(env_id > 0, "env id should be set");
+      }
+
+      // The close task has finished (including cleanup). The Rust entry should be removed while JS
+      // accessors continue to work via tombstone properties.
+      host.exec_script(
+        r#"
+        globalThis.__ready = globalThis.__ws.readyState;
+        globalThis.__url = globalThis.__ws.url;
+        globalThis.__protocol = globalThis.__ws.protocol;
+        globalThis.__buffered = globalThis.__ws.bufferedAmount;
+        "#,
+      )?;
+
+      let closed = (WS_CLOSED as f64).to_string();
+      assert_eq!(
+        get_global_prop_utf8(&mut host, "__ready").as_deref(),
+        Some(closed.as_str())
+      );
+      assert_eq!(
+        get_global_prop_utf8(&mut host, "__url").as_deref(),
+        Some(resolved_url.as_str())
+      );
+      assert_eq!(
+        get_global_prop_utf8(&mut host, "__protocol").as_deref(),
+        Some("")
+      );
+      assert_eq!(
+        get_global_prop_utf8(&mut host, "__buffered").as_deref(),
+        Some("0")
+      );
+
+      let sockets_len = {
+        let lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        lock
+          .get(&env_id)
+          .expect("env should still be registered")
+          .sockets
+          .len()
+      };
+      assert_eq!(sockets_len, 0, "socket entry should be removed after close");
+
+      host.exec_script("globalThis.__ws = null;")?;
+    }
+
+    Ok(())
+  }
+
+  #[test]
   fn websocket_close_code_1000_ok() -> Result<()> {
     websocket_close_code_test("1000", false)
   }
@@ -3907,5 +4334,75 @@ mod tests {
     .expect("inspect websocket state");
 
     unregister_window_websocket_env(env_id);
+  }
+
+  #[test]
+  fn websocket_constructor_enforces_env_cap() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let document_url = "https://example.invalid/__ws_cap_test";
+    let mut host = WindowHost::new(dom, document_url)?;
+
+    let env_id = {
+      let lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      lock
+        .iter()
+        .find_map(|(id, state)| {
+          (state.env.document_url.as_deref() == Some(document_url)).then_some(*id)
+        })
+        .expect("websocket env should be registered")
+    };
+
+    // Use a stable, rooted JS object (the global object) so sweep does not remove the dummy
+    // entries.
+    let global_obj = {
+      let window = host.host_mut().window_mut();
+      let (_vm, realm, _heap) = window.vm_realm_and_heap_mut();
+      realm.global_object()
+    };
+
+    let (cmd_tx, _cmd_rx) = mpsc::sync_channel::<WsCommand>(1);
+
+    with_env_state_mut(env_id, |state| {
+      state.sockets.clear();
+      state.next_id = 1;
+      for _ in 0..MAX_WEBSOCKETS_PER_ENV {
+        let id = state.alloc_id();
+        state.sockets.insert(
+          id,
+         WebSocketState {
+            weak_obj: WeakGcObject::from(global_obj),
+            url: "ws://example.invalid/".to_string(),
+            protocol: String::new(),
+            ready_state: WS_CONNECTING,
+            buffered_amount: 0,
+            pending_events: 0,
+            close_task_queued: false,
+            forced_close: None,
+            cmd_tx: Some(cmd_tx.clone()),
+            thread: None,
+          },
+        );
+      }
+      Ok(())
+    })
+    .unwrap();
+
+    host.exec_script(
+      r#"
+      globalThis.__cap_err = "";
+      try {
+        new WebSocket("wss://127.0.0.1:1/");
+      } catch (e) {
+        globalThis.__cap_err = String(e && e.message || "");
+      }
+      "#,
+    )?;
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__cap_err").as_deref(),
+      Some("Too many WebSocket connections")
+    );
+
+    Ok(())
   }
 }

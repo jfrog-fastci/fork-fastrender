@@ -5,7 +5,6 @@
 //! *before* the Rust test harness starts.
 
 use std::io;
-use std::net::TcpListener;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -22,7 +21,7 @@ fn sandbox_exec_path() -> &'static Path {
 fn sandbox_profile(read_path: &Path, write_path: &Path) -> String {
   fn escape_sbpl_string(value: &str) -> String {
     // SBPL uses C-like string literals. The generated temp paths should be "boring", but escape
-    // `"` defensively so the profile remains parseable.
+    // `\"` defensively so the profile remains parseable.
     value.replace('"', "\\\"")
   }
 
@@ -103,8 +102,8 @@ fn sandbox_exec_wrapper_enforces_sandbox() {
     return;
   }
 
-  let Ok(listener) = TcpListener::bind(("127.0.0.1", 0)) else {
-    eprintln!("skipping macos sandbox-exec enforcement test: unable to bind localhost");
+  let _net_lock = crate::common::net_test_lock();
+  let Some(listener) = crate::common::try_bind_localhost("macos sandbox-exec enforcement test") else {
     return;
   };
   let port = listener
