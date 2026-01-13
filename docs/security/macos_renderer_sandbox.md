@@ -6,7 +6,7 @@ inside an OS sandbox.
 On macOS we rely on two related mechanisms:
 
 - **Seatbelt** (what we use today for dev/CI and unsigned binaries): `sandbox_init(3)` /
-  `/usr/bin/sandbox-exec`
+  `/usr/bin/sandbox-exec` (**deprecated by Apple**; debug/legacy spawn wrapper only)
 - **App Sandbox** (future `.app` distribution): entitlement-based sandbox enforced by codesigning
 
 Canonical macOS sandbox guide (more detail + rationale): [`docs/macos_sandbox.md`](../macos_sandbox.md).
@@ -14,7 +14,8 @@ Canonical macOS sandbox guide (more detail + rationale): [`docs/macos_sandbox.md
 Key code entrypoints:
 
 - Seatbelt profiles + `sandbox_init` wrappers: [`src/sandbox/macos.rs`](../../src/sandbox/macos.rs)
-- `/usr/bin/sandbox-exec` spawn helper: [`src/sandbox/macos_spawn.rs`](../../src/sandbox/macos_spawn.rs)
+- `/usr/bin/sandbox-exec` spawn helpers (debug/legacy; deprecated by Apple; opt-in via
+  `FASTR_MACOS_USE_SANDBOX_EXEC=1`): [`src/sandbox/macos_spawn.rs`](../../src/sandbox/macos_spawn.rs)
 
 ---
 

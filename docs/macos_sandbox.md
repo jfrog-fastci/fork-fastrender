@@ -27,8 +27,13 @@ system “sandboxd” machinery + kernel enforcement). There are two common inte
   - FastRender’s entry point: `fastrender::sandbox::macos::apply_pure_computation_sandbox()`
     (and `apply_renderer_sandbox` for other modes).
   - One-way: once applied, it cannot be reverted for the lifetime of the process.
-- **`/usr/bin/sandbox-exec`** (CLI wrapper): launches a program already inside a sandbox.
-  - FastRender launcher helper: `fastrender::sandbox::macos_spawn::sandbox_exec_command(...)`.
+- **`/usr/bin/sandbox-exec`** (CLI wrapper; **deprecated by Apple**): launches a program already inside a sandbox.
+  - FastRender helpers:
+    - `fastrender::sandbox::macos_spawn::sandbox_exec_command(...)` (convenience wrapper for the
+      `pure-computation` profile).
+    - `fastrender::sandbox::macos_spawn::wrap_command_with_sandbox_exec(...)` (rewrites an existing
+      `std::process::Command` into `sandbox-exec -p <sbpl> -- <exe> <args...>`).
+      - Opt-in gate: `FASTR_MACOS_USE_SANDBOX_EXEC=1` + `maybe_wrap_command_with_sandbox_exec(...)`.
 
 Critically:
 
@@ -96,8 +101,9 @@ Reasoning:
   `pre_exec` often forces a fallback to `fork` + custom child setup (exactly the sharp edge we want
   to avoid in a browser process).
 
-Using `sandbox-exec` (via `fastrender::sandbox::macos_spawn::sandbox_exec_command`) avoids running
-arbitrary Rust code in the `fork` window and keeps spawning behavior easier to reason about.
+Using `sandbox-exec` (e.g. via `fastrender::sandbox::macos_spawn::sandbox_exec_command` or
+`wrap_command_with_sandbox_exec`) avoids running arbitrary Rust code in the `fork` window and keeps
+spawning behavior easier to reason about.
 
 ## Common failure modes under `pure-computation`
 
@@ -338,11 +344,15 @@ timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --test integrat
 If your macOS environment does not have `timeout`, either install coreutils (`brew install
 coreutils`, then use `gtimeout`) or run without the outer timeout wrapper.
 
-### `sandbox-exec` launcher tests (ignored by default)
+### `sandbox-exec` launcher tests
 
-The `/usr/bin/sandbox-exec` launcher helper has an ignored test in `src/sandbox/macos_spawn.rs`.
+FastRender has a small unit test in `src/sandbox/macos_spawn.rs` that uses the `sandbox-exec`
+wrapper to deny network binding in a child process. It will automatically **skip** if
+`/usr/bin/sandbox-exec` is missing (it is deprecated by Apple and may not exist on future macOS
+releases).
+
 Run it explicitly on macOS with:
 
 ```bash
-bash scripts/cargo_agent.sh test -p fastrender sandbox_exec_blocks_file_and_network -- --ignored --nocapture
+bash scripts/cargo_agent.sh test -p fastrender sandbox_exec_blocks_network_bind -- --nocapture
 ```

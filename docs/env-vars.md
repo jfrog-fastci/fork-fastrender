@@ -71,9 +71,6 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
 - `FASTR_MACOS_USE_SANDBOX_EXEC=0|1` – **macOS-only**: opt into wrapping spawned subprocesses with `/usr/bin/sandbox-exec` when using `macos_spawn` helpers (debug/legacy; deprecated by Apple).
 - `FASTR_LOG_SANDBOX=0|1` – **Windows-only**: enable verbose Windows sandbox spawn logging (useful when debugging AppContainer/restricted-token failures).
   - In debug builds, sandbox spawn debug logs are enabled by default; set this in release builds.
-- `FASTR_DISABLE_WIN_MITIGATIONS=0|1` – **Windows-only**: disable applying Windows process mitigation policies (`PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`) when spawning via `crates/win-sandbox`.
-  - This does **not** disable AppContainer/restricted-token/Job/handle-allowlist layers in `fastrender::sandbox::windows::spawn_sandboxed(...)` (they are separate codepaths).
-  - Intended as an escape hatch for debugging/compatibility on unusual Windows configurations.
 - `FASTR_PERF_SMOKE_PAGESET_GUARDRAILS_MANIFEST=/path/to/pageset_guardrails.json` – override the guardrails manifest consumed by the `perf_smoke` binary for the `--suite pageset-guardrails` suite. `FASTR_PERF_SMOKE_PAGESET_TIMEOUT_MANIFEST` is accepted as a legacy alias.
 
 ## Browser UI (`browser` binary)
