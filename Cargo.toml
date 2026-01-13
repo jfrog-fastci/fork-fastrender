@@ -177,6 +177,10 @@ winit = { version = "0.28", default-features = false, optional = true }
 egui-winit = { version = "0.23", default-features = false, features = ["clipboard", "accesskit"], optional = true }
 rfd = { version = "0.12", optional = true }
 
+[[target.'cfg(target_os = "macos")'.bin]]
+name = "macos_sandbox_probe"
+path = "src/bin/macos_sandbox_probe/probe.rs"
+
 [dev-dependencies]
 criterion = "0.5"
 filetime = "0.2"

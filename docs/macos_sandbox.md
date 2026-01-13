@@ -48,6 +48,5 @@ The `connect to 127.0.0.1:8000` probe should report `DENIED`.
 
 ## Editing the profiles
 
-The profiles currently live in `src/bin/macos_sandbox_probe.rs`. This tool is intentionally small
-so you can tweak the profile rules and re-run quickly.
-
+The profiles currently live in `src/bin/macos_sandbox_probe/probe.rs`. This tool is intentionally
+small so you can tweak the profile rules and re-run quickly.
