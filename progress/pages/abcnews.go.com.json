@@ -14,7 +14,7 @@
     "layout": 308.0477136,
     "paint": 308.0477136
   },
-  "notes": "",
+  "notes": "Mostly raster-level diff: font AA/hinting differences on dense nav/footer link text (white-on-dark) plus subtle near-white background deltas (e.g. #fff vs #f9f9f9). Layout/images look correct; no obvious missing sections.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 132119,
