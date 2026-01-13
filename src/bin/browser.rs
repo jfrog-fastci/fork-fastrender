@@ -5206,6 +5206,7 @@ impl App {
           self.downloads_panel_request_focus = true;
         }
         self.downloads_panel_open = true;
+        self.page_has_focus = false;
       }
       PageContextMenuAction::OpenLinkInNewTab(url) => {
         session_dirty |= self.open_url_in_new_tab(url);
@@ -5255,6 +5256,7 @@ impl App {
     if output.close_requested {
       self.downloads_panel_open = false;
       self.downloads_panel_request_focus = false;
+      self.page_has_focus = self.should_restore_page_focus();
     }
 
     for (tab_id, download_id) in output.cancel_requests {
@@ -6072,6 +6074,19 @@ impl App {
     self.page_has_focus = false;
     self.browser_state.chrome.request_focus_address_bar = true;
     self.browser_state.chrome.request_select_all_address_bar = true;
+  }
+
+  fn should_restore_page_focus(&self) -> bool {
+    !self.browser_state.chrome.address_bar_has_focus
+      && !self.bookmarks_panel_open
+      && !self.history_panel_open
+      && !self.downloads_panel_open
+      && !self.clear_browsing_data_dialog_open
+      && !self.browser_state.chrome.tab_search.open
+      && !self
+        .browser_state
+        .active_tab()
+        .is_some_and(|tab| tab.find.open)
   }
 
   fn handle_profile_shortcuts(&mut self, key: winit::event::VirtualKeyCode) -> bool {
@@ -6911,7 +6926,8 @@ impl App {
               self.send_worker_msg(fastrender::ui::UiToWorker::FindStop { tab_id });
               self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus
                 && !self.bookmarks_panel_open
-                && !self.history_panel_open;
+                && !self.history_panel_open
+                && !self.downloads_panel_open;
               self.window.request_redraw();
               return;
             }
@@ -7400,7 +7416,8 @@ impl App {
           self.send_worker_msg(UiToWorker::FindStop { tab_id });
           self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus
             && !self.bookmarks_panel_open
-            && !self.history_panel_open;
+            && !self.history_panel_open
+            && !self.downloads_panel_open;
           self.window.request_redraw();
         }
         ChromeAction::OpenTabSearch => {
@@ -7415,6 +7432,7 @@ impl App {
           self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus
             && !self.bookmarks_panel_open
             && !self.history_panel_open
+            && !self.downloads_panel_open
             && !self.browser_state.active_tab().is_some_and(|tab| tab.find.open);
           self.window.request_redraw();
         }
@@ -7427,6 +7445,9 @@ impl App {
             // history/bookmarks.
             self.history_panel_open = false;
             self.bookmarks_panel_open = false;
+            self.page_has_focus = false;
+          } else {
+            self.page_has_focus = self.should_restore_page_focus();
           }
           self.window.request_redraw();
         }
@@ -7436,7 +7457,10 @@ impl App {
           // When the address bar has focus, keyboard input should not be forwarded to the page.
           // When it loses focus (via Enter/Escape/clicking elsewhere), restore page focus so common
           // scrolling shortcuts work without requiring an extra click.
-          self.page_has_focus = !has_focus && !self.bookmarks_panel_open && !self.history_panel_open;
+          self.page_has_focus = !has_focus
+            && !self.bookmarks_panel_open
+            && !self.history_panel_open
+            && !self.downloads_panel_open;
         }
         ChromeAction::ToggleBookmarkForActiveTab => {
           self.toggle_bookmark_for_active_tab();
@@ -7462,6 +7486,7 @@ impl App {
           } else {
             self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus
               && !self.bookmarks_panel_open
+              && !self.downloads_panel_open
               && !self.browser_state.chrome.tab_search.open
               && !self.browser_state.active_tab().is_some_and(|tab| tab.find.open);
           }
@@ -7480,6 +7505,7 @@ impl App {
             self.bookmarks_manager.clear_transient();
             self.page_has_focus = !self.browser_state.chrome.address_bar_has_focus
               && !self.history_panel_open
+              && !self.downloads_panel_open
               && !self.browser_state.chrome.tab_search.open
               && !self.browser_state.active_tab().is_some_and(|tab| tab.find.open);
           }
@@ -8337,6 +8363,7 @@ impl App {
       && !ctx.wants_keyboard_input()
     {
       self.downloads_panel_open = false;
+      self.page_has_focus = self.should_restore_page_focus();
     }
     if self.downloads_panel_open {
       self.render_downloads_panel(&ctx);
