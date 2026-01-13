@@ -16148,7 +16148,7 @@ impl App {
 
     let tab_id = open_controls.tab_id;
     let node_id = open_controls.media_node_id;
-    let anchor_page = open_controls.anchor_page;
+    let mut anchor_page = open_controls.anchor_page;
     let mut anchor_rect_points = open_controls.anchor_rect_points;
     let mut seek_seconds = open_controls.seek_seconds;
     let mut volume = open_controls.volume;
@@ -16162,15 +16162,67 @@ impl App {
 
     // Recompute the viewport-local anchor rect from the stored page-space rect so the overlay stays
     // attached while scrolling / resizing.
-    let scroll_offset = self
-      .browser_state
-      .tab(tab_id)
-      .map(|tab| tab.scroll_state.viewport)
-      .unwrap_or(fastrender::Point::ZERO);
+    //
+    // When an up-to-date page accessibility snapshot is available, refresh the page-space rect from
+    // it so the overlay continues to track the media element after reflow (e.g. viewport resize).
+    //
+    // Note: the accessibility bounds are expressed in viewport-local CSS coords for the *rendered*
+    // scroll state (the uploaded texture). Convert them back to page coords using
+    // `rendered_scroll_state.viewport` so async-scroll texture translation continues to line up.
+    let Some(tab) = self.browser_state.tab(tab_id) else {
+      self.close_media_controls();
+      return;
+    };
+    let scroll_offset = tab.scroll_state.viewport;
+    let scroll_offset = fastrender::Point::new(
+      if scroll_offset.x.is_finite() {
+        scroll_offset.x
+      } else {
+        0.0
+      },
+      if scroll_offset.y.is_finite() {
+        scroll_offset.y
+      } else {
+        0.0
+      },
+    );
+
+    if let Some(a11y) = tab.page_accessibility.as_ref() {
+      if let Ok(idx) = a11y
+        .bounds_css
+        .binary_search_by_key(&node_id, |(id, _)| *id)
+      {
+        let rect_css = a11y.bounds_css[idx].1;
+        if rect_css.origin.x.is_finite()
+          && rect_css.origin.y.is_finite()
+          && rect_css.size.width.is_finite()
+          && rect_css.size.height.is_finite()
+          && rect_css.size.width > 0.0
+          && rect_css.size.height > 0.0
+        {
+          let rendered_scroll = tab.rendered_scroll_state.viewport;
+          let rendered_scroll = fastrender::Point::new(
+            if rendered_scroll.x.is_finite() {
+              rendered_scroll.x
+            } else {
+              0.0
+            },
+            if rendered_scroll.y.is_finite() {
+              rendered_scroll.y
+            } else {
+              0.0
+            },
+          );
+          anchor_page = rect_css.translate(rendered_scroll);
+        }
+      }
+    }
+
     let anchor_css =
       anchor_page.translate(fastrender::Point::new(-scroll_offset.x, -scroll_offset.y));
     if let Some(controls) = self.open_media_controls.as_mut() {
       controls.anchor_css = anchor_css;
+      controls.anchor_page = anchor_page;
     }
 
     // When the page mapping isn't available (no frame / degenerate viewport), close rather than
