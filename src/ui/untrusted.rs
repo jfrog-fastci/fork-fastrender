@@ -3,7 +3,11 @@
 //! The UI treats all [`crate::ui::messages::WorkerToUi`] payloads as untrusted. Do not store or
 //! display raw worker strings without first applying the helpers in this module.
 
-use crate::ui::protocol_limits::{MAX_FAVICON_BYTES, MAX_URL_BYTES};
+use crate::tree::box_tree::{SelectControl, SelectItem};
+use crate::ui::protocol_limits::{
+  MAX_FAVICON_BYTES, MAX_SELECT_ITEMS, MAX_SELECT_LABEL_BYTES, MAX_URL_BYTES,
+};
+use std::sync::Arc;
 
 /// Clamp an untrusted string to `max_bytes` in UTF-8 without splitting code points.
 ///
@@ -104,9 +108,43 @@ pub fn validate_untrusted_favicon_rgba(rgba_len: usize, width: u32, height: u32)
   }
 }
 
+/// Sanitize a `<select>` control snapshot received from the worker.
+///
+/// `<select>` option labels/values are derived from page content, so they must be treated as
+/// untrusted text for UI display.
+pub fn sanitize_untrusted_select_control(mut control: SelectControl) -> SelectControl {
+  let items = match Arc::try_unwrap(control.items) {
+    Ok(items) => items,
+    Err(shared) => (*shared).clone(),
+  };
+  let mut items = items;
+
+  if items.len() > MAX_SELECT_ITEMS {
+    items.truncate(MAX_SELECT_ITEMS);
+  }
+
+  for item in &mut items {
+    match item {
+      SelectItem::OptGroupLabel { label, .. } => {
+        *label = sanitize_untrusted_text(label, MAX_SELECT_LABEL_BYTES);
+      }
+      SelectItem::Option { label, value, .. } => {
+        *label = sanitize_untrusted_text(label, MAX_SELECT_LABEL_BYTES);
+        *value = sanitize_untrusted_text(value, MAX_SELECT_LABEL_BYTES);
+      }
+    }
+  }
+
+  // Ensure selected indices remain in-bounds after truncation.
+  control.selected.retain(|idx| *idx < items.len());
+  control.items = Arc::new(items);
+  control
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
+  use std::sync::Arc;
 
   #[test]
   fn sanitize_strips_control_and_collapses_whitespace() {
@@ -145,5 +183,38 @@ mod tests {
     assert!(clamped.len() <= 5);
     assert!(clamped.is_char_boundary(clamped.len()));
     assert!(clamped.chars().all(|c| c == 'é'));
+  }
+
+  #[test]
+  fn sanitize_untrusted_select_control_strips_control_chars() {
+    let control = SelectControl {
+      multiple: false,
+      size: 1,
+      items: Arc::new(vec![
+        SelectItem::OptGroupLabel {
+          label: "Group\u{0000}".to_string(),
+          disabled: false,
+        },
+        SelectItem::Option {
+          node_id: 1,
+          label: "A\u{007f}".to_string(),
+          value: "v\u{001f}".to_string(),
+          selected: true,
+          disabled: false,
+          in_optgroup: true,
+        },
+      ]),
+      selected: vec![1],
+    };
+
+    let sanitized = sanitize_untrusted_select_control(control);
+    assert_eq!(sanitized.items[0].label(), "Group");
+    match &sanitized.items[1] {
+      SelectItem::Option { label, value, .. } => {
+        assert_eq!(label, "A");
+        assert_eq!(value, "v");
+      }
+      _ => panic!("expected Option"),
+    }
   }
 }

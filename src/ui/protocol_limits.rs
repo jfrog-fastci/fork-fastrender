@@ -54,4 +54,3 @@ pub const MAX_INPUT_VALUE_BYTES: usize = 1024;
 
 /// Maximum UTF-8 byte length allowed for `<input type=file accept>` attribute strings.
 pub const MAX_ACCEPT_ATTR_BYTES: usize = 1024;
-

@@ -6904,7 +6904,7 @@ impl App {
       if self.browser_state.active_tab_id() == Some(*tab_id) {
         let safe_value = fastrender::ui::untrusted::sanitize_untrusted_text(
           value,
-          fastrender::ui::protocol_limits::MAX_TITLE_BYTES,
+          fastrender::ui::protocol_limits::MAX_INPUT_VALUE_BYTES,
         );
         let focus_before_open = self
           .open_date_time_picker
@@ -6967,7 +6967,7 @@ impl App {
             .map(|a| {
               fastrender::ui::untrusted::sanitize_untrusted_text(
                 a,
-                fastrender::ui::protocol_limits::MAX_TITLE_BYTES,
+                fastrender::ui::protocol_limits::MAX_ACCEPT_ATTR_BYTES,
               )
             })
             .filter(|s| !s.is_empty()),

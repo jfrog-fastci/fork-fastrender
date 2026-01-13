@@ -13,7 +13,8 @@ use crate::ui::protocol_limits::{
   MAX_TITLE_BYTES, MAX_URL_BYTES, MAX_WARNING_BYTES,
 };
 use crate::ui::untrusted::{
-  sanitize_untrusted_text, validate_untrusted_favicon_rgba, validate_untrusted_navigation_url,
+  sanitize_untrusted_select_control, sanitize_untrusted_text, validate_untrusted_favicon_rgba,
+  validate_untrusted_navigation_url,
 };
 use crate::ui::{
   resolve_omnibox_input, validate_user_navigation_url_scheme, GlobalHistoryStore,
@@ -2022,7 +2023,7 @@ impl BrowserAppState {
         update.open_select_dropdown = Some(OpenSelectDropdownUpdate {
           tab_id,
           select_node_id,
-          control,
+          control: sanitize_untrusted_select_control(control),
           anchor_css: None,
         });
       }
@@ -2036,7 +2037,7 @@ impl BrowserAppState {
         update.open_select_dropdown = Some(OpenSelectDropdownUpdate {
           tab_id,
           select_node_id,
-          control,
+          control: sanitize_untrusted_select_control(control),
           anchor_css: Some(anchor_css),
         });
       }
