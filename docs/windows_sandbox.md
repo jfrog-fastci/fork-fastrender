@@ -43,12 +43,17 @@ Code map (repo reality):
         `ERROR_ACCESS_DENIED` (best-effort). It does **not** provide an automatic “jobless” mode.
       - Can apply a mitigation policy bitmask (`mitigation_policy`) via
         `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY` (escape hatch: `FASTR_DISABLE_WIN_MITIGATIONS=1`).
+        - Best-effort compatibility: if the OS rejects the mitigation attribute (e.g.
+          `ERROR_INVALID_PARAMETER` / `ERROR_NOT_SUPPORTED`), the spawner retries without mitigations
+          rather than failing process creation.
     - Restricted-token `CreateProcessAsUserW` spawner (`restricted_token::spawn_with_token`)
       - Uses a low-integrity restricted primary token (from `RestrictedToken`).
       - Also supports job/handle allowlisting and mitigation policies via `STARTUPINFOEX`.
       - When `SpawnConfig.job` is set and the parent process is already inside a Job, the spawner
         attempts `CREATE_BREAKAWAY_FROM_JOB` first, then retries without breakaway on
         `ERROR_ACCESS_DENIED` (best-effort). It does **not** provide an automatic “jobless” mode.
+      - Mitigation policies are best-effort: if the OS rejects
+        `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`, the spawner retries without mitigations.
     - High-level renderer sandbox wrapper (`win_sandbox::renderer::RendererSandbox`)
       - Sets up a Job object (kill-on-close + active-process limit; optional memory cap) and (when
         supported) an AppContainer profile with zero capabilities, then spawns the child suspended,
