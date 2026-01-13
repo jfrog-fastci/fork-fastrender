@@ -39,6 +39,7 @@ pub enum BrowserIcon {
   Trash,
   Edit,
   Folder,
+  Plus,
   BookmarkOutline,
   BookmarkFilled,
 }
@@ -77,6 +78,7 @@ impl BrowserIcon {
       Self::Trash => "trash",
       Self::Edit => "edit",
       Self::Folder => "folder",
+      Self::Plus => "plus",
       Self::BookmarkOutline => "bookmark_outline",
       Self::BookmarkFilled => "bookmark_filled",
     }
@@ -117,6 +119,7 @@ impl BrowserIcon {
       Self::Trash => "Delete",
       Self::Edit => "Edit",
       Self::Folder => "Folder",
+      Self::Plus => "Add",
       Self::BookmarkOutline => "Bookmark",
       Self::BookmarkFilled => "Bookmark",
     }
@@ -153,6 +156,7 @@ impl BrowserIcon {
       Self::Trash => include_bytes!("../../assets/browser_icons/trash.svg"),
       Self::Edit => include_bytes!("../../assets/browser_icons/edit.svg"),
       Self::Folder => include_bytes!("../../assets/browser_icons/folder.svg"),
+      Self::Plus => include_bytes!("../../assets/browser_icons/plus.svg"),
       Self::BookmarkOutline => include_bytes!("../../assets/browser_icons/bookmark_outline.svg"),
       Self::BookmarkFilled => include_bytes!("../../assets/browser_icons/bookmark_filled.svg"),
     }
@@ -589,6 +593,7 @@ mod tests {
       BrowserIcon::Trash,
       BrowserIcon::Edit,
       BrowserIcon::Folder,
+      BrowserIcon::Plus,
       BrowserIcon::BookmarkOutline,
       BrowserIcon::BookmarkFilled,
     ] {
@@ -739,6 +744,7 @@ mod tests {
       BrowserIcon::Trash,
       BrowserIcon::Edit,
       BrowserIcon::Folder,
+      BrowserIcon::Plus,
       BrowserIcon::BookmarkOutline,
       BrowserIcon::BookmarkFilled,
     ];
