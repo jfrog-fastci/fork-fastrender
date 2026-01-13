@@ -622,6 +622,73 @@ mod profile_shortcut_tests {
   }
 }
 
+#[cfg(all(test, feature = "browser_ui"))]
+mod date_time_picker_a11y_tests {
+  use super::App;
+
+  fn begin_frame(ctx: &egui::Context) {
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::Pos2::new(0.0, 0.0),
+      egui::vec2(800.0, 600.0),
+    ));
+    // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
+    raw.time = Some(0.0);
+    raw.focused = true;
+    ctx.begin_frame(raw);
+  }
+
+  #[test]
+  fn time_picker_drag_values_have_accessible_labels_and_request_focus_on_open() {
+    let ctx = egui::Context::default();
+    begin_frame(&ctx);
+
+    let mut hour: u32 = 9;
+    let mut minute: u32 = 30;
+    let mut hour_id: Option<egui::Id> = None;
+    let mut minute_id: Option<egui::Id> = None;
+    let tab_id = fastrender::ui::TabId(1);
+    let input_node_id: usize = 42;
+
+    egui::CentralPanel::default().show(&ctx, |ui| {
+      ui.horizontal(|ui| {
+        let (hour_resp, minute_resp) =
+          App::render_date_time_picker_time_inputs(ui, tab_id, input_node_id, &mut hour, &mut minute, true);
+        hour_id = Some(hour_resp.id);
+        minute_id = Some(minute_resp.id);
+      });
+    });
+
+    let _output = ctx.end_frame();
+
+    let hour_id = hour_id.expect("expected hour response id");
+    assert!(
+      ctx.memory(|mem| mem.has_focus(hour_id)),
+      "expected hour DragValue to be focused when the picker opens"
+    );
+
+    let minute_id = minute_id.expect("expected minute response id");
+    assert_ne!(
+      hour_id, minute_id,
+      "expected hour/minute DragValues to have distinct egui ids"
+    );
+
+    let hour_label = ctx.data(|d| d.get_temp::<String>(egui::Id::new("test_dt_picker_time_hour_label")));
+    let minute_label = ctx.data(|d| d.get_temp::<String>(egui::Id::new("test_dt_picker_time_minute_label")));
+
+    assert!(
+      hour_label.as_deref().is_some_and(|label| !label.trim().is_empty()),
+      "expected hour DragValue to have a non-empty accessible label"
+    );
+    assert!(
+      minute_label.as_deref().is_some_and(|label| !label.trim().is_empty()),
+      "expected minute DragValue to have a non-empty accessible label"
+    );
+    assert_eq!(hour_label.as_deref(), Some("Hour"));
+    assert_eq!(minute_label.as_deref(), Some("Minute"));
+  }
+}
+
 #[cfg(test)]
 mod viewport_throttle_integration_tests {
   use std::time::{Duration, Instant};
@@ -6070,6 +6137,54 @@ impl App {
     self.window.request_redraw();
   }
 
+  fn render_date_time_picker_time_inputs(
+    ui: &mut egui::Ui,
+    tab_id: fastrender::ui::TabId,
+    input_node_id: usize,
+    hour: &mut u32,
+    minute: &mut u32,
+    request_initial_focus: bool,
+  ) -> (egui::Response, egui::Response) {
+    const HOUR_LABEL: &str = "Hour";
+    const MINUTE_LABEL: &str = "Minute";
+
+    ui.label("Hour");
+    let hour_resp = ui
+      .push_id(
+        ui.make_persistent_id(("dt_picker_time_hour", tab_id.0, input_node_id)),
+        |ui| ui.add(egui::DragValue::new(hour).clamp_range(0..=23)),
+      )
+      .inner;
+    hour_resp
+      .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::DragValue, HOUR_LABEL));
+    #[cfg(test)]
+    ui
+      .ctx()
+      .data_mut(|d| d.insert_temp(egui::Id::new("test_dt_picker_time_hour_label"), HOUR_LABEL.to_string()));
+    if request_initial_focus {
+      hour_resp.request_focus();
+    }
+
+    ui.label("Minute");
+    let minute_resp = ui
+      .push_id(
+        ui.make_persistent_id(("dt_picker_time_minute", tab_id.0, input_node_id)),
+        |ui| ui.add(egui::DragValue::new(minute).clamp_range(0..=59)),
+      )
+      .inner;
+    minute_resp
+      .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::DragValue, MINUTE_LABEL));
+    #[cfg(test)]
+    ui.ctx().data_mut(|d| {
+      d.insert_temp(
+        egui::Id::new("test_dt_picker_time_minute_label"),
+        MINUTE_LABEL.to_string(),
+      );
+    });
+
+    (hour_resp, minute_resp)
+  }
+
   fn render_date_time_picker(&mut self, ctx: &egui::Context) {
     use fastrender::ui::messages::DateTimeInputKind;
     use fastrender::ui::UiToWorker;
@@ -6193,7 +6308,6 @@ impl App {
             let last_day = first_next_month - chrono::Duration::days(1);
             let days_in_month = chrono::Datelike::day(&last_day);
             let weekday_idx = chrono::Datelike::weekday(&first_day).num_days_from_monday() as usize;
-
             let focus_day = if request_initial_focus {
               let selected_valid = selected_day
                 .as_ref()
@@ -6295,29 +6409,14 @@ impl App {
           }
           (DateTimeInputKind::Time, DateTimePickerState::Time { hour, minute }) => {
             ui.horizontal(|ui| {
-              ui.label("Hour");
-              let hour_resp = ui
-                .push_id(
-                  ui.make_persistent_id(("dt_picker_time_hour", tab_id.0, input_node_id)),
-                  |ui| ui.add(egui::DragValue::new(hour).clamp_range(0..=23)),
-                )
-                .inner;
-              hour_resp.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::DragValue, "Hour")
-              });
-              if request_initial_focus {
-                hour_resp.request_focus();
-              }
-              ui.label("Minute");
-              let minute_resp = ui
-                .push_id(
-                  ui.make_persistent_id(("dt_picker_time_minute", tab_id.0, input_node_id)),
-                  |ui| ui.add(egui::DragValue::new(minute).clamp_range(0..=59)),
-                )
-                .inner;
-              minute_resp.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::DragValue, "Minute")
-              });
+              let (_hour_resp, _minute_resp) = Self::render_date_time_picker_time_inputs(
+                ui,
+                tab_id,
+                input_node_id,
+                hour,
+                minute,
+                request_initial_focus,
+              );
             });
             ui.horizontal(|ui| {
               if ui.button("Set").clicked() {
