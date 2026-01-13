@@ -2498,7 +2498,61 @@ impl BrowserDocumentDom2 {
     // Note: `dom2::MutationLog` models these separately so hosts can add future incremental paths
     // (e.g. repainting replaced form controls) without forcing a full restyle.
     for node in mutations.form_state_changed {
-      if self.dom.is_connected_for_scripting(node) {
+      if !self.dom.is_connected_for_scripting(node) {
+        continue;
+      }
+
+      // Only treat form-state mutations as render-affecting when they can influence the rendered
+      // output. Some form controls never paint (`type=hidden`), and some state is tracked out of DOM
+      // (`type=file` uses `InteractionState`).
+      let affects_render = match &self.dom.node(node).kind {
+        crate::dom2::NodeKind::Element {
+          tag_name,
+          namespace,
+          attributes,
+          ..
+        } if self.dom.is_html_case_insensitive_namespace(namespace) => {
+          if tag_name.eq_ignore_ascii_case("input") {
+            let ty = attributes
+              .iter()
+              .find(|(k, _)| k.eq_ignore_ascii_case("type"))
+              .map(|(_, v)| v.as_str())
+              .unwrap_or("text");
+            !(ty.eq_ignore_ascii_case("hidden")
+              || ty.eq_ignore_ascii_case("image")
+              || ty.eq_ignore_ascii_case("file"))
+          } else if tag_name.eq_ignore_ascii_case("textarea") || tag_name.eq_ignore_ascii_case("select") {
+            true
+          } else if tag_name.eq_ignore_ascii_case("option") {
+            // Option selectedness only affects rendering when it participates in a <select>.
+            let mut current = node;
+            let mut in_select = false;
+            while let Some(parent) = self.dom.parent_node(current) {
+              match &self.dom.node(parent).kind {
+                crate::dom2::NodeKind::Element {
+                  tag_name,
+                  namespace,
+                  ..
+                } if self.dom.is_html_case_insensitive_namespace(namespace)
+                  && tag_name.eq_ignore_ascii_case("select") =>
+                {
+                  in_select = true;
+                  break;
+                }
+                _ => {}
+              }
+              current = parent;
+            }
+            in_select
+          } else {
+            false
+          }
+        }
+        // Conservatively treat unknown cases as render-affecting.
+        _ => true,
+      };
+
+      if affects_render {
         render_affecting = true;
         self.form_state_dirty = true;
         self.layout_dirty = true;
