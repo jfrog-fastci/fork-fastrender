@@ -2900,17 +2900,18 @@ impl<'vm> HirEvaluator<'vm> {
             Ok(out)
           }
           hir_js::ExprKind::Member(member) => {
-            let object = self.eval_expr(scope, body, member.object)?;
-            let Value::Object(obj) = object else {
-              return Err(VmError::TypeError("member assignment requires object"));
-            };
+            let base = self.eval_expr(scope, body, member.object)?;
 
             let mut scope = scope.reborrow();
+            // Root base across `ToObject`, key evaluation, `[[Get]]` and `[[Set]]`. Compound
+            // assignment evaluates the property reference once and then performs both a get and set.
+            scope.push_root(base)?;
+            let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
             scope.push_root(Value::Object(obj))?;
 
             let key = self.eval_object_key(&mut scope, body, &member.property)?;
             root_property_key(&mut scope, key)?;
-            let receiver = Value::Object(obj);
+            let receiver = base;
 
             let left = scope.get_with_host_and_hooks(
               self.vm,
