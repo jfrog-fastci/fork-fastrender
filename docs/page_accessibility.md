@@ -75,6 +75,12 @@ When page accessibility is wired into the browser UI, the intended shape is:
   - The `AccessibilityNode` tree (semantics).
   - Per-node bounds in viewport-local CSS px (geometry), if/when bounds are implemented.
 - UI maps those bounds through `InputMapping` into whatever coordinate space AccessKit needs.
+  - In practice, the worker will likely reuse existing library plumbing:
+    - Semantics: `RenderOptions::with_accessibility(true)` (see `FastRender::render_html_with_accessibility`)
+      or `FastRender::accessibility_tree_with_interaction_state(...)`.
+    - Construction should be gated on whether assistive tech is connected (see
+      [`src/ui/accesskit_bridge.rs`](../src/ui/accesskit_bridge.rs)) so normal browsing doesn’t pay
+      the full a11y build cost.
 
 (As of this commit, `WorkerToUi::PageAccessibility` does **not** exist yet; the name is included here
 to document the intended routing point.)
