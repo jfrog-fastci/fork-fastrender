@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use crate::geometry::{Point, Rect};
+use crate::geometry::{Point, Rect, Size};
 use crate::style::types::OverflowAnchor;
 use crate::tree::fragment_tree::{FragmentNode, FragmentTree, HitTestRoot};
 use super::ScrollState;
@@ -49,6 +49,10 @@ fn point_sub(a: Point, b: Point) -> Point {
 
 fn sanitize_point(p: Point) -> Point {
   Point::new(if p.x.is_finite() { p.x } else { 0.0 }, if p.y.is_finite() { p.y } else { 0.0 })
+}
+
+fn approx_eq_point(a: Point, b: Point, epsilon: f32) -> bool {
+  (a.x - b.x).abs() <= epsilon && (a.y - b.y).abs() <= epsilon
 }
 
 fn fragment_excludes_scroll_anchoring(node: &FragmentNode) -> bool {
@@ -579,6 +583,84 @@ pub fn apply_scroll_anchoring(
     .retain(|_, offset| *offset != Point::ZERO);
 
   (next_scroll, next_snapshot)
+}
+
+/// Apply scroll anchoring adjustments, integrating CSS Scroll Snap re-snapping for snapped scrollers.
+///
+/// CSS Scroll Anchoring (§2 "Scroll anchoring adjustments") notes that snapped scrollers should not
+/// end up between snap points: after applying anchoring, the UA re-snaps the scroll position. This
+/// helper implements that behaviour by:
+/// - Detecting which scrolling boxes were snapped in the previous layout (via `apply_scroll_snap`).
+/// - Applying scroll anchoring to the new layout.
+/// - Re-running scroll snap for the *previously snapped* scrolling boxes and accepting the snapped
+///   result.
+///
+/// The returned scroll state has `viewport_delta`/`elements_delta` recomputed relative to `scroll`.
+pub(crate) fn apply_scroll_anchoring_with_scroll_snap(
+  prev_tree: &mut FragmentTree,
+  new_tree: &mut FragmentTree,
+  scrollport_viewport: Size,
+  scroll: &ScrollState,
+) -> ScrollState {
+  // Determine which containers were snapped in the previous layout.
+  prev_tree.ensure_scroll_metadata();
+  let prev_metadata = prev_tree.scroll_metadata.clone().unwrap_or_default();
+  let snapped_prev = super::apply_scroll_snap(prev_tree, scroll).state;
+  let epsilon = 0.1;
+  let mut snapped_viewport = false;
+  let mut snapped_elements: HashSet<usize> = HashSet::new();
+
+  for container in &prev_metadata.containers {
+    if !container.snap_x && !container.snap_y {
+      continue;
+    }
+    if container.uses_viewport_scroll {
+      if approx_eq_point(scroll.viewport, snapped_prev.viewport, epsilon) {
+        snapped_viewport = true;
+      }
+      continue;
+    }
+    let Some(id) = container.box_id else {
+      continue;
+    };
+    let Some(current) = scroll.elements.get(&id) else {
+      continue;
+    };
+    let Some(snapped) = snapped_prev.elements.get(&id) else {
+      continue;
+    };
+    if approx_eq_point(*current, *snapped, epsilon) {
+      snapped_elements.insert(id);
+    }
+  }
+
+  let snapshot = capture_scroll_anchors(prev_tree, scroll);
+  let (mut next_scroll, _next_snapshot) = apply_scroll_anchoring(&snapshot, new_tree, scroll);
+
+  if snapped_viewport || !snapped_elements.is_empty() {
+    let snapped_after = super::apply_scroll_snap(new_tree, &next_scroll).state;
+    if snapped_viewport {
+      next_scroll.viewport = snapped_after.viewport;
+    }
+    for id in snapped_elements {
+      if let Some(offset) = snapped_after.elements.get(&id).copied() {
+        next_scroll.elements.insert(id, offset);
+      }
+    }
+  }
+
+  // Mirror paint-time viewport clamping so callers that only flush layout (no paint) still see a
+  // stable scroll state.
+  next_scroll.viewport = sanitize_point(next_scroll.viewport);
+  if let Some(bounds) = super::build_scroll_chain(&new_tree.root, scrollport_viewport, &[])
+    .first()
+    .map(|state| state.bounds)
+  {
+    next_scroll.viewport = bounds.clamp(next_scroll.viewport);
+  }
+
+  next_scroll.update_deltas_from(scroll);
+  next_scroll
 }
 
 #[cfg(test)]

@@ -928,7 +928,7 @@ impl BrowserDocumentDom2 {
     let mut flush_kind = BrowserDocumentDom2LayoutFlushKind::IncrementalRelayout;
     if !did_incremental_layout {
       flush_kind = BrowserDocumentDom2LayoutFlushKind::Full;
-      let prev_prepared = self.prepared.take();
+      let mut prev_prepared = self.prepared.take();
       let prev_mapping = self.last_dom_mapping.take();
       let prev_seen_generation = self.last_seen_dom_mutation_generation;
 
@@ -974,6 +974,18 @@ impl BrowserDocumentDom2 {
           transition_state.capture_layout_from_fragment_tree(&prepared.fragment_tree);
           prepared.fragment_tree.transition_state = Some(Arc::new(transition_state));
         }
+      }
+
+      if let Some(prev_prepared) = prev_prepared.as_mut() {
+        let current_scroll_state = self.scroll_state();
+        let next_viewport = prepared.layout_viewport();
+        let anchored = crate::scroll::apply_scroll_anchoring_with_scroll_snap(
+          &mut prev_prepared.fragment_tree,
+          &mut prepared.fragment_tree,
+          next_viewport,
+          &current_scroll_state,
+        );
+        self.set_scroll_state(anchored);
       }
 
       self.prepared = Some(prepared);
@@ -4594,6 +4606,91 @@ mod tests {
     assert!(
       !state.elements.contains_key(&scroller_box_id),
       "expected element scroll offset to clear back to zero"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn scroll_anchoring_resnaps_snapped_element_scroller_after_layout_change() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = r#"<!doctype html><html><head><style>
+html, body { margin: 0; padding: 0; }
+#scroller { width: 100px; height: 100px; overflow-y: scroll; scroll-snap-type: y mandatory; }
+.item { height: 50px; margin: 0; padding: 0; scroll-snap-align: center; }
+</style></head><body><div id="scroller"><div id="item1" class="item"></div><div id="item2" class="item"></div><div id="item3" class="item"></div><div id="item4" class="item"></div></div></body></html>"#;
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(200, 200))?;
+    doc.render_frame()?;
+
+    let scroller_node = doc.dom().get_element_by_id("scroller").expect("scroller node");
+    let scroller_box_id = doc
+      .principal_box_id_for_node(scroller_node)?
+      .expect("scroller box id");
+
+    // Scroll close to the third snap target and paint once so scroll snap commits the snapped state.
+    doc.set_element_scroll_offset(scroller_box_id, Point::new(0.0, 70.0));
+    doc.paint_from_cache_frame_with_deadline(None)?;
+    let snapped_before = doc.element_scroll_offset(scroller_box_id).y;
+    assert!(
+      (snapped_before - 75.0).abs() < 0.5,
+      "expected element scroller to snap to 75px, got {snapped_before}"
+    );
+
+    // Mutate layout above the viewport inside the scroller so later snap points shift.
+    let item2_node = doc.dom().get_element_by_id("item2").expect("item2 node");
+    let changed = doc.mutate_dom(|dom| {
+      dom
+        .set_attribute(item2_node, "style", "padding-top: 10px")
+        .expect("set attribute")
+    });
+    assert!(changed, "expected style mutation to dirty layout");
+
+    // Flush layout without painting. Scroll anchoring must apply, and snapped scrollers must re-snap.
+    doc.ensure_layout()?;
+    let snapped_after = doc.element_scroll_offset(scroller_box_id).y;
+    assert!(
+      (snapped_after - 85.0).abs() < 0.5,
+      "expected element scroller to re-snap to 85px, got {snapped_after}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn scroll_anchoring_resnaps_snapped_viewport_after_layout_change() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = r#"<!doctype html><html><head><style>
+html, body { margin: 0; padding: 0; }
+html { scroll-snap-type: y mandatory; }
+.snap { height: 50px; margin: 0; padding: 0; scroll-snap-align: center; }
+</style></head><body><div id="s1" class="snap"></div><div id="s2" class="snap"></div><div id="s3" class="snap"></div><div id="s4" class="snap"></div></body></html>"#;
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(100, 100))?;
+    doc.render_frame()?;
+
+    // Scroll close to the third snap target and paint once so scroll snap commits the snapped state.
+    doc.set_scroll(0.0, 70.0);
+    doc.paint_from_cache_frame_with_deadline(None)?;
+    let snapped_before = doc.viewport_scroll_offset().y;
+    assert!(
+      (snapped_before - 75.0).abs() < 0.5,
+      "expected viewport to snap to 75px, got {snapped_before}"
+    );
+
+    // Mutate layout above the viewport so later snap points shift.
+    let s2_node = doc.dom().get_element_by_id("s2").expect("s2 node");
+    let changed = doc.mutate_dom(|dom| {
+      dom
+        .set_attribute(s2_node, "style", "padding-top: 10px")
+        .expect("set attribute")
+    });
+    assert!(changed, "expected style mutation to dirty layout");
+
+    // Flush layout without painting. Scroll anchoring must apply, and snapped scrollers must re-snap.
+    doc.ensure_layout()?;
+    let snapped_after = doc.viewport_scroll_offset().y;
+    assert!(
+      (snapped_after - 85.0).abs() < 0.5,
+      "expected viewport to re-snap to 85px, got {snapped_after}"
     );
     Ok(())
   }

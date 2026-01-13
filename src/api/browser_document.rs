@@ -1220,7 +1220,7 @@ impl BrowserDocument {
 
     let needs_layout = self.style_dirty || self.layout_dirty;
     if needs_layout {
-      let prev_prepared = self.prepared.take();
+      let mut prev_prepared = self.prepared.take();
       let mut prepared =
         match self.prepare_dom_with_options_and_interaction_state(interaction_state) {
           Ok(prepared) => prepared,
@@ -1293,6 +1293,20 @@ impl BrowserDocument {
           transition_state.capture_layout_from_fragment_tree(&prepared.fragment_tree);
           prepared.fragment_tree.transition_state = Some(Arc::new(transition_state));
         }
+      }
+
+      if let Some(prev_prepared) = prev_prepared.as_mut() {
+        let current_scroll_state = self.scroll_state();
+        let next_viewport = prepared.layout_viewport();
+        let anchored = crate::scroll::apply_scroll_anchoring_with_scroll_snap(
+          &mut prev_prepared.fragment_tree,
+          &mut prepared.fragment_tree,
+          next_viewport,
+          &current_scroll_state,
+        );
+        // Synchronize the document scroll state with the anchor adjustment. This is a scroll event,
+        // but it should not mark style/layout dirty; only paint needs a fresh frame.
+        self.set_scroll_state(anchored);
       }
 
       self.prepared = Some(prepared);
