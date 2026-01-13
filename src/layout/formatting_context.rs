@@ -95,6 +95,8 @@ pub enum IntrinsicSizingMode {
 
 type IntrinsicCacheKey = (usize, usize, IntrinsicSizingMode);
 type RememberedSizeCacheKey = (usize, usize);
+type IntrinsicOverrideCacheKey = (usize, u64, IntrinsicSizingMode);
+type RememberedSizeOverrideCacheKey = (usize, u64);
 
 /// Number of shards used for intrinsic sizing caches.
 ///
@@ -149,6 +151,49 @@ static GLOBAL_INTRINSIC_INLINE_CACHE: LazyLock<ShardedIntrinsicCache> =
 static GLOBAL_INTRINSIC_BLOCK_CACHE: LazyLock<ShardedIntrinsicCache> =
   LazyLock::new(ShardedIntrinsicCache::new);
 
+struct ShardedIntrinsicOverrideCache {
+  shards: [RwLock<FxHashMap<IntrinsicOverrideCacheKey, (usize, f32)>>; INTRINSIC_CACHE_SHARDS],
+}
+
+impl ShardedIntrinsicOverrideCache {
+  fn new() -> Self {
+    Self {
+      shards: std::array::from_fn(|_| RwLock::new(FxHashMap::default())),
+    }
+  }
+
+  #[inline]
+  fn shard_index_for_box_id(box_id: usize) -> usize {
+    box_id % INTRINSIC_CACHE_SHARDS
+  }
+
+  #[inline]
+  fn get(&self, key: &IntrinsicOverrideCacheKey, epoch: usize) -> Option<f32> {
+    let shard = &self.shards[Self::shard_index_for_box_id(key.0)];
+    let map = shard.read();
+    map
+      .get(key)
+      .and_then(|(entry_epoch, value)| (*entry_epoch == epoch).then_some(*value))
+  }
+
+  #[inline]
+  fn insert(&self, key: IntrinsicOverrideCacheKey, epoch: usize, value: f32) {
+    let shard = &self.shards[Self::shard_index_for_box_id(key.0)];
+    shard.write().insert(key, (epoch, value));
+  }
+
+  fn clear(&self) {
+    for shard in &self.shards {
+      shard.write().clear();
+    }
+  }
+}
+
+static GLOBAL_INTRINSIC_INLINE_OVERRIDE_CACHE: LazyLock<ShardedIntrinsicOverrideCache> =
+  LazyLock::new(ShardedIntrinsicOverrideCache::new);
+static GLOBAL_INTRINSIC_BLOCK_OVERRIDE_CACHE: LazyLock<ShardedIntrinsicOverrideCache> =
+  LazyLock::new(ShardedIntrinsicOverrideCache::new);
+
 /// Stores remembered *content-box* sizes (physical width + height) for skipped content.
 ///
 /// This cache exists to implement `contain-intrinsic-size: auto` semantics. When an element's
@@ -197,6 +242,48 @@ impl ShardedRememberedSizeCache {
 static GLOBAL_REMEMBERED_SIZE_CACHE: LazyLock<ShardedRememberedSizeCache> =
   LazyLock::new(ShardedRememberedSizeCache::new);
 
+struct ShardedRememberedSizeOverrideCache {
+  shards:
+    [RwLock<FxHashMap<RememberedSizeOverrideCacheKey, (usize, Size)>>; INTRINSIC_CACHE_SHARDS],
+}
+
+impl ShardedRememberedSizeOverrideCache {
+  fn new() -> Self {
+    Self {
+      shards: std::array::from_fn(|_| RwLock::new(FxHashMap::default())),
+    }
+  }
+
+  #[inline]
+  fn shard_index_for_box_id(box_id: usize) -> usize {
+    box_id % INTRINSIC_CACHE_SHARDS
+  }
+
+  #[inline]
+  fn get(&self, key: &RememberedSizeOverrideCacheKey, epoch: usize) -> Option<Size> {
+    let shard = &self.shards[Self::shard_index_for_box_id(key.0)];
+    let map = shard.read();
+    map
+      .get(key)
+      .and_then(|(entry_epoch, value)| (*entry_epoch == epoch).then_some(*value))
+  }
+
+  #[inline]
+  fn insert(&self, key: RememberedSizeOverrideCacheKey, epoch: usize, value: Size) {
+    let shard = &self.shards[Self::shard_index_for_box_id(key.0)];
+    shard.write().insert(key, (epoch, value));
+  }
+
+  fn clear(&self) {
+    for shard in &self.shards {
+      shard.write().clear();
+    }
+  }
+}
+
+static GLOBAL_REMEMBERED_SIZE_OVERRIDE_CACHE: LazyLock<ShardedRememberedSizeOverrideCache> =
+  LazyLock::new(ShardedRememberedSizeOverrideCache::new);
+
 thread_local! {
   /// Intrinsic sizing cache for callers that temporarily override the effective `ComputedStyle`
   /// via `layout::style_override`.
@@ -207,14 +294,14 @@ thread_local! {
   /// sizing cached (and safe) under overrides, we maintain a parallel cache keyed by a stable
   /// signature of the override style values.
   static INTRINSIC_INLINE_OVERRIDE_CACHE: RefCell<
-    FxHashMap<(usize, u64, IntrinsicSizingMode), (usize, f32)>,
+    FxHashMap<IntrinsicOverrideCacheKey, (usize, f32)>,
   > = RefCell::new(FxHashMap::default());
 }
 
 thread_local! {
   /// Block-axis counterpart to `INTRINSIC_INLINE_OVERRIDE_CACHE`.
   static INTRINSIC_BLOCK_OVERRIDE_CACHE: RefCell<
-    FxHashMap<(usize, u64, IntrinsicSizingMode), (usize, f32)>,
+    FxHashMap<IntrinsicOverrideCacheKey, (usize, f32)>,
   > = RefCell::new(FxHashMap::default());
 }
 
@@ -224,7 +311,7 @@ thread_local! {
   /// Like intrinsic sizing, style overrides keep the `BoxNode` style pointer stable while changing
   /// the effective layout inputs. Keying by the override signature avoids accidentally attributing
   /// a temporary sizing probe to the base style pointer.
-  static REMEMBERED_SIZE_OVERRIDE_CACHE: RefCell<FxHashMap<(usize, u64), (usize, Size)>> =
+  static REMEMBERED_SIZE_OVERRIDE_CACHE: RefCell<FxHashMap<RememberedSizeOverrideCacheKey, (usize, Size)>> =
     RefCell::new(FxHashMap::default());
 }
 
@@ -355,6 +442,8 @@ impl ShardedCounter {
 static CACHE_LOOKUPS: LazyLock<ShardedCounter> = LazyLock::new(ShardedCounter::new);
 static CACHE_HITS: LazyLock<ShardedCounter> = LazyLock::new(ShardedCounter::new);
 static CACHE_STORES: LazyLock<ShardedCounter> = LazyLock::new(ShardedCounter::new);
+static OVERRIDE_GLOBAL_CACHE_HITS: LazyLock<ShardedCounter> = LazyLock::new(ShardedCounter::new);
+static OVERRIDE_GLOBAL_CACHE_MISSES: LazyLock<ShardedCounter> = LazyLock::new(ShardedCounter::new);
 static CACHE_EPOCH: AtomicUsize = AtomicUsize::new(1);
 static BLOCK_INTRINSIC_CALLS: LazyLock<ShardedCounter> = LazyLock::new(ShardedCounter::new);
 static FLEX_INTRINSIC_CALLS: LazyLock<ShardedCounter> = LazyLock::new(ShardedCounter::new);
@@ -382,6 +471,36 @@ static INTRINSIC_CACHE_TEST_LOCK: LazyLock<parking_lot::ReentrantMutex<()>> =
 static INTRINSIC_CACHE_TEST_LOCK_DEPTH: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(test)]
+static INTRINSIC_CACHE_TEST_TOKEN: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+static INTRINSIC_CACHE_TEST_TOKEN_NEXT: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(test)]
+thread_local! {
+  static INTRINSIC_CACHE_TEST_THREAD_TOKEN: Cell<u64> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+fn intrinsic_cache_test_is_current_thread_allowed() -> bool {
+  let active = INTRINSIC_CACHE_TEST_TOKEN.load(Ordering::Relaxed);
+  if active == 0 {
+    return false;
+  }
+  INTRINSIC_CACHE_TEST_THREAD_TOKEN.with(|cell| cell.get() == active)
+}
+
+#[cfg(test)]
+pub(crate) fn intrinsic_cache_test_token() -> u64 {
+  INTRINSIC_CACHE_TEST_TOKEN.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+pub(crate) fn intrinsic_cache_test_set_thread_token(token: u64) {
+  INTRINSIC_CACHE_TEST_THREAD_TOKEN.with(|cell| cell.set(token));
+}
+
+#[cfg(test)]
 pub(crate) struct IntrinsicCacheTestLockGuard {
   guard: std::mem::ManuallyDrop<parking_lot::ReentrantMutexGuard<'static, ()>>,
 }
@@ -390,7 +509,10 @@ pub(crate) struct IntrinsicCacheTestLockGuard {
 impl Drop for IntrinsicCacheTestLockGuard {
   fn drop(&mut self) {
     unsafe { std::mem::ManuallyDrop::drop(&mut self.guard) };
-    INTRINSIC_CACHE_TEST_LOCK_DEPTH.fetch_sub(1, Ordering::SeqCst);
+    let previous = INTRINSIC_CACHE_TEST_LOCK_DEPTH.fetch_sub(1, Ordering::SeqCst);
+    if previous == 1 {
+      INTRINSIC_CACHE_TEST_TOKEN.store(0, Ordering::SeqCst);
+    }
   }
 }
 
@@ -398,6 +520,11 @@ impl Drop for IntrinsicCacheTestLockGuard {
 pub(crate) fn intrinsic_cache_test_lock() -> IntrinsicCacheTestLockGuard {
   INTRINSIC_CACHE_TEST_LOCK_DEPTH.fetch_add(1, Ordering::SeqCst);
   let guard = INTRINSIC_CACHE_TEST_LOCK.lock();
+  if !intrinsic_cache_test_is_current_thread_allowed() {
+    let token = INTRINSIC_CACHE_TEST_TOKEN_NEXT.fetch_add(1, Ordering::SeqCst);
+    INTRINSIC_CACHE_TEST_TOKEN.store(token, Ordering::SeqCst);
+    intrinsic_cache_test_set_thread_token(token);
+  }
   IntrinsicCacheTestLockGuard {
     guard: std::mem::ManuallyDrop::new(guard),
   }
@@ -498,7 +625,7 @@ fn override_cache_key(
   mode: IntrinsicSizingMode,
   epoch: usize,
   override_fingerprint: u64,
-) -> Option<(usize, u64, IntrinsicSizingMode)> {
+) -> Option<IntrinsicOverrideCacheKey> {
   let id = node.id();
   if id == 0 || subtree_contains_subgrid(node, epoch) {
     return None;
@@ -524,22 +651,18 @@ fn ensure_intrinsic_thread_epoch(epoch: usize) {
 
 pub(crate) fn intrinsic_cache_lookup(node: &BoxNode, mode: IntrinsicSizingMode) -> Option<f32> {
   #[cfg(test)]
-  let _test_lock_guard = {
+  {
     // When cache behavior is being asserted in a unit test, other concurrently-running tests can
     // pollute the global cache/counters and make stats-based assertions flaky.
     //
-    // `intrinsic_cache_test_lock()` is a re-entrant mutex so the test thread can safely call into
-    // layout/intrinsic code while holding the lock. Non-owning threads fail fast here and bypass
-    // caching, avoiding cross-test interference without risking deadlocks.
-    if INTRINSIC_CACHE_TEST_LOCK_DEPTH.load(Ordering::Relaxed) > 0 {
-      match INTRINSIC_CACHE_TEST_LOCK.try_lock() {
-        Some(guard) => Some(guard),
-        None => return None,
-      }
-    } else {
-      None
+    // Tests that need deterministic cache behavior grab `intrinsic_cache_test_lock()`, which
+    // installs a per-test token. Threads that do not carry that token must bypass caching.
+    if INTRINSIC_CACHE_TEST_LOCK_DEPTH.load(Ordering::Relaxed) > 0
+      && !intrinsic_cache_test_is_current_thread_allowed()
+    {
+      return None;
     }
-  };
+  }
 
   CACHE_LOOKUPS.inc();
   let epoch = CACHE_EPOCH.load(Ordering::Relaxed);
@@ -553,10 +676,22 @@ pub(crate) fn intrinsic_cache_lookup(node: &BoxNode, mode: IntrinsicSizingMode) 
         .get(&key)
         .and_then(|(entry_epoch, value)| (*entry_epoch == epoch).then_some(*value))
     });
-    if hit.is_some() {
+    if let Some(hit) = hit {
       CACHE_HITS.inc();
+      return Some(hit);
     }
-    return hit;
+
+    if let Some(hit) = GLOBAL_INTRINSIC_INLINE_OVERRIDE_CACHE.get(&key, epoch) {
+      OVERRIDE_GLOBAL_CACHE_HITS.inc();
+      INTRINSIC_INLINE_OVERRIDE_CACHE.with(|cache| {
+        cache.borrow_mut().insert(key, (epoch, hit));
+      });
+      CACHE_HITS.inc();
+      return Some(hit);
+    }
+
+    OVERRIDE_GLOBAL_CACHE_MISSES.inc();
+    return None;
   }
 
   let key = cache_key(node, mode, epoch)?;
@@ -576,16 +711,13 @@ pub(crate) fn intrinsic_cache_lookup(node: &BoxNode, mode: IntrinsicSizingMode) 
 
 pub(crate) fn intrinsic_cache_store(node: &BoxNode, mode: IntrinsicSizingMode, value: f32) {
   #[cfg(test)]
-  let _test_lock_guard = {
-    if INTRINSIC_CACHE_TEST_LOCK_DEPTH.load(Ordering::Relaxed) > 0 {
-      match INTRINSIC_CACHE_TEST_LOCK.try_lock() {
-        Some(guard) => Some(guard),
-        None => return,
-      }
-    } else {
-      None
+  {
+    if INTRINSIC_CACHE_TEST_LOCK_DEPTH.load(Ordering::Relaxed) > 0
+      && !intrinsic_cache_test_is_current_thread_allowed()
+    {
+      return;
     }
-  };
+  }
 
   let epoch = CACHE_EPOCH.load(Ordering::Relaxed);
   ensure_intrinsic_thread_epoch(epoch);
@@ -596,6 +728,7 @@ pub(crate) fn intrinsic_cache_store(node: &BoxNode, mode: IntrinsicSizingMode, v
       INTRINSIC_INLINE_OVERRIDE_CACHE.with(|cache| {
         cache.borrow_mut().insert(key, (epoch, value));
       });
+      GLOBAL_INTRINSIC_INLINE_OVERRIDE_CACHE.insert(key, epoch, value);
       CACHE_STORES.inc();
     }
     return;
@@ -613,6 +746,8 @@ pub(crate) fn intrinsic_cache_store(node: &BoxNode, mode: IntrinsicSizingMode, v
 pub(crate) fn intrinsic_cache_clear() {
   GLOBAL_INTRINSIC_INLINE_CACHE.clear();
   GLOBAL_INTRINSIC_BLOCK_CACHE.clear();
+  GLOBAL_INTRINSIC_INLINE_OVERRIDE_CACHE.clear();
+  GLOBAL_INTRINSIC_BLOCK_OVERRIDE_CACHE.clear();
   INTRINSIC_INLINE_CACHE_TL.with(|cache| cache.borrow_mut().clear());
   INTRINSIC_BLOCK_CACHE_TL.with(|cache| cache.borrow_mut().clear());
   INTRINSIC_INLINE_OVERRIDE_CACHE.with(|cache| cache.borrow_mut().clear());
@@ -631,12 +766,25 @@ pub(crate) fn remembered_size_cache_lookup(node: &BoxNode) -> Option<Size> {
   }
   if let Some(fingerprint) = crate::layout::style_override::style_override_fingerprint_for(id) {
     let signature = style_override_signature(node, fingerprint);
-    return REMEMBERED_SIZE_OVERRIDE_CACHE.with(|cache| {
+    let key = (id, signature);
+    let hit = REMEMBERED_SIZE_OVERRIDE_CACHE.with(|cache| {
       cache
         .borrow()
-        .get(&(id, signature))
+        .get(&key)
         .and_then(|(entry_epoch, value)| (*entry_epoch == epoch).then_some(*value))
     });
+    if let Some(hit) = hit {
+      return Some(hit);
+    }
+    if let Some(hit) = GLOBAL_REMEMBERED_SIZE_OVERRIDE_CACHE.get(&key, epoch) {
+      OVERRIDE_GLOBAL_CACHE_HITS.inc();
+      REMEMBERED_SIZE_OVERRIDE_CACHE.with(|cache| {
+        cache.borrow_mut().insert(key, (epoch, hit));
+      });
+      return Some(hit);
+    }
+    OVERRIDE_GLOBAL_CACHE_MISSES.inc();
+    return None;
   }
   let style_ptr = Arc::as_ptr(&node.style) as usize;
   GLOBAL_REMEMBERED_SIZE_CACHE.get(&(id, style_ptr), epoch)
@@ -651,9 +799,11 @@ pub(crate) fn remembered_size_cache_store(node: &BoxNode, value: Size) {
   }
   if let Some(fingerprint) = crate::layout::style_override::style_override_fingerprint_for(id) {
     let signature = style_override_signature(node, fingerprint);
+    let key = (id, signature);
     REMEMBERED_SIZE_OVERRIDE_CACHE.with(|cache| {
-      cache.borrow_mut().insert((id, signature), (epoch, value));
+      cache.borrow_mut().insert(key, (epoch, value));
     });
+    GLOBAL_REMEMBERED_SIZE_OVERRIDE_CACHE.insert(key, epoch, value);
     return;
   }
   let style_ptr = Arc::as_ptr(&node.style) as usize;
@@ -662,6 +812,7 @@ pub(crate) fn remembered_size_cache_store(node: &BoxNode, value: Size) {
 
 pub(crate) fn remembered_size_cache_clear() {
   GLOBAL_REMEMBERED_SIZE_CACHE.clear();
+  GLOBAL_REMEMBERED_SIZE_OVERRIDE_CACHE.clear();
   REMEMBERED_SIZE_OVERRIDE_CACHE.with(|cache| cache.borrow_mut().clear());
 }
 
@@ -698,6 +849,8 @@ pub(crate) fn intrinsic_cache_reset_counters() {
   CACHE_LOOKUPS.store(0);
   CACHE_HITS.store(0);
   CACHE_STORES.store(0);
+  OVERRIDE_GLOBAL_CACHE_HITS.store(0);
+  OVERRIDE_GLOBAL_CACHE_MISSES.store(0);
   BLOCK_INTRINSIC_CALLS.store(0);
   FLEX_INTRINSIC_CALLS.store(0);
   INLINE_INTRINSIC_CALLS.store(0);
@@ -714,22 +867,27 @@ pub(crate) fn intrinsic_cache_stats() -> (usize, usize, usize, usize, usize, usi
   )
 }
 
+#[cfg(test)]
+pub(crate) fn intrinsic_override_global_cache_stats() -> (usize, usize) {
+  (
+    OVERRIDE_GLOBAL_CACHE_HITS.load_sum(),
+    OVERRIDE_GLOBAL_CACHE_MISSES.load_sum(),
+  )
+}
+
 pub(crate) fn count_block_intrinsic_call() {
   BLOCK_INTRINSIC_CALLS.inc();
 }
 
 pub(crate) fn count_flex_intrinsic_call() {
   #[cfg(test)]
-  let _test_lock_guard = {
-    if INTRINSIC_CACHE_TEST_LOCK_DEPTH.load(Ordering::Relaxed) > 0 {
-      match INTRINSIC_CACHE_TEST_LOCK.try_lock() {
-        Some(guard) => Some(guard),
-        None => return,
-      }
-    } else {
-      None
+  {
+    if INTRINSIC_CACHE_TEST_LOCK_DEPTH.load(Ordering::Relaxed) > 0
+      && !intrinsic_cache_test_is_current_thread_allowed()
+    {
+      return;
     }
-  };
+  }
   FLEX_INTRINSIC_CALLS.inc();
 }
 
@@ -2030,12 +2188,24 @@ pub(crate) fn intrinsic_block_cache_lookup(
   let id = node.id();
   if let Some(fingerprint) = crate::layout::style_override::style_override_fingerprint_for(id) {
     let key = override_cache_key(node, mode, epoch, fingerprint)?;
-    return INTRINSIC_BLOCK_OVERRIDE_CACHE.with(|cache| {
+    let hit = INTRINSIC_BLOCK_OVERRIDE_CACHE.with(|cache| {
       cache
         .borrow()
         .get(&key)
         .and_then(|(entry_epoch, value)| (*entry_epoch == epoch).then_some(*value))
     });
+    if let Some(hit) = hit {
+      return Some(hit);
+    }
+    if let Some(hit) = GLOBAL_INTRINSIC_BLOCK_OVERRIDE_CACHE.get(&key, epoch) {
+      OVERRIDE_GLOBAL_CACHE_HITS.inc();
+      INTRINSIC_BLOCK_OVERRIDE_CACHE.with(|cache| {
+        cache.borrow_mut().insert(key, (epoch, hit));
+      });
+      return Some(hit);
+    }
+    OVERRIDE_GLOBAL_CACHE_MISSES.inc();
+    return None;
   }
 
   let key = cache_key(node, mode, epoch)?;
@@ -2059,6 +2229,7 @@ pub(crate) fn intrinsic_block_cache_store(node: &BoxNode, mode: IntrinsicSizingM
       INTRINSIC_BLOCK_OVERRIDE_CACHE.with(|cache| {
         cache.borrow_mut().insert(key, (epoch, value));
       });
+      GLOBAL_INTRINSIC_BLOCK_OVERRIDE_CACHE.insert(key, epoch, value);
     }
     return;
   }
@@ -2388,14 +2559,108 @@ mod tests {
     intrinsic_cache_use_epoch(1, true);
   }
 
-  fn find_fragment_by_box_id<'a>(fragment: &'a FragmentNode, box_id: usize) -> Option<&'a FragmentNode> {
+  #[test]
+  fn intrinsic_cache_style_overrides_reuse_across_rayon_workers() {
+    let _guard = intrinsic_cache_test_lock();
+    let fresh_epoch = intrinsic_cache_epoch().saturating_add(1);
+    intrinsic_cache_use_epoch(fresh_epoch, true);
+
+    let token = intrinsic_cache_test_token();
+
+    let mut node = BoxNode::new_block(
+      Arc::new(ComputedStyle::default()),
+      FormattingContextType::Block,
+      vec![],
+    );
+    node.id = 1;
+    let node = Arc::new(node);
+
+    let mut override_style = ComputedStyle::default();
+    override_style.width = Some(Length::px(100.0));
+    override_style.width_keyword = None;
+    let override_style = Arc::new(override_style);
+
+    let pool = ThreadPoolBuilder::new()
+      .num_threads(2)
+      .build()
+      .expect("thread pool should build");
+
+    let store_threads = pool.broadcast(|_| {
+      intrinsic_cache_test_set_thread_token(token);
+      if rayon::current_thread_index() == Some(0) {
+        crate::layout::style_override::with_style_override(node.id, override_style.clone(), || {
+          intrinsic_cache_store(&node, IntrinsicSizingMode::MinContent, 42.0);
+        });
+        Some(std::thread::current().id())
+      } else {
+        None
+      }
+    });
+    let store_thread = store_threads
+      .into_iter()
+      .flatten()
+      .next()
+      .expect("store should run on one worker");
+
+    let lookup_threads = pool.broadcast(|_| {
+      intrinsic_cache_test_set_thread_token(token);
+      if rayon::current_thread_index() == Some(1) {
+        let value = crate::layout::style_override::with_style_override(
+          node.id,
+          override_style.clone(),
+          || intrinsic_cache_lookup(&node, IntrinsicSizingMode::MinContent),
+        );
+        Some((std::thread::current().id(), value))
+      } else {
+        None
+      }
+    });
+    let (lookup_thread, lookup_value) = lookup_threads
+      .into_iter()
+      .flatten()
+      .next()
+      .expect("lookup should run on one worker");
+
+    assert_ne!(
+      store_thread, lookup_thread,
+      "expected intrinsic sizing probes to run on distinct rayon workers"
+    );
+    assert_eq!(
+      lookup_value,
+      Some(42.0),
+      "expected second worker to observe cached override intrinsic size"
+    );
+
+    let (hits, misses) = intrinsic_override_global_cache_stats();
+    assert_eq!(
+      hits, 1,
+      "expected second worker to hit the global override intrinsic cache"
+    );
+    assert_eq!(
+      misses, 0,
+      "expected no global override cache misses for the cross-thread reuse scenario"
+    );
+
+    intrinsic_cache_use_epoch(1, true);
+  }
+
+  fn find_fragment_by_box_id<'a>(
+    fragment: &'a FragmentNode,
+    box_id: usize,
+  ) -> Option<&'a FragmentNode> {
     let mut stack = vec![fragment];
     while let Some(node) = stack.pop() {
       let matches_id = match &node.content {
         FragmentContent::Block { box_id: Some(id) }
-        | FragmentContent::Inline { box_id: Some(id), .. }
-        | FragmentContent::Text { box_id: Some(id), .. }
-        | FragmentContent::Replaced { box_id: Some(id), .. } => *id == box_id,
+        | FragmentContent::Inline {
+          box_id: Some(id), ..
+        }
+        | FragmentContent::Text {
+          box_id: Some(id), ..
+        }
+        | FragmentContent::Replaced {
+          box_id: Some(id), ..
+        } => *id == box_id,
         _ => false,
       };
       if matches_id {
@@ -2414,8 +2679,9 @@ mod tests {
     intrinsic_cache_use_epoch(1, true);
 
     let viewport = crate::geometry::Size::new(800.0, 600.0);
-    let factory = FormattingContextFactory::with_font_context_and_viewport(FontContext::new(), viewport)
-      .with_parallelism(LayoutParallelism::disabled());
+    let factory =
+      FormattingContextFactory::with_font_context_and_viewport(FontContext::new(), viewport)
+        .with_parallelism(LayoutParallelism::disabled());
     let fc = BlockFormattingContext::with_factory(factory);
 
     let mut root_style = ComputedStyle::default();
@@ -2450,14 +2716,20 @@ mod tests {
 
     let constraints = LayoutConstraints::definite(300.0, 600.0);
 
-    let fragment1 = fc.layout(&root, &constraints).expect("first layout should succeed");
-    let float_fragment1 = find_fragment_by_box_id(&fragment1, 2).expect("float fragment should exist");
+    let fragment1 = fc
+      .layout(&root, &constraints)
+      .expect("first layout should succeed");
+    let float_fragment1 =
+      find_fragment_by_box_id(&fragment1, 2).expect("float fragment should exist");
     let width1 = float_fragment1.bounds.width();
 
     let (lookups1, hits1, stores1, ..) = intrinsic_cache_stats();
 
-    let fragment2 = fc.layout(&root, &constraints).expect("second layout should succeed");
-    let float_fragment2 = find_fragment_by_box_id(&fragment2, 2).expect("float fragment should exist");
+    let fragment2 = fc
+      .layout(&root, &constraints)
+      .expect("second layout should succeed");
+    let float_fragment2 =
+      find_fragment_by_box_id(&fragment2, 2).expect("float fragment should exist");
     let width2 = float_fragment2.bounds.width();
 
     assert!(
@@ -2513,7 +2785,8 @@ mod tests {
       .compute_intrinsic_inline_size(&root, IntrinsicSizingMode::MaxContent)
       .expect("max-content intrinsic width should be cached");
 
-    let (_lookups, hits, stores, _block_calls, _flex_calls, _inline_calls) = intrinsic_cache_stats();
+    let (_lookups, hits, stores, _block_calls, _flex_calls, _inline_calls) =
+      intrinsic_cache_stats();
     assert!(
       hits > 0,
       "expected intrinsic sizing cache hits after repeating inline FC measurement"
@@ -2828,7 +3101,9 @@ mod tests {
       cb,
     );
     LAYOUT_RESULT_CACHE.with(|cache| assert!(cache.borrow().is_empty()));
-    assert!(layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport, cb, cb).is_none());
+    assert!(
+      layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport, cb, cb).is_none()
+    );
 
     layout_cache_use_epoch(1, false, true, None, None);
   }
