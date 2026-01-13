@@ -11693,15 +11693,19 @@ impl BrowserRuntime {
     // debug UIs want visibility into *why* the fast-path was skipped.
     #[cfg(any(test, feature = "browser_ui"))]
     {
-      if !force && !doc.needs_layout() {
-        if let Some(prev_scroll) = tab.last_painted_scroll_state.as_ref() {
-          let next_scroll = &tab.scroll_state;
-          if prev_scroll.viewport != next_scroll.viewport {
-            if let Some(prepared) = doc.prepared() {
-              if let Err(reason) =
-                crate::ui::scroll_blit::scroll_blit_plan(prepared, prev_scroll, next_scroll)
-              {
-                crate::ui::scroll_blit::record_scroll_blit_fallback_reason(reason);
+      if !force {
+        if let Some(doc) = tab.document.as_ref() {
+          if !doc.needs_layout() {
+            if let Some(prev_scroll) = tab.last_painted_scroll_state.as_ref() {
+              let next_scroll = &tab.scroll_state;
+              if prev_scroll.viewport != next_scroll.viewport {
+                if let Some(prepared) = doc.prepared() {
+                  if let Err(reason) =
+                    crate::ui::scroll_blit::scroll_blit_plan(prepared, prev_scroll, next_scroll)
+                  {
+                    crate::ui::scroll_blit::record_scroll_blit_fallback_reason(reason);
+                  }
+                }
               }
             }
           }
