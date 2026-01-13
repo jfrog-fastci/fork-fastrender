@@ -138,6 +138,13 @@ collapsing all internal pages into the opaque `"null"` origin bucket.
 `chrome-action:` is **not a fetchable resource**. It is an internal “action request” encoding used
 inside trusted chrome HTML to ask the browser to do something.
 
+This is separate from the privileged JS bridge (`globalThis.chrome`, see
+[`docs/chrome_js_bridge.md`](chrome_js_bridge.md)):
+
+- `chrome-action:` is useful for simple, declarative “command links/buttons” (e.g. `<a href=...>`),
+  even on pages that want minimal JS.
+- The JS bridge is for richer chrome UI logic (stateful UI, async operations, etc).
+
 Example (illustrative):
 
 ```html
