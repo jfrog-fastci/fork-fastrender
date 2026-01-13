@@ -4066,6 +4066,15 @@ fn should_show_crash_recovery_infobar(
   matches!(source, StartupSessionSource::Restored) && !did_exit_cleanly
 }
 
+#[cfg(any(test, feature = "browser_ui"))]
+fn should_open_crash_recovery_infobar_for_window(
+  show_crash_recovery_infobar: bool,
+  window_index: usize,
+  active_window_index: usize,
+) -> bool {
+  show_crash_recovery_infobar && window_index == active_window_index
+}
+
 /// Plan for resetting an existing window to a fresh session (single `about:newtab` tab).
 #[cfg(any(test, feature = "browser_ui"))]
 #[derive(Debug)]
@@ -4126,6 +4135,19 @@ mod crash_recovery_prompt_tests {
       StartupSessionSource::HeadlessOverride,
       false
     ));
+  }
+
+  #[test]
+  fn crash_recovery_infobar_opens_only_in_active_window_for_multi_window_restore() {
+    let show = should_show_crash_recovery_infobar(StartupSessionSource::Restored, false);
+    let window_count = 2;
+    let active_window_index = 1;
+    let active_idx = active_window_index.min(window_count.saturating_sub(1));
+
+    let open_states: Vec<bool> = (0..window_count)
+      .map(|idx| should_open_crash_recovery_infobar_for_window(show, idx, active_idx))
+      .collect();
+    assert_eq!(open_states, vec![false, true]);
   }
 
   #[test]
@@ -6271,7 +6293,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     app.startup(session_window);
     // Show crash recovery UI once at process startup; prefer the active window when multiple
     // session windows are restored.
-    app.crash_recovery_infobar_open = show_crash_recovery_infobar && idx == active_idx;
+    app.crash_recovery_infobar_open = should_open_crash_recovery_infobar_for_window(
+      show_crash_recovery_infobar,
+      idx,
+      active_idx,
+    );
 
     if let Some(toast_text) = profile_autosave_failure_toast.as_deref() {
       // Only relevant for windowed UI (headless modes return before reaching this point).
