@@ -2715,6 +2715,11 @@ impl BrowserRuntime {
         node_id,
         value,
       } => {
+        // Screen readers typically set text values on the currently focused element, but some
+        // platforms send a SetValue request without an explicit focus action. Mirror browser
+        // behaviour by ensuring the node is focused (with focus-visible) first.
+        self.handle_a11y_set_focus(tab_id, node_id);
+
         let Some(tab) = self.tabs.get_mut(&tab_id) else {
           return;
         };
@@ -2735,6 +2740,11 @@ impl BrowserRuntime {
         start,
         end,
       } => {
+        // AccessKit selection updates are typically targeted at the focused text control, but keep
+        // this robust by focusing the node first so `InteractionEngine::a11y_set_text_selection_range`
+        // can apply the update.
+        self.handle_a11y_set_focus(tab_id, node_id);
+
         let Some(tab) = self.tabs.get_mut(&tab_id) else {
           return;
         };
