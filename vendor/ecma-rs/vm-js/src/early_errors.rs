@@ -1006,18 +1006,25 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
           }
           Stmt::ClassDecl(class) => {
             if let Some(name) = class.stx.name.as_ref() {
-              lexical_names.insert(name.stx.name.clone());
+              let name_str = name.stx.name.as_str();
+              if !lexical_names.contains(name_str) {
+                lexical_names
+                  .try_reserve(1)
+                  .map_err(|_| VmError::OutOfMemory)?;
+                lexical_names.insert(try_clone_string(name_str)?);
+              }
             }
           }
           Stmt::FunctionDecl(decl) => {
-            let Some(name) = &decl.stx.name else {
-              if decl.stx.export_default {
-                continue;
+            if let Some(name) = &decl.stx.name {
+              let name_str = name.stx.name.as_str();
+              if !lexical_names.contains(name_str) {
+                lexical_names
+                  .try_reserve(1)
+                  .map_err(|_| VmError::OutOfMemory)?;
+                lexical_names.insert(try_clone_string(name_str)?);
               }
-              self.push_error(stmt.loc, "anonymous function declaration")?;
-              continue;
-            };
-            lexical_names.insert(name.stx.name.clone());
+            }
           }
           _ => {}
         }
