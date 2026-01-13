@@ -32,18 +32,18 @@ const PROCESS_CREATION_ALL_APPLICATION_PACKAGES_POLICY_BLOCK: u32 = 1;
 
 #[test]
 fn appcontainer_token_omits_all_application_packages_group_when_hardened() {
-  if !crate::common::windows_sandbox::require_full_windows_sandbox(
-    "appcontainer_token_omits_all_application_packages_group_when_hardened",
-  ) {
-    return;
-  }
-
   // Ensure developer environment overrides don't silently change test semantics.
   let _env_guard = crate::common::EnvVarsGuard::remove(&[
     "FASTR_DISABLE_RENDERER_SANDBOX",
     "FASTR_WINDOWS_RENDERER_SANDBOX",
     "FASTR_ALLOW_UNSANDBOXED_RENDERER",
+    "FASTR_WINDOWS_SANDBOX_INHERIT_ENV",
   ]);
+  if !crate::common::windows_sandbox::require_full_windows_sandbox(
+    "appcontainer_token_omits_all_application_packages_group_when_hardened",
+  ) {
+    return;
+  }
 
   let exe = std::env::current_exe().expect("current test exe path");
   let child_test_name = concat!(
