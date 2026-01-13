@@ -607,6 +607,8 @@ pub struct BrowserTabHost {
   event_invoker: Box<dyn crate::web::events::EventListenerInvoker>,
   js_events: JsDomEvents,
   current_script: CurrentScriptStateHandle,
+  script_execution_log: Option<crate::js::ScriptExecutionLog>,
+  script_execution_log_capacity: Option<usize>,
   orchestrator: ScriptOrchestrator,
   scheduler: HtmlScriptScheduler<NodeId>,
   scripts: HashMap<HtmlScriptId, ScriptEntry>,
@@ -720,6 +722,8 @@ impl BrowserTabHost {
       event_invoker,
       js_events: JsDomEvents::new()?,
       current_script,
+      script_execution_log: None,
+      script_execution_log_capacity: None,
       orchestrator: ScriptOrchestrator::new(),
       scheduler,
       scripts: HashMap::new(),
@@ -1085,6 +1089,14 @@ impl BrowserTabHost {
     document_referrer_policy: ReferrerPolicy,
   ) -> Result<()> {
     self.current_script.reset();
+    match self.script_execution_log_capacity {
+      Some(capacity) => {
+        self.script_execution_log = Some(crate::js::ScriptExecutionLog::new(capacity));
+      }
+      None => {
+        self.script_execution_log = None;
+      }
+    }
     self.orchestrator = ScriptOrchestrator::new();
     self.scheduler = {
       let mut scheduler = HtmlScriptScheduler::new();
@@ -4256,6 +4268,14 @@ impl CurrentScriptHost for BrowserTabHost {
   fn current_script_state(&self) -> &CurrentScriptStateHandle {
     &self.current_script
   }
+
+  fn script_execution_log(&self) -> Option<&crate::js::ScriptExecutionLog> {
+    self.script_execution_log.as_ref()
+  }
+
+  fn script_execution_log_mut(&mut self) -> Option<&mut crate::js::ScriptExecutionLog> {
+    self.script_execution_log.as_mut()
+  }
 }
 
 impl DomHost for BrowserTabHost {
@@ -5468,6 +5488,18 @@ impl BrowserTab {
     self
       .host
       .register_external_script_source(url.into(), source.into());
+  }
+
+  /// Enable a bounded FIFO log of executed scripts for debugging script ordering and
+  /// `document.currentScript`.
+  pub fn enable_script_execution_log(&mut self, capacity: usize) {
+    self.host.script_execution_log_capacity = Some(capacity);
+    self.host.script_execution_log = Some(crate::js::ScriptExecutionLog::new(capacity));
+  }
+
+  /// Returns the script execution log if enabled.
+  pub fn script_execution_log(&self) -> Option<&crate::js::ScriptExecutionLog> {
+    self.host.script_execution_log.as_ref()
   }
 
   /// Register an in-memory HTML payload that can be navigated to by URL (including via
@@ -13243,6 +13275,81 @@ mod tests {
       .map_err(|err| Error::Other(err.to_string()))?;
     let event_type = value_to_string(realm, event_type_value);
     assert_eq!(event_type, "load");
+    Ok(())
+  }
+
+  #[test]
+  fn browser_tab_script_execution_log_records_parse_time_script_order() -> Result<()> {
+    use crate::js::{ScriptExecutionLogEntry, ScriptSourceSnapshot};
+    use std::collections::VecDeque;
+
+    let mut tab = BrowserTab::from_html_with_vmjs_executor("", RenderOptions::default())?;
+    tab.enable_script_execution_log(16);
+    tab.register_script_source(
+      "https://example.com/a.js",
+      r#"globalThis.__ext_ran = true;"#,
+    );
+
+    tab.navigate_to_html(
+      r#"<!doctype html><html><head>
+        <script id="ext" src="https://example.com/a.js"></script>
+        <script id="inline">globalThis.__inline_ran = true;</script>
+      </head><body></body></html>"#,
+      RenderOptions::default(),
+    )?;
+    assert!(matches!(
+      tab.run_event_loop_until_idle(RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    ));
+
+    let dom = tab.dom();
+    let ext_script = dom
+      .get_element_by_id("ext")
+      .expect("expected external script element");
+    let inline_script = dom
+      .get_element_by_id("inline")
+      .expect("expected inline script element");
+    let expected = VecDeque::from([
+      ScriptExecutionLogEntry {
+        script_id: ext_script.index(),
+        source: ScriptSourceSnapshot::Url {
+          url: "https://example.com/a.js".to_string(),
+        },
+        current_script_node_id: Some(ext_script.index()),
+      },
+      ScriptExecutionLogEntry {
+        script_id: inline_script.index(),
+        source: ScriptSourceSnapshot::Inline,
+        current_script_node_id: Some(inline_script.index()),
+      },
+    ]);
+    let log = tab
+      .script_execution_log()
+      .expect("expected script execution log to be enabled");
+    assert_eq!(log.entries(), &expected);
+
+    // Script execution log entries are per-navigation: a subsequent navigation should start with an
+    // empty log.
+    tab.navigate_to_html(
+      r#"<!doctype html><script id="second">globalThis.__second_ran = true;</script>"#,
+      RenderOptions::default(),
+    )?;
+    assert!(matches!(
+      tab.run_event_loop_until_idle(RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    ));
+    let dom = tab.dom();
+    let second = dom.get_element_by_id("second").expect("expected script");
+    let expected = VecDeque::from([ScriptExecutionLogEntry {
+      script_id: second.index(),
+      source: ScriptSourceSnapshot::Inline,
+      current_script_node_id: Some(second.index()),
+    }]);
+    let log = tab
+      .script_execution_log()
+      .expect("expected script execution log to remain enabled");
+    assert_eq!(log.entries(), &expected);
+
     Ok(())
   }
 
