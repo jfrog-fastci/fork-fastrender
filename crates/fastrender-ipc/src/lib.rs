@@ -501,6 +501,15 @@ pub enum RendererToBrowser {
     /// Subframe embeddings present in this frame (to be composited by the browser).
     subframes: Vec<SubframeInfo>,
   },
+  /// The renderer discovered or updated the set of subframes attached to `parent_frame_id`.
+  ///
+  /// The browser must treat this message as untrusted: `parent_frame_id` must be owned by the
+  /// sending renderer process, and any referenced child `FrameId`s must be validated against the
+  /// browser's frame tree.
+  SubframesDiscovered {
+    parent_frame_id: FrameId,
+    subframes: Vec<SubframeInfo>,
+  },
   /// The renderer committed a navigation for `frame_id`.
   NavigationCommitted { frame_id: FrameId, url: String },
   /// The renderer failed to commit a navigation for `frame_id`.

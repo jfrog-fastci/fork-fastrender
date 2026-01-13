@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RendererToBrowserKind {
   FrameReady,
+  SubframesDiscovered,
   NavigationCommitted,
   NavigationFailed,
   InputAck,
@@ -97,6 +98,13 @@ impl BrowserIpcSecurityState {
         if self.check_frame(sender, frame_id, RendererToBrowserKind::FrameReady) {
           self.latest_frame.insert(frame_id, buffer);
         }
+      }
+      RendererToBrowser::SubframesDiscovered { parent_frame_id, .. } => {
+        let _ = self.check_frame(
+          sender,
+          parent_frame_id,
+          RendererToBrowserKind::SubframesDiscovered,
+        );
       }
       RendererToBrowser::NavigationCommitted { frame_id, .. } => {
         let _ = self.check_frame(sender, frame_id, RendererToBrowserKind::NavigationCommitted);
@@ -226,6 +234,34 @@ mod tests {
       events.iter().any(|evt| matches!(
         evt,
         IpcSecurityEvent::ProtocolViolation { process_id, frame_id, message: RendererToBrowserKind::FrameReady, .. }
+          if *process_id == attacker && *frame_id == frame
+      )),
+      "expected protocol violation to be recorded (events={events:?})"
+    );
+  }
+
+  #[test]
+  fn spoofed_subframes_discovered_kills_sender() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let honest = RendererId(1);
+    let attacker = RendererId(2);
+    let frame = FrameId(123);
+    browser.assign_frame(frame, honest);
+
+    browser.handle_renderer_message(
+      attacker,
+      RendererToBrowser::SubframesDiscovered {
+        parent_frame_id: frame,
+        subframes: vec![],
+      },
+    );
+
+    assert!(browser.is_process_terminated(attacker));
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation { process_id, frame_id, message: RendererToBrowserKind::SubframesDiscovered, .. }
           if *process_id == attacker && *frame_id == frame
       )),
       "expected protocol violation to be recorded (events={events:?})"

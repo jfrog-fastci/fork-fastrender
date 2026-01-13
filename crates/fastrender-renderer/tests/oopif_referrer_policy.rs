@@ -357,6 +357,7 @@ impl RendererProc {
         RendererToBrowser::Error { frame_id: _, message } => last_error = Some(message),
         RendererToBrowser::NavigationCommitted { .. }
         | RendererToBrowser::NavigationFailed { .. }
+        | RendererToBrowser::SubframesDiscovered { .. }
         | RendererToBrowser::InputAck { .. } => {}
       }
     }
