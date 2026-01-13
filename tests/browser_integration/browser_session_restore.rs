@@ -85,6 +85,7 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
         {"title": "My Group", "color": "purple", "collapsed": true}
       ],
       "active_tab_index": 1,
+      "bookmarks_bar_visible": true,
       "show_menu_bar": false,
       "window_state": {
         "x": 123,
@@ -137,6 +138,10 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
     .and_then(|v| v.as_array())
     .expect("expected windows array");
   let win0 = windows.first().expect("expected one window");
+  assert_eq!(
+    win0.get("bookmarks_bar_visible").and_then(|v| v.as_bool()),
+    Some(true)
+  );
   let tabs = win0
     .get("tabs")
     .and_then(|v| v.as_array())

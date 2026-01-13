@@ -6617,6 +6617,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let inherit_show_menu_bar = windows
           .get(&from_id)
           .map(|win| win.app.browser_state.chrome.show_menu_bar);
+        let inherit_bookmarks_bar_visible = windows
+          .get(&from_id)
+          .map(|win| win.app.browser_state.chrome.bookmarks_bar_visible);
 
         let applied_appearance = global_appearance.clone().with_env_overrides(appearance_env);
         let theme_accent = applied_appearance
@@ -6733,6 +6736,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           }],
           tab_groups: Vec::new(),
           active_tab_index: 0,
+          bookmarks_bar_visible: inherit_bookmarks_bar_visible.unwrap_or(false),
           show_menu_bar: inherit_show_menu_bar.unwrap_or(!cfg!(target_os = "macos")),
           window_state: None,
         });
@@ -11502,6 +11506,7 @@ impl App {
       tabs,
       tab_groups,
       active_tab_index,
+      bookmarks_bar_visible,
       show_menu_bar,
       window_state,
     } = window.sanitized();
@@ -11518,6 +11523,8 @@ impl App {
     // Allow CI/scripts to force showing/hiding the menu bar regardless of persisted state.
     self.browser_state.chrome.show_menu_bar =
       show_menu_bar_override_from_env().unwrap_or(show_menu_bar);
+
+    self.browser_state.chrome.bookmarks_bar_visible = bookmarks_bar_visible;
 
     // Recreate runtime tab group ids (session indices are stable; runtime ids are process-unique).
     let mut runtime_groups: Vec<fastrender::ui::TabGroupId> = Vec::with_capacity(tab_groups.len());
@@ -21560,6 +21567,7 @@ impl App {
             }],
             tab_groups,
             active_tab_index: 0,
+            bookmarks_bar_visible: self.browser_state.chrome.bookmarks_bar_visible,
             show_menu_bar: self.browser_state.chrome.show_menu_bar,
             window_state: None,
           };
@@ -22150,6 +22158,7 @@ impl App {
         ChromeAction::ToggleBookmarksBar => {
           self.browser_state.chrome.bookmarks_bar_visible =
             !self.browser_state.chrome.bookmarks_bar_visible;
+          session_dirty = true;
           self.window.request_redraw();
         }
         ChromeAction::SetShowMenuBar(show) => {

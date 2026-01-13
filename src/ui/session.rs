@@ -191,6 +191,8 @@ pub struct BrowserSessionWindow {
   pub tab_groups: Vec<BrowserSessionTabGroup>,
   #[serde(default)]
   pub active_tab_index: usize,
+  #[serde(default, skip_serializing_if = "is_false")]
+  pub bookmarks_bar_visible: bool,
   #[serde(
     default = "default_show_menu_bar",
     skip_serializing_if = "is_default_show_menu_bar"
@@ -266,6 +268,7 @@ impl BrowserSessionWindow {
       tabs,
       tab_groups,
       active_tab_index,
+      bookmarks_bar_visible: app.chrome.bookmarks_bar_visible,
       show_menu_bar: app.chrome.show_menu_bar,
       window_state: None,
     }
@@ -419,6 +422,7 @@ impl BrowserSession {
         }],
         tab_groups: Vec::new(),
         active_tab_index: 0,
+        bookmarks_bar_visible: false,
         show_menu_bar: default_show_menu_bar(),
         window_state: None,
       }],
@@ -487,6 +491,7 @@ impl BrowserSession {
         }],
         tab_groups: Vec::new(),
         active_tab_index: 0,
+        bookmarks_bar_visible: false,
         show_menu_bar: default_show_menu_bar(),
         window_state: None,
       });
@@ -658,6 +663,7 @@ mod tests {
         ],
         tab_groups: Vec::new(),
         active_tab_index: 0,
+        bookmarks_bar_visible: false,
         show_menu_bar: default_show_menu_bar(),
         window_state: None,
       }],
@@ -794,6 +800,7 @@ mod tests {
         ],
         tab_groups: Vec::new(),
         active_tab_index: 0,
+        bookmarks_bar_visible: false,
         show_menu_bar: default_show_menu_bar(),
         window_state: None,
       }],
@@ -869,6 +876,7 @@ mod tests {
         },
       ],
       active_tab_index: 0,
+      bookmarks_bar_visible: false,
       show_menu_bar: default_show_menu_bar(),
       window_state: None,
     }
@@ -911,6 +919,7 @@ mod tests {
         collapsed: true,
       }],
       active_tab_index: 1,
+      bookmarks_bar_visible: false,
       show_menu_bar: default_show_menu_bar(),
       window_state: None,
     }
@@ -1057,6 +1066,7 @@ mod tests {
           },
         ],
         active_tab_index: 2,
+        bookmarks_bar_visible: false,
         show_menu_bar: default_show_menu_bar(),
         window_state: None,
       }],
@@ -1128,6 +1138,7 @@ mod tests {
           tabs: vec![],
           tab_groups: Vec::new(),
           active_tab_index: 123,
+          bookmarks_bar_visible: false,
           show_menu_bar: default_show_menu_bar(),
           window_state: None,
         },
@@ -1141,6 +1152,7 @@ mod tests {
           }],
           tab_groups: Vec::new(),
           active_tab_index: 999,
+          bookmarks_bar_visible: false,
           show_menu_bar: default_show_menu_bar(),
           window_state: None,
         },
@@ -1386,6 +1398,7 @@ mod tests {
         }],
         tab_groups: Vec::new(),
         active_tab_index: 0,
+        bookmarks_bar_visible: false,
         show_menu_bar: default_show_menu_bar(),
         window_state: Some(BrowserWindowState {
           x: Some(MAX_WINDOW_POS_ABS_PX + 1),
@@ -1514,6 +1527,7 @@ mod tests {
         }],
         tab_groups: Vec::new(),
         active_tab_index: 0,
+        bookmarks_bar_visible: false,
         show_menu_bar: default_show_menu_bar(),
         window_state: None,
       }],
@@ -1545,6 +1559,7 @@ mod tests {
         }],
         tab_groups: Vec::new(),
         active_tab_index: 0,
+        bookmarks_bar_visible: false,
         show_menu_bar: default_show_menu_bar(),
         window_state: None,
       }],
@@ -1576,6 +1591,7 @@ mod tests {
         }],
         tab_groups: Vec::new(),
         active_tab_index: 0,
+        bookmarks_bar_visible: false,
         show_menu_bar: default_show_menu_bar(),
         window_state: None,
       }],
@@ -1862,6 +1878,7 @@ fn v1_into_v2(v1: BrowserSessionV1) -> BrowserSession {
       tabs: v1.tabs,
       tab_groups: Vec::new(),
       active_tab_index: v1.active_tab_index,
+      bookmarks_bar_visible: false,
       show_menu_bar: default_show_menu_bar(),
       window_state: None,
     }],

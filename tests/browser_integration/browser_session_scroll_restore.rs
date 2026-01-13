@@ -19,7 +19,12 @@ fn recv_frame_matching_scroll(
       rx,
       tab_id,
       remaining.min(Duration::from_millis(200)),
-      |msg| matches!(msg, WorkerToUi::FrameReady { .. } | WorkerToUi::NavigationFailed { .. }),
+      |msg| {
+        matches!(
+          msg,
+          WorkerToUi::FrameReady { .. } | WorkerToUi::NavigationFailed { .. }
+        )
+      },
     );
     let Some(msg) = msg else { continue };
     match msg {
@@ -65,7 +70,10 @@ fn browser_session_restores_scroll_position_via_scroll_to() {
 
   // Wait for any initial frame so we know the document is ready.
   let msg = support::recv_for_tab(&rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::FrameReady { .. } | WorkerToUi::NavigationFailed { .. })
+    matches!(
+      msg,
+      WorkerToUi::FrameReady { .. } | WorkerToUi::NavigationFailed { .. }
+    )
   })
   .unwrap_or_else(|| panic!("timed out waiting for initial FrameReady for tab {tab_id:?}"));
   if let WorkerToUi::NavigationFailed { url, error, .. } = msg {
@@ -109,6 +117,7 @@ fn browser_session_restores_scroll_position_via_scroll_to() {
       }],
       tab_groups: Vec::new(),
       active_tab_index: 0,
+      bookmarks_bar_visible: false,
       show_menu_bar: !cfg!(target_os = "macos"),
       window_state: None,
     }],
@@ -122,11 +131,7 @@ fn browser_session_restores_scroll_position_via_scroll_to() {
 
   // Second run: restore the scroll offset after establishing a viewport.
   let worker = fastrender::ui::spawn_browser_worker().expect("spawn browser worker");
-  let fastrender::ui::BrowserWorkerHandle {
-    tx,
-    rx,
-    join,
-  } = worker;
+  let fastrender::ui::BrowserWorkerHandle { tx, rx, join } = worker;
 
   let restored_tab_id = TabId::new();
   tx.send(support::create_tab_msg(
