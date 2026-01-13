@@ -856,6 +856,7 @@ fn global_data_desc(value: Value) -> PropertyDescriptor {
 fn install_test262_host_object_for_realm(
   vm: &mut Vm,
   scope: &mut vm_js::Scope<'_>,
+  realm_id: RealmId,
   global_object: GcObject,
   intr: Intrinsics,
 ) -> Result<GcObject, VmError> {
@@ -910,6 +911,8 @@ fn install_test262_host_object_for_realm(
       scope
         .heap_mut()
         .object_set_prototype(func, Some(intr.function_prototype()))?;
+      scope.heap_mut().set_function_realm(func, global_object)?;
+      scope.heap_mut().set_function_job_realm(func, realm_id)?;
 
       scope.define_property(
         obj_262,
@@ -938,10 +941,11 @@ fn install_test262_host_object_for_realm(
 
 fn install_test262_host_object(runtime: &mut vm_js::JsRuntime) -> Result<(), VmError> {
   let (vm, realm, heap) = runtime.vm_realm_and_heap_mut();
+  let realm_id = realm.id();
   let global_object = realm.global_object();
   let intr = *realm.intrinsics();
   let mut scope = heap.scope();
-  let _ = install_test262_host_object_for_realm(vm, &mut scope, global_object, intr)?;
+  let _ = install_test262_host_object_for_realm(vm, &mut scope, realm_id, global_object, intr)?;
   Ok(())
 }
 
@@ -965,67 +969,42 @@ fn test262_create_realm(
     ));
   };
 
-  // Snapshot the active realm state so creating a new realm doesn't perturb the currently-running
-  // test realm.
-  let intr_before = vm
-    .intrinsics()
-    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-  let global_var_names_before = vm.take_global_var_names();
-  let math_random_before = vm.math_random_state();
-  let default_object_proto_before = scope.heap().default_object_prototype();
+  let caller_realm = vm
+    .current_realm()
+    .ok_or(VmError::InvariantViolation("$262.createRealm requires an active realm"))?;
 
   // Create the new realm on the same heap/agent (shared symbol registry).
   let mut realm = match Realm::new(vm, scope.heap_mut()) {
     Ok(realm) => realm,
     Err(err) => {
-      // Restore the active realm state before surfacing the error.
-      vm.set_intrinsics(intr_before);
-      vm.set_math_random_state(math_random_before);
-      vm.set_global_var_names(global_var_names_before);
-      scope
-        .heap_mut()
-        .set_default_object_prototype(default_object_proto_before);
       return Err(err);
     }
   };
 
   // Install `$262` on the new realm's global object.
+  let realm_id = realm.id();
   let global_object = realm.global_object();
   let intr = *realm.intrinsics();
-  let obj_262 = match install_test262_host_object_for_realm(vm, scope, global_object, intr) {
+  let obj_262 = match install_test262_host_object_for_realm(vm, scope, realm_id, global_object, intr) {
     Ok(obj) => obj,
     Err(err) => {
       realm.teardown(scope.heap_mut());
-      vm.set_intrinsics(intr_before);
-      vm.set_math_random_state(math_random_before);
-      vm.set_global_var_names(global_var_names_before);
-      scope
-        .heap_mut()
-        .set_default_object_prototype(default_object_proto_before);
+      let _ = vm.load_realm_state(scope.heap_mut(), caller_realm);
       return Err(err);
     }
   };
+  scope.push_root(Value::Object(obj_262))?;
 
   // Store the realm so its persistent roots can be torn down after the test completes.
   if test262_hooks.created_realms.try_reserve(1).is_err() {
     realm.teardown(scope.heap_mut());
-    vm.set_intrinsics(intr_before);
-    vm.set_math_random_state(math_random_before);
-    vm.set_global_var_names(global_var_names_before);
-    scope
-      .heap_mut()
-      .set_default_object_prototype(default_object_proto_before);
+    let _ = vm.load_realm_state(scope.heap_mut(), caller_realm);
     return Err(VmError::OutOfMemory);
   }
   test262_hooks.created_realms.push(realm);
 
-  // Restore the active realm state.
-  vm.set_intrinsics(intr_before);
-  vm.set_math_random_state(math_random_before);
-  vm.set_global_var_names(global_var_names_before);
-  scope
-    .heap_mut()
-    .set_default_object_prototype(default_object_proto_before);
+  // Restore the calling realm as the active realm state.
+  let _ = vm.load_realm_state(scope.heap_mut(), caller_realm)?;
 
   Ok(Value::Object(obj_262))
 }
@@ -1914,6 +1893,11 @@ assert.sameValue(other.$262, realm, 'new realm should install and return its own
 assert.sameValue(other.Object !== Object, true, 'Object constructor differs across realms');
 assert.sameValue(other.Symbol.for('x'), Symbol.for('x'), 'Symbol registry is shared across realms');
 assert.sameValue(other.Symbol.iterator, Symbol.iterator, 'well-known symbols are shared across realms');
+
+// `$262.evalScript` must run in the realm it is associated with.
+realm.evalScript('globalThis.__evalScript_ran_in_new_realm = 1;');
+assert.sameValue(other.__evalScript_ran_in_new_realm, 1, 'evalScript executes in created realm');
+assert.sameValue(typeof __evalScript_ran_in_new_realm, 'undefined', 'evalScript does not pollute the caller realm');
 
 var obj = Reflect.construct(Object, [], other.Function);
 assert.sameValue(Object.getPrototypeOf(obj) === other.Function.prototype, true, 'Reflect.construct uses newTarget prototype');

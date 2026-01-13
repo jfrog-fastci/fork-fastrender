@@ -7280,7 +7280,11 @@ impl Heap {
     }
   }
 
-  pub(crate) fn set_function_realm(&mut self, func: GcObject, realm: GcObject) -> Result<(), VmError> {
+  /// Sets a function object's `[[Realm]]` metadata (represented as the realm's global object).
+  ///
+  /// This is used by built-ins like `%Function%`/`eval` to determine which realm to create new
+  /// objects in.
+  pub fn set_function_realm(&mut self, func: GcObject, realm: GcObject) -> Result<(), VmError> {
     match self.get_heap_object_mut(func.0)? {
       HeapObject::Function(f) => {
         f.realm = Some(realm);
@@ -7290,7 +7294,11 @@ impl Heap {
     }
   }
 
-  pub(crate) fn set_function_job_realm(&mut self, func: GcObject, realm: RealmId) -> Result<(), VmError> {
+  /// Sets a function object's `[[JobRealm]]` metadata.
+  ///
+  /// This is used by Promise jobs / host callbacks to recover a realm when no execution context is
+  /// currently active.
+  pub fn set_function_job_realm(&mut self, func: GcObject, realm: RealmId) -> Result<(), VmError> {
     match self.get_heap_object_mut(func.0)? {
       HeapObject::Function(f) => {
         f.job_realm = realm.to_raw().checked_add(1).ok_or(VmError::OutOfMemory)?;

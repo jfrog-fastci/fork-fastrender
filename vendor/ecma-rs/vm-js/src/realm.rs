@@ -157,10 +157,6 @@ impl Realm {
 
   /// Creates a new realm on `heap`.
   pub fn new(vm: &mut Vm, heap: &mut Heap) -> Result<Self, VmError> {
-    // A new realm implies a fresh global environment record; clear any tracked global `var`/function
-    // declaration names from a prior realm.
-    vm.global_var_names_clear();
-
     let id = RealmId::from_raw(NEXT_REALM_ID.fetch_add(1, Ordering::Relaxed));
     let mut roots = Vec::new();
 
@@ -681,7 +677,7 @@ impl Realm {
       return Err(err);
     }
 
-    vm.set_intrinsics_for_realm(id, intrinsics);
+    vm.register_realm_state(id, intrinsics)?;
 
     let global_lexical_env = global_lexical_env.ok_or(VmError::InvariantViolation(
       "global lexical environment missing after successful Realm::new",
