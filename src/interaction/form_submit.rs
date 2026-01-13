@@ -398,6 +398,7 @@ fn collect_form_entries(
   index: &DomIndex<'_>,
   form_node_id: usize,
   submitter_node_id: Option<usize>,
+  submitter_image_coords: Option<(i32, i32)>,
   out: &mut Vec<FormDataEntry>,
 ) -> Option<()> {
   // Spec-ish: successful controls are collected in tree order (document order), including form-
@@ -575,11 +576,27 @@ fn collect_form_entries(
       .map(trim_ascii_whitespace)
       .filter(|name| !name.is_empty())
     {
-      let value = submitter.get_attribute_ref("value").unwrap_or("");
-      out.push(FormDataEntry::Text {
-        name: name.to_string(),
-        value: value.to_string(),
-      });
+      if is_input(submitter) && input_type(submitter).eq_ignore_ascii_case("image") {
+        // `<input type=image>` submits click coordinates as `name.x`/`name.y`.
+        //
+        // We only track click coordinates for pointer activation. Keyboard activation (Enter/Space)
+        // and other submit paths fall back to (0,0) like browsers.
+        let (x, y) = submitter_image_coords.unwrap_or((0, 0));
+        out.push(FormDataEntry::Text {
+          name: format!("{name}.x"),
+          value: x.max(0).to_string(),
+        });
+        out.push(FormDataEntry::Text {
+          name: format!("{name}.y"),
+          value: y.max(0).to_string(),
+        });
+      } else {
+        let value = submitter.get_attribute_ref("value").unwrap_or("");
+        out.push(FormDataEntry::Text {
+          name: name.to_string(),
+          value: value.to_string(),
+        });
+      }
     }
   }
 
@@ -744,6 +761,7 @@ fn enctype_for_form(form: &DomNode) -> FormSubmissionEnctype {
 pub fn form_submission(
   dom: &DomNode,
   submitter_node_id: usize,
+  submitter_image_coords: Option<(i32, i32)>,
   document_url: &str,
   base_url: &str,
 ) -> Option<FormSubmission> {
@@ -769,7 +787,13 @@ pub fn form_submission(
   url.set_fragment(None);
 
   let mut entries: Vec<FormDataEntry> = Vec::new();
-  collect_form_entries(&index, form_id, Some(submitter_node_id), &mut entries)?;
+  collect_form_entries(
+    &index,
+    form_id,
+    Some(submitter_node_id),
+    submitter_image_coords,
+    &mut entries,
+  )?;
 
   match method {
     FormSubmissionMethod::Get => {
@@ -844,7 +868,7 @@ pub fn form_submission_without_submitter(
   url.set_fragment(None);
 
   let mut entries: Vec<FormDataEntry> = Vec::new();
-  collect_form_entries(&index, form_node_id, None, &mut entries)?;
+  collect_form_entries(&index, form_node_id, None, None, &mut entries)?;
 
   match method {
     FormSubmissionMethod::Get => {
@@ -900,6 +924,6 @@ pub fn form_submission_get_url(
   document_url: &str,
   base_url: &str,
 ) -> Option<String> {
-  let submission = form_submission(dom, submitter_node_id, document_url, base_url)?;
+  let submission = form_submission(dom, submitter_node_id, None, document_url, base_url)?;
   (submission.method == FormSubmissionMethod::Get).then_some(submission.url)
 }

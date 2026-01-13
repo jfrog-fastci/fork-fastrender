@@ -5092,7 +5092,33 @@ impl InteractionEngine {
                 // A form submission attempt flips HTML "user validity" so `:user-invalid` matches.
                 dom_changed |= self.mark_user_validity(target_id);
                 dom_changed |= self.mark_form_user_validity(&index, target_id);
-                if let Some(submission) = form_submission(dom, target_id, document_url, base_url) {
+                let image_coords = if index.node(target_id).is_some_and(is_image_submit_input) {
+                  let coords = up_hit
+                    .as_ref()
+                    .filter(|hit| hit.dom_node_id == target_id)
+                    .and_then(|hit| {
+                      fragment_tree
+                        .hit_test(page_point)
+                        .into_iter()
+                        .find(|fragment| fragment.box_id() == Some(hit.box_id))
+                    })
+                    .and_then(|fragment| {
+                      image_maps::local_point_in_fragment(fragment_tree, fragment, page_point)
+                    })
+                    .map(|point| {
+                      let x = point.x.max(0.0).floor() as i32;
+                      let y = point.y.max(0.0).floor() as i32;
+                      (x, y)
+                    })
+                    .unwrap_or((0, 0));
+                  Some(coords)
+                } else {
+                  None
+                };
+
+                if let Some(submission) =
+                  form_submission(dom, target_id, image_coords, document_url, base_url)
+                {
                   self.last_form_submitter = Some(target_id);
                   match submission.method {
                     FormSubmissionMethod::Get => {
@@ -6752,7 +6778,11 @@ impl InteractionEngine {
             // A form submission attempt flips HTML "user validity" so `:user-invalid` matches.
             changed |= self.mark_user_validity(focused);
             changed |= self.mark_form_user_validity(&index, focused);
-            if let Some(submission) = form_submission(dom, focused, document_url, base_url) {
+            let image_coords = index
+              .node(focused)
+              .is_some_and(is_image_submit_input)
+              .then_some((0, 0));
+            if let Some(submission) = form_submission(dom, focused, image_coords, document_url, base_url) {
               self.last_form_submitter = Some(focused);
               match submission.method {
                 FormSubmissionMethod::Get => {
@@ -6778,7 +6808,13 @@ impl InteractionEngine {
             if let Some(form_id) = resolve_form_owner(&index, focused) {
               let submitter_id = find_default_form_submitter(&index, form_id);
               let submission = match submitter_id {
-                Some(submitter_id) => form_submission(dom, submitter_id, document_url, base_url),
+                Some(submitter_id) => {
+                  let image_coords = index
+                    .node(submitter_id)
+                    .is_some_and(is_image_submit_input)
+                    .then_some((0, 0));
+                  form_submission(dom, submitter_id, image_coords, document_url, base_url)
+                }
                 None => form_submission_without_submitter(dom, form_id, document_url, base_url),
               };
               if let Some(submission) = submission {
@@ -6862,7 +6898,11 @@ impl InteractionEngine {
           } else {
             changed |= self.mark_user_validity(focused);
             changed |= self.mark_form_user_validity(&index, focused);
-            if let Some(submission) = form_submission(dom, focused, document_url, base_url) {
+            let image_coords = index
+              .node(focused)
+              .is_some_and(is_image_submit_input)
+              .then_some((0, 0));
+            if let Some(submission) = form_submission(dom, focused, image_coords, document_url, base_url) {
               self.last_form_submitter = Some(focused);
               match submission.method {
                 FormSubmissionMethod::Get => {
@@ -7056,7 +7096,11 @@ impl InteractionEngine {
             // A form submission attempt flips HTML "user validity" so `:user-invalid` matches.
             changed |= self.mark_user_validity(focused);
             changed |= self.mark_form_user_validity(&index, focused);
-            if let Some(submission) = form_submission(dom, focused, document_url, base_url) {
+            let image_coords = index
+              .node(focused)
+              .is_some_and(is_image_submit_input)
+              .then_some((0, 0));
+            if let Some(submission) = form_submission(dom, focused, image_coords, document_url, base_url) {
               self.last_form_submitter = Some(focused);
               match submission.method {
                 FormSubmissionMethod::Get => {
@@ -7080,7 +7124,13 @@ impl InteractionEngine {
             if let Some(form_id) = resolve_form_owner(&index, focused) {
               let submitter_id = find_default_form_submitter(&index, form_id);
               let submission = match submitter_id {
-                Some(submitter_id) => form_submission(dom, submitter_id, document_url, base_url),
+                Some(submitter_id) => {
+                  let image_coords = index
+                    .node(submitter_id)
+                    .is_some_and(is_image_submit_input)
+                    .then_some((0, 0));
+                  form_submission(dom, submitter_id, image_coords, document_url, base_url)
+                }
                 None => form_submission_without_submitter(dom, form_id, document_url, base_url),
               };
               if let Some(submission) = submission {
@@ -7152,7 +7202,11 @@ impl InteractionEngine {
           } else {
             changed |= self.mark_user_validity(focused);
             changed |= self.mark_form_user_validity(&index, focused);
-            if let Some(submission) = form_submission(dom, focused, document_url, base_url) {
+            let image_coords = index
+              .node(focused)
+              .is_some_and(is_image_submit_input)
+              .then_some((0, 0));
+            if let Some(submission) = form_submission(dom, focused, image_coords, document_url, base_url) {
               self.last_form_submitter = Some(focused);
               match submission.method {
                 FormSubmissionMethod::Get => {

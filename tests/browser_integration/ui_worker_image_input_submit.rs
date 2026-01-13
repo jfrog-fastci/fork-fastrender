@@ -125,20 +125,20 @@ fn click_image_input_submits_form() {
   };
   let submitted = Url::parse(&submitted_url).expect("parse submitted URL");
 
-  let mut has_submitter_param = false;
+  let mut has_x = false;
+  let mut has_y = false;
   if let Some(query) = submitted.query() {
-    // We only care that at least one of the submitter keys exists; don't depend on ordering or
-    // coordinate behaviour (`img` for MVP, or `img.x`/`img.y` for full semantics).
     for (key, _value) in url::form_urlencoded::parse(query.as_bytes()) {
-      if key == "img" || key == "img.x" || key == "img.y" {
-        has_submitter_param = true;
-        break;
+      if key == "img.x" {
+        has_x = true;
+      } else if key == "img.y" {
+        has_y = true;
       }
     }
   }
   assert!(
-    has_submitter_param,
-    "expected submitted URL to include submitter parameter for <input type=image name=img>; got {submitted_url}"
+    has_x && has_y,
+    "expected submitted URL to include img.x and img.y parameters for <input type=image name=img>; got {submitted_url}"
   );
 
   support::recv_for_tab(
