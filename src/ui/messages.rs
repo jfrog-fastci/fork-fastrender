@@ -416,8 +416,8 @@ pub enum UiToWorker {
   },
   /// Request a page hit-test for context menu purposes.
   ///
-  /// The worker responds with [`WorkerToUi::ContextMenu`] containing a resolved link URL (if the
-  /// hit target is a link).
+  /// The worker responds with [`WorkerToUi::ContextMenu`] containing resolved link/image URLs (when
+  /// the hit target is a link/image) plus context-sensitive clipboard/editing capability flags.
   ContextMenuRequest {
     tab_id: TabId,
     /// Pointer position in **viewport-local CSS pixels** (0,0 at the top-left of the rendered
@@ -722,6 +722,16 @@ pub enum WorkerToUi {
     pos_css: (f32, f32),
     /// Fully-resolved link URL under the cursor, if any.
     link_url: Option<String>,
+    /// Fully-resolved image URL under the cursor, if any.
+    image_url: Option<String>,
+    /// True when "Copy" is meaningful for this context menu invocation (e.g. there is a selection).
+    can_copy: bool,
+    /// True when "Cut" is meaningful for this context menu invocation.
+    can_cut: bool,
+    /// True when "Paste" is meaningful for this context menu invocation (e.g. editable text control).
+    can_paste: bool,
+    /// True when "Select All" is meaningful for this context menu invocation.
+    can_select_all: bool,
   },
   /// Hover metadata changed for a tab (cursor semantics and hovered link URL).
   ///

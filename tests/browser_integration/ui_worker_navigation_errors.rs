@@ -40,6 +40,7 @@ fn context_menu_link_at(
         tab_id: msg_tab,
         pos_css: msg_pos,
         link_url,
+        ..
       } if msg_tab == tab_id && msg_pos == pos_css => return Some(link_url),
       _ => continue,
     }

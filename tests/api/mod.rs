@@ -3,6 +3,7 @@
 //! These tests exercise `fastrender` as an external consumer would (via `FastRender`), without
 //! reaching into internal modules.
 mod clip_mask_diagnostics;
+mod color_calc;
 mod csp_img_data_url;
 mod css_double_fetch;
 mod css_empty_url_no_fetch;

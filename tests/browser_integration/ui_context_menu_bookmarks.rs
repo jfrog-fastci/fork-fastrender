@@ -19,10 +19,15 @@ fn context_menu_bookmark_link_toggles_bookmark_store() {
   let build = |bookmarks: &BookmarkStore, history_panel_open: bool, bookmarks_panel_open: bool| {
     build_page_context_menu_entries(PageContextMenuBuildInput {
       link_url: Some(link_url),
+      image_url: None,
       page_url: Some(page_url),
       bookmarks,
       history_panel_open,
       bookmarks_panel_open,
+      can_copy: false,
+      can_cut: false,
+      can_paste: false,
+      can_select_all: false,
     })
   };
 

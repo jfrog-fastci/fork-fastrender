@@ -653,11 +653,16 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
       tab_id,
       pos_css,
       link_url,
+      image_url,
+      can_copy,
+      can_cut,
+      can_paste,
+      can_select_all,
     } = msg
     {
       let _ = writeln!(
         &mut out,
-        "ContextMenu(tab={}, pos_css={pos_css:?}, link_url={link_url:?})",
+        "ContextMenu(tab={}, pos_css={pos_css:?}, link_url={link_url:?}, image_url={image_url:?}, can_copy={can_copy}, can_cut={can_cut}, can_paste={can_paste}, can_select_all={can_select_all})",
         tab_id.0
       );
       continue;

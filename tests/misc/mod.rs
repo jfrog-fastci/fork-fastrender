@@ -30,6 +30,8 @@ mod js_window_realm;
 mod preserve3d_env_var_disable_warp_test;
 mod rayon_global_pool_test;
 mod replaced_element_max_width_toggle;
+mod streams_tee_uninitialized;
+mod text_decoder_stream;
 mod transition_behavior_property_test;
 mod vm_js_crypto_subtle_digest;
 mod vm_js_dynamic_script_crossorigin_cors;

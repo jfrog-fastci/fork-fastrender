@@ -1,8 +1,8 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::api::FastRenderFactory;
+use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::ui::browser_limits::BrowserLimits;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker_with_factory;

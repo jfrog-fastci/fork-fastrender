@@ -3780,54 +3780,86 @@ impl BrowserRuntime {
         tab_id,
         pos_css,
         link_url: None,
+        image_url: None,
+        can_copy: false,
+        can_cut: false,
+        can_paste: false,
+        can_select_all: false,
       });
       return;
     };
 
+    struct HitContextMenuInfo {
+      href: Option<String>,
+      target_id: Option<usize>,
+      target_element_id: Option<String>,
+      image_src: Option<String>,
+      text_control_target: Option<usize>,
+      text_control_disabled: bool,
+      text_control_readonly: bool,
+    }
+
     let engine = &mut tab.interaction;
-    let (changed, href, target_id, target_element_id) = match doc.mutate_dom_with_layout_artifacts(
-      |dom, box_tree, fragment_tree| {
-        let scrolled =
-          (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
-        let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
-        let hit = hit_test_dom(dom, box_tree, hit_tree, page_point);
-        let target_id = hit.as_ref().map(|hit| hit.dom_node_id);
-        let target_element_id = target_id.and_then(|target_id| {
-          crate::dom::find_node_mut_by_preorder_id(dom, target_id)
-            .and_then(|node| node.get_attribute_ref("id"))
-            .map(|id| id.to_string())
-        });
-        let href = hit.as_ref().and_then(|hit| {
-          if hit.kind == HitTestKind::Link {
-            hit.href.clone()
-          } else {
-            None
-          }
-        });
+    let (changed, hit_info) = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+      let scrolled =
+        (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
+      let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+      let hit = hit_test_dom(dom, box_tree, hit_tree, page_point);
+      let target_id = hit.as_ref().map(|hit| hit.dom_node_id);
+      let target_element_id = target_id.and_then(|target_id| {
+        crate::dom::find_node_mut_by_preorder_id(dom, target_id)
+          .and_then(|node| node.get_attribute_ref("id"))
+          .map(|id| id.to_string())
+      });
+      let href = hit
+        .as_ref()
+        .and_then(|hit| (hit.kind == HitTestKind::Link).then(|| hit.href.as_deref()))
+        .flatten()
+        .map(|href| href.to_string());
 
-        // Windowed UIs send `ContextMenuRequest` on right-click without a preceding `PointerDown`.
-        // When a text control is clicked, mirror native browser behavior by focusing it and placing
-        // the caret at the click position so subsequent Paste inserts at the expected offset.
-        let mut changed = false;
-        if let Some(hit) = hit.as_ref() {
-          let node_id = hit.dom_node_id;
-          let box_id = hit.box_id;
-          let is_text_control = crate::dom::find_node_mut_by_preorder_id(dom, node_id)
-            .is_some_and(|node| dom_is_text_input(node) || dom_is_textarea(node));
+      let image_src = hit.as_ref().and_then(|hit| {
+        let styled_id = hit.styled_node_id;
+        let node = crate::dom::find_node_mut_by_preorder_id(dom, styled_id)?;
+        // Match browser-style image context menu behaviour for `<img>` and `input type=image`.
+        if node
+          .tag_name()
+          .is_some_and(|tag| tag.eq_ignore_ascii_case("img"))
+        {
+          node.get_attribute_ref("src").map(|src| src.to_string())
+        } else if node
+          .tag_name()
+          .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+          && dom_input_type(node).eq_ignore_ascii_case("image")
+        {
+          node.get_attribute_ref("src").map(|src| src.to_string())
+        } else {
+          None
+        }
+      });
 
+      // Windowed UIs send `ContextMenuRequest` on right-click without a preceding `PointerDown`.
+      // When a text control is clicked, mirror native browser behavior by focusing it and placing
+      // the caret at the click position so subsequent Paste inserts at the expected offset.
+      let mut changed = false;
+      let mut text_control_target: Option<usize> = None;
+      let mut text_control_disabled = false;
+      let mut text_control_readonly = false;
+      if let Some(hit) = hit.as_ref() {
+        let node_id = hit.dom_node_id;
+        let box_id = hit.box_id;
+        if let Some(node) = crate::dom::find_node_mut_by_preorder_id(dom, node_id) {
+          let is_text_control = dom_is_text_input(node) || dom_is_textarea(node);
           if is_text_control {
-            let dom_index = crate::interaction::dom_index::DomIndex::build(dom);
-            let disabled = crate::interaction::effective_disabled::is_effectively_disabled(
-              node_id,
-              &dom_index,
-            );
-            let inert_or_hidden =
-              crate::interaction::effective_disabled::is_effectively_inert_or_hidden(
-                node_id,
-                &dom_index,
-              );
+            text_control_target = Some(node_id);
+            text_control_readonly = node.get_attribute_ref("readonly").is_some();
 
-            if !disabled && !inert_or_hidden {
+            let dom_index = crate::interaction::dom_index::DomIndex::build(dom);
+            let disabled = crate::interaction::effective_disabled::is_effectively_disabled(node_id, &dom_index);
+            let inert_or_hidden =
+              crate::interaction::effective_disabled::is_effectively_inert_or_hidden(node_id, &dom_index);
+            text_control_disabled = disabled || inert_or_hidden;
+
+            if !text_control_disabled {
               let (focused_changed, _) = engine.focus_node_id(dom, Some(node_id), false);
               changed |= focused_changed;
               changed |= engine.set_text_caret_from_page_point(
@@ -3842,15 +3874,47 @@ impl BrowserRuntime {
             }
           }
         }
+      }
 
-        (false, (changed, href, target_id, target_element_id))
-      },
-    ) {
+      (
+        false,
+        (
+          changed,
+          HitContextMenuInfo {
+            href,
+            target_id,
+            target_element_id,
+            image_src,
+            text_control_target,
+            text_control_disabled,
+            text_control_readonly,
+          },
+        ),
+      )
+    }) {
       Ok(result) => result,
-      Err(_) => (false, None, None, None),
+      Err(_) => (
+        false,
+        HitContextMenuInfo {
+          href: None,
+          target_id: None,
+          target_element_id: None,
+          image_src: None,
+          text_control_target: None,
+          text_control_disabled: false,
+          text_control_readonly: false,
+        },
+      ),
     };
 
-    let link_url = href.and_then(|href| resolve_link_url(&base_url, &href));
+    let link_url = hit_info
+      .href
+      .as_deref()
+      .and_then(|href| resolve_link_url(&base_url, href));
+    let image_url = hit_info
+      .image_src
+      .as_deref()
+      .and_then(|src| resolve_link_url(&base_url, src));
 
     if changed {
       tab.cancel.bump_paint();
@@ -3861,10 +3925,10 @@ impl BrowserRuntime {
     //
     // If JS calls `preventDefault()`, suppress the UI menu (matching browser behavior).
     let mut suppress_menu = false;
-    if let Some(target_id) = target_id {
+    if let Some(target_id) = hit_info.target_id {
       if let Some(js_tab) = tab.js_tab.as_mut() {
         let target =
-          js_dom_node_for_preorder_id(js_tab, target_id, target_element_id.as_deref());
+          js_dom_node_for_preorder_id(js_tab, target_id, hit_info.target_element_id.as_deref());
         if let Some(node_id) = target {
           let mouse = web_events::MouseEvent {
             client_x: mouse_client_coord(pos_css.0),
@@ -3908,10 +3972,39 @@ impl BrowserRuntime {
       return;
     }
 
+    let state = tab.interaction.interaction_state();
+    let has_document_selection = state
+      .document_selection
+      .as_ref()
+      .is_some_and(|sel| sel.has_highlight());
+    let has_text_selection = hit_info.text_control_target.is_some_and(|node_id| {
+      state
+        .text_edit
+        .as_ref()
+        .is_some_and(|edit| edit.node_id == node_id && edit.selection.is_some())
+    });
+
+    let can_copy = has_text_selection || has_document_selection;
+    let can_cut = has_text_selection
+      && hit_info.text_control_target.is_some()
+      && !hit_info.text_control_disabled
+      && !hit_info.text_control_readonly;
+    let can_paste = hit_info.text_control_target.is_some()
+      && !hit_info.text_control_disabled
+      && !hit_info.text_control_readonly;
+    let can_select_all =
+      hit_info.text_control_target.is_some_and(|_| !hit_info.text_control_disabled)
+        || has_document_selection;
+
     let _ = self.ui_tx.send(WorkerToUi::ContextMenu {
       tab_id,
       pos_css,
       link_url,
+      image_url,
+      can_copy,
+      can_cut,
+      can_paste,
+      can_select_all,
     });
   }
 

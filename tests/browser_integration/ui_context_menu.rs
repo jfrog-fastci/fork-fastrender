@@ -93,6 +93,7 @@ fn context_menu_request_resolves_link_url() {
       tab_id: got_tab,
       pos_css: got_pos,
       link_url,
+      ..
     } => {
       assert_eq!(got_tab, tab_id);
       assert_eq!(got_pos, pos_css);

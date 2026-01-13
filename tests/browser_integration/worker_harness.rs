@@ -302,6 +302,7 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
       tab_id,
       pos_css,
       link_url,
+      ..
     } => (
       WorkerToUiEvent::ContextMenu {
         tab_id,

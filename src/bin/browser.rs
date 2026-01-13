@@ -2637,6 +2637,11 @@ struct OpenContextMenu {
   pos_css: (f32, f32),
   anchor_points: egui::Pos2,
   link_url: Option<String>,
+  image_url: Option<String>,
+  can_copy: bool,
+  can_cut: bool,
+  can_paste: bool,
+  can_select_all: bool,
   selected_idx: usize,
 }
 
@@ -4574,6 +4579,11 @@ impl App {
       tab_id,
       pos_css,
       link_url,
+      image_url,
+      can_copy,
+      can_cut,
+      can_paste,
+      can_select_all,
     } = &msg
     {
       if self.browser_state.active_tab_id() == Some(*tab_id) {
@@ -4588,6 +4598,11 @@ impl App {
               pos_css: *pos_css,
               anchor_points: pending.anchor_points,
               link_url: link_url.clone(),
+              image_url: image_url.clone(),
+              can_copy: *can_copy,
+              can_cut: *can_cut,
+              can_paste: *can_paste,
+              can_select_all: *can_select_all,
               selected_idx: 0,
             });
             self.open_context_menu_rect = None;
@@ -5902,13 +5917,14 @@ impl App {
   }
 
   fn render_context_menu(&mut self, ctx: &egui::Context) -> bool {
+    use fastrender::ui::BrowserIcon;
+    use fastrender::ui::ChromeAction;
+    use fastrender::ui::UiToWorker;
     use fastrender::ui::context_menu::{
       apply_page_context_menu_action, build_page_context_menu_entries, PageContextMenuAction,
       PageContextMenuBuildInput, PageContextMenuEntry,
     };
     use fastrender::ui::motion::UiMotion;
-    use fastrender::ui::BrowserIcon;
-    use fastrender::ui::ChromeAction;
 
     let motion = UiMotion::from_ctx(ctx);
     let open_t = motion.animate_bool(
@@ -5919,20 +5935,35 @@ impl App {
     );
 
     let mut session_dirty = false;
-    let (tab_id, pos_css, anchor_points, link_url, selected_idx) =
-      match self.open_context_menu.as_ref() {
-        Some(menu) => (
-          menu.tab_id,
-          menu.pos_css,
-          menu.anchor_points,
-          menu.link_url.clone(),
-          menu.selected_idx,
-        ),
-        None => {
-          self.open_context_menu_rect = None;
-          return session_dirty;
-        }
-      };
+    let (
+      tab_id,
+      pos_css,
+      anchor_points,
+      link_url,
+      image_url,
+      can_copy,
+      can_cut,
+      can_paste,
+      can_select_all,
+      selected_idx,
+    ) = match self.open_context_menu.as_ref() {
+      Some(menu) => (
+        menu.tab_id,
+        menu.pos_css,
+        menu.anchor_points,
+        menu.link_url.clone(),
+        menu.image_url.clone(),
+        menu.can_copy,
+        menu.can_cut,
+        menu.can_paste,
+        menu.can_select_all,
+        menu.selected_idx,
+      ),
+      None => {
+        self.open_context_menu_rect = None;
+        return session_dirty;
+      }
+    };
 
     if self.browser_state.active_tab_id() != Some(tab_id) {
       self.close_context_menu();
@@ -5953,10 +5984,15 @@ impl App {
 
     let entries = build_page_context_menu_entries(PageContextMenuBuildInput {
       link_url: link_url.as_deref(),
+      image_url: image_url.as_deref(),
       page_url,
       bookmarks: &self.bookmarks,
       history_panel_open: self.history_panel_open,
       bookmarks_panel_open: self.bookmarks_panel_open,
+      can_copy,
+      can_cut,
+      can_paste,
+      can_select_all,
     });
 
     #[derive(Clone)]
@@ -5988,6 +6024,13 @@ impl App {
         }
         PageContextMenuEntry::Action(item) => {
           let icon = match (&item.action, item.checked) {
+            (PageContextMenuAction::CopySelection, _) => BrowserIcon::Copy,
+            (PageContextMenuAction::Cut, _) => BrowserIcon::Copy,
+            (PageContextMenuAction::Paste, _) => BrowserIcon::Copy,
+            (PageContextMenuAction::SelectAll, _) => BrowserIcon::Copy,
+            (PageContextMenuAction::OpenImageInNewTab(_), _) => BrowserIcon::OpenInNewTab,
+            (PageContextMenuAction::DownloadImage(_), _) => BrowserIcon::ArrowDown,
+            (PageContextMenuAction::CopyImageAddress(_), _) => BrowserIcon::Copy,
             (PageContextMenuAction::OpenLinkInNewTab(_), _) => BrowserIcon::OpenInNewTab,
             (PageContextMenuAction::DownloadLink(_), _) => BrowserIcon::ArrowDown,
             (PageContextMenuAction::CopyLinkAddress(_), _) => BrowserIcon::Copy,
@@ -6304,6 +6347,42 @@ impl App {
     };
 
     match action {
+      PageContextMenuAction::CopySelection => {
+        self.send_worker_msg(UiToWorker::Copy { tab_id });
+      }
+      PageContextMenuAction::Cut => {
+        self.send_worker_msg(UiToWorker::Cut { tab_id });
+      }
+      PageContextMenuAction::Paste => {
+        if let Ok(mut clipboard) = Clipboard::new() {
+          if let Ok(text) = clipboard.get_text() {
+            self.send_worker_msg(UiToWorker::Paste { tab_id, text });
+          }
+        }
+      }
+      PageContextMenuAction::SelectAll => {
+        self.send_worker_msg(UiToWorker::SelectAll { tab_id });
+      }
+      PageContextMenuAction::CopyImageAddress(url) => {
+        ctx.output_mut(|o| o.copied_text = url);
+      }
+      PageContextMenuAction::DownloadImage(url) => {
+        self.send_worker_msg(UiToWorker::StartDownload {
+          tab_id,
+          url,
+          filename_hint: None,
+        });
+        // Downloads are shown in the right-side panel, so close other panels that share that space.
+        self.history_panel_open = false;
+        self.bookmarks_panel_open = false;
+        if !self.downloads_panel_open {
+          self.downloads_panel_request_focus = true;
+        }
+        self.downloads_panel_open = true;
+      }
+      PageContextMenuAction::OpenImageInNewTab(url) => {
+        session_dirty |= self.open_url_in_new_tab(url);
+      }
       PageContextMenuAction::CopyLinkAddress(url) => {
         ctx.output_mut(|o| o.copied_text = url);
       }
@@ -6311,7 +6390,6 @@ impl App {
         self.handle_chrome_actions(vec![ChromeAction::Reload]);
       }
       PageContextMenuAction::DownloadLink(url) => {
-        use fastrender::ui::UiToWorker;
         self.send_worker_msg(UiToWorker::StartDownload {
           tab_id,
           url,

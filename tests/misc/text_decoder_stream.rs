@@ -13,7 +13,7 @@ fn debug_js_error(realm: &mut WindowRealm, v: Value) -> String {
     return format!("{v:?}");
   }
   // Best-effort: stringify and include stack if available.
-  let s = realm
+  realm
     .exec_script(
       r#"
 (() => {
@@ -41,8 +41,7 @@ fn debug_js_error(realm: &mut WindowRealm, v: Value) -> String {
         format!("{v:?}")
       }
     })
-    .unwrap_or_else(|| "<failed to format error>".to_string());
-  s
+    .unwrap_or_else(|| "<failed to format error>".to_string())
 }
 
 #[test]
@@ -181,3 +180,4 @@ globalThis.__threw = false;
   assert_eq!(threw, Value::Bool(true));
   Ok(())
 }
+

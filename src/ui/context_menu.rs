@@ -106,6 +106,13 @@ use crate::ui::BookmarkStore;
 #[cfg(any(test, feature = "browser_ui"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PageContextMenuAction {
+  CopySelection,
+  Cut,
+  Paste,
+  SelectAll,
+  OpenImageInNewTab(String),
+  DownloadImage(String),
+  CopyImageAddress(String),
   OpenLinkInNewTab(String),
   DownloadLink(String),
   CopyLinkAddress(String),
@@ -162,10 +169,15 @@ pub enum PageContextMenuEntry {
 #[derive(Debug, Clone, Copy)]
 pub struct PageContextMenuBuildInput<'a> {
   pub link_url: Option<&'a str>,
+  pub image_url: Option<&'a str>,
   pub page_url: Option<&'a str>,
   pub bookmarks: &'a BookmarkStore,
   pub history_panel_open: bool,
   pub bookmarks_panel_open: bool,
+  pub can_copy: bool,
+  pub can_cut: bool,
+  pub can_paste: bool,
+  pub can_select_all: bool,
 }
 
 #[cfg(feature = "browser_ui")]
@@ -173,6 +185,66 @@ pub fn build_page_context_menu_entries(
   input: PageContextMenuBuildInput<'_>,
 ) -> Vec<PageContextMenuEntry> {
   let mut out = Vec::new();
+
+  let push_separator = |out: &mut Vec<PageContextMenuEntry>| {
+    if out.is_empty() {
+      return;
+    }
+    if matches!(out.last(), Some(PageContextMenuEntry::Separator)) {
+      return;
+    }
+    out.push(PageContextMenuEntry::Separator);
+  };
+
+  // Clipboard/editing actions (context-sensitive).
+  if input.can_copy {
+    out.push(PageContextMenuEntry::Action(PageContextMenuItem {
+      label: "Copy",
+      action: PageContextMenuAction::CopySelection,
+      checked: false,
+    }));
+  }
+  if input.can_cut {
+    out.push(PageContextMenuEntry::Action(PageContextMenuItem {
+      label: "Cut",
+      action: PageContextMenuAction::Cut,
+      checked: false,
+    }));
+  }
+  if input.can_paste {
+    out.push(PageContextMenuEntry::Action(PageContextMenuItem {
+      label: "Paste",
+      action: PageContextMenuAction::Paste,
+      checked: false,
+    }));
+  }
+  if input.can_select_all {
+    out.push(PageContextMenuEntry::Action(PageContextMenuItem {
+      label: "Select All",
+      action: PageContextMenuAction::SelectAll,
+      checked: false,
+    }));
+  }
+  push_separator(&mut out);
+
+  if let Some(url) = input.image_url.map(str::trim).filter(|s| !s.is_empty()) {
+    out.push(PageContextMenuEntry::Action(PageContextMenuItem {
+      label: "Open Image in New Tab",
+      action: PageContextMenuAction::OpenImageInNewTab(url.to_string()),
+      checked: false,
+    }));
+    out.push(PageContextMenuEntry::Action(PageContextMenuItem {
+      label: "Download Image",
+      action: PageContextMenuAction::DownloadImage(url.to_string()),
+      checked: false,
+    }));
+    out.push(PageContextMenuEntry::Action(PageContextMenuItem {
+      label: "Copy Image Address",
+      action: PageContextMenuAction::CopyImageAddress(url.to_string()),
+      checked: false,
+    }));
+    push_separator(&mut out);
+  }
 
   if let Some(url) = input.link_url.map(str::trim).filter(|s| !s.is_empty()) {
     out.push(PageContextMenuEntry::Action(PageContextMenuItem {
@@ -195,7 +267,7 @@ pub fn build_page_context_menu_entries(
       action: PageContextMenuAction::BookmarkLink(url.to_string()),
       checked: input.bookmarks.contains_url(url),
     }));
-    out.push(PageContextMenuEntry::Separator);
+    push_separator(&mut out);
   }
 
   let page_url = input.page_url.map(str::trim).unwrap_or("");
@@ -374,6 +446,13 @@ pub fn apply_page_context_menu_action(
     }
     PageContextMenuAction::OpenLinkInNewTab(_)
     | PageContextMenuAction::DownloadLink(_)
+    | PageContextMenuAction::CopySelection
+    | PageContextMenuAction::Cut
+    | PageContextMenuAction::Paste
+    | PageContextMenuAction::SelectAll
+    | PageContextMenuAction::OpenImageInNewTab(_)
+    | PageContextMenuAction::DownloadImage(_)
+    | PageContextMenuAction::CopyImageAddress(_)
     | PageContextMenuAction::CopyLinkAddress(_)
     | PageContextMenuAction::Reload => ApplyPageContextMenuActionResult::default(),
   }
