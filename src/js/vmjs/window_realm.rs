@@ -5377,20 +5377,27 @@ fn location_search_set_native(
     other => scope.heap_mut().to_string(other)?,
   };
   scope.push_root(Value::String(search_value))?;
-  let mut search = scope.heap().get_string(search_value)?.to_utf8_lossy();
-  let query = if search.is_empty() {
-    None
-  } else {
-    if !search.starts_with('?') {
-      search = format!("?{search}");
-    }
-    Some(search[1..].to_string())
-  };
 
   let Some(mut url) = parse_location_url(scope, location_obj)? else {
     return Ok(Value::Undefined);
   };
-  url.set_query(query.as_deref());
+
+  let search = scope.heap().get_string(search_value)?.to_utf8_lossy();
+  if search.is_empty() {
+    url.set_query(None);
+  } else {
+    let input = search.strip_prefix('?').unwrap_or(search.as_ref());
+    // In query state, `#` starts the fragment. `url::Url::set_query` percent-encodes `#`, so split
+    // it ourselves to preserve delimiter semantics (matches `WebUrl::set_search`).
+    let (query, fragment) = match input.split_once('#') {
+      Some((query, fragment)) => (query, Some(fragment)),
+      None => (input, None),
+    };
+    url.set_query(Some(query));
+    if let Some(fragment) = fragment {
+      url.set_fragment(Some(fragment));
+    }
+  }
   let new_href = url.to_string();
   let new_href_s = scope.alloc_string(&new_href)?;
   request_location_navigation(
@@ -51116,6 +51123,29 @@ mod tests {
     assert_eq!(get_string(realm.heap(), href_v), req.url);
     let port_v = realm.exec_script("location.port")?;
     assert_eq!(get_string(realm.heap(), port_v), "");
+    Ok(())
+  }
+
+  #[test]
+  fn location_search_set_hash_requests_navigation() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new(
+      "https://example.invalid:8443/path?x=1#h",
+    ))?;
+    assert!(realm
+      .exec_script("location.search = 'y=2#new'; 1 + 2")
+      .is_err());
+    let req = realm
+      .take_pending_navigation_request()
+      .expect("expected pending navigation request");
+    assert_eq!(req.url, "https://example.invalid:8443/path?y=2#new");
+    assert_eq!(req.replace, false);
+    realm.reset_interrupt();
+    let href_v = realm.exec_script("location.href")?;
+    assert_eq!(get_string(realm.heap(), href_v), req.url);
+    let search_v = realm.exec_script("location.search")?;
+    assert_eq!(get_string(realm.heap(), search_v), "?y=2");
+    let hash_v = realm.exec_script("location.hash")?;
+    assert_eq!(get_string(realm.heap(), hash_v), "#new");
     Ok(())
   }
 
