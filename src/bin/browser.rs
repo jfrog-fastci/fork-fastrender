@@ -5353,8 +5353,11 @@ mod tests {
           group: None,
         },
       ],
+      downloads: Vec::new(),
       tab_groups: Vec::new(),
+      closed_tabs: Vec::new(),
       active_tab_index: 2,
+      bookmarks_bar_visible: false,
       show_menu_bar: true,
       window_state: None,
     };
