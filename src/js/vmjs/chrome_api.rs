@@ -578,7 +578,7 @@ mod tests {
     fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<vm_js::RealmId>) {}
 
     fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
-      self.inner.as_any_mut()
+      vm_js::VmHostHooks::as_any_mut(&mut self.inner)
     }
   }
 
