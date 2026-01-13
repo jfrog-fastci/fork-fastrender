@@ -60,6 +60,7 @@ pub mod loading_overlay;
 // Viewport-change throttling is used only by the windowed browser UI.
 pub mod viewport_throttle;
 pub mod notifications;
+pub mod multiprocess;
 
 #[cfg(any(test, feature = "browser_ui"))]
 mod tab_accessible_label;

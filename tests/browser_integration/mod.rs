@@ -166,6 +166,7 @@ mod ui_worker_visited_links;
 mod ui_worker_viewport_changed;
 mod ui_worker_viewport_limits;
 mod ui_worker_zoom;
+mod multiprocess_shared_renderer_process_crash;
 mod worker_harness;
 mod ui_text_control_pointer_selection;
 mod untrusted_worker_messages;
