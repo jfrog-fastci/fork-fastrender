@@ -35,6 +35,16 @@ pub enum IpcError {
   #[error("failed to deserialize IPC JSON message: {0}")]
   Deserialize(#[source] serde_json::Error),
   // ==========================================================================
+  // Generic errors (used by helper modules like the shared frame pool)
+  // ==========================================================================
+
+  #[error("invalid IPC parameters: {message}")]
+  InvalidParameters { message: String },
+
+  #[error("IPC protocol violation: {message}")]
+  ProtocolViolation { message: String },
+
+  // ==========================================================================
   // Protocol validation errors (renderer → browser)
   // ==========================================================================
 

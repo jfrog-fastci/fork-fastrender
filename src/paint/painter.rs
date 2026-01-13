@@ -20545,6 +20545,7 @@ mod tests {
   use crate::image_loader::ImageCache;
   use crate::paint::display_list::BorderRadii;
   use crate::paint::pixmap::NewPixmapAllocRecorder;
+  use crate::text::caret::CaretAffinity;
   use crate::style::types::BackgroundAttachment;
   use crate::style::types::BackgroundBox;
   use crate::style::types::BackgroundImage;
