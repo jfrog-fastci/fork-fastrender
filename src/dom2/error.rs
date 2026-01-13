@@ -12,6 +12,8 @@ pub enum DomError {
   IndexSizeError,
   #[error("InvalidCharacterError")]
   InvalidCharacterError,
+  #[error("InvalidStateError")]
+  InvalidStateError,
   #[error("NamespaceError")]
   NamespaceError,
   #[error("NotFoundError")]
@@ -26,6 +28,8 @@ pub enum DomError {
   NoModificationAllowedError,
   #[error("SyntaxError")]
   SyntaxError,
+  #[error("WrongDocumentError")]
+  WrongDocumentError,
 }
 
 impl DomError {
@@ -34,6 +38,7 @@ impl DomError {
       Self::HierarchyRequestError => "HierarchyRequestError",
       Self::IndexSizeError => "IndexSizeError",
       Self::InvalidCharacterError => "InvalidCharacterError",
+      Self::InvalidStateError => "InvalidStateError",
       Self::NamespaceError => "NamespaceError",
       Self::NotFoundError => "NotFoundError",
       Self::NotSupportedError => "NotSupportedError",
@@ -41,6 +46,7 @@ impl DomError {
       Self::InvalidNodeTypeError => "InvalidNodeTypeError",
       Self::NoModificationAllowedError => "NoModificationAllowedError",
       Self::SyntaxError => "SyntaxError",
+      Self::WrongDocumentError => "WrongDocumentError",
     }
   }
 }
