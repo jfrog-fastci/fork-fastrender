@@ -14,6 +14,16 @@ Related:
 - Current single-process iframe rendering (recursive): [`src/paint/iframe.rs`](../src/paint/iframe.rs)
 - Current iframe depth limit knobs: `FastRenderConfig::with_max_iframe_depth` (default `DEFAULT_MAX_IFRAME_DEPTH` in `src/api.rs`)
 
+**Status / repo reality (today):**
+
+- FastRender is currently **single-process**; iframes are rendered by recursively rendering nested
+  documents into images (see `src/paint/iframe.rs`).
+- The windowed `browser` app currently runs the “renderer” on a dedicated worker **thread**, not a
+  separate OS process (see `docs/browser.md` + `docs/multiprocess_threat_model.md`).
+- This document specifies the **target process model** for the multiprocess workstream and is
+  intended to be treated as **normative** once site isolation lands (so future work stays
+  consistent).
+
 ---
 
 ## 0) Scope and threat model
@@ -226,6 +236,42 @@ Rationale:
 Operational note:
 - This can cause process growth for adversarial pages that generate many `data:` iframes; quotas
   (see §5) must make that safe.
+
+### 2.6 Other `about:*` pages (internal pages)
+
+FastRender supports several internal pages under `about:*` (e.g. `about:newtab`, `about:history`,
+`about:bookmarks`). These are browser-generated documents and may embed **privileged browser-owned
+state snapshots**.
+
+**Rule (normative):**
+
+- `about:*` URLs other than `about:blank` and `about:srcdoc` get a fresh opaque site:
+  - `derive_site_key(about:history, initiator_site) == SiteKey::Opaque(new_opaque_id())`
+  - i.e. they **do not inherit** `initiator_site`.
+
+Rationale:
+- Internal pages must not share a renderer process with arbitrary web content, otherwise a renderer
+  compromise in a web page could read the internal page’s in-memory state after navigating.
+
+Future note:
+- When “renderer chrome” lands (trusted UI pages rendered by FastRender), we may replace the
+  “fresh opaque id” rule with a stable `SiteKey::Internal` bucket. If that happens, update this doc
+  and add tests so we do not regress the “internal pages never share with web origins” invariant.
+
+### 2.7 Other schemes (`blob:`, `javascript:`, unknown)
+
+Navigation policy (URL allowlists) should reject dangerous schemes like `javascript:` *before*
+process assignment is considered (see `docs/multiprocess_threat_model.md` for the “treat URLs as
+capabilities” rule).
+
+For the site isolation process model, we still need an explicit fallback rule:
+
+**Rule (normative):**
+
+- If a URL’s scheme is not covered above (Origin/File/about:blank/about:srcdoc/data/about-internal),
+  treat it as a fresh opaque site: `SiteKey::Opaque(new_opaque_id())`.
+- Do not attempt to “guess” an origin for schemes we don’t fully model yet. Add explicit handling
+  plus tests when a new scheme is introduced (e.g. `blob:` origin tracking).
 
 ---
 
@@ -462,6 +508,11 @@ Add browser-side unit tests for `derive_site_key`:
 - `about:blank` with no initiator is `Opaque`.
 - `about:srcdoc` inherits initiator site.
 - `data:` always produces `Opaque` and never inherits.
+
+Notes:
+- Follow the repo’s test organization rules in [`docs/test_architecture.md`](test_architecture.md):
+  pure helpers should be unit-tested in `src/`, and integration/process tests should live in the
+  existing integration harness (avoid introducing new `tests/*.rs` binaries).
 
 Add unit tests for process assignment decisions:
 
