@@ -1253,3 +1253,26 @@ fn regexp_lookbehind_misc_anchor_interactions() {
 
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn regexp_lookbehind_can_reference_prior_captures() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"JSON.stringify("abb".match(/(.)(?<=(\1\1))/))"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), r#"["b","b","bb"]"#);
+}
+
+#[test]
+fn regexp_captures_from_lookbehind_visible_to_later_backrefs() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"JSON.stringify("  'foo'  ".match(/(?<=(.))(\w+)(?=\1)/))"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), r#"["foo","'","foo"]"#);
+
+  let value = rt
+    .exec_script(r#"JSON.stringify('  "foo"  '.match(/(?<=(.))(\w+)(?=\1)/))"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), r#"["foo","\"","foo"]"#);
+}
