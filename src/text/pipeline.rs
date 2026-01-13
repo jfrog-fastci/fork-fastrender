@@ -4229,6 +4229,9 @@ fn coalesce_adjacent_font_runs(runs: Vec<FontRun>) -> Vec<FontRun> {
     let bytes = text.as_bytes();
     bytes.starts_with(b"\n")
       || bytes.starts_with(b"\r")
+      || bytes.starts_with(b"\x0B") // U+000B VERTICAL TAB
+      || bytes.starts_with(b"\x0C") // U+000C FORM FEED
+      || bytes.starts_with(b"\xC2\x85") // U+0085 NEXT LINE
       || bytes.starts_with(b"\xE2\x80\xA8") // U+2028 LINE SEPARATOR
       || bytes.starts_with(b"\xE2\x80\xA9") // U+2029 PARAGRAPH SEPARATOR
   }
@@ -4238,6 +4241,9 @@ fn coalesce_adjacent_font_runs(runs: Vec<FontRun>) -> Vec<FontRun> {
     let bytes = text.as_bytes();
     bytes.ends_with(b"\n")
       || bytes.ends_with(b"\r")
+      || bytes.ends_with(b"\x0B") // U+000B VERTICAL TAB
+      || bytes.ends_with(b"\x0C") // U+000C FORM FEED
+      || bytes.ends_with(b"\xC2\x85") // U+0085 NEXT LINE
       || bytes.ends_with(b"\xE2\x80\xA8") // U+2028 LINE SEPARATOR
       || bytes.ends_with(b"\xE2\x80\xA9") // U+2029 PARAGRAPH SEPARATOR
   }
@@ -8475,6 +8481,58 @@ mod tests {
       font_runs.len(),
       2,
       "font runs should not coalesce across hard line breaks"
+    );
+    assert_eq!(
+      font_runs.iter().map(|run| run.text.as_str()).collect::<String>(),
+      text
+    );
+  }
+
+  #[test]
+  fn coalescing_avoids_other_paragraph_separators() {
+    let ctx = dejavu_sans_fixture_context();
+    let mut style = ComputedStyle::default();
+    style.font_family = vec!["DejaVu Sans".to_string()].into();
+    style.font_size = 16.0;
+
+    // U+0085 (NEL) is treated as a paragraph separator by the Unicode bidi algorithm. Coalescing
+    // must avoid bridging it so shaping never tries to form adjacency-sensitive features across
+    // a hard break boundary.
+    let text = "Hello\u{0085}world";
+    let split = "Hello\u{0085}".len();
+    let runs = [
+      ItemizedRun {
+        start: 0,
+        end: split,
+        text: text[..split].to_string(),
+        script: Script::Latin,
+        direction: Direction::LeftToRight,
+        level: 0,
+      },
+      ItemizedRun {
+        start: split,
+        end: text.len(),
+        text: text[split..].to_string(),
+        script: Script::Latin,
+        direction: Direction::LeftToRight,
+        level: 0,
+      },
+    ];
+
+    let font_runs = assign_fonts_internal(
+      &runs,
+      &style,
+      &ctx,
+      None,
+      ctx.font_generation(),
+      true,
+    )
+    .expect("assign fonts");
+
+    assert_eq!(
+      font_runs.len(),
+      2,
+      "font runs should not coalesce across Unicode paragraph separators"
     );
     assert_eq!(
       font_runs.iter().map(|run| run.text.as_str()).collect::<String>(),
