@@ -737,19 +737,24 @@ fn group_chip_ui(
     response.hovered(),
     motion.durations.hover_fade,
   );
+  let pressed = ui.is_enabled() && response.is_pointer_button_down_on();
 
   let (r, g, b) = color.rgb();
   let fill_base = Color32::from_rgba_unmultiplied(r, g, b, 48);
   let fill_hover = Color32::from_rgba_unmultiplied(r, g, b, 72);
   let fill_active = Color32::from_rgba_unmultiplied(r, g, b, 92);
   let mut fill = lerp_color(fill_base, fill_hover, hover_t);
-  if response.is_pointer_button_down_on() {
+  if pressed {
     fill = fill_active;
   }
 
   let stroke_base = with_alpha(group_color_egui(color), 0.85);
   let stroke_hover = group_color_egui(color);
-  let stroke_color = lerp_color(stroke_base, stroke_hover, hover_t);
+  let stroke_color = if pressed {
+    stroke_hover
+  } else {
+    lerp_color(stroke_base, stroke_hover, hover_t)
+  };
   let stroke = Stroke::new(1.0, stroke_color);
 
   let rounding = visuals.widgets.inactive.rounding;
@@ -930,12 +935,13 @@ fn tab_ui(
     hovered && !is_active,
     motion.durations.hover_fade,
   );
+  let pressed = interactive && ui.is_enabled() && response.is_pointer_button_down_on();
 
   // Micro-interaction: fade the active tab background in/out instead of snapping.
   let active_t = motion.animate_bool(
     ui.ctx(),
     tab_id.with("active"),
-    is_active,
+    is_active || pressed,
     motion.durations.tab_underline,
   );
 
@@ -944,7 +950,10 @@ fn tab_ui(
     visuals.widgets.hovered.bg_fill,
     hover_t,
   );
-  let bg = lerp_color(inactive_bg, visuals.widgets.active.bg_fill, active_t);
+  let mut bg = lerp_color(inactive_bg, visuals.widgets.active.bg_fill, active_t);
+  if pressed {
+    bg = visuals.widgets.active.bg_fill;
+  }
   let rounding = visuals.widgets.inactive.rounding;
   {
     let painter = paint_ui.painter();
@@ -952,6 +961,15 @@ fn tab_ui(
 
     if let Some(color) = group_color {
       painter.rect_stroke(tab_rect.shrink(0.5), rounding, Stroke::new(1.0, color));
+    }
+
+    if pressed {
+      let stroke_rect = if group_color.is_some() {
+        tab_rect.shrink(1.5)
+      } else {
+        tab_rect.shrink(0.5)
+      };
+      painter.rect_stroke(stroke_rect, rounding, visuals.widgets.active.bg_stroke);
     }
   }
 
@@ -1063,13 +1081,22 @@ fn tab_ui(
     // Micro-interaction: fade close button hover fill in/out.
     let close_rounding =
       egui::Rounding::same((visuals.widgets.inactive.rounding.nw * 0.8).clamp(4.0, 6.0));
+    let close_pressed =
+      close_reveal_target && ui.is_enabled() && close_resp.is_pointer_button_down_on();
     let close_hover_t = motion.animate_bool(
       ui.ctx(),
       close_id.with("hover"),
       close_resp.hovered(),
       motion.durations.hover_fade,
     );
-    if close_hover_t > 0.0 {
+    if close_pressed {
+      paint_ui.painter().rect(
+        close_rect,
+        close_rounding,
+        visuals.widgets.active.bg_fill,
+        visuals.widgets.active.bg_stroke,
+      );
+    } else if close_hover_t > 0.0 {
       paint_ui.painter().rect_filled(
         close_rect,
         close_rounding,
@@ -1220,12 +1247,13 @@ fn pinned_tab_ui(
     response.hovered() && !is_active,
     motion.durations.hover_fade,
   );
+  let pressed = ui.is_enabled() && response.is_pointer_button_down_on();
 
   // Micro-interaction: fade the active tab background in/out instead of snapping.
   let active_t = motion.animate_bool(
     ui.ctx(),
     tab_id.with("active"),
-    is_active,
+    is_active || pressed,
     motion.durations.tab_underline,
   );
 
@@ -1234,9 +1262,19 @@ fn pinned_tab_ui(
     visuals.widgets.hovered.bg_fill,
     hover_t,
   );
-  let bg = lerp_color(inactive_bg, visuals.widgets.active.bg_fill, active_t);
+  let mut bg = lerp_color(inactive_bg, visuals.widgets.active.bg_fill, active_t);
+  if pressed {
+    bg = visuals.widgets.active.bg_fill;
+  }
   let rounding = visuals.widgets.inactive.rounding;
   ui.painter().rect_filled(tab_rect, rounding, bg);
+  if pressed {
+    ui.painter().rect_stroke(
+      tab_rect.shrink(0.5),
+      rounding,
+      visuals.widgets.active.bg_stroke,
+    );
+  }
 
   // Favicon (centered).
   let icon_min = Pos2::new(
