@@ -977,6 +977,100 @@ impl WindowRealm {
     Ok(())
   }
 
+  /// Dispatch a DOM `Event` with the given type at a specific DOM node.
+  ///
+  /// This is intended for host-side engines (e.g. a media playback engine) to surface events like
+  /// `timeupdate`, `ended`, and `error` into the JS realm, targeting a particular
+  /// `HTMLMediaElement`.
+  ///
+  /// Best-effort: if the node is no longer present in the backing DOM (stale `NodeId`), the event
+  /// is ignored and `Ok(())` is returned.
+  pub fn dispatch_media_event(
+    &mut self,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    document_obj: GcObject,
+    node_id: NodeId,
+    type_: &str,
+  ) -> Result<(), VmError> {
+    let realm_id = self.realm_id;
+    self.with_vm_budget(|rt| {
+      let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+        realm: realm_id,
+        script_or_module: None,
+      })?;
+
+      let document_id = gc_object_id(document_obj);
+      let Some(dom_ptr) = dom_ptr_for_document_id_read(&mut vm, host, document_id) else {
+        return Ok(());
+      };
+      // SAFETY: `dom_ptr` is derived from the caller-provided `VmHost` and remains valid for the
+      // duration of this call.
+      let dom = unsafe { dom_ptr.as_ref() };
+      if dom.node_id_from_index(node_id.index()).is_err() {
+        return Ok(());
+      }
+
+      // Obtain the JS wrapper for the target node.
+      let target_value =
+        get_or_create_node_wrapper(&mut vm, &mut scope, document_obj, Some(dom), node_id)?;
+      let Value::Object(target_obj) = target_value else {
+        return Ok(());
+      };
+      scope.push_root(Value::Object(target_obj))?;
+
+      // Construct a branded `Event` instance with the requested type.
+      let event_obj = scope.alloc_object()?;
+      scope.push_root(Value::Object(event_obj))?;
+
+      // Inherit from the internal `Event.prototype` stored on the document wrapper so
+      // `instanceof Event` and prototype methods behave as expected even when the global `Event`
+      // constructor is overwritten.
+      scope.push_root(Value::Object(document_obj))?;
+      let event_proto_key = alloc_key(&mut scope, EVENT_PROTOTYPE_KEY)?;
+      if let Some(Value::Object(proto_obj)) =
+        scope
+          .heap()
+          .object_get_own_data_property_value(document_obj, &event_proto_key)?
+      {
+        scope.heap_mut().object_set_prototype(event_obj, Some(proto_obj))?;
+      }
+
+      let type_s = scope.alloc_string(type_)?;
+      scope.push_root(Value::String(type_s))?;
+      let type_key = alloc_key(&mut scope, "type")?;
+      scope.define_property(event_obj, type_key, read_only_data_desc(Value::String(type_s)))?;
+      let bubbles_key = alloc_key(&mut scope, "bubbles")?;
+      scope.define_property(event_obj, bubbles_key, read_only_data_desc(Value::Bool(false)))?;
+      let cancelable_key = alloc_key(&mut scope, "cancelable")?;
+      scope.define_property(
+        event_obj,
+        cancelable_key,
+        read_only_data_desc(Value::Bool(false)),
+      )?;
+      let composed_key = alloc_key(&mut scope, "composed")?;
+      scope.define_property(event_obj, composed_key, read_only_data_desc(Value::Bool(false)))?;
+
+      define_event_default_properties(&mut scope, event_obj)?;
+      let initialized_key = alloc_key(&mut scope, EVENT_INITIALIZED_KEY)?;
+      scope.define_property(event_obj, initialized_key, data_desc(Value::Bool(true)))?;
+      brand_event_object(&mut scope, event_obj, BrandedEventKind::Event)?;
+
+      let _ = event_target_dispatch_event_dom2(
+        &mut vm,
+        &mut scope,
+        host,
+        hooks,
+        target_obj,
+        &[Value::Object(event_obj)],
+      )?;
+
+      Ok(())
+    })
+  }
+
   /// Execute a classic script in this window realm.
   pub fn exec_script(&mut self, source: &str) -> Result<Value, VmError> {
     self.exec_script_with_name("<inline>", source)
@@ -43760,6 +43854,66 @@ mod tests {
       })()"#,
     )?;
     assert_eq!(result, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn dispatch_media_event_runs_listener_on_target_node() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><head></head><body><video id=\"v\"></video></body></html>",
+    )
+    .expect("parse_html should succeed");
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        globalThis.__mediaPlayFired = false;
+        const v = document.querySelector('video');
+        if (!v) throw new Error('missing <video>');
+        v.addEventListener('play', () => { globalThis.__mediaPlayFired = true; });
+      })()"#,
+    )?;
+
+    let video_node_id = {
+      let dom = host.dom();
+      dom
+        .nodes()
+        .iter()
+        .enumerate()
+        .find_map(|(idx, node)| match &node.kind {
+          NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("video") => {
+            dom.node_id_from_index(idx).ok()
+          }
+          _ => None,
+        })
+        .expect("expected <video> element")
+    };
+
+    let document_obj = {
+      let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      let global = realm_ref.global_object();
+      let mut scope = heap.scope();
+      let Value::Object(document_obj) = get_prop(vm, &mut scope, global, "document")? else {
+        panic!("expected window.document to be an object");
+      };
+      document_obj
+    };
+
+    let dataset_ctx = realm.dataset_exotic_context();
+    let mut hooks = DomShimHostHooks::new(&mut host, dataset_ctx);
+    realm.dispatch_media_event(
+      &mut host,
+      &mut hooks,
+      document_obj,
+      video_node_id,
+      "play",
+    )?;
+
+    let fired = exec_script_with_dom_host(&mut realm, &mut host, "globalThis.__mediaPlayFired")?;
+    assert_eq!(fired, Value::Bool(true));
     Ok(())
   }
 
