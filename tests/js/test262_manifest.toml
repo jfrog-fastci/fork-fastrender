@@ -763,6 +763,10 @@ glob = "built-ins/Object/getOwnPropertyNames/**"
 status = "pass"
 
 [[expectations]]
+glob = "built-ins/Object/getOwnPropertySymbols/**"
+status = "pass"
+
+[[expectations]]
 glob = "built-ins/Object/prototype/propertyIsEnumerable/**"
 status = "pass"
 
