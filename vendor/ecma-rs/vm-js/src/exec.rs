@@ -17438,6 +17438,53 @@ fn async_eval_class(
       }
     }
 
+    // Create the class's private-name environment.
+    //
+    // Mirrors `Evaluator::eval_class`. All class element bodies capture the class lexical
+    // environment, so private member expressions can resolve the correct per-class symbols.
+    let mut private_names: Vec<String> = Vec::new();
+    let mut private_name_set: HashSet<&str> = HashSet::new();
+    for member in members {
+      if let ClassOrObjKey::Direct(key) = &member.stx.key {
+        if key.stx.tt == TT::PrivateMember {
+          let name = key.stx.key.as_str();
+          if private_name_set.contains(name) {
+            continue;
+          }
+          private_name_set
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          private_name_set.insert(name);
+          private_names
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          private_names.push(try_clone_string(name)?);
+        }
+      }
+    }
+    if !private_names.is_empty() {
+      let mut entries: Vec<crate::env::PrivateNameEntry> = Vec::new();
+      entries
+        .try_reserve_exact(private_names.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+
+      // Keep all allocated symbols rooted until the mapping is installed into the environment
+      // record, so intermediate allocations cannot collect them.
+      let mut priv_scope = scope.reborrow();
+      for name in private_names {
+        let desc = priv_scope.alloc_string(&name)?;
+        let sym = priv_scope.new_internal_symbol(Some(desc))?;
+        priv_scope.push_root(Value::Symbol(sym))?;
+        entries.push(crate::env::PrivateNameEntry {
+          name: name.into_boxed_str(),
+          sym,
+        });
+      }
+      priv_scope
+        .heap_mut()
+        .env_set_private_names(class_env, entries.into_boxed_slice())?;
+    }
+
     // Evaluate `extends` (class heritage), if present.
     let super_value = match extends {
       None => Value::Undefined,
@@ -17480,7 +17527,9 @@ fn async_eval_class(
     Ok(AsyncEval::Suspend(mut suspend)) => {
       // Preserve strict-mode semantics across the suspension; restore strictness only after the
       // class definition evaluation completes.
-      if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RestoreStrict { saved_strict }) {
+      if let Err(err) =
+        async_frames_push(&mut suspend.frames, AsyncFrame::RestoreStrict { saved_strict })
+      {
         // Best-effort cleanup: tear down any rooted frames so we don't leak GC roots on OOM.
         for mut frame in suspend.frames {
           async_teardown_frame(scope.heap_mut(), &mut frame);
@@ -17541,6 +17590,28 @@ fn async_eval_class_after_super(
   // not otherwise reachable (e.g. `class B extends (class {}) {}`).
   let mut class_scope = scope.reborrow();
   class_scope.push_root(super_value)?;
+
+  // Count instance **public** fields so the class constructor wrapper can preallocate its hidden
+  // native-slot storage.
+  let mut instance_field_count: usize = 0;
+  for member in members {
+    if member.stx.static_ {
+      continue;
+    }
+    if !matches!(&member.stx.val, ClassOrObjVal::Prop(_)) {
+      continue;
+    }
+    let is_private_field = matches!(
+      &member.stx.key,
+      ClassOrObjKey::Direct(direct) if direct.stx.tt == TT::PrivateMember
+    );
+    if is_private_field {
+      continue;
+    }
+    instance_field_count = instance_field_count
+      .checked_add(1)
+      .ok_or(VmError::OutOfMemory)?;
+  }
 
   // Find an explicit `constructor(...) { ... }` method, if present.
   let mut ctor_method: Option<(&Node<Func>, u32, parse_js::loc::Loc)> = None;
@@ -17660,7 +17731,7 @@ fn async_eval_class_after_super(
     ctor_length,
     ctor_body_func,
     super_value,
-    /* instance_field_count */ 0,
+    instance_field_count,
   )?;
 
   // Create a persistent root for the class constructor object so it remains GC-safe across `await`
