@@ -3602,6 +3602,7 @@ fn apply_request_init(
             inferred_content_type = Some(format!("multipart/form-data; boundary={boundary}"));
             multipart
           } else {
+            inferred_content_type = Some("text/plain;charset=UTF-8".to_string());
             let s = scope.to_string(vm, host, host_hooks, body_val)?;
             js_string_to_rust_string_limited(
               scope.heap(),
@@ -3631,6 +3632,7 @@ fn apply_request_init(
         }
       }
       other => {
+        let inferred_content_type = "text/plain;charset=UTF-8";
         let s = scope.to_string(vm, host, host_hooks, other)?;
         let bytes = js_string_to_rust_string_limited(
           scope.heap(),
@@ -3639,6 +3641,17 @@ fn apply_request_init(
           FETCH_BODY_TOO_LONG_ERROR,
         )?
         .into_bytes();
+
+        let has_content_type = request
+          .headers
+          .has("Content-Type")
+          .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))?;
+        if !has_content_type {
+          request
+            .headers
+            .set("Content-Type", inferred_content_type)
+            .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))?;
+        }
 
         let body = Body::new_with_limits(bytes, request.headers.limits())
           .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, host_hooks, err))?;
@@ -6690,6 +6703,7 @@ fn response_ctor_construct(
             inferred_content_type = Some(format!("multipart/form-data; boundary={boundary}"));
             multipart
           } else {
+            inferred_content_type = Some("text/plain;charset=UTF-8".to_string());
             let s = scope.to_string(vm, host, host_hooks, body)?;
             js_string_to_rust_string_limited(
               scope.heap(),
@@ -6703,6 +6717,7 @@ fn response_ctor_construct(
         }
       }
       other => {
+        inferred_content_type = Some("text/plain;charset=UTF-8".to_string());
         let s = scope.to_string(vm, host, host_hooks, other)?;
         body_bytes = Some(
           js_string_to_rust_string_limited(
@@ -9149,6 +9164,50 @@ mod tests {
        })()",
     )?;
     assert_eq!(get_string(window.heap(), response), "DataCloneError");
+
+    drop(fetch_bindings);
+    window.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn response_string_body_infers_text_plain_content_type() -> Result<(), VmError> {
+    let mut window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))?;
+    let fetch_bindings = {
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<DummyHost>(
+        vm,
+        realm,
+        heap,
+        WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+      )?
+    };
+
+    let ct_val = window.exec_script("new Response('hi').headers.get('content-type')")?;
+    assert_eq!(get_string(window.heap(), ct_val), "text/plain;charset=UTF-8");
+
+    drop(fetch_bindings);
+    window.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn request_string_body_does_not_override_existing_content_type() -> Result<(), VmError> {
+    let mut window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))?;
+    let fetch_bindings = {
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<DummyHost>(
+        vm,
+        realm,
+        heap,
+        WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+      )?
+    };
+
+    let ct_val = window.exec_script(
+      "new Request('https://example.invalid/', { method: 'POST', body: 'hi', headers: { 'Content-Type': 'application/custom' } }).headers.get('content-type')",
+    )?;
+    assert_eq!(get_string(window.heap(), ct_val), "application/custom");
 
     drop(fetch_bindings);
     window.teardown();
@@ -15027,6 +15086,52 @@ mod tests {
     assert_eq!(rem_cancel, 0);
     assert_eq!(first_keep, expected_first);
     assert_eq!(rem_keep, expected_remaining);
+
+    Ok(())
+  }
+
+  #[test]
+  fn fetch_string_body_sets_content_type() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EventLoopHost>::with_clock(clock);
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher = Arc::new(CaptureHttpRequestFetcher::default());
+    let env = WindowFetchEnv::for_document(
+      fetcher.clone(),
+      Some("https://example.invalid/".to_string()),
+    );
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?
+    };
+
+    {
+      let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host)?;
+      hooks.set_event_loop(&mut event_loop);
+      let EventLoopHost { host_ctx, window } = &mut host;
+      window
+        .exec_script_with_host_and_hooks(
+          host_ctx,
+          &mut hooks,
+          "fetch('https://example.invalid/upload', { method: 'POST', body: 'hi' });",
+        )
+        .unwrap();
+    }
+
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    let captured = fetcher.take().expect("expected fetch_http_request call");
+    assert_eq!(captured.method, "POST");
+    assert_eq!(captured.url, "https://example.invalid/upload");
+    assert_eq!(captured.body.as_deref(), Some(b"hi".as_slice()));
+    assert_eq!(
+      header_value(&captured.headers, "content-type"),
+      Some("text/plain;charset=UTF-8"),
+      "headers={:?}",
+      captured.headers
+    );
 
     Ok(())
   }
