@@ -412,7 +412,89 @@ use fastrender::ui::messages::{
 
 #[cfg(feature = "browser_ui")]
 fn worker_to_ui_tab_id(msg: &WorkerToUi) -> Option<TabId> {
+<<<<<<< HEAD
   Some(msg.tab_id())
+=======
+  if let WorkerToUi::Stage { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::Favicon { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::FrameReady { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::PageAccessKitSubtree { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::OpenSelectDropdown { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::SelectDropdownOpened { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::DateTimePickerOpened { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::FilePickerOpened { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::NavigationStarted { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::NavigationCommitted { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::NavigationFailed { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::RequestOpenInNewTab { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::RequestOpenInNewTabRequest { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::ScrollStateUpdated { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::LoadingState { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::Warning { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::DebugLog { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::SelectDropdownClosed { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::DateTimePickerClosed { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::FilePickerClosed { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::SetClipboardText { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::ContextMenu { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::HoverChanged { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::DownloadStarted { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::DownloadProgress { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::DownloadFinished { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  None
+>>>>>>> 1fb86f70 (feat(ui): emit page AccessKit subtree updates from render worker)
 }
 
 /// Receive a `WorkerToUi` message scoped to `tab_id`.
@@ -538,6 +620,16 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
         frame.pixmap.height(),
         frame.viewport_css,
         frame.dpr
+      );
+      continue;
+    }
+    if let WorkerToUi::PageAccessKitSubtree { tab_id, subtree } = msg {
+      let _ = writeln!(
+        &mut out,
+        "PageAccessKitSubtree(tab={}, nodes={}, focus={:?})",
+        tab_id.0,
+        subtree.nodes.len(),
+        subtree.focus_id.as_ref().map(|id| id.0.get())
       );
       continue;
     }

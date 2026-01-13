@@ -41,8 +41,13 @@ use crate::ui::messages::{
   BrowserMediaPreferences, CursorKind, DatalistOption, DownloadId, DownloadOutcome, NavigationReason,
   PointerButton, RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
 };
+<<<<<<< HEAD
 use super::router_coalescer::UiToWorkerRouterCoalescer;
 use crate::ui::protocol_limits::{MAX_FAVICON_BYTES, MAX_FAVICON_EDGE_PX};
+=======
+#[cfg(feature = "browser_ui")]
+use crate::ui::page_accesskit_subtree;
+>>>>>>> 1fb86f70 (feat(ui): emit page AccessKit subtree updates from render worker)
 use crate::ui::{resolve_link_url, validate_user_navigation_url_scheme};
 use crate::web::events as web_events;
 use image::imageops::FilterType;
@@ -1431,12 +1436,46 @@ fn compute_scroll_metrics(
   }
 }
 
+<<<<<<< HEAD
 fn base_url_for_links<'a>(
   last_base_url: Option<&'a str>,
   last_committed_url: Option<&'a str>,
 ) -> &'a str {
   last_base_url
     .or(last_committed_url)
+=======
+#[cfg(feature = "browser_ui")]
+fn build_page_accesskit_subtree_for_tab(
+  tab_id: TabId,
+  tab: &TabState,
+  cancel_callback: Arc<crate::render_control::CancelCallback>,
+) -> Option<crate::ui::messages::PageAccessKitSubtree> {
+  // Avoid doing any work if the current job was already cancelled.
+  if cancel_callback() {
+    return None;
+  }
+
+  let doc = tab.document.as_ref()?;
+  let prepared = doc.prepared()?;
+
+  // Reuse the worker's cooperative cancellation plumbing: building large accessibility trees should
+  // be interruptible by the UI bumping paint/nav generations.
+  let deadline = deadline_for(cancel_callback, None);
+  let _guard = DeadlineGuard::install(Some(&deadline));
+
+  let interaction_state = Some(tab.interaction.interaction_state());
+  let a11y_tree =
+    crate::accessibility::build_accessibility_tree(prepared.styled_tree(), interaction_state).ok()?;
+
+  Some(page_accesskit_subtree::accesskit_subtree_for_page(tab_id, &a11y_tree))
+}
+
+fn base_url_for_links(tab: &TabState) -> &str {
+  tab
+    .last_base_url
+    .as_deref()
+    .or(tab.last_committed_url.as_deref())
+>>>>>>> 1fb86f70 (feat(ui): emit page AccessKit subtree updates from render worker)
     .unwrap_or(about_pages::ABOUT_BASE_URL)
 }
 
@@ -9631,6 +9670,7 @@ impl BrowserRuntime {
               .then_some(DEFAULT_TICK_INTERVAL),
           },
         });
+<<<<<<< HEAD
         if let Some(doc) = tab.document.as_ref() {
           if let Some((tree, bounds_css)) =
             compute_page_accessibility_snapshot(doc, &tab.interaction, &tab.scroll_state)
@@ -9643,6 +9683,18 @@ impl BrowserRuntime {
           }
         }
         emitted_frame = true;
+=======
+        #[cfg(feature = "browser_ui")]
+        if let Some(subtree) =
+          build_page_accesskit_subtree_for_tab(tab_id, tab, paint_cancel_callback.clone())
+        {
+          msgs.push(WorkerToUi::PageAccessKitSubtree { tab_id, subtree });
+        }
+        msgs.push(WorkerToUi::ScrollStateUpdated {
+          tab_id,
+          scroll: tab.scroll_state.clone(),
+        });
+>>>>>>> 1fb86f70 (feat(ui): emit page AccessKit subtree updates from render worker)
       } else {
         tab.needs_repaint = true;
       }
@@ -9884,11 +9936,14 @@ impl BrowserRuntime {
     tab.pending_history_entry = false;
     tab.history.mark_committed();
 
+<<<<<<< HEAD
     let page_accessibility = tab
       .document
       .as_ref()
       .and_then(|doc| compute_page_accessibility_snapshot(doc, &tab.interaction, &tab.scroll_state));
 
+=======
+>>>>>>> 1fb86f70 (feat(ui): emit page AccessKit subtree updates from render worker)
     let mut msgs = Vec::new();
     msgs.push(WorkerToUi::NavigationFailed {
       tab_id,
@@ -9910,6 +9965,7 @@ impl BrowserRuntime {
           .unwrap_or(tab.dpr),
         scroll_state: tab.scroll_state.clone(),
         scroll_metrics: compute_scroll_metrics(tab.document.as_ref(), tab.viewport_css, &tab.scroll_state),
+<<<<<<< HEAD
         next_tick: (tab.document.as_ref().is_some_and(document_wants_ticks) || tab.js_tab.is_some())
           .then_some(DEFAULT_TICK_INTERVAL),
       },
@@ -9921,6 +9977,20 @@ impl BrowserRuntime {
         bounds_css,
       });
     }
+=======
+        wants_ticks: tab.document.as_ref().is_some_and(document_wants_ticks),
+      },
+    });
+    #[cfg(feature = "browser_ui")]
+    if let Some(subtree) = build_page_accesskit_subtree_for_tab(tab_id, tab, cancel_callback.clone())
+    {
+      msgs.push(WorkerToUi::PageAccessKitSubtree { tab_id, subtree });
+    }
+    msgs.push(WorkerToUi::ScrollStateUpdated {
+      tab_id,
+      scroll: tab.scroll_state.clone(),
+    });
+>>>>>>> 1fb86f70 (feat(ui): emit page AccessKit subtree updates from render worker)
     msgs.push(WorkerToUi::LoadingState {
       tab_id,
       loading: false,
@@ -10091,6 +10161,7 @@ impl BrowserRuntime {
             .then_some(DEFAULT_TICK_INTERVAL),
         },
       });
+<<<<<<< HEAD
       if let Some(doc) = tab.document.as_ref() {
         if let Some((tree, bounds_css)) =
           compute_page_accessibility_snapshot(doc, &tab.interaction, &tab.scroll_state)
@@ -10102,6 +10173,17 @@ impl BrowserRuntime {
           });
         }
       }
+=======
+      #[cfg(feature = "browser_ui")]
+      if let Some(subtree) = build_page_accesskit_subtree_for_tab(tab_id, tab, cancel_callback.clone())
+      {
+        msgs.push(WorkerToUi::PageAccessKitSubtree { tab_id, subtree });
+      }
+      msgs.push(WorkerToUi::ScrollStateUpdated {
+        tab_id,
+        scroll: tab.scroll_state.clone(),
+      });
+>>>>>>> 1fb86f70 (feat(ui): emit page AccessKit subtree updates from render worker)
     }
 
     Some(JobOutput {

@@ -350,6 +350,21 @@ impl std::fmt::Debug for RenderedFrame {
   }
 }
 
+/// AccessKit subtree update representing the *page/document* accessibility tree for a tab.
+///
+/// This is emitted by the render worker alongside [`WorkerToUi::FrameReady`] so the windowed
+/// browser UI can merge the document subtree into its overall AccessKit tree (browser chrome + page).
+#[cfg(feature = "browser_ui")]
+#[derive(Debug)]
+pub struct PageAccessKitSubtree {
+  /// Root node id for this subtree (typically a per-tab deterministic id).
+  pub root_id: accesskit::NodeId,
+  /// All nodes in the subtree (including `root_id`).
+  pub nodes: Vec<(accesskit::NodeId, accesskit::Node)>,
+  /// Focused node within the subtree, when any.
+  pub focus_id: Option<accesskit::NodeId>,
+}
+
 /// Messages sent from the UI thread to the render worker.
 #[derive(Debug)]
 pub enum UiToWorker {
@@ -897,6 +912,7 @@ pub enum WorkerToUi {
     tab_id: TabId,
     frame: RenderedFrame,
   },
+<<<<<<< HEAD
   /// Snapshot of the currently rendered page's accessibility tree.
   ///
   /// `bounds_css` maps DOM preorder node id → viewport-local CSS rect. The vector is sorted by id
@@ -917,6 +933,15 @@ pub enum WorkerToUi {
     tab_id: TabId,
     after: Duration,
     reason: WakeReason,
+=======
+  /// Updated page accessibility subtree (AccessKit nodes + focus) for the given tab.
+  ///
+  /// Feature-gated behind `browser_ui` because it depends on AccessKit types.
+  #[cfg(feature = "browser_ui")]
+  PageAccessKitSubtree {
+    tab_id: TabId,
+    subtree: PageAccessKitSubtree,
+>>>>>>> 1fb86f70 (feat(ui): emit page AccessKit subtree updates from render worker)
   },
   OpenSelectDropdown {
     tab_id: TabId,

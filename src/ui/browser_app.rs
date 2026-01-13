@@ -557,6 +557,8 @@ pub struct BrowserTabState {
   /// Latest accessibility snapshot reported by the worker for this tab.
   pub page_accessibility: Option<PageAccessibilitySnapshot>,
   pub favicon_meta: Option<FaviconMeta>,
+  #[cfg(feature = "browser_ui")]
+  pub page_accesskit_subtree: Option<crate::ui::messages::PageAccessKitSubtree>,
   debug_log: VecDeque<String>,
   #[cfg(any(test, feature = "browser_ui"))]
   tab_a11y_label_cache: crate::ui::tab_accessible_label::TabAccessibleLabelCache,
@@ -603,6 +605,8 @@ impl BrowserTabState {
       latest_frame_meta: None,
       page_accessibility: None,
       favicon_meta: None,
+      #[cfg(feature = "browser_ui")]
+      page_accesskit_subtree: None,
       debug_log: VecDeque::new(),
       #[cfg(any(test, feature = "browser_ui"))]
       tab_a11y_label_cache: crate::ui::tab_accessible_label::TabAccessibleLabelCache::default(),
@@ -2524,6 +2528,16 @@ impl BrowserAppState {
           tab.page_accessibility = Some(PageAccessibilitySnapshot { tree, bounds_css });
         }
         update.request_redraw = self.active_tab_id() == Some(tab_id);
+      }
+      #[cfg(feature = "browser_ui")]
+      WorkerToUi::PageAccessKitSubtree { tab_id, subtree } => {
+        if let Some(tab) = self.tab_mut(tab_id) {
+          tab.page_accesskit_subtree = Some(subtree);
+        }
+        // Accessibility updates can affect assistive tech output even when the visual frame is
+        // unchanged, so request a redraw to ensure the UI layer can flush them alongside the next
+        // frame.
+        update.request_redraw = true;
       }
       WorkerToUi::OpenSelectDropdown {
         tab_id,
