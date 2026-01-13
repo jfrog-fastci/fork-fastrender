@@ -5,7 +5,8 @@
   Intent: App-Sandbox the untrusted renderer helper process when FastRender is
   shipped as a macOS `.app`. The renderer should not have direct OS capabilities
   beyond what is required to render:
-    - NO network access (do NOT add `com.apple.security.network.client`)
+    - NO network access (do NOT add `com.apple.security.network.client` or
+      `com.apple.security.network.server`)
     - NO filesystem read/write access (do NOT add any `com.apple.security.files.*`
       entitlements)
 
@@ -30,4 +31,3 @@
     <true/>
   </dict>
 </plist>
-

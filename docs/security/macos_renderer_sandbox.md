@@ -20,6 +20,8 @@ packaging step:
   - Intended for the untrusted renderer helper process.
   - Enables `com.apple.security.app-sandbox`.
   - Intentionally does **not** request network or file entitlements.
+  - Reminder: App Sandbox entitlements are *additive* grants; “denied” is achieved by leaving
+    entitlements out (not by writing explicit deny rules).
 
 ## How these would be used (future `.app` bundling)
 
