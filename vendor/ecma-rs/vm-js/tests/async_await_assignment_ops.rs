@@ -356,6 +356,40 @@ fn async_await_nullish_assignment_short_circuits_without_awaiting_rhs() -> Resul
 }
 
 #[test]
+fn async_await_logical_assignments_work_on_property_targets() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var hit = "";
+      async function f() {
+        let obj = { a: 1, b: 0, c: null, d: 0, e: 1, f: 0 };
+        obj.a &&= await Promise.resolve(2);
+        obj.b ||= await Promise.resolve(3);
+        obj.c ??= await Promise.resolve(4);
+
+        // Short-circuit cases: RHS must not be evaluated (including any `await`).
+        obj.d &&= (hit += "d", await Promise.resolve(9));
+        obj.e ||= (hit += "e", await Promise.resolve(9));
+        obj.f ??= (hit += "f", await Promise.resolve(9));
+
+        return [obj.a, obj.b, obj.c, obj.d, obj.e, obj.f, hit].join("|");
+      }
+      f().then(v => out = v);
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "2|3|4|0|1|0|");
+  Ok(())
+}
+
+#[test]
 fn async_await_compound_assignment_getvalue_happens_before_awaiting_rhs() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
