@@ -7089,14 +7089,14 @@ mod tests {
 
     // Frame 0: render once to capture widget ids from `store_test_id`.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
     let _ = ctx.end_frame();
     let downloads_id = expect_temp_id(&ctx, "chrome_downloads_button_id");
 
     // Frame 1: move focus to the downloads button.
     ctx.memory_mut(|mem| mem.request_focus(downloads_id));
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
     let _ = ctx.end_frame();
     assert!(
       ctx.memory(|mem| mem.has_focus(downloads_id)),
@@ -7105,7 +7105,7 @@ mod tests {
 
     // Frame 2: press Enter; should activate like a primary click.
     begin_frame(&ctx, vec![key_press(egui::Key::Enter)]);
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
     let _ = ctx.end_frame();
     assert!(
       actions
@@ -7128,14 +7128,14 @@ mod tests {
 
     // Frame 0: render once to capture widget ids from `store_test_id`.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), true, |_| None);
     let _ = ctx.end_frame();
     let bookmark_id = expect_temp_id(&ctx, "chrome_bookmark_star_id");
 
     // Frame 1: move focus to the bookmark star.
     ctx.memory_mut(|mem| mem.request_focus(bookmark_id));
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), true, |_| None);
     let _ = ctx.end_frame();
     assert!(
       ctx.memory(|mem| mem.has_focus(bookmark_id)),
@@ -7144,7 +7144,7 @@ mod tests {
 
     // Frame 2: press Space; should activate like a primary click.
     begin_frame(&ctx, vec![key_press(egui::Key::Space)]);
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), true, |_| None);
     let _ = ctx.end_frame();
     assert!(
       actions
