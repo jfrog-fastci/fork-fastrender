@@ -2,6 +2,7 @@ use crate::error::Termination;
 use crate::error::TerminationReason;
 use crate::error::VmError;
 use crate::exec::{AsyncContinuation, RuntimeEnv};
+use crate::hir_exec::HirAsyncContinuation;
 use crate::execution_context::ExecutionContext;
 use crate::execution_context::ModuleId;
 use crate::execution_context::ScriptId;
@@ -484,6 +485,7 @@ pub struct Vm {
   ecma_function_cache: HashMap<EcmaFunctionKey, EcmaFunctionId>,
   template_registry: HashMap<TemplateRegistryKey, TemplateRegistryEntry>,
   async_resume_call: Option<NativeFunctionId>,
+  hir_async_resume_call: Option<NativeFunctionId>,
   exec_module_load_on_fulfilled_call: Option<NativeFunctionId>,
   exec_module_load_on_rejected_call: Option<NativeFunctionId>,
   module_tla_on_fulfilled_call: Option<NativeFunctionId>,
@@ -500,6 +502,8 @@ pub struct Vm {
   async_iterator_close_on_rejected_call: Option<NativeFunctionId>,
   next_async_continuation_id: u32,
   async_continuations: HashMap<u32, AsyncContinuation>,
+  next_hir_async_continuation_id: u32,
+  hir_async_continuations: HashMap<u32, HirAsyncContinuation>,
   /// Optional pointer to an embedding-owned [`ModuleGraph`].
   ///
   /// This enables dynamic `import()` expressions evaluated from the AST interpreter (`exec.rs`) to
@@ -544,6 +548,7 @@ impl std::fmt::Debug for Vm {
     ds.field("ecma_function_cache", &self.ecma_function_cache.len());
     ds.field("template_registry", &self.template_registry.len());
     ds.field("async_continuations", &self.async_continuations.len());
+    ds.field("hir_async_continuations", &self.hir_async_continuations.len());
     ds.field("module_graph", &self.module_graph.is_some());
     ds.field("realm_states", &self.realm_states.len());
     ds.field("intrinsics", &self.intrinsics);
@@ -763,6 +768,7 @@ impl Vm {
       ecma_function_cache: HashMap::new(),
       template_registry: HashMap::new(),
       async_resume_call: None,
+      hir_async_resume_call: None,
       exec_module_load_on_fulfilled_call: None,
       exec_module_load_on_rejected_call: None,
       module_tla_on_fulfilled_call: None,
@@ -779,6 +785,8 @@ impl Vm {
       async_iterator_close_on_rejected_call: None,
       next_async_continuation_id: 0,
       async_continuations: HashMap::new(),
+      next_hir_async_continuation_id: 0,
+      hir_async_continuations: HashMap::new(),
       module_graph: None,
       realm_states: HashMap::new(),
       intrinsics: None,
@@ -1057,16 +1065,25 @@ impl Vm {
     }
 
     if self.async_continuations.is_empty() {
+      // Continue: compiled (HIR) top-level await uses a separate continuation store.
+    } else {
+      // Tearing down async continuations is a best-effort cleanup path for embeddings that abort
+      // execution and will not resume the event loop. This does *not* settle the associated Promises;
+      // it only unregisters the continuation's persistent roots so the heap can be reused safely.
+      let continuations = mem::take(&mut self.async_continuations);
+      let mut scope = heap.scope();
+      for (_, cont) in continuations {
+        crate::exec::async_teardown_continuation(&mut scope, cont);
+      }
+    }
+ 
+    if self.hir_async_continuations.is_empty() {
       return;
     }
-
-    // Tearing down async continuations is a best-effort cleanup path for embeddings that abort
-    // execution and will not resume the event loop. This does *not* settle the associated Promises;
-    // it only unregisters the continuation's persistent roots so the heap can be reused safely.
-    let continuations = mem::take(&mut self.async_continuations);
+    let continuations = mem::take(&mut self.hir_async_continuations);
     let mut scope = heap.scope();
     for (_, cont) in continuations {
-      crate::exec::async_teardown_continuation(&mut scope, cont);
+      crate::hir_exec::hir_async_teardown_continuation(&mut scope, cont);
     }
   }
 
@@ -1123,6 +1140,15 @@ impl Vm {
     }
     let id = self.register_native_call(crate::exec::async_resume_call)?;
     self.async_resume_call = Some(id);
+    Ok(id)
+  }
+
+  pub(crate) fn hir_async_resume_call_id(&mut self) -> Result<NativeFunctionId, VmError> {
+    if let Some(id) = self.hir_async_resume_call {
+      return Ok(id);
+    }
+    let id = self.register_native_call(crate::hir_exec::hir_async_resume_call)?;
+    self.hir_async_resume_call = Some(id);
     Ok(id)
   }
 
@@ -1307,6 +1333,37 @@ impl Vm {
       .try_reserve(1)
       .map_err(|_| VmError::OutOfMemory)?;
     self.async_continuations.insert(id, cont);
+    Ok(())
+  }
+
+  pub(crate) fn reserve_hir_async_continuations(&mut self, additional: usize) -> Result<(), VmError> {
+    self
+      .hir_async_continuations
+      .try_reserve(additional)
+      .map_err(|_| VmError::OutOfMemory)
+  }
+
+  pub(crate) fn insert_hir_async_continuation_reserved(&mut self, cont: HirAsyncContinuation) -> u32 {
+    let id = self.next_hir_async_continuation_id;
+    self.next_hir_async_continuation_id = self.next_hir_async_continuation_id.wrapping_add(1);
+    self.hir_async_continuations.insert(id, cont);
+    id
+  }
+
+  pub(crate) fn take_hir_async_continuation(&mut self, id: u32) -> Option<HirAsyncContinuation> {
+    self.hir_async_continuations.remove(&id)
+  }
+
+  pub(crate) fn replace_hir_async_continuation(
+    &mut self,
+    id: u32,
+    cont: HirAsyncContinuation,
+  ) -> Result<(), VmError> {
+    self
+      .hir_async_continuations
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    self.hir_async_continuations.insert(id, cont);
     Ok(())
   }
 
@@ -2753,54 +2810,74 @@ impl Vm {
     opts: ParseOptions,
     allow_enclosing_meta_properties: bool,
   ) -> Result<Node<parse_js::ast::stx::TopLevel>, VmError> {
-    // Ensure fuel/deadline/interrupt budgets apply *during parsing* as well as during evaluation.
-    self.tick()?;
+    let mut parse_once = |allow_top_level_await_in_script: bool| -> Result<Node<parse_js::ast::stx::TopLevel>, VmError> {
+      // Ensure fuel/deadline/interrupt budgets apply *during parsing* as well as during evaluation.
+      self.tick()?;
 
-    const PARSE_TICK_EVERY: u64 = 1024;
-    let mut steps: u64 = 0;
-    let mut tick_err: Option<VmError> = None;
+      const PARSE_TICK_EVERY: u64 = 1024;
+      let mut steps: u64 = 0;
+      let mut tick_err: Option<VmError> = None;
 
-    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-      parse_with_options_cancellable_by_with_init(
-        source,
-        opts,
-        || {
-          steps = steps.wrapping_add(1);
-          if steps % PARSE_TICK_EVERY == 0 {
-            if let Err(err) = self.tick() {
-              tick_err = Some(err);
-              return true;
+      let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        parse_with_options_cancellable_by_with_init(
+          source,
+          opts,
+          || {
+            steps = steps.wrapping_add(1);
+            if steps % PARSE_TICK_EVERY == 0 {
+              if let Err(err) = self.tick() {
+                tick_err = Some(err);
+                return true;
+              }
             }
-          }
-          false
-        },
-        |p| {
-          if allow_enclosing_meta_properties {
-            p.set_initial_meta_property_context(
-              /* allow_new_target */ true,
-              /* allow_super_property */ true,
-              /* allow_super_call */ true,
-            );
-          }
-        },
-      )
-    }));
-    let res = match res {
-      Ok(res) => res,
-      Err(_) => {
-        return Err(VmError::InvariantViolation(
-          "parse-js panicked while parsing source",
-        ));
+            false
+          },
+          |p| {
+            if allow_enclosing_meta_properties {
+              p.set_initial_meta_property_context(
+                /* allow_new_target */ true,
+                /* allow_super_property */ true,
+                /* allow_super_call */ true,
+              );
+            }
+            if allow_top_level_await_in_script {
+              p.set_allow_top_level_await_in_script(true);
+            }
+          },
+        )
+      }));
+      let res = match res {
+        Ok(res) => res,
+        Err(_) => {
+          return Err(VmError::InvariantViolation(
+            "parse-js panicked while parsing source",
+          ));
+        }
+      };
+
+      match res {
+        Ok(top) => Ok(top),
+        Err(err) if err.typ == SyntaxErrorType::Cancelled => Err(tick_err.unwrap_or_else(|| {
+          VmError::Termination(Termination::new(TerminationReason::Interrupted, Vec::new()))
+        })),
+        Err(err) => Err(VmError::Syntax(vec![err.to_diagnostic(FileId(0))])),
       }
     };
 
-    match res {
-      Ok(top) => Ok(top),
-      Err(err) if err.typ == SyntaxErrorType::Cancelled => Err(tick_err.unwrap_or_else(|| {
-        VmError::Termination(Termination::new(TerminationReason::Interrupted, Vec::new()))
-      })),
-      Err(err) => Err(VmError::Syntax(vec![err.to_diagnostic(FileId(0))])),
+    let first = parse_once(false);
+    let should_retry =
+      matches!(&first, Err(VmError::Syntax(_))) && matches!(opts.source_type, SourceType::Script);
+    if !should_retry {
+      return first;
     }
+
+    // If parsing a classic script fails, retry with top-level `await` enabled. This implements async
+    // classic scripts without breaking valid scripts that use `await` as an identifier.
+    let retry = parse_once(true);
+    if retry.is_ok() {
+      return retry;
+    }
+    first
   }
 
   pub(crate) fn parse_top_level_with_budget(

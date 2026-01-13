@@ -159,6 +159,7 @@ pub struct Parser<'a> {
   next_tok_i: usize,
   options: ParseOptions,
   allow_bare_ts_type_args: bool,
+  allow_top_level_await_in_script: bool,
   strict_mode: u32,
   in_function: u32,
   new_target_allowed: u32,
@@ -195,6 +196,7 @@ impl<'a> Parser<'a> {
       next_tok_i: 0,
       options,
       allow_bare_ts_type_args: false,
+      allow_top_level_await_in_script: false,
       strict_mode: 0,
       in_function: 0,
       new_target_allowed: 0,
@@ -220,6 +222,7 @@ impl<'a> Parser<'a> {
       next_tok_i: 0,
       options,
       allow_bare_ts_type_args: false,
+      allow_top_level_await_in_script: false,
       strict_mode: 0,
       in_function: 0,
       new_target_allowed: 0,
@@ -255,6 +258,17 @@ impl<'a> Parser<'a> {
     self.new_target_allowed = allow_new_target as u32;
     self.super_prop_allowed = allow_super_property as u32;
     self.super_call_allowed = allow_super_call as u32;
+  }
+
+  /// Allows parsing top-level `await` expressions in classic scripts (`SourceType::Script`).
+  ///
+  /// This is an embedder hook used to implement "async classic scripts" (top-level await) without
+  /// globally changing the script grammar, which would break valid scripts that use `await` as an
+  /// identifier (e.g. `await(0)`).
+  ///
+  /// Callers should only use this to widen the initial grammar context *before* parsing begins.
+  pub fn set_allow_top_level_await_in_script(&mut self, allow: bool) {
+    self.allow_top_level_await_in_script = allow;
   }
 
   pub fn options(&self) -> ParseOptions {

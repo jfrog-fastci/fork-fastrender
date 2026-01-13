@@ -11,8 +11,8 @@ use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, 
 use crate::tick::vec_try_extend_from_slice_with_ticks;
 use crate::vm::EcmaFunctionKind;
 use crate::{
-  EnvBinding, ExecutionContext, GcBigInt, GcEnv, GcObject, ModuleId, RealmId, Scope, ScriptOrModule,
-  StackFrame, Value, Vm, VmError, VmHost, VmHostHooks,
+  EnvBinding, ExecutionContext, GcBigInt, GcEnv, GcObject, ModuleId, RealmId, RootId, Scope,
+  ScriptOrModule, StackFrame, Value, Vm, VmError, VmHost, VmHostHooks,
 };
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -9115,6 +9115,10 @@ pub(crate) fn run_compiled_script(
 ) -> Result<Value, VmError> {
   env.set_source_info(script.source.clone(), 0, 0);
 
+  if script.contains_top_level_await {
+    return run_compiled_script_async(vm, scope, host, hooks, env, script);
+  }
+
   let global_object = env.global_object();
   let mut evaluator = HirEvaluator {
     vm,
@@ -9408,4 +9412,863 @@ mod async_function_ast_fallback_tests {
     );
     Ok(())
   }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum HirAsyncResumePoint {
+  /// Resume statement-list evaluation after completing a top-level `await` *expression statement*.
+  ///
+  /// The resumed value becomes the statement-list completion value (ECMA-262 `UpdateEmpty`).
+  ExprStmt { next_stmt_index: usize },
+  /// Resume a `var`/`let`/`const` statement after awaiting a declarator initializer of the form
+  /// `await <expr>`.
+  VarDecl {
+    stmt_index: usize,
+    declarator_index: usize,
+  },
+}
+
+#[derive(Debug)]
+pub(crate) struct HirAsyncContinuation {
+  env: RuntimeEnv,
+  strict: bool,
+  exec_ctx: Option<ExecutionContext>,
+  script: Arc<CompiledScript>,
+  this_root: RootId,
+  new_target_root: RootId,
+  promise_root: RootId,
+  resolve_root: RootId,
+  reject_root: RootId,
+  awaited_promise_root: Option<RootId>,
+  resume: HirAsyncResumePoint,
+  /// Rooted running completion value for statement-list evaluation (ECMA-262 `UpdateEmpty`).
+  last_value_root: RootId,
+  last_value_is_set: bool,
+}
+
+pub(crate) fn hir_async_teardown_continuation(scope: &mut Scope<'_>, mut cont: HirAsyncContinuation) {
+  cont.env.teardown(scope.heap_mut());
+  scope.heap_mut().remove_root(cont.this_root);
+  scope.heap_mut().remove_root(cont.new_target_root);
+  scope.heap_mut().remove_root(cont.promise_root);
+  scope.heap_mut().remove_root(cont.resolve_root);
+  scope.heap_mut().remove_root(cont.reject_root);
+  scope.heap_mut().remove_root(cont.last_value_root);
+  if let Some(root) = cont.awaited_promise_root.take() {
+    scope.heap_mut().remove_root(root);
+  }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum HirAsyncEvalResult {
+  Complete,
+  Await {
+    await_value: Value,
+    resume: HirAsyncResumePoint,
+  },
+}
+
+fn hir_eval_stmt_list_until_await(
+  evaluator: &mut HirEvaluator<'_>,
+  scope: &mut Scope<'_>,
+  body: &hir_js::Body,
+  stmts: &[hir_js::StmtId],
+  start_index: usize,
+  last_value_root: RootId,
+  last_value_is_set: &mut bool,
+) -> Result<HirAsyncEvalResult, VmError> {
+  for (i, stmt_id) in stmts.iter().enumerate().skip(start_index) {
+    // Fast-path top-level `await` expression statements without touching the normal compiled
+    // evaluator (which does not yet support `ExprKind::Await`).
+    let stmt = evaluator.get_stmt(body, *stmt_id)?;
+    if let hir_js::StmtKind::Expr(expr_id) = stmt.kind {
+      let expr = evaluator.get_expr(body, expr_id)?;
+      if let hir_js::ExprKind::Await { expr: awaited_expr } = expr.kind {
+        // Budget once for the statement and once for the await expression itself.
+        evaluator.vm.tick()?;
+        evaluator.vm.tick()?;
+        let await_value = evaluator.eval_expr(scope, body, awaited_expr)?;
+        return Ok(HirAsyncEvalResult::Await {
+          await_value,
+          resume: HirAsyncResumePoint::ExprStmt {
+            next_stmt_index: i.saturating_add(1),
+          },
+        });
+      }
+    }
+
+    // Fast-path `var`/`let`/`const` declarations whose initializer expression is a direct `await`
+    // expression (e.g. `const x = await foo();`).
+    if let hir_js::StmtKind::Var(var_decl) = &stmt.kind {
+      // Budget once for the statement itself, matching `eval_stmt`.
+      evaluator.vm.tick()?;
+      for (j, declarator) in var_decl.declarators.iter().enumerate() {
+        // Match `eval_var_decl`'s per-declarator tick.
+        evaluator.vm.tick()?;
+        let init_missing = declarator.init.is_none();
+        if let Some(init) = declarator.init {
+          let init_expr = evaluator.get_expr(body, init)?;
+          if let hir_js::ExprKind::Await { expr: awaited_expr } = init_expr.kind {
+            // Budget once for the await expression itself.
+            evaluator.vm.tick()?;
+            let await_value = evaluator.eval_expr(scope, body, awaited_expr)?;
+            return Ok(HirAsyncEvalResult::Await {
+              await_value,
+              resume: HirAsyncResumePoint::VarDecl {
+                stmt_index: i,
+                declarator_index: j,
+              },
+            });
+          }
+        }
+        let value = match declarator.init {
+          Some(init) => evaluator.eval_expr(scope, body, init)?,
+          None => Value::Undefined,
+        };
+        evaluator.bind_var_decl_pat(
+          scope,
+          body,
+          declarator.pat,
+          var_decl.kind,
+          init_missing,
+          value,
+        )?;
+      }
+      continue;
+    }
+
+    match evaluator.eval_stmt(scope, body, *stmt_id)? {
+      Flow::Normal(v) => {
+        if let Some(v) = v {
+          *last_value_is_set = true;
+          scope.heap_mut().set_root(last_value_root, v);
+        }
+      }
+      Flow::Return(_) => {
+        return Err(VmError::InvariantViolation(
+          "script evaluation produced Return flow (early errors should prevent this)",
+        ))
+      }
+      Flow::Break(..) => {
+        return Err(VmError::InvariantViolation(
+          "script evaluation produced Break flow (early errors should prevent this)",
+        ))
+      }
+      Flow::Continue(..) => {
+        return Err(VmError::InvariantViolation(
+          "script evaluation produced Continue flow (early errors should prevent this)",
+        ))
+      }
+    }
+  }
+  Ok(HirAsyncEvalResult::Complete)
+}
+
+fn run_compiled_script_async(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  runtime_env: &mut RuntimeEnv,
+  script: Arc<CompiledScript>,
+) -> Result<Value, VmError> {
+  // Async classic script execution: evaluate the statement list and return a Promise representing
+  // completion.
+  let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(vm, scope, host, hooks)?;
+  let promise = cap.promise;
+
+  let global_object = runtime_env.global_object();
+  let exec_ctx = vm
+    .current_realm()
+    .map(|realm| ExecutionContext {
+      realm,
+      script_or_module: vm.get_active_script_or_module(),
+    });
+
+  // Use a distinct `RuntimeEnv` for async script evaluation. Async continuations tear down their
+  // env roots on completion; classic scripts must not tear down the runtime's global env.
+  let mut env = RuntimeEnv::new_with_lexical_env(scope.heap_mut(), global_object, runtime_env.lexical_env())?;
+  env.set_source_info(script.source.clone(), 0, 0);
+
+  // Root the running completion value so it can survive allocations during evaluation segments and
+  // across suspensions.
+  let last_value_root = scope.heap_mut().add_root(Value::Undefined)?;
+  let mut last_value_is_set = false;
+
+  // In classic scripts, top-level `this` is the global object (even in strict mode).
+  let global_this = Value::Object(global_object);
+
+  let hir = script.hir.as_ref();
+  let body = hir
+    .body(hir.root_body())
+    .ok_or(VmError::InvariantViolation("compiled script root body not found"))?;
+ 
+  // Execute the instantiation phase and the first evaluation segment while borrowing `vm`/`host`/`hooks`
+  // through the evaluator. We need those borrows to end before we can schedule Promise reactions for
+  // the first `await`.
+  let (strict, eval) = match (|| -> Result<(bool, Result<HirAsyncEvalResult, VmError>), VmError> {
+    let mut evaluator = HirEvaluator {
+      vm,
+      host,
+      hooks,
+      env: &mut env,
+      // Best-effort strict detection.
+      strict: false,
+      this: global_this,
+      this_initialized: true,
+      class_constructor: None,
+      derived_constructor: false,
+      this_root_idx: None,
+      new_target: Value::Undefined,
+      home_object: None,
+      script: script.clone(),
+    };
+
+    evaluator.strict = evaluator.detect_use_strict_directive(body)?;
+
+    // Some early errors are still checked at runtime during instantiation so invalid declarations do
+    // not partially pollute the global environment.
+    evaluator.early_error_missing_initializers_in_stmt_list(body, body.root_stmts.as_slice())?;
+    // Hoist `var` declarations so lookups before declaration see `undefined` instead of throwing
+    // ReferenceError.
+    evaluator.instantiate_var_decls(scope, body, body.root_stmts.as_slice())?;
+    // Hoist function declarations so they can be called before their declaration statement.
+    evaluator.instantiate_function_decls(scope, body, body.root_stmts.as_slice(), /* annex_b */ false)?;
+    // Create `let` / `const` bindings up-front in the global lexical environment so TDZ + shadowing
+    // semantics are correct.
+    evaluator.instantiate_lexical_decls(
+      scope,
+      body,
+      body.root_stmts.as_slice(),
+      evaluator.env.lexical_env(),
+    )?;
+
+    let eval = hir_eval_stmt_list_until_await(
+      &mut evaluator,
+      scope,
+      body,
+      body.root_stmts.as_slice(),
+      /* start_index */ 0,
+      last_value_root,
+      &mut last_value_is_set,
+    );
+    Ok((evaluator.strict, eval))
+  })() {
+    Ok(v) => v,
+    Err(err) => {
+      scope.heap_mut().remove_root(last_value_root);
+      env.teardown(scope.heap_mut());
+      return Err(err);
+    }
+  };
+
+  match eval {
+    Ok(HirAsyncEvalResult::Complete) => {
+      // Complete synchronously: resolve the script-completion promise.
+      let v = if last_value_is_set {
+        scope
+          .heap()
+          .get_root(last_value_root)
+          .ok_or(VmError::InvariantViolation("async script missing last value root"))?
+      } else {
+        Value::Undefined
+      };
+
+      let mut call_scope = scope.reborrow();
+      if let Err(err) = call_scope.push_roots(&[cap.resolve, v]) {
+        call_scope.heap_mut().remove_root(last_value_root);
+        env.teardown(call_scope.heap_mut());
+        return Err(err);
+      }
+      let res = vm.call_with_host_and_hooks(host, &mut call_scope, hooks, cap.resolve, Value::Undefined, &[v]);
+      call_scope.heap_mut().remove_root(last_value_root);
+      env.teardown(call_scope.heap_mut());
+      res.map(|_| promise)
+    }
+    Ok(HirAsyncEvalResult::Await { await_value, resume }) => {
+      // Root all captured values while we create persistent roots and schedule the resumption.
+      let mut root_scope = scope.reborrow();
+      if let Err(err) = root_scope.push_roots(&[promise, cap.resolve, cap.reject, global_this, await_value]) {
+        root_scope.heap_mut().remove_root(last_value_root);
+        env.teardown(root_scope.heap_mut());
+        return Err(err);
+      }
+
+      let resolve_res = crate::promise_ops::promise_resolve_for_await_with_host_and_hooks(
+        vm,
+        &mut root_scope,
+        host,
+        hooks,
+        await_value,
+      );
+      let resolve_res =
+        resolve_res.map_err(|err| crate::exec::coerce_error_to_throw_for_async(vm, &mut root_scope, err));
+
+      let awaited_promise = match resolve_res {
+        Ok(p) => p,
+        Err(err) if err.is_throw_completion() => {
+          let reason = match err {
+            VmError::Throw(reason) => reason,
+            VmError::ThrowWithStack { value: reason, .. } => reason,
+            other => {
+              root_scope.heap_mut().remove_root(last_value_root);
+              env.teardown(root_scope.heap_mut());
+              return Err(other);
+            }
+          };
+          let mut call_scope = root_scope.reborrow();
+          if let Err(err) = call_scope.push_roots(&[cap.reject, reason]) {
+            call_scope.heap_mut().remove_root(last_value_root);
+            env.teardown(call_scope.heap_mut());
+            return Err(err);
+          }
+          let res =
+            vm.call_with_host_and_hooks(host, &mut call_scope, hooks, cap.reject, Value::Undefined, &[reason]);
+          call_scope.heap_mut().remove_root(last_value_root);
+          env.teardown(call_scope.heap_mut());
+          return res.map(|_| promise);
+        }
+        Err(err) => {
+          root_scope.heap_mut().remove_root(last_value_root);
+          env.teardown(root_scope.heap_mut());
+          return Err(err);
+        }
+      };
+
+      if let Err(err) = root_scope.push_root(awaited_promise) {
+        root_scope.heap_mut().remove_root(last_value_root);
+        env.teardown(root_scope.heap_mut());
+        return Err(err);
+      }
+
+      // Create persistent roots for the async continuation.
+      let values = [
+        global_this,
+        Value::Undefined, // new.target
+        promise,
+        cap.resolve,
+        cap.reject,
+        awaited_promise,
+      ];
+      let mut roots: Vec<RootId> = Vec::new();
+      if roots.try_reserve_exact(values.len()).is_err() {
+        root_scope.heap_mut().remove_root(last_value_root);
+        env.teardown(root_scope.heap_mut());
+        return Err(VmError::OutOfMemory);
+      }
+      for &value in &values {
+        match root_scope.heap_mut().add_root(value) {
+          Ok(id) => roots.push(id),
+          Err(err) => {
+            for id in roots.drain(..) {
+              root_scope.heap_mut().remove_root(id);
+            }
+            root_scope.heap_mut().remove_root(last_value_root);
+            env.teardown(root_scope.heap_mut());
+            return Err(err);
+          }
+        }
+      }
+
+      let this_root = roots[0];
+      let new_target_root = roots[1];
+      let promise_root = roots[2];
+      let resolve_root = roots[3];
+      let reject_root = roots[4];
+      let awaited_root = roots[5];
+
+      if let Err(err) = vm.reserve_hir_async_continuations(1) {
+        for id in roots.drain(..) {
+          root_scope.heap_mut().remove_root(id);
+        }
+        root_scope.heap_mut().remove_root(last_value_root);
+        env.teardown(root_scope.heap_mut());
+        return Err(err);
+      }
+
+      let cont = HirAsyncContinuation {
+        env: env.clone(),
+        strict,
+        exec_ctx,
+        script: script.clone(),
+        this_root,
+        new_target_root,
+        promise_root,
+        resolve_root,
+        reject_root,
+        awaited_promise_root: Some(awaited_root),
+        resume,
+        last_value_root,
+        last_value_is_set,
+      };
+      let id = vm.insert_hir_async_continuation_reserved(cont);
+
+      let schedule_res: Result<(), VmError> = (|| {
+        let call_id = vm.hir_async_resume_call_id()?;
+        let intr = vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+        let job_realm = vm.current_realm();
+        let script_or_module_token = match vm.get_active_script_or_module() {
+          Some(sm) => Some(vm.intern_script_or_module(sm)?),
+          None => None,
+        };
+
+        let name = root_scope.alloc_string("")?;
+        let slots_fulfill = [Value::Number(id as f64), Value::Bool(false)];
+        let on_fulfilled = root_scope.alloc_native_function_with_slots(call_id, None, name, 1, &slots_fulfill)?;
+        root_scope.push_root(Value::Object(on_fulfilled))?;
+
+        let name = root_scope.alloc_string("")?;
+        let slots_reject = [Value::Number(id as f64), Value::Bool(true)];
+        let on_rejected = root_scope.alloc_native_function_with_slots(call_id, None, name, 1, &slots_reject)?;
+        root_scope.push_root(Value::Object(on_rejected))?;
+
+        for cb in [on_fulfilled, on_rejected] {
+          root_scope
+            .heap_mut()
+            .object_set_prototype(cb, Some(intr.function_prototype()))?;
+          root_scope
+            .heap_mut()
+            .set_function_realm(cb, global_object)?;
+          if let Some(realm) = job_realm {
+            root_scope.heap_mut().set_function_job_realm(cb, realm)?;
+          }
+          if let Some(token) = script_or_module_token {
+            root_scope
+              .heap_mut()
+              .set_function_script_or_module_token(cb, Some(token))?;
+          }
+        }
+
+        crate::promise_ops::perform_promise_then_no_capability_with_host_and_hooks(
+          vm,
+          &mut root_scope,
+          host,
+          hooks,
+          awaited_promise,
+          Value::Object(on_fulfilled),
+          Value::Object(on_rejected),
+        )?;
+        Ok(())
+      })();
+
+      if let Err(err) = schedule_res {
+        if let Some(cont) = vm.take_hir_async_continuation(id) {
+          hir_async_teardown_continuation(&mut root_scope, cont);
+        }
+        return Err(err);
+      }
+
+      Ok(promise)
+    }
+    Err(err) if err.is_throw_completion() => {
+      // Synchronous throw before the first await: reject the completion promise.
+      let reason = err
+        .thrown_value()
+        .ok_or(VmError::InvariantViolation("throw completion missing thrown value"))?;
+      let mut call_scope = scope.reborrow();
+      if let Err(err) = call_scope.push_roots(&[cap.reject, reason]) {
+        call_scope.heap_mut().remove_root(last_value_root);
+        env.teardown(call_scope.heap_mut());
+        return Err(err);
+      }
+      let res =
+        vm.call_with_host_and_hooks(host, &mut call_scope, hooks, cap.reject, Value::Undefined, &[reason]);
+      call_scope.heap_mut().remove_root(last_value_root);
+      env.teardown(call_scope.heap_mut());
+      res.map(|_| promise)
+    }
+    Err(err) => {
+      // Fatal error during evaluation: clean up roots/env to avoid leaks.
+      scope.heap_mut().remove_root(last_value_root);
+      env.teardown(scope.heap_mut());
+      Err(err)
+    }
+  }
+}
+
+pub(crate) fn hir_async_resume_call(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let id = match slots.get(0).copied().unwrap_or(Value::Undefined) {
+    Value::Number(n) => n as u32,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "hir async resume callback missing continuation id",
+      ))
+    }
+  };
+  let is_reject = match slots.get(1).copied().unwrap_or(Value::Undefined) {
+    Value::Bool(b) => b,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "hir async resume callback missing reject flag",
+      ))
+    }
+  };
+
+  let Some(mut cont) = vm.take_hir_async_continuation(id) else {
+    // Embeddings can abort in-progress top-level await evaluation by tearing down async
+    // continuations. In that case, previously-registered resume callbacks must no-op.
+    return Ok(Value::Undefined);
+  };
+
+  // The awaited promise has settled; it no longer needs to be rooted by the continuation.
+  if let Some(root) = cont.awaited_promise_root.take() {
+    scope.heap_mut().remove_root(root);
+  }
+
+  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  let resolve = scope
+    .heap()
+    .get_root(cont.resolve_root)
+    .ok_or(VmError::InvariantViolation(
+      "hir async continuation missing resolve root",
+    ))?;
+  let reject = scope
+    .heap()
+    .get_root(cont.reject_root)
+    .ok_or(VmError::InvariantViolation(
+      "hir async continuation missing reject root",
+    ))?;
+
+  let this = scope
+    .heap()
+    .get_root(cont.this_root)
+    .ok_or(VmError::InvariantViolation(
+      "hir async continuation missing this root",
+    ))?;
+  let new_target = scope
+    .heap()
+    .get_root(cont.new_target_root)
+    .ok_or(VmError::InvariantViolation(
+      "hir async continuation missing new.target root",
+    ))?;
+
+  let resume_segment = |vm: &mut Vm,
+                        scope: &mut Scope<'_>,
+                        host: &mut dyn VmHost,
+                        hooks: &mut dyn VmHostHooks,
+                        mut cont: HirAsyncContinuation|
+   -> Result<Value, VmError> {
+    let global_object = cont.env.global_object();
+
+    // Rejection from the awaited promise becomes a script evaluation throw.
+    if is_reject {
+      let reason = arg0;
+      let mut call_scope = scope.reborrow();
+      if let Err(err) = call_scope.push_roots(&[reject, reason]) {
+        hir_async_teardown_continuation(&mut call_scope, cont);
+        return Err(err);
+      }
+      let res = vm.call_with_host_and_hooks(host, &mut call_scope, hooks, reject, Value::Undefined, &[reason]);
+      hir_async_teardown_continuation(&mut call_scope, cont);
+      return res.map(|_| Value::Undefined);
+    }
+
+    let mut evaluator = HirEvaluator {
+      vm,
+      host,
+      hooks,
+      env: &mut cont.env,
+      strict: cont.strict,
+      this,
+      this_initialized: true,
+      class_constructor: None,
+      derived_constructor: false,
+      this_root_idx: None,
+      new_target,
+      home_object: None,
+      script: cont.script.clone(),
+    };
+
+    let hir = cont.script.hir.as_ref();
+    let body = hir
+      .body(hir.root_body())
+      .ok_or(VmError::InvariantViolation("compiled script root body not found"))?;
+    let eval: Result<HirAsyncEvalResult, VmError> = (|| {
+      match cont.resume {
+        HirAsyncResumePoint::ExprStmt { next_stmt_index } => {
+          // Complete the suspended `await` expression statement: its value becomes the statement-list
+          // completion value.
+          cont.last_value_is_set = true;
+          scope.heap_mut().set_root(cont.last_value_root, arg0);
+          hir_eval_stmt_list_until_await(
+            &mut evaluator,
+            scope,
+            body,
+            body.root_stmts.as_slice(),
+            next_stmt_index,
+            cont.last_value_root,
+            &mut cont.last_value_is_set,
+          )
+        }
+        HirAsyncResumePoint::VarDecl {
+          stmt_index,
+          declarator_index,
+        } => {
+          // Resume a variable declaration where the initializer was `await <expr>`.
+          let stmt_id = *body
+            .root_stmts
+            .get(stmt_index)
+            .ok_or(VmError::InvariantViolation(
+              "hir async var decl resume stmt index out of bounds",
+            ))?;
+          let stmt = evaluator.get_stmt(body, stmt_id)?;
+          let hir_js::StmtKind::Var(var_decl) = &stmt.kind else {
+            return Err(VmError::InvariantViolation(
+              "hir async var decl resume target is not a var declaration",
+            ));
+          };
+          let declarator = var_decl
+            .declarators
+            .get(declarator_index)
+            .ok_or(VmError::InvariantViolation(
+              "hir async var decl resume declarator index out of bounds",
+            ))?;
+
+          // Initialize the awaited declarator binding with the resumed value.
+          evaluator.bind_var_decl_pat(
+            scope,
+            body,
+            declarator.pat,
+            var_decl.kind,
+            /* init_missing */ false,
+            arg0,
+          )?;
+
+          // Continue evaluating subsequent declarators in the same declaration.
+          for (j, declarator) in var_decl
+            .declarators
+            .iter()
+            .enumerate()
+            .skip(declarator_index.saturating_add(1))
+          {
+            evaluator.vm.tick()?;
+            let init_missing = declarator.init.is_none();
+            if let Some(init) = declarator.init {
+              let init_expr = evaluator.get_expr(body, init)?;
+              if let hir_js::ExprKind::Await { expr: awaited_expr } = init_expr.kind {
+                evaluator.vm.tick()?;
+                let await_value = evaluator.eval_expr(scope, body, awaited_expr)?;
+                return Ok(HirAsyncEvalResult::Await {
+                  await_value,
+                  resume: HirAsyncResumePoint::VarDecl {
+                    stmt_index,
+                    declarator_index: j,
+                  },
+                });
+              }
+            }
+            let value = match declarator.init {
+              Some(init) => evaluator.eval_expr(scope, body, init)?,
+              None => Value::Undefined,
+            };
+            evaluator.bind_var_decl_pat(
+              scope,
+              body,
+              declarator.pat,
+              var_decl.kind,
+              init_missing,
+              value,
+            )?;
+          }
+
+          // The variable statement completes with an empty value; continue with the next root stmt.
+          hir_eval_stmt_list_until_await(
+            &mut evaluator,
+            scope,
+            body,
+            body.root_stmts.as_slice(),
+            stmt_index.saturating_add(1),
+            cont.last_value_root,
+            &mut cont.last_value_is_set,
+          )
+        }
+      }
+    })();
+
+    match eval {
+      Ok(HirAsyncEvalResult::Complete) => {
+        let v = if cont.last_value_is_set {
+          scope
+            .heap()
+            .get_root(cont.last_value_root)
+            .ok_or(VmError::InvariantViolation("hir async script missing last value root"))?
+        } else {
+          Value::Undefined
+        };
+
+        let mut call_scope = scope.reborrow();
+        if let Err(err) = call_scope.push_roots(&[resolve, v]) {
+          hir_async_teardown_continuation(&mut call_scope, cont);
+          return Err(err);
+        }
+        let res = vm.call_with_host_and_hooks(host, &mut call_scope, hooks, resolve, Value::Undefined, &[v]);
+        hir_async_teardown_continuation(&mut call_scope, cont);
+        res.map(|_| Value::Undefined)
+      }
+      Ok(HirAsyncEvalResult::Await { await_value, resume }) => {
+        cont.resume = resume;
+
+        let mut await_scope = scope.reborrow();
+        if let Err(err) = await_scope.push_root(await_value) {
+          hir_async_teardown_continuation(&mut await_scope, cont);
+          return Err(err);
+        }
+
+        let resolve_res = crate::promise_ops::promise_resolve_for_await_with_host_and_hooks(
+          vm,
+          &mut await_scope,
+          host,
+          hooks,
+          await_value,
+        );
+        let resolve_res =
+          resolve_res.map_err(|err| crate::exec::coerce_error_to_throw_for_async(vm, &mut await_scope, err));
+
+        let awaited_promise = match resolve_res {
+          Ok(p) => p,
+          Err(err) if err.is_throw_completion() => {
+            let reason = match err {
+              VmError::Throw(reason) => reason,
+              VmError::ThrowWithStack { value: reason, .. } => reason,
+              other => {
+                hir_async_teardown_continuation(&mut await_scope, cont);
+                return Err(other);
+              }
+            };
+            let mut call_scope = await_scope.reborrow();
+            if let Err(err) = call_scope.push_roots(&[reject, reason]) {
+              hir_async_teardown_continuation(&mut call_scope, cont);
+              return Err(err);
+            }
+            let res = vm.call_with_host_and_hooks(host, &mut call_scope, hooks, reject, Value::Undefined, &[reason]);
+            hir_async_teardown_continuation(&mut call_scope, cont);
+            return res.map(|_| Value::Undefined);
+          }
+          Err(err) => {
+            hir_async_teardown_continuation(&mut await_scope, cont);
+            return Err(err);
+          }
+        };
+
+        if let Err(err) = await_scope.push_root(awaited_promise) {
+          hir_async_teardown_continuation(&mut await_scope, cont);
+          return Err(err);
+        }
+
+        let awaited_root = match await_scope.heap_mut().add_root(awaited_promise) {
+          Ok(root) => root,
+          Err(err) => {
+            hir_async_teardown_continuation(&mut await_scope, cont);
+            return Err(err);
+          }
+        };
+        cont.awaited_promise_root = Some(awaited_root);
+
+        // Reinsert continuation before scheduling any resumption callbacks.
+        if let Err(err) = vm.reserve_hir_async_continuations(1) {
+          hir_async_teardown_continuation(&mut await_scope, cont);
+          return Err(err);
+        }
+        vm.replace_hir_async_continuation(id, cont)?;
+
+        let then_res: Result<(), VmError> = (|| {
+          let call_id = vm.hir_async_resume_call_id()?;
+          let intr = vm
+            .intrinsics()
+            .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+          let job_realm = vm.current_realm();
+          let script_or_module_token = match vm.get_active_script_or_module() {
+            Some(sm) => Some(vm.intern_script_or_module(sm)?),
+            None => None,
+          };
+
+          let name = await_scope.alloc_string("")?;
+          let slots_fulfill = [Value::Number(id as f64), Value::Bool(false)];
+          let on_fulfilled = await_scope.alloc_native_function_with_slots(call_id, None, name, 1, &slots_fulfill)?;
+          await_scope.push_root(Value::Object(on_fulfilled))?;
+
+          let name = await_scope.alloc_string("")?;
+          let slots_reject = [Value::Number(id as f64), Value::Bool(true)];
+          let on_rejected = await_scope.alloc_native_function_with_slots(call_id, None, name, 1, &slots_reject)?;
+          await_scope.push_root(Value::Object(on_rejected))?;
+
+          for cb in [on_fulfilled, on_rejected] {
+            await_scope
+              .heap_mut()
+              .object_set_prototype(cb, Some(intr.function_prototype()))?;
+            await_scope
+              .heap_mut()
+              .set_function_realm(cb, global_object)?;
+            if let Some(realm) = job_realm {
+              await_scope.heap_mut().set_function_job_realm(cb, realm)?;
+            }
+            if let Some(token) = script_or_module_token {
+              await_scope
+                .heap_mut()
+                .set_function_script_or_module_token(cb, Some(token))?;
+            }
+          }
+
+          crate::promise_ops::perform_promise_then_no_capability_with_host_and_hooks(
+            vm,
+            &mut await_scope,
+            host,
+            hooks,
+            awaited_promise,
+            Value::Object(on_fulfilled),
+            Value::Object(on_rejected),
+          )?;
+          Ok(())
+        })();
+
+        if let Err(err) = then_res {
+          if let Some(cont) = vm.take_hir_async_continuation(id) {
+            hir_async_teardown_continuation(&mut await_scope, cont);
+          }
+          return Err(err);
+        }
+
+        Ok(Value::Undefined)
+      }
+      Err(err) if err.is_throw_completion() => {
+        let reason = err
+          .thrown_value()
+          .ok_or(VmError::InvariantViolation("throw completion missing thrown value"))?;
+        let mut call_scope = scope.reborrow();
+        if let Err(err) = call_scope.push_roots(&[reject, reason]) {
+          hir_async_teardown_continuation(&mut call_scope, cont);
+          return Err(err);
+        }
+        let res = vm.call_with_host_and_hooks(host, &mut call_scope, hooks, reject, Value::Undefined, &[reason]);
+        hir_async_teardown_continuation(&mut call_scope, cont);
+        res.map(|_| Value::Undefined)
+      }
+      Err(err) => {
+        hir_async_teardown_continuation(scope, cont);
+        Err(err)
+      }
+    }
+  };
+
+  if let Some(exec_ctx) = cont.exec_ctx {
+    vm.push_execution_context(exec_ctx)?;
+    let res = resume_segment(vm, scope, host, hooks, cont);
+    let popped = vm.pop_execution_context();
+    debug_assert_eq!(popped, Some(exec_ctx));
+    return res;
+  }
+
+  resume_segment(vm, scope, host, hooks, cont)
 }

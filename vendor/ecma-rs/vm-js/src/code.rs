@@ -70,7 +70,7 @@ impl CompiledScript {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
     };
-
+ 
     let parsed = {
       let parsed_script = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         parse_with_options(source.text.as_ref(), opts)

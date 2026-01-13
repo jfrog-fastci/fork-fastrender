@@ -15126,6 +15126,7 @@ pub(crate) fn async_teardown_continuation(scope: &mut Scope<'_>, mut cont: Async
   }
 }
 
+
 fn async_handle_body_result(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -15524,7 +15525,7 @@ enum AsyncBodyResult {
   },
 }
 
-fn coerce_error_to_throw_for_async(vm: &Vm, scope: &mut Scope<'_>, err: VmError) -> VmError {
+pub(crate) fn coerce_error_to_throw_for_async(vm: &Vm, scope: &mut Scope<'_>, err: VmError) -> VmError {
   match err {
     VmError::Throw(_) | VmError::ThrowWithStack { .. } => err,
     VmError::TypeError(message) => throw_type_error(vm, scope, message).unwrap_or_else(|e| e),

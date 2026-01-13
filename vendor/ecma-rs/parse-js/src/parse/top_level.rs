@@ -44,7 +44,7 @@ impl<'a> Parser<'a> {
       rules: ParsePatternRules {
         await_allowed: !is_module,
         yield_allowed: !is_module,
-        await_expr_allowed: is_module,
+        await_expr_allowed: is_module || self.allow_top_level_await_in_script,
         yield_expr_allowed: false,
       },
       top_level: true,
