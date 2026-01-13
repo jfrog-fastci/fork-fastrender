@@ -14240,6 +14240,15 @@ pub(crate) enum GenFrame {
     key: Option<Value>,
     left: Value,
   },
+  /// Continue a `**=` assignment after evaluating the RHS.
+  ///
+  /// `left` stores the original `GetValue` result of the reference before evaluating the RHS.
+  AssignExpAfterRhs {
+    expr: *const BinaryExpr,
+    base: Option<Value>,
+    key: Option<Value>,
+    left: Value,
+  },
 
   /// Continue an update expression after evaluating a member base expression.
   UpdateMemberAfterBase {
@@ -14320,6 +14329,15 @@ impl Trace for GenFrame {
         }
       }
       GenFrame::AssignAddAfterRhs { base, key, left, .. } => {
+        if let Some(v) = base {
+          tracer.trace_value(*v);
+        }
+        if let Some(v) = key {
+          tracer.trace_value(*v);
+        }
+        tracer.trace_value(*left);
+      }
+      GenFrame::AssignExpAfterRhs { base, key, left, .. } => {
         if let Some(v) = base {
           tracer.trace_value(*v);
         }
@@ -32044,7 +32062,9 @@ fn gen_eval_expr(
     Expr::Binary(binary)
       if matches!(
         binary.stx.operator,
-        OperatorName::Assignment | OperatorName::AssignmentAddition
+        OperatorName::Assignment
+          | OperatorName::AssignmentAddition
+          | OperatorName::AssignmentExponentiation
       ) =>
     {
       gen_eval_assignment_expr(evaluator, scope, &binary.stx)
@@ -32573,7 +32593,9 @@ fn gen_eval_assignment_expr(
   expr: &BinaryExpr,
 ) -> Result<GenEval<Completion>, VmError> {
   match expr.operator {
-    OperatorName::Assignment | OperatorName::AssignmentAddition => {}
+    OperatorName::Assignment
+    | OperatorName::AssignmentAddition
+    | OperatorName::AssignmentExponentiation => {}
     _ => {
       return Err(VmError::InvariantViolation(
         "generator assignment evaluator called for non-assignment operator",
@@ -32902,6 +32924,51 @@ fn gen_eval_assignment_apply_reference(
           gen_frames_push(
             &mut suspend.frames,
             GenFrame::AssignAddAfterRhs {
+              expr: expr as *const BinaryExpr,
+              base,
+              key,
+              left,
+            },
+          )?;
+          Ok(GenEval::Suspend(suspend))
+        }
+      }
+    }
+    OperatorName::AssignmentExponentiation => {
+      let mut op_scope = scope.reborrow();
+      evaluator.root_reference(&mut op_scope, &reference)?;
+
+      let left = evaluator.get_value_from_reference(&mut op_scope, &reference)?;
+      op_scope.push_root(left)?;
+
+      match gen_eval_expr(evaluator, &mut op_scope, &expr.right)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(v) => {
+            let right = v.unwrap_or(Value::Undefined);
+            let mut exp_scope = op_scope.reborrow();
+            exp_scope.push_root(right)?;
+            let value = evaluator.exponentiation_operator(&mut exp_scope, left, right)?;
+            exp_scope.push_root(value)?;
+            evaluator.put_value_to_reference(&mut exp_scope, &reference, value)?;
+            Ok(GenEval::Complete(Completion::normal(value)))
+          }
+          abrupt => Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          drop(op_scope);
+          // Root the assignment target + left operand across the yield boundary.
+          let mut roots: Vec<Value> = Vec::new();
+          roots.try_reserve_exact(3).map_err(|_| VmError::OutOfMemory)?;
+          if let (Some(base), Some(key)) = (base.as_ref(), key.as_ref()) {
+            roots.push(*base);
+            roots.push(*key);
+          }
+          roots.push(left);
+          scope.push_roots(&roots)?;
+
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::AssignExpAfterRhs {
               expr: expr as *const BinaryExpr,
               base,
               key,
@@ -34039,6 +34106,72 @@ fn gen_resume_from_frames(
           evaluator.root_reference(&mut op_scope, &reference)?;
           op_scope.push_roots(&[left, right])?;
           match evaluator.addition_operator(&mut op_scope, left, right) {
+            Ok(value) => {
+              op_scope.push_root(value)?;
+              match evaluator.put_value_to_reference(&mut op_scope, &reference, value) {
+                Ok(()) => state = Completion::normal(value),
+                Err(err) => state = gen_error_to_completion(evaluator, &mut op_scope, err)?,
+              }
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, &mut op_scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::AssignExpAfterRhs {
+        expr,
+        base,
+        key,
+        left,
+      } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          let right = v.unwrap_or(Value::Undefined);
+
+          let reference = match (base, key) {
+            (None, None) => match &*expr.left.stx {
+              Expr::Id(id) => Reference::Binding(&id.stx.name),
+              Expr::IdPat(id) => Reference::Binding(&id.stx.name),
+              _ => {
+                return Err(VmError::InvariantViolation(
+                  "AssignExpAfterRhs used for non-binding LHS without base/key",
+                ))
+              }
+            },
+            (Some(base), Some(key_value)) => match key_value {
+              Value::String(s) => Reference::Property {
+                base,
+                key: PropertyKey::from_string(s),
+              },
+              Value::Symbol(sym) if scope.heap().is_internal_symbol(sym) => {
+                let name = match &*expr.left.stx {
+                  Expr::Member(member) => member.stx.right.as_str(),
+                  _ => "",
+                };
+                Reference::Private { base, sym, name }
+              }
+              Value::Symbol(sym) => Reference::Property {
+                base,
+                key: PropertyKey::from_symbol(sym),
+              },
+              _ => {
+                return Err(VmError::InvariantViolation(
+                  "assignment key should be a string or symbol",
+                ))
+              }
+            },
+            _ => {
+              return Err(VmError::InvariantViolation(
+                "AssignExpAfterRhs has mismatched base/key values",
+              ))
+            }
+          };
+
+          let mut op_scope = scope.reborrow();
+          evaluator.root_reference(&mut op_scope, &reference)?;
+          op_scope.push_roots(&[left, right])?;
+          match evaluator.exponentiation_operator(&mut op_scope, left, right) {
             Ok(value) => {
               op_scope.push_root(value)?;
               match evaluator.put_value_to_reference(&mut op_scope, &reference, value) {

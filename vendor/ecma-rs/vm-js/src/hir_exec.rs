@@ -8533,6 +8533,7 @@ pub(crate) fn run_compiled_script(
 mod async_function_allocation_tests {
   use crate::function::CallHandler;
   use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+  use std::sync::Arc;
 
   #[test]
   fn compiled_hir_allocates_async_functions_as_compiled_user_functions() -> Result<(), VmError> {
@@ -8540,7 +8541,7 @@ mod async_function_allocation_tests {
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;
 
-    let script = CompiledScript::compile_script(
+    let mut script = CompiledScript::compile_script(
       &mut rt.heap,
       "<inline>",
       r#"
@@ -8548,6 +8549,13 @@ mod async_function_allocation_tests {
         f;
       "#,
     )?;
+    // The compiled (HIR) execution path does not yet support executing async function bodies, so
+    // `CompiledScript` conservatively opts into AST fallback when it sees `async function` syntax.
+    // For this unit test we only care about *allocation* of the async function object during HIR
+    // execution, so force the compiled path.
+    Arc::get_mut(&mut script)
+      .expect("compiled script Arc should be uniquely owned in this unit test")
+      .requires_ast_fallback = false;
 
     let result = rt.exec_compiled_script(script)?;
     let Value::Object(func_obj) = result else {
