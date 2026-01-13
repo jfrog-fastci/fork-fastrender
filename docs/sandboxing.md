@@ -168,6 +168,9 @@ Linux sandbox code lives in:
 
 Repo reality (today): the Linux seccomp sandbox is designed to:
 
+- disable dumpability (`prctl(PR_SET_DUMPABLE, 0)`) before installing the filter to reduce
+  `ptrace`/`/proc` leakage and to disable core dumps (we intentionally do **not** relax ptrace via
+  `PR_SET_PTRACER`)
 - deny path-based filesystem opens (`open`, `openat`, `openat2`, `creat`)
 - deny network socket creation by default (including `AF_UNIX`), and deny most socket-specific
   syscalls (`connect`/`sendmsg`/`recvmsg`/etc).

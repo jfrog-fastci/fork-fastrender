@@ -1,6 +1,8 @@
 //! Linux `seccomp-bpf` renderer sandbox.
 //!
 //! Implementation notes:
+//! - Disables dumpability via `prctl(PR_SET_DUMPABLE, 0)` before installing seccomp to reduce
+//!   `ptrace`/`/proc` information leaks and disable core dumps.
 //! - Uses `PR_SET_NO_NEW_PRIVS` (mandatory for unprivileged seccomp).
 //! - Installs a `SECCOMP_MODE_FILTER` program via the `seccomp()` syscall, attempting
 //!   `SECCOMP_FILTER_FLAG_TSYNC` first (all threads) and falling back to `flags=0` on older kernels
@@ -421,6 +423,18 @@ pub(super) fn apply_renderer_sandbox_prelude_linux() -> Result<(), SandboxError>
   super::linux_set_parent_death_signal().map_err(|source| SandboxError::SetParentDeathSignalFailed {
     source,
   })?;
+
+  // Disable dumpability so same-UID processes cannot `ptrace` attach and sensitive `/proc/<pid>`
+  // entries are protected. This also disables core dumps.
+  //
+  // SAFETY: `prctl` is a process-global syscall. We pass the documented arguments for
+  // `PR_SET_DUMPABLE`.
+  let rc = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
+  if rc != 0 {
+    return Err(SandboxError::SetDumpableFailed {
+      source: io::Error::last_os_error(),
+    });
+  }
   Ok(())
 }
 
