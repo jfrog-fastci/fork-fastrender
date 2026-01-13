@@ -31,6 +31,10 @@ fn subgrid_line_names_accepts_specified_grammar() {
     Some(vec![vec!["a".to_string(), "b".to_string()]])
   );
   assert_eq!(
+    parse_subgrid_line_names("subgrid [a/*]*/b]"),
+    Some(vec![vec!["a".to_string(), "b".to_string()]])
+  );
+  assert_eq!(
     parse_subgrid_line_names("subgrid []"),
     Some(vec![Vec::<String>::new()])
   );

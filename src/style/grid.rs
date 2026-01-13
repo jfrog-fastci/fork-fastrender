@@ -1159,32 +1159,58 @@ impl<'a> TrackListParser<'a> {
       return None;
     }
     let after_open = rem.get('['.len_utf8()..)?;
-    let close_idx = after_open.find(']')?;
-    let names_raw = after_open.get(..close_idx)?;
 
-    let names = if names_raw.contains("/*") {
-      let mut stripped = String::with_capacity(names_raw.len());
-      let mut idx = 0usize;
-      while let Some(rel_start) = names_raw.get(idx..).and_then(|s| s.find("/*")) {
-        let start = idx + rel_start;
-        stripped.push_str(names_raw.get(idx..start).unwrap_or(""));
-        stripped.push(' ');
-        let after_start = start + "/*".len();
-        let Some(rel_end) = names_raw.get(after_start..).and_then(|s| s.find("*/")) else {
-          idx = names_raw.len();
-          break;
-        };
-        idx = after_start + rel_end + "*/".len();
+    // Find the first unescaped `]`, ignoring any `]` that appear inside CSS comments.
+    let bytes = after_open.as_bytes();
+    let mut idx = 0usize;
+    let mut escape = false;
+    let mut in_comment = false;
+    let mut close_idx: Option<usize> = None;
+    while idx < bytes.len() {
+      let b = bytes[idx];
+
+      if in_comment {
+        if b == b'*' && bytes.get(idx + 1) == Some(&b'/') {
+          in_comment = false;
+          idx += 2;
+          continue;
+        }
+        idx += 1;
+        continue;
       }
-      stripped.push_str(names_raw.get(idx..).unwrap_or(""));
-      split_ascii_whitespace(&stripped)
-        .map(|n| n.to_string())
-        .collect::<Vec<_>>()
-    } else {
-      split_ascii_whitespace(names_raw)
-        .map(|n| n.to_string())
-        .collect::<Vec<_>>()
-    };
+
+      if escape {
+        escape = false;
+        idx += 1;
+        continue;
+      }
+
+      if b == b'\\' {
+        escape = true;
+        idx += 1;
+        continue;
+      }
+
+      if b == b'/' && bytes.get(idx + 1) == Some(&b'*') {
+        in_comment = true;
+        idx += 2;
+        continue;
+      }
+
+      if b == b']' {
+        close_idx = Some(idx);
+        break;
+      }
+
+      idx += 1;
+    }
+
+    let close_idx = close_idx?;
+    let names_raw = after_open.get(..close_idx)?;
+    let names_raw = strip_css_comments_to_whitespace(names_raw);
+    let names = split_ascii_whitespace(names_raw.as_ref())
+      .map(|n| n.to_string())
+      .collect::<Vec<_>>();
 
     // Advance past `[ ... ]`.
     self.pos = self
