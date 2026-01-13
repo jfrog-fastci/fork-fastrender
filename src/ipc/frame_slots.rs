@@ -1,6 +1,7 @@
 #![cfg(target_os = "linux")]
 
 use crate::Error;
+use crate::ipc::sync;
 use std::io;
 use std::mem;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -514,6 +515,9 @@ pub struct FrameReady {
 }
 
 pub fn send_frame_ready(sock: &UnixSeqpacket, msg: FrameReady) -> Result<(), Error> {
+  // Publish shared-memory writes (frame pixels) before notifying the other process that a frame is
+  // ready. Pair with the Acquire fence in `recv_frame_ready`.
+  sync::shm_publish_frame();
   let mut buf = [0u8; FRAME_READY_LEN];
   write_u32_le(&mut buf, 0, TAG_FRAME_READY).ok_or_else(|| Error::Other("frame_ready encode failed".to_string()))?;
   write_u32_le(&mut buf, 4, msg.slot_id).ok_or_else(|| Error::Other("frame_ready encode failed".to_string()))?;
@@ -547,16 +551,25 @@ pub fn recv_frame_ready(sock: &UnixSeqpacket) -> Result<FrameReady, Error> {
   let stride = read_u32_le(&buf, 16).ok_or_else(|| Error::Other("missing stride".to_string()))?;
   let seq = read_u64_le(&buf, 20).ok_or_else(|| Error::Other("missing seq".to_string()))?;
 
+  // Consume the readiness signal before reading from the shared-memory slot. This prevents the CPU
+  // and compiler from reordering subsequent loads from the slot to before the `FrameReady` message
+  // was observed. Pair with the Release fence in `send_frame_ready`.
+  sync::shm_consume_frame();
+
   Ok(FrameReady { slot_id, width, height, stride, seq })
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::ipc::sync;
 
   #[test]
   fn init_and_frame_ready_smoke() -> Result<(), Error> {
     let (browser_sock, renderer_sock) = UnixSeqpacket::pair()?;
+
+    let publish_before = sync::shm_publish_count_for_test();
+    let consume_before = sync::shm_consume_count_for_test();
 
     let browser_slots = FrameSlots::new(2, 4096)?;
     browser_slots.send_init(&browser_sock)?;
@@ -575,8 +588,16 @@ mod tests {
       &renderer_sock,
       FrameReady { slot_id: 0, width: 64, height: 64, stride: 256, seq: 1 },
     )?;
+    assert!(
+      sync::shm_publish_count_for_test() > publish_before,
+      "expected publish fence to run before sending FrameReady"
+    );
 
     let ready = recv_frame_ready(&browser_sock)?;
+    assert!(
+      sync::shm_consume_count_for_test() > consume_before,
+      "expected consume fence to run after receiving FrameReady"
+    );
     assert_eq!(ready.slot_id, 0);
     assert_eq!(ready.seq, 1);
 
@@ -617,4 +638,3 @@ mod tests {
     Ok(())
   }
 }
-
