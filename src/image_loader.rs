@@ -3737,6 +3737,7 @@ fn resolve_svg_stylesheet_import_url(
 
 fn fetch_svg_stylesheet_import(
   requested_url: &str,
+  importer_url: Option<&str>,
   fetcher: &dyn ResourceFetcher,
   ctx: Option<&ResourceContext>,
 ) -> Result<Option<(String, String, usize)>> {
@@ -3756,10 +3757,12 @@ fn fetch_svg_stylesheet_import(
     if let Some(origin) = ctx.policy.document_origin.as_ref() {
       req = req.with_client_origin(origin);
     }
-    if let Some(referrer_url) = ctx.document_url.as_deref() {
-      req = req.with_referrer_url(referrer_url);
-    }
     req = req.with_referrer_policy(ctx.referrer_policy);
+  }
+  let referrer_url =
+    importer_url.or_else(|| ctx.and_then(|ctx| ctx.document_url.as_deref()));
+  if let Some(referrer_url) = referrer_url {
+    req = req.with_referrer_url(referrer_url);
   }
 
   let res = match fetcher.fetch_with_request(req) {
@@ -3800,6 +3803,7 @@ fn fetch_svg_stylesheet_import(
 fn inline_css_imports_with_budget<'a>(
   css: &'a str,
   base_url: Option<&str>,
+  importer_url: Option<&str>,
   fetcher: &dyn ResourceFetcher,
   ctx: Option<&ResourceContext>,
   budget: &mut SvgCssImportBudget,
@@ -3977,7 +3981,7 @@ fn inline_css_imports_with_budget<'a>(
           continue;
         }
 
-        let fetched = fetch_svg_stylesheet_import(&requested_url, fetcher, ctx)?;
+        let fetched = fetch_svg_stylesheet_import(&requested_url, importer_url, fetcher, ctx)?;
         let Some((final_url, fetched_css, fetched_bytes)) = fetched else {
           if should_rewrite_url {
             emit_import_rewrite(&requested_url);
@@ -3998,6 +4002,7 @@ fn inline_css_imports_with_budget<'a>(
         let mut nested =
           inline_css_imports_with_budget(
             &fetched_css,
+            Some(&final_url),
             Some(&final_url),
             fetcher,
             ctx,
@@ -4109,6 +4114,11 @@ fn inline_svg_style_imports<'a>(
         .and_then(|ctx| ctx.document_url.as_deref())
         .filter(|doc_url| Url::parse(doc_url).is_ok())
     });
+  let importer_url = if base_url == Some(svg_url) {
+    Some(svg_url)
+  } else {
+    ctx.and_then(|ctx| ctx.document_url.as_deref())
+  };
 
   let mut budget =
     SvgCssImportBudget::new(MAX_IMPORT_DEPTH, MAX_IMPORT_RULES, MAX_IMPORTED_CSS_BYTES);
@@ -4148,6 +4158,7 @@ fn inline_svg_style_imports<'a>(
     let expanded = inline_css_imports_with_budget(
       &css_text,
       effective_base,
+      importer_url,
       fetcher,
       ctx,
       &mut budget,
@@ -12589,6 +12600,63 @@ mod tests_inline {
     }
   }
 
+  #[derive(Debug, Clone, PartialEq, Eq)]
+  struct RecordedFetchRequest {
+    url: String,
+    destination: FetchDestination,
+    referrer_url: Option<String>,
+  }
+
+  #[derive(Clone, Default)]
+  struct RecordingFetcher {
+    responses: Arc<HashMap<String, FetchedResource>>,
+    requests: Arc<Mutex<Vec<RecordedFetchRequest>>>,
+  }
+
+  impl RecordingFetcher {
+    fn with_entries(entries: impl IntoIterator<Item = (String, FetchedResource)>) -> Self {
+      Self {
+        responses: Arc::new(entries.into_iter().collect()),
+        requests: Arc::new(Mutex::new(Vec::new())),
+      }
+    }
+
+    fn requests(&self) -> Vec<RecordedFetchRequest> {
+      self
+        .requests
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+    }
+  }
+
+  impl ResourceFetcher for RecordingFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      self
+        .responses
+        .get(url)
+        .cloned()
+        .map(|mut res| {
+          res.final_url.get_or_insert_with(|| url.to_string());
+          res
+        })
+        .ok_or_else(|| Error::Other(format!("unexpected fetch url {url}")))
+    }
+
+    fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+      self
+        .requests
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(RecordedFetchRequest {
+          url: req.url.to_string(),
+          destination: req.destination,
+          referrer_url: req.referrer_url.map(|url| url.to_string()),
+        });
+      self.fetch(req.url)
+    }
+  }
+
   fn gzip_bytes(input: &[u8]) -> Vec<u8> {
     use flate2::write::GzEncoder;
     use flate2::Compression;
@@ -17467,6 +17535,109 @@ mod tests_inline {
         .iter()
         .any(|(url, dest, _)| url == css_url && *dest == FetchDestination::Style),
       "expected stylesheet fetch for {css_url}, got: {requests:?}"
+    );
+  }
+
+  #[test]
+  fn svg_style_import_fetch_uses_svg_url_as_referrer_when_parseable() {
+    let svg_url = "https://example.test/main.svg";
+    let style_url = "https://example.test/style.css";
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><style>@import url("style.css");</style></svg>"#;
+
+    let mut css_res =
+      FetchedResource::new(b"/* empty */".to_vec(), Some("text/css".to_string()));
+    css_res.status = Some(200);
+    css_res.final_url = Some(style_url.to_string());
+
+    let fetcher = RecordingFetcher::with_entries([(style_url.to_string(), css_res)]);
+
+    let _processed =
+      inline_svg_style_imports(svg, svg_url, &fetcher, None).expect("inlined style imports");
+
+    let requests = fetcher.requests();
+    assert!(
+      requests.iter().any(|req| {
+        req.url == style_url
+          && req.destination == FetchDestination::Style
+          && req.referrer_url.as_deref() == Some(svg_url)
+      }),
+      "expected stylesheet fetch for {style_url} to use referrer_url={svg_url}, got: {requests:?}"
+    );
+  }
+
+  #[test]
+  fn svg_style_import_nested_fetch_uses_importer_final_url_as_referrer() {
+    let svg_url = "https://example.test/main.svg";
+    let requested_url = "https://example.test/style.css";
+    let final_url = "https://example.test/assets/style.css";
+    let nested_url = "https://example.test/assets/nested.css";
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><style>@import url("style.css");</style></svg>"#;
+
+    let mut redirected_res =
+      FetchedResource::new(b"@import \"nested.css\";".to_vec(), Some("text/css".to_string()));
+    redirected_res.status = Some(200);
+    redirected_res.final_url = Some(final_url.to_string());
+
+    let mut nested_res =
+      FetchedResource::new(b"/* nested */".to_vec(), Some("text/css".to_string()));
+    nested_res.status = Some(200);
+    nested_res.final_url = Some(nested_url.to_string());
+
+    let fetcher = RecordingFetcher::with_entries([
+      (requested_url.to_string(), redirected_res),
+      (nested_url.to_string(), nested_res),
+    ]);
+
+    let _processed =
+      inline_svg_style_imports(svg, svg_url, &fetcher, None).expect("inlined style imports");
+
+    let requests = fetcher.requests();
+    assert!(
+      requests.iter().any(|req| {
+        req.url == requested_url
+          && req.destination == FetchDestination::Style
+          && req.referrer_url.as_deref() == Some(svg_url)
+      }),
+      "expected stylesheet fetch for {requested_url} to use referrer_url={svg_url}, got: {requests:?}"
+    );
+    assert!(
+      requests.iter().any(|req| {
+        req.url == nested_url
+          && req.destination == FetchDestination::Style
+          && req.referrer_url.as_deref() == Some(final_url)
+      }),
+      "expected nested stylesheet fetch for {nested_url} to use referrer_url={final_url}, got: {requests:?}"
+    );
+  }
+
+  #[test]
+  fn svg_style_import_fetch_uses_document_url_as_referrer_when_svg_url_is_not_a_url() {
+    let svg_url = "inline-svg";
+    let doc_url = "https://example.test/page.html";
+    let style_url = "https://example.test/style.css";
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><style>@import url("style.css");</style></svg>"#;
+
+    let mut css_res =
+      FetchedResource::new(b"/* empty */".to_vec(), Some("text/css".to_string()));
+    css_res.status = Some(200);
+    css_res.final_url = Some(style_url.to_string());
+
+    let fetcher = RecordingFetcher::with_entries([(style_url.to_string(), css_res)]);
+
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+
+    let _processed = inline_svg_style_imports(svg, svg_url, &fetcher, Some(&ctx))
+      .expect("inlined style imports");
+
+    let requests = fetcher.requests();
+    assert!(
+      requests.iter().any(|req| {
+        req.url == style_url
+          && req.destination == FetchDestination::Style
+          && req.referrer_url.as_deref() == Some(doc_url)
+      }),
+      "expected stylesheet fetch for {style_url} to use referrer_url={doc_url}, got: {requests:?}"
     );
   }
 
