@@ -18,6 +18,7 @@ use parse_js::ast::expr::pat::Pat;
 use parse_js::ast::expr::lit::{LitArrElem, LitTemplatePart};
 use parse_js::ast::import_export::ExportNames;
 use parse_js::ast::import_export::ImportNames;
+use parse_js::ast::import_export::ModuleExportImportName as AstModuleExportImportName;
 use parse_js::ast::node::{
   literal_string_code_units, module_export_import_name_code_units, module_specifier_code_units, Node,
 };
@@ -998,14 +999,14 @@ fn module_record_from_top_level(
                   let Pat::Id(id) = &*name.stx.alias.stx.pat.stx else {
                     return Err(syntax_error(name.stx.alias.loc, "invalid import binding"));
                   };
-                  record.import_entries.push(ImportEntry {
-                    module_request: next_req(&mut ctx, &mut remaining, &mut req_for_entries)?,
-                    import_name: ImportName::Name(try_string_from_identifier_name(name.stx.importable.as_str())?),
-                    local_name: try_string_from_identifier_name(&id.stx.name)?,
-                  });
-                }
+                record.import_entries.push(ImportEntry {
+                  module_request: next_req(&mut ctx, &mut remaining, &mut req_for_entries)?,
+                  import_name: ImportName::Name(try_string_from_module_export_import_name(&name.stx.importable)?),
+                  local_name: try_string_from_identifier_name(&id.stx.name)?,
+                });
               }
             }
+          }
           }
 
           debug_assert_eq!(remaining, 0, "import entry count mismatch");
@@ -1072,7 +1073,7 @@ fn module_record_from_top_level(
               .try_reserve(1)
               .map_err(|_| VmError::OutOfMemory)?;
             record.indirect_export_entries.push(IndirectExportEntry {
-              export_name: try_string_from_identifier_name(&alias.stx.name)?,
+              export_name: try_string_from_export_name(alias)?,
               module_request: req,
               import_name: ImportName::All,
             });
@@ -1086,16 +1087,16 @@ fn module_record_from_top_level(
               for name in rest {
                 ctx.budget_tick()?;
                 record.indirect_export_entries.push(IndirectExportEntry {
-                  export_name: try_string_from_identifier_name(&name.stx.alias.stx.name)?,
+                  export_name: try_string_from_export_alias(&name.stx.exportable, name.loc, &name.stx.alias)?,
                   module_request: clone_module_request(&req, &mut ctx)?,
-                  import_name: ImportName::Name(try_string_from_identifier_name(name.stx.exportable.as_str())?),
+                  import_name: ImportName::Name(try_string_from_module_export_import_name(&name.stx.exportable)?),
                 });
               }
               ctx.budget_tick()?;
               record.indirect_export_entries.push(IndirectExportEntry {
-                export_name: try_string_from_identifier_name(&last.stx.alias.stx.name)?,
+                export_name: try_string_from_export_alias(&last.stx.exportable, last.loc, &last.stx.alias)?,
                 module_request: req,
-                import_name: ImportName::Name(try_string_from_identifier_name(last.stx.exportable.as_str())?),
+                import_name: ImportName::Name(try_string_from_module_export_import_name(&last.stx.exportable)?),
               });
             }
           }
@@ -1106,8 +1107,8 @@ fn module_record_from_top_level(
             for name in names {
               ctx.budget_tick()?;
               pending_export_entries_without_from.push(LocalExportEntry {
-                export_name: try_string_from_identifier_name(&name.stx.alias.stx.name)?,
-                local_name: try_string_from_identifier_name(name.stx.exportable.as_str())?,
+                export_name: try_string_from_export_alias(&name.stx.exportable, name.loc, &name.stx.alias)?,
+                local_name: try_string_from_module_export_import_name(&name.stx.exportable)?,
               });
             }
           }
@@ -2595,6 +2596,41 @@ fn try_string_from_str(value: &str) -> Result<String, VmError> {
   Ok(out)
 }
 
+fn try_string_from_module_export_import_name(name: &AstModuleExportImportName) -> Result<String, VmError> {
+  match name {
+    AstModuleExportImportName::Ident(s) => try_string_from_identifier_name(s),
+    AstModuleExportImportName::Str(s) => try_string_from_str(s),
+  }
+}
+
+fn try_string_from_export_name(alias: &Node<parse_js::ast::expr::pat::IdPat>) -> Result<String, VmError> {
+  // Exported names can be identifiers/keywords *or* string literals. `parse-js` represents them all
+  // as `IdPat` nodes; use associated data to distinguish string-literal spellings so we don't
+  // misinterpret backslashes in string values as identifier escape sequences.
+  if literal_string_code_units(&alias.assoc).is_some() {
+    return try_string_from_str(&alias.stx.name);
+  }
+  try_string_from_identifier_name(&alias.stx.name)
+}
+
+fn try_string_from_export_alias(
+  exportable: &AstModuleExportImportName,
+  exportable_loc: parse_js::loc::Loc,
+  alias: &Node<parse_js::ast::expr::pat::IdPat>,
+) -> Result<String, VmError> {
+  // `parse-js` always populates `alias`, even when no explicit `as` clause is present. Detect the
+  // implicit alias case via location: the exported name's span starts at the exportable name, while
+  // an explicit alias must begin later in the source.
+  //
+  // For implicit aliases, the export name is the same as the exported binding name, and therefore
+  // must be interpreted using the binding name's syntactic form (identifier vs string literal).
+  if alias.loc.0 == exportable_loc.0 {
+    return try_string_from_module_export_import_name(exportable);
+  }
+
+  try_string_from_export_name(alias)
+}
+
 /// Decodes `\uXXXX` and `\u{...}` escape sequences in identifier names.
 ///
 /// `parse-js` preserves the original source spelling for identifiers (including Unicode escape
@@ -2707,7 +2743,7 @@ fn syntax_error(loc: parse_js::loc::Loc, message: &str) -> VmError {
 
 #[cfg(test)]
 mod tests {
-  use super::{ImportName, IndirectExportEntry, LocalExportEntry, SourceTextModuleRecord};
+  use super::{ImportEntry, ImportName, IndirectExportEntry, LocalExportEntry, SourceTextModuleRecord};
   use crate::{Heap, HeapLimits, SourceText, TerminationReason, Vm, VmError, VmOptions};
   use std::sync::Arc;
 
@@ -3012,6 +3048,50 @@ mod tests {
   fn module_allows_shorthand_string_literal_export_names() {
     parse(r#"export { "☿" } from "./m.js";"#)
       .expect("string-literal module export names should be allowed in re-exports");
+  }
+
+  #[test]
+  fn module_preserves_backslashes_in_string_literal_export_names() {
+    let record = parse(
+      r#"
+      const a = 1;
+      export { a as "\\u0061" };
+    "#,
+    )
+    .unwrap();
+    assert_eq!(
+      record.local_export_entries,
+      vec![LocalExportEntry {
+        export_name: String::from("\\u0061"),
+        local_name: String::from("a"),
+      }]
+    );
+  }
+
+  #[test]
+  fn module_preserves_backslashes_in_string_literal_reexport_names() {
+    let record = parse(r#"export { "\\u0061" } from "./m.js";"#).unwrap();
+    assert_eq!(
+      record.indirect_export_entries,
+      vec![IndirectExportEntry {
+        export_name: String::from("\\u0061"),
+        module_request: crate::ModuleRequest::new(crate::JsString::from_str("./m.js").unwrap(), vec![]),
+        import_name: ImportName::Name(String::from("\\u0061")),
+      }]
+    );
+  }
+
+  #[test]
+  fn module_preserves_backslashes_in_string_literal_import_names() {
+    let record = parse(r#"import { "\\u0061" as a } from "./m.js";"#).unwrap();
+    assert_eq!(
+      record.import_entries,
+      vec![ImportEntry {
+        module_request: crate::ModuleRequest::new(crate::JsString::from_str("./m.js").unwrap(), vec![]),
+        import_name: ImportName::Name(String::from("\\u0061")),
+        local_name: String::from("a"),
+      }]
+    );
   }
 
   #[test]
