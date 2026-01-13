@@ -5659,6 +5659,18 @@ impl<'vm> HirEvaluator<'vm> {
     body: &hir_js::Body,
     obj: &hir_js::ObjectLiteral,
   ) -> Result<Value, VmError> {
+    const PROTO_KEY_UNITS: [u16; 9] = [
+      b'_' as u16,
+      b'_' as u16,
+      b'p' as u16,
+      b'r' as u16,
+      b'o' as u16,
+      b't' as u16,
+      b'o' as u16,
+      b'_' as u16,
+      b'_' as u16,
+    ];
+
     // Object literals inherit from %Object.prototype% (when intrinsics are available).
     //
     // The heap can be used without an initialized realm in some low-level unit tests; in that case
@@ -5680,8 +5692,11 @@ impl<'vm> HirEvaluator<'vm> {
           key,
           value,
           method,
-          ..
+          shorthand,
         } => {
+          let is_proto_setter =
+            !*method && !*shorthand && !matches!(key, hir_js::ObjectKey::Computed(_));
+
           // Spec-ish name inference: for methods and anonymous function definitions used as property
           // values, apply `SetFunctionName` with the property key.
           //
@@ -5723,6 +5738,30 @@ impl<'vm> HirEvaluator<'vm> {
           } else {
             self.eval_expr(&mut member_scope, body, *value)?
           };
+
+          // `__proto__: value` does *not* create an own property. If the evaluated value is an
+          // Object or Null, it sets the object's `[[Prototype]]`; otherwise it is ignored.
+          //
+          // Importantly, this returns early before `SetFunctionName` name inference for anonymous
+          // function definitions (since no property is created).
+          if is_proto_setter {
+            if let PropertyKey::String(s) = key {
+              if member_scope.heap().get_string(s)?.as_code_units() == PROTO_KEY_UNITS.as_slice() {
+                match v {
+                  Value::Object(proto) => {
+                    member_scope
+                      .heap_mut()
+                      .object_set_prototype(obj_val, Some(proto))?;
+                  }
+                  Value::Null => {
+                    member_scope.heap_mut().object_set_prototype(obj_val, None)?;
+                  }
+                  _ => {}
+                }
+                continue;
+              }
+            }
+          }
 
           // Root the value across `SetFunctionName` and `CreateDataProperty`.
           member_scope.push_root(v)?;

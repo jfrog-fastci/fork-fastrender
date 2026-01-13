@@ -8767,12 +8767,15 @@ impl<'a> Evaluator<'a> {
       let member_loc_start = member_node.loc.start_u32();
       let member = &member_node.stx.typ;
 
-      match member {
-        ObjMemberType::Valued { key, val } => {
-          let key_loc_start = match key {
-            ClassOrObjKey::Direct(direct) => direct.loc.start_u32(),
-            // `ClassOrObjKey::Computed` stores the loc of the *expression inside* the brackets, not
-            // the `[` token itself. When we later slice source text for lazy method parsing we need
+        match member {
+          ObjMemberType::Valued { key, val } => {
+            let is_proto_setter = matches!(key, ClassOrObjKey::Direct(direct) if direct.stx.key == "__proto__")
+              && matches!(val, ClassOrObjVal::Prop(Some(_)));
+
+            let key_loc_start = match key {
+              ClassOrObjKey::Direct(direct) => direct.loc.start_u32(),
+              // `ClassOrObjKey::Computed` stores the loc of the *expression inside* the brackets, not
+              // the `[` token itself. When we later slice source text for lazy method parsing we need
             // to include the full member prefix (e.g. `[` / `get [` / `set [`), otherwise the
             // reparsed wrapper `({ <snippet> })` becomes invalid (`Symbol.toPrimitive]...`).
             ClassOrObjKey::Computed(_) => member_loc_start,
@@ -8803,12 +8806,26 @@ impl<'a> Evaluator<'a> {
             PropertyKey::Symbol(s) => member_scope.push_root(Value::Symbol(s))?,
           };
 
-          match val {
-            ClassOrObjVal::Prop(Some(value_expr)) => {
-              let value = self.eval_expr(&mut member_scope, value_expr)?;
-              member_scope.push_root(value)?;
-              member_scope.create_data_property_or_throw(obj, key, value)?;
-            }
+            match val {
+              ClassOrObjVal::Prop(Some(value_expr)) => {
+                let value = self.eval_expr(&mut member_scope, value_expr)?;
+                member_scope.push_root(value)?;
+                if is_proto_setter {
+                  match value {
+                    Value::Object(proto) => {
+                      member_scope
+                        .heap_mut()
+                        .object_set_prototype(obj, Some(proto))?;
+                    }
+                    Value::Null => {
+                      member_scope.heap_mut().object_set_prototype(obj, None)?;
+                    }
+                    _ => {}
+                  }
+                } else {
+                  member_scope.create_data_property_or_throw(obj, key, value)?;
+                }
+              }
             ClassOrObjVal::Prop(None) => {
               return Err(VmError::Unimplemented(
                 "object literal property without initializer",

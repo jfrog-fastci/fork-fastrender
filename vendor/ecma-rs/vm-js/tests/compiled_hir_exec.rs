@@ -1207,6 +1207,68 @@ fn compiled_object_literal_in_function_inherits_from_object_prototype() -> Resul
 }
 
 #[test]
+fn compiled_object_literal_proto_property_sets_prototype() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      let proto = { y: 1 };
+      let o = { __proto__: proto };
+      Object.getPrototypeOf(o) === proto &&
+        Object.getOwnPropertyDescriptor(o, "__proto__") === undefined
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_object_literal_proto_property_non_object_is_ignored() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      let o = { __proto__: 1, x: 2 };
+      Object.getPrototypeOf(o) === Object.prototype &&
+        Object.getOwnPropertyDescriptor(o, "__proto__") === undefined &&
+        o.x === 2
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_object_literal_computed_proto_key_creates_data_property() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      let o = { ["__proto__"]: 1 };
+      Object.getPrototypeOf(o) === Object.prototype &&
+        Object.getOwnPropertyDescriptor(o, "__proto__").value === 1
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_object_literal_object_spread_copies_properties() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
