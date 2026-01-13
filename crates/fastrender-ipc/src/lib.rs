@@ -2575,6 +2575,7 @@ mod hover_router_tests {
         referrer_policy: None,
         sandbox_flags: SandboxFlags::NONE,
         opaque_origin: false,
+        effects: SubframeEffects::default(),
       }],
     );
 
@@ -2623,6 +2624,7 @@ mod hover_router_tests {
         referrer_policy: None,
         sandbox_flags: SandboxFlags::NONE,
         opaque_origin: false,
+        effects: SubframeEffects::default(),
       }],
     );
 
