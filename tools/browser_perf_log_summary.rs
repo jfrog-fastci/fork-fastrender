@@ -1,12 +1,10 @@
 use clap::Parser;
+use fastrender::perf_log;
 use serde::Serialize;
-use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
 use std::path::PathBuf;
-
-const SUPPORTED_SCHEMA_VERSIONS: &[u64] = &[1, 2];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum OnlyEvent {
@@ -140,7 +138,7 @@ fn percentile_nearest_rank_sorted(sorted: &[f64], pct: f64) -> f64 {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 struct Summary {
-  source_schema_version: u64,
+  source_schema_version: u32,
   filters: Filters,
   frames: Option<FrameSummary>,
   input: Option<InputSummary>,
@@ -197,59 +195,16 @@ struct WindowFilter {
   only_event: Option<OnlyEvent>,
 }
 
-fn parse_required_u64(obj: &serde_json::Map<String, Value>, key: &str) -> Result<u64, String> {
-  let Some(value) = obj.get(key) else {
-    return Err(format!("missing required field {key:?}"));
-  };
-  value
-    .as_u64()
-    .ok_or_else(|| format!("expected {key:?} to be an integer, got {value}"))
-}
-
-fn parse_optional_u64(obj: &serde_json::Map<String, Value>, key: &str) -> Result<Option<u64>, String> {
-  let Some(value) = obj.get(key) else {
-    return Ok(None);
-  };
-  let Some(value) = value.as_u64() else {
-    return Err(format!("expected {key:?} to be an integer, got {value}"));
-  };
-  Ok(Some(value))
-}
-
-fn parse_required_str<'a>(
-  obj: &'a serde_json::Map<String, Value>,
-  key: &str,
-) -> Result<&'a str, String> {
-  let Some(value) = obj.get(key) else {
-    return Err(format!("missing required field {key:?}"));
-  };
-  value
-    .as_str()
-    .ok_or_else(|| format!("expected {key:?} to be a string, got {value}"))
-}
-
-fn parse_required_ms(obj: &serde_json::Map<String, Value>, key: &str) -> Result<f64, String> {
-  let Some(value) = obj.get(key) else {
-    return Err(format!("missing required field {key:?}"));
-  };
-  parse_value_as_f64(value).ok_or_else(|| format!("expected {key:?} to be a number, got {value}"))
-}
-
-fn parse_optional_ms(obj: &serde_json::Map<String, Value>, key: &str) -> Option<f64> {
-  obj.get(key).and_then(parse_value_as_f64)
-}
-
-fn parse_value_as_f64(value: &Value) -> Option<f64> {
-  if let Some(v) = value.as_f64() {
-    return Some(v);
+fn matches_only_event(event: &perf_log::PerfEvent<'_>, only: OnlyEvent) -> bool {
+  match event {
+    perf_log::PerfEvent::Frame { .. } => matches!(only, OnlyEvent::Frame),
+    perf_log::PerfEvent::Input { .. } => matches!(only, OnlyEvent::Input),
+    perf_log::PerfEvent::Resize { .. } => matches!(only, OnlyEvent::Resize),
+    perf_log::PerfEvent::Ttfp { .. } => matches!(only, OnlyEvent::Ttfp),
+    perf_log::PerfEvent::IdleSample { .. } => matches!(only, OnlyEvent::IdleSample),
+    perf_log::PerfEvent::CpuSummary { .. } => matches!(only, OnlyEvent::CpuSummary),
+    _ => false,
   }
-  value.as_u64().map(|v| v as f64)
-}
-
-fn parse_timestamp_ms(obj: &serde_json::Map<String, Value>) -> Option<f64> {
-  // Most browser perf-log events use `t_ms` (monotonic ms since process start), but some
-  // diagnostic/legacy emitters use `ts_ms`. Accept both for robustness.
-  parse_optional_ms(obj, "t_ms").or_else(|| parse_optional_ms(obj, "ts_ms"))
 }
 
 fn should_include_timestamp(t_ms: f64, filter: WindowFilter) -> bool {
@@ -277,7 +232,7 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
   let mut cpu_percent_recent = Series::default();
   let mut cpu_time_ms_total = Series::default();
 
-  let mut schema_version_seen: Option<u64> = None;
+  let mut schema_version_seen: Option<u32> = None;
 
   for (idx, line) in reader.lines().enumerate() {
     let line_no = idx + 1;
@@ -287,24 +242,10 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
       continue;
     }
 
-    let parsed: Value =
-      serde_json::from_str(line).map_err(|err| format!("line {line_no}: invalid JSON: {err}"))?;
-    let Some(obj) = parsed.as_object() else {
-      return Err(format!("line {line_no}: expected JSON object per line"));
-    };
+    let event = perf_log::parse_jsonl_line(line)
+      .map_err(|err| format!("line {line_no}: invalid perf log event: {err}"))?;
 
-    // `schema_version` is present on most structured events, but some auxiliary browser logs
-    // (historical/diagnostic) may omit it. Treat missing as "unknown but assumed supported" so the
-    // summary tool stays resilient to mixed streams.
-    let schema_version = parse_optional_u64(obj, "schema_version")
-      .map_err(|err| format!("line {line_no}: {err}"))?;
-    if let Some(schema_version) = schema_version {
-      if !SUPPORTED_SCHEMA_VERSIONS.contains(&schema_version) {
-        return Err(format!(
-          "line {line_no}: unknown FASTR_PERF_LOG schema_version {schema_version} (supported: {:?})",
-          SUPPORTED_SCHEMA_VERSIONS
-        ));
-      }
+    if let Some(schema_version) = event.schema_version() {
       match schema_version_seen {
         Some(seen) if seen != schema_version => {
           return Err(format!(
@@ -318,9 +259,7 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
       }
     }
 
-    let event = parse_required_str(obj, "event").map_err(|err| format!("line {line_no}: {err}"))?;
-    let Some(t_ms) = parse_timestamp_ms(obj) else {
-      // If we don't have a timestamp we can't apply filters; ignore the line.
+    let Some(t_ms) = event.timestamp_ms().map(|t| t as f64) else {
       continue;
     };
 
@@ -329,17 +268,15 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
     }
 
     if let Some(only) = filter.only_event {
-      if !only.matches(event) {
+      if !matches_only_event(&event, only) {
         continue;
       }
     }
 
     match event {
-      "frame" => {
-        let ui_frame_ms =
-          parse_required_ms(obj, "ui_frame_ms").map_err(|err| format!("line {line_no}: {err}"))?;
+      perf_log::PerfEvent::Frame { ui_frame_ms, fps, .. } => {
         frame_ms.push(ui_frame_ms);
-        if let Some(fps_value) = parse_optional_ms(obj, "fps") {
+        if let Some(fps_value) = fps {
           fps.push(fps_value);
         } else if ui_frame_ms.is_finite() && ui_frame_ms > 0.0 {
           // Legacy fallback: older logs did not include an explicit FPS measurement, so estimate it
@@ -347,62 +284,55 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
           fps.push(1000.0 / ui_frame_ms);
         }
       }
-      "input" => {
-        let input_to_present_ms = parse_required_ms(obj, "input_to_present_ms")
-          .map_err(|err| format!("line {line_no}: {err}"))?;
+      perf_log::PerfEvent::Input {
+        input_to_present_ms,
+        input_kind,
+        ..
+      } => {
         input_overall.push(input_to_present_ms);
 
-        let kind = obj
-          .get("input_kind")
-          .and_then(|v| v.as_str())
-          .or_else(|| obj.get("kind").and_then(|v| v.as_str()))
-          .unwrap_or("unknown");
-
         input_by_kind
-          .entry(kind.to_string())
+          .entry(input_kind.as_str().to_string())
           .or_insert_with(Series::default)
           .push(input_to_present_ms);
       }
-      "resize" => {
-        let resize_to_present_ms = parse_required_ms(obj, "resize_to_present_ms")
-          .map_err(|err| format!("line {line_no}: {err}"))?;
+      perf_log::PerfEvent::Resize {
+        resize_to_present_ms,
+        ..
+      } => {
         resize_ms.push(resize_to_present_ms);
       }
-      "ttfp" => {
-        let ttfp =
-          parse_required_ms(obj, "ttfp_ms").map_err(|err| format!("line {line_no}: {err}"))?;
-        ttfp_ms.push(ttfp);
+      perf_log::PerfEvent::Ttfp { ttfp_ms, .. } => {
+        ttfp_ms.push(ttfp_ms);
       }
-      "idle_sample" | "idle_summary" => {
-        let value = parse_optional_ms(obj, "idle_fps")
-          .or_else(|| parse_optional_ms(obj, "idle_frames_per_sec"))
-          .or_else(|| parse_optional_ms(obj, "idle_frames"))
-          .or_else(|| parse_optional_ms(obj, "idle_frame_count"))
-          .or_else(|| parse_optional_ms(obj, "idle_frames_total"))
-          .ok_or_else(|| {
-            format!(
-              "line {line_no}: idle_sample event missing numeric field \"idle_fps\" (or legacy \"idle_frames_per_sec\"/\"idle_frames\"/\"idle_frame_count\"/\"idle_frames_total\")"
-            )
-          })?;
+      perf_log::PerfEvent::IdleSample {
+        idle_fps,
+        idle_frames_total,
+        ..
+      } => {
+        let value = if idle_fps > 0.0 {
+          f64::from(idle_fps)
+        } else {
+          idle_frames_total as f64
+        };
         idle_frames.push(value);
       }
-      "cpu_summary" => {
-        let percent = parse_required_ms(obj, "cpu_percent_recent")
-          .map_err(|err| format!("line {line_no}: {err}"))?;
-        cpu_percent_recent.push(percent);
-        if let Some(total) = parse_optional_ms(obj, "cpu_time_ms_total") {
-          cpu_time_ms_total.push(total);
-        }
+      perf_log::PerfEvent::CpuSummary {
+        cpu_percent_recent,
+        cpu_time_ms_total,
+        ..
+      } => {
+        cpu_percent_recent.push(cpu_percent_recent);
+        cpu_time_ms_total.push(cpu_time_ms_total as f64);
       }
-      other => {
+      _ => {
         // Unknown events are ignored so the tool stays forward-compatible with extra event types.
-        let _ = other;
       }
-    }
+    };
   }
 
   let schema_version_seen = schema_version_seen
-    .or_else(|| SUPPORTED_SCHEMA_VERSIONS.last().copied())
+    .or_else(|| perf_log::SUPPORTED_SCHEMA_VERSIONS.last().copied())
     .unwrap_or(0);
 
   let fps_stats = fps.stats();
