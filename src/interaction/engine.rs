@@ -2319,6 +2319,208 @@ mod tests {
     );
     assert!(!engine.active_document_selection_drag());
   }
+
+  #[test]
+  fn active_text_drag_clears_on_focus_change() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"abc\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut input_box = BoxNode::new_block(
+      Arc::new(ComputedStyle::default()),
+      crate::style::display::FormattingContextType::Block,
+      vec![],
+    );
+    input_box.styled_node_id = Some(input_id);
+    let root = BoxNode::new_block(
+      Arc::new(ComputedStyle::default()),
+      crate::style::display::FormattingContextType::Block,
+      vec![input_box],
+    );
+    let box_tree = BoxTree::new(root);
+    let input_box_id = find_box_id_for_styled_node_id(&box_tree, input_id);
+
+    let fragment_tree = FragmentTree::new(crate::tree::fragment_tree::FragmentNode::new_block(
+      Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+      vec![crate::tree::fragment_tree::FragmentNode::new_block_with_id(
+        Rect::from_xywh(0.0, 0.0, 200.0, 40.0),
+        input_box_id,
+        vec![],
+      )],
+    ));
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+    engine.pointer_down_with_click_count(
+      &mut dom,
+      &box_tree,
+      &fragment_tree,
+      &ScrollState::default(),
+      Point::new(5.0, 5.0),
+      PointerButton::Primary,
+      PointerModifiers::NONE,
+      1,
+    );
+    assert_eq!(engine.active_text_drag(), Some((input_id, input_box_id)));
+
+    // Any focus change should clear an in-progress text selection drag.
+    let _ = engine.focus_node_id(&mut dom, None, true);
+    assert_eq!(engine.active_text_drag(), None);
+  }
+
+  #[test]
+  fn active_text_drag_clears_on_clear_pointer_state() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"abc\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut input_box = BoxNode::new_block(
+      Arc::new(ComputedStyle::default()),
+      crate::style::display::FormattingContextType::Block,
+      vec![],
+    );
+    input_box.styled_node_id = Some(input_id);
+    let root = BoxNode::new_block(
+      Arc::new(ComputedStyle::default()),
+      crate::style::display::FormattingContextType::Block,
+      vec![input_box],
+    );
+    let box_tree = BoxTree::new(root);
+    let input_box_id = find_box_id_for_styled_node_id(&box_tree, input_id);
+
+    let fragment_tree = FragmentTree::new(crate::tree::fragment_tree::FragmentNode::new_block(
+      Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+      vec![crate::tree::fragment_tree::FragmentNode::new_block_with_id(
+        Rect::from_xywh(0.0, 0.0, 200.0, 40.0),
+        input_box_id,
+        vec![],
+      )],
+    ));
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+    engine.pointer_down_with_click_count(
+      &mut dom,
+      &box_tree,
+      &fragment_tree,
+      &ScrollState::default(),
+      Point::new(5.0, 5.0),
+      PointerButton::Primary,
+      PointerModifiers::NONE,
+      1,
+    );
+    assert_eq!(engine.active_text_drag(), Some((input_id, input_box_id)));
+
+    engine.clear_pointer_state(&mut dom);
+    assert_eq!(engine.active_text_drag(), None);
+  }
+
+  #[test]
+  fn active_document_selection_drag_clears_on_focus_change() {
+    let text = "Hello";
+    let mut dom = crate::dom::parse_html("<html><body><p>Hello</p></body></html>").expect("parse");
+    let p_id = find_element_node_id(&mut dom, "p");
+    let text_node_id = find_text_node_id(&mut dom, text);
+
+    let mut text_box = BoxNode::new_text(Arc::new(ComputedStyle::default()), text.to_string());
+    text_box.styled_node_id = Some(text_node_id);
+    let root = BoxNode::new_block(
+      Arc::new(ComputedStyle::default()),
+      crate::style::display::FormattingContextType::Block,
+      vec![text_box],
+    );
+    let box_tree = BoxTree::new(root);
+    let text_box_id = find_box_id_for_styled_node_id(&box_tree, text_node_id);
+
+    let mut text_fragment = crate::tree::fragment_tree::FragmentNode::new_text(
+      Rect::from_xywh(0.0, 0.0, 200.0, 40.0),
+      text,
+      0.0,
+    );
+    if let FragmentContent::Text {
+      box_id,
+      source_range,
+      ..
+    } = &mut text_fragment.content
+    {
+      *box_id = Some(text_box_id);
+      *source_range = crate::tree::fragment_tree::TextSourceRange::new(0..text.len());
+    } else {
+      panic!("expected text fragment content");
+    }
+
+    let fragment_tree = FragmentTree::new(crate::tree::fragment_tree::FragmentNode::new_block(
+      Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+      vec![text_fragment],
+    ));
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(p_id), true);
+    engine.pointer_down(
+      &mut dom,
+      &box_tree,
+      &fragment_tree,
+      &ScrollState::default(),
+      Point::new(5.0, 5.0),
+    );
+    assert!(engine.active_document_selection_drag());
+
+    // Any focus change should clear an in-progress document selection drag.
+    let _ = engine.focus_node_id(&mut dom, None, true);
+    assert!(!engine.active_document_selection_drag());
+  }
+
+  #[test]
+  fn active_document_selection_drag_clears_on_clear_pointer_state() {
+    let text = "Hello";
+    let mut dom = crate::dom::parse_html("<html><body><p>Hello</p></body></html>").expect("parse");
+    let text_node_id = find_text_node_id(&mut dom, text);
+
+    let mut text_box = BoxNode::new_text(Arc::new(ComputedStyle::default()), text.to_string());
+    text_box.styled_node_id = Some(text_node_id);
+    let root = BoxNode::new_block(
+      Arc::new(ComputedStyle::default()),
+      crate::style::display::FormattingContextType::Block,
+      vec![text_box],
+    );
+    let box_tree = BoxTree::new(root);
+    let text_box_id = find_box_id_for_styled_node_id(&box_tree, text_node_id);
+
+    let mut text_fragment = crate::tree::fragment_tree::FragmentNode::new_text(
+      Rect::from_xywh(0.0, 0.0, 200.0, 40.0),
+      text,
+      0.0,
+    );
+    if let FragmentContent::Text {
+      box_id,
+      source_range,
+      ..
+    } = &mut text_fragment.content
+    {
+      *box_id = Some(text_box_id);
+      *source_range = crate::tree::fragment_tree::TextSourceRange::new(0..text.len());
+    } else {
+      panic!("expected text fragment content");
+    }
+
+    let fragment_tree = FragmentTree::new(crate::tree::fragment_tree::FragmentNode::new_block(
+      Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+      vec![text_fragment],
+    ));
+
+    let mut engine = InteractionEngine::new();
+    engine.pointer_down(
+      &mut dom,
+      &box_tree,
+      &fragment_tree,
+      &ScrollState::default(),
+      Point::new(5.0, 5.0),
+    );
+    assert!(engine.active_document_selection_drag());
+
+    engine.clear_pointer_state(&mut dom);
+    assert!(!engine.active_document_selection_drag());
+  }
 }
 
 fn nearest_element_ancestor(index: &DomIndexMut, mut node_id: usize) -> Option<usize> {
@@ -5674,10 +5876,22 @@ impl InteractionEngine {
     None
   }
 
+  /// Return the currently active text-control selection drag, if any.
+  ///
+  /// This is `Some((node_id, box_id))` while the user is dragging the caret/selection within a
+  /// focused `<input>`/`<textarea>` via a pointer gesture (e.g. click-drag).
+  ///
+  /// The drag state is cleared on pointer up, focus changes, and `clear_pointer_state`.
   pub fn active_text_drag(&self) -> Option<(usize, usize)> {
     self.text_drag.map(|state| (state.node_id, state.box_id))
   }
 
+  /// Returns true while the user is extending a document selection via a pointer drag.
+  ///
+  /// This tracks "click and drag to select text" gestures in normal document content (outside of
+  /// form controls).
+  ///
+  /// The drag state is cleared on pointer up, focus changes, and `clear_pointer_state`.
   pub fn active_document_selection_drag(&self) -> bool {
     self.document_drag.is_some()
   }
