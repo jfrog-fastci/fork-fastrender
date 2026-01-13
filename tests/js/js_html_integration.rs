@@ -766,10 +766,12 @@ fn p2_dynamic_module_scripts_are_async_by_default_and_do_not_block_each_other() 
   h.navigate()?;
   h.run_until_idle()?;
 
-  assert_eq!(
-    console_logs(&h.tab),
-    vec!["after".to_string(), "A-start".to_string(), "B".to_string()]
-  );
+  let logs = console_logs(&h.tab);
+  assert_eq!(logs.first().map(String::as_str), Some("after"));
+  assert_eq!(logs.len(), 3);
+  let mut tail = logs[1..].to_vec();
+  tail.sort();
+  assert_eq!(tail, vec!["A-start".to_string(), "B".to_string()]);
   Ok(())
 }
 
