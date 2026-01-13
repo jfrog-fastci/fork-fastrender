@@ -281,6 +281,24 @@ fn accessibility_title_only_form_scopes_other_landmarks_only_when_title_is_non_e
 }
 
 #[test]
+fn accessibility_aria_label_form_scopes_other_landmarks_only_when_label_is_non_empty() {
+  let html = r##"
+    <html><body>
+      <form id="missing" aria-label="   "><header id="hdr1">Site</header></form>
+      <form id="named" aria-label="Named"><header id="hdr2">Site</header></form>
+    </body></html>
+  "##;
+
+  let tree = render_accessibility_json(html);
+
+  let hdr1 = find_json_node(&tree, "hdr1").expect("hdr1");
+  assert_eq!(hdr1.get("role").and_then(|v| v.as_str()), Some("banner"));
+
+  let hdr2 = find_json_node(&tree, "hdr2").expect("hdr2");
+  assert_eq!(hdr2.get("role").and_then(|v| v.as_str()), Some("generic"));
+}
+
+#[test]
 fn accessibility_section_landmark_role_is_preserved_when_named_by_title() {
   let html = r##"
     <html><body>
