@@ -6577,7 +6577,14 @@ impl<'vm> HirEvaluator<'vm> {
     let Some(class_meta) = class_body.class.as_ref() else {
       return Err(VmError::InvariantViolation("class body missing class metadata"));
     };
-    if class_meta.extends.is_some() {
+    let extends_null = match class_meta.extends {
+      None => false,
+      Some(expr_id) => {
+        let expr = self.get_expr(class_body, expr_id)?;
+        matches!(&expr.kind, hir_js::ExprKind::Literal(hir_js::Literal::Null))
+      }
+    };
+    if class_meta.extends.is_some() && !extends_null {
       return Err(VmError::Unimplemented("class inheritance"));
     }
 
@@ -6611,7 +6618,14 @@ impl<'vm> HirEvaluator<'vm> {
       let Some(class_meta) = class_body.class.as_ref() else {
         return Err(VmError::InvariantViolation("class body missing class metadata"));
       };
-      if class_meta.extends.is_some() {
+      let extends_null = match class_meta.extends {
+        None => false,
+        Some(expr_id) => {
+          let expr = self.get_expr(class_body, expr_id)?;
+          matches!(&expr.kind, hir_js::ExprKind::Literal(hir_js::Literal::Null))
+        }
+      };
+      if class_meta.extends.is_some() && !extends_null {
         return Err(VmError::Unimplemented("class inheritance"));
       }
 
@@ -6712,7 +6726,9 @@ impl<'vm> HirEvaluator<'vm> {
         None
       };
 
-      let func_obj = self.create_class_constructor_object(scope, func_name, ctor_length, ctor_body_func)?;
+      let is_derived = extends_null;
+      let func_obj =
+        self.create_class_constructor_object(scope, func_name, ctor_length, ctor_body_func, is_derived)?;
 
       // Initialize the requested binding now that the class constructor object exists.
       if let Some(name) = binding_name {
@@ -6745,6 +6761,13 @@ impl<'vm> HirEvaluator<'vm> {
         ));
       };
       class_scope.push_root(Value::Object(prototype_obj))?;
+
+      // `extends null` means the prototype object inherits from `null` (not `%Object.prototype%`).
+      if extends_null {
+        class_scope
+          .heap_mut()
+          .object_set_prototype(prototype_obj, None)?;
+      }
 
       // Per ECMAScript, class constructors have a non-writable `prototype` property.
       class_scope.define_property_or_throw(
@@ -6904,6 +6927,7 @@ impl<'vm> HirEvaluator<'vm> {
     name: &str,
     length: u32,
     constructor_body: Option<GcObject>,
+    is_derived: bool,
   ) -> Result<GcObject, VmError> {
     let intr = self
       .vm
@@ -6920,10 +6944,11 @@ impl<'vm> HirEvaluator<'vm> {
     let name_s = init_scope.alloc_string(name)?;
     let slots_buf;
     let slots = if let Some(body) = constructor_body {
-      slots_buf = [Value::Object(body)];
+      slots_buf = [Value::Object(body), Value::Bool(is_derived)];
       &slots_buf[..]
     } else {
-      &[][..]
+      slots_buf = [Value::Undefined, Value::Bool(is_derived)];
+      &slots_buf[..]
     };
 
     let func_obj = init_scope.alloc_native_function_with_slots(
