@@ -13,7 +13,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use fastrender::layout::contexts::block::BlockFormattingContext;
 use fastrender::layout::engine::LayoutParallelism;
 use fastrender::layout::table::{TableFormattingContext, TableStructure};
@@ -912,6 +912,12 @@ fn bench_grid_track_sizing_measure_fanout(c: &mut Criterion) {
   let _taffy_usage_guard = enable_taffy_counters(true);
 
   let mut group = c.benchmark_group("layout_hotspots_grid_track_sizing");
+  // This benchmark tends to be heavier than the other "micro" hotspots, and Criterion may choose
+  // >1 iteration/sample when the iteration time sits just below the per-sample budget. Keep the
+  // measurement window small so `cargo bench --bench layout_hotspots` stays quick.
+  group.warm_up_time(Duration::from_millis(100));
+  group.measurement_time(Duration::from_millis(400));
+  group.throughput(Throughput::Elements(256));
   group.bench_function("grid_track_sizing_measure_fanout", |b| {
     b.iter(|| {
       reset_taffy_counters();
