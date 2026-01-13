@@ -14,6 +14,7 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::Arc;
+use std::sync::mpsc;
 
 /// Maximum width/height in pixels for a cached video frame.
 ///
@@ -29,16 +30,110 @@ const MAX_VIDEO_FRAME_DIMENSION: u32 = 4096;
 const DOWNSCALE_TRIGGER_NUM: u64 = 3;
 const DOWNSCALE_TRIGGER_DEN: u64 = 2; // 1.5x
 
+/// Maximum number of queued scale jobs.
+///
+/// Scaling is CPU-bound and can be slower than decode on some machines; keep the queue bounded so
+/// repeated paint calls (e.g. during resize) cannot accumulate unbounded work.
+const SCALE_JOB_QUEUE_CAPACITY: usize = 8;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct VideoKey {
   box_id: Option<usize>,
-  src: String,
+  src: Arc<str>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingScale {
+  revision: u64,
+  max_w: u32,
+  max_h: u32,
+}
+
+#[derive(Debug)]
 struct VideoEntry {
+  src: Arc<str>,
   last_size_hint: Option<MediaFrameSizeHint>,
   frame: Option<Arc<ImageData>>,
+  revision: u64,
+  pending_scale: Option<PendingScale>,
+}
+
+impl VideoEntry {
+  fn new(src: Arc<str>) -> Self {
+    Self {
+      src,
+      last_size_hint: None,
+      frame: None,
+      revision: 0,
+      pending_scale: None,
+    }
+  }
+}
+
+struct ScaleJob {
+  box_id: Option<usize>,
+  src: Arc<str>,
+  revision: u64,
+  max_w: u32,
+  max_h: u32,
+  frame: Arc<ImageData>,
+}
+
+#[derive(Debug)]
+struct FrameScaler {
+  sender: Option<mpsc::SyncSender<ScaleJob>>,
+  handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl FrameScaler {
+  fn new(videos: Arc<Mutex<HashMap<VideoKey, VideoEntry>>>) -> Self {
+    let (sender, receiver) = mpsc::sync_channel::<ScaleJob>(SCALE_JOB_QUEUE_CAPACITY);
+    let handle = std::thread::spawn(move || {
+      while let Ok(job) = receiver.recv() {
+        let Some(scaled) = downscale_frame_to_bounds(&job.frame, job.max_w, job.max_h) else {
+          continue;
+        };
+        let mut guard = videos.lock();
+        if let Some(entry) = guard.get_mut(&VideoKey {
+          box_id: job.box_id,
+          src: Arc::clone(&job.src),
+        }) {
+          if entry.revision != job.revision {
+            continue;
+          }
+          if entry
+            .pending_scale
+            .is_some_and(|p| p.revision == job.revision && p.max_w == job.max_w && p.max_h == job.max_h)
+          {
+            entry.frame = Some(scaled);
+            entry.pending_scale = None;
+            entry.revision = entry.revision.wrapping_add(1);
+          }
+        }
+      }
+    });
+    Self {
+      sender: Some(sender),
+      handle: Some(handle),
+    }
+  }
+
+  fn try_schedule(&self, job: ScaleJob) -> bool {
+    self
+      .sender
+      .as_ref()
+      .is_some_and(|sender| sender.try_send(job).is_ok())
+  }
+}
+
+impl Drop for FrameScaler {
+  fn drop(&mut self) {
+    // Dropping the sender closes the channel, which makes the worker thread exit its recv loop.
+    self.sender.take();
+    if let Some(handle) = self.handle.take() {
+      let _ = handle.join();
+    }
+  }
 }
 
 /// A [`MediaFrameProvider`] implementation that:
@@ -49,15 +144,18 @@ struct VideoEntry {
 ///
 /// This type is intentionally minimal and deterministic. It does **not** perform any decoding on
 /// its own; instead, decoded frames are pushed in via [`Self::update_video_frame`].
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SizeHintMediaFrameProvider {
-  videos: Mutex<HashMap<VideoKey, VideoEntry>>,
+  videos: Arc<Mutex<HashMap<VideoKey, VideoEntry>>>,
+  scaler: FrameScaler,
 }
 
 impl SizeHintMediaFrameProvider {
   /// Creates an empty provider.
   pub fn new() -> Self {
-    Self::default()
+    let videos = Arc::new(Mutex::new(HashMap::new()));
+    let scaler = FrameScaler::new(Arc::clone(&videos));
+    Self { videos, scaler }
   }
 
   /// Publishes a decoded video frame for (`box_id`, `src`).
@@ -75,6 +173,14 @@ impl SizeHintMediaFrameProvider {
     let mut guard = self.videos.lock();
     let entry = video_entry_mut(&mut guard, box_id, src);
     entry.frame = Some(scaled);
+    entry.pending_scale = None;
+    entry.revision = entry.revision.wrapping_add(1);
+  }
+}
+
+impl Default for SizeHintMediaFrameProvider {
+  fn default() -> Self {
+    Self::new()
   }
 }
 
@@ -85,12 +191,52 @@ impl MediaFrameProvider for SizeHintMediaFrameProvider {
     src: &str,
     size_hint: Option<MediaFrameSizeHint>,
   ) -> Option<Arc<ImageData>> {
-    let mut guard = self.videos.lock();
-    let entry = video_entry_mut(&mut guard, box_id, src);
-    if size_hint.is_some() {
-      entry.last_size_hint = size_hint;
+    let mut job: Option<ScaleJob> = None;
+    let frame = {
+      let mut guard = self.videos.lock();
+      let entry = video_entry_mut(&mut guard, box_id, src);
+      if size_hint.is_some() && entry.last_size_hint != size_hint {
+        entry.last_size_hint = size_hint;
+        entry.pending_scale = None;
+        entry.revision = entry.revision.wrapping_add(1);
+      }
+
+      let frame = entry.frame.as_ref().map(Arc::clone);
+      if let (Some(hint), Some(frame)) = (entry.last_size_hint, frame.as_ref()) {
+        if let Some((max_w, max_h)) = hint_device_pixel_bounds(hint) {
+          if should_downscale(frame.width, frame.height, max_w, max_h) {
+            let pending = PendingScale {
+              revision: entry.revision,
+              max_w,
+              max_h,
+            };
+            if entry.pending_scale != Some(pending) {
+              entry.pending_scale = Some(pending);
+              job = Some(ScaleJob {
+                box_id,
+                src: Arc::clone(&entry.src),
+                revision: entry.revision,
+                max_w,
+                max_h,
+                frame: Arc::clone(frame),
+              });
+            }
+          }
+        }
+      }
+      frame
+    };
+
+    if let Some(job) = job {
+      if !self.scaler.try_schedule(job) {
+        // Queue is full/disconnected: clear the pending marker so we can retry later.
+        let mut guard = self.videos.lock();
+        let entry = video_entry_mut(&mut guard, box_id, src);
+        entry.pending_scale = None;
+      }
     }
-    entry.frame.as_ref().map(Arc::clone)
+
+    frame
   }
 }
 
@@ -108,18 +254,19 @@ fn video_entry_mut<'a>(
 
   match map
     .raw_entry_mut()
-    .from_hash(hash, |k| k.box_id == box_id && k.src == src)
+    .from_hash(hash, |k| k.box_id == box_id && k.src.as_ref() == src)
   {
     RawEntryMut::Occupied(entry) => entry.into_mut(),
     RawEntryMut::Vacant(entry) => {
+      let src_arc: Arc<str> = Arc::from(src);
       entry
         .insert_hashed_nocheck(
           hash,
           VideoKey {
             box_id,
-            src: src.to_owned(),
+            src: Arc::clone(&src_arc),
           },
-          VideoEntry::default(),
+          VideoEntry::new(src_arc),
         )
         .1
     }
@@ -202,6 +349,14 @@ fn downscale_frame_to_hint(
   let (max_w, max_h) = hint
     .and_then(hint_device_pixel_bounds)
     .unwrap_or((MAX_VIDEO_FRAME_DIMENSION, MAX_VIDEO_FRAME_DIMENSION));
+  downscale_frame_to_bounds(frame, max_w, max_h)
+}
+
+fn downscale_frame_to_bounds(
+  frame: &Arc<ImageData>,
+  max_w: u32,
+  max_h: u32,
+) -> Option<Arc<ImageData>> {
 
   if !should_downscale(frame.width, frame.height, max_w, max_h) {
     return None;
