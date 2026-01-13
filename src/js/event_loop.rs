@@ -1801,7 +1801,6 @@ impl<Host: 'static> EventLoop<Host> {
     };
 
     self.currently_running_task = previous_running_task;
-
     if self.animation_frame_callbacks.is_empty() {
       // Avoid accumulating canceled IDs in the scheduling queue when all callbacks are gone.
       self.animation_frame_queue.clear();
@@ -1822,6 +1821,17 @@ impl<Host: 'static> EventLoop<Host> {
         }
       }
       Err(err) => {
+        // Preserve any callbacks we did not get to execute.
+        //
+        // `run_animation_frame` snapshot-drains `animation_frame_queue` at the start of a frame so
+        // callbacks queued during the frame are deferred to the next one. If the frame aborts
+        // early (e.g. callback error without an error handler, or a renderer deadline), `queue`
+        // still contains the remaining snapshot IDs. We must reattach them; otherwise callbacks
+        // become unreachable (IDs removed from the queue but still present in
+        // `animation_frame_callbacks`).
+        queue.append(&mut self.animation_frame_queue);
+        self.animation_frame_queue = queue;
+
         // Prefer surfacing the callback error if both the frame and checkpoint failed: this mirrors
         // `run_next_task` error precedence.
         let _ = microtask_err;
@@ -4490,6 +4500,13 @@ mod tests {
     assert!(matches!(err, Error::Other(msg) if msg == "boom"));
     assert_eq!(host.log, vec!["a"]);
     assert_eq!(event_loop.currently_running_task(), None);
+
+    // The remaining callback should still be queued for the next frame (no leak).
+    assert_eq!(
+      event_loop.run_animation_frame(&mut host).unwrap(),
+      RunAnimationFrameOutcome::Ran { callbacks: 1 }
+    );
+    assert_eq!(host.log, vec!["a", "b"]);
   }
 
   #[test]
