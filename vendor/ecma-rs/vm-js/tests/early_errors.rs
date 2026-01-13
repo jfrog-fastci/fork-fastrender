@@ -330,7 +330,7 @@ fn using_declaration_at_script_top_level_is_syntax_error() {
 #[test]
 fn using_declaration_in_for_in_head_is_syntax_error() {
   let mut rt = new_runtime();
-  let err = rt.exec_script("for (using x in [1]) {}").unwrap_err();
+  let err = rt.exec_script("for (using x in [1,2,3]) {}").unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
 
@@ -355,14 +355,47 @@ fn using_declaration_in_switch_default_clause_is_syntax_error() {
 #[test]
 fn using_declaration_does_not_allow_destructuring_pattern_is_syntax_error() {
   let mut rt = new_runtime();
+  let err = rt.exec_script("{ using [] = null; }").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn await_using_declaration_at_script_top_level_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("await using x = null;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn using_declaration_does_not_allow_object_destructuring_pattern_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("{ using {} = null; }").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn await_using_declaration_does_not_allow_destructuring_pattern_in_declarator_list_is_syntax_error() {
+  let mut rt = new_runtime();
   let err = rt
-    .exec_script(
-      r#"
-      {
-        using [] = null;
-      }
-    "#,
-    )
+    .exec_script("async function f(){ await using x = null, [] = null; }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn await_using_declaration_in_for_in_head_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("async function f(){ for (await using x in [1,2,3]) {} }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn await_using_declaration_in_switch_clause_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("async function f(){ switch (true) { default: await using x = null; } }")
     .unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
