@@ -1445,11 +1445,22 @@ impl FloatContext {
     if toggles.truthy("FASTR_LAYOUT_PROFILE") {
       let stats = float_profile_stats();
       eprintln!(
-        "  float_profile: range_queries={} range_boundaries_scanned={} max_range_boundaries_scanned_per_query={} max_range_cache_segments_len={}",
+        "  float_profile: width_queries={} range_queries={} boundary_steps={} sweep_state_clones={} range_boundaries_scanned={} max_range_boundaries_scanned_per_query={} max_range_cache_segments_len={} range_cache_splits={} range_cache_merges={} active_left_prunes={} active_right_prunes={} active_left_max_edges={} active_right_max_edges={} clearance_queries={} clearance_steps={}",
+        stats.width_queries,
         stats.range_queries,
+        stats.boundary_steps,
+        stats.sweep_state_clones,
         stats.range_boundaries_scanned,
         stats.max_range_boundaries_scanned_per_query,
-        stats.max_range_cache_segments_len
+        stats.max_range_cache_segments_len,
+        stats.range_cache_segment_splits,
+        stats.range_cache_segment_merges,
+        stats.active_left_prunes,
+        stats.active_right_prunes,
+        stats.active_left_max_edges,
+        stats.active_right_max_edges,
+        stats.clearance_queries,
+        stats.clearance_steps
       );
     }
   }
