@@ -1697,9 +1697,8 @@ impl TextItem {
         axis
       });
 
-      // `cluster.glyph_end` is derived from shaping output; clamp defensively so we never borrow
-      // `run.glyphs` twice (and so out-of-range cluster indices still apply spacing to the last
-      // glyph).
+      // `cluster.glyph_end` is derived from shaping output; clamp defensively so out-of-range
+      // cluster indices (e.g. after glyph compaction) still apply spacing to the last glyph.
       debug_assert!(cluster.glyph_end > 0);
       let glyph_idx = cluster
         .glyph_end
