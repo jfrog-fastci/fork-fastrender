@@ -81,7 +81,8 @@ These are consumed by the experimental desktop browser UI (`browser` binary; see
   - This can help in environments without a discrete GPU, under remote desktop, or when GPU driver setup is incomplete.
 - `FASTR_BROWSER_WGPU_BACKENDS=<backend[,backend...]>` – select `wgpu` backend(s) used by the `browser` UI.
   - CLI equivalent: `browser --wgpu-backends <backend[,backend...]>` (alias: `browser --wgpu-backend <backend>`).
-  - Accepted values: `vulkan`, `metal`, `dx12`, `dx11`, `gl`, `all` (aliases: `auto`, `default`).
+  - Accepted values: `vulkan`, `metal`, `dx12`, `dx11`, `gl` (alias: `opengl`), `browser-webgpu`
+    (alias: `webgpu`), `all` (aliases: `auto`, `default`).
 - `FASTR_BROWSER_DOWNLOAD_DIR=/path/to/dir` – override the download directory used by the windowed browser UI.
   - CLI equivalent: `browser --download-dir /path/to/dir`.
 - `FASTR_BROWSER_BOOKMARKS_PATH=/path/to/bookmarks.json` – override the bookmarks persistence file path (JSON).
