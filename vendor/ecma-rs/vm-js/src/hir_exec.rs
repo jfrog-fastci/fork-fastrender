@@ -2072,6 +2072,21 @@ impl<'vm> HirEvaluator<'vm> {
         }
       }
       hir_js::StmtKind::With { object, body: inner } => {
+        if self.strict {
+          // Early error in strict mode (ECMA-262). The compiled HIR execution path does not run the
+          // full early-error validator today, so reject at runtime to keep behaviour aligned with
+          // the interpreter for scripts/functions that contain `"use strict"`.
+          let diag = diagnostics::Diagnostic::error(
+            "VMJS0004",
+            "with statements are not allowed in strict mode",
+            diagnostics::Span {
+              file: diagnostics::FileId(0),
+              range: diagnostics::TextRange::new(0, 0),
+            },
+          );
+          return Err(VmError::Syntax(vec![diag]));
+        }
+
         // Minimal ECMA-262 `WithStatement` evaluation:
         //
         // - Evaluate the object expression, then `ToObject` it.
@@ -2088,7 +2103,7 @@ impl<'vm> HirEvaluator<'vm> {
         let with_env = with_scope.alloc_object_env_record(binding_object, Some(outer), true)?;
         self.env.set_lexical_env(with_scope.heap_mut(), with_env);
 
-        let result = self.eval_stmt(&mut with_scope, body, *inner);
+        let result = self.eval_stmt_labelled(&mut with_scope, body, *inner, label_set);
 
         // Always restore the outer lexical environment so later statements run in the correct
         // scope.
