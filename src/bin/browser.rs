@@ -19188,6 +19188,12 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     }
 
     let mut platform_output = full_output.platform_output;
+    // Security/perf: egui clipboard writes can originate from UI actions that include untrusted
+    // renderer-provided strings (e.g. debug logs). Clamp the outgoing text so we never hand
+    // arbitrarily large strings to the OS clipboard implementation.
+    if !platform_output.copied_text.is_empty() {
+      fastrender::ui::clipboard::clamp_clipboard_text_in_place(&mut platform_output.copied_text);
+    }
     if let Some(tab_id) = self.browser_state.active_tab_id() {
       if let Some(page_subtree) = self.pending_page_subtree_accesskit.remove(&tab_id) {
         let merged = Self::merge_page_subtree_accesskit_update(&mut platform_output, page_subtree);
