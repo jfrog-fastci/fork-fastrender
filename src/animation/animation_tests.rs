@@ -1489,6 +1489,46 @@ fn matrix_interpolation_2d_preserves_reflection_axis() {
 }
 
 #[test]
+fn matrix_interpolation_2d_roundtrips_translation_with_skew() {
+  // Regression: 2D matrix decomposition must be a true decomposition so interpolating a matrix
+  // against itself produces the same matrix (even when the linear part contains shear/skew).
+  let sheet = parse_stylesheet(
+    "@keyframes skew { from { transform: matrix(1, 0, 0.5773503, 1, 128.85, 50); } to { transform: matrix(1, 0, 0.5773503, 1, 128.85, 50); } }",
+  )
+  .unwrap();
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = &keyframes[0];
+  let sampled = sample_keyframes(
+    rule,
+    0.5,
+    &ComputedStyle::default(),
+    Size::new(800.0, 600.0),
+    Size::new(120.0, 80.0),
+  );
+  let transform = match sampled.get("transform") {
+    Some(AnimatedValue::Transform(t)) => t,
+    other => panic!("unexpected value {other:?}"),
+  };
+
+  // matrix() interpolation returns a matrix3d() per spec.
+  assert_eq!(transform.len(), 1);
+  let matrix = crate::animation::compose_transform_list(transform);
+
+  let (tx, ty, _tz, tw) = matrix.transform_point(0.0, 0.0, 0.0);
+  assert!((tw - 1.0).abs() < 1e-6, "expected w≈1, got {tw}");
+  assert!((tx - 128.85).abs() < 1e-3, "expected tx≈128.85, got {tx}");
+  assert!((ty - 50.0).abs() < 1e-3, "expected ty≈50, got {ty}");
+
+  let v = matrix.transform_direction(0.0, 1.0, 0.0);
+  assert!(
+    (v[0] - 0.5773503).abs() < 1e-3,
+    "expected skew x≈0.577, got {:?}",
+    v
+  );
+  assert!((v[1] - 1.0).abs() < 1e-3, "expected y≈1, got {:?}", v);
+}
+
+#[test]
 fn keyframes_interpolate_filters() {
   let sheet =
     parse_stylesheet("@keyframes blur { from { filter: blur(0px); } to { filter: blur(10px); } }")

@@ -4671,7 +4671,13 @@ fn decompose_transform_matrix2d(matrix: &Transform3D) -> Option<DecomposedTransf
   let mut row1x = t.c;
   let mut row1y = t.d;
 
-  let translation = [t.e, t.f];
+  // `translate` in CSS Transforms decomposition/recomposition is expressed in the coordinate space
+  // prior to applying the decomposed 2×2 matrix (m11..m22). The recomposition algorithm later
+  // multiplies the translation vector by that matrix to recover the final translation column.
+  //
+  // Store the original matrix translation column so we can solve for the pre-matrix translation
+  // once m11..m22 are known.
+  let translation_col = [t.e, t.f];
 
   let mut scale_x = (row0x * row0x + row0y * row0y).sqrt();
   let mut scale_y = (row1x * row1x + row1y * row1y).sqrt();
@@ -4734,7 +4740,18 @@ fn decompose_transform_matrix2d(matrix: &Transform3D) -> Option<DecomposedTransf
   // Convert into degrees because our rotation functions expect degrees.
   angle = angle.to_degrees();
 
+  let det_m = m11 * m22 - m12 * m21;
+  if !det_m.is_finite() || det_m.abs() <= 1e-12 {
+    return None;
+  }
+  let inv_det_m = 1.0 / det_m;
+  let translation = [
+    (translation_col[0] * m22 - translation_col[1] * m21) * inv_det_m,
+    (translation_col[1] * m11 - translation_col[0] * m12) * inv_det_m,
+  ];
+
   if !translation.iter().all(|v| v.is_finite())
+    || !translation_col.iter().all(|v| v.is_finite())
     || !scale_x.is_finite()
     || !scale_y.is_finite()
     || !angle.is_finite()
