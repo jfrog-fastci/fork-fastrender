@@ -32,6 +32,8 @@ pub enum IpcError {
   #[error("IPC protocol violation: {message}")]
   ProtocolViolation { message: String },
 
+  #[error("IPC codec error")]
+  Codec(#[source] Box<bincode::ErrorKind>),
   // ==========================================================================
   // Protocol validation errors (renderer → browser)
   // ==========================================================================
@@ -117,5 +119,11 @@ impl From<std::io::Error> for IpcError {
     } else {
       Self::Io(err)
     }
+  }
+}
+
+impl From<bincode::Error> for IpcError {
+  fn from(err: bincode::Error) -> Self {
+    Self::Codec(err)
   }
 }

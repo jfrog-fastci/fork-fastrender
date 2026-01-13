@@ -18,5 +18,8 @@ pub mod shm;
 pub mod websocket;
 
 pub use error::IpcError;
-pub use framing::{read_frame, write_frame, MAX_IPC_MESSAGE_BYTES};
+pub use framing::{
+  decode_bincode_payload, encode_bincode_payload, read_bincode_frame, read_frame, write_bincode_frame,
+  write_frame, MAX_IPC_MESSAGE_BYTES,
+};
 pub use network::{NetworkToRenderer, RendererToNetwork};

@@ -1,5 +1,8 @@
 use std::io::{Read, Write};
 
+use bincode::Options;
+use serde::{de::DeserializeOwned, Serialize};
+
 use super::error::IpcError;
 
 /// Maximum payload size accepted by `read_frame` / `write_frame`.
@@ -11,6 +14,39 @@ use super::error::IpcError;
 /// serialization overhead for IPC envelopes. Keep this value in sync with any IPC-level limits
 /// enforced by the network process once WebSocket traffic is proxied over renderer↔network IPC.
 pub const MAX_IPC_MESSAGE_BYTES: usize = 8 * 1024 * 1024; // 8 MiB
+
+fn bincode_options() -> impl Options {
+  // Use fixed-width integer encoding to keep the wire format predictable and easy to reason about
+  // when hand-crafting regression cases.
+  bincode::DefaultOptions::new()
+    .with_fixint_encoding()
+    .with_limit(MAX_IPC_MESSAGE_BYTES as u64)
+}
+
+/// Serialize `msg` into a payload suitable for [`write_frame`].
+pub fn encode_bincode_payload<T: Serialize>(msg: &T) -> Result<Vec<u8>, IpcError> {
+  Ok(bincode_options().serialize(msg)?)
+}
+
+/// Deserialize a message from a [`read_frame`] payload.
+///
+/// This uses a hard byte limit to prevent pathological container lengths from triggering large
+/// allocations during deserialization.
+pub fn decode_bincode_payload<T: DeserializeOwned>(payload: &[u8]) -> Result<T, IpcError> {
+  Ok(bincode_options().deserialize(payload)?)
+}
+
+/// Serialize `msg` using `bincode` and write it as a single [`write_frame`] frame.
+pub fn write_bincode_frame<W: Write, T: Serialize>(writer: &mut W, msg: &T) -> Result<(), IpcError> {
+  let payload = encode_bincode_payload(msg)?;
+  write_frame(writer, &payload)
+}
+
+/// Read a single [`read_frame`] frame and deserialize it using `bincode`.
+pub fn read_bincode_frame<R: Read, T: DeserializeOwned>(reader: &mut R) -> Result<T, IpcError> {
+  let payload = read_frame(reader)?;
+  decode_bincode_payload(&payload)
+}
 
 /// Write a single length-prefixed frame to `writer`.
 ///
@@ -61,6 +97,7 @@ pub fn read_frame<R: Read>(reader: &mut R) -> Result<Vec<u8>, IpcError> {
 mod tests {
   use super::*;
   use std::io::Cursor;
+  use serde::{Deserialize, Serialize};
 
   #[test]
   fn roundtrip_small_payload() {
@@ -110,5 +147,46 @@ mod tests {
     let mut cursor = Cursor::new(vec![0, 1, 2]); // 3 bytes; incomplete u32 prefix.
     let err = read_frame(&mut cursor).unwrap_err();
     assert!(matches!(err, IpcError::UnexpectedEof));
+  }
+
+  #[test]
+  fn bincode_frame_roundtrip() {
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct TestMsg {
+      a: u32,
+      b: u32,
+    }
+
+    let msg = TestMsg { a: 1, b: 2 };
+    let mut buf = Vec::new();
+    write_bincode_frame(&mut buf, &msg).unwrap();
+
+    let mut cursor = Cursor::new(buf);
+    let got: TestMsg = read_bincode_frame(&mut cursor).unwrap();
+    assert_eq!(got, msg);
+  }
+
+  #[test]
+  fn bincode_decode_rejects_oversized_container_len() {
+    // Craft a bincode payload for a `Vec<u8>` whose declared length exceeds the hard IPC limit.
+    // If `decode_bincode_payload` ignored the limit, this would attempt to allocate a large buffer
+    // before failing with EOF.
+    let declared_len = (MAX_IPC_MESSAGE_BYTES as u64) + 1;
+    let payload = declared_len.to_le_bytes();
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    frame.extend_from_slice(&payload);
+
+    let mut cursor = Cursor::new(frame);
+    let err = read_bincode_frame::<_, Vec<u8>>(&mut cursor).unwrap_err();
+    match err {
+      IpcError::Codec(source) => {
+        assert!(
+          matches!(source.as_ref(), bincode::ErrorKind::SizeLimit),
+          "expected SizeLimit error, got {source:?}"
+        );
+      }
+      other => panic!("unexpected error: {other:?}"),
+    }
   }
 }

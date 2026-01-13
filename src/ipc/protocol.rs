@@ -215,6 +215,19 @@ pub struct RendererToBrowserValidationContext<'a> {
 }
 
 impl RendererToBrowser {
+  /// Deserialize a renderer message from a framed payload and validate it before returning.
+  ///
+  /// This is the recommended entry point for the **browser** process when receiving messages from
+  /// the untrusted renderer.
+  pub fn decode_and_validate_payload(
+    payload: &[u8],
+    ctx: &RendererToBrowserValidationContext<'_>,
+  ) -> Result<Self, IpcError> {
+    let msg: Self = super::framing::decode_bincode_payload(payload)?;
+    msg.validate(ctx)?;
+    Ok(msg)
+  }
+
   /// Validate an incoming renderer message before acting on it.
   pub fn validate(&self, ctx: &RendererToBrowserValidationContext<'_>) -> Result<(), IpcError> {
     match self {
@@ -351,7 +364,10 @@ mod tests {
       scroll_metrics: ScrollMetrics::default(),
       wants_ticks: false,
     };
-    msg.validate(&ctx).expect("frame should validate");
+    let payload = super::super::framing::encode_bincode_payload(&msg).expect("encode payload");
+    let decoded =
+      RendererToBrowser::decode_and_validate_payload(&payload, &ctx).expect("frame should validate");
+    assert_eq!(decoded, msg);
   }
 
   #[test]
@@ -371,7 +387,9 @@ mod tests {
       scroll_metrics: ScrollMetrics::default(),
       wants_ticks: false,
     };
-    let err = msg.validate(&ctx).expect_err("expected invalid buffer index");
+    let payload = super::super::framing::encode_bincode_payload(&msg).expect("encode payload");
+    let err = RendererToBrowser::decode_and_validate_payload(&payload, &ctx)
+      .expect_err("expected invalid buffer index");
     assert!(matches!(err, IpcError::InvalidBufferIndex { .. }));
   }
 
@@ -392,8 +410,8 @@ mod tests {
       scroll_metrics: ScrollMetrics::default(),
       wants_ticks: false,
     };
-    let err = msg
-      .validate(&ctx)
+    let payload = super::super::framing::encode_bincode_payload(&msg).expect("encode payload");
+    let err = RendererToBrowser::decode_and_validate_payload(&payload, &ctx)
       .expect_err("expected oversized dimensions to be rejected");
     assert!(matches!(err, IpcError::FrameDimensionsExceedMax { .. }));
   }
@@ -415,7 +433,9 @@ mod tests {
       scroll_metrics: ScrollMetrics::default(),
       wants_ticks: false,
     };
-    let err = msg.validate(&ctx).expect_err("expected dpr to be rejected");
+    let payload = super::super::framing::encode_bincode_payload(&msg).expect("encode payload");
+    let err = RendererToBrowser::decode_and_validate_payload(&payload, &ctx)
+      .expect_err("expected dpr to be rejected");
     assert!(matches!(err, IpcError::InvalidDpr { .. }));
   }
 }

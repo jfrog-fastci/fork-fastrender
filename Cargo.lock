@@ -1791,6 +1791,7 @@ dependencies = [
  "avif-decode",
  "avif-parse",
  "base64",
+ "bincode",
  "brotli",
  "chrono",
  "clap",
