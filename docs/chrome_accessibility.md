@@ -463,7 +463,10 @@ If you need a lower-level view than a screen reader, use platform accessibility 
 - **Windows:** Inspect.exe (Windows SDK) / Accessibility Insights
 - **Linux:** Accerciser / other AT-SPI inspection tools
 
-Current scope note: the rendered page is still an image, so the screen reader will not traverse document content yet (see future work below).
+Scope note: the rendered page is still a pixmap, but the windowed UI can inject a page content
+subtree (via `PageA11ySnapshot`) into the OS-facing AccessKit tree so screen readers can traverse
+basic document content. Action/bounds completeness is still evolving; see
+[`docs/browser_ui.md`](browser_ui.md) for the current limitations checklist.
 
 To smoke-test the **renderer-chrome AccessKit adapter path** (even before a real chrome document is
 wired up), run the windowed browser with:
@@ -481,6 +484,11 @@ accessibility tree without panics. (Today it is a placeholder tree; this is pure
 
 ## Future work: composing chrome + content accessibility trees
 
+With the default egui backend, the windowed browser already composes the egui chrome widget tree
+with an injected page subtree. Renderer-chrome (HTML/CSS chrome rendered by FastRender) still needs
+to provide an equivalent single OS-visible tree without relying on egui’s widget/accessibility
+integration.
+
 Renderer-chrome (HTML/CSS chrome rendered by FastRender) ultimately wants a single OS-visible tree that contains:
 
 - chrome UI (tabs, address bar, menus), and
@@ -490,6 +498,9 @@ The hard parts to plan for:
 
 - **Geometry composition:** content bounds must be offset into the window coordinate space (chrome height, splits, device scale).
 - **Id namespaces:** ids must not collide across chrome/content/tabs/processes.
-- **Action routing:** AccessKit actions on content nodes must reach the correct renderer/interaction instance (possibly over IPC in a multi-process model).
+- **Action routing:** AccessKit actions on content nodes must reach the correct renderer/interaction
+  instance (possibly over IPC in a multi-process model).
 
-Until content accessibility is wired up, keep chrome AccessKit behavior healthy (stable ids, correct labels, correct focus) so we have a solid foundation to compose on top of later.
+Keep chrome AccessKit behavior healthy (stable ids, correct labels, correct focus) so we have a
+solid foundation to compose on top of—both for the current egui backend and for future
+renderer-chrome/multiprocess work.

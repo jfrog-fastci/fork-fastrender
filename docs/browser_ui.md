@@ -579,8 +579,8 @@ Accessibility sources:
 
 - **Chrome widgets (egui):** tabs, toolbar buttons, address bar, menus/panels/popups are exposed via
   egui-winit + AccessKit when compiled with `--features browser_ui`.
-- **Page content (renderer tree):** page content accessibility is exposed via **injected AccessKit
-  nodes** derived from the renderer’s accessibility tree.
+- **Page content (renderer tree):** the worker sends a `PageA11ySnapshot`, and the UI injects it into
+  egui’s AccessKit tree so assistive tech can traverse page content nodes.
 
 For background and developer workflow:
 
@@ -598,11 +598,14 @@ bash scripts/run_limited.sh --as 64G -- \
 
 Current limitations (MVP / in-progress):
 
-- **Action support is incomplete:** many AccessKit actions are not fully plumbed through to DOM
-  interaction yet (for example “activate/click”, focus, set value/text, scroll-to, etc.). Expect
-  read-only traversal to work better than interacting with complex controls.
+- **Action support is partial:** basic **focus** and **activate/press** are supported, but many
+  richer AccessKit actions are not fully plumbed through to DOM interaction yet (for example set
+  value/text, scroll-to, etc.). Expect read-only traversal to work better than interacting with
+  complex controls.
 - **Bounds/geometry may be missing or approximate** for some page nodes, which can affect
   hit-testing and “click this element” style commands.
+- **Selection/value reporting may be partial** for some controls (e.g. caret/selection state or
+  text values may be missing/incomplete).
 - **Tree updates are coarse:** page accessibility updates are currently best-effort and may lag
   behind visual updates on complex pages.
 
@@ -614,13 +617,17 @@ Manual testing checklist (smoke):
     (e.g. after Cmd+L).
   - Navigate to a simple page (e.g. `about:test-form`) and verify VoiceOver can reach/announce basic
     document content (headings/links/form controls).
+  - Verify VoiceOver focus/activate works on at least one page control (e.g. focus a text input or
+    “press” a button on `about:test-form`).
 - **Windows (Narrator):**
   - Enable Narrator (Ctrl+Win+Enter).
   - Verify basic traversal/announcement works for chrome controls and simple page content.
+  - Verify focus/activate works on at least one page control.
 - **Linux (Orca):**
   - Enable Orca (often Super+Alt+S).
   - Verify basic traversal/announcement works for chrome controls and simple page content (backend
     support depends on your `winit`/X11/Wayland environment).
+  - Verify focus/activate works on at least one page control.
 
 ## Code layout
 
