@@ -322,9 +322,44 @@ fn build_renderer_filter() -> Vec<libc::sock_filter> {
   filter
 }
 
+pub(super) fn apply_renderer_sandbox_prelude_linux() -> Result<(), SandboxError> {
+  set_dumpable_0()?;
+  disable_core_dumps()?;
+  Ok(())
+}
+
+fn set_dumpable_0() -> Result<(), SandboxError> {
+  // SAFETY: `prctl` is a process-global syscall. `PR_SET_DUMPABLE` expects a single integer
+  // argument (0/1) followed by unused zeroes.
+  let rc = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
+  if rc != 0 {
+    return Err(SandboxError::SetDumpableFailed {
+      source: io::Error::last_os_error(),
+    });
+  }
+  Ok(())
+}
+
+fn disable_core_dumps() -> Result<(), SandboxError> {
+  let new = libc::rlimit {
+    rlim_cur: 0,
+    rlim_max: 0,
+  };
+  // SAFETY: `setrlimit` reads from a valid `rlimit` pointer for the duration of the syscall.
+  let rc = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &new) };
+  if rc != 0 {
+    return Err(SandboxError::DisableCoreDumpsFailed {
+      source: io::Error::last_os_error(),
+    });
+  }
+  Ok(())
+}
+
 pub(super) fn apply_renderer_sandbox_linux(
   _config: RendererSandboxConfig,
 ) -> Result<SandboxStatus, SandboxError> {
+  apply_renderer_sandbox_prelude_linux()?;
+
   // 1) no_new_privs
   // SAFETY: `prctl` is a process-scoped syscall. We pass the documented arguments.
   let rc = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };

@@ -92,6 +92,20 @@ pub enum SandboxError {
   },
 
   #[cfg(target_os = "linux")]
+  #[error("failed to set PR_SET_DUMPABLE=0")]
+  SetDumpableFailed {
+    #[source]
+    source: io::Error,
+  },
+
+  #[cfg(target_os = "linux")]
+  #[error("failed to set RLIMIT_CORE to 0")]
+  DisableCoreDumpsFailed {
+    #[source]
+    source: io::Error,
+  },
+
+  #[cfg(target_os = "linux")]
   #[error("failed to enable no_new_privs via prctl(PR_SET_NO_NEW_PRIVS)")]
   EnableNoNewPrivsFailed {
     #[source]
@@ -116,6 +130,15 @@ pub enum SandboxError {
     #[source]
     source: io::Error,
   },
+}
+
+/// Apply hardening steps that must run before seccomp is installed.
+///
+/// On Linux, this disables core dumps via `RLIMIT_CORE=0` and sets `PR_SET_DUMPABLE=0` so the
+/// renderer does not leak sensitive data via core files.
+#[cfg(target_os = "linux")]
+pub fn apply_renderer_sandbox_prelude() -> Result<(), SandboxError> {
+  linux_seccomp::apply_renderer_sandbox_prelude_linux()
 }
 
 /// Apply the renderer sandbox for the current process.
@@ -179,7 +202,9 @@ mod tests {
 
   fn is_seccomp_unsupported_error(err: &SandboxError) -> bool {
     let errno = match err {
-      SandboxError::EnableNoNewPrivsFailed { source } => source.raw_os_error(),
+      SandboxError::SetDumpableFailed { source }
+      | SandboxError::DisableCoreDumpsFailed { source }
+      | SandboxError::EnableNoNewPrivsFailed { source } => source.raw_os_error(),
       SandboxError::SeccompInstallRejected { errno, .. } => Some(*errno),
       SandboxError::SeccompInstallFailed { errno, .. } => Some(*errno),
       _ => None,
@@ -275,7 +300,8 @@ mod tests {
       }
 
       let exe = std::env::current_exe().expect("current test exe path");
-      let test_name = "sandbox::tests::macos::pure_computation_sandbox_allows_inherited_stdout_pipe";
+      let test_name =
+        "sandbox::tests::macos::pure_computation_sandbox_allows_inherited_stdout_pipe";
       let output = Command::new(exe)
         .env(CHILD_ENV, "1")
         .arg("--exact")
