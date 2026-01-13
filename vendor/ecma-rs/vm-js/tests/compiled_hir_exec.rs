@@ -6996,6 +6996,33 @@ fn compiled_direct_eval_updates_local_let() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_direct_eval_var_decl_conflicts_with_let() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(){
+        let x = 1;
+        try { eval('var x = 2'); } catch (e) { return e.name; }
+        return "did not throw";
+      }
+      f()
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string result, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "SyntaxError");
+  Ok(())
+}
+
+#[test]
 fn compiled_indirect_eval_does_not_see_local_let() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));

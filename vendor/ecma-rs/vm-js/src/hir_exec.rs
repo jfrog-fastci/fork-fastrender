@@ -829,6 +829,19 @@ impl<'vm> HirEvaluator<'vm> {
       }
     }
 
+    // For block-bodied functions, create a dedicated function-body lexical environment nested
+    // inside the function's VariableEnvironment (which holds `var` + parameter bindings).
+    //
+    // This matches `exec.rs::instantiate_function` and ensures that:
+    // - `let`/`const`/`class` bindings do not live in the VariableEnvironment, and
+    // - dynamic `var` declarations introduced via direct `eval` can correctly detect collisions
+    //   with function-body lexical bindings.
+    if matches!(func_meta.body, hir_js::FunctionBody::Block(_)) {
+      let outer = self.env.lexical_env();
+      let body_lex = scope.env_create(Some(outer))?;
+      self.env.set_lexical_env(scope.heap_mut(), body_lex);
+    }
+
     // Hoist function declarations (best-effort).
     //
     // This enables simple recursion and calling a function before its declaration statement is
