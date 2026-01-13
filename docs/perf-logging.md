@@ -4,13 +4,7 @@ Helpful environment variables for profiling layout/cascade on large pages. The c
 
 When using `render_pages`/`fetch_and_render`, per-page logs are written to `fetches/renders/<page>.log` and a summary to `fetches/renders/_summary.log`; review these alongside the flags below when investigating slow or blank renders.
 
-## Browser perf JSONL logs (`FASTR_PERF_LOG`)
-
-The windowed `browser` UI can emit newline-delimited JSON (`.jsonl`) perf events when
-`FASTR_PERF_LOG=1`.
-
-See [Browser responsiveness](#browser-responsiveness) below for the capture wrapper
-(`scripts/capture_browser_perf_log.sh`) and `browser_perf_log_summary` usage.
+## Common profiling flags (renderer pipeline)
 
 - `FASTR_CASCADE_PROFILE=1`
   - Enables cascade profiling. Logs node count, candidate/match counts, and timing breakdown for selector matching, declaration application, and pseudo computation at the end of `apply_styles`.
@@ -32,8 +26,8 @@ See [Browser responsiveness](#browser-responsiveness) below for the capture wrap
   - `FASTR_LOG_CONTAINER_FIELDS=1` lists which layout-affecting fields changed for the sampled diff entries.
   - `FASTR_LOG_CONTAINER_QUERY=1` logs container sizes while building the container-query context (useful when debugging “why did this query match?”).
 
-These env vars are read in the rendering binaries (`render_pages`, `fetch_and_render`) and cascade
-internals; leave them unset for normal runs.
+These env vars are read in the rendering binaries (`render_pages`, `fetch_and_render`), the windowed
+`browser` UI, and the cascade internals; leave them unset for normal runs.
 
 ## Browser responsiveness
 
@@ -55,8 +49,8 @@ timeout -k 10 600 bash scripts/cargo_agent.sh xtask browser --release --hud --pe
 Set `FASTR_PERF_LOG=1` when running the windowed browser to emit **JSON Lines** (one JSON object per
 line) describing UI responsiveness events.
 
-For interactive captures, prefer the convenience wrapper (handles `FASTR_PERF_LOG=1` and tees the
-JSONL stdout stream to a file under repo guardrails):
+For interactive captures, prefer the convenience wrapper (handles `FASTR_PERF_LOG=1`, runs under the
+repo guardrails, and writes the JSONL stream to a file):
 
 ```bash
 timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --url about:test-layout-stress --out target/browser_perf.jsonl
@@ -68,10 +62,9 @@ timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --url about:test-layo
 Typical run (writes a JSONL log you can post-process with `jq`, pandas, etc.):
 
 ```bash
-FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT= \
+FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
   timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
-  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- about:test-layout-stress \
-  | tee target/browser_perf.jsonl
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- about:test-layout-stress
 ```
 
 When enabled, you should expect events covering at least:
@@ -94,6 +87,24 @@ include:
   summaries).
 - Event-specific numeric fields such as `ui_frame_ms`, `input_to_present_ms`, `resize_to_present_ms`,
   `ttfp_ms`, etc.
+
+### Summarizing a capture: `browser_perf_log_summary`
+
+To turn a captured JSONL log into p50/p95/max headline numbers, run:
+
+```bash
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- \
+  --input target/browser_perf.jsonl >/dev/null
+```
+
+(`>/dev/null` suppresses the tool’s JSON output; the human-readable summary is printed to stderr.)
+
+Filtering options (see `browser_perf_log_summary --help`):
+
+- `--from-ms <ms>` / `--to-ms <ms>`: limit to a timestamp window.
+- `--only-event frame|input|resize|ttfp|idle_sample|cpu_summary`: summarize a single event type.
+  (`idle_summary` is accepted as a legacy alias.)
 
 ### Headless benchmark harness: `ui_perf_smoke`
 
@@ -159,20 +170,6 @@ in [Perfetto UI](https://ui.perfetto.dev):
   most recent render).
 - Browser UI trace: `FASTR_BROWSER_TRACE_OUT=/tmp/ui_trace.json` (legacy alias: `FASTR_PERF_TRACE_OUT`).
 
-## Browser perf logging (`FASTR_PERF_LOG`)
-
-The windowed `browser` UI can emit a newline-delimited JSON (JSONL) perf log when `FASTR_PERF_LOG`
-is enabled. The raw stream is useful for deep dives but hard to compare without tooling; use the
-`browser_perf_log_summary` helper to compute percentile summaries:
-
-```bash
-cat perf.jsonl | timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
-  bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary
-```
-
-The summary tool is resilient to unknown/extra JSON fields so older captures keep working as the
-schema evolves.
-
 ## Other useful profiling flags
 
 - `FASTR_RENDER_TIMINGS=1` — prints high-level timing for parse/cascade/box_tree/layout/paint per page in the render binaries.
@@ -189,58 +186,6 @@ schema evolves.
 - `FASTR_DISPLAY_LIST_PARALLEL_MIN=<N>` — lowers the display list parallel fan-out threshold when debugging determinism or forcing rayon paths in tests.
 
 All profiling logs are best run in release builds to reflect real performance.
-
-## Browser responsiveness (`FASTR_PERF_LOG`)
-
-The windowed `browser` UI can emit a machine-readable JSONL stream describing responsiveness
-metrics (per-frame and per-input timing). Enable it by setting:
-
-```bash
-FASTR_PERF_LOG=1
-```
-
-Each log line is a JSON object that includes:
-
-- `schema_version` (currently `2`)
-- `event` (tag)
-- `t_ms` (monotonic timestamp in milliseconds since process start)
-- `window_id` (string)
-
-Event payload fields (current schema in `src/bin/browser.rs`, `perf_log::PerfEvent`):
-
-- `event=frame`: `ui_frame_ms`, `fps` (optional), plus window state flags (`window_focused`,
-  `window_occluded`, `window_minimized`) and `active_tab_id` (optional).
-- `event=input`: `input_kind` (`keyboard|mouse_wheel|pointer_move|button`), `input_to_present_ms`,
-  `input_ts_ms`, `count`, and `active_tab_id` (optional).
-- `event=resize`: `resize_to_present_ms`, `resize_ts_ms`, `new_width_px`, `new_height_px`.
-- `event=navigation`: `tab_id`, `navigation_seqno`, `url`.
-- `event=stage`: `tab_id`, `stage` (fine-grained stage heartbeat such as `layout`), `hotspot`
-  (coarse bucket such as `fetch`, `css`, `layout`, `paint`).
-- `event=ttfp`: `tab_id`, `navigation_seqno`, `ttfp_ms`.
-- `event=cpu_summary`: `cpu_time_ms_total`, `cpu_percent_recent` (process CPU time over the last interval)
-
-Other JSONL diagnostics may be emitted (for example `event=idle_sample` (legacy: `idle_summary`) and `event=worker_wake_summary`);
-`browser_perf_log_summary` ignores unknown event types.
-
-To turn a captured JSONL log into p50/p95/max summary numbers, pipe it into the helper:
-
-```bash
-FASTR_PERF_LOG=1 \
-  timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
-  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- about:test-layout-stress \
-  | timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary
-```
-
-You can also summarize an existing file:
-
-```bash
-timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- --input perf.jsonl
-```
-
-Filtering options (see `browser_perf_log_summary --help`):
-
-- `--from-ms <ms>` / `--to-ms <ms>`: limit to a timestamp window.
-- `--only-event frame|input|resize|ttfp|idle_sample|cpu_summary`: summarize one event type (unknown events are ignored for forward compatibility). (`idle_summary` is accepted as a legacy alias.)
 
 ## Interactive profiling (windowed browser UI)
 
