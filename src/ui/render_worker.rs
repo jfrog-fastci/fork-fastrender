@@ -696,6 +696,37 @@ fn sync_render_dom_from_js_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender
 
   let next_focused_preorder = prev_focused_dom2_node.and_then(|id| mapping.preorder_for_node_id(id));
 
+  // JS DOM mutations can shift renderer preorder ids. If the hovered element's preorder id no longer
+  // matches its stable dom2 NodeId, clear the interaction engine's pointer state so we don't apply
+  // `:hover` / `:active` to the wrong renderer nodes in the first paint after a dom2→dom1 resync.
+  //
+  // We intentionally do this only when there are no active pointer buttons: clearing pointer state
+  // mid-gesture would cancel drags and clicks.
+  let prev_hovered_preorder = tab.last_hovered_dom_node_id;
+  let prev_hovered_dom2_node = tab.last_hovered_dom2_node.or_else(|| {
+    prev_hovered_preorder
+      .and_then(|preorder| {
+        tab
+          .js_dom_mapping
+          .as_ref()
+          .and_then(|mapping| mapping.node_id_for_preorder(preorder))
+      })
+      .or_else(|| {
+        tab
+          .last_hovered_dom_element_id
+          .as_deref()
+          .and_then(|id| dom2.get_element_by_id(id))
+      })
+  });
+  let hover_preorder_shifted = match (prev_hovered_preorder, prev_hovered_dom2_node) {
+    (Some(preorder), Some(dom2_node)) => mapping.preorder_for_node_id(dom2_node) != Some(preorder),
+    (Some(_), None) => true,
+    _ => false,
+  };
+  if hover_preorder_shifted && tab.pointer_buttons == 0 {
+    tab.interaction.clear_pointer_state_without_dom();
+  }
+
   // Replace the renderer document's DOM in-place so we preserve its configured viewport/dpr/scroll
   // state/animation clock.
   doc.mutate_dom(|dom| {
