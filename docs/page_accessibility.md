@@ -61,6 +61,9 @@ The UI then maps viewport-local CSS rects into egui/window coordinates via:
     OS-facing API, multiply by `egui_ctx.pixels_per_point()` / `Window::scale_factor()` as
     appropriate for the frontend.
 
+For more general-purpose, scroll- and sticky-aware geometry queries (mirroring the paint pipeline),
+see [`src/api/dom2_geometry.rs`](../src/api/dom2_geometry.rs) (`Dom2GeometryContext::*_in_viewport`).
+
 ### Browser UI worker protocol (page a11y snapshot status)
 
 The render worker currently sends frames and some element geometry (for popups/overlays), but it does
