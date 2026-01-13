@@ -15926,6 +15926,88 @@ mod tests {
   }
 
   #[test]
+  fn block_intrinsic_inline_sizes_parallel_matches_serial_for_many_block_children() {
+    // Ensure the Rayon global pool is initialized with FastRender's conservative defaults so the
+    // parallel intrinsic-sizing path doesn't trip Rayon's lazy init in constrained test runners.
+    crate::rayon_global::ensure_global_pool().expect("rayon global pool");
+
+    // Guard against other concurrently running tests mutating/clearing the global intrinsic caches
+    // mid-run (which can make regression assertions flaky).
+    let _cache_guard = crate::layout::formatting_context::intrinsic_cache_test_lock();
+    let epoch = crate::layout::formatting_context::intrinsic_cache_epoch() + 1;
+
+    // Build a synthetic tree that yields many block-child segments. Each child contains inline
+    // text so intrinsic sizing does non-trivial work.
+    const CHILD_COUNT: usize = 64;
+    const LONG_WORD: &str = "supercalifragilisticexpialidocious";
+    const FILL: &str = "lorem ipsum dolor sit amet consectetur adipiscing elit";
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    let root_style = Arc::new(root_style);
+
+    let mut child_style = ComputedStyle::default();
+    child_style.display = Display::Block;
+    let child_style = Arc::new(child_style);
+
+    let mut text_style = ComputedStyle::default();
+    text_style.display = Display::Inline;
+    let text_style = Arc::new(text_style);
+
+    let children = (0..CHILD_COUNT)
+      .map(|idx| {
+        let payload = if idx % 7 == 0 {
+          format!("child-{idx} {LONG_WORD} {FILL} {FILL}")
+        } else {
+          format!("child-{idx} {FILL} {FILL}")
+        };
+        let text = BoxNode::new_text(text_style.clone(), payload);
+        BoxNode::new_block(child_style.clone(), FormattingContextType::Block, vec![text])
+      })
+      .collect::<Vec<_>>();
+
+    let root = BoxNode::new_block(root_style, FormattingContextType::Block, children);
+
+    let viewport = Size::new(800.0, 600.0);
+    let font_ctx = FontContext::new();
+
+    crate::layout::formatting_context::intrinsic_cache_use_epoch(epoch, true);
+    let serial_factory = FormattingContextFactory::with_font_context_and_viewport(
+      font_ctx.clone(),
+      viewport,
+    )
+    .with_parallelism(LayoutParallelism::disabled());
+    let serial_bfc = BlockFormattingContext::with_factory(serial_factory);
+    let (serial_min, serial_max) = serial_bfc
+      .compute_intrinsic_inline_sizes(&root)
+      .expect("serial intrinsic sizing");
+
+    crate::layout::formatting_context::intrinsic_cache_use_epoch(epoch + 1, true);
+    let parallelism = LayoutParallelism::enabled(1).with_max_threads(Some(2));
+    assert!(
+      parallelism.should_parallelize(root.children.len()),
+      "expected intrinsic sizing to take the parallel path (children={})",
+      root.children.len()
+    );
+    let parallel_factory = FormattingContextFactory::with_font_context_and_viewport(font_ctx, viewport)
+      .with_parallelism(parallelism);
+    let parallel_bfc = BlockFormattingContext::with_factory(parallel_factory);
+    let (parallel_min, parallel_max) = parallel_bfc
+      .compute_intrinsic_inline_sizes(&root)
+      .expect("parallel intrinsic sizing");
+
+    const EPS: f32 = 1e-3;
+    assert!(
+      (serial_min - parallel_min).abs() < EPS,
+      "min-content mismatch: serial={serial_min} parallel={parallel_min}"
+    );
+    assert!(
+      (serial_max - parallel_max).abs() < EPS,
+      "max-content mismatch: serial={serial_max} parallel={parallel_max}"
+    );
+  }
+
+  #[test]
   fn float_shrink_to_fit_reuses_intrinsic_cache_within_epoch() {
     let _guard = crate::layout::formatting_context::intrinsic_cache_test_lock();
     let next_epoch = crate::layout::formatting_context::intrinsic_cache_epoch() + 1;

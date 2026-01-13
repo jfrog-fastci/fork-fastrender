@@ -260,6 +260,45 @@ fn build_block_intrinsic_tree(span_count: usize) -> BoxTree {
   BoxTree::new(root)
 }
 
+fn build_block_intrinsic_block_children_tree(child_count: usize) -> BoxTree {
+  // Regression protected:
+  // - The block intrinsic sizing hot path can fan out over many block-level children (e.g. tables,
+  //   multi-column flows). This tree is constructed so the parallel segment path has many
+  //   block-child segments to process.
+  const LONG_WORD: &str = "supercalifragilisticexpialidocious";
+  const FILL: &str = "lorem ipsum dolor sit amet consectetur adipiscing elit";
+
+  let mut root_style = ComputedStyle::default();
+  root_style.display = Display::Block;
+  let root_style = Arc::new(root_style);
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  let child_style = Arc::new(child_style);
+
+  let mut text_style = ComputedStyle::default();
+  text_style.display = Display::Inline;
+  let text_style = Arc::new(text_style);
+
+  let mut children = Vec::with_capacity(child_count);
+  for idx in 0..child_count {
+    let payload = if idx % 7 == 0 {
+      format!("child-{idx} {LONG_WORD} {FILL} {FILL}")
+    } else {
+      format!("child-{idx} {FILL} {FILL}")
+    };
+    let text = BoxNode::new_text(text_style.clone(), payload);
+    children.push(BoxNode::new_block(
+      child_style.clone(),
+      FormattingContextType::Block,
+      vec![text],
+    ));
+  }
+
+  let root = BoxNode::new_block(root_style, FormattingContextType::Block, children);
+  BoxTree::new(root)
+}
+
 fn build_block_intrinsic_tree_nowrap(span_count: usize) -> BoxTree {
   // Regression protected:
   // - Inline intrinsic sizing runs `find_break_opportunities` (UAX#14) to locate soft wrap points.
@@ -831,6 +870,37 @@ fn bench_block_intrinsic_sizing(c: &mut Criterion) {
   group.finish();
 }
 
+fn bench_block_intrinsic_sizing_parallel(c: &mut Criterion) {
+  common::bench_print_config_once("layout_hotspots", &[]);
+  let viewport = Size::new(800.0, 600.0);
+  let font_ctx = common::fixed_font_context();
+  let parallelism = LayoutParallelism::enabled(1).with_max_threads(Some(2));
+  let factory = FormattingContextFactory::with_font_context_and_viewport(font_ctx, viewport)
+    .with_parallelism(parallelism);
+  let bfc = BlockFormattingContext::with_factory(factory);
+
+  let mut tree = build_block_intrinsic_block_children_tree(256);
+  // Disable global intrinsic caching so each iteration recomputes intrinsic widths.
+  tree.root.id = 0;
+  let node = &tree.root;
+  assert!(
+    parallelism.should_parallelize(node.children.len()),
+    "expected benchmark tree to exceed parallel intrinsic sizing threshold (children={})",
+    node.children.len()
+  );
+
+  let mut group = c.benchmark_group("layout_hotspots_block_intrinsic_parallel");
+  group.bench_function("min_and_max_combined_api", |b| {
+    b.iter(|| {
+      let widths = bfc
+        .compute_intrinsic_inline_sizes(black_box(node))
+        .expect("intrinsic sizing should succeed");
+      black_box(widths);
+    })
+  });
+  group.finish();
+}
+
 fn bench_block_intrinsic_sizing_nowrap(c: &mut Criterion) {
   common::bench_print_config_once("layout_hotspots", &[]);
   let viewport = Size::new(800.0, 600.0);
@@ -1139,6 +1209,7 @@ criterion_group!(
     bench_grid_track_sizing_measure_fanout,
     bench_float_shrink_to_fit_intrinsic_cache_reuse,
     bench_block_intrinsic_sizing,
+    bench_block_intrinsic_sizing_parallel,
     bench_block_intrinsic_sizing_nowrap,
     bench_block_intrinsic_many_inline_runs,
     bench_block_intrinsic_sizing_parallel_fanout,
