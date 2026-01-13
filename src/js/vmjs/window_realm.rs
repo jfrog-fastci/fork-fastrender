@@ -11,7 +11,7 @@ use crate::js::document_write::{
 };
 use crate::js::dom_platform::{DocumentId, DomInterface, DomNodeKey, DomPlatform, DOM_WRAPPER_HOST_TAG};
 use crate::js::host_document::ActiveEventGuard;
-use crate::js::realm_module_loader::{ModuleLoader, ModuleLoaderHandle};
+use crate::js::realm_module_loader::{ModuleKey, ModuleLoader, ModuleLoaderHandle};
 use crate::js::time::{TimeBindings, WebTime};
 use crate::js::web_storage;
 use crate::js::window_env::{
@@ -50,8 +50,8 @@ use std::time::Duration;
 use url::Url;
 use vm_js::{
   GcObject, GcString, Heap, HeapLimits, HostSlots, JsRuntime as VmJsRuntime, ModuleGraph,
-  NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm, RealmId, RootId, Scope,
-  SourceText, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions, WeakGcObject,
+  NativeFunctionId, PromiseState, PropertyDescriptor, PropertyKey, PropertyKind, Realm, RealmId,
+  RootId, Scope, SourceText, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions, WeakGcObject,
 };
 use webidl_vm_js::VmJsHostHooksPayload;
 use webidl_vm_js::WebIdlBindingsHost;
@@ -31640,9 +31640,9 @@ fn prepare_dynamic_script_element(
   }
 
   // When running inside the standalone `WindowHostState` harness, queue classic scripts as tasks.
-  // Module scripts/import maps are currently ignored by this path (leave eligible for later support).
   if event_loop_mut_from_hooks::<WindowHostState>(hooks).is_some() {
     let crate::js::ScriptElementSpec {
+      base_url,
       src,
       src_attr_present,
       inline_text,
@@ -31655,42 +31655,82 @@ fn prepare_dynamic_script_element(
       ..
     } = spec;
 
-    if script_type != ScriptType::Classic {
-      return Ok(());
-    }
+    let modules_supported = vm
+      .user_data::<WindowRealmUserData>()
+      .is_some_and(|data| data.module_graph.is_some());
 
-    // `integrity` attribute clamping: if present but too large, treat it as invalid metadata.
-    // Inline scripts should remain eligible for later mutations; external scripts are scheduled so
-    // the task can surface an SRI error (consistent with other SRI failures).
-    if integrity_attr_present && integrity.is_none() && !src_attr_present {
-      return Ok(());
-    }
-
-    let scheduled = if src_attr_present {
-      let Some(url) = src else {
-        return Ok(());
-      };
-      let destination = if crossorigin.is_some() {
-        FetchDestination::ScriptCors
-      } else {
-        FetchDestination::Script
-      };
-      queue_dynamic_script_task_external(
-        hooks,
-        script,
-        url,
-        destination,
-        nomodule_attr,
-        crossorigin,
-        referrer_policy,
-        integrity_attr_present,
-        integrity,
-      )
-      .is_ok()
-    } else {
-      let source_name = format!("<script {}>", script.index());
-      queue_dynamic_script_task_inline(hooks, script, source_name, inline_text, nomodule_attr)
-        .is_ok()
+    let scheduled = match script_type {
+      ScriptType::Classic => {
+        // `integrity` attribute clamping: if present but too large, treat it as invalid metadata.
+        // Inline scripts should remain eligible for later mutations; external scripts are scheduled
+        // so the task can surface an SRI error (consistent with other SRI failures).
+        if integrity_attr_present && integrity.is_none() && !src_attr_present {
+          false
+        } else if src_attr_present {
+          let Some(url) = src else {
+            return Ok(());
+          };
+          let destination = if crossorigin.is_some() {
+            FetchDestination::ScriptCors
+          } else {
+            FetchDestination::Script
+          };
+          queue_dynamic_script_task_external(
+            hooks,
+            script,
+            url,
+            destination,
+            nomodule_attr,
+            crossorigin,
+            referrer_policy,
+            integrity_attr_present,
+            integrity,
+          )
+          .is_ok()
+        } else {
+          let source_name = format!("<script {}>", script.index());
+          queue_dynamic_script_task_inline(hooks, script, source_name, inline_text, nomodule_attr)
+            .is_ok()
+        }
+      }
+      ScriptType::Module => {
+        if !modules_supported {
+          false
+        } else if src_attr_present {
+          let Some(url) = src else {
+            return Ok(());
+          };
+          queue_dynamic_module_script_task_external(
+            hooks,
+            script,
+            url,
+            base_url.clone(),
+            crossorigin,
+            referrer_policy,
+            integrity_attr_present,
+            integrity,
+          )
+          .is_ok()
+        } else {
+          queue_dynamic_module_script_task_inline(
+            hooks,
+            script,
+            inline_text,
+            base_url.clone(),
+            crossorigin,
+            referrer_policy,
+          )
+          .is_ok()
+        }
+      }
+      ScriptType::ImportMap => {
+        if !modules_supported || src_attr_present {
+          false
+        } else {
+          queue_dynamic_import_map_task_inline(hooks, inline_text, base_url.clone()).is_ok()
+        }
+      }
+      ScriptType::Unknown => false,
     };
 
     if scheduled {
@@ -31987,6 +32027,369 @@ fn queue_dynamic_script_task_external(
       )
     })
     .map_err(|_| VmError::TypeError("Failed to queue dynamic script task"))?;
+
+  Ok(())
+}
+
+fn ensure_promise_fulfilled(heap: &Heap, promise: Value) -> std::result::Result<(), VmError> {
+  let Value::Object(promise_obj) = promise else {
+    return Err(VmError::InvariantViolation("expected a Promise object"));
+  };
+  match heap.promise_state(promise_obj)? {
+    PromiseState::Pending => Err(VmError::Unimplemented(
+      "asynchronous module loading/evaluation is not supported",
+    )),
+    PromiseState::Fulfilled => Ok(()),
+    PromiseState::Rejected => {
+      let reason = heap
+        .promise_result(promise_obj)?
+        .unwrap_or(Value::Undefined);
+      Err(VmError::Throw(reason))
+    }
+  }
+}
+
+fn synthesize_inline_module_url(base_url: &str, inline_id: &str) -> String {
+  match Url::parse(base_url) {
+    Ok(mut url) => {
+      url.set_fragment(Some(inline_id));
+      url.to_string()
+    }
+    Err(_) => format!("about:blank#{inline_id}"),
+  }
+}
+
+fn queue_dynamic_module_script_task_inline(
+  hooks: &mut dyn VmHostHooks,
+  script: NodeId,
+  source_text: String,
+  base_url_at_discovery: Option<String>,
+  crossorigin: Option<CorsMode>,
+  referrer_policy: Option<ReferrerPolicy>,
+) -> Result<(), VmError> {
+  let Some(event_loop) = event_loop_mut_from_hooks::<WindowHostState>(hooks) else {
+    return Ok(());
+  };
+
+  event_loop
+    // Run module scripts in a networking task so `VmJsEventLoopHooks::host_load_imported_module`
+    // takes the synchronous module-fetch path. This keeps dynamic module insertion deterministic
+    // in the standalone `WindowHostState` harness without requiring a full module-graph prefetch
+    // pipeline.
+    .queue_task(TaskSource::Networking, move |host, event_loop| {
+      let js_execution_options = host.js_execution_options();
+      if !js_execution_options.supports_module_scripts {
+        return Ok(());
+      }
+      let fetcher = Arc::clone(host.fetcher());
+
+      let cors_mode = crossorigin.unwrap_or(CorsMode::Anonymous);
+      let effective_referrer_policy = referrer_policy.unwrap_or_default();
+
+      let base_str = base_url_at_discovery
+        .as_deref()
+        .or(host.base_url.as_deref())
+        .unwrap_or(host.document_url.as_str());
+      let inline_id = format!("inline-module-{}", script.index());
+      let entry_url = synthesize_inline_module_url(base_str, &inline_id);
+      let entry_key = ModuleKey {
+        url: entry_url,
+        attributes: Vec::new(),
+      };
+
+      let current_script_state = host.document_host().current_script_handle().clone();
+      let mut orchestrator = ScriptOrchestrator::new();
+      orchestrator.execute_with_current_script_state_resolved(&current_script_state, None, || {
+        let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(host)?;
+        hooks.set_event_loop(event_loop);
+
+        let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
+        window_realm.reset_interrupt();
+
+        let module_loader = window_realm.module_loader_handle();
+        {
+          let mut loader = module_loader.borrow_mut();
+          loader.set_fetcher(fetcher);
+          loader.set_cors_mode(cors_mode);
+          loader.set_referrer_policy(effective_referrer_policy);
+          loader.set_js_execution_options(js_execution_options);
+          loader.set_entry_module_integrity_override(None);
+        }
+
+        let budget = window_realm.vm_budget_now();
+        let (vm, realm, heap) = window_realm.vm_realm_and_heap_mut();
+        let mut vm = vm.push_budget(budget);
+        vm.tick()
+          .map_err(|err| crate::js::vm_error_format::vm_error_to_error(heap, err))?;
+
+        let Some(modules_ptr) = vm.module_graph_ptr() else {
+          return Err(crate::error::Error::Other(
+            "module scripts requested but module loading is not enabled for this realm".to_string(),
+          ));
+        };
+        // SAFETY: `WindowRealm::enable_module_loader` installs a stable pointer to a realm-owned
+        // boxed `ModuleGraph`, cleared during teardown.
+        let module_graph = unsafe { &mut *(modules_ptr as *mut ModuleGraph) };
+
+        let mut scope = heap.scope();
+
+        let entry_module = {
+          let mut loader = module_loader.borrow_mut();
+          loader.set_entry_module_integrity_override(None);
+          loader.get_or_parse_inline_module(scope.heap_mut(), module_graph, entry_key, &source_text)
+        };
+        let entry_module = match entry_module {
+          Ok(id) => id,
+          Err(err) => {
+            return Err(crate::js::vm_error_format::vm_error_to_error(
+              scope.heap_mut(),
+              err,
+            ));
+          }
+        };
+
+        let load_promise = match vm_js::load_requested_modules(
+          &mut vm,
+          &mut scope,
+          module_graph,
+          &mut hooks,
+          entry_module,
+          vm_js::HostDefined::default(),
+        ) {
+          Ok(p) => p,
+          Err(err) => {
+            return Err(crate::js::vm_error_format::vm_error_to_error(
+              scope.heap_mut(),
+              err,
+            ));
+          }
+        };
+        if let Err(err) = ensure_promise_fulfilled(scope.heap(), load_promise) {
+          return Err(crate::js::vm_error_format::vm_error_to_error(
+            scope.heap_mut(),
+            err,
+          ));
+        }
+
+        let eval_promise = match module_graph.evaluate_with_scope(
+          &mut vm,
+          &mut scope,
+          realm.global_object(),
+          realm.id(),
+          entry_module,
+          vm_host,
+          &mut hooks,
+        ) {
+          Ok(p) => p,
+          Err(err) => {
+            return Err(crate::js::vm_error_format::vm_error_to_error(
+              scope.heap_mut(),
+              err,
+            ));
+          }
+        };
+        if let Err(err) = ensure_promise_fulfilled(scope.heap(), eval_promise) {
+          return Err(crate::js::vm_error_format::vm_error_to_error(
+            scope.heap_mut(),
+            err,
+          ));
+        }
+
+        if let Some(err) = hooks.finish(scope.heap_mut()) {
+          return Err(err);
+        }
+
+        Ok(())
+      })
+    })
+    .map_err(|_| VmError::TypeError("Failed to queue dynamic module script task"))?;
+
+  Ok(())
+}
+
+fn queue_dynamic_module_script_task_external(
+  hooks: &mut dyn VmHostHooks,
+  _script: NodeId,
+  url: String,
+  base_url_at_discovery: Option<String>,
+  crossorigin: Option<CorsMode>,
+  referrer_policy: Option<ReferrerPolicy>,
+  integrity_attr_present: bool,
+  integrity: Option<String>,
+) -> Result<(), VmError> {
+  let Some(event_loop) = event_loop_mut_from_hooks::<WindowHostState>(hooks) else {
+    return Ok(());
+  };
+
+  event_loop
+    .queue_task(TaskSource::Networking, move |host, event_loop| {
+      let _ = &base_url_at_discovery;
+      let js_execution_options = host.js_execution_options();
+      if !js_execution_options.supports_module_scripts {
+        return Ok(());
+      }
+      let fetcher = Arc::clone(host.fetcher());
+
+      let cors_mode = crossorigin.unwrap_or(CorsMode::Anonymous);
+      let effective_referrer_policy = referrer_policy.unwrap_or_default();
+
+      let entry_key = ModuleKey {
+        url: url.clone(),
+        attributes: Vec::new(),
+      };
+
+      let entry_integrity_override = if integrity_attr_present {
+        if integrity.is_none() {
+          return Err(crate::error::Error::Other(format!(
+            "SRI blocked module script {url}: integrity attribute exceeded max length of {} bytes",
+            crate::js::sri::MAX_INTEGRITY_ATTRIBUTE_BYTES
+          )));
+        }
+        integrity.clone()
+      } else {
+        None
+      };
+
+      let current_script_state = host.document_host().current_script_handle().clone();
+      let mut orchestrator = ScriptOrchestrator::new();
+      orchestrator.execute_with_current_script_state_resolved(&current_script_state, None, || {
+        let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(host)?;
+        hooks.set_event_loop(event_loop);
+
+        let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
+        window_realm.reset_interrupt();
+
+        let module_loader = window_realm.module_loader_handle();
+        {
+          let mut loader = module_loader.borrow_mut();
+          loader.set_fetcher(fetcher);
+          loader.set_cors_mode(cors_mode);
+          loader.set_referrer_policy(effective_referrer_policy);
+          loader.set_js_execution_options(js_execution_options);
+          // The entry module fetch applies the `<script integrity>` override, but we clear it after
+          // the fetch to avoid leaking it into unrelated module loads.
+          loader.set_entry_module_integrity_override(None);
+        }
+
+        let budget = window_realm.vm_budget_now();
+        let (vm, realm, heap) = window_realm.vm_realm_and_heap_mut();
+        let mut vm = vm.push_budget(budget);
+        vm.tick()
+          .map_err(|err| crate::js::vm_error_format::vm_error_to_error(heap, err))?;
+
+        let Some(modules_ptr) = vm.module_graph_ptr() else {
+          return Err(crate::error::Error::Other(
+            "module scripts requested but module loading is not enabled for this realm".to_string(),
+          ));
+        };
+        // SAFETY: `WindowRealm::enable_module_loader` installs a stable pointer to a realm-owned
+        // boxed `ModuleGraph`, cleared during teardown.
+        let module_graph = unsafe { &mut *(modules_ptr as *mut ModuleGraph) };
+
+        let mut scope = heap.scope();
+
+        let entry_module = {
+          let mut loader = module_loader.borrow_mut();
+          loader.set_entry_module_integrity_override(entry_integrity_override.clone());
+          let result = loader.get_or_fetch_module(scope.heap_mut(), module_graph, entry_key);
+          loader.set_entry_module_integrity_override(None);
+          result
+        };
+        let entry_module = match entry_module {
+          Ok(id) => id,
+          Err(err) => {
+            return Err(crate::js::vm_error_format::vm_error_to_error(
+              scope.heap_mut(),
+              err,
+            ));
+          }
+        };
+
+        let load_promise = match vm_js::load_requested_modules(
+          &mut vm,
+          &mut scope,
+          module_graph,
+          &mut hooks,
+          entry_module,
+          vm_js::HostDefined::default(),
+        ) {
+          Ok(p) => p,
+          Err(err) => {
+            return Err(crate::js::vm_error_format::vm_error_to_error(
+              scope.heap_mut(),
+              err,
+            ));
+          }
+        };
+        if let Err(err) = ensure_promise_fulfilled(scope.heap(), load_promise) {
+          return Err(crate::js::vm_error_format::vm_error_to_error(
+            scope.heap_mut(),
+            err,
+          ));
+        }
+
+        let eval_promise = match module_graph.evaluate_with_scope(
+          &mut vm,
+          &mut scope,
+          realm.global_object(),
+          realm.id(),
+          entry_module,
+          vm_host,
+          &mut hooks,
+        ) {
+          Ok(p) => p,
+          Err(err) => {
+            return Err(crate::js::vm_error_format::vm_error_to_error(
+              scope.heap_mut(),
+              err,
+            ));
+          }
+        };
+        if let Err(err) = ensure_promise_fulfilled(scope.heap(), eval_promise) {
+          return Err(crate::js::vm_error_format::vm_error_to_error(
+            scope.heap_mut(),
+            err,
+          ));
+        }
+
+        if let Some(err) = hooks.finish(scope.heap_mut()) {
+          return Err(err);
+        }
+
+        Ok(())
+      })
+    })
+    .map_err(|_| VmError::TypeError("Failed to queue dynamic module script task"))?;
+
+  Ok(())
+}
+
+fn queue_dynamic_import_map_task_inline(
+  hooks: &mut dyn VmHostHooks,
+  source_text: String,
+  base_url_at_discovery: Option<String>,
+) -> Result<(), VmError> {
+  let Some(event_loop) = event_loop_mut_from_hooks::<WindowHostState>(hooks) else {
+    return Ok(());
+  };
+
+  event_loop
+    .queue_task(TaskSource::Script, move |host, _event_loop| {
+      if !host.js_execution_options().supports_module_scripts {
+        return Ok(());
+      }
+
+      let base_str = base_url_at_discovery
+        .as_deref()
+        .or(host.base_url.as_deref())
+        .unwrap_or(host.document_url.as_str());
+
+      let base_url =
+        Url::parse(base_str).unwrap_or_else(|_| Url::parse("about:blank").expect("about:blank"));
+      host.register_import_map_from_script_text(&source_text, &base_url)?;
+      Ok(())
+    })
+    .map_err(|_| VmError::TypeError("Failed to queue dynamic import map task"))?;
 
   Ok(())
 }

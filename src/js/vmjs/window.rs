@@ -7017,6 +7017,159 @@ mod tests {
   }
 
   #[test]
+  fn dynamic_inline_module_script_executes() -> Result<()> {
+    let mut dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let container = dom.create_element("div", "");
+    dom
+      .set_attribute(container, "id", "c")
+      .expect("set container id");
+    dom
+      .append_child(dom.root(), container)
+      .expect("append container");
+    let mut opts = js_opts_for_test();
+    opts.supports_module_scripts = true;
+    let mut host = WindowHost::new_with_js_execution_options(dom, "https://example.invalid/", opts)?;
+
+    host.exec_script(
+      r#"
+      globalThis.__ran = false;
+      const container = document.getElementById("c");
+      const s = document.createElement("script");
+      s.type = "module";
+      s.textContent = "globalThis.__ran = true;";
+      container.appendChild(s);
+      "#,
+    )?;
+
+    // Module scripts are asynchronous (queued onto the event loop).
+    assert!(matches!(
+      get_global_prop(&mut host, "__ran"),
+      Value::Bool(false)
+    ));
+
+    host.run_until_idle(RunLimits {
+      max_tasks: 10,
+      max_microtasks: 100,
+      max_wall_time: Some(Duration::from_secs(1)),
+    })?;
+
+    assert!(matches!(get_global_prop(&mut host, "__ran"), Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_importmap_then_module_bare_specifier_resolves() -> Result<()> {
+    let mut dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let container = dom.create_element("div", "");
+    dom
+      .set_attribute(container, "id", "c")
+      .expect("set container id");
+    dom
+      .append_child(dom.root(), container)
+      .expect("append container");
+
+    let fetcher = Arc::new(MapResourceFetcher::default());
+    let mut mapped = FetchedResource::new(
+      b"export const value = 123;".to_vec(),
+      Some("application/javascript".to_string()),
+    );
+    mapped.status = Some(200);
+    fetcher.insert("https://example.invalid/mapped.js", mapped);
+
+    let mut opts = js_opts_for_test();
+    opts.supports_module_scripts = true;
+    let mut host =
+      WindowHost::new_with_fetcher_and_options(dom, "https://example.invalid/", fetcher, opts)?;
+
+    host.exec_script(
+      r#"
+      globalThis.__result = null;
+      const container = document.getElementById("c");
+      const im = document.createElement("script");
+      im.type = "importmap";
+      im.textContent = '{"imports":{"foo":"./mapped.js"}}';
+      container.appendChild(im);
+
+      const s = document.createElement("script");
+      s.type = "module";
+      s.textContent = 'import { value } from "foo"; globalThis.__result = value;';
+      container.appendChild(s);
+      "#,
+    )?;
+
+    host.run_until_idle(RunLimits {
+      max_tasks: 20,
+      max_microtasks: 100,
+      max_wall_time: Some(Duration::from_secs(1)),
+    })?;
+
+    assert!(matches!(
+      get_global_prop(&mut host, "__result"),
+      Value::Number(n) if (n - 123.0).abs() < f64::EPSILON
+    ));
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_external_module_scripts_are_ordered_asap_when_async_false() -> Result<()> {
+    let mut dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let container = dom.create_element("div", "");
+    dom
+      .set_attribute(container, "id", "c")
+      .expect("set container id");
+    dom
+      .append_child(dom.root(), container)
+      .expect("append container");
+
+    let fetcher = Arc::new(MapResourceFetcher::default());
+    let mut a = FetchedResource::new(
+      b"globalThis.__log.push('a');".to_vec(),
+      Some("application/javascript".to_string()),
+    );
+    a.status = Some(200);
+    fetcher.insert("https://example.invalid/a.js", a);
+    let mut b = FetchedResource::new(
+      b"globalThis.__log.push('b');".to_vec(),
+      Some("application/javascript".to_string()),
+    );
+    b.status = Some(200);
+    fetcher.insert("https://example.invalid/b.js", b);
+
+    let mut opts = js_opts_for_test();
+    opts.supports_module_scripts = true;
+    let mut host =
+      WindowHost::new_with_fetcher_and_options(dom, "https://example.invalid/", fetcher, opts)?;
+
+    host.exec_script(
+      r#"
+      globalThis.__log = [];
+      const container = document.getElementById("c");
+      const a = document.createElement("script");
+      a.type = "module";
+      a.src = "https://example.invalid/a.js";
+      a.async = false;
+      container.appendChild(a);
+
+      const b = document.createElement("script");
+      b.type = "module";
+      b.src = "https://example.invalid/b.js";
+      b.async = false;
+      container.appendChild(b);
+      "#,
+    )?;
+
+    host.run_until_idle(RunLimits {
+      max_tasks: 20,
+      max_microtasks: 100,
+      max_wall_time: Some(Duration::from_secs(1)),
+    })?;
+
+    let joined = host.exec_script("globalThis.__log.join(',')")?;
+    assert_eq!(value_to_string(&host, joined), "a,b");
+    Ok(())
+  }
+
+  #[test]
   fn dynamic_script_executes_once_after_text_content_set() -> Result<()> {
     let mut dom = dom2::Document::new(QuirksMode::NoQuirks);
     let container = dom.create_element("div", "");
