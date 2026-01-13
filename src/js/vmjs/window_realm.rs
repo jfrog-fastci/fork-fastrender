@@ -2601,6 +2601,10 @@ const SIGNAL_LISTENER_MAP_ENTRY_ABORT_FUNC_KEY: &str = "abort_func";
 
 const DOM_PARSER_BRAND_KEY: &str = "__fastrender_dom_parser";
 const DOM_PARSER_PARSE_FROM_STRING_DOCUMENT_SLOT: usize = 0;
+const DATA_TRANSFER_BRAND_KEY: &str = "__fastrender_data_transfer";
+const DATA_TRANSFER_STORE_KEY: &str = "__fastrender_data_transfer_store";
+const DATA_TRANSFER_DROP_EFFECT_VALUE_KEY: &str = "__fastrender_data_transfer_drop_effect";
+const DATA_TRANSFER_EFFECT_ALLOWED_VALUE_KEY: &str = "__fastrender_data_transfer_effect_allowed";
 const NODE_ID_KEY: &str = "__fastrender_node_id";
 
 const WINDOW_REALM_GLOBAL_OBJECT_HOST_TAG: u64 = u64::from_be_bytes(*b"WINDOW__");
@@ -13380,6 +13384,429 @@ fn dom_parser_parse_from_string_native(
     .insert(document_id, Box::new(dom));
 
   Ok(Value::Object(document_obj))
+}
+
+fn data_transfer_require_this(scope: &mut Scope<'_>, this: Value) -> Result<GcObject, VmError> {
+  let Value::Object(dt_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let brand_key = alloc_key(scope, DATA_TRANSFER_BRAND_KEY)?;
+  match scope
+    .heap()
+    .object_get_own_data_property_value(dt_obj, &brand_key)?
+  {
+    Some(Value::Bool(true)) => Ok(dt_obj),
+    _ => Err(VmError::TypeError("Illegal invocation")),
+  }
+}
+
+fn data_transfer_store(scope: &mut Scope<'_>, dt_obj: GcObject) -> Result<GcObject, VmError> {
+  let store_key = alloc_key(scope, DATA_TRANSFER_STORE_KEY)?;
+  match scope
+    .heap()
+    .object_get_own_data_property_value(dt_obj, &store_key)?
+  {
+    Some(Value::Object(obj)) => Ok(obj),
+    _ => Err(VmError::TypeError("Illegal invocation")),
+  }
+}
+
+fn data_transfer_normalize_format(scope: &mut Scope<'_>, value: Value) -> Result<GcString, VmError> {
+  let format_s = match value {
+    Value::String(s) => s,
+    other => scope.heap_mut().to_string(other)?,
+  };
+  let mut format = scope
+    .heap()
+    .get_string(format_s)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default()
+    .to_ascii_lowercase();
+  // HTML drag-and-drop uses `"text"` as a legacy alias for `"text/plain"`.
+  if format == "text" {
+    format = "text/plain".to_string();
+  }
+  let normalized = scope.alloc_string(&format)?;
+  scope.push_root(Value::String(normalized))?;
+  Ok(normalized)
+}
+
+fn data_transfer_constructor_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "DataTransfer constructor cannot be invoked without 'new'",
+  ))
+}
+
+fn data_transfer_constructor_construct_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  let ctor = match new_target {
+    Value::Object(obj) => obj,
+    _ => callee,
+  };
+
+  let prototype_key = alloc_key(scope, "prototype")?;
+  let proto = scope
+    .heap()
+    .object_get_own_data_property_value(ctor, &prototype_key)?
+    .and_then(|v| match v {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    });
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+  if let Some(proto) = proto {
+    scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+  }
+
+  // Brand-check for DataTransfer.prototype methods / accessors.
+  let brand_key = alloc_key(scope, DATA_TRANSFER_BRAND_KEY)?;
+  scope.define_property(
+    obj,
+    brand_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Bool(true),
+        writable: false,
+      },
+    },
+  )?;
+
+  let store_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(store_obj))?;
+  let store_key = alloc_key(scope, DATA_TRANSFER_STORE_KEY)?;
+  scope.define_property(
+    obj,
+    store_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(store_obj),
+        writable: false,
+      },
+    },
+  )?;
+
+  // Defaults:
+  // - Chromium returns `dropEffect === "none"` and `effectAllowed === "all"` for `new DataTransfer()`.
+  // - The HTML spec uses different states ("uninitialized") for some drag sessions; for now we keep
+  //   the Chromium-like defaults to match common library expectations.
+  let drop_effect_s = scope.alloc_string("none")?;
+  scope.push_root(Value::String(drop_effect_s))?;
+  let drop_effect_key = alloc_key(scope, DATA_TRANSFER_DROP_EFFECT_VALUE_KEY)?;
+  scope.define_property(
+    obj,
+    drop_effect_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::String(drop_effect_s),
+        writable: true,
+      },
+    },
+  )?;
+
+  let effect_allowed_s = scope.alloc_string("all")?;
+  scope.push_root(Value::String(effect_allowed_s))?;
+  let effect_allowed_key = alloc_key(scope, DATA_TRANSFER_EFFECT_ALLOWED_VALUE_KEY)?;
+  scope.define_property(
+    obj,
+    effect_allowed_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::String(effect_allowed_s),
+        writable: true,
+      },
+    },
+  )?;
+
+  Ok(Value::Object(obj))
+}
+
+fn data_transfer_get_data_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let dt_obj = data_transfer_require_this(scope, this)?;
+  let store_obj = data_transfer_store(scope, dt_obj)?;
+  let format = data_transfer_normalize_format(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let key = PropertyKey::from_string(format);
+  match scope
+    .heap()
+    .object_get_own_data_property_value(store_obj, &key)?
+  {
+    Some(Value::String(s)) => Ok(Value::String(s)),
+    Some(other) => Ok(Value::String(scope.heap_mut().to_string(other)?)),
+    None => Ok(Value::String(scope.alloc_string("")?)),
+  }
+}
+
+fn data_transfer_set_data_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let dt_obj = data_transfer_require_this(scope, this)?;
+  let store_obj = data_transfer_store(scope, dt_obj)?;
+  let format = data_transfer_normalize_format(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let key = PropertyKey::from_string(format);
+
+  let data_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let data_s = match data_value {
+    Value::String(s) => s,
+    other => scope.heap_mut().to_string(other)?,
+  };
+  scope.push_root(Value::String(data_s))?;
+  scope.define_property(store_obj, key, data_desc(Value::String(data_s)))?;
+  Ok(Value::Undefined)
+}
+
+fn data_transfer_clear_data_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let dt_obj = data_transfer_require_this(scope, this)?;
+  let store_obj = data_transfer_store(scope, dt_obj)?;
+
+  match args.get(0).copied() {
+    None | Some(Value::Undefined) => {
+      let keys = scope.heap().own_property_keys(store_obj)?;
+      for key in keys {
+        let _ = scope.ordinary_delete(store_obj, key)?;
+      }
+    }
+    Some(format_value) => {
+      let format = data_transfer_normalize_format(scope, format_value)?;
+      let key = PropertyKey::from_string(format);
+      let _ = scope.ordinary_delete(store_obj, key)?;
+    }
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn data_transfer_set_drag_image_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let _ = data_transfer_require_this(scope, this)?;
+  Ok(Value::Undefined)
+}
+
+fn data_transfer_types_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let dt_obj = data_transfer_require_this(scope, this)?;
+  let store_obj = data_transfer_store(scope, dt_obj)?;
+
+  let keys = scope.heap().own_property_keys(store_obj)?;
+  let mut formats = Vec::new();
+  for key in keys {
+    let PropertyKey::String(s) = key else {
+      continue;
+    };
+    formats.push(s);
+  }
+  let len = formats.len();
+
+  let array = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(array))?;
+  if let Some(intrinsics) = vm.intrinsics() {
+    scope
+      .heap_mut()
+      .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
+  }
+
+  for (idx, format) in formats.into_iter().enumerate() {
+    let idx_key = alloc_key(scope, &idx.to_string())?;
+    scope.define_property(array, idx_key, data_desc(Value::String(format)))?;
+  }
+
+  let length_key = alloc_key(scope, "length")?;
+  scope.define_property(
+    array,
+    length_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(len as f64),
+        writable: true,
+      },
+    },
+  )?;
+
+  Ok(Value::Object(array))
+}
+
+fn data_transfer_drop_effect_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let dt_obj = data_transfer_require_this(scope, this)?;
+  let key = alloc_key(scope, DATA_TRANSFER_DROP_EFFECT_VALUE_KEY)?;
+  match scope
+    .heap()
+    .object_get_own_data_property_value(dt_obj, &key)?
+  {
+    Some(Value::String(s)) => Ok(Value::String(s)),
+    Some(other) => Ok(Value::String(scope.heap_mut().to_string(other)?)),
+    None => Ok(Value::String(scope.alloc_string("")?)),
+  }
+}
+
+fn data_transfer_drop_effect_set_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let dt_obj = data_transfer_require_this(scope, this)?;
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let s = match value {
+    Value::String(s) => s,
+    other => scope.heap_mut().to_string(other)?,
+  };
+  scope.push_root(Value::String(s))?;
+  let key = alloc_key(scope, DATA_TRANSFER_DROP_EFFECT_VALUE_KEY)?;
+  match scope
+    .heap_mut()
+    .object_set_existing_data_property_value(dt_obj, &key, Value::String(s))
+  {
+    Ok(()) => {}
+    Err(VmError::PropertyNotFound | VmError::PropertyNotData) => {
+      scope.define_property(
+        dt_obj,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::String(s),
+            writable: true,
+          },
+        },
+      )?;
+    }
+    Err(err) => return Err(err),
+  };
+  Ok(Value::Undefined)
+}
+
+fn data_transfer_effect_allowed_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let dt_obj = data_transfer_require_this(scope, this)?;
+  let key = alloc_key(scope, DATA_TRANSFER_EFFECT_ALLOWED_VALUE_KEY)?;
+  match scope
+    .heap()
+    .object_get_own_data_property_value(dt_obj, &key)?
+  {
+    Some(Value::String(s)) => Ok(Value::String(s)),
+    Some(other) => Ok(Value::String(scope.heap_mut().to_string(other)?)),
+    None => Ok(Value::String(scope.alloc_string("")?)),
+  }
+}
+
+fn data_transfer_effect_allowed_set_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let dt_obj = data_transfer_require_this(scope, this)?;
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let s = match value {
+    Value::String(s) => s,
+    other => scope.heap_mut().to_string(other)?,
+  };
+  scope.push_root(Value::String(s))?;
+  let key = alloc_key(scope, DATA_TRANSFER_EFFECT_ALLOWED_VALUE_KEY)?;
+  match scope
+    .heap_mut()
+    .object_set_existing_data_property_value(dt_obj, &key, Value::String(s))
+  {
+    Ok(()) => {}
+    Err(VmError::PropertyNotFound | VmError::PropertyNotData) => {
+      scope.define_property(
+        dt_obj,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::String(s),
+            writable: true,
+          },
+        },
+      )?;
+    }
+    Err(err) => return Err(err),
+  };
+  Ok(Value::Undefined)
 }
 
 fn document_import_node_native(
@@ -37188,6 +37615,249 @@ fn init_window_globals(
     dom_parser_key,
     data_desc(Value::Object(dom_parser_ctor_func)),
   )?;
+
+  // --- DataTransfer ----------------------------------------------------------------------------
+  //
+  // `DataTransfer` is frequently used by drag-and-drop / clipboard code paths and is also
+  // constructible in modern browsers (`new DataTransfer()`), making it a common target for feature
+  // detection in libraries and tests.
+  let data_transfer_proto = scope.alloc_object()?;
+  scope.push_root(Value::Object(data_transfer_proto))?;
+  scope.heap_mut().object_set_prototype(
+    data_transfer_proto,
+    Some(realm.intrinsics().object_prototype()),
+  )?;
+
+  let data_transfer_get_data_call_id = vm.register_native_call(data_transfer_get_data_native)?;
+  let data_transfer_get_data_name = scope.alloc_string("getData")?;
+  scope.push_root(Value::String(data_transfer_get_data_name))?;
+  let data_transfer_get_data_func = scope.alloc_native_function(
+    data_transfer_get_data_call_id,
+    None,
+    data_transfer_get_data_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    data_transfer_get_data_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(data_transfer_get_data_func))?;
+  let data_transfer_get_data_key = alloc_key(&mut scope, "getData")?;
+  scope.define_property(
+    data_transfer_proto,
+    data_transfer_get_data_key,
+    data_desc(Value::Object(data_transfer_get_data_func)),
+  )?;
+
+  let data_transfer_set_data_call_id = vm.register_native_call(data_transfer_set_data_native)?;
+  let data_transfer_set_data_name = scope.alloc_string("setData")?;
+  scope.push_root(Value::String(data_transfer_set_data_name))?;
+  let data_transfer_set_data_func = scope.alloc_native_function(
+    data_transfer_set_data_call_id,
+    None,
+    data_transfer_set_data_name,
+    2,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    data_transfer_set_data_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(data_transfer_set_data_func))?;
+  let data_transfer_set_data_key = alloc_key(&mut scope, "setData")?;
+  scope.define_property(
+    data_transfer_proto,
+    data_transfer_set_data_key,
+    data_desc(Value::Object(data_transfer_set_data_func)),
+  )?;
+
+  let data_transfer_clear_data_call_id = vm.register_native_call(data_transfer_clear_data_native)?;
+  let data_transfer_clear_data_name = scope.alloc_string("clearData")?;
+  scope.push_root(Value::String(data_transfer_clear_data_name))?;
+  let data_transfer_clear_data_func = scope.alloc_native_function(
+    data_transfer_clear_data_call_id,
+    None,
+    data_transfer_clear_data_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    data_transfer_clear_data_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(data_transfer_clear_data_func))?;
+  let data_transfer_clear_data_key = alloc_key(&mut scope, "clearData")?;
+  scope.define_property(
+    data_transfer_proto,
+    data_transfer_clear_data_key,
+    data_desc(Value::Object(data_transfer_clear_data_func)),
+  )?;
+
+  let data_transfer_set_drag_image_call_id =
+    vm.register_native_call(data_transfer_set_drag_image_native)?;
+  let data_transfer_set_drag_image_name = scope.alloc_string("setDragImage")?;
+  scope.push_root(Value::String(data_transfer_set_drag_image_name))?;
+  let data_transfer_set_drag_image_func = scope.alloc_native_function(
+    data_transfer_set_drag_image_call_id,
+    None,
+    data_transfer_set_drag_image_name,
+    3,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    data_transfer_set_drag_image_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(data_transfer_set_drag_image_func))?;
+  let data_transfer_set_drag_image_key = alloc_key(&mut scope, "setDragImage")?;
+  scope.define_property(
+    data_transfer_proto,
+    data_transfer_set_drag_image_key,
+    data_desc(Value::Object(data_transfer_set_drag_image_func)),
+  )?;
+
+  let data_transfer_types_get_call_id = vm.register_native_call(data_transfer_types_get_native)?;
+  let data_transfer_types_get_name = scope.alloc_string("get types")?;
+  scope.push_root(Value::String(data_transfer_types_get_name))?;
+  let data_transfer_types_get_func = scope.alloc_native_function(
+    data_transfer_types_get_call_id,
+    None,
+    data_transfer_types_get_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    data_transfer_types_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(data_transfer_types_get_func))?;
+  let data_transfer_types_key = alloc_key(&mut scope, "types")?;
+  scope.define_property(
+    data_transfer_proto,
+    data_transfer_types_key,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(data_transfer_types_get_func),
+        set: Value::Undefined,
+      },
+    },
+  )?;
+
+  let data_transfer_drop_effect_get_call_id =
+    vm.register_native_call(data_transfer_drop_effect_get_native)?;
+  let data_transfer_drop_effect_get_name = scope.alloc_string("get dropEffect")?;
+  scope.push_root(Value::String(data_transfer_drop_effect_get_name))?;
+  let data_transfer_drop_effect_get_func = scope.alloc_native_function(
+    data_transfer_drop_effect_get_call_id,
+    None,
+    data_transfer_drop_effect_get_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    data_transfer_drop_effect_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(data_transfer_drop_effect_get_func))?;
+
+  let data_transfer_drop_effect_set_call_id =
+    vm.register_native_call(data_transfer_drop_effect_set_native)?;
+  let data_transfer_drop_effect_set_name = scope.alloc_string("set dropEffect")?;
+  scope.push_root(Value::String(data_transfer_drop_effect_set_name))?;
+  let data_transfer_drop_effect_set_func = scope.alloc_native_function(
+    data_transfer_drop_effect_set_call_id,
+    None,
+    data_transfer_drop_effect_set_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    data_transfer_drop_effect_set_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(data_transfer_drop_effect_set_func))?;
+
+  let data_transfer_drop_effect_key = alloc_key(&mut scope, "dropEffect")?;
+  scope.define_property(
+    data_transfer_proto,
+    data_transfer_drop_effect_key,
+    idl_attribute_desc(
+      Value::Object(data_transfer_drop_effect_get_func),
+      Value::Object(data_transfer_drop_effect_set_func),
+    ),
+  )?;
+
+  let data_transfer_effect_allowed_get_call_id =
+    vm.register_native_call(data_transfer_effect_allowed_get_native)?;
+  let data_transfer_effect_allowed_get_name = scope.alloc_string("get effectAllowed")?;
+  scope.push_root(Value::String(data_transfer_effect_allowed_get_name))?;
+  let data_transfer_effect_allowed_get_func = scope.alloc_native_function(
+    data_transfer_effect_allowed_get_call_id,
+    None,
+    data_transfer_effect_allowed_get_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    data_transfer_effect_allowed_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(data_transfer_effect_allowed_get_func))?;
+
+  let data_transfer_effect_allowed_set_call_id =
+    vm.register_native_call(data_transfer_effect_allowed_set_native)?;
+  let data_transfer_effect_allowed_set_name = scope.alloc_string("set effectAllowed")?;
+  scope.push_root(Value::String(data_transfer_effect_allowed_set_name))?;
+  let data_transfer_effect_allowed_set_func = scope.alloc_native_function(
+    data_transfer_effect_allowed_set_call_id,
+    None,
+    data_transfer_effect_allowed_set_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    data_transfer_effect_allowed_set_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(data_transfer_effect_allowed_set_func))?;
+
+  let data_transfer_effect_allowed_key = alloc_key(&mut scope, "effectAllowed")?;
+  scope.define_property(
+    data_transfer_proto,
+    data_transfer_effect_allowed_key,
+    idl_attribute_desc(
+      Value::Object(data_transfer_effect_allowed_get_func),
+      Value::Object(data_transfer_effect_allowed_set_func),
+    ),
+  )?;
+
+  let data_transfer_ctor_call_id = vm.register_native_call(data_transfer_constructor_native)?;
+  let data_transfer_ctor_construct_id =
+    vm.register_native_construct(data_transfer_constructor_construct_native)?;
+  let data_transfer_ctor_name = scope.alloc_string("DataTransfer")?;
+  scope.push_root(Value::String(data_transfer_ctor_name))?;
+  let data_transfer_ctor_func = scope.alloc_native_function(
+    data_transfer_ctor_call_id,
+    Some(data_transfer_ctor_construct_id),
+    data_transfer_ctor_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    data_transfer_ctor_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(data_transfer_ctor_func))?;
+  scope.define_property(
+    data_transfer_ctor_func,
+    prototype_key,
+    ctor_link_desc(Value::Object(data_transfer_proto)),
+  )?;
+  scope.define_property(
+    data_transfer_proto,
+    constructor_key,
+    ctor_link_desc(Value::Object(data_transfer_ctor_func)),
+  )?;
+  let data_transfer_ctor_key = alloc_key(&mut scope, "DataTransfer")?;
+  scope.define_property(
+    global,
+    data_transfer_ctor_key,
+    data_desc(Value::Object(data_transfer_ctor_func)),
+  )?;
+
   if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
     let event_ctor_call_id = vm.register_native_call(event_constructor_native)?;
     let event_ctor_construct_id = vm.register_native_construct(event_constructor_construct_native)?;
@@ -48587,6 +49257,82 @@ mod tests {
       Value::Bool(true)
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn data_transfer_constructor_exists() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    assert_eq!(
+      realm.exec_script("typeof DataTransfer === 'function'")?,
+      Value::Bool(true)
+    );
+    assert_eq!(
+      realm.exec_script("new DataTransfer() instanceof DataTransfer")?,
+      Value::Bool(true)
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn data_transfer_set_get_clear_roundtrip() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = realm.exec_script(
+      "(() => {\n\
+        const dt = new DataTransfer();\n\
+        dt.setData('text/plain', 'hello');\n\
+        if (dt.getData('text/plain') !== 'hello') return false;\n\
+        if (dt.getData('text/html') !== '') return false;\n\
+        dt.clearData('text/plain');\n\
+        if (dt.getData('text/plain') !== '') return false;\n\
+        dt.setData('text/plain', 'x');\n\
+        dt.setData('text/html', 'y');\n\
+        dt.clearData();\n\
+        return dt.getData('text/plain') === '' && dt.getData('text/html') === '';\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn data_transfer_types_reflect_store() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = realm.exec_script(
+      "(() => {\n\
+        const dt = new DataTransfer();\n\
+        if (!Array.isArray(dt.types)) return false;\n\
+        if (dt.types.length !== 0) return false;\n\
+        dt.setData('text/plain', 'a');\n\
+        if (dt.types.length !== 1 || dt.types[0] !== 'text/plain') return false;\n\
+        dt.setData('text/html', 'b');\n\
+        if (dt.types.indexOf('text/plain') === -1) return false;\n\
+        if (dt.types.indexOf('text/html') === -1) return false;\n\
+        dt.clearData('text/plain');\n\
+        if (dt.types.indexOf('text/plain') !== -1) return false;\n\
+        if (dt.types.length !== 1 || dt.types[0] !== 'text/html') return false;\n\
+        dt.clearData();\n\
+        return dt.types.length === 0;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn data_transfer_illegal_invocation_is_type_error() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = realm.exec_script(
+      "(() => {\n\
+        try {\n\
+          DataTransfer.prototype.getData.call({}, 'text/plain');\n\
+          return false;\n\
+        } catch (e) {\n\
+          return e instanceof TypeError;\n\
+        }\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 
