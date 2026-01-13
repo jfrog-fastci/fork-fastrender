@@ -17,6 +17,7 @@ use crate::js::window_timers::{
   SET_TIMEOUT_NOT_CALLABLE_ERROR, SET_TIMEOUT_STRING_HANDLER_ERROR,
 };
 use crate::js::{DomHost, DocumentHostState, TimerId, Url, UrlLimits, UrlSearchParams, WindowRealmHost};
+use crate::web::events as web_events;
 use std::any::TypeId;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -227,6 +228,10 @@ fn dom_platform_mut(vm: &mut Vm) -> Option<&mut DomPlatform> {
   vm
     .user_data_mut::<WindowRealmUserData>()
     .and_then(|data| data.dom_platform_mut())
+}
+
+fn gc_object_id(obj: GcObject) -> u64 {
+  (obj.index() as u64) | ((obj.generation() as u64) << 32)
 }
 
 fn require_element_receiver(
@@ -1762,10 +1767,32 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             b: 0,
           },
         )?;
-        self
-          .event_targets
-          .entry(WeakGcObject::from(obj))
-          .or_default();
+        let child_id = gc_object_id(obj);
+        // Integrate `new EventTarget()` with the shared DOM event registry so `dispatchEvent`
+        // participates in capture/bubble semantics (and so other opaque targets can reference this
+        // target as a parent).
+        match self.with_dom_host(vm, |host| {
+          host.mutate_dom(|dom| {
+            let registry = dom.events();
+            registry.register_opaque_target(child_id, WeakGcObject::new(obj));
+            // Defensive: ensure any stale parent mapping is cleared if this object is initialized
+            // multiple times.
+            registry.set_opaque_parent(child_id, None);
+            ((), false)
+          });
+          Ok(())
+        }) {
+          Ok(()) => {}
+          // Fallback: when called without an active DOM host (e.g. standalone realms), keep the
+          // legacy per-target listener list behavior.
+          Err(VmError::TypeError(msg)) if msg == DOM_HOST_NOT_AVAILABLE_ERROR => {
+            self
+              .event_targets
+              .entry(WeakGcObject::from(obj))
+              .or_default();
+          }
+          Err(err) => return Err(err),
+        }
         Ok(Value::Undefined)
       }
       ("EventTarget", "constructor", 1) => {
@@ -1781,28 +1808,92 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             b: 0,
           },
         )?;
-        let state = self.event_targets.entry(WeakGcObject::from(obj)).or_default();
+        let parent_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let mut parent_target: Option<web_events::EventTargetId> = None;
+        let mut parent_obj: Option<GcObject> = None;
+        if !matches!(parent_value, Value::Undefined | Value::Null) {
+          let Value::Object(obj) = parent_value else {
+            return Err(VmError::TypeError(
+              "EventTarget parent must be null, undefined, or an EventTarget",
+            ));
+          };
+          parent_obj = Some(obj);
 
-        // If the object is somehow initialized twice, ensure we do not leak persistent roots.
-        if let Some(parent) = state.parent.take() {
-          scope.heap_mut().remove_root(parent.root);
+          // Accept DOM-backed EventTargets (window/document/node wrappers) and opaque EventTargets
+          // (AbortSignal / `new EventTarget()`).
+          if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
+            if data.window_obj() == Some(obj) {
+              parent_target = Some(web_events::EventTargetId::Window);
+            } else if data.document_obj() == Some(obj) {
+              parent_target = Some(web_events::EventTargetId::Document);
+            } else if let Some(platform) = data.dom_platform_mut() {
+              if let Ok(t) = platform.event_target_id_for_value(scope.heap(), Value::Object(obj)) {
+                parent_target = Some(t);
+              }
+            }
+          }
+          if parent_target.is_none() {
+            let slots = match scope.heap().object_host_slots(obj) {
+              Ok(slots) => slots,
+              Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+              Err(err) => return Err(err),
+            };
+            if matches!(
+              slots,
+              Some(slots) if slots.a == EVENT_TARGET_HOST_TAG || slots.b == EVENT_TARGET_HOST_TAG
+            ) {
+              parent_target = Some(web_events::EventTargetId::Opaque(gc_object_id(obj)));
+            }
+          }
+
+          if parent_target.is_none() {
+            return Err(VmError::TypeError(
+              "EventTarget parent must be null, undefined, or an EventTarget",
+            ));
+          }
         }
 
-        let parent_value = args.get(0).copied().unwrap_or(Value::Undefined);
-        match parent_value {
-          Value::Undefined | Value::Null => {}
-          Value::Object(_) => {
+        // Store a strong reference to the parent so it stays alive as long as the child EventTarget
+        // wrapper is reachable (matching the behavior of an internal parent slot).
+        {
+          let state = self.event_targets.entry(WeakGcObject::from(obj)).or_default();
+
+          // If the object is somehow initialized twice, ensure we do not leak persistent roots.
+          if let Some(parent) = state.parent.take() {
+            scope.heap_mut().remove_root(parent.root);
+          }
+
+          if parent_obj.is_some() {
             let root = scope.heap_mut().add_root(parent_value)?;
             state.parent = Some(RootedValue {
               value: parent_value,
               root,
             });
           }
-          _ => {
-            return Err(VmError::TypeError(
-              "EventTarget parent must be null, undefined, or an object",
-            ))
-          }
+        }
+
+        let child_id = gc_object_id(obj);
+        // Integrate with the shared DOM event registry so `dispatchEvent` uses the spec-shaped
+        // capture/target/bubble algorithm even for opaque targets.
+        match self.with_dom_host(vm, |host| {
+          host.mutate_dom(|dom| {
+            let registry = dom.events();
+            registry.register_opaque_target(child_id, WeakGcObject::new(obj));
+            registry.set_opaque_parent(child_id, parent_target);
+            if let Some(parent_target) = parent_target {
+              if let (web_events::EventTargetId::Opaque(parent_id), Some(parent_obj)) =
+                (parent_target, parent_obj)
+              {
+                registry.register_opaque_target(parent_id, WeakGcObject::new(parent_obj));
+              }
+            }
+            ((), false)
+          });
+          Ok(())
+        }) {
+          Ok(()) => {}
+          Err(VmError::TypeError(msg)) if msg == DOM_HOST_NOT_AVAILABLE_ERROR => {}
+          Err(err) => return Err(err),
         }
 
         Ok(Value::Undefined)
@@ -1810,23 +1901,22 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       ("EventTarget", "addEventListener", 0) => {
         let obj = self.require_event_target_receiver(vm, scope, receiver)?;
 
-        // Route DOM-backed targets (`window`/`document`/node wrappers) through the DOM event system
-        // so capture/bubble semantics match `WindowRealm`'s native `dispatchEvent`.
-        if Self::is_dom_backed_event_target(vm, scope.heap(), obj)? {
-          let abort_cleanup_call_id = self.abort_signal_listener_cleanup_call_id(vm)?;
-          if let Some(result) = with_active_vm_host_and_hooks(vm, |vm, host, hooks| {
-            event_target_add_event_listener_dom2(
-              vm,
-              scope,
-              host,
-              hooks,
-              abort_cleanup_call_id,
-              obj,
-              args,
-            )
-          })? {
-            return Ok(result);
-          }
+        // When possible, route all EventTargets through the shared `dom2` + `web::events` listener
+        // registry so opaque targets (`new EventTarget()`, `AbortSignal`, etc) participate in
+        // capture/bubble semantics.
+        let abort_cleanup_call_id = self.abort_signal_listener_cleanup_call_id(vm)?;
+        if let Some(result) = with_active_vm_host_and_hooks(vm, |vm, host, hooks| {
+          event_target_add_event_listener_dom2(
+            vm,
+            scope,
+            host,
+            hooks,
+            abort_cleanup_call_id,
+            obj,
+            args,
+          )
+        })? {
+          return Ok(result);
         }
 
         let Some(Value::String(_)) = args.get(0).copied() else {
@@ -1875,12 +1965,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       ("EventTarget", "removeEventListener", 0) => {
         let obj = self.require_event_target_receiver(vm, scope, receiver)?;
 
-        if Self::is_dom_backed_event_target(vm, scope.heap(), obj)? {
-          if let Some(result) = with_active_vm_host_and_hooks(vm, |vm, host, hooks| {
-            event_target_remove_event_listener_dom2(vm, scope, host, hooks, obj, args)
-          })? {
-            return Ok(result);
-          }
+        if let Some(result) = with_active_vm_host_and_hooks(vm, |vm, host, hooks| {
+          event_target_remove_event_listener_dom2(vm, scope, host, hooks, obj, args)
+        })? {
+          return Ok(result);
         }
 
         let Some(Value::String(_)) = args.get(0).copied() else {
@@ -1919,12 +2007,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       ("EventTarget", "dispatchEvent", 0) => {
         let obj = self.require_event_target_receiver(vm, scope, receiver)?;
 
-        if Self::is_dom_backed_event_target(vm, scope.heap(), obj)? {
-          if let Some(result) = with_active_vm_host_and_hooks(vm, |vm, host, hooks| {
-            event_target_dispatch_event_dom2(vm, scope, host, hooks, obj, args)
-          })? {
-            return Ok(result);
-          }
+        if let Some(result) = with_active_vm_host_and_hooks(vm, |vm, host, hooks| {
+          event_target_dispatch_event_dom2(vm, scope, host, hooks, obj, args)
+        })? {
+          return Ok(result);
         }
 
         let event_val = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -4852,6 +4938,92 @@ mod selector_api_tests {
       "#,
     )?;
 
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod webidl_event_target_dom2_tests {
+  use super::*;
+  use crate::js::window_realm::{DomBindingsBackend, WindowRealm, WindowRealmConfig};
+  use crate::js::WindowHostState;
+  use vm_js::Value;
+
+  fn exec_webidl_event_target_script_to_string(script: &str) -> Result<String, VmError> {
+    let mut window = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+
+    let mut dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(window.global_object());
+    let value = window.with_webidl_bindings_host(&mut dispatch, |realm| realm.exec_script(script))?;
+
+    let (_vm, _realm, heap) = window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let Value::String(s) = value else {
+      return Err(VmError::TypeError("expected script to return a string"));
+    };
+    Ok(scope.heap().get_string(s)?.to_utf8_lossy())
+  }
+
+  #[test]
+  fn webidl_event_target_capture_ordering_at_target_uses_dom2_dispatch() -> Result<(), VmError> {
+    let out = exec_webidl_event_target_script_to_string(
+      r#"
+(() => {
+  const t = new EventTarget();
+  const log = [];
+  function bubble() { log.push('bubble'); }
+  function capture() { log.push('capture'); }
+  t.addEventListener('x', bubble);
+  t.addEventListener('x', capture, Object.create({ capture: true }));
+  t.dispatchEvent(new Event('x', { bubbles: true }));
+  return log.join(',');
+})()
+"#,
+    )?;
+    assert_eq!(out, "capture,bubble");
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_event_target_parent_chain_propagates_and_sets_current_target() -> Result<(), VmError> {
+    let out = exec_webidl_event_target_script_to_string(
+      r#"
+(() => {
+  const parent = new EventTarget();
+  const child = new EventTarget(parent);
+  const log = [];
+
+  parent.addEventListener('x', (e) => log.push('pc:' + (e.currentTarget === parent)), { capture: true });
+  child.addEventListener('x', (e) => log.push('cc:' + (e.currentTarget === child)), { capture: true });
+  child.addEventListener('x', (e) => log.push('cb:' + (e.currentTarget === child)));
+  parent.addEventListener('x', (e) => log.push('pb:' + (e.currentTarget === parent)));
+
+  child.dispatchEvent(new Event('x', { bubbles: true }));
+  return log.join(',');
+})()
+"#,
+    )?;
+    assert_eq!(out, "pc:true,cc:true,cb:true,pb:true");
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_event_target_passive_listener_prevent_default_is_ignored() -> Result<(), VmError> {
+    let out = exec_webidl_event_target_script_to_string(
+      r#"
+(() => {
+  const t = new EventTarget();
+  let inside = null;
+  t.addEventListener('x', (e) => { e.preventDefault(); inside = e.defaultPrevented; }, { passive: true });
+  const ev = new Event('x', { cancelable: true });
+  const ret = t.dispatchEvent(ev);
+  return [inside, ev.defaultPrevented, ret].join(',');
+})()
+"#,
+    )?;
+    assert_eq!(out, "false,false,true");
     Ok(())
   }
 }
