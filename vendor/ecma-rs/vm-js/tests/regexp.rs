@@ -1086,7 +1086,7 @@ fn regexp_lookbehind_alternations_ordering_and_atomicity() {
       r#"
         function m(s, r) {
           var res = s.match(r);
-          return res === null ? "null" : res.join(",");
+          return res === null ? "null" : JSON.stringify(res);
         }
         [
           m("xabcd", /.*(?<=(..|...|....))(.*)/),
@@ -1100,7 +1100,7 @@ fn regexp_lookbehind_alternations_ordering_and_atomicity() {
 
   assert_eq!(
     as_utf8_lossy(&rt, value),
-    "xabcd,cd,|xabcd,bcd,|xxabcd,bcd,|xxabcd,xx,abcd"
+    r#"["xabcd","cd",""]|["xabcd","bcd",""]|["xxabcd","bcd",""]|["xxabcd","xx","abcd"]"#
   );
 }
 
