@@ -157,3 +157,44 @@ fn string_regex_methods_do_not_consult_symbol_methods_on_primitive_arguments() -
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn string_replace_and_replace_all_dispatch_before_tostring_receiver_and_use_original_receiver(
+) -> Result<(), VmError> {
+  let mut agent = new_agent();
+
+  let value = agent.run_script(
+    "string_replace_dispatch_before_tostring.js",
+    r#"
+      // If the builtins call `ToString(this)` before `@@replace` dispatch, `ToString(Symbol)` would
+      // throw a TypeError and we would not get our custom result.
+
+      const receiver = Symbol("replaceReceiver");
+      const searchReplace = {
+        [Symbol.replace](o, replaceValue) {
+          if (this !== searchReplace) throw new Error("wrong this for @@replace");
+          if (o !== receiver) throw new Error("wrong receiver passed to @@replace");
+          if (replaceValue !== "x") throw new Error("wrong replaceValue passed to @@replace");
+          return "okReplace";
+        }
+      };
+
+      const receiver2 = Symbol("replaceAllReceiver");
+      const searchReplaceAll = {
+        [Symbol.replace](o, replaceValue) {
+          if (this !== searchReplaceAll) throw new Error("wrong this for @@replace (replaceAll)");
+          if (o !== receiver2) throw new Error("wrong receiver passed to @@replace (replaceAll)");
+          if (replaceValue !== "y") throw new Error("wrong replaceValue passed to @@replace (replaceAll)");
+          return "okReplaceAll";
+        }
+      };
+
+      String.prototype.replace.call(receiver, searchReplace, "x") === "okReplace" &&
+        String.prototype.replaceAll.call(receiver2, searchReplaceAll, "y") === "okReplaceAll";
+    "#,
+    Budget::unlimited(1),
+    None,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
