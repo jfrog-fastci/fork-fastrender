@@ -7,8 +7,7 @@ use std::ptr;
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{
-  ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED,
-  HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+  ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::SECURITY_CAPABILITIES;
 use windows_sys::Win32::System::JobObjects::IsProcessInJob;
@@ -33,7 +32,6 @@ const PROCESS_CREATION_ALL_APPLICATION_PACKAGES_POLICY_BLOCK: u32 = 1;
 // when a `STARTUPINFOEX` attribute is not supported by the host OS.
 const ERROR_NOT_SUPPORTED: u32 = 50;
 const ERROR_INVALID_PARAMETER: u32 = 87;
-
 /// Configuration for spawning a sandboxed Windows child process.
 #[derive(Debug)]
 pub struct SpawnConfig<'a> {
