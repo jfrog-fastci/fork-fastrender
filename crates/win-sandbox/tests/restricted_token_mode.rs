@@ -17,9 +17,9 @@ use windows_sys::Win32::Security::{
 };
 use windows_sys::Win32::Security::Authorization::{
   ConvertStringSidToSidW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
-  NO_INHERITANCE, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN,
-  TRUSTEE_W,
+  NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
+use windows_sys::Win32::Security::NO_INHERITANCE;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetExitCodeProcess, WaitForSingleObject, INFINITE};
 
 const TEST_NAME: &str = "restricted_token_spawn_enforces_low_integrity_and_blocks_userprofile";
@@ -67,7 +67,7 @@ fn set_users_only_dacl(path: &Path) -> std::io::Result<()> {
     fn drop(&mut self) {
       unsafe {
         if !self.0.is_null() {
-          LocalFree(self.0 as isize);
+          LocalFree(self.0.cast());
         }
       }
     }
@@ -103,7 +103,7 @@ fn set_users_only_dacl(path: &Path) -> std::io::Result<()> {
     fn drop(&mut self) {
       unsafe {
         if !self.0.is_null() {
-          LocalFree(self.0 as isize);
+          LocalFree(self.0.cast());
         }
       }
     }

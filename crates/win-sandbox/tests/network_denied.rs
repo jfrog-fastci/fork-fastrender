@@ -10,9 +10,11 @@ use std::time::Duration;
 use win_sandbox::RendererSandbox;
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
 use windows_sys::Win32::Security::{
-  GetTokenInformation, OpenProcessToken, TokenCapabilities, TokenIsAppContainer, TOKEN_QUERY,
+  GetTokenInformation, TokenCapabilities, TokenIsAppContainer, TOKEN_QUERY,
 };
-use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetExitCodeProcess, WaitForSingleObject};
+use windows_sys::Win32::System::Threading::{
+  GetCurrentProcess, GetExitCodeProcess, OpenProcessToken, WaitForSingleObject,
+};
 
 const CHILD_ENV: &str = "FASTR_TEST_WIN_APPCONTAINER_NETWORK_CHILD";
 
@@ -118,7 +120,7 @@ unsafe fn token_capability_sids(token: HANDLE) -> io::Result<Vec<String>> {
     let len = wide_ptr_len(sid_str);
     let wide = std::slice::from_raw_parts(sid_str, len);
     out.push(String::from_utf16_lossy(wide));
-    windows_sys::Win32::Foundation::LocalFree(sid_str as isize);
+    windows_sys::Win32::Foundation::LocalFree(sid_str.cast());
   }
   Ok(out)
 }
