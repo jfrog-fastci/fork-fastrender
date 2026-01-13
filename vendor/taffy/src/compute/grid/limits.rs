@@ -25,6 +25,18 @@ const DEFAULT_MAX_IMPLICIT_TRACKS_PER_SIDE: u16 = 32;
 #[cfg(all(feature = "std", not(test)))]
 const ENV_MAX_IMPLICIT_TRACKS_PER_SIDE: &str = "TAFFY_MAX_IMPLICIT_GRID_TRACKS_PER_SIDE";
 
+#[cfg(all(feature = "std", not(test)))]
+use std::sync::Once;
+#[cfg(all(feature = "std", not(test)))]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+// Cache the env-var value (if any) so we don't re-read/parse it on every clamping call.
+#[cfg(all(feature = "std", not(test)))]
+static MAX_IMPLICIT_TRACKS_PER_SIDE: AtomicUsize =
+  AtomicUsize::new(DEFAULT_MAX_IMPLICIT_TRACKS_PER_SIDE as usize);
+#[cfg(all(feature = "std", not(test)))]
+static MAX_IMPLICIT_TRACKS_INIT: Once = Once::new();
+
 /// Returns the UA-defined maximum number of implicit tracks that may be generated on each side of
 /// the explicit grid.
 ///
@@ -33,13 +45,19 @@ const ENV_MAX_IMPLICIT_TRACKS_PER_SIDE: &str = "TAFFY_MAX_IMPLICIT_GRID_TRACKS_P
 pub(super) fn max_implicit_tracks_per_side() -> u16 {
   #[cfg(all(feature = "std", not(test)))]
   {
-    std::env::var(ENV_MAX_IMPLICIT_TRACKS_PER_SIDE)
-      .ok()
-      .and_then(|v| v.parse::<u16>().ok())
-      .filter(|v| *v > 0)
-      // Constrain the limit so that it can be represented in OriginZeroLine (i16).
-      .map(|v| v.min(i16::MAX as u16))
-      .unwrap_or(DEFAULT_MAX_IMPLICIT_TRACKS_PER_SIDE)
+    MAX_IMPLICIT_TRACKS_INIT.call_once(|| {
+      let parsed = std::env::var(ENV_MAX_IMPLICIT_TRACKS_PER_SIDE)
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .filter(|v| *v > 0)
+        // Constrain the limit so that it can be represented in OriginZeroLine (i16).
+        .map(|v| v.min(i16::MAX as u16))
+        .unwrap_or(DEFAULT_MAX_IMPLICIT_TRACKS_PER_SIDE);
+
+      MAX_IMPLICIT_TRACKS_PER_SIDE.store(parsed as usize, Ordering::Relaxed);
+    });
+
+    MAX_IMPLICIT_TRACKS_PER_SIDE.load(Ordering::Relaxed) as u16
   }
 
   #[cfg(any(not(feature = "std"), test))]
