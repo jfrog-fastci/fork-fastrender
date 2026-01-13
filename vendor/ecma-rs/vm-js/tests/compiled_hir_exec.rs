@@ -1815,6 +1815,93 @@ fn compiled_member_get_dispatches_proxy_get_trap() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_object_spread_dispatches_proxy_get_trap() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f(o) {
+        let r = { ...o };
+        return r.x;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+
+  let mut vm = Vm::new(VmOptions::default());
+  let call_id = vm.register_native_call(proxy_get_trap)?;
+
+  let mut scope = heap.scope();
+
+  // Target: { x: 1 }
+  let target = scope.alloc_object()?;
+  scope.push_root(Value::Object(target))?;
+  let x_key_s = scope.alloc_string("x")?;
+  scope.push_root(Value::String(x_key_s))?;
+  let x_key = vm_js::PropertyKey::from_string(x_key_s);
+  scope.define_property(
+    target,
+    x_key,
+    vm_js::PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: vm_js::PropertyKind::Data {
+        value: Value::Number(1.0),
+        writable: true,
+      },
+    },
+  )?;
+
+  // Handler: { get: <native trap> }
+  let handler = scope.alloc_object()?;
+  scope.push_root(Value::Object(handler))?;
+  let get_name = scope.alloc_string("get")?;
+  scope.push_root(Value::String(get_name))?;
+  let get_fn = scope.alloc_native_function(call_id, None, get_name, 3)?;
+  scope.push_root(Value::Object(get_fn))?;
+  let get_key_s = scope.alloc_string("get")?;
+  scope.push_root(Value::String(get_key_s))?;
+  let get_key = vm_js::PropertyKey::from_string(get_key_s);
+  scope.define_property(
+    handler,
+    get_key,
+    vm_js::PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: vm_js::PropertyKind::Data {
+        value: Value::Object(get_fn),
+        writable: true,
+      },
+    },
+  )?;
+
+  let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+  scope.push_root(Value::Object(proxy))?;
+
+  let f_name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script,
+      body: f_body,
+    },
+    f_name,
+    1,
+  )?;
+
+  // f(proxy) should return the proxy get-trap result (2), proving object spread performs `Get`
+  // through the Proxy's `[[Get]]` internal method.
+  let result = vm.call_without_host(
+    &mut scope,
+    Value::Object(f),
+    Value::Undefined,
+    &[Value::Object(proxy)],
+  )?;
+  assert_eq!(result, Value::Number(2.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_member_set_dispatches_proxy_set_trap() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(
