@@ -3,6 +3,8 @@
 FastRender’s long-term multiprocess model assumes **renderer processes are untrusted** and must run
 inside a strong OS sandbox boundary.
 
+Detailed Windows sandbox boundary doc (recommended reading): [`docs/windows_sandbox.md`](../windows_sandbox.md).
+
 Canonical sandboxing overview (all platforms): [`docs/sandboxing.md`](../sandboxing.md).
 
 Key Windows code entrypoints:
@@ -14,6 +16,14 @@ Key Windows code entrypoints:
 ---
 
 ## Default Windows sandbox model
+
+This is a quick reference. The full Windows sandbox design is layered as:
+
+1. **AppContainer (preferred)** with **zero capabilities** (blocks outbound network + most filesystem).
+2. **Job object** limits (kill-on-close + active process limit; optional memory cap in `crates/win-sandbox`).
+3. **Handle inheritance allowlisting** (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`) to prevent capability leaks.
+4. **Process mitigations** (Win32k lockdown, dynamic code prohibition, etc.) when enabled.
+5. **Fallback mode**: restricted token + Low IL (weaker; network not reliably blocked).
 
 ### Primary mode: AppContainer (zero capabilities)
 
@@ -92,4 +102,3 @@ Windows sandbox/security regression tests live under:
 
 - `tests/sandbox/` (e.g. process handle escape, job-object process creation limits)
 - `tests/windows_sandbox_appcontainer_spawn.rs` (AppContainer spawn + opt-out behaviour)
-
