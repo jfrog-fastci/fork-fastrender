@@ -62,6 +62,17 @@ pub struct AboutPageSnapshot {
   pub open_tabs: Vec<OpenTabSnapshot>,
   /// Effective browser chrome accent color (used to theme `about:` pages).
   pub chrome_accent: Option<RgbaColor>,
+  /// Displayable path to the persisted browser session JSON (when available).
+  ///
+  /// Stored as a `String` (rather than `PathBuf`) so that `AboutPageSnapshot` stays lightweight and
+  /// does not require extra serde/path feature plumbing.
+  pub session_path: Option<String>,
+  /// Displayable path to the persisted bookmarks JSON (when available).
+  pub bookmarks_path: Option<String>,
+  /// Displayable path to the persisted browsing history JSON (when available).
+  pub history_path: Option<String>,
+  /// Displayable path to the active download directory (when available).
+  pub download_dir: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -126,15 +137,26 @@ pub fn set_about_snapshot_from_stores(bookmarks: &BookmarkStore, history: &Globa
   // Preserve any separately-updated chrome settings (e.g. accent color) across snapshot refreshes.
   // Similarly, keep optional debug snapshots (open tabs) intact unless explicitly overwritten by
   // callers.
-  let (chrome_accent, open_tabs) = {
+  let (chrome_accent, open_tabs, session_path, bookmarks_path, history_path, download_dir) = {
     let snapshot = about_page_snapshot_lock().read();
-    (snapshot.chrome_accent, snapshot.open_tabs.clone())
+    (
+      snapshot.chrome_accent,
+      snapshot.open_tabs.clone(),
+      snapshot.session_path.clone(),
+      snapshot.bookmarks_path.clone(),
+      snapshot.history_path.clone(),
+      snapshot.download_dir.clone(),
+    )
   };
   set_about_page_snapshot(AboutPageSnapshot {
     bookmarks: bookmark_snapshots_from_store(bookmarks),
     history: history_snapshots_from_global_history_store(history),
     open_tabs,
     chrome_accent,
+    session_path,
+    bookmarks_path,
+    history_path,
+    download_dir,
   });
 }
 
@@ -764,6 +786,26 @@ fn settings_html(_full_url: &str) -> String {
   let safe_env_accent = escape_html(ENV_BROWSER_ACCENT);
   let safe_env_high_contrast = escape_html(ENV_BROWSER_HIGH_CONTRAST);
 
+  let mut path_rows = String::new();
+  for (label, value) in [
+    ("Session", snapshot.session_path.as_deref()),
+    ("Bookmarks", snapshot.bookmarks_path.as_deref()),
+    ("History", snapshot.history_path.as_deref()),
+    ("Download directory", snapshot.download_dir.as_deref()),
+  ] {
+    let safe_label = escape_html(label);
+    if let Some(value) = value.filter(|v| !v.trim().is_empty()) {
+      let safe_value = escape_html(value);
+      path_rows.push_str(&format!(
+        "<tr><td>{safe_label}</td><td><code>{safe_value}</code></td></tr>"
+      ));
+    } else {
+      path_rows.push_str(&format!(
+        "<tr><td>{safe_label}</td><td><span class=\"muted\">unknown</span></td></tr>"
+      ));
+    }
+  }
+
   let pages = [
     (ABOUT_NEWTAB, "New tab"),
     (ABOUT_HISTORY, "History"),
@@ -803,14 +845,19 @@ fn settings_html(_full_url: &str) -> String {
       <p class="muted">
         Appearance can be overridden via environment variables:
       </p>
-      <ul>
-        <li><code>{safe_env_theme}</code> — <code>system</code>/<code>light</code>/<code>dark</code></li>
-        <li><code>{safe_env_accent}</code> — hex color (<code>#RRGGBB</code> or <code>#RRGGBBAA</code>)</li>
-        <li><code>{safe_env_high_contrast}</code> — enable high-contrast UI</li>
-      </ul>
-
-      <h2>Built-in pages</h2>
-      <div class="about-actions" aria-label="Built-in pages">{page_links}</div>"#,
+       <ul>
+         <li><code>{safe_env_theme}</code> — <code>system</code>/<code>light</code>/<code>dark</code></li>
+         <li><code>{safe_env_accent}</code> — hex color (<code>#RRGGBB</code> or <code>#RRGGBBAA</code>)</li>
+         <li><code>{safe_env_high_contrast}</code> — enable high-contrast UI</li>
+       </ul>
+ 
+       <h2>Paths</h2>
+       <table class="settings-table">
+         {path_rows}
+       </table>
+ 
+       <h2>Built-in pages</h2>
+       <div class="about-actions" aria-label="Built-in pages">{page_links}</div>"#,
       rgba = rgba,
       safe_hex = safe_hex,
       safe_rgba = safe_rgba,
@@ -818,6 +865,7 @@ fn settings_html(_full_url: &str) -> String {
       safe_env_theme = safe_env_theme,
       safe_env_accent = safe_env_accent,
       safe_env_high_contrast = safe_env_high_contrast,
+      path_rows = path_rows,
       page_links = page_links,
     ),
     ABOUT_SETTINGS_CSS,
@@ -2723,6 +2771,43 @@ mod tests {
       html.contains("https://example.com/nested"),
       "expected about:bookmarks HTML to include nested bookmark URL"
     );
+
+    set_about_page_snapshot(before);
+  }
+
+  #[cfg(feature = "browser_ui")]
+  #[test]
+  fn about_settings_renders_snapshot_paths_with_html_escaping() {
+    let _lock = SNAPSHOT_TEST_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = about_page_snapshot();
+
+    let session_path = r"C:\path\<test>&session.json".to_string();
+    let bookmarks_path = r"C:\path\<test>&bookmarks.json".to_string();
+    let history_path = r"C:\path\<test>&history.json".to_string();
+    let download_dir = r"C:\downloads\<test>&".to_string();
+
+    set_about_page_snapshot(AboutPageSnapshot {
+      session_path: Some(session_path.clone()),
+      bookmarks_path: Some(bookmarks_path.clone()),
+      history_path: Some(history_path.clone()),
+      download_dir: Some(download_dir.clone()),
+      ..Default::default()
+    });
+
+    let html = html_for_about_url(ABOUT_SETTINGS).unwrap();
+    for raw in [&session_path, &bookmarks_path, &history_path, &download_dir] {
+      let escaped = escape_html(raw);
+      assert!(
+        html.contains(&escaped),
+        "expected about:settings HTML to contain escaped path {escaped:?}, got: {html}"
+      );
+      assert!(
+        !html.contains(raw),
+        "expected about:settings HTML not to contain unescaped path {raw:?}, got: {html}"
+      );
+    }
 
     set_about_page_snapshot(before);
   }

@@ -3365,6 +3365,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   // Seed the process-global about-page snapshot so `about:newtab` can render bookmarks + history
   // immediately (including persisted state) before any new navigation commits happen.
   fastrender::ui::about_pages::set_about_snapshot_from_stores(&bookmarks, &history);
+  {
+    // Expose runtime persistence locations in `about:settings` so users can discover where state is
+    // written without reading stderr.
+    let mut snapshot = fastrender::ui::about_pages::about_page_snapshot();
+    snapshot.session_path = Some(session_path.display().to_string());
+    snapshot.bookmarks_path = Some(bookmarks_path.display().to_string());
+    snapshot.history_path = Some(history_path.display().to_string());
+    snapshot.download_dir = Some(download_dir.display().to_string());
+    fastrender::ui::about_pages::set_about_page_snapshot(snapshot);
+  }
 
   use std::collections::{HashMap, VecDeque};
   use std::sync::atomic::{AtomicBool, Ordering};
