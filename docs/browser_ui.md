@@ -597,15 +597,17 @@ readers (VoiceOver/Narrator/Orca) can traverse both the browser chrome and (expe
 content.
 
 Note: the page is still *visually* rendered as a pixel buffer (pixmap); the page content
-accessibility subtree is a separate semantic tree merged into the OS accessibility tree.
+accessibility subtree is a separate semantic tree. Injecting that page subtree into the OS-facing
+AccessKit tree is still in progress (see “Current limitations” below).
 
 Accessibility sources:
 
 - **Chrome widgets (egui):** tabs, toolbar buttons, address bar, menus/panels/popups are exposed via
   egui-winit + AccessKit when compiled with `--features browser_ui`.
 - **Page content (renderer tree):** the renderer can compute a semantic accessibility tree
-  (`AccessibilityNode`, via `src/accessibility.rs`). The windowed UI has scaffolding to merge a
-  future page/content subtree into the OS-facing AccessKit tree, but per-element page content
+  (`AccessibilityNode`, via `src/accessibility.rs`). The render worker can also emit a live
+  `WorkerToUi::PageAccessibility` snapshot (semantic tree + best-effort bounds in viewport-local CSS
+  pixels), stored in `ui::browser_app::PageAccessibilitySnapshot`. Per-element OS-facing page content
   exposure is still in progress (see [page_accessibility.md](page_accessibility.md)).
 
 For background and developer workflow:
@@ -618,8 +620,8 @@ Debugging tip: to inspect the **egui-produced** AccessKit update (chrome widgets
 screen reader, use the `dump_accesskit` CLI (requires `--features browser_ui`).
 
 Note: `dump_accesskit` does not run the browser worker, so it does **not** include any
-worker-produced page/content subtree (if/when wired); use the real windowed `browser` + a platform
-accessibility inspector to debug page nodes.
+worker-produced page accessibility snapshot (or any injected page subtree); use the real windowed
+`browser` + a platform accessibility inspector to debug page nodes.
 
 ```bash
 bash scripts/run_limited.sh --as 64G -- \
@@ -647,19 +649,19 @@ Manual testing checklist (smoke):
   - Enable VoiceOver (Cmd+F5).
   - Verify you can traverse chrome controls and the address bar is announced as “Address bar”
     (e.g. after Cmd+L).
-  - Navigate to a simple page (e.g. `about:test-form`) and verify VoiceOver can reach/announce basic
-    document content (headings/links/form controls).
-  - Verify VoiceOver focus/activate works on at least one page control (e.g. focus a text input or
-    “press” a button on `about:test-form`).
+  - Navigate to a simple page (e.g. `about:test-form`) and verify the page region is discoverable
+    and has a meaningful label.
+  - If your build includes injected page semantics, verify VoiceOver can traverse basic document
+    content (headings/links/form controls) and trigger focus/activate on at least one control.
 - **Windows (Narrator):**
   - Enable Narrator (Ctrl+Win+Enter).
-  - Verify basic traversal/announcement works for chrome controls and simple page content.
-  - Verify focus/activate works on at least one page control.
+  - Verify basic traversal/announcement works for chrome controls and the page region.
+  - If your build includes injected page semantics, verify focus/activate works on at least one page control.
 - **Linux (Orca):**
   - Enable Orca (often Super+Alt+S).
-  - Verify basic traversal/announcement works for chrome controls and simple page content (backend
+  - Verify basic traversal/announcement works for chrome controls and the page region (backend
     support depends on your `winit`/X11/Wayland environment).
-  - Verify focus/activate works on at least one page control.
+  - If your build includes injected page semantics, verify focus/activate works on at least one page control.
 
 ## Code layout
 

@@ -95,8 +95,10 @@ end-to-end:
   via AccessKit (VoiceOver/Narrator/Orca). See [chrome_accessibility.md](chrome_accessibility.md).
 - **Accessibility (page content)**: the renderer can compute a page accessibility tree
   (roles/names/states) as JSON via `dump_a11y` (see [page_accessibility.md](page_accessibility.md)).
-  Wiring page content into the OS-facing AccessKit tree is in progress; today the windowed UI exposes
-  the rendered page primarily as a single labeled region (the pixmap).
+  The render worker also emits a live `WorkerToUi::PageAccessibility` snapshot (tree + best-effort
+  bounds) that the UI stores for future OS-facing subtree injection. Wiring per-element page content
+  into the OS-facing AccessKit tree is still in progress; today the windowed UI typically exposes the
+  rendered page primarily as a single labeled region (the pixmap).
 - **Navigation**:
   - address bar URL entry (press Enter to navigate; user input is normalized, e.g. `example.com`
     → `https://example.com/`, filesystem paths → `file://...`)

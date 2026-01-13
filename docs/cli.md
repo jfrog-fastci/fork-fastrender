@@ -742,7 +742,7 @@ bash scripts/cargo_agent.sh xtask import-page-fixture target/bundles/example.com
     invocations (`--named-only`, `--show-menu-bar`, `--focus-address-bar`) and how to interpret the
     output.
   - `dump_accesskit` is a headless egui snapshot tool; it does **not** run the browser worker and
-    therefore does not include any worker-produced page/content subtree (if/when that is wired).
+    therefore does not include any worker-produced page accessibility snapshot / injected page subtree.
 
 ## Offline / cached captures
 

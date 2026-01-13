@@ -6,8 +6,12 @@ renderer. This semantic tree (`AccessibilityNode`) is used by tests, the library
 
 The desktop `browser` UI exposes the **browser chrome** (tabs/address bar/menus) to OS screen readers
 via **AccessKit**. Page content is still *visually* rendered as a pixel buffer; wiring the page
-semantics tree into the OS-facing AccessKit tree is **in progress** (there is UI-side merge
-scaffolding in `src/bin/browser.rs`).
+semantics tree into the OS-facing AccessKit tree is **in progress**.
+
+However, the render worker already emits a page accessibility snapshot as part of the UI↔worker
+protocol: `WorkerToUi::PageAccessibility` contains the semantic tree plus best-effort per-node bounds
+in viewport-local CSS pixels. The windowed UI stores that snapshot (for future AccessKit subtree
+injection and other UI features), but not every build wires it into the OS-facing tree yet.
 
 For deeper details on the browser chrome’s AccessKit wiring (including the experimental non-egui
 backend), see [chrome_accessibility.md](chrome_accessibility.md).
@@ -49,12 +53,15 @@ Coordinate conventions that matter when extending bounds/a11y:
   - `page = viewport + scroll_state.viewport`
 - **Element scroll offsets** (`scrollLeft`/`scrollTop`) are applied by mutating a cloned fragment tree:
   - `crate::scroll::apply_scroll_offsets` (see [`src/scroll.rs`](../src/scroll.rs)).
+- **Viewport-fixed scroll cancel** for `position: fixed` is applied when producing page-space geometry
+  (so hit testing with `page_point = viewport_point + scroll_state.viewport` matches paint-time):
+  - `crate::scroll::apply_viewport_scroll_cancel` (see [`src/scroll.rs`](../src/scroll.rs)).
 - **Viewport scroll** is applied during paint via a global translation (`-scroll_state.viewport`), and
   `position: fixed` subtrees cancel that translation so they remain pinned:
   - see `needs_viewport_scroll_cancel` in [`src/paint/painter.rs`](../src/paint/painter.rs).
-- For “paint-time geometry” (sticky- and element-scroll-aware, but still in **page** coordinates),
-  prefer [`PreparedDocument::fragment_tree_for_geometry`](../src/api.rs) and subtract
-  `scroll_state.viewport` yourself when you need viewport-local CSS pixels.
+- For “paint-time geometry” (sticky- + scroll-container- + `position: fixed`-aware, but still in
+  **page** coordinates), prefer [`PreparedDocument::fragment_tree_for_geometry`](../src/api.rs) and
+  subtract `scroll_state.viewport` yourself when you need viewport-local CSS pixels.
 
 How bounds are computed today (used for positioning UI popups like `<select>` dropdowns):
 
@@ -89,9 +96,8 @@ see [`src/api/dom2_geometry.rs`](../src/api/dom2_geometry.rs) (`Dom2GeometryCont
 
 The render worker sends frames and some element geometry (for popups/overlays).
 
-Page content accessibility today is primarily surfaced through `dump_a11y` and tests. The windowed UI
-has scaffolding for merging a future page accessibility payload (an AccessKit subtree) into the
-OS-facing accessibility tree, but that payload is not yet a stable part of the UI↔worker protocol.
+Page content accessibility is surfaced both via `dump_a11y` (renderer semantics inspection) and via
+the live UI worker protocol (`WorkerToUi::PageAccessibility`).
 
 - UI↔worker messages: [`src/ui/messages.rs`](../src/ui/messages.rs)
 - Worker loop: [`src/ui/render_worker.rs`](../src/ui/render_worker.rs)
@@ -101,12 +107,20 @@ High-level flow:
 - The worker builds a `RenderedFrame` (pixmap + scroll state + viewport metadata) and sends it to the
   UI via `WorkerToUi::FrameReady` (see `src/ui/messages.rs`).
 - The windowed UI renders the pixmap as an egui image widget.
-- The UI has scaffolding to merge a **page content subtree** into egui’s AccessKit output (see
-  `App::merge_page_subtree_accesskit_update` in `src/bin/browser.rs`). The UI↔worker protocol does not
-  yet have a stable “page subtree” payload, but this is the intended insertion point.
-- AccessKit action requests targeted at page nodes are intended to round-trip back to the worker as
-  DOM interactions; today `BrowserTabController::handle_accesskit_action` implements `Focus` and
-  `ScrollIntoView` (including best-effort focus scrolling when layout artifacts exist).
+- When layout artifacts exist, the worker also computes a **page accessibility snapshot** and sends
+  it as `WorkerToUi::PageAccessibility { tree, bounds_css }`:
+  - `tree`: the `AccessibilityNode` semantic tree (built in `src/accessibility.rs`, with
+    `InteractionState` applied).
+  - `bounds_css`: a mapping from DOM preorder node id → **viewport-local CSS rect**, derived from
+    `PreparedDocument::fragment_tree_for_geometry(scroll_state)` and then translated into viewport
+    coordinates by subtracting `scroll_state.viewport`.
+  - The windowed UI stores this snapshot as `PageAccessibilitySnapshot` in `src/ui/browser_app.rs`.
+- The UI has scaffolding to merge a future **page content subtree** into egui’s AccessKit output (see
+  `App::merge_page_subtree_accesskit_update` in `src/bin/browser.rs`). This is the intended insertion
+  point for exposing per-element page semantics to OS screen readers.
+- AccessKit action requests targeted at page nodes are routed back to the worker as DOM interactions;
+  today `BrowserTabController::handle_accesskit_action` implements `Focus` and `ScrollIntoView`
+  (including best-effort focus scrolling when layout artifacts exist).
 
 ### AccessKit integration (browser chrome)
 
