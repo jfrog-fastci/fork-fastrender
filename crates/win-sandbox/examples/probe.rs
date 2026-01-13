@@ -7,7 +7,7 @@
 //! Usage:
 //!
 //! ```text
-//! bash scripts/cargo_agent.sh run -p win-sandbox --example probe -- [--read <PATH>] [--connect <IP:PORT>] [--connect-localhost]
+//! bash scripts/cargo_agent.sh run -p win-sandbox --example probe -- [--read <PATH>] [--connect <IP:PORT>] [--connect-localhost] [--no-aap-hardening]
 //! ```
 //!
 //! Notes:
@@ -88,6 +88,7 @@ mod windows {
     read_path: Option<PathBuf>,
     connect: Option<OsString>,
     connect_localhost: bool,
+    aap_hardened: bool,
     timeout_ms: u32,
   }
 
@@ -146,6 +147,7 @@ mod windows {
       exe: &Path,
       args: &[OsString],
       inherit_handles: &[RawHandle],
+      all_application_packages_hardened: bool,
     ) -> io::Result<SpawnedChild> {
       let mitigation_policy = if std::env::var_os("FASTR_DISABLE_WIN_MITIGATIONS").is_some() {
         0
@@ -172,6 +174,7 @@ mod windows {
         inherit_handles,
         mitigation_policy,
         parent_in_job,
+        all_application_packages_hardened,
       ) {
         Ok(child) => return Ok(child),
         Err(err) => {
@@ -274,6 +277,7 @@ mod windows {
     inherit_handles: &[RawHandle],
     mitigation_policy: u64,
     parent_in_job: bool,
+    all_application_packages_hardened: bool,
   ) -> io::Result<SpawnedChild> {
     let profile = AppContainerProfile::ensure(
       "FastRender.Renderer",
@@ -303,7 +307,7 @@ mod windows {
         args,
         inherit_handles,
         mitigation_policy,
-        true,
+        all_application_packages_hardened,
         flags,
         Some(current_dir_ptr),
       )
@@ -950,6 +954,7 @@ mod windows {
   fn parse_args() -> Result<Args, String> {
     let mut out = Args {
       timeout_ms: DEFAULT_TIMEOUT_MS,
+      aap_hardened: true,
       ..Args::default()
     };
 
@@ -969,6 +974,8 @@ mod windows {
         out.connect = Some(value);
       } else if arg == OsStr::new("--connect-localhost") {
         out.connect_localhost = true;
+      } else if arg == OsStr::new("--no-aap-hardening") {
+        out.aap_hardened = false;
       } else if arg == OsStr::new("--timeout-ms") {
         let Some(value) = iter.next() else {
           return Err("missing value for --timeout-ms".to_string());
@@ -995,8 +1002,8 @@ mod windows {
 
   fn print_usage() {
     eprintln!(
-      "Usage:\n  # From the workspace root (wrapper-friendly):\n  bash scripts/cargo_agent.sh run -p win-sandbox --example probe -- [--read <PATH>] [--connect <IP:PORT>] [--connect-localhost] [--timeout-ms <MS>]\n\n\
-  # Or directly via cargo:\n  cargo run -p win-sandbox --example probe -- [--read <PATH>] [--connect <IP:PORT>] [--connect-localhost] [--timeout-ms <MS>]\n\n\
+      "Usage:\n  # From the workspace root (wrapper-friendly):\n  bash scripts/cargo_agent.sh run -p win-sandbox --example probe -- [--read <PATH>] [--connect <IP:PORT>] [--connect-localhost] [--no-aap-hardening] [--timeout-ms <MS>]\n\n\
+  # Or directly via cargo:\n  cargo run -p win-sandbox --example probe -- [--read <PATH>] [--connect <IP:PORT>] [--connect-localhost] [--no-aap-hardening] [--timeout-ms <MS>]\n\n\
 Parent mode (default) spawns a sandboxed child.\nChild mode (--child) prints sandbox state and runs probes.\n"
     );
   }
@@ -1059,12 +1066,13 @@ Parent mode (default) spawns a sandboxed child.\nChild mode (--child) prints san
 
     let inherit = collect_stdio_handles_for_inheritance();
     println!(
-      "parent: spawning child (inherit_handles={}, timeout_ms={})",
+      "parent: spawning child (inherit_handles={}, aap_hardened={}, timeout_ms={})",
       inherit.len(),
+      args.aap_hardened,
       args.timeout_ms
     );
 
-    let child = match RendererSandbox::spawn(&exe, &child_args, &inherit) {
+    let child = match RendererSandbox::spawn(&exe, &child_args, &inherit, args.aap_hardened) {
       Ok(child) => child,
       Err(err) => {
         eprintln!("error: failed to spawn sandboxed child: {err}");
