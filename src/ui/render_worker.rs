@@ -39,6 +39,7 @@ use crate::ui::messages::{
   BrowserMediaPreferences, CursorKind, DownloadId, DownloadOutcome, NavigationReason, PointerButton,
   RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
 };
+use super::router_coalescer::UiToWorkerRouterCoalescer;
 use crate::ui::{resolve_link_url, validate_user_navigation_url_scheme};
 use crate::web::events as web_events;
 use image::imageops::FilterType;
@@ -7840,19 +7841,89 @@ fn spawn_worker_with_factory_inner(
       let router_join = std::thread::Builder::new()
         .name(router_thread_name)
         .spawn(move || {
-          while let Ok(msg) = ui_to_worker_rx.recv() {
-            // Apply cancellation immediately so it can interrupt long-running downloads even while
-            // the render loop is busy with prepare/paint work.
-            if let UiToWorker::CancelDownload { download_id, .. } = &msg {
-              let downloads = router_downloads.lock().unwrap_or_else(|err| err.into_inner());
-              if let Some(download) = downloads.get(download_id) {
-                download.cancel.store(true, Ordering::Release);
+          use std::sync::mpsc::RecvTimeoutError;
+          use std::time::{Duration, Instant};
+
+          // Keep this short: the router thread should remain mostly blocking, and we don't want to
+          // add noticeable latency to UI input when the runtime thread is idle. The goal is to
+          // bound the number of messages enqueued into the unbounded runtime channel while the
+          // runtime is busy.
+          const COALESCE_WINDOW: Duration = Duration::from_millis(4);
+
+          let mut coalescer = UiToWorkerRouterCoalescer::new();
+          let mut deadline: Option<Instant> = None;
+
+          loop {
+            let recv = if coalescer.has_pending() {
+              let now = Instant::now();
+              let d = deadline.get_or_insert_with(|| now + COALESCE_WINDOW);
+              if now >= *d {
+                // Periodic flush: ensure liveness even under a continuous stream of coalescible
+                // messages.
+                let out = coalescer.flush();
+                deadline = None;
+                for msg in out {
+                  if runtime_tx.send(msg).is_err() {
+                    return;
+                  }
+                }
+                continue;
+              }
+              ui_to_worker_rx.recv_timeout(d.saturating_duration_since(now))
+            } else {
+              deadline = None;
+              match ui_to_worker_rx.recv() {
+                Ok(msg) => Ok(msg),
+                Err(_) => break,
+              }
+            };
+
+            match recv {
+              Ok(msg) => {
+                // Apply cancellation immediately so it can interrupt long-running downloads even
+                // while the render loop is busy with prepare/paint work.
+                if let UiToWorker::CancelDownload { download_id, .. } = &msg {
+                  let downloads = router_downloads.lock().unwrap_or_else(|err| err.into_inner());
+                  if let Some(download) = downloads.get(download_id) {
+                    download.cancel.store(true, Ordering::Release);
+                  }
+                }
+
+                let out = coalescer.push(msg);
+                if !out.is_empty() {
+                  // A barrier (or a forced flush) resets the coalescing window.
+                  deadline = None;
+                  for msg in out {
+                    if runtime_tx.send(msg).is_err() {
+                      return;
+                    }
+                  }
+                }
+              }
+              Err(RecvTimeoutError::Timeout) => {
+                let out = coalescer.flush();
+                deadline = None;
+                for msg in out {
+                  if runtime_tx.send(msg).is_err() {
+                    return;
+                  }
+                }
+              }
+              Err(RecvTimeoutError::Disconnected) => {
+                // UI sender was dropped. Flush any pending coalesced state best-effort, then
+                // terminate so the runtime can observe channel closure.
+                let out = coalescer.flush();
+                for msg in out {
+                  let _ = runtime_tx.send(msg);
+                }
+                break;
               }
             }
+          }
 
-            if runtime_tx.send(msg).is_err() {
-              break;
-            }
+          // Best-effort final flush (ignore errors: runtime might have exited).
+          for msg in coalescer.flush() {
+            let _ = runtime_tx.send(msg);
           }
         })
         .expect("spawn UI worker router thread");
