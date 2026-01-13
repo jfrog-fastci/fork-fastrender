@@ -73,6 +73,41 @@ fn vp9_high_bit_depth_frames_are_downshifted_to_rgba8() {
 }
 
 #[test]
+fn vp9_12bit_frames_are_downshifted_to_rgba8() {
+  // Same as the 10-bit test, but with 12-bit samples (4095 max, center 2048).
+  let mut y = vec![0u16, 4095u16, 4095u16, 0u16];
+  let mut u = vec![2048u16];
+  let mut v = vec![2048u16];
+
+  let mut img: vpx_image_t = unsafe { std::mem::zeroed() };
+  img.fmt = VPX_IMG_FMT_I42016;
+  img.bit_depth = 12;
+  img.d_w = 2;
+  img.d_h = 2;
+  img.x_chroma_shift = 1;
+  img.y_chroma_shift = 1;
+  img.range = VPX_CR_FULL_RANGE;
+  img.planes[0] = y.as_mut_ptr().cast::<u8>();
+  img.planes[1] = u.as_mut_ptr().cast::<u8>();
+  img.planes[2] = v.as_mut_ptr().cast::<u8>();
+  img.stride[0] = 4;
+  img.stride[1] = 2;
+  img.stride[2] = 2;
+
+  let frame = Vp9Decoder::rgba_from_image(&img).expect("expected successful downshift+convert");
+  assert_eq!((frame.width, frame.height), (2, 2));
+  assert_eq!(
+    frame.rgba8,
+    vec![
+      0, 0, 0, 255, // row0 col0
+      255, 255, 255, 255, // row0 col1
+      255, 255, 255, 255, // row1 col0
+      0, 0, 0, 255, // row1 col1
+    ]
+  );
+}
+
+#[test]
 fn vp9_alpha_frames_are_converted_to_rgba8() {
   // Minimal 2x2 4:4:4+alpha frame (VPX_IMG_FMT_444A).
   let mut y = vec![0u8, 255, 255, 0];
