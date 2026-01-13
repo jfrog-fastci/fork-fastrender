@@ -4136,6 +4136,9 @@ impl Vm {
       new_target,
       home_object,
       args,
+      /* class_constructor */ None,
+      /* derived_constructor */ false,
+      /* this_root_idx */ None,
     );
 
     if !is_async {
@@ -4229,6 +4232,9 @@ impl Vm {
       new_target,
       home_object,
       args,
+      /* class_constructor */ None,
+      /* derived_constructor */ false,
+      /* this_root_idx */ None,
     );
 
     env.teardown(this_scope.heap_mut());

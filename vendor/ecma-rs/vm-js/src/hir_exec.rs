@@ -28,19 +28,20 @@ fn compiled_constructor_body_construct(
   args: &[Value],
   new_target: Value,
 ) -> Result<Value, VmError> {
-  // Determine whether this is a derived class constructor body.
+  // Determine whether this is a derived class constructor body and recover the containing class
+  // constructor object.
   //
   // The wrapper function is annotated by `eval_class` so we can consult its containing class
   // constructor's `extends` value.
-  let is_derived = {
+  let (class_constructor, is_derived) = {
     let func = scope.heap().get_function(callee)?;
     match func.data {
       FunctionData::ClassConstructorBody { class_constructor } => {
         let super_value =
           crate::class_fields::class_constructor_super_value(scope, class_constructor)?;
-        !matches!(super_value, Value::Undefined)
+        (Some(class_constructor), !matches!(super_value, Value::Undefined))
       }
-      _ => false,
+      _ => (None, false),
     }
   };
 
@@ -93,8 +94,6 @@ fn compiled_constructor_body_construct(
   // Base/ordinary constructor: allocate `this` up-front.
   //
   // Derived class constructors do not allocate `this` up-front; `this` is initialized by `super()`.
-  // The compiled path does not yet support `super`, so derived constructor bodies can only succeed
-  // by explicitly returning an object.
   if !is_derived {
     // Allocate the instance using `OrdinaryCreateFromConstructor(newTarget, %Object.prototype%)`.
     //
@@ -131,6 +130,9 @@ fn compiled_constructor_body_construct(
       new_target,
       home_object,
       args,
+      class_constructor,
+      /* derived_constructor */ false,
+      /* this_root_idx */ None,
     );
 
     env.teardown(scope.heap_mut());
@@ -145,6 +147,12 @@ fn compiled_constructor_body_construct(
     // Root inputs across env creation and body execution in case either triggers GC.
     let mut scope = scope.reborrow();
     scope.push_roots(&[Value::Object(body_func), new_target])?;
+    // Reserve a root-stack slot for the derived constructor `this` value.
+    //
+    // `this` is initialized by `super()`, but the evaluator's `this` field is not traced by GC, so
+    // `super()` must update this root slot once it returns.
+    let this_root_idx = scope.heap().root_stack.len();
+    scope.push_root(Value::Undefined)?;
 
     let func_env = scope.env_create(outer)?;
     let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
@@ -162,17 +170,23 @@ fn compiled_constructor_body_construct(
       new_target,
       home_object,
       args,
+      class_constructor,
+      /* derived_constructor */ true,
+      Some(this_root_idx),
     );
 
     env.teardown(scope.heap_mut());
 
     match result? {
       Value::Object(o) => Ok(Value::Object(o)),
-      _ => Err(throw_reference_error(
-        vm,
-        &mut scope,
-        "Derived constructor did not initialize `this` via super()",
-      )?),
+      _ => match scope.heap().root_stack.get(this_root_idx).copied().unwrap_or(Value::Undefined) {
+        Value::Object(o) => Ok(Value::Object(o)),
+        _ => Err(throw_reference_error(
+          vm,
+          &mut scope,
+          "Derived constructor did not initialize `this` via super()",
+        )?),
+      },
     }
   }
 }
@@ -461,6 +475,21 @@ struct HirEvaluator<'vm> {
   /// This is relevant for **derived class constructors**, where `this` is uninitialized until
   /// `super()` returns. Accessing `this` before initialization must throw a ReferenceError.
   this_initialized: bool,
+  /// The current class constructor object, when evaluating a user-written `constructor(...) { ... }`
+  /// body.
+  ///
+  /// This is used to implement derived `super()` calls (and instance-field initialization timing).
+  class_constructor: Option<GcObject>,
+  /// True if the current function is a **derived** class constructor body.
+  ///
+  /// In derived constructors, `this` is uninitialized until `super()` returns.
+  derived_constructor: bool,
+  /// Index into the heap root stack used to keep a derived constructor's `this` value alive once it
+  /// is initialized by `super()`.
+  ///
+  /// This is required because `this` is stored in the evaluator struct (a local Rust value), which
+  /// is not traced by GC.
+  this_root_idx: Option<usize>,
   new_target: Value,
   home_object: Option<GcObject>,
   script: Arc<CompiledScript>,
@@ -4003,20 +4032,27 @@ impl<'vm> HirEvaluator<'vm> {
           hir_js::ExprKind::Member(member) => {
             // Super References are not deletable (ECMA-262 `delete` runtime semantics).
             //
+            // Evaluating a super property reference requires an initialized `this` binding; in
+            // derived constructors before `super()`, that evaluation throws first and must not be
+            // masked by the delete semantics.
+            //
             // For computed super property references, the key expression (including `ToPropertyKey`)
-            // is still evaluated before throwing *unless* we're in a derived constructor before
-            // `super()` has initialized `this` (in which case evaluating the SuperPropertyReference
-            // itself throws a ReferenceError before evaluating the property key expression).
+            // is evaluated before throwing *only after* `this` is initialized.
             let object_expr = self.get_expr(body, member.object)?;
             if matches!(object_expr.kind, hir_js::ExprKind::Super) {
-              if self.this_initialized {
-                if let hir_js::ObjectKey::Computed(expr_id) = &member.property {
-                  let member_value = self.eval_expr(scope, body, *expr_id)?;
-                  let mut key_scope = scope.reborrow();
-                  key_scope.push_root(member_value)?;
-                  let _ =
-                    key_scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, member_value)?;
-                }
+              if self.derived_constructor && !self.this_initialized {
+                return Err(throw_reference_error(
+                  self.vm,
+                  scope,
+                  "Must call super constructor in derived class before accessing 'this'",
+                )?);
+              }
+              if let hir_js::ObjectKey::Computed(expr_id) = &member.property {
+                let member_value = self.eval_expr(scope, body, *expr_id)?;
+                let mut key_scope = scope.reborrow();
+                key_scope.push_root(member_value)?;
+                let _ =
+                  key_scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, member_value)?;
               }
               return Err(throw_reference_error(
                 self.vm,
@@ -7317,6 +7353,94 @@ impl<'vm> HirEvaluator<'vm> {
       )
       && !callee_is_parenthesized;
 
+    // `super(...args)` in derived class constructors.
+    if !call.is_new && matches!(callee_expr.kind, hir_js::ExprKind::Super) {
+      if call.optional {
+        return Err(VmError::Unimplemented("optional chaining super call"));
+      }
+
+      let Some(class_ctor) = self.class_constructor else {
+        return Err(VmError::Unimplemented("super call outside of class constructor"));
+      };
+      if !self.derived_constructor {
+        return Err(throw_reference_error(
+          self.vm,
+          scope,
+          "super() is not allowed in base class constructors",
+        )?);
+      }
+      if self.this_initialized {
+        return Err(throw_reference_error(
+          self.vm,
+          scope,
+          "super() can only be called once in a derived constructor",
+        )?);
+      }
+
+      // Resolve the superclass constructor from the class constructor's hidden `extends` slot.
+      let super_value = crate::class_fields::class_constructor_super_value(scope, class_ctor)?;
+      let super_ctor = match super_value {
+        Value::Object(o) => o,
+        Value::Null => {
+          return Err(throw_type_error(
+            self.vm,
+            scope,
+            "Class extends value is not a constructor",
+          )?)
+        }
+        Value::Undefined => {
+          return Err(VmError::InvariantViolation(
+            "derived constructor attempted super() call with undefined superclass",
+          ))
+        }
+        _ => {
+          return Err(VmError::InvariantViolation(
+            "class constructor super slot is not undefined, null, or object",
+          ))
+        }
+      };
+
+      // Root callee/new_target for the duration of argument evaluation + construction.
+      let mut call_scope = scope.reborrow();
+      call_scope.push_roots(&[Value::Object(super_ctor), self.new_target])?;
+
+      let args = self.eval_call_arguments(&mut call_scope, body, call.args.as_slice())?;
+
+      let this_value = self.vm.construct_with_host_and_hooks(
+        &mut *self.host,
+        &mut call_scope,
+        &mut *self.hooks,
+        Value::Object(super_ctor),
+        args.as_slice(),
+        self.new_target,
+      )?;
+      let Value::Object(this_obj) = this_value else {
+        return Err(VmError::InvariantViolation(
+          "super constructor returned non-object from Construct",
+        ));
+      };
+
+      // Bind `this` and keep it rooted for the remainder of constructor evaluation.
+      let this_root_idx = self.this_root_idx.ok_or(VmError::InvariantViolation(
+        "derived constructor missing this root slot",
+      ))?;
+      self.this = this_value;
+      self.this_initialized = true;
+      call_scope.heap_mut().root_stack[this_root_idx] = this_value;
+
+      // Initialize derived instance fields immediately after `super()` returns.
+      crate::class_fields::initialize_instance_fields_with_host_and_hooks(
+        self.vm,
+        &mut call_scope,
+        &mut *self.host,
+        &mut *self.hooks,
+        this_obj,
+        class_ctor,
+      )?;
+
+      return Ok(OptionalChainEval::Value(this_value));
+    }
+
     let mut scope = scope.reborrow();
 
     if call.is_new {
@@ -8261,6 +8385,9 @@ pub(crate) fn run_compiled_function(
   new_target: Value,
   home_object: Option<GcObject>,
   args: &[Value],
+  class_constructor: Option<GcObject>,
+  derived_constructor: bool,
+  this_root_idx: Option<usize>,
 ) -> Result<Value, VmError> {
   env.set_source_info(func.script.source.clone(), 0, 0);
 
@@ -8294,6 +8421,9 @@ pub(crate) fn run_compiled_function(
     strict,
     this,
     this_initialized,
+    class_constructor,
+    derived_constructor,
+    this_root_idx,
     new_target,
     home_object,
     script: func.script.clone(),
@@ -8332,6 +8462,9 @@ pub(crate) fn run_compiled_script(
     strict: false,
     this: Value::Object(global_object),
     this_initialized: true,
+    class_constructor: None,
+    derived_constructor: false,
+    this_root_idx: None,
     new_target: Value::Undefined,
     home_object: None,
     script: script.clone(),

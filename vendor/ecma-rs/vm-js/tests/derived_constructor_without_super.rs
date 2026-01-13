@@ -108,3 +108,107 @@ fn derived_constructor_this_access_before_super_throws_reference_error_compiled(
   assert_value_is_utf8(&rt, value, "ReferenceError");
   Ok(())
 }
+
+#[test]
+fn derived_constructor_with_super_initializes_this() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class A { constructor() { this.x = 1; } }
+        class B extends A { constructor() { super(); } }
+        new B().x === 1
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn derived_constructor_with_super_initializes_this_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class A { constructor() { this.x = 1; } }
+      class B extends A { constructor() { super(); } }
+      new B().x === 1
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn derived_constructor_super_call_twice_throws_reference_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var out = "";
+        class A {}
+        class B extends A {
+          constructor() {
+            super();
+            try { super(); out = "no"; }
+            catch (e) { out = e.name; }
+          }
+        }
+        new B();
+        out
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+}
+
+#[test]
+fn derived_constructor_super_call_twice_throws_reference_error_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var out = "";
+      class A {}
+      class B extends A {
+        constructor() {
+          super();
+          try { super(); out = "no"; }
+          catch (e) { out = e.name; }
+        }
+      }
+      new B();
+      out
+    "#,
+  )?;
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn derived_constructor_super_on_extends_null_throws_type_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class C extends null { constructor() { super(); } }
+        try { new C(); "no" } catch (e) { e.name }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "TypeError");
+}
+
+#[test]
+fn derived_constructor_super_on_extends_null_throws_type_error_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class C extends null { constructor() { super(); } }
+      try { new C(); "no" } catch (e) { e.name }
+    "#,
+  )?;
+  assert_value_is_utf8(&rt, value, "TypeError");
+  Ok(())
+}

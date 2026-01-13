@@ -461,7 +461,6 @@ fn delete_super_property_derived_constructor_does_not_evaluate_key_before_super_
       catch (e) { String(side) + ":" + e.name; }
     "#,
   )?;
-
   assert_value_is_utf8(&rt, value, "0:ReferenceError");
   Ok(())
 }
