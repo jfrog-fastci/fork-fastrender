@@ -428,7 +428,16 @@ fn install_accessor(
   realm_slot: Value,
 ) -> Result<(), VmError> {
   let get_id = vm.register_native_call(get_call)?;
-  let get_name = scope.alloc_string(&format!("get {name}"))?;
+  // Avoid `format!()` here since it uses an infallible heap allocation, which can abort the
+  // process on OOM before we get a chance to surface `VmError::OutOfMemory`.
+  let mut get_name_buf = String::new();
+  get_name_buf
+    .try_reserve_exact(4usize.saturating_add(name.len()))
+    .map_err(|_| VmError::OutOfMemory)?;
+  get_name_buf.push_str("get");
+  get_name_buf.push(' ');
+  get_name_buf.push_str(name);
+  let get_name = scope.alloc_string(&get_name_buf)?;
   scope.push_root(Value::String(get_name))?;
   let slots = [realm_slot];
   let get_func = scope.alloc_native_function_with_slots(get_id, None, get_name, 0, &slots)?;
@@ -439,7 +448,14 @@ fn install_accessor(
 
   let set_value = if let Some(set_call) = set_call {
     let set_id = vm.register_native_call(set_call)?;
-    let set_name = scope.alloc_string(&format!("set {name}"))?;
+    let mut set_name_buf = String::new();
+    set_name_buf
+      .try_reserve_exact(4usize.saturating_add(name.len()))
+      .map_err(|_| VmError::OutOfMemory)?;
+    set_name_buf.push_str("set");
+    set_name_buf.push(' ');
+    set_name_buf.push_str(name);
+    let set_name = scope.alloc_string(&set_name_buf)?;
     scope.push_root(Value::String(set_name))?;
     let set_func = scope.alloc_native_function_with_slots(set_id, None, set_name, 1, &slots)?;
     scope
@@ -1758,7 +1774,24 @@ fn urlsp_get_all_native(
     let idx_u32: u32 = idx
       .try_into()
       .map_err(|_| VmError::Unimplemented("array too large"))?;
-    let key = alloc_key(scope, &idx_u32.to_string())?;
+    // Avoid `idx_u32.to_string()` which uses an infallible heap allocation.
+    let mut idx_buf = [0u8; 16];
+    let mut n = idx_u32;
+    let mut start = idx_buf.len();
+    if n == 0 {
+      start = start.saturating_sub(1);
+      idx_buf[start] = b'0';
+    } else {
+      while n > 0 {
+        let digit = (n % 10) as u8;
+        start = start.saturating_sub(1);
+        idx_buf[start] = b'0' + digit;
+        n /= 10;
+      }
+    }
+    let idx_str =
+      std::str::from_utf8(&idx_buf[start..]).map_err(|_| VmError::InvariantViolation("non-UTF8 u32 buffer"))?;
+    let key = alloc_key(scope, idx_str)?;
     let s = scope.alloc_string(&value)?;
     scope.define_property(
       arr,
