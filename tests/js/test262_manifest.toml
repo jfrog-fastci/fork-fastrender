@@ -1471,11 +1471,6 @@ glob = "built-ins/RegExp/prototype/exec/**"
 status = "pass"
 
 [[expectations]]
-id = "built-ins/RegExp/prototype/exec/S15.10.6.2_A12.js"
-status = "xfail"
-reason = "parse-js/vm-js: RegExp constructor does not accept literal CR/LF characters in pattern strings."
-
-[[expectations]]
 id = "built-ins/RegExp/prototype/exec/S15.10.6.2_A1_T6.js"
 status = "xfail"
 reason = "vm-js: RegExp backtracking/repetition capture semantics are still incorrect for some nested groups."
