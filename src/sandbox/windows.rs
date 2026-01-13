@@ -1210,9 +1210,15 @@ struct GetAppContainerFolderPathApi {
 
 #[link(name = "kernel32")]
 extern "system" {
-  fn LoadLibraryW(name: *const u16) -> isize;
+  fn LoadLibraryExW(name: *const u16, hfile: *mut c_void, flags: u32) -> isize;
   fn GetProcAddress(module: isize, proc_name: *const i8) -> *mut c_void;
+  fn FreeLibrary(module: isize) -> i32;
 }
+
+// Force DLL resolution from `%SystemRoot%\\System32` to avoid search-order hijacking.
+//
+// Value is stable ABI: https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-loadlibraryexw
+const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x0000_0800;
 
 #[link(name = "ole32")]
 extern "system" {
@@ -1224,12 +1230,13 @@ fn get_appcontainer_folder_path_api() -> Option<&'static GetAppContainerFolderPa
   API
     .get_or_init(|| unsafe {
       let userenv = wide_from_str("userenv.dll");
-      let module = LoadLibraryW(userenv.as_ptr());
+      let module = LoadLibraryExW(userenv.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32);
       if module == 0 {
         return None;
       }
       let proc = GetProcAddress(module, b"GetAppContainerFolderPath\0".as_ptr() as *const i8);
       if proc.is_null() {
+        let _ = FreeLibrary(module);
         return None;
       }
       let func: GetAppContainerFolderPathFn = std::mem::transmute(proc);
