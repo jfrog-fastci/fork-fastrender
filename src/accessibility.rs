@@ -196,6 +196,12 @@ pub struct AccessibilityNode {
   pub html_tag: Option<String>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub id: Option<String>,
+  /// Stable DOM node identifier that can be used by downstream tooling (e.g. AccessKit action
+  /// routing) to map accessibility nodes back to the originating DOM nodes.
+  ///
+  /// This intentionally does not appear in the JSON snapshot schema.
+  #[serde(skip)]
+  pub dom_node_id: usize,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub relations: Option<AccessibilityRelations>,
   pub states: AccessibilityState,
@@ -349,6 +355,7 @@ pub fn build_accessibility_tree(
     level: None,
     html_tag: Some("document".to_string()),
     id: None,
+    dom_node_id: root.node_id,
     relations: None,
     states: AccessibilityState::default(),
     children,
@@ -1933,6 +1940,7 @@ fn build_nodes<'a, 'state>(node: &'a StyledNode, ctx: &BuildContext<'a, 'state>)
               level,
               html_tag,
               id,
+              dom_node_id: node.node_id,
               relations,
               states,
               children,

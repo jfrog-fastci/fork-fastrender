@@ -1,12 +1,14 @@
 use crate::common::accessibility::{
   count_by_id, find_by_id, find_json_node, find_path, read_accessibility_fixture_html,
   read_accessibility_fixture_json, render_accessibility_json, render_accessibility_json_with_options,
+  render_accessibility_tree,
 };
 use fastrender::accessibility::{AccessibilityNode, CheckState, PressedState};
 use fastrender::api::{FastRender, RenderOptions};
 use fastrender::dom::{enumerate_dom_ids, DomNode};
 use fastrender::interaction::InteractionState;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 
 fn collect_by_role<'a>(
   node: &'a AccessibilityNode,
@@ -79,6 +81,39 @@ fn snapshot_subset(root: &Value, ids: &[&str]) -> Value {
   }
 
   Value::Object(out)
+}
+
+#[test]
+fn accessibility_nodes_include_dom_node_id() {
+  let tree = render_accessibility_tree(r#"<button id="x">Hi</button>"#);
+  let x = find_by_id(&tree, "x").expect("button x");
+  assert_ne!(x.dom_node_id, 0);
+
+  let tree = render_accessibility_tree(r#"<button id="x">Hi</button><button id="y">Yo</button>"#);
+  let x_path = find_path(&tree, "x").expect("path to x");
+  let y_path = find_path(&tree, "y").expect("path to y");
+
+  let x = *x_path.last().expect("x node");
+  let y = *y_path.last().expect("y node");
+  assert_ne!(x.dom_node_id, 0);
+  assert_ne!(y.dom_node_id, 0);
+  assert_ne!(x.dom_node_id, y.dom_node_id);
+
+  let x_parent = x_path.get(x_path.len() - 2).copied().expect("x parent");
+  let y_parent = y_path.get(y_path.len() - 2).copied().expect("y parent");
+  assert!(
+    std::ptr::eq(x_parent, y_parent),
+    "expected x and y to share the same parent in the accessibility tree"
+  );
+
+  let mut sibling_ids = HashSet::new();
+  for child in x_parent.children.iter() {
+    assert!(
+      sibling_ids.insert(child.dom_node_id),
+      "duplicate dom_node_id {} among siblings",
+      child.dom_node_id
+    );
+  }
 }
 
 #[test]
