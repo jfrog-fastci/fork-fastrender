@@ -3429,3 +3429,94 @@ fn subgrid_named_lines_resolve_in_vertical_mode() {
     "second named span inherits third track size",
   );
 }
+
+#[test]
+fn nested_subgrids_with_writing_mode_inherit_parent_tracks_for_auto_span() {
+  // Mirrors WPT `css/subgrid/subgrid-nested-writing-mode-001`.
+  //
+  // The nested subgrids (`outer` and `inner`) are auto-placed (no explicit grid-column/row
+  // placement). They should still inherit *all* parent tracks so the leaf items can land in
+  // inherited columns 1 and 2 even though the subgrids specify a mismatched `writing-mode`.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Grid;
+  container_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(28.0)),
+    GridTrack::Length(Length::px(42.0)),
+  ];
+  container_style.grid_template_rows = vec![GridTrack::Auto];
+  container_style.grid_column_gap = Length::px(5.0);
+  container_style.grid_column_gap_is_normal = false;
+  container_style.width = Some(Length::px(75.0));
+  container_style.padding_left = Length::px(4.0);
+  container_style.padding_right = Length::px(4.0);
+  container_style.padding_top = Length::px(4.0);
+  container_style.padding_bottom = Length::px(4.0);
+
+  let mut outer_style = ComputedStyle::default();
+  outer_style.display = Display::Grid;
+  outer_style.grid_column_subgrid = true;
+  outer_style.grid_row_subgrid = true;
+  // A plain `subgrid` track list omits the optional line-name-list. The style parser represents
+  // that omission as an empty Vec (as opposed to an explicit empty list `subgrid []`, which would
+  // be `[[]]`).
+  outer_style.subgrid_column_line_names = Vec::new();
+  outer_style.subgrid_row_line_names = Vec::new();
+  outer_style.writing_mode = WritingMode::VerticalRl;
+  outer_style.grid_column_gap = container_style.grid_column_gap;
+  outer_style.grid_column_gap_is_normal = container_style.grid_column_gap_is_normal;
+
+  let mut inner_style = ComputedStyle::default();
+  inner_style.display = Display::Grid;
+  inner_style.grid_column_subgrid = true;
+  inner_style.grid_row_subgrid = true;
+  inner_style.subgrid_column_line_names = Vec::new();
+  inner_style.subgrid_row_line_names = Vec::new();
+  inner_style.writing_mode = WritingMode::VerticalRl;
+  inner_style.grid_column_gap = container_style.grid_column_gap;
+  inner_style.grid_column_gap_is_normal = container_style.grid_column_gap_is_normal;
+
+  let mut a_style = ComputedStyle::default();
+  a_style.display = Display::Block;
+  a_style.height = Some(Length::px(12.0));
+  a_style.grid_column_start = 1;
+  a_style.grid_column_end = 2;
+
+  let mut b_style = ComputedStyle::default();
+  b_style.display = Display::Block;
+  b_style.height = Some(Length::px(12.0));
+  b_style.grid_column_start = 2;
+  b_style.grid_column_end = 3;
+
+  let a = BoxNode::new_block(Arc::new(a_style), FormattingContextType::Block, vec![]);
+  let b = BoxNode::new_block(Arc::new(b_style), FormattingContextType::Block, vec![]);
+
+  let inner = BoxNode::new_block(
+    Arc::new(inner_style),
+    FormattingContextType::Grid,
+    vec![a, b],
+  );
+  let outer = BoxNode::new_block(Arc::new(outer_style), FormattingContextType::Grid, vec![inner]);
+  let grid = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Grid,
+    vec![outer],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(200.0, 200.0))
+    .expect("layout succeeds");
+
+  let outer_fragment = &fragment.children[0];
+  let inner_fragment = &outer_fragment.children[0];
+  let a_fragment = &inner_fragment.children[0];
+  let b_fragment = &inner_fragment.children[1];
+
+  let a_x = a_fragment.bounds.x() - inner_fragment.bounds.x();
+  let b_x = b_fragment.bounds.x() - inner_fragment.bounds.x();
+
+  assert_approx(a_x, 0.0, "first item starts in column 1");
+  assert_approx(a_fragment.bounds.width(), 28.0, "first column width");
+  assert_approx(b_x, 33.0, "second item starts in column 2 (+ gap)");
+  assert_approx(b_fragment.bounds.width(), 42.0, "second column width");
+}
