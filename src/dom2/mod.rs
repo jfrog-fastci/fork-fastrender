@@ -2775,6 +2775,8 @@ mod shadow_boundary_tests;
 mod shadow_root_boundary_tests;
 #[cfg(test)]
 mod xml_parse_tests;
+#[cfg(test)]
+mod live_range_updates_tests;
 mod range_tests;
 #[cfg(test)]
 mod xml_selector_disconnected_tests;

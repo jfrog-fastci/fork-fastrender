@@ -1019,7 +1019,6 @@ impl Document {
     if has_live_subscribers || has_live_ranges {
       let removed_len = utf16_len(&old_value);
       let inserted_len = utf16_len(data);
-
       if has_live_subscribers {
         self
           .live_mutation
@@ -1110,7 +1109,6 @@ impl Document {
     if has_live_subscribers || has_live_ranges {
       let removed_len = utf16_len(&old_value);
       let inserted_len = utf16_len(data);
-
       if has_live_subscribers {
         self
           .live_mutation
@@ -1159,7 +1157,6 @@ impl Document {
     if has_live_subscribers || has_live_ranges {
       let removed_len = utf16_len(&old_value);
       let inserted_len = utf16_len(data);
-
       if has_live_subscribers {
         self
           .live_mutation
