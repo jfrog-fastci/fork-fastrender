@@ -1665,7 +1665,7 @@ impl ModuleGraph {
       let source = self.modules[idx]
         .source
         .clone()
-        .or_else(|| compiled.as_ref().map(|s| s.source.clone()))
+        .or_else(|| compiled.as_ref().map(|c| c.source.clone()))
         .ok_or(VmError::Unimplemented("module source missing"))?;
       let ast = self.modules[idx].ast.clone();
 

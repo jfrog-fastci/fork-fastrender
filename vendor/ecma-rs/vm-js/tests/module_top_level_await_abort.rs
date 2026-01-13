@@ -243,6 +243,7 @@ fn abort_tla_evaluation_tears_down_compiled_module_state() -> Result<(), VmError
   // await evaluation parses on demand and retains the AST across suspension.
   graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), entry)?;
   graph.module_mut(entry).ast = None;
+  graph.module_mut(entry).source = None;
 
   let promise = graph.evaluate(
     &mut vm,

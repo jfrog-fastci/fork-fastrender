@@ -404,6 +404,9 @@ fn import_meta_works_after_top_level_await_in_compiled_module() -> Result<(), Vm
   // await evaluation parses on demand and retains the AST across suspension.
   graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), m)?;
   graph.module_mut(m).ast = None;
+  // The compiled script retains the `SourceText`; ensure evaluation does not require
+  // `SourceTextModuleRecord::source` once compilation has happened.
+  graph.module_mut(m).source = None;
 
   let eval_promise = graph.evaluate(
     &mut vm,
@@ -483,6 +486,7 @@ fn compiled_module_top_level_await_falls_back_to_ast() -> Result<(), VmError> {
 
   graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), m)?;
   graph.module_mut(m).ast = None;
+  graph.module_mut(m).source = None;
 
   let eval_promise = graph.evaluate(
     &mut vm,
