@@ -58,12 +58,12 @@ Rule of thumb:
 
 - Use `fastrender::sandbox::windows::spawn_sandboxed(...)` when you want the **full renderer spawn
   sandbox** (AppContainer/restricted token + Job + handle allowlisting).
-- Use `win_sandbox::spawn_sandboxed(&SpawnConfig)` when you want a **reusable spawner** that can
-  apply AppContainer/Job/handle-allowlist and (optionally) mitigations, but you do **not** need the
-  extra `fastrender`-specific behavior in `src/sandbox/windows.rs` (notably env sanitization and
-  AppContainer executable relocation/current-dir workarounds).
-- Use `win_sandbox::restricted_token::spawn_with_token(...)` if you specifically want to spawn via
-  the restricted-token fallback path (`CreateProcessAsUserW`).
+- Use `win_sandbox::spawn_sandboxed(&SpawnConfig)` when you want a **reusable `CreateProcessW` spawner**
+  that can apply AppContainer/Job/handle-allowlist and (optionally) mitigations, but you do **not**
+  need the extra `fastrender`-specific behavior in `src/sandbox/windows.rs` (notably env sanitization
+  and AppContainer executable relocation/current-dir workarounds).
+- Use `win_sandbox::RestrictedToken` + `win_sandbox::restricted_token::spawn_with_token(...)` when
+  you specifically want a restricted-token (Low IL) child process.
 - Use `win_sandbox::renderer::RendererSandbox` when you want a small, reusable “renderer-like” spawn
   wrapper (Job + AppContainer when available + mitigations), and you are okay with its simpler
   behavior (no env sanitization; no AppContainer executable relocation).
@@ -197,13 +197,13 @@ Repo reality:
 
 Notes:
 
-- AppContainer APIs are in `userenv.dll` and are resolved at runtime (see code map above). If the
-  APIs are missing, AppContainer is treated as unsupported.
-  - `src/sandbox/windows.rs` **fails closed by default** (returns an error so we don’t silently run
-    without the intended sandbox). Set `FASTR_ALLOW_UNSANDBOXED_RENDERER=1` to explicitly opt in to
-    falling back to restricted-token (or unsandboxed) spawning.
-  - `crates/win-sandbox` exposes a similar opt-in policy helper (`RendererSandboxMode`) plus an
-    explicit `SpawnConfig::allow_restricted_token_fallback` knob.
+  - AppContainer APIs are in `userenv.dll` and are resolved at runtime (see code map above). If the
+    APIs are missing, AppContainer is treated as unsupported.
+    - `src/sandbox/windows.rs` **fails closed by default** (returns an error so we don’t silently run
+      without the intended sandbox). Set `FASTR_ALLOW_UNSANDBOXED_RENDERER=1` to explicitly opt in to
+      falling back to restricted-token (or unsandboxed) spawning.
+    - `crates/win-sandbox` exposes a similar opt-in policy helper (`RendererSandboxMode`) used to avoid
+      silent sandbox downgrades on unsupported hosts.
 - Creating the profile is a one-time system registration; the profile persists on the machine. We
   intentionally use a stable name so we do not create many profiles over time.
 
