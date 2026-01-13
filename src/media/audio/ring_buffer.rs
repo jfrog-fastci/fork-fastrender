@@ -258,6 +258,44 @@ impl AudioRingBuffer {
       .read
       .store(read.wrapping_add(to_read), Ordering::Release);
   }
+
+  /// Returns `true` if the buffer currently contains any samples.
+  ///
+  /// This is intended for fast-path "maybe audible" checks. It intentionally does not attempt to
+  /// repair broken invariants (that recovery is handled by the consumer during `pop_*` calls).
+  #[inline]
+  pub fn has_data(&self) -> bool {
+    let read = self.read.load(Ordering::Relaxed);
+    let write = self.write.load(Ordering::Acquire);
+    write.wrapping_sub(read) != 0
+  }
+
+  /// Discard up to `max` samples from the buffer without reading/mixing them.
+  ///
+  /// This is a constant-time drain path used for muted sinks (or when the output is silent) where
+  /// we still want to advance the sink's buffered audio to avoid unbounded growth.
+  pub fn pop_discard(&self, max: usize) {
+    if max == 0 {
+      return;
+    }
+
+    let read = self.read.load(Ordering::Relaxed);
+    let write = self.write.load(Ordering::Acquire);
+    let available = write.wrapping_sub(read);
+
+    if available == 0 {
+      return;
+    }
+
+    // If indices have wrapped in a way that breaks invariants, drop buffered audio.
+    if available > self.capacity {
+      self.read.store(write, Ordering::Release);
+      return;
+    }
+
+    let to_read = max.min(available);
+    self.read.store(read.wrapping_add(to_read), Ordering::Release);
+  }
 }
 
 #[cfg(test)]
@@ -288,7 +326,6 @@ mod tests {
     rb.pop_add_into(&mut out, 0.5);
     assert_eq!(out, vec![0.5, 0.5]);
   }
-
   #[test]
   fn ring_buffer_drops_nan_and_subnormal_samples() {
     let rb = AudioRingBuffer::new(8);

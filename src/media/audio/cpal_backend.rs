@@ -11,10 +11,11 @@ use super::{
   AudioEngineConfig, AudioError, AudioOutputInfo, AudioSink, AudioStreamConfig, DeviceSelector,
 };
 use super::convert::sanitize_sample;
-use crate::media::audio_clock::InterpolatedAudioClock;
 use super::limits::{MAX_BUFFERED_DURATION, MAX_CHANNELS, MAX_FRAMES_PER_PUSH, MAX_SAMPLE_RATE_HZ};
 use crate::media::audio::ring_buffer::{AudioRingBuffer, GainRamp};
 use super::restart::{AudioStreamFactory, ResilientStreamManager, RestartPolicy};
+use super::mixer_decision::{decide_mixer_callback_action, MixerCallbackAction};
+use crate::media::audio_clock::InterpolatedAudioClock;
 use cpal::traits::{HostTrait, StreamTrait};
 
 pub fn list_output_devices() -> Result<Vec<AudioDeviceInfo>, AudioError> {
@@ -536,12 +537,71 @@ impl MixerState {
     sinks.push(Arc::downgrade(sink));
   }
 
+  /// Decide whether the current callback cycle needs full mixing work.
+  ///
+  /// When no sinks are audible (all muted/empty), we can output silence without touching the per-sample
+  /// mixing hot path. When outputting silence we still drain **fully muted** sinks so they don't
+  /// accumulate buffered audio.
+  fn mix_for_callback(&self, output_samples: usize) -> MixerCallbackAction {
+    let sinks = self.sinks.read();
+    let mut has_sinks = false;
+
+    for weak in sinks.iter() {
+      let Some(sink) = weak.upgrade() else {
+        continue;
+      };
+      has_sinks = true;
+
+      // Fully muted sinks never make the output audible; skip them for the decision. They'll be
+      // drained in `mix_into` (mixing path) or via `pop_discard` (silence path).
+      if sink.is_fully_muted() {
+        continue;
+      }
+
+      if sink.maybe_audible.load(Ordering::Relaxed) {
+        return MixerCallbackAction::Mix;
+      }
+    }
+
+    let action = decide_mixer_callback_action(has_sinks, false, true);
+    if action == MixerCallbackAction::SilenceAndDrain {
+      let channels = self.channels_usize().max(1);
+      // Keep frame alignment when draining so channel interleaving stays consistent.
+      let output_samples = output_samples - (output_samples % channels);
+
+      if output_samples != 0 {
+        for weak in sinks.iter() {
+          let Some(sink) = weak.upgrade() else {
+            continue;
+          };
+
+          if sink.is_fully_muted() {
+            sink.buffer.pop_discard(output_samples);
+            sink.maybe_audible.store(false, Ordering::Relaxed);
+          }
+        }
+      }
+    }
+
+    action
+  }
+
   fn mix_into(&self, dst: &mut [f32]) {
+    let channels = self.channels_usize().max(1);
+    let to_drain = dst.len() - (dst.len() % channels);
+
     let sinks = self.sinks.read();
     for weak in sinks.iter() {
       let Some(sink) = weak.upgrade() else {
         continue;
       };
+
+      if sink.is_fully_muted() {
+        sink.buffer.pop_discard(to_drain);
+        sink.maybe_audible.store(false, Ordering::Relaxed);
+        continue;
+      }
+
       sink.mix_into(dst);
     }
   }
@@ -560,6 +620,7 @@ struct SinkState {
   ramp_step_bits: AtomicU32,
   ramp_remaining_frames: AtomicU32,
   ramp_frames: u32,
+  maybe_audible: AtomicBool,
 }
 
 impl SinkState {
@@ -578,7 +639,26 @@ impl SinkState {
       ramp_step_bits: AtomicU32::new(0.0f32.to_bits()),
       ramp_remaining_frames: AtomicU32::new(0),
       ramp_frames,
+      maybe_audible: AtomicBool::new(false),
     }
+  }
+
+  #[inline]
+  fn gain_nonzero_for_hint(&self, volume_target: f32) -> bool {
+    let current_bits = self.ramp_current_bits.load(Ordering::Relaxed);
+    let current = f32::from_bits(current_bits);
+    volume_target > 0.0 || (current.is_finite() && current > 0.0)
+  }
+
+  #[inline]
+  fn is_fully_muted(&self) -> bool {
+    let target = f32::from_bits(self.volume_target_bits.load(Ordering::Relaxed));
+    let target = if target.is_finite() { target } else { 0.0 };
+    if self.gain_nonzero_for_hint(target) {
+      return false;
+    }
+    // If we're mid-ramp, keep processing so we converge to the final state.
+    self.ramp_remaining_frames.load(Ordering::Relaxed) == 0
   }
 
   fn set_volume(&self, volume: f32) {
@@ -590,11 +670,23 @@ impl SinkState {
     self
       .volume_target_bits
       .store(volume.to_bits(), Ordering::Relaxed);
+    let gain_nonzero = self.gain_nonzero_for_hint(volume);
+    if gain_nonzero && self.buffer.has_data() {
+      self.maybe_audible.store(true, Ordering::Relaxed);
+    } else {
+      self.maybe_audible.store(false, Ordering::Relaxed);
+    }
   }
 
   fn mix_into(&self, dst: &mut [f32]) {
     let channels = usize::from(self.config.channels.max(1));
     if channels == 0 || dst.is_empty() {
+      return;
+    }
+
+    // If the buffer is empty, ensure the hint is cleared so the callback can fast-path to silence.
+    if !self.buffer.has_data() {
+      self.maybe_audible.store(false, Ordering::Relaxed);
       return;
     }
 
@@ -641,6 +733,13 @@ impl SinkState {
     self
       .ramp_remaining_frames
       .store(ramp.frames_remaining, Ordering::Relaxed);
+
+    let has_data = self.buffer.has_data();
+    let gain_nonzero = (ramp.target_gain.is_finite() && ramp.target_gain > 0.0)
+      || (ramp.current_gain.is_finite() && ramp.current_gain > 0.0);
+    self
+      .maybe_audible
+      .store(has_data && gain_nonzero, Ordering::Relaxed);
   }
 }
 
@@ -659,7 +758,32 @@ impl AudioSink for CpalAudioSink {
     let frames = usable_len / channels;
     let frames = frames.min(MAX_FRAMES_PER_PUSH);
     let capped_len = frames * channels;
-    self.state.buffer.push(&samples[..capped_len])
+    if capped_len == 0 {
+      return 0;
+    }
+
+    // If the sink may produce audible output, set the hint before publishing samples so the
+    // callback can avoid racing between the ring-buffer write becoming visible and the hint update.
+    let volume_bits = self.state.volume_target_bits.load(Ordering::Relaxed);
+    let volume = f32::from_bits(volume_bits);
+    let volume = if volume.is_finite() { volume } else { 0.0 };
+    if self.state.gain_nonzero_for_hint(volume) {
+      self.state.maybe_audible.store(true, Ordering::Relaxed);
+    }
+
+    let written = self.state.buffer.push(&samples[..capped_len]);
+
+    // Re-assert after the write so a concurrent callback maintenance pass can't clobber us.
+    if written != 0 {
+      let volume_bits = self.state.volume_target_bits.load(Ordering::Relaxed);
+      let volume = f32::from_bits(volume_bits);
+      let volume = if volume.is_finite() { volume } else { 0.0 };
+      if self.state.gain_nonzero_for_hint(volume) {
+        self.state.maybe_audible.store(true, Ordering::Relaxed);
+      }
+    }
+
+    written
   }
 
   fn set_volume(&self, volume: f32) {
@@ -944,14 +1068,23 @@ where
           let ts = info.timestamp();
           let latency = ts.playback.duration_since(&ts.callback);
 
-          // CPAL can (rarely) provide variable callback buffer sizes. Never resize or allocate in
-          // the callback; instead, process in bounded chunks using the preallocated mix buffer.
-          for out_chunk in output.chunks_mut(mix_buf.len()) {
-            let mix = &mut mix_buf[..out_chunk.len()];
-            mix.fill(0.0);
-            mixer.mix_into(mix);
-            for (out, sample) in out_chunk.iter_mut().zip(mix.iter()) {
-              *out = T::from_mixed_f32(*sample);
+          match mixer.mix_for_callback(output.len()) {
+            MixerCallbackAction::Mix => {
+              // CPAL can (rarely) provide variable callback buffer sizes. Never resize or allocate
+              // in the callback; instead, process in bounded chunks using the preallocated mix
+              // buffer.
+              for out_chunk in output.chunks_mut(mix_buf.len()) {
+                let mix = &mut mix_buf[..out_chunk.len()];
+                mix.fill(0.0);
+                mixer.mix_into(mix);
+                for (out, sample) in out_chunk.iter_mut().zip(mix.iter()) {
+                  *out = T::from_mixed_f32(*sample);
+                }
+              }
+            }
+            MixerCallbackAction::Silence | MixerCallbackAction::SilenceAndDrain => {
+              // Fill output with silence without doing any per-sample mixing work.
+              output.fill(T::from_mixed_f32(0.0));
             }
           }
 

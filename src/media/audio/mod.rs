@@ -33,6 +33,7 @@ mod cpal_backend;
 mod latency;
 pub mod engine;
 pub mod limits;
+mod mixer_decision;
 mod null_backend;
 mod restart;
 mod ring_buffer;
