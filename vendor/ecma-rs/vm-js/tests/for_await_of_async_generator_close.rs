@@ -20,24 +20,26 @@ fn async_generators_supported(rt: &mut JsRuntime) -> Result<bool, VmError> {
   // vm-js historically parsed `async function*` but deliberately rejected it at runtime (via a
   // throwable SyntaxError) while async generator semantics were unimplemented. These tests should
   // start running automatically once that support lands.
-  let value = rt.exec_script(
+  let value = match rt.exec_script(
     r#"
-      var supported = true;
       try {
-        var f = (async function* () { yield 1; });
-        void f;
+        (async function* () { yield 1; })();
+        true;
       } catch (e) {
         // Only treat the known feature-detection SyntaxError as "unsupported". Any other exception
         // should fail the test so we don't accidentally mask bugs once async generators exist.
-        if (e && e.name === "SyntaxError" && String(e.message).includes("async generator")) {
-          supported = false;
+        if (e && e.name === "SyntaxError" && String(e.message).includes("async generator functions")) {
+          false;
         } else {
           throw e;
         }
       }
-      supported
     "#,
-  )?;
+  ) {
+    Ok(value) => value,
+    Err(VmError::Unimplemented(msg)) if msg.contains("async generator functions") => return Ok(false),
+    Err(err) => return Err(err),
+  };
   Ok(value == Value::Bool(true))
 }
 
@@ -128,5 +130,47 @@ fn for_await_throw_closes_async_generator_before_catch() -> Result<(), VmError> 
     out.contains('F'),
     "expected `finally` to run and write 'F', got {out:?}"
   );
+  Ok(())
+}
+
+#[test]
+fn for_await_return_closes_async_generator() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  if !async_generators_supported(&mut rt)? {
+    return Ok(());
+  }
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var log = "";
+
+      async function* gen() {
+        try {
+          yield 1;
+          yield 2;
+        } finally {
+          log += "F";
+        }
+      }
+
+      async function run() {
+        for await (const x of gen()) {
+          return "R";
+        }
+        return "bad";
+      }
+
+      run().then(v => out = v + log);
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "RF");
   Ok(())
 }

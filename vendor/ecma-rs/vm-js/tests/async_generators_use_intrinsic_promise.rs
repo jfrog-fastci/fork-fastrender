@@ -39,7 +39,7 @@ fn is_unimplemented_async_generator_error(rt: &mut JsRuntime, err: &VmError) -> 
 }
 
 fn feature_detect_async_generators(rt: &mut JsRuntime) -> Result<bool, VmError> {
-  match rt.exec_script("async function* __ag_support() {}") {
+  match rt.exec_script("async function* __ag_support() {} void __ag_support();") {
     Ok(_) => Ok(true),
     Err(err) if is_unimplemented_async_generator_error(rt, &err)? => Ok(false),
     Err(err) => Err(err),

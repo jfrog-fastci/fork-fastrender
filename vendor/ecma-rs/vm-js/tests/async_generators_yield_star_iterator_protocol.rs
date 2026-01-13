@@ -20,18 +20,22 @@ fn supports_async_generators(rt: &mut JsRuntime) -> Result<bool, VmError> {
   // vm-js currently treats async generators as a throwable `SyntaxError` so user code can detect
   // support via try/catch. Once async generators are implemented, this probe will return true and
   // the conformance tests below will begin exercising `yield*` delegation semantics.
-  let v = rt.exec_script(
+  let v = match rt.exec_script(
     r#"
       (() => {
         try {
-          eval("async function* g() {}");
+          eval("async function* g() {} g();");
           return true;
         } catch (e) {
           return false;
         }
       })()
     "#,
-  )?;
+  ) {
+    Ok(v) => v,
+    Err(VmError::Unimplemented(msg)) if msg.contains("async generator functions") => return Ok(false),
+    Err(err) => return Err(err),
+  };
   Ok(v == Value::Bool(true))
 }
 

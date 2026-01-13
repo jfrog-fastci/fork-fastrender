@@ -45,7 +45,7 @@ fn is_async_generator_syntax_unsupported(
 
 fn feature_detect_async_generators(rt: &mut JsRuntime) -> Result<bool, VmError> {
   let intr = *rt.realm().intrinsics();
-  match rt.exec_script("async function* __ag_support() {}") {
+  match rt.exec_script("async function* __ag_support() {} void __ag_support();") {
     Ok(_) => Ok(true),
     Err(err) => {
       let mut scope = rt.heap.scope();

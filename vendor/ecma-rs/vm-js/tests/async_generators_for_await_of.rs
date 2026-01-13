@@ -20,12 +20,12 @@ fn async_generators_supported(rt: &mut JsRuntime) -> Result<bool, VmError> {
   // vm-js historically parsed `async function*` but deliberately rejected it at runtime (via a
   // throwable SyntaxError) while async generator semantics were unimplemented. These tests should
   // start running automatically once that support lands.
-  let value = rt.exec_script(
+  let value = match rt.exec_script(
     r#"
       var supported = true;
       try {
         var f = (async function* () { yield 1; });
-        void f;
+        f();
       } catch (e) {
         // Only treat the known feature-detection SyntaxError as "unsupported". Any other exception
         // should fail the test so we don't accidentally mask bugs once async generators exist.
@@ -37,7 +37,11 @@ fn async_generators_supported(rt: &mut JsRuntime) -> Result<bool, VmError> {
       }
       supported
     "#,
-  )?;
+  ) {
+    Ok(value) => value,
+    Err(VmError::Unimplemented(msg)) if msg.contains("async generator functions") => return Ok(false),
+    Err(err) => return Err(err),
+  };
   Ok(value == Value::Bool(true))
 }
 

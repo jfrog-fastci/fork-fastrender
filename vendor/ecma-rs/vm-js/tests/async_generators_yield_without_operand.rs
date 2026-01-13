@@ -13,11 +13,11 @@ fn new_runtime() -> JsRuntime {
 /// exercise yield semantics once async generators are implemented, but should not fail while the
 /// feature is still unavailable.
 fn async_generators_supported(rt: &mut JsRuntime) -> Result<bool, VmError> {
-  let supported = rt.exec_script(
+  let supported = match rt.exec_script(
     r#"
       (() => {
         try {
-          (async function* () {});
+          (async function* () {})();
           return true;
         } catch (e) {
           // Preserve unexpected failures (e.g. if parsing or error objects regress).
@@ -28,7 +28,11 @@ fn async_generators_supported(rt: &mut JsRuntime) -> Result<bool, VmError> {
         }
       })()
     "#,
-  )?;
+  ) {
+    Ok(value) => value,
+    Err(VmError::Unimplemented(msg)) if msg.contains("async generator functions") => return Ok(false),
+    Err(err) => return Err(err),
+  };
   Ok(supported == Value::Bool(true))
 }
 
@@ -75,4 +79,3 @@ fn async_generator_yield_undefined_evaluates_operand_when_explicit() -> Result<(
   assert_eq!(ok, Value::Bool(true));
   Ok(())
 }
-
