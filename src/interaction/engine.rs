@@ -167,6 +167,11 @@ pub enum DragDropKind {
 #[derive(Debug, Clone)]
 pub struct InteractionEngine {
   state: InteractionState,
+  /// Cached hover tooltip text derived from HTML `title` attributes (if any).
+  ///
+  /// This is maintained by pointer-move handlers so UI layers can display tooltips without
+  /// repeatedly walking the DOM to resolve `title` attributes on each high-frequency pointer move.
+  hover_tooltip: Option<String>,
   pointer_down_target: Option<usize>,
   link_drag: Option<LinkDragState>,
   range_drag: Option<RangeDragState>,
@@ -5994,6 +5999,7 @@ impl InteractionEngine {
   pub fn new() -> Self {
     Self {
       state: InteractionState::default(),
+      hover_tooltip: None,
       pointer_down_target: None,
       link_drag: None,
       range_drag: None,
@@ -6015,6 +6021,10 @@ impl InteractionEngine {
 
   pub fn interaction_state(&self) -> &InteractionState {
     &self.state
+  }
+
+  pub fn hover_tooltip(&self) -> Option<&str> {
+    self.hover_tooltip.as_deref()
   }
 
   /// Replace the set of visited link node ids for the current document.
@@ -7393,6 +7403,7 @@ impl InteractionEngine {
     let active_changed = !self.state.active_chain().is_empty();
     self.state.clear_hover_chain();
     self.state.clear_active_chain();
+    self.hover_tooltip = None;
     self.pointer_down_target = None;
     self.link_drag = None;
     self.range_drag = None;
@@ -7408,6 +7419,7 @@ impl InteractionEngine {
   pub fn clear_pointer_state_without_dom(&mut self) {
     self.state.clear_hover_chain();
     self.state.clear_active_chain();
+    self.hover_tooltip = None;
     self.pointer_down_target = None;
     self.link_drag = None;
     self.range_drag = None;
@@ -7417,6 +7429,44 @@ impl InteractionEngine {
     self.document_drag = None;
     self.document_selection_drag_drop = None;
     self.pending_text_drop_move = None;
+  }
+
+  fn hover_tooltip_from_title_attributes<'a>(
+    index: &'a DomIndexMut,
+    hover_chain: &[usize],
+  ) -> Option<&'a str> {
+    // `InteractionEngine` stores hover chain ids in target→root order.
+    //
+    // The chain may contain additional non-ancestor nodes (e.g. label-associated controls) appended
+    // after the real ancestor chain. Ancestor ids are strictly decreasing in DOM pre-order, so keep
+    // only that prefix for HTML `title` tooltip semantics.
+    let mut prev = usize::MAX;
+    for &node_id in hover_chain {
+      if node_id >= prev {
+        break;
+      }
+      prev = node_id;
+
+      let Some(node) = index.node(node_id) else {
+        continue;
+      };
+      let Some(title) = node.get_attribute_ref("title") else {
+        continue;
+      };
+      let title = trim_ascii_whitespace(title);
+      if !title.is_empty() {
+        return Some(title);
+      }
+    }
+    None
+  }
+
+  fn title_attribute_tooltip<'a>(index: &'a DomIndexMut, node_id: usize) -> Option<&'a str> {
+    index
+      .node(node_id)
+      .and_then(|node| node.get_attribute_ref("title"))
+      .map(trim_ascii_whitespace)
+      .filter(|title| !title.is_empty())
   }
 
   /// Update hover state (element under pointer + ancestors).
@@ -7807,6 +7857,15 @@ impl InteractionEngine {
     let changed = self.state.hover_chain() != new_chain.as_slice();
     if changed {
       self.state.set_hover_chain(new_chain);
+    }
+    // Tooltip semantics: prefer the semantic hit target (e.g. `<area>` for client-side image maps).
+    // If it doesn't have a `title`, fall back to the hovered element chain.
+    let tooltip = hit
+      .as_ref()
+      .and_then(|hit| Self::title_attribute_tooltip(&index, hit.dom_node_id))
+      .or_else(|| Self::hover_tooltip_from_title_attributes(&index, self.state.hover_chain()));
+    if tooltip != self.hover_tooltip.as_deref() {
+      self.hover_tooltip = tooltip.map(|title| title.to_string());
     }
     (dom_changed | changed, hit, hover_is_drop_target)
   }

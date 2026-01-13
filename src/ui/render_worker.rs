@@ -1257,33 +1257,6 @@ fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
 
-fn tooltip_from_hover_chain(dom: &mut crate::dom::DomNode, hover_chain: &[usize]) -> Option<String> {
-  // `InteractionEngine` stores hover chain ids in target→root order.
-  //
-  // The chain may contain additional non-ancestor nodes (e.g. label-associated controls) appended
-  // after the real ancestor chain. Ancestor ids are strictly decreasing in DOM pre-order, so keep
-  // only that prefix for HTML `title` tooltip semantics.
-  let mut prev = usize::MAX;
-  for &node_id in hover_chain {
-    if node_id >= prev {
-      break;
-    }
-    prev = node_id;
-
-    let Some(node) = crate::dom::find_node_mut_by_preorder_id(dom, node_id) else {
-      continue;
-    };
-    let Some(title) = node.get_attribute_ref("title") else {
-      continue;
-    };
-    let title = trim_ascii_whitespace(title);
-    if !title.is_empty() {
-      return Some(title.to_string());
-    }
-  }
-  None
-}
-
 fn dom_node_type_eq(a: &crate::dom::DomNodeType, b: &crate::dom::DomNodeType) -> bool {
   use crate::dom::DomNodeType;
   match (a, b) {
@@ -3468,7 +3441,16 @@ impl BrowserRuntime {
 
         // Switching tabs should clear any stale hover state (cursor + hovered URL) until the UI
         // sends the next pointer position for this tab.
-        Self::maybe_emit_hover_changed(&self.ui_tx, tab_id, tab, None, CursorKind::Default, None);
+        Self::maybe_emit_hover_changed(
+          &self.ui_tx,
+          tab_id,
+          &mut tab.last_cursor,
+          &mut tab.last_hovered_url,
+          &mut tab.last_tooltip,
+          None,
+          CursorKind::Default,
+          None,
+        );
       }
       UiToWorker::Navigate {
         tab_id,
@@ -5139,7 +5121,16 @@ impl BrowserRuntime {
 
     // Navigations replace the document (or at least its URL/scroll state); clear any stale hover
     // metadata until the next pointer move re-establishes it.
-    Self::maybe_emit_hover_changed(&self.ui_tx, tab_id, tab, None, CursorKind::Default, None);
+    Self::maybe_emit_hover_changed(
+      &self.ui_tx,
+      tab_id,
+      &mut tab.last_cursor,
+      &mut tab.last_hovered_url,
+      &mut tab.last_tooltip,
+      None,
+      CursorKind::Default,
+      None,
+    );
 
     let had_pending_navigation = tab.loading;
     let had_pending_history_entry = tab.pending_history_entry;
@@ -5879,20 +5870,29 @@ impl BrowserRuntime {
   fn maybe_emit_hover_changed(
     ui_tx: &Sender<WorkerToUiMsg>,
     tab_id: TabId,
-    tab: &mut TabState,
+    last_cursor: &mut CursorKind,
+    last_hovered_url: &mut Option<String>,
+    last_tooltip: &mut Option<String>,
     hovered_url: Option<String>,
     cursor: CursorKind,
-    tooltip: Option<String>,
+    tooltip: Option<&str>,
   ) {
-    if tab.last_cursor == cursor
-      && tab.last_hovered_url.as_deref() == hovered_url.as_deref()
-      && tab.last_tooltip.as_deref() == tooltip.as_deref()
+    if *last_cursor == cursor
+      && last_hovered_url.as_deref() == hovered_url.as_deref()
+      && last_tooltip.as_deref() == tooltip
     {
       return;
     }
-    tab.last_cursor = cursor;
-    tab.last_hovered_url = hovered_url.clone();
-    tab.last_tooltip = tooltip.clone();
+    *last_cursor = cursor;
+    *last_hovered_url = hovered_url.clone();
+    let tooltip_changed = last_tooltip.as_deref() != tooltip;
+    let tooltip = if tooltip_changed {
+      let owned = tooltip.map(|tooltip| tooltip.to_string());
+      *last_tooltip = owned.clone();
+      owned
+    } else {
+      last_tooltip.clone()
+    };
     let _ = ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::HoverChanged {
       tab_id,
       hovered_url,
@@ -5995,15 +5995,7 @@ impl BrowserRuntime {
         0.0
       };
 
-    let (
-      changed,
-      hovered_url,
-      cursor,
-      tooltip,
-      hovered_dom_node_id,
-      hovered_dom_element_id,
-      next_scroll,
-    ) = {
+    let (changed, hovered_url, cursor, hovered_dom_node_id, hovered_dom_element_id, next_scroll) = {
       let Some(doc) = tab.document.as_mut() else {
         return;
       };
@@ -6041,117 +6033,106 @@ impl BrowserRuntime {
         .as_ref()
         .and_then(|scroll| tab.hit_test_fragment_tree_for_scroll(doc, scroll));
       let engine = &mut tab.interaction;
-      match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-        let fragment_tree_before = hit_tree_before.as_deref().unwrap_or(fragment_tree);
-        let (mut changed, mut hit, mut hover_is_drop_target) =
-          engine.pointer_move_and_hit_and_drop_target(
-            dom,
-            box_tree,
-            fragment_tree_before,
-            &scroll_snapshot,
-            viewport_point,
-          );
-
-        if let Some(scroll_after) = next_scroll.as_ref() {
-          let fragment_tree_after = hit_tree_after.as_deref().unwrap_or(fragment_tree);
-          let (changed_after, hit_after, hover_is_drop_target_after) =
+      let (changed, hovered_url, cursor, hovered_dom_node_id, hovered_dom_element_id) =
+        match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+          let fragment_tree_before = hit_tree_before.as_deref().unwrap_or(fragment_tree);
+          let (mut changed, mut hit, mut hover_is_drop_target) =
             engine.pointer_move_and_hit_and_drop_target(
               dom,
               box_tree,
-              fragment_tree_after,
-              scroll_after,
+              fragment_tree_before,
+              &scroll_snapshot,
               viewport_point,
             );
-          // Important: after scrolling, re-run pointer_move with the updated scroll state so the
-          // document selection focus advances in the same event.
-          changed |= changed_after;
-          hit = hit_after;
-          hover_is_drop_target = hover_is_drop_target_after;
-        }
-        let drag_drop_active = engine.drag_drop_active_kind().is_some();
-        let (
-          hovered_url,
-          mut cursor,
-          tooltip,
-          hovered_dom_node_id,
-          hovered_dom_element_id,
-          hover_is_drop_target,
-        ) = if !pointer_in_page {
-          (None, CursorKind::Default, None, None, None, false)
-        } else {
-          match hit {
-            Some(hit) => {
-              let cursor = cursor_kind_for_hit(Some(&hit));
-              let crate::interaction::HitTestResult {
-                element_id,
-                dom_node_id,
-                kind,
-                href,
-                ..
-              } = hit;
 
-              // Tooltip semantics: prefer the semantic hit target (e.g. `<area>` for client-side
-              // image maps). If it doesn't have a title, fall back to the hovered element chain.
-              let semantic_title = crate::dom::find_node_mut_by_preorder_id(dom, dom_node_id)
-                .and_then(|node| node.get_attribute_ref("title"))
-                .map(trim_ascii_whitespace)
-                .filter(|t| !t.is_empty())
-                .map(|t| t.to_string());
-              let tooltip = semantic_title
-                .or_else(|| tooltip_from_hover_chain(dom, engine.interaction_state().hover_chain()));
-
-              // `hovered_url` remains a semantic link property even when CSS overrides the cursor.
-              let hovered_url = match kind {
-                HitTestKind::Link => href
-                  .as_deref()
-                  .and_then(|href| resolve_link_url(base_url, href)),
-                _ => None,
-              };
-
-              (
-                hovered_url,
-                cursor,
-                tooltip,
-                Some(dom_node_id),
-                element_id,
-                hover_is_drop_target,
-              )
-            }
-            None => (None, CursorKind::Default, None, None, None, false),
+          if let Some(scroll_after) = next_scroll.as_ref() {
+            let fragment_tree_after = hit_tree_after.as_deref().unwrap_or(fragment_tree);
+            let (changed_after, hit_after, hover_is_drop_target_after) =
+              engine.pointer_move_and_hit_and_drop_target(
+                dom,
+                box_tree,
+                fragment_tree_after,
+                scroll_after,
+                viewport_point,
+              );
+            // Important: after scrolling, re-run pointer_move with the updated scroll state so the
+            // document selection focus advances in the same event.
+            changed |= changed_after;
+            hit = hit_after;
+            hover_is_drop_target = hover_is_drop_target_after;
           }
-        };
-
-        if pointer_in_page && drag_drop_active {
-          cursor = if hover_is_drop_target {
-            CursorKind::Grabbing
-          } else {
-            CursorKind::NotAllowed
-          };
-        }
-
-        (
-          changed,
-          (
-            changed,
+          let drag_drop_active = engine.drag_drop_active_kind().is_some();
+          let (
             hovered_url,
-            cursor,
-            tooltip,
+            mut cursor,
             hovered_dom_node_id,
             hovered_dom_element_id,
-          ),
-        )
-      }) {
-        Ok(changed) => (
-          changed.0,
-          changed.1,
-          changed.2,
-          changed.3,
-          changed.4,
-          changed.5,
-          next_scroll,
-        ),
-        Err(_) => return,
-      }
+            hover_is_drop_target,
+          ) = if !pointer_in_page {
+            (None, CursorKind::Default, None, None, false)
+          } else {
+            match hit {
+              Some(hit) => {
+                let cursor = cursor_kind_for_hit(Some(&hit));
+                let crate::interaction::HitTestResult {
+                  element_id,
+                  dom_node_id,
+                  kind,
+                  href,
+                  ..
+                } = hit;
+
+                // `hovered_url` remains a semantic link property even when CSS overrides the cursor.
+                let hovered_url = match kind {
+                  HitTestKind::Link => href
+                    .as_deref()
+                    .and_then(|href| resolve_link_url(base_url, href)),
+                  _ => None,
+                };
+
+                (
+                  hovered_url,
+                  cursor,
+                  Some(dom_node_id),
+                  element_id,
+                  hover_is_drop_target,
+                )
+              }
+              None => (None, CursorKind::Default, None, None, false),
+            }
+          };
+
+          if pointer_in_page && drag_drop_active {
+            cursor = if hover_is_drop_target {
+              CursorKind::Grabbing
+            } else {
+              CursorKind::NotAllowed
+            };
+          }
+
+          (
+            changed,
+            (
+              changed,
+              hovered_url,
+              cursor,
+              hovered_dom_node_id,
+              hovered_dom_element_id,
+            ),
+          )
+        }) {
+          Ok(changed) => changed,
+          Err(_) => return,
+        };
+
+      (
+        changed,
+        hovered_url,
+        cursor,
+        hovered_dom_node_id,
+        hovered_dom_element_id,
+        next_scroll,
+      )
     };
     let mut scroll_changed = false;
     if let Some(next_scroll) = next_scroll {
@@ -6179,6 +6160,12 @@ impl BrowserRuntime {
       tab.needs_repaint = true;
     }
 
+    let tooltip = if pointer_in_page {
+      tab.interaction.hover_tooltip()
+    } else {
+      None
+    };
+
     // `<input type="range">` updates its value continuously while dragging. Mirror those UI-driven
     // value changes into dom2 so JS reads the live value and dom2→dom1 resync can't clobber the
     // slider state.
@@ -6201,7 +6188,16 @@ impl BrowserRuntime {
       }
     }
 
-    Self::maybe_emit_hover_changed(&self.ui_tx, tab_id, tab, hovered_url, cursor, tooltip);
+    Self::maybe_emit_hover_changed(
+      &self.ui_tx,
+      tab_id,
+      &mut tab.last_cursor,
+      &mut tab.last_hovered_url,
+      &mut tab.last_tooltip,
+      hovered_url,
+      cursor,
+      tooltip,
+    );
 
     // ---------------------------------------------------------------------------
     // DOM mouse events (`mousemove` + hover transitions)
