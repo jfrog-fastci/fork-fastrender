@@ -8875,6 +8875,26 @@ fn compiled_import_call_returns_promise_like_value() -> Result<(), VmError> {
   // Discard any jobs enqueued by Promise resolution/rejection so `Job` persistent roots are cleaned
   // up before the test ends.
   hooks.microtasks.teardown(&mut rt);
+  Ok(())
+}
 
+#[test]
+fn compiled_script_generator_function_falls_back_to_ecma() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function* g(){ yield 1; }
+      let it = g();
+      it.next().value
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
   Ok(())
 }

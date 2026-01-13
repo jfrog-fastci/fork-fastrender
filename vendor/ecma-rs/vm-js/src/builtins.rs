@@ -14833,40 +14833,45 @@ pub fn regexp_prototype_to_string(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  // https://tc39.es/ecma262/#sec-regexp.prototype.tostring
-  let Value::Object(r) = this else {
+  // Spec: https://tc39.es/ecma262/#sec-regexp.prototype.tostring
+  let Value::Object(obj) = this else {
     return Err(VmError::TypeError(
       "RegExp.prototype.toString called on non-object",
     ));
   };
 
   let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(r))?;
+  scope.push_root(Value::Object(obj))?;
 
   let source_key = string_key(&mut scope, "source")?;
-  let source_val = scope.get_with_host_and_hooks(vm, host, hooks, r, source_key, Value::Object(r))?;
-  scope.push_root(source_val)?;
-  let source_s = scope.to_string(vm, host, hooks, source_val)?;
-  scope.push_root(Value::String(source_s))?;
+  let source = scope.get_with_host_and_hooks(vm, host, hooks, obj, source_key, this)?;
+  scope.push_root(source)?;
+  let source = scope.to_string(vm, host, hooks, source)?;
+  scope.push_root(Value::String(source))?;
 
   let flags_key = string_key(&mut scope, "flags")?;
-  let flags_val = scope.get_with_host_and_hooks(vm, host, hooks, r, flags_key, Value::Object(r))?;
-  scope.push_root(flags_val)?;
-  let flags_s = scope.to_string(vm, host, hooks, flags_val)?;
-  scope.push_root(Value::String(flags_s))?;
+  let flags = scope.get_with_host_and_hooks(vm, host, hooks, obj, flags_key, this)?;
+  scope.push_root(flags)?;
+  let flags = scope.to_string(vm, host, hooks, flags)?;
+  scope.push_root(Value::String(flags))?;
 
-  let source_units = scope.heap().get_string(source_s)?.as_code_units();
-  let flags_units = scope.heap().get_string(flags_s)?.as_code_units();
-  let total_len = 2usize
-    .saturating_add(source_units.len())
-    .saturating_add(flags_units.len());
-
+  // Build `"/" + source + "/" + flags` without holding heap borrows across allocation.
   let mut out: Vec<u16> = Vec::new();
-  out.try_reserve_exact(total_len).map_err(|_| VmError::OutOfMemory)?;
-  out.push(b'/' as u16);
-  vec_try_extend_from_slice_u16_with_ticks(vm, &mut out, source_units)?;
-  out.push(b'/' as u16);
-  vec_try_extend_from_slice_u16_with_ticks(vm, &mut out, flags_units)?;
+  {
+    let source_units = scope.heap().get_string(source)?.as_code_units();
+    let flags_units = scope.heap().get_string(flags)?.as_code_units();
+    let total_len = 2usize
+      .saturating_add(source_units.len())
+      .saturating_add(flags_units.len());
+    out
+      .try_reserve_exact(total_len)
+      .map_err(|_| VmError::OutOfMemory)?;
+
+    vec_try_push(&mut out, b'/' as u16)?;
+    vec_try_extend_from_slice(&mut out, source_units, || vm.tick())?;
+    vec_try_push(&mut out, b'/' as u16)?;
+    vec_try_extend_from_slice(&mut out, flags_units, || vm.tick())?;
+  }
 
   let out_s = scope.alloc_string_from_u16_vec(out)?;
   Ok(Value::String(out_s))

@@ -8,6 +8,7 @@ use crate::iterator;
 use crate::module_loading;
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
 use crate::tick::vec_try_extend_from_slice_with_ticks;
+use crate::vm::EcmaFunctionKind;
 use crate::{EnvBinding, GcBigInt, GcEnv, GcObject, Scope, ScriptOrModule, Value, Vm, VmError, VmHost, VmHostHooks};
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -506,9 +507,12 @@ impl<'vm> HirEvaluator<'vm> {
     &mut self,
     scope: &mut Scope<'_>,
     body_id: hir_js::BodyId,
+    span_start: u32,
+    span_end: u32,
     name: &str,
     is_arrow: bool,
     is_constructable: bool,
+    kind: EcmaFunctionKind,
     name_binding: Option<&str>,
   ) -> Result<GcObject, VmError> {
     // Avoid holding references into `self.script.hir` across `vm.tick()` calls below: `tick()`
@@ -564,15 +568,18 @@ impl<'vm> HirEvaluator<'vm> {
 
     let is_strict = outer_strict || body_has_use_strict;
 
-    if is_generator {
-      return Err(VmError::Unimplemented(if is_async {
-        "async generator functions"
-      } else {
-        "generator functions"
-      }));
-    }
-    if is_async {
-      return Err(VmError::Unimplemented("async functions (hir-js compiled path)"));
+    // `async function*` is valid ECMAScript syntax, but vm-js does not implement async generator
+    // semantics yet. Surface this as a throwable `SyntaxError` (matching the interpreter path) so
+    // user code can feature-detect via try/catch instead of treating it as a host-level fatal
+    // error.
+    if is_async && is_generator {
+      let intr = self
+        .vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+      let err_obj =
+        crate::error_object::new_syntax_error_object(scope, &intr, "async generator functions")?;
+      return Err(VmError::Throw(err_obj));
     }
 
     // Root inputs across string allocation + function allocation in case either triggers GC.
@@ -608,21 +615,36 @@ impl<'vm> HirEvaluator<'vm> {
       ThisMode::Global
     };
 
-    // Arrow functions are never constructable regardless of the requested flag.
-    let is_constructable = is_constructable && !is_arrow;
+    let is_constructable = is_constructable && !is_async && !is_generator && !is_arrow;
 
-    let func_obj = scope.alloc_user_function_with_env(
-      CompiledFunctionRef {
-        script,
-        body: body_id,
-      },
-      is_constructable,
-      name_s,
-      length,
-      this_mode,
-      is_strict,
-      closure_env,
-    )?;
+    let func_obj = if is_async || is_generator {
+      let code_id =
+        self
+          .vm
+          .register_ecma_function(self.env.source(), span_start, span_end, kind)?;
+      scope.alloc_ecma_function(
+        code_id,
+        is_constructable,
+        name_s,
+        length,
+        this_mode,
+        is_strict,
+        closure_env,
+      )?
+    } else {
+      scope.alloc_user_function_with_env(
+        CompiledFunctionRef {
+          script,
+          body: body_id,
+        },
+        is_constructable,
+        name_s,
+        length,
+        this_mode,
+        is_strict,
+        closure_env,
+      )?
+    };
 
     // Root the function object while performing any additional allocations (e.g. `.prototype`
     // creation) and while assigning metadata that can invoke GC (directly or indirectly).
@@ -651,7 +673,21 @@ impl<'vm> HirEvaluator<'vm> {
     if let Some(intr) = self.vm.intrinsics() {
       scope
         .heap_mut()
-        .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+        .object_set_prototype(
+          func_obj,
+          Some(if is_generator {
+            intr.generator_function_prototype()
+          } else {
+            intr.function_prototype()
+          }),
+        )?;
+      if is_generator {
+        crate::function_properties::make_generator_function_instance_prototype(
+          &mut scope,
+          func_obj,
+          intr.generator_prototype(),
+        )?;
+      }
     }
     scope
       .heap_mut()
@@ -1021,15 +1057,17 @@ impl<'vm> HirEvaluator<'vm> {
             continue;
           }
           let name = self.resolve_name(def.name)?;
-          let func_obj =
-            self.alloc_user_function_object(
-              scope,
-              body_id,
-              name.as_str(),
-              /* is_arrow */ false,
-              /* is_constructable */ true,
-              /* name_binding */ None,
-            )?;
+          let func_obj = self.alloc_user_function_object(
+            scope,
+            body_id,
+            def.span.start,
+            def.span.end,
+            name.as_str(),
+            /* is_arrow */ false,
+            /* is_constructable */ true,
+            EcmaFunctionKind::Decl,
+            /* name_binding */ None,
+          )?;
           // Root the function object while assigning into the environment.
           let mut assign_scope = scope.reborrow();
           assign_scope.push_root(Value::Object(func_obj))?;
@@ -1208,9 +1246,12 @@ impl<'vm> HirEvaluator<'vm> {
       let func_obj = self.alloc_user_function_object(
         scope,
         body_id,
+        def.span.start,
+        def.span.end,
         name_str,
         /* is_arrow */ false,
         /* is_constructable */ true,
+        EcmaFunctionKind::Decl,
         /* name_binding */ None,
       )?;
 
@@ -2756,6 +2797,8 @@ impl<'vm> HirEvaluator<'vm> {
         is_arrow,
         ..
       } => {
+        let span_start = expr.span.start;
+        let span_end = expr.span.end;
         let mut name_str = name
           .as_ref()
           .and_then(|id| self.hir().names.resolve(*id))
@@ -2767,15 +2810,17 @@ impl<'vm> HirEvaluator<'vm> {
         if *is_arrow {
           name_str.clear();
         }
+        let name_binding = (!*is_arrow && !name_str.is_empty()).then_some(name_str.as_str());
         let func_obj = self.alloc_user_function_object(
           scope,
           *func_body,
+          span_start,
+          span_end,
           name_str.as_str(),
           *is_arrow,
           /* is_constructable */ !*is_arrow,
-          // Named function expressions create an inner binding for their own name.
-          // Arrow functions are always anonymous at the syntax level.
-          /* name_binding */ (!*is_arrow && !name_str.is_empty()).then_some(name_str.as_str()),
+          EcmaFunctionKind::Expr,
+          name_binding,
         )?;
         Ok(Value::Object(func_obj))
       }
@@ -4330,7 +4375,6 @@ impl<'vm> HirEvaluator<'vm> {
         match &pat.kind {
           hir_js::PatKind::Ident(_) | hir_js::PatKind::AssignTarget(_) => {
             let reference = self.eval_assignment_reference(scope, body, target)?;
-
             let mut scope = scope.reborrow();
             self.root_assignment_reference(&mut scope, &reference)?;
 
@@ -5961,14 +6005,20 @@ impl<'vm> HirEvaluator<'vm> {
                 body: func_body,
                 is_arrow,
                 ..
-              } => Value::Object(self.alloc_user_function_object(
-                &mut member_scope,
-                *func_body,
-                "",
-                *is_arrow,
-                /* is_constructable */ false,
-                /* name_binding */ None,
-              )?),
+              } => {
+                let func_span = self.get_body(*func_body)?.span;
+                Value::Object(self.alloc_user_function_object(
+                  &mut member_scope,
+                  *func_body,
+                  func_span.start,
+                  func_span.end,
+                  "",
+                  *is_arrow,
+                  /* is_constructable */ false,
+                  EcmaFunctionKind::ObjectMember,
+                  /* name_binding */ None,
+                )?)
+              }
               _ => self.eval_expr(&mut member_scope, body, *value)?,
             }
           } else {
@@ -6053,12 +6103,16 @@ impl<'vm> HirEvaluator<'vm> {
             }
           }
 
+          let getter_span = self.get_body(*getter_body)?.span;
           let func_obj = self.alloc_user_function_object(
             &mut member_scope,
             *getter_body,
+            getter_span.start,
+            getter_span.end,
             /* name */ "",
             /* is_arrow */ false,
             /* is_constructable */ false,
+            EcmaFunctionKind::ObjectMember,
             /* name_binding */ None,
           )?;
           crate::function_properties::set_function_name(&mut member_scope, func_obj, key, Some("get"))?;
@@ -6090,12 +6144,16 @@ impl<'vm> HirEvaluator<'vm> {
             }
           }
 
+          let setter_span = self.get_body(*setter_body)?.span;
           let func_obj = self.alloc_user_function_object(
             &mut member_scope,
             *setter_body,
+            setter_span.start,
+            setter_span.end,
             /* name */ "",
             /* is_arrow */ false,
             /* is_constructable */ false,
+            EcmaFunctionKind::ObjectMember,
             /* name_binding */ None,
           )?;
           crate::function_properties::set_function_name(&mut member_scope, func_obj, key, Some("set"))?;
@@ -6399,15 +6457,17 @@ impl<'vm> HirEvaluator<'vm> {
         };
         if let Some(body_id) = *body {
           // Allocate the compiled function object for the constructor body.
-          let body_func =
-            self.alloc_user_function_object(
-              scope,
-              body_id,
-              "constructor",
-              /* is_arrow */ false,
-              /* is_constructable */ true,
-              /* name_binding */ None,
-            )?;
+          let body_func = self.alloc_user_function_object(
+            scope,
+            body_id,
+            member.span.start,
+            member.span.end,
+            "constructor",
+            /* is_arrow */ false,
+            /* is_constructable */ true,
+            EcmaFunctionKind::ClassMember,
+            /* name_binding */ None,
+          )?;
           ctor_length = scope.heap().get_function(body_func)?.length;
 
           // Wrap it in a constructable native function so `class_constructor_construct` can delegate
@@ -6546,9 +6606,12 @@ impl<'vm> HirEvaluator<'vm> {
             let func_obj_member = self.alloc_user_function_object(
               &mut member_scope,
               *body_id,
+              member.span.start,
+              member.span.end,
               /* name */ "",
               /* is_arrow */ false,
               /* is_constructable */ false,
+              EcmaFunctionKind::ClassMember,
               /* name_binding */ None,
             )?;
             member_scope.push_root(Value::Object(func_obj_member))?;
