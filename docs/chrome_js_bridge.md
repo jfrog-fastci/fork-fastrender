@@ -84,6 +84,10 @@ by calling:
 install_chrome_api_bindings_vm_js(/* realm + host state */);
 ```
 
+Repo reality (today): this installer is not wired up in-tree yet because the `browser` binary still
+uses an egui-rendered chrome UI. Treat the function name above as the **intended** embedder API for
+the renderer-chrome workstream.
+
 Default “content page” realms must **not** call this function, so that:
 
 ```js
