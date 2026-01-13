@@ -7,6 +7,10 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    // Tool discovery depends on PATH (and PATHEXT on Windows). Track these so changes to the
+    // environment (e.g. installing `gmake` on macOS) reliably re-run the build script.
+    println!("cargo:rerun-if-env-changed=PATH");
+    println!("cargo:rerun-if-env-changed=PATHEXT");
 
     let target = env::var("TARGET").expect("TARGET not set");
     let host = env::var("HOST").expect("HOST not set");
