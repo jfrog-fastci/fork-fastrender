@@ -390,6 +390,481 @@ impl Document {
     false
   }
 
+  #[inline]
+  fn node_is_character_data_for_range(&self, node: NodeId) -> bool {
+    self
+      .nodes
+      .get(node.index())
+      .is_some_and(|n| matches!(n.kind, NodeKind::Text { .. } | NodeKind::Comment { .. } | NodeKind::ProcessingInstruction { .. }))
+  }
+
+  fn character_data_string_for_range(&self, node: NodeId) -> DomResult<&str> {
+    let node = self.node_checked(node)?;
+    match &node.kind {
+      NodeKind::Text { content } | NodeKind::Comment { content } => Ok(content.as_str()),
+      NodeKind::ProcessingInstruction { data, .. } => Ok(data.as_str()),
+      _ => Err(DomError::InvalidNodeType),
+    }
+  }
+
+  fn set_character_data_string_for_range(&mut self, node: NodeId, data: String) -> DomResult<()> {
+    let node = self.node_checked_mut(node)?;
+    match &mut node.kind {
+      NodeKind::Text { content } | NodeKind::Comment { content } => {
+        *content = data;
+        Ok(())
+      }
+      NodeKind::ProcessingInstruction { data: value, .. } => {
+        *value = data;
+        Ok(())
+      }
+      _ => Err(DomError::InvalidNodeType),
+    }
+  }
+
+  fn substring_character_data_for_range(
+    &self,
+    node: NodeId,
+    offset: usize,
+    count: usize,
+  ) -> DomResult<String> {
+    let data = self.character_data_string_for_range(node)?;
+    let units: Vec<u16> = data.encode_utf16().collect();
+    if offset > units.len() {
+      return Err(DomError::IndexSizeError);
+    }
+    let end = offset.saturating_add(count).min(units.len());
+    Ok(String::from_utf16_lossy(&units[offset..end]))
+  }
+
+  fn append_child_quiet_for_range(&mut self, parent: NodeId, child: NodeId) -> DomResult<()> {
+    self.node_checked(parent)?;
+    self.node_checked(child)?;
+    // Internal algorithms only use this helper for freshly created / detached clones.
+    debug_assert!(
+      self.nodes[child.index()].parent.is_none(),
+      "append_child_quiet_for_range requires a detached child"
+    );
+    self.nodes[child.index()].parent = Some(parent);
+    self.nodes[parent.index()].children.push(child);
+    Ok(())
+  }
+
+  fn append_document_fragment_contents_quiet_for_range(
+    &mut self,
+    parent: NodeId,
+    fragment: NodeId,
+  ) -> DomResult<()> {
+    self.node_checked(parent)?;
+    self.node_checked(fragment)?;
+    let moved_children = std::mem::take(&mut self.nodes[fragment.index()].children);
+    if moved_children.is_empty() {
+      return Ok(());
+    }
+    for &child in &moved_children {
+      if let Some(node) = self.nodes.get_mut(child.index()) {
+        node.parent = Some(parent);
+      }
+    }
+    self.nodes[parent.index()].children.extend(moved_children);
+    Ok(())
+  }
+
+  fn is_node_partially_contained_in_range(
+    &self,
+    node: NodeId,
+    start_node: NodeId,
+    end_node: NodeId,
+  ) -> bool {
+    let start_in = self.is_inclusive_descendant_for_range(start_node, node);
+    let end_in = self.is_inclusive_descendant_for_range(end_node, node);
+    start_in ^ end_in
+  }
+
+  fn is_node_contained_in_range(
+    &self,
+    node: NodeId,
+    start: BoundaryPoint,
+    end: BoundaryPoint,
+  ) -> DomResult<bool> {
+    let range_root = self.tree_root_for_range(start.node);
+    if self.tree_root_for_range(node) != range_root {
+      return Ok(false);
+    }
+    let len = self.node_length(node)?;
+    let after_start =
+      self.boundary_point_position(BoundaryPoint { node, offset: 0 }, start) == BoundaryPointPosition::After;
+    let before_end = self.boundary_point_position(BoundaryPoint { node, offset: len }, end)
+      == BoundaryPointPosition::Before;
+    Ok(after_start && before_end)
+  }
+
+  fn clone_contents_between(&mut self, start: BoundaryPoint, end: BoundaryPoint) -> DomResult<NodeId> {
+    // Spec: https://dom.spec.whatwg.org/#concept-range-clone
+    let fragment = self.create_document_fragment();
+    if start == end {
+      return Ok(fragment);
+    }
+
+    let (original_start_node, original_start_offset) = (start.node, start.offset);
+    let (original_end_node, original_end_offset) = (end.node, end.offset);
+
+    if original_start_node == original_end_node && self.node_is_character_data_for_range(original_start_node)
+    {
+      let clone = self.clone_node(original_start_node, /* deep */ false)?;
+      let data = self.substring_character_data_for_range(
+        original_start_node,
+        original_start_offset,
+        original_end_offset.saturating_sub(original_start_offset),
+      )?;
+      self.set_character_data_string_for_range(clone, data)?;
+      self.append_child_quiet_for_range(fragment, clone)?;
+      return Ok(fragment);
+    }
+
+    // 5-6. Compute common ancestor.
+    let mut common_ancestor = original_start_node;
+    let mut remaining = self.nodes.len() + 1;
+    while remaining > 0 && !self.is_inclusive_descendant_for_range(original_end_node, common_ancestor) {
+      remaining -= 1;
+      let Some(parent) = self.range_parent(common_ancestor) else {
+        break;
+      };
+      common_ancestor = parent;
+    }
+
+    let start_node = original_start_node;
+    let end_node = original_end_node;
+
+    let original_start_is_inclusive_ancestor_of_end =
+      self.is_inclusive_descendant_for_range(original_end_node, original_start_node);
+    let original_end_is_inclusive_ancestor_of_start =
+      self.is_inclusive_descendant_for_range(original_start_node, original_end_node);
+
+    let common_children: Vec<NodeId> = self.nodes[common_ancestor.index()].children.clone();
+
+    let first_partially_contained_child = if original_start_is_inclusive_ancestor_of_end {
+      None
+    } else {
+      common_children
+        .iter()
+        .copied()
+        .find(|&child| {
+          self.nodes.get(child.index()).is_some_and(|n| n.parent == Some(common_ancestor))
+            && self.is_node_partially_contained_in_range(child, start_node, end_node)
+        })
+    };
+
+    let last_partially_contained_child = if original_end_is_inclusive_ancestor_of_start {
+      None
+    } else {
+      common_children
+        .iter()
+        .rev()
+        .copied()
+        .find(|&child| {
+          self.nodes.get(child.index()).is_some_and(|n| n.parent == Some(common_ancestor))
+            && self.is_node_partially_contained_in_range(child, start_node, end_node)
+        })
+    };
+
+    let mut contained_children: Vec<NodeId> = Vec::new();
+    for child in common_children.iter().copied() {
+      if !self.nodes.get(child.index()).is_some_and(|n| n.parent == Some(common_ancestor)) {
+        continue;
+      }
+      if self.is_node_contained_in_range(child, start, end)? {
+        contained_children.push(child);
+      }
+    }
+
+    if contained_children.iter().any(|&id| matches!(self.nodes[id.index()].kind, NodeKind::Doctype { .. })) {
+      return Err(DomError::HierarchyRequestError);
+    }
+
+    if let Some(first) = first_partially_contained_child {
+      if self.node_is_character_data_for_range(first) {
+        let clone = self.clone_node(original_start_node, /* deep */ false)?;
+        let start_len = self.node_length(original_start_node)?;
+        let data = self.substring_character_data_for_range(
+          original_start_node,
+          original_start_offset,
+          start_len.saturating_sub(original_start_offset),
+        )?;
+        self.set_character_data_string_for_range(clone, data)?;
+        self.append_child_quiet_for_range(fragment, clone)?;
+      } else {
+        let clone = self.clone_node(first, /* deep */ false)?;
+        self.append_child_quiet_for_range(fragment, clone)?;
+
+        let end_offset = self.node_length(first)?;
+        let subfragment = self.clone_contents_between(
+          BoundaryPoint {
+            node: original_start_node,
+            offset: original_start_offset,
+          },
+          BoundaryPoint {
+            node: first,
+            offset: end_offset,
+          },
+        )?;
+        self.append_document_fragment_contents_quiet_for_range(clone, subfragment)?;
+      }
+    }
+
+    for child in contained_children {
+      let clone = self.clone_node(child, /* deep */ true)?;
+      self.append_child_quiet_for_range(fragment, clone)?;
+    }
+
+    if let Some(last) = last_partially_contained_child {
+      if self.node_is_character_data_for_range(last) {
+        let clone = self.clone_node(original_end_node, /* deep */ false)?;
+        let data = self.substring_character_data_for_range(original_end_node, 0, original_end_offset)?;
+        self.set_character_data_string_for_range(clone, data)?;
+        self.append_child_quiet_for_range(fragment, clone)?;
+      } else {
+        let clone = self.clone_node(last, /* deep */ false)?;
+        self.append_child_quiet_for_range(fragment, clone)?;
+
+        let subfragment = self.clone_contents_between(
+          BoundaryPoint { node: last, offset: 0 },
+          BoundaryPoint {
+            node: original_end_node,
+            offset: original_end_offset,
+          },
+        )?;
+        self.append_document_fragment_contents_quiet_for_range(clone, subfragment)?;
+      }
+    }
+
+    Ok(fragment)
+  }
+
+  pub fn range_clone_contents(&mut self, range: RangeId) -> DomResult<NodeId> {
+    let (start, end) = {
+      let r = self.range(range)?;
+      (r.start, r.end)
+    };
+    self.clone_contents_between(start, end)
+  }
+
+  fn extract_contents_between_impl(
+    &mut self,
+    start: BoundaryPoint,
+    end: BoundaryPoint,
+  ) -> DomResult<(NodeId, Option<BoundaryPoint>)> {
+    // Spec: https://dom.spec.whatwg.org/#concept-range-extract
+    let fragment = self.create_document_fragment();
+    if start == end {
+      return Ok((fragment, None));
+    }
+
+    let (original_start_node, original_start_offset) = (start.node, start.offset);
+    let (original_end_node, original_end_offset) = (end.node, end.offset);
+
+    if original_start_node == original_end_node && self.node_is_character_data_for_range(original_start_node)
+    {
+      let clone = self.clone_node(original_start_node, /* deep */ false)?;
+      let data = self.substring_character_data_for_range(
+        original_start_node,
+        original_start_offset,
+        original_end_offset.saturating_sub(original_start_offset),
+      )?;
+      self.set_character_data_string_for_range(clone, data)?;
+      self.append_child_quiet_for_range(fragment, clone)?;
+      let _ = self.replace_data(
+        original_start_node,
+        original_start_offset,
+        original_end_offset.saturating_sub(original_start_offset),
+        "",
+      )?;
+      return Ok((
+        fragment,
+        Some(BoundaryPoint {
+          node: original_start_node,
+          offset: original_start_offset,
+        }),
+      ));
+    }
+
+    // 5-6. Compute common ancestor.
+    let mut common_ancestor = original_start_node;
+    let mut remaining = self.nodes.len() + 1;
+    while remaining > 0 && !self.is_inclusive_descendant_for_range(original_end_node, common_ancestor) {
+      remaining -= 1;
+      let Some(parent) = self.range_parent(common_ancestor) else {
+        break;
+      };
+      common_ancestor = parent;
+    }
+
+    let start_node = original_start_node;
+    let end_node = original_end_node;
+
+    let original_start_is_inclusive_ancestor_of_end =
+      self.is_inclusive_descendant_for_range(original_end_node, original_start_node);
+    let original_end_is_inclusive_ancestor_of_start =
+      self.is_inclusive_descendant_for_range(original_start_node, original_end_node);
+
+    let common_children: Vec<NodeId> = self.nodes[common_ancestor.index()].children.clone();
+
+    let first_partially_contained_child = if original_start_is_inclusive_ancestor_of_end {
+      None
+    } else {
+      common_children
+        .iter()
+        .copied()
+        .find(|&child| {
+          self.nodes.get(child.index()).is_some_and(|n| n.parent == Some(common_ancestor))
+            && self.is_node_partially_contained_in_range(child, start_node, end_node)
+        })
+    };
+
+    let last_partially_contained_child = if original_end_is_inclusive_ancestor_of_start {
+      None
+    } else {
+      common_children
+        .iter()
+        .rev()
+        .copied()
+        .find(|&child| {
+          self.nodes.get(child.index()).is_some_and(|n| n.parent == Some(common_ancestor))
+            && self.is_node_partially_contained_in_range(child, start_node, end_node)
+        })
+    };
+
+    let mut contained_children: Vec<NodeId> = Vec::new();
+    for child in common_children.iter().copied() {
+      if !self.nodes.get(child.index()).is_some_and(|n| n.parent == Some(common_ancestor)) {
+        continue;
+      }
+      if self.is_node_contained_in_range(child, start, end)? {
+        contained_children.push(child);
+      }
+    }
+
+    if contained_children.iter().any(|&id| matches!(self.nodes[id.index()].kind, NodeKind::Doctype { .. })) {
+      return Err(DomError::HierarchyRequestError);
+    }
+
+    // 13-15. Compute where to collapse the range after extraction.
+    let collapse_point = if original_start_is_inclusive_ancestor_of_end {
+      BoundaryPoint {
+        node: original_start_node,
+        offset: original_start_offset,
+      }
+    } else {
+      let mut reference_node = original_start_node;
+      let mut remaining = self.nodes.len() + 1;
+      while remaining > 0 {
+        remaining -= 1;
+        let Some(parent) = self.range_parent(reference_node) else {
+          break;
+        };
+        if self.is_inclusive_descendant_for_range(original_end_node, parent) {
+          break;
+        }
+        reference_node = parent;
+      }
+
+      if let Some(new_node) = self.range_parent(reference_node) {
+        let idx = self.node_index(reference_node).unwrap_or(0);
+        BoundaryPoint {
+          node: new_node,
+          offset: idx.saturating_add(1),
+        }
+      } else {
+        BoundaryPoint {
+          node: original_start_node,
+          offset: original_start_offset,
+        }
+      }
+    };
+
+    // 16-20. Mutate the tree while building `fragment`.
+    if let Some(first) = first_partially_contained_child {
+      if self.node_is_character_data_for_range(first) {
+        let clone = self.clone_node(original_start_node, /* deep */ false)?;
+        let start_len = self.node_length(original_start_node)?;
+        let data = self.substring_character_data_for_range(
+          original_start_node,
+          original_start_offset,
+          start_len.saturating_sub(original_start_offset),
+        )?;
+        self.set_character_data_string_for_range(clone, data)?;
+        self.append_child_quiet_for_range(fragment, clone)?;
+        let _ = self.replace_data(
+          original_start_node,
+          original_start_offset,
+          start_len.saturating_sub(original_start_offset),
+          "",
+        )?;
+      } else {
+        let clone = self.clone_node(first, /* deep */ false)?;
+        self.append_child_quiet_for_range(fragment, clone)?;
+        let end_offset = self.node_length(first)?;
+        let subfragment = self.extract_contents_between(
+          BoundaryPoint {
+            node: original_start_node,
+            offset: original_start_offset,
+          },
+          BoundaryPoint {
+            node: first,
+            offset: end_offset,
+          },
+        )?;
+        self.append_document_fragment_contents_quiet_for_range(clone, subfragment)?;
+      }
+    }
+
+    for child in contained_children {
+      let _ = self.append_child(fragment, child)?;
+    }
+
+    if let Some(last) = last_partially_contained_child {
+      if self.node_is_character_data_for_range(last) {
+        let clone = self.clone_node(original_end_node, /* deep */ false)?;
+        let data = self.substring_character_data_for_range(original_end_node, 0, original_end_offset)?;
+        self.set_character_data_string_for_range(clone, data)?;
+        self.append_child_quiet_for_range(fragment, clone)?;
+        let _ = self.replace_data(original_end_node, 0, original_end_offset, "")?;
+      } else {
+        let clone = self.clone_node(last, /* deep */ false)?;
+        self.append_child_quiet_for_range(fragment, clone)?;
+        let subfragment = self.extract_contents_between(
+          BoundaryPoint { node: last, offset: 0 },
+          BoundaryPoint {
+            node: original_end_node,
+            offset: original_end_offset,
+          },
+        )?;
+        self.append_document_fragment_contents_quiet_for_range(clone, subfragment)?;
+      }
+    }
+
+    Ok((fragment, Some(collapse_point)))
+  }
+
+  fn extract_contents_between(&mut self, start: BoundaryPoint, end: BoundaryPoint) -> DomResult<NodeId> {
+    let (fragment, _collapse) = self.extract_contents_between_impl(start, end)?;
+    Ok(fragment)
+  }
+
+  pub fn range_extract_contents(&mut self, range: RangeId) -> DomResult<NodeId> {
+    let (start, end) = {
+      let r = self.range(range)?;
+      (r.start, r.end)
+    };
+    let (fragment, collapse_to) = self.extract_contents_between_impl(start, end)?;
+    if let Some(bp) = collapse_to {
+      let r = self.range_mut(range)?;
+      r.start = bp;
+      r.end = bp;
+    }
+    Ok(fragment)
+  }
+
   /// Live range pre-remove steps.
   ///
   /// Spec: https://dom.spec.whatwg.org/#concept-live-range-pre-remove

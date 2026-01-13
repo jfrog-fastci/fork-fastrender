@@ -112,3 +112,54 @@ fn range_endpoints_update_after_replace_data_deletion_processing_instruction() {
 
   assert_range_collapsed(&doc, range, pi, 1);
 }
+
+#[test]
+fn range_clone_extract_does_not_leak_persistent_subranges() {
+  let html = "<!doctype html><div id=root><b id=b>hello</b><span id=mid>mid</span><i id=i>world</i></div>";
+
+  // cloneContents should not allocate persistent subranges.
+  {
+    let mut doc: Document = parse_html(html).unwrap();
+    let b = doc.get_element_by_id("b").unwrap();
+    let i = doc.get_element_by_id("i").unwrap();
+    let b_text = doc.node(b).children[0];
+    let i_text = doc.node(i).children[0];
+
+    let range = doc.create_range();
+    doc.range_set_start(range, b_text, 1).unwrap();
+    doc.range_set_end(range, i_text, 3).unwrap();
+
+    let ranges_len = doc.ranges.len();
+    for _ in 0..200 {
+      let _ = doc.range_clone_contents(range).unwrap();
+      assert_eq!(
+        doc.ranges.len(),
+        ranges_len,
+        "range_clone_contents must not allocate persistent subranges"
+      );
+    }
+  }
+
+  // extractContents should not allocate persistent subranges either.
+  {
+    let mut doc: Document = parse_html(html).unwrap();
+    let b = doc.get_element_by_id("b").unwrap();
+    let i = doc.get_element_by_id("i").unwrap();
+    let b_text = doc.node(b).children[0];
+    let i_text = doc.node(i).children[0];
+
+    let range = doc.create_range();
+    doc.range_set_start(range, b_text, 1).unwrap();
+    doc.range_set_end(range, i_text, 3).unwrap();
+
+    let ranges_len = doc.ranges.len();
+    for _ in 0..200 {
+      let _ = doc.range_extract_contents(range).unwrap();
+      assert_eq!(
+        doc.ranges.len(),
+        ranges_len,
+        "range_extract_contents must not allocate persistent subranges"
+      );
+    }
+  }
+}
