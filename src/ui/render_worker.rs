@@ -76,6 +76,17 @@ pub fn reset_renderer_build_count_for_test() {
   UI_WORKER_RENDERER_BUILD_COUNT.store(0, Ordering::Relaxed);
 }
 
+/// Navigation URL that triggers the UI worker crash test when opted in.
+#[cfg(feature = "browser_ui")]
+pub const BROWSER_WORKER_CRASH_TEST_URL: &str = "crash://panic";
+
+/// Opt-in runtime toggle for the UI worker crash test.
+///
+/// This intentionally requires an explicit environment/runtime toggle so production builds cannot be
+/// crashed just by navigating to the URL.
+#[cfg(feature = "browser_ui")]
+pub const ENV_BROWSER_WORKER_CRASH_TEST: &str = "FASTR_TEST_BROWSER_WORKER_CRASH";
+
 /// Handle to a spawned UI render worker thread.
 ///
 /// The UI thread sends [`UiToWorker`] messages over `ui_tx`, and receives [`WorkerToUi`] updates on
@@ -2485,10 +2496,19 @@ impl BrowserRuntime {
       return;
     }
 
-    if request
-      .url
-      .get(0..8)
-      .is_some_and(|prefix| prefix.eq_ignore_ascii_case("crash://"))
+    // Test hook: allow integration tests to trigger a deterministic worker crash.
+    //
+    // This is opt-in via `ENV_BROWSER_WORKER_CRASH_TEST` so production builds cannot be crashed
+    // just by navigating to a `crash://...` URL.
+    //
+    // Restrict this to typed navigations so untrusted pages cannot crash the worker via link clicks.
+    #[cfg(feature = "browser_ui")]
+    if reason == NavigationReason::TypedUrl
+      && self.runtime_toggles.truthy(ENV_BROWSER_WORKER_CRASH_TEST)
+      && request
+        .url
+        .get(0..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("crash://"))
     {
       panic!(
         "intentional crash triggered via internal navigation request to {}",
@@ -5515,7 +5535,6 @@ impl BrowserRuntime {
   fn run_navigation(&mut self, tab_id: TabId, request: NavigationRequest) -> Option<JobOutput> {
     let preempt_cancel_callback = self.preempt_cancel_callback_for_job(tab_id);
     let request_for_retry = request.clone();
-    let runtime_toggles = Arc::clone(&self.runtime_toggles);
 
     let NavigationRequest {
       request,

@@ -4047,6 +4047,7 @@ fn run_headless_crash_smoke_mode(
   use fastrender::text::font_db::FontConfig;
   use fastrender::ui::cancel::CancelGens;
   use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
+  use fastrender::ui::render_worker::{BROWSER_WORKER_CRASH_TEST_URL, ENV_BROWSER_WORKER_CRASH_TEST};
   use std::sync::mpsc::RecvTimeoutError;
   use std::time::{Duration, Instant};
   use std::collections::HashMap;
@@ -4059,13 +4060,22 @@ fn run_headless_crash_smoke_mode(
       .build_global();
   }
 
+  // Opt in to the crash trigger in `render_worker` without mutating the process environment. Keep
+  // other `FASTR_*` flags intact so configuration behaves like a normal browser session.
+  let mut raw = std::env::vars()
+    .filter(|(k, _)| k.starts_with("FASTR_"))
+    .collect::<std::collections::HashMap<_, _>>();
+  raw.insert(ENV_BROWSER_WORKER_CRASH_TEST.to_string(), "1".to_string());
+  let toggles = std::sync::Arc::new(fastrender::debug::runtime::RuntimeToggles::from_map(raw));
+  fastrender::debug::runtime::update_runtime_toggles(toggles);
+
   // Bounded but generous: under debug builds / CI contention the worker may take a while to spin up
   // before hitting the crash URL.
   const TIMEOUT: Duration = Duration::from_secs(60);
   const VIEWPORT_CSS: (u32, u32) = (64, 64);
   const DPR: f32 = 1.0;
 
-  let crash_url = "crash://panic".to_string();
+  let crash_url = BROWSER_WORKER_CRASH_TEST_URL.to_string();
 
   // Enable crash URLs explicitly for this smoke-test mode.
   let factory = {

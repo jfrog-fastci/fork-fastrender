@@ -32,4 +32,3 @@ fn browser_headless_crash_smoke_mode_runs_and_reports_success() {
     "expected headless crash smoke success marker, got stdout:\n{stdout}"
   );
 }
-
