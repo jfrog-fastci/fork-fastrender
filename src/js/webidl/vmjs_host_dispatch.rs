@@ -4683,24 +4683,16 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       ("Element", "replaceWith", 0) => {
         let (node_id, _obj) = require_element_receiver(vm, scope, receiver)?;
 
-        // 1) If receiver has no parent, return undefined.
-        let parent = self.with_dom_host(vm, |host| Ok(host.with_dom(|dom| dom.parent(node_id))))?;
-        let Some(parent_id) = (match parent {
-          Ok(parent) => parent,
-          Err(err) => {
-            let class = self.dom_exception_class_for_realm(vm, scope)?;
-            return Err(throw_dom_error(scope, class, err));
-          }
-        }) else {
-          return Ok(Value::Undefined);
-        };
-
         enum ReplaceWithItem {
           Node(NodeId),
           Text(String),
         }
 
-        // 2) Convert args: (Node or DOMString)...
+        // Convert args: (Node or DOMString)...
+        //
+        // Spec note: WebIDL argument conversion happens before the `replaceWith` algorithm runs.
+        // Since ToString can invoke user code, we must not read `parent`/`nextSibling` until after
+        // conversion.
         let mut items: Vec<ReplaceWithItem> = Vec::with_capacity(args.len());
         for &arg in args {
           match require_dom_platform_mut(vm)?.require_node_id(scope.heap(), arg) {
@@ -4722,16 +4714,35 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           }
         }
 
-        // 3) If args are empty, remove receiver from its parent.
-        // 4) Otherwise, build a DocumentFragment, append converted nodes, and replace receiver with
-        //    the fragment (DocumentFragment replacement splices its children).
+        // Spec: if the node is detached after argument conversion, return undefined.
+        //
+        // Otherwise:
+        // - If args are empty, remove receiver from its parent.
+        // - Else, convert args to a DocumentFragment, then:
+        //   - If receiver is still a child of `parent`, replace it.
+        //   - Otherwise, insert before `viableNextSibling` (handles cases where receiver was moved
+        //     during conversion, e.g. `el.replaceWith(el)`).
         let result = self.with_dom_host(vm, |host| {
           Ok(host.mutate_dom(|dom| {
             let generation = dom.mutation_generation();
-            let result: Result<(), DomError> = (|| {
+            let result: Result<Option<()>, DomError> = (|| {
+              let Some(parent_id) = dom.parent(node_id)? else {
+                return Ok(None);
+              };
+
+              // `viableNextSibling` is captured before conversion can move nodes out of the parent.
+              let mut viable_next_sibling = dom.next_sibling(node_id);
+              for item in &items {
+                if let ReplaceWithItem::Node(id) = item {
+                  if viable_next_sibling == Some(*id) {
+                    viable_next_sibling = dom.next_sibling(*id);
+                  }
+                }
+              }
+
               if items.is_empty() {
                 dom.remove_child(parent_id, node_id)?;
-                return Ok(());
+                return Ok(Some(()));
               }
 
               let fragment = dom.create_document_fragment();
@@ -4743,8 +4754,12 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                 dom.append_child(fragment, child_id)?;
               }
 
-              dom.replace_child(parent_id, fragment, node_id)?;
-              Ok(())
+              if dom.parent(node_id)? == Some(parent_id) {
+                dom.replace_child(parent_id, fragment, node_id)?;
+              } else {
+                dom.insert_before(parent_id, fragment, viable_next_sibling)?;
+              }
+              Ok(Some(()))
             })();
 
             let changed = dom.mutation_generation() != generation;
@@ -4753,7 +4768,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         })?;
 
         match result {
-          Ok(()) => Ok(Value::Undefined),
+          Ok(Some(())) | Ok(None) => Ok(Value::Undefined),
           Err(err) => {
             let class = self.dom_exception_class_for_realm(vm, scope)?;
             Err(throw_dom_error(scope, class, err))
@@ -5130,6 +5145,120 @@ mod element_replace_with_tests {
           document.getElementById('a').replaceWith({ toString() { return 'x' } });
           return document.getElementById('a') === null
             && document.getElementById('root').innerHTML === 'x';
+        })()
+      "#,
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn element_replace_with_self_is_noop() -> Result<(), VmError> {
+    let dom =
+      crate::dom2::parse_html("<!doctype html><html><body></body></html>").expect("parse_html");
+    let mut doc_host = DocumentHostState::new(dom);
+
+    let mut window = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let global = window.global_object();
+
+    let mut webidl_host = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(global);
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut doc_host,
+      &mut window,
+      Some(&mut webidl_host),
+    );
+
+    let out = window.exec_script_with_host_and_hooks(
+      &mut doc_host,
+      &mut hooks,
+      r#"
+        (() => {
+          document.body.innerHTML = '<div id="root"><span id="a"></span><span id="b"></span></div>';
+          const a = document.getElementById('a');
+          a.replaceWith(a);
+          return document.getElementById('root').innerHTML === '<span id="a"></span><span id="b"></span>';
+        })()
+      "#,
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn element_replace_with_updates_viable_next_sibling_when_it_is_moved() -> Result<(), VmError> {
+    let dom =
+      crate::dom2::parse_html("<!doctype html><html><body></body></html>").expect("parse_html");
+    let mut doc_host = DocumentHostState::new(dom);
+
+    let mut window = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let global = window.global_object();
+
+    let mut webidl_host = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(global);
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut doc_host,
+      &mut window,
+      Some(&mut webidl_host),
+    );
+
+    let out = window.exec_script_with_host_and_hooks(
+      &mut doc_host,
+      &mut hooks,
+      r#"
+        (() => {
+          document.body.innerHTML = '<div id="root"><span id="a"></span><span id="b"></span><span id="c"></span></div>';
+          const a = document.getElementById('a');
+          const b = document.getElementById('b');
+          a.replaceWith(b, a);
+          return document.getElementById('root').innerHTML === '<span id="b"></span><span id="a"></span><span id="c"></span>';
+        })()
+      "#,
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn element_replace_with_reads_parent_after_argument_to_string_side_effects() -> Result<(), VmError> {
+    let dom =
+      crate::dom2::parse_html("<!doctype html><html><body></body></html>").expect("parse_html");
+    let mut doc_host = DocumentHostState::new(dom);
+
+    let mut window = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let global = window.global_object();
+
+    let mut webidl_host = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(global);
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut doc_host,
+      &mut window,
+      Some(&mut webidl_host),
+    );
+
+    let out = window.exec_script_with_host_and_hooks(
+      &mut doc_host,
+      &mut hooks,
+      r#"
+        (() => {
+          document.body.innerHTML = '<div id="root"><span id="a"></span></div>';
+          const root = document.getElementById('root');
+          const a = document.getElementById('a');
+          a.replaceWith({
+            toString() {
+              // If `replaceWith` reads `parent` before argument conversion, this removal will cause a
+              // later DOM mutation to fail (NotFoundError). Spec: argument conversion happens first.
+              root.innerHTML = '';
+              return 'x';
+            }
+          });
+          return document.getElementById('a') === null && root.innerHTML === '';
         })()
       "#,
     )?;
