@@ -1039,6 +1039,26 @@ impl BrowserTabController {
         }
         Ok(out)
       }
+      InteractionAction::OpenMediaControls { media_node_id, kind } => {
+        let mut out = vec![WorkerToUi::MediaControlsOpened {
+          tab_id: self.tab_id,
+          node_id: media_node_id,
+          kind,
+          anchor_css: self
+            .select_anchor_css(media_node_id)
+            .filter(|rect| {
+              rect.origin.x.is_finite()
+                && rect.origin.y.is_finite()
+                && rect.size.width.is_finite()
+                && rect.size.height.is_finite()
+            })
+            .unwrap_or_else(|| Rect::from_xywh(viewport_point.x, viewport_point.y, 1.0, 1.0)),
+        }];
+        if changed {
+          out.extend(self.paint_if_needed()?);
+        }
+        Ok(out)
+      }
       _ => {
         if changed {
           self.paint_if_needed()

@@ -17,7 +17,7 @@ use crate::tree::box_tree::SelectControl;
 use crate::tree::box_tree::SelectItem;
 use crate::tree::fragment_tree::FragmentTree;
 use crate::tree::fragment_tree::{FragmentContent, HitTestRoot};
-use crate::ui::messages::{PointerButton, PointerModifiers};
+use crate::ui::messages::{MediaElementKind, PointerButton, PointerModifiers};
 use crate::interaction::selection_serialize::{
   serialize_document_selection, DocumentSelection, DocumentSelectionPoint, DocumentSelectionRange,
 };
@@ -112,6 +112,11 @@ pub enum InteractionAction {
     input_node_id: usize,
     multiple: bool,
     accept: Option<String>,
+  },
+  /// Request that the UI show native media controls for a `<video>`/`<audio>` element.
+  OpenMediaControls {
+    media_node_id: usize,
+    kind: MediaElementKind,
   },
 }
 
@@ -2215,6 +2220,23 @@ fn is_button(node: &DomNode) -> bool {
   node
     .tag_name()
     .is_some_and(|tag| tag.eq_ignore_ascii_case("button"))
+}
+
+fn media_controls_kind(node: &DomNode) -> Option<MediaElementKind> {
+  let tag = node.tag_name()?;
+  if tag.eq_ignore_ascii_case("video") {
+    return node
+      .get_attribute_ref("controls")
+      .is_some()
+      .then_some(MediaElementKind::Video);
+  }
+  if tag.eq_ignore_ascii_case("audio") {
+    return node
+      .get_attribute_ref("controls")
+      .is_some()
+      .then_some(MediaElementKind::Audio);
+  }
+  None
 }
 
 fn is_details(node: &DomNode) -> bool {
@@ -8092,6 +8114,13 @@ impl InteractionEngine {
                 };
               }
             }
+          }
+        } else if is_primary_button {
+          if let Some(kind) = index.node(target_id).and_then(media_controls_kind) {
+            action = InteractionAction::OpenMediaControls {
+              media_node_id: target_id,
+              kind,
+            };
           }
         } else {
           // If the click happened within a details summary but did not resolve to a focusable target

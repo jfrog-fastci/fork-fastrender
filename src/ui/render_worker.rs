@@ -4440,6 +4440,12 @@ impl BrowserRuntime {
             &scroll_snapshot,
             *input_node_id,
           ),
+          InteractionAction::OpenMediaControls { media_node_id, .. } => styled_node_anchor_css(
+            box_tree,
+            fragment_tree,
+            &scroll_snapshot,
+            *media_node_id,
+          ),
           _ => None,
         };
 
@@ -4894,6 +4900,25 @@ impl BrowserRuntime {
           accept,
           anchor_css,
         });
+        if dom_changed || scroll_changed {
+          tab.needs_repaint = true;
+        }
+      }
+      InteractionAction::OpenMediaControls { media_node_id, kind } => {
+        // Prefer anchoring the overlay to the `<video>`/`<audio>` box, falling back to the cursor
+        // position when we cannot resolve the layout geometry (e.g. missing prepared tree).
+        let cursor_anchor_css = Rect::from_xywh(viewport_point.x, viewport_point.y, 1.0, 1.0);
+        let anchor_css = anchor_css
+          .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+          .unwrap_or(cursor_anchor_css);
+
+        let _ = self.ui_tx.send(WorkerToUi::MediaControlsOpened {
+          tab_id,
+          node_id: media_node_id,
+          kind,
+          anchor_css,
+        });
+
         if dom_changed || scroll_changed {
           tab.needs_repaint = true;
         }
