@@ -5533,9 +5533,30 @@ impl InteractionEngine {
 
     let mut click_target = if click_qualifies { down_semantic } else { None };
     // `<details>/<summary>`: clicking the "details summary" toggles the parent `<details open>`
-    // attribute. Compute this from the original semantic target before label resolution so summary
-    // clicks inside a `<label>` still toggle.
-    let summary_toggle = click_target.and_then(|id| nearest_details_summary(&index, id));
+    // attribute.
+    //
+    // We consider it a summary "click" when both the pointer-down and pointer-up semantic targets
+    // are within the same details-summary subtree. This matches typical activation behavior for
+    // nested content (e.g. `<summary><span>...</span></summary>`): drifting between descendants
+    // should still toggle the `<details>`.
+    //
+    // Compute this from the original semantic targets before label resolution so summary clicks
+    // inside a `<label>` still toggle.
+    let summary_toggle = if suppress_click {
+      None
+    } else {
+      match (down_semantic, up_semantic) {
+        (Some(down), Some(up)) => {
+          let down_summary = nearest_details_summary(&index, down);
+          let up_summary = nearest_details_summary(&index, up);
+          match (down_summary, up_summary) {
+            (Some(down_summary), Some(up_summary)) if down_summary == up_summary => Some(down_summary),
+            _ => None,
+          }
+        }
+        _ => None,
+      }
+    };
     if is_primary_button {
       if let Some(target_id) = click_target {
         if index.node(target_id).is_some_and(is_label) {
@@ -5555,13 +5576,6 @@ impl InteractionEngine {
 
     if click_qualifies {
       if let Some(target_id) = click_target {
-        if is_primary_button {
-          if let Some((summary_id, details_id)) = summary_toggle {
-            if !node_or_ancestor_is_inert(&index, summary_id) {
-              dom_changed |= toggle_details_open(&mut index, details_id);
-            }
-          }
-        }
         if node_or_ancestor_is_inert(&index, target_id) {
           // Inert subtrees are not interactive: do not navigate, focus, or mutate form state.
         } else if index.node(target_id).is_some_and(is_select) {
@@ -5610,6 +5624,18 @@ impl InteractionEngine {
             }
           }
         } else {
+          // If the click happened within a details summary but did not resolve to a focusable target
+          // (e.g. `<summary><span>...</span></summary>`), focus the summary like a native button.
+          if is_primary_button {
+            if let Some((summary_id, _details_id)) = summary_toggle {
+              if !node_or_ancestor_is_inert(&index, summary_id) {
+                if !is_focusable_interactive_element(&index, target_id) {
+                  dom_changed |= self.set_focus(&mut index, Some(summary_id), false);
+                }
+              }
+            }
+          }
+
           if is_primary_button && is_focusable_interactive_element(&index, target_id) {
             dom_changed |= self.set_focus(&mut index, Some(target_id), false);
           }
@@ -5837,6 +5863,21 @@ impl InteractionEngine {
         });
         if !clicked_focusable && !down_prevents_blur && prev_focus.is_some() {
           dom_changed |= self.set_focus(&mut index, None, false);
+        }
+      }
+    }
+
+    // Apply the default open/close toggle for `<details>` when the click is within its details
+    // summary.
+    if is_primary_button {
+      if let Some((summary_id, details_id)) = summary_toggle {
+        if !node_or_ancestor_is_inert(&index, summary_id) {
+          dom_changed |= toggle_details_open(&mut index, details_id);
+          // If there is no focusable semantic click target (e.g. pointer-up resolved to a sibling
+          // element), still focus the summary.
+          if click_target.is_none() {
+            dom_changed |= self.set_focus(&mut index, Some(summary_id), false);
+          }
         }
       }
     }

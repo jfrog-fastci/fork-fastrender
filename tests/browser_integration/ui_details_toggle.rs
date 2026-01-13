@@ -51,6 +51,27 @@ fn details_fixture_html() -> &'static str {
           <summary id="s">Title</summary>
           <div id="content">Hidden</div>
         </details>
+     </body>
+    </html>"#
+}
+
+fn details_nested_span_fixture_html() -> &'static str {
+  r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          summary { position: absolute; left: 0; top: 0; width: 200px; height: 40px; }
+          #inner { display: block; width: 40px; height: 40px; }
+          #content { position: absolute; left: 0; top: 50px; width: 200px; height: 40px; }
+        </style>
+      </head>
+      <body>
+        <details id="d">
+          <summary id="s"><span id="inner">Title</span></summary>
+          <div id="content">Hidden</div>
+        </details>
       </body>
     </html>"#
 }
@@ -146,3 +167,50 @@ fn details_summary_is_tab_focusable_and_space_toggles_open() -> Result<()> {
   Ok(())
 }
 
+#[test]
+fn details_summary_click_on_descendant_and_release_elsewhere_still_toggles_and_focuses() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (240, 120);
+  let url = "https://example.com/index.html";
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    details_nested_span_fixture_html(),
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  let summary_id = node_id_by_id_attr(controller.document().dom(), "s");
+
+  assert!(
+    find_element_by_id(controller.document().dom(), "d")
+      .get_attribute_ref("open")
+      .is_none(),
+    "fixture <details> should start closed"
+  );
+
+  let down = (10.0, 10.0); // inside #inner
+  let up = (190.0, 10.0); // inside <summary> but outside #inner
+  let _ =
+    controller.handle_message(support::pointer_down(tab_id, down, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, up, PointerButton::Primary))?;
+
+  assert!(
+    find_element_by_id(controller.document().dom(), "d")
+      .get_attribute_ref("open")
+      .is_some(),
+    "expected click within <summary> (even across descendants) to toggle parent <details open>"
+  );
+  assert_eq!(
+    controller.interaction_state().focused,
+    Some(summary_id),
+    "clicking the details summary should focus the <summary> element"
+  );
+
+  Ok(())
+}
