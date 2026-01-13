@@ -405,7 +405,7 @@ impl VmJsBrowserTabExecutor {
     if !event_loop.is_idle() {
       return false;
     }
-    if event_loop.next_timer_due_time().is_some() {
+    if event_loop.has_pending_timers() {
       return false;
     }
     if event_loop.has_pending_animation_frame_callbacks() {

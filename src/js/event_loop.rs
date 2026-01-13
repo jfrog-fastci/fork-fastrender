@@ -602,6 +602,16 @@ impl<Host: 'static> EventLoop<Host> {
     Some(due.saturating_sub(self.now()))
   }
 
+  /// Returns the duration until the next scheduled timer becomes due, if any.
+  ///
+  /// This is a convenience wrapper around [`Self::next_timer_due_time`]. Like that method, it
+  /// discards stale heap entries before returning.
+  ///
+  /// If the next timer is already due, this returns `Some(Duration::ZERO)`.
+  pub fn duration_until_next_timer(&mut self) -> Option<Duration> {
+    self.next_timer_due_in()
+  }
+
   pub fn queue_limits(&self) -> QueueLimits {
     self.queue_limits
   }
@@ -619,7 +629,8 @@ impl<Host: 'static> EventLoop<Host> {
 
   /// Whether there is any runnable work (tasks or microtasks) queued.
   ///
-  /// This does *not* consider future timers that are not yet due.
+  /// This does *not* consider timers that are scheduled but not yet due; see
+  /// [`EventLoop::has_pending_timers`] / [`EventLoop::duration_until_next_timer`].
   pub fn is_idle(&self) -> bool {
     self.pending_tasks == 0
       && self.microtask_queue.is_empty()
@@ -627,8 +638,18 @@ impl<Host: 'static> EventLoop<Host> {
       && self.idle_callback_queue.is_empty()
   }
 
+  /// Whether any timers are currently scheduled (`setTimeout`/`setInterval`).
+  ///
+  /// This reports whether any timers exist at all, regardless of whether they are due yet.
+  /// This is distinct from [`EventLoop::is_idle`], which only considers *runnable* work (tasks and
+  /// microtasks) and can be true even when future timers are pending.
   pub fn has_pending_timers(&self) -> bool {
     !self.timers.is_empty()
+  }
+
+  /// Returns the number of currently scheduled timers.
+  pub fn pending_timer_count(&self) -> usize {
+    self.timers.len()
   }
 
   pub fn has_pending_animation_frame_callbacks(&self) -> bool {
@@ -4824,6 +4845,42 @@ mod tests {
       ticks: usize,
       interval_id: Option<TimerId>,
       times: Vec<Duration>,
+    }
+
+    #[test]
+    fn pending_timer_state_is_exposed_for_host_scheduling() -> Result<()> {
+      let clock = Arc::new(VirtualClock::new());
+      let mut event_loop = EventLoop::<Host>::with_clock(clock.clone());
+
+      assert!(!event_loop.has_pending_timers());
+      assert_eq!(event_loop.pending_timer_count(), 0);
+      assert_eq!(event_loop.duration_until_next_timer(), None);
+
+      event_loop.set_timeout(Duration::from_millis(10), |host, _| {
+        host.ticks += 1;
+        Ok(())
+      })?;
+
+      // The event loop is still "idle" (no runnable work queued), but it is not quiescent: a future
+      // timer is scheduled.
+      assert!(event_loop.is_idle());
+      assert!(event_loop.has_pending_timers());
+      assert_eq!(event_loop.pending_timer_count(), 1);
+      assert_eq!(
+        event_loop.duration_until_next_timer(),
+        Some(Duration::from_millis(10))
+      );
+
+      clock.advance(Duration::from_millis(10));
+      let mut host = Host::default();
+      assert_eq!(
+        event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+        RunUntilIdleOutcome::Idle
+      );
+      assert_eq!(host.ticks, 1);
+      assert!(!event_loop.has_pending_timers());
+      assert_eq!(event_loop.pending_timer_count(), 0);
+      Ok(())
     }
 
     #[test]
