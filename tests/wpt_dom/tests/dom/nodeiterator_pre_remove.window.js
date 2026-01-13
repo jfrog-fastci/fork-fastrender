@@ -62,6 +62,61 @@ test(() => {
   const a1 = document.createElement("span");
   a.appendChild(a1);
 
+  root.appendChild(a);
+  document.body.appendChild(root);
+
+  const it = document.createNodeIterator(root, NodeFilter.SHOW_ALL, null);
+
+  // Move into `a`'s subtree and flip pointerBeforeReferenceNode to true without moving.
+  it.nextNode(); // root
+  it.nextNode(); // a
+  it.nextNode(); // a1
+  it.previousNode(); // a1 (toggle pointerBeforeReferenceNode => true)
+
+  assert_equals(it.referenceNode, a1);
+  assert_true(it.pointerBeforeReferenceNode);
+
+  // Removing `a` leaves no following node outside the removed subtree, so the iterator should:
+  // 1) flip pointerBeforeReferenceNode to false, then
+  // 2) set referenceNode to the removed node's parent (since it had no previous sibling).
+  root.removeChild(a);
+
+  assert_equals(it.referenceNode, root);
+  assert_false(it.pointerBeforeReferenceNode);
+}, "NodeIterator pre-remove steps: when there is no following node, pointer-before-reference falls back to the removed node's parent and flips pointerBeforeReferenceNode false");
+
+test(() => {
+  clear_children(document.body);
+
+  const root = document.createElement("div");
+  const a = document.createElement("span");
+  const b = document.createElement("span");
+  root.appendChild(a);
+  root.appendChild(b);
+  document.body.appendChild(root);
+
+  const it = document.createNodeIterator(root, NodeFilter.SHOW_ALL, null);
+  it.nextNode(); // root
+  it.nextNode(); // a
+
+  assert_equals(it.referenceNode, a);
+  assert_false(it.pointerBeforeReferenceNode);
+
+  // Removing a node that is not an inclusive ancestor of the reference must not change the iterator.
+  root.removeChild(b);
+  assert_equals(it.referenceNode, a);
+  assert_false(it.pointerBeforeReferenceNode);
+}, "NodeIterator pre-remove steps: removing a non-ancestor node does not affect referenceNode/pointerBeforeReferenceNode");
+
+test(() => {
+  clear_children(document.body);
+
+  const root = document.createElement("div");
+
+  const a = document.createElement("span");
+  const a1 = document.createElement("span");
+  a.appendChild(a1);
+
   const b = document.createElement("span");
   const b1 = document.createElement("span");
   b.appendChild(b1);
