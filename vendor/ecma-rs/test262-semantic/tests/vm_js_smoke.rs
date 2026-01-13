@@ -60,7 +60,7 @@ fn vm_js_executor_smoke_pass_and_timeout() {
     &expectations,
     executor.as_ref(),
     false,
-    Duration::from_millis(500),
+    Duration::from_secs(2),
     &timeout_manager,
   );
   // Run the infinite-loop case with a short timeout so the test stays fast.

@@ -10,6 +10,7 @@ use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::thread;
 use vm_js::format_stack_trace;
 use vm_js::{
   finish_loading_imported_module, HostDefined, ImportAttribute, ImportMetaProperty, Job, ModuleGraph, ModuleId,
@@ -28,6 +29,17 @@ use vm_js::{
 // the harness.
 const DEFAULT_HEAP_MAX_BYTES: usize = 512 * 1024 * 1024;
 const DEFAULT_HEAP_GC_THRESHOLD_BYTES: usize = 64 * 1024 * 1024;
+
+// Some test262 cases (notably PTC/TCO tests) intentionally recurse extremely deeply.
+//
+// `vm-js` has its own stack-depth check (`VmOptions::max_stack_depth`), but the interpreter currently
+// uses host recursion heavily enough that running with the default OS thread stack can still abort
+// the entire `test262-semantic` process with:
+//   `fatal runtime error: stack overflow`
+//
+// To keep the harness robust (and allow collecting a full JSON report even when PTC is not
+// supported), run each test case on a fresh OS thread with a larger stack.
+const TEST_CASE_THREAD_STACK_SIZE: usize = 128 * 1024 * 1024;
 
 #[derive(Debug, Clone, Default)]
 struct AsyncDoneError {
@@ -731,9 +743,9 @@ impl Default for VmJsExecutor {
     }
   }
 }
- 
-impl Executor for VmJsExecutor {
-  fn execute(&self, case: &TestCase, source: &str, cancel: &Arc<AtomicBool>) -> ExecResult {
+
+impl VmJsExecutor {
+  fn execute_in_current_thread(&self, case: &TestCase, source: &str, cancel: &Arc<AtomicBool>) -> ExecResult {
     if cancel.load(Ordering::Relaxed) {
       return Err(ExecError::Cancelled);
     }
@@ -770,7 +782,7 @@ impl Executor for VmJsExecutor {
       let (vm, modules, _heap) = runtime.vm_modules_and_heap_mut();
       vm.set_module_graph(modules);
     }
-  
+
     // Give the VM a useful/stable source name for stack traces.
     let file_name = if case.id.is_empty() {
       "<test262>".to_string()
@@ -837,6 +849,75 @@ impl Executor for VmJsExecutor {
     }
 
     execute_module(case, &file_name, source, cancel, is_async, &mut runtime)
+  }
+}
+ 
+impl Executor for VmJsExecutor {
+  fn execute(&self, case: &TestCase, source: &str, cancel: &Arc<AtomicBool>) -> ExecResult {
+    // To avoid aborting the entire process on a host stack overflow, run each test case on a fresh
+    // OS thread with an explicit (large) stack.
+    //
+    // Note: this intentionally happens inside the executor rather than in the runner so we can
+    // apply it only to the `vm-js` backend.
+    if cancel.load(Ordering::Relaxed) {
+      return Err(ExecError::Cancelled);
+    }
+
+    // Copy just the fields `vm-js` needs (avoid cloning the test body).
+    let case = TestCase {
+      id: case.id.clone(),
+      path: case.path.clone(),
+      variant: case.variant,
+      expected: case.expected.clone(),
+      metadata: case.metadata.clone(),
+      body: String::new(),
+    };
+
+    let source = source.to_owned();
+    let cancel_for_thread = Arc::clone(cancel);
+    let exec = *self;
+
+    let handle = thread::Builder::new()
+      .stack_size(TEST_CASE_THREAD_STACK_SIZE)
+      .spawn(move || exec.execute_in_current_thread(&case, &source, &cancel_for_thread));
+
+    let handle = match handle {
+      Ok(handle) => handle,
+      Err(err) => {
+        // If we're cancelled, preserve existing cancellation semantics.
+        if cancel.load(Ordering::Relaxed) {
+          return Err(ExecError::Cancelled);
+        }
+        return Err(ExecError::Js(JsError::new(
+          ExecPhase::Runtime,
+          None,
+          format!("failed to spawn executor thread: {err}"),
+        )));
+      }
+    };
+
+    match handle.join() {
+      Ok(result) => result,
+      Err(payload) => {
+        if cancel.load(Ordering::Relaxed) {
+          return Err(ExecError::Cancelled);
+        }
+
+        let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
+          (*s).to_string()
+        } else if let Some(s) = payload.downcast_ref::<String>() {
+          s.clone()
+        } else {
+          "<non-string panic payload>".to_string()
+        };
+
+        Err(ExecError::Js(JsError::new(
+          ExecPhase::Runtime,
+          None,
+          format!("panic while executing test case: {msg}"),
+        )))
+      }
+    }
   }
 }
 
