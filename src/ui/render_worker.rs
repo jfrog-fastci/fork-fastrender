@@ -834,11 +834,12 @@ fn compute_scroll_metrics(
   }
 }
 
-fn base_url_for_links(tab: &TabState) -> &str {
-  tab
-    .last_base_url
-    .as_deref()
-    .or(tab.last_committed_url.as_deref())
+fn base_url_for_links<'a>(
+  last_base_url: Option<&'a str>,
+  last_committed_url: Option<&'a str>,
+) -> &'a str {
+  last_base_url
+    .or(last_committed_url)
     .unwrap_or(about_pages::ABOUT_BASE_URL)
 }
 
@@ -3360,7 +3361,8 @@ impl BrowserRuntime {
     tab.last_pointer_pos_css = pointer_in_page.then_some(pos_css);
     let scroll = &tab.scroll_state;
     let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
-    let base_url = base_url_for_links(tab).to_string();
+    let base_url =
+      base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref());
 
     let (changed, hovered_url, cursor, hovered_dom_node_id, hovered_dom_element_id) = {
       let Some(doc) = tab.document.as_mut() else {
@@ -3403,7 +3405,7 @@ impl BrowserRuntime {
                   HitTestKind::Link => hit
                     .href
                     .as_deref()
-                    .and_then(|href| resolve_link_url(&base_url, href)),
+                    .and_then(|href| resolve_link_url(base_url, href)),
                   _ => None,
                 };
 
@@ -3922,12 +3924,12 @@ impl BrowserRuntime {
 
     let pointer_buttons = tab.pointer_buttons;
 
-    let base_url = base_url_for_links(tab).to_string();
+    let base_url =
+      base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref());
     let document_url = tab
       .last_committed_url
       .as_deref()
-      .unwrap_or(about_pages::ABOUT_BASE_URL)
-      .to_string();
+      .unwrap_or(about_pages::ABOUT_BASE_URL);
     let scroll_snapshot = tab.scroll_state.clone();
     let viewport_point = viewport_point_for_pos_css(&scroll_snapshot, pos_css);
     let (
@@ -3963,17 +3965,17 @@ impl BrowserRuntime {
         let scrolled = (!scroll_snapshot.elements.is_empty())
           .then(|| fragment_tree_with_scroll(fragment_tree, &scroll_snapshot));
         let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
-         let (dom_changed, action, up_hit) = engine.pointer_up_with_scroll_and_hit(
-           dom,
-           box_tree,
-           hit_tree,
-           &scroll_snapshot,
-           viewport_point,
-           button,
-           modifiers,
-           &document_url,
-           &base_url,
-         );
+        let (dom_changed, action, up_hit) = engine.pointer_up_with_scroll_and_hit(
+          dom,
+          box_tree,
+          hit_tree,
+          &scroll_snapshot,
+          viewport_point,
+          button,
+          modifiers,
+          document_url,
+          base_url,
+        );
 
          let mouseup_target = up_hit.as_ref().map(|hit| hit.dom_node_id);
          let mouseup_target_element_id = mouseup_target.and_then(|target_id| {
@@ -4507,7 +4509,8 @@ impl BrowserRuntime {
       return;
     };
 
-    let base_url = base_url_for_links(tab).to_string();
+    let base_url =
+      base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref());
     let dpr = tab.dpr;
     let viewport = Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32);
     let scroll = &tab.scroll_state;
@@ -4597,9 +4600,9 @@ impl BrowserRuntime {
               media_context: None,
               font_size: None,
               root_font_size: None,
-              base_url: Some(&base_url),
+              base_url: Some(base_url),
             });
-            resolve_link_url(&base_url, selected.url)
+            resolve_link_url(base_url, selected.url)
           } else {
             let node = crate::dom::find_node_mut_by_preorder_id(dom, styled_id)?;
             // Match browser-style image context menu behaviour for `<img>` and `input type=image`.
@@ -4609,7 +4612,7 @@ impl BrowserRuntime {
             {
               node
                 .get_attribute_ref("src")
-                .and_then(|src| resolve_link_url(&base_url, src))
+                .and_then(|src| resolve_link_url(base_url, src))
             } else if node
               .tag_name()
               .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
@@ -4617,7 +4620,7 @@ impl BrowserRuntime {
             {
               node
                 .get_attribute_ref("src")
-                .and_then(|src| resolve_link_url(&base_url, src))
+                .and_then(|src| resolve_link_url(base_url, src))
             } else {
               None
             }
@@ -4697,7 +4700,7 @@ impl BrowserRuntime {
     let link_url = hit_info
       .href
       .as_deref()
-      .and_then(|href| resolve_link_url(&base_url, href));
+      .and_then(|href| resolve_link_url(base_url, href));
     let image_url = hit_info.image_url.clone();
 
     if changed {
@@ -5106,12 +5109,12 @@ impl BrowserRuntime {
       let Some(tab) = self.tabs.get_mut(&tab_id) else {
         return;
       };
-      let base_url = base_url_for_links(tab).to_string();
+      let base_url =
+        base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref());
       let document_url = tab
         .last_committed_url
         .as_deref()
-        .unwrap_or(about_pages::ABOUT_BASE_URL)
-        .to_string();
+        .unwrap_or(about_pages::ABOUT_BASE_URL);
 
       let Some(doc) = tab.document.as_mut() else {
         return;
@@ -5124,8 +5127,8 @@ impl BrowserRuntime {
           Some(box_tree),
           fragment_tree,
           key,
-          &document_url,
-          &base_url,
+          document_url,
+          base_url,
         );
         let submitter = tab.interaction.take_last_form_submitter();
         let submitter_element_id = submitter.and_then(|submitter_id| {
@@ -5219,7 +5222,7 @@ impl BrowserRuntime {
             let (dom_changed, next_action) =
               tab
                 .interaction
-                .key_activate(dom, key, &document_url, &base_url);
+                .key_activate(dom, key, document_url, base_url);
             action = next_action;
             submitter = tab.interaction.take_last_form_submitter();
             submitter_element_id = submitter.and_then(|submitter_id| {
@@ -7161,5 +7164,30 @@ mod download_progress_tests {
   fn download_progress_forces_final_update() {
     // Final update must bypass throttling.
     assert!(should_emit_download_progress(123, 0, Duration::ZERO, true));
+  }
+}
+
+#[cfg(test)]
+mod base_url_tests {
+  #[test]
+  fn render_worker_does_not_to_string_base_url_for_links() {
+    // Regression test: pointer-move / context-menu paths are hot and should not allocate an owned
+    // `String` for the base URL. Keep `base_url_for_links(...)` borrowed and pass `&str` downstream.
+    //
+    // (We scan the source rather than counting allocations because these paths already perform
+    // unrelated allocations during hit-testing and interaction bookkeeping.)
+    let src = include_str!("render_worker.rs");
+    let re = regex::Regex::new(r"(?s)base_url_for_links\(.*?\)\s*\.\s*to_string\(")
+      .expect("regex");
+    assert!(
+      !re.is_match(src),
+      "render_worker.rs should not call `.to_string()` on base_url_for_links(...)"
+    );
+
+    let re = regex::Regex::new(r"(?s)base_url_for_links\(.*?\)\s*\.\s*to_owned\(").expect("regex");
+    assert!(
+      !re.is_match(src),
+      "render_worker.rs should not call `.to_owned()` on base_url_for_links(...)"
+    );
   }
 }
