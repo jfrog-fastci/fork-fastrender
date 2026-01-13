@@ -8912,6 +8912,7 @@ impl<'vm> HirEvaluator<'vm> {
             self.strict,
             self.this,
             self.new_target,
+            self.home_object,
             s,
           )?,
           other => other,

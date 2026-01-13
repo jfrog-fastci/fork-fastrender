@@ -465,23 +465,42 @@ pub(crate) fn perform_direct_eval_with_host_and_hooks(
   caller_strict: bool,
   this: Value,
   new_target: Value,
+  home_object: Option<GcObject>,
   source_string: GcString,
 ) -> Result<Value, VmError> {
   // Root the global object, the input string, and caller `this` / `new.target` across allocations
   // and potential nested calls.
   let global_object = env.global_object();
   let mut scope = scope.reborrow();
-  scope.push_roots(&[
-    Value::Object(global_object),
-    Value::String(source_string),
-    this,
-    new_target,
-  ])?;
+  if let Some(home) = home_object {
+    scope.push_roots(&[
+      Value::Object(global_object),
+      Value::String(source_string),
+      this,
+      new_target,
+      Value::Object(home),
+    ])?;
+  } else {
+    scope.push_roots(&[
+      Value::Object(global_object),
+      Value::String(source_string),
+      this,
+      new_target,
+    ])?;
+  }
 
   let allow_super_call = match this {
     Value::Object(obj) if scope.heap().is_derived_constructor_state(obj) => true,
     _ => false,
   };
+  // `super` property access is only syntactically valid in eval code when the caller is contained
+  // within a method environment (i.e. it has a `[[HomeObject]]`).
+  //
+  // In derived class constructors, `this` is a `DerivedConstructorState` placeholder that allows
+  // nested eval code to observe `super()` initializing the outer constructor's `this` binding.
+  // Those eval contexts should also allow `super` property references, even if `home_object` is not
+  // available for some reason.
+  let allow_super_property = home_object.is_some() || allow_super_call;
 
   let source_text = eval_string_to_utf8_lossy_with_tick(vm, scope.heap(), source_string)?;
   let source = arc_try_new_vm(SourceText::new_charged(
@@ -494,7 +513,7 @@ pub(crate) fn perform_direct_eval_with_host_and_hooks(
     source_type: SourceType::Script,
   };
   // Like the Function constructor, `eval("...")` parse/early errors are JS-catchable.
-  let top = match if allow_super_call {
+  let top = match if allow_super_property {
     vm.parse_top_level_with_budget_allowing_enclosing_meta_properties(&source.text, opts)
   } else {
     vm.parse_top_level_with_budget(&source.text, opts)
@@ -572,7 +591,7 @@ pub(crate) fn perform_direct_eval_with_host_and_hooks(
       strict,
       this,
       new_target,
-      home_object: None,
+      home_object,
       class_constructor: None,
       derived_constructor: false,
       this_initialized: true,
@@ -13738,6 +13757,7 @@ impl<'a> Evaluator<'a> {
       self.strict,
       self.this,
       self.new_target,
+      self.home_object,
       source_string,
     )
   }
@@ -43377,6 +43397,70 @@ mod tests {
       })()
     "#;
 
+    let script = crate::CompiledScript::compile_script(&mut rt.heap, "<inline>", source)?;
+    let value = rt.exec_compiled_script(script)?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn direct_eval_super_property_in_class_method_uses_home_object() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      var fromA, fromB;
+      class A {}
+      class B extends A {}
+      class C extends B {
+        method() {
+          fromA = eval('super.fromA;');
+          fromB = eval('super.fromB;');
+        }
+      }
+
+      A.prototype.fromA = 'a';
+      A.prototype.fromB = 'a';
+      B.prototype.fromB = 'b';
+      C.prototype.fromA = 'c';
+      C.prototype.fromB = 'c';
+
+      C.prototype.method();
+      fromA === 'a' && fromB === 'b'
+    "#,
+    )?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn direct_eval_super_property_in_object_method_uses_home_object_hir() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let source = r#"
+      (() => {
+        var fromA, fromB;
+        var A = { fromA: 'a', fromB: 'a' };
+        var B = { fromB: 'b' };
+        Object.setPrototypeOf(B, A);
+
+        var obj = {
+          fromA: 'c',
+          fromB: 'c',
+          method() {
+            fromA = eval('super.fromA;');
+            fromB = eval('super.fromB;');
+          }
+        };
+        Object.setPrototypeOf(obj, B);
+
+        obj.method();
+        return fromA === 'a' && fromB === 'b';
+      })()
+    "#;
     let script = crate::CompiledScript::compile_script(&mut rt.heap, "<inline>", source)?;
     let value = rt.exec_compiled_script(script)?;
     assert!(matches!(value, Value::Bool(true)));
