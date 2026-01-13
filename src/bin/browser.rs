@@ -10160,8 +10160,8 @@ impl App {
       || self
         .chrome_toast_rect
         .is_some_and(|rect| rect.contains(pos_points))
-      || self.debug_log_overlay_pointer_capture
       || self.media_controls_overlay_pointer_capture
+      || self.debug_log_overlay_pointer_capture
   }
 
   fn cursor_over_overlay_scrollbars(&self, pos_points: egui::Pos2) -> bool {
@@ -12189,22 +12189,6 @@ impl App {
   fn close_media_controls(&mut self) {
     self.open_media_controls = None;
     self.open_media_controls_rect = None;
-
-    if self.media_controls_overlay_pointer_capture {
-      self.media_controls_overlay_pointer_capture = false;
-      if let Some(pos_points) = self.last_cursor_pos_points {
-        if self
-          .page_rect_points
-          .is_some_and(|page_rect| page_rect.contains(pos_points))
-          && !self.cursor_over_egui_overlay(pos_points)
-        {
-          // Pointer capture ended with the cursor over the page. Re-sync hover state so the worker
-          // immediately sees the current hover target without waiting for another CursorMoved event.
-          self.hover_sync_pending = true;
-          self.window.request_redraw();
-        }
-      }
-    }
   }
 
   fn cancel_media_controls(&mut self) {
@@ -16642,11 +16626,8 @@ impl App {
     }
 
     let Some(open_controls) = self.open_media_controls.as_ref() else {
-      // Defensive: ensure stale rect/pointer-capture state cannot linger if some code path drops the
-      // overlay without calling `close_media_controls`.
-      if self.open_media_controls_rect.is_some() || self.media_controls_overlay_pointer_capture {
-        self.close_media_controls();
-      }
+      // Defensive: ensure stale rect state cannot linger if some code path drops the overlay.
+      self.open_media_controls_rect = None;
       return;
     };
 
@@ -18096,11 +18077,11 @@ impl App {
           return;
         }
 
-        if self.debug_log_overlay_pointer_capture {
+        if self.media_controls_overlay_pointer_capture {
           if matches!(state, ElementState::Released)
             && matches!(mapped_button, fastrender::ui::PointerButton::Primary)
           {
-            self.debug_log_overlay_pointer_capture = false;
+            self.media_controls_overlay_pointer_capture = false;
             if let Some(pos_points) = self.last_cursor_pos_points {
               if self
                 .page_rect_points
@@ -18118,11 +18099,11 @@ impl App {
           return;
         }
 
-        if self.media_controls_overlay_pointer_capture {
+        if self.debug_log_overlay_pointer_capture {
           if matches!(state, ElementState::Released)
             && matches!(mapped_button, fastrender::ui::PointerButton::Primary)
           {
-            self.media_controls_overlay_pointer_capture = false;
+            self.debug_log_overlay_pointer_capture = false;
             if let Some(pos_points) = self.last_cursor_pos_points {
               if self
                 .page_rect_points
@@ -18345,6 +18326,7 @@ impl App {
               self
                 .page_input_mapping
                 .and_then(|mapping| mapping.rect_css_to_rect_points_clamped(controls.anchor_css))
+                .or(Some(controls.anchor_rect_points))
                 .is_some_and(|rect_points| rect_points.contains(pos_points))
             });
 
