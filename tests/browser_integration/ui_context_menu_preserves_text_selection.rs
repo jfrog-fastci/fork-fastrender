@@ -125,7 +125,11 @@ fn ui_context_menu_preserves_text_selection() {
 
   // Right-clicking inside the selected word should preserve the selection so Copy remains available.
   ui_tx
-    .send(UiToWorker::ContextMenuRequest { tab_id, pos_css: input_pos })
+    .send(UiToWorker::ContextMenuRequest {
+      tab_id,
+      pos_css: input_pos,
+      modifiers: PointerModifiers::NONE,
+    })
     .expect("context menu request");
   let msg = support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::ContextMenu { .. })

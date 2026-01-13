@@ -2181,7 +2181,7 @@ mod page_context_menu_keyboard_shortcut_tests {
   };
 
   use egui::{Pos2, Rect, Vec2};
-  use fastrender::ui::{InputMapping, TabId, UiToWorker};
+  use fastrender::ui::{InputMapping, PointerModifiers, TabId, UiToWorker};
   use winit::event::{ModifiersState, VirtualKeyCode};
 
   fn shift_mods() -> ModifiersState {
@@ -2225,9 +2225,11 @@ mod page_context_menu_keyboard_shortcut_tests {
       UiToWorker::ContextMenuRequest {
         tab_id: msg_tab_id,
         pos_css,
+        modifiers,
       } => {
         assert_eq!(msg_tab_id, tab_id);
         assert_eq!(pos_css, pending.pos_css);
+        assert_eq!(modifiers, PointerModifiers::SHIFT);
       }
       other => panic!("unexpected worker message: {other:?}"),
     }
@@ -2269,9 +2271,12 @@ mod page_context_menu_keyboard_shortcut_tests {
 
     match msg {
       UiToWorker::ContextMenuRequest {
-        tab_id: msg_tab_id, ..
+        tab_id: msg_tab_id,
+        modifiers,
+        ..
       } => {
         assert_eq!(msg_tab_id, tab_id);
+        assert_eq!(modifiers, PointerModifiers::NONE);
       }
       other => panic!("unexpected worker message: {other:?}"),
     }
@@ -4749,7 +4754,11 @@ fn keyboard_page_context_menu_request(
       pos_css,
       anchor_points,
     };
-    let msg = fastrender::ui::UiToWorker::ContextMenuRequest { tab_id, pos_css };
+    let msg = fastrender::ui::UiToWorker::ContextMenuRequest {
+      tab_id,
+      pos_css,
+      modifiers: map_modifiers(modifiers),
+    };
     return Some(KeyboardPageContextMenuOpenPlan::WorkerRequest { pending, msg });
   }
 
@@ -12289,6 +12298,7 @@ impl App {
               let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ContextMenuRequest {
                 tab_id,
                 pos_css,
+                modifiers: map_modifiers(self.modifiers),
               });
               self.window.request_redraw();
               return;

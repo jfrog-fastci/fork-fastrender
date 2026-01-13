@@ -442,6 +442,11 @@ pub enum UiToWorker {
     /// The worker is responsible for converting viewport-local coords to page coords by adding the
     /// current scroll offset.
     pos_css: (f32, f32),
+    /// Modifier key state at the time the context menu request was initiated.
+    ///
+    /// This is used to populate the cancelable JS `contextmenu` `MouseEvent` dispatched by the
+    /// render worker so pages can implement modifier-sensitive context menus.
+    modifiers: PointerModifiers,
   },
   /// User chose an option in a dropdown `<select>` popup.
   ///

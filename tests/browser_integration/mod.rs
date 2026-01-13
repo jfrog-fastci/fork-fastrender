@@ -78,6 +78,7 @@ mod ui_document_selection_pointer_multiclick;
 mod ui_drag_drop;
 mod ui_context_menu;
 mod ui_context_menu_can_select_all_without_selection;
+mod ui_context_menu_modifiers;
 mod ui_context_menu_entries;
 mod ui_context_menu_text_caret_right_click;
 mod ui_context_menu_preserves_document_selection;

@@ -1934,8 +1934,12 @@ impl BrowserRuntime {
       UiToWorker::DropFiles { tab_id, pos_css, paths } => {
         self.handle_drop_files(tab_id, pos_css, paths);
       }
-      UiToWorker::ContextMenuRequest { tab_id, pos_css } => {
-        self.handle_context_menu_request(tab_id, pos_css);
+      UiToWorker::ContextMenuRequest {
+        tab_id,
+        pos_css,
+        modifiers,
+      } => {
+        self.handle_context_menu_request(tab_id, pos_css, modifiers);
       }
       UiToWorker::SelectDropdownChoose {
         tab_id,
@@ -4329,7 +4333,12 @@ impl BrowserRuntime {
     }
   }
 
-  fn handle_context_menu_request(&mut self, tab_id: TabId, pos_css: (f32, f32)) {
+  fn handle_context_menu_request(
+    &mut self,
+    tab_id: TabId,
+    pos_css: (f32, f32),
+    modifiers: crate::ui::PointerModifiers,
+  ) {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };
@@ -4558,10 +4567,10 @@ impl BrowserRuntime {
             button: mouse_event_button(PointerButton::Secondary),
             buttons: tab.pointer_buttons,
             detail: 0,
-            ctrl_key: false,
-            shift_key: false,
-            alt_key: false,
-            meta_key: false,
+            ctrl_key: modifiers.ctrl(),
+            shift_key: modifiers.shift(),
+            alt_key: modifiers.alt(),
+            meta_key: modifiers.meta(),
             related_target: None,
           };
           match js_tab.dispatch_mouse_event(

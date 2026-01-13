@@ -1,7 +1,9 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{
+  NavigationReason, PointerModifiers, TabId, UiToWorker, WorkerToUi,
+};
 use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
@@ -100,7 +102,11 @@ fn ui_context_menu_text_caret_right_click_places_paste_at_click_position() {
   // Right-click inside the input near the left edge.
   let pos_css = (1.0, 15.0);
   ui_tx
-    .send(UiToWorker::ContextMenuRequest { tab_id, pos_css })
+    .send(UiToWorker::ContextMenuRequest {
+      tab_id,
+      pos_css,
+      modifiers: PointerModifiers::NONE,
+    })
     .unwrap();
   let _ = support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::ContextMenu { .. })
@@ -205,7 +211,11 @@ fn ui_context_menu_textarea_caret_right_click_places_paste_at_click_position() {
   // Right-click inside the textarea near the left edge.
   let pos_css = (1.0, 15.0);
   ui_tx
-    .send(UiToWorker::ContextMenuRequest { tab_id, pos_css })
+    .send(UiToWorker::ContextMenuRequest {
+      tab_id,
+      pos_css,
+      modifiers: PointerModifiers::NONE,
+    })
     .unwrap();
   let _ = support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::ContextMenu { .. })

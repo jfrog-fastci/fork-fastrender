@@ -1,6 +1,6 @@
 #![cfg(feature = "browser_ui")]
 
-use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{NavigationReason, PointerModifiers, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
@@ -31,7 +31,11 @@ fn context_menu_link_at(
   pos_css: (f32, f32),
   deadline: Instant,
 ) -> Option<Option<String>> {
-  tx.send(UiToWorker::ContextMenuRequest { tab_id, pos_css })
+  tx.send(UiToWorker::ContextMenuRequest {
+    tab_id,
+    pos_css,
+    modifiers: PointerModifiers::NONE,
+  })
     .expect("send context menu request");
   loop {
     let msg = recv_until_deadline(rx, deadline)?;

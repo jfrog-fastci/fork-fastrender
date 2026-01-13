@@ -740,6 +740,15 @@ impl BrowserTabHost {
           composed: event.composed,
         },
       );
+      // `WindowRealmDomEventListenerInvoker` synthesizes a single JS `Event` object per dispatch and
+      // reuses it across listeners. That object captures immutable event fields at allocation time
+      // (e.g. `isTrusted` and `MouseEvent` properties like `clientX` and modifier keys).
+      //
+      // We therefore must mirror those immutable fields onto the temporary snapshot we pass into
+      // `with_dispatch_event_object`, even though `web_events::dispatch_event` itself operates on
+      // the mutable `event` instance below.
+      event_for_event_obj.is_trusted = event.is_trusted;
+      event_for_event_obj.mouse = event.mouse;
       event_for_event_obj.detail = event.detail.clone();
       event_for_event_obj.storage = event.storage.clone();
       return invoker
@@ -774,6 +783,8 @@ impl BrowserTabHost {
             composed: event.composed,
           },
         );
+        event_for_event_obj.is_trusted = event.is_trusted;
+        event_for_event_obj.mouse = event.mouse;
         event_for_event_obj.detail = event.detail.clone();
         event_for_event_obj.storage = event.storage.clone();
         invoker
