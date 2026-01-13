@@ -14626,6 +14626,11 @@ pub(crate) enum GenFrame {
     left: Value,
   },
 
+  /// Continue a simple assignment after evaluating the RHS (binding target).
+  AssignAfterRhsBinding { name: *const String },
+  /// Continue a destructuring assignment after evaluating the RHS.
+  AssignAfterRhsPattern { expr: *const BinaryExpr },
+
   /// Continue a call expression while evaluating arguments.
   CallAfterCallee { expr: *const CallExpr },
   CallMemberAfterBase {
@@ -32667,6 +32672,9 @@ fn gen_eval_expr_chain(
         Ok(GenEval::Suspend(suspend))
       }
     },
+    Expr::Binary(binary) if binary.stx.operator == OperatorName::Assignment => {
+      gen_eval_assignment_expr(evaluator, scope, &binary.stx)
+    }
     Expr::Binary(binary) => match gen_eval_expr(evaluator, scope, &binary.stx.left)? {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => {
@@ -33142,6 +33150,101 @@ fn gen_computed_member_after_member(
   let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
   let reference = Reference::Property { base, key };
   evaluator.get_value_from_reference(&mut key_scope, &reference)
+}
+
+fn gen_eval_assignment_expr(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &BinaryExpr,
+) -> Result<GenEval<Completion>, VmError> {
+  debug_assert!(expr.operator == OperatorName::Assignment);
+
+  // Destructuring assignment patterns appear in expression position as `Expr::ObjPat` /
+  // `Expr::ArrPat` nodes. These are not valid "references" and must be handled by pattern
+  // binding.
+  match &*expr.left.stx {
+    Expr::ObjPat(_) | Expr::ArrPat(_) => {
+      if expr_contains_yield(&expr.left) {
+        return Err(VmError::Unimplemented(
+          "yield in destructuring assignment target",
+        ));
+      }
+
+      match gen_eval_expr(evaluator, scope, &expr.right)? {
+        GenEval::Complete(c) => Ok(GenEval::Complete(match c {
+          Completion::Normal(v) => {
+            let value = v.unwrap_or(Value::Undefined);
+            bind_assignment_target(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              scope,
+              evaluator.env,
+              &expr.left,
+              value,
+              evaluator.strict,
+              evaluator.this,
+            )?;
+            Completion::normal(value)
+          }
+          abrupt => abrupt,
+        })),
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::AssignAfterRhsPattern {
+              expr: expr as *const BinaryExpr,
+            },
+          )?;
+          Ok(GenEval::Suspend(suspend))
+        }
+      }
+    }
+
+    Expr::Id(id) => gen_eval_assignment_to_binding(evaluator, scope, expr, &id.stx.name),
+    Expr::IdPat(id) => gen_eval_assignment_to_binding(evaluator, scope, expr, &id.stx.name),
+    _ => Err(VmError::Unimplemented("yield in assignment target")),
+  }
+}
+
+fn gen_eval_assignment_to_binding(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &BinaryExpr,
+  name: &String,
+) -> Result<GenEval<Completion>, VmError> {
+  if expr_contains_yield(&expr.left) {
+    return Err(VmError::Unimplemented("yield in assignment target"));
+  }
+
+  match gen_eval_expr(evaluator, scope, &expr.right)? {
+    GenEval::Complete(c) => Ok(GenEval::Complete(match c {
+      Completion::Normal(v) => {
+        let value = v.unwrap_or(Value::Undefined);
+        let reference = Reference::Binding(name.as_str());
+
+        let mut rhs_scope = scope.reborrow();
+        rhs_scope.push_root(value)?;
+        evaluator.maybe_set_anonymous_function_name_for_assignment(
+          &mut rhs_scope,
+          &reference,
+          value,
+        )?;
+        evaluator.put_value_to_reference(&mut rhs_scope, &reference, value)?;
+        Completion::normal(value)
+      }
+      abrupt => abrupt,
+    })),
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::AssignAfterRhsBinding {
+          name: name as *const String,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
 }
 
 fn gen_binary_after_left(
@@ -34238,6 +34341,56 @@ fn gen_resume_from_frames(
               Ok(out) => state = Completion::normal(out),
               Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
             }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::AssignAfterRhsBinding { name } => match state {
+        Completion::Normal(v) => {
+          let name = unsafe { &*name };
+          let value = v.unwrap_or(Value::Undefined);
+          let reference = Reference::Binding(name.as_str());
+
+          let assign_result = {
+            let mut rhs_scope = scope.reborrow();
+            rhs_scope.push_root(value)?;
+            match evaluator.maybe_set_anonymous_function_name_for_assignment(
+              &mut rhs_scope,
+              &reference,
+              value,
+            ) {
+              Ok(()) => evaluator.put_value_to_reference(&mut rhs_scope, &reference, value),
+              Err(err) => Err(err),
+            }
+          };
+
+          match assign_result {
+            Ok(()) => state = Completion::normal(value),
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::AssignAfterRhsPattern { expr } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          let value = v.unwrap_or(Value::Undefined);
+
+          match bind_assignment_target(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            scope,
+            evaluator.env,
+            &expr.left,
+            value,
+            evaluator.strict,
+            evaluator.this,
+          ) {
+            Ok(()) => state = Completion::normal(value),
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
           }
         }
         abrupt => state = abrupt,
