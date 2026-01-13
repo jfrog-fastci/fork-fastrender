@@ -14,6 +14,7 @@
 
 use crate::runtime::{JsRuntime, WebIdlJsRuntime};
 use std::collections::BTreeMap;
+use crate::conversions_shared;
 use crate::ir::{
   eval_default_value, DefaultValue, DictionaryMemberSchema, IdlType, NamedType, NamedTypeKind,
   NumericType, PlatformObject, StringType, TypeAnnotation, TypeContext, WebIdlException,
@@ -454,11 +455,7 @@ fn string_to_rust_string_with_limits<R: WebIdlJsRuntime>(
   rt: &mut R,
   string: R::JsValue,
 ) -> Result<String, R::Error> {
-  let max_units = rt.limits().max_string_code_units;
-  let len = rt.with_string_code_units(string, |units| units.len())?;
-  if len > max_units {
-    return Err(rt.throw_range_error("string exceeds maximum length"));
-  }
+  conversions_shared::enforce_string_code_units_limit(rt, string)?;
   rt.string_to_utf8_lossy(string)
 }
 
@@ -466,11 +463,7 @@ fn usv_string_to_rust_string_with_limits<R: WebIdlJsRuntime>(
   rt: &mut R,
   string: R::JsValue,
 ) -> Result<String, R::Error> {
-  let max_units = rt.limits().max_string_code_units;
-  let len = rt.with_string_code_units(string, |units| units.len())?;
-  if len > max_units {
-    return Err(rt.throw_range_error("string exceeds maximum length"));
-  }
+  conversions_shared::enforce_string_code_units_limit(rt, string)?;
   // `string_to_utf8_lossy` performs a UTF-16 decode with replacement (`U+FFFD`) for ill-formed
   // surrogate sequences, matching USVString's scalar-value requirement.
   rt.string_to_utf8_lossy(string)
@@ -617,10 +610,8 @@ fn convert_to_int(
   signed: bool,
   ext: IntegerConversionAttrs,
 ) -> Result<i128, WebIdlException> {
-  crate::convert_to_int(n, bit_length, signed, ext).map_err(|e| match e.kind() {
-    crate::NumericConversionErrorKind::TypeError => WebIdlException::type_error(e.message()),
-    crate::NumericConversionErrorKind::RangeError => WebIdlException::range_error(e.message()),
-  })
+  crate::convert_to_int(n, bit_length, signed, ext)
+    .map_err(conversions_shared::numeric_conversion_error_to_webidl_exception)
 }
 
 fn is_null_or_undefined<R: JsRuntime>(rt: &R, value: R::JsValue) -> bool {
@@ -939,51 +930,27 @@ fn create_sequence_from_iterable<R: WebIdlJsRuntime>(
   ctx: &TypeContext,
   typedef_stack: &mut Vec<String>,
 ) -> Result<ConvertedValue<R::JsValue>, R::Error> {
-  let mut iterator_record = rt.get_iterator_from_method(iterable, method)?;
-  rt.with_stack_roots(
-    &[
-      iterable,
-      iterator_record.iterator,
-      iterator_record.next_method,
-    ],
-    |rt| {
-      let mut values = Vec::<ConvertedValue<R::JsValue>>::new();
-      // Roots for any JS values stored in `values` so far. These are not otherwise visible to the GC.
-      let mut value_roots: Vec<R::JsValue> = Vec::new();
-
-      loop {
-        // Ensure any previously-converted JS values remain alive while we perform the next
-        // `IteratorStepValue` (which allocates and can trigger GC).
-        let next = rt.with_stack_roots(&value_roots, |rt| {
-          rt.iterator_step_value(&mut iterator_record)
-        })?;
-        let Some(next) = next else {
-          break;
-        };
-        if values.len() >= rt.limits().max_sequence_length {
-          return Err(rt.throw_range_error("sequence exceeds maximum length"));
-        }
-        let converted = rt.with_stack_roots(&value_roots, |rt| {
-          rt.with_stack_roots(&[next], |rt| {
-            convert_to_idl_inner(
-              rt,
-              next,
-              elem_ty,
-              ctx,
-              typedef_stack,
-              ConversionState::default(),
-            )
-          })
-        })?;
-        append_converted_value_roots(&mut value_roots, &converted);
-        values.push(converted);
-      }
-      Ok(ConvertedValue::Sequence {
-        elem_ty: Box::new(elem_ty.clone()),
-        values,
-      })
+  let values = conversions_shared::materialize_iterable(
+    rt,
+    iterable,
+    method,
+    |rt, next| {
+      convert_to_idl_inner(
+        rt,
+        next,
+        elem_ty,
+        ctx,
+        typedef_stack,
+        ConversionState::default(),
+      )
     },
-  )
+    |roots, v| append_converted_value_roots(roots, v),
+  )?;
+
+  Ok(ConvertedValue::Sequence {
+    elem_ty: Box::new(elem_ty.clone()),
+    values,
+  })
 }
 
 fn convert_to_record<R: WebIdlJsRuntime>(
@@ -995,72 +962,35 @@ fn convert_to_record<R: WebIdlJsRuntime>(
   typedef_stack: &mut Vec<String>,
 ) -> Result<ConvertedValue<R::JsValue>, R::Error> {
   // Record conversions use `ToObject` (per WebIDL), so accept primitives here.
-  let v = rt.to_object(v)?;
+  let obj = rt.to_object(v)?;
 
-  // Root `v` and any JS values produced by earlier property conversions for the duration of later
-  // conversions. Record entries can contain `object` / `any` values, which may allocate wrappers
-  // that are otherwise only referenced from Rust.
-  let keys = rt.with_stack_roots(&[v], |rt| rt.own_property_keys(v))?;
-  let mut roots: Vec<R::JsValue> = Vec::new();
-  roots.push(v);
-  let mut entries = Vec::<(String, ConvertedValue<R::JsValue>)>::new();
-  // Records use map/set semantics; when a converted key already exists, the value is overwritten
-  // without changing insertion order.
-  let mut index_by_key = std::collections::HashMap::<String, usize>::new();
-
-  for key in keys {
-    let Some((typed_key, typed_value)) = rt.with_stack_roots(&roots, |rt| {
-      let Some(desc) = rt.get_own_property(v, key)? else {
-        return Ok(None);
-      };
-      if !desc.enumerable {
-        return Ok(None);
-      }
-
-      let key_value = rt.property_key_to_js_string(key)?;
-      let typed_key = rt.with_stack_roots(&[key_value], |rt| {
-        convert_to_idl_inner(
-          rt,
-          key_value,
-          key_ty,
-          ctx,
-          typedef_stack,
-          ConversionState::default(),
-        )
-      })?;
+  let entries = conversions_shared::materialize_record_entries(
+    rt,
+    obj,
+    |rt, key_value, value| {
+      let typed_key = convert_to_idl_inner(
+        rt,
+        key_value,
+        key_ty,
+        ctx,
+        typedef_stack,
+        ConversionState::default(),
+      )?;
       let ConvertedValue::String(typed_key) = typed_key else {
         return Err(rt.throw_type_error("Record key did not convert to a string"));
       };
-
-      let value = rt.get(v, key)?;
-      let typed_value = rt.with_stack_roots(&[value], |rt| {
-        convert_to_idl_inner(
-          rt,
-          value,
-          value_ty,
-          ctx,
-          typedef_stack,
-          ConversionState::default(),
-        )
-      })?;
-
-      Ok(Some((typed_key, typed_value)))
-    })?
-    else {
-      continue;
-    };
-
-    append_converted_value_roots(&mut roots, &typed_value);
-    if let Some(&idx) = index_by_key.get(&typed_key) {
-      entries[idx].1 = typed_value;
-    } else {
-      if entries.len() >= rt.limits().max_record_entries {
-        return Err(rt.throw_range_error("record exceeds maximum entry count"));
-      }
-      index_by_key.insert(typed_key.clone(), entries.len());
-      entries.push((typed_key, typed_value));
-    }
-  }
+      convert_to_idl_inner(
+        rt,
+        value,
+        value_ty,
+        ctx,
+        typedef_stack,
+        ConversionState::default(),
+      )
+      .map(|typed_value| (typed_key, typed_value))
+    },
+    |roots, v| append_converted_value_roots(roots, v),
+  )?;
 
   Ok(ConvertedValue::Record {
     key_ty: Box::new(key_ty.clone()),

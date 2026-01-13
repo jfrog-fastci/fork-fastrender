@@ -9,6 +9,7 @@ mod numeric;
 mod to_js;
 pub mod ir;
 pub mod runtime;
+mod conversions_shared;
 mod bindings_conversions;
 pub mod overload_resolution;
 

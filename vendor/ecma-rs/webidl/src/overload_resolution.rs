@@ -8,8 +8,9 @@
 //! The goal is for generated bindings to be able to share one correct implementation, rather than
 //! emitting bespoke dispatch code per overloaded operation.
 
-use crate::runtime::{IteratorRecord, WebIdlJsRuntime};
-use std::collections::{BTreeMap, HashMap};
+use crate::conversions_shared;
+use crate::runtime::WebIdlJsRuntime;
+use std::collections::BTreeMap;
 use crate::ir::{
   DefaultValue, DistinguishabilityCategory, IdlType, NamedType, NamedTypeKind, NumericLiteral,
   NumericType, TypeAnnotation,
@@ -248,6 +249,10 @@ pub fn resolve_overload<R: WebIdlJsRuntime>(
   let mut d: isize = -1;
   // 7. Initialize method to undefined.
   let mut method: Option<R::JsValue> = None;
+
+  // Root `args` and any JS values produced by conversions for the duration of later conversions.
+  let mut roots: Vec<R::JsValue> = Vec::new();
+  roots.extend_from_slice(args);
   // 8. If there is more than one entry in S, set d to distinguishing argument index.
   if entries.len() > 1 {
     d = match precomputed_distinguishing_index(overloads, argcount) {
@@ -275,186 +280,203 @@ pub fn resolve_overload<R: WebIdlJsRuntime>(
     let ty = entries[0].type_list[i].clone();
     let optionality = entries[0].optionality_list[i];
 
-    if optionality.is_optional() && is_undefined(rt, v)? {
-      if let Some(default) = overloads[entries[0].overload_index].args[i]
-        .default
-        .as_ref()
-      {
-        values.push(ConvertedArgument::Value(convert_default(rt, &ty, default)?));
+    let converted = rt.with_stack_roots(&roots, |rt| {
+      if optionality.is_optional() && is_undefined(rt, v)? {
+        if let Some(default) = overloads[entries[0].overload_index].args[i]
+          .default
+          .as_ref()
+        {
+          Ok(ConvertedArgument::Value(convert_default(rt, &ty, default)?))
+        } else {
+          Ok(ConvertedArgument::Missing)
+        }
       } else {
-        values.push(ConvertedArgument::Missing);
+        Ok(ConvertedArgument::Value(convert_js_to_idl(rt, &ty, v)?))
       }
-    } else {
-      values.push(ConvertedArgument::Value(convert_js_to_idl(rt, &ty, v)?));
+    })?;
+
+    if let ConvertedArgument::Value(v) = &converted {
+      append_webidl_value_roots(&mut roots, v);
     }
+
+    values.push(converted);
     i += 1;
   }
 
   // 12. If i = d, then resolve the overload using args[i].
   if (i as isize) == d {
     let v = args[i];
+    let mut selected_method: Option<R::JsValue> = None;
 
-    // 12.2 optional undefined special-case.
-    if is_undefined(rt, v)?
-      && entries
-        .iter()
-        .any(|e| e.optionality_list.get(i).copied() == Some(Optionality::Optional))
-    {
-      entries.retain(|e| e.optionality_list.get(i).copied() == Some(Optionality::Optional));
-    }
-    // 12.3 nullable/dictionary special-case.
-    else if matches!(null_or_undefined(rt, v)?, Some(_))
-      && entries
-        .iter()
-        .any(|e| type_matches_nullable_dictionary(&e.type_list[i]))
-    {
-      entries.retain(|e| type_matches_nullable_dictionary(&e.type_list[i]));
-    }
-    // 12.4 platform object special-case.
-    else if rt.is_platform_object(v)
-      && entries
-        .iter()
-        .any(|e| type_matches_platform_object(rt, &e.type_list[i], v))
-    {
-      entries.retain(|e| type_matches_platform_object(rt, &e.type_list[i], v));
-    }
-    // 12.5 ArrayBuffer special-case.
-    else if rt.is_object(v)
-      && rt.is_array_buffer(v)
-      && entries
-        .iter()
-        .any(|e| type_matches_array_buffer(rt, &e.type_list[i], v))
-    {
-      entries.retain(|e| type_matches_array_buffer(rt, &e.type_list[i], v));
-    }
-    // 12.6 DataView special-case.
-    else if rt.is_object(v)
-      && rt.is_data_view(v)
-      && entries
-        .iter()
-        .any(|e| type_matches_data_view(rt, &e.type_list[i], v))
-    {
-      entries.retain(|e| type_matches_data_view(rt, &e.type_list[i], v));
-    }
-    // 12.7 TypedArray special-case.
-    else if rt.is_object(v)
-      && rt.typed_array_name(v).is_some()
-      && entries
-        .iter()
-        .any(|e| type_matches_typed_array(rt, &e.type_list[i], v))
-    {
-      entries.retain(|e| type_matches_typed_array(rt, &e.type_list[i], v));
-    }
-    // 12.8 callback function special-case.
-    else if rt.is_callable(v)
-      && entries
-        .iter()
-        .any(|e| type_matches_callable(rt, &e.type_list[i], v))
-    {
-      entries.retain(|e| type_matches_callable(rt, &e.type_list[i], v));
-    }
-    // 12.9 async sequence special-case.
-    else if rt.is_object(v)
-      && entries
-        .iter()
-        .any(|e| type_matches_async_sequence(&e.type_list[i]))
-    {
-      let has_string_type = entries.iter().any(|e| type_matches_string(&e.type_list[i]));
-      let skip_async_sequence = rt.is_string_object(v) && has_string_type;
+    rt.with_stack_roots(&roots, |rt| {
+      // 12.2 optional undefined special-case.
+      if is_undefined(rt, v)?
+        && entries
+          .iter()
+          .any(|e| e.optionality_list.get(i).copied() == Some(Optionality::Optional))
+      {
+        entries.retain(|e| e.optionality_list.get(i).copied() == Some(Optionality::Optional));
+      }
+      // 12.3 nullable/dictionary special-case.
+      else if matches!(null_or_undefined(rt, v)?, Some(_))
+        && entries
+          .iter()
+          .any(|e| type_matches_nullable_dictionary(&e.type_list[i]))
+      {
+        entries.retain(|e| type_matches_nullable_dictionary(&e.type_list[i]));
+      }
+      // 12.4 platform object special-case.
+      else if rt.is_platform_object(v)
+        && entries
+          .iter()
+          .any(|e| type_matches_platform_object(rt, &e.type_list[i], v))
+      {
+        entries.retain(|e| type_matches_platform_object(rt, &e.type_list[i], v));
+      }
+      // 12.5 ArrayBuffer special-case.
+      else if rt.is_object(v)
+        && rt.is_array_buffer(v)
+        && entries
+          .iter()
+          .any(|e| type_matches_array_buffer(rt, &e.type_list[i], v))
+      {
+        entries.retain(|e| type_matches_array_buffer(rt, &e.type_list[i], v));
+      }
+      // 12.6 DataView special-case.
+      else if rt.is_object(v)
+        && rt.is_data_view(v)
+        && entries
+          .iter()
+          .any(|e| type_matches_data_view(rt, &e.type_list[i], v))
+      {
+        entries.retain(|e| type_matches_data_view(rt, &e.type_list[i], v));
+      }
+      // 12.7 TypedArray special-case.
+      else if rt.is_object(v)
+        && rt.typed_array_name(v).is_some()
+        && entries
+          .iter()
+          .any(|e| type_matches_typed_array(rt, &e.type_list[i], v))
+      {
+        entries.retain(|e| type_matches_typed_array(rt, &e.type_list[i], v));
+      }
+      // 12.8 callback function special-case.
+      else if rt.is_callable(v)
+        && entries
+          .iter()
+          .any(|e| type_matches_callable(rt, &e.type_list[i], v))
+      {
+        entries.retain(|e| type_matches_callable(rt, &e.type_list[i], v));
+      }
+      // 12.9 async sequence special-case.
+      else if rt.is_object(v)
+        && entries
+          .iter()
+          .any(|e| type_matches_async_sequence(&e.type_list[i]))
+      {
+        let has_string_type = entries.iter().any(|e| type_matches_string(&e.type_list[i]));
+        let skip_async_sequence = rt.is_string_object(v) && has_string_type;
 
-      if !skip_async_sequence {
-        let async_iter_key = rt.symbol_async_iterator()?;
+        if !skip_async_sequence {
+          let async_iter_key = rt.symbol_async_iterator()?;
+          let iter_key = rt.symbol_iterator()?;
+          let mut m = rt.get_method(v, async_iter_key)?;
+          if m.is_none() {
+            m = rt.get_method(v, iter_key)?;
+          }
+          if m.is_some() {
+            entries.retain(|e| type_matches_async_sequence(&e.type_list[i]));
+          }
+        }
+      }
+      // 12.10 sequence special-case.
+      else if rt.is_object(v)
+        && entries
+          .iter()
+          .any(|e| type_matches_sequence(&e.type_list[i]))
+      {
         let iter_key = rt.symbol_iterator()?;
-        let mut m = rt.get_method(v, async_iter_key)?;
-        if m.is_none() {
-          m = rt.get_method(v, iter_key)?;
-        }
-        if m.is_some() {
-          entries.retain(|e| type_matches_async_sequence(&e.type_list[i]));
+        let m = rt.get_method(v, iter_key)?;
+        if let Some(method_value) = m {
+          selected_method = Some(method_value);
+          entries.retain(|e| type_matches_sequence(&e.type_list[i]));
         }
       }
-    }
-    // 12.10 sequence special-case.
-    else if rt.is_object(v)
-      && entries
-        .iter()
-        .any(|e| type_matches_sequence(&e.type_list[i]))
-    {
-      let iter_key = rt.symbol_iterator()?;
-      let m = rt.get_method(v, iter_key)?;
-      if let Some(method_value) = m {
-        method = Some(method_value);
-        entries.retain(|e| type_matches_sequence(&e.type_list[i]));
+      // 12.11 object/dictionary-like special-case.
+      else if rt.is_object(v)
+        && entries
+          .iter()
+          .any(|e| type_matches_object_or_dictionary_like(&e.type_list[i]))
+      {
+        entries.retain(|e| type_matches_object_or_dictionary_like(&e.type_list[i]));
       }
-    }
-    // 12.11 object/dictionary-like special-case.
-    else if rt.is_object(v)
-      && entries
-        .iter()
-        .any(|e| type_matches_object_or_dictionary_like(&e.type_list[i]))
-    {
-      entries.retain(|e| type_matches_object_or_dictionary_like(&e.type_list[i]));
-    }
-    // 12.12 boolean special-case.
-    else if rt.is_boolean(v)
-      && entries
-        .iter()
-        .any(|e| type_matches_boolean(&e.type_list[i]))
-    {
-      entries.retain(|e| type_matches_boolean(&e.type_list[i]));
-    }
-    // 12.13 number special-case.
-    else if rt.is_number(v)
-      && entries
+      // 12.12 boolean special-case.
+      else if rt.is_boolean(v)
+        && entries
+          .iter()
+          .any(|e| type_matches_boolean(&e.type_list[i]))
+      {
+        entries.retain(|e| type_matches_boolean(&e.type_list[i]));
+      }
+      // 12.13 number special-case.
+      else if rt.is_number(v)
+        && entries
+          .iter()
+          .any(|e| type_matches_numeric(&e.type_list[i]))
+      {
+        entries.retain(|e| type_matches_numeric(&e.type_list[i]));
+      }
+      // 12.14 bigint special-case.
+      else if rt.is_bigint(v) && entries.iter().any(|e| type_matches_bigint(&e.type_list[i])) {
+        entries.retain(|e| type_matches_bigint(&e.type_list[i]));
+      }
+      // 12.15 string fallthrough.
+      else if entries.iter().any(|e| type_matches_string(&e.type_list[i])) {
+        entries.retain(|e| type_matches_string(&e.type_list[i]));
+      }
+      // 12.16 numeric fallthrough.
+      else if entries
         .iter()
         .any(|e| type_matches_numeric(&e.type_list[i]))
-    {
-      entries.retain(|e| type_matches_numeric(&e.type_list[i]));
-    }
-    // 12.14 bigint special-case.
-    else if rt.is_bigint(v) && entries.iter().any(|e| type_matches_bigint(&e.type_list[i])) {
-      entries.retain(|e| type_matches_bigint(&e.type_list[i]));
-    }
-    // 12.15 string fallthrough.
-    else if entries.iter().any(|e| type_matches_string(&e.type_list[i])) {
-      entries.retain(|e| type_matches_string(&e.type_list[i]));
-    }
-    // 12.16 numeric fallthrough.
-    else if entries
-      .iter()
-      .any(|e| type_matches_numeric(&e.type_list[i]))
-    {
-      entries.retain(|e| type_matches_numeric(&e.type_list[i]));
-    }
-    // 12.17 boolean fallthrough.
-    else if entries
-      .iter()
-      .any(|e| type_matches_boolean(&e.type_list[i]))
-    {
-      entries.retain(|e| type_matches_boolean(&e.type_list[i]));
-    }
-    // 12.18 bigint fallthrough.
-    else if entries.iter().any(|e| type_matches_bigint(&e.type_list[i])) {
-      entries.retain(|e| type_matches_bigint(&e.type_list[i]));
-    }
-    // 12.19 any fallthrough.
-    else if entries
-      .iter()
-      .any(|e| matches!(e.type_list[i].innermost_type(), IdlType::Any))
-    {
-      let any_entry = entries
-        .iter()
-        .find(|e| matches!(e.type_list[i].innermost_type(), IdlType::Any))
-        .cloned();
-      if let Some(e) = any_entry {
-        entries.clear();
-        entries.push(e);
+      {
+        entries.retain(|e| type_matches_numeric(&e.type_list[i]));
       }
-    } else {
-      return Err(rt.throw_type_error(&format!(
-        "No matching overload for argument {i}. Candidates:\n{}",
-        format_effective_entries(&entries)
-      )));
+      // 12.17 boolean fallthrough.
+      else if entries
+        .iter()
+        .any(|e| type_matches_boolean(&e.type_list[i]))
+      {
+        entries.retain(|e| type_matches_boolean(&e.type_list[i]));
+      }
+      // 12.18 bigint fallthrough.
+      else if entries.iter().any(|e| type_matches_bigint(&e.type_list[i])) {
+        entries.retain(|e| type_matches_bigint(&e.type_list[i]));
+      }
+      // 12.19 any fallthrough.
+      else if entries
+        .iter()
+        .any(|e| matches!(e.type_list[i].innermost_type(), IdlType::Any))
+      {
+        let any_entry = entries
+          .iter()
+          .find(|e| matches!(e.type_list[i].innermost_type(), IdlType::Any))
+          .cloned();
+        if let Some(e) = any_entry {
+          entries.clear();
+          entries.push(e);
+        }
+      } else {
+        return Err(rt.throw_type_error(&format!(
+          "No matching overload for argument {i}. Candidates:\n{}",
+          format_effective_entries(&entries)
+        )));
+      }
+      Ok(())
+    })?;
+
+    if let Some(method_value) = selected_method {
+      method = Some(method_value);
+      roots.push(method_value);
     }
 
     if entries.len() != 1 {
@@ -483,7 +505,10 @@ pub fn resolve_overload<R: WebIdlJsRuntime>(
         .and_then(sequence_element_type)
       {
         let v = args[i];
-        let seq = create_sequence_from_iterable(rt, elem_ty, v, method_value)?;
+        let seq = rt.with_stack_roots(&roots, |rt| {
+          create_sequence_from_iterable(rt, elem_ty, v, method_value)
+        })?;
+        append_webidl_value_roots(&mut roots, &seq);
         values.push(ConvertedArgument::Value(seq));
         i += 1;
       }
@@ -496,15 +521,23 @@ pub fn resolve_overload<R: WebIdlJsRuntime>(
     let ty = selected_entry.type_list[i].clone();
     let optionality = selected_entry.optionality_list[i];
 
-    if optionality.is_optional() && is_undefined(rt, v)? {
-      if let Some(default) = selected_overload.args[i].default.as_ref() {
-        values.push(ConvertedArgument::Value(convert_default(rt, &ty, default)?));
+    let converted = rt.with_stack_roots(&roots, |rt| {
+      if optionality.is_optional() && is_undefined(rt, v)? {
+        if let Some(default) = selected_overload.args[i].default.as_ref() {
+          Ok(ConvertedArgument::Value(convert_default(rt, &ty, default)?))
+        } else {
+          Ok(ConvertedArgument::Missing)
+        }
       } else {
-        values.push(ConvertedArgument::Missing);
+        Ok(ConvertedArgument::Value(convert_js_to_idl(rt, &ty, v)?))
       }
-    } else {
-      values.push(ConvertedArgument::Value(convert_js_to_idl(rt, &ty, v)?));
+    })?;
+
+    if let ConvertedArgument::Value(v) = &converted {
+      append_webidl_value_roots(&mut roots, v);
     }
+
+    values.push(converted);
     i += 1;
   }
 
@@ -512,9 +545,9 @@ pub fn resolve_overload<R: WebIdlJsRuntime>(
   while i < selected_overload.args.len() {
     let arg = &selected_overload.args[i];
     if let Some(default) = arg.default.as_ref() {
-      values.push(ConvertedArgument::Value(convert_default(
-        rt, &arg.ty, default,
-      )?));
+      let v = rt.with_stack_roots(&roots, |rt| convert_default(rt, &arg.ty, default))?;
+      append_webidl_value_roots(&mut roots, &v);
+      values.push(ConvertedArgument::Value(v));
     } else if arg.optionality != Optionality::Variadic {
       values.push(ConvertedArgument::Missing);
     }
@@ -1032,39 +1065,17 @@ fn create_sequence_from_iterable<R: WebIdlJsRuntime>(
   iterable: R::JsValue,
   method: R::JsValue,
 ) -> Result<WebIdlValue<R::JsValue>, R::Error> {
-  let mut record: IteratorRecord<R::JsValue> = rt.get_iterator_from_method(iterable, method)?;
-  rt.with_stack_roots(
-    &[iterable, record.iterator, record.next_method],
-    |rt| {
-      let mut out = Vec::<WebIdlValue<R::JsValue>>::new();
-      // Roots for any JS values stored in `out` so far. These are not otherwise visible to the GC.
-      let mut value_roots: Vec<R::JsValue> = Vec::new();
-
-      loop {
-        // Ensure any previously-converted JS values remain alive while we perform the next
-        // `IteratorStepValue` (which can allocate and trigger GC).
-        let next = rt.with_stack_roots(&value_roots, |rt| rt.iterator_step_value(&mut record))?;
-        let Some(next) = next else {
-          break;
-        };
-
-        if out.len() >= rt.limits().max_sequence_length {
-          return Err(rt.throw_range_error("sequence exceeds maximum length"));
-        }
-
-        let converted = rt.with_stack_roots(&value_roots, |rt| {
-          rt.with_stack_roots(&[next], |rt| convert_js_to_idl(rt, elem_ty, next))
-        })?;
-        append_webidl_value_roots(&mut value_roots, &converted);
-        out.push(converted);
-      }
-
-      Ok(WebIdlValue::Sequence {
-        elem_ty: Box::new(elem_ty.clone()),
-        values: out,
-      })
-    },
-  )
+  let out = conversions_shared::materialize_iterable(
+    rt,
+    iterable,
+    method,
+    |rt, next| convert_js_to_idl(rt, elem_ty, next),
+    |roots, v| append_webidl_value_roots(roots, v),
+  )?;
+  Ok(WebIdlValue::Sequence {
+    elem_ty: Box::new(elem_ty.clone()),
+    values: out,
+  })
 }
 
 fn convert_record<R: WebIdlJsRuntime>(
@@ -1076,61 +1087,21 @@ fn convert_record<R: WebIdlJsRuntime>(
   // Record conversions use `ToObject` (per WebIDL), so accept primitives here.
   let obj = rt.to_object(value)?;
 
-  // Root `obj` while collecting keys: `own_property_keys` can allocate (e.g. array growth).
-  let keys = rt.with_stack_roots(&[obj], |rt| rt.own_property_keys(obj))?;
-
-  // Roots for any JS values stored in `entries` so far. These are not otherwise visible to the GC.
-  let mut roots: Vec<R::JsValue> = Vec::new();
-  roots.push(obj);
-
-  let mut entries: Vec<(String, WebIdlValue<R::JsValue>)> = Vec::new();
-  // Records use map/set semantics; when a converted key already exists, the value is overwritten
-  // without changing insertion order.
-  let mut index_by_key = HashMap::<String, usize>::new();
-
-  for key in keys {
-    let Some((typed_key, typed_value)) = rt.with_stack_roots(&roots, |rt| {
-      let Some(desc) = rt.get_own_property(obj, key)? else {
-        return Ok(None);
-      };
-      if !desc.enumerable {
-        return Ok(None);
-      }
-
-      // This must throw for Symbol keys (per WebIDL).
-      let key_value = rt.property_key_to_js_string(key)?;
-      let typed_key = rt.with_stack_roots(&[key_value], |rt| {
-        convert_js_to_idl(rt, key_ty, key_value)
-      })?;
-      let WebIdlValue::String(typed_key_value) = typed_key else {
+  let entries = conversions_shared::materialize_record_entries(
+    rt,
+    obj,
+    |rt, key_value, prop_value| {
+      let typed_key_idl = convert_js_to_idl(rt, key_ty, key_value)?;
+      let WebIdlValue::String(typed_key_value) = typed_key_idl else {
         return Err(rt.throw_type_error("record key did not convert to a string"));
       };
-      let typed_key = rt.with_stack_roots(&[typed_key_value], |rt| {
-        rt.string_to_utf8_lossy(typed_key_value)
-      })?;
+      let typed_key = rt.string_to_utf8_lossy(typed_key_value)?;
 
-      let prop_value = rt.get(obj, key)?;
-      let typed_value = rt.with_stack_roots(&[prop_value], |rt| {
-        convert_js_to_idl(rt, value_ty, prop_value)
-      })?;
-
-      Ok(Some((typed_key, typed_value)))
-    })?
-    else {
-      continue;
-    };
-
-    append_webidl_value_roots(&mut roots, &typed_value);
-    if let Some(&idx) = index_by_key.get(&typed_key) {
-      entries[idx].1 = typed_value;
-    } else {
-      if entries.len() >= rt.limits().max_record_entries {
-        return Err(rt.throw_range_error("record exceeds maximum entry count"));
-      }
-      index_by_key.insert(typed_key.clone(), entries.len());
-      entries.push((typed_key, typed_value));
-    }
-  }
+      let typed_value = convert_js_to_idl(rt, value_ty, prop_value)?;
+      Ok((typed_key, typed_value))
+    },
+    |roots, v| append_webidl_value_roots(roots, v),
+  )?;
 
   Ok(WebIdlValue::Record {
     key_ty: Box::new(key_ty.clone()),
@@ -1216,22 +1187,12 @@ fn convert_default<R: WebIdlJsRuntime>(
   rt.with_stack_roots(&[js_value], |rt| convert_js_to_idl(rt, ty, js_value))
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct IntegerConversionAttrs {
-  clamp: bool,
-  enforce_range: bool,
-}
-
 fn to_js_string_with_limits<R: WebIdlJsRuntime>(
   rt: &mut R,
   value: R::JsValue,
 ) -> Result<R::JsValue, R::Error> {
   let s = rt.to_string(value)?;
-  let max_units = rt.limits().max_string_code_units;
-  let len = rt.with_stack_roots(&[s], |rt| rt.with_string_code_units(s, |units| units.len()))?;
-  if len > max_units {
-    return Err(rt.throw_range_error("string exceeds maximum length"));
-  }
+  conversions_shared::enforce_string_code_units_limit(rt, s)?;
   Ok(s)
 }
 
@@ -1240,14 +1201,14 @@ fn convert_js_to_idl<R: WebIdlJsRuntime>(
   ty: &IdlType,
   value: R::JsValue,
 ) -> Result<WebIdlValue<R::JsValue>, R::Error> {
-  convert_js_to_idl_inner(rt, ty, value, IntegerConversionAttrs::default())
+  convert_js_to_idl_inner(rt, ty, value, crate::IntegerConversionAttrs::default())
 }
 
 fn convert_js_to_idl_inner<R: WebIdlJsRuntime>(
   rt: &mut R,
   ty: &IdlType,
   value: R::JsValue,
-  int_attrs: IntegerConversionAttrs,
+  int_attrs: crate::IntegerConversionAttrs,
 ) -> Result<WebIdlValue<R::JsValue>, R::Error> {
   match ty {
     IdlType::Annotated { annotations, inner } => {
@@ -1539,7 +1500,7 @@ fn convert_union<R: WebIdlJsRuntime>(
       IdlType::Numeric(n) => Some((*n, t.clone())),
       _ => None,
     }) {
-      let out = convert_numeric(rt, numeric, value, IntegerConversionAttrs::default())?;
+      let out = convert_numeric(rt, numeric, value, crate::IntegerConversionAttrs::default())?;
       return Ok(WebIdlValue::Union {
         member_ty: Box::new(member_ty),
         value: Box::new(out),
@@ -1582,7 +1543,7 @@ fn convert_numeric<R: WebIdlJsRuntime>(
   rt: &mut R,
   numeric_ty: NumericType,
   value: R::JsValue,
-  attrs: IntegerConversionAttrs,
+  attrs: crate::IntegerConversionAttrs,
 ) -> Result<WebIdlValue<R::JsValue>, R::Error> {
   match numeric_ty {
     NumericType::Byte => Ok(WebIdlValue::Byte(
@@ -1621,97 +1582,11 @@ fn convert_to_int<R: WebIdlJsRuntime>(
   value: R::JsValue,
   bit_length: u32,
   signed: bool,
-  attrs: IntegerConversionAttrs,
-) -> Result<f64, R::Error> {
-  // Spec: https://webidl.spec.whatwg.org/#abstract-opdef-converttoint
-
-  let (lower_bound, upper_bound) = if bit_length == 64 {
-    // WebIDL defines `long long`/`unsigned long long` conversion bounds using the "safe integer"
-    // range because ECMAScript Numbers cannot precisely represent all 64-bit integers.
-    let upper_bound = (1u64 << 53) as f64 - 1.0;
-    let lower_bound = if signed {
-      -((1u64 << 53) as f64) + 1.0
-    } else {
-      0.0
-    };
-    (lower_bound, upper_bound)
-  } else if signed {
-    let lower_bound = -((1u64 << (bit_length - 1)) as f64);
-    let upper_bound = ((1u64 << (bit_length - 1)) as f64) - 1.0;
-    (lower_bound, upper_bound)
-  } else {
-    let lower_bound = 0.0;
-    let upper_bound = ((1u64 << bit_length) as f64) - 1.0;
-    (lower_bound, upper_bound)
-  };
-
-  let mut x = rt.to_number(value)?;
-  // Normalize -0 to +0.
-  if x == 0.0 && x.is_sign_negative() {
-    x = 0.0;
-  }
-
-  if attrs.enforce_range {
-    if x.is_nan() || x.is_infinite() {
-      return Err(rt.throw_range_error("EnforceRange integer conversion cannot be NaN/Infinity"));
-    }
-    x = integer_part(x);
-    if x < lower_bound || x > upper_bound {
-      return Err(rt.throw_range_error("integer value is outside EnforceRange bounds"));
-    }
-    return Ok(x);
-  }
-
-  if !x.is_nan() && attrs.clamp {
-    x = x.clamp(lower_bound, upper_bound);
-    x = round_ties_even(x);
-    if x == 0.0 && x.is_sign_negative() {
-      x = 0.0;
-    }
-    return Ok(x);
-  }
-
-  if x.is_nan() || x == 0.0 || x.is_infinite() {
-    return Ok(0.0);
-  }
-
-  x = integer_part(x);
-  let modulo = 2f64.powi(bit_length as i32);
-  x = x.rem_euclid(modulo);
-  if signed {
-    let threshold = 2f64.powi((bit_length - 1) as i32);
-    if x >= threshold {
-      return Ok(x - modulo);
-    }
-  }
-  Ok(x)
-}
-
-fn integer_part(n: f64) -> f64 {
-  let r = n.abs().floor();
-  if n < 0.0 {
-    -r
-  } else {
-    r
-  }
-}
-
-fn round_ties_even(n: f64) -> f64 {
-  let floor = n.floor();
-  let frac = n - floor;
-  if frac < 0.5 {
-    return floor;
-  }
-  if frac > 0.5 {
-    return floor + 1.0;
-  }
-  // Exactly halfway between two integers.
-  let floor_int = floor as i64;
-  if floor_int % 2 == 0 {
-    floor
-  } else {
-    floor + 1.0
-  }
+  attrs: crate::IntegerConversionAttrs,
+) -> Result<i128, R::Error> {
+  let n = rt.to_number(value)?;
+  crate::convert_to_int(n, bit_length, signed, attrs)
+    .map_err(|e| conversions_shared::numeric_conversion_error_to_js_error(rt, e))
 }
 
 fn convert_float<R: WebIdlJsRuntime>(
