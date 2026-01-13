@@ -550,6 +550,71 @@ jobs:
           bash scripts/cargo_agent.sh test --locked -p fastrender --no-default-features --lib windows_renderer_sandbox_test -- --nocapture
 
   # ===========================================================================
+  # macOS sandbox - Ensure Seatbelt sandboxing continues to work
+  # ===========================================================================
+  macos-sandbox:
+    name: macOS sandbox (Seatbelt)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    env:
+      # macOS runners can be resource constrained; keep libtest thread count low to avoid flakiness.
+      RUST_TEST_THREADS: 2
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Init ecma-rs submodule
+        shell: bash
+        run: bash scripts/ci_init_ecma_rs_submodule.sh
+
+      - name: Assert ecma-rs is checked out
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f vendor/ecma-rs/Cargo.toml ]; then
+            echo "Missing vendor/ecma-rs submodule checkout (expected vendor/ecma-rs/Cargo.toml)." >&2
+            echo "Run: git submodule update --init vendor/ecma-rs" >&2
+            exit 1
+          fi
+
+      - name: Run macOS Seatbelt sandbox tests (scoped)
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout_bin="timeout"
+          if ! command -v "${timeout_bin}" >/dev/null 2>&1; then
+            timeout_bin="gtimeout"
+          fi
+          if ! command -v "${timeout_bin}" >/dev/null 2>&1; then
+            echo "Neither 'timeout' nor 'gtimeout' is available on this runner." >&2
+            echo "Install coreutils (provides gtimeout) or add a timeout implementation." >&2
+            exit 1
+          fi
+
+          "${timeout_bin}" -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --test macos_sandbox
+
+  # ===========================================================================
   # Browser UI - Cross-platform compile + Linux headless smoke (no display/GPU)
   # ===========================================================================
   browser_ui_headless_smoke:
@@ -1178,12 +1243,13 @@ jobs:
   ci-status:
     name: CI Status
     runs-on: ubuntu-latest
-    needs: [lockfile, ecma-rs-sanity, ecma-rs-webidl-tests, test, windows-sandbox, browser_ui_headless_smoke, chrome_baseline_viewport, msrv, msrv-cross, clippy, format, docs, audit, fuzz-smoke]
+    needs: [lockfile, ecma-rs-sanity, ecma-rs-webidl-tests, test, windows-sandbox, macos-sandbox, browser_ui_headless_smoke, chrome_baseline_viewport, msrv, msrv-cross, clippy, format, docs, audit, fuzz-smoke]
     if: always()
     steps:
       - name: Check CI Status
         run: |
           if [ "${{ needs.test.result }}" != "success" ] || \
+              [ "${{ needs.macos-sandbox.result }}" != "success" ] || \
               [ "${{ needs.lockfile.result }}" != "success" ] || \
               [ "${{ needs.ecma-rs-sanity.result }}" != "success" ] || \
               [ "${{ needs.ecma-rs-webidl-tests.result }}" != "success" ] || \
