@@ -32614,46 +32614,59 @@ fn gen_binary_after_left(
       }
       gen_eval_expr(evaluator, scope, &expr.right)
     }
-    OperatorName::Comma => match gen_eval_expr(evaluator, scope, &expr.right)? {
-      GenEval::Complete(c) => match c {
-        Completion::Normal(v) => Ok(GenEval::Complete(Completion::normal(v.unwrap_or(Value::Undefined)))),
-        abrupt => Ok(GenEval::Complete(abrupt)),
-      },
-      GenEval::Suspend(mut suspend) => {
-        gen_frames_push(
-          &mut suspend.frames,
-          GenFrame::BinaryAfterRight {
-            expr: expr as *const BinaryExpr,
-            left: Value::Undefined,
-          },
-        )?;
-        Ok(GenEval::Suspend(suspend))
-      }
-    },
-    OperatorName::Addition => match gen_eval_expr(evaluator, scope, &expr.right)? {
-      GenEval::Complete(c) => match c {
-        Completion::Normal(v) => {
-          match evaluator.addition_operator(scope, left, v.unwrap_or(Value::Undefined)) {
-            Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
-            Err(err) => {
-              let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
-              Ok(GenEval::Complete(completion_from_expr_result(Err(err))?))
+    // Binary operators that always evaluate both operands.
+    OperatorName::Addition
+    | OperatorName::Exponentiation
+    | OperatorName::Multiplication
+    | OperatorName::BitwiseAnd
+    | OperatorName::BitwiseOr
+    | OperatorName::BitwiseXor
+    | OperatorName::BitwiseLeftShift
+    | OperatorName::BitwiseRightShift
+    | OperatorName::BitwiseUnsignedRightShift
+    | OperatorName::Subtraction
+    | OperatorName::Division
+    | OperatorName::Remainder
+    | OperatorName::StrictEquality
+    | OperatorName::StrictInequality
+    | OperatorName::Equality
+    | OperatorName::Inequality
+    | OperatorName::In
+    | OperatorName::Instanceof
+    | OperatorName::LessThan
+    | OperatorName::LessThanOrEqual
+    | OperatorName::GreaterThan
+    | OperatorName::GreaterThanOrEqual => {
+      // Root `left` across evaluation of `right` in case the RHS allocates and triggers GC.
+      let right_eval = {
+        let mut rhs_scope = scope.reborrow();
+        rhs_scope.push_root(left)?;
+        gen_eval_expr(evaluator, &mut rhs_scope, &expr.right)?
+      };
+
+      match right_eval {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(v) => {
+            let right = v.unwrap_or(Value::Undefined);
+            match async_apply_binary_operator(evaluator, scope, expr.operator, left, right) {
+              Ok(out) => Ok(GenEval::Complete(Completion::normal(out))),
+              Err(err) => Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?)),
             }
           }
+          abrupt => Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          // Root the left operand so it survives until the next yield boundary.
+          scope.push_root(left)?;
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::BinaryAfterRight {
+              expr: expr as *const BinaryExpr,
+              left,
+            },
+          )?;
+          Ok(GenEval::Suspend(suspend))
         }
-        abrupt => Ok(GenEval::Complete(abrupt)),
-      },
-      GenEval::Suspend(mut suspend) => {
-        // Root the left operand so it survives until the next yield boundary.
-        scope.push_root(left)?;
-        gen_frames_push(
-          &mut suspend.frames,
-          GenFrame::BinaryAfterRight {
-            expr: expr as *const BinaryExpr,
-            left,
-          },
-        )?;
-        Ok(GenEval::Suspend(suspend))
       }
     },
     OperatorName::Comma => {
@@ -33583,20 +33596,15 @@ fn gen_resume_from_frames(
       GenFrame::BinaryAfterRight { expr, left } => match state {
         Completion::Normal(v) => {
           let expr = unsafe { &*expr };
-          match expr.operator {
-            OperatorName::Comma => {
-              state = Completion::normal(v.unwrap_or(Value::Undefined));
+          let right = v.unwrap_or(Value::Undefined);
+          if matches!(expr.operator, OperatorName::Comma) {
+            // `,` simply evaluates the RHS and returns it.
+            state = Completion::normal(right);
+          } else {
+            match async_apply_binary_operator(evaluator, scope, expr.operator, left, right) {
+              Ok(out) => state = Completion::normal(out),
+              Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
             }
-            OperatorName::Addition => {
-              match evaluator.addition_operator(scope, left, v.unwrap_or(Value::Undefined)) {
-                Ok(v) => state = Completion::normal(v),
-                Err(err) => {
-                  let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
-                  state = completion_from_expr_result(Err(err))?;
-                }
-              }
-            }
-            _ => return Err(VmError::Unimplemented("yield in binary operator")),
           }
         }
         abrupt => state = abrupt,
