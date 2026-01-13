@@ -25,7 +25,7 @@ These are optional wrappers for the most common loops:
   - Defaults to `--features disk_cache`; set `DISK_CACHE=0` or `NO_DISK_CACHE=1` or pass `--no-disk-cache` to opt out; pass `--disk-cache` to force-enable.
   - Fonts: defaults to bundled fixtures; pass `--system-fonts` (alias `--no-bundled-fonts`) to run `pageset_progress` against host system fonts (useful for Chrome accuracy diffs). `--system-fonts` forces `FASTR_USE_BUNDLED_FONTS=0` and `CI=0` for the `pageset_progress` subprocess so the behavior is predictable even when those env vars are set.
   - Supports `--jobs/-j`, `--fetch-timeout`, `--render-timeout`, `--cache-dir`, `--no-fetch`, `--refresh`, `--pages`, `--shard`, `--allow-http-error-status`, `--allow-collisions`, `--timings`, `--bundled-fonts` (default) / `--system-fonts` (alias `--no-bundled-fonts`), `--accuracy` (plus `--accuracy-baseline`, `--accuracy-baseline-dir`, `--accuracy-tolerance`, `--accuracy-max-diff-percent`, and `--accuracy-diff-dir`), and `--capture-missing-failure-fixtures` (plus `--capture-missing-failure-fixtures-out-dir`, `--capture-missing-failure-fixtures-allow-missing-resources`, and `--capture-missing-failure-fixtures-overwrite`).
-  - Prefetch/report flags like `--prefetch-fonts` / `--prefetch-images` / `--report-json` / `--discover-only` passed after `--` are forwarded to `prefetch_assets` when disk cache is enabled.
+  - Prefetch/report flags like `--prefetch-fonts` / `--prefetch-images` / `--prefetch-media` / `--report-json` / `--discover-only` passed after `--` are forwarded to `prefetch_assets` when disk cache is enabled.
   - Pass extra `pageset_progress run` flags after `--` (for example `--accuracy`; consider `--system-fonts` for Chrome diffs so font substitution doesn’t dominate the results).
   - Use `--dry-run` to print the underlying `bash scripts/cargo_agent.sh xtask pageset ...` command instead of executing it.
 - Cached-pages Chrome-vs-FastRender diff (best-effort; non-deterministic): `scripts/chrome_vs_fastrender.sh [options] [--] [page_stem...]`
@@ -146,9 +146,9 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
     - When reusing an existing FastRender output directory (`--no-fastrender` / `--diff-only`), xtask validates the metadata matches the requested `--viewport/--dpr/--media/--fit-canvas-to-content/--timeout`, font config, and fixture input fingerprints. Missing/incomplete metadata warns by default; pass `--require-fastrender-metadata` to fail instead. Use `--allow-stale-fastrender-renders` to downgrade fingerprint mismatches to warnings.
   - Import a bundled capture into a `pages_regression` fixture: `bash scripts/cargo_agent.sh xtask import-page-fixture <bundle_dir|.tar> <fixture_name> [--output-root tests/pages/fixtures --overwrite --dry-run --include-media]`
     - Relative `<bundle>` and `--output-root` paths are resolved relative to the repository root so the command behaves consistently even when invoked from subdirectories (pass absolute paths to override).
-    - Media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`) are rewritten to deterministic empty placeholder files by default (fixtures stay small and safe to commit).
+    - Media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`) are rewritten to deterministic empty `assets/missing_<hash>.<ext>` placeholder files by default (fixtures stay small and safe to commit).
       - Opt in to vendoring playable media with `--include-media`.
-      - When enabled, media bytes are capped by `--media-max-bytes` (total) and `--media-max-file-bytes` (per file). Set either to `0` to disable the limit (see `xtask import-page-fixture --help` for current defaults).
+      - When enabled, media bytes are capped by `--media-max-bytes` (total, default **5 MiB**) and `--media-max-file-bytes` (per file, default **2 MiB**). Set either to `0` to disable the limit.
   - Recapture and (re)import offline page fixtures from a manifest (pageset guardrails by default): `bash scripts/cargo_agent.sh xtask recapture-page-fixtures [--capture-mode cache|crawl|render] [--only stripe.com] [--overwrite]`
   - Validate that offline page fixtures do not reference network resources: `bash scripts/cargo_agent.sh xtask validate-page-fixtures [--only stripe.com]`
 - Update `tests/pages/pageset_guardrails.json` from the pageset scoreboard: `bash scripts/cargo_agent.sh xtask update-pageset-guardrails`
@@ -204,6 +204,10 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
     - `--prefetch-images`: prefetch common HTML image-like assets (`<img>`, `<picture><source srcset>`, video posters, icons/manifests (including `mask-icon`), and `<link rel="preload" as="image">`). This uses the renderer's responsive image selection (DPR/viewport + `srcset`/`sizes`/`picture`) instead of enumerating every candidate.
       - Safety valves: `--max-images-per-page` and `--max-image-urls-per-element` bound image prefetching when pages contain large `srcset` lists.
       - Note: if you only need a small subset (e.g. icons or video posters) without fetching all `<img>` content, use `--prefetch-icons` / `--prefetch-video-posters` instead.
+    - `--prefetch-media`: prefetch playable media sources referenced directly from HTML (`<video src>`, `<audio src>`, `<source src>`). This is opt-in because media files can be large.
+      - Budgets: `--max-media-bytes-per-file` (default **10 MiB**) and `--max-media-bytes-per-page` (default **50 MiB**). Set either to `0` to disable the cap.
+      - When caps are enabled, `prefetch_assets` probes size using a partial fetch and **skips** media URLs that would exceed the budgets (recorded as `false` in the JSON report).
+      - Current limitation: `<track src>` and `<link rel="preload" as="video|audio|track">` are not discovered by the media prefetcher yet.
     - `--prefetch-iframes` (alias `--prefetch-documents`): prefetch `<iframe src>` documents and best-effort warm their linked stylesheets (and images when `--prefetch-images` is enabled).
     - `--prefetch-embeds`: prefetch `<object data>` and `<embed src>` subresources. If the fetched resource is HTML, it is treated like a nested document and its CSS/images can also be warmed (same behavior as `--prefetch-iframes`).
     - `--prefetch-icons`: prefetch icon resources referenced by `<link rel=icon|shortcut icon|apple-touch-icon|mask-icon href=...>` without enabling full `--prefetch-images` (note: `--prefetch-images` already includes these).
@@ -219,6 +223,17 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
   - `--report-per-page-dir <dir>`: write one JSON report per page stem under `<dir>/<stem>.json`.
   - `--max-report-urls-per-kind <n>`: cap the number of sampled URL strings per section (default 50; 0 => counts only).
   - Note: the report tracks unique URL sets. A URL can appear in both `fetched` and `failed` if some attempts succeeded and others failed (for example, `Image` fetch succeeded but `ImageCors` failed).
+
+Example (prefetch CSS + media into the disk cache for one cached page and write a report):
+
+```bash
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin prefetch_assets -- \
+  --pages w3.org \
+  --prefetch-media \
+  --max-media-bytes-per-file $((2*1024*1024)) \
+  --max-media-bytes-per-page $((8*1024*1024)) \
+  --report-json target/prefetch_assets_media.w3.org.json
+```
 
 ## `disk_cache_audit`
 
@@ -478,19 +493,38 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
   - Fetch: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- fetch <url> --out <bundle_dir|.tar>`
     - HTTP fetch tuning: `bundle_page fetch` honors the `FASTR_HTTP_*` env vars described above (see [`docs/env-vars.md#http-fetch-tuning`](env-vars.md#http-fetch-tuning)).
     - For pages that crash or time out during capture, add `--no-render` (alias `--crawl`) to discover subresources by parsing HTML + CSS instead of rendering.
+      - Crawl discovery includes media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`), in addition to the existing CSS/images/fonts/document discovery.
+      - Current limitation: `<link rel="preload" as="video|audio|track">` is not discovered as a media source yet.
     - Use `--fetch-timeout-secs <secs>` to bound per-request network time when crawling large pages.
+    - Note: in render capture mode (default), FastRender may not fetch media sources yet. If you need media bytes inside the bundle, use `--no-render/--crawl` (or pass `--bundle-scripts`, which runs an additional crawl pass after the render and will also pick up media URLs).
+    - Size: `bundle_page` does not cap media bytes; crawls can download large files. Use `--fetch-timeout-secs` as a best-effort guardrail and rely on `import-page-fixture`'s `--media-max-*` budgets to keep committed fixtures small.
   - Cache (offline, from pageset caches): `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- cache <stem> --out <bundle_dir|.tar>`
     - Reads HTML from `fetches/html/<stem>.html` (+ `.html.meta`) and subresources from the disk-backed cache under `fetches/assets/` (override with `--asset-cache-dir` (alias `--cache-dir`); this should match the `--cache-dir` used when warming/running the pageset).
-    - Fails if a discovered subresource is missing from the cache; pass `--allow-missing` to insert empty placeholders.
+    - Fails if a discovered subresource (including media) is missing from the cache; pass `--allow-missing` to insert empty placeholders.
     - The disk cache key namespace depends on request headers. If you warmed `fetches/assets/` with non-default values (e.g. `pageset_progress --user-agent ... --accept-language ...`, or `FASTR_HTTP_BROWSER_HEADERS=0`), pass matching `bundle_page cache --user-agent ... --accept-language ...` (and the same env var) so cache capture hits the correct entries.
   - Render: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- render <bundle> --out <png>`
     - `bundle_page render` is offline and ignores `FASTR_HTTP_*` env vars (it uses the bundle contents only).
 - Security: `--same-origin-subresources` (plus optional `--allow-subresource-origin`) applies both when capturing and replaying bundles to keep cross-origin assets out of offline artifacts. It does not block cross-origin iframe/embed document navigation.
 - Convert bundles to offline fixtures for the `pages_regression` harness: `bash scripts/cargo_agent.sh xtask import-page-fixture <bundle> <fixture_name> [--output-root tests/pages/fixtures --overwrite --dry-run --include-media]`.
   - By default, media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`) are rewritten to deterministic empty placeholder files so fixtures stay small/offline-safe.
-  - Pass `--include-media` to vendor playable media, subject to size budgets (`--media-max-bytes`, `--media-max-file-bytes`; set to `0` to disable).
+  - Pass `--include-media` to vendor playable media, subject to size budgets (`--media-max-bytes` default **5 MiB**, `--media-max-file-bytes` default **2 MiB**; set either to `0` to disable).
   - All HTML/CSS references are rewritten to hashed files under `assets/`, and the importer fails if any network URLs would remain.
   - Media asset provenance/licensing + regeneration guidance: [`tests/pages/fixtures/assets/media/README.md`](../tests/pages/fixtures/assets/media/README.md).
+
+Example (capture a bundle with crawl mode so media sources are included):
+
+```bash
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- \
+  fetch --no-render https://example.com --out target/bundles/example.com.tar
+```
+
+Example (import that bundle as an offline fixture and vendor playable media within the default budgets):
+
+```bash
+bash scripts/cargo_agent.sh xtask import-page-fixture target/bundles/example.com.tar example_com \
+  --overwrite \
+  --include-media
+```
 
 ## `import_wpt`
 
@@ -608,7 +642,7 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 
 ## Offline / cached captures
 
-- Use `bundle_page fetch` to save a single reproducible capture (HTML bytes, content-type + final URL, all fetched CSS/image/font subresources with HTTP metadata, and a manifest mapping original URLs to bundle paths). Bundles can be directories or `.tar` archives and are deterministic.
+- Use `bundle_page fetch` to save a single reproducible capture (HTML bytes, content-type + final URL, fetched subresources with HTTP metadata (CSS/images/fonts, plus crawl-discovered assets like media when enabled), and a manifest mapping original URLs to bundle paths). Bundles can be directories or `.tar` archives and are deterministic.
 - Use `bundle_page cache <stem> --out <bundle>` to convert an already-warmed pageset cache entry (cached HTML + disk-backed assets) into a portable bundle **without network access**.
 - Replay with `bundle_page render <bundle> --out out.png` to render strictly from the bundle with zero network calls.
 - For larger batch workflows, offline captures are also available via the existing on-disk caches:
