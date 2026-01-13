@@ -1,7 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::ui::messages::{RenderedFrame, WorkerToUi};
+use fastrender::ui::messages::{RepaintReason, RenderedFrame, WorkerToUi};
 use fastrender::ui::spawn_ui_worker_with_factory;
 use fastrender::ui::{TabId, UiToWorker};
 use std::time::Duration;
@@ -246,6 +246,101 @@ fn tick_runs_js_request_animation_frame_and_repaints() {
     support::rgba_at(&frame.pixmap, 0, 0),
     [0, 255, 0, 255],
     "expected tick to run rAF and repaint the updated background"
+  );
+
+  handle.join().expect("worker join");
+}
+
+#[test]
+fn js_timer_dom_mutation_affects_rendered_pixels() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let url = site.write(
+    "index.html",
+    r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: rgb(0, 0, 0); }
+          </style>
+          <script>
+            setTimeout(function () {
+              // Use `setProperty` because our CSSStyleDeclaration shim only exposes a limited set of
+              // named property accessors (but supports `setProperty` for arbitrary declarations).
+              document.documentElement.style.setProperty('background-color', 'rgb(255,0,0)');
+              document.body.style.setProperty('background-color', 'rgb(255,0,0)');
+            }, 0);
+          </script>
+        </head>
+        <body></body>
+      </html>"#,
+  );
+
+  let handle = spawn_ui_worker_with_factory(
+    "fastr-ui-worker-js-dom-pixels",
+    support::deterministic_factory(),
+  )
+  .expect("spawn ui worker");
+  let tab_id = TabId::new();
+  handle
+    .ui_tx
+    .send(support::create_tab_msg(tab_id, Some(url)))
+    .expect("create tab");
+  handle
+    .ui_tx
+    .send(support::viewport_changed_msg(tab_id, (32, 32), 1.0))
+    .expect("viewport");
+
+  let initial = next_frame(&handle.ui_rx, tab_id);
+  assert!(
+    initial.wants_ticks,
+    "expected JS pages to request ticks (JS timers/rAF)"
+  );
+  let baseline = support::rgba_at(&initial.pixmap, 0, 0);
+  assert_eq!(
+    baseline,
+    [0, 0, 0, 255],
+    "expected initial frame to be black before JS timers run"
+  );
+
+  // Drain navigation follow-ups so we only consider repaint-driven frames below.
+  let _ = support::recv_for_tab(&handle.ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
+  });
+  while handle.ui_rx.try_recv().is_ok() {}
+
+  let mut last_sample = baseline;
+  let mut saw_change = false;
+
+  // Poll for the `setTimeout(..., 0)` callback to run and change the DOM, forcing repaints so we
+  // observe the updated pixels once the render worker syncs the JS DOM into the renderer document.
+  for _ in 0..20 {
+    handle
+      .ui_tx
+      .send(UiToWorker::Tick { tab_id })
+      .expect("tick");
+    handle
+      .ui_tx
+      .send(support::request_repaint(tab_id, RepaintReason::Explicit))
+      .expect("request repaint");
+    let frame = next_frame(&handle.ui_rx, tab_id);
+    last_sample = support::rgba_at(&frame.pixmap, 0, 0);
+    if last_sample != baseline {
+      saw_change = true;
+      break;
+    }
+  }
+
+  assert!(
+    saw_change,
+    "expected JS timer mutation to affect rendered pixels; baseline={baseline:?} last={last_sample:?}"
+  );
+  assert_eq!(
+    last_sample,
+    [255, 0, 0, 255],
+    "expected JS-set background to render as red"
   );
 
   handle.join().expect("worker join");

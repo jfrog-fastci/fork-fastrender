@@ -477,6 +477,62 @@ impl TabState {
   }
 }
 
+fn sync_render_dom_from_js_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender<WorkerToUi>) {
+  let Some(doc) = tab.document.as_mut() else {
+    return;
+  };
+  let Some(js_tab) = tab.js_tab.as_ref() else {
+    tab.js_dom_dirty = false;
+    tab.js_dom_mutation_generation = 0;
+    tab.js_dom_mapping_generation = 0;
+    tab.js_dom_mapping = None;
+    tab.js_dom_mapping_miss_logged = false;
+    return;
+  };
+
+  let dom2 = js_tab.dom();
+  let generation = dom2.mutation_generation();
+
+  // Converting the live `dom2` tree into the renderer's DOM snapshot can be expensive and may panic
+  // if `to_renderer_dom` hits an internal consistency bug. Keep it isolated so a single bad page
+  // does not crash the UI worker thread.
+  let (mut dom_snapshot, mapping) = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let snapshot = dom2.to_renderer_dom_with_mapping();
+    (snapshot.dom, snapshot.mapping)
+  })) {
+    Ok(snapshot) => snapshot,
+    Err(_) => {
+      let _ = ui_tx.send(WorkerToUi::DebugLog {
+        tab_id,
+        line: "panic while snapshotting JS DOM into renderer DOM".to_string(),
+      });
+      tab.js_dom_dirty = false;
+      tab.js_dom_mutation_generation = generation;
+      tab.js_dom_mapping_generation = 0;
+      tab.js_dom_mapping = None;
+      tab.js_dom_mapping_miss_logged = false;
+      return;
+    }
+  };
+
+  // Preserve live form control state stored in dom2 (values/checkedness/selectedness) when syncing
+  // to the renderer DOM snapshot. Without this, the UI-side interaction engine can update dom1
+  // attributes and later dom2→dom1 resync would clobber user edits.
+  patch_dom2_form_control_state_into_renderer_dom(dom2, &mut dom_snapshot, &mapping);
+
+  // Replace the renderer document's DOM in-place so we preserve its configured viewport/dpr/scroll
+  // state/animation clock.
+  doc.mutate_dom(|dom| {
+    *dom = dom_snapshot;
+    true
+  });
+  tab.js_dom_mapping_generation = generation;
+  tab.js_dom_mapping = Some(mapping);
+  tab.js_dom_mapping_miss_logged = false;
+  tab.js_dom_dirty = false;
+  tab.js_dom_mutation_generation = generation;
+}
+
 fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUi>) -> StageListenerGuard {
   let listener = Arc::new(move |stage: StageHeartbeat| {
     // Best-effort: UI might have dropped its receiver.
@@ -7359,6 +7415,17 @@ impl BrowserRuntime {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return None;
     };
+
+    // Keep the renderer's DOM snapshot in sync with the live `dom2` document owned by the JS tab.
+    // This lets JS-driven DOM mutations affect subsequent paints (while preserving the existing
+    // BrowserDocument configuration like viewport/dpr/scroll).
+    let js_dom_generation_changed = tab
+      .js_tab
+      .as_ref()
+      .is_some_and(|js_tab| js_tab.dom().mutation_generation() != tab.js_dom_mutation_generation);
+    if tab.js_dom_dirty || js_dom_generation_changed {
+      sync_render_dom_from_js_tab(tab_id, tab, &self.ui_tx);
+    }
     let Some(doc) = tab.document.as_mut() else {
       return None;
     };
@@ -7369,32 +7436,6 @@ impl BrowserRuntime {
       preempt_cancel_callback.clone(),
     );
     doc.set_cancel_callback(Some(cancel_callback.clone()));
-
-    if tab.js_dom_dirty {
-      if let Some(js_tab) = tab.js_tab.as_ref() {
-        let dom2 = js_tab.dom();
-        let generation = dom2.mutation_generation();
-        let snapshot = dom2.to_renderer_dom_with_mapping();
-        let mut dom_snapshot = snapshot.dom;
-        let mapping = snapshot.mapping;
-        patch_dom2_form_control_state_into_renderer_dom(dom2, &mut dom_snapshot, &mapping);
-        let _ = doc.mutate_dom(|dom| {
-          *dom = dom_snapshot;
-          true
-        });
-
-        // Cache the freshly-built preorder mapping so subsequent JS event dispatches can translate
-        // renderer preorder ids back into the `dom2` tree without rebuilding a snapshot.
-        tab.js_dom_mapping_generation = generation;
-        tab.js_dom_mapping = Some(mapping);
-        tab.js_dom_mapping_miss_logged = false;
-        tab.js_dom_dirty = false;
-        tab.js_dom_mutation_generation = generation;
-      } else {
-        tab.js_dom_dirty = false;
-        tab.js_dom_mutation_generation = 0;
-      }
-    }
 
     // Forward render pipeline stage heartbeats during paint jobs (including scroll/hover repaints)
     // so UI callers and integration tests can observe progress and deterministically cancel
