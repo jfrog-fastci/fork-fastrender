@@ -221,6 +221,20 @@ fn worker_loop(
   update_tx: mpsc::Sender<SearchSuggestUpdate>,
   wake: Option<Arc<dyn Fn() + Send + Sync>>,
 ) {
+  // Construct per-worker resources once. During fast typing we want to avoid per-request setup
+  // overhead, especially `reqwest::blocking::Client` construction and base URL parsing.
+  #[cfg(feature = "direct_network")]
+  let timeout = Duration::from_millis(config.timeout_ms.max(1));
+  #[cfg(feature = "direct_network")]
+  let client = reqwest::blocking::Client::builder()
+    .connect_timeout(timeout)
+    .timeout(timeout)
+    .user_agent(USER_AGENT)
+    .build()
+    .ok();
+  #[cfg(feature = "direct_network")]
+  let endpoint_base = url::Url::parse(&config.endpoint_base).ok();
+
   while let Ok(mut req) = request_rx.recv() {
     // Debounce: collapse rapid keystrokes into a single network request.
     loop {
@@ -244,7 +258,14 @@ fn worker_loop(
     let suggestions = if query_trimmed.is_empty() {
       Vec::new()
     } else {
-      fetch_duckduckgo_suggestions(&config.endpoint_base, query_trimmed, config.timeout_ms)
+      #[cfg(feature = "direct_network")]
+      {
+        fetch_duckduckgo_suggestions(client.as_ref(), endpoint_base.as_ref(), query_trimmed)
+      }
+      #[cfg(not(feature = "direct_network"))]
+      {
+        fetch_duckduckgo_suggestions(&config.endpoint_base, query_trimmed, config.timeout_ms)
+      }
     };
 
     // Cancellation: drop late results if a newer request was issued while we were fetching.
@@ -277,28 +298,24 @@ fn fetch_duckduckgo_suggestions(_endpoint_base: &str, _query: &str, _timeout_ms:
 }
 
 #[cfg(feature = "direct_network")]
-fn fetch_duckduckgo_suggestions(endpoint_base: &str, query: &str, timeout_ms: u64) -> Vec<String> {
-  let timeout = Duration::from_millis(timeout_ms.max(1));
-
-  let mut url = match url::Url::parse(endpoint_base) {
-    Ok(url) => url,
-    Err(_) => return Vec::new(),
+fn fetch_duckduckgo_suggestions(
+  client: Option<&reqwest::blocking::Client>,
+  endpoint_base: Option<&url::Url>,
+  query: &str,
+) -> Vec<String> {
+  let Some(client) = client else {
+    return Vec::new();
   };
+  let Some(endpoint_base) = endpoint_base else {
+    return Vec::new();
+  };
+
+  let mut url = endpoint_base.clone();
   {
     let mut pairs = url.query_pairs_mut();
     pairs.append_pair("q", query);
     pairs.append_pair("type", "list");
   }
-
-  let client = match reqwest::blocking::Client::builder()
-    .connect_timeout(timeout)
-    .timeout(timeout)
-    .user_agent(USER_AGENT)
-    .build()
-  {
-    Ok(client) => client,
-    Err(_) => return Vec::new(),
-  };
 
   let res = match client.get(url).send() {
     Ok(res) => res,
@@ -579,5 +596,20 @@ mod tests {
     dropped_rx
       .recv_timeout(Duration::from_millis(800))
       .expect("expected SearchSuggestService::drop to return promptly");
+  }
+
+  #[test]
+  fn invalid_endpoint_base_returns_empty_suggestions() {
+    let mut service = SearchSuggestService::new(SearchSuggestConfig {
+      endpoint_base: "not a url".to_string(),
+      enabled: true,
+      timeout_ms: 1000,
+      worker_test_hook: None,
+    });
+    service.request("rust".to_string());
+
+    let update = poll_update(&service, Duration::from_secs(2)).expect("expected update");
+    assert_eq!(update.query, "rust");
+    assert!(update.suggestions.is_empty());
   }
 }
