@@ -1604,8 +1604,6 @@ enum WebSocketConnState {
 
 #[derive(Debug)]
 struct WebSocketConnEntry {
-  #[allow(dead_code)]
-  url: String,
   state: WebSocketConnState,
 }
 
@@ -1663,7 +1661,7 @@ impl NetworkWebSocketManager {
 
   pub fn handle_command(&mut self, renderer_id: RendererId, cmd: WebSocketCommand) -> Vec<WebSocketEvent> {
     match cmd {
-      WebSocketCommand::Connect { conn_id, url } => {
+      WebSocketCommand::Connect { conn_id, url: _url } => {
         let renderer_count = match self.conns.get(&renderer_id) {
           Some(renderer_conns) => {
             if renderer_conns.contains_key(&conn_id) {
@@ -1717,7 +1715,6 @@ impl NetworkWebSocketManager {
         renderer_conns.insert(
           conn_id,
           WebSocketConnEntry {
-            url,
             state: WebSocketConnState::Connecting,
           },
         );
@@ -1746,10 +1743,9 @@ impl NetworkWebSocketManager {
         let Some(renderer_conns) = self.conns.get_mut(&renderer_id) else {
           return Vec::new();
         };
-        let Some(mut conn) = renderer_conns.remove(&conn_id) else {
+        if renderer_conns.remove(&conn_id).is_none() {
           return Vec::new();
-        };
-        conn.state = WebSocketConnState::Closed;
+        }
         self.active_total = self.active_total.saturating_sub(1);
         if renderer_conns.is_empty() {
           self.conns.remove(&renderer_id);
