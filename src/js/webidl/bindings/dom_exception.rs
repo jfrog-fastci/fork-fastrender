@@ -169,32 +169,65 @@ fn value_to_rust_string(rt: &mut VmJsRuntime, value: Value) -> Result<String, Vm
   rt.string_to_utf8_lossy(value)
 }
 
+// DOMException "legacy codes" as specified by the DOM Standard.
+//
+// <https://dom.spec.whatwg.org/#dom-domexception-code>
 const LEGACY_CODE_CONSTANTS: &[(&str, u16)] = &[
   ("INDEX_SIZE_ERR", 1),
+  ("DOMSTRING_SIZE_ERR", 2),
   ("HIERARCHY_REQUEST_ERR", 3),
+  ("WRONG_DOCUMENT_ERR", 4),
   ("INVALID_CHARACTER_ERR", 5),
+  ("NO_DATA_ALLOWED_ERR", 6),
   ("NO_MODIFICATION_ALLOWED_ERR", 7),
   ("NOT_FOUND_ERR", 8),
   ("NOT_SUPPORTED_ERR", 9),
+  ("INUSE_ATTRIBUTE_ERR", 10),
   ("INVALID_STATE_ERR", 11),
   ("SYNTAX_ERR", 12),
+  ("INVALID_MODIFICATION_ERR", 13),
   ("NAMESPACE_ERR", 14),
+  ("INVALID_ACCESS_ERR", 15),
+  ("VALIDATION_ERR", 16),
+  ("TYPE_MISMATCH_ERR", 17),
+  ("SECURITY_ERR", 18),
+  ("NETWORK_ERR", 19),
+  ("ABORT_ERR", 20),
+  ("URL_MISMATCH_ERR", 21),
+  ("QUOTA_EXCEEDED_ERR", 22),
+  ("TIMEOUT_ERR", 23),
   ("INVALID_NODE_TYPE_ERR", 24),
+  ("DATA_CLONE_ERR", 25),
 ];
 
 fn legacy_code_for_name(name: &str) -> u16 {
   match name {
     "IndexSizeError" => 1,
+    "DOMStringSizeError" => 2,
     "HierarchyRequestError" => 3,
+    "WrongDocumentError" => 4,
     "InvalidCharacterError" => 5,
+    "NoDataAllowedError" => 6,
     "NoModificationAllowedError" => 7,
     "NotFoundError" => 8,
     "NotSupportedError" => 9,
+    "InUseAttributeError" => 10,
     "InvalidStateError" => 11,
     "SyntaxError" => 12,
+    "InvalidModificationError" => 13,
     "NamespaceError" => 14,
+    "InvalidAccessError" => 15,
+    "ValidationError" => 16,
+    "TypeMismatchError" => 17,
+    "SecurityError" => 18,
+    "NetworkError" => 19,
+    "AbortError" => 20,
+    "URLMismatchError" => 21,
+    "QuotaExceededError" => 22,
+    "TimeoutError" => 23,
     // `dom2::DomError` historically used a shortened name here; accept both spellings.
     "InvalidNodeType" | "InvalidNodeTypeError" => 24,
+    "DataCloneError" => 25,
     _ => 0,
   }
 }
@@ -295,6 +328,17 @@ mod tests {
       }
       _ => panic!("expected SYNTAX_ERR to be a data property"),
     }
+
+    // Spot-check another legacy constant + name->code mapping.
+    let data_clone_err_key = rt.property_key_from_str("DATA_CLONE_ERR")?;
+    let data_clone_err_val = rt.get(ctor, data_clone_err_key)?;
+    assert_eq!(data_clone_err_val, Value::Number(25.0));
+
+    let msg2 = rt.alloc_string_value("m2")?;
+    let name2 = rt.alloc_string_value("DataCloneError")?;
+    let obj2 = rt.call(ctor, Value::Undefined, &[msg2, name2])?;
+    let code2 = rt.get(obj2, code_key)?;
+    assert_eq!(code2, Value::Number(25.0));
 
     Ok(())
   }
