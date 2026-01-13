@@ -2896,7 +2896,9 @@ pub fn chrome_ui_with_bookmarks(
           for (label, rgba) in ACCENT_PRESETS {
             let color = rgba.to_color32();
             let selected = current_accent == Some(rgba);
-            let (rect, resp) = ui.allocate_exact_size(swatch_size, egui::Sense::click());
+            let id = ui.make_persistent_id(("accent_swatch", label));
+            let (_, rect) = ui.allocate_space(swatch_size);
+            let mut resp = ui.interact(rect, id, egui::Sense::click());
             if ui.is_rect_visible(rect) {
               ui.painter().rect_filled(rect, swatch_rounding, color);
               let stroke = if selected {
@@ -2906,11 +2908,13 @@ pub fn chrome_ui_with_bookmarks(
               };
               ui.painter().rect_stroke(rect, swatch_rounding, stroke);
             }
-            let resp = resp.on_hover_text(label);
             resp.widget_info({
-              let a11y_label = format!("Accent: {label}");
-              move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
+              let label = format!("Set accent color: {label}");
+              move || egui::WidgetInfo::selected(egui::WidgetType::Button, selected, label.clone())
             });
+            resp = resp.on_hover_text(label);
+            show_tooltip_on_focus(ui, &resp, label);
+            paint_focus_ring(ui, &resp, focus_ring);
             if resp.clicked() {
               app.appearance.accent_color = Some(format_hex_color(rgba));
             }
@@ -2922,7 +2926,7 @@ pub fn chrome_ui_with_bookmarks(
           let mut custom = current_accent
             .map(|c| c.to_color32())
             .unwrap_or(ui.visuals().hyperlink_color);
-          let resp = egui::color_picker::color_edit_button_srgba(
+          let mut resp = egui::color_picker::color_edit_button_srgba(
             ui,
             &mut custom,
             egui::color_picker::Alpha::BlendOrAdditive,
@@ -2933,6 +2937,13 @@ pub fn chrome_ui_with_bookmarks(
           if resp.changed() {
             app.appearance.accent_color = Some(format_hex_color(RgbaColor::from(custom)));
           }
+          let tooltip = if let Some(hex) = app.appearance.accent_color.as_deref() {
+            format!("Custom accent color: {hex}")
+          } else {
+            "Custom accent color: Default".to_string()
+          };
+          resp = resp.on_hover_text(tooltip.clone());
+          show_tooltip_on_focus(ui, &resp, &tooltip);
           if let Some(hex) = app.appearance.accent_color.as_deref() {
             ui.monospace(hex);
           } else {
