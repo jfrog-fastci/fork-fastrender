@@ -3027,8 +3027,12 @@ mod tests {
     options.event_loop_queue_limits.max_pending_tasks = 2;
 
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host =
-      WindowHost::new_with_js_execution_options(dom, "https://example.invalid/", options)?;
+    let mut host = WindowHost::new_with_fetcher_and_options(
+      dom,
+      "https://example.invalid/",
+      Arc::new(NoFetchResourceFetcher),
+      options,
+    )?;
     host.event_loop_mut().clear_all_pending_work();
 
     // Fill the external task queue so the upcoming `open` event can enqueue, but the subsequent

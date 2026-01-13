@@ -435,11 +435,23 @@ impl WindowHost {
     })
   }
 
+  #[cfg(feature = "direct_network")]
   pub fn from_renderer_dom(
     root: &crate::dom::DomNode,
     document_url: impl Into<String>,
   ) -> Result<Self> {
     Self::new(dom2::Document::from_renderer_dom(root), document_url)
+  }
+
+  #[cfg(not(feature = "direct_network"))]
+  pub fn from_renderer_dom(
+    _root: &crate::dom::DomNode,
+    _document_url: impl Into<String>,
+  ) -> Result<Self> {
+    Err(Error::Other(
+      "WindowHost::from_renderer_dom requires a ResourceFetcher; use WindowHost::from_renderer_dom_with_fetcher (or enable the `direct_network` feature)"
+        .to_string(),
+    ))
   }
 
   pub fn from_renderer_dom_with_fetcher(
@@ -825,11 +837,23 @@ impl WindowHostState {
     self.session_storage_namespace_id
   }
 
+  #[cfg(feature = "direct_network")]
   pub fn from_renderer_dom(
     root: &crate::dom::DomNode,
     document_url: impl Into<String>,
   ) -> Result<Self> {
     Self::new(dom2::Document::from_renderer_dom(root), document_url)
+  }
+
+  #[cfg(not(feature = "direct_network"))]
+  pub fn from_renderer_dom(
+    _root: &crate::dom::DomNode,
+    _document_url: impl Into<String>,
+  ) -> Result<Self> {
+    Err(Error::Other(
+      "WindowHostState::from_renderer_dom requires a ResourceFetcher; use WindowHostState::from_renderer_dom_with_fetcher (or enable the `direct_network` feature)"
+        .to_string(),
+    ))
   }
 
   pub fn from_renderer_dom_with_fetcher(
