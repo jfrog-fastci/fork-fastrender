@@ -17,8 +17,8 @@ use vm_js::{
   VmJobContext,
 };
 use vm_js::{
-  GcObject, Heap, HeapLimits, MicrotaskQueue, PropertyDescriptor, PropertyKey, PropertyKind, SourceText,
-  SourceTextModuleRecord,
+  GcObject, Heap, HeapLimits, Intrinsics, MicrotaskQueue, PropertyDescriptor, PropertyKey, PropertyKind, Realm,
+  SourceText, SourceTextModuleRecord,
   StackFrame, TerminationReason, Value, Vm, VmError, VmOptions,
 };
   
@@ -168,6 +168,11 @@ struct ModuleCacheKey {
 #[derive(Debug, Default)]
 struct Test262ModuleHooks {
   microtasks: MicrotaskQueue,
+  /// Realms created via `$262.createRealm()`.
+  ///
+  /// Each [`Realm`] owns persistent GC roots and must be explicitly torn down with access to the
+  /// [`Heap`] before dropping.
+  created_realms: Vec<Realm>,
   /// Directory used to resolve `ModuleReferrer::Realm` (dynamic import from classic scripts).
   test_dir: PathBuf,
   /// Sandbox root for module loading. All resolved module paths must stay within this directory.
@@ -193,6 +198,7 @@ impl Test262ModuleHooks {
 
     Self {
       microtasks: MicrotaskQueue::new(),
+      created_realms: Vec::new(),
       test_dir,
       test_root_dir_normalized,
       test_root_dir_canonical,
@@ -776,43 +782,48 @@ impl Executor for VmJsExecutor {
       }
 
       let mut hooks = Test262ModuleHooks::new(&case.path);
-      let source_text = match SourceText::new_charged(&mut runtime.heap, file_name, source) {
-        Ok(source_text) => Arc::new(source_text),
-        Err(err) => return Err(map_vm_error(case, source, cancel, &mut runtime, err)),
-      };
-      let result = runtime.exec_script_source_with_hooks(&mut hooks, source_text);
+      let outcome: ExecResult = (|| {
+        let source_text = match SourceText::new_charged(&mut runtime.heap, file_name, source) {
+          Ok(source_text) => Arc::new(source_text),
+          Err(err) => return Err(map_vm_error(case, source, cancel, &mut runtime, err)),
+        };
+        let result = runtime.exec_script_source_with_hooks(&mut hooks, source_text);
 
-      // Cancellation should win over any other outcome (including parse/runtime errors).
-      if cancel.load(Ordering::Relaxed) {
-        drain_microtasks_into_hooks(&mut runtime, &mut hooks);
-        hooks.microtasks.teardown(&mut runtime);
-        return Err(ExecError::Cancelled);
-      }
-
-      match result {
-        Ok(_) => {
-          if is_async {
-            wait_for_done(case, source, cancel, &mut runtime, &mut hooks)?;
-          } else {
-            drain_microtasks_into_hooks(&mut runtime, &mut hooks);
-            if let Some(err) = handle_microtask_errors(case, source, cancel, &mut runtime, &mut hooks) {
-              return Err(err);
-            }
-          }
-        }
-        Err(err) => {
-          // Discard queued jobs so persistent roots are cleaned up before dropping the runtime.
+        // Cancellation should win over any other outcome (including parse/runtime errors).
+        if cancel.load(Ordering::Relaxed) {
           drain_microtasks_into_hooks(&mut runtime, &mut hooks);
           hooks.microtasks.teardown(&mut runtime);
-          return Err(map_vm_error(case, source, cancel, &mut runtime, err));
+          return Err(ExecError::Cancelled);
         }
-      }
 
-      if cancel.load(Ordering::Relaxed) {
-        return Err(ExecError::Cancelled);
-      }
+        match result {
+          Ok(_) => {
+            if is_async {
+              wait_for_done(case, source, cancel, &mut runtime, &mut hooks)?;
+            } else {
+              drain_microtasks_into_hooks(&mut runtime, &mut hooks);
+              if let Some(err) = handle_microtask_errors(case, source, cancel, &mut runtime, &mut hooks) {
+                return Err(err);
+              }
+            }
+          }
+          Err(err) => {
+            // Discard queued jobs so persistent roots are cleaned up before dropping the runtime.
+            drain_microtasks_into_hooks(&mut runtime, &mut hooks);
+            hooks.microtasks.teardown(&mut runtime);
+            return Err(map_vm_error(case, source, cancel, &mut runtime, err));
+          }
+        }
 
-      return Ok(());
+        if cancel.load(Ordering::Relaxed) {
+          return Err(ExecError::Cancelled);
+        }
+
+        Ok(())
+      })();
+
+      teardown_created_realms(&mut runtime, &mut hooks);
+      return outcome;
     }
 
     if is_async {
@@ -842,10 +853,13 @@ fn global_data_desc(value: Value) -> PropertyDescriptor {
   data_desc(value, /* writable */ true, /* enumerable */ false, /* configurable */ true)
 }
 
-fn install_test262_host_object(runtime: &mut vm_js::JsRuntime) -> Result<(), VmError> {
-  let (vm, realm, heap) = runtime.vm_realm_and_heap_mut();
-  let global_object = realm.global_object();
-  let intr = *realm.intrinsics();
+fn install_test262_host_object_for_realm(
+  vm: &mut Vm,
+  scope: &mut vm_js::Scope<'_>,
+  global_object: GcObject,
+  intr: Intrinsics,
+) -> Result<GcObject, VmError> {
+  scope.push_root(Value::Object(global_object))?;
 
   // Register native call handlers.
   //
@@ -855,9 +869,6 @@ fn install_test262_host_object(runtime: &mut vm_js::JsRuntime) -> Result<(), VmE
   let gc_call = vm.register_native_call(test262_gc)?;
   let detach_array_buffer_call = vm.register_native_call(test262_detach_array_buffer)?;
   let eval_script_call = vm.register_native_call(test262_eval_script)?;
-
-  let mut scope = heap.scope();
-  scope.push_root(Value::Object(global_object))?;
 
   // Allocate `$262` as a regular object.
   let obj_262 = scope.alloc_object()?;
@@ -889,37 +900,29 @@ fn install_test262_host_object(runtime: &mut vm_js::JsRuntime) -> Result<(), VmE
   }
 
   // Define native methods on `$262`.
-  let mut define_native = |name: &str,
-                           call: vm_js::NativeFunctionId,
-                           length: u32,
-                           slots: &[Value]|
-   -> Result<(), VmError> {
-    let name_s = scope.alloc_string(name)?;
-    scope.push_root(Value::String(name_s))?;
+  let mut define_native =
+    |name: &str, call: vm_js::NativeFunctionId, length: u32| -> Result<(), VmError> {
+      let name_s = scope.alloc_string(name)?;
+      scope.push_root(Value::String(name_s))?;
 
-    let func = if slots.is_empty() {
-      scope.alloc_native_function(call, None, name_s, length)?
-    } else {
-      scope.alloc_native_function_with_slots(call, None, name_s, length, slots)?
+      let func = scope.alloc_native_function(call, None, name_s, length)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(intr.function_prototype()))?;
+
+      scope.define_property(
+        obj_262,
+        PropertyKey::from_string(name_s),
+        data_desc(Value::Object(func), true, true, true),
+      )?;
+      Ok(())
     };
-    scope.push_root(Value::Object(func))?;
-    scope
-      .heap_mut()
-      .object_set_prototype(func, Some(intr.function_prototype()))?;
 
-    scope.define_property(
-      obj_262,
-      PropertyKey::from_string(name_s),
-      data_desc(Value::Object(func), true, true, true),
-    )?;
-    Ok(())
-  };
-
-  let global_slot = [Value::Object(global_object)];
-  define_native("createRealm", create_realm_call, 0, &global_slot)?;
-  define_native("gc", gc_call, 0, &[])?;
-  define_native("detachArrayBuffer", detach_array_buffer_call, 1, &[])?;
-  define_native("evalScript", eval_script_call, 1, &[])?;
+  define_native("createRealm", create_realm_call, 0)?;
+  define_native("gc", gc_call, 0)?;
+  define_native("detachArrayBuffer", detach_array_buffer_call, 1)?;
+  define_native("evalScript", eval_script_call, 1)?;
 
   // Define global `$262` binding.
   let key_s = scope.alloc_string("$262")?;
@@ -930,6 +933,15 @@ fn install_test262_host_object(runtime: &mut vm_js::JsRuntime) -> Result<(), VmE
     global_data_desc(Value::Object(obj_262)),
   )?;
 
+  Ok(obj_262)
+}
+
+fn install_test262_host_object(runtime: &mut vm_js::JsRuntime) -> Result<(), VmError> {
+  let (vm, realm, heap) = runtime.vm_realm_and_heap_mut();
+  let global_object = realm.global_object();
+  let intr = *realm.intrinsics();
+  let mut scope = heap.scope();
+  let _ = install_test262_host_object_for_realm(vm, &mut scope, global_object, intr)?;
   Ok(())
 }
 
@@ -937,38 +949,85 @@ fn test262_create_realm(
   vm: &mut Vm,
   scope: &mut vm_js::Scope<'_>,
   _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  // Stubbed realm creation: return the current realm.
-  //
-  // `$262.createRealm().global` is widely used for cross-realm tests, but vm-js is currently
-  // single-realm. Keep the tests running by returning the current global object.
-  let slots = scope.heap().get_function_native_slots(callee)?;
-  let Some(Value::Object(global_object)) = slots.first().copied() else {
+  let Some(any) = hooks.as_any_mut() else {
     return Err(VmError::InvariantViolation(
-      "$262.createRealm missing global-object slot",
+      "$262.createRealm requires host hooks downcasting support",
+    ));
+  };
+  let Some(test262_hooks) = any.downcast_mut::<Test262ModuleHooks>() else {
+    return Err(VmError::InvariantViolation(
+      "$262.createRealm requires Test262ModuleHooks",
     ));
   };
 
-  let out = scope.alloc_object()?;
-  scope.push_root(Value::Object(out))?;
-  if let Some(intr) = vm.intrinsics() {
+  // Snapshot the active realm state so creating a new realm doesn't perturb the currently-running
+  // test realm.
+  let intr_before = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let global_var_names_before = vm.take_global_var_names();
+  let math_random_before = vm.math_random_state();
+  let default_object_proto_before = scope.heap().default_object_prototype();
+
+  // Create the new realm on the same heap/agent (shared symbol registry).
+  let mut realm = match Realm::new(vm, scope.heap_mut()) {
+    Ok(realm) => realm,
+    Err(err) => {
+      // Restore the active realm state before surfacing the error.
+      vm.set_intrinsics(intr_before);
+      vm.set_math_random_state(math_random_before);
+      vm.set_global_var_names(global_var_names_before);
+      scope
+        .heap_mut()
+        .set_default_object_prototype(default_object_proto_before);
+      return Err(err);
+    }
+  };
+
+  // Install `$262` on the new realm's global object.
+  let global_object = realm.global_object();
+  let intr = *realm.intrinsics();
+  let obj_262 = match install_test262_host_object_for_realm(vm, scope, global_object, intr) {
+    Ok(obj) => obj,
+    Err(err) => {
+      realm.teardown(scope.heap_mut());
+      vm.set_intrinsics(intr_before);
+      vm.set_math_random_state(math_random_before);
+      vm.set_global_var_names(global_var_names_before);
+      scope
+        .heap_mut()
+        .set_default_object_prototype(default_object_proto_before);
+      return Err(err);
+    }
+  };
+
+  // Store the realm so its persistent roots can be torn down after the test completes.
+  if test262_hooks.created_realms.try_reserve(1).is_err() {
+    realm.teardown(scope.heap_mut());
+    vm.set_intrinsics(intr_before);
+    vm.set_math_random_state(math_random_before);
+    vm.set_global_var_names(global_var_names_before);
     scope
       .heap_mut()
-      .object_set_prototype(out, Some(intr.object_prototype()))?;
+      .set_default_object_prototype(default_object_proto_before);
+    return Err(VmError::OutOfMemory);
   }
+  test262_hooks.created_realms.push(realm);
 
-  let key_s = scope.alloc_string("global")?;
-  scope.push_root(Value::String(key_s))?;
-  scope.define_property(
-    out,
-    PropertyKey::from_string(key_s),
-    data_desc(Value::Object(global_object), true, true, true),
-  )?;
-  Ok(Value::Object(out))
+  // Restore the active realm state.
+  vm.set_intrinsics(intr_before);
+  vm.set_math_random_state(math_random_before);
+  vm.set_global_var_names(global_var_names_before);
+  scope
+    .heap_mut()
+    .set_default_object_prototype(default_object_proto_before);
+
+  Ok(Value::Object(obj_262))
 }
 
 fn test262_gc(
@@ -1270,6 +1329,8 @@ fn execute_module(
     hooks.microtasks.teardown(runtime);
   }
 
+  teardown_created_realms(runtime, &mut hooks);
+
   result
 }
 
@@ -1284,6 +1345,13 @@ fn drain_microtasks_into_hooks(runtime: &mut vm_js::JsRuntime, hooks: &mut Test2
   while let Some((realm, job)) = runtime.vm.microtask_queue_mut().pop_front() {
     hooks.host_enqueue_promise_job(job, realm);
   }
+}
+
+fn teardown_created_realms(runtime: &mut vm_js::JsRuntime, hooks: &mut Test262ModuleHooks) {
+  for realm in hooks.created_realms.iter_mut() {
+    realm.teardown(&mut runtime.heap);
+  }
+  hooks.created_realms.clear();
 }
 
 fn add_persistent_root(
@@ -1819,6 +1887,33 @@ assert.sameValue(this.hasOwnProperty('test262let'), false, 'let does not create 
         &cancel,
       )
       .expect("expected $262.evalScript to execute as global script");
+  }
+
+  #[test]
+  fn create_realm_creates_fresh_intrinsics_and_shared_symbol_registry() {
+    let exec = VmJsExecutor::default();
+    let cancel = Arc::new(AtomicBool::new(false));
+    exec
+      .execute(
+        &test_case("create_realm.js"),
+        r#"
+var assert = {};
+assert.sameValue = function (actual, expected, message) {
+  if (actual !== expected) {
+    throw new Error(message || ('assert.sameValue failed: expected ' + expected + ', got ' + actual));
+  }
+};
+
+var realm = $262.createRealm();
+var other = realm.global;
+assert.sameValue(other.$262, realm, 'new realm should install and return its own $262 object');
+
+assert.sameValue(other.Object !== Object, true, 'Object constructor differs across realms');
+assert.sameValue(other.Symbol.for('x'), Symbol.for('x'), 'Symbol registry is shared across realms');
+"#,
+        &cancel,
+      )
+      .expect("expected $262.createRealm to create a fresh Realm");
   }
 
   #[test]

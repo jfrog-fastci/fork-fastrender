@@ -1246,11 +1246,45 @@ impl Vm {
     }
   }
 
-  pub(crate) fn set_intrinsics(&mut self, intrinsics: Intrinsics) {
+  /// Replace the VM's active realm intrinsics.
+  ///
+  /// This is normally called by [`crate::Realm::new`] during realm initialization.
+  ///
+  /// Embeddings that manage multiple realms on a single [`Vm`] (notably test262's
+  /// `$262.createRealm`) may need to temporarily swap intrinsics while creating new realms.
+  pub fn set_intrinsics(&mut self, intrinsics: Intrinsics) {
     self.intrinsics = Some(intrinsics);
     // Intrinsics are installed per realm. Treat this as the realm initialization boundary for
     // `Math.random()` and reset the per-realm PRNG state.
     self.math_random_state = self.options.math_random_seed;
+  }
+
+  /// Takes ownership of the VM's current global `var`/function declaration name set.
+  ///
+  /// This models the GlobalEnvironmentRecord internal `[[VarNames]]` list for the **active** realm.
+  ///
+  /// Note: `vm-js` currently stores this per-VM, but embeddings that create multiple realms on a
+  /// shared heap can use this to snapshot/restore the active realm state.
+  pub fn take_global_var_names(&mut self) -> HashSet<String> {
+    mem::take(&mut self.global_var_names)
+  }
+
+  /// Replace the VM's global `var`/function declaration name set for the active realm.
+  pub fn set_global_var_names(&mut self, names: HashSet<String>) {
+    self.global_var_names = names;
+  }
+
+  /// Returns the VM's current deterministic `Math.random()` state.
+  ///
+  /// This is intended for embeddings that need to snapshot/restore per-realm state when managing
+  /// multiple realms on a single [`Vm`].
+  pub fn math_random_state(&self) -> u64 {
+    self.math_random_state
+  }
+
+  /// Replace the VM's deterministic `Math.random()` state.
+  pub fn set_math_random_state(&mut self, state: u64) {
+    self.math_random_state = state;
   }
 
   /// Returns the VM's initialized intrinsics, if any.

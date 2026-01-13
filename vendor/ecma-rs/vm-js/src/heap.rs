@@ -380,11 +380,20 @@ impl Heap {
     }
   }
 
-  pub(crate) fn set_default_object_prototype(&mut self, proto: Option<GcObject>) {
+  /// Sets the heap-level default `%Object.prototype%` for newly-created constructor `.prototype`
+  /// objects.
+  ///
+  /// This is initialized by [`Realm::new`](crate::Realm::new) and cleared by
+  /// [`Realm::teardown`](crate::Realm::teardown).
+  ///
+  /// Embeddings that manage multiple realms on a shared heap (e.g. test262's `$262.createRealm`)
+  /// may need to temporarily swap this value when switching the active realm.
+  pub fn set_default_object_prototype(&mut self, proto: Option<GcObject>) {
     self.default_object_prototype = proto;
   }
 
-  pub(crate) fn default_object_prototype(&self) -> Option<GcObject> {
+  /// Returns the heap-level default `%Object.prototype%`, if any.
+  pub fn default_object_prototype(&self) -> Option<GcObject> {
     self.default_object_prototype
   }
 
