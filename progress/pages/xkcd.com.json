@@ -14,31 +14,32 @@
     "layout": 46.350585924273574,
     "paint": 31.204706241016957
   },
-  "notes": "",
+  "notes": "Visually good. Centered page scaffold (780px body) with left nav, background boxes, and comic panel placement match Chrome. Comic image selects the 1x `src` (fixture `srcset` only provides a 2x candidate) at dpr=1 and sizes to 740×327. Remaining ~9.5% pixel diffs vs Chrome are dominated by text rasterization/antialiasing differences plus minor per-pixel rounding noise.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 218572,
-    "diff_percent": 22.7679,
-    "perceptual": 0.8038,
+    "diff_pixels": 122506,
+    "diff_percent": 9.4995,
+    "perceptual": 0.1029,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 438,
+      "x": 137,
       "y": 8,
       "baseline_rgba": [
-        255,
-        255,
-        255,
+        223,
+        225,
+        225,
         255
       ],
       "rendered_rgba": [
-        223,
+        224,
         225,
-        222,
+        226,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "cbe69ff1e1bb8b51872f4692117518afddba2e99"
+    "computed_at_commit": "95c9b4b4d20baade7f1d429acb5315a7d666173d"
   },
   "hotspot": "box_tree",
   "failure_stage": null,
