@@ -21318,9 +21318,120 @@ fn build_container_scope(styled: &StyledNode, ctx: &ContainerQueryContext) -> Ha
 }
 
 fn build_styled_lookup<'a>(styled: &'a StyledNode, out: &mut HashMap<usize, *const StyledNode>) {
-  out.insert(styled.node_id, styled as *const _);
-  for child in &styled.children {
-    build_styled_lookup(child, out);
+  // Styled trees can be arbitrarily deep (e.g. degenerate DOM inputs), so avoid recursion to
+  // prevent stack overflows during reuse-map construction.
+  let mut stack: Vec<&StyledNode> = vec![styled];
+  while let Some(node) = stack.pop() {
+    out.insert(node.node_id, node as *const _);
+    // Preserve the same traversal order as the prior recursive implementation (pre-order, left to
+    // right) by pushing children in reverse.
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+}
+
+#[cfg(test)]
+mod build_styled_lookup_tests {
+  use super::*;
+
+  fn empty_dom_node() -> DomNode {
+    DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: String::new(),
+        namespace: String::new(),
+        attributes: Vec::new(),
+      },
+      children: Vec::new(),
+    }
+  }
+
+  fn styled_node(id: usize, styles: &Arc<ComputedStyle>, children: Vec<StyledNode>) -> StyledNode {
+    StyledNode {
+      node_id: id,
+      node: empty_dom_node(),
+      styles: Arc::clone(styles),
+      starting_styles: Default::default(),
+      before_styles: None,
+      after_styles: None,
+      marker_styles: None,
+      placeholder_styles: None,
+      file_selector_button_styles: None,
+      footnote_call_styles: None,
+      footnote_marker_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
+      progress_bar_styles: None,
+      progress_value_styles: None,
+      meter_bar_styles: None,
+      meter_optimum_value_styles: None,
+      meter_suboptimum_value_styles: None,
+      meter_even_less_good_value_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children,
+    }
+  }
+
+  fn deep_styled_chain(depth: usize) -> StyledNode {
+    assert!(depth > 0);
+    let styles = Arc::new(ComputedStyle::default());
+    let mut current = styled_node(depth - 1, &styles, Vec::new());
+    for id in (0..depth - 1).rev() {
+      current = styled_node(id, &styles, vec![current]);
+    }
+    current
+  }
+
+  #[test]
+  fn build_styled_lookup_indexes_all_nodes() {
+    let styles = Arc::new(ComputedStyle::default());
+    let tree = styled_node(
+      1,
+      &styles,
+      vec![styled_node(2, &styles, vec![]), styled_node(3, &styles, vec![])],
+    );
+    let mut map = HashMap::new();
+    build_styled_lookup(&tree, &mut map);
+    assert_eq!(map.len(), 3);
+    for id in [1usize, 2, 3] {
+      let ptr = map.get(&id).copied().expect("expected entry");
+      assert!(!ptr.is_null());
+      // Safety: pointers returned by build_styled_lookup are derived from `tree` and the tree is
+      // alive for the duration of this assertion.
+      let node = unsafe { &*ptr };
+      assert_eq!(node.node_id, id);
+    }
+  }
+
+  #[test]
+  fn build_styled_lookup_does_not_overflow_stack_on_deep_trees() {
+    // Run the traversal on a small-stack thread; recursive implementations will reliably overflow
+    // here, while the iterative implementation should succeed.
+    let handle = std::thread::Builder::new()
+      .name("build_styled_lookup_deep".into())
+      .stack_size(64 * 1024)
+      .spawn(|| {
+        let tree = deep_styled_chain(10_000);
+        let mut map = HashMap::new();
+        build_styled_lookup(&tree, &mut map);
+        assert_eq!(map.len(), 10_000);
+      })
+      .expect("spawn thread");
+    handle.join().expect("thread should complete without panic");
+  }
+
+  #[test]
+  #[ignore]
+  fn build_styled_lookup_stress_test_very_deep_tree() {
+    // This is a heavier stress test intended to be run manually:
+    // `cargo test build_styled_lookup_stress_test_very_deep_tree -- --ignored`.
+    let tree = deep_styled_chain(200_000);
+    let mut map = HashMap::new();
+    build_styled_lookup(&tree, &mut map);
+    assert_eq!(map.len(), 200_000);
   }
 }
 
