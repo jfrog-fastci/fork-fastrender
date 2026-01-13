@@ -8327,13 +8327,8 @@ impl App {
     }
 
     if self.resize_burst_active {
-      let ttl_left_ms = self
-        .last_resize_event_at
-        .map(|t| {
-          (t + RESIZE_BURST_TTL)
-            .saturating_duration_since(std::time::Instant::now())
-            .as_millis()
-        })
+      let ttl_left_ms = resize_burst_deadline(self.last_resize_event_at)
+        .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()).as_millis())
         .unwrap_or(0);
       let _ = writeln!(
         &mut hud.text_buf,
