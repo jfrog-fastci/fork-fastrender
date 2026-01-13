@@ -2268,6 +2268,33 @@ fn columns_shorthand_single_length_sets_column_width() {
 }
 
 #[test]
+fn inline_columns_shorthand_single_length_sets_column_width() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; font-size: 16px; }
+      #multi { width: 600px; }
+    </style>
+    <div id="multi" style="columns: 12em;">hello<br>world<br>more<br>lines<br>to<br>flow</div>
+  "#;
+
+  let tree = render_tree_with_artifacts(html, 800, 200);
+  let container = find_first_multicol_container(&tree.root).expect("multicol container");
+  let info = container
+    .fragmentation
+    .as_ref()
+    .expect("fragmentation info");
+
+  assert_eq!(info.column_count, 2);
+  assert!((info.column_gap - 16.0).abs() < 0.1, "expected 1em gap");
+  assert!(
+    (info.column_width - 292.0).abs() < 0.6,
+    "expected auto column width (got {})",
+    info.column_width
+  );
+  assert!(info.column_width >= 192.0);
+}
+
+#[test]
 fn columns_shorthand_single_number_sets_column_count() {
   let html = r#"<!doctype html>
     <style>
@@ -2285,6 +2312,32 @@ fn columns_shorthand_single_number_sets_column_count() {
     .expect("fragmentation info");
 
   assert_eq!(info.column_count, 4);
+  assert!(
+    (info.column_width - 188.0).abs() < 0.6,
+    "expected computed column width (got {})",
+    info.column_width
+  );
+}
+
+#[test]
+fn inline_columns_shorthand_single_number_sets_column_count() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; font-size: 16px; }
+      #multi { width: 800px; }
+    </style>
+    <div id="multi" style="columns: 4;">hello<br>world<br>more<br>lines<br>to<br>flow</div>
+  "#;
+
+  let tree = render_tree_with_artifacts(html, 900, 200);
+  let container = find_first_multicol_container(&tree.root).expect("multicol container");
+  let info = container
+    .fragmentation
+    .as_ref()
+    .expect("fragmentation info");
+
+  assert_eq!(info.column_count, 4);
+  assert!((info.column_gap - 16.0).abs() < 0.1, "expected 1em gap");
   assert!(
     (info.column_width - 188.0).abs() < 0.6,
     "expected computed column width (got {})",
@@ -2323,6 +2376,33 @@ fn columns_shorthand_length_and_number_in_inline_style_treats_count_as_maximum()
   let html = r#"<!doctype html>
     <style>html,body{margin:0;font-size:16px;}</style>
     <div id=multi style="width:600px; columns: 8em 12;">hello<br>world<br>more<br>lines<br>to<br>flow</div>
+  "#;
+
+  let tree = render_tree_with_artifacts(html, 800, 200);
+  let container = find_first_multicol_container(&tree.root).expect("multicol container");
+  let info = container
+    .fragmentation
+    .as_ref()
+    .expect("fragmentation info");
+
+  assert_eq!(info.column_count, 4);
+  assert!((info.column_gap - 16.0).abs() < 0.1, "expected 1em gap");
+  assert!(
+    (info.column_width - 138.0).abs() < 0.6,
+    "expected computed column width (got {})",
+    info.column_width
+  );
+  assert!(info.column_width >= 128.0);
+}
+
+#[test]
+fn inline_columns_shorthand_number_and_length_treats_count_as_maximum() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; font-size: 16px; }
+      #multi { width: 600px; }
+    </style>
+    <div id="multi" style="columns: 12 8em;">hello<br>world<br>more<br>lines<br>to<br>flow</div>
   "#;
 
   let tree = render_tree_with_artifacts(html, 800, 200);
