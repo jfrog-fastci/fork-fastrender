@@ -143,6 +143,16 @@ pub fn create_restricted_token_low_integrity() -> Result<OwnedHandle> {
 
 /// Spawn a child process with the provided primary token via `CreateProcessAsUserW`.
 ///
+/// ## Parent already in a Job object
+///
+/// When `cfg.job` is set and the current process is already running inside a Windows Job, the OS
+/// may require the child to be created with `CREATE_BREAKAWAY_FROM_JOB` (depending on nested-job
+/// support + parent job policy). In that case this helper:
+///
+/// 1. Tries `CreateProcessAsUserW` with `CREATE_BREAKAWAY_FROM_JOB`.
+/// 2. Retries without breakaway if the breakaway attempt fails with `ERROR_ACCESS_DENIED`.
+///
+/// This is best-effort compatibility: it does not provide a "jobless" fallback mode.
 pub fn spawn_with_token(cfg: &SpawnConfig<'_>, token: &OwnedHandle) -> Result<ChildProcess> {
   // Match the behavior of `spawn_sandboxed`: mitigations can be disabled via an env var.
   let mitigation_policy = match cfg.mitigation_policy {
@@ -163,10 +173,7 @@ pub fn spawn_with_token(cfg: &SpawnConfig<'_>, token: &OwnedHandle) -> Result<Ch
 
   match spawn_with_token_inner(cfg, token, mitigation_policy) {
     Ok(child) => Ok(child),
-    Err(err)
-      if mitigation_policy.is_some()
-        && mitigation_policy_attribute_unsupported(&err) =>
-    {
+    Err(err) if mitigation_policy.is_some() && mitigation_policy_attribute_unsupported(&err) => {
       spawn_with_token_inner(cfg, token, None)
     }
     Err(err) => Err(err),
@@ -178,7 +185,6 @@ fn spawn_with_token_inner(
   token: &OwnedHandle,
   mitigation_policy: Option<u64>,
 ) -> Result<ChildProcess> {
-
   let application_name = wide_null(cfg.exe.as_os_str());
   let mut cmdline = build_command_line(cfg.exe.as_os_str(), &cfg.args);
 

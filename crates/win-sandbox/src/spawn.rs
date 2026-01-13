@@ -270,6 +270,17 @@ fn mitigation_policy_attribute_unsupported(err: &WinSandboxError) -> bool {
 }
 
 /// Spawn a sandboxed process using `CreateProcessW` + `STARTUPINFOEXW` attributes.
+///
+/// ## Parent already in a Job object
+///
+/// When `cfg.job` is set and the current process is already running inside a Windows Job, the OS
+/// may require the new child process to be created with `CREATE_BREAKAWAY_FROM_JOB` (depending on
+/// nested-job support + parent job policy). In that case this helper:
+///
+/// 1. Tries `CreateProcessW` with `CREATE_BREAKAWAY_FROM_JOB`.
+/// 2. Retries without breakaway if the breakaway attempt fails with `ERROR_ACCESS_DENIED`.
+///
+/// This is best-effort compatibility: it does not provide a "jobless" fallback mode.
 pub fn spawn_sandboxed(
   cfg: &SpawnConfig<'_>,
 ) -> std::result::Result<ChildProcess, WinSandboxError> {
@@ -283,10 +294,7 @@ pub fn spawn_sandboxed(
 
   match spawn_sandboxed_inner(cfg, mitigation_policy) {
     Ok(child) => Ok(child),
-    Err(err)
-      if mitigation_policy.is_some()
-        && mitigation_policy_attribute_unsupported(&err) =>
-    {
+    Err(err) if mitigation_policy.is_some() && mitigation_policy_attribute_unsupported(&err) => {
       // Best-effort compatibility: if the OS doesn't recognize the mitigation policy attribute,
       // retry without it instead of failing process creation.
       spawn_sandboxed_inner(cfg, None)
