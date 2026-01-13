@@ -25,6 +25,8 @@ use icu_casemap::{CaseMapperBorrowed, ClosureSink};
 use std::alloc::alloc;
 
 mod case_folding;
+mod unicode_string_property;
+pub(crate) use unicode_string_property::{resolve_unicode_string_property, UnicodeStringProperty};
 
 #[derive(Debug, Clone)]
 pub(crate) struct RegExpSyntaxError {

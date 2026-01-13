@@ -29287,6 +29287,7 @@ fn gen_resume_from_frames(
               state = gen_error_to_completion(evaluator, scope, close_err)?;
               continue;
             }
+
             let type_err = throw_type_error(
               evaluator.vm,
               scope,
