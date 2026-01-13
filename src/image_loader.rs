@@ -75,6 +75,7 @@ use url::Url;
 
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 const MAX_PNG_ICC_PROFILE_BYTES: usize = 1024 * 1024;
+const MAX_WEBP_ICC_PROFILE_BYTES: usize = 1024 * 1024;
 
 fn extract_png_iccp_profile(png_bytes: &[u8]) -> Option<Vec<u8>> {
   if png_bytes.len() < PNG_SIGNATURE.len() || &png_bytes[..PNG_SIGNATURE.len()] != PNG_SIGNATURE {
@@ -117,6 +118,47 @@ fn extract_png_iccp_profile(png_bytes: &[u8]) -> Option<Vec<u8>> {
     }
 
     offset = next;
+  }
+
+  None
+}
+
+fn extract_webp_icc_profile(bytes: &[u8]) -> Option<Vec<u8>> {
+  if bytes.len() < 12 {
+    return None;
+  }
+  if bytes.get(0..4)? != b"RIFF" || bytes.get(8..12)? != b"WEBP" {
+    return None;
+  }
+
+  // The RIFF size field counts everything after it (i.e. file size - 8). Use it as a best-effort
+  // bound for chunk iteration, but never read beyond the actual input slice.
+  let riff_size: [u8; 4] = bytes.get(4..8)?.try_into().ok()?;
+  let declared_end = 8usize.checked_add(u32::from_le_bytes(riff_size) as usize)?;
+  let container_end = declared_end.min(bytes.len());
+
+  let mut offset = 12usize;
+  while offset + 8 <= container_end {
+    let tag = bytes.get(offset..offset + 4)?;
+    let size_bytes: [u8; 4] = bytes.get(offset + 4..offset + 8)?.try_into().ok()?;
+    let size = u32::from_le_bytes(size_bytes) as usize;
+    offset = offset.checked_add(8)?;
+    let end = offset.checked_add(size)?;
+    if end > container_end {
+      return None;
+    }
+
+    if tag == b"ICCP" {
+      if size > MAX_WEBP_ICC_PROFILE_BYTES {
+        return None;
+      }
+      return Some(bytes.get(offset..end)?.to_vec());
+    }
+
+    offset = end;
+    if size % 2 == 1 && offset < container_end {
+      offset = offset.checked_add(1)?;
+    }
   }
 
   None
@@ -10883,6 +10925,9 @@ impl ImageCache {
 
     check_root(RenderStage::Paint).map_err(Error::Render)?;
 
+    let icc_transform =
+      extract_webp_icc_profile(bytes).and_then(|icc| icc_transform_to_srgb(&icc));
+
     let mut width: c_int = 0;
     let mut height: c_int = 0;
     unsafe {
@@ -10967,6 +11012,10 @@ impl ImageCache {
           reason: "libwebp WebPDecodeRGBAInto failed".to_string(),
         }));
       }
+    }
+
+    if let Some(transform) = icc_transform.as_ref() {
+      transform.apply_rgba8_in_place(&mut buf)?;
     }
 
     let rgba = RgbaImage::from_raw(width, height, buf).ok_or_else(|| {
@@ -19906,6 +19955,101 @@ mod tests_inline {
       .decode_bitmap(bytes, Some("image/jpeg"), "icc-adobe-rgb")
       .expect("decode with color management");
     let decoded_px = decoded.to_rgba8().get_pixel(10, 10).0;
+    assert_eq!(
+      (decoded_px[0], decoded_px[1], decoded_px[2]),
+      expected,
+      "decoded pixels should be color corrected"
+    );
+  }
+
+  #[test]
+  fn webp_icc_extractor_parses_riff_chunks_and_padding() {
+    let icc_payload = b"abc";
+    let riff_size: u32 = 4 /* WEBP */ + 8 /* ICCP header */ + icc_payload.len() as u32 + 1 /* pad */;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&riff_size.to_le_bytes());
+    bytes.extend_from_slice(b"WEBP");
+    bytes.extend_from_slice(b"ICCP");
+    bytes.extend_from_slice(&(icc_payload.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(icc_payload);
+    bytes.push(0); // odd-sized chunks are padded to an even boundary.
+
+    assert_eq!(
+      extract_webp_icc_profile(&bytes),
+      Some(icc_payload.to_vec()),
+      "expected ICCP payload to be extracted"
+    );
+
+    // Malformed/truncated payloads should fail cleanly without panicking.
+    let mut truncated = bytes.clone();
+    truncated.truncate(truncated.len().saturating_sub(2));
+    assert!(extract_webp_icc_profile(&truncated).is_none());
+  }
+
+  #[test]
+  fn image_cache_decodes_adobe_rgb_webp_with_color_management() {
+    let bytes = include_bytes!(
+      "../tests/pages/fixtures/en.wikipedia.org/assets/9550a19a4c433c52e322f1dd56981c9b.webp"
+    );
+    let icc = extract_webp_icc_profile(bytes).expect("extract icc profile");
+    let transform = icc_transform_to_srgb(&icc).expect("build ICC transform");
+
+    // Decode via libwebp directly to get the raw pixel values before color management.
+    let raw = (|| -> RgbaImage {
+      use std::ffi::c_int;
+      let mut width: c_int = 0;
+      let mut height: c_int = 0;
+      unsafe {
+        assert_ne!(
+          libwebp_sys::WebPGetInfo(bytes.as_ptr(), bytes.len(), &mut width, &mut height),
+          0,
+          "WebPGetInfo failed"
+        );
+      }
+      let width: u32 = width.try_into().expect("width fits u32");
+      let height: u32 = height.try_into().expect("height fits u32");
+      let stride: usize = width as usize * 4;
+      let stride_i32: i32 = stride.try_into().expect("stride fits i32");
+      let mut buf = vec![0u8; stride * height as usize];
+      unsafe {
+        let out = libwebp_sys::WebPDecodeRGBAInto(
+          bytes.as_ptr(),
+          bytes.len(),
+          buf.as_mut_ptr(),
+          buf.len(),
+          stride_i32,
+        );
+        assert!(!out.is_null(), "WebPDecodeRGBAInto failed");
+      }
+      RgbaImage::from_raw(width, height, buf).expect("raw rgba buffer is valid")
+    })();
+
+    let (w, h) = raw.dimensions();
+    let candidates = [
+      (0, 0),
+      (w / 2, h / 2),
+      (w / 3, h / 3),
+      (w.saturating_sub(1), h.saturating_sub(1)),
+      (10.min(w.saturating_sub(1)), 10.min(h.saturating_sub(1))),
+    ];
+    let mut chosen = (0u32, 0u32);
+    let mut expected = (0u8, 0u8, 0u8);
+    for (x, y) in candidates {
+      let raw_px = raw.get_pixel(x, y).0;
+      let converted = transform.convert_rgb8(raw_px[0], raw_px[1], raw_px[2]);
+      chosen = (x, y);
+      expected = converted;
+      if converted != (raw_px[0], raw_px[1], raw_px[2]) {
+        break;
+      }
+    }
+
+    let cache = ImageCache::new();
+    let (decoded, _has_alpha) = cache
+      .decode_bitmap(bytes, Some("image/webp"), "icc-adobe-rgb-webp")
+      .expect("decode with color management");
+    let decoded_px = decoded.to_rgba8().get_pixel(chosen.0, chosen.1).0;
     assert_eq!(
       (decoded_px[0], decoded_px[1], decoded_px[2]),
       expected,
