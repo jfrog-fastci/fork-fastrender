@@ -18960,6 +18960,38 @@ mod tests_inline {
   }
 
   #[test]
+  fn jpeg_decode_420_matches_chrome_pixel_values() {
+    // Regression test: baseline 4:2:0 (chroma subsampled) JPEG decoding should match
+    // Chrome/libjpeg-turbo output exactly. Tiny per-channel differences (often +/-1..3) can show
+    // up as large fixture diffs because the page-loop diffing uses tolerance=0.
+    let bytes = include_bytes!("../tests/fixtures/jpeg/nbcnews_80x80_sof0_420.jpg");
+    let cache = ImageCache::new();
+    let (image, has_alpha) = cache
+      .decode_with_format(bytes, ImageFormat::Jpeg, "nbcnews_80x80_sof0_420")
+      .expect("decode 4:2:0 baseline jpeg");
+    assert!(!has_alpha);
+    assert_eq!(image.width(), 80);
+    assert_eq!(image.height(), 80);
+    let rgba = image.to_rgba8();
+
+    // Reference pixels sampled from Chrome (headless) output.
+    for (x, y, expected) in [
+      (0, 0, [28, 62, 107, 255]),   // top-left
+      (30, 40, [207, 200, 174, 255]), // interior
+      (40, 30, [0, 1, 10, 255]),    // interior (dark)
+      (79, 0, [9, 41, 80, 255]),    // top-right
+      (0, 79, [0, 0, 2, 255]),      // bottom-left
+      (79, 79, [0, 0, 0, 255]),     // bottom-right
+    ] {
+      assert_eq!(
+        rgba.get_pixel(x, y).0,
+        expected,
+        "unexpected pixel at ({x},{y})"
+      );
+    }
+  }
+
+  #[test]
   fn resolves_relative_urls_against_base() {
     let mut cache = ImageCache::new();
     let mut path: PathBuf = std::env::temp_dir();
