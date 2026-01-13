@@ -548,12 +548,17 @@ pub fn apply_renderer_sandbox_with_report(
 
     linux_hardening::apply_linux_hardening(&config, &mut report);
 
-    // Apply Landlock as defense-in-depth. This doesn't affect already-open FDs (pipes, sockets,
-    // memfd, etc.) because Landlock mediates path-based filesystem operations.
-    match linux_landlock::apply(&linux_landlock::LandlockConfig::default()) {
-      Ok(linux_landlock::LandlockStatus::Applied { .. }) => {}
-      Ok(linux_landlock::LandlockStatus::Unsupported { .. }) => {}
-      Err(source) => return Err(SandboxError::LandlockFailed { source }),
+    match config.landlock {
+      RendererLandlockPolicy::Disabled => {}
+      RendererLandlockPolicy::RestrictWrites => {
+        // Best-effort Landlock: deny filesystem writes while allowing reads (so pre-opened read-only
+        // FDs, dynamic linking, etc. remain usable). If unsupported, we still apply seccomp.
+        match linux_landlock::apply_restrict_writes() {
+          Ok(linux_landlock::LandlockStatus::Applied { .. }) => {}
+          Ok(linux_landlock::LandlockStatus::Unsupported { .. }) => {}
+          Err(source) => return Err(SandboxError::LandlockFailed { source }),
+        }
+      }
     }
 
     let status = linux_seccomp::apply_renderer_sandbox_linux(config)?;

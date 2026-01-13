@@ -129,12 +129,36 @@ const HANDLED_FS_ABI_V1: u64 = LANDLOCK_ACCESS_FS_EXECUTE
 const HANDLED_FS_ABI_V2: u64 = HANDLED_FS_ABI_V1 | LANDLOCK_ACCESS_FS_REFER;
 const HANDLED_FS_ABI_V3: u64 = HANDLED_FS_ABI_V2 | LANDLOCK_ACCESS_FS_TRUNCATE;
 
+// Write-only subsets used by `RendererLandlockPolicy::RestrictWrites`: deny filesystem writes
+// globally while still allowing reads so dynamic linking / system font reads can continue.
+const HANDLED_FS_WRITES_ABI_V1: u64 = LANDLOCK_ACCESS_FS_WRITE_FILE
+  | LANDLOCK_ACCESS_FS_REMOVE_DIR
+  | LANDLOCK_ACCESS_FS_REMOVE_FILE
+  | LANDLOCK_ACCESS_FS_MAKE_CHAR
+  | LANDLOCK_ACCESS_FS_MAKE_DIR
+  | LANDLOCK_ACCESS_FS_MAKE_REG
+  | LANDLOCK_ACCESS_FS_MAKE_SOCK
+  | LANDLOCK_ACCESS_FS_MAKE_FIFO
+  | LANDLOCK_ACCESS_FS_MAKE_BLOCK
+  | LANDLOCK_ACCESS_FS_MAKE_SYM;
+const HANDLED_FS_WRITES_ABI_V2: u64 = HANDLED_FS_WRITES_ABI_V1 | LANDLOCK_ACCESS_FS_REFER;
+const HANDLED_FS_WRITES_ABI_V3: u64 = HANDLED_FS_WRITES_ABI_V2 | LANDLOCK_ACCESS_FS_TRUNCATE;
+
 fn handled_access_fs_for_abi(abi: u32) -> u64 {
   match abi {
     0 => 0,
     1 => HANDLED_FS_ABI_V1,
     2 => HANDLED_FS_ABI_V2,
     _ => HANDLED_FS_ABI_V3,
+  }
+}
+
+fn handled_access_fs_writes_for_abi(abi: u32) -> u64 {
+  match abi {
+    0 => 0,
+    1 => HANDLED_FS_WRITES_ABI_V1,
+    2 => HANDLED_FS_WRITES_ABI_V2,
+    _ => HANDLED_FS_WRITES_ABI_V3,
   }
 }
 
@@ -278,6 +302,78 @@ pub fn apply(config: &LandlockConfig) -> Result<LandlockStatus, LandlockError> {
   for (path, access) in &config.allowed_paths {
     add_path_rule(ruleset_fd.as_raw_fd(), path, *access, handled_access_fs)?;
   }
+
+  // Landlock requires no_new_privs.
+  // SAFETY: `prctl` with PR_SET_NO_NEW_PRIVS is process-scoped; argument types match the syscall.
+  let prctl_rc = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+  if prctl_rc != 0 {
+    return Err(LandlockError::SetNoNewPrivsFailed {
+      source: io::Error::last_os_error(),
+    });
+  }
+
+  if let Err(err) = landlock_restrict_self(ruleset_fd.as_raw_fd()) {
+    if err.raw_os_error() == Some(libc::ENOSYS) || err.raw_os_error() == Some(libc::EOPNOTSUPP) {
+      return Ok(LandlockStatus::Unsupported {
+        reason: LandlockUnsupportedReason::KernelUnsupported,
+      });
+    }
+    return Err(LandlockError::RestrictSelfFailed { source: err });
+  }
+
+  Ok(LandlockStatus::Applied { abi: abi_version })
+}
+
+/// Apply a best-effort Landlock policy that denies filesystem writes globally while still allowing
+/// reads.
+///
+/// This is intended as defense-in-depth for renderer processes:
+/// - it does *not* replace seccomp (which blocks obvious syscalls like `open/openat`), and
+/// - it does *not* revoke access to already-open non-filesystem FDs (pipes/sockets/memfd).
+///
+/// When Landlock is unsupported, this returns [`LandlockStatus::Unsupported`] (best-effort).
+pub fn apply_restrict_writes() -> Result<LandlockStatus, LandlockError> {
+  if !LANDLOCK_ARCH_SUPPORTED {
+    return Ok(LandlockStatus::Unsupported {
+      reason: LandlockUnsupportedReason::UnknownArchitecture,
+    });
+  }
+
+  let abi_version = match probe_abi_version() {
+    Ok(version) => version,
+    Err(err) if err.raw_os_error() == Some(libc::ENOSYS) => {
+      return Ok(LandlockStatus::Unsupported {
+        reason: LandlockUnsupportedReason::KernelUnsupported,
+      });
+    }
+    Err(err) if err.raw_os_error() == Some(libc::EOPNOTSUPP) => {
+      return Ok(LandlockStatus::Unsupported {
+        reason: LandlockUnsupportedReason::KernelUnsupported,
+      });
+    }
+    Err(err) => return Err(LandlockError::ProbeFailed { source: err }),
+  };
+  if abi_version == 0 {
+    return Ok(LandlockStatus::Unsupported {
+      reason: LandlockUnsupportedReason::KernelUnsupported,
+    });
+  }
+
+  let handled_access_fs = handled_access_fs_writes_for_abi(abi_version);
+  let ruleset_attr = LandlockRulesetAttr { handled_access_fs };
+  let ruleset_fd = match landlock_create_ruleset(&ruleset_attr) {
+    Ok(fd) => fd,
+    Err(err) if err.raw_os_error() == Some(libc::ENOSYS) || err.raw_os_error() == Some(libc::EOPNOTSUPP) => {
+      return Ok(LandlockStatus::Unsupported {
+        reason: LandlockUnsupportedReason::KernelUnsupported,
+      });
+    }
+    Err(source) => {
+      return Err(LandlockError::CreateRulesetFailed {
+        source,
+      });
+    }
+  };
 
   // Landlock requires no_new_privs.
   // SAFETY: `prctl` with PR_SET_NO_NEW_PRIVS is process-scoped; argument types match the syscall.
