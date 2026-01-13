@@ -210,6 +210,7 @@ include = [
   "built-ins/Function/prototype/apply/**/*.js",
   "staging/sm/Function/15.3.4.3-01.js",
   "built-ins/RegExp/prototype/flags/**/*.js",
+  "built-ins/RegExp/prototype/unicodeSets/**/*.js",
 
   # --- RegExp UnicodeMode (`/u`) disallow-extended-pattern restrictions (Annex B disabled) ---
   "built-ins/RegExp/unicode_restricted_*.js",
