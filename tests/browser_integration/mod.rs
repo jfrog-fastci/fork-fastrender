@@ -149,6 +149,7 @@ mod ui_worker_image_input_submit;
 mod ui_worker_image_maps;
 mod ui_worker_form_submit;
 mod ui_worker_file_input_submit_multipart;
+mod ui_worker_file_input_max_bytes;
 mod ui_worker_form_target_blank;
 mod ui_worker_file_input_multiple;
 mod ui_worker_fragment_navigation;

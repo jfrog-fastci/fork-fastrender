@@ -2684,7 +2684,58 @@ fn filter_paths_by_file_accept<'a>(
   Cow::Owned(filtered)
 }
 
+/// Environment variable override for the per-file read limit used by `<input type="file">`.
+///
+/// FastRender currently snapshots selected files by eagerly reading their bytes into memory so they
+/// can be included in form submissions. To prevent accidental OOM when a user selects an enormous
+/// file, we enforce a hard cap on the number of bytes read per selected file.
+///
+/// Behavior: files whose metadata-reported size exceeds the limit are **skipped** (not selected).
+const ENV_MAX_FILE_INPUT_BYTES: &str = "FASTR_MAX_FILE_INPUT_BYTES";
+
+/// Default per-file byte limit for file input selections.
+///
+/// This is a best-effort safety bound, not an HTTP upload limit.
+const DEFAULT_MAX_FILE_INPUT_BYTES: u64 = 10 * 1024 * 1024; // 10 MiB
+
+fn max_file_input_bytes() -> u64 {
+  let raw = match std::env::var(ENV_MAX_FILE_INPUT_BYTES) {
+    Ok(v) => v,
+    Err(_) => return DEFAULT_MAX_FILE_INPUT_BYTES,
+  };
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return DEFAULT_MAX_FILE_INPUT_BYTES;
+  }
+  let raw = raw.replace('_', "");
+  match raw.parse::<u64>() {
+    Ok(v) if v > 0 => v,
+    _ => DEFAULT_MAX_FILE_INPUT_BYTES,
+  }
+}
+
+fn read_file_bytes_bounded(path: &std::path::Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
+  use std::io::Read;
+
+  // Keep allocations representable on this platform even if the user configured a huge limit.
+  let max_bytes = max_bytes.min(usize::MAX as u64);
+  let max_plus_one = max_bytes.saturating_add(1);
+
+  let mut file = std::fs::File::open(path)?;
+  let mut limited = file.take(max_plus_one);
+  let mut buf = Vec::new();
+  limited.read_to_end(&mut buf)?;
+  if (buf.len() as u64) > max_bytes {
+    return Err(std::io::Error::new(
+      std::io::ErrorKind::Other,
+      "file exceeds maximum byte limit",
+    ));
+  }
+  Ok(buf)
+}
+
 fn build_file_selections_from_paths(paths: &[PathBuf], multiple: bool) -> Vec<FileSelection> {
+  let max_bytes = max_file_input_bytes();
   let mut selected: Vec<FileSelection> = Vec::new();
   for path in paths {
     if path.as_os_str().is_empty() {
@@ -2703,7 +2754,17 @@ fn build_file_selections_from_paths(paths: &[PathBuf], multiple: bool) -> Vec<Fi
     };
 
     let normalized_path = normalize_file_selection_path(path);
-    let bytes = match std::fs::read(&normalized_path) {
+    let file_len = match std::fs::metadata(&normalized_path) {
+      Ok(meta) => meta.len(),
+      Err(_) => continue,
+    };
+    if file_len > max_bytes {
+      continue;
+    }
+    // NOTE: Avoid `std::fs::read` here: it reads the full file into memory unconditionally.
+    // `read_file_bytes_bounded` is additionally defensive against TOCTOU races where the file grows
+    // after the metadata check.
+    let bytes = match read_file_bytes_bounded(&normalized_path, max_bytes) {
       Ok(bytes) => bytes,
       Err(_) => continue,
     };
