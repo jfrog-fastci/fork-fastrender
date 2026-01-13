@@ -180,13 +180,13 @@ Common cases:
 Probe tool (macOS-only):
 
 ```bash
-bash scripts/cargo_agent.sh run --bin macos_sandbox_probe -- --mode strict
+bash scripts/cargo_agent.sh run --features macos_sandbox_probe --bin macos_sandbox_probe -- --mode strict
 
 # Or, directly:
-cargo run --bin macos_sandbox_probe -- --mode strict
+cargo run --features macos_sandbox_probe --bin macos_sandbox_probe -- --mode strict
 
 # Faster iteration builds (skip default renderer features):
-cargo run --no-default-features --bin macos_sandbox_probe -- --mode strict
+cargo run --no-default-features --features macos_sandbox_probe --bin macos_sandbox_probe -- --mode strict
 ```
 
 macOS sandbox unit tests:
