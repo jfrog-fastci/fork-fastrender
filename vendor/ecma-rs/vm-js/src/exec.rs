@@ -8,6 +8,7 @@ use crate::heap::{
   Tracer,
 };
 use crate::iterator;
+use crate::promise_ops::promise_resolve_for_await_with_host_and_hooks;
 use crate::tick::vec_try_extend_from_slice_with_ticks;
 use crate::{
 <<<<<<< HEAD
@@ -14801,48 +14802,6 @@ pub(crate) fn async_teardown_continuation(scope: &mut Scope<'_>, mut cont: Async
   for mut frame in cont.frames {
     async_teardown_frame(scope.heap_mut(), &mut frame);
   }
-}
-
-/// Promise resolution used by the spec's `Await` abstract operation.
-///
-/// `Await` conceptually performs `PromiseResolve(%Promise%, value)` followed by
-/// `PerformPromiseThen(promise, onFulfilled, onRejected, resultCapability = undefined)`.
-///
-/// vm-js intentionally deviates from the full `PromiseResolve` algorithm for *Promise objects*:
-/// if `value` is already a Promise, we still perform `Get(value, "constructor")` for
-/// side-effects/throws, but we do **not** wrap it into a new Promise (which can add an extra
-/// microtask turn and consult `constructor[Symbol.species]` via `.then`).
-#[inline]
-fn promise_resolve_for_await_with_host_and_hooks(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  value: Value,
-) -> Result<Value, VmError> {
-  if let Value::Object(obj) = value {
-    if scope.heap().is_promise_object(obj) {
-      // Root the promise object across key allocation and the `Get` operation (which can run user
-      // code and trigger GC).
-      let mut scope = scope.reborrow();
-      let value = scope.push_root(value)?;
-
-      let ctor_key_s = scope.alloc_string("constructor")?;
-      scope.push_root(Value::String(ctor_key_s))?;
-      let ctor_key = PropertyKey::from_string(ctor_key_s);
-      let _ = scope.ordinary_get_with_host_and_hooks(
-        vm,
-        host,
-        hooks,
-        obj,
-        ctor_key,
-        Value::Object(obj),
-      )?;
-      return Ok(value);
-    }
-  }
-
-  crate::promise_ops::promise_resolve_with_host_and_hooks(vm, scope, host, hooks, value)
 }
 
 fn async_handle_body_result(

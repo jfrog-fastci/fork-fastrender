@@ -741,7 +741,7 @@ fn async_from_sync_iterator_continuation(
   };
   scope.push_root(value)?;
 
-  let value_wrapper = match crate::promise_ops::promise_resolve_with_host_and_hooks(
+  let value_wrapper = match crate::promise_ops::promise_resolve_for_await_with_host_and_hooks(
     vm,
     &mut scope,
     host,
@@ -1378,7 +1378,7 @@ pub fn async_iterator_close_with_completion_kind(
     }
   };
 
-  let awaited = match crate::promise_ops::promise_resolve_with_host_and_hooks(
+  let awaited = match crate::promise_ops::promise_resolve_for_await_with_host_and_hooks(
     vm,
     &mut scope,
     host,

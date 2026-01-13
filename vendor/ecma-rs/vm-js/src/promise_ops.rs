@@ -10,7 +10,7 @@
 //! This module exposes small, spec-shaped helpers that are convenient to call from engine code
 //! without going through property lookups on the global `Promise` constructor.
 
-use crate::{PromiseCapability, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+use crate::{PromiseCapability, PropertyKey, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 
 /// `NewPromiseCapability(%Promise%)`.
 pub fn new_promise_capability_with_host_and_hooks(
@@ -93,6 +93,48 @@ pub fn promise_resolve_with_host_and_hooks(
     value,
   )?;
   Ok(Value::Object(promise_obj))
+}
+
+/// Promise resolution used by the spec's `Await` abstract operation.
+///
+/// `Await` conceptually performs `PromiseResolve(%Promise%, value)` followed by
+/// `PerformPromiseThen(promise, onFulfilled, onRejected, resultCapability = undefined)`.
+///
+/// vm-js intentionally deviates from the full `PromiseResolve` algorithm for *Promise objects*:
+/// if `value` is already a Promise, we still perform `Get(value, "constructor")` for
+/// side-effects/throws, but we do **not** wrap it into a new Promise (which can add an extra
+/// microtask turn and consult `constructor[Symbol.species]` via `.then`).
+#[inline]
+pub(crate) fn promise_resolve_for_await_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host_ctx: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<Value, VmError> {
+  if let Value::Object(obj) = value {
+    if scope.heap().is_promise_object(obj) {
+      // Root the promise object across key allocation and the `Get` operation (which can run user
+      // code and trigger GC).
+      let mut scope = scope.reborrow();
+      let value = scope.push_root(value)?;
+
+      let ctor_key_s = scope.alloc_string("constructor")?;
+      scope.push_root(Value::String(ctor_key_s))?;
+      let ctor_key = PropertyKey::from_string(ctor_key_s);
+      let _ = scope.ordinary_get_with_host_and_hooks(
+        vm,
+        host_ctx,
+        hooks,
+        obj,
+        ctor_key,
+        Value::Object(obj),
+      )?;
+      return Ok(value);
+    }
+  }
+
+  promise_resolve_with_host_and_hooks(vm, scope, host_ctx, hooks, value)
 }
 
 /// Convenience wrapper around [`promise_resolve_with_host_and_hooks`] that passes a dummy host
