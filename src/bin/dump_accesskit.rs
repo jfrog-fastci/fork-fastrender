@@ -21,8 +21,34 @@ mod enabled {
   use fastrender::ui::{menu_bar_ui, MenuBarState};
   use fastrender::ui::messages::TabId;
 
+  fn checked_state_to_string(value: accesskit::CheckedState) -> &'static str {
+    match value {
+      accesskit::CheckedState::True => "true",
+      accesskit::CheckedState::False => "false",
+      accesskit::CheckedState::Mixed => "mixed",
+    }
+  }
+
+  fn checked_fields_for_node(
+    role: accesskit::Role,
+    node: &accesskit::Node,
+  ) -> (Option<String>, Option<String>, Option<String>) {
+    let Some(value) = node.checked_state() else {
+      return (None, None, None);
+    };
+    let value = checked_state_to_string(value).to_string();
+    match role {
+      // AccessKit 0.11 uses a single `CheckedState` value for multiple control types. We fan it out
+      // into separate debug fields based on role so `dump_accesskit` output more closely resembles
+      // the ARIA terminology used throughout the codebase/docs.
+      accesskit::Role::ToggleButton => (None, None, Some(value)),
+      accesskit::Role::Switch => (None, Some(value), None),
+      _ => (Some(value), None, None),
+    }
+  }
+
   /// Snapshot-friendly summary of a single AccessKit node.
-  #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+  #[derive(Debug, Clone, PartialEq, Serialize)]
   struct AccessKitNodeSnapshot {
     /// AccessKit's `NodeId` is a `NonZeroU128`.
     ///
@@ -33,6 +59,23 @@ mod enabled {
     name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     expanded: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selected: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    checked: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    toggled: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pressed: Option<String>,
+    /// Whether the node is disabled.
+    #[serde(skip_serializing_if = "is_false")]
+    disabled: bool,
+    /// The accessible value for value-bearing nodes (text fields, combo boxes, etc).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value: Option<String>,
+    /// Numeric value for range-like controls (sliders, progress indicators, etc).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    numeric_value: Option<f64>,
     /// Whether the node explicitly supports the Expand action.
     ///
     /// This is only populated for debugging; most chrome widgets rely on default actions.
@@ -48,7 +91,7 @@ mod enabled {
   }
 
   /// Snapshot-friendly representation of an AccessKit update.
-  #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+  #[derive(Debug, Clone, PartialEq, Serialize)]
   struct AccessKitSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     root_id: Option<String>,
@@ -155,11 +198,20 @@ mod enabled {
         if args.named_only && name.is_empty() {
           return None;
         }
+        let role = node.role();
+        let (checked, toggled, pressed) = checked_fields_for_node(role, node);
         Some(AccessKitNodeSnapshot {
           id: id.0.get().to_string(),
-          role: format!("{:?}", node.role()),
+          role: format!("{:?}", role),
           name,
           expanded: node.is_expanded(),
+          selected: node.is_selected(),
+          checked,
+          toggled,
+          pressed,
+          disabled: node.is_disabled(),
+          value: node.value().map(|value| value.to_string()),
+          numeric_value: node.numeric_value(),
           supports_expand: node.supports_action(accesskit::Action::Expand),
           supports_collapse: node.supports_action(accesskit::Action::Collapse),
         })
@@ -182,6 +234,52 @@ mod enabled {
     }
 
     Ok(())
+  }
+
+  #[cfg(test)]
+  mod tests {
+    use super::*;
+    use accesskit::{CheckedState, NodeBuilder, NodeClassSet, Role};
+
+    #[test]
+    fn checked_state_is_emitted_as_checked_toggled_or_pressed_based_on_role() {
+      let mut classes = NodeClassSet::new();
+
+      let mut checkbox = NodeBuilder::new(Role::CheckBox);
+      checkbox.set_checked_state(CheckedState::True);
+      let node = checkbox.build(&mut classes);
+      let (checked, toggled, pressed) = checked_fields_for_node(Role::CheckBox, &node);
+      assert_eq!(checked.as_deref(), Some("true"));
+      assert!(toggled.is_none());
+      assert!(pressed.is_none());
+
+      let mut toggle_button = NodeBuilder::new(Role::ToggleButton);
+      toggle_button.set_checked_state(CheckedState::False);
+      let node = toggle_button.build(&mut classes);
+      let (checked, toggled, pressed) = checked_fields_for_node(Role::ToggleButton, &node);
+      assert!(checked.is_none());
+      assert!(toggled.is_none());
+      assert_eq!(pressed.as_deref(), Some("false"));
+
+      let mut switch = NodeBuilder::new(Role::Switch);
+      switch.set_checked_state(CheckedState::Mixed);
+      let node = switch.build(&mut classes);
+      let (checked, toggled, pressed) = checked_fields_for_node(Role::Switch, &node);
+      assert!(checked.is_none());
+      assert_eq!(toggled.as_deref(), Some("mixed"));
+      assert!(pressed.is_none());
+    }
+
+    #[test]
+    fn checked_state_is_omitted_when_not_present() {
+      let mut classes = NodeClassSet::new();
+      let builder = NodeBuilder::new(Role::Button);
+      let node = builder.build(&mut classes);
+      let (checked, toggled, pressed) = checked_fields_for_node(Role::Button, &node);
+      assert!(checked.is_none());
+      assert!(toggled.is_none());
+      assert!(pressed.is_none());
+    }
   }
 }
 

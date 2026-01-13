@@ -432,6 +432,11 @@ Output notes:
   - `role` and `name` (primary debugging fields)
   - `expanded` plus `supports_expand` / `supports_collapse` (useful when debugging widgets that use
     explicit AccessKit `Expand`/`Collapse` action routing, e.g. details toggles/toasts)
+  - common state flags when present:
+    - `selected`
+    - `checked` / `toggled` / `pressed`
+    - `disabled`
+    - `value` / `numeric_value` (for value-bearing controls like text fields and sliders)
   - a stringified `id` (helpful when correlating focus updates, but avoid asserting on ids unless
     you are explicitly debugging id stability)
 - The top-level snapshot also includes:
