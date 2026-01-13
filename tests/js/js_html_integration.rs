@@ -796,7 +796,7 @@ fn p2_dynamic_module_scripts_with_async_false_wait_for_top_level_await_before_ne
   // until the first one finishes evaluation.
   h.register_script_source(
     "https://example.invalid/a_tla.js",
-    "await Promise.resolve(); console.log('A');",
+    r#"console.log("A-start"); await new Promise((resolve) => { globalThis.__resolveA = resolve; }); console.log("A-end");"#,
   );
   h.register_script_source("https://example.invalid/b_tla.js", "console.log('B');");
   h.register_html_source(
@@ -814,6 +814,11 @@ fn p2_dynamic_module_scripts_with_async_false_wait_for_top_level_await_before_ne
         b.async = false;
         document.body.appendChild(b);
 
+        setTimeout(() => {
+          console.log("resolve");
+          globalThis.__resolveA();
+        }, 10);
+
         console.log('after');
       </script>
     </body>"#,
@@ -824,7 +829,21 @@ fn p2_dynamic_module_scripts_with_async_false_wait_for_top_level_await_before_ne
 
   assert_eq!(
     console_logs(&h.tab),
-    vec!["after".to_string(), "A".to_string(), "B".to_string()]
+    vec!["after".to_string(), "A-start".to_string()]
+  );
+
+  h.advance_clock(Duration::from_millis(10));
+  h.run_until_idle()?;
+
+  assert_eq!(
+    console_logs(&h.tab),
+    vec![
+      "after".to_string(),
+      "A-start".to_string(),
+      "resolve".to_string(),
+      "A-end".to_string(),
+      "B".to_string(),
+    ]
   );
   Ok(())
 }
