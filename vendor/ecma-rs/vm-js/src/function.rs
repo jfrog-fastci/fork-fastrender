@@ -61,6 +61,17 @@ pub(crate) enum ConstructHandler {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum FunctionData {
   None,
+  /// ECMAScript function object that represents the user-written `constructor(...) { ... }` body
+  /// for a class definition.
+  ///
+  /// `vm-js` represents class constructors as native wrapper functions (so `C()` throws) which
+  /// delegate construction to this hidden function when `new C(...)` occurs.
+  ///
+  /// This metadata links the body function back to its containing class constructor object so
+  /// `run_ecma_function` can implement:
+  /// - public instance field initialization timing, and
+  /// - derived constructor `super()` semantics.
+  ClassConstructorBody { class_constructor: GcObject },
   /// Executor function created by `NewPromiseCapability(C)`.
   ///
   /// This is a builtin closure that captures a shared record with `resolve`/`reject` fields
@@ -363,6 +374,9 @@ impl Trace for JsFunction {
 
     match self.data {
       FunctionData::None => {}
+      FunctionData::ClassConstructorBody { class_constructor } => {
+        tracer.trace_value(Value::Object(class_constructor));
+      }
       FunctionData::PromiseCapabilityExecutor => {}
       FunctionData::PromiseResolvingFunction { promise, .. } => {
         tracer.trace_value(Value::Object(promise));

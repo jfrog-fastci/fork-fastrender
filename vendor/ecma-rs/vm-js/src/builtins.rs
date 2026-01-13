@@ -505,22 +505,8 @@ pub fn class_constructor_construct(
   //
   // When no constructor body is present (e.g. `class C {}`), fall back to a default constructor that
   // just allocates the instance via `OrdinaryCreateFromConstructor`.
-  let (ctor_body, is_derived) = {
-    // Extract slot values without holding a heap borrow across VM calls.
-    let func = scope.heap().get_function(callee)?;
-    let slots = func.native_slots.as_deref();
-    let ctor_body = slots.and_then(|slots| slots.first().copied());
-    let is_derived = slots
-      .and_then(|slots| slots.get(1).copied())
-      .and_then(|v| match v {
-        Value::Bool(b) => Some(b),
-        _ => None,
-      })
-      .unwrap_or(false);
-    (ctor_body, is_derived)
-  };
-
-  if let Some(Value::Object(body_func)) = ctor_body {
+  let ctor_body = crate::class_fields::class_constructor_body(scope, callee)?;
+  if let Some(body_func) = ctor_body {
     return vm.construct_with_host_and_hooks(
       host,
       scope,
@@ -531,33 +517,54 @@ pub fn class_constructor_construct(
     );
   }
 
-  // Default derived constructors behave like:
-  //   constructor(...args) { super(...args); }
-  //
-  // `extends null` is special-cased by the spec: the class constructor's `[[Prototype]]` is still
-  // `%Function.prototype%`, so `superCtor = F.[[GetPrototypeOf]]()` yields `Function.prototype`,
-  // which is **not** constructable. This means `new C()` must throw `TypeError` when no explicit
-  // constructor is provided.
-  if is_derived {
-    let super_ctor = match scope.heap().object_prototype(callee)? {
-      Some(obj) => Value::Object(obj),
-      None => Value::Null,
-    };
-    return vm.construct_with_host_and_hooks(host, scope, hooks, super_ctor, args, new_target);
-  }
+  // Default constructor behaviour depends on whether the class is base or derived.
+  let super_value = crate::class_fields::class_constructor_super_value(scope, callee)?;
 
-  let intr = require_intrinsics(vm)?;
-  let obj = crate::spec_ops::ordinary_create_from_constructor_with_host_and_hooks(
-    vm,
-    scope,
-    host,
-    hooks,
-    new_target,
-    intr.object_prototype(),
-    &[],
-    |scope| scope.alloc_object(),
-  )?;
-  Ok(Value::Object(obj))
+  match super_value {
+    // Base class default constructor: allocate the instance and initialize instance fields.
+    Value::Undefined => {
+      let intr = require_intrinsics(vm)?;
+      let obj = crate::spec_ops::ordinary_create_from_constructor_with_host_and_hooks(
+        vm,
+        scope,
+        host,
+        hooks,
+        new_target,
+        intr.object_prototype(),
+        &[],
+        |scope| scope.alloc_object(),
+      )?;
+      scope.push_root(Value::Object(obj))?;
+      crate::class_fields::initialize_instance_fields_with_host_and_hooks(vm, scope, host, hooks, obj, callee)?;
+      Ok(Value::Object(obj))
+    }
+
+    // `class C extends null {}`: default constructor cannot construct because `super` is `null`.
+    Value::Null => Err(VmError::TypeError("Class extends value is not a constructor")),
+
+    // Derived class default constructor: `super(...args)` then initialize instance fields.
+    Value::Object(super_ctor) => {
+      let this_value = vm.construct_with_host_and_hooks(
+        host,
+        scope,
+        hooks,
+        Value::Object(super_ctor),
+        args,
+        new_target,
+      )?;
+      let Value::Object(obj) = this_value else {
+        return Err(VmError::InvariantViolation(
+          "super constructor returned non-object from Construct",
+        ));
+      };
+      scope.push_root(Value::Object(obj))?;
+      crate::class_fields::initialize_instance_fields_with_host_and_hooks(vm, scope, host, hooks, obj, callee)?;
+      Ok(Value::Object(obj))
+    }
+    _ => Err(VmError::InvariantViolation(
+      "class constructor super slot is not undefined, null, or object",
+    )),
+  }
 }
 
 fn object_constructor_impl(

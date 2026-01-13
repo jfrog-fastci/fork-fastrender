@@ -1675,6 +1675,18 @@ impl ModuleGraph {
     let idx = module_index(module);
     if let Some(record) = self.modules.get(idx) {
       if record.status == ModuleStatus::EvaluatingAsync {
+        // Modules can be in the `EvaluatingAsync` state even if they do not directly contain
+        // top-level await (e.g. modules in an async SCC where another module suspends).
+        //
+        // Only modules that *directly* contain top-level await should have a stored TLA evaluation
+        // state; other SCC members can safely return the shared SCC evaluation promise without
+        // requiring per-module state.
+        if record.has_tla && self.tla_states.get(idx).and_then(|s| s.as_ref()).is_none() {
+          return Err(VmError::InvariantViolation(
+            "module is evaluating-async but has no stored TLA evaluation state",
+          ));
+        }
+
         // Async module evaluation is in progress; per spec, `Evaluate()` is idempotent and must
         // return the existing evaluation promise (stored on the SCC root module record via
         // `[[TopLevelCapability]]`).

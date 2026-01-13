@@ -40,6 +40,7 @@ use std::mem;
 use std::sync::Arc;
 
 use crate::function::ThisMode;
+use crate::function::FunctionData;
 use crate::vm::EcmaFunctionKind;
 
 /// A `throw` completion value paired with a captured stack trace.
@@ -327,6 +328,10 @@ pub(crate) fn perform_indirect_eval(
     strict,
     this: Value::Object(global_object),
     new_target: Value::Undefined,
+    class_constructor: None,
+    derived_constructor: false,
+    this_initialized: true,
+    this_root_idx: None,
   };
 
   let result = (|| {
@@ -482,6 +487,10 @@ pub(crate) fn perform_direct_eval_with_host_and_hooks(
       strict,
       this,
       new_target,
+      class_constructor: None,
+      derived_constructor: false,
+      this_initialized: true,
+      this_root_idx: None,
     };
 
     (|| {
@@ -642,6 +651,10 @@ pub fn eval_script_with_host_and_hooks(
       strict,
       this: global_this,
       new_target: Value::Undefined,
+      class_constructor: None,
+      derived_constructor: false,
+      this_initialized: true,
+      this_root_idx: None,
     };
 
     evaluator.instantiate_script(&mut scope, &top.stx.body)?;
@@ -2132,6 +2145,10 @@ impl JsRuntime {
           strict,
           this: global_this,
           new_target: Value::Undefined,
+          class_constructor: None,
+          derived_constructor: false,
+          this_initialized: true,
+          this_root_idx: None,
         };
 
         evaluator.instantiate_script(&mut scope, &top.stx.body)?;
@@ -2183,6 +2200,10 @@ impl JsRuntime {
           strict,
           this: global_this,
           new_target: Value::Undefined,
+          class_constructor: None,
+          derived_constructor: false,
+          this_initialized: true,
+          this_root_idx: None,
         };
 
         evaluator.instantiate_script(&mut scope, &top.stx.body)?;
@@ -2564,6 +2585,10 @@ impl JsRuntime {
           strict,
           this: global_this,
           new_target: Value::Undefined,
+          class_constructor: None,
+          derived_constructor: false,
+          this_initialized: true,
+          this_root_idx: None,
         };
 
         evaluator.instantiate_script(&mut scope, &top.stx.body)?;
@@ -2615,6 +2640,10 @@ impl JsRuntime {
           strict,
           this: global_this,
           new_target: Value::Undefined,
+          class_constructor: None,
+          derived_constructor: false,
+          this_initialized: true,
+          this_root_idx: None,
         };
 
         evaluator.instantiate_script(&mut scope, &top.stx.body)?;
@@ -3011,6 +3040,17 @@ struct Evaluator<'a> {
   strict: bool,
   this: Value,
   new_target: Value,
+  /// If executing a user-defined class constructor body, this links back to the containing class
+  /// constructor function object (the native wrapper that holds field metadata).
+  class_constructor: Option<GcObject>,
+  /// Whether the current class constructor body is a *derived* constructor (i.e. has an `extends`
+  /// clause). In derived constructors, `this` is uninitialized until `super()` returns.
+  derived_constructor: bool,
+  /// Whether `this` has been initialized (only meaningful when `derived_constructor` is `true`).
+  this_initialized: bool,
+  /// Root-stack slot index used to keep a derived constructor's `this` value alive across nested
+  /// scopes. When present, `heap.root_stack[this_root_idx]` is kept in sync with `self.this`.
+  this_root_idx: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -4789,45 +4829,57 @@ impl<'a> Evaluator<'a> {
     name: &str,
     length: u32,
     constructor_body: Option<GcObject>,
-    is_derived: bool,
+    super_value: Value,
+    instance_field_count: usize,
   ) -> Result<GcObject, VmError> {
     let intr = self
       .vm
       .intrinsics()
       .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
 
-    // Root the optional constructor body function before allocating any strings/function objects in
-    // case those allocations trigger GC.
+    // Root the optional constructor body function and superclass value before allocating any
+    // strings/function objects in case those allocations trigger GC.
     let mut init_scope = scope.reborrow();
     if let Some(body) = constructor_body {
       init_scope.push_root(Value::Object(body))?;
     }
+    init_scope.push_root(super_value)?;
 
     let name_s = init_scope.alloc_string(name)?;
-    // Native slots:
-    // - slot 0: optional internal (hidden) constructor body function (Value::Object or Undefined)
-    // - slot 1: whether the class has `[[ConstructorKind]] = derived` (i.e. a ClassHeritage is present)
-    let slots_buf;
-    let slots = if let Some(body) = constructor_body {
-      slots_buf = [Value::Object(body), Value::Bool(is_derived)];
-      &slots_buf[..]
-    } else {
-      slots_buf = [Value::Undefined, Value::Bool(is_derived)];
-      &slots_buf[..]
-    };
+    let slots_len = crate::class_fields::CLASS_CTOR_SLOT_INSTANCE_FIELDS_START
+      .saturating_add(instance_field_count.saturating_mul(2));
+    let mut slots_vec: Vec<Value> = Vec::new();
+    slots_vec
+      .try_reserve_exact(slots_len)
+      .map_err(|_| VmError::OutOfMemory)?;
+    slots_vec.push(constructor_body.map(Value::Object).unwrap_or(Value::Undefined));
+    slots_vec.push(super_value);
+    slots_vec.resize(slots_len, Value::Undefined);
 
     let func_obj = init_scope.alloc_native_function_with_slots(
       intr.class_constructor_call(),
       Some(intr.class_constructor_construct()),
       name_s,
       length,
-      slots,
+      &slots_vec,
     )?;
     init_scope.push_root(Value::Object(func_obj))?;
 
+    // Per ECMA-262 `ClassDefinitionEvaluation`:
+    // - base classes: `F.[[Prototype]] = %Function.prototype%`
+    // - derived classes: `F.[[Prototype]] = superCtor` (static inheritance)
+    let proto_parent = match super_value {
+      Value::Object(super_ctor) => super_ctor,
+      Value::Undefined | Value::Null => intr.function_prototype(),
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "class constructor super value is not undefined, null, or object",
+        ))
+      }
+    };
     init_scope
       .heap_mut()
-      .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+      .object_set_prototype(func_obj, Some(proto_parent))?;
     init_scope
       .heap_mut()
       .set_function_realm(func_obj, self.env.global_object())?;
@@ -5959,6 +6011,7 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     binding: ClassBinding<'_>,
     func_name: &str,
+    extends: Option<&Node<Expr>>,
     members: &[Node<ClassMember>],
     extends_null: bool,
   ) -> Result<GcObject, VmError> {
@@ -5991,8 +6044,8 @@ impl<'a> Evaluator<'a> {
     // `parse-js` represents private names as strings like `"#x"`. To enforce per-class privacy, we
     // allocate a fresh internal symbol for each declared private name and store the mapping on the
     // class's lexical environment record. All class element bodies capture that environment, so
-    // private member expressions can resolve the correct symbol even if the class binding is
-    // passed around.
+    // private member expressions can resolve the correct symbol even if the class binding is passed
+    // around.
     let mut private_names: Vec<String> = Vec::new();
     let mut private_name_set: HashSet<String> = HashSet::new();
     for member in members {
@@ -6025,6 +6078,67 @@ impl<'a> Evaluator<'a> {
       priv_scope
         .heap_mut()
         .env_set_private_names(class_env, entries.into_boxed_slice())?;
+    }
+
+    // Evaluate `extends` (class heritage), if present.
+    //
+    // - `undefined` => no `extends` (base class)
+    // - `null` => `extends null`
+    // - object => superclass constructor
+    let super_value = match extends {
+      None => Value::Undefined,
+      Some(extends_expr) => {
+        let v = self.eval_expr(scope, extends_expr)?;
+        match v {
+          Value::Undefined => {
+            return Err(throw_type_error(
+              self.vm,
+              scope,
+              "Class extends value is not a constructor",
+            )?)
+          }
+          Value::Null => Value::Null,
+          Value::Object(_) => {
+            if !scope.heap().is_constructor(v)? {
+              return Err(throw_type_error(
+                self.vm,
+                scope,
+                "Class extends value is not a constructor",
+              )?);
+            }
+            v
+          }
+          _ => {
+            return Err(throw_type_error(
+              self.vm,
+              scope,
+              "Class extends value is not a constructor",
+            )?)
+          }
+        }
+      }
+    };
+
+    // Count instance **public** fields so the class constructor wrapper can preallocate its hidden
+    // native-slot storage.
+    let mut instance_field_count: usize = 0;
+    for member in members {
+      if member.stx.static_ {
+        continue;
+      }
+      if !matches!(&member.stx.val, ClassOrObjVal::Prop(_)) {
+        continue;
+      }
+      let is_private_field = matches!(
+        &member.stx.key,
+        ClassOrObjKey::Direct(direct) if direct.stx.tt == TT::PrivateMember
+      );
+      if is_private_field {
+        continue;
+      }
+      instance_field_count = instance_field_count
+        .checked_add(1)
+        .ok_or(VmError::OutOfMemory)?;
     }
 
     // Find an explicit `constructor(...) { ... }` method, if present.
@@ -6137,9 +6251,26 @@ impl<'a> Evaluator<'a> {
       None
     };
 
-    let is_derived = extends_null;
-    let func_obj =
-      self.create_class_constructor_object(scope, func_name, ctor_length, ctor_body_func, is_derived)?;
+    let func_obj = self.create_class_constructor_object(
+      scope,
+      func_name,
+      ctor_length,
+      ctor_body_func,
+      super_value,
+      instance_field_count,
+    )?;
+
+    // If the class has an explicit `constructor(...) { ... }` body, annotate that hidden function
+    // object so `[[Construct]]` can implement class-field initialization and derived `super()`
+    // semantics.
+    if let Some(body_func) = ctor_body_func {
+      scope.heap_mut().set_function_data(
+        body_func,
+        FunctionData::ClassConstructorBody {
+          class_constructor: func_obj,
+        },
+      )?;
+    }
 
     // Initialize the requested binding now that the class constructor object exists.
     if let Some(binding_name) = match binding {
@@ -6198,22 +6329,79 @@ impl<'a> Evaluator<'a> {
       },
     )?;
 
+    // Wire the instance prototype chain for derived classes.
+    //
+    // - base class: `prototype.[[Prototype]] = %Object.prototype%`
+    // - `extends null`: `prototype.[[Prototype]] = null`
+    // - derived class: `prototype.[[Prototype]] = super.prototype`
+    let intr = self
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    match super_value {
+      Value::Undefined => {
+        class_scope
+          .heap_mut()
+          .object_set_prototype(prototype_obj, Some(intr.object_prototype()))?;
+      }
+      Value::Null => {
+        class_scope.heap_mut().object_set_prototype(prototype_obj, None)?;
+      }
+      Value::Object(super_ctor) => {
+        let proto_parent = {
+          // `Get(superCtor, "prototype")` (Proxy-aware / accessor-aware).
+          let mut proto_scope = class_scope.reborrow();
+          proto_scope.push_root(Value::Object(super_ctor))?;
+          let proto_key_s = proto_scope.alloc_string("prototype")?;
+          proto_scope.push_root(Value::String(proto_key_s))?;
+          let proto_key = PropertyKey::from_string(proto_key_s);
+          let proto_value = proto_scope.ordinary_get_with_host_and_hooks(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            super_ctor,
+            proto_key,
+            Value::Object(super_ctor),
+          )?;
+          match proto_value {
+            Value::Object(o) => Some(o),
+            Value::Null => None,
+            _ => {
+              return Err(throw_type_error(
+                self.vm,
+                &mut proto_scope,
+                "Class extends value does not have a valid prototype property",
+              )?)
+            }
+          }
+        };
+        class_scope
+          .heap_mut()
+          .object_set_prototype(prototype_obj, proto_parent)?;
+      }
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "class constructor super value is not undefined, null, or object",
+        ))
+      }
+    }
+
     // Define prototype and static methods.
     //
-    // While defining methods, collect static initialization elements (static fields and static
-    // blocks) so we can evaluate them *after* all methods have been defined.
-    //
-    // This matches ECMA-262 `ClassDefinitionEvaluation`, which performs an element definition pass
-    // to install methods/accessors, then runs static field initializers and static blocks in source
-    // order.
-    enum StaticElement<'a> {
-      Block(&'a [Node<Stmt>]),
+    // While defining methods, collect class static initialization elements (public static fields,
+    // private static fields, and static blocks) so we can evaluate them *after* all methods have
+    // been defined (ECMA-262 `ClassDefinitionEvaluation`: the initialization pass happens after the
+    // element definition pass).
+    enum StaticInitElement<'a> {
+      Field { key: Value, initializer: Value },
       PrivateField {
         sym: GcSymbol,
         init: Option<&'a Node<Expr>>,
       },
+      Block(&'a [Node<Stmt>]),
     }
-    let mut static_elements: Vec<StaticElement<'_>> = Vec::new();
+    let mut static_inits: Vec<StaticInitElement<'_>> = Vec::new();
+    let mut instance_field_idx: usize = 0;
     for member in members {
       self.tick()?;
 
@@ -6247,38 +6435,10 @@ impl<'a> Evaluator<'a> {
       // Static initialization blocks are not properties on the class/prototype. Record them for
       // later evaluation and continue to the next element.
       if let ClassOrObjVal::StaticBlock(block) = &member.stx.val {
-        static_elements
+        static_inits
           .try_reserve(1)
           .map_err(|_| VmError::OutOfMemory)?;
-        static_elements.push(StaticElement::Block(&block.stx.body));
-        continue;
-      }
-
-      // Static fields are evaluated after the element definition pass (after all methods are
-      // defined).
-      if let ClassOrObjVal::Prop(init) = &member.stx.val {
-        // We currently implement **only static private fields**.
-        if !member.stx.static_ {
-          return Err(VmError::Unimplemented("class fields"));
-        }
-        let ClassOrObjKey::Direct(direct) = &member.stx.key else {
-          return Err(VmError::Unimplemented("computed class fields"));
-        };
-        if direct.stx.tt != TT::PrivateMember {
-          return Err(VmError::Unimplemented("class fields"));
-        }
-
-        let sym = class_scope
-          .heap()
-          .resolve_private_name_symbol(class_env, &direct.stx.key)?
-          .ok_or(VmError::InvariantViolation("unresolved private name"))?;
-        static_elements
-          .try_reserve(1)
-          .map_err(|_| VmError::OutOfMemory)?;
-        static_elements.push(StaticElement::PrivateField {
-          sym,
-          init: init.as_ref(),
-        });
+        static_inits.push(StaticInitElement::Block(&block.stx.body));
         continue;
       }
 
@@ -6623,8 +6783,129 @@ impl<'a> Evaluator<'a> {
             },
           )?;
         }
-        ClassOrObjVal::Prop(_) => {
-          return Err(VmError::Unimplemented("class fields"));
+        ClassOrObjVal::Prop(initializer_expr) => {
+          // Public class fields.
+          //
+          // - instance fields are stored as `(key, initializer)` pairs in the class constructor's
+          //   native slots, and are initialized per-instance during `[[Construct]]`.
+          // - static fields are initialized during the post-definition initialization pass (after
+          //   all methods have been defined), in source order relative to static blocks.
+          //
+          // Private fields are handled separately so we can enforce the correct property
+          // attributes (notably non-enumerable and non-configurable for private static fields).
+          if is_private_key {
+            if !member.stx.static_ {
+              return Err(VmError::Unimplemented("private instance fields"));
+            }
+            let PropertyKey::Symbol(sym) = key else {
+              return Err(VmError::InvariantViolation(
+                "private field key is not a symbol",
+              ));
+            };
+            static_inits
+              .try_reserve(1)
+              .map_err(|_| VmError::OutOfMemory)?;
+            static_inits.push(StaticInitElement::PrivateField {
+              sym,
+              init: initializer_expr.as_ref(),
+            });
+            continue;
+          }
+
+          let key_value = match key {
+            PropertyKey::String(s) => Value::String(s),
+            PropertyKey::Symbol(s) => Value::Symbol(s),
+          };
+
+          // Create a function object for `= <expr>` initializers so they can be evaluated later with
+          // the correct `this` value.
+          let init_value = match initializer_expr {
+            Some(expr_node) => {
+              // Root the initializer expression node span inputs across registration/allocation.
+              let rel_start = expr_node.loc.start_u32().saturating_sub(self.env.prefix_len());
+              let rel_end = expr_node
+                .loc
+                .end_u32()
+                .saturating_sub(self.env.prefix_len());
+              let span_start = self.env.base_offset().saturating_add(rel_start);
+              let span_end = self.env.base_offset().saturating_add(rel_end);
+
+              let code = self.vm.register_ecma_function(
+                self.env.source(),
+                span_start,
+                span_end,
+                EcmaFunctionKind::ClassFieldInitializer,
+              )?;
+
+              // Field initializer functions are always strict mode and have `length = 0`.
+              let is_strict = true;
+              let this_mode = ThisMode::Strict;
+              let closure_env = Some(self.env.lexical_env);
+
+              let name_string = member_scope.alloc_string("")?;
+              let init_func_obj = member_scope.alloc_ecma_function(
+                code,
+                /* is_constructable */ false,
+                name_string,
+                0,
+                this_mode,
+                is_strict,
+                closure_env,
+              )?;
+
+              let intr = self
+                .vm
+                .intrinsics()
+                .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+              member_scope
+                .heap_mut()
+                .object_set_prototype(init_func_obj, Some(intr.function_prototype()))?;
+              member_scope
+                .heap_mut()
+                .set_function_realm(init_func_obj, self.env.global_object())?;
+              if let Some(realm) = self.vm.current_realm() {
+                member_scope
+                  .heap_mut()
+                  .set_function_job_realm(init_func_obj, realm)?;
+              }
+              if let Some(script_or_module) = self.vm.get_active_script_or_module() {
+                let token = self.vm.intern_script_or_module(script_or_module)?;
+                member_scope
+                  .heap_mut()
+                  .set_function_script_or_module_token(init_func_obj, Some(token))?;
+              }
+              Value::Object(init_func_obj)
+            }
+            None => Value::Undefined,
+          };
+
+          if member.stx.static_ {
+            // Static field: defer initialization until after the element definition pass.
+            // Drop `member_scope` early so we can push persistent roots onto `class_scope`.
+            drop(member_scope);
+            class_scope.push_root(key_value)?;
+            class_scope.push_root(init_value)?;
+            static_inits
+              .try_reserve(1)
+              .map_err(|_| VmError::OutOfMemory)?;
+            static_inits.push(StaticInitElement::Field {
+              key: key_value,
+              initializer: init_value,
+            });
+          } else {
+            // Instance field: store as `(key, initializer)` in the class constructor's native slots.
+            let slot_base = crate::class_fields::CLASS_CTOR_SLOT_INSTANCE_FIELDS_START
+              .saturating_add(instance_field_idx.saturating_mul(2));
+            member_scope
+              .heap_mut()
+              .set_function_native_slot(func_obj, slot_base, key_value)?;
+            member_scope
+              .heap_mut()
+              .set_function_native_slot(func_obj, slot_base.saturating_add(1), init_value)?;
+            instance_field_idx = instance_field_idx
+              .checked_add(1)
+              .ok_or(VmError::OutOfMemory)?;
+          }
         }
         ClassOrObjVal::IndexSignature(_) => {
           return Err(VmError::Unimplemented("class index signature"));
@@ -6634,14 +6915,48 @@ impl<'a> Evaluator<'a> {
       }
     }
 
-    // Evaluate class static elements in source order.
-    for elem in static_elements {
-      match elem {
-        StaticElement::Block(stmts) => {
+    // Evaluate class static initialization elements (public static fields, private static fields,
+    // and static blocks) in source order.
+    for init in static_inits {
+      match init {
+        StaticInitElement::Block(stmts) => {
           self.eval_class_static_block(&mut class_scope, func_obj, stmts)?;
         }
-        StaticElement::PrivateField { sym, init } => {
+        StaticInitElement::PrivateField { sym, init } => {
           self.eval_class_static_private_field(&mut class_scope, func_obj, sym, init)?;
+        }
+        StaticInitElement::Field { key, initializer } => {
+          let key = match key {
+            Value::String(s) => PropertyKey::from_string(s),
+            Value::Symbol(s) => PropertyKey::from_symbol(s),
+            Value::Undefined => {
+              return Err(VmError::InvariantViolation(
+                "static field key is undefined",
+              ))
+            }
+            _ => {
+              return Err(VmError::InvariantViolation(
+                "static field key is not a string or symbol",
+              ))
+            }
+          };
+          let value = match initializer {
+            Value::Object(func) => self.vm.call_with_host_and_hooks(
+              &mut *self.host,
+              &mut class_scope,
+              &mut *self.hooks,
+              Value::Object(func),
+              Value::Object(func_obj),
+              &[],
+            )?,
+            Value::Undefined => Value::Undefined,
+            _ => {
+              return Err(VmError::InvariantViolation(
+                "static field initializer is not a function or undefined",
+              ))
+            }
+          };
+          class_scope.create_data_property_or_throw(func_obj, key, value)?;
         }
       }
     }
@@ -6768,9 +7083,6 @@ impl<'a> Evaluator<'a> {
       None => false,
       Some(expr) => matches!(&*expr.stx, Expr::LitNull(_)),
     };
-    if decl.stx.extends.is_some() && !extends_null {
-      return Err(VmError::Unimplemented("class inheritance"));
-    }
     if !decl.stx.decorators.is_empty() {
       return Err(VmError::Unimplemented("class decorators"));
     }
@@ -6807,7 +7119,14 @@ impl<'a> Evaluator<'a> {
         Some(name) => ClassBinding::Immutable(name.stx.name.as_str()),
         None => ClassBinding::None,
       };
-      self.eval_class(scope, inner_binding, func_name, &decl.stx.members, extends_null)
+      self.eval_class(
+        scope,
+        inner_binding,
+        func_name,
+        decl.stx.extends.as_ref(),
+        &decl.stx.members,
+        extends_null,
+      )
     })();
 
     // Restore outer environment regardless of how class evaluation completes.
@@ -6836,9 +7155,6 @@ impl<'a> Evaluator<'a> {
       None => false,
       Some(expr) => matches!(&*expr.stx, Expr::LitNull(_)),
     };
-    if expr.stx.extends.is_some() && !extends_null {
-      return Err(VmError::Unimplemented("class inheritance"));
-    }
     if !expr.stx.decorators.is_empty() {
       return Err(VmError::Unimplemented("class decorators"));
     }
@@ -6853,7 +7169,14 @@ impl<'a> Evaluator<'a> {
     let outer = self.env.lexical_env;
     let result = (|| {
       let Some(name) = expr.stx.name.as_ref() else {
-        let func_obj = self.eval_class(scope, ClassBinding::None, "", &expr.stx.members, extends_null)?;
+        let func_obj = self.eval_class(
+          scope,
+          ClassBinding::None,
+          "",
+          expr.stx.extends.as_ref(),
+          &expr.stx.members,
+          extends_null,
+        )?;
         return Ok(Value::Object(func_obj));
       };
 
@@ -6864,6 +7187,7 @@ impl<'a> Evaluator<'a> {
         scope,
         ClassBinding::Immutable(name.stx.name.as_str()),
         name.stx.name.as_str(),
+        expr.stx.extends.as_ref(),
         &expr.stx.members,
         extends_null,
       )?;
@@ -8002,7 +8326,16 @@ impl<'a> Evaluator<'a> {
       Expr::LitObj(node) => OptionalChainEval::Value(self.eval_lit_obj(scope, &node.stx)?),
       Expr::LitTemplate(node) => OptionalChainEval::Value(self.eval_lit_template(scope, &node.stx)?),
       Expr::TaggedTemplate(node) => OptionalChainEval::Value(self.eval_tagged_template(scope, node)?),
-      Expr::This(_) => OptionalChainEval::Value(self.this),
+      Expr::This(_) => {
+        if self.derived_constructor && !self.this_initialized {
+          return Err(throw_reference_error(
+            self.vm,
+            scope,
+            "Must call super constructor in derived class before accessing 'this'",
+          )?);
+        }
+        OptionalChainEval::Value(self.this)
+      }
       Expr::NewTarget(_) => OptionalChainEval::Value(self.new_target),
       Expr::Id(node) => OptionalChainEval::Value(self.eval_id(scope, &node.stx)?),
       Expr::ImportMeta(_) => OptionalChainEval::Value(self.eval_import_meta(scope)?),
@@ -10218,6 +10551,160 @@ impl<'a> Evaluator<'a> {
         Expr::IdPat(id) => id.stx.name == "eval",
         _ => false,
       };
+
+    // `super(...args)` in derived class constructors.
+    if matches!(&*expr.callee.stx, Expr::Super(_)) {
+      if expr.optional_chaining {
+        return Err(VmError::Unimplemented("optional chaining super call"));
+      }
+
+      let Some(class_ctor) = self.class_constructor else {
+        return Err(VmError::Unimplemented("super call outside of class constructor"));
+      };
+      if !self.derived_constructor {
+        return Err(throw_reference_error(
+          self.vm,
+          scope,
+          "super() is not allowed in base class constructors",
+        )?);
+      }
+      if self.this_initialized {
+        return Err(throw_reference_error(
+          self.vm,
+          scope,
+          "super() can only be called once in a derived constructor",
+        )?);
+      }
+
+      // Resolve the superclass constructor from the class constructor's hidden `extends` slot.
+      let super_value = crate::class_fields::class_constructor_super_value(scope, class_ctor)?;
+      let super_ctor = match super_value {
+        Value::Object(o) => o,
+        Value::Null => {
+          return Err(throw_type_error(
+            self.vm,
+            scope,
+            "Class extends value is not a constructor",
+          )?)
+        }
+        Value::Undefined => {
+          return Err(VmError::InvariantViolation(
+            "derived constructor attempted super() call with undefined superclass",
+          ))
+        }
+        _ => {
+          return Err(VmError::InvariantViolation(
+            "class constructor super slot is not undefined, null, or object",
+          ))
+        }
+      };
+
+      // Root callee/new_target for the duration of argument evaluation + construction.
+      let mut call_scope = scope.reborrow();
+      call_scope.push_roots(&[Value::Object(super_ctor), self.new_target])?;
+
+      // Evaluate argument list (including spread) in source order.
+      let mut args: Vec<Value> = Vec::new();
+      args
+        .try_reserve_exact(expr.arguments.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      for arg in &expr.arguments {
+        if arg.stx.spread {
+          let spread_value = self.eval_expr(&mut call_scope, &arg.stx.value)?;
+          call_scope.push_root(spread_value)?;
+
+          let mut iter = iterator::get_iterator(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            &mut call_scope,
+            spread_value,
+          )?;
+          call_scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
+          if let Err(err) = call_scope.push_root(iter.next_method) {
+            // `ArgumentListEvaluation` uses `IteratorStepValue` and does not perform `IteratorClose`
+            // on abrupt completions (including when `next` throws).
+            return Err(err);
+          }
+
+          loop {
+            let next_value = match iterator::iterator_step_value(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              &mut call_scope,
+              &mut iter,
+            ) {
+              Ok(v) => v,
+              // Spec: spread argument evaluation does not perform `IteratorClose` on errors produced
+              // while stepping the iterator (`next`/`done`/`value`).
+              Err(err) => return Err(err),
+            };
+
+            let Some(value) = next_value else {
+              break;
+            };
+
+            let step_res: Result<(), VmError> = (|| {
+              self.tick()?;
+              call_scope.push_root(value)?;
+              args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+              args.push(value);
+              Ok(())
+            })();
+            if let Err(err) = step_res {
+              return Err(err);
+            }
+          }
+        } else {
+          let value = self.eval_expr(&mut call_scope, &arg.stx.value)?;
+          call_scope.push_root(value)?;
+          args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+          args.push(value);
+        }
+      }
+
+      // Construct the superclass instance: `Construct(super, args, newTarget)`.
+      let source = self.env.source();
+      let rel_start = loc.start_u32().saturating_sub(self.env.prefix_len());
+      let abs_offset = self.env.base_offset().saturating_add(rel_start);
+      let this_value = self.vm.construct_with_host_and_hooks_at_location(
+        &mut *self.host,
+        &mut call_scope,
+        &mut *self.hooks,
+        Value::Object(super_ctor),
+        &args,
+        self.new_target,
+        source.as_ref(),
+        abs_offset,
+      )?;
+
+      let Value::Object(this_obj) = this_value else {
+        return Err(VmError::InvariantViolation(
+          "super constructor returned non-object from Construct",
+        ));
+      };
+
+      // Bind `this` and keep it rooted for the remainder of constructor evaluation.
+      let this_root_idx = self.this_root_idx.ok_or(VmError::InvariantViolation(
+        "derived constructor missing this root slot",
+      ))?;
+      self.this = this_value;
+      self.this_initialized = true;
+      call_scope.heap_mut().root_stack[this_root_idx] = this_value;
+
+      // Initialize derived instance fields immediately after `super()` returns.
+      crate::class_fields::initialize_instance_fields_with_host_and_hooks(
+        self.vm,
+        &mut call_scope,
+        &mut *self.host,
+        &mut *self.hooks,
+        this_obj,
+        class_ctor,
+      )?;
+
+      return Ok(OptionalChainEval::Value(this_value));
+    }
 
     // Evaluate the callee and compute the `this` value for the call.
     let (callee_value, this_value) = match &*expr.callee.stx {
@@ -13099,6 +13586,10 @@ pub(crate) fn async_resume_call(
         strict: cont.strict,
         this,
         new_target,
+        class_constructor: None,
+        derived_constructor: false,
+        this_initialized: true,
+        this_root_idx: None,
       };
 
       let frames = mem::take(&mut cont.frames);
@@ -13125,6 +13616,10 @@ pub(crate) fn async_resume_call(
     strict: cont.strict,
     this,
     new_target,
+    class_constructor: None,
+    derived_constructor: false,
+    this_initialized: true,
+    this_root_idx: None,
   };
 
   let frames = mem::take(&mut cont.frames);
@@ -15461,13 +15956,18 @@ fn async_eval_class(
     None
   };
 
-  let is_derived = extends_null;
+  let super_value = if extends_null {
+    Value::Null
+  } else {
+    Value::Undefined
+  };
   let func_obj = evaluator.create_class_constructor_object(
     scope,
     func_name,
     ctor_length,
     ctor_body_func,
-    is_derived,
+    super_value,
+    /* instance_field_count */ 0,
   )?;
 
   // Create a persistent root for the class constructor object so it remains GC-safe across `await`
@@ -30218,6 +30718,10 @@ pub(crate) fn generator_resume(
             strict: cont.strict,
             this,
             new_target,
+            class_constructor: None,
+            derived_constructor: false,
+            this_initialized: true,
+            this_root_idx: None,
           };
           gen_start_body(&mut evaluator, &mut scope, &func, args)
         };
@@ -30311,6 +30815,10 @@ pub(crate) fn generator_resume(
           strict: cont.strict,
           this,
           new_target,
+          class_constructor: None,
+          derived_constructor: false,
+          this_initialized: true,
+          this_root_idx: None,
         };
         gen_resume_from_frames(&mut evaluator, &mut scope, frames, resume_completion)
       };
@@ -30376,7 +30884,7 @@ pub(crate) fn run_ecma_function(
   new_target: Value,
   func: Arc<Node<Func>>,
   args: &[Value],
-) -> Result<Value, VmError> {
+) -> Result<(Value, Value), VmError> {
   env.set_source_info(source, base_offset, prefix_len);
 
   if func.stx.generator {
@@ -30451,12 +30959,35 @@ pub(crate) fn run_ecma_function(
         Some(box_try_new_vm(cont)?),
       )?
     };
-    return Ok(Value::Object(gen_obj));
+    return Ok((Value::Object(gen_obj), this));
   }
 
   let Some(body) = &func.stx.body else {
     return Err(VmError::Unimplemented("function without body"));
   };
+
+  // Detect class constructor bodies so we can:
+  // - initialize base-class instance fields before executing the user constructor body, and
+  // - support derived constructor `super()` calls + `this` binding semantics.
+  let mut class_constructor: Option<GcObject> = None;
+  let mut derived_constructor = false;
+  let mut this_initialized = true;
+  let mut this_root_idx: Option<usize> = None;
+  if let FunctionData::ClassConstructorBody { class_constructor: ctor } =
+    scope.heap().get_function_data(callee)?
+  {
+    class_constructor = Some(ctor);
+    let super_value = crate::class_fields::class_constructor_super_value(scope, ctor)?;
+    derived_constructor = !matches!(super_value, Value::Undefined);
+    this_initialized = !derived_constructor;
+    if derived_constructor {
+      // Keep an always-present root slot for `this` so derived constructors can initialize it after
+      // `super()` returns and keep it alive across nested scopes.
+      let idx = scope.heap().root_stack.len();
+      scope.push_root(this)?;
+      this_root_idx = Some(idx);
+    }
+  }
 
   let mut evaluator = Evaluator {
     vm,
@@ -30466,8 +30997,32 @@ pub(crate) fn run_ecma_function(
     strict,
     this,
     new_target,
+    class_constructor,
+    derived_constructor,
+    this_initialized,
+    this_root_idx,
   };
   evaluator.instantiate_function(scope, func.as_ref(), args)?;
+
+  // Base class instance fields are initialized immediately after `this` is created (before running
+  // the user-defined constructor body).
+  if let Some(class_ctor) = evaluator.class_constructor {
+    if !evaluator.derived_constructor {
+      let Value::Object(this_obj) = evaluator.this else {
+        return Err(VmError::InvariantViolation(
+          "base class constructor `this` is not an object",
+        ));
+      };
+      crate::class_fields::initialize_instance_fields_with_host_and_hooks(
+        evaluator.vm,
+        scope,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        this_obj,
+        class_ctor,
+      )?;
+    }
+  }
 
   if func.stx.async_ {
     // Async function invocation returns a Promise and executes the body until the first `await`.
@@ -30497,7 +31052,7 @@ pub(crate) fn run_ecma_function(
           &[v],
         );
         evaluator.env.teardown(call_scope.heap_mut());
-        res.map(|_| promise)
+        res.map(|_| (promise, evaluator.this))
       }
       Ok(AsyncBodyResult::CompleteThrow(reason)) => {
         let mut call_scope = scope.reborrow();
@@ -30514,7 +31069,7 @@ pub(crate) fn run_ecma_function(
           &[reason],
         );
         evaluator.env.teardown(call_scope.heap_mut());
-        res.map(|_| promise)
+        res.map(|_| (promise, evaluator.this))
       }
       Ok(AsyncBodyResult::Await { await_value, frames }) => {
         // Root all GC-managed values while we create persistent roots and schedule the resumption.
@@ -30602,7 +31157,7 @@ pub(crate) fn run_ecma_function(
               &[reason],
             );
             evaluator.env.teardown(root_scope.heap_mut());
-            return reject_result.map(|_| promise);
+            return reject_result.map(|_| (promise, evaluator.this));
           }
           Err(e) => {
             evaluator.env.teardown(root_scope.heap_mut());
@@ -30746,7 +31301,7 @@ pub(crate) fn run_ecma_function(
           return Err(err);
         }
 
-        Ok(promise)
+        Ok((promise, evaluator.this))
       }
       Err(err) => {
         evaluator.env.teardown(scope.heap_mut());
@@ -30755,7 +31310,7 @@ pub(crate) fn run_ecma_function(
     };
   }
 
-  match body {
+  let value = match body {
     FuncBody::Expression(expr) => match evaluator.eval_expr(scope, expr) {
       Ok(v) => Ok(v),
       Err(VmError::Throw(value)) => {
@@ -30804,7 +31359,9 @@ pub(crate) fn run_ecma_function(
         )),
       }
     }
-  }
+  }?;
+
+  Ok((value, evaluator.this))
 }
 
 pub(crate) fn instantiate_module_decls(
@@ -30833,6 +31390,10 @@ pub(crate) fn instantiate_module_decls(
       strict: true,
       this: Value::Undefined,
       new_target: Value::Undefined,
+      class_constructor: None,
+      derived_constructor: false,
+      this_initialized: true,
+      this_root_idx: None,
     };
 
     evaluator.instantiate_stmt_list(scope, stmts)
@@ -30885,6 +31446,10 @@ pub(crate) fn run_module(
         // Per ECMA-262, module top-level `this` is `undefined`.
         this: Value::Undefined,
         new_target: Value::Undefined,
+        class_constructor: None,
+        derived_constructor: false,
+        this_initialized: true,
+        this_root_idx: None,
       };
 
       let completion = evaluator.eval_stmt_list(scope, stmts)?;
@@ -30977,6 +31542,10 @@ pub(crate) fn start_module_tla_evaluation(
       // Per ECMA-262, module top-level `this` is `undefined`.
       this: Value::Undefined,
       new_target: Value::Undefined,
+      class_constructor: None,
+      derived_constructor: false,
+      this_initialized: true,
+      this_root_idx: None,
     };
 
     // Start module evaluation. If we suspend, convert the suspended evaluator call stack into a VM
@@ -31200,6 +31769,10 @@ pub(crate) fn resume_module_tla_evaluation(
       strict: true,
       this: Value::Undefined,
       new_target: Value::Undefined,
+      class_constructor: None,
+      derived_constructor: false,
+      this_initialized: true,
+      this_root_idx: None,
     };
 
     let mut next = async_resume_from_frames(
@@ -31369,16 +31942,20 @@ pub(crate) fn run_module_async_start(
 
       let async_eval = {
         let cont = cont.as_mut().expect("module async continuation missing");
-        let mut evaluator = Evaluator {
-          vm: &mut *vm_frame,
-          host,
-          hooks,
-          env: &mut cont.env,
-          strict: true,
-          // Per ECMA-262, module top-level `this` is `undefined`.
-          this: Value::Undefined,
-          new_target: Value::Undefined,
-        };
+         let mut evaluator = Evaluator {
+           vm: &mut *vm_frame,
+           host,
+           hooks,
+           env: &mut cont.env,
+           strict: true,
+           // Per ECMA-262, module top-level `this` is `undefined`.
+           this: Value::Undefined,
+           new_target: Value::Undefined,
+           class_constructor: None,
+           derived_constructor: false,
+           this_initialized: true,
+           this_root_idx: None,
+         };
         async_eval_stmt_list(&mut evaluator, scope, stmts)?
       };
 
@@ -31498,15 +32075,19 @@ pub(crate) fn run_module_async_resume(
 
     let body_result = {
       let cont = cont.as_mut().expect("module async continuation missing");
-      let mut evaluator = Evaluator {
-        vm: &mut *vm_frame,
-        host,
-        hooks,
-        env: &mut cont.env,
-        strict: true,
-        this: Value::Undefined,
-        new_target: Value::Undefined,
-      };
+       let mut evaluator = Evaluator {
+         vm: &mut *vm_frame,
+         host,
+         hooks,
+         env: &mut cont.env,
+         strict: true,
+         this: Value::Undefined,
+         new_target: Value::Undefined,
+         class_constructor: None,
+         derived_constructor: false,
+         this_initialized: true,
+         this_root_idx: None,
+       };
 
       let frames = mem::take(&mut cont.frames);
       async_resume_from_frames(&mut evaluator, scope, frames, resume_value)?
@@ -31588,6 +32169,10 @@ pub(crate) fn eval_expr(
     strict,
     this,
     new_target: Value::Undefined,
+    class_constructor: None,
+    derived_constructor: false,
+    this_initialized: true,
+    this_root_idx: None,
   };
   evaluator.eval_expr(scope, expr)
 }

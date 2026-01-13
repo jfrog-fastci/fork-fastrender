@@ -6,7 +6,7 @@ use crate::execution_context::ExecutionContext;
 use crate::execution_context::ModuleId;
 use crate::execution_context::ScriptOrModule;
 use crate::function::{
-  CallHandler, ConstructHandler, EcmaFunctionId, NativeConstructId, NativeFunctionId, ThisMode,
+  CallHandler, ConstructHandler, EcmaFunctionId, FunctionData, NativeConstructId, NativeFunctionId, ThisMode,
 };
 use crate::interrupt::InterruptHandle;
 use crate::interrupt::InterruptToken;
@@ -125,6 +125,14 @@ pub(crate) enum EcmaFunctionKind {
   Decl,
   /// A function or arrow function expression (`function() {}` / `() => {}`).
   Expr,
+  /// A public class field initializer (`x = <expr>` / `static x = <expr>`).
+  ///
+  /// These are parsed by wrapping the field initializer expression in a function expression:
+  /// `(function(){ return <expr>; })`.
+  ///
+  /// This allows the VM to represent field initializers as ordinary callable functions which can be
+  /// invoked during instance/static initialization with the correct `this` value.
+  ClassFieldInitializer,
   /// An object literal method/getter/setter definition (e.g. `f() {}` / `get x() {}`).
   ///
   /// These are parsed by wrapping the snippet in an object literal expression: `({ <snippet> })`.
@@ -1697,7 +1705,13 @@ impl Vm {
       EcmaFunctionKind::Decl => 0,
       EcmaFunctionKind::Expr => 1,
       EcmaFunctionKind::ObjectMember => 2,
-      EcmaFunctionKind::ClassMember => 8, // "(class {".
+      // Parse class member snippets by wrapping them in a derived class expression:
+      // `(class extends null { <snippet> })`.
+      //
+      // Using `extends null` ensures `super()` is syntactically permitted in constructor bodies
+      // (which would otherwise be rejected in a non-derived `class { ... }` wrapper).
+      EcmaFunctionKind::ClassMember => 21, // "(class extends null {".
+      EcmaFunctionKind::ClassFieldInitializer => 19, // "(function(){return ".
     };
 
     self.ecma_functions.push(EcmaFunctionCode {
@@ -1820,14 +1834,28 @@ impl Vm {
         parse_top(self, &wrapped, script_opts, module_opts, false)?
       }
       EcmaFunctionKind::ClassMember => {
-        let capacity = snippet.len().checked_add(10).ok_or(VmError::OutOfMemory)?;
+        let capacity = snippet.len().checked_add(23).ok_or(VmError::OutOfMemory)?;
         wrapped
           .try_reserve(capacity)
           .map_err(|_| VmError::OutOfMemory)?;
-        wrapped.push_str("(class {");
+        wrapped.push_str("(class extends null {");
         wrapped.push_str(snippet);
         wrapped.push_str("})");
         parse_top(self, &wrapped, script_opts, module_opts, false)?
+      }
+      EcmaFunctionKind::ClassFieldInitializer => {
+        wrapped.clear();
+        // "(function(){return " + snippet + ";})"
+        let capacity = snippet.len().checked_add(24).ok_or(VmError::OutOfMemory)?;
+        wrapped
+          .try_reserve(capacity)
+          .map_err(|_| VmError::OutOfMemory)?;
+        wrapped.push_str("(function(){return ");
+        wrapped.push_str(snippet);
+        wrapped.push_str(";})");
+        // Field initializers can contain `super` / `new.target` expressions provided by an enclosing
+        // class body. Allow parsing them in a permissive enclosing-meta-property context.
+        parse_top(self, &wrapped, script_opts, module_opts, true)?
       }
       EcmaFunctionKind::Expr => {
         wrapped.clear();
@@ -1886,7 +1914,7 @@ impl Vm {
           ));
         }
       },
-      EcmaFunctionKind::Expr => match *stmt.stx {
+      EcmaFunctionKind::Expr | EcmaFunctionKind::ClassFieldInitializer => match *stmt.stx {
         Stmt::Expr(expr_stmt) => {
           let expr = expr_stmt.stx.expr;
           match *expr.stx {
@@ -3694,7 +3722,10 @@ impl Vm {
     if !is_async {
       env.teardown(scope.heap_mut());
     }
-    result
+    match result {
+      Ok((value, _final_this)) => Ok(value),
+      Err(err) => Err(err),
+    }
   }
 
   fn call_user_function(
@@ -3921,7 +3952,7 @@ impl Vm {
     args: &[Value],
     new_target: Value,
   ) -> Result<Value, VmError> {
-    let (is_strict, global_object, outer) = {
+    let (is_strict, global_object, outer, func_data) = {
       let f = scope.heap().get_function(callee)?;
       (
         f.is_strict,
@@ -3929,26 +3960,43 @@ impl Vm {
           "ECMAScript function missing [[Realm]]",
         ))?,
         f.closure_env,
+        f.data,
       )
     };
 
-    // GetPrototypeFromConstructor(newTarget, %Object.prototype%).
-    let default_proto = self
-      .intrinsics()
-      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?
-      .object_prototype();
-    let proto = crate::spec_ops::get_prototype_from_constructor_with_host_and_hooks(
-      self,
-      scope,
-      host,
-      hooks,
-      new_target,
-      default_proto,
-    )?;
+    // Derived class constructors (`class D extends B { constructor(){ super(); } }`) do not
+    // allocate `this` up-front; `this` is initialized by `super()` (i.e. by constructing the
+    // superclass with `newTarget`).
+    let is_derived_class_ctor_body = match func_data {
+      FunctionData::ClassConstructorBody { class_constructor } => {
+        let super_value =
+          crate::class_fields::class_constructor_super_value(scope, class_constructor)?;
+        !matches!(super_value, Value::Undefined)
+      }
+      _ => false,
+    };
 
     let mut this_scope = scope.reborrow();
-    let this_obj = this_scope.alloc_object_with_prototype(Some(proto))?;
-    this_scope.push_root(Value::Object(this_obj))?;
+    let this_value = if is_derived_class_ctor_body {
+      Value::Undefined
+    } else {
+      // Base/ordinary constructor: allocate `this` via `GetPrototypeFromConstructor`.
+      let default_proto = self
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?
+        .object_prototype();
+      let proto = crate::spec_ops::get_prototype_from_constructor_with_host_and_hooks(
+        self,
+        &mut this_scope,
+        host,
+        hooks,
+        new_target,
+        default_proto,
+      )?;
+      let this_obj = this_scope.alloc_object_with_prototype(Some(proto))?;
+      this_scope.push_root(Value::Object(this_obj))?;
+      Value::Object(this_obj)
+    };
 
     let func_env = this_scope.env_create(outer)?;
     let mut env =
@@ -3971,7 +4019,7 @@ impl Vm {
       code_meta.span_start,
       code_meta.prefix_len,
       is_strict,
-      Value::Object(this_obj),
+      this_value,
       new_target,
       func_ast.clone(),
       args,
@@ -3979,9 +4027,13 @@ impl Vm {
 
     env.teardown(this_scope.heap_mut());
 
-    match result? {
+    let (return_value, final_this) = result?;
+    match return_value {
       Value::Object(o) => Ok(Value::Object(o)),
-      _ => Ok(Value::Object(this_obj)),
+      _ => match final_this {
+        Value::Object(o) => Ok(Value::Object(o)),
+        _ => Err(VmError::TypeError("Derived constructor did not initialize `this` via super()")),
+      },
     }
   }
 }

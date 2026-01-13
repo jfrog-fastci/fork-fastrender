@@ -132,6 +132,7 @@
 mod agent;
 mod bigint;
 mod builtins;
+mod class_fields;
 mod code;
 mod conversion_ops;
 mod destructure;
