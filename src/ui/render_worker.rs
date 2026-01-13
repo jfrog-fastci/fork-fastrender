@@ -1206,6 +1206,76 @@ struct BrowserRuntime {
 
 
 impl BrowserRuntime {
+  fn compute_effective_scroll_state_from_prepared(
+    prepared: &crate::api::PreparedDocument,
+    scroll_state: &ScrollState,
+  ) -> ScrollState {
+    // Mirror `api::paint_fragment_tree_with_state` scroll adjustments so the UI's scroll model can
+    // stay in sync with the eventual painted frame.
+    let mut fragment_tree = prepared.fragment_tree().clone();
+    let result = crate::scroll::apply_scroll_snap(&mut fragment_tree, scroll_state);
+    let mut state = result.state;
+
+    // Paint clamps/sanitizes viewport scroll even for programmatic scroll updates.
+    state.viewport = Point::new(
+      if state.viewport.x.is_finite() {
+        state.viewport.x
+      } else {
+        0.0
+      },
+      if state.viewport.y.is_finite() {
+        state.viewport.y
+      } else {
+        0.0
+      },
+    );
+
+    // Clamp to the root scroll bounds using the same viewport used for scroll calculations.
+    if let Some(bounds) =
+      crate::scroll::build_scroll_chain(&fragment_tree.root, prepared.layout_viewport(), &[])
+        .first()
+        .map(|state| state.bounds)
+    {
+      state.viewport = bounds.clamp(state.viewport);
+    }
+
+    // Keep element scroll offsets stable (wheel interaction already clamps), but canonicalize the
+    // representation so NaNs/inf and explicit zero offsets don't cause spurious diffs.
+    state.elements.retain(|_, offset| {
+      offset.x = if offset.x.is_finite() {
+        offset.x.max(0.0)
+      } else {
+        0.0
+      };
+      offset.y = if offset.y.is_finite() {
+        offset.y.max(0.0)
+      } else {
+        0.0
+      };
+      *offset != Point::ZERO
+    });
+
+    // Keep deltas finite as well so protocol consumers never need to defend against NaN.
+    state.viewport_delta = Point::new(
+      if state.viewport_delta.x.is_finite() {
+        state.viewport_delta.x
+      } else {
+        0.0
+      },
+      if state.viewport_delta.y.is_finite() {
+        state.viewport_delta.y
+      } else {
+        0.0
+      },
+    );
+    for delta in state.elements_delta.values_mut() {
+      delta.x = if delta.x.is_finite() { delta.x } else { 0.0 };
+      delta.y = if delta.y.is_finite() { delta.y } else { 0.0 };
+    }
+
+    state
+  }
+
   fn new(
     ui_rx: Receiver<UiToWorker>,
     ui_tx: Sender<WorkerToUi>,
@@ -1759,6 +1829,8 @@ impl BrowserRuntime {
           let current_scroll = doc.scroll_state();
           let mut changed = false;
           let mut wheel_handled = false;
+          let mut scroll_changed = false;
+          let mut emit_scroll_state_updated = false;
 
           if let Some(pointer_css) = pointer_pos_css {
             // Give a focused `<input type=number>` under the pointer a chance to consume the wheel
@@ -1798,7 +1870,17 @@ impl BrowserRuntime {
                 Ok(scrolled) => {
                   wheel_handled = true;
                   if scrolled {
-                    tab.scroll_state = doc.scroll_state();
+                    let next = doc.scroll_state();
+                    if let Some(prepared) = doc.prepared() {
+                      let effective =
+                        Self::compute_effective_scroll_state_from_prepared(prepared, &next);
+                      doc.set_scroll_state(effective.clone());
+                      tab.scroll_state = effective;
+                      emit_scroll_state_updated = true;
+                    } else {
+                      tab.scroll_state = next;
+                    }
+                    scroll_changed = true;
                     changed = true;
                   }
                 }
@@ -1811,13 +1893,11 @@ impl BrowserRuntime {
 
           // If no pointer position was provided (or we couldn't apply wheel scrolling at all), treat
           // this as a basic viewport scroll and clamp to the content bounds when possible.
-          if !wheel_handled {
-            let mut next = current_scroll.clone();
+            if !wheel_handled {
+              let mut next = current_scroll.clone();
 
-            // Important: do not clamp to content bounds here. Paint-from-cache will clamp/snap the
-            // scroll offset, and we still want to produce a new frame for "overscroll" deltas that
-            // would otherwise appear as a no-op (e.g. scrolling past the end of the page while already
-            // at max scroll).
+            // Apply the raw delta first. When cached layout artifacts are available, we'll
+            // immediately derive the effective snapped/clamped scroll state (matching paint) below.
             let apply_axis = |current: f32, delta: f32| {
               if delta == 0.0 || !delta.is_finite() {
                 return current;
@@ -1830,21 +1910,40 @@ impl BrowserRuntime {
               }
             };
 
-            // Force evaluation of `doc.prepared()` so we keep layout alive and let paint apply
-            // scroll-snap/clamp logic, but do not use it for clamping here.
-            let _ = doc.prepared();
-
             next.viewport.x = apply_axis(next.viewport.x, delta_x);
             next.viewport.y = apply_axis(next.viewport.y, delta_y);
 
             if next != current_scroll {
-              doc.set_scroll_state(next.clone());
-              tab.scroll_state = next;
-              changed = true;
+              // Apply scroll snap/clamp immediately when we have cached layout artifacts so the UI
+              // can use the effective scroll state before the next paint finishes.
+              if let Some(prepared) = doc.prepared() {
+                let effective = Self::compute_effective_scroll_state_from_prepared(prepared, &next);
+                if effective != current_scroll {
+                  doc.set_scroll_state(effective.clone());
+                  tab.scroll_state = effective;
+                  scroll_changed = true;
+                  emit_scroll_state_updated = true;
+                  changed = true;
+                }
+              } else {
+                // No cached layout yet; record the raw scroll offset for the first render.
+                doc.set_scroll_state(next.clone());
+                tab.scroll_state = next;
+                scroll_changed = true;
+                changed = true;
+              }
             }
           }
 
           if changed {
+            if scroll_changed && emit_scroll_state_updated {
+              // Emit an early scroll-state update so UIs can async-scroll the last painted texture
+              // while waiting for the repaint.
+              let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
+                tab_id,
+                scroll: tab.scroll_state.clone(),
+              });
+            }
             tab.cancel.bump_paint();
             tab.needs_repaint = true;
             tab.scroll_coalesce = true;
@@ -1874,18 +1973,26 @@ impl BrowserRuntime {
           let mut next = current.clone();
           next.viewport = target;
 
-          // Clamp to the root scroll bounds when layout artifacts are available.
-          if let Some(prepared) = doc.prepared() {
-            let viewport = Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32);
-            if let Some(root) =
-              crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport, &[])
-                .last()
-            {
-              next.viewport = root.bounds.clamp(next.viewport);
-            }
-          }
+          // When cached layout artifacts are available, compute the effective scroll state that
+          // paint will apply (scroll snap + clamping).
+          let effective = doc
+            .prepared()
+            .map(|prepared| Self::compute_effective_scroll_state_from_prepared(prepared, &next));
 
-          if next != current {
+          if let Some(effective) = effective {
+            if effective != current {
+              doc.set_scroll_state(effective.clone());
+              tab.scroll_state = effective;
+              let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
+                tab_id,
+                scroll: tab.scroll_state.clone(),
+              });
+              tab.cancel.bump_paint();
+              tab.needs_repaint = true;
+              tab.scroll_coalesce = true;
+            }
+          } else if next != current {
+            // No cached layout yet; record the scroll position for the first frame.
             doc.set_scroll_state(next.clone());
             tab.scroll_state = next;
             tab.cancel.bump_paint();
