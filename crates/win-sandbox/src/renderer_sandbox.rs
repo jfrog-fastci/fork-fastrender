@@ -16,7 +16,7 @@ use windows_sys::Win32::System::Console::{
 use windows_sys::Win32::System::Threading::{
   CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList, ResumeThread,
   UpdateProcThreadAttribute, CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
-  STARTUPINFOEXW, STARTUPINFOW,
+  LPPROC_THREAD_ATTRIBUTE_LIST, STARTUPINFOEXW, STARTUPINFOW,
 };
 
 use windows_sys::Win32::Security::Authorization::{
@@ -432,11 +432,8 @@ fn grant_read_execute_acl(path: &Path, sid: windows_sys::Win32::Security::PSID) 
 // -----------------------------------------------------------------------------
 
 struct AttributeList {
-  list: windows_sys::Win32::System::Threading::LPPROC_THREAD_ATTRIBUTE_LIST,
+  list: LPPROC_THREAD_ATTRIBUTE_LIST,
   // Use `usize` buffer to guarantee pointer alignment.
-  //
-  // This is never read; it only keeps the backing allocation alive while `list` is in use.
-  #[allow(dead_code)]
   _buffer: Vec<usize>,
 }
 
@@ -454,17 +451,13 @@ impl AttributeList {
 
     let units = (size + std::mem::size_of::<usize>() - 1) / std::mem::size_of::<usize>();
     let mut buffer = vec![0usize; units];
-    let list = buffer.as_mut_ptr().cast::<c_void>()
-      as windows_sys::Win32::System::Threading::LPPROC_THREAD_ATTRIBUTE_LIST;
+    let list: LPPROC_THREAD_ATTRIBUTE_LIST = buffer.as_mut_ptr().cast();
     let ok = unsafe { InitializeProcThreadAttributeList(list, attribute_count, 0, &mut size) };
     if ok == 0 {
       return Err(WinSandboxError::last("InitializeProcThreadAttributeList"));
     }
 
-    Ok(Self {
-      list,
-      _buffer: buffer,
-    })
+    Ok(Self { list, _buffer: buffer })
   }
 
   fn update_raw(&mut self, attribute: usize, value: *mut c_void, size: usize) -> Result<()> {

@@ -19,7 +19,6 @@ use windows_sys::Win32::Security::Authorization::{
   ConvertStringSidToSidW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
   NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
-use windows_sys::Win32::Security::NO_INHERITANCE;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetExitCodeProcess, WaitForSingleObject, INFINITE};
 
 const TEST_NAME: &str = "restricted_token_spawn_enforces_low_integrity_and_blocks_userprofile";
@@ -45,6 +44,8 @@ fn set_users_only_dacl(path: &Path) -> std::io::Result<()> {
   const USERS_SID: &str = "S-1-5-32-545";
   // Generic access rights from winnt.h.
   const GENERIC_ALL: u32 = 0x1000_0000;
+  // `NO_INHERITANCE` from winnt.h (not currently exported by windows-sys).
+  const NO_INHERITANCE: u32 = 0;
   // `DACL_SECURITY_INFORMATION` from winnt.h.
   const DACL_SECURITY_INFORMATION: u32 = 0x0000_0004;
 

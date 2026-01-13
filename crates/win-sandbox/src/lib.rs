@@ -373,10 +373,13 @@ pub use support::{is_appcontainer_supported, is_nested_job_supported, SandboxSup
 
 /// Runtime sandbox mode selection for the Windows renderer sandbox.
 ///
-/// `RendererSandboxMode::new_default()` enforces a "no silent downgrade" policy:
-/// - If the host supports the required primitives, the sandbox is enabled.
+/// This type is intended for callers that want a "no silent downgrade" policy:
+/// - If the host supports the required primitives, sandboxing is enabled.
 /// - Otherwise, `new_default()` returns an error unless the caller has explicitly opted in to
 ///   running unsandboxed via `FASTR_ALLOW_UNSANDBOXED_RENDERER=1`.
+///
+/// Note: This is distinct from the [`renderer_sandbox::RendererSandbox`] spawner helper, which is a
+/// small convenience wrapper used by tests to spawn a no-capabilities AppContainer child.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RendererSandboxMode {
   /// Full sandboxing is enabled (AppContainer + nested job objects).

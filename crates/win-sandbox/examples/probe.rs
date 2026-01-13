@@ -42,15 +42,14 @@ mod windows {
   use std::time::Duration;
   use std::time::{SystemTime, UNIX_EPOCH};
 
-  use windows_sys::core::BOOL;
   use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, SetHandleInformation, ERROR_ACCESS_DENIED, FALSE, HANDLE_FLAG_INHERIT,
     INVALID_HANDLE_VALUE, TRUE,
   };
   use windows_sys::Win32::Security::{
     GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel,
-    TokenIsAppContainer, DACL_SECURITY_INFORMATION, NO_INHERITANCE, PSID,
-    SECURITY_CAPABILITIES, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+    TokenIsAppContainer, DACL_SECURITY_INFORMATION, PSID, SECURITY_CAPABILITIES,
+    TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
   };
   use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW,
@@ -65,10 +64,11 @@ mod windows {
   use windows_sys::Win32::System::Threading::{
     CreateProcessAsUserW, CreateProcessW, DeleteProcThreadAttributeList, GetCurrentProcess,
     GetExitCodeProcess, GetProcessMitigationPolicy, InitializeProcThreadAttributeList,
+    OpenProcessToken,
     ProcessDynamicCodePolicy, ProcessExtensionPointDisablePolicy, ProcessImageLoadPolicy,
     ProcessStrictHandleCheckPolicy, ProcessSystemCallDisablePolicy, ResumeThread, TerminateProcess,
     UpdateProcThreadAttribute, WaitForSingleObject, CREATE_BREAKAWAY_FROM_JOB, CREATE_SUSPENDED,
-    EXTENDED_STARTUPINFO_PRESENT, OpenProcessToken, PROCESS_INFORMATION, PROCESS_MITIGATION_POLICY,
+    EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION, PROCESS_MITIGATION_POLICY,
     STARTUPINFOEXW, STARTUPINFOW, LPPROC_THREAD_ATTRIBUTE_LIST,
   };
 
@@ -596,6 +596,9 @@ mod windows {
   }
 
   fn grant_read_execute_acl(path: &Path, sid: PSID) -> io::Result<()> {
+    // `NO_INHERITANCE` from `winnt.h` (not currently exported by windows-sys).
+    const NO_INHERITANCE: u32 = 0;
+
     let mut name = wide_from_os(path.as_os_str());
 
     let mut dacl: *mut windows_sys::Win32::Security::ACL = std::ptr::null_mut();
@@ -634,7 +637,7 @@ mod windows {
     let status = unsafe { SetEntriesInAclW(1, &mut ea, dacl, &mut new_dacl) };
     if status != 0 {
       unsafe {
-        windows_sys::Win32::Foundation::LocalFree(sd.cast());
+        windows_sys::Win32::Foundation::LocalFree(sd as _);
       }
       return Err(io::Error::from_raw_os_error(status as i32));
     }
@@ -652,8 +655,8 @@ mod windows {
     };
 
     unsafe {
-      windows_sys::Win32::Foundation::LocalFree(sd.cast());
-      windows_sys::Win32::Foundation::LocalFree(new_dacl.cast());
+      windows_sys::Win32::Foundation::LocalFree(sd as _);
+      windows_sys::Win32::Foundation::LocalFree(new_dacl as _);
     }
 
     if status != 0 {
@@ -1208,12 +1211,12 @@ Parent mode (default) spawns a sandboxed child.\nChild mode (--child) prints san
     }
     let wide = std::slice::from_raw_parts(sid_str, len);
     let out = String::from_utf16_lossy(wide);
-    windows_sys::Win32::Foundation::LocalFree(sid_str.cast());
+    windows_sys::Win32::Foundation::LocalFree(sid_str as _);
     Ok(out)
   }
 
   fn current_process_in_job() -> io::Result<bool> {
-    let mut in_job: BOOL = 0;
+    let mut in_job: i32 = FALSE;
     let ok = unsafe { IsProcessInJob(GetCurrentProcess(), std::ptr::null_mut(), &mut in_job) };
     if ok == 0 {
       return Err(io::Error::last_os_error());
