@@ -30,7 +30,6 @@ use fastrender::api::{
   BrowserTab, CascadeDiagnostics, DiagnosticsLevel, LayoutDiagnostics, PaintDiagnostics,
   RenderArtifactRequest, RenderArtifacts, RenderCounts, RenderDiagnostics, RenderResult,
   RenderStageTimings, RenderStats, ResourceDiagnostics, ResourceFetchError, ResourceKind,
-  VmJsBrowserTabExecutor,
 };
 use fastrender::debug::snapshot;
 use fastrender::error::{RenderError, RenderStage, ResourceError};
@@ -40,6 +39,7 @@ use fastrender::pageset::{
   pageset_entries, pageset_stem, PagesetEntry, PagesetFilter, CACHE_HTML_DIR,
 };
 use fastrender::render_control::{push_stage_listener, record_stage, StageHeartbeat};
+use fastrender::render_control::{DeadlineGuard, RenderDeadline};
 use fastrender::resource::normalize_user_agent_for_log;
 use fastrender::resource::parse_cached_html_meta;
 use fastrender::resource::CacheStalePolicy;
@@ -811,9 +811,6 @@ struct WorkerArgs {
   #[command(flatten)]
   render_parse: RenderParseArgs,
 
-  #[command(flatten)]
-  animation_time: AnimationTimeArgs,
-
   /// Execute JavaScript while rendering pages (vm-js BrowserTab harness).
   #[arg(long)]
   js: bool,
@@ -825,6 +822,9 @@ struct WorkerArgs {
   /// JS execution budget overrides (queue sizes, per-spin run limits, VM budgets).
   #[command(flatten)]
   js_execution: JsExecutionArgs,
+
+  #[command(flatten)]
+  animation_time: AnimationTimeArgs,
 
   /// Override the User-Agent header
   #[arg(long)]
@@ -3384,9 +3384,15 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
   };
 
   let RenderConfigBundle {
-    config,
+    mut config,
     mut options,
   } = build_render_configs(&render_surface);
+
+  if args.js {
+    // When JavaScript execution is enabled, parse/render with "scripting enabled" semantics
+    // (affects `<noscript>` handling and the `(scripting: ...)` media feature baseline).
+    config = config.with_dom_scripting_enabled(true);
+  }
 
   options.diagnostics_level = args.diagnostics.to_level();
   if args.memory.stage_mem_budget_mb > 0 {
@@ -3422,10 +3428,19 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
     options.trace_output = Some(path.clone());
   }
 
-  let mut renderer = if args.js {
-    None
-  } else {
-    Some(match common::render_pipeline::build_renderer_with_fetcher(config, renderer_fetcher) {
+  let mut js_execution_options = args.js_execution.to_options();
+  // Treat `--js-max-script-bytes 0` as "unbounded" (disables the script size limit).
+  if js_execution_options.max_script_bytes == 0 {
+    js_execution_options.max_script_bytes = usize::MAX;
+  }
+  // `pageset_progress --js` uses the `vm-js` executor, which can evaluate module scripts. Enable
+  // module script support so `<script type="module">` works.
+  if args.js {
+    js_execution_options.supports_module_scripts = true;
+  }
+
+  let mut renderer =
+    match common::render_pipeline::build_renderer_with_fetcher(config, renderer_fetcher) {
       Ok(r) => r,
       Err(e) => {
         let log_msg = format_error_with_chain(&e, true);
@@ -3453,8 +3468,7 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
         }
         return Ok(());
       }
-    })
-  };
+    };
 
   let mut doc = cached.document;
   log.push_str(&format!("Resource base: {}\n", doc.base_url));
@@ -3482,22 +3496,47 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
 
   record_stage(StageHeartbeat::CssInline);
   log.push_str("Stage: render\n");
+  if args.js {
+    log.push_str(&format!(
+      "JavaScript: enabled (max_frames={})\n",
+      args.js_max_frames
+    ));
+  }
   flush_log(&log, &args.log_path);
+
   #[derive(Debug)]
   struct WorkerRenderError {
     error: fastrender::Error,
     diagnostics: Option<RenderDiagnostics>,
   }
 
-  let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-    if args.js {
-      let js_execution_options = args.js_execution.to_options();
-      let mut tab = match BrowserTab::from_html_with_document_url_and_fetcher_and_js_execution_options(
-        &doc.html,
-        &base_hint,
-        options.clone(),
-        VmJsBrowserTabExecutor::default(),
-        std::sync::Arc::clone(&fetcher),
+
+  let render_result = if args.js {
+    let document_url = base_hint.clone();
+    let html = doc.html.clone();
+    let opts = options.clone();
+    let max_frames = if args.js_max_frames == 0 {
+      usize::MAX
+    } else {
+      args.js_max_frames
+    };
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+      // Ensure JavaScript execution is bounded by the same cooperative render timeout. We keep
+      // this deadline alive through navigation + JS + render so `check_root` operations share one
+      // budget.
+      let deadline_enabled = opts.timeout.is_some() || opts.cancel_callback.is_some();
+      let root_deadline_is_enabled = fastrender::render_control::root_deadline()
+        .is_some_and(|deadline| deadline.is_enabled());
+      let deadline = (deadline_enabled && !root_deadline_is_enabled).then(|| {
+        RenderDeadline::new(opts.timeout, opts.cancel_callback.clone())
+      });
+      let _deadline_guard = deadline
+        .as_ref()
+        .map(|deadline| DeadlineGuard::install(Some(deadline)));
+
+      let mut tab = match BrowserTab::with_renderer_and_vmjs_and_js_execution_options(
+        renderer,
+        opts.clone(),
         js_execution_options,
       ) {
         Ok(tab) => tab,
@@ -3505,15 +3544,22 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
           return Err(WorkerRenderError {
             error,
             diagnostics: None,
-          })
+          });
         }
       };
+      tab.register_html_source(document_url.clone(), html);
 
       let mut pixmap: Option<Pixmap> = None;
       let mut error: Option<fastrender::Error> = None;
 
-      if let Err(err) = tab.run_until_stable(args.js_max_frames) {
+      if let Err(err) = tab.navigate_to_url(&document_url, opts.clone()) {
         error = Some(err);
+      }
+
+      if error.is_none() {
+        if let Err(err) = tab.run_until_stable(max_frames) {
+          error = Some(err);
+        }
       }
 
       if error.is_none() {
@@ -3532,6 +3578,12 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
           Err(err) => {
             error = Some(err);
           }
+        }
+      }
+
+      if error.is_none() {
+        if let Err(err) = tab.write_trace() {
+          error = Some(err);
         }
       }
 
@@ -3555,23 +3607,17 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
           diagnostics: Some(diagnostics),
         }),
       }
-    } else {
-      let Some(renderer) = renderer.as_mut() else {
-        return Err(WorkerRenderError {
-          error: fastrender::Error::Other(
-            "internal error: renderer missing for non-JS render".to_string(),
-          ),
-          diagnostics: None,
-        });
-      };
-      render_fetched_document(renderer, &resource, Some(&base_hint), &options).map_err(|error| {
+    }))
+  } else {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      render_fetched_document(&mut renderer, &resource, Some(&base_hint), &options).map_err(|error| {
         WorkerRenderError {
           error,
           diagnostics: None,
         }
       })
-    }
-  }));
+    }))
+  };
 
   let timeline_elapsed_ms = heartbeat.elapsed_ms();
   let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -3858,6 +3904,9 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
     ));
     flush_log(&log, &args.log_path);
     record_stage(StageHeartbeat::Done);
+    if cfg!(test) {
+      return Ok(());
+    }
     std::process::exit(0);
   }
 
@@ -3916,6 +3965,9 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
     .and_then(|v| v.parse::<u64>().ok())
   {
     std::thread::sleep(Duration::from_millis(delay));
+  }
+  if cfg!(test) {
+    return Ok(());
   }
   std::process::exit(0);
 }
@@ -10731,7 +10783,7 @@ mod progress_tests {
         continue;
       }
       let stdout = String::from_utf8_lossy(&output.stdout);
-      if stdout.contains("--cache-dir") {
+      if stdout.contains("--cache-dir") && stdout.contains("--js-max-frames") {
         return Some(candidate);
       }
     }
@@ -12739,6 +12791,106 @@ mod progress_tests {
   }
 
   #[test]
+  fn js_mode_records_js_stats_in_progress_json() {
+    let _lock = env_lock();
+
+    let dir = tempdir().unwrap();
+    let cache_path = dir.path().join("page.html");
+    fs::write(
+      &cache_path,
+      "<!doctype html><html><head><script>1+1</script></head><body>ok</body></html>",
+    )
+    .unwrap();
+    fs::write(
+      cache_path.with_extension("html.meta"),
+      "content-type: text/html\nurl: https://js.test/\n",
+    )
+    .unwrap();
+    let progress_path = dir.path().join("page.json");
+    let worker_args = WorkerArgs {
+      cache_path: cache_path.clone(),
+      stem: "js".to_string(),
+      progress_path: progress_path.clone(),
+      log_path: None,
+      stage_path: None,
+      viewport: (64, 64),
+      dpr: 1.0,
+      render_parse: RenderParseArgs {
+        render_parse_scripting_enabled: true,
+      },
+      js: true,
+      js_max_frames: 5,
+      js_execution: JsExecutionArgs::default(),
+      animation_time: AnimationTimeArgs::default(),
+      user_agent: DEFAULT_USER_AGENT.to_string(),
+      accept_language: DEFAULT_ACCEPT_LANGUAGE.to_string(),
+      no_http_freshness: false,
+      disk_cache_stale_policy: DiskCacheStalePolicyArg::UseStaleWhenDeadline,
+      offline: false,
+      fail_on_cached_http_error_status: false,
+      disk_cache: DiskCacheArgs {
+        max_bytes: common::args::DEFAULT_DISK_CACHE_MAX_BYTES,
+        max_age_secs: common::args::DEFAULT_DISK_CACHE_MAX_AGE_SECS,
+        lock_stale_secs: common::args::DEFAULT_DISK_CACHE_LOCK_STALE_SECS,
+        allow_no_store: false,
+        writeback_under_deadline: false,
+      },
+      cache_dir: dir.path().join("assets"),
+      css_limit: None,
+      fonts: FontSourceArgs {
+        bundled_fonts: true,
+        font_dir: Vec::new(),
+      },
+      resource_access: ResourceAccessArgs {
+        allow_file_from_http: false,
+        block_mixed_content: false,
+        same_origin_subresources: false,
+        allow_subresource_origin: Vec::new(),
+      },
+      layout_parallel: LayoutParallelArgs {
+        layout_parallel: LayoutParallelModeArg::Off,
+        layout_parallel_min_fanout: 8,
+        layout_parallel_max_threads: None,
+        layout_parallel_auto_min_nodes: None,
+      },
+      compat: CompatArgs::default(),
+      timeout: 5,
+      soft_timeout_ms: None,
+      memory: MemoryGuardArgs::default(),
+      trace_out: None,
+      diagnostics: DiagnosticsArg::Basic,
+      verbose: false,
+      dump_failures: None,
+      dump_slow_ms: None,
+      dump_slow: None,
+      dump_dir: dir.path().join("dump"),
+      dump_timeout: None,
+      dump_soft_timeout_ms: None,
+      accuracy: false,
+      accuracy_require_clean: false,
+      baseline_dir: None,
+      tolerance: 0,
+      max_diff_percent: 0.0,
+      diff_dir: None,
+    };
+
+    render_worker(worker_args).unwrap();
+
+    let progress = read_progress(&progress_path).expect("progress");
+    let scripts_executed = progress
+      .diagnostics
+      .as_ref()
+      .and_then(|d| d.stats.as_ref())
+      .and_then(|s| s.js.as_ref())
+      .map(|js| js.scripts_executed)
+      .unwrap_or_default();
+    assert!(
+      scripts_executed > 0,
+      "expected scripts_executed > 0, got {scripts_executed} (progress={progress:?})"
+    );
+  }
+
+  #[test]
   fn kill_after_progress_during_dump_capture_does_not_overwrite_progress() {
     let _lock = env_lock();
     let Some(exe) = pageset_progress_exe() else {
@@ -13655,7 +13807,6 @@ mod progress_merge_tests {
   use fastrender::error::RenderStage;
   use fastrender::render_control::StageHeartbeat;
   use serde_json::json;
-  use std::collections::HashMap;
   use std::ffi::OsString;
   use std::sync::{Mutex, MutexGuard, OnceLock};
   use std::time::Duration;

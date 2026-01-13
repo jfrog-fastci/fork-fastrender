@@ -2121,9 +2121,53 @@ impl SharedRenderDiagnostics {
 
   /// Extract owned diagnostics, cloning when the handle is shared.
   pub fn into_inner(self) -> RenderDiagnostics {
-    match Arc::try_unwrap(self.inner) {
+    let mut diagnostics = match Arc::try_unwrap(self.inner) {
       Ok(mutex) => mutex.into_inner().unwrap_or_default(),
       Err(shared) => shared.lock().map(|g| g.clone()).unwrap_or_default(),
+    };
+    diagnostics.merge_js_failure_stats_into_render_stats();
+    diagnostics
+  }
+}
+
+impl RenderDiagnostics {
+  /// Ensure JavaScript failure telemetry is surfaced via `stats.js` when present.
+  ///
+  /// `RenderDiagnostics` tracks JS execution counts/errors in an internal `js_failure` field so
+  /// non-JS render paths don't have to allocate/populate full `RenderStats` containers. Many of
+  /// the "classic" render entrypoints (e.g. `FastRender::render_*`) later merge this telemetry
+  /// into `RenderStats` when producing a report.
+  ///
+  /// Some embeddings (notably `BrowserTab`, which can execute JS without using those entrypoints)
+  /// rely on `SharedRenderDiagnostics::into_inner()` to retrieve a diagnostics snapshot. In those
+  /// cases we still want the per-page JS telemetry to be available to downstream tooling
+  /// (e.g. pageset progress aggregation), so we synthesize/patch `stats.js` here.
+  fn merge_js_failure_stats_into_render_stats(&mut self) {
+    let has_js_stats = self
+      .stats
+      .as_ref()
+      .is_some_and(|stats| stats.js.is_some());
+    if has_js_stats {
+      // Already merged by a stats recorder / render entrypoint.
+      return;
+    }
+
+    let js = std::mem::take(&mut self.js_failure);
+    if js.is_empty() {
+      return;
+    }
+
+    match self.stats.as_mut() {
+      Some(stats) => {
+        if stats.js.is_none() {
+          stats.js = Some(js);
+        }
+      }
+      None => {
+        let mut stats = RenderStats::default();
+        stats.js = Some(js);
+        self.stats = Some(stats);
+      }
     }
   }
 }

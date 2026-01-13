@@ -30,14 +30,17 @@ zero-valued fields for compactness.
 ## Note on missing telemetry
 
 The pageset scoreboard (`progress/pages/*.json`) only contains JS failure telemetry when it was
-generated with JavaScript execution enabled:
-
-```bash
-# From repo root, after `fetches/html/` caches exist:
-bash scripts/cargo_agent.sh run --release --bin pageset_progress -- \
-  run --js
-```
+generated with JavaScript execution enabled (via `pageset_progress run --js`).
 
 If `pages_with_js` is `0`, the committed progress artifacts were generated without `--js` (the
 default) and therefore omit `diagnostics.stats.js`. Rerun with `--js` to populate the telemetry, then
 regenerate the report.
+
+```bash
+# From repo root, after `fetches/html/` caches exist:
+bash scripts/cargo_agent.sh run --release --bin pageset_progress -- \
+  run --js --js-max-frames 10
+```
+
+Note: enabling JavaScript may require raising `--timeout`/`--soft-timeout-ms` because it drives an
+event loop and can execute additional scripts/tasks before rendering the final frame.
