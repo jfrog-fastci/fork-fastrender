@@ -24654,6 +24654,59 @@ mod array_at_tests {
 }
 
 #[cfg(test)]
+mod regexp_unicode_sets_tests {
+  use crate::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+
+  fn new_runtime() -> JsRuntime {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    JsRuntime::new(vm, heap).unwrap()
+  }
+
+  #[test]
+  fn regexp_prototype_unicode_sets_descriptor_and_this_semantics() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        (function () {
+          const desc = Object.getOwnPropertyDescriptor(RegExp.prototype, "unicodeSets");
+          if (typeof desc !== "object" || desc === null) return false;
+          if (desc.enumerable !== false) return false;
+          if (desc.configurable !== true) return false;
+          if (typeof desc.get !== "function") return false;
+          if (desc.set !== undefined) return false;
+          if (desc.get.name !== "get unicodeSets") return false;
+          if (desc.get.length !== 0) return false;
+
+          if (RegExp.prototype.unicodeSets !== undefined) return false;
+          if (/./.unicodeSets !== false) return false;
+
+          let threw = false;
+          try {
+            Reflect.apply(desc.get, {}, []);
+          } catch (e) {
+            threw = e && e.name === "TypeError";
+          }
+          if (!threw) return false;
+
+          threw = false;
+          try {
+            Reflect.apply(desc.get, "x", []);
+          } catch (e) {
+            threw = e && e.name === "TypeError";
+          }
+          if (!threw) return false;
+
+          return true;
+        })()
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+}
+
+#[cfg(test)]
 mod proxy_tests {
   use crate::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
