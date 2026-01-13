@@ -3436,15 +3436,23 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
           WsTaskKind::Normal,
           payload_bytes,
           move |vm_host, heap, vm, hooks, ws_obj| {
-          let mut scope = heap.scope();
-          let ev = make_simple_event(&mut scope, "message")?;
-          let data_s = scope.alloc_string(&text)?;
-          scope.push_root(Value::String(data_s))?;
-          let data_key = alloc_key(&mut scope, "data")?;
-          scope.define_property(ev, data_key, data_desc(Value::String(data_s), false))?;
-          dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onmessage")?;
-          Ok(())
-        },
+            let mut scope = heap.scope();
+            let ev = make_simple_event(&mut scope, "message")?;
+            let data_s = scope.alloc_string(&text)?;
+            scope.push_root(Value::String(data_s))?;
+            let data_key = alloc_key(&mut scope, "data")?;
+            scope.define_property(ev, data_key, data_desc(Value::String(data_s), false))?;
+            dispatch_ws_event(
+              vm,
+              &mut scope,
+              vm_host,
+              hooks,
+              ws_obj,
+              Value::Object(ev),
+              "onmessage",
+            )?;
+            Ok(())
+          },
         );
         if matches!(outcome, QueueWsTaskOutcome::DeliveryFailed) {
           closing = Some((1001, "backpressure".to_string()));
@@ -3467,60 +3475,68 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
           WsTaskKind::Normal,
           payload_bytes,
           move |vm_host, heap, vm, hooks, ws_obj| {
-          let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
-            "WebSocket message dispatch requires intrinsics",
-          ))?;
-          let mut scope = heap.scope();
-          let ev = make_simple_event(&mut scope, "message")?;
+            let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+              "WebSocket message dispatch requires intrinsics",
+            ))?;
+            let mut scope = heap.scope();
+            let ev = make_simple_event(&mut scope, "message")?;
 
-          let (binary_type, realm_id) = with_env_state(env_id, |state| {
-            let kind = state
-              .sockets
-              .get(&ws_id)
-              .map(|ws| ws.binary_type)
-              .unwrap_or_default();
-            Ok((kind, state.realm_id))
-          })
-          .unwrap_or((WebSocketBinaryType::default(), RealmId::from_raw(0)));
+            let (binary_type, realm_id) = with_env_state(env_id, |state| {
+              let kind = state
+                .sockets
+                .get(&ws_id)
+                .map(|ws| ws.binary_type)
+                .unwrap_or_default();
+              Ok((kind, state.realm_id))
+            })
+            .unwrap_or((WebSocketBinaryType::default(), RealmId::from_raw(0)));
 
-          let data_val: Value = match binary_type {
-            WebSocketBinaryType::ArrayBuffer => {
-              let ab = scope.alloc_array_buffer_from_u8_vec(bytes)?;
-              scope.push_root(Value::Object(ab))?;
-              scope
-                .heap_mut()
-                .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
-              Value::Object(ab)
-            }
-            WebSocketBinaryType::Blob => {
-              if window_blob::blob_prototype_for_realm(realm_id).is_none() {
-                // Best-effort fallback for environments that install WebSocket without Blob.
+            let data_val: Value = match binary_type {
+              WebSocketBinaryType::ArrayBuffer => {
                 let ab = scope.alloc_array_buffer_from_u8_vec(bytes)?;
                 scope.push_root(Value::Object(ab))?;
                 scope
                   .heap_mut()
                   .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
                 Value::Object(ab)
-              } else {
-                let blob_obj = window_blob::create_blob_for_realm(
-                  &mut scope,
-                  realm_id,
-                  window_blob::BlobData {
-                    bytes,
-                    r#type: String::new(),
-                  },
-                )?;
-                Value::Object(blob_obj)
               }
-            }
-          };
+              WebSocketBinaryType::Blob => {
+                if window_blob::blob_prototype_for_realm(realm_id).is_none() {
+                  // Best-effort fallback for environments that install WebSocket without Blob.
+                  let ab = scope.alloc_array_buffer_from_u8_vec(bytes)?;
+                  scope.push_root(Value::Object(ab))?;
+                  scope
+                    .heap_mut()
+                    .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+                  Value::Object(ab)
+                } else {
+                  let blob_obj = window_blob::create_blob_for_realm(
+                    &mut scope,
+                    realm_id,
+                    window_blob::BlobData {
+                      bytes,
+                      r#type: String::new(),
+                    },
+                  )?;
+                  Value::Object(blob_obj)
+                }
+              }
+            };
 
-          scope.push_root(data_val)?;
-          let data_key = alloc_key(&mut scope, "data")?;
-          scope.define_property(ev, data_key, data_desc(data_val, false))?;
-          dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onmessage")?;
-          Ok(())
-        },
+            scope.push_root(data_val)?;
+            let data_key = alloc_key(&mut scope, "data")?;
+            scope.define_property(ev, data_key, data_desc(data_val, false))?;
+            dispatch_ws_event(
+              vm,
+              &mut scope,
+              vm_host,
+              hooks,
+              ws_obj,
+              Value::Object(ev),
+              "onmessage",
+            )?;
+            Ok(())
+          },
         );
         if matches!(outcome, QueueWsTaskOutcome::DeliveryFailed) {
           closing = Some((1001, "backpressure".to_string()));

@@ -7816,6 +7816,10 @@ impl BrowserRuntime {
           }
         }
       }
+      // Release the mutable borrow of `tab.document` before pumping the JS event loop (which needs
+      // to mutably borrow `tab`).
+      let _ = doc;
+
       if dispatched_dom_event {
         if let Some(before) = js_mutation_generation_before_dispatch {
 <<<<<<< HEAD

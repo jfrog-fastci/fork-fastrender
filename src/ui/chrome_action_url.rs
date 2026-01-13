@@ -137,11 +137,15 @@ pub enum ChromeActionUrl {
 }
 
 impl ChromeActionUrl {
+<<<<<<< HEAD
   pub const SCHEME: &'static str = CHROME_ACTION_SCHEME;
 
   pub fn parse_url(url: &Url) -> Result<Self, String> {
     Self::parse(url.as_str())
   }
+=======
+  pub const SCHEME: &'static str = "chrome-action";
+>>>>>>> 32fb975cc (fix: restore build and refresh browser UI a11y docs)
 
   /// Parse a `chrome-action:` URL string.
   ///
@@ -156,7 +160,11 @@ impl ChromeActionUrl {
 
     let url =
       Url::parse(trimmed).map_err(|err| format!("invalid chrome-action URL {trimmed:?}: {err}"))?;
+    Self::parse_url(&url)
+  }
 
+  /// Parse a pre-parsed [`Url`] for the `chrome-action:` scheme.
+  pub fn parse_url(url: &Url) -> Result<Self, String> {
     if !url.scheme().eq_ignore_ascii_case(Self::SCHEME) {
       return Err(format!(
         "invalid chrome-action URL scheme: expected {}, got {}",

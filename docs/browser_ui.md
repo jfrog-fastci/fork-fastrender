@@ -690,23 +690,21 @@ FastRender’s experimental desktop browser UI supports **bookmarks** and a basi
 ## Accessibility
 
 The windowed `browser` UI exposes accessibility information via **AccessKit** so platform screen
-readers (VoiceOver/Narrator/Orca) can traverse both the browser chrome and (experimental) page
-content.
+readers (VoiceOver/Narrator/Orca) can traverse both the browser chrome and page content.
 
-Note: the page is still *visually* rendered as a pixel buffer (pixmap); the page content
-accessibility subtree is a separate semantic tree. Injecting that page subtree into the OS-facing
-AccessKit tree is still in progress (see “Current limitations” below).
+Note: the page is still *visually* rendered as a pixel buffer (pixmap), but the render worker also
+produces a semantic accessibility snapshot that the UI injects into the OS-facing AccessKit tree.
 
 Accessibility sources:
 
 - **Chrome widgets (egui):** tabs, toolbar buttons, address bar, menus/panels/popups are exposed via
   egui-winit + AccessKit when compiled with `--features browser_ui`.
-- **Page content (renderer tree):** page content accessibility can be exposed by injecting an
-  AccessKit subtree derived from the renderer’s accessibility tree (`AccessibilityNode`, via
-  `src/accessibility.rs`). The render worker can emit a live `WorkerToUi::PageAccessibility` snapshot
-  (semantic tree + best-effort bounds in viewport-local CSS pixels), stored in
-  `ui::browser_app::PageAccessibilitySnapshot`. Per-element OS-facing page content exposure is still
-  in progress (see [page_accessibility.md](page_accessibility.md)).
+- **Page content (renderer tree):** the render worker emits two related representations:
+  - `WorkerToUi::PageAccessibility` carries the renderer’s `AccessibilityNode` tree plus best-effort
+    bounds in viewport-local CSS pixels, stored in `ui::browser_app::PageAccessibilitySnapshot`.
+  - When compiled with `--features browser_ui`, `WorkerToUi::PageAccessKitSubtree` carries a
+    pre-built `PageAccessKitSubtree` (AccessKit nodes + focus) which the windowed UI merges into
+    egui’s AccessKit tree under the page viewport node (`Role::WebView`).
 
 When wiring up a page subtree, AccessKit node IDs are expected to be derived from
 `(tab_id, tree_generation, dom_node_id)` using `ui::encode_page_node_id` (see `ui::page_a11y`)
@@ -726,8 +724,8 @@ Debugging tip: to inspect the **egui-produced** AccessKit update (chrome widgets
 screen reader, use the `dump_accesskit` CLI (requires `--features browser_ui`).
 
 Note: `dump_accesskit` does not run the browser worker, so it does **not** include any
-worker-produced page accessibility snapshot (or any injected page subtree); use the real windowed
-`browser` + a platform accessibility inspector to debug page nodes.
+worker-produced page subtree (`WorkerToUi::PageAccessKitSubtree`) or any injected page nodes; use
+the real windowed `browser` + a platform accessibility inspector to debug page content.
 
 ```bash
 timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
@@ -736,13 +734,10 @@ timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 Current limitations (MVP / in-progress):
 
-- **Page subtree injection is not complete:** depending on the build/runtime configuration, the OS
-  accessibility tree may contain only the egui chrome widgets + a single labeled page region (pixmap),
-  without per-element page semantics.
 - **Action support is evolving:** chrome widgets support focus/activate via egui. The worker also
-  supports additional page actions such as **scroll into view**, **set value** (basic form controls),
-  and **set text selection** (text inputs), but full parity with platform/AT actions is still in
-  progress.
+  supports basic page actions such as **focus** and **activate** (AccessKit `Focus` / `Default`),
+  plus a small set of form/text actions (**scroll into view**, **set value**, **set text
+  selection**). Full parity with platform/AT actions is still in progress.
 - **Bounds/geometry may be missing or approximate** for page nodes once exposed, which can affect
   hit-testing and “click this element” style commands.
 - **Selection/value reporting may be partial** for some controls (e.g. caret/selection state or
@@ -756,19 +751,19 @@ Manual testing checklist (smoke):
   - Enable VoiceOver (Cmd+F5).
   - Verify you can traverse chrome controls and the address bar is announced as “Address bar”
     (e.g. after Cmd+L).
-  - Navigate to a simple page (e.g. `about:test-form`) and verify the page region is discoverable
-    and has a meaningful label (currently: “Web page content (rendered image)”).
-  - If your build includes injected page semantics, verify VoiceOver can traverse basic document
-    content (headings/links/form controls) and trigger focus/activate on at least one control.
+  - Navigate to a simple page (e.g. `about:test-form`) and verify the page viewport is discoverable
+    (announced as “Web page …”).
+  - Verify VoiceOver can traverse basic document content nodes (headings/links/buttons/form
+    controls) and trigger focus/activate on at least one control.
 - **Windows (Narrator):**
   - Enable Narrator (Ctrl+Win+Enter).
-  - Verify basic traversal/announcement works for chrome controls and the page region.
-  - If your build includes injected page semantics, verify focus/activate works on at least one page control.
+  - Verify basic traversal/announcement works for chrome controls and the page.
+  - Verify Narrator can traverse page content nodes and focus/activate at least one page control.
 - **Linux (Orca):**
   - Enable Orca (often Super+Alt+S).
-  - Verify basic traversal/announcement works for chrome controls and the page region (backend
+  - Verify basic traversal/announcement works for chrome controls and the page (backend
     support depends on your `winit`/X11/Wayland environment).
-  - If your build includes injected page semantics, verify focus/activate works on at least one page control.
+  - Verify Orca can traverse page content nodes and focus/activate at least one page control.
 
 If you need a lower-level view than screen reader announcements, use a platform accessibility
 inspector (e.g. macOS Accessibility Inspector, Windows Inspect.exe, Linux Accerciser) to confirm
