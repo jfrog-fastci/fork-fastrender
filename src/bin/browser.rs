@@ -3160,6 +3160,8 @@ enum UserEvent {
     from_id: winit::window::WindowId,
     window: fastrender::ui::BrowserSessionWindow,
   },
+  /// Discard the currently restored session and start fresh (single `about:newtab` tab per window).
+  StartNewSession(winit::window::WindowId),
   /// An accessibility action request (e.g. "activate" or "focus") dispatched by the OS via AccessKit.
   AccessKitAction {
     window_id: winit::window::WindowId,
@@ -3431,13 +3433,112 @@ enum RestoreMode {
   Disable,
 }
 
-#[cfg(feature = "browser_ui")]
+#[cfg(any(test, feature = "browser_ui"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StartupSessionSource {
   Restored,
   CliUrl,
   DefaultNewTab,
   HeadlessOverride,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn should_show_crash_recovery_infobar(source: StartupSessionSource, did_exit_cleanly: bool) -> bool {
+  matches!(source, StartupSessionSource::Restored) && !did_exit_cleanly
+}
+
+/// Plan for resetting an existing window to a fresh session (single `about:newtab` tab).
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug)]
+struct StartNewSessionPlan {
+  new_tab_id: fastrender::ui::TabId,
+  closed_tab_ids: Vec<fastrender::ui::TabId>,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn plan_start_new_session_for_window(
+  app: &mut fastrender::ui::BrowserAppState,
+) -> StartNewSessionPlan {
+  let closed_tab_ids: Vec<fastrender::ui::TabId> = app.tabs.iter().map(|t| t.id).collect();
+  let new_tab_id = app.create_tab(Some(fastrender::ui::about_pages::ABOUT_NEWTAB.to_string()));
+
+  for tab_id in &closed_tab_ids {
+    let _ = app.remove_tab(*tab_id);
+    #[cfg(feature = "browser_ui")]
+    {
+      app.chrome.clear_tab_close(*tab_id);
+    }
+  }
+
+  // Discard any "reopen closed tab" history from the restored session.
+  app.closed_tabs.clear();
+  // Discard restored tab groups; a new session starts with no groups.
+  app.tab_groups.clear();
+
+  StartNewSessionPlan {
+    new_tab_id,
+    closed_tab_ids,
+  }
+}
+
+#[cfg(test)]
+mod crash_recovery_prompt_tests {
+  use super::*;
+
+  #[test]
+  fn crash_recovery_infobar_shows_only_for_unclean_restored_sessions() {
+    assert!(!should_show_crash_recovery_infobar(
+      StartupSessionSource::Restored,
+      true
+    ));
+    assert!(should_show_crash_recovery_infobar(
+      StartupSessionSource::Restored,
+      false
+    ));
+    assert!(!should_show_crash_recovery_infobar(
+      StartupSessionSource::CliUrl,
+      false
+    ));
+    assert!(!should_show_crash_recovery_infobar(
+      StartupSessionSource::DefaultNewTab,
+      false
+    ));
+    assert!(!should_show_crash_recovery_infobar(
+      StartupSessionSource::HeadlessOverride,
+      false
+    ));
+  }
+
+  #[test]
+  fn start_new_session_plan_resets_state_to_single_newtab_session_snapshot() {
+    use fastrender::ui::{BrowserAppState, BrowserSession, BrowserTabState};
+
+    let mut app = BrowserAppState::new();
+    app.push_tab(
+      BrowserTabState::new(fastrender::ui::TabId::new(), "https://example.com".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(fastrender::ui::TabId::new(), "about:newtab".to_string()),
+      false,
+    );
+    app.closed_tabs.push(fastrender::ui::ClosedTabState {
+      url: "https://old.example".to_string(),
+      title: None,
+      pinned: false,
+    });
+
+    let plan = plan_start_new_session_for_window(&mut app);
+    assert!(!plan.closed_tab_ids.is_empty());
+
+    let session = BrowserSession::from_app_state(&app);
+    assert_eq!(session.windows.len(), 1);
+    assert_eq!(session.windows[0].tabs.len(), 1);
+    assert_eq!(
+      session.windows[0].tabs[0].url,
+      fastrender::ui::about_pages::ABOUT_NEWTAB
+    );
+  }
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
@@ -4855,8 +4956,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
   }
 
-  let (startup_session, _source) = determine_startup_session(cli_url, restore, &session_path);
+  let (startup_session, source) = determine_startup_session(cli_url, restore, &session_path);
   let startup_session = startup_session.sanitized();
+  let show_crash_recovery_infobar =
+    should_show_crash_recovery_infobar(source, startup_session.did_exit_cleanly);
   let bookmarks_path = fastrender::ui::bookmarks_path();
   let history_path = fastrender::ui::history_path();
   let bookmarks = match fastrender::ui::load_bookmarks(&bookmarks_path) {
@@ -5419,6 +5522,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     app.home_url = home_url.clone();
     app.browser_state.appearance = startup_appearance.clone();
     app.startup(session_window);
+    app.crash_recovery_infobar_open = show_crash_recovery_infobar;
 
     let window_id = app.window.id();
     window_ids_by_index[idx] = Some(window_id);
@@ -6045,6 +6149,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           win.app.handle_accesskit_action_request(request);
           win.app.window.request_redraw();
         }
+      }
+      Event::UserEvent(UserEvent::StartNewSession(from_id)) => {
+        if windows.contains_key(&from_id) {
+          active_window_id = Some(from_id);
+        }
+
+        for win in windows.values_mut() {
+          win.app.start_new_session();
+        }
+
+        request_autosave(&windows, &window_order, active_window_id);
       }
       Event::UserEvent(UserEvent::RequestNewWindow(from_id)) => {
         let inherit_size = windows.get(&from_id).map(|win| win.app.window.inner_size());
@@ -9861,6 +9976,8 @@ struct App {
   tab_notifications: std::collections::HashMap<fastrender::ui::TabId, TabNotificationUiState>,
   warning_toast_rect: Option<egui::Rect>,
   error_infobar_rect: Option<egui::Rect>,
+  crash_recovery_infobar_open: bool,
+  crash_recovery_infobar_rect: Option<egui::Rect>,
   chrome_toast: fastrender::ui::ToastState,
   chrome_toast_rect: Option<egui::Rect>,
 
@@ -10271,6 +10388,9 @@ impl App {
         .is_some_and(|rect| rect.contains(pos_points))
       || self
         .error_infobar_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .crash_recovery_infobar_rect
         .is_some_and(|rect| rect.contains(pos_points))
       || self
         .page_unresponsive_overlay_rect
@@ -10712,6 +10832,8 @@ impl App {
       tab_notifications: std::collections::HashMap::new(),
       warning_toast_rect: None,
       error_infobar_rect: None,
+      crash_recovery_infobar_open: false,
+      crash_recovery_infobar_rect: None,
       chrome_toast: fastrender::ui::ToastState::default(),
       chrome_toast_rect: None,
       next_egui_repaint: None,
@@ -10848,6 +10970,107 @@ impl App {
       capture,
       self.window_minimized,
     );
+  }
+
+  fn start_new_session(&mut self) {
+    use fastrender::ui::cancel::CancelGens;
+    use fastrender::ui::{PointerButton, RepaintReason, UiToWorker};
+
+    // Close all restored tabs and replace them with a single `about:newtab` tab.
+    let plan = plan_start_new_session_for_window(&mut self.browser_state);
+    let new_tab_id = plan.new_tab_id;
+
+    // Clear transient UI that could still reference old tab ids.
+    self.close_context_menu();
+    self.pending_context_menu_request = None;
+    self.open_select_dropdown = None;
+    self.open_select_dropdown_rect = None;
+    self.open_date_time_picker = None;
+    self.open_date_time_picker_rect = None;
+    self.open_file_picker = None;
+    self.open_file_picker_rect = None;
+
+    // Clear chrome transient UI that may reference the previous tabs.
+    self.browser_state.chrome.open_tab_context_menu = None;
+    self.browser_state.chrome.tab_context_menu_rect = None;
+    self.browser_state.chrome.tab_search.open = false;
+    self.browser_state.chrome.clear_tab_drag();
+    self.browser_state.chrome.clear_link_drag();
+
+    self.pending_dropped_files.clear();
+    self.pending_dropped_files_tab = None;
+    self.pending_dropped_files_pos_css = None;
+
+    self.pending_scroll_drag = None;
+    self.scrollbar_drag = None;
+    self.pointer_captured = false;
+    self.captured_button = PointerButton::None;
+    self.page_has_focus = false;
+    self.chrome_has_text_focus = false;
+    self.cursor_in_page = false;
+    self.pending_pointer_move = None;
+    self.page_cursor_override = None;
+
+    self.page_input_tab = None;
+    self.page_input_mapping = None;
+    self.page_loading_overlay_blocks_input = false;
+    self.page_unresponsive_overlay_rect = None;
+
+    self.pending_scroll_restores.clear();
+    self.pending_frame_uploads.clear();
+    self.animation_tick_tab = None;
+    self.next_animation_tick = None;
+    self.next_media_wakeup.clear();
+    self.last_media_wakeup_tick.clear();
+
+    self.tab_notifications.clear();
+    self.warning_toast_rect = None;
+    self.error_infobar_rect = None;
+    self.crash_recovery_infobar_open = false;
+    self.crash_recovery_infobar_rect = None;
+
+    // Create a fresh worker tab for the new session's `about:newtab`.
+    let cancel = self
+      .browser_state
+      .tab(new_tab_id)
+      .map(|t| t.cancel.clone())
+      .unwrap_or_else(CancelGens::new);
+    self.tab_cancel.insert(new_tab_id, cancel.clone());
+
+    self.send_worker_msg(UiToWorker::CreateTab {
+      tab_id: new_tab_id,
+      initial_url: Some(fastrender::ui::about_pages::ABOUT_NEWTAB.to_string()),
+      cancel,
+    });
+    self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_tab_id });
+    self.viewport_cache_tab = None;
+    self.last_page_upload_at = None;
+    self.next_page_upload_redraw = None;
+    self.hover_sync_pending = true;
+    self.send_worker_msg(UiToWorker::RequestRepaint {
+      tab_id: new_tab_id,
+      reason: RepaintReason::Explicit,
+    });
+
+    // Close the old tabs on the worker side and tear down any cached textures/cancellation state.
+    for closed_tab_id in plan.closed_tab_ids {
+      self.pending_frame_uploads.remove_tab(closed_tab_id);
+      self.next_media_wakeup.remove(&closed_tab_id);
+      self.last_media_wakeup_tick.remove(&closed_tab_id);
+      if let Some(tex) = self.tab_textures.remove(&closed_tab_id) {
+        tex.destroy(&mut self.egui_renderer);
+      }
+      self.move_tab_favicon_into_delayed_destroy(closed_tab_id);
+      if let Some(cancel) = self.tab_cancel.remove(&closed_tab_id) {
+        cancel.bump_nav();
+      }
+      self.send_worker_msg(UiToWorker::CloseTab { tab_id: closed_tab_id });
+    }
+
+    self.sync_window_title();
+    // Match typical new-tab UX: focus the address bar after resetting.
+    self.focus_address_bar_select_all();
+    self.window.request_redraw();
   }
 
   fn sync_window_title(&mut self) {
@@ -14606,6 +14829,151 @@ impl App {
 
     if popup.inner {
       self.handle_chrome_actions(vec![ChromeAction::Reload]);
+      self.window.request_redraw();
+    }
+  }
+
+  fn render_crash_recovery_infobar(&mut self, ctx: &egui::Context) {
+    let motion = fastrender::ui::motion::UiMotion::from_ctx(ctx);
+    let infobar_id = egui::Id::new("fastr_crash_recovery_infobar");
+    let open_t = motion.animate_bool(
+      ctx,
+      infobar_id.with("open"),
+      self.crash_recovery_infobar_open,
+      motion.durations.popup_open,
+    );
+    let open_opacity = open_t.clamp(0.0, 1.0);
+    if open_opacity <= 0.0 {
+      self.crash_recovery_infobar_rect = None;
+      return;
+    }
+
+    let theme_colors = self.theme.colors.clone();
+    let theme_sizing = self.theme.sizing.clone();
+
+    let screen_rect = ctx.screen_rect();
+    let content_rect = self.content_rect_points.unwrap_or(screen_rect);
+    let margin = theme_sizing.padding.max(8.0) + 4.0;
+    let mut pos = egui::pos2(content_rect.min.x + margin, content_rect.min.y + margin);
+    // When the navigation error infobar is visible, stack the crash recovery prompt beneath it.
+    if let Some(error_rect) = self.error_infobar_rect {
+      pos.y = error_rect.max.y + margin;
+    }
+    let available_width = (content_rect.width() - margin * 2.0).max(240.0);
+
+    let popup = egui::Area::new(infobar_id)
+      .order(egui::Order::Foreground)
+      .fixed_pos(pos)
+      .interactable(self.crash_recovery_infobar_open)
+      .show(ctx, |ui| {
+        ui.set_enabled(self.crash_recovery_infobar_open);
+        ui.visuals_mut().override_text_color =
+          Some(Self::with_alpha(ui.visuals().text_color(), open_opacity));
+
+        let mut start_new_session = false;
+        let mut dismiss = false;
+
+        let fill = egui::Color32::from_rgba_unmultiplied(
+          theme_colors.raised.r(),
+          theme_colors.raised.g(),
+          theme_colors.raised.b(),
+          245,
+        );
+        let fill = Self::with_alpha(fill, open_opacity);
+        let stroke = egui::Stroke::new(
+          theme_sizing.stroke_width,
+          Self::with_alpha(theme_colors.warn, open_opacity),
+        );
+        let frame = egui::Frame::none()
+          .fill(fill)
+          .stroke(stroke)
+          .rounding(egui::Rounding::same(theme_sizing.corner_radius))
+          .inner_margin(egui::Margin::symmetric(
+            theme_sizing.padding * 1.25,
+            theme_sizing.padding,
+          ));
+
+        frame.show(ui, |ui| {
+          ui.set_min_width(available_width);
+          ui.vertical(|ui| {
+            ui.horizontal_wrapped(|ui| {
+              let icon_side = ui.spacing().icon_width;
+              let icon_resp = fastrender::ui::icon_tinted(
+                ui,
+                fastrender::ui::BrowserIcon::WarningInsecure,
+                icon_side,
+                Self::with_alpha(theme_colors.warn, open_opacity),
+              );
+              icon_resp.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                  egui::WidgetType::Label,
+                  "Previous session restored after an unexpected shutdown",
+                )
+              });
+
+              ui.label(
+                egui::RichText::new("Session restored")
+                  .strong()
+                  .color(Self::with_alpha(theme_colors.text_primary, open_opacity)),
+              );
+
+              ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let keep_resp = ui.button("Keep");
+                keep_resp.widget_info(|| {
+                  egui::WidgetInfo::labeled(egui::WidgetType::Button, "Keep restored session")
+                });
+                if keep_resp.clicked() {
+                  dismiss = true;
+                }
+
+                let start_resp = ui.button("Start new session");
+                start_resp.widget_info(|| {
+                  egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    "Start new session and discard restored tabs",
+                  )
+                });
+                if start_resp.clicked() {
+                  start_new_session = true;
+                  dismiss = true;
+                }
+              });
+            });
+
+            ui.add_space(2.0);
+            let msg = ui.add(
+              egui::Label::new(
+                egui::RichText::new(
+                  "FastRender didn't shut down correctly, so your previous session was restored.",
+                )
+                .color(Self::with_alpha(theme_colors.text_primary, open_opacity)),
+              )
+              .wrap(true),
+            );
+            msg.widget_info(|| {
+              egui::WidgetInfo::labeled(
+                egui::WidgetType::Label,
+                "FastRender didn't shut down correctly, so your previous session was restored.",
+              )
+            });
+          });
+        });
+
+        (start_new_session, dismiss)
+      });
+
+    self.crash_recovery_infobar_rect = Some(popup.response.rect);
+
+    if popup.inner.0 {
+      // Best-effort: if the event loop has already been torn down, ignore failures.
+      let _ = self
+        .event_loop_proxy
+        .send_event(UserEvent::StartNewSession(self.window.id()));
+      self.window.request_redraw();
+    }
+
+    if popup.inner.1 {
+      self.crash_recovery_infobar_open = false;
       self.window.request_redraw();
     }
   }
@@ -22193,6 +22561,7 @@ impl App {
     self.sync_tab_notifications(now);
     self.chrome_toast.expire(now);
     self.render_error_infobar(&ctx);
+    self.render_crash_recovery_infobar(&ctx);
     self.render_warning_toast(&ctx);
     self.render_chrome_toast(&ctx);
 
