@@ -12678,6 +12678,69 @@ fn compiled_import_meta_in_module_returns_cached_object() -> Result<(), VmError>
 }
 
 #[test]
+fn compiled_module_throw_stack_has_statement_location() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // We don't currently have a compiled-module entry point. Simulate module execution by pushing an
+  // `ExecutionContext` whose active ScriptOrModule is a module id.
+  let module = rt
+    .modules_mut()
+    .add_module(vm_js::SourceTextModuleRecord::default())?;
+
+  let script = CompiledScript::compile_module(
+    rt.heap_mut(),
+    "test.js",
+    "function f() {\n  1;\n  throw \"x\";\n}\n",
+  )?;
+  let f_body = find_function_body(&script, "f");
+
+  let mut hooks = vm_js::MicrotaskQueue::new();
+  let mut host = ();
+  let realm_id = rt.realm().id();
+
+  let mut scope = rt.heap.scope();
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script: script.clone(),
+      body: f_body,
+    },
+    name,
+    0,
+  )?;
+  scope.push_root(Value::Object(f))?;
+
+  let exec_ctx = vm_js::ExecutionContext {
+    realm: realm_id,
+    script_or_module: Some(vm_js::ScriptOrModule::Module(module)),
+  };
+  let mut vm_ctx = rt.vm.execution_context_guard(exec_ctx)?;
+
+  let err = vm_ctx
+    .call_with_host_and_hooks(
+      &mut host,
+      &mut scope,
+      &mut hooks,
+      Value::Object(f),
+      Value::Undefined,
+      &[],
+    )
+    .unwrap_err();
+
+  let VmError::ThrowWithStack { stack, .. } = err else {
+    return Err(err);
+  };
+
+  assert!(!stack.is_empty());
+  assert_eq!(stack[0].source.as_ref(), "test.js");
+  // `throw "x"` starts at line 3, column 3.
+  assert_eq!((stack[0].line, stack[0].col), (3, 3));
+  Ok(())
+}
+
+#[test]
 fn compiled_new_constructs_compiled_user_function() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));

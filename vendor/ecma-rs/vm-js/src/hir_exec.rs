@@ -10,7 +10,10 @@ use crate::module_loading;
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
 use crate::tick::vec_try_extend_from_slice_with_ticks;
 use crate::vm::EcmaFunctionKind;
-use crate::{EnvBinding, GcBigInt, GcEnv, GcObject, Scope, ScriptOrModule, Value, Vm, VmError, VmHost, VmHostHooks};
+use crate::{
+  EnvBinding, GcBigInt, GcEnv, GcObject, Scope, ScriptOrModule, StackFrame, Value, Vm, VmError, VmHost,
+  VmHostHooks,
+};
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -1686,7 +1689,7 @@ impl<'vm> HirEvaluator<'vm> {
     self.vm.tick()?;
 
     let stmt = self.get_stmt(body, stmt_id)?;
-    match &stmt.kind {
+    let res: Result<Flow, VmError> = match &stmt.kind {
       hir_js::StmtKind::Expr(expr_id) => {
         let v = self.eval_expr(scope, body, *expr_id)?;
         Ok(Flow::normal(v))
@@ -2723,6 +2726,61 @@ impl<'vm> HirEvaluator<'vm> {
         result
       }
       hir_js::StmtKind::Empty | hir_js::StmtKind::Debugger => Ok(Flow::empty()),
+    };
+
+    // Improve stack traces for compiled *module* execution by attributing thrown exceptions to the
+    // currently executing HIR statement span (similar to `exec.rs::eval_stmt_labelled`).
+    //
+    // This is intentionally scoped to module execution so broader HIR stack-trace semantics (e.g.
+    // call-site locations) can be addressed separately.
+    if !matches!(
+      self.vm.get_active_script_or_module(),
+      Some(ScriptOrModule::Module(_))
+    ) {
+      return res;
+    }
+
+    // Only annotate throw-completions: termination/OOM/etc must propagate untouched.
+    let Err(err) = res else {
+      return res;
+    };
+    if !err.is_throw_completion() {
+      return Err(err);
+    }
+
+    let source = self.script.source.as_ref();
+    let (line, col) = source.line_col(stmt.span.start);
+    let update_top_frame = |stack: &mut Vec<StackFrame>| {
+      if let Some(top) = stack.first_mut() {
+        top.source = source.name.clone();
+        top.line = line;
+        top.col = col;
+      } else {
+        stack.push(StackFrame {
+          function: None,
+          source: source.name.clone(),
+          line,
+          col,
+        });
+      }
+    };
+
+    let err = crate::vm::coerce_error_to_throw(&*self.vm, scope, err);
+    match err {
+      VmError::Throw(value) => {
+        let mut stack = self.vm.capture_stack();
+        update_top_frame(&mut stack);
+        Err(VmError::ThrowWithStack { value, stack })
+      }
+      VmError::ThrowWithStack { value, mut stack } => {
+        // Mirror the AST evaluator's behavior: only patch captured stacks that have no meaningful
+        // top-frame location (typically captured while executing native code).
+        if stack.first().is_none() || stack.first().is_some_and(|top| top.line == 0) {
+          update_top_frame(&mut stack);
+        }
+        Err(VmError::ThrowWithStack { value, stack })
+      }
+      other => Err(other),
     }
   }
 
