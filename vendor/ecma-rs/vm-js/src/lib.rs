@@ -171,6 +171,7 @@ mod property_descriptor_ops;
 mod realm;
 mod regexp;
 mod regexp_unicode_property_strings;
+mod regexp_unicode_resolver;
 mod source;
 mod spec_ops;
 mod string;
@@ -181,6 +182,12 @@ mod vm;
 
 #[cfg(test)]
 mod regexp_unicode_property_strings_tests;
+
+// Unit tests that need access to crate-private internals live in `../tests/unit/` and are pulled
+// into the library test target here so they can exercise non-public APIs.
+#[cfg(test)]
+#[path = "../tests/unit/regexp_unicode_resolver.rs"]
+mod regexp_unicode_resolver_tests;
 
 pub use crate::handle::EnvRootId;
 
