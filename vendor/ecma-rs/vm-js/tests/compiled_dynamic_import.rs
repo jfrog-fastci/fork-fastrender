@@ -127,6 +127,91 @@ impl VmHostHooks for TestHostHooks {
   }
 }
 
+/// Host hook implementation that completes `HostLoadImportedModule` synchronously by immediately
+/// calling `FinishLoadingImportedModule`.
+struct SyncImportHooks {
+  microtasks: MicrotaskQueue,
+  modules: HashMap<String, ModuleId>,
+}
+
+impl SyncImportHooks {
+  fn new() -> Self {
+    Self {
+      microtasks: MicrotaskQueue::new(),
+      modules: HashMap::new(),
+    }
+  }
+
+  fn register_module(&mut self, specifier: &str, module: ModuleId) {
+    self.modules.insert(specifier.to_string(), module);
+  }
+
+  fn teardown_jobs(&mut self, rt: &mut JsRuntime) {
+    self.microtasks.teardown(rt);
+  }
+
+  fn perform_microtask_checkpoint(&mut self, rt: &mut JsRuntime) -> Result<(), VmError> {
+    if !self.microtasks.begin_checkpoint() {
+      return Ok(());
+    }
+
+    let mut errors = Vec::new();
+    while let Some((_realm, job)) = self.microtasks.pop_front() {
+      if let Err(err) = job.run(rt, self) {
+        let is_termination = matches!(err, VmError::Termination(_));
+        errors.push(err);
+        if is_termination {
+          // Termination is a hard stop; discard remaining queued jobs so we don't leak persistent
+          // roots.
+          self.microtasks.teardown(rt);
+          break;
+        }
+      }
+    }
+    self.microtasks.end_checkpoint();
+
+    if let Some(err) = errors.into_iter().next() {
+      return Err(err);
+    }
+    Ok(())
+  }
+}
+
+impl VmHostHooks for SyncImportHooks {
+  fn host_enqueue_promise_job(&mut self, job: vm_js::Job, realm: Option<vm_js::RealmId>) {
+    self.microtasks.host_enqueue_promise_job(job, realm);
+  }
+
+  fn host_get_supported_import_attributes(&self) -> &'static [&'static str] {
+    &[]
+  }
+
+  fn host_load_imported_module(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut vm_js::Scope<'_>,
+    modules: &mut vm_js::ModuleGraph,
+    referrer: ModuleReferrer,
+    module_request: ModuleRequest,
+    _host_defined: HostDefined,
+    payload: ModuleLoadPayload,
+  ) -> Result<(), VmError> {
+    let module = *self
+      .modules
+      .get(module_request.specifier.as_str())
+      .unwrap_or_else(|| panic!("no module registered for specifier {:?}", module_request.specifier));
+    vm.finish_loading_imported_module(
+      scope,
+      modules,
+      self,
+      referrer,
+      module_request,
+      payload,
+      Ok(module),
+    )
+  }
+}
+
 fn new_runtime_with_heap_limit(bytes: usize) -> Result<JsRuntime, VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = vm_js::Heap::new(HeapLimits::new(bytes, bytes));
@@ -162,7 +247,7 @@ fn compiled_dynamic_import_resolves_to_module_namespace() -> Result<(), VmError>
   let script = CompiledScript::compile_script(&mut rt.heap, "test.js", "import('./m.js')")?;
 
   let mut dummy_host = ();
-  let promise_value = rt.exec_compiled_script_with_hooks(&mut dummy_host, &mut hooks, script)?;
+  let promise_value = rt.exec_compiled_script_with_host_and_hooks(&mut dummy_host, &mut hooks, script)?;
   let promise_root = rt.heap.add_root(promise_value)?;
 
   let Value::Object(promise_obj) = promise_value else {
@@ -280,3 +365,74 @@ fn compiled_dynamic_import_resolves_to_module_namespace() -> Result<(), VmError>
   hooks.teardown_jobs(&mut rt);
   Ok(())
 }
+
+#[test]
+fn compiled_script_dynamic_import_works() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  let m_record = SourceTextModuleRecord::parse(&mut rt.heap, "export const x = 1;")?;
+  let m = rt.modules_mut().add_module(m_record);
+
+  let mut hooks = SyncImportHooks::new();
+  hooks.register_module("m.js", m);
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      var p = import('m.js');
+    "#,
+  )?;
+
+  let mut dummy_host = ();
+  rt.exec_compiled_script_with_host_and_hooks(&mut dummy_host, &mut hooks, script)?;
+
+  // Read `p` off the global object.
+  let promise_obj = {
+    let global = rt.realm().global_object();
+    let mut scope = rt.heap.scope();
+    let key = PropertyKey::from_string(scope.alloc_string("p")?);
+    let promise_value = scope.get_with_host_and_hooks(
+      &mut rt.vm,
+      &mut dummy_host,
+      &mut hooks,
+      global,
+      key,
+      Value::Object(global),
+    )?;
+    let Value::Object(obj) = promise_value else {
+      panic!("import() should assign a Promise object to global `p`");
+    };
+    assert_eq!(scope.heap().promise_state(obj)?, PromiseState::Pending);
+    obj
+  };
+
+  hooks.perform_microtask_checkpoint(&mut rt)?;
+
+  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let ns_value = rt
+    .heap
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  let Value::Object(ns_obj) = ns_value else {
+    panic!("dynamic import promise should fulfill to an object");
+  };
+
+  // Namespace should expose `x === 1`.
+  let mut scope = rt.heap.scope();
+  let x_key = PropertyKey::from_string(scope.alloc_string("x")?);
+  let x_value = scope.get_with_host_and_hooks(
+    &mut rt.vm,
+    &mut dummy_host,
+    &mut hooks,
+    ns_obj,
+    x_key,
+    Value::Object(ns_obj),
+  )?;
+  assert!(matches!(x_value, Value::Number(n) if n == 1.0));
+
+  drop(scope);
+  hooks.teardown_jobs(&mut rt);
+  Ok(())
+}
+

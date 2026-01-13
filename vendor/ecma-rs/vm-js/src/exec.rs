@@ -1757,7 +1757,6 @@ impl JsRuntime {
     script: Arc<crate::CompiledScript>,
   ) -> Result<Value, VmError> {
     let source = Arc::new(script.source.clone());
-
     let (line, col) = source.line_col(0);
     let frame = StackFrame {
       function: None,
@@ -1765,7 +1764,6 @@ impl JsRuntime {
       line,
       col,
     };
-
     let exec_ctx = crate::ExecutionContext {
       realm: self.realm.id(),
       script_or_module: None,
@@ -1799,6 +1797,7 @@ impl JsRuntime {
       }
     })();
 
+    // Pop any host hooks override before returning to avoid leaving the VM with a dangling pointer.
     vm_ctx.pop_active_host_hooks(prev_hooks);
     drop(vm_ctx);
 
@@ -1809,6 +1808,17 @@ impl JsRuntime {
     }
 
     result
+  }
+
+  /// Alias for [`JsRuntime::exec_compiled_script_with_hooks`], provided for API consistency with
+  /// [`JsRuntime::exec_script_source_with_host_and_hooks`].
+  pub fn exec_compiled_script_with_host_and_hooks(
+    &mut self,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    script: Arc<crate::CompiledScript>,
+  ) -> Result<Value, VmError> {
+    self.exec_compiled_script_with_hooks(host, hooks, script)
   }
 
   /// Parse and execute a classic script (ECMAScript dialect, `SourceType::Script`) using an explicit
