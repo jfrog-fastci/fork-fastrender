@@ -20770,7 +20770,16 @@ impl App {
         let mapping = fastrender::ui::InputMapping::new(response.rect, viewport_css_for_mapping);
         self.page_input_tab = Some(active_tab);
         self.page_input_mapping = Some(mapping);
-        handle_page_host_accesskit_focus_actions(ui, &response, &mut self.page_has_focus);
+        let page_host_accesskit_focus_requested =
+          handle_page_host_accesskit_focus_actions(ui, &response, &mut self.page_has_focus);
+        if page_host_accesskit_focus_requested {
+          // AccessKit focus actions can arrive after the address bar/text controls have already been
+          // painted for this frame. Clear any cached chrome text-focus state immediately so
+          // subsequent keyboard input is routed to the page (mirroring pointer click focus
+          // semantics).
+          self.browser_state.set_address_bar_editing(false);
+          self.chrome_has_text_focus = false;
+        }
         if self.page_has_focus {
           response.request_focus();
         }
@@ -21925,7 +21934,7 @@ fn handle_page_host_accesskit_focus_actions(
   ui: &egui::Ui,
   response: &egui::Response,
   page_has_focus: &mut bool,
-) {
+) -> bool {
   // Some assistive technologies trigger actions on the page host container node (the egui widget
   // that hosts the page viewport) instead of a descendant. Treat these actions as a request to
   // focus the rendered page so subsequent keyboard input is routed to the page worker.
@@ -21938,7 +21947,10 @@ fn handle_page_host_accesskit_focus_actions(
 
   if focus_requested || default_requested {
     *page_has_focus = true;
+    return true;
   }
+
+  false
 }
 
 #[cfg(test)]
@@ -22295,7 +22307,7 @@ mod page_host_accesskit_action_tests {
       response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Label, "Web page content (rendered image)")
       });
-      handle_page_host_accesskit_focus_actions(ui, &response, page_has_focus);
+      let _ = handle_page_host_accesskit_focus_actions(ui, &response, page_has_focus);
       if *page_has_focus {
         response.request_focus();
       }
