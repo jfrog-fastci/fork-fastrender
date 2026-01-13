@@ -672,13 +672,20 @@ impl BrowserTabController {
       // gesture for numeric stepping (instead of scrolling the page).
       let scroll_snapshot = self.scroll_state.clone();
       let engine = &mut self.interaction;
+      let hit_tree =
+        (scroll_snapshot.viewport != Point::ZERO || !scroll_snapshot.elements.is_empty())
+          .then(|| {
+            self
+              .document
+              .prepared()
+              .map(|prepared| prepared.fragment_tree_for_geometry(&scroll_snapshot))
+          })
+          .flatten();
       if let Ok(step_result) =
         self
           .document
           .mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-            let scrolled = (!scroll_snapshot.elements.is_empty())
-              .then(|| fragment_tree_with_scroll(fragment_tree, &scroll_snapshot));
-            let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+            let hit_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
             let step_result = engine.wheel_step_number_input(
               dom,
               box_tree,

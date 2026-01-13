@@ -1,9 +1,7 @@
 use crate::api::BrowserDocument;
 use crate::dom::{DomNode, DomNodeType};
 use crate::geometry::Point;
-use crate::interaction::{
-  fragment_tree_with_scroll, InteractionAction, InteractionEngine, InteractionState, KeyAction,
-};
+use crate::interaction::{InteractionAction, InteractionEngine, InteractionState, KeyAction};
 use crate::ui::omnibox_nav::{apply_omnibox_nav_key, OmniboxNavKey};
 use crate::ui::{
   BrowserAppState, ChromeAction, ChromeActionUrl, OmniboxSuggestion, PointerButton, PointerModifiers,
@@ -436,11 +434,14 @@ impl ChromeFrameDocument {
       .unwrap_or(document_url.as_str())
       .to_string();
 
+    let hit_tree =
+      (scroll.viewport != Point::ZERO || !scroll.elements.is_empty())
+        .then(|| self.document.prepared().map(|prepared| prepared.fragment_tree_for_geometry(&scroll)))
+        .flatten();
+
     let (document, interaction) = (&mut self.document, &mut self.interaction);
     let result = document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-      let scrolled_tree =
-        (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, &scroll));
-      let hit_tree = scrolled_tree.as_ref().unwrap_or(fragment_tree);
+      let hit_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
 
       let mut changed = interaction.pointer_down_with_click_count(
         dom,
@@ -727,12 +728,14 @@ impl ChromeFrameDocument {
       // Scrolling moves content under a stationary pointer, so refresh hover state using the
       // updated scroll offsets and the cached layout artifacts.
       let scroll = self.document.scroll_state();
+      let hit_tree =
+        (scroll.viewport != Point::ZERO || !scroll.elements.is_empty())
+          .then(|| self.document.prepared().map(|prepared| prepared.fragment_tree_for_geometry(&scroll)))
+          .flatten();
       let interaction = &mut self.interaction;
       self.document.mutate_dom_with_layout_artifacts(
         |dom: &mut DomNode, box_tree, fragment_tree| {
-          let scrolled_tree =
-            (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, &scroll));
-          let hit_tree = scrolled_tree.as_ref().unwrap_or(fragment_tree);
+          let hit_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
           let dom_changed =
             interaction.pointer_move(dom, box_tree, hit_tree, &scroll, viewport_point);
           (dom_changed, ())

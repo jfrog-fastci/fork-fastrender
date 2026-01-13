@@ -1,5 +1,5 @@
 use crate::geometry::Point;
-use crate::interaction::{fragment_tree_with_scroll, InteractionEngine, InteractionState};
+use crate::interaction::{InteractionEngine, InteractionState};
 use crate::scroll::ScrollState;
 use crate::Result;
 
@@ -88,10 +88,13 @@ impl ChromeFrameDocument {
 
     let scroll: ScrollState = document.scroll_state();
     let viewport_point = Point::new(pos_css.0, pos_css.1);
+
+    let hit_tree =
+      (scroll.viewport != Point::ZERO || !scroll.elements.is_empty())
+        .then(|| document.prepared().map(|prepared| prepared.fragment_tree_for_geometry(&scroll)))
+        .flatten();
     document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-      let scrolled =
-        (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, &scroll));
-      let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+      let fragment_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
       let changed = interaction.pointer_move(dom, box_tree, fragment_tree, &scroll, viewport_point);
       (changed, changed)
     })
