@@ -185,6 +185,41 @@ reason = "vm-js: ECMAScript semantics are still incomplete; tracked via curated 
 glob = "language/statements/generators/**"
 status = "pass"
 
+# --- Async generators (newly green) ---
+[[expectations]]
+glob = "language/statements/async-generator/**"
+status = "pass"
+
+[[expectations]]
+id = "language/statements/async-generator/await-as-binding-identifier-escaped.js"
+status = "xfail"
+reason = "vm-js: escaped `await` should be an early SyntaxError in async generator bodies (currently surfaces as a runtime SyntaxError)."
+
+[[expectations]]
+id = "language/statements/async-generator/await-as-identifier-reference-escaped.js"
+status = "xfail"
+reason = "vm-js: escaped `await` should be an early SyntaxError in async generator bodies (currently surfaces as a runtime SyntaxError)."
+
+[[expectations]]
+id = "language/statements/async-generator/await-as-label-identifier-escaped.js"
+status = "xfail"
+reason = "vm-js: escaped `await` should be an early SyntaxError in async generator bodies (currently surfaces as a runtime SyntaxError)."
+
+[[expectations]]
+id = "language/statements/async-generator/yield-as-binding-identifier-escaped.js"
+status = "xfail"
+reason = "vm-js: escaped `yield` should be an early SyntaxError in async generator bodies (currently surfaces as a runtime SyntaxError)."
+
+[[expectations]]
+id = "language/statements/async-generator/yield-as-identifier-reference-escaped.js"
+status = "xfail"
+reason = "vm-js: escaped `yield` should be an early SyntaxError in async generator bodies (currently surfaces as a runtime SyntaxError)."
+
+[[expectations]]
+id = "language/statements/async-generator/yield-as-label-identifier-escaped.js"
+status = "xfail"
+reason = "vm-js: escaped `yield` should be an early SyntaxError in async generator bodies (currently surfaces as a runtime SyntaxError)."
+
 # --- for-await-of (async iteration) ---
 [[expectations]]
 id = "language/statements/for-await-of/async-from-sync-iterator-continuation-abrupt-completion-get-constructor.js"
