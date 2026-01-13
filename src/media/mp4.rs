@@ -235,6 +235,17 @@ fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
     });
   }
 
+  let stts_total: u64 = stts.iter().map(|e| u64::from(e.sample_count)).sum();
+  if stts_total != sample_count as u64 {
+    return Err(Mp4Error::Invalid("stts sample_count sum mismatch"));
+  }
+  if !ctts.is_empty() {
+    let ctts_total: u64 = ctts.iter().map(|e| u64::from(e.sample_count)).sum();
+    if ctts_total != sample_count as u64 {
+      return Err(Mp4Error::Invalid("ctts sample_count sum mismatch"));
+    }
+  }
+
   // Build sync flags.
   let mut sync_flags = vec![false; sample_count];
   match t.stss {
