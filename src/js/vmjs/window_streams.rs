@@ -42,6 +42,7 @@ const READER_STREAM_REF_KEY: &str = "__fastrender_readable_stream_reader_stream_
 const READABLE_STREAM_HOST_TAG: u64 = 0x5245_4144_5354_524D; // "READSTRM"
 const READABLE_STREAM_DEFAULT_READER_HOST_TAG: u64 = 0x5253_5245_4144_4552; // "RSREADER"
 const READABLE_STREAM_DEFAULT_CONTROLLER_HOST_TAG: u64 = 0x5253_434E_5452_4C52; // "RSCNTRLR"
+const READABLE_STREAM_ASYNC_ITERATOR_HOST_TAG: u64 = 0x5253_4153_594E_4349; // "RSASYNCI"
 const WRITABLE_STREAM_HOST_TAG: u64 = 0x5752_4954_5354_524D; // "WRITSTRM"
 const WRITABLE_STREAM_DEFAULT_WRITER_HOST_TAG: u64 = 0x5753_5752_4954_4552; // "WSWRITER"
 const TRANSFORM_STREAM_HOST_TAG: u64 = 0x5452_4E53_5354_524D; // "TRNSSTRM"
@@ -1264,6 +1265,13 @@ fn readable_stream_values_native(
   scope
     .heap_mut()
     .object_set_prototype(iter, Some(intr.object_prototype()))?;
+  scope.heap_mut().object_set_host_slots(
+    iter,
+    HostSlots {
+      a: READABLE_STREAM_ASYNC_ITERATOR_HOST_TAG,
+      b: 0,
+    },
+  )?;
 
   set_data_prop(scope, iter, ITER_READER_KEY, Value::Object(reader_obj), false)?;
   set_data_prop(

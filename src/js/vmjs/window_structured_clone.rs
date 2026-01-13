@@ -2851,6 +2851,16 @@ mod tests {
     )?;
     assert_eq!(get_string(&realm, stream), "DataCloneError");
 
+    let iter = realm.exec_script(
+      "try { structuredClone(new ReadableStream().values()); 'no' } catch (e) { e.name }",
+    )?;
+    assert_eq!(get_string(&realm, iter), "DataCloneError");
+
+    let async_iter = realm.exec_script(
+      "try { structuredClone((new ReadableStream())[Symbol.asyncIterator]()); 'no' } catch (e) { e.name }",
+    )?;
+    assert_eq!(get_string(&realm, async_iter), "DataCloneError");
+
     let reader = realm.exec_script(
       "try { structuredClone(new ReadableStream().getReader()); 'no' } catch (e) { e.name }",
     )?;
