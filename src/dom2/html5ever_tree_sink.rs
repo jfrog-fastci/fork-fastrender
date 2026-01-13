@@ -1044,13 +1044,16 @@ impl TreeSink for Dom2TreeSink {
     if !moved_children_snapshot.is_empty() {
       // Run pre-remove steps in reverse so offsets are updated as though children were removed from
       // the end towards the start. This matches a sequence of individual removals without requiring
-      // us to mutate the children list until we `take()` it below.
-      for (idx, &child) in moved_children_snapshot.iter().enumerate().rev() {
-        doc.live_range_pre_remove_steps(child, *node, idx);
-      }
+      // us to mutate the children list itself until we `take()` it below.
+      //
+      // Note: NodeIterator pre-remove steps depend on tree traversal order (e.g. finding the
+      // following node after a removed subtree). Detach each removed child's parent pointer as we go
+      // so subsequent pre-remove calls observe the tree as if removals happened sequentially.
       for (idx, &child) in moved_children_snapshot.iter().enumerate().rev() {
         doc.node_iterator_pre_remove_steps(child);
         doc.live_mutation.pre_remove(child, *node, idx);
+        doc.live_range_pre_remove_steps(child, *node, idx);
+        doc.node_mut(child).parent = None;
       }
       doc
         .live_mutation
@@ -1796,6 +1799,40 @@ mod tests {
       Some(from),
       "removing all children from a NodeIterator root should update the iterator reference to the root"
     );
+    assert_eq!(doc.node_iterator_pointer_before_reference(iter), Some(false));
+  }
+
+  #[test]
+  fn reparent_children_node_iterator_pointer_before_reference_true_does_not_reference_moved_node() {
+    let sink = Dom2TreeSink::new(None);
+    let root = sink.get_document();
+
+    let from = sink.create_element(html_name("div"), Vec::new(), ElementFlags::default());
+    let to = sink.create_element(html_name("div"), Vec::new(), ElementFlags::default());
+    sink.append(&root, NodeOrText::AppendNode(from));
+    sink.append(&root, NodeOrText::AppendNode(to));
+
+    let a = sink.create_element(html_name("a"), Vec::new(), ElementFlags::default());
+    let b = sink.create_element(html_name("b"), Vec::new(), ElementFlags::default());
+    sink.append(&from, NodeOrText::AppendNode(a));
+    sink.append(&from, NodeOrText::AppendNode(b));
+
+    // Point the iterator at `a` with the pointer before the reference. When `a` is removed, the
+    // NodeIterator pre-remove algorithm would normally try to advance to the following node. Since
+    // `b` is also being removed, we must ensure `b` is treated as already removed when processing
+    // `a` (otherwise the iterator could end up referencing a moved node).
+    let iter = {
+      let mut doc = sink.document_mut();
+      let iter = doc.create_node_iterator(from);
+      doc.set_node_iterator_reference_and_pointer(iter, a, /* pointer_before_reference */ true);
+      iter
+    };
+
+    sink.reparent_children(&from, &to);
+
+    let doc = sink.document();
+    assert!(doc.node(from).children.is_empty());
+    assert_eq!(doc.node_iterator_reference(iter), Some(from));
     assert_eq!(doc.node_iterator_pointer_before_reference(iter), Some(false));
   }
 }
