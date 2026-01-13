@@ -88,10 +88,10 @@ binary)”). Notably:
 - `FASTR_BROWSER_MAX_PIXELS`, `FASTR_BROWSER_MAX_DIM_PX`, `FASTR_BROWSER_MAX_DPR` – hard safety
   limits for viewport/DPR to prevent huge in-process pixmap allocations when the window is resized
   to extreme dimensions or when the display has a very high DPI scale.
-- `FASTR_BROWSER_WGPU_FALLBACK=1` / `browser --wgpu-fallback` – force `wgpu` to use a fallback (software)
-  adapter when selecting a GPU for the windowed UI.
-- `FASTR_BROWSER_WGPU_BACKENDS=...` / `browser --wgpu-backend ...` – force a specific `wgpu` backend
-  (e.g. `gl`) when the default backend selection fails.
+- `FASTR_BROWSER_WGPU_FALLBACK=1` / `browser --force-fallback-adapter` (alias: `--wgpu-fallback`) – force
+  `wgpu` to use a fallback (software) adapter when selecting a GPU for the windowed UI.
+- `FASTR_BROWSER_WGPU_BACKENDS=...` / `browser --wgpu-backends ...` (alias: `--wgpu-backend`) – restrict
+  the `wgpu` backend set (for example `gl`) when the default backend selection fails.
 
 When running against arbitrary real-world pages, consider using the repo’s resource limit wrapper
 (see [browser_ui.md](browser_ui.md)).
