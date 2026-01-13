@@ -120,6 +120,7 @@ Before migrating anything, prove it works.
    - Chrome frame renders at 60fps
    - No perceptible lag vs egui
    - Memory usage is reasonable
+   - Tip: set `FASTR_LOG_INTERACTION_INVALIDATION=1` to print one line per chrome render describing whether it was paint-only vs restyle/relayout (useful when dogfooding hover/focus performance).
 
 ### P1: Simple chrome components
 
