@@ -210,6 +210,32 @@ mod perf_log {
       idle_frames_total: u64,
       idle_frames_window: u64,
     },
+    /// Page frame upload/coalescing stats sampled during `App::flush_pending_frame_uploads`.
+    ///
+    /// Emitted only when at least one frame was uploaded or the coalescer observed activity
+    /// (push/overwrite/drain) since the last sample.
+    FrameUpload {
+      schema_version: u32,
+      t_ms: u64,
+      window_id: &'a str,
+      active_tab_id: Option<u64>,
+      uploaded_tab_id: Option<u64>,
+      uploads: u32,
+      uploaded_bytes: u64,
+      upload_last_ms: f64,
+      upload_total_ms: f64,
+      textures_created: u32,
+      textures_updated: u32,
+      push_calls: u64,
+      overwritten_frames: u64,
+      drained_frames: u64,
+      pending_tabs: u64,
+      max_pending_tabs: u64,
+      pending_bytes: u64,
+      received_total: u64,
+      dropped_total: u64,
+      drained_total: u64,
+    },
   }
 
   pub fn write_event_jsonl<W: Write>(writer: &mut W, event: &PerfEvent<'_>) -> io::Result<()> {
@@ -14168,6 +14194,19 @@ impl App {
 
   fn flush_pending_frame_uploads(&mut self) {
     let _span = self.trace.span("flush_pending_frame_uploads", "ui.upload");
+
+    #[derive(Debug, Clone, Copy, Default)]
+    struct FrameUploadSample {
+      uploaded_tab_id: Option<fastrender::ui::TabId>,
+      uploads: u32,
+      uploaded_bytes: u64,
+      upload_last_ms: f32,
+      upload_total_ms: f32,
+      textures_created: u32,
+      textures_updated: u32,
+    }
+
+    let mut sample = FrameUploadSample::default();
     // Reset per-frame upload stats so the HUD remains stable when idle (or when uploads are
     // rate-limited).
     if let Some(hud) = self.hud.as_mut() {
@@ -14179,10 +14218,48 @@ impl App {
       hud.last_upload_textures_updated = 0;
     }
 
-    let record_frame_upload_stats = |app: &mut Self| {
+    let record_frame_upload_stats = |app: &mut Self, sample: FrameUploadSample| {
       let stats = app.pending_frame_uploads.take_stats();
       if let Some(hud) = app.hud.as_mut() {
         hud.frame_upload_stats = stats;
+      }
+      if let Some(perf) = app.perf_log.as_ref() {
+        // Avoid spamming the log when nothing is happening (idle frames).
+        let saw_activity = sample.uploads > 0
+          || stats.push_calls > 0
+          || stats.overwritten_frames > 0
+          || stats.drained_frames > 0;
+        if saw_activity {
+          let at = std::time::Instant::now();
+          let active_tab_id = app.browser_state.active_tab_id().map(|id| id.0);
+          let pending_bytes = app.pending_frame_uploads.total_estimated_bytes();
+          let received_total = app.pending_frame_uploads.received_total();
+          let dropped_total = app.pending_frame_uploads.dropped_total();
+          let drained_total = app.pending_frame_uploads.drained_total();
+          let event = perf_log::PerfEvent::FrameUpload {
+            schema_version: perf_log::SCHEMA_VERSION,
+            t_ms: perf.ts_ms(at),
+            window_id: &perf.window_id,
+            active_tab_id,
+            uploaded_tab_id: sample.uploaded_tab_id.map(|id| id.0),
+            uploads: sample.uploads,
+            uploaded_bytes: sample.uploaded_bytes,
+            upload_last_ms: f64::from(sample.upload_last_ms),
+            upload_total_ms: f64::from(sample.upload_total_ms),
+            textures_created: sample.textures_created,
+            textures_updated: sample.textures_updated,
+            push_calls: stats.push_calls,
+            overwritten_frames: stats.overwritten_frames,
+            drained_frames: stats.drained_frames,
+            pending_tabs: stats.pending_tabs as u64,
+            max_pending_tabs: stats.max_pending_tabs as u64,
+            pending_bytes,
+            received_total,
+            dropped_total,
+            drained_total,
+          };
+          perf.writer.borrow_mut().emit(&event);
+        }
       }
       stats
     };
@@ -14192,7 +14269,7 @@ impl App {
 
     let Some(tab_id) = self.browser_state.active_tab_id() else {
       self.next_page_upload_redraw = None;
-      record_frame_upload_stats(self);
+      record_frame_upload_stats(self, sample);
       return;
     };
 
@@ -14201,7 +14278,7 @@ impl App {
     // time on every redraw (especially during resize).
     if !self.pending_frame_uploads.has_pending_for_tab(tab_id) {
       self.next_page_upload_redraw = None;
-      record_frame_upload_stats(self);
+      record_frame_upload_stats(self, sample);
       return;
     }
 
@@ -14224,7 +14301,7 @@ impl App {
                 .map(|existing| existing.min(earliest))
                 .unwrap_or(earliest),
             );
-            record_frame_upload_stats(self);
+            record_frame_upload_stats(self, sample);
             return;
           }
         } else {
@@ -14241,13 +14318,13 @@ impl App {
 
     let should_time_uploads = self.hud.is_some() || self.perf_log_enabled;
     let Some(frame_ready) = self.pending_frame_uploads.take(tab_id) else {
-      record_frame_upload_stats(self);
+      record_frame_upload_stats(self, sample);
       return;
     };
 
     // Ignore stale frames for tabs that have already been closed.
     if self.browser_state.tab(frame_ready.tab_id).is_none() {
-      record_frame_upload_stats(self);
+      record_frame_upload_stats(self, sample);
       return;
     }
 
@@ -14276,6 +14353,7 @@ impl App {
       if let Some(hud) = self.hud.as_mut() {
         hud.last_upload_textures_updated = textures_updated;
       }
+      sample.textures_updated = textures_updated;
     } else {
       let textures_created = 1u32;
       let textures_updated = 1u32;
@@ -14300,6 +14378,8 @@ impl App {
         hud.last_upload_textures_created = textures_created;
         hud.last_upload_textures_updated = textures_updated;
       }
+      sample.textures_created = textures_created;
+      sample.textures_updated = textures_updated;
     }
 
     if let Some(hud) = self.hud.as_mut() {
@@ -14314,7 +14394,13 @@ impl App {
       hud.upload_total_ms = upload_total_ms;
     }
 
-    let frame_upload_stats = record_frame_upload_stats(self);
+    sample.uploaded_tab_id = Some(tab_id);
+    sample.uploads = 1;
+    sample.uploaded_bytes = uploaded_bytes;
+    sample.upload_last_ms = upload_last_ms;
+    sample.upload_total_ms = upload_total_ms;
+
+    let frame_upload_stats = record_frame_upload_stats(self, sample);
     if self.perf_log_enabled {
       let pending_bytes = self.pending_frame_uploads.total_estimated_bytes();
       let received_total = self.pending_frame_uploads.received_total();
