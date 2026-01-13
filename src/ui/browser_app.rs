@@ -698,6 +698,20 @@ pub struct ChromeState {
   pub drag_start_pointer_pos: Option<egui::Pos2>,
   #[cfg(feature = "browser_ui")]
   pub drag_target_index: Option<usize>,
+  /// Transient "drag a hovered link to the address bar" state.
+  ///
+  /// When the user begins a primary-button drag while the active tab reports a `hovered_url`, the
+  /// chrome layer can treat it as a link drag candidate and, on drop over the address bar, trigger
+  /// a navigation.
+  ///
+  /// This is kept behind the `browser_ui` feature gate so the core renderer does not depend on egui
+  /// types.
+  #[cfg(feature = "browser_ui")]
+  pub link_drag_url: Option<String>,
+  #[cfg(feature = "browser_ui")]
+  pub link_drag_start_pos: Option<egui::Pos2>,
+  #[cfg(feature = "browser_ui")]
+  pub link_drag_active: bool,
 }
 
 impl ChromeState {
@@ -706,6 +720,13 @@ impl ChromeState {
     self.dragging_tab_id = None;
     self.drag_start_pointer_pos = None;
     self.drag_target_index = None;
+  }
+
+  #[cfg(feature = "browser_ui")]
+  pub fn clear_link_drag(&mut self) {
+    self.link_drag_url = None;
+    self.link_drag_start_pos = None;
+    self.link_drag_active = false;
   }
 }
 

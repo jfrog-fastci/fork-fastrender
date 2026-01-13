@@ -112,6 +112,11 @@ fn format_bytes(bytes: u64) -> String {
 }
 
 const MIN_CHROME_HIT_TARGET_POINTS: f32 = 30.0;
+/// Minimum pointer travel (in egui points) required to treat a primary press as a drag gesture.
+///
+/// This is used for chrome-level link drag/drop (drag a hovered link to the address bar) to avoid
+/// triggering a navigation on normal clicks.
+const LINK_DRAG_THRESHOLD_POINTS: f32 = 6.0;
 
 #[derive(Clone, Copy)]
 struct FocusRingStyle {
@@ -1423,6 +1428,8 @@ pub fn chrome_ui_with_bookmarks(
          });
        }
        address_bar_rect = Some(bar_rect);
+       #[cfg(test)]
+       store_test_rect(ctx, "chrome_address_bar_rect", bar_rect);
        if !show_text_edit {
          // When the address bar is in display mode (non-editing), still expose a focusable element
          // for assistive tech to activate.
@@ -3102,6 +3109,89 @@ pub fn chrome_ui_with_bookmarks(
         app.chrome.tab_context_menu_rect = Some((rect.min.x, rect.min.y, rect.max.x, rect.max.y));
       }
     }
+  }
+
+  // -----------------------------------------------------------------------------
+  // Drag hovered link → address bar navigation
+  // -----------------------------------------------------------------------------
+  //
+  // Common browser UX: drag a link from page content and drop it onto the address bar to navigate.
+  //
+  // This is implemented at the chrome layer (egui) using the worker-provided `hovered_url` as the
+  // drag payload. We intentionally keep this minimal: if the user doesn't exceed the drag
+  // threshold, we do nothing and let the worker handle the normal click navigation.
+  let hovered_url = app.active_tab().and_then(|t| t.hovered_url.clone());
+  let (events, primary_down) = ctx.input(|i| (i.events.clone(), i.pointer.primary_down()));
+  let mut dropped_url: Option<String> = None;
+
+  for event in events {
+    match event {
+      egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        ..
+      } => {
+        // Avoid treating address bar interactions as link drags even if the worker hover state is
+        // stale (e.g. pointer moved to chrome without the worker receiving a hover-clear update).
+        let pressed_over_address_bar = address_bar_rect.is_some_and(|r| r.contains(pos));
+        if pressed_over_address_bar {
+          app.chrome.clear_link_drag();
+          continue;
+        }
+
+        if let Some(url) = hovered_url.clone() {
+          app.chrome.link_drag_url = Some(url);
+          app.chrome.link_drag_start_pos = Some(pos);
+          app.chrome.link_drag_active = false;
+        } else {
+          app.chrome.clear_link_drag();
+        }
+      }
+      egui::Event::PointerMoved(pos) => {
+        if app.chrome.link_drag_url.is_some()
+          && !app.chrome.link_drag_active
+          && app.chrome.link_drag_start_pos.is_some()
+        {
+          let start = app
+            .chrome
+            .link_drag_start_pos
+            .expect("checked is_some above");
+          let dx = pos.x - start.x;
+          let dy = pos.y - start.y;
+          let dist_sq = dx * dx + dy * dy;
+          if dist_sq >= LINK_DRAG_THRESHOLD_POINTS * LINK_DRAG_THRESHOLD_POINTS {
+            app.chrome.link_drag_active = true;
+          }
+        }
+      }
+      egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        ..
+      } => {
+        if app.chrome.link_drag_url.is_some() {
+          if app.chrome.link_drag_active && address_bar_rect.is_some_and(|r| r.contains(pos)) {
+            dropped_url = app.chrome.link_drag_url.clone();
+          }
+          app.chrome.clear_link_drag();
+        }
+      }
+      egui::Event::PointerGone => {
+        app.chrome.clear_link_drag();
+      }
+      _ => {}
+    }
+  }
+
+  // Ensure we don't keep drag state alive if egui loses track of the pointer/button state.
+  if !primary_down {
+    app.chrome.clear_link_drag();
+  }
+
+  if let Some(url) = dropped_url {
+    actions.push(ChromeAction::NavigateTo(url));
   }
 
   actions
@@ -5036,6 +5126,76 @@ mod tests {
     );
     assert_eq!(app.active_tab_id(), Some(tab_a));
     assert!(app.chrome.dragging_tab_id.is_none());
+  }
+
+  #[test]
+  fn dragging_hovered_link_to_address_bar_emits_navigate_action() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+    app
+      .active_tab_mut()
+      .expect("expected active tab")
+      .hovered_url = Some("https://example.com".to_string());
+
+    let ctx = egui::Context::default();
+
+    // Frame 0: layout the chrome and capture the address bar rect.
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+    let address_bar_rect = expect_temp_rect(&ctx, "chrome_address_bar_rect");
+
+    let press_pos = egui::pos2(address_bar_rect.center().x, address_bar_rect.max.y + 120.0);
+    let drag_pos = egui::pos2(
+      press_pos.x,
+      press_pos.y + super::LINK_DRAG_THRESHOLD_POINTS + 10.0,
+    );
+    let drop_pos = address_bar_rect.center();
+
+    // Frame 1: press on a hovered link (outside the address bar).
+    begin_frame(
+      &ctx,
+      vec![
+        egui::Event::PointerMoved(press_pos),
+        egui::Event::PointerButton {
+          pos: press_pos,
+          button: egui::PointerButton::Primary,
+          pressed: true,
+          modifiers: egui::Modifiers::default(),
+        },
+      ],
+    );
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    // Frame 2: move far enough to exceed the drag threshold.
+    begin_frame(&ctx, vec![egui::Event::PointerMoved(drag_pos)]);
+    let _ = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    // Frame 3: release over the address bar.
+    begin_frame(
+      &ctx,
+      vec![
+        egui::Event::PointerMoved(drop_pos),
+        egui::Event::PointerButton {
+          pos: drop_pos,
+          button: egui::PointerButton::Primary,
+          pressed: false,
+          modifiers: egui::Modifiers::default(),
+        },
+      ],
+    );
+    let actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|a| matches!(a, ChromeAction::NavigateTo(url) if url == "https://example.com")),
+      "expected ChromeAction::NavigateTo(\"https://example.com\"), got {actions:?}"
+    );
   }
 
   #[test]
