@@ -136,6 +136,14 @@ pub enum KeyAction {
   Redo,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DragDropKind {
+  /// Dragging a selected text range from a focused `<input>` / `<textarea>`.
+  TextSelection,
+  /// Dragging an active document selection (outside form controls).
+  DocumentSelection,
+}
+
 #[derive(Debug, Clone)]
 pub struct InteractionEngine {
   state: InteractionState,
@@ -4475,6 +4483,29 @@ impl InteractionEngine {
   /// external per-tab visited URL store without mutating the DOM.
   pub fn set_visited_links(&mut self, visited_links: FxHashSet<usize>) {
     self.state.visited_links = visited_links;
+  }
+
+  /// Return the kind of *active* drag-and-drop gesture, if any.
+  ///
+  /// Drag-and-drop gestures begin as "candidates" when the pointer is pressed inside an existing
+  /// selection highlight, but only become active after the pointer crosses the drag threshold and a
+  /// payload has been captured.
+  pub fn drag_drop_active_kind(&self) -> Option<DragDropKind> {
+    if self
+      .text_drag_drop
+      .as_ref()
+      .is_some_and(|state| matches!(state, TextDragDropState::Active(_)))
+    {
+      return Some(DragDropKind::TextSelection);
+    }
+    if self
+      .document_selection_drag_drop
+      .as_ref()
+      .is_some_and(|state| state.payload.is_some())
+    {
+      return Some(DragDropKind::DocumentSelection);
+    }
+    None
   }
 
   /// Debug/test helper: validate internal interaction invariants.

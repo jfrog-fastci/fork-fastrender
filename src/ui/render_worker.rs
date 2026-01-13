@@ -422,6 +422,16 @@ fn dom_is_textarea(node: &crate::dom::DomNode) -> bool {
     .is_some_and(|tag| tag.eq_ignore_ascii_case("textarea"))
 }
 
+fn dom_is_editable_text_drop_target(node: &crate::dom::DomNode) -> bool {
+  // Align with the interaction engine's drop-target checks:
+  // - only text-like `<input>` / `<textarea>`
+  // - not disabled/readonly/inert (best-effort; some disabledness can be inherited from ancestors)
+  (dom_is_text_input(node) || dom_is_textarea(node))
+    && node.get_attribute_ref("disabled").is_none()
+    && node.get_attribute_ref("readonly").is_none()
+    && node.get_attribute_ref("inert").is_none()
+}
+
 fn dom_is_select(node: &crate::dom::DomNode) -> bool {
   node
     .tag_name()
@@ -525,10 +535,7 @@ fn js_find_form_owner_for_submitter(
   None
 }
 
-fn cursor_for_form_control(dom: &mut crate::dom::DomNode, dom_node_id: usize) -> CursorKind {
-  let Some(node) = crate::dom::find_node_mut_by_preorder_id(dom, dom_node_id) else {
-    return CursorKind::Default;
-  };
+fn cursor_for_form_control(node: &crate::dom::DomNode) -> CursorKind {
   let Some(tag) = node.tag_name() else {
     return CursorKind::Default;
   };
@@ -3053,56 +3060,79 @@ impl BrowserRuntime {
           (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
         let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
         let changed = engine.pointer_move(dom, box_tree, fragment_tree, scroll, viewport_point);
-        let (hovered_url, cursor, hovered_dom_node_id, hovered_dom_element_id) = if !pointer_in_page
-        {
-          (None, CursorKind::Default, None, None)
-        } else {
-          let page_point = viewport_point.translate(scroll.viewport);
-          match hit_test_dom(dom, box_tree, fragment_tree, page_point) {
-            Some(hit) => {
-              let element_id = crate::dom::find_node_mut_by_preorder_id(dom, hit.dom_node_id)
-                .and_then(|node| node.get_attribute_ref("id"))
-                .map(|id| id.to_string());
-
-              // Prefer the computed `cursor` property (including UA stylesheet defaults) so hover
-              // behaviour matches the platform. Only fall back to legacy heuristics when the computed
-              // cursor is `auto`.
-              let css_cursor_kind = box_node_by_id(box_tree, hit.box_id)
-                .and_then(|node| cursor_kind_from_css_cursor(node.style.cursor));
-
-              // `hovered_url` remains a semantic link property even when CSS overrides the cursor.
-              let hovered_url = match hit.kind {
-                HitTestKind::Link => hit
-                  .href
-                  .as_deref()
-                  .and_then(|href| resolve_link_url(&base_url, href)),
-                _ => None,
-              };
-
-              let cursor = match css_cursor_kind {
-                Some(cursor) => cursor,
-                None => match hit.kind {
-                  HitTestKind::Link => {
-                    // Keep showing the hand cursor over links even when we reject the URL scheme
-                    // (e.g. `javascript:`).
-                    CursorKind::Pointer
-                  }
-                  HitTestKind::FormControl => cursor_for_form_control(dom, hit.dom_node_id),
-                  _ => {
-                    if box_id_is_selectable_text_for_document_cursor(box_tree, hit.box_id) {
-                      CursorKind::Text
-                    } else {
-                      CursorKind::Default
+        let (hovered_url, mut cursor, hovered_dom_node_id, hovered_dom_element_id, hover_is_drop_target) =
+          if !pointer_in_page {
+            (None, CursorKind::Default, None, None, false)
+          } else {
+            let page_point = viewport_point.translate(scroll.viewport);
+            match hit_test_dom(dom, box_tree, fragment_tree, page_point) {
+              Some(hit) => {
+                let (element_id, is_drop_target, form_control_cursor) =
+                  match crate::dom::find_node_mut_by_preorder_id(dom, hit.dom_node_id) {
+                    Some(node) => {
+                      let element_id = node.get_attribute_ref("id").map(|id| id.to_string());
+                      (
+                        element_id,
+                        dom_is_editable_text_drop_target(node),
+                        cursor_for_form_control(node),
+                      )
                     }
-                  }
-                },
-              };
+                    None => (None, false, CursorKind::Default),
+                  };
 
-              (hovered_url, cursor, Some(hit.dom_node_id), element_id)
+                // Prefer the computed `cursor` property (including UA stylesheet defaults) so hover
+                // behaviour matches the platform. Only fall back to legacy heuristics when the computed
+                // cursor is `auto`.
+                let css_cursor_kind = box_node_by_id(box_tree, hit.box_id)
+                  .and_then(|node| cursor_kind_from_css_cursor(node.style.cursor));
+
+                // `hovered_url` remains a semantic link property even when CSS overrides the cursor.
+                let hovered_url = match hit.kind {
+                  HitTestKind::Link => hit
+                    .href
+                    .as_deref()
+                    .and_then(|href| resolve_link_url(&base_url, href)),
+                  _ => None,
+                };
+
+                let cursor = match css_cursor_kind {
+                  Some(cursor) => cursor,
+                  None => match hit.kind {
+                    HitTestKind::Link => {
+                      // Keep showing the hand cursor over links even when we reject the URL scheme
+                      // (e.g. `javascript:`).
+                      CursorKind::Pointer
+                    }
+                    HitTestKind::FormControl => form_control_cursor,
+                    _ => {
+                      if box_id_is_selectable_text_for_document_cursor(box_tree, hit.box_id) {
+                        CursorKind::Text
+                      } else {
+                        CursorKind::Default
+                      }
+                    }
+                  },
+                };
+
+                (
+                  hovered_url,
+                  cursor,
+                  Some(hit.dom_node_id),
+                  element_id,
+                  is_drop_target,
+                )
+              }
+              None => (None, CursorKind::Default, None, None, false),
             }
-            None => (None, CursorKind::Default, None, None),
-          }
-        };
+          };
+
+        if pointer_in_page && engine.drag_drop_active_kind().is_some() {
+          cursor = if hover_is_drop_target {
+            CursorKind::Grabbing
+          } else {
+            CursorKind::NotAllowed
+          };
+        }
         (
           changed,
           (
