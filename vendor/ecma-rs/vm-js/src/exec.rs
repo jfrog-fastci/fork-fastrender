@@ -24581,10 +24581,22 @@ fn async_call_member_after_base(
   let callee_value = {
     let mut key_scope = scope.reborrow();
     key_scope.push_root(base)?;
-    let key_s = key_scope.alloc_string(&member.right)?;
-    let reference = Reference::Property {
-      base,
-      key: PropertyKey::from_string(key_s),
+    let reference = if member.right.starts_with('#') {
+      let sym = key_scope
+        .heap()
+        .resolve_private_name_symbol(evaluator.env.lexical_env, &member.right)?
+        .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+      Reference::Private {
+        base,
+        sym,
+        name: &member.right,
+      }
+    } else {
+      let key_s = key_scope.alloc_string(&member.right)?;
+      Reference::Property {
+        base,
+        key: PropertyKey::from_string(key_s),
+      }
     };
     evaluator
       .get_value_from_reference(&mut key_scope, &reference)
