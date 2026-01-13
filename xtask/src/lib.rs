@@ -12,10 +12,23 @@ pub mod lint_no_merge_conflicts;
 pub mod lint_test_global_state;
 pub mod page_loop_plan;
 pub mod pageset_failure_fixtures;
+// `import_page_fixture` is normally only built for the `xtask` CLI binary, but we compile it in the
+// library crate for unit tests so its HTML rewrite logic can be exercised without enabling the
+// binary test harness (disabled in `xtask/Cargo.toml` for performance).
+#[cfg(test)]
+mod import_page_fixture;
 pub mod webidl;
 pub mod webidl_bindings_codegen;
 use serde::Deserialize;
 use std::process::Command;
+
+#[cfg(test)]
+fn repo_root() -> std::path::PathBuf {
+  std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    .parent()
+    .expect("xtask manifest should be in the repository root")
+    .to_path_buf()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PagesetFontMode {

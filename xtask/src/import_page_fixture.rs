@@ -182,6 +182,13 @@ pub fn run_import_page_fixture(mut args: ImportPageFixtureArgs) -> Result<()> {
     catalog.add_resource(url, info, &resource)?;
   }
 
+  // Some sites (notably MDN) ship JS-driven live-sample iframes that have placeholder `src`
+  // attributes, but include `data-live-path` + `data-live-id` metadata and embed the HTML/CSS
+  // source inline as code blocks. If the bundler didn't capture the derived iframe HTML (common
+  // when the authored `src` is `about:blank`), synthesize deterministic HTML assets from the
+  // embedded sample code so offline fixtures still exercise the demos in JS-off mode.
+  inject_live_sample_iframe_assets(&document_html, &effective_base, &mut catalog)?;
+
   catalog.rewrite_stylesheets()?;
   catalog.rewrite_html_assets(args.legacy_rewrite, args.rewrite_scripts)?;
 
@@ -311,6 +318,224 @@ fn is_media_resource(info: &BundledResourceInfo, res: &FetchedResource) -> bool 
       | "m3u8"
       | "mpd"
   )
+}
+
+fn inject_live_sample_iframe_assets(
+  document_html: &str,
+  base_url: &Url,
+  catalog: &mut AssetCatalog,
+) -> Result<()> {
+  #[derive(Default)]
+  struct LiveSampleBlocks {
+    html: Vec<String>,
+    css: Vec<String>,
+    js: Vec<String>,
+  }
+
+  fn extract_blocks(html: &str, live_id: &str) -> LiveSampleBlocks {
+    fn capture_first_match<'t>(
+      caps: &regex::Captures<'t>,
+      groups: &[usize],
+    ) -> Option<regex::Match<'t>> {
+      groups.iter().find_map(|idx| caps.get(*idx))
+    }
+
+    // MDN uses `live-sample---<id>` today, but older dumps have used `live-sample___<id>`.
+    let pre_regex = Regex::new(&format!(
+      "(?is)<pre\\b[^>]*\\b(?:live-sample---{}|live-sample___{})\\b[^>]*>.*?</pre>",
+      regex::escape(live_id),
+      regex::escape(live_id),
+    ))
+    .expect("live sample <pre> regex must compile");
+    let class_attr =
+      Regex::new("(?is)(?:^|\\s)class\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+        .expect("class attr regex must compile");
+    let brush_lang =
+      Regex::new("(?i)\\bbrush:\\s*([a-z0-9_-]+)").expect("brush lang regex must compile");
+    let code_inner =
+      Regex::new("(?is)<code\\b[^>]*>(?P<body>.*?)</code>").expect("code inner regex must compile");
+    let strip_tags =
+      Regex::new("(?is)<[^>]+>").expect("strip tags regex must compile for code blocks");
+
+    let mut blocks = LiveSampleBlocks::default();
+    for pre_match in pre_regex.find_iter(html) {
+      let pre = &html[pre_match.start()..pre_match.end()];
+
+      let class_value = class_attr
+        .captures(pre)
+        .and_then(|caps| capture_first_match(&caps, &[1, 2, 3]))
+        .map(|m| m.as_str().to_string())
+        .unwrap_or_default();
+
+      let lang = brush_lang
+        .captures(&class_value)
+        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_ascii_lowercase()))
+        .or_else(|| {
+          if class_value.to_ascii_lowercase().contains("language-html") {
+            Some("html".to_string())
+          } else if class_value.to_ascii_lowercase().contains("language-css") {
+            Some("css".to_string())
+          } else if class_value.to_ascii_lowercase().contains("language-js")
+            || class_value
+              .to_ascii_lowercase()
+              .contains("language-javascript")
+          {
+            Some("js".to_string())
+          } else {
+            None
+          }
+        });
+
+      let Some(lang) = lang else {
+        continue;
+      };
+
+      let raw_code = code_inner
+        .captures(pre)
+        .and_then(|caps| caps.name("body").map(|m| m.as_str().to_string()))
+        .unwrap_or_default();
+      let without_markup = strip_tags.replace_all(&raw_code, "");
+      let decoded = decode_html_entities_if_needed(without_markup.trim())
+        .trim()
+        .to_string();
+      if decoded.is_empty() {
+        continue;
+      }
+
+      match lang.as_str() {
+        "html" => blocks.html.push(decoded),
+        "css" => blocks.css.push(decoded),
+        "js" | "javascript" => blocks.js.push(decoded),
+        _ => {}
+      }
+    }
+    blocks
+  }
+
+  fn build_live_sample_document(blocks: LiveSampleBlocks) -> Option<String> {
+    if blocks.html.is_empty() && blocks.css.is_empty() && blocks.js.is_empty() {
+      return None;
+    }
+
+    let html_body = blocks.html.join("\n");
+    let css = blocks.css.join("\n\n");
+    let js = blocks.js.join("\n\n");
+
+    let mut out = String::new();
+    out.push_str("<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n");
+    if !css.is_empty() {
+      out.push_str("<style>\n");
+      out.push_str(&css);
+      out.push_str("\n</style>\n");
+    }
+    out.push_str("</head>\n<body>\n");
+    out.push_str(&html_body);
+    if !js.is_empty() {
+      out.push_str("\n<script>\n");
+      out.push_str(&js);
+      out.push_str("\n</script>\n");
+    }
+    out.push_str("\n</body>\n</html>\n");
+    Some(out)
+  }
+
+  fn capture_first_match<'t>(
+    caps: &regex::Captures<'t>,
+    groups: &[usize],
+  ) -> Option<regex::Match<'t>> {
+    groups.iter().find_map(|idx| caps.get(*idx))
+  }
+
+  let iframe_tag = Regex::new("(?is)<iframe\\b[^>]*>").expect("iframe tag regex must compile");
+  let attr_src = Regex::new("(?is)(?:^|\\s)src\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+    .expect("iframe src attr regex must compile");
+  let attr_data_live_path =
+    Regex::new("(?is)(?:^|\\s)data-live-path\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+      .expect("data-live-path attr regex must compile");
+  let attr_data_live_id =
+    Regex::new("(?is)(?:^|\\s)data-live-id\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+      .expect("data-live-id attr regex must compile");
+
+  let mut seen: HashSet<String> = HashSet::new();
+  for tag_match in iframe_tag.find_iter(document_html) {
+    let tag = &document_html[tag_match.start()..tag_match.end()];
+
+    let src_match = attr_src
+      .captures(tag)
+      .and_then(|caps| capture_first_match(&caps, &[1, 2, 3]));
+    let src_is_placeholder = src_match
+      .as_ref()
+      .map(|m| {
+        let value = decode_html_entities_if_needed(m.as_str());
+        fastrender::dom::img_src_is_placeholder(value.trim())
+      })
+      .unwrap_or(true);
+
+    if !src_is_placeholder {
+      continue;
+    }
+
+    let live_path = attr_data_live_path
+      .captures(tag)
+      .and_then(|caps| capture_first_match(&caps, &[1, 2, 3]))
+      .map(|m| {
+        decode_html_entities_if_needed(m.as_str())
+          .trim()
+          .to_string()
+      })
+      .filter(|s| !s.is_empty());
+    let live_id = attr_data_live_id
+      .captures(tag)
+      .and_then(|caps| capture_first_match(&caps, &[1, 2, 3]))
+      .map(|m| {
+        decode_html_entities_if_needed(m.as_str())
+          .trim()
+          .to_string()
+      })
+      .filter(|s| !s.is_empty());
+
+    let (Some(path), Some(id)) = (live_path, live_id) else {
+      continue;
+    };
+
+    let synthesized = format!("{path}{id}.html");
+    let Some(resolved) = resolve_href(base_url.as_str(), &synthesized) else {
+      continue;
+    };
+
+    if !seen.insert(resolved.clone()) {
+      continue;
+    }
+    if catalog.url_to_filename.contains_key(&resolved) {
+      continue;
+    }
+
+    // Attempt to synthesize the iframe HTML from embedded live-sample code blocks.
+    let blocks = extract_blocks(document_html, &id);
+    let Some(live_html) = build_live_sample_document(blocks) else {
+      continue;
+    };
+
+    let info = BundledResourceInfo {
+      path: format!("synthetic/{}.html", id),
+      content_type: Some("text/html; charset=utf-8".to_string()),
+      nosniff: false,
+      status: Some(200),
+      final_url: Some(resolved.clone()),
+      etag: None,
+      last_modified: None,
+      response_referrer_policy: None,
+      response_headers: None,
+      vary: None,
+      access_control_allow_origin: None,
+      timing_allow_origin: None,
+      access_control_allow_credentials: false,
+    };
+    let res = FetchedResource::new(live_html.into_bytes(), info.content_type.clone());
+    catalog.add_resource(&resolved, &info, &res)?;
+  }
+
+  Ok(())
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2003,6 +2228,101 @@ fn rewrite_html_resource_attrs(
   catalog: &mut AssetCatalog,
   rewrite_scripts: bool,
 ) -> Result<String> {
+  fn rewrite_iframe_live_sample_src_placeholders(input: &str) -> String {
+    fn capture_first_match<'t>(
+      caps: &regex::Captures<'t>,
+      groups: &[usize],
+    ) -> Option<regex::Match<'t>> {
+      groups.iter().find_map(|idx| caps.get(*idx))
+    }
+    fn insert_attr(tag: &mut String, key: &str, value: &str) {
+      let value = value.replace('\"', "&quot;");
+      let Some(close_idx) = tag.rfind('>') else {
+        return;
+      };
+
+      let mut insert_pos = close_idx;
+      let mut cursor = close_idx;
+      while cursor > 0 && tag.as_bytes()[cursor - 1].is_ascii_whitespace() {
+        cursor -= 1;
+      }
+      if cursor > 0 && tag.as_bytes()[cursor - 1] == b'/' {
+        insert_pos = cursor - 1;
+      }
+      tag.insert_str(insert_pos, &format!(" {key}=\"{value}\""));
+    }
+
+    let iframe_tag = Regex::new("(?is)<iframe\\b[^>]*>").expect("iframe tag regex must compile");
+    let attr_src = Regex::new("(?is)(?:^|\\s)src\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+      .expect("iframe src attr regex must compile");
+    let attr_data_live_path =
+      Regex::new("(?is)(?:^|\\s)data-live-path\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+        .expect("data-live-path attr regex must compile");
+    let attr_data_live_id =
+      Regex::new("(?is)(?:^|\\s)data-live-id\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+        .expect("data-live-id attr regex must compile");
+
+    let mut out = String::with_capacity(input.len());
+    let mut last = 0usize;
+    for tag_match in iframe_tag.find_iter(input) {
+      let tag = &input[tag_match.start()..tag_match.end()];
+      let mut rewritten_tag = tag.to_string();
+
+      let src_match = attr_src
+        .captures(&rewritten_tag)
+        .and_then(|caps| capture_first_match(&caps, &[1, 2, 3]));
+      let src_is_placeholder = src_match
+        .as_ref()
+        .map(|m| {
+          let value = decode_html_entities_if_needed(m.as_str());
+          fastrender::dom::img_src_is_placeholder(value.trim())
+        })
+        .unwrap_or(true);
+
+      if src_is_placeholder {
+        let live_path = attr_data_live_path
+          .captures(&rewritten_tag)
+          .and_then(|caps| capture_first_match(&caps, &[1, 2, 3]))
+          .map(|m| {
+            decode_html_entities_if_needed(m.as_str())
+              .trim()
+              .to_string()
+          })
+          .filter(|s| !s.is_empty());
+        let live_id = attr_data_live_id
+          .captures(&rewritten_tag)
+          .and_then(|caps| capture_first_match(&caps, &[1, 2, 3]))
+          .map(|m| {
+            decode_html_entities_if_needed(m.as_str())
+              .trim()
+              .to_string()
+          })
+          .filter(|s| !s.is_empty());
+        if let (Some(path), Some(id)) = (live_path, live_id) {
+          let synthesized = format!("{path}{id}.html");
+          if let Some(m) = src_match {
+            let start = m.start();
+            let end = m.end();
+            rewritten_tag = format!(
+              "{}{}{}",
+              &rewritten_tag[..start],
+              synthesized,
+              &rewritten_tag[end..]
+            );
+          } else {
+            insert_attr(&mut rewritten_tag, "src", &synthesized);
+          }
+        }
+      }
+
+      out.push_str(&input[last..tag_match.start()]);
+      out.push_str(&rewritten_tag);
+      last = tag_match.end();
+    }
+    out.push_str(&input[last..]);
+    out
+  }
+
   let stylesheet_urls: HashSet<String> = fastrender::css::loader::extract_css_links(
     input,
     base_url.as_str(),
@@ -2035,6 +2355,8 @@ fn rewrite_html_resource_attrs(
   rewritten = replace_attr_values_with(&img_src, &rewritten, &[1, 2, 3], |raw| {
     rewrite_reference(raw, base_url, ctx, catalog)
   })?;
+
+  rewritten = rewrite_iframe_live_sample_src_placeholders(&rewritten);
 
   let iframe_src =
     Regex::new("(?is)<iframe[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
@@ -2305,11 +2627,9 @@ fn rewrite_lazy_load_image_attrs(
     }
 
     if inserted_srcset && !attr_sizes.is_match(&rewritten_tag) {
-      let data_sizes_value = attr_data_sizes
-        .captures(&rewritten_tag)
-        .and_then(|caps| {
-          capture_first_match(&caps, &[1, 2, 3]).map(|m| m.as_str().trim().to_string())
-        });
+      let data_sizes_value = attr_data_sizes.captures(&rewritten_tag).and_then(|caps| {
+        capture_first_match(&caps, &[1, 2, 3]).map(|m| m.as_str().trim().to_string())
+      });
       if let Some(value) = data_sizes_value {
         if !value.is_empty() {
           insert_attr(&mut rewritten_tag, "sizes", &value);
@@ -2335,7 +2655,9 @@ fn rewrite_lazy_load_image_attrs(
       .and_then(|caps| capture_first_match(&caps, &[1, 2]).map(|m| m.as_str().to_string()));
     let srcset_needs_backfill = attr_srcset
       .captures(&rewritten_tag)
-      .and_then(|caps| capture_first_match(&caps, &[1, 2]).map(|m| srcset_is_placeholder(m.as_str())))
+      .and_then(|caps| {
+        capture_first_match(&caps, &[1, 2]).map(|m| srcset_is_placeholder(m.as_str()))
+      })
       .unwrap_or(false)
       || (!attr_srcset.is_match(&rewritten_tag) && data_srcset_value.is_some());
 
@@ -2381,9 +2703,9 @@ fn rewrite_lazy_load_image_attrs(
     }
 
     if inserted_srcset && !attr_sizes.is_match(&rewritten_tag) {
-      let data_sizes_value = attr_data_sizes
-        .captures(&rewritten_tag)
-        .and_then(|caps| capture_first_match(&caps, &[1, 2, 3]).map(|m| m.as_str().trim().to_string()));
+      let data_sizes_value = attr_data_sizes.captures(&rewritten_tag).and_then(|caps| {
+        capture_first_match(&caps, &[1, 2, 3]).map(|m| m.as_str().trim().to_string())
+      });
       if let Some(value) = data_sizes_value {
         if !value.is_empty() {
           insert_attr(&mut rewritten_tag, "sizes", &value);
@@ -3094,6 +3416,131 @@ mod tests {
     Ok(())
   }
 
+  fn write_synthetic_bundle_with_live_sample_iframe(dir: &Path) -> Result<()> {
+    let resources_dir = dir.join("resources");
+    fs::create_dir_all(&resources_dir)?;
+
+    // Simulate MDN "live sample" iframes that ship with placeholder `src` but include the
+    // live-sample metadata attributes.
+    let document_html = r#"<!doctype html>
+<html>
+  <body>
+    <iframe src="about:blank" data-live-path="/live/" data-live-id="frame"></iframe>
+  </body>
+</html>
+"#;
+    fs::write(dir.join("document.html"), document_html)?;
+
+    let frame_html = r#"<!doctype html>
+<html>
+  <head>
+    <style>@font-face{src:url(//cdn.example.test/font.woff2)}</style>
+  </head>
+  <body>
+    <img src="https://example.test/img.png">
+  </body>
+</html>
+"#;
+    fs::write(resources_dir.join("00000_frame.html"), frame_html)?;
+    fs::write(resources_dir.join("00001_img.png"), b"dummy png")?;
+    fs::write(resources_dir.join("00002_font.woff2"), b"dummy font")?;
+
+    let manifest = json!({
+      "version": 1,
+      "original_url": "https://example.test/",
+      "document": {
+        "path": "document.html",
+        "content_type": "text/html; charset=utf-8",
+        "final_url": "https://example.test/",
+        "status": 200,
+        "etag": null,
+        "last_modified": null
+      },
+      "render": {
+        "viewport": [800, 600],
+        "device_pixel_ratio": 1.0,
+        "scroll_x": 0.0,
+        "scroll_y": 0.0,
+        "full_page": false
+      },
+      "resources": {
+        "https://example.test/live/frame.html": {
+          "path": "resources/00000_frame.html",
+          "content_type": "text/html; charset=utf-8",
+          "status": 200,
+          "final_url": "https://example.test/live/frame.html",
+          "etag": null,
+          "last_modified": null
+        },
+        "https://example.test/img.png": {
+          "path": "resources/00001_img.png",
+          "content_type": "image/png",
+          "status": 200,
+          "final_url": "https://example.test/img.png",
+          "etag": null,
+          "last_modified": null
+        },
+        "https://cdn.example.test/font.woff2": {
+          "path": "resources/00002_font.woff2",
+          "content_type": "font/woff2",
+          "status": 200,
+          "final_url": "https://cdn.example.test/font.woff2",
+          "etag": null,
+          "last_modified": null
+        }
+      }
+    });
+    fs::write(
+      dir.join("bundle.json"),
+      serde_json::to_vec_pretty(&manifest).expect("manifest json"),
+    )?;
+
+    Ok(())
+  }
+
+  fn write_synthetic_bundle_with_embedded_live_sample_code_blocks(dir: &Path) -> Result<()> {
+    fs::create_dir_all(dir.join("resources"))?;
+
+    // Synthetic MDN-style code blocks that the importer can stitch into an iframe document when
+    // the derived `data-live-path + data-live-id + ".html"` resource is absent from the bundle.
+    let document_html = r#"<!doctype html>
+<html>
+  <body>
+    <pre class="brush: html notranslate live-sample---demo"><code>&lt;p&gt;Hello&lt;/p&gt;</code></pre>
+    <pre class="brush: css notranslate live-sample---demo"><code>p{color:red}</code></pre>
+    <iframe src="about:blank" data-live-path="/live/" data-live-id="demo"></iframe>
+  </body>
+</html>
+"#;
+    fs::write(dir.join("document.html"), document_html)?;
+
+    let manifest = json!({
+      "version": 1,
+      "original_url": "https://example.test/",
+      "document": {
+        "path": "document.html",
+        "content_type": "text/html; charset=utf-8",
+        "final_url": "https://example.test/",
+        "status": 200,
+        "etag": null,
+        "last_modified": null
+      },
+      "render": {
+        "viewport": [800, 600],
+        "device_pixel_ratio": 1.0,
+        "scroll_x": 0.0,
+        "scroll_y": 0.0,
+        "full_page": false
+      },
+      "resources": {}
+    });
+    fs::write(
+      dir.join("bundle.json"),
+      serde_json::to_vec_pretty(&manifest).expect("manifest json"),
+    )?;
+    Ok(())
+  }
+
   fn write_synthetic_bundle_with_font_face_fallbacks(dir: &Path) -> Result<()> {
     let resources_dir = dir.join("resources");
     fs::create_dir_all(&resources_dir)?;
@@ -3294,6 +3741,146 @@ body{background:url("/bg.png");}
     assert!(
       frame_html.contains(&woff2_asset),
       "iframe HTML should reference local font asset {woff2_asset}"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn imports_and_rewrites_iframe_data_live_path_id_placeholders() -> Result<()> {
+    let bundle_dir = tempdir()?;
+    write_synthetic_bundle_with_live_sample_iframe(bundle_dir.path())?;
+
+    let output = tempdir()?;
+    let output_root = output.path().join("fixtures");
+    let fixture_name = "example_live_sample";
+
+    run_import_page_fixture(ImportPageFixtureArgs {
+      bundle: bundle_dir.path().to_path_buf(),
+      fixture_name: fixture_name.to_string(),
+      output_root: output_root.clone(),
+      overwrite: true,
+      include_media: false,
+      media_max_bytes: DEFAULT_MEDIA_MAX_BYTES,
+      media_max_file_bytes: DEFAULT_MEDIA_MAX_FILE_BYTES,
+      allow_missing: false,
+      allow_http_references: false,
+      legacy_rewrite: false,
+      rewrite_scripts: false,
+      dry_run: false,
+    })?;
+
+    let fixture_dir = output_root.join(fixture_name);
+    let index_html = fs::read_to_string(fixture_dir.join("index.html"))?;
+    assert_no_remote_url_strings(&index_html);
+    assert!(
+      !index_html.contains("about:blank"),
+      "expected placeholder iframe src to be replaced with a live-sample URL and rewritten"
+    );
+
+    let assets_dir = fixture_dir.join(ASSETS_DIR);
+    let mut html_assets = Vec::new();
+    let mut png_asset = None;
+    let mut woff2_asset = None;
+    for entry in fs::read_dir(&assets_dir)? {
+      let entry = entry?;
+      if !entry.file_type()?.is_file() {
+        continue;
+      }
+      let filename = entry.file_name().to_string_lossy().to_string();
+      if filename.ends_with(".html") {
+        html_assets.push(filename);
+      } else if filename.ends_with(".png") {
+        png_asset = Some(filename);
+      } else if filename.ends_with(".woff2") {
+        woff2_asset = Some(filename);
+      }
+    }
+    assert_eq!(html_assets.len(), 1, "expected exactly one HTML asset");
+    let frame_asset = &html_assets[0];
+    assert!(
+      index_html.contains(&format!("{ASSETS_DIR}/{frame_asset}")),
+      "index.html should rewrite iframe src to point at the local HTML asset"
+    );
+
+    let frame_html = fs::read_to_string(assets_dir.join(frame_asset))?;
+    assert_no_remote_url_strings(&frame_html);
+
+    let png_asset = png_asset.expect("missing png asset");
+    let woff2_asset = woff2_asset.expect("missing woff2 asset");
+    assert!(
+      frame_html.contains(&png_asset),
+      "iframe HTML should reference local image asset {png_asset}"
+    );
+    assert!(
+      frame_html.contains(&woff2_asset),
+      "iframe HTML should reference local font asset {woff2_asset}"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn imports_and_synthesizes_live_sample_iframe_html_from_code_blocks() -> Result<()> {
+    let bundle_dir = tempdir()?;
+    write_synthetic_bundle_with_embedded_live_sample_code_blocks(bundle_dir.path())?;
+
+    let output = tempdir()?;
+    let output_root = output.path().join("fixtures");
+    let fixture_name = "example_live_sample_synth";
+
+    run_import_page_fixture(ImportPageFixtureArgs {
+      bundle: bundle_dir.path().to_path_buf(),
+      fixture_name: fixture_name.to_string(),
+      output_root: output_root.clone(),
+      overwrite: true,
+      include_media: false,
+      media_max_bytes: DEFAULT_MEDIA_MAX_BYTES,
+      media_max_file_bytes: DEFAULT_MEDIA_MAX_FILE_BYTES,
+      allow_missing: false,
+      allow_http_references: false,
+      legacy_rewrite: false,
+      rewrite_scripts: false,
+      dry_run: false,
+    })?;
+
+    let fixture_dir = output_root.join(fixture_name);
+    let index_html = fs::read_to_string(fixture_dir.join("index.html"))?;
+    assert_no_remote_url_strings(&index_html);
+    assert!(
+      !index_html.contains("about:blank"),
+      "expected placeholder iframe src to be replaced with synthesized live-sample HTML"
+    );
+
+    let assets_dir = fixture_dir.join(ASSETS_DIR);
+    let html_assets: Vec<String> = fs::read_dir(&assets_dir)?
+      .filter_map(|entry| entry.ok())
+      .filter_map(|entry| {
+        let filename = entry.file_name().to_string_lossy().to_string();
+        if filename.ends_with(".html") {
+          Some(filename)
+        } else {
+          None
+        }
+      })
+      .collect();
+    assert_eq!(html_assets.len(), 1, "expected one synthesized HTML asset");
+
+    let frame_asset = &html_assets[0];
+    assert!(
+      index_html.contains(&format!("{ASSETS_DIR}/{frame_asset}")),
+      "index.html should reference synthesized HTML asset {frame_asset}, got: {index_html}"
+    );
+
+    let frame_html = fs::read_to_string(assets_dir.join(frame_asset))?;
+    assert_no_remote_url_strings(&frame_html);
+    assert!(
+      frame_html.contains("<p>Hello</p>"),
+      "expected synthesized iframe HTML to contain decoded HTML snippet, got: {frame_html}"
+    );
+    assert!(
+      frame_html.contains("color:red"),
+      "expected synthesized iframe HTML to include decoded CSS snippet, got: {frame_html}"
     );
 
     Ok(())
@@ -3719,9 +4306,6 @@ body{background:url("/bg.png");}
 <iframe class="sample-code-frame" src="about:blank" data-live-id="demo"></iframe>
 "#;
 
-    let expected_asset = "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<style>\n#box { color: red; }\n</style>\n</head>\n<body>\n<div id=\"box\">Hello</div>\n</body>\n</html>\n";
-    let expected_filename = format!("{}.html", hash_bytes(expected_asset.as_bytes()));
-
     let mut catalog = AssetCatalog::new(false);
     let rewritten = rewrite_mdn_live_sample_iframes(
       input,
@@ -3732,18 +4316,34 @@ body{background:url("/bg.png");}
       false,
     )?;
 
+    assert_eq!(
+      catalog.assets.len(),
+      1,
+      "expected exactly one generated iframe asset, got keys: {:?}",
+      catalog.assets.keys().collect::<Vec<_>>()
+    );
+    let filename = catalog
+      .assets
+      .keys()
+      .next()
+      .expect("missing generated asset filename")
+      .clone();
     assert!(
-      rewritten.contains(&format!("src=\"assets/{expected_filename}\"")),
+      rewritten.contains(&format!("src=\"assets/{filename}\"")),
       "expected iframe src to be rewritten to local asset, got: {rewritten}"
     );
     let asset = catalog
       .assets
-      .get(&expected_filename)
-      .unwrap_or_else(|| panic!("missing generated asset {expected_filename}"));
-    assert_eq!(
-      String::from_utf8_lossy(&asset.bytes),
-      expected_asset,
-      "generated asset contents should match expected HTML"
+      .get(&filename)
+      .unwrap_or_else(|| panic!("missing generated asset {filename}"));
+    let asset_html = String::from_utf8_lossy(&asset.bytes);
+    assert!(
+      asset_html.contains("<div id=\"box\">Hello</div>"),
+      "expected decoded HTML snippet in generated asset, got: {asset_html}"
+    );
+    assert!(
+      asset_html.contains("#box {") && asset_html.contains("color: red"),
+      "expected CSS snippet in generated asset, got: {asset_html}"
     );
     Ok(())
   }
@@ -3758,9 +4358,6 @@ body{background:url("/bg.png");}
 <iframe class="sample-code-frame" src="about:blank" data-live-id="demo"></iframe>
 "#;
 
-    let expected_asset = "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<style>\n#a { color: red; }\n#b { color: blue; }\n</style>\n</head>\n<body>\n<div id=\"a\">Hi</div>\n</body>\n</html>\n";
-    let expected_filename = format!("{}.html", hash_bytes(expected_asset.as_bytes()));
-
     let mut catalog = AssetCatalog::new(false);
     let rewritten = rewrite_mdn_live_sample_iframes(
       input,
@@ -3771,18 +4368,40 @@ body{background:url("/bg.png");}
       false,
     )?;
 
+    assert_eq!(
+      catalog.assets.len(),
+      1,
+      "expected exactly one generated iframe asset, got keys: {:?}",
+      catalog.assets.keys().collect::<Vec<_>>()
+    );
+    let filename = catalog
+      .assets
+      .keys()
+      .next()
+      .expect("missing generated asset filename")
+      .clone();
     assert!(
-      rewritten.contains(&format!("src=\"assets/{expected_filename}\"")),
+      rewritten.contains(&format!("src=\"assets/{filename}\"")),
       "expected iframe src to be rewritten to local asset, got: {rewritten}"
     );
     let asset = catalog
       .assets
-      .get(&expected_filename)
-      .unwrap_or_else(|| panic!("missing generated asset {expected_filename}"));
-    assert_eq!(
-      String::from_utf8_lossy(&asset.bytes),
-      expected_asset,
-      "generated asset contents should concatenate CSS blocks in document order"
+      .get(&filename)
+      .unwrap_or_else(|| panic!("missing generated asset {filename}"));
+    let asset_html = String::from_utf8_lossy(&asset.bytes);
+    assert!(
+      asset_html.contains("<div id=\"a\">Hi</div>"),
+      "expected decoded HTML snippet in generated asset, got: {asset_html}"
+    );
+    let pos_a = asset_html
+      .find("#a")
+      .unwrap_or_else(|| panic!("missing first CSS block in generated asset, got: {asset_html}"));
+    let pos_b = asset_html
+      .find("#b")
+      .unwrap_or_else(|| panic!("missing second CSS block in generated asset, got: {asset_html}"));
+    assert!(
+      pos_a < pos_b,
+      "expected CSS blocks to appear in document order, got: {asset_html}"
     );
     Ok(())
   }
