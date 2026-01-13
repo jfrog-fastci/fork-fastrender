@@ -57,9 +57,15 @@ use std::sync::OnceLock;
 fn interaction_font_ctx() -> &'static FontContext {
   static FONT_CTX: OnceLock<FontContext> = OnceLock::new();
   FONT_CTX.get_or_init(|| {
-    #[cfg(feature = "browser_ui")]
+    // Keep interaction-time font metrics aligned with how browser UI documents are painted.
+    //
+    // - `browser_ui` builds render with bundled fonts for deterministic output and to avoid relying
+    //   on host-installed font databases.
+    // - Unit tests should also use bundled fonts so hit-testing/caret placement does not depend on
+    //   external IO (system font scans) and stays deterministic across environments.
+    #[cfg(any(test, feature = "browser_ui"))]
     let config = FontConfig::bundled_only();
-    #[cfg(not(feature = "browser_ui"))]
+    #[cfg(not(any(test, feature = "browser_ui")))]
     let config = FontConfig::default();
     FontContext::with_config(config)
   })

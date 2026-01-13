@@ -4,3 +4,6 @@ pub mod template;
 pub mod dialog;
 
 pub use state_to_html::chrome_frame_html_from_state;
+
+#[cfg(test)]
+mod clipboard_ime_tests;

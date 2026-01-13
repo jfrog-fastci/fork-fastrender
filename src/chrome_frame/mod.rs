@@ -1,8 +1,9 @@
 use crate::api::BrowserDocument;
 use crate::dom::{DomNode, DomNodeType};
-use crate::ui::omnibox_nav::{apply_omnibox_nav_key, OmniboxNavKey};
-use crate::ui::{BrowserAppState, ChromeAction, OmniboxSuggestion};
+use crate::geometry::Point;
 use crate::interaction::{fragment_tree_with_scroll, InteractionEngine, InteractionState};
+use crate::ui::omnibox_nav::{apply_omnibox_nav_key, OmniboxNavKey};
+use crate::ui::{BrowserAppState, ChromeAction, OmniboxSuggestion, PointerButton, PointerModifiers};
 use crate::{FastRender, Pixmap, RenderOptions, Result};
 
 pub mod dom_mutation;
@@ -209,6 +210,169 @@ impl ChromeFrameDocument {
     // depends on `dirty` stays conservative.
     self.dirty = true;
     &mut self.document
+  }
+
+  pub fn interaction_state(&self) -> &InteractionState {
+    self.interaction.interaction_state()
+  }
+
+  pub(crate) fn text_input(&mut self, text: &str) -> bool {
+    let (document, interaction) = (&mut self.document, &mut self.interaction);
+    let changed = document.mutate_dom(|dom| interaction.text_input(dom, text));
+    self.dirty |= changed;
+    changed
+  }
+
+  /// Simulate a primary-button click at the given viewport point.
+  ///
+  /// Returns `false` when the document has no cached layout yet (call [`render`](Self::render)
+  /// first).
+  pub(crate) fn click_viewport_point(&mut self, viewport_point: Point) -> bool {
+    let scroll = self.document.scroll_state();
+    let document_url = self
+      .document
+      .document_url()
+      .unwrap_or("chrome://chrome-frame/")
+      .to_string();
+    let base_url = self
+      .document
+      .base_url()
+      .unwrap_or(document_url.as_str())
+      .to_string();
+
+    let (document, interaction) = (&mut self.document, &mut self.interaction);
+    let result = document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+      let scrolled_tree =
+        (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, &scroll));
+      let hit_tree = scrolled_tree.as_ref().unwrap_or(fragment_tree);
+
+      let mut changed = interaction.pointer_down_with_click_count(
+        dom,
+        box_tree,
+        hit_tree,
+        &scroll,
+        viewport_point,
+        PointerButton::Primary,
+        PointerModifiers::NONE,
+        1,
+      );
+      let (up_changed, _action) = interaction.pointer_up_with_scroll(
+        dom,
+        box_tree,
+        hit_tree,
+        &scroll,
+        viewport_point,
+        PointerButton::Primary,
+        PointerModifiers::NONE,
+        true,
+        &document_url,
+        &base_url,
+      );
+      changed |= up_changed;
+      (changed, changed)
+    });
+
+    match result {
+      Ok(changed) => {
+        self.dirty |= changed;
+        changed
+      }
+      Err(_) => false,
+    }
+  }
+
+  /// Return the selected text for either:
+  /// - a focused text control (`<input>` / `<textarea>`), or
+  /// - an active document selection (e.g. from [`select_all`](Self::select_all) when no text
+  ///   control is focused).
+  pub fn copy(&mut self) -> Option<String> {
+    let mut copied: Option<String> = None;
+    {
+      let (document, interaction) = (&mut self.document, &mut self.interaction);
+      if document
+        .mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+          copied = interaction.clipboard_copy_with_layout(dom, box_tree, fragment_tree);
+          (false, ())
+        })
+        .is_ok()
+      {
+        return copied;
+      }
+    }
+
+    // Fallback when layout is unavailable.
+    let (document, interaction) = (&mut self.document, &mut self.interaction);
+    let _ = document.mutate_dom(|dom| {
+      copied = interaction.clipboard_copy(dom);
+      false
+    });
+    copied
+  }
+
+  /// Cut the current selection into the clipboard, deleting it when the control is editable.
+  ///
+  /// Returns `(changed, clipboard_text)`.
+  pub fn cut(&mut self) -> (bool, Option<String>) {
+    let mut cut_text: Option<String> = None;
+    let changed = {
+      let (document, interaction) = (&mut self.document, &mut self.interaction);
+      document.mutate_dom(|dom| {
+        let (dom_changed, text) = interaction.clipboard_cut(dom);
+        cut_text = text;
+        dom_changed
+      })
+    };
+    self.dirty |= changed;
+
+    // When the focused element isn't an editable text control, native browsers typically treat
+    // Cut as Copy (copy selection but do not delete). Mirror that for document selections.
+    if cut_text.is_none() {
+      cut_text = self.copy();
+    }
+
+    (changed, cut_text)
+  }
+
+  /// Paste text into the focused text control (`<input>`/`<textarea>`), replacing any selection.
+  pub fn paste(&mut self, text: &str) -> bool {
+    let (document, interaction) = (&mut self.document, &mut self.interaction);
+    let changed = document.mutate_dom(|dom| interaction.clipboard_paste(dom, text));
+    self.dirty |= changed;
+    changed
+  }
+
+  /// Select all text in the focused text control, falling back to selecting the document when no
+  /// text control is focused.
+  pub fn select_all(&mut self) -> bool {
+    let (document, interaction) = (&mut self.document, &mut self.interaction);
+    let changed = document.mutate_dom(|dom| interaction.clipboard_select_all(dom));
+    self.dirty |= changed;
+    changed
+  }
+
+  /// Update the active IME preedit (composition) string for the focused text control.
+  pub fn ime_preedit(&mut self, text: &str, cursor: Option<usize>) -> bool {
+    let cursor = cursor.map(|idx| (idx, idx));
+    let (document, interaction) = (&mut self.document, &mut self.interaction);
+    let changed = document.mutate_dom(|dom| interaction.ime_preedit(dom, text, cursor));
+    self.dirty |= changed;
+    changed
+  }
+
+  /// Commit IME text into the focused text control, clearing any active preedit.
+  pub fn ime_commit(&mut self, text: &str) -> bool {
+    let (document, interaction) = (&mut self.document, &mut self.interaction);
+    let changed = document.mutate_dom(|dom| interaction.ime_commit(dom, text));
+    self.dirty |= changed;
+    changed
+  }
+
+  /// Cancel any active IME preedit string without mutating the DOM value.
+  pub fn ime_cancel(&mut self) -> bool {
+    let (document, interaction) = (&mut self.document, &mut self.interaction);
+    let changed = document.mutate_dom(|dom| interaction.ime_cancel(dom));
+    self.dirty |= changed;
+    changed
   }
 
   /// Mutate the existing DOM in-place to reflect the latest chrome state.
