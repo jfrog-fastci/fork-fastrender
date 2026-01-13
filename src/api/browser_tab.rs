@@ -631,6 +631,13 @@ pub struct BrowserTabHost {
   /// The currently in-flight post-parse module script (parser-inserted, non-async `type=module`).
   in_flight_post_parse_module: Option<HtmlScriptId>,
   queued_post_parse_modules: VecDeque<HtmlScriptSchedulerAction<NodeId>>,
+  /// Script execution tasks (`HtmlScriptSchedulerAction::QueueTask`) that were deferred because the
+  /// document still has script-blocking stylesheets.
+  ///
+  /// HTML requires scripts in the "list of scripts that will execute when the document has
+  /// finished parsing" (classic `defer` and parser-inserted non-async module scripts) to wait until
+  /// there is no style sheet blocking scripts.
+  queued_stylesheet_blocked_script_tasks: VecDeque<HtmlScriptSchedulerAction<NodeId>>,
   parser_blocked_on: Option<HtmlScriptId>,
   document_url: Option<String>,
   /// Current document base URL used for resolving *JS-visible* relative URLs.
@@ -729,6 +736,7 @@ impl BrowserTabHost {
       queued_ordered_asap_modules: VecDeque::new(),
       in_flight_post_parse_module: None,
       queued_post_parse_modules: VecDeque::new(),
+      queued_stylesheet_blocked_script_tasks: VecDeque::new(),
       parser_blocked_on: None,
       document_url: None,
       base_url: None,
@@ -1097,6 +1105,7 @@ impl BrowserTabHost {
     self.queued_ordered_asap_modules.clear();
     self.in_flight_post_parse_module = None;
     self.queued_post_parse_modules.clear();
+    self.queued_stylesheet_blocked_script_tasks.clear();
     self.parser_blocked_on = None;
     self.document_url = document_url.clone();
     self.base_url = document_url;
@@ -1310,6 +1319,32 @@ impl BrowserTabHost {
     !spec.async_attr && !spec.defer_attr
   }
 
+  fn should_delay_post_parse_script_for_stylesheets(&self, script_id: HtmlScriptId) -> bool {
+    // HTML "stop parsing" executes scripts from the "list of scripts that will execute when the
+    // document has finished parsing" only once the document has no style sheet blocking scripts.
+    //
+    // `BrowserTabHost` models this list as `deferred_scripts` (classic `defer` scripts and
+    // parser-inserted module scripts without `async`).
+    self.deferred_scripts.contains(&script_id)
+  }
+
+  fn flush_stylesheet_blocked_script_tasks(
+    &mut self,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<()> {
+    if self.script_blocking_stylesheets.has_blocking_stylesheet() {
+      return Ok(());
+    }
+
+    while let Some(action) = self.queued_stylesheet_blocked_script_tasks.pop_front() {
+      if self.pending_navigation.is_some() {
+        break;
+      }
+      self.apply_scheduler_actions(vec![action], event_loop)?;
+    }
+    Ok(())
+  }
+
   fn has_pending_asap_script_execution(&self) -> bool {
     self.streaming_parse_active && !self.pending_asap_script_executions.is_empty()
   }
@@ -1491,6 +1526,7 @@ impl BrowserTabHost {
           let _ = err;
           while host.parse_until_blocked(event_loop)?.should_continue() {}
         }
+        host.flush_stylesheet_blocked_script_tasks(event_loop)?;
       }
       match load_result {
         Ok(()) => Ok(()),
@@ -3188,6 +3224,22 @@ impl BrowserTabHost {
           work,
           ..
         } => {
+          if self.script_blocking_stylesheets.has_blocking_stylesheet()
+            && self.should_delay_post_parse_script_for_stylesheets(script_id)
+          {
+            // HTML: scripts in the "list of scripts that will execute when the document has finished
+            // parsing" (classic `defer` and parser-inserted non-async module scripts) wait until the
+            // document has no style sheet blocking scripts.
+            self
+              .queued_stylesheet_blocked_script_tasks
+              .push_back(HtmlScriptSchedulerAction::QueueTask {
+                script_id,
+                node_id,
+                work,
+              });
+            continue;
+          }
+
           let source_text = match work {
             HtmlScriptWork::Classic { source_text } => {
               let Some(source_text) = source_text else {
@@ -13571,6 +13623,206 @@ html, body { margin: 0; padding: 0; }
       log.borrow().iter().any(|line| line == "script:ASYNC"),
       "expected async script to execute even with pending stylesheet; log={:?}",
       &*log.borrow()
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn defer_script_waits_for_script_blocking_stylesheet() -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let (mut host, mut event_loop) =
+      build_host("<script defer src=\"d.js\"></script>", Rc::clone(&log))?;
+    host.register_external_script_source("d.js".to_string(), "D".to_string());
+    host
+      .script_blocking_stylesheets
+      .register_blocking_stylesheet(0);
+
+    let mut discovered = host.discover_scripts_best_effort(None);
+    assert_eq!(discovered.len(), 1);
+    let (node_id, spec) = discovered.pop().unwrap();
+    let base_url_at_discovery = spec.base_url.clone();
+    host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
+    let actions = host.scheduler.parsing_completed()?;
+    host.apply_scheduler_actions(actions, &mut event_loop)?;
+    host.notify_parsing_completed(&mut event_loop)?;
+
+    let _ =
+      event_loop.run_until_idle_handling_errors(&mut host, RunLimits::unbounded(), |_err| {})?;
+
+    assert!(
+      log.borrow().iter().all(|line| line != "script:D"),
+      "expected deferred script to be blocked by pending stylesheet; log={:?}",
+      &*log.borrow()
+    );
+
+    let log_for_task = Rc::clone(&log);
+    event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
+      host
+        .script_blocking_stylesheets
+        .unregister_blocking_stylesheet(0);
+      log_for_task.borrow_mut().push("style_done".to_string());
+      host.flush_stylesheet_blocked_script_tasks(event_loop)?;
+      Ok(())
+    })?;
+
+    let _ =
+      event_loop.run_until_idle_handling_errors(&mut host, RunLimits::unbounded(), |_err| {})?;
+
+    let entries = log.borrow().clone();
+    let style_idx = log_index(&entries, "style_done").expect("expected style_done marker");
+    let script_idx = log_index(&entries, "script:D").expect("expected deferred script execution");
+    assert!(
+      style_idx < script_idx,
+      "expected deferred script to execute after stylesheet completion; log={entries:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn parser_inserted_module_script_waits_for_script_blocking_stylesheet() -> Result<()> {
+    let mut js_execution_options = JsExecutionOptions::default();
+    js_execution_options.supports_module_scripts = true;
+
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let (mut host, mut event_loop) = build_host_with_options(
+      "<script type=\"module\" src=\"m.js\"></script>",
+      Rc::clone(&log),
+      js_execution_options,
+    )?;
+    host.register_external_script_source("m.js".to_string(), "MOD".to_string());
+    host
+      .script_blocking_stylesheets
+      .register_blocking_stylesheet(0);
+
+    let mut discovered = host.discover_scripts_best_effort(None);
+    assert_eq!(discovered.len(), 1);
+    let (node_id, spec) = discovered.pop().unwrap();
+    let base_url_at_discovery = spec.base_url.clone();
+    host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
+    let actions = host.scheduler.parsing_completed()?;
+    host.apply_scheduler_actions(actions, &mut event_loop)?;
+    host.notify_parsing_completed(&mut event_loop)?;
+
+    let _ =
+      event_loop.run_until_idle_handling_errors(&mut host, RunLimits::unbounded(), |_err| {})?;
+
+    assert!(
+      log.borrow().iter().all(|line| line != "module:MOD"),
+      "expected parser-inserted module script to be blocked by pending stylesheet; log={:?}",
+      &*log.borrow()
+    );
+
+    let log_for_task = Rc::clone(&log);
+    event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
+      host
+        .script_blocking_stylesheets
+        .unregister_blocking_stylesheet(0);
+      log_for_task.borrow_mut().push("style_done".to_string());
+      host.flush_stylesheet_blocked_script_tasks(event_loop)?;
+      Ok(())
+    })?;
+
+    let _ =
+      event_loop.run_until_idle_handling_errors(&mut host, RunLimits::unbounded(), |_err| {})?;
+
+    let entries = log.borrow().clone();
+    let style_idx = log_index(&entries, "style_done").expect("expected style_done marker");
+    let module_idx = log_index(&entries, "module:MOD").expect("expected module script execution");
+    assert!(
+      style_idx < module_idx,
+      "expected module script to execute after stylesheet completion; log={entries:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn lifecycle_events_are_observable_and_ordered_with_deferred_scripts_behind_script_blocking_stylesheets(
+  ) -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let (mut host, mut event_loop) =
+      build_host("<script defer src=\"d.js\"></script>", Rc::clone(&log))?;
+    host.register_external_script_source("d.js".to_string(), "D".to_string());
+
+    add_js_event_listener_log(
+      &mut host,
+      EventTargetId::Document,
+      "readystatechange",
+      "rs",
+      Rc::clone(&log),
+    )?;
+    add_js_event_listener_log(
+      &mut host,
+      EventTargetId::Document,
+      "DOMContentLoaded",
+      "dom",
+      Rc::clone(&log),
+    )?;
+    add_js_event_listener_log(
+      &mut host,
+      EventTargetId::Window,
+      "load",
+      "load",
+      Rc::clone(&log),
+    )?;
+
+    host
+      .script_blocking_stylesheets
+      .register_blocking_stylesheet(0);
+    host
+      .lifecycle
+      .register_pending_load_blocker(LoadBlockerKind::StyleSheet);
+
+    assert_eq!(host.dom().ready_state(), DocumentReadyState::Loading);
+
+    let mut discovered = host.discover_scripts_best_effort(None);
+    assert_eq!(discovered.len(), 1);
+    let (node_id, spec) = discovered.pop().unwrap();
+    let base_url_at_discovery = spec.base_url.clone();
+    host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
+
+    let actions = host.scheduler.parsing_completed()?;
+    host.apply_scheduler_actions(actions, &mut event_loop)?;
+    host.notify_parsing_completed(&mut event_loop)?;
+
+    // `readystatechange` fires synchronously when the `loading` → `interactive` transition occurs.
+    assert_eq!(host.dom().ready_state(), DocumentReadyState::Interactive);
+    assert_eq!(&*log.borrow(), &["rs".to_string()]);
+
+    let _ =
+      event_loop.run_until_idle_handling_errors(&mut host, RunLimits::unbounded(), |_err| {})?;
+
+    // With a pending blocking stylesheet, the deferred script must not execute, and therefore
+    // DOMContentLoaded/load must not fire.
+    assert_eq!(&*log.borrow(), &["rs".to_string()]);
+
+    let log_for_task = Rc::clone(&log);
+    event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
+      host
+        .script_blocking_stylesheets
+        .unregister_blocking_stylesheet(0);
+      host
+        .lifecycle
+        .load_blocker_completed(LoadBlockerKind::StyleSheet, event_loop)?;
+      log_for_task.borrow_mut().push("style_done".to_string());
+      host.flush_stylesheet_blocked_script_tasks(event_loop)?;
+      Ok(())
+    })?;
+
+    let _ =
+      event_loop.run_until_idle_handling_errors(&mut host, RunLimits::unbounded(), |_err| {})?;
+
+    assert_eq!(host.dom().ready_state(), DocumentReadyState::Complete);
+    assert_eq!(
+      &*log.borrow(),
+      &[
+        "rs".to_string(),
+        "style_done".to_string(),
+        "script:D".to_string(),
+        "microtask:D".to_string(),
+        "dom".to_string(),
+        "rs".to_string(),
+        "load".to_string(),
+      ],
     );
     Ok(())
   }

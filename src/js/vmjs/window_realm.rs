@@ -24477,10 +24477,9 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
     {
       Ok(Some(handler)) => handler,
       Ok(None) => return Ok(()),
-      // vm-js installs many `on{type}` EventHandler attributes (e.g. `onstorage`) as accessors on
-      // `window`/`document`. Those accessors register wrapper listeners in the shared event
-      // registry, so attempting to treat the property as a direct data slot is both incorrect and
-      // would abort host-driven dispatch.
+      // `on*` EventHandler attributes are typically installed as accessors that register an
+      // internal wrapper listener in the DOM event registry. In that case, there is no legacy data
+      // property to invoke here; the wrapper listener will fire during normal dispatch.
       Err(VmError::PropertyNotData) => return Ok(()),
       Err(err) => return Err(web_events::DomError::new(err.to_string())),
     };

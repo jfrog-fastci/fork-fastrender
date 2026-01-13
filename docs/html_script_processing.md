@@ -165,6 +165,9 @@ FastRender implements an MVP subset for streaming parsing via `api::BrowserTab`:
 
 - Parser-blocking scripts (inline classic scripts, and external classic scripts without `async` or
   `defer`) wait for the current `ScriptBlockingStyleSheetSet` to become empty before executing.
+- Scripts in the HTML “list of scripts that will execute when the document has finished parsing”
+  (classic external `defer` scripts, and parser-inserted non-`async` module scripts) also wait until
+  the `ScriptBlockingStyleSheetSet` is empty before their execution tasks are queued.
 - `async` scripts are **not** delayed by script-blocking stylesheets.
 - Stylesheets in inert `<template>` contents do not register as script-blocking.
 
