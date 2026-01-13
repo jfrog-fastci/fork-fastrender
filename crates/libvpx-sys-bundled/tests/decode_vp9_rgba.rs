@@ -32,6 +32,7 @@ fn decodes_vp9_frame_to_rgba8_from_webm_fixture() {
   assert!(!frames.is_empty(), "expected at least one output frame");
   for out in frames {
     assert_eq!((out.width, out.height), (64, 64));
+    assert_eq!((out.render_width, out.render_height), (64, 64));
     assert_eq!(out.rgba8.len(), 64 * 64 * 4);
   }
 

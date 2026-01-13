@@ -29,6 +29,14 @@ impl std::error::Error for MediaError {}
 pub struct Vp9Frame {
   pub width: u32,
   pub height: u32,
+  /// Intended rendering width, if the stream specifies non-square pixel aspect ratio metadata.
+  ///
+  /// This corresponds to `vpx_image_t.r_w` and may differ from `width`.
+  pub render_width: u32,
+  /// Intended rendering height, if the stream specifies non-square pixel aspect ratio metadata.
+  ///
+  /// This corresponds to `vpx_image_t.r_h` and may differ from `height`.
+  pub render_height: u32,
   pub rgba8: Vec<u8>,
 }
 
@@ -357,6 +365,8 @@ impl Vp9Decoder {
     Ok(Vp9Frame {
       width: width as u32,
       height: height as u32,
+      render_width: if img.r_w != 0 { img.r_w } else { width as u32 },
+      render_height: if img.r_h != 0 { img.r_h } else { height as u32 },
       rgba8,
     })
   }
