@@ -20396,6 +20396,110 @@ fn add_plus_to_exponent(s: &str) -> Result<String, VmError> {
   Ok(out)
 }
 
+fn parse_ryu_to_decimal<'a>(raw: &str, digits_buf: &'a mut [u8; 32]) -> Result<(&'a [u8], i32), VmError> {
+  // `raw` is expected to be ASCII and contain either:
+  // - digits with optional decimal point
+  // - digits with optional decimal point and a trailing `e[+-]?\d+`
+  //
+  // Returns `(digits, exp)` such that `value = digits × 10^exp` and `digits` contains no leading
+  // zeros.
+  let (mantissa, exp_part) = match raw.split_once('e') {
+    Some((mantissa, exp)) => (mantissa, Some(exp)),
+    None => (raw, None),
+  };
+
+  let mut exp: i32 = exp_part.map_or(0, |e| e.parse().unwrap_or(0));
+
+  let mut digits_len = 0usize;
+  if let Some((int_part, frac_part)) = mantissa.split_once('.') {
+    exp = exp.saturating_sub(frac_part.len() as i32);
+    for b in int_part.bytes().chain(frac_part.bytes()) {
+      if digits_len >= digits_buf.len() {
+        return Err(VmError::InvariantViolation("ryu digit buffer too small"));
+      }
+      digits_buf[digits_len] = b;
+      digits_len += 1;
+    }
+  } else {
+    for b in mantissa.bytes() {
+      if digits_len >= digits_buf.len() {
+        return Err(VmError::InvariantViolation("ryu digit buffer too small"));
+      }
+      digits_buf[digits_len] = b;
+      digits_len += 1;
+    }
+  }
+
+  // Strip leading zeros introduced by `0.xxx` forms.
+  let mut start = 0usize;
+  while start < digits_len && digits_buf[start] == b'0' {
+    start += 1;
+  }
+  if start >= digits_len {
+    return Err(VmError::InvariantViolation("expected non-zero number to produce digits"));
+  }
+  if start > 0 {
+    digits_buf.copy_within(start..digits_len, 0);
+    digits_len -= start;
+  }
+
+  Ok((&digits_buf[..digits_len], exp))
+}
+
+fn round_ryu_digits_to_precision(
+  digits: &[u8],
+  exp: i32,
+  precision: usize,
+  out_digits: &mut [u8; 128],
+) -> Result<i32, VmError> {
+  if precision == 0 || precision > out_digits.len() {
+    return Err(VmError::InvariantViolation("invalid precision for rounding"));
+  }
+  if digits.is_empty() {
+    return Err(VmError::InvariantViolation("expected non-empty digit slice from ryu"));
+  }
+
+  let n = digits.len();
+  let mut exp10 = exp
+    .checked_add(n as i32)
+    .and_then(|v| v.checked_sub(1))
+    .ok_or(VmError::InvariantViolation("base-10 exponent overflow in number formatting"))?;
+
+  if n >= precision {
+    out_digits[..precision].copy_from_slice(&digits[..precision]);
+
+    if n > precision && digits[precision] >= b'5' {
+      // Round half away from zero: any next digit >= 5 increments.
+      let mut carry = true;
+      for i in (0..precision).rev() {
+        if !carry {
+          break;
+        }
+        if out_digits[i] < b'9' {
+          out_digits[i] += 1;
+          carry = false;
+        } else {
+          out_digits[i] = b'0';
+        }
+      }
+      if carry {
+        out_digits[0] = b'1';
+        for d in &mut out_digits[1..precision] {
+          *d = b'0';
+        }
+        exp10 = exp10.saturating_add(1);
+      }
+    }
+  } else {
+    out_digits[..n].copy_from_slice(digits);
+    for d in &mut out_digits[n..precision] {
+      *d = b'0';
+    }
+  }
+
+  Ok(exp10)
+}
+
 /// A `fmt::Write` wrapper that performs fallible `String` growth via `try_reserve`.
 ///
 /// `std::fmt` formatting APIs use infallible `String::push_str`/`push` internally, which can abort
@@ -20664,7 +20768,7 @@ pub fn number_prototype_to_exponential(
   let x = if x == 0.0 { 0.0 } else { x };
 
   let fd_val = args.get(0).copied().unwrap_or(Value::Undefined);
-  let raw = if matches!(fd_val, Value::Undefined) {
+  let formatted = if matches!(fd_val, Value::Undefined) {
     let mut buf = String::new();
     // `{:e}` uses the shortest round-trippable representation of an f64, which has at most 17
     // significant digits. In `1.xxxxxe±ddd` form, that's at most:
@@ -20672,7 +20776,7 @@ pub fn number_prototype_to_exponential(
     let reserve = 1usize + 1 + 1 + 16 + 1 + 1 + 3;
     buf.try_reserve_exact(reserve).map_err(|_| VmError::OutOfMemory)?;
     try_write_fmt(&mut buf, format_args!("{:e}", x))?;
-    buf
+    add_plus_to_exponent(&buf)?
   } else {
     let mut f = scope.to_number(vm, host, hooks, fd_val)?;
     if f.is_nan() {
@@ -20691,28 +20795,58 @@ pub fn number_prototype_to_exponential(
     }
     let f = f as usize;
 
-    let mut buf = String::new();
-    // With an explicit precision, Rust's `{:.*e}` prints exactly `f` digits after the decimal
-    // point.
-    //
-    // For f64, the base-10 exponent is always within [-324, 308], so the exponent component is
-    // bounded by `e±ddd`.
-    //
-    // Total bound:
-    //   [optional '-'] + (1 digit + ['.' + f digits]) + 'e' + [optional '-'] + 3 digits
+    let precision = f.saturating_add(1);
+    let negative = x < 0.0;
+    let abs = if negative { -x } else { x };
+
+    let mut digits_out = [0u8; 128];
+    let exp10: i32 = if abs == 0.0 {
+      for d in &mut digits_out[..precision] {
+        *d = b'0';
+      }
+      0
+    } else {
+      let mut ryu_buf = ryu::Buffer::new();
+      let raw = ryu_buf.format_finite(abs);
+      let mut digits_buf = [0u8; 32];
+      let (digits, exp) = parse_ryu_to_decimal(raw, &mut digits_buf)?;
+      round_ryu_digits_to_precision(digits, exp, precision, &mut digits_out)?
+    };
+
+    let exp_negative = exp10 < 0;
+    let exp_abs: u32 = if exp_negative { (-exp10) as u32 } else { exp10 as u32 };
+    let mut exp_buf = itoa::Buffer::new();
+    let exp_digits = exp_buf.format(exp_abs);
+
+    let sign_len = if negative { 1usize } else { 0usize };
     let mantissa_len = 1usize.saturating_add(if f > 0 { 1usize.saturating_add(f) } else { 0 });
-    let reserve = 1usize
+    let total_len = sign_len
       .saturating_add(mantissa_len)
       .saturating_add(1) // 'e'
       .saturating_add(1) // exponent sign
-      .saturating_add(3); // exponent digits
-    buf.try_reserve_exact(reserve).map_err(|_| VmError::OutOfMemory)?;
-    try_write_fmt(&mut buf, format_args!("{:.*e}", f, x))?;
-    buf
+      .saturating_add(exp_digits.len());
+
+    let mut out = String::new();
+    out
+      .try_reserve_exact(total_len)
+      .map_err(|_| VmError::OutOfMemory)?;
+    if negative {
+      out.push('-');
+    }
+    out.push(digits_out[0] as char);
+    if f > 0 {
+      out.push('.');
+      for &b in &digits_out[1..precision] {
+        out.push(b as char);
+      }
+    }
+    out.push('e');
+    out.push(if exp_negative { '-' } else { '+' });
+    out.push_str(exp_digits);
+    out
   };
 
-  let fixed = add_plus_to_exponent(&raw)?;
-  let out = scope.alloc_string(&fixed)?;
+  let out = scope.alloc_string(&formatted)?;
   Ok(Value::String(out))
 }
 
@@ -20764,105 +20898,96 @@ pub fn number_prototype_to_precision(
   let negative = x < 0.0;
   let abs = if negative { -x } else { x };
 
-  // Start with exponential form at the requested precision so any rounding is consistent.
-  let mut exp_buf = String::new();
-  let exp_precision = p.saturating_sub(1);
-  // f64 base-10 exponent fits in `e±ddd` ([-324, 308]), and the mantissa is `d[.ffff]` where
-  // `f = exp_precision` digits are printed after the decimal point.
-  let mantissa_len =
-    1usize.saturating_add(if exp_precision > 0 { 1usize.saturating_add(exp_precision) } else { 0 });
-  let reserve = mantissa_len
-    .saturating_add(1) // 'e'
-    .saturating_add(1) // exponent sign
-    .saturating_add(3); // exponent digits
-  exp_buf
-    .try_reserve_exact(reserve)
-    .map_err(|_| VmError::OutOfMemory)?;
-  try_write_fmt(&mut exp_buf, format_args!("{:.*e}", exp_precision, abs))?;
-
-  let Some((mantissa, exp_part)) = exp_buf.split_once('e') else {
-    return Err(VmError::InvariantViolation("expected exponential formatting to contain 'e'"));
-  };
-  let exp: i32 = exp_part.parse().unwrap_or(0);
-
-  // Extract mantissa digits (ASCII) without the decimal point.
-  let mantissa_bytes = mantissa.as_bytes();
-  let mut digits: Vec<u8> = Vec::new();
-  digits
-    .try_reserve_exact(p)
-    .map_err(|_| VmError::OutOfMemory)?;
-  for &b in mantissa_bytes {
-    if b == b'.' {
-      continue;
+  let mut digits_out = [0u8; 128];
+  let exp10: i32 = if abs == 0.0 {
+    for d in &mut digits_out[..p] {
+      *d = b'0';
     }
-    digits.push(b);
-  }
+    0
+  } else {
+    let mut ryu_buf = ryu::Buffer::new();
+    let raw = ryu_buf.format_finite(abs);
+    let mut digits_buf = [0u8; 32];
+    let (digits, exp) = parse_ryu_to_decimal(raw, &mut digits_buf)?;
+    round_ryu_digits_to_precision(digits, exp, p, &mut digits_out)?
+  };
 
-  let use_exponential = exp < -6 || exp >= (p as i32);
+  let use_exponential = exp10 < -6 || exp10 >= (p as i32);
   let mut out = String::new();
 
   if use_exponential {
-    // `mantissa` already contains the decimal point and trailing zeros to produce exactly `p`
-    // significant digits.
-    let exp_fixed = add_plus_to_exponent(&exp_buf)?;
-    out
-      .try_reserve_exact((if negative { 1 } else { 0 }) + exp_fixed.len())
-      .map_err(|_| VmError::OutOfMemory)?;
-    if negative {
-      out.push('-');
-    }
-    out.push_str(&exp_fixed);
-  } else {
-    // Convert to fixed notation by shifting the decimal point within `digits`.
-    let decimal_pos: i32 = exp + 1;
+    let exp_negative = exp10 < 0;
+    let exp_abs: u32 = if exp_negative { (-exp10) as u32 } else { exp10 as u32 };
+    let mut exp_buf = itoa::Buffer::new();
+    let exp_digits = exp_buf.format(exp_abs);
 
-    // Estimate output length for a single fallible reservation.
     let sign_len = if negative { 1usize } else { 0usize };
-    let leading_zeros = if decimal_pos <= 0 { (-decimal_pos) as usize } else { 0 };
-    let dot_len = if decimal_pos < (digits.len() as i32) { 1usize } else { 0usize };
-    let int_pad_zeros = if decimal_pos > (digits.len() as i32) {
-      (decimal_pos as usize).saturating_sub(digits.len())
-    } else {
-      0usize
-    };
-
+    let mantissa_len = if p == 1 { 1usize } else { p.saturating_add(1) };
     let total_len = sign_len
-      .saturating_add(1) // at least "0"
-      .saturating_add(dot_len)
-      .saturating_add(leading_zeros)
-      .saturating_add(digits.len())
-      .saturating_add(int_pad_zeros);
+      .saturating_add(mantissa_len)
+      .saturating_add(1) // 'e'
+      .saturating_add(1) // exponent sign
+      .saturating_add(exp_digits.len());
     out.try_reserve_exact(total_len).map_err(|_| VmError::OutOfMemory)?;
 
     if negative {
       out.push('-');
     }
+    out.push(digits_out[0] as char);
+    if p > 1 {
+      out.push('.');
+      for &b in &digits_out[1..p] {
+        out.push(b as char);
+      }
+    }
+    out.push('e');
+    out.push(if exp_negative { '-' } else { '+' });
+    out.push_str(exp_digits);
+  } else {
+    let decimal_pos: i32 = exp10 + 1;
 
+    let sign_len = if negative { 1usize } else { 0usize };
     if decimal_pos <= 0 {
+      let leading_zeros = (-decimal_pos) as usize;
+      let total_len = sign_len
+        .saturating_add(2) // "0."
+        .saturating_add(leading_zeros)
+        .saturating_add(p);
+      out.try_reserve_exact(total_len).map_err(|_| VmError::OutOfMemory)?;
+
+      if negative {
+        out.push('-');
+      }
       out.push('0');
       out.push('.');
       for _ in 0..leading_zeros {
         out.push('0');
       }
-      for &b in &digits {
+      for &b in &digits_out[..p] {
         out.push(b as char);
       }
     } else {
       let dec = decimal_pos as usize;
-      if dec >= digits.len() {
-        for &b in &digits {
+      let dot_len = if dec < p { 1usize } else { 0usize };
+      let total_len = sign_len.saturating_add(p).saturating_add(dot_len);
+      out.try_reserve_exact(total_len).map_err(|_| VmError::OutOfMemory)?;
+
+      if negative {
+        out.push('-');
+      }
+      for &b in &digits_out[..dec.min(p)] {
+        out.push(b as char);
+      }
+      if dec < p {
+        out.push('.');
+        for &b in &digits_out[dec..p] {
           out.push(b as char);
-        }
-        for _ in 0..int_pad_zeros {
-          out.push('0');
         }
       } else {
-        for &b in &digits[..dec] {
-          out.push(b as char);
-        }
-        out.push('.');
-        for &b in &digits[dec..] {
-          out.push(b as char);
+        // `dec > p` can happen only if `use_exponential` is false and rounding increased the
+        // exponent; in that case `dec == p` and the mantissa is an integer.
+        for _ in 0..dec.saturating_sub(p) {
+          out.push('0');
         }
       }
     }

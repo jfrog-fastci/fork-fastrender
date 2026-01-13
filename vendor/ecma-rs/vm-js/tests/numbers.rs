@@ -77,8 +77,10 @@ fn number_prototype_formatting_methods_work() -> Result<(), VmError> {
       (1.2345).toFixed(2) + "," +
       (1.25).toFixed(1) + "," +
       (1).toExponential(2) + "," +
+      (1.25).toExponential(1) + "," +
       (77).toExponential() + "," +
       (123.45).toPrecision(4) + "," +
+      (1.25).toPrecision(2) + "," +
       (9.99).toPrecision(1) + "," +
       // `toPrecision` threshold: fixed for exp == p-1, exponential for exp == p.
       (999).toPrecision(3) + "," +
@@ -90,7 +92,7 @@ fn number_prototype_formatting_methods_work() -> Result<(), VmError> {
   )?;
   assert_eq!(
     as_utf8_lossy(&rt, s),
-    "1.23,1.3,1.00e+0,7.7e+1,123.5,1e+1,999,1.00e+3,0.0000012,1.2e-7"
+    "1.23,1.3,1.00e+0,1.3e+0,7.7e+1,123.5,1.3,1e+1,999,1.00e+3,0.0000012,1.2e-7"
   );
 
   // Max length / range edge cases (fractionDigits/precision upper bound is 100).
