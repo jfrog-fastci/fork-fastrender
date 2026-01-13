@@ -5,8 +5,9 @@ requires multiple layers of limits that work together:
 
 These limits primarily matter for the JS-capable runtime containers (e.g. `api::BrowserTab` and
 `api::BrowserDocumentJs`) and tooling that embeds them (for example `fetch_and_render --js`,
-`render_pages --js`, `render_fixtures --js`, and `pageset_progress run --js`). For a map of which
-public containers include JavaScript + an event loop, see [`docs/runtime_stacks.md`](runtime_stacks.md).
+`render_pages --js`, `render_fixtures --js`, `pageset_progress run --js`, and
+`bundle_page render --js`). For a map of which public containers include JavaScript + an event loop,
+see [`docs/runtime_stacks.md`](runtime_stacks.md).
 
 ## 1) OS/process-level caps
 

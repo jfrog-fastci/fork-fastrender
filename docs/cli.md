@@ -29,11 +29,10 @@ scripts are **not** executed unless you opt in with `--js`.
   - `render_pages --js …` (render cached pageset HTML under `fetches/html/`)
   - `render_fixtures --js …` (render offline fixtures under `tests/pages/fixtures/`)
   - `pageset_progress run --js …` (pageset scoreboard renders)
+  - `bundle_page render --js …` (offline replay from a bundle)
 - Browser:
-  - Windowed UI: JavaScript is currently enabled by default (no stable CLI toggle to disable it yet;
-    `browser --js` does not change behaviour in windowed mode).
-  - `browser --headless-smoke --js …` (vm-js `BrowserTab` smoke test; this is the only thing the
-    `browser --js` flag currently controls)
+  - `browser --js …` (windowed browser UI; experimental)
+  - `browser --headless-smoke --js …` (headless smoke test mode; selects a vm-js `api::BrowserTab` harness)
   - Note: the `browser` binary does not expose the shared JS budget flags.
   - Example (headless smoke test):
 
@@ -44,7 +43,8 @@ scripts are **not** executed unless you opt in with `--js`.
 
 When `--js` is enabled in the render CLIs above, they use the `vm-js`-backed
 [`api::BrowserTab`](../src/api/browser_tab.rs) and drive it via `BrowserTab::run_until_stable`
-(bounded by `--js-max-frames`).
+(typically bounded by `--js-max-frames`; `bundle_page render --js` currently uses a fixed 50-frame
+budget).
 
 ### Determinism / time model
 
@@ -66,10 +66,20 @@ provide a `VirtualClock` to the event loop, but this is not currently exposed as
 
 ### Shared JS budget flags
 
-These flags are available on the JS-enabled render CLIs (`fetch_and_render`, `render_pages`, and
-`pageset_progress run`; run `--help` for per-binary defaults):
+JS-enabled render CLIs expose a mix of:
+
+- a “frame” budget for the outer `BrowserTab::run_until_stable` loop, and
+- shared `JsExecutionArgs` knobs that map to `JsExecutionOptions` (per-spin event loop budgets + VM budgets).
+
+Run `--help` for per-binary defaults.
 
 - `--js-max-frames <N>`: maximum “frame” iterations while driving `run_until_stable`.
+  - Available on: `fetch_and_render`, `render_pages`, `render_fixtures`, `pageset_progress run`.
+  - Note: `bundle_page render --js` currently uses a fixed `max_frames=50` and does not expose `--js-max-frames`.
+
+The following shared `JsExecutionArgs` flags are available on: `fetch_and_render`, `render_pages`,
+`pageset_progress run`, and `bundle_page render`:
+
 - `--js-max-wall-ms <MS>`: wall-time budget per event-loop “spin” (0 disables the wall-time limit).
 - `--js-max-script-bytes <BYTES>`: maximum bytes accepted for a single script source (inline or external).
 - `--js-max-tasks <N>` / `--js-max-microtasks <N>`: maximum tasks/microtasks executed per spin.
@@ -616,6 +626,9 @@ bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --releas
     - The disk cache key namespace depends on request headers. If you warmed `fetches/assets/` with non-default values (e.g. `pageset_progress --user-agent ... --accept-language ...`, or `FASTR_HTTP_BROWSER_HEADERS=0`), pass matching `bundle_page cache --user-agent ... --accept-language ...` (and the same env var) so cache capture hits the correct entries.
   - Render: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- render <bundle> --out <png>`
     - `bundle_page render` is offline and ignores `FASTR_HTTP_*` env vars (it uses the bundle contents only).
+    - JavaScript (optional): add `--js` to execute author scripts via the `vm-js` `BrowserTab` harness before capturing the final pixels.
+      - `bundle_page render --js` currently drives `BrowserTab::run_until_stable` with a fixed `max_frames=50` budget (there is no `--js-max-frames` flag).
+      - It *does* expose the shared `JsExecutionArgs` budget override flags like `--js-max-script-bytes` and `--js-max-wall-ms` (run `bundle_page render --help`).
 - Security: `--same-origin-subresources` (plus optional `--allow-subresource-origin`) applies both when capturing and replaying bundles to keep cross-origin assets out of offline artifacts. It does not block cross-origin iframe/embed document navigation.
 - Convert bundles to offline fixtures for the `pages_regression` harness: `bash scripts/cargo_agent.sh xtask import-page-fixture <bundle> <fixture_name> [--output-root tests/pages/fixtures --overwrite --dry-run --include-media]`.
   - By default, media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`) are rewritten to deterministic empty `assets/missing_<hash>.<ext>` placeholder files so fixtures stay small/offline-safe.
@@ -628,6 +641,16 @@ Example (capture a bundle with crawl mode and prefetch media sources into the bu
 ```bash
 bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- \
   fetch --no-render --prefetch-media https://example.com --out target/bundles/example.com.tar
+```
+
+Example (render that bundle offline with JavaScript enabled):
+
+```bash
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- \
+  render target/bundles/example.com.tar --out target/example.com.js.png \
+  --js \
+  --js-max-script-bytes $((2*1024*1024)) \
+  --js-max-wall-ms 50
 ```
 
 Example (import that bundle as an offline fixture and vendor playable media within the default budgets):
