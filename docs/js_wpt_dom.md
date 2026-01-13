@@ -65,6 +65,12 @@ FASTERENDER_WPT_DOM_BINDINGS_BACKEND=webidl \
   bash scripts/cargo_agent.sh xtask js wpt-dom
 ```
 
+Or equivalently via the `xtask` flag:
+
+```bash
+bash scripts/cargo_agent.sh xtask js wpt-dom --dom-bindings-backend webidl
+```
+
 When invoking `wpt_dom` directly, you can also use the CLI flag:
 
 ```bash

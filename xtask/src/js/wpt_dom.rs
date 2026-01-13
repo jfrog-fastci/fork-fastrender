@@ -12,6 +12,8 @@ const DEFAULT_REPORT_PATH: &str = "target/js/wpt_dom.json";
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_LONG_TIMEOUT_MS: u64 = 30_000;
 
+const DOM_BINDINGS_BACKEND_ENV_VAR: &str = "FASTERENDER_WPT_DOM_BINDINGS_BACKEND";
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 #[clap(rename_all = "lowercase")]
 pub enum WptDomBackend {
@@ -30,6 +32,25 @@ impl WptDomBackend {
       WptDomBackend::Auto => BackendSelection::Auto,
       WptDomBackend::VmJs => BackendSelection::VmJs,
       WptDomBackend::VmJsRendered => BackendSelection::VmJsRendered,
+    }
+  }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+#[clap(rename_all = "kebab-case")]
+pub enum WptDomDomBindingsBackend {
+  /// Use FastRender's handwritten DOM bindings backend (default).
+  Handwritten,
+  /// Use the WebIDL-generated DOM bindings backend.
+  #[value(alias = "webidl", alias = "web_idl")]
+  WebIdl,
+}
+
+impl WptDomDomBindingsBackend {
+  fn as_env_value(self) -> &'static str {
+    match self {
+      WptDomDomBindingsBackend::Handwritten => "handwritten",
+      WptDomDomBindingsBackend::WebIdl => "webidl",
     }
   }
 }
@@ -119,9 +140,19 @@ pub struct WptDomArgs {
   /// Select which JS backend to execute the corpus with.
   #[arg(long, value_enum, default_value_t = WptDomBackend::Auto)]
   pub backend: WptDomBackend,
+
+  /// Select which DOM bindings backend to use for vm-js backends.
+  ///
+  /// This is equivalent to setting `FASTERENDER_WPT_DOM_BINDINGS_BACKEND=handwritten|webidl`.
+  #[arg(long, value_enum)]
+  pub dom_bindings_backend: Option<WptDomDomBindingsBackend>,
 }
 
 pub fn run_wpt_dom(args: WptDomArgs) -> Result<()> {
+  if let Some(dom_bindings_backend) = args.dom_bindings_backend {
+    std::env::set_var(DOM_BINDINGS_BACKEND_ENV_VAR, dom_bindings_backend.as_env_value());
+  }
+
   let timeout_ms = if let Some(secs) = args.timeout_secs {
     if secs == 0 {
       bail!("--timeout-secs must be > 0");
