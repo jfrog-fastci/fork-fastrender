@@ -382,6 +382,56 @@ fn async_generator_return_on_completed_generator_resolves_to_done_true_with_awai
 }
 
 #[test]
+fn async_generator_return_on_completed_generator_rejects_if_promise_resolve_throws() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = match rt.exec_script(
+    r#"
+      var out = "";
+      var unblocked = false;
+      var unblock;
+      var blocking = new Promise(function (resolve) { unblock = resolve; });
+
+      async function* g() { await blocking; unblocked = true; }
+      var it = g();
+
+      var brokenPromise = Promise.resolve(42);
+      Object.defineProperty(brokenPromise, "constructor", {
+        get: function () { throw new Error("broken promise"); },
+        configurable: true,
+      });
+
+      it.next().then(function (r) {
+        // Ensure generator has completed before calling `return`.
+        if (r.done !== true) out = "bad:next-not-done";
+        it.return(brokenPromise).then(
+          function () { out = "bad:resolved"; },
+          function (e) { out = unblocked + ":" + e.message; }
+        );
+      });
+
+      unblock();
+      out
+    "#,
+  ) {
+    Ok(value) => value,
+    Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+    Err(err) => return Err(err),
+  };
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "true:broken promise");
+  assert!(
+    rt.vm.microtask_queue().is_empty(),
+    "expected microtask queue to be empty after checkpoint"
+  );
+  Ok(())
+}
+
+#[test]
 fn async_generator_first_next_argument_is_ignored() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
