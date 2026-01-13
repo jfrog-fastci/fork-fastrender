@@ -367,6 +367,166 @@ pub(crate) fn perform_indirect_eval(
   }
 }
 
+/// Implements direct eval (ECMA-262 `PerformEval` with `direct = true`) for Script source.
+///
+/// This is used by evaluators that detect a **syntactic** direct-eval call (`eval(...)`) and then
+/// confirm that the callee resolves to the intrinsic `%eval%` function object (i.e. it wasn't
+/// shadowed).
+///
+/// Direct eval executes in the caller's current lexical/variable environments and inherits
+/// strictness from the caller: eval code is strict if either the caller is strict or the eval source
+/// begins with a `"use strict"` directive.
+pub(crate) fn perform_direct_eval_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  env: &mut RuntimeEnv,
+  caller_strict: bool,
+  this: Value,
+  new_target: Value,
+  source_string: GcString,
+) -> Result<Value, VmError> {
+  // Root the global object, the input string, and caller `this` / `new.target` across allocations
+  // and potential nested calls.
+  let global_object = env.global_object();
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[
+    Value::Object(global_object),
+    Value::String(source_string),
+    this,
+    new_target,
+  ])?;
+
+  let source_text = eval_string_to_utf8_lossy_with_tick(vm, scope.heap(), source_string)?;
+  let source = Arc::new(SourceText::new_charged(
+    scope.heap_mut(),
+    "<eval>",
+    source_text,
+  )?);
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  // Like the Function constructor, `eval("...")` parse/early errors are JS-catchable.
+  let top = match vm.parse_top_level_with_budget(&source.text, opts) {
+    Ok(top) => top,
+    Err(VmError::Syntax(diags)) => {
+      let intr = vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+      let message = diags
+        .first()
+        .map(|d| d.message.as_str())
+        .unwrap_or("Invalid or unexpected token");
+      let err_obj = crate::error_object::new_syntax_error_object(&mut scope, &intr, message)?;
+      return Err(VmError::Throw(err_obj));
+    }
+    Err(err) => return Err(err),
+  };
+  let strict = caller_strict || detect_use_strict_directive(&top.stx.body, || vm.tick())?;
+  {
+    let mut tick = || vm.tick();
+    match crate::early_errors::validate_top_level(
+      &top.stx.body,
+      crate::early_errors::EarlyErrorOptions::script(strict),
+      &mut tick,
+    ) {
+      Ok(()) => {}
+      Err(VmError::Syntax(diags)) => {
+        let intr = vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+        let message = diags
+          .first()
+          .map(|d| d.message.as_str())
+          .unwrap_or("Invalid or unexpected token");
+        let err_obj = crate::error_object::new_syntax_error_object(&mut scope, &intr, message)?;
+        return Err(VmError::Throw(err_obj));
+      }
+      Err(err) => return Err(err),
+    }
+  }
+
+  // Save and restore the runtime's source and environments while running eval code. This keeps
+  // nested function source spans aligned with the eval input and preserves the caller's execution
+  // state.
+  let prev_source = env.source();
+  let prev_base_offset = env.base_offset();
+  let prev_prefix_len = env.prefix_len();
+  let prev_lexical_env = env.lexical_env;
+  let prev_var_env = env.var_env();
+  let prev_global_var_deletable = env.global_var_deletable();
+
+  let eval_lex = scope.env_create(Some(prev_lexical_env))?;
+  env.set_source_info(source.clone(), 0, 0);
+  env.set_lexical_env(scope.heap_mut(), eval_lex);
+  // In strict eval code, var/function declarations are scoped to the eval itself. In non-strict
+  // direct eval, they are scoped to the caller's VariableEnvironment.
+  env.set_var_env(if strict {
+    VarEnv::Env(eval_lex)
+  } else {
+    prev_var_env
+  });
+  // Annex B: non-strict *direct* eval in the global scope creates deletable (configurable) global
+  // var/function bindings.
+  env.set_global_var_deletable(!strict && matches!(prev_var_env, VarEnv::GlobalObject));
+
+  let result = {
+    let mut evaluator = Evaluator {
+      vm,
+      host,
+      hooks,
+      env,
+      strict,
+      this,
+      new_target,
+    };
+
+    (|| {
+      evaluator.instantiate_script(&mut scope, &top.stx.body)?;
+
+      let completion = evaluator.eval_stmt_list(&mut scope, &top.stx.body)?;
+      match completion {
+        Completion::Normal(v) => Ok(v.unwrap_or(Value::Undefined)),
+        Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
+          value: thrown.value,
+          stack: thrown.stack,
+        }),
+        Completion::Return(_) => Err(VmError::InvariantViolation(
+          "eval produced Return completion (early errors should prevent this)",
+        )),
+        Completion::Break(..) => Err(VmError::InvariantViolation(
+          "eval produced Break completion (early errors should prevent this)",
+        )),
+        Completion::Continue(..) => Err(VmError::InvariantViolation(
+          "eval produced Continue completion (early errors should prevent this)",
+        )),
+      }
+    })()
+  };
+
+  env.set_lexical_env(scope.heap_mut(), prev_lexical_env);
+  env.set_var_env(prev_var_env);
+  env.set_global_var_deletable(prev_global_var_deletable);
+  env.set_source_info(prev_source, prev_base_offset, prev_prefix_len);
+
+  match result {
+    Err(VmError::Syntax(diags)) => {
+      let intr = vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+      let message = diags
+        .first()
+        .map(|d| d.message.as_str())
+        .unwrap_or("Invalid or unexpected token");
+      let err_obj = crate::error_object::new_syntax_error_object(&mut scope, &intr, message)?;
+      Err(VmError::Throw(err_obj))
+    }
+    other => other,
+  }
+}
+
 /// Execute a *script* provided as a JavaScript String value in the current realm's global
 /// environment.
 ///
@@ -9676,129 +9836,17 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     source_string: GcString,
   ) -> Result<Value, VmError> {
-    let source_text = eval_string_to_utf8_lossy_with_tick(self.vm, scope.heap(), source_string)?;
-    let source = Arc::new(SourceText::new_charged(
-      scope.heap_mut(),
-      "<eval>",
-      source_text,
-    )?);
-    let opts = ParseOptions {
-      dialect: Dialect::Ecma,
-      source_type: SourceType::Script,
-    };
-    // Like the Function constructor, `eval("...")` parse/early errors are JS-catchable.
-    let top = match self.vm.parse_top_level_with_budget(&source.text, opts) {
-      Ok(top) => top,
-      Err(VmError::Syntax(diags)) => {
-        let intr = self
-          .vm
-          .intrinsics()
-          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-        let message = diags
-          .first()
-          .map(|d| d.message.as_str())
-          .unwrap_or("Invalid or unexpected token");
-        let err_obj = crate::error_object::new_syntax_error_object(scope, &intr, message)?;
-        return Err(VmError::Throw(err_obj));
-      }
-      Err(err) => return Err(err),
-    };
-    let strict = self.strict || detect_use_strict_directive(&top.stx.body, || self.tick())?;
-    {
-      let mut tick = || self.tick();
-      match crate::early_errors::validate_top_level(
-        &top.stx.body,
-        crate::early_errors::EarlyErrorOptions::script(strict),
-        &mut tick,
-      ) {
-        Ok(()) => {}
-        Err(VmError::Syntax(diags)) => {
-          let intr = self
-            .vm
-            .intrinsics()
-            .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-          let message = diags
-            .first()
-            .map(|d| d.message.as_str())
-            .unwrap_or("Invalid or unexpected token");
-          let err_obj = crate::error_object::new_syntax_error_object(scope, &intr, message)?;
-          return Err(VmError::Throw(err_obj));
-        }
-        Err(err) => return Err(err),
-      }
-    }
-
-    // Save and restore the runtime's source and environments while running eval code. This keeps
-    // nested function source spans aligned with the eval input and preserves the caller's
-    // execution state.
-    let prev_source = self.env.source();
-    let prev_base_offset = self.env.base_offset();
-    let prev_prefix_len = self.env.prefix_len();
-    let prev_lexical_env = self.env.lexical_env;
-    let prev_var_env = self.env.var_env();
-    let prev_global_var_deletable = self.env.global_var_deletable();
-    let prev_strict = self.strict;
-
-    let eval_lex = scope.env_create(Some(prev_lexical_env))?;
-    self.env.set_source_info(source.clone(), 0, 0);
-    self.env.set_lexical_env(scope.heap_mut(), eval_lex);
-    // In strict eval code, var/function declarations are scoped to the eval itself. In non-strict
-    // direct eval, they are scoped to the caller's VariableEnvironment.
-    self
-      .env
-      .set_var_env(if strict { VarEnv::Env(eval_lex) } else { prev_var_env });
-    // Annex B: non-strict *direct* eval in the global scope creates deletable (configurable) global
-    // var/function bindings.
-    self
-      .env
-      .set_global_var_deletable(!strict && matches!(prev_var_env, VarEnv::GlobalObject));
-    self.strict = strict;
-
-    let result = (|| {
-      self.instantiate_script(scope, &top.stx.body)?;
-
-      let completion = self.eval_stmt_list(scope, &top.stx.body)?;
-      match completion {
-        Completion::Normal(v) => Ok(v.unwrap_or(Value::Undefined)),
-        Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
-          value: thrown.value,
-          stack: thrown.stack,
-        }),
-        Completion::Return(_) => Err(VmError::InvariantViolation(
-          "eval produced Return completion (early errors should prevent this)",
-        )),
-        Completion::Break(..) => Err(VmError::InvariantViolation(
-          "eval produced Break completion (early errors should prevent this)",
-        )),
-        Completion::Continue(..) => Err(VmError::InvariantViolation(
-          "eval produced Continue completion (early errors should prevent this)",
-        )),
-      }
-    })();
-
-    self.strict = prev_strict;
-    self.env.set_lexical_env(scope.heap_mut(), prev_lexical_env);
-    self.env.set_var_env(prev_var_env);
-    self.env.set_global_var_deletable(prev_global_var_deletable);
-    self
-      .env
-      .set_source_info(prev_source, prev_base_offset, prev_prefix_len);
-
-    match result {
-      Err(VmError::Syntax(diags)) => {
-        let intr = self
-          .vm
-          .intrinsics()
-          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-        let message = diags
-          .first()
-          .map(|d| d.message.as_str())
-          .unwrap_or("Invalid or unexpected token");
-        let err_obj = crate::error_object::new_syntax_error_object(scope, &intr, message)?;
-        Err(VmError::Throw(err_obj))
-      }
-      other => other,
-    }
+    perform_direct_eval_with_host_and_hooks(
+      self.vm,
+      scope,
+      &mut *self.host,
+      &mut *self.hooks,
+      self.env,
+      self.strict,
+      self.this,
+      self.new_target,
+      source_string,
+    )
   }
 
   fn eval_cond(&mut self, scope: &mut Scope<'_>, expr: &CondExpr) -> Result<Value, VmError> {

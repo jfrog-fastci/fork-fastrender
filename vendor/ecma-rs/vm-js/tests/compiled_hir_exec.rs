@@ -2508,6 +2508,47 @@ fn compiled_function_level_use_strict_sets_this_to_undefined() -> Result<(), VmE
 }
 
 #[test]
+fn compiled_direct_eval_updates_local_var() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(){ var x = 1; eval('x = 2'); return x; }
+      f()
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(2.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_direct_eval_is_not_triggered_when_shadowed() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(){ var eval = function(s){ return s; }; return eval('x'); }
+      f()
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string result, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "x");
+  Ok(())
+}
+
+#[test]
 fn compiled_function_creates_arguments_object() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());

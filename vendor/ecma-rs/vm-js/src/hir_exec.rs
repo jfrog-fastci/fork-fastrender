@@ -1,6 +1,6 @@
 use crate::code::{CompiledFunctionRef, CompiledScript};
 use crate::conversion_ops::ToPrimitiveHint;
-use crate::exec::{ResolvedBinding, RuntimeEnv};
+use crate::exec::{perform_direct_eval_with_host_and_hooks, ResolvedBinding, RuntimeEnv};
 use crate::fallible_format;
 use crate::function::ThisMode;
 use crate::for_in::ForInEnumerator;
@@ -4506,6 +4506,21 @@ impl<'vm> HirEvaluator<'vm> {
       return Err(VmError::Unimplemented("spread arguments (hir-js compiled path)"));
     }
 
+    // Track whether this call is *syntactically* a direct eval candidate (`eval(...)`).
+    //
+    // A call is only a direct eval if:
+    // - it is syntactically `eval(...)`, and
+    // - `eval` resolves to the original `%eval%` intrinsic function object.
+    //
+    // HIR does not preserve parenthesization metadata, so this is best-effort.
+    let callee_expr = self.get_expr(body, call.callee)?;
+    let direct_eval_syntax = !call.optional
+      && matches!(
+        &callee_expr.kind,
+        hir_js::ExprKind::Ident(name_id)
+          if self.hir().names.resolve(*name_id) == Some("eval")
+      );
+
     let mut scope = scope.reborrow();
 
     if call.is_new {
@@ -4539,7 +4554,7 @@ impl<'vm> HirEvaluator<'vm> {
     }
 
     // Method call detection: `obj.prop(...)` uses `this = obj`.
-    let (callee_value, this_value) = match &self.get_expr(body, call.callee)?.kind {
+    let (callee_value, this_value) = match &callee_expr.kind {
       hir_js::ExprKind::Member(member) => {
         let base = self.eval_expr(&mut scope, body, member.object)?;
         if member.optional && matches!(base, Value::Null | Value::Undefined) {
@@ -4584,6 +4599,31 @@ impl<'vm> HirEvaluator<'vm> {
       let v = self.eval_expr(&mut scope, body, arg.expr)?;
       scope.push_root(v)?;
       args.push(v);
+    }
+
+    if direct_eval_syntax {
+      let intr = self
+        .vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+      if callee_value == Value::Object(intr.eval()) {
+        // Direct eval: execute in the caller's lexical environment (with strictness propagation).
+        let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
+        return match arg0 {
+          Value::String(s) => perform_direct_eval_with_host_and_hooks(
+            self.vm,
+            &mut scope,
+            &mut *self.host,
+            &mut *self.hooks,
+            self.env,
+            self.strict,
+            self.this,
+            self.new_target,
+            s,
+          ),
+          other => Ok(other),
+        };
+      }
     }
 
     self.vm.call_with_host_and_hooks(
