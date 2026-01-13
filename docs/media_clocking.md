@@ -138,6 +138,14 @@ This fallback is fine because there is no external hardware clock to drift again
 The UI / event loop “tick” (e.g. a per-frame update, a timer firing, a winit `RedrawRequested`) is
 **only a wake-up mechanism**.
 
+In FastRender’s windowed browser, “tick” is concretely a UI→worker protocol message:
+
+* `UiToWorker::Tick { tab_id }` in `src/ui/messages.rs`
+
+Importantly, this message does **not** carry a timestamp. That’s intentional: the worker is expected
+to query whatever clock is appropriate (for JS timers, for media playback, etc.) rather than trusting
+the UI thread’s scheduling jitter.
+
 What the tick does:
 
 * Gives the media pipeline CPU time to:
@@ -153,6 +161,11 @@ What the tick must **not** do:
 * **Do not** treat “time since last tick” as progress on the media timeline.
   * Ticks can jitter, coalesce, or pause entirely (window moved, system under load, backgrounded).
   * Accumulating `dt` from ticks is a classic way to create drift.
+* **Do not** advance media time by a fixed amount per tick (e.g. “+16ms each tick”).
+  * This is a tempting pattern because it is deterministic, and FastRender currently uses a fixed
+    tick step for **CSS animation sampling** (see `TICK_ANIMATION_STEP_MS` in
+    `src/ui/render_worker.rs`), but that approach is not suitable for audio/video because the audio
+    device continues advancing in real time regardless of UI tick delivery.
 
 Correct model:
 

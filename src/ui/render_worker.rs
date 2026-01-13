@@ -118,8 +118,13 @@ struct NavigationRequest {
 }
 
 // `UiToWorker::Tick` is the UI's periodic driver for time-based updates (CSS animations/transitions,
-// and eventually JS timers). The UI does not provide a timestamp, so we advance a fixed amount of
-// time per tick to keep behaviour deterministic for tests.
+// and eventually JS timers).
+//
+// This worker-side CSS animation sampling intentionally advances by a fixed amount of time per tick
+// to keep behaviour deterministic for tests.
+//
+// Do not copy this approach for media playback: audio/video must be driven from a real master clock
+// (audio device time when available) to avoid A/V drift. See `docs/media_clocking.md`.
 const TICK_ANIMATION_STEP_MS: f32 = 16.0;
 
 // -----------------------------------------------------------------------------
