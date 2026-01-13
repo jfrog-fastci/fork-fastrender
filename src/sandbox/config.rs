@@ -91,6 +91,17 @@ impl RendererSandboxEnvConfig {
       RendererSandboxMode::Relaxed => MacosSeatbeltProfileSelection::RendererDefault,
       RendererSandboxMode::Off => MacosSeatbeltProfileSelection::PureComputation,
     };
+
+    // If sandboxing is disabled, do not parse profile overrides. This ensures that
+    // `FASTR_RENDERER_SANDBOX=off` reliably disables sandboxing even if other sandbox-related env vars
+    // are set to invalid values.
+    if !enabled {
+      return Ok(Self {
+        enabled,
+        macos_seatbelt_profile: default_profile,
+      });
+    }
+
     let macos_seatbelt_profile = parse_macos_seatbelt_profile(
       env.get(ENV_MACOS_SEATBELT_PROFILE).map(String::as_str),
       default_profile,
@@ -276,6 +287,15 @@ mod tests {
     );
 
     env.insert(ENV_RENDERER_SANDBOX.to_string(), "OFF".to_string());
+    let config = RendererSandboxEnvConfig::from_env_map(&env, true).expect("parse config");
+    assert!(!config.enabled);
+  }
+
+  #[test]
+  fn sandbox_off_ignores_invalid_seatbelt_profile_override() {
+    let mut env = HashMap::new();
+    env.insert(ENV_RENDERER_SANDBOX.to_string(), "off".to_string());
+    env.insert(ENV_MACOS_SEATBELT_PROFILE.to_string(), "   ".to_string());
     let config = RendererSandboxEnvConfig::from_env_map(&env, true).expect("parse config");
     assert!(!config.enabled);
   }
