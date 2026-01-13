@@ -16,9 +16,12 @@ use common::prng;
 use common::render_pipeline::{
   apply_test_render_delay, compute_soft_timeout_ms, format_error_with_chain, CLI_RENDER_STACK_SIZE,
 };
-use fastrender::api::{FastRenderPool, FastRenderPoolConfig, RenderArtifactRequest, RenderOptions};
+use fastrender::api::{
+  BrowserTab, FastRenderPool, FastRenderPoolConfig, RenderArtifactRequest, RenderOptions,
+};
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::image_output::{encode_image, OutputFormat};
+use fastrender::js::JsExecutionOptions;
 use fastrender::render_control::{
   push_stage_listener, with_deadline, RenderDeadline, StageHeartbeat,
 };
@@ -194,6 +197,20 @@ struct Cli {
   /// still valuable; the summary/metadata will still record per-fixture failures.
   #[arg(long)]
   keep_going: bool,
+
+  /// Enable JavaScript execution when rendering fixtures.
+  ///
+  /// When enabled, fixtures are loaded via `api::BrowserTab` (vm-js) so scripts can run before the
+  /// final pixels are captured.
+  #[arg(long)]
+  js: bool,
+
+  /// Maximum number of JS "frames" to run before giving up on reaching a stable state.
+  ///
+  /// This bounds `BrowserTab::run_until_stable` so hostile pages cannot keep scheduling work
+  /// forever.
+  #[arg(long, default_value_t = 50, value_name = "N")]
+  js_max_frames: usize,
 }
 
 #[derive(Clone)]
@@ -218,6 +235,8 @@ struct RenderShared {
   force_light_mode: bool,
   allow_animations: bool,
   allow_dark_mode: bool,
+  js_enabled: bool,
+  js_max_frames: usize,
 }
 
 #[derive(Clone)]
@@ -488,6 +507,7 @@ fn build_fixture_render_config(
   patch_html_for_chrome_baseline: bool,
   compat_profile: fastrender::CompatProfile,
   dom_compat_mode: fastrender::dom::DomCompatibilityMode,
+  js_enabled: bool,
 ) -> fastrender::api::FastRenderConfig {
   let resource_policy = ResourcePolicy::default()
     .allow_http(false)
@@ -495,10 +515,12 @@ fn build_fixture_render_config(
   fastrender::api::FastRenderConfig::new()
     .with_default_viewport(viewport.0, viewport.1)
     .with_device_pixel_ratio(dpr)
-    // Fixtures are rendered with scripts disabled and no JS execution. Use scripting-disabled HTML
-    // parsing semantics so `<noscript>` fallback content is visible (e.g. sites that render a
-    // no-JS message or lazy-load fallbacks).
-    .with_render_parse_scripting_enabled(false)
+    // Fixture renders default to "scripts disabled" so `<noscript>` fallback content is visible
+    // when JS is not executed.
+    //
+    // When `--js` is enabled, switch back to scripting-enabled parsing semantics so `noscript`
+    // behaves like a JS-capable browser.
+    .with_render_parse_scripting_enabled(js_enabled)
     // Headless Chrome (used by `xtask chrome-baseline-fixtures`) does not honor `<meta name="viewport">`
     // directives on desktop. Rendering fixtures with meta viewport enabled can therefore change the
     // effective zoom/DPR and even the output image dimensions, making Chrome-vs-FastRender diffs
@@ -509,6 +531,9 @@ fn build_fixture_render_config(
     .with_resource_policy(resource_policy)
     .with_font_sources(font_config)
     .with_runtime_toggles(fixture_runtime_toggles(patch_html_for_chrome_baseline))
+    // When JS execution is enabled, treat the document as "scripting enabled" for media queries
+    // and `<noscript>` rendering semantics.
+    .with_dom_scripting_enabled(js_enabled)
 }
 
 fn run(cli: Cli) -> io::Result<()> {
@@ -534,6 +559,12 @@ fn run(cli: Cli) -> io::Result<()> {
     return Err(io::Error::new(
       io::ErrorKind::InvalidInput,
       "dpr must be a finite number > 0",
+    ));
+  }
+  if cli.js && cli.js_max_frames == 0 {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      "js-max-frames must be >= 1 when --js is enabled",
     ));
   }
   if cli.repeat == 1 {
@@ -626,6 +657,7 @@ fn run(cli: Cli) -> io::Result<()> {
     cli.patch_html_for_chrome_baseline,
     cli.compat.compat_profile(),
     cli.compat.dom_compat_mode(),
+    cli.js,
   );
 
   let render_pool = FastRenderPool::with_config(
@@ -666,6 +698,8 @@ fn run(cli: Cli) -> io::Result<()> {
     force_light_mode: cli.force_light_mode,
     allow_animations: cli.allow_animations,
     allow_dark_mode: cli.allow_dark_mode,
+    js_enabled: cli.js,
+    js_max_frames: cli.js_max_frames,
   };
 
   println!(
@@ -678,13 +712,14 @@ fn run(cli: Cli) -> io::Result<()> {
     println!("Shard: {idx}/{total}");
   }
   println!(
-    "Viewport: {}x{} dpr={} media={:?} fit_canvas_to_content={} timeout={}s animations={} dark_mode={}",
+    "Viewport: {}x{} dpr={} media={:?} fit_canvas_to_content={} timeout={}s js={} animations={} dark_mode={}",
     cli.viewport.0,
     cli.viewport.1,
     cli.dpr,
     cli.media.as_media_type(),
     cli.fit_canvas_to_content,
     cli.timeout,
+    if cli.js { "on" } else { "off" },
     if cli.allow_animations { "on" } else { "off" },
     if cli.allow_dark_mode { "on" } else { "off" }
   );
@@ -1637,7 +1672,7 @@ fn render_fixture(
     html_bytes = common::fixture_html_patch::patch_html_bytes(
       &html_bytes,
       Some(&base_url),
-      true, // disable JS
+      !shared.js_enabled, // disable JS unless explicitly enabled
       !shared.allow_animations,
       shared.allow_dark_mode,
     );
@@ -1693,6 +1728,8 @@ fn render_fixture(
   let determinism = opts.determinism.clone();
   let stem_for_determinism = stem.clone();
   let out_dir_for_determinism = shared.out_dir.clone();
+  let js_enabled = shared.js_enabled;
+  let js_max_frames = shared.js_max_frames;
   let last_stage: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
   let last_stage_for_listener = Arc::clone(&last_stage);
   let last_stage_for_encode = Arc::clone(&last_stage);
@@ -1709,15 +1746,48 @@ fn render_fixture(
     let _stage_guard = push_stage_listener(Some(stage_listener));
 
     apply_test_render_delay(Some(&stem_for_determinism));
-    let report = render_pool.with_renderer(|renderer| {
-      renderer.render_html_with_stylesheets_report(&html, &base_url, options, artifact_request)
-    })?;
+    let (pixmap, diagnostics, artifacts) = if !js_enabled {
+      let report = render_pool.with_renderer(|renderer| {
+        renderer.render_html_with_stylesheets_report(&html, &base_url, options, artifact_request)
+      })?;
+      (report.pixmap, report.diagnostics, report.artifacts)
+    } else {
+      // Ensure JavaScript execution is bounded by the same cooperative render timeout. We keep this
+      // deadline alive through navigation + JS + render so `check_root` operations share one budget.
+      let deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+
+      let factory = render_pool.factory();
+      let renderer = factory.build_renderer()?;
+      let mut tab = BrowserTab::with_renderer_and_vmjs_and_js_execution_options(
+        renderer,
+        options.clone(),
+        JsExecutionOptions::default(),
+      )?;
+      // Register the (possibly patched) HTML contents at the fixture's canonical file:// URL so
+      // navigation/subresource resolution matches the non-JS fixture path.
+      tab.register_html_source(base_url.clone(), html.clone());
+
+      let (pixmap, diagnostics) = with_deadline(Some(&deadline), || {
+        tab.navigate_to_url(&base_url, options.clone())?;
+        // Drive the JS event loop until stable with a bounded number of "frames" so hostile pages
+        // cannot hang the CLI indefinitely even if they keep scheduling work.
+        let _ = tab.run_until_stable(js_max_frames)?;
+        let pixmap = tab.render_frame()?;
+        let diagnostics = tab.diagnostics_snapshot().unwrap_or_default();
+        Ok::<_, fastrender::Error>((pixmap, diagnostics))
+      })?;
+
+      // JS-mode fixture renders currently do not capture pipeline artifacts for `diff_snapshots`.
+      let artifacts = RenderArtifacts::new(artifact_request);
+
+      (pixmap, diagnostics, artifacts)
+    };
 
     if let Some(determinism) = determinism.as_ref() {
-      if blocked_network_urls(&report.diagnostics).is_empty() {
-        let width = report.pixmap.width();
-        let height = report.pixmap.height();
-        let data = report.pixmap.data();
+      if blocked_network_urls(&diagnostics).is_empty() {
+        let width = pixmap.width();
+        let height = pixmap.height();
+        let data = pixmap.data();
         let (hash_hi, hash_lo) = hash128(data);
 
         let mut determinism_map = lock_mutex(&determinism.determinism);
@@ -1770,7 +1840,7 @@ fn render_fixture(
       let deadline = RenderDeadline::new(Some(remaining), None);
 
       Some(with_deadline(Some(&deadline), || {
-        encode_image(&report.pixmap, OutputFormat::Png)
+        encode_image(&pixmap, OutputFormat::Png)
       })?)
     } else {
       None
@@ -1778,8 +1848,8 @@ fn render_fixture(
 
     Ok(RenderOutcome {
       png,
-      diagnostics: report.diagnostics,
-      artifacts: report.artifacts,
+      diagnostics,
+      artifacts,
     })
   };
 
@@ -1929,7 +1999,11 @@ fn render_fixture(
   };
 
   if opts.write_snapshot {
-    if let Some(artifacts) = captured_artifacts.as_ref() {
+    if shared.js_enabled {
+      // JS-mode fixture rendering currently uses `BrowserTab::render_frame` and does not capture
+      // the intermediate pipeline artifacts needed to build `snapshot.json`.
+      let _ = writeln!(log, "Snapshot: skipped (JS mode does not capture pipeline artifacts)");
+    } else if let Some(artifacts) = captured_artifacts.as_ref() {
       if let Err(err) = write_snapshot_outputs(&snapshot_dir, artifacts, &mut log) {
         let _ = writeln!(log, "Snapshot write error: {err}");
       }
@@ -2154,6 +2228,7 @@ mod tests {
       true,
       fastrender::CompatProfile::Standards,
       fastrender::dom::DomCompatibilityMode::Standard,
+      false,
     );
     assert!(!config.apply_meta_viewport);
   }
@@ -2170,6 +2245,7 @@ mod tests {
       false,
       fastrender::CompatProfile::Standards,
       fastrender::dom::DomCompatibilityMode::Standard,
+      false,
     );
     assert!(
       !config.render_parse_scripting_enabled,

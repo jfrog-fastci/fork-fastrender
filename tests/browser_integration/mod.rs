@@ -55,6 +55,7 @@ mod js_diagnostics;
 #[cfg(feature = "quickjs")]
 mod js_rendering;
 mod js_time;
+mod render_fixtures_js;
 mod location_navigation;
 mod navigation_streaming;
 mod a11y_select_action;
