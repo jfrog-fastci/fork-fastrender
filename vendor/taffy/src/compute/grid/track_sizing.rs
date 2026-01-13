@@ -84,28 +84,23 @@ impl ItemBatcher {
 
 /// This struct captures a bunch of variables which are used to compute the intrinsic sizes of children so that those variables
 /// don't have to be passed around all over the place below. It then has methods that implement the intrinsic sizing computations
-struct IntrisicSizeMeasurer<'tree, 'oat, Tree, EstimateFunction>
+struct IntrisicSizeMeasurer<'tree, 'oat, Tree>
 where
   Tree: LayoutPartialTree,
-  EstimateFunction: Fn(&GridTrack, Option<f32>, &Tree) -> Option<f32>,
 {
   /// The layout tree
   tree: &'tree mut Tree,
   /// The tracks in the opposite axis to the one we are currently sizing
   other_axis_tracks: &'oat [GridTrack],
-  /// A function that computes an estimate of an other-axis track's size which is passed to
-  /// the child size measurement functions
-  get_track_size_estimate: EstimateFunction,
   /// The axis we are currently sizing
   axis: AbstractAxis,
   /// The available grid space
   inner_node_size: Size<Option<f32>>,
 }
 
-impl<Tree, EstimateFunction> IntrisicSizeMeasurer<'_, '_, Tree, EstimateFunction>
+impl<Tree> IntrisicSizeMeasurer<'_, '_, Tree>
 where
   Tree: LayoutPartialTree,
-  EstimateFunction: Fn(&GridTrack, Option<f32>, &Tree) -> Option<f32>,
 {
   /// Compute the available_space to be passed to the child sizing functions
   /// These are estimates based on either the max track sizing function or the provisional base size in the opposite
@@ -113,12 +108,10 @@ where
   /// https://www.w3.org/TR/css-grid-1/#algo-overview
   #[inline(always)]
   fn available_space(&self, item: &mut GridItem) -> Size<Option<f32>> {
-    item.available_space_cached(
-      self.axis,
-      self.other_axis_tracks,
-      self.inner_node_size.get(self.axis.other()),
-      |track, basis| (self.get_track_size_estimate)(track, basis, self.tree),
-    )
+    // `resolve_intrinsic_track_sizes` pre-fills this cache for the current sizing pass.
+    item
+      .available_space_cache
+      .expect("available_space_cache should be set before intrinsic measurement")
   }
 
   /// Compute the item's resolved margins for size contributions. Horizontal percentage margins always resolve
@@ -826,12 +819,45 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
     .iter()
     .map(|track| track.flex_factor())
     .sum::<f32>();
+
+  // Pre-compute the other-axis track-size estimates used for intrinsic measurement.
+  //
+  // `GridItem::available_space()` historically summed these estimates per item by iterating the
+  // spanned other-axis tracks (O(items * span)). We compute prefix sums so each item's sum can be
+  // computed in O(1) while preserving `Option` sum semantics (None if any estimate in the range is
+  // None).
+  let other_axis_available_space = inner_node_size.get(axis.other());
+  let mut prefix_sum: Vec<f32> = Vec::with_capacity(other_axis_tracks.len() + 1);
+  let mut prefix_none: Vec<u32> = Vec::with_capacity(other_axis_tracks.len() + 1);
+  prefix_sum.push(0.0);
+  prefix_none.push(0);
+  for track in other_axis_tracks.iter() {
+    let estimate = get_track_size_estimate(track, other_axis_available_space, tree)
+      .map(|v| v + track.content_alignment_adjustment);
+    prefix_sum.push(prefix_sum.last().copied().unwrap() + estimate.unwrap_or(0.0));
+    prefix_none.push(prefix_none.last().copied().unwrap() + u32::from(estimate.is_none()));
+  }
+
+  let sum_range = |range: core::ops::Range<usize>| -> Option<f32> {
+    if prefix_none[range.end] - prefix_none[range.start] > 0 {
+      None
+    } else {
+      Some(prefix_sum[range.end] - prefix_sum[range.start])
+    }
+  };
+
+  for item in items.iter_mut() {
+    let mut available_space = Size::NONE;
+    let other_axis_size = sum_range(item.track_range_excluding_lines(axis.other()));
+    available_space.set(axis.other(), other_axis_size);
+    item.available_space_cache = Some(available_space);
+  }
+
   let mut item_sizer = IntrisicSizeMeasurer {
     tree,
     other_axis_tracks,
     axis,
     inner_node_size,
-    get_track_size_estimate,
   };
 
   // Many intrinsic sizing sub-steps only affect specific kinds of tracks. Computing min/max-content
@@ -2061,6 +2087,73 @@ mod tests {
     assert!((final_sizes[0] - 5.0).abs() < 1e-5);
     assert!((final_sizes[1] - 10.0).abs() < 1e-5);
     assert!((final_sizes[2] - 15.0).abs() < 1e-5);
+  }
+
+  #[test]
+  fn grid_available_space_other_axis_sum_is_none_if_any_track_estimate_is_none() {
+    // `GridItem::available_space()` historically summed `Option<f32>` estimates across the spanned
+    // other-axis tracks using `sum::<Option<f32>>()`, which yields `None` if *any* element is
+    // `None`.
+    //
+    // `resolve_intrinsic_track_sizes` now precomputes these sums via prefix sums, and must preserve
+    // the exact same semantics.
+
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+    // Item spans two rows.
+    let child = taffy
+      .new_leaf(Style {
+        grid_row: Line {
+          start: line(1),
+          end: line(3),
+        },
+        ..Default::default()
+      })
+      .unwrap();
+
+    // Second row is `max-content`, meaning `get_track_size_estimate` returns `None` for that track
+    // during the inline-axis intrinsic sizing pass.
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Grid,
+          size: Size::from_lengths(100.0, 100.0),
+          grid_template_columns: vec![min_content()],
+          grid_template_rows: vec![length(10.0), max_content()],
+          ..Default::default()
+        },
+        &[child],
+      )
+      .unwrap();
+
+    let saw_intrinsic_measure = std::cell::Cell::new(false);
+    taffy
+      .compute_layout_with_measure(root, Size::MAX_CONTENT, |_, available_space, node_id, _, _| {
+        // During inline-axis intrinsic sizing we probe min-content widths with an unconstrained
+        // available width (`MinContent`). If the other-axis track-size estimate sum is `None` then
+        // the available height should also be treated as `MinContent`.
+        if node_id == child && matches!(available_space.width, AvailableSpace::MinContent) {
+          saw_intrinsic_measure.set(true);
+          assert!(
+            matches!(available_space.height, AvailableSpace::MinContent),
+            "expected other-axis available space to be MinContent when any spanned track estimate is None (got {available_space:?})",
+          );
+        }
+
+        MeasureOutput {
+          size: Size {
+            width: 10.0,
+            height: 10.0,
+          },
+          first_baselines: Point { x: None, y: None },
+        }
+      })
+      .unwrap();
+
+    assert!(
+      saw_intrinsic_measure.get(),
+      "expected intrinsic measurement probe to run"
+    );
   }
 
   #[test]
