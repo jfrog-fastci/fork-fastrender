@@ -2741,11 +2741,21 @@ fn validate_regex_pattern(
       if esc == 'c' {
         let after_c = i + esc_len;
         let Some(control) = pattern[after_c..].chars().next() else {
-          return Err(RegexError {
-            kind: RegexErrorKind::InvalidPattern,
-            offset: base_offset + escape_start,
-            len: after_c.saturating_sub(escape_start),
-          });
+          // In UnicodeMode, `\c` must be followed by an ASCII letter.
+          //
+          // In non-UnicodeMode, Annex B treats an incomplete control escape as literal pattern
+          // characters (`\c`), so accept it.
+          if unicode_mode {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + escape_start,
+              len: after_c.saturating_sub(escape_start),
+            });
+          }
+          i += esc_len;
+          prev_can_be_quantified = true;
+          quantifier_allows_lazy = false;
+          continue;
         };
         if control.is_ascii_alphabetic() {
           i = after_c + control.len_utf8();

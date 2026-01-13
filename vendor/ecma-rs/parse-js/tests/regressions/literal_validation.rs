@@ -377,17 +377,15 @@ fn unicode_mode_invalid_regex_escapes_are_rejected() {
 
 #[test]
 fn unicode_mode_escape_edge_cases() {
-  // `\\c` must be followed by an ASCII letter (including in character classes).
-  for src in [
-    "/\\c/",
-    "/\\c!/",
-    "/[\\c]/",
-    "/[\\c!]/",
-    "/\\c/u",
-    "/\\c/v",
-    "/[\\c]/u",
-    "/[\\c]/v",
-  ] {
+  // In non-unicode mode, Annex B extends the escape grammar:
+  // invalid/incomplete `\c` escapes are treated as literal pattern characters.
+  for src in ["/\\c/", "/\\c!/", "/[\\c]/", "/[\\c!]/"] {
+    assert!(parse(src).is_ok(), "{src}");
+  }
+
+  // In UnicodeMode (`/u` or `/v`), `\c` must be followed by an ASCII letter (including in
+  // character classes).
+  for src in ["/\\c/u", "/\\c/v", "/[\\c]/u", "/[\\c]/v"] {
     let err = parse(src).unwrap_err();
     assert_eq!(
       err.typ,

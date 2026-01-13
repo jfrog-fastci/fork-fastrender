@@ -11,6 +11,46 @@ fn ecma_script_opts() -> ParseOptions {
   }
 }
 
+fn is_test262_parse_negative(src: &str) -> bool {
+  let Some(frontmatter_start) = src.find("/*---") else {
+    return false;
+  };
+  let Some(frontmatter_end_rel) = src[frontmatter_start..].find("---*/") else {
+    return false;
+  };
+  let frontmatter_end = frontmatter_start + frontmatter_end_rel;
+  let frontmatter = &src[frontmatter_start + "/*---".len()..frontmatter_end];
+
+  let mut in_negative = false;
+  let mut negative_indent: usize = 0;
+  for line in frontmatter.lines() {
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    let trimmed = line.trim_start();
+    let indent = line.len() - trimmed.len();
+    if !in_negative {
+      if trimmed == "negative:" {
+        in_negative = true;
+        negative_indent = indent;
+      }
+      continue;
+    }
+
+    // Leave the `negative:` block when indentation decreases.
+    if indent <= negative_indent && !trimmed.is_empty() {
+      in_negative = false;
+      continue;
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("phase:") {
+      if rest.trim() == "parse" {
+        return true;
+      }
+    }
+  }
+
+  false
+}
+
 #[test]
 fn rejects_regex_literal_with_both_u_and_v_flags() {
   let opts = ecma_script_opts();
@@ -216,7 +256,7 @@ fn parses_test262_property_escapes_generated_strings_corpus() {
       continue;
     };
     let src = std::fs::read_to_string(&path).expect("read test262 file");
-    let expects_parse_error = src.contains("negative:") && src.contains("phase: parse");
+    let expects_parse_error = is_test262_parse_negative(&src);
     if expects_parse_error {
       let err = parse_with_options(&src, opts).expect_err("expected parse error");
       assert_eq!(
@@ -319,46 +359,6 @@ fn parses_test262_unicode_property_escape_files() {
   let mut files = Vec::new();
   collect_js_files(&root, &mut files);
   files.sort();
-
-  fn is_test262_parse_negative(src: &str) -> bool {
-    let Some(frontmatter_start) = src.find("/*---") else {
-      return false;
-    };
-    let Some(frontmatter_end_rel) = src[frontmatter_start..].find("---*/") else {
-      return false;
-    };
-    let frontmatter_end = frontmatter_start + frontmatter_end_rel;
-    let frontmatter = &src[frontmatter_start + "/*---".len()..frontmatter_end];
-
-    let mut in_negative = false;
-    let mut negative_indent: usize = 0;
-    for line in frontmatter.lines() {
-      let line = line.strip_suffix('\r').unwrap_or(line);
-      let trimmed = line.trim_start();
-      let indent = line.len() - trimmed.len();
-      if !in_negative {
-        if trimmed == "negative:" {
-          in_negative = true;
-          negative_indent = indent;
-        }
-        continue;
-      }
-
-      // Leave the `negative:` block when indentation decreases.
-      if indent <= negative_indent && !trimmed.is_empty() {
-        in_negative = false;
-        continue;
-      }
-
-      if let Some(rest) = trimmed.strip_prefix("phase:") {
-        if rest.trim() == "parse" {
-          return true;
-        }
-      }
-    }
-
-    false
-  }
 
   let opts = ecma_script_opts();
   for path in files {
