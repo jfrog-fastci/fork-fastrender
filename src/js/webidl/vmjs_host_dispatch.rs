@@ -3688,33 +3688,31 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             return Ok(());
           }
 
-          let global = self
-            .global
-            .or_else(|| vm.user_data_mut::<WindowRealmUserData>().and_then(|data| data.window_obj()));
+          let global = self.global.or_else(|| {
+            vm.user_data_mut::<WindowRealmUserData>()
+              .and_then(|data| data.window_obj())
+          });
           let Some(global) = global else {
             return Ok(());
           };
 
           scope.push_root(Value::Object(global))?;
           let ctor_key = key_from_str(scope, "DOMTokenList")?;
-          let Some(Value::Object(ctor_obj)) = scope
-            .heap()
-            .object_get_own_data_property_value(global, &ctor_key)?
+          let Some(Value::Object(ctor_obj)) =
+            scope.heap().object_get_own_data_property_value(global, &ctor_key)?
           else {
             return Ok(());
           };
           scope.push_root(Value::Object(ctor_obj))?;
           let proto_key = key_from_str(scope, "prototype")?;
-          let Some(Value::Object(proto_obj)) = scope
-            .heap()
-            .object_get_own_data_property_value(ctor_obj, &proto_key)?
+          let Some(Value::Object(proto_obj)) =
+            scope.heap().object_get_own_data_property_value(ctor_obj, &proto_key)?
           else {
             return Ok(());
           };
           scope.push_root(Value::Object(proto_obj))?;
-          let Some(Value::Object(func_obj)) = scope
-            .heap()
-            .object_get_own_data_property_value(proto_obj, &supports_key)?
+          let Some(Value::Object(func_obj)) =
+            scope.heap().object_get_own_data_property_value(proto_obj, &supports_key)?
           else {
             return Ok(());
           };
