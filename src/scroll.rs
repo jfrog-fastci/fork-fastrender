@@ -1509,8 +1509,6 @@ pub fn apply_scroll_offsets(tree: &mut FragmentTree, scroll: &ScrollState) {
     apply_element_scroll_offsets(fragment, scroll, Point::ZERO, false);
   }
 }
-
-<<<<<<< HEAD
 fn apply_viewport_scroll_cancel_to_fixed(
   node: &mut FragmentNode,
   viewport_scroll: Point,
@@ -1566,7 +1564,8 @@ pub fn apply_viewport_scroll_cancel(tree: &mut FragmentTree, scroll: &ScrollStat
   for fragment in tree.additional_fragments.iter_mut() {
     apply_viewport_scroll_cancel_to_fixed(fragment, viewport_scroll, false);
   }
-=======
+}
+
 /// Returns `true` if a fragment tree can safely use the "scroll blit" fast-path.
 ///
 /// Scroll blitting (reusing the previously rendered frame by shifting pixels) is only valid when
@@ -1625,7 +1624,6 @@ pub(crate) fn scroll_blit_supported(tree: &FragmentTree) -> bool {
     }
   }
   true
->>>>>>> c6779416 (feat: add fragment-tree scan for scroll blit safety)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
