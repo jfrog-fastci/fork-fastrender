@@ -263,6 +263,66 @@ fn interaction_state_dom2_projection_updates_preorder_ids_after_dom_mutation() {
 }
 
 #[test]
+fn interaction_state_dom2_projection_survives_preorder_shifts_and_drops_detached_targets() {
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<div id=before></div>",
+    "<div id=target></div>",
+    "</body></html>",
+  );
+  let mut doc = crate::dom2::parse_html(html).unwrap();
+  let target = doc.get_element_by_id("target").expect("missing #target");
+
+  let mut state_dom2 = InteractionStateDom2::default();
+  state_dom2.focused = Some(target);
+  state_dom2.focus_visible = true;
+  state_dom2.focus_chain = vec![target];
+  state_dom2.hover_chain = vec![target];
+  state_dom2.visited_links.insert(target);
+
+  let snapshot1 = doc.to_renderer_dom_with_mapping();
+  let projected1 = state_dom2.project_to_preorder(&snapshot1.mapping);
+  let preorder_1 = projected1.focused.expect("focused preorder id");
+  assert!(preorder_1 > 0, "preorder ids should be 1-based");
+  assert_eq!(
+    snapshot1.mapping.node_id_for_preorder(preorder_1),
+    Some(target),
+    "projected focus preorder id should map back to the original NodeId"
+  );
+  assert!(projected1.is_hovered(preorder_1));
+  assert!(projected1.is_visited_link(preorder_1));
+
+  // Insert a new sibling before the target so renderer preorder ids shift.
+  let parent = doc.parent(target).unwrap().unwrap();
+  let inserted = doc.create_element("div", "");
+  assert!(doc.insert_before(parent, inserted, Some(target)).unwrap());
+
+  let snapshot2 = doc.to_renderer_dom_with_mapping();
+  let projected2 = state_dom2.project_to_preorder(&snapshot2.mapping);
+  let preorder_2 = projected2.focused.expect("focused preorder id after insertion");
+  assert_ne!(
+    preorder_1, preorder_2,
+    "expected the focused preorder id to change after inserting a prior sibling"
+  );
+  assert_eq!(
+    snapshot2.mapping.node_id_for_preorder(preorder_2),
+    Some(target),
+    "new focused preorder id should still refer to the same stable NodeId"
+  );
+  assert!(projected2.is_hovered(preorder_2));
+  assert!(projected2.is_visited_link(preorder_2));
+
+  // Detach the target; projection should drop focus/hover/visited state for it.
+  assert!(doc.remove_child(parent, target).unwrap());
+  let snapshot3 = doc.to_renderer_dom_with_mapping();
+  let projected3 = state_dom2.project_to_preorder(&snapshot3.mapping);
+  assert_eq!(projected3.focused, None);
+  assert!(projected3.hover_chain().is_empty());
+  assert!(projected3.visited_links.is_empty());
+}
+
+#[test]
 fn interaction_state_dom2_projection_clears_unmappable_focus() {
   let html = "<!doctype html><html><body><div id=a></div></body></html>";
   let mut doc = crate::dom2::parse_html(html).unwrap();
