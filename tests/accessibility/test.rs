@@ -281,6 +281,24 @@ fn accessibility_title_only_form_scopes_other_landmarks_only_when_title_is_non_e
 }
 
 #[test]
+fn accessibility_section_landmark_role_is_preserved_when_named_by_title() {
+  let html = r##"
+    <html><body>
+      <section id="s" title="Named section"></section>
+    </body></html>
+  "##;
+
+  let tree = render_accessibility_json(html);
+  let section = find_json_node(&tree, "s").expect("section");
+
+  assert_eq!(section.get("role").and_then(|v| v.as_str()), Some("region"));
+  assert_eq!(
+    section.get("name").and_then(|v| v.as_str()),
+    Some("Named section")
+  );
+}
+
+#[test]
 fn accessibility_roles_and_states_basic() {
   let mut renderer = FastRender::new().expect("renderer");
   let html = r##"
