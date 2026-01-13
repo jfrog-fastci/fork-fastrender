@@ -10,9 +10,11 @@ use std::time::Duration;
 
 #[derive(Arbitrary, Debug)]
 struct MediaTimebaseInput {
+  ticks: i64,
   num: u32,
   den: u32,
-  ticks: i64,
+  secs: u64,
+  nanos: u32,
 }
 
 fuzz_target!(|input: MediaTimebaseInput| {
@@ -20,8 +22,16 @@ fuzz_target!(|input: MediaTimebaseInput| {
 
   let d = ticks_to_duration(input.ticks, tb);
   let ticks2 = duration_to_ticks(d, tb);
+
   let ts: MediaTimestamp = ticks_to_timestamp(input.ticks, tb);
   let ticks3 = timestamp_to_ticks(ts, tb);
+
+  // Exercise conversions from arbitrary Durations as well (not just tick-derived ones).
+  let nanos = input.nanos % 1_000_000_000;
+  let dur = Duration::new(input.secs, nanos);
+  let ticks4 = duration_to_ticks(dur, tb);
+  let _ = ticks_to_duration(ticks4, tb);
+  let _ = timestamp_to_ticks(ticks_to_timestamp(ticks4, tb), tb);
 
   // Round-trips should generally drift by at most one tick, but the conversion goes through
   // nanoseconds (`Duration`), so extremely high-resolution timebases (<1ns/tick) can legitimately
@@ -54,4 +64,10 @@ fuzz_target!(|input: MediaTimebaseInput| {
     let diff = (i128::from(ticks3) - i128::from(input.ticks)).abs();
     assert!(diff <= 1);
   }
+
+  // Stress edge-case branches.
+  let _ = ticks_to_duration(i64::MIN, tb);
+  let _ = ticks_to_duration(i64::MAX, tb);
+  let _ = ticks_to_timestamp(i64::MIN, tb);
+  let _ = ticks_to_timestamp(i64::MAX, tb);
 });

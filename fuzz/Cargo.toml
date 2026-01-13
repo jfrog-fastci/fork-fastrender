@@ -146,6 +146,27 @@ doc = false
 bench = false
 
 [[bin]]
+name = "audio_resampler"
+path = "fuzz_targets/audio_resampler.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "audio_mixer"
+path = "fuzz_targets/audio_mixer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "audio_queue"
+path = "fuzz_targets/audio_queue.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "media_timebase"
 path = "fuzz_targets/media_timebase.rs"
 test = false

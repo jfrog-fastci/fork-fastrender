@@ -12,6 +12,7 @@
 //! If we *don't* resample when the decoder output rate doesn't match the output device rate,
 //! playback will run at the wrong speed (perceived as pitch/time changes). These helpers are
 //! intended to make audio output robust in common cases like 44.1kHz↔48kHz and mono↔stereo.
+use std::collections::VecDeque;
 
 use super::types::{AudioBuffer, AudioSamples};
 use super::limits::{MAX_CHANNELS, MAX_FRAMES_PER_PUSH, MAX_SAMPLE_RATE_HZ};
@@ -608,4 +609,348 @@ mod tests {
     let out = resample_f32(&[0.0, 1.0, 2.0], 44_100, 48_000, 2);
     assert!(out.len() % 2 == 0);
   }
+}
+
+/// Conservative cap for buffered interleaved samples inside [`LinearResampler`].
+///
+/// Resamplers are often fed attacker-controlled media streams; keep internal buffering bounded so
+/// fuzzing and real-world playback cannot accidentally allocate unbounded memory.
+const MAX_BUFFERED_SAMPLES: usize = 1_000_000; // ~4MB of f32 PCM.
+
+/// Resample interleaved `f32` PCM using nearest-neighbour sampling.
+///
+/// - `channels` must match the interleaving in `input`.
+/// - `max_output_frames` caps the returned length to avoid huge allocations when upsampling.
+#[must_use]
+pub fn resample_nearest_interleaved_f32(
+  input: &[f32],
+  channels: usize,
+  in_rate_hz: u32,
+  out_rate_hz: u32,
+  max_output_frames: usize,
+) -> Vec<f32> {
+  if channels == 0 || in_rate_hz == 0 || out_rate_hz == 0 || max_output_frames == 0 {
+    return Vec::new();
+  }
+
+  let usable_len = input.len() - (input.len() % channels);
+  let input = &input[..usable_len];
+  let input_frames = input.len() / channels;
+  if input_frames == 0 {
+    return Vec::new();
+  }
+
+  let output_frames =
+    estimate_output_frames(input_frames, in_rate_hz, out_rate_hz, max_output_frames);
+  if output_frames == 0 {
+    return Vec::new();
+  }
+
+  let mut out = Vec::with_capacity(output_frames.saturating_mul(channels));
+
+  for out_frame in 0..output_frames {
+    let idx = map_output_frame_to_input_index(out_frame, in_rate_hz, out_rate_hz);
+    let idx = idx.min(input_frames - 1);
+    let base = idx.saturating_mul(channels);
+    out.extend_from_slice(&input[base..base + channels]);
+  }
+
+  out
+}
+
+/// Resample interleaved `f32` PCM using linear interpolation.
+///
+/// This is intended for media playback (not high-quality offline resampling). The implementation
+/// prioritizes panic-freedom, bounded allocations, and reasonable numerical behaviour.
+#[must_use]
+pub fn resample_linear_interleaved_f32(
+  input: &[f32],
+  channels: usize,
+  in_rate_hz: u32,
+  out_rate_hz: u32,
+  max_output_frames: usize,
+) -> Vec<f32> {
+  if channels == 0 || in_rate_hz == 0 || out_rate_hz == 0 || max_output_frames == 0 {
+    return Vec::new();
+  }
+
+  let usable_len = input.len() - (input.len() % channels);
+  let input = &input[..usable_len];
+  let input_frames = input.len() / channels;
+  if input_frames == 0 {
+    return Vec::new();
+  }
+
+  let output_frames =
+    estimate_output_frames(input_frames, in_rate_hz, out_rate_hz, max_output_frames);
+  if output_frames == 0 {
+    return Vec::new();
+  }
+
+  let step = (in_rate_hz as f64) / (out_rate_hz as f64);
+  if !(step.is_finite()) || step <= 0.0 {
+    return Vec::new();
+  }
+
+  let mut out = Vec::with_capacity(output_frames.saturating_mul(channels));
+
+  for out_frame in 0..output_frames {
+    let pos = (out_frame as f64) * step;
+    if !(pos.is_finite()) {
+      break;
+    }
+    let base = pos.floor();
+    if !(base.is_finite()) || base < 0.0 {
+      continue;
+    }
+    let base_idx = base as usize;
+    if base_idx >= input_frames {
+      break;
+    }
+    let frac = (pos - base) as f32;
+    let frac = if frac.is_finite() {
+      frac.clamp(0.0, 1.0)
+    } else {
+      0.0
+    };
+
+    let next_idx = (base_idx + 1).min(input_frames - 1);
+    let base_sample = base_idx.saturating_mul(channels);
+    let next_sample = next_idx.saturating_mul(channels);
+
+    for ch in 0..channels {
+      let a = input[base_sample + ch];
+      let b = input[next_sample + ch];
+      out.push(lerp_f32(a, b, frac));
+    }
+  }
+
+  out
+}
+
+/// A small stateful linear resampler for interleaved `f32` PCM.
+///
+/// Callers can stream input in arbitrary chunk sizes; [`process`] maintains fractional position and
+/// buffers as needed. Output is capped per call to avoid unbounded work on pathological ratios.
+#[derive(Debug, Clone)]
+pub struct LinearResampler {
+  in_rate_hz: u32,
+  out_rate_hz: u32,
+  channels: usize,
+  step: f64,
+  pos: f64,
+  buf: VecDeque<f32>,
+}
+
+impl LinearResampler {
+  #[must_use]
+  pub fn new(in_rate_hz: u32, out_rate_hz: u32, channels: usize) -> Self {
+    let step = if in_rate_hz == 0 || out_rate_hz == 0 {
+      0.0
+    } else {
+      (in_rate_hz as f64) / (out_rate_hz as f64)
+    };
+    let step = if step.is_finite() && step > 0.0 {
+      step
+    } else {
+      0.0
+    };
+    Self {
+      in_rate_hz,
+      out_rate_hz,
+      channels,
+      step,
+      pos: 0.0,
+      buf: VecDeque::new(),
+    }
+  }
+
+  #[must_use]
+  pub fn in_rate_hz(&self) -> u32 {
+    self.in_rate_hz
+  }
+
+  #[must_use]
+  pub fn out_rate_hz(&self) -> u32 {
+    self.out_rate_hz
+  }
+
+  #[must_use]
+  pub fn channels(&self) -> usize {
+    self.channels
+  }
+
+  pub fn reset(&mut self) {
+    self.pos = 0.0;
+    self.buf.clear();
+  }
+
+  /// Push additional interleaved samples into the internal buffer.
+  pub fn push_interleaved_f32(&mut self, input: &[f32]) {
+    if self.channels == 0 || input.is_empty() {
+      return;
+    }
+
+    let usable_len = input.len() - (input.len() % self.channels);
+    if usable_len == 0 {
+      return;
+    }
+
+    let remaining_capacity = MAX_BUFFERED_SAMPLES.saturating_sub(self.buf.len());
+    if remaining_capacity == 0 {
+      return;
+    }
+
+    let mut to_push = usable_len.min(remaining_capacity);
+    to_push -= to_push % self.channels;
+    if to_push == 0 {
+      return;
+    }
+
+    self.buf.extend(input[..to_push].iter().copied());
+  }
+
+  /// Push `input` and return up to `max_output_frames` resampled frames.
+  #[must_use]
+  pub fn process(&mut self, input: &[f32], max_output_frames: usize) -> Vec<f32> {
+    self.push_interleaved_f32(input);
+    self.render(max_output_frames)
+  }
+
+  /// Drain resampled output from the internal buffer.
+  #[must_use]
+  pub fn render(&mut self, max_output_frames: usize) -> Vec<f32> {
+    let mut out = Vec::new();
+    self.render_into(&mut out, max_output_frames);
+    out
+  }
+
+  pub fn render_into(&mut self, out: &mut Vec<f32>, max_output_frames: usize) {
+    if max_output_frames == 0 || self.channels == 0 || self.step == 0.0 {
+      return;
+    }
+
+    let channels = self.channels;
+    let mut frames_written = 0usize;
+
+    while frames_written < max_output_frames {
+      let available_frames = self.buf.len() / channels;
+      if available_frames == 0 {
+        break;
+      }
+
+      // Sample at `pos` in input-frame units.
+      let base = self.pos.floor();
+      if !(base.is_finite()) || base < 0.0 {
+        self.pos = 0.0;
+        break;
+      }
+      let base_idx = base as usize;
+      if base_idx >= available_frames {
+        // We've advanced past the buffered input. Keep a single frame of history.
+        self.drop_frames(available_frames.saturating_sub(1));
+        self.pos = 0.0;
+        break;
+      }
+      let frac = (self.pos - base) as f32;
+      let frac = if frac.is_finite() {
+        frac.clamp(0.0, 1.0)
+      } else {
+        0.0
+      };
+
+      let next_idx = (base_idx + 1).min(available_frames - 1);
+
+      for ch in 0..channels {
+        let a = self.sample_at(base_idx, ch);
+        let b = self.sample_at(next_idx, ch);
+        out.push(lerp_f32(a, b, frac));
+      }
+
+      frames_written += 1;
+      self.pos += self.step;
+
+      if !(self.pos.is_finite()) || self.pos < 0.0 {
+        self.pos = 0.0;
+        break;
+      }
+
+      // Drop any whole frames that are no longer needed.
+      let available_frames = self.buf.len() / channels;
+      if available_frames == 0 {
+        self.pos = 0.0;
+        break;
+      }
+
+      let drop_frames_raw = self.pos.floor() as usize;
+      let drop_frames = drop_frames_raw.min(available_frames.saturating_sub(1));
+      if drop_frames > 0 {
+        self.drop_frames(drop_frames);
+        self.pos -= drop_frames as f64;
+        if self.pos < 0.0 || !(self.pos.is_finite()) {
+          self.pos = 0.0;
+        }
+      }
+
+      // If a pathological step advanced us past the remaining buffer, clamp back.
+      let available_frames = self.buf.len() / channels;
+      if available_frames == 0 || self.pos >= available_frames as f64 {
+        self.pos = 0.0;
+      }
+    }
+  }
+
+  fn sample_at(&self, frame: usize, channel: usize) -> f32 {
+    let idx = frame.saturating_mul(self.channels).saturating_add(channel);
+    self.buf.get(idx).copied().unwrap_or(0.0)
+  }
+
+  fn drop_frames(&mut self, frames: usize) {
+    if frames == 0 || self.channels == 0 {
+      return;
+    }
+    let samples = frames.saturating_mul(self.channels).min(self.buf.len());
+    for _ in 0..samples {
+      let _ = self.buf.pop_front();
+    }
+  }
+}
+
+fn estimate_output_frames(
+  input_frames: usize,
+  in_rate_hz: u32,
+  out_rate_hz: u32,
+  max_output_frames: usize,
+) -> usize {
+  if input_frames == 0 || in_rate_hz == 0 || out_rate_hz == 0 || max_output_frames == 0 {
+    return 0;
+  }
+
+  let in_rate = in_rate_hz as u128;
+  let out_rate = out_rate_hz as u128;
+  let input_frames = input_frames as u128;
+
+  let estimated = input_frames
+    .saturating_mul(out_rate)
+    .saturating_add(in_rate.saturating_sub(1))
+    .checked_div(in_rate)
+    .unwrap_or(u128::MAX);
+
+  let estimated = usize::try_from(estimated).unwrap_or(usize::MAX);
+  estimated.min(max_output_frames)
+}
+
+fn map_output_frame_to_input_index(out_frame: usize, in_rate_hz: u32, out_rate_hz: u32) -> usize {
+  if in_rate_hz == 0 || out_rate_hz == 0 {
+    return 0;
+  }
+  let n = (out_frame as u128).saturating_mul(in_rate_hz as u128);
+  let d = out_rate_hz as u128;
+  let idx = n / d;
+  usize::try_from(idx).unwrap_or(usize::MAX)
+}
+
+fn lerp_f32(a: f32, b: f32, t: f32) -> f32 {
+  // Allow NaNs to propagate; callers may sanitize at the sink boundary.
+  a + (b - a) * t
 }
