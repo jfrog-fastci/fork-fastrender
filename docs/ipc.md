@@ -57,6 +57,14 @@ transport/codec yet:
     `u32_le length` + payload, serialized with `bincode`.
   - See: [`crates/fastrender-renderer/src/main.rs`](../crates/fastrender-renderer/src/main.rs) and
     the size cap [`crates/fastrender-ipc/src/lib.rs`](../crates/fastrender-ipc/src/lib.rs).
+- **Browser ↔ renderer (in-tree multiprocess IPC, under active development):**
+  - Framing + bounded `bincode` helpers live in [`src/ipc/framing.rs`](../src/ipc/framing.rs).
+  - The intended browser↔renderer *schema* lives in
+    [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) and is explicitly designed to:
+    - keep control messages small (separate `bincode` decode limit),
+    - carry large pixel buffers out-of-band as FD attachments (`SCM_RIGHTS`).
+  - Linux SHM primitives live in [`src/ipc/shm.rs`](../src/ipc/shm.rs) (`memfd_create` + `mmap` +
+    best-effort seals).
 - **Browser ↔ network (today):**
   - `src/resource/ipc_fetcher.rs` uses a `TcpStream` to a local “network process” endpoint, framed
     as `u32_le length` + payload, serialized with JSON (`serde_json`).
@@ -64,6 +72,10 @@ transport/codec yet:
 - **Shared framing helper (in-tree):**
   - `src/ipc/framing.rs` provides a length-prefixed framing layer with a hard maximum frame size.
   - See: [`src/ipc/framing.rs`](../src/ipc/framing.rs).
+- **Network-process IPC (in-tree, under active development):**
+  - `src/net/transport.rs` defines a binary protocol with explicit per-field limits and uses
+    `src/ipc/framing.rs` for bounded framing.
+  - See: [`src/net/transport.rs`](../src/net/transport.rs).
 
 All of the above are **stream transports**: message boundaries are *not* preserved by the kernel, so
 framing must be explicit and allocation-bounded.
@@ -136,6 +148,14 @@ Important: the 64 MiB browser↔renderer cap is intentionally large enough to ca
 pixel buffers inline (see the comment in `crates/fastrender-ipc`). **Long-term, frame transfers
 should move to shared memory**, but the hard cap must remain enforced either way.
 
+Additional (important) size limits that sit *on top* of framing:
+
+| Purpose | Limit | Where enforced |
+|---|---:|---|
+| Browser↔renderer control-message decode budget | 256 KiB | `RENDERER_IPC_DECODE_LIMIT_BYTES` in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) (`bincode_options().with_limit(...)`) |
+| Linux shared memory hard ceiling | 256 MiB | `MAX_SHM_SIZE` in [`src/ipc/shm.rs`](../src/ipc/shm.rs) |
+| WebSocket message payload (renderer→network) | 4 MiB | `MAX_WEBSOCKET_MESSAGE_BYTES` in [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) |
+
 ### Framing with `SOCK_SEQPACKET` (target)
 
 With `SOCK_SEQPACKET` the kernel already gives us frames:
@@ -202,6 +222,13 @@ Repo reality:
   - reads from a bounded reader (`Read::take(len as u64)`)
   - rejects trailing bytes after decode
   - See: [`crates/fastrender-renderer/src/main.rs`](../crates/fastrender-renderer/src/main.rs).
+- The in-tree framing helper also enforces a hard `bincode` size limit (8 MiB) and has regression
+  tests that must remain:
+  - See: [`src/ipc/framing.rs`](../src/ipc/framing.rs).
+- The browser↔renderer protocol intentionally enforces a **smaller** decode limit for control
+  messages (256 KiB), independent of the outer frame length:
+  - See: `RENDERER_IPC_DECODE_LIMIT_BYTES` + `bincode_options()` in
+    [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs).
 
 ---
 
@@ -223,6 +250,11 @@ Security invariants:
      sites.
 3. **Message types must define the FD arity.**
    - For a given message type, the receiver knows exactly how many FDs to expect (usually 0 or 1).
+   - Repo reality: the browser↔renderer protocol encodes this explicitly via `expected_fds()`:
+     [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs).
+   - **Do not send the FD “out of band” in a separate write.** For messages like
+     `RendererToBrowser::FrameReady`, the metadata and its FD must be sent in the *same* `sendmsg`
+     so the receiver cannot accidentally associate the FD with the wrong message.
 4. **Close unexpected FDs immediately.**
    - If a message arrives with too many FDs, close *all* of them (including the “expected” ones) and
      treat it as a protocol violation. This avoids subtle “keep the first N” bugs that let a
@@ -235,9 +267,11 @@ Security invariants:
    - Create sockets with `SOCK_CLOEXEC` where possible.
    - Prefer receiving FDs with `recvmsg(MSG_CMSG_CLOEXEC)` so `FD_CLOEXEC` is applied **atomically**.
      - Do not rely on a follow-up `fcntl(FD_CLOEXEC)` in another step (TOCTOU footgun).
-   - Repo reality note: `src/ipc/fd_passing.rs` currently calls `recvmsg` with flags `0` (no
-     `MSG_CMSG_CLOEXEC`). Until that is upgraded, callers must ensure passed FDs are already CLOEXEC
-     (e.g. created with `O_CLOEXEC` / `MFD_CLOEXEC`) or set `FD_CLOEXEC` immediately after receipt.
+   - Repo reality:
+     - `src/ipc/ancillary.rs::recv_fd` uses `MSG_CMSG_CLOEXEC` on Linux for single-FD transfers.
+     - `src/ipc/frame_slots.rs` uses `MSG_CMSG_CLOEXEC` for seqpacket messages with FD sets.
+     - `src/ipc/fd_passing.rs` currently calls `recvmsg` with flags `0` (no `MSG_CMSG_CLOEXEC`), so
+       call sites must ensure received FDs are CLOEXEC or upgrade the helper.
 7. **Include at least one byte of real payload data when sending FDs.**
    - On Linux, `SCM_RIGHTS` control messages are associated with a received datagram/packet. Sending
      “FD-only” control messages without accompanying payload bytes is a well-known footgun; always
@@ -257,7 +291,9 @@ Why this matters:
 Long-term, large IPC payloads (pixels, blobs, network bodies, etc.) should not be transferred inline.
 Use shared memory and pass the `memfd` via `SCM_RIGHTS`.
 
-### Repo reality (today): tempfile-backed shared memory (no FD passing in this path yet)
+### Repo reality (today): two SHM backends exist
+
+#### A) Tempfile-backed mappings (cross-platform, but not sandbox-friendly)
 
 The in-tree multiprocess frame-buffer pool currently uses **temporary files + `memmap2`** as a
 cross-platform shared-memory stand-in:
@@ -280,16 +316,32 @@ This is *not* the final design: a sandboxed renderer should not rely on arbitrar
 On Linux we expect to move to `memfd` + FD passing (see next section and
 [ipc_linux_fd_passing.md](ipc_linux_fd_passing.md)).
 
+#### B) Linux `memfd` shared memory (intended long-term primitive)
+
+`src/ipc/shm.rs` implements:
+
+- `OwnedShm`: producer-side `memfd_create` + `mmap(PROT_READ|PROT_WRITE)` with a hard cap
+  `MAX_SHM_SIZE` (256 MiB).
+- `OwnedShm::seal_readonly()`: best-effort sealing and a local read-only transition.
+- `ReceivedShm::from_fd(...)`: consumer-side `fstat` size validation + `mmap(PROT_READ)`.
+
+This is the intended building block for secure multiprocess frame/body transfers (with FD passing).
+
 ### memfd creation rules (sender)
 
 When creating shared memory to send to another process:
 
 1. Create with sealing support:
-   - `memfd_create(..., MFD_CLOEXEC | MFD_ALLOW_SEALING)`
+   - `memfd_create(..., MFD_CLOEXEC | MFD_ALLOW_SEALING)` (fall back only if sealing is acceptable
+     to degrade; see `src/ipc/shm.rs`)
 2. Set the size **exactly** (e.g. `ftruncate`) and enforce a hard cap:
-   - `size_bytes <= MAX_SHM_BYTES` where `MAX_SHM_BYTES` is a per-message-type security limit.
-     - For frame buffers, this should be **≤ `MAX_PIXMAP_BYTES`** (see
-       [`src/paint/pixmap.rs`](../src/paint/pixmap.rs)).
+   - Enforce both:
+     - a **global** cap: `size_bytes <= shm::MAX_SHM_SIZE` (256 MiB today; see
+       [`src/ipc/shm.rs`](../src/ipc/shm.rs))
+     - a **message-type** cap: `size_bytes <= max_size` chosen by the protocol (passed to
+       `ReceivedShm::from_fd(..., max_size)`).
+   - For frame buffers, the per-message cap should also respect pixmap policy (`MAX_PIXMAP_BYTES` in
+     [`src/paint/pixmap.rs`](../src/paint/pixmap.rs)).
 3. Write the contents.
 4. Apply seals **before sending the FD**:
    - Always: `F_SEAL_SHRINK | F_SEAL_GROW`
@@ -308,7 +360,7 @@ Rules:
 1. **Size validation:**
    - `fstat` the FD and read `st_size`.
    - Reject if `st_size == 0` (unless explicitly allowed for a message type).
-   - Reject if `st_size > MAX_SHM_BYTES` (same per-message-type cap as above).
+   - Reject if `st_size > max_size` (the per-message-type cap).
    - If the control message includes an expected length, it must match `st_size` exactly.
 2. **Seal validation:**
    - Query seals via `fcntl(F_GET_SEALS)`.
@@ -325,6 +377,13 @@ Why seals are non-negotiable:
 - If a malicious sender can `ftruncate` (shrink) after the receiver maps the file, the receiver can
   SIGBUS when reading beyond the new end-of-file. That’s a reliable browser crash primitive.
 
+Repo reality note:
+
+- `src/ipc/shm.rs` makes sealing **best-effort** and returns a `SealStatus`:
+  - If you are accepting SHM from an **untrusted** peer, treat `SealStatus::Unsupported` as a
+    protocol violation (or redesign so the browser allocates + seals the buffer before handing it to
+    the renderer).
+
 ---
 
 ## Protocol versioning + upgrade strategy
@@ -334,11 +393,11 @@ Therefore versioning must be explicit and checked **before** attempting to decod
 
 Repo reality:
 
-- The in-tree multiprocess protocol in [`src/ipc/protocol.rs`](../src/ipc/protocol.rs) uses an
-  explicit version handshake:
-  - browser sends `BrowserToRenderer::Hello { protocol_version: IPC_PROTOCOL_VERSION }`
-  - renderer replies with `RendererToBrowser::HelloAck { protocol_version }`
-  - both sides reject mismatches.
+- The intended browser↔renderer multiprocess protocol in
+  [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) defines:
+  - `RENDERER_PROTOCOL_VERSION`
+  - a `Hello { version, capabilities }` / `HelloAck` handshake
+  - `expected_fds()` so the receiver can enforce FD arity per message.
 - The current stdio+`bincode` dev transport in `crates/fastrender-renderer` assumes browser+renderer
   are built together (no explicit version negotiation). Treat mismatches as unsupported.
 
