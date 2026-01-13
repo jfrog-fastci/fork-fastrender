@@ -92,7 +92,7 @@ markup patterns and `chrome-action:` URLs.
 | Forward | `<a class=btn href="chrome-action:forward">` | `chrome-action:forward` | ✅ Disabled state from `active_tab.can_go_forward`. |
 | Reload | `<a class=btn href="chrome-action:reload">` | `chrome-action:reload` | ✅ Often toggles to “Stop” while loading (see below). |
 | Home | `<a class=btn href="chrome-action:home">` | `chrome-action:home` | ✅ Typically navigates to `about:newtab`. |
-| Stop loading | `<a class=btn href="chrome-action:stop-loading">` | `chrome-action:stop-loading` | ⚠️ Requires the browser process to expose an explicit “cancel” action for the active tab. |
+| Stop loading | `<a class=btn href="chrome-action:stop-loading">` | `chrome-action:stop-loading` | ✅ Mirrors the existing egui chrome “Stop loading” action (`ChromeAction::StopLoading`). |
 
 ### Tabs: new / close / activate
 
