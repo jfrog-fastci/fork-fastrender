@@ -234,6 +234,30 @@ fn live_range_updates_use_tree_child_indices_excluding_shadow_root() {
 }
 
 #[test]
+fn range_tree_child_mapping_excludes_shadow_root() {
+  let html = concat!(
+    "<!doctype html>",
+    "<div id=host>",
+    "<template shadowrootmode=open></template>",
+    "<span id=a></span>",
+    "<span id=b></span>",
+    "</div>",
+  );
+  let doc: Document = parse_html(html).unwrap();
+
+  let host = doc.get_element_by_id("host").expect("host not found");
+  let a = doc.get_element_by_id("a").expect("a not found");
+  let b = doc.get_element_by_id("b").expect("b not found");
+  assert_eq!(
+    doc.tree_child_for_range(host, 0),
+    Some(a),
+    "offset 0 should map to the first light DOM child (not the shadow root)"
+  );
+  assert_eq!(doc.tree_child_for_range(host, 1), Some(b));
+  assert_eq!(doc.tree_child_for_range(host, 2), None);
+}
+
+#[test]
 fn range_common_ancestor_container_matches_dom_algorithm() {
   let html = "<!doctype html><div id=host><span id=a></span><span id=b></span></div>";
   let mut doc: Document = parse_html(html).unwrap();

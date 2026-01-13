@@ -80,6 +80,36 @@ impl Document {
     count
   }
 
+  /// Return the `index`th tree child of `parent` for Range algorithms.
+  ///
+  /// Range boundary-point offsets into element-like nodes are defined in terms of light-DOM tree
+  /// children. `dom2` stores an attached `ShadowRoot` as a host child for traversal, but it must
+  /// not be visible to Range algorithms as a tree child.
+  pub(super) fn tree_child_for_range(&self, parent: NodeId, index: usize) -> Option<NodeId> {
+    let parent_node = self.nodes.get(parent.index())?;
+    let parent_is_element_like = self.parent_is_element_like_for_range(parent);
+
+    let mut current = 0usize;
+    for &child in parent_node.children.iter() {
+      let Some(child_node) = self.nodes.get(child.index()) else {
+        continue;
+      };
+      if child_node.parent != Some(parent) {
+        continue;
+      }
+      if parent_is_element_like && self.is_shadow_root_node(child) {
+        continue;
+      }
+
+      if current == index {
+        return Some(child);
+      }
+      current += 1;
+    }
+
+    None
+  }
+
   pub(super) fn tree_child_index_for_range(&self, parent: NodeId, child: NodeId) -> Option<usize> {
     if self.nodes.get(child.index())?.parent != Some(parent) {
       return None;
