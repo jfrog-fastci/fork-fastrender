@@ -176,6 +176,7 @@ include = [
   "built-ins/Math/**/*.js",
   "built-ins/Function/prototype/apply/**/*.js",
   "staging/sm/Function/15.3.4.3-01.js",
+  "built-ins/RegExp/prototype/flags/**/*.js",
 
   # Promise.* (targeted iterator-close / [[Done]] semantics)
   #

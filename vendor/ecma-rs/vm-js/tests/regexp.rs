@@ -153,6 +153,76 @@ fn regexp_unicode_mode_rejects_escape_8() {
 }
 
 #[test]
+fn regexp_prototype_flags_basic() {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#"/a/gim.flags"#).unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "gim");
+}
+
+#[test]
+fn regexp_prototype_flags_get_order_is_observable() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var r = /a/;
+        var calls = [];
+        function def(name, marker) {
+          Object.defineProperty(r, name, {
+            get: function () { calls.push(marker); return 1; },
+            configurable: true,
+          });
+        }
+
+        def("hasIndices", "d");
+        def("global", "g");
+        def("ignoreCase", "i");
+        def("multiline", "m");
+        def("dotAll", "s");
+        def("unicode", "u");
+        def("unicodeSets", "v");
+        def("sticky", "y");
+
+        r.flags + "|" + calls.join("")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "dgimsuvy|dgimsuvy");
+}
+
+#[test]
+fn regexp_prototype_flags_get_rethrows() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var r = /a/;
+        var calls = [];
+        Object.defineProperty(r, "hasIndices", {
+          get: function () { calls.push("d"); return 0; },
+          configurable: true,
+        });
+        Object.defineProperty(r, "global", {
+          get: function () { calls.push("g"); throw "boom"; },
+          configurable: true,
+        });
+        Object.defineProperty(r, "ignoreCase", {
+          get: function () { calls.push("i"); return 1; },
+          configurable: true,
+        });
+        try {
+          r.flags;
+          "no";
+        } catch (e) {
+          e + "|" + calls.join("")
+        }
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "boom|dg");
+}
+
+#[test]
 fn regexp_last_index_global_exec_updates_and_resets() {
   let mut rt = new_runtime();
   let value = rt
