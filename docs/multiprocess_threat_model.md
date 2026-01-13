@@ -47,6 +47,16 @@ Target model (conceptual):
 | **Renderer process** (per tab or site) | **Untrusted + sandboxed** | Parse/layout/JS/paint. Must be survivable if compromised. |
 | (Future) Network process | Restricted | HTTP(S) fetch, cookie policy, redirects, response limits |
 
+### Trusted chrome UI and privileged JS
+
+In the target architecture, the browser process may render its own chrome UI using FastRender
+(`renderer-chrome`). Those UI pages are **trusted** and may be given additional capabilities via a
+privileged JS bridge (the `globalThis.chrome` API). This bridge must never be installed in untrusted
+content realms.
+
+See [`docs/chrome_js_bridge.md`](chrome_js_bridge.md) for the API surface and its capability-based
+installation model.
+
 ### Trust boundary
 
 **All messages from renderer → browser are untrusted.**
@@ -154,4 +164,3 @@ Renderer crashes are expected and must be contained:
   - Can decode/parse **ever panic**?
 - Does this message grant the renderer a new capability over the browser (filesystem, network,
   profile state)? If yes: redesign; the browser must remain the policy/authority.
-
