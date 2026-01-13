@@ -65,10 +65,8 @@ fn is_async_generator_syntax_unsupported(
     return Ok(msg.contains("async generator functions"));
   }
 
-  let thrown = match err {
-    VmError::Throw(v) => *v,
-    VmError::ThrowWithStack { value, .. } => *value,
-    _ => return Ok(false),
+  let Some(thrown) = err.thrown_value() else {
+    return Ok(false);
   };
   let Value::Object(obj) = thrown else {
     return Ok(false);

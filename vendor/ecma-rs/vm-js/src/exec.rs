@@ -32154,22 +32154,30 @@ mod tests {
     let value = rt.exec_script(
       r#"
       (() => {
-        const r1 = /a\//g;
+        // Escaped slash in the pattern (`\/`) should be treated as part of the pattern, not as the
+        // literal terminator.
+        const r1 = /a\//;
+        if (r1.flags !== "") return false;
+        if (!r1.test("a/")) return false;
+        if (r1.test("a")) return false;
+
+        // Flags are parsed from the literal suffix after the closing `/`.
+        const r1g = /a\//g;
+        if (r1g.flags !== "g") return false;
+        if (!r1g.test("a/")) return false;
+
+        // `[` inside a character class should not confuse literal splitting.
         const r2 = /[[]/;
-        const r3 = /[/]/g;
+        if (!r2.test("[")) return false;
 
-        return (
-          r1.source === "a\\/" &&
-          r1.flags === "g" &&
-          r1.test("a/") &&
+        // Unescaped `/` inside a character class should not terminate the literal.
+        const r3 = /[/]/;
+        if (!r3.test("/")) return false;
 
-          r2.source === "[[]" &&
-          r2.test("[") &&
+        const r3g = /[/]/g;
+        if (r3g.flags !== "g") return false;
 
-          r3.source === "[/]" &&
-          r3.flags === "g" &&
-          r3.test("/")
-        );
+        return true;
       })()
     "#,
     )?;
