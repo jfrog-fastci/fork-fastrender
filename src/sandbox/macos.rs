@@ -20,6 +20,106 @@ use std::ffi::{CStr, CString};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
+use std::sync::OnceLock;
+
+/// Debug escape hatch: disable the macOS Seatbelt renderer sandbox entirely.
+///
+/// This matches the Windows escape-hatch name so cross-platform harnesses can share a single knob.
+pub const ENV_DISABLE_RENDERER_SANDBOX: &str = "FASTR_DISABLE_RENDERER_SANDBOX";
+
+/// Developer override for selecting a macOS Seatbelt sandbox profile.
+///
+/// Accepted values (case-insensitive):
+/// - `pure-computation`, `pure`, `strict` => strict sandbox (default)
+/// - `system-fonts`, `fonts`, `relaxed` => renderer-friendly sandbox that allows reading system font paths
+/// - `off`, `0`, `false`, `no` => disable sandbox (equivalent to `FASTR_DISABLE_RENDERER_SANDBOX=1`)
+pub const ENV_MACOS_RENDERER_SANDBOX: &str = "FASTR_MACOS_RENDERER_SANDBOX";
+
+fn env_var_truthy(raw: Option<&std::ffi::OsStr>) -> bool {
+  let Some(raw) = raw else {
+    return false;
+  };
+  if raw.is_empty() {
+    return false;
+  }
+  let raw = raw.to_string_lossy();
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return false;
+  }
+  !matches!(
+    trimmed.to_ascii_lowercase().as_str(),
+    "0" | "false" | "no" | "off"
+  )
+}
+
+fn sandbox_disabled_via_env() -> bool {
+  if env_var_truthy(std::env::var_os(ENV_DISABLE_RENDERER_SANDBOX).as_deref()) {
+    return true;
+  }
+  let Some(raw) = std::env::var_os(ENV_MACOS_RENDERER_SANDBOX) else {
+    return false;
+  };
+  if raw.is_empty() {
+    return false;
+  }
+  let raw = raw.to_string_lossy();
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return false;
+  }
+  matches!(
+    trimmed.to_ascii_lowercase().as_str(),
+    "0" | "false" | "no" | "off"
+  )
+}
+
+fn log_sandbox_disabled_once() {
+  static LOGGED: OnceLock<()> = OnceLock::new();
+  LOGGED.get_or_init(|| {
+    eprintln!(
+      "warning: macOS Seatbelt renderer sandbox is DISABLED (debug escape hatch; INSECURE). \
+Set {ENV_DISABLE_RENDERER_SANDBOX}=0/1 or {ENV_MACOS_RENDERER_SANDBOX}=pure-computation|system-fonts|off to control this."
+    );
+  });
+}
+
+fn sandbox_mode_override_from_env() -> io::Result<Option<MacosSandboxMode>> {
+  let Some(raw) = std::env::var_os(ENV_MACOS_RENDERER_SANDBOX) else {
+    return Ok(None);
+  };
+  if raw.is_empty() {
+    return Ok(None);
+  }
+  let raw = raw.to_string_lossy();
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return Ok(None);
+  }
+  let normalized = trimmed.to_ascii_lowercase().replace('_', "-");
+  match normalized.as_str() {
+    "pure-computation" | "pure" | "strict" => Ok(Some(MacosSandboxMode::PureComputation)),
+    "system-fonts" | "fonts" | "relaxed" | "renderer-system-fonts" => {
+      Ok(Some(MacosSandboxMode::RendererSystemFonts))
+    }
+    "0" | "false" | "no" | "off" => Ok(None),
+    other => Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      format!(
+        "invalid {ENV_MACOS_RENDERER_SANDBOX}={other:?} (expected pure-computation|system-fonts|off)"
+      ),
+    )),
+  }
+}
+
+fn apply_renderer_sandbox_inner(mode: MacosSandboxMode) -> io::Result<()> {
+  match mode {
+    MacosSandboxMode::PureComputation => apply_strict_sandbox_named_first("pure-computation").map(|_| ()),
+    MacosSandboxMode::RendererSystemFonts => {
+      apply_profile_source_with_home_param(RENDERER_SYSTEM_FONTS_PROFILE)
+    }
+  }
+}
 
 // Seatbelt sandboxing is macOS-specific.
 //
@@ -385,6 +485,15 @@ fn apply_strict_sandbox_named_first(profile_name: &str) -> io::Result<StrictSand
 /// ⚠️ This is irreversible for the lifetime of the process; tests must apply it in a dedicated
 /// child process.
 pub fn apply_strict_sandbox() -> io::Result<()> {
+  if sandbox_disabled_via_env() {
+    log_sandbox_disabled_once();
+    return Ok(());
+  }
+
+  if let Some(mode) = sandbox_mode_override_from_env()? {
+    return apply_renderer_sandbox_inner(mode);
+  }
+
   apply_strict_sandbox_named_first("pure-computation").map(|_| ())
 }
 
@@ -399,12 +508,13 @@ pub fn apply_pure_computation_sandbox() -> io::Result<()> {
 ///
 /// This call is irreversible: once applied, the process cannot regain privileges.
 pub fn apply_renderer_sandbox(mode: MacosSandboxMode) -> io::Result<()> {
-  match mode {
-    MacosSandboxMode::PureComputation => apply_pure_computation_sandbox(),
-    MacosSandboxMode::RendererSystemFonts => {
-      apply_profile_source_with_home_param(RENDERER_SYSTEM_FONTS_PROFILE)
-    }
+  if sandbox_disabled_via_env() {
+    log_sandbox_disabled_once();
+    return Ok(());
   }
+
+  let mode = sandbox_mode_override_from_env()?.unwrap_or(mode);
+  apply_renderer_sandbox_inner(mode)
 }
 
   #[cfg(test)]

@@ -52,12 +52,21 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
 - `FASTR_FETCH_ALTERNATE_STYLESHEETS=0|1` – allow skipping `<link rel="alternate stylesheet">` entries when disabled (defaults to on).
 - `FASTR_FETCH_ENFORCE_CORS=0|false|no|off` – opt out of browser-like CORS checks (`Access-Control-Allow-Origin`) for cross-origin web fonts and `<img crossorigin>` images (enabled by default).
 - `FASTR_PAINT_BACKEND=display_list|legacy` – select the paint pipeline (defaults to `display_list`). Use `legacy` to force the immediate painter.
-- `FASTR_DISABLE_RENDERER_SANDBOX=0|1` – **Windows-only** debug escape hatch: disable the Windows renderer sandbox (AppContainer/restricted-token).
+- `FASTR_DISABLE_RENDERER_SANDBOX=0|1` – debug escape hatch: disable the renderer OS sandbox (INSECURE).
   - Any non-empty value **other than** `0`/`false`/`no`/`off` disables sandboxing (e.g. `1`).
-  - Alias: `FASTR_WINDOWS_RENDERER_SANDBOX=off` (`off`/`0`/`false`/`no` disable sandboxing).
+  - Windows alias: `FASTR_WINDOWS_RENDERER_SANDBOX=off` (`off`/`0`/`false`/`no` disable).
+  - macOS alias: `FASTR_MACOS_RENDERER_SANDBOX=off`.
   - When set, FastRender logs a warning to stderr so insecure runs are not silent.
-  - Note: disabling token/AppContainer sandboxing does **not** remove all guardrails: the spawn helper
-    still uses a Job Object (kill-on-close, active-process cap) and the handle-inheritance allowlist.
+  - Windows note: disabling token/AppContainer sandboxing does **not** remove all guardrails: the spawn
+    helper still uses a Job Object (kill-on-close, active-process cap) and the handle-inheritance
+    allowlist.
+- `FASTR_MACOS_RENDERER_SANDBOX=pure-computation|system-fonts|off` – **macOS-only**: override the Seatbelt renderer profile used by `src/sandbox/macos.rs`.
+  - `pure-computation` is the strict default.
+  - `system-fonts` enables the relaxed system-font allowlist profile.
+- `FASTR_MACOS_USE_SANDBOX_EXEC=0|1` – **macOS-only**: opt into wrapping spawned subprocesses with `/usr/bin/sandbox-exec` when using `macos_spawn` helpers (debug/legacy; deprecated by Apple).
+- `FASTR_DISABLE_WIN_MITIGATIONS=0|1` – **Windows-only**: disable Win32 *process mitigation policies* applied at process creation (Win32k lockdown, dynamic code prohibition, etc).
+  - This does **not** disable AppContainer / restricted-token sandboxing or job-object limits; it only skips the optional mitigation policy attribute layer.
+  - Intended for debugging and compatibility with older/unusual Windows configurations.
 - `FASTR_LOG_SANDBOX=0|1` – **Windows-only**: enable verbose Windows sandbox spawn logging (useful when debugging AppContainer/restricted-token failures).
   - In debug builds, sandbox spawn debug logs are enabled by default; set this in release builds.
 - `FASTR_DISABLE_WIN_MITIGATIONS=0|1` – **Windows-only**: disable applying Windows process mitigation policies (`PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`) when spawning via `crates/win-sandbox`.

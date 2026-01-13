@@ -34,9 +34,10 @@ use tempfile::TempDir;
 
 pub mod appcontainer;
 
-/// Debug escape hatch: disable the Windows renderer sandbox.
+/// Debug escape hatch: disable the renderer sandbox (INSECURE).
 ///
-/// This is intentionally Windows-only (the variable is ignored on other platforms).
+/// On Windows this disables AppContainer/restricted-token sandboxing. Other platforms may interpret
+/// the same env var for their own renderer sandboxes.
 const ENV_DISABLE_RENDERER_SANDBOX: &str = "FASTR_DISABLE_RENDERER_SANDBOX";
 
 /// Legacy/alternative spelling for disabling the Windows renderer sandbox.

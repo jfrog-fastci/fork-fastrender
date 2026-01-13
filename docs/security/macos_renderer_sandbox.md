@@ -70,6 +70,74 @@ For an exact IPC/shared-memory capability matrix, use `macos_sandbox_probe` (see
 
 ---
 
+## Developer overrides (debug only)
+
+The renderer sandbox is a security boundary. These knobs exist to unblock local debugging and
+bring-up; do not rely on them in production.
+
+### Disable the Seatbelt renderer sandbox
+
+Set:
+
+- `FASTR_DISABLE_RENDERER_SANDBOX=1`
+
+On macOS this makes the in-process Seatbelt entrypoints in `src/sandbox/macos.rs`
+(`apply_strict_sandbox`, `apply_pure_computation_sandbox`, `apply_renderer_sandbox`) return `Ok(())`
+without calling `sandbox_init`. FastRender prints a warning to stderr once per process so insecure
+runs are not silent.
+
+### Select a different renderer profile
+
+Set:
+
+- `FASTR_MACOS_RENDERER_SANDBOX=pure-computation|system-fonts|off`
+
+Notes:
+
+- `pure-computation` is the strict default.
+- `system-fonts` maps to `MacosSandboxMode::RendererSystemFonts` and is intended for temporary
+  bring-up when bundled fonts are not yet viable.
+- `off` disables sandboxing (equivalent to `FASTR_DISABLE_RENDERER_SANDBOX=1`).
+
+### `sandbox-exec` wrapper gate (debug/legacy)
+
+Some tests and tooling can opt into launching a renderer already sandboxed using Apple’s deprecated
+`/usr/bin/sandbox-exec` wrapper (see `src/sandbox/macos_spawn.rs`). This path is gated by:
+
+- `FASTR_MACOS_USE_SANDBOX_EXEC=1`
+
+---
+
+## Example debug runs (sandboxed)
+
+Render smoke test under the strict Seatbelt sandbox (`pure-computation`):
+
+```bash
+bash scripts/cargo_agent.sh test -p fastrender --test macos_seatbelt_render_smoke -- --nocapture
+```
+
+Force the relaxed "system fonts" profile (useful for bring-up):
+
+```bash
+FASTR_MACOS_RENDERER_SANDBOX=system-fonts \
+  bash scripts/cargo_agent.sh test -p fastrender --test macos_seatbelt_render_smoke -- --nocapture
+```
+
+Disable the renderer sandbox entirely (debug escape hatch; insecure):
+
+```bash
+FASTR_DISABLE_RENDERER_SANDBOX=1 \
+  bash scripts/cargo_agent.sh test -p fastrender --test macos_seatbelt_render_smoke -- --nocapture
+```
+
+Probe IPC allowances under a minimal SBPL-based renderer profile:
+
+```bash
+bash scripts/cargo_agent.sh run --bin macos_renderer_sandbox_ipc_probe -- pipes-only pipe-stdio
+```
+
+---
+
 ## Debugging Seatbelt denials
 
 Sandbox denials typically surface as `EPERM` / `Operation not permitted`. The authoritative signal
@@ -87,6 +155,23 @@ To filter to denies:
 log stream --style syslog --level debug --predicate \
   'subsystem == "com.apple.sandbox" && eventMessage CONTAINS[c] "deny"'
 ```
+
+## When sandbox activation fails (`sandbox_init` errorbuf)
+
+When Seatbelt fails to install a profile, `sandbox_init(3)` returns non-zero and (optionally) fills
+an `errorbuf` C string describing the failure. FastRender propagates this string in the returned
+`io::Error` (see `src/sandbox/macos.rs`, `sandbox_message(...)`).
+
+Common cases:
+
+- **Named profile missing/invalid**: messages containing “unknown profile” / “profile not found” /
+  “invalid profile”.
+  - FastRender treats this as “`pure-computation` is unavailable” and retries using the embedded
+    SBPL fallback profile (`STRICT_FALLBACK_PROFILE`).
+- **SBPL parse/validation errors**: syntax errors typically include a line/column or point at the
+  unexpected token. This usually indicates a bug in an embedded/custom profile string.
+- **Sandbox already applied**: calling `sandbox_init` more than once in the same process is not
+  supported; errors here typically mean the process is already sandboxed.
 
 ---
 
