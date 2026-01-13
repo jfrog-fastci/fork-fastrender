@@ -96,7 +96,7 @@ impl BrowserFrameTree {
       process,
       BrowserToRenderer::Navigate {
         frame_id,
-        url: url.clone(),
+        navigation: IframeNavigation::Url(url.clone()),
         context: NavigationContext {
           site_key: site,
           ..Default::default()
@@ -239,12 +239,11 @@ impl BrowserFrameTree {
     site_key: SiteKey,
     discovered: &DiscoveredSubframe,
   ) {
-    let url = navigation.effective_url().to_string();
     self.processes.send(
       process,
       BrowserToRenderer::Navigate {
         frame_id,
-        url,
+        navigation: navigation.clone(),
         context: NavigationContext {
           site_key,
           sandbox_flags: discovered.sandbox_flags,
@@ -338,8 +337,8 @@ fn same_token_url_change_triggers_navigate() {
   assert!(
     msgs.iter().any(|msg| matches!(
       msg,
-      BrowserToRenderer::Navigate { frame_id, url, .. }
-        if *frame_id == child_frame_id && url == "https://child.test/b"
+      BrowserToRenderer::Navigate { frame_id, navigation, .. }
+        if *frame_id == child_frame_id && *navigation == IframeNavigation::Url("https://child.test/b".to_string())
     )),
     "expected Navigate to be sent for updated URL; got {msgs:?}"
   );
@@ -455,9 +454,68 @@ fn cross_origin_url_change_causes_process_swap() {
   assert!(
     new_msgs.iter().any(|msg| matches!(
       msg,
-      BrowserToRenderer::Navigate { frame_id, url, .. }
-        if *frame_id == child_frame_id && url == "https://b.test/"
+      BrowserToRenderer::Navigate { frame_id, navigation, .. }
+        if *frame_id == child_frame_id && *navigation == IframeNavigation::Url("https://b.test/".to_string())
     )),
     "expected Navigate on new process; got {new_msgs:?}"
+  );
+}
+
+#[test]
+fn same_token_srcdoc_hash_change_triggers_navigate_without_process_swap() {
+  let mut browser = BrowserFrameTree::new(SiteKeyFactory::new_with_seed(1));
+  let parent = browser.create_root("https://parent.test/");
+  let parent_process = browser.frames.get(&parent).unwrap().process;
+
+  browser.handle_subframes_discovered(
+    parent,
+    &[discovered(
+      3,
+      IframeNavigation::Srcdoc { content_hash: 1 },
+      rect(0.0, 0.0, 100.0, 100.0),
+    )],
+  );
+
+  let child_frame_id = browser
+    .frames
+    .get(&parent)
+    .unwrap()
+    .subframes
+    .get(&SubframeToken(3))
+    .unwrap()
+    .frame_id;
+  let child_process = browser.frames.get(&child_frame_id).unwrap().process;
+  assert_eq!(
+    child_process, parent_process,
+    "expected srcdoc iframe to inherit parent site/process"
+  );
+
+  let msgs_before = browser.processes.messages(child_process).len();
+
+  browser.handle_subframes_discovered(
+    parent,
+    &[discovered(
+      3,
+      IframeNavigation::Srcdoc { content_hash: 2 },
+      rect(0.0, 0.0, 100.0, 100.0),
+    )],
+  );
+
+  let msgs_after = browser.processes.messages(child_process);
+  let new_msgs = &msgs_after[msgs_before..];
+  assert!(
+    new_msgs.iter().any(|msg| matches!(
+      msg,
+      BrowserToRenderer::Navigate { frame_id, navigation, .. }
+        if *frame_id == child_frame_id && *navigation == IframeNavigation::Srcdoc { content_hash: 2 }
+    )),
+    "expected Navigate for updated srcdoc hash; got {msgs_after:?}"
+  );
+  assert!(
+    new_msgs.iter().all(|msg| !matches!(
+      msg,
+      BrowserToRenderer::DestroyFrame { .. } | BrowserToRenderer::CreateFrame { .. }
+    )),
+    "expected no process swap for srcdoc update; got {msgs_after:?}"
   );
 }

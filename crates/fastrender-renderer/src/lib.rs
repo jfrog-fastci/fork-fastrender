@@ -2,8 +2,8 @@
 
 use fastrender_ipc::{
   AffineTransform, BrowserToRenderer, ClipItem, CursorKind, FrameBuffer, FrameId, HoverState,
-  IpcTransport, NavigationContext, ReferrerPolicy, RendererToBrowser, SandboxFlags, SiteLock,
-  SubframeInfo,
+  IframeNavigation, IpcTransport, NavigationContext, ReferrerPolicy, RendererToBrowser, SandboxFlags,
+  SiteLock, SubframeInfo,
 };
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
@@ -25,7 +25,7 @@ const FETCH_IO_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub struct FrameState {
-  pub url: Option<String>,
+  pub navigation: Option<IframeNavigation>,
   pub navigation_context: NavigationContext,
   pub viewport_css: (u32, u32),
   pub dpr: f32,
@@ -36,7 +36,7 @@ pub struct FrameState {
 impl FrameState {
   pub fn new() -> Self {
     Self {
-      url: None,
+      navigation: None,
       navigation_context: NavigationContext::default(),
       viewport_css: DEFAULT_VIEWPORT,
       dpr: DEFAULT_DPR,
@@ -71,7 +71,15 @@ impl FrameState {
 
     // Deterministic per-frame fill color to help catch cross-talk in tests/debugging.
     let id = frame_id.0;
-    let url_hash = self.url.as_deref().map(Self::url_hash).unwrap_or(0);
+    let url_hash = match self.navigation.as_ref() {
+      Some(IframeNavigation::Url(url)) => Self::url_hash(url),
+      Some(IframeNavigation::AboutBlank) => Self::url_hash("about:blank"),
+      Some(IframeNavigation::Srcdoc { content_hash }) => {
+        let folded = (*content_hash as u32) ^ ((*content_hash >> 32) as u32);
+        Self::url_hash("about:srcdoc") ^ folded
+      }
+      None => 0,
+    };
     let r = (id as u8) ^ (url_hash as u8);
     let g = ((id >> 8) as u8) ^ ((url_hash >> 8) as u8);
     let b = ((id >> 16) as u8) ^ ((url_hash >> 16) as u8);
@@ -758,7 +766,7 @@ impl<T: IpcTransport> RendererMainLoop<T> {
         }
         BrowserToRenderer::Navigate {
           frame_id,
-          url,
+          navigation,
           context,
         } => {
           let Some(frame) = self.frames.get_mut(&frame_id) else {
@@ -772,11 +780,12 @@ impl<T: IpcTransport> RendererMainLoop<T> {
           if self
             .site_lock
             .as_ref()
-            .is_some_and(|lock| !lock.matches_url(&url, &context.site_key))
+            .is_some_and(|lock| !lock.matches_url(navigation.effective_url(), &context.site_key))
           {
+            let url = navigation.effective_url().to_string();
             let _ = self.transport.send(RendererToBrowser::NavigationFailed {
               frame_id,
-              url: url.clone(),
+              url,
               error: "site lock violation".to_string(),
             });
 
@@ -787,7 +796,7 @@ impl<T: IpcTransport> RendererMainLoop<T> {
             continue;
           }
 
-          frame.url = Some(url);
+          frame.navigation = Some(navigation);
           frame.navigation_context = context;
           frame.hover_hint = HoverState::default();
           frame.last_hover_sent = None;
@@ -818,7 +827,7 @@ impl<T: IpcTransport> RendererMainLoop<T> {
           };
 
           let mut subframes = Vec::new();
-          if let Some(raw_url) = frame.url.clone() {
+          if let Some(IframeNavigation::Url(raw_url)) = frame.navigation.clone() {
             if let Ok(url) = Url::parse(&raw_url) {
               if should_fetch_url(&url) {
                 match http_get_follow_redirects(
@@ -830,7 +839,7 @@ impl<T: IpcTransport> RendererMainLoop<T> {
                     // When the navigation redirects, commit the final URL so the browser can apply
                     // embedder policy/CSP checks against the real destination.
                     let committed_url = response.final_url.to_string();
-                    frame.url = Some(committed_url.clone());
+                    frame.navigation = Some(IframeNavigation::Url(committed_url.clone()));
 
                     let html = String::from_utf8_lossy(&response.body);
                     frame.hover_hint = hover_hint_from_html(&response.final_url, html.as_ref());
@@ -1091,7 +1100,7 @@ mod tests {
     to_renderer_tx
       .send(BrowserToRenderer::Navigate {
         frame_id: frame,
-        url: "https://example.test/".to_string(),
+        navigation: IframeNavigation::Url("https://example.test/".to_string()),
         context: NavigationContext::default(),
       })
       .unwrap();
@@ -1187,7 +1196,7 @@ mod tests {
     to_renderer_tx
       .send(BrowserToRenderer::Navigate {
         frame_id: frame,
-        url: "https://example.test/a".to_string(),
+        navigation: IframeNavigation::Url("https://example.test/a".to_string()),
         context: NavigationContext::default(),
       })
       .unwrap();
@@ -1342,7 +1351,7 @@ mod tests {
     to_renderer_tx
       .send(BrowserToRenderer::Navigate {
         frame_id: frame,
-        url: disallowed_url.clone(),
+        navigation: IframeNavigation::Url(disallowed_url.clone()),
         context: NavigationContext {
           site_key: lock_site_key.clone(),
           ..Default::default()
@@ -1365,7 +1374,7 @@ mod tests {
     to_renderer_tx
       .send(BrowserToRenderer::Navigate {
         frame_id: frame,
-        url: disallowed_url.clone(),
+        navigation: IframeNavigation::Url(disallowed_url.clone()),
         context: NavigationContext {
           site_key: disallowed_site_key,
           ..Default::default()

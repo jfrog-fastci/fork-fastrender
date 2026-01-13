@@ -3,7 +3,8 @@ mod common;
 use common::{net_test_lock, RendererProc, TestResponse, TestServer};
 use fastrender_ipc::csp::FrameNode;
 use fastrender_ipc::{
-  composite_subframes, BrowserToRenderer, FrameId, NavigationContext, ReferrerPolicy, SiteKeyFactory,
+  composite_subframes, BrowserToRenderer, FrameId, IframeNavigation, NavigationContext, ReferrerPolicy,
+  SiteKeyFactory,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -66,7 +67,7 @@ fn oopif_parent_csp_frame_src_none_blocks_iframe_creation() {
   });
   parent_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: parent_frame,
-    url: parent_url.clone(),
+    navigation: IframeNavigation::Url(parent_url.clone()),
     context: NavigationContext {
       referrer_url: None,
       referrer_policy: ReferrerPolicy::default(),
@@ -221,7 +222,7 @@ fn oopif_parent_csp_src_change_to_blocked_url_does_not_navigate_child() {
   });
   parent_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: parent_frame,
-    url: parent_url.clone(),
+    navigation: IframeNavigation::Url(parent_url.clone()),
     context: NavigationContext {
       referrer_url: None,
       referrer_policy: ReferrerPolicy::default(),
@@ -281,7 +282,7 @@ fn oopif_parent_csp_src_change_to_blocked_url_does_not_navigate_child() {
   );
   child_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: child_frame,
-    url: resolved_allowed.to_string(),
+    navigation: IframeNavigation::Url(resolved_allowed.to_string()),
     context: child_ctx,
   });
   child_renderer.send(&BrowserToRenderer::RequestRepaint {
@@ -413,7 +414,7 @@ fn oopif_parent_csp_src_change_to_allowed_url_navigates_child() {
   });
   parent_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: parent_frame,
-    url: parent_url.clone(),
+    navigation: IframeNavigation::Url(parent_url.clone()),
     context: NavigationContext {
       referrer_url: None,
       referrer_policy: ReferrerPolicy::default(),
@@ -469,7 +470,7 @@ fn oopif_parent_csp_src_change_to_allowed_url_navigates_child() {
   );
   child_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: child_frame,
-    url: resolved1.to_string(),
+    navigation: IframeNavigation::Url(resolved1.to_string()),
     context: child_ctx1,
   });
   child_renderer.send(&BrowserToRenderer::RequestRepaint {
@@ -521,7 +522,7 @@ fn oopif_parent_csp_src_change_to_allowed_url_navigates_child() {
   );
   child_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: child_frame,
-    url: resolved2.to_string(),
+    navigation: IframeNavigation::Url(resolved2.to_string()),
     context: child_ctx2,
   });
   child_renderer.send(&BrowserToRenderer::RequestRepaint {
@@ -620,7 +621,7 @@ fn oopif_parent_csp_default_src_none_blocks_iframe_creation() {
   });
   parent_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: parent_frame,
-    url: parent_url.clone(),
+    navigation: IframeNavigation::Url(parent_url.clone()),
     context: NavigationContext {
       referrer_url: None,
       referrer_policy: ReferrerPolicy::default(),
@@ -750,7 +751,7 @@ fn oopif_parent_csp_multiple_policies_intersect_to_block_iframe() {
   });
   parent_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: parent_frame,
-    url: parent_url.clone(),
+    navigation: IframeNavigation::Url(parent_url.clone()),
     context: NavigationContext {
       referrer_url: None,
       referrer_policy: ReferrerPolicy::default(),
@@ -890,7 +891,7 @@ fn oopif_parent_csp_frame_src_checked_against_final_redirect_url() {
   });
   parent_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: parent_frame,
-    url: parent_url.clone(),
+    navigation: IframeNavigation::Url(parent_url.clone()),
     context: NavigationContext {
       referrer_url: None,
       referrer_policy: ReferrerPolicy::default(),
@@ -955,7 +956,7 @@ fn oopif_parent_csp_frame_src_checked_against_final_redirect_url() {
   );
   child_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: child_frame,
-    url: resolved_requested.to_string(),
+    navigation: IframeNavigation::Url(resolved_requested.to_string()),
     context: child_ctx,
   });
   child_renderer.send(&BrowserToRenderer::RequestRepaint {
@@ -1052,7 +1053,7 @@ fn oopif_parent_csp_frame_src_self_allows_same_origin_iframe_navigation() {
   });
   parent_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: parent_frame,
-    url: parent_url.clone(),
+    navigation: IframeNavigation::Url(parent_url.clone()),
     context: NavigationContext {
       referrer_url: None,
       referrer_policy: ReferrerPolicy::default(),
@@ -1124,7 +1125,7 @@ fn oopif_parent_csp_frame_src_self_allows_same_origin_iframe_navigation() {
   );
   child_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: child_frame,
-    url: resolved.to_string(),
+    navigation: IframeNavigation::Url(resolved.to_string()),
     context: child_context,
   });
   child_renderer.send(&BrowserToRenderer::RequestRepaint {

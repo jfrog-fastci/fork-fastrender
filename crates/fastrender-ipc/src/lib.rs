@@ -1044,10 +1044,10 @@ pub enum BrowserToRenderer {
   CreateFrame { frame_id: FrameId },
   /// Destroy per-frame state for `frame_id`.
   DestroyFrame { frame_id: FrameId },
-  /// Navigate the given frame to `url`.
+  /// Navigate the given frame.
   Navigate {
     frame_id: FrameId,
-    url: String,
+    navigation: IframeNavigation,
     context: NavigationContext,
   },
   /// Resize the viewport for the given frame (CSS pixels).

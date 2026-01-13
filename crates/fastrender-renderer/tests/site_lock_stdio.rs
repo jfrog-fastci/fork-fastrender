@@ -2,8 +2,8 @@ mod common;
 
 use common::RendererProc;
 use fastrender_ipc::{
-  site_key_for_navigation, BrowserToRenderer, FrameId, NavigationContext, SiteIsolationMode,
-  SiteLock,
+  site_key_for_navigation, BrowserToRenderer, FrameId, IframeNavigation, NavigationContext,
+  SiteIsolationMode, SiteLock,
 };
 use std::time::Duration;
 
@@ -36,7 +36,7 @@ fn renderer_stdio_rejects_cross_site_navigation_with_site_lock() {
   // Simulate buggy browser: keeps the old site_key but changes the URL cross-site.
   renderer.send(&BrowserToRenderer::Navigate {
     frame_id: frame,
-    url: disallowed_url.clone(),
+    navigation: IframeNavigation::Url(disallowed_url.clone()),
     context: NavigationContext {
       site_key: locked_site,
       ..Default::default()
@@ -68,4 +68,3 @@ fn renderer_stdio_rejects_cross_site_navigation_with_site_lock() {
 
   renderer.shutdown();
 }
-

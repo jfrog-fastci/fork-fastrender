@@ -3,6 +3,7 @@ mod common;
 use common::{net_test_lock, tiny_png, RendererProc, TestServer};
 use fastrender_ipc::{
   BrowserToRenderer, FrameId, NavigationContext, ReferrerPolicy, SiteKeyFactory,
+  IframeNavigation,
 };
 use std::time::Duration;
 
@@ -53,7 +54,7 @@ fn oopif_iframe_referrerpolicy_no_referrer_omits_referer_on_child_subresource_fe
   });
   parent_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: parent_frame,
-    url: parent_url.clone(),
+    navigation: IframeNavigation::Url(parent_url.clone()),
     context: NavigationContext {
       referrer_url: None,
       referrer_policy: ReferrerPolicy::default(),
@@ -111,7 +112,7 @@ fn oopif_iframe_referrerpolicy_no_referrer_omits_referer_on_child_subresource_fe
   assert_eq!(child_context.opaque_origin, iframe.opaque_origin);
   child_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: child_frame,
-    url: child_url.clone(),
+    navigation: IframeNavigation::Url(child_url.clone()),
     context: child_context,
   });
   child_renderer.send(&BrowserToRenderer::RequestRepaint {
@@ -169,7 +170,7 @@ fn oopif_about_blank_site_key_inherits_parent_unless_sandboxed() {
   });
   parent_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: parent_frame,
-    url: parent_url.clone(),
+    navigation: IframeNavigation::Url(parent_url.clone()),
     context: NavigationContext {
       referrer_url: None,
       referrer_policy: ReferrerPolicy::default(),
@@ -273,7 +274,7 @@ fn oopif_srcdoc_site_key_inherits_parent_unless_sandboxed() {
   });
   parent_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: parent_frame,
-    url: parent_url.clone(),
+    navigation: IframeNavigation::Url(parent_url.clone()),
     context: NavigationContext {
       referrer_url: None,
       referrer_policy: ReferrerPolicy::default(),

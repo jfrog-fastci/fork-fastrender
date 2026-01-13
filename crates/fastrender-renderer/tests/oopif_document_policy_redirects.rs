@@ -2,7 +2,7 @@ mod common;
 
 use common::{net_test_lock, RendererProc, TestResponse, TestServer};
 use fastrender_ipc::csp::FrameNode;
-use fastrender_ipc::{BrowserToRenderer, NavigationContext, ReferrerPolicy, SiteKeyFactory};
+use fastrender_ipc::{BrowserToRenderer, IframeNavigation, NavigationContext, ReferrerPolicy, SiteKeyFactory};
 use std::time::Duration;
 
 #[test]
@@ -59,7 +59,7 @@ fn oopif_parent_policy_blocks_mixed_content_redirect_final_url() {
   });
   parent_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: parent_frame,
-    url: parent_url.clone(),
+    navigation: IframeNavigation::Url(parent_url.clone()),
     context: NavigationContext {
       referrer_url: None,
       referrer_policy: ReferrerPolicy::default(),
@@ -124,7 +124,7 @@ fn oopif_parent_policy_blocks_mixed_content_redirect_final_url() {
   );
   child_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: child_frame,
-    url: resolved_requested.to_string(),
+    navigation: IframeNavigation::Url(resolved_requested.to_string()),
     context: child_ctx,
   });
   child_renderer.send(&BrowserToRenderer::RequestRepaint {
@@ -197,7 +197,7 @@ fn oopif_parent_policy_blocks_file_redirect_final_url() {
   });
   parent_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: parent_frame,
-    url: parent_url.clone(),
+    navigation: IframeNavigation::Url(parent_url.clone()),
     context: NavigationContext {
       referrer_url: None,
       referrer_policy: ReferrerPolicy::default(),
@@ -260,7 +260,7 @@ fn oopif_parent_policy_blocks_file_redirect_final_url() {
   );
   child_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: child_frame,
-    url: resolved_requested.to_string(),
+    navigation: IframeNavigation::Url(resolved_requested.to_string()),
     context: child_ctx,
   });
   child_renderer.send(&BrowserToRenderer::RequestRepaint {
