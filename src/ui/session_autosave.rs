@@ -38,10 +38,28 @@ impl SessionAutosave {
   /// Spawn a background writer thread and immediately (best-effort) write a crash marker by setting
   /// `did_exit_cleanly=false` in the on-disk session.
   pub fn new(path: PathBuf) -> Self {
-    Self::new_with_debounce(path, DEFAULT_DEBOUNCE)
+    Self::new_with_debounce_and_initial(path, DEFAULT_DEBOUNCE, None)
+  }
+
+  /// Spawn a background writer thread that immediately (best-effort) writes the provided initial
+  /// session snapshot with `did_exit_cleanly=false`.
+  ///
+  /// This is intended for startup crash marking: callers can restore/build a session snapshot in
+  /// memory first (including any window state) and have the autosave worker persist that exact
+  /// snapshot as soon as it starts.
+  pub fn new_with_initial_session(path: PathBuf, initial_session: BrowserSession) -> Self {
+    Self::new_with_debounce_and_initial(path, DEFAULT_DEBOUNCE, Some(initial_session))
   }
 
   fn new_with_debounce(path: PathBuf, debounce: Duration) -> Self {
+    Self::new_with_debounce_and_initial(path, debounce, None)
+  }
+
+  fn new_with_debounce_and_initial(
+    path: PathBuf,
+    debounce: Duration,
+    initial_session: Option<BrowserSession>,
+  ) -> Self {
     let (tx, rx) = mpsc::channel::<Command>();
     let write_count = Arc::new(AtomicUsize::new(0));
 
@@ -49,7 +67,7 @@ impl SessionAutosave {
       .name("browser_session_autosave".to_string())
       .spawn({
         let write_count = Arc::clone(&write_count);
-        move || session_writer_thread(path, debounce, rx, write_count)
+        move || session_writer_thread(path, debounce, initial_session, rx, write_count)
       })
       .ok();
 
@@ -166,21 +184,55 @@ impl Drop for SessionAutosave {
 fn session_writer_thread(
   path: PathBuf,
   debounce: Duration,
+  initial_session: Option<BrowserSession>,
   rx: mpsc::Receiver<Command>,
   write_count: Arc<AtomicUsize>,
 ) {
   // On startup: best-effort mark the on-disk session as "unclean" so crash recovery can detect
   // abnormal exits.
-  let mut current_session = match load_session(&path) {
-    Ok(Some(session)) => session,
-    Ok(None) => BrowserSession::single(about_pages::ABOUT_NEWTAB.to_string()),
-    Err(_) => BrowserSession::single(about_pages::ABOUT_NEWTAB.to_string()),
+  //
+  // If an initial in-memory snapshot is provided, prefer that over whatever happens to be on disk.
+  // This ensures early crashes (before the UI's first autosave tick) still leave a correct session
+  // snapshot for recovery.
+  //
+  // If the on-disk session cannot be parsed, do **not** overwrite it with a blank default session:
+  // leave the file untouched and wait for the first explicit Save request from the UI.
+  let (mut current_session, mut last_write_result) = match initial_session {
+    Some(mut session) => {
+      session.did_exit_cleanly = false;
+      let result = save_session_atomic(&path, &session);
+      if result.is_ok() {
+        write_count.fetch_add(1, Ordering::Relaxed);
+      }
+      (session, result)
+    }
+    None => match load_session(&path) {
+      Ok(Some(mut session)) => {
+        session.did_exit_cleanly = false;
+        let result = save_session_atomic(&path, &session);
+        if result.is_ok() {
+          write_count.fetch_add(1, Ordering::Relaxed);
+        }
+        (session, result)
+      }
+      Ok(None) => {
+        let mut session = BrowserSession::single(about_pages::ABOUT_NEWTAB.to_string());
+        session.did_exit_cleanly = false;
+        let result = save_session_atomic(&path, &session);
+        if result.is_ok() {
+          write_count.fetch_add(1, Ordering::Relaxed);
+        }
+        (session, result)
+      }
+      Err(_) => {
+        let mut session = BrowserSession::single(about_pages::ABOUT_NEWTAB.to_string());
+        session.did_exit_cleanly = false;
+        // Leave `last_write_result` as Ok so `flush()` doesn't try to "repair" the file by writing
+        // our fallback session.
+        (session, Ok(()))
+      }
+    },
   };
-  current_session.did_exit_cleanly = false;
-  let mut last_write_result = save_session_atomic(&path, &current_session);
-  if last_write_result.is_ok() {
-    write_count.fetch_add(1, Ordering::Relaxed);
-  }
 
   let mut pending: Option<(BrowserSession, Instant)> = None;
 
@@ -272,6 +324,30 @@ fn session_writer_thread(
 #[cfg(all(test, feature = "browser_ui"))]
 mod tests {
   use super::*;
+
+  #[test]
+  fn startup_writes_provided_initial_snapshot_as_unclean() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+    assert!(!path.exists());
+
+    let mut initial = BrowserSession::single("about:blank".to_string());
+    initial.home_url = "about:blank".to_string();
+    initial.did_exit_cleanly = true;
+
+    let autosave = SessionAutosave::new_with_debounce_and_initial(
+      path.clone(),
+      Duration::from_millis(10),
+      Some(initial.clone()),
+    );
+    autosave.flush(Duration::from_secs(2)).unwrap();
+
+    let mut expected = initial.sanitized();
+    expected.did_exit_cleanly = false;
+
+    let session = load_session(&path).unwrap().unwrap();
+    assert_eq!(session, expected);
+  }
 
   #[test]
   fn startup_creates_minimal_session_when_missing() {
@@ -379,5 +455,22 @@ mod tests {
       !session.did_exit_cleanly,
       "dropping SessionAutosave should not mark the session as clean"
     );
+  }
+
+  #[test]
+  fn startup_does_not_overwrite_invalid_json_session_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+
+    let corrupted = "this is not valid JSON\n";
+    std::fs::write(&path, corrupted).unwrap();
+
+    let autosave = SessionAutosave::new_with_debounce(path.clone(), Duration::from_millis(10));
+    // Allow the writer thread to run its startup logic; `flush()` should be a no-op in this case.
+    autosave.flush(Duration::from_secs(2)).unwrap();
+
+    // The corrupted file should be preserved until a real Save request is made.
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(on_disk, corrupted);
   }
 }

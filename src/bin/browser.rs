@@ -4508,8 +4508,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   use std::sync::atomic::{AtomicBool, Ordering};
   use std::sync::Arc;
   use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
-  let mut session_autosave =
-    fastrender::ui::session_autosave::SessionAutosave::new(session_path.clone());
   let mut session_save_scheduler =
     fastrender::ui::session_save_scheduler::SessionSaveScheduler::new();
   use winit::event::Event;
@@ -5089,6 +5087,50 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let mut pending_window_state_autosave_deadline: Option<std::time::Instant> = None;
   let mut window_state_autosave_due = false;
   let window_state_autosave_debounce = std::time::Duration::from_millis(500);
+
+  // Startup crash marker: persist the *restored* in-memory snapshot (including any platform window
+  // state) as soon as the autosave worker starts.
+  //
+  // If the existing session file is unreadable (JSON corruption), avoid overwriting it
+  // automatically—wait for the first explicit save request.
+  let can_write_startup_snapshot =
+    fastrender::ui::session::load_session(&session_path).is_ok();
+  let mut session_autosave = if can_write_startup_snapshot {
+    let active_window_index = active_window_id
+      .and_then(|id| window_order.iter().position(|other| *other == id))
+      .unwrap_or(0)
+      .min(window_order.len().saturating_sub(1));
+
+    let mut session_windows: Vec<fastrender::ui::BrowserSessionWindow> =
+      Vec::with_capacity(window_order.len());
+    for id in &window_order {
+      if let Some(win) = windows.get(id) {
+        let mut session_window =
+          fastrender::ui::BrowserSessionWindow::from_app_state(&win.app.browser_state);
+        session_window.window_state = capture_window_state(&win.app.window);
+        session_windows.push(session_window);
+      }
+    }
+
+    let mut appearance = startup_appearance.clone();
+    let mut session_home_url = home_url.clone();
+    if let Some(active_id) = active_window_id.and_then(|id| windows.get(&id).map(|_| id)) {
+      if let Some(active) = windows.get(&active_id) {
+        appearance = active.app.browser_state.appearance.clone();
+        session_home_url = active.app.home_url.clone();
+      }
+    }
+
+    let mut session =
+      fastrender::ui::BrowserSession::from_windows(session_windows, active_window_index, appearance);
+    session.home_url = session_home_url;
+    fastrender::ui::session_autosave::SessionAutosave::new_with_initial_session(
+      session_path.clone(),
+      session,
+    )
+  } else {
+    fastrender::ui::session_autosave::SessionAutosave::new(session_path.clone())
+  };
 
   event_loop.run(move |event, event_loop_target, control_flow| {
     // Keep the session lock alive for the duration of the winit event loop.
