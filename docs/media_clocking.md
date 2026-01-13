@@ -225,12 +225,16 @@ Reasons:
 3. **Audio requires real-time scheduling.** Audio output is constrained by the backend’s callback /
    buffer deadlines. Video can adapt to whatever the audio clock is doing.
 
-### Fallback clocks (no audio / muted / no device)
+### Fallback clocks (no audio / no device)
 
 If there is no audio track, or audio output is disabled/unavailable:
 
 * Use a **monotonic system clock** as the master (e.g. `Instant` via an injectable `Clock`).
 * The clock origin must be “play start” plus a stored offset so pause/seek remain correct.
+
+Muting (`HTMLMediaElement.muted = true` or `volume = 0`) is **not** a fallback condition: playback
+continues silently, so audio queues must still drain and the audio device clock remains a valid master
+clock.
 
 This fallback is fine because there is no external hardware clock to drift against.
 

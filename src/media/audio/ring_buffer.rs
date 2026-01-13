@@ -73,7 +73,11 @@ impl AudioRingBuffer {
 
   /// Pop as many samples as available (up to `dst.len()`) and add them into `dst`.
   pub fn pop_add_into(&self, dst: &mut [f32], gain: f32) {
-    if dst.is_empty() || gain == 0.0 {
+    // `gain == 0.0` represents a muted sink. Muting must *not* behave like pausing:
+    // we still advance the read cursor to keep device-time and queued audio aligned,
+    // and to avoid unbounded buffering/backpressure when the caller keeps pushing
+    // samples while muted.
+    if dst.is_empty() {
       return;
     }
 
@@ -92,16 +96,22 @@ impl AudioRingBuffer {
     }
 
     let to_read = dst.len().min(available);
-    let mut pos = read % self.capacity;
-    let first = to_read.min(self.capacity - pos);
-    for i in 0..first {
-      let sample = unsafe { *self.buf[pos + i].get() };
-      dst[i] += sample * gain;
+    if to_read == 0 {
+      return;
     }
-    pos = 0;
-    for i in 0..(to_read - first) {
-      let sample = unsafe { *self.buf[pos + i].get() };
-      dst[first + i] += sample * gain;
+
+    if gain != 0.0 {
+      let mut pos = read % self.capacity;
+      let first = to_read.min(self.capacity - pos);
+      for i in 0..first {
+        let sample = unsafe { *self.buf[pos + i].get() };
+        dst[i] += sample * gain;
+      }
+      pos = 0;
+      for i in 0..(to_read - first) {
+        let sample = unsafe { *self.buf[pos + i].get() };
+        dst[first + i] += sample * gain;
+      }
     }
 
     self.read.store(read.wrapping_add(to_read), Ordering::Release);
@@ -136,5 +146,25 @@ mod tests {
     rb.pop_add_into(&mut out, 0.5);
     assert_eq!(out, vec![0.5, 0.5]);
   }
-}
 
+  #[test]
+  fn ring_buffer_drains_when_gain_is_zero() {
+    // 200ms worth of mono 48kHz samples.
+    let total = 48_000 / 5;
+    let half = total / 2;
+
+    let rb = AudioRingBuffer::new(total * 2);
+    assert_eq!(rb.push(&vec![1.0; total]), total);
+
+    // Muted playback for 100ms should still consume samples.
+    let mut muted_out = vec![0.0; half];
+    rb.pop_add_into(&mut muted_out, 0.0);
+    assert_eq!(muted_out, vec![0.0; half]);
+
+    // Unmuting should play immediately (no backlog): only the remaining 100ms should be present.
+    let mut out = vec![0.0; total];
+    rb.pop_add_into(&mut out, 1.0);
+    assert_eq!(&out[..half], &vec![1.0; half][..]);
+    assert_eq!(&out[half..], &vec![0.0; half][..]);
+  }
+}

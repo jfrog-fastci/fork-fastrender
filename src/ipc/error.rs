@@ -25,17 +25,19 @@ pub enum IpcError {
 
   #[error("IPC protocol error: frame length {len} exceeds maximum {max}")]
   FrameTooLarge { len: usize, max: usize },
+
   // ==========================================================================
   // Generic errors (used by helper modules like the shared frame pool)
   // ==========================================================================
   #[error("IPC codec error")]
   Codec(#[source] Box<bincode::ErrorKind>),
- 
+
   #[error("failed to serialize IPC JSON message: {0}")]
   Serialize(#[source] serde_json::Error),
- 
+
   #[error("failed to deserialize IPC JSON message: {0}")]
   Deserialize(#[source] serde_json::Error),
+
   // ==========================================================================
   // Protocol validation errors (renderer → browser)
   // ==========================================================================

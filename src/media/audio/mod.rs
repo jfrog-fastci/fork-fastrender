@@ -29,7 +29,6 @@ mod config;
 mod cpal_backend;
 mod latency;
 mod null_backend;
-#[cfg(feature = "audio_cpal")]
 mod ring_buffer;
 #[cfg(feature = "audio_cpal")]
 mod thread_priority;
@@ -242,6 +241,11 @@ pub trait AudioSink: Send + Sync {
   /// Returns the number of samples accepted (the remainder, if any, was dropped).
   fn push_interleaved_f32(&self, samples: &[f32]) -> usize;
 
+  /// Sets the playback volume (gain) for this sink.
+  ///
+  /// Setting volume to `0.0` is a mute: the sink must still drain queued audio so media time
+  /// continues advancing and buffered-duration/backpressure statistics remain meaningful. Only
+  /// an explicit pause should stop draining.
   fn set_volume(&self, volume: f32);
 }
 
@@ -302,7 +306,6 @@ impl dyn AudioBackend {
     Box::new(NullAudioBackend::new_with_defaults(cfg.default_sample_rate_hz, cfg.default_channels))
   }
 }
-
 /// High-level audio engine that owns an output backend and its configuration.
 ///
 /// This is the intended entry point for media playback code. It centralizes all tunables and
