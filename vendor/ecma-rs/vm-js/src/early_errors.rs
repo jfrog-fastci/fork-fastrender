@@ -988,7 +988,10 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         self.step()?;
         match &*stmt.stx {
           Stmt::VarDecl(var)
-            if var.stx.mode == VarDeclMode::Let || var.stx.mode == VarDeclMode::Const =>
+            if matches!(
+              var.stx.mode,
+              VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+            ) =>
           {
             for declarator in &var.stx.declarators {
               self.step()?;
