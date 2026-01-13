@@ -229,6 +229,7 @@ pub mod image_output;
 pub mod ipc;
 #[cfg(test)]
 pub(crate) mod testing;
+pub mod ipc;
 pub mod js;
 pub mod memory;
 pub mod multiprocess;

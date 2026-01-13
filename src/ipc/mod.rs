@@ -19,6 +19,8 @@ pub mod frame_pool;
 pub mod network;
 pub mod protocol;
 pub mod shm;
+#[cfg(target_os = "linux")]
+pub mod unix_seqpacket;
 pub mod websocket;
 
 #[cfg(target_os = "linux")]
