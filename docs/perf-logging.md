@@ -65,7 +65,7 @@ include:
 For automated/regression-friendly measurements, use the headless harness `ui_perf_smoke`. It runs a
 small scripted set of UI scenarios and writes a single JSON summary.
 
-If your checkout includes an `xtask` wrapper:
+Via `xtask` (recommended):
 
 ```bash
 bash scripts/cargo_agent.sh xtask ui-perf-smoke --output target/ui_perf_smoke.json
@@ -77,6 +77,22 @@ Or run the binary directly:
 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --features browser_ui --bin ui_perf_smoke -- \
   --output target/ui_perf_smoke.json
+```
+
+The `xtask` wrapper mirrors the `perf-smoke` workflow: it runs the harness in `--release` mode,
+enables bundled fonts (`FASTR_USE_BUNDLED_FONTS=1`) for determinism, and forwards common regression
+gating flags (`--output`, `--baseline`, `--threshold`, `--fail-on-regression`).
+
+Examples:
+
+```bash
+# Run a single scenario (see `ui_perf_smoke --help` for the full list).
+bash scripts/cargo_agent.sh xtask ui-perf-smoke -- --only ttfp_newtab
+
+# Compare against a saved baseline and fail on regressions.
+bash scripts/cargo_agent.sh xtask ui-perf-smoke \
+  --baseline baseline/ui_perf_smoke.json --threshold 0.05 --fail-on-regression \
+  -- --only ttfp_newtab
 ```
 
 How to map the harness output back to the metrics table in
@@ -136,24 +152,6 @@ bash scripts/cargo_agent.sh xtask perf-smoke --baseline ../baseline/perf_smoke.j
 `--top N` prints the slowest fixtures. With `--fail-on-regression`, baseline comparisons fail the
 run when any fixture metric exceeds the relative threshold, making the output suitable for
 lightweight CI or local preflight checks.
-
-## UI perf smoke (headless browser UI responsiveness)
-
-Run the headless browser UI responsiveness harness (writes a JSON report under `target/` by
-default; run with `--help` for details):
-
-```bash
-bash scripts/cargo_agent.sh xtask ui-perf-smoke -- --only ttfp_newtab
-```
-
-Like `xtask perf-smoke`, the wrapper forwards `--output`, `--baseline`, `--threshold`, and
-`--fail-on-regression` to support lightweight regression gating:
-
-```bash
-bash scripts/cargo_agent.sh xtask ui-perf-smoke \
-  --baseline baseline/ui_perf_smoke.json --threshold 0.05 --fail-on-regression \
-  -- --only ttfp_newtab
-```
 
 ## Pipeline benchmarks (Criterion)
 
