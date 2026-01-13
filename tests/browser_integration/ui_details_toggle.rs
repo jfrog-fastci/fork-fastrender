@@ -168,6 +168,52 @@ fn details_summary_is_tab_focusable_and_space_toggles_open() -> Result<()> {
 }
 
 #[test]
+fn details_summary_enter_toggles_open() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (240, 120);
+  let url = "https://example.com/index.html";
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    details_fixture_html(),
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  let summary_id = node_id_by_id_attr(controller.document().dom(), "s");
+
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Tab))?;
+  assert_eq!(
+    controller.interaction_state().focused,
+    Some(summary_id),
+    "Tab should focus the first <summary> of <details>"
+  );
+
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Enter))?;
+  assert!(
+    find_element_by_id(controller.document().dom(), "d")
+      .get_attribute_ref("open")
+      .is_some(),
+    "Enter on focused <summary> should toggle parent <details open>"
+  );
+
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Enter))?;
+  assert!(
+    find_element_by_id(controller.document().dom(), "d")
+      .get_attribute_ref("open")
+      .is_none(),
+    "a second Enter on focused <summary> should close the <details>"
+  );
+
+  Ok(())
+}
+
+#[test]
 fn details_summary_click_on_descendant_and_release_elsewhere_still_toggles_and_focuses() -> Result<()> {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();
