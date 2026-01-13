@@ -8,7 +8,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 #[cfg(feature = "direct_websocket")]
 use tungstenite::client::IntoClientRequest;
 #[cfg(feature = "direct_websocket")]
@@ -290,24 +290,42 @@ impl Drop for NetworkProcessHandle {
       return;
     };
 
-    // Best-effort graceful shutdown first.
-    let _ = TcpStream::connect_timeout(&self.addr, self.connect_timeout).and_then(|mut stream| {
-      stream.set_nodelay(true).unwrap_or_else(|_| ()); // ignore
-                                                       // Authenticate before issuing the shutdown command.
-      let _ = ipc::write_request_frame(
-        &mut stream,
-        &ipc::NetworkRequest::Hello {
-          token: self.auth_token.as_str().to_string(),
-          role: ipc::ClientRole::Browser,
-        },
-      );
-      let _ = ipc::write_request_frame(&mut stream, &ipc::NetworkRequest::Shutdown);
+    // Best-effort graceful shutdown first. We keep this bounded (short timeouts) because `Drop`
+    // should never hang indefinitely.
+    let _ = TcpStream::connect_timeout(&self.addr, self.connect_timeout).and_then(|stream| {
+      let _ = stream.set_nodelay(true);
+      let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+      let _ = stream.set_write_timeout(Some(Duration::from_millis(200)));
+      let mut conn = ipc::NetworkClient::new(stream);
+
+      let _ = conn.send_request(&ipc::NetworkRequest::Hello {
+        token: self.auth_token.as_str().to_string(),
+        role: ipc::ClientRole::Browser,
+      });
+      let _ = conn.recv_response::<ipc::NetworkResponse>();
+
+      let _ = conn.send_request(&ipc::NetworkRequest::Shutdown);
+      let _ = conn.recv_response::<ipc::NetworkResponse>();
       Ok(())
     });
 
-    // Then hard kill if still running.
-    let _ = child.kill();
-    let _ = child.wait();
+    // Give the child a brief window to exit on its own after receiving Shutdown.
+    let deadline = Instant::now() + Duration::from_millis(200);
+    loop {
+      match child.try_wait() {
+        Ok(Some(_status)) => return,
+        Ok(None) => {
+          if Instant::now() >= deadline {
+            break;
+          }
+          std::thread::sleep(Duration::from_millis(10));
+        }
+        Err(_) => break,
+      }
+    }
+
+    // Then hard kill if still running. Use a bounded wait so dropping the handle is non-hanging.
+    let _ = crate::process_supervision::RunningChild::new(child).kill_and_wait();
   }
 }
 
