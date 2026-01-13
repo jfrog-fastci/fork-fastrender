@@ -19315,7 +19315,7 @@ impl App {
         let paste_cap_before = self.paste_events_buf.capacity();
         self.wheel_events_buf.clear();
         self.paste_events_buf.clear();
-        for event in raw.events.iter() {
+        for event in raw.events.iter_mut() {
           match event {
             egui::Event::MouseWheel {
               unit,
@@ -19329,6 +19329,11 @@ impl App {
               }
             }
             egui::Event::Paste(text) => {
+              // Security/perf: Clamp pasted clipboard text before cloning/stashing it for forwarding
+              // to the renderer. The OS clipboard can contain arbitrarily large data and egui-winit
+              // may surface it as a `Paste` event; truncating here avoids cloning huge strings and
+              // ensures egui widgets never ingest unbounded paste payloads.
+              let _ = fastrender::ui::clipboard::clamp_clipboard_text_in_place(text);
               self.paste_events_buf.push(text.clone());
             }
             _ => {}
