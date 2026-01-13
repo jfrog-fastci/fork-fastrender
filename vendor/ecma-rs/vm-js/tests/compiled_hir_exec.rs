@@ -6542,6 +6542,96 @@ fn compiled_array_literal_spread_from_string() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_array_literal_holes_respect_fuel_budget() -> Result<(), VmError> {
+  let holes = 10_000usize;
+  let source = format!("function f() {{ return [{}]; }}", ",".repeat(holes));
+
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(&mut heap, "test.js", source)?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+  let mut realm = vm_js::Realm::new(&mut vm, &mut heap)?;
+
+  // The array literal contains no expressions, so the only per-element budgeting comes from
+  // `eval_array_literal`'s per-hole ticks.
+  vm.set_budget(Budget {
+    fuel: Some(100),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let res: Result<Value, VmError> = (|| {
+    let mut scope = heap.scope();
+    let name = scope.alloc_string("f")?;
+    let f = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script,
+        body: f_body,
+      },
+      name,
+      0,
+    )?;
+    vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])
+  })();
+
+  realm.teardown(&mut heap);
+
+  match res.unwrap_err() {
+    VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::OutOfFuel),
+    other => panic!("expected OutOfFuel termination, got {other:?}"),
+  }
+
+  Ok(())
+}
+
+#[test]
+fn compiled_array_literal_string_spread_respects_fuel_budget() -> Result<(), VmError> {
+  let len = 500usize;
+  let s = "a".repeat(len);
+  let source = format!("function f() {{ return [...'{s}']; }}");
+
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(&mut heap, "test.js", source)?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+  let mut realm = vm_js::Realm::new(&mut vm, &mut heap)?;
+
+  // Each element produced by string spread should consume budget even though the string iterator's
+  // `next()` is native. The compiled HIR path charges one tick at the `next()` call boundary, and
+  // an additional tick per spread element while appending to the array.
+  vm.set_budget(Budget {
+    // Between `N` and `2N` (plus a small constant), so this should only terminate if the array
+    // literal's per-spread-element tick is present.
+    fuel: Some(750),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let res: Result<Value, VmError> = (|| {
+    let mut scope = heap.scope();
+    let name = scope.alloc_string("f")?;
+    let f = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script,
+        body: f_body,
+      },
+      name,
+      0,
+    )?;
+    vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])
+  })();
+
+  realm.teardown(&mut heap);
+
+  match res.unwrap_err() {
+    VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::OutOfFuel),
+    other => panic!("expected OutOfFuel termination, got {other:?}"),
+  }
+
+  Ok(())
+}
+
+#[test]
 fn compiled_array_literal_spread_step_error_does_not_close_iterator() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
