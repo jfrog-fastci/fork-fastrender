@@ -4872,11 +4872,20 @@ impl BrowserRuntime {
     // If a real pointer move arrives, it supersedes any pending scroll-induced hover sync. The
     // pointer move will do a fresh hit-test using the latest scroll offset.
     tab.pending_hover_sync_pos_css = None;
-    let pointer_in_page =
-      pos_css.0.is_finite() && pos_css.1.is_finite() && pos_css.0 >= 0.0 && pos_css.1 >= 0.0;
+    let viewport_w = tab.viewport_css.0 as f32;
+    let viewport_h = tab.viewport_css.1 as f32;
+    let pointer_in_page = pos_css.0.is_finite()
+      && pos_css.1.is_finite()
+      && pos_css.0 >= 0.0
+      && pos_css.1 >= 0.0
+      && pos_css.0 < viewport_w
+      && pos_css.1 < viewport_h;
     tab.last_pointer_pos_css = pointer_in_page.then_some(pos_css);
     let scroll_snapshot = tab.scroll_state.clone();
-    let viewport_point = viewport_point_for_pos_css(&scroll_snapshot, pos_css);
+    // Note: treat out-of-bounds coordinates like the (-1,-1) sentinel and feed them through
+    // `viewport_point_for_pos_css` so they translate to a negative page-point (clearing hover).
+    let viewport_point =
+      viewport_point_for_pos_css(&scroll_snapshot, if pointer_in_page { pos_css } else { (-1.0, -1.0) });
     let base_url = base_url_for_links(tab);
 
     // ---------------------------------------------------------------------------

@@ -52,19 +52,23 @@ fn hover_changed_reports_link_url_and_cursor_kind() {
           <style>
             html, body { margin: 0; padding: 0; }
              #link { position: absolute; top: 10px; left: 10px; display: block; width: 120px; height: 24px; background: rgb(220, 220, 0); }
-             #input { position: absolute; top: 50px; left: 10px; width: 140px; height: 24px; border: 1px solid #000; }
-             #empty { position: absolute; top: 90px; left: 10px; width: 140px; height: 24px; background: rgb(10, 10, 10); }
-             #button { position: absolute; top: 120px; left: 10px; width: 140px; height: 24px; }
-             #select { position: absolute; top: 150px; left: 10px; width: 140px; height: 24px; }
-           </style>
-         </head>
-         <body>
-           <a id="link" href="dest.html#frag">Link</a>
-           <input id="input" type="text" value="">
-           <div id="empty"></div>
-           <button id="button" type="button">Button</button>
-           <select id="select"><option>One</option><option>Two</option></select>
-         </body>
+             /* Link placed far outside the viewport so out-of-bounds pointer coords would still hit it
+                if the worker incorrectly considers them "in page". */
+             #far { position: absolute; top: 9990px; left: 9990px; display: block; width: 120px; height: 24px; background: rgb(0, 220, 220); }
+              #input { position: absolute; top: 50px; left: 10px; width: 140px; height: 24px; border: 1px solid #000; }
+              #empty { position: absolute; top: 90px; left: 10px; width: 140px; height: 24px; background: rgb(10, 10, 10); }
+              #button { position: absolute; top: 120px; left: 10px; width: 140px; height: 24px; }
+              #select { position: absolute; top: 150px; left: 10px; width: 140px; height: 24px; }
+            </style>
+          </head>
+          <body>
+            <a id="link" href="dest.html#frag">Link</a>
+            <a id="far" href="far.html">Far</a>
+            <input id="input" type="text" value="">
+            <div id="empty"></div>
+            <button id="button" type="button">Button</button>
+            <select id="select"><option>One</option><option>Two</option></select>
+          </body>
        </html>
      "##,
   );
@@ -160,7 +164,34 @@ fn hover_changed_reports_link_url_and_cursor_kind() {
   assert_eq!(cursor, CursorKind::Pointer);
   assert_eq!(hovered_url.as_deref(), Some(expected_hover_url.as_str()));
 
-  // Leaving the page clears hover state.
+  // Out-of-bounds pointer coordinates (outside viewport) should clear hover state. Some UI
+  // front-ends send these values instead of the (-1,-1) sentinel.
+  worker
+    .ui_tx
+    .send(support::pointer_move(
+      tab_id,
+      (9999.0, 9999.0),
+      PointerButton::None,
+    ))
+    .unwrap();
+  let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
+  assert_eq!(cursor, CursorKind::Default);
+  assert_eq!(hovered_url, None);
+
+  // Hover the link again.
+  worker
+    .ui_tx
+    .send(support::pointer_move(
+      tab_id,
+      (15.0, 15.0),
+      PointerButton::None,
+    ))
+    .unwrap();
+  let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
+  assert_eq!(cursor, CursorKind::Pointer);
+  assert_eq!(hovered_url.as_deref(), Some(expected_hover_url.as_str()));
+
+  // Leaving the page via sentinel coordinates should also clear hover state.
   worker
     .ui_tx
     .send(support::pointer_move(
