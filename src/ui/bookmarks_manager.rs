@@ -1001,7 +1001,7 @@ fn folder_open_id(folder_id: BookmarkId) -> egui::Id {
 
 fn folder_open(ctx: &egui::Context, folder_id: BookmarkId) -> bool {
   ctx
-    .data_mut(|d| d.get_persisted::<bool>(folder_open_id(folder_id)))
+    .data(|d| d.get_persisted::<bool>(folder_open_id(folder_id)))
     .unwrap_or(false)
 }
 
@@ -1149,7 +1149,7 @@ fn render_folder_row(
   let open_id = folder_open_id(folder_id);
   let mut open = ui
     .ctx()
-    .data_mut(|d| d.get_persisted::<bool>(open_id))
+    .data(|d| d.get_persisted::<bool>(open_id))
     .unwrap_or(false);
 
   let mut delete_clicked = false;
