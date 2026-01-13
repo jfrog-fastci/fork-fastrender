@@ -57,7 +57,11 @@ fn ui_perf_smoke_emits_tab_switch_scenario_summary() {
   let scenarios = summary["scenarios"]
     .as_array()
     .expect("scenarios array must exist");
-  assert_eq!(scenarios.len(), 1, "--scenario should filter to one scenario");
+  assert_eq!(
+    scenarios.len(),
+    1,
+    "--scenario should filter to one scenario"
+  );
   let scenario = &scenarios[0];
 
   assert_eq!(
@@ -123,4 +127,72 @@ fn ui_perf_smoke_records_isolate_and_warmup_overrides() {
     Some(true),
     "run_config.isolate should reflect the CLI override"
   );
+}
+
+#[test]
+fn ui_perf_smoke_emits_resize_fixture_scenario_summary() {
+  let temp = tempdir().expect("create temp dir");
+  let output = temp.path().join("ui-perf-smoke.json");
+
+  let result = Command::new(env!("CARGO_BIN_EXE_ui_perf_smoke"))
+    .args([
+      "--output",
+      output.to_str().unwrap(),
+      "--scenario",
+      "resize_fixture",
+      "--iterations",
+      "1",
+      "--warmup",
+      "0",
+    ])
+    // Keep the harness deterministic and avoid depending on system fonts.
+    .env("FASTR_USE_BUNDLED_FONTS", "1")
+    .env("RAYON_NUM_THREADS", "1")
+    .stdout(Stdio::null())
+    .output()
+    .expect("run ui_perf_smoke");
+
+  assert!(
+    result.status.success(),
+    "ui_perf_smoke should exit successfully; stderr: {}",
+    String::from_utf8_lossy(&result.stderr)
+  );
+
+  let data = fs::read_to_string(&output).expect("read ui_perf_smoke output");
+  let summary: Value = serde_json::from_str(&data).expect("parse ui_perf_smoke json");
+
+  let scenarios = summary["scenarios"]
+    .as_array()
+    .expect("scenarios array must exist");
+  assert_eq!(
+    scenarios.len(),
+    1,
+    "--scenario should filter to one scenario"
+  );
+  let scenario = &scenarios[0];
+
+  assert_eq!(
+    scenario["name"].as_str(),
+    Some("resize_fixture"),
+    "scenario name should match"
+  );
+  assert_eq!(
+    scenario["url"].as_str(),
+    Some("about:test-layout-stress"),
+    "expected resize_fixture to run on the built-in layout-stress page"
+  );
+
+  let metrics = scenario["metrics_ms"]
+    .as_object()
+    .expect("scenario should include metrics_ms object");
+  for key in [
+    "resize_latency_p50_ms",
+    "resize_latency_p95_ms",
+    "resize_latency_max_ms",
+  ] {
+    assert!(
+      metrics.get(key).and_then(Value::as_f64).is_some(),
+      "scenario metrics_ms should include numeric {key}"
+    );
+  }
 }
