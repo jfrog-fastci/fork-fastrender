@@ -14111,7 +14111,10 @@ impl App {
     let url = match fastrender::ui::untrusted::validate_untrusted_navigation_url(&url) {
       Ok(url) => url,
       Err(_) => {
-        self.show_chrome_toast("Blocked attempt to open an invalid URL");
+        self.show_chrome_toast_with_kind(
+          fastrender::ui::ToastKind::Warning,
+          "Blocked attempt to open an invalid URL",
+        );
         return false;
       }
     };
@@ -14148,7 +14151,10 @@ impl App {
     let request = match fastrender::ui::untrusted::validate_untrusted_form_submission_for_open_in_new_tab_request(request) {
       Ok(request) => request,
       Err(err) => {
-        self.show_chrome_toast(err.toast_message());
+        self.show_chrome_toast_with_kind(
+          fastrender::ui::ToastKind::Warning,
+          err.toast_message(),
+        );
         return false;
       }
     };
