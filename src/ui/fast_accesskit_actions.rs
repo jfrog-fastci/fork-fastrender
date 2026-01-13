@@ -1,6 +1,8 @@
 #![cfg(feature = "browser_ui")]
 
+use crate::api::BrowserTab;
 use crate::dom::DomNode;
+use crate::dom2;
 use crate::interaction::dom_index::DomIndex;
 use crate::interaction::{InteractionAction, InteractionEngine, KeyAction};
 use crate::scroll::ScrollState;
@@ -16,6 +18,11 @@ use std::num::NonZeroU128;
 pub struct ChromeDocumentContext<'a> {
   pub dom: &'a mut DomNode,
   pub interaction: &'a mut InteractionEngine,
+
+  /// Optional JS-backed tab: when present, focus changes routed from AccessKit will dispatch trusted
+  /// DOM focus events (`blur`/`focus` + bubbling `focusin`/`focusout`) so scripts observe the same
+  /// flow as user interactions.
+  pub js_tab: Option<&'a mut BrowserTab>,
 
   pub box_tree: Option<&'a BoxTree>,
   pub fragment_tree: Option<&'a FragmentTree>,
@@ -43,6 +50,67 @@ impl ChromeDocumentContext<'_> {
 
   fn mark_redraw(&mut self) {
     *self.needs_redraw = true;
+  }
+
+  fn dispatch_focus_change_to_js(&mut self, prev: Option<usize>, next: Option<usize>) {
+    if prev == next {
+      return;
+    }
+    let Some(js_tab) = self.js_tab.as_mut() else {
+      return;
+    };
+
+    fn element_id_for_node(dom: &mut DomNode, node_id: usize) -> Option<String> {
+      crate::dom::find_node_mut_by_preorder_id(dom, node_id)
+        .and_then(|node| node.get_attribute_ref("id"))
+        .map(|id| id.to_string())
+    }
+
+    fn js_dom_node_for_preorder_id(
+      js_tab: &BrowserTab,
+      preorder_id: usize,
+      element_id: Option<&str>,
+    ) -> Option<dom2::NodeId> {
+      element_id
+        .and_then(|id| js_tab.dom().get_element_by_id(id))
+        .or_else(|| {
+          js_tab
+            .dom()
+            .node_id_from_index(preorder_id.saturating_sub(1))
+            .ok()
+        })
+    }
+
+    let prev_element_id = prev.and_then(|id| element_id_for_node(self.dom, id));
+    let next_element_id = next.and_then(|id| element_id_for_node(self.dom, id));
+
+    let prev_js_node_id =
+      prev.and_then(|id| js_dom_node_for_preorder_id(js_tab, id, prev_element_id.as_deref()));
+    let next_js_node_id =
+      next.and_then(|id| js_dom_node_for_preorder_id(js_tab, id, next_element_id.as_deref()));
+
+    // Dispatch `focusin`/`focusout` first so bubbled listeners observe a deterministic sequence.
+    // Keep non-bubbling `blur`/`focus` as the final notifications.
+    if let Some(prev_js_node_id) = prev_js_node_id {
+      let _ = js_tab.dispatch_focusout_event(prev_js_node_id);
+    }
+    if let Some(next_js_node_id) = next_js_node_id {
+      let _ = js_tab.dispatch_focusin_event(next_js_node_id);
+    }
+    if let Some(prev_js_node_id) = prev_js_node_id {
+      let _ = js_tab.dispatch_blur_event(prev_js_node_id);
+    }
+    if let Some(next_js_node_id) = next_js_node_id {
+      let _ = js_tab.dispatch_focus_event(next_js_node_id);
+    }
+  }
+
+  fn focus_node_id(&mut self, node_id: usize) -> (bool, InteractionAction) {
+    let prev = self.interaction.focused_node_id();
+    let (changed, action) = self.interaction.focus_node_id(self.dom, Some(node_id), true);
+    let next = self.interaction.focused_node_id();
+    self.dispatch_focus_change_to_js(prev, next);
+    (changed, action)
   }
 }
 
@@ -80,9 +148,7 @@ pub fn handle_accesskit_action_request(
 
   match request.action {
     accesskit::Action::Focus => {
-      let (changed, action) = ctx
-        .interaction
-        .focus_node_id(ctx.dom, Some(target_node_id), true);
+      let (changed, action) = ctx.focus_node_id(target_node_id);
       ctx.push_action(action);
       if changed {
         ctx.mark_redraw();
@@ -93,9 +159,7 @@ pub fn handle_accesskit_action_request(
     accesskit::Action::Default => {
       // Ensure the target is focused before activation (matching the pointer/keyboard path, where
       // activation is based on the focused element).
-      let (focus_changed, focus_action) = ctx
-        .interaction
-        .focus_node_id(ctx.dom, Some(target_node_id), true);
+      let (focus_changed, focus_action) = ctx.focus_node_id(target_node_id);
       ctx.push_action(focus_action);
 
       let (changed, action) = ctx.interaction.key_activate(
@@ -120,9 +184,7 @@ pub fn handle_accesskit_action_request(
         _ => return false,
       };
 
-      let (focus_changed, focus_action) = ctx
-        .interaction
-        .focus_node_id(ctx.dom, Some(target_node_id), true);
+      let (focus_changed, focus_action) = ctx.focus_node_id(target_node_id);
       ctx.push_action(focus_action);
 
       let changed = ctx
@@ -180,9 +242,7 @@ pub fn handle_accesskit_action_request(
         KeyAction::ArrowDown
       };
 
-      let (focus_changed, focus_action) = ctx
-        .interaction
-        .focus_node_id(ctx.dom, Some(target_node_id), true);
+      let (focus_changed, focus_action) = ctx.focus_node_id(target_node_id);
       ctx.push_action(focus_action);
 
       let changed =
@@ -202,6 +262,7 @@ pub fn handle_accesskit_action_request(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::api::{RenderOptions, VmJsBrowserTabExecutor};
 
   fn find_node_id_by_id_attr(dom: &mut DomNode, id: &str) -> usize {
     let index = DomIndex::build(dom);
@@ -243,6 +304,7 @@ mod tests {
     let mut ctx = ChromeDocumentContext {
       dom: &mut dom,
       interaction: &mut engine,
+      js_tab: None,
       box_tree: None,
       fragment_tree: None,
       scroll_state: None,
@@ -284,6 +346,7 @@ mod tests {
     let mut ctx = ChromeDocumentContext {
       dom: &mut dom,
       interaction: &mut engine,
+      js_tab: None,
       box_tree: None,
       fragment_tree: None,
       scroll_state: None,
@@ -321,6 +384,7 @@ mod tests {
     let mut ctx = ChromeDocumentContext {
       dom: &mut dom,
       interaction: &mut engine,
+      js_tab: None,
       box_tree: None,
       fragment_tree: None,
       scroll_state: None,
@@ -340,5 +404,121 @@ mod tests {
     assert!(handled);
     assert!(has_bool_attr(ctx.dom, checkbox_id, "checked"));
     assert!(needs_redraw);
+  }
+
+  #[test]
+  fn accesskit_focus_dispatches_focus_blur_events_into_js() -> crate::Result<()> {
+    let _lock = crate::testing::global_test_lock();
+
+    let html = r#"<!doctype html>
+<input id="a">
+<input id="b">
+<script>
+  var a = document.getElementById("a");
+  var b = document.getElementById("b");
+
+  a.onfocus = function () { a.setAttribute("data-focused", "1"); };
+  a.onblur = function () { a.setAttribute("data-blurred", "1"); };
+
+  b.onfocus = function () { b.setAttribute("data-focused", "1"); };
+  b.onblur = function () { b.setAttribute("data-blurred", "1"); };
+
+  document.body.addEventListener("focusin", function (ev) {
+    var log = document.body.getAttribute("data-log") || "";
+    document.body.setAttribute("data-log", log + "focusin:" + ev.target.id + ";");
+  });
+  document.body.addEventListener("focusout", function (ev) {
+    var log = document.body.getAttribute("data-log") || "";
+    document.body.setAttribute("data-log", log + "focusout:" + ev.target.id + ";");
+  });
+
+  // `focus`/`blur` should not bubble.
+  document.body.addEventListener("focus", function () {
+    document.body.setAttribute("data-focus-bubbled", "1");
+  });
+  document.body.addEventListener("blur", function () {
+    document.body.setAttribute("data-blur-bubbled", "1");
+  });
+</script>
+"#;
+
+    let executor = VmJsBrowserTabExecutor::new();
+    let mut tab =
+      BrowserTab::from_html(html, RenderOptions::new().with_viewport(64, 64), executor)?;
+
+    let mut dom = crate::dom::parse_html(html)?;
+    let a_id = find_node_id_by_id_attr(&mut dom, "a");
+    let b_id = find_node_id_by_id_attr(&mut dom, "b");
+
+    let mut engine = InteractionEngine::new();
+    let mut needs_redraw = false;
+
+    {
+      let mut ctx = ChromeDocumentContext {
+        dom: &mut dom,
+        interaction: &mut engine,
+        js_tab: Some(&mut tab),
+        box_tree: None,
+        fragment_tree: None,
+        scroll_state: None,
+        document_url: "about:blank",
+        base_url: "about:blank",
+        needs_redraw: &mut needs_redraw,
+        emitted_actions: None,
+      };
+
+      assert!(handle_accesskit_action_request(
+        &mut ctx,
+        accesskit::ActionRequest {
+          action: accesskit::Action::Focus,
+          target: accesskit_node_id_from_fastrender(a_id),
+          data: None,
+        },
+      ));
+      assert!(handle_accesskit_action_request(
+        &mut ctx,
+        accesskit::ActionRequest {
+          action: accesskit::Action::Focus,
+          target: accesskit_node_id_from_fastrender(b_id),
+          data: None,
+        },
+      ));
+    }
+
+    let dom2 = tab.dom();
+    let a = dom2
+      .get_element_by_id("a")
+      .expect("expected <input id=a> in dom2");
+    let b = dom2
+      .get_element_by_id("b")
+      .expect("expected <input id=b> in dom2");
+    let body = dom2.body().expect("expected <body> element");
+
+    assert_eq!(dom2.get_attribute(a, "data-focused").unwrap(), Some("1"));
+    assert_eq!(dom2.get_attribute(a, "data-blurred").unwrap(), Some("1"));
+    assert_eq!(dom2.get_attribute(b, "data-focused").unwrap(), Some("1"));
+    assert_eq!(
+      dom2.get_attribute(b, "data-blurred").unwrap(),
+      None,
+      "expected b to remain focused after focusing it"
+    );
+
+    assert_eq!(
+      dom2.get_attribute(body, "data-log").unwrap(),
+      Some("focusin:a;focusout:a;focusin:b;"),
+      "expected bubbling focusin/focusout events to be observed on <body>"
+    );
+    assert_eq!(
+      dom2.get_attribute(body, "data-focus-bubbled").unwrap(),
+      None,
+      "expected non-bubbling focus event to not reach <body>"
+    );
+    assert_eq!(
+      dom2.get_attribute(body, "data-blur-bubbled").unwrap(),
+      None,
+      "expected non-bubbling blur event to not reach <body>"
+    );
+
+    Ok(())
   }
 }

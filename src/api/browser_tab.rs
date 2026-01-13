@@ -5739,6 +5739,90 @@ impl BrowserTab {
     )
   }
 
+  /// Dispatch a trusted `focus` DOM event to `node_id`.
+  ///
+  /// Returns `true` when the event's default was **not** prevented.
+  pub fn dispatch_focus_event(&mut self, node_id: NodeId) -> Result<bool> {
+    let mut event = Event::new(
+      "focus",
+      EventInit {
+        bubbles: false,
+        cancelable: false,
+        composed: false,
+      },
+    );
+    event.is_trusted = true;
+    let (host, event_loop) = (&mut self.host, &mut self.event_loop);
+    host.dispatch_dom_event_in_event_loop(
+      EventTargetId::Node(node_id).normalize(),
+      event,
+      event_loop,
+    )
+  }
+
+  /// Dispatch a trusted `blur` DOM event to `node_id`.
+  ///
+  /// Returns `true` when the event's default was **not** prevented.
+  pub fn dispatch_blur_event(&mut self, node_id: NodeId) -> Result<bool> {
+    let mut event = Event::new(
+      "blur",
+      EventInit {
+        bubbles: false,
+        cancelable: false,
+        composed: false,
+      },
+    );
+    event.is_trusted = true;
+    let (host, event_loop) = (&mut self.host, &mut self.event_loop);
+    host.dispatch_dom_event_in_event_loop(
+      EventTargetId::Node(node_id).normalize(),
+      event,
+      event_loop,
+    )
+  }
+
+  /// Dispatch a trusted bubbling `focusin` DOM event to `node_id`.
+  ///
+  /// Returns `true` when the event's default was **not** prevented.
+  pub fn dispatch_focusin_event(&mut self, node_id: NodeId) -> Result<bool> {
+    let mut event = Event::new(
+      "focusin",
+      EventInit {
+        bubbles: true,
+        cancelable: false,
+        composed: false,
+      },
+    );
+    event.is_trusted = true;
+    let (host, event_loop) = (&mut self.host, &mut self.event_loop);
+    host.dispatch_dom_event_in_event_loop(
+      EventTargetId::Node(node_id).normalize(),
+      event,
+      event_loop,
+    )
+  }
+
+  /// Dispatch a trusted bubbling `focusout` DOM event to `node_id`.
+  ///
+  /// Returns `true` when the event's default was **not** prevented.
+  pub fn dispatch_focusout_event(&mut self, node_id: NodeId) -> Result<bool> {
+    let mut event = Event::new(
+      "focusout",
+      EventInit {
+        bubbles: true,
+        cancelable: false,
+        composed: false,
+      },
+    );
+    event.is_trusted = true;
+    let (host, event_loop) = (&mut self.host, &mut self.event_loop);
+    host.dispatch_dom_event_in_event_loop(
+      EventTargetId::Node(node_id).normalize(),
+      event,
+      event_loop,
+    )
+  }
+
   /// Handle a selection-related accessibility action targeting `target`.
   ///
   /// This supports:
