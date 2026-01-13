@@ -137,9 +137,15 @@ Notes:
 
 There is currently **no** `--include-bounds` flag. If you need bounds today:
 
+- `dump_a11y` builds semantics from the **styled DOM only** (no box generation / layout), so it does
+  not have geometry available to report.
 - Use the layout/interaction helpers described in “Bounds / geometry” above (especially
   `absolute_bounds_for_box_id` + `styled_node_anchor_css`), or
 - Add a new tool flag and ensure it is covered by unit tests in the geometry modules.
+
+If you just need to **inspect layout rectangles** for a particular node, `inspect_frag` is usually
+the quickest route (it can dump fragment bounds and render overlay PNGs). See [cli.md](cli.md) for
+`inspect_frag` usage.
 
 ### `dump_accesskit` (browser chrome / OS-facing a11y)
 
