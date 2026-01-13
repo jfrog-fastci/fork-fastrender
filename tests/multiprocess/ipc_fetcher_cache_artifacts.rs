@@ -1,6 +1,6 @@
 use crate::common::net::{net_test_lock, try_bind_localhost};
 use base64::Engine as _;
-use fastrender::resource::ipc_fetcher::{IpcRequest, IpcResponse, IpcResult};
+use fastrender::resource::ipc_fetcher::{validate_ipc_request, IpcRequest, IpcResponse, IpcResult};
 use fastrender::resource::{CacheArtifactKind, FetchDestination, FetchRequest, FetchedResource};
 use fastrender::{IpcResourceFetcher, ResourceFetcher};
 use std::collections::HashMap;
@@ -8,6 +8,8 @@ use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
 use std::time::Duration;
+
+const TEST_AUTH_TOKEN: &str = "fastrender-ipc-test-token";
 
 fn write_frame(stream: &mut TcpStream, payload: &[u8]) -> io::Result<()> {
   let len = (payload.len() as u32).to_le_bytes();
@@ -57,6 +59,18 @@ fn spawn_ipc_server(listener: TcpListener) -> thread::JoinHandle<()> {
       .set_write_timeout(Some(Duration::from_secs(5)))
       .unwrap();
 
+    // Auth handshake must precede any other IPC request.
+    let hello_bytes = read_frame(&mut stream).expect("read ipc hello frame");
+    let hello: IpcRequest = serde_json::from_slice(&hello_bytes).expect("decode ipc hello request");
+    match hello {
+      IpcRequest::Hello { token } => {
+        assert_eq!(token, TEST_AUTH_TOKEN, "unexpected IPC auth token");
+      }
+      other => panic!("expected IPC hello request, got {other:?}"),
+    }
+    let hello_ack = serde_json::to_vec(&IpcResponse::HelloAck).expect("encode ipc hello ack");
+    write_frame(&mut stream, &hello_ack).expect("write ipc hello ack");
+
     let mut aliases: HashMap<String, String> = HashMap::new();
     let mut artifacts: HashMap<(String, CacheArtifactKind), StoredArtifact> = HashMap::new();
 
@@ -67,6 +81,7 @@ fn spawn_ipc_server(listener: TcpListener) -> thread::JoinHandle<()> {
         Err(err) => panic!("read ipc frame: {err}"),
       };
       let req: IpcRequest = serde_json::from_slice(&req_bytes).expect("decode ipc request");
+      validate_ipc_request(&req).expect("validate ipc request");
 
       let response = match req {
         IpcRequest::WriteCacheArtifactWithRequest {
@@ -182,7 +197,8 @@ fn ipc_fetcher_cache_artifacts_roundtrip_metadata() {
 
   let ipc_handle = spawn_ipc_server(ipc_listener);
 
-  let fetcher = IpcResourceFetcher::new(ipc_addr.to_string()).expect("connect ipc fetcher");
+  let fetcher =
+    IpcResourceFetcher::new_with_auth_token(ipc_addr.to_string(), TEST_AUTH_TOKEN).expect("connect ipc fetcher");
   let url = "https://example.test/image.png";
   let final_url = "https://cdn.example.test/image.png";
 
