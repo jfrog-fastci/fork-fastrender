@@ -326,10 +326,148 @@ fn pixel(pixmap: &resvg::tiny_skia::Pixmap, x: u32, y: u32) -> [u8; 4] {
 }
 
 #[test]
-fn page_rule_sets_size_and_margins() {
+fn bleed_auto_defaults_to_zero_when_marks_none() {
   let html = r#"
     <html>
       <head>
+        <style>
+          @page { size: 100px 100px; margin: 0; bleed: auto; }
+        </style>
+      </head>
+      <body></body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
+  let page = pages(&tree)[0];
+
+  assert!(
+    (page.bounds.width() - 100.0).abs() < 0.1,
+    "expected total page width==page size for bleed:auto without crop marks; got {}",
+    page.bounds.width()
+  );
+  assert!(
+    (page.bounds.height() - 100.0).abs() < 0.1,
+    "expected total page height==page size for bleed:auto without crop marks; got {}",
+    page.bounds.height()
+  );
+}
+
+#[test]
+fn bleed_auto_is_6pt_when_marks_crop() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 100px 100px;
+            margin: 0;
+            marks: crop;
+            bleed: auto;
+            background: rgb(255, 0, 0);
+          }
+          html, body { margin: 0; background: transparent; }
+        </style>
+      </head>
+      <body></body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  renderer.set_background_color(Rgba::TRANSPARENT);
+  let pixmap = renderer
+    .render_html_with_options(
+      html,
+      RenderOptions::new()
+        .with_viewport(130, 130)
+        .with_media_type(MediaType::Print),
+    )
+    .expect("render bleed:auto with crop marks");
+
+  // 6pt computes to 8px at 96dpi, so the page total size should be 100px + 2*8px = 116px.
+  // Sample in the bleed area (outside the page box, but inside total size).
+  assert_eq!(
+    pixel(&pixmap, 110, 50),
+    [255, 0, 0, 255],
+    "expected page background to paint into the auto bleed area when marks include crop"
+  );
+  // Sample beyond the bleed edge.
+  assert_eq!(
+    pixel(&pixmap, 125, 50),
+    [0, 0, 0, 0],
+    "expected page background to be clipped at the bleed edge"
+  );
+}
+
+#[test]
+fn bleed_negative_shrinks_total_size_and_clips() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 100px 100px;
+            margin: 0;
+            bleed: -5px;
+            background: rgb(255, 0, 0);
+          }
+          html, body { margin: 0; background: transparent; }
+        </style>
+      </head>
+      <body></body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
+  let page = pages(&tree)[0];
+
+  assert!(
+    (page.bounds.width() - 90.0).abs() < 0.1,
+    "expected bleed:-5px to shrink total width to 90px; got {}",
+    page.bounds.width()
+  );
+  assert!(
+    (page.bounds.height() - 90.0).abs() < 0.1,
+    "expected bleed:-5px to shrink total height to 90px; got {}",
+    page.bounds.height()
+  );
+
+  let mut renderer = FastRender::new().unwrap();
+  renderer.set_background_color(Rgba::TRANSPARENT);
+  let pixmap = renderer
+    .render_html_with_options(
+      html,
+      RenderOptions::new()
+        .with_viewport(120, 120)
+        .with_media_type(MediaType::Print),
+    )
+    .expect("render negative bleed");
+
+  assert_eq!(
+    pixel(&pixmap, 85, 45),
+    [255, 0, 0, 255],
+    "expected page background inside the reduced bleed edge"
+  );
+  assert_eq!(
+    pixel(&pixmap, 95, 45),
+    [0, 0, 0, 0],
+    "expected page background to be clipped after shrinking total size for negative bleed"
+  );
+}
+
+#[test]
+fn page_rule_sets_size_and_margins() {
+  let html = r#"
+     <html>
+       <head>
         <style>
           @page { size: 200px 400px; margin: 20px 30px 40px 50px; }
         </style>

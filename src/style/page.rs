@@ -463,7 +463,10 @@ pub fn resolve_page_style(
     bleed + trim + margin_left + border_left + padding_left,
     bleed + trim + margin_top + border_top + padding_top,
   );
-  let total_size = Size::new(page_width + 2.0 * bleed, page_height + 2.0 * bleed);
+  let total_size = Size::new(
+    (page_width + 2.0 * bleed).max(0.0),
+    (page_height + 2.0 * bleed).max(0.0),
+  );
 
   ResolvedPageStyle {
     page_size: Size::new(page_width, page_height),
