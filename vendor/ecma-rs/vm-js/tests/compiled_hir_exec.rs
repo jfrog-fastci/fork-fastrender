@@ -1598,6 +1598,55 @@ fn compiled_object_literal_object_spread_invokes_getter_once() -> Result<(), VmE
 }
 
 #[test]
+fn compiled_object_literal_object_spread_does_not_trigger_proto_setter() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // CopyDataProperties uses CreateDataProperty (not assignment), so spreading an own `"__proto__"`
+  // data property must not set the target's prototype.
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      let proto = { y: 1 };
+      let src = {};
+      Object.defineProperty(src, "__proto__", { value: proto, enumerable: true, configurable: true, writable: true });
+      let o = { ...src };
+      let desc = Object.getOwnPropertyDescriptor(o, "__proto__");
+      Object.getPrototypeOf(o) === Object.prototype &&
+        desc !== undefined &&
+        desc.value === proto
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_object_literal_object_spread_skips_non_enumerable_getters() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      let log = "";
+      let src = {};
+      Object.defineProperty(src, "x", { get() { log += "x"; return 1; }, enumerable: false, configurable: true });
+      let o = { ...src };
+      log === "" && Object.getOwnPropertyDescriptor(o, "x") === undefined
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_object_literal_object_spread_respects_member_order() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
