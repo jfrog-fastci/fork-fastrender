@@ -4,12 +4,29 @@ use std::io::Write;
 use std::os::windows::io::AsRawHandle;
 use std::process::{Command, Stdio};
 
-use win_sandbox::Job;
+use win_sandbox::{is_nested_job_supported, Job, WinSandboxError};
 
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
 
+fn should_skip_job_assignment_error(err: &WinSandboxError) -> bool {
+  match err {
+    WinSandboxError::Win32 { code, .. } => {
+      // When the parent process is already inside a Job that disallows nested jobs/breakaway, Windows
+      // typically reports this as ERROR_ACCESS_DENIED. In that case, this is an environment
+      // limitation (not a regression in Job support), so skip the test.
+      *code == windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED
+    }
+    _ => false,
+  }
+}
+
 #[test]
 fn kill_on_close_terminates_processes() {
+  if !is_nested_job_supported() {
+    eprintln!("skipping kill_on_close_terminates_processes: nested job support unavailable");
+    return;
+  }
+
   let job = Job::new(None).expect("create job");
   job.set_kill_on_close().expect("set kill-on-close");
 
@@ -22,7 +39,16 @@ fn kill_on_close_terminates_processes() {
     .spawn()
     .expect("spawn child");
 
-  job.assign_process(&child).expect("assign process to job");
+  match job.assign_process(&child) {
+    Ok(()) => {}
+    Err(err) if should_skip_job_assignment_error(&err) => {
+      eprintln!("skipping kill_on_close_terminates_processes: cannot assign child to Job ({err})");
+      let _ = child.kill();
+      let _ = child.wait();
+      return;
+    }
+    Err(err) => panic!("assign process to job: {err}"),
+  }
 
   // Let the child proceed into its sleep loop.
   child
@@ -61,6 +87,11 @@ fn kill_on_close_terminates_processes() {
 
 #[test]
 fn active_process_limit_blocks_grandchildren() {
+  if !is_nested_job_supported() {
+    eprintln!("skipping active_process_limit_blocks_grandchildren: nested job support unavailable");
+    return;
+  }
+
   let job = Job::new(None).expect("create job");
   job.set_kill_on_close().expect("set kill-on-close");
   job
@@ -76,7 +107,18 @@ fn active_process_limit_blocks_grandchildren() {
     .spawn()
     .expect("spawn child");
 
-  job.assign_process(&child).expect("assign process to job");
+  match job.assign_process(&child) {
+    Ok(()) => {}
+    Err(err) if should_skip_job_assignment_error(&err) => {
+      eprintln!(
+        "skipping active_process_limit_blocks_grandchildren: cannot assign child to Job ({err})"
+      );
+      let _ = child.kill();
+      let _ = child.wait();
+      return;
+    }
+    Err(err) => panic!("assign process to job: {err}"),
+  }
 
   child
     .stdin
