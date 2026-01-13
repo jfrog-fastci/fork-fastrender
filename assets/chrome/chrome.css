@@ -17,6 +17,23 @@
   color: #1f1f1f;
 }
 
+/* Ensure the chrome-frame document has a stable viewport-sized layout so the compositor can use
+ * `#content-frame` geometry to place the web-content surface.
+ *
+ * Scope this to `.chrome-frame` so other chrome documents (e.g. modal dialogs) can opt into their
+ * own layout model.
+ */
+html.chrome-frame,
+html.chrome-frame body {
+  height: 100%;
+}
+
+html.chrome-frame body {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
 body {
   margin: 0;
   background: #f3f4f6;
@@ -224,6 +241,14 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Placeholder for the embedded web-content texture/surface. */
+html.chrome-frame #content-frame,
+html.chrome-frame .content-frame {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: #ffffff;
 }
 
 .content {
