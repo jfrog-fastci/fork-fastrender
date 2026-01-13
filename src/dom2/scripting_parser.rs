@@ -71,7 +71,7 @@ mod tests {
   use super::parse_html_with_scripting_dom2;
   use crate::dom::DomParseOptions;
   use crate::dom2::live_mutation::{LiveMutationEvent, LiveMutationTestRecorder};
-  use crate::dom2::{Document, NodeId, NodeKind};
+  use crate::dom2::{Document, NodeId, NodeKind, RangeId};
 
   fn find_first_tag(doc: &Document, root: NodeId, tag: &str) -> Option<NodeId> {
     let mut stack: Vec<NodeId> = vec![root];
@@ -149,6 +149,41 @@ mod tests {
       NodeKind::Text { content } => assert_eq!(content, "x"),
       other => panic!("expected foster-parented text node, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn mutations_after_script_boundary_update_live_ranges() {
+    // Like the live-mutation test above, but validates that live Range endpoints created while the
+    // HTML parser is paused stay in sync when parsing resumes and mutates the same Document.
+    //
+    // This relies on the foster-parenting insertion of `x` (a text node) into <body> before the
+    // <table> element after the </script> boundary.
+    let html = "<!doctype html><table><script>1</script>x</table>";
+    let mut range_id: Option<RangeId> = None;
+    let mut body_id: Option<NodeId> = None;
+
+    let doc = parse_html_with_scripting_dom2(html, None, |partial_doc, _script_id, _spec| {
+      let body = find_first_tag(partial_doc, partial_doc.root(), "body").expect("<body> missing");
+      body_id = Some(body);
+
+      // At the </script> boundary, <body> contains only the <table> element. Offset 1 is therefore
+      // the boundary point after the table.
+      let range = partial_doc.create_range();
+      partial_doc.range_set_start(range, body, 1).unwrap();
+      range_id = Some(range);
+      Ok(())
+    })
+    .unwrap();
+
+    let range = range_id.expect("expected Range to be created during parsing pause");
+    let body = body_id.expect("expected <body> to exist at script boundary");
+
+    // After parsing resumes, `x` is inserted before the table, so a boundary point that was
+    // previously after the table should now be offset 2 (after both children).
+    assert_eq!(doc.range_start_container(range).unwrap(), body);
+    assert_eq!(doc.range_end_container(range).unwrap(), body);
+    assert_eq!(doc.range_start_offset(range).unwrap(), 2);
+    assert_eq!(doc.range_end_offset(range).unwrap(), 2);
   }
 
   #[test]
