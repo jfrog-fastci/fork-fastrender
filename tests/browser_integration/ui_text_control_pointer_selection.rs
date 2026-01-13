@@ -70,7 +70,7 @@ fn ui_text_control_pointer_selection_double_triple_shift_click() {
     </style>
   </head>
   <body>
-    <input id="i" value="hello world">
+    <input id="i" value="hello world again">
     <textarea id="ta">alpha beta
 second line</textarea>
   </body>
@@ -105,6 +105,7 @@ second line</textarea>
 
   let input_pos = (10.0, 20.0);
   let input_far_right = (310.0, 20.0);
+  let input_mid_world = (120.0, 20.0);
 
   // Double-click selects word.
   ui_tx
@@ -164,7 +165,7 @@ second line</textarea>
     })
     .expect("input click 3 up");
   ui_tx.send(UiToWorker::Copy { tab_id }).expect("copy all");
-  assert_eq!(next_clipboard_text(&ui_rx, tab_id), "hello world");
+  assert_eq!(next_clipboard_text(&ui_rx, tab_id), "hello world again");
 
   // Shift-click extends selection.
   ui_tx
@@ -193,7 +194,7 @@ second line</textarea>
   ui_tx
     .send(UiToWorker::Copy { tab_id })
     .expect("copy after shift click");
-  assert_eq!(next_clipboard_text(&ui_rx, tab_id), "hello world");
+  assert_eq!(next_clipboard_text(&ui_rx, tab_id), "hello world again");
 
   // Textarea: double-click selects word; triple-click selects line.
   let textarea_pos = (10.0, 80.0);
@@ -257,6 +258,109 @@ second line</textarea>
     .send(UiToWorker::Copy { tab_id })
     .expect("copy textarea line");
   assert_eq!(next_clipboard_text(&ui_rx, tab_id), "alpha beta");
+
+  // Double-click + drag extends selection by whole words.
+  ui_tx
+    .send(UiToWorker::PointerDown {
+      tab_id,
+      pos_css: input_pos,
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+      click_count: 1,
+    })
+    .expect("input drag focus down");
+  ui_tx
+    .send(UiToWorker::PointerUp {
+      tab_id,
+      pos_css: input_pos,
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+    })
+    .expect("input drag focus up");
+  ui_tx
+    .send(UiToWorker::PointerDown {
+      tab_id,
+      pos_css: input_pos,
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+      click_count: 2,
+    })
+    .expect("input double click down for drag");
+  ui_tx
+    .send(UiToWorker::PointerMove {
+      tab_id,
+      pos_css: input_mid_world,
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+    })
+    .expect("input drag move");
+  ui_tx
+    .send(UiToWorker::PointerUp {
+      tab_id,
+      pos_css: input_mid_world,
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+    })
+    .expect("input drag up");
+  ui_tx.send(UiToWorker::Copy { tab_id }).expect("copy word drag");
+  assert_eq!(
+    next_clipboard_text(&ui_rx, tab_id),
+    "hello world",
+    "word drag should extend to full word boundaries"
+  );
+
+  // Textarea triple-click + drag extends selection by whole lines.
+  let textarea_mid_second_line = (100.0, 120.0);
+  ui_tx
+    .send(UiToWorker::PointerDown {
+      tab_id,
+      pos_css: textarea_pos,
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+      click_count: 1,
+    })
+    .expect("textarea drag focus down");
+  ui_tx
+    .send(UiToWorker::PointerUp {
+      tab_id,
+      pos_css: textarea_pos,
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+    })
+    .expect("textarea drag focus up");
+  ui_tx
+    .send(UiToWorker::PointerDown {
+      tab_id,
+      pos_css: textarea_pos,
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+      click_count: 3,
+    })
+    .expect("textarea triple click down for drag");
+  ui_tx
+    .send(UiToWorker::PointerMove {
+      tab_id,
+      pos_css: textarea_mid_second_line,
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+    })
+    .expect("textarea drag move");
+  ui_tx
+    .send(UiToWorker::PointerUp {
+      tab_id,
+      pos_css: textarea_mid_second_line,
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+    })
+    .expect("textarea drag up");
+  ui_tx
+    .send(UiToWorker::Copy { tab_id })
+    .expect("copy textarea line drag");
+  assert_eq!(
+    next_clipboard_text(&ui_rx, tab_id),
+    "alpha beta\nsecond line",
+    "line drag should extend to full line boundaries"
+  );
 
   drop(ui_tx);
   join.join().expect("join ui worker thread");
