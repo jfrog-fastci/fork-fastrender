@@ -201,8 +201,8 @@ bring-up; do not rely on them in production.
 - Opt into launching a renderer already sandboxed via Apple’s deprecated `sandbox-exec` wrapper
   (debug/legacy; see `src/sandbox/macos_spawn.rs`):
   - `FASTR_MACOS_USE_SANDBOX_EXEC=1`
-  - Note: this is ignored when sandboxing is disabled via `FASTR_DISABLE_RENDERER_SANDBOX=1` or
-    `FASTR_MACOS_RENDERER_SANDBOX=off`.
+  - Note: this is ignored when sandboxing is disabled via `FASTR_DISABLE_RENDERER_SANDBOX=1`,
+    `FASTR_RENDERER_SANDBOX=off`, or `FASTR_MACOS_RENDERER_SANDBOX=off`.
 
 Renderer-focused quick reference + more examples: [`docs/security/macos_renderer_sandbox.md`](security/macos_renderer_sandbox.md).
 
