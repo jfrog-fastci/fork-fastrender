@@ -40,8 +40,9 @@ use crate::ui::find_in_page::{FindIndex, FindMatch, FindOptions};
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{
   BrowserMediaPreferences, CursorKind, DatalistOption, DownloadId, DownloadOutcome, MediaCommand,
-  MediaElementKind, NavigationReason, PageExportKind, PageExportOutcome, PointerButton, RenderedFrame,
-  ScrollMetrics, TabId, UiToWorker, WakeReason, WorkerToUi, WorkerToUiInbox, WorkerToUiMsg,
+  MediaElementKind, NavigationReason, PageDragKind, PageExportKind, PageExportOutcome, PointerButton,
+  RenderedFrame, ScrollMetrics, TabId, UiToWorker, WakeReason, WorkerToUi, WorkerToUiInbox,
+  WorkerToUiMsg,
 };
 use super::router_coalescer::UiToWorkerRouterCoalescer;
 use crate::ui::protocol_limits::{MAX_FAVICON_BYTES, MAX_FAVICON_EDGE_PX};
@@ -1013,6 +1014,14 @@ struct DatalistPopupState {
   anchor_css: Rect,
 }
 
+#[derive(Debug, Clone)]
+struct PageDragCandidate {
+  kind: PageDragKind,
+  href: String,
+  down_page_point: Point,
+  started: bool,
+}
+
 struct TabState {
   history: TabHistory,
   loading: bool,
@@ -1091,6 +1100,7 @@ struct TabState {
   pending_hover_sync_pos_css: Option<(f32, f32)>,
   last_pointer_click_count: u8,
   pointer_buttons: u16,
+  page_drag_candidate: Option<PageDragCandidate>,
   last_hovered_dom_node_id: Option<usize>,
   last_hovered_dom_element_id: Option<String>,
   last_hovered_dom2_node: Option<crate::dom2::NodeId>,
@@ -1180,6 +1190,7 @@ impl TabState {
       pending_hover_sync_pos_css: None,
       last_pointer_click_count: 0,
       pointer_buttons: 0,
+      page_drag_candidate: None,
       last_hovered_dom_node_id: None,
       last_hovered_dom_element_id: None,
       last_hovered_dom2_node: None,
@@ -4073,6 +4084,7 @@ struct BrowserRuntime {
           return;
         };
         tab.last_pointer_pos_css = None;
+        tab.page_drag_candidate = None;
 
         let dom_changed = if let Some(doc) = tab.document.as_mut() {
           doc.mutate_dom(|dom| tab.interaction.clear_pointer_state(dom))
@@ -5923,6 +5935,7 @@ struct BrowserRuntime {
 
     // New navigation from the UI: reset any site-mismatch restart loop counter.
     tab.site_mismatch_restarts = 0;
+    tab.page_drag_candidate = None;
 
     // Navigations replace the document (or at least its URL/scroll state); clear any stale hover
     // metadata until the next pointer move re-establishes it.
@@ -6872,6 +6885,34 @@ struct BrowserRuntime {
       base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref());
 
     // ---------------------------------------------------------------------------
+    // Page drag payloads (link drag-to-omnibox, etc).
+    // ---------------------------------------------------------------------------
+    const LINK_DRAG_THRESHOLD_PX: f32 = 5.0;
+    if let Some(candidate) = tab.page_drag_candidate.as_mut() {
+      let primary_down = (tab.pointer_buttons & mouse_buttons_mask_for_button(PointerButton::Primary)) != 0;
+      if primary_down && !candidate.started {
+        let page_point = viewport_point.translate(scroll_snapshot.viewport);
+        if page_point.x.is_finite()
+          && page_point.y.is_finite()
+          && page_point.x >= 0.0
+          && page_point.y >= 0.0
+          && candidate.down_page_point.distance_to(page_point) >= LINK_DRAG_THRESHOLD_PX
+        {
+          candidate.started = true;
+          if matches!(candidate.kind, PageDragKind::Link) {
+            if let Some(payload) = resolve_link_url(base_url, candidate.href.as_str()) {
+              let _ = self.ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::PageDragStarted {
+                tab_id,
+                kind: PageDragKind::Link,
+                payload,
+              }));
+            }
+          }
+        }
+      }
+    }
+
+    // ---------------------------------------------------------------------------
     // Viewport autoscroll while extending a document selection.
     // ---------------------------------------------------------------------------
     const EDGE_THRESHOLD: f32 = 32.0;
@@ -7554,6 +7595,9 @@ struct BrowserRuntime {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };
+    if matches!(button, PointerButton::Primary) {
+      tab.page_drag_candidate = None;
+    }
     tab.last_pointer_click_count = click_count;
     tab.pointer_buttons |= mouse_buttons_mask_for_button(button);
     let Some(doc) = tab.document.as_mut() else {
@@ -7563,11 +7607,12 @@ struct BrowserRuntime {
     let pointer_in_page = pointer_pos_css_in_viewport(pos_css, tab.viewport_css);
     let viewport_point =
       viewport_point_for_pos_css(scroll, if pointer_in_page { pos_css } else { (-1.0, -1.0) });
+    let down_page_point = viewport_point.translate(scroll.viewport);
     let hit_tree =
       hit_test_fragment_tree_for_scroll_cached(&mut tab.hit_test_fragment_tree_cache, doc, scroll);
     let engine = &mut tab.interaction;
 
-    let (changed, target_id, target_element_id) = match doc.mutate_dom_with_layout_artifacts(
+    let (changed, target_id, target_element_id, link_drag_href) = match doc.mutate_dom_with_layout_artifacts(
       |dom, box_tree, fragment_tree| {
         let fragment_tree = hit_tree.as_deref().unwrap_or(fragment_tree);
 
@@ -7587,15 +7632,33 @@ struct BrowserRuntime {
           (false, hit_test_dom(dom, box_tree, fragment_tree, page_point))
         };
 
-        let (target_id, target_element_id) = match hit {
-          Some(hit) => (Some(hit.dom_node_id), hit.element_id),
-          None => (None, None),
+        let (target_id, target_element_id, link_drag_href) = match hit {
+          Some(hit) => {
+            let link_drag_href = if hit.kind == HitTestKind::Link {
+              hit.href.clone()
+            } else {
+              None
+            };
+            (Some(hit.dom_node_id), hit.element_id, link_drag_href)
+          }
+          None => (None, None, None),
         };
-        (changed, (changed, target_id, target_element_id))
+        (changed, (changed, target_id, target_element_id, link_drag_href))
       }) {
         Ok(result) => result,
         Err(_) => return,
       };
+
+    if pointer_in_page && matches!(button, PointerButton::Primary) {
+      if let Some(href) = link_drag_href {
+        tab.page_drag_candidate = Some(PageDragCandidate {
+          kind: PageDragKind::Link,
+          href,
+          down_page_point,
+          started: false,
+        });
+      }
+    }
 
     // `<input type="range">` updates its value on pointer down (jumping the knob to the click
     // position) and then continuously during drag. Mirror the initial change into dom2 before we
@@ -7704,6 +7767,9 @@ struct BrowserRuntime {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };
+    if matches!(button, PointerButton::Primary) {
+      tab.page_drag_candidate = None;
+    }
     tab.pointer_buttons &= !mouse_buttons_mask_for_button(button);
     let click_count = tab.last_pointer_click_count;
     let js_cancel_snapshot = tab.cancel.snapshot_paint();

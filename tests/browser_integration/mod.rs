@@ -216,6 +216,8 @@ mod ui_worker_hover_tooltip_image_map;
 mod ui_worker_interaction;
 mod ui_worker_js_form_control_state;
 mod ui_worker_ismap_click_appends_coords;
+mod ui_worker_link_drag_payload;
+mod ui_worker_ismap_click_appends_coords;
 mod ui_details_toggle;
 mod ui_fieldset_disabled;
 mod ui_form_reset;

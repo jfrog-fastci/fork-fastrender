@@ -278,6 +278,16 @@ pub enum CursorKind {
   NsResize,
 }
 
+/// High-level kinds of page-originated drag payloads.
+///
+/// This is part of the UI↔worker protocol. Keep it small and forward-compatible so UIs can map it
+/// to platform drag-and-drop primitives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PageDragKind {
+  /// Dragging a link (`<a href>` / `<area href>`) from page content.
+  Link,
+}
+
 impl Default for CursorKind {
   fn default() -> Self {
     CursorKind::Default
@@ -1301,6 +1311,15 @@ pub enum WorkerToUi {
     tooltip: Option<String>,
     cursor: CursorKind,
   },
+  /// A page-originated drag gesture has started and produced a payload.
+  ///
+  /// This is emitted once per drag-start activation (debounced). Front-ends can use this to
+  /// initiate platform drag-and-drop (e.g. dragging a link to the address bar / tab strip).
+  PageDragStarted {
+    tab_id: TabId,
+    kind: PageDragKind,
+    payload: String,
+  },
   /// Updated find-in-page results for a tab.
   ///
   /// - `active_match_index` is **0-based** (UIs can display `+1`).
@@ -1395,6 +1414,7 @@ impl WorkerToUi {
       | WorkerToUi::MediaControlsClosed { tab_id }
       | WorkerToUi::ContextMenu { tab_id, .. }
       | WorkerToUi::HoverChanged { tab_id, .. }
+      | WorkerToUi::PageDragStarted { tab_id, .. }
       | WorkerToUi::FindResult { tab_id, .. }
       | WorkerToUi::SetClipboardText { tab_id, .. }
       | WorkerToUi::DownloadStarted { tab_id, .. }

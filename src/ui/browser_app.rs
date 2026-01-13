@@ -3723,6 +3723,9 @@ impl BrowserAppState {
         }
         update.request_redraw = self.active_tab_id() == Some(tab_id);
       }
+      WorkerToUi::PageDragStarted { tab_id, .. } => {
+        update.request_redraw = self.active_tab_id() == Some(tab_id);
+      }
       WorkerToUi::FindResult {
         tab_id,
         query,

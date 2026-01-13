@@ -586,6 +586,13 @@ pub fn format_events(events: &[WorkerToUiEvent]) -> String {
           scroll_state.elements.len()
         );
       }
+      WorkerToUiEvent::PageAccessibility { tab_id, node_count } => {
+        let _ = writeln!(
+          &mut out,
+          "PageAccessibility(tab={}, node_count={node_count})",
+          tab_id.0
+        );
+      }
       WorkerToUiEvent::OpenSelectDropdown {
         tab_id,
         select_node_id,
