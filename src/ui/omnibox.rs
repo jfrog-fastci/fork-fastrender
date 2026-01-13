@@ -336,8 +336,9 @@ impl OmniboxProvider for BookmarksProvider {
       return Vec::new();
     }
 
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(matches.len());
     let mut seen_urls: FxHashSet<AsciiCaseInsensitiveStr<'_>> = FxHashSet::default();
+    seen_urls.reserve(matches.len());
 
     for id in matches {
       let Some(BookmarkNode::Bookmark(entry)) = bookmarks.nodes.get(&id) else {

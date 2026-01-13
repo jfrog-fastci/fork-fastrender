@@ -155,8 +155,22 @@ impl Hash for AsciiCaseInsensitiveStr<'_> {
   fn hash<H: Hasher>(&self, state: &mut H) {
     // Ensure hashing is consistent with the `Eq` implementation above: fold ASCII to lowercase and
     // hash bytes directly.
+    //
+    // NOTE: Avoid calling `Hasher::write_u8` in a tight loop, which can be surprisingly expensive
+    // for many hashers because the default implementation forwards to `write(&[u8])` per byte.
+    const BUF_LEN: usize = 64;
+    let mut buf = [0u8; BUF_LEN];
+    let mut len = 0usize;
     for &b in self.0.as_bytes() {
-      state.write_u8(b.to_ascii_lowercase());
+      buf[len] = b.to_ascii_lowercase();
+      len += 1;
+      if len == BUF_LEN {
+        state.write(&buf);
+        len = 0;
+      }
+    }
+    if len != 0 {
+      state.write(&buf[..len]);
     }
   }
 }
