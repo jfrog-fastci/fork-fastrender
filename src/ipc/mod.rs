@@ -40,6 +40,9 @@ pub mod frame_slots;
 #[cfg(target_os = "linux")]
 pub mod unix_seqpacket;
 
+#[cfg(test)]
+mod platform_compile;
+
 pub use connection::IpcConnection;
 pub use error::IpcError;
 pub use framing::{
