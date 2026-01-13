@@ -1,3 +1,4 @@
+pub mod modal_dialog;
 pub mod state_to_html;
 pub mod template;
 pub mod dialog;
