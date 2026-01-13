@@ -389,14 +389,15 @@ When hidden, the menu bar does not reserve any vertical space; keyboard shortcut
 Implemented items are wired up to existing browser UI actions (tabs, navigation, reload, zoom,
 clipboard, panels).
 
-Some menu entries are still placeholders and remain disabled (for example **Edit → Undo/Redo**).
+Enabled items (as of now):
 
-Notable enabled items:
-
-- **Window → New Window** (<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>N</kbd>)
-- **Window → Show Downloads…** (also available via the downloads toolbar button)
-- **Bookmarks → Bookmark manager…** (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> on Win/Linux; <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> on macOS)
-- **View → Toggle Full Screen** (<kbd>F11</kbd> on Win/Linux; <kbd>Ctrl</kbd>+<kbd>Cmd</kbd>+<kbd>F</kbd> on macOS)
+- **File:** New Tab, Close Tab, Quit
+- **Edit:** Cut/Copy/Paste (Undo/Redo are still disabled)
+- **View:** Reload, Zoom In/Out/Reset, Debug log toggle, Toggle Full Screen
+- **History:** Back/Forward, Reopen Closed Tab, toggle History panel
+- **Bookmarks:** Bookmark This Page / Remove Bookmark, toggle Bookmarks panel, Bookmark manager…
+- **Window:** New Window, Show Downloads…
+- **Help:** Help, About FastRender
 
 Help/About items open `about:help` / `about:version` in a new tab.
 
