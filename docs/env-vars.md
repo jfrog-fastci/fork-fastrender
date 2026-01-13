@@ -96,7 +96,7 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
 ## Renderer sandboxing (macOS)
 
 These env vars are consumed by the multiprocess renderer sandbox entrypoints (i.e. processes that
-call [`fastrender::sandbox::apply_macos_sandbox_from_env`](../src/sandbox/mod.rs) during startup).
+call [`fastrender::sandbox::maybe_apply_renderer_sandbox_from_env`](../src/sandbox/mod.rs) during startup).
 
 - `FASTR_RENDERER_SANDBOX=strict|relaxed|off` – control the macOS Seatbelt sandbox mode for renderer processes.
   - `strict` (default on macOS renderer processes): apply the built-in `pure-computation` profile (no filesystem access; no network access). Intended for production.

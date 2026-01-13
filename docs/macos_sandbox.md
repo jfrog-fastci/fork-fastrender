@@ -24,8 +24,8 @@ Renderer processes can select the Seatbelt sandbox mode at startup via:
 
 The canonical entrypoint is:
 
-- `fastrender::sandbox::apply_macos_sandbox_from_env()` (returns `MacosSandboxStatus` so callers can
-  choose fail-closed in production or best-effort in dev).
+- `fastrender::sandbox::maybe_apply_renderer_sandbox_from_env()` (returns `SandboxStatus` so callers
+  can choose fail-closed in production or best-effort in dev).
 
 Mode mapping:
 
