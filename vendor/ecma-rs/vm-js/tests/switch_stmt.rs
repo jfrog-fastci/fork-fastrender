@@ -207,3 +207,21 @@ fn switch_let_initialized_fallthrough_is_visible_in_later_clause() {
     .unwrap();
   assert_eq!(value, Value::Number(1.0));
 }
+
+#[test]
+fn switch_generator_function_decl_is_not_visible_outside_case_block() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"try { switch (0) { default: function* x() {} } x } catch(e) { e.name }"#)
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+}
+
+#[test]
+fn switch_async_function_decl_is_not_visible_outside_case_block() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"try { switch (0) { default: async function x() {} } x } catch(e) { e.name }"#)
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+}
