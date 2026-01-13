@@ -24,6 +24,9 @@ fn push_imported_node(doc: &mut Document, parent: NodeId, src: &DomNode) -> Node
       mode: *mode,
       delegates_focus: *delegates_focus,
       slot_assignment: SlotAssignmentMode::Named,
+      clonable: false,
+      serializable: false,
+      declarative: false,
     },
     DomNodeType::Slot {
       namespace,
@@ -166,10 +169,16 @@ fn push_imported_dom2_node(dst_doc: &mut Document, parent: NodeId, src_doc: &Doc
       mode,
       delegates_focus,
       slot_assignment,
+      clonable,
+      serializable,
+      declarative,
     } => NodeKind::ShadowRoot {
       mode: *mode,
       delegates_focus: *delegates_focus,
       slot_assignment: *slot_assignment,
+      clonable: *clonable,
+      serializable: *serializable,
+      declarative: *declarative,
     },
     NodeKind::Slot {
       namespace,

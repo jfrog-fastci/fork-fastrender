@@ -139,6 +139,18 @@ pub enum NodeKind {
     mode: ShadowRootMode,
     delegates_focus: bool,
     slot_assignment: SlotAssignmentMode,
+    /// Whether this shadow root should be cloned when cloning its host element.
+    ///
+    /// Mirrors WHATWG DOM's `ShadowRoot.clonable` internal slot. Defaults to false.
+    clonable: bool,
+    /// Whether this shadow root is eligible for HTML serialization via declarative shadow DOM.
+    ///
+    /// Mirrors WHATWG DOM's `ShadowRoot.serializable` internal slot. Defaults to false.
+    serializable: bool,
+    /// Whether this shadow root originated from declarative shadow DOM markup.
+    ///
+    /// Mirrors WHATWG DOM's `ShadowRoot.declarative` internal slot. Defaults to false.
+    declarative: bool,
   },
   Slot {
     namespace: String,

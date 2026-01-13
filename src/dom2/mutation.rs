@@ -61,10 +61,16 @@ fn clone_node_data(doc: &Document, src: &Node, parent: Option<NodeId>) -> CloneN
       mode,
       delegates_focus,
       slot_assignment,
+      clonable,
+      serializable,
+      declarative,
     } => NodeKind::ShadowRoot {
       mode: *mode,
       delegates_focus: *delegates_focus,
       slot_assignment: *slot_assignment,
+      clonable: *clonable,
+      serializable: *serializable,
+      declarative: *declarative,
     },
     NodeKind::Slot {
       namespace,
@@ -241,45 +247,179 @@ impl Document {
   ///
   /// Deep cloning is implemented iteratively to avoid recursion overflow on degenerate trees.
   pub fn clone_node(&mut self, node: NodeId, deep: bool) -> Result<NodeId, DomError> {
-    self.node_checked(node)?;
+    let src_node = self.node_checked(node)?;
+
+    // WHATWG DOM: `Node.cloneNode()` throws for ShadowRoot.
+    // https://dom.spec.whatwg.org/#dom-node-clonenode
+    if matches!(src_node.kind, NodeKind::ShadowRoot { .. }) {
+      return Err(DomError::NotSupportedError);
+    }
 
     let dst_root = self.clone_node_shallow(node, None)?;
-    if !deep {
-      return Ok(dst_root);
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Phase {
+      TreeChildren,
+      ShadowRootChildren,
     }
 
     struct Frame {
       src: NodeId,
       dst: NodeId,
+      phase: Phase,
       next_child: usize,
+      shadow_root_src: Option<NodeId>,
+      shadow_root_dst: Option<NodeId>,
+      next_shadow_child: usize,
+    }
+
+    fn should_skip_tree_child(parent_kind: &NodeKind, child_kind: &NodeKind) -> bool {
+      // Shadow roots are not part of an element's tree children (light DOM).
+      matches!(parent_kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
+        && matches!(child_kind, NodeKind::ShadowRoot { .. })
+    }
+
+    fn initial_phase(deep: bool) -> Phase {
+      if deep {
+        Phase::TreeChildren
+      } else {
+        Phase::ShadowRootChildren
+      }
     }
 
     let mut stack: Vec<Frame> = vec![Frame {
       src: node,
       dst: dst_root,
+      phase: initial_phase(deep),
       next_child: 0,
+      shadow_root_src: None,
+      shadow_root_dst: None,
+      next_shadow_child: 0,
     }];
 
-    while let Some(mut frame) = stack.pop() {
-      let child_src = self.nodes[frame.src.index()]
-        .children
-        .get(frame.next_child)
-        .copied();
+    'clone: while let Some(mut frame) = stack.pop() {
+      match frame.phase {
+        Phase::TreeChildren => {
+          // Clone tree children (light DOM), in tree order.
+          //
+          // For element nodes, `dom2` stores the attached shadow root as a child, but it is not a
+          // tree child per WHATWG DOM's "clone a node" algorithm. Those are handled separately in
+          // `Phase::ShadowRootChildren`.
+          let src_children_len = self.nodes[frame.src.index()].children.len();
+          while frame.next_child < src_children_len {
+            let child_src = self.nodes[frame.src.index()].children[frame.next_child];
+            frame.next_child += 1;
 
-      let Some(child_src) = child_src else {
-        continue;
-      };
+            let child_node = self.node_checked(child_src)?;
+            if child_node.parent != Some(frame.src) {
+              continue;
+            }
+            if should_skip_tree_child(&self.nodes[frame.src.index()].kind, &child_node.kind) {
+              continue;
+            }
 
-      frame.next_child += 1;
-      let parent_dst = frame.dst;
-      stack.push(frame);
+            let parent_dst = frame.dst;
+            stack.push(frame);
+            let child_dst = self.clone_node_shallow(child_src, Some(parent_dst))?;
+            stack.push(Frame {
+              src: child_src,
+              dst: child_dst,
+              phase: initial_phase(deep),
+              next_child: 0,
+              shadow_root_src: None,
+              shadow_root_dst: None,
+              next_shadow_child: 0,
+            });
+            // Continue DFS with the cloned child.
+            continue 'clone;
+          }
 
-      let child_dst = self.clone_node_shallow(child_src, Some(parent_dst))?;
-      stack.push(Frame {
-        src: child_src,
-        dst: child_dst,
-        next_child: 0,
-      });
+          // Tree children complete; proceed to cloning the element's shadow root (if any).
+          frame.phase = Phase::ShadowRootChildren;
+          stack.push(frame);
+        }
+
+        Phase::ShadowRootChildren => {
+          // Initialize shadow root cloning state if we have not yet done so.
+          if frame.shadow_root_src.is_none() {
+            if matches!(
+              &self.nodes[frame.src.index()].kind,
+              NodeKind::Element { .. } | NodeKind::Slot { .. }
+            ) {
+              if let Some(src_shadow_root) = self.shadow_root_for_host(frame.src) {
+                let (mode, delegates_focus, slot_assignment, clonable, serializable, declarative) =
+                  match &self.nodes[src_shadow_root.index()].kind {
+                    NodeKind::ShadowRoot {
+                      mode,
+                      delegates_focus,
+                      slot_assignment,
+                      clonable,
+                      serializable,
+                      declarative,
+                    } => (*mode, *delegates_focus, *slot_assignment, *clonable, *serializable, *declarative),
+                    _ => unreachable!("shadow_root_for_host must return a ShadowRoot node"),
+                  };
+
+                if clonable {
+                  // Attach a new shadow root to the cloned host.
+                  //
+                  // We cannot use `Document::attach_shadow_root()` here: cloneNode must not emit
+                  // live mutation hooks or mark the document as mutated, and `attach_shadow_root`
+                  // performs full insertion steps.
+                  let shadow_root_dst = self.push_node(
+                    NodeKind::ShadowRoot {
+                      mode,
+                      delegates_focus,
+                      slot_assignment,
+                      clonable: true,
+                      serializable,
+                      declarative,
+                    },
+                    None,
+                    /* inert_subtree */ false,
+                  );
+                  self.nodes[shadow_root_dst.index()].parent = Some(frame.dst);
+                  self.nodes[frame.dst.index()].children.insert(0, shadow_root_dst);
+
+                  frame.shadow_root_src = Some(src_shadow_root);
+                  frame.shadow_root_dst = Some(shadow_root_dst);
+                }
+              }
+            }
+          }
+
+          let (Some(src_shadow_root), Some(dst_shadow_root)) =
+            (frame.shadow_root_src, frame.shadow_root_dst)
+          else {
+            // No clonable shadow root: nothing left to do for this frame.
+            continue;
+          };
+
+          let src_children_len = self.nodes[src_shadow_root.index()].children.len();
+          while frame.next_shadow_child < src_children_len {
+            let child_src = self.nodes[src_shadow_root.index()].children[frame.next_shadow_child];
+            frame.next_shadow_child += 1;
+
+            let child_node = self.node_checked(child_src)?;
+            if child_node.parent != Some(src_shadow_root) {
+              continue;
+            }
+
+            stack.push(frame);
+            let child_dst = self.clone_node_shallow(child_src, Some(dst_shadow_root))?;
+            stack.push(Frame {
+              src: child_src,
+              dst: child_dst,
+              phase: initial_phase(deep),
+              next_child: 0,
+              shadow_root_src: None,
+              shadow_root_dst: None,
+              next_shadow_child: 0,
+            });
+            continue 'clone;
+          }
+        }
+      }
     }
 
     Ok(dst_root)

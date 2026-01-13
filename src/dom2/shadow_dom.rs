@@ -46,7 +46,7 @@ fn has_attribute(attrs: &[(String, String)], name: &str) -> bool {
   attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case(name))
 }
 
-fn parse_shadow_root_definition(doc: &Document, kind: &NodeKind) -> Option<(ShadowRootMode, bool)> {
+fn parse_shadow_root_definition(doc: &Document, kind: &NodeKind) -> Option<(ShadowRootMode, bool, bool, bool)> {
   let NodeKind::Element {
     tag_name,
     namespace,
@@ -76,8 +76,10 @@ fn parse_shadow_root_definition(doc: &Document, kind: &NodeKind) -> Option<(Shad
   };
 
   let delegates_focus = has_attribute(attributes, "shadowrootdelegatesfocus");
+  let clonable = has_attribute(attributes, "shadowrootclonable");
+  let serializable = has_attribute(attributes, "shadowrootserializable");
 
-  Some((mode, delegates_focus))
+  Some((mode, delegates_focus, clonable, serializable))
 }
 
 fn promote_template_to_shadow_root(
@@ -87,6 +89,8 @@ fn promote_template_to_shadow_root(
   template_idx: usize,
   mode: ShadowRootMode,
   delegates_focus: bool,
+  clonable: bool,
+  serializable: bool,
 ) {
   // Detach the template from the host.
   doc.node_iterator_pre_remove_steps(template);
@@ -100,6 +104,9 @@ fn promote_template_to_shadow_root(
       mode,
       delegates_focus,
       slot_assignment: SlotAssignmentMode::Named,
+      clonable,
+      serializable,
+      declarative: true,
     },
     None,
     /* inert_subtree */ false,
@@ -141,6 +148,8 @@ impl Document {
     &mut self,
     host: NodeId,
     mode: ShadowRootMode,
+    clonable: bool,
+    serializable: bool,
     delegates_focus: bool,
     slot_assignment: SlotAssignmentMode,
   ) -> Result<NodeId, DomError> {
@@ -175,6 +184,9 @@ impl Document {
         mode,
         delegates_focus,
         slot_assignment,
+        clonable,
+        serializable,
+        declarative: false,
       },
       None,
       /* inert_subtree */ false,
@@ -214,7 +226,7 @@ impl Document {
           node.children.iter().position(|&child_id| {
             self.node(child_id).parent == Some(id)
               && parse_shadow_root_definition(self, &self.node(child_id).kind).is_some()
-          })
+           })
         } else {
           None
         };
@@ -263,16 +275,27 @@ impl Document {
               }
               let child_kind = &self.node(child_id).kind;
               parse_shadow_root_definition(self, child_kind)
-                .map(|(mode, delegates_focus)| (idx, child_id, mode, delegates_focus))
+                .map(|(mode, delegates_focus, clonable, serializable)| {
+                  (idx, child_id, mode, delegates_focus, clonable, serializable)
+                })
             })
         }
       };
 
-      let Some((template_idx, template_id, mode, delegates_focus)) = shadow_template else {
+      let Some((template_idx, template_id, mode, delegates_focus, clonable, serializable)) = shadow_template else {
         continue;
       };
 
-      promote_template_to_shadow_root(self, id, template_id, template_idx, mode, delegates_focus);
+      promote_template_to_shadow_root(
+        self,
+        id,
+        template_id,
+        template_idx,
+        mode,
+        delegates_focus,
+        clonable,
+        serializable,
+      );
     }
   }
 }
@@ -333,7 +356,8 @@ mod tests {
         NodeKind::ShadowRoot {
           mode: ShadowRootMode::Open,
           delegates_focus: false,
-          slot_assignment: SlotAssignmentMode::Named
+          slot_assignment: SlotAssignmentMode::Named,
+          ..
         }
       ),
       "host should have an attached open shadow root at index 0"
@@ -365,7 +389,8 @@ mod tests {
         NodeKind::ShadowRoot {
           mode: ShadowRootMode::Closed,
           delegates_focus: false,
-          slot_assignment: SlotAssignmentMode::Named
+          slot_assignment: SlotAssignmentMode::Named,
+          ..
         }
       ),
       "nested shadow root should be promoted within the first template contents"

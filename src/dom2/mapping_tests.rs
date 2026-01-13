@@ -17,6 +17,9 @@ fn node_kind_from_dom_node_type(node_type: &DomNodeType) -> NodeKind {
       mode: *mode,
       delegates_focus: *delegates_focus,
       slot_assignment: SlotAssignmentMode::Named,
+      clonable: false,
+      serializable: false,
+      declarative: false,
     },
     DomNodeType::Slot {
       namespace,

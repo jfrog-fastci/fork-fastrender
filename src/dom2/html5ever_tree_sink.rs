@@ -641,6 +641,20 @@ impl TreeSink for Dom2TreeSink {
         .as_ref()
         .eq_ignore_ascii_case("shadowrootdelegatesfocus")
     });
+    let clonable = attrs.iter().any(|attr| {
+      attr
+        .name
+        .local
+        .as_ref()
+        .eq_ignore_ascii_case("shadowrootclonable")
+    });
+    let serializable = attrs.iter().any(|attr| {
+      attr
+        .name
+        .local
+        .as_ref()
+        .eq_ignore_ascii_case("shadowrootserializable")
+    });
 
     let mut doc = self.document.borrow_mut();
     let is_valid_shadow_host = match &doc.node(*location).kind {
@@ -672,6 +686,9 @@ impl TreeSink for Dom2TreeSink {
         mode,
         delegates_focus,
         slot_assignment: SlotAssignmentMode::Named,
+        clonable,
+        serializable,
+        declarative: true,
       },
       None,
       /* inert_subtree */ false,

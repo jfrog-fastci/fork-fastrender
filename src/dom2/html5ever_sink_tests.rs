@@ -429,6 +429,9 @@ fn declarative_shadow_rootmode_attaches_and_routes_template_contents() {
       mode,
       delegates_focus,
       slot_assignment,
+      clonable,
+      serializable,
+      ..
     } => {
       assert_eq!(*mode, ShadowRootMode::Open);
       assert!(
@@ -439,6 +442,11 @@ fn declarative_shadow_rootmode_attaches_and_routes_template_contents() {
         *slot_assignment,
         SlotAssignmentMode::Named,
         "declarative shadow roots should default to named slot assignment mode"
+      );
+      assert!(!*clonable, "declarative shadow roots should default clonable=false");
+      assert!(
+        !*serializable,
+        "declarative shadow roots should default serializable=false"
       );
     }
     other => panic!("expected ShadowRoot kind, got {other:?}"),

@@ -9240,6 +9240,9 @@ fn get_or_create_node_wrapper(
         mode,
         delegates_focus,
         slot_assignment,
+        clonable,
+        serializable,
+        ..
       } => {
         let mode_str = match mode {
           crate::dom::ShadowRootMode::Open => "open",
@@ -9264,6 +9267,20 @@ fn get_or_create_node_wrapper(
           wrapper,
           slot_assignment_key,
           read_only_data_desc(Value::String(slot_assignment_s)),
+        )?;
+
+        let clonable_key = alloc_key(scope, "clonable")?;
+        scope.define_property(
+          wrapper,
+          clonable_key,
+          read_only_data_desc(Value::Bool(*clonable)),
+        )?;
+
+        let serializable_key = alloc_key(scope, "serializable")?;
+        scope.define_property(
+          wrapper,
+          serializable_key,
+          read_only_data_desc(Value::Bool(*serializable)),
         )?;
       }
       _ => {}
@@ -27224,6 +27241,26 @@ fn element_attach_shadow_native(
       .unwrap_or(false)
   };
 
+  let clonable = {
+    let key = alloc_key(scope, "clonable")?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(init_obj, &key)?
+      .map(|v| scope.heap().to_boolean(v))
+      .transpose()?
+      .unwrap_or(false)
+  };
+
+  let serializable = {
+    let key = alloc_key(scope, "serializable")?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(init_obj, &key)?
+      .map(|v| scope.heap().to_boolean(v))
+      .transpose()?
+      .unwrap_or(false)
+  };
+
   let slot_assignment = {
     let key = alloc_key(scope, "slotAssignment")?;
     let value = scope
@@ -27254,7 +27291,7 @@ fn element_attach_shadow_native(
   let shadow_root = {
     // SAFETY: `dom_ptr` is valid for the duration of this native call.
     let dom = unsafe { dom_ptr.as_mut() };
-    match dom.attach_shadow_root(handle.node_id, mode, delegates_focus, slot_assignment) {
+    match dom.attach_shadow_root(handle.node_id, mode, clonable, serializable, delegates_focus, slot_assignment) {
       Ok(id) => id,
       Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
     }
@@ -48025,6 +48062,81 @@ mod tests {
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn node_clone_node_does_not_clone_shadow_root_by_default() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const host = document.createElement('div');\n\
+        host.attachShadow({ mode: 'open' });\n\
+        const clone = host.cloneNode(true);\n\
+        if (clone.shadowRoot !== null) return 'shadowRoot';\n\
+        try { clone.attachShadow({ mode: 'open' }); } catch (e) { return 'attach:' + e.name; }\n\
+        return 'ok';\n\
+      })()",
+    )?;
+
+    assert_eq!(get_string(realm.heap(), result), "ok");
+    Ok(())
+  }
+
+  #[test]
+  fn node_clone_node_clones_clonable_shadow_root_subtree() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const host = document.createElement('div');\n\
+        const sr = host.attachShadow({ mode: 'open', clonable: true });\n\
+        const span = document.createElement('span');\n\
+        span.id = 'x';\n\
+        sr.appendChild(span);\n\
+        const clone = host.cloneNode(true);\n\
+        if (clone.shadowRoot === null) return 'no_shadow_root';\n\
+        const found = clone.shadowRoot.getElementById('x');\n\
+        if (!found) return 'missing_child';\n\
+        return 'ok';\n\
+      })()",
+    )?;
+
+    assert_eq!(get_string(realm.heap(), result), "ok");
+    Ok(())
+  }
+
+  #[test]
+  fn node_clone_node_preserves_closed_clonable_shadow_root() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const host = document.createElement('div');\n\
+        const sr = host.attachShadow({ mode: 'closed', clonable: true });\n\
+        const span = document.createElement('span');\n\
+        span.id = 'x';\n\
+        sr.appendChild(span);\n\
+        const clone = host.cloneNode(true);\n\
+        if (clone.shadowRoot !== null) return 'shadowRoot_visible';\n\
+        let threw = false;\n\
+        try { clone.attachShadow({ mode: 'open' }); } catch (e) { threw = e.name === 'NotSupportedError'; if (!threw) return 'err:' + e.name; }\n\
+        if (!threw) return 'no_throw';\n\
+        return 'ok';\n\
+      })()",
+    )?;
+
+    assert_eq!(get_string(realm.heap(), result), "ok");
     Ok(())
   }
 
