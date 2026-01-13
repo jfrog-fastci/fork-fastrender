@@ -16,10 +16,15 @@ use crate::resource::{
 use crate::style::color::Rgba;
 use crate::style::ComputedStyle;
 use crate::text::font_loader::FontContext;
+use base64::engine::general_purpose::STANDARD as BASE64_STD;
+use base64::Engine as _;
 use lru::LruCache;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::io;
+use std::path::PathBuf;
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 use tiny_skia::Pixmap;
@@ -30,6 +35,38 @@ const DEFAULT_IFRAME_RENDER_CACHE_MAX_ENTRIES: usize = 128;
 const DEFAULT_IFRAME_RENDER_CACHE_MAX_BYTES: usize = 128 * 1024 * 1024;
 const ENV_IFRAME_RENDER_CACHE_ITEMS: &str = "FASTR_IFRAME_RENDER_CACHE_ITEMS";
 const ENV_IFRAME_RENDER_CACHE_BYTES: &str = "FASTR_IFRAME_RENDER_CACHE_BYTES";
+const ENV_OOPIF_ENABLED: &str = "FASTR_OOPIF";
+const ENV_OOPIF_RENDERER_BIN: &str = "FASTR_OOPIF_RENDERER_BIN";
+
+#[derive(Debug)]
+enum OopifError {
+  RendererUnavailable,
+  SpawnFailed(io::Error),
+  Io(io::Error),
+  ProcessExit { status: ExitStatus, stderr: Vec<u8> },
+  ResponseDecode(String),
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct OopifRenderRequest {
+  url: String,
+  html: Option<String>,
+  base_url: Option<String>,
+  width: u32,
+  height: u32,
+  device_pixel_ratio: f32,
+  max_iframe_depth: usize,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct OopifRenderResponse {
+  status: String,
+  message: Option<String>,
+  pixel_width: Option<u32>,
+  pixel_height: Option<u32>,
+  premultiplied: Option<bool>,
+  pixels_base64: Option<String>,
+}
 
 fn iframe_render_cache_limits_from_env() -> (usize, usize) {
   let toggles = runtime::runtime_toggles();
@@ -44,6 +81,162 @@ fn iframe_render_cache_limits_from_env() -> (usize, usize) {
   (max_entries, max_bytes)
 }
 
+fn oopif_enabled() -> bool {
+  runtime::runtime_toggles().truthy(ENV_OOPIF_ENABLED)
+}
+
+fn is_crash_url(url: &str) -> bool {
+  url
+    .as_bytes()
+    .get(..8)
+    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"crash://"))
+}
+
+fn iframe_renderer_bin_from_toggles() -> Option<PathBuf> {
+  let toggles = runtime::runtime_toggles();
+  let raw = toggles.get(ENV_OOPIF_RENDERER_BIN)?;
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return None;
+  }
+  Some(PathBuf::from(trimmed))
+}
+
+fn iframe_renderer_bin_guess_from_current_exe() -> Option<PathBuf> {
+  let exe = std::env::current_exe().ok()?;
+  let mut dir = exe.parent()?.to_path_buf();
+  // Integration test executables live in `target/{debug,release}/deps`; binaries are siblings.
+  if dir.file_name().and_then(|s| s.to_str()) == Some("deps") {
+    dir = dir.parent()?.to_path_buf();
+  }
+  let name = format!("iframe_renderer{}", std::env::consts::EXE_SUFFIX);
+  let candidate = dir.join(name);
+  candidate.is_file().then_some(candidate)
+}
+
+fn iframe_renderer_bin() -> Option<PathBuf> {
+  iframe_renderer_bin_from_toggles().or_else(iframe_renderer_bin_guess_from_current_exe)
+}
+
+fn crashed_iframe_placeholder_image(css_width: u32, css_height: u32, device_pixel_ratio: f32) -> Arc<ImageData> {
+  let device_width = ((css_width as f32) * device_pixel_ratio).round().max(1.0) as u32;
+  let device_height = ((css_height as f32) * device_pixel_ratio).round().max(1.0) as u32;
+  let mut pixels = vec![0u8; (device_width as usize) * (device_height as usize) * 4];
+  let tile = 8u32.max(1);
+  let light = [210u8, 210u8, 210u8, 255u8];
+  let dark = [160u8, 160u8, 160u8, 255u8];
+  for y in 0..device_height {
+    for x in 0..device_width {
+      let idx = (y as usize * device_width as usize + x as usize) * 4;
+      let which = ((x / tile) + (y / tile)) % 2;
+      let c = if which == 0 { light } else { dark };
+      pixels[idx..idx + 4].copy_from_slice(&c);
+    }
+  }
+  Arc::new(ImageData::new_premultiplied(
+    device_width,
+    device_height,
+    css_width as f32,
+    css_height as f32,
+    pixels,
+  ))
+}
+
+fn render_iframe_out_of_process(
+  url: &str,
+  html: Option<&str>,
+  base_url: Option<&str>,
+  css_width: u32,
+  css_height: u32,
+  device_pixel_ratio: f32,
+  max_iframe_depth: usize,
+) -> Result<Arc<ImageData>, OopifError> {
+  let Some(bin) = iframe_renderer_bin() else {
+    return Err(OopifError::RendererUnavailable);
+  };
+
+  let mut cmd = Command::new(bin);
+  cmd
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
+
+  let mut child = cmd.spawn().map_err(OopifError::SpawnFailed)?;
+  {
+    let Some(mut stdin) = child.stdin.take() else {
+      return Err(OopifError::Io(io::Error::new(
+        io::ErrorKind::BrokenPipe,
+        "failed to open iframe renderer stdin",
+      )));
+    };
+    let req = OopifRenderRequest {
+      url: url.to_string(),
+      html: html.map(str::to_string),
+      base_url: base_url.map(str::to_string),
+      width: css_width.max(1),
+      height: css_height.max(1),
+      device_pixel_ratio,
+      max_iframe_depth,
+    };
+    serde_json::to_writer(&mut stdin, &req).map_err(|err| {
+      OopifError::Io(io::Error::new(io::ErrorKind::InvalidData, err.to_string()))
+    })?;
+  }
+
+  let output = child.wait_with_output().map_err(OopifError::Io)?;
+  if !output.status.success() {
+    return Err(OopifError::ProcessExit {
+      status: output.status,
+      stderr: output.stderr,
+    });
+  }
+
+  let resp: OopifRenderResponse =
+    serde_json::from_slice(&output.stdout).map_err(|err| OopifError::ResponseDecode(err.to_string()))?;
+  if resp.status != "ok" {
+    return Err(OopifError::ResponseDecode(
+      resp
+        .message
+        .unwrap_or_else(|| format!("iframe renderer returned status {}", resp.status)),
+    ));
+  }
+  let pixel_width = resp.pixel_width.ok_or_else(|| {
+    OopifError::ResponseDecode("iframe renderer missing pixel_width".to_string())
+  })?;
+  let pixel_height = resp.pixel_height.ok_or_else(|| {
+    OopifError::ResponseDecode("iframe renderer missing pixel_height".to_string())
+  })?;
+  let premultiplied = resp.premultiplied.unwrap_or(true);
+  if !premultiplied {
+    return Err(OopifError::ResponseDecode(
+      "iframe renderer returned un-premultiplied pixels".to_string(),
+    ));
+  }
+  let pixels_b64 = resp.pixels_base64.ok_or_else(|| {
+    OopifError::ResponseDecode("iframe renderer missing pixels_base64".to_string())
+  })?;
+  let pixels = BASE64_STD
+    .decode(pixels_b64.as_bytes())
+    .map_err(|err| OopifError::ResponseDecode(err.to_string()))?;
+  if pixels.len() != (pixel_width as usize) * (pixel_height as usize) * 4 {
+    return Err(OopifError::ResponseDecode(format!(
+      "iframe renderer returned {} bytes, expected {}",
+      pixels.len(),
+      (pixel_width as usize) * (pixel_height as usize) * 4
+    )));
+  }
+  Ok(Arc::new(ImageData::new_premultiplied(
+    pixel_width,
+    pixel_height,
+    css_width as f32,
+    css_height as f32,
+    pixels,
+  )))
+}
+
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
 #[inline]
 fn f32_to_canonical_bits(value: f32) -> u32 {
   if value == 0.0 {
@@ -574,6 +767,12 @@ pub(crate) fn render_iframe_src(
   }
 
   let context = image_cache.resource_context();
+  let use_oopif = oopif_enabled()
+    && context
+      .as_ref()
+      .and_then(|ctx| ctx.policy.document_origin.as_ref())
+      .and_then(|parent| origin_from_url(&resolved).map(|child| (parent, child)))
+      .is_some_and(|(parent, child)| !parent.same_origin(&child));
   let remaining_depth = context
     .as_ref()
     .and_then(|ctx| ctx.iframe_depth_remaining)
@@ -670,6 +869,37 @@ pub(crate) fn render_iframe_src(
     return image;
   }
   let mut owner_guard = IframeInFlightOwnerGuard::new(key, flight);
+
+  // Deterministic crash trigger URLs bypass network fetch and instead instruct the out-of-process
+  // renderer to crash. The browser process should remain alive and paint a fallback placeholder.
+  if use_oopif && is_crash_url(&resolved) {
+    let image = match render_iframe_out_of_process(
+      &resolved,
+      None,
+      Some(&resolved),
+      width,
+      height,
+      device_pixel_ratio,
+      nested_depth,
+    ) {
+      Ok(image) => image,
+      Err(_) => {
+        if let Some(ctx) = context.as_ref() {
+          ctx.record_violation(
+            ResourceKind::Document,
+            &resolved,
+            Some(&resolved),
+            "iframe renderer process crashed".to_string(),
+          );
+        }
+        crashed_iframe_placeholder_image(width, height, device_pixel_ratio)
+      }
+    };
+    owner_guard.finish(Some(Arc::clone(&image)));
+    #[cfg(test)]
+    record_iframe_cache_hit(false);
+    return Some(image);
+  }
 
   let origin_fallback = referrer_url.and_then(origin_from_url);
   let client_origin = context
@@ -782,6 +1012,44 @@ pub(crate) fn render_iframe_src(
     .map(|ctx| ctx.policy.clone())
     .or_else(|| context.as_ref().map(|ctx| ctx.policy.clone()))
     .unwrap_or_default();
+
+  if use_oopif {
+    match render_iframe_out_of_process(
+      &final_url,
+      Some(&html),
+      Some(&final_url),
+      width,
+      height,
+      device_pixel_ratio,
+      nested_depth,
+    ) {
+      Ok(image) => {
+        owner_guard.finish(Some(Arc::clone(&image)));
+        #[cfg(test)]
+        record_iframe_cache_hit(false);
+        return Some(image);
+      }
+      Err(OopifError::RendererUnavailable | OopifError::SpawnFailed(_)) => {
+        // Best-effort fallback: if the renderer binary is not available, render in-process so we
+        // preserve existing behavior.
+      }
+      Err(err) => {
+        if let Some(ctx) = context.as_ref() {
+          ctx.record_violation(
+            ResourceKind::Document,
+            &resolved,
+            Some(&final_url),
+            format!("iframe renderer process crashed: {err:?}"),
+          );
+        }
+        let image = crashed_iframe_placeholder_image(width, height, device_pixel_ratio);
+        owner_guard.finish(Some(Arc::clone(&image)));
+        #[cfg(test)]
+        record_iframe_cache_hit(false);
+        return Some(image);
+      }
+    }
+  }
 
   let pixmap = render_html_with_shared_resources(
     &html,
