@@ -185,12 +185,22 @@ impl Cache {
               || entry
                 .available_space
                 .width
-                .is_roughly_equal(available_space.width))
+                .is_roughly_equal(available_space.width)
+              || definite_space_unconstrained_match(
+                entry.available_space.width,
+                available_space.width,
+                cached_size.width,
+              ))
             && (known_dimensions.height.is_some()
               || entry
                 .available_space
                 .height
-                .is_roughly_equal(available_space.height))
+                .is_roughly_equal(available_space.height)
+              || definite_space_unconstrained_match(
+                entry.available_space.height,
+                available_space.height,
+                cached_size.height,
+              ))
         })
         .map(|e| e.content),
       RunMode::ComputeSize => {
@@ -710,6 +720,108 @@ mod tests {
         height: AvailableSpace::MinContent,
       },
       RunMode::ComputeSize,
+    );
+    assert!(miss.is_none());
+  }
+
+  #[test]
+  fn perform_layout_cache_reuses_unconstrained_definite_available_space() {
+    let mut cache = Cache::new();
+
+    cache.store(
+      Size::NONE,
+      Size {
+        width: AvailableSpace::Definite(500.0),
+        height: AvailableSpace::MaxContent,
+      },
+      RunMode::PerformLayout,
+      LayoutOutput::from_outer_size(Size {
+        width: 100.0,
+        height: 10.0,
+      }),
+    );
+
+    let hit = cache
+      .get(
+        Size::NONE,
+        Size {
+          width: AvailableSpace::Definite(600.0),
+          height: AvailableSpace::MaxContent,
+        },
+        RunMode::PerformLayout,
+      )
+      .map(|o| o.size);
+    assert_eq!(
+      hit,
+      Some(Size {
+        width: 100.0,
+        height: 10.0,
+      })
+    );
+
+    let miss = cache.get(
+      Size::NONE,
+      Size {
+        width: AvailableSpace::Definite(80.0),
+        height: AvailableSpace::MaxContent,
+      },
+      RunMode::PerformLayout,
+    );
+    assert!(miss.is_none());
+  }
+
+  #[test]
+  fn perform_layout_cache_does_not_reuse_saturating_definite_measurements_across_constraints() {
+    let mut cache = Cache::new();
+
+    cache.store(
+      Size::NONE,
+      Size {
+        width: AvailableSpace::Definite(100.0),
+        height: AvailableSpace::MaxContent,
+      },
+      RunMode::PerformLayout,
+      LayoutOutput::from_outer_size(Size {
+        width: 100.0,
+        height: 10.0,
+      }),
+    );
+
+    let miss = cache.get(
+      Size::NONE,
+      Size {
+        width: AvailableSpace::Definite(200.0),
+        height: AvailableSpace::MaxContent,
+      },
+      RunMode::PerformLayout,
+    );
+    assert!(miss.is_none());
+  }
+
+  #[test]
+  fn perform_layout_cache_unconstrained_match_is_per_axis() {
+    let mut cache = Cache::new();
+
+    cache.store(
+      Size::NONE,
+      Size {
+        width: AvailableSpace::Definite(500.0),
+        height: AvailableSpace::MaxContent,
+      },
+      RunMode::PerformLayout,
+      LayoutOutput::from_outer_size(Size {
+        width: 100.0,
+        height: 10.0,
+      }),
+    );
+
+    let miss = cache.get(
+      Size::NONE,
+      Size {
+        width: AvailableSpace::Definite(600.0),
+        height: AvailableSpace::MinContent,
+      },
+      RunMode::PerformLayout,
     );
     assert!(miss.is_none());
   }

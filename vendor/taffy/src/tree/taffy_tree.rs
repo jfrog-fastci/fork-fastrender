@@ -1424,11 +1424,19 @@ mod tests {
 
     let mut view = TaffyView {
       taffy: &mut taffy,
-      measure_function: move |_, _, _, _, _| {
+      measure_function: move |_, available_space, _, _, _| {
         calls_for_cb.fetch_add(1, Ordering::Relaxed);
+        let width = match available_space.width {
+          AvailableSpace::Definite(w) => w,
+          _ => 0.0,
+        };
+        let height = match available_space.height {
+          AvailableSpace::Definite(h) => h,
+          _ => 0.0,
+        };
         MeasureOutput::from_size(Size {
-          width: 10.0,
-          height: 10.0,
+          width,
+          height,
         })
       },
       leaf_measure_cache: Default::default(),
