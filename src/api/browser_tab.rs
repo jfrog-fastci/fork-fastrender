@@ -5592,6 +5592,39 @@ impl BrowserTab {
     self.host.register_html_source(url.into(), html.into());
   }
 
+  /// Returns and clears a pending navigation request emitted by JavaScript (for example via
+  /// `window.location.href = ...`).
+  ///
+  /// This only exposes the request; it does **not** commit the navigation or reset the tab.
+  ///
+  /// Live embeddings that drive a dedicated JS tab can use this to observe JS-triggered navigations
+  /// and synchronize them with a separate render tab.
+  pub fn take_pending_navigation_request(&mut self) -> Option<LocationNavigationRequest> {
+    self
+      .take_pending_navigation_request_with_deadline()
+      .map(|(req, _deadline)| req)
+  }
+
+  /// Like [`BrowserTab::take_pending_navigation_request`], but also returns any associated render
+  /// deadline captured when the request was promoted to `BrowserTabHost.pending_navigation`.
+  pub fn take_pending_navigation_request_with_deadline(
+    &mut self,
+  ) -> Option<(LocationNavigationRequest, Option<RenderDeadline>)> {
+    if let Some(req) = self.host.pending_navigation.take() {
+      let deadline = self.host.pending_navigation_deadline.take();
+      return Some((req, deadline));
+    }
+
+    // Requests can be stored in the JS executor (e.g. vm-js `WindowRealm`) until the host polls
+    // `take_navigation_request()`. Expose them here so embedders can coordinate navigation without
+    // forcing an immediate commit.
+    self
+      .host
+      .executor
+      .take_navigation_request()
+      .map(|req| (req, None))
+  }
+
   pub fn set_event_listener_invoker(
     &mut self,
     invoker: Box<dyn crate::web::events::EventListenerInvoker>,
@@ -15594,6 +15627,71 @@ html, body { margin: 0; padding: 0; }
       tab.history.current().map(|e| e.url.as_str()),
       Some(page2_url)
     );
+    Ok(())
+  }
+
+  #[test]
+  fn take_pending_navigation_request_exposes_js_driven_navigation_without_committing() -> Result<()> {
+    let html = r#"<!doctype html><html><body>
+        <button id="btn">go</button>
+        <script>
+          document.getElementById("btn").addEventListener("click", () => {
+            window.location.href = "https://example.com/next";
+          });
+        </script>
+      </body></html>"#;
+    let mut tab = BrowserTab::from_html_with_vmjs_and_document_url(
+      html,
+      "https://example.com/start",
+      RenderOptions::default(),
+    )?;
+
+    let button = tab
+      .dom()
+      .get_element_by_id("btn")
+      .expect("expected button to exist");
+    // `window.location` triggers a vm-js interrupt/termination to abort the current JS turn. The
+    // dispatch helper surfaces that as an error; for this test we only care that the navigation
+    // request is recorded.
+    let _ = tab.dispatch_click_event(button);
+
+    let req = tab
+      .take_pending_navigation_request()
+      .expect("expected JS-driven navigation request");
+    assert_eq!(req.url, "https://example.com/next");
+    assert!(!req.replace);
+    assert!(
+      tab.take_pending_navigation_request().is_none(),
+      "expected navigation request to be cleared"
+    );
+    assert!(
+      tab.dom().get_element_by_id("btn").is_some(),
+      "expected navigation to not be committed by take_pending_navigation_request"
+    );
+
+    // Also cover the case where the request is already stored in `BrowserTabHost.pending_navigation`
+    // (for example after script execution boundaries where the host polls the executor).
+    use std::time::Duration;
+    tab.host.pending_navigation = Some(LocationNavigationRequest {
+      url: "https://example.com/host".to_string(),
+      replace: true,
+    });
+    tab.host.pending_navigation_deadline =
+      Some(RenderDeadline::new(Some(Duration::from_millis(5)), None));
+    let (req, deadline) = tab
+      .take_pending_navigation_request_with_deadline()
+      .expect("expected host pending navigation request");
+    assert_eq!(req.url, "https://example.com/host");
+    assert!(req.replace);
+    assert!(
+      deadline.is_some_and(|d| d.is_enabled()),
+      "expected deadline to be returned"
+    );
+    assert!(
+      tab.host.pending_navigation.is_none() && tab.host.pending_navigation_deadline.is_none(),
+      "expected host pending navigation state to be cleared"
+    );
+
     Ok(())
   }
 
