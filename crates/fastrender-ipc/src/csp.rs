@@ -870,6 +870,54 @@ mod tests {
   }
 
   #[test]
+  fn frame_src_host_source_ipv6_literal_with_port() {
+    let mut frame = FrameNode::new(FrameId(1));
+    frame.navigation_committed(
+      "http://[::1]/".to_string(),
+      vec!["frame-src http://[::1]:8080".to_string()],
+    );
+
+    frame
+      .check_frame_src("http://[::1]:8080/child")
+      .expect("expected frame-src host source to allow matching IPv6 literal + port");
+
+    frame
+      .check_frame_src("http://[::1]/child")
+      .expect_err("expected frame-src host source with port to reject default port");
+  }
+
+  #[test]
+  fn frame_src_host_source_path_exact_matching() {
+    let mut frame = FrameNode::new(FrameId(1));
+    frame.navigation_committed(
+      "https://parent.example/".to_string(),
+      vec!["frame-src https://example.com/images/logo.png".to_string()],
+    );
+
+    frame
+      .check_frame_src("https://example.com/images/logo.png")
+      .expect("expected host source with exact path to allow exact URL path");
+
+    frame
+      .check_frame_src("https://example.com/images/other.png")
+      .expect_err("expected host source with exact path to block other URL paths");
+  }
+
+  #[test]
+  fn duplicate_frame_src_directives_ignore_subsequent_occurrences() {
+    // CSP: When a directive appears multiple times within a policy set, only the first is used.
+    let mut frame = FrameNode::new(FrameId(1));
+    frame.navigation_committed(
+      "https://example.com/".to_string(),
+      vec!["frame-src 'none'; frame-src https:".to_string()],
+    );
+
+    frame
+      .check_frame_src("https://example.com/child")
+      .expect_err("expected first frame-src directive to win");
+  }
+
+  #[test]
   fn mixed_content_blocks_final_url_after_redirect() {
     let mut frame = FrameNode::new(FrameId(1));
     frame.navigation_committed("https://secure.example/".to_string(), Vec::new());
