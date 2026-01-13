@@ -5327,6 +5327,69 @@ fn compiled_array_literal_spread_from_string() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_array_literal_spread_step_error_does_not_close_iterator() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let it = {
+        closed: 0,
+        [Symbol.iterator]: function() { return this; },
+        next: function() { throw 1; },
+        return: function() {
+          this.closed = this.closed + 1;
+          return { done: true };
+        },
+      };
+      try { [...it]; } catch (e) {}
+      it.closed
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(0.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_array_literal_spread_value_error_does_not_close_iterator() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let it = {
+        closed: 0,
+        [Symbol.iterator]: function() { return this; },
+        next: function() {
+          return {
+            get done() { return false; },
+            get value() { throw 1; },
+          };
+        },
+        return: function() {
+          this.closed = this.closed + 1;
+          return { done: true };
+        },
+      };
+      try { [...it]; } catch (e) {}
+      it.closed
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(0.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_array_literal_uses_array_prototype() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
