@@ -11361,6 +11361,26 @@ impl InteractionEngine {
     }
 
     // Non-text-control keyboard actions.
+    //
+    // Some windowed backends (e.g. winit) encode Shift-modified arrow and Home/End keys as distinct
+    // `KeyAction` variants. For non-text controls like `<input type=range>` and `<select>`, these
+    // Shift variants should behave like their base keys (they do not extend text selection).
+    //
+    // Note: Text-control Shift semantics are handled earlier in this method and must remain intact.
+    let focused_is_range_input = index.node(focused).is_some_and(is_range_input);
+    let focused_is_select = index.node(focused).is_some_and(is_select);
+    let key = if focused_is_range_input || focused_is_select {
+      match key {
+        KeyAction::ShiftArrowLeft => KeyAction::ArrowLeft,
+        KeyAction::ShiftArrowRight => KeyAction::ArrowRight,
+        KeyAction::ShiftHome => KeyAction::Home,
+        KeyAction::ShiftEnd => KeyAction::End,
+        _ => key,
+      }
+    } else {
+      key
+    };
+
     match key {
       KeyAction::ArrowUp
       | KeyAction::ArrowDown
@@ -11368,7 +11388,7 @@ impl InteractionEngine {
       | KeyAction::ArrowRight
       | KeyAction::Home
       | KeyAction::End => {
-        if index.node(focused).is_some_and(is_range_input) {
+        if focused_is_range_input {
           if node_or_ancestor_is_inert(&index, focused)
             || node_is_disabled(&index, focused)
             || node_is_readonly(&index, focused)
@@ -11401,7 +11421,7 @@ impl InteractionEngine {
         } else if matches!(
           key,
           KeyAction::ArrowUp | KeyAction::ArrowDown | KeyAction::Home | KeyAction::End
-        ) && index.node(focused).is_some_and(is_select)
+        ) && focused_is_select
           && !is_disabled_or_inert(&index, focused)
         {
           if matches!(key, KeyAction::Home | KeyAction::End)
