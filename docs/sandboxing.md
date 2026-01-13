@@ -147,11 +147,13 @@ expectations, see [macos_sandbox.md](macos_sandbox.md) (and the launcher helper 
 ### Debug escape hatches (macOS)
 
 - Control renderer sandbox mode (recommended):
-  `FASTR_RENDERER_SANDBOX=strict|relaxed|off`.
+  - `FASTR_RENDERER_SANDBOX=strict|relaxed|off`
+  - Legacy aliases: `1` = `strict`, `0` = `off`.
 - Disable renderer sandboxing (INSECURE): `FASTR_RENDERER_SANDBOX=off`,
   `FASTR_DISABLE_RENDERER_SANDBOX=1`, or `FASTR_MACOS_RENDERER_SANDBOX=off`.
-- Select the relaxed "system fonts" profile for bring-up: `FASTR_RENDERER_SANDBOX=relaxed` (preferred)
-  or `FASTR_MACOS_RENDERER_SANDBOX=system-fonts` (legacy alias).
+- Select the relaxed "system fonts" profile for bring-up (still blocks network + user filesystem):
+  - `FASTR_RENDERER_SANDBOX=relaxed` (preferred), or
+  - `FASTR_MACOS_RENDERER_SANDBOX=system-fonts` (legacy alias).
 - Opt into wrapping spawns with Apple’s deprecated `sandbox-exec` wrapper when using `macos_spawn`
   helpers: `FASTR_MACOS_USE_SANDBOX_EXEC=1`.
   - Note: this is ignored when sandboxing is disabled via `FASTR_RENDERER_SANDBOX=off`,
