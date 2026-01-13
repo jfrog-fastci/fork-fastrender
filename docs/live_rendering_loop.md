@@ -26,6 +26,7 @@ remains or a limit is hit:
 - task queue(s) (`TaskSource::*`),
 - microtask queue (Promise jobs, `queueMicrotask`, etc),
 - timers that are **already due** (timer *scheduling* is part of the event loop).
+- `requestIdleCallback` callbacks (dispatched as tasks when the event loop is otherwise idle).
 
 It intentionally does **not**:
 
@@ -180,6 +181,8 @@ returns an **absolute timestamp on that clock** (not “sleep for X”):
 It considers:
 
 - **Immediate runnable work**: if tasks/microtasks are runnable now, it returns `Some(now)`.
+- (This includes pending `requestIdleCallback` callbacks, which are dispatched as tasks when the
+  loop is otherwise idle.)
 - **Timers**: if only timers are pending, it returns the next timer due time (clamped to `>= now`).
 - **Frame callbacks**: if `requestAnimationFrame` callbacks are pending and nothing else is runnable,
   it returns the next eligible animation-frame time (based on

@@ -7083,6 +7083,7 @@ impl BrowserTab {
   /// - queued tasks and their post-task microtask checkpoints,
   /// - queued microtasks,
   /// - timers that are already due at the current event-loop time (time is *not* advanced).
+  /// - `requestIdleCallback` callbacks (dispatched as tasks when the event loop is otherwise idle).
   ///
   /// This intentionally does **not**:
   /// - render (call [`BrowserTab::render_if_needed`] / [`BrowserTab::render_frame`] yourself, or use
@@ -7666,7 +7667,7 @@ impl BrowserTab {
   /// would make progress.
   ///
   /// - If rendering is needed (`render_if_needed()` would return `Some(_)`), this returns `Some(now)`.
-  /// - If tasks/microtasks are runnable now, this returns `Some(now)`.
+  /// - If tasks/microtasks/idle callbacks are runnable now, this returns `Some(now)`.
   /// - If only timers are pending, this returns their next due time.
   /// - If `requestAnimationFrame` callbacks are pending and nothing else is runnable, this returns
   ///   `Some(max(now, next_animation_frame_due))` so embedders can sleep until the next frame is

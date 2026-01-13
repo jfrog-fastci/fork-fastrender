@@ -665,7 +665,7 @@ impl<Host: 'static> EventLoop<Host> {
     self.currently_running_task
   }
 
-  /// Whether there is any runnable work (tasks or microtasks) queued.
+  /// Whether there is any runnable work (tasks, microtasks, or idle callbacks) queued.
   ///
   /// This does *not* consider timers that are scheduled but not yet due; see
   /// [`EventLoop::has_pending_timers`] / [`EventLoop::duration_until_next_timer`].
