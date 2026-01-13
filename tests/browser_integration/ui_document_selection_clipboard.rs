@@ -118,8 +118,7 @@ fn ui_document_selection_copy_preserves_preformatted_spaces() {
 #[test]
 fn ui_document_selection_copy_preserves_preformatted_newlines() {
   let text = run_copy(
-    r#"<!doctype html><meta charset="utf-8"><style>html,body{margin:0;padding:0}</style><pre>hello
-world</pre>"#,
+    "<!doctype html><meta charset=\"utf-8\"><style>html,body{margin:0;padding:0}</style><pre>hello\nworld</pre>",
   );
   assert_eq!(text, "hello\nworld");
 }
@@ -127,8 +126,7 @@ world</pre>"#,
 #[test]
 fn ui_document_selection_copy_does_not_double_newline_after_pre_trailing_newline() {
   let text = run_copy(
-    r#"<!doctype html><meta charset="utf-8"><style>html,body{margin:0;padding:0}</style><pre>hello
-</pre><p>world</p>"#,
+    "<!doctype html><meta charset=\"utf-8\"><style>html,body{margin:0;padding:0}</style><pre>hello\n</pre><p>world</p>",
   );
   assert_eq!(text, "hello\nworld");
 }
