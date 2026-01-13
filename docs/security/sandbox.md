@@ -6,7 +6,7 @@ This doc is a **Linux deep-dive** companion to the cross-platform sandbox overvi
 It explains:
 
 - the threat model for a sandboxed renderer process,
-- the Linux sandbox **layering and ordering** (rlimits → fd hygiene → Landlock → seccomp),
+- the Linux sandbox **layering and ordering** (rlimits → fd hygiene → namespaces → Landlock → seccomp),
 - the current seccomp “hybrid allowlist + denylist” policy,
 - and how to debug sandbox bring-up failures.
 
@@ -200,16 +200,21 @@ includes (non-exhaustive):
   `mkdir*`, `rmdir`, `link*`, `symlink*`, `chmod*`, `chown*`, `truncate*`
 - **Namespace / mount escape**: `mount`, `umount2`, `pivot_root`, `chroot`, `unshare`, `setns`
 - **Program exec**: `execve`, `execveat`
-- **Network surface**: `connect`, `bind`, `listen`, `accept*`, `send*`, `recv*`, `set/get sockopt`
+- **Network surface** (when `NetworkPolicy::DenyAllSockets`): `connect`, `bind`, `listen`, `accept*`,
+  `send*`, `recv*`, `set/get sockopt`
 - **High-risk kernel APIs**: `ptrace`, `bpf`, `perf_event_open`, `kexec_load`,
   `process_vm_{readv,writev}`, `userfaultfd`, `keyctl`/`add_key`/`request_key`
 
 Additionally, `socket(2)` / `socketpair(2)` are special-cased via `NetworkPolicy`:
 
-- Default (`NetworkPolicy::DenyAllSockets`): deny all socket creation (including `AF_UNIX`) with
-  `EPERM`. This forces the renderer to use **inherited IPC endpoints** only (preferred).
-- Optional (`NetworkPolicy::AllowUnixSocketsOnly`): allow `socket(AF_UNIX, ...)` and
-  `socketpair(AF_UNIX, ...)` while denying other domains (`AF_INET`, `AF_INET6`, …) with `EPERM`.
+- Default (`NetworkPolicy::DenyAllSockets`): deny all socket creation (including `AF_UNIX`) and deny
+  socket operations (`connect`/`sendmsg`/`recvmsg`/etc) with `EPERM`. This forces the renderer to use
+  **non-socket IPC** (e.g. inherited pipes) plus shared memory.
+- Optional (`NetworkPolicy::AllowUnixSocketsOnly`): allow `socket(AF_UNIX, ...)`,
+  `socketpair(AF_UNIX, ...)`, and Unix-socket operations (including FD passing via `SCM_RIGHTS`)
+  while denying creation of other domains (`AF_INET`, `AF_INET6`, …) with `EPERM`.
+  - Security note: this mode assumes strict FD hygiene so the renderer does not inherit any
+    pre-existing network sockets from the parent.
 
 For allowlist maintenance workflow (when the renderer legitimately needs more syscalls), see:
 [seccomp_allowlist.md](../seccomp_allowlist.md) and `scripts/trace_renderer_syscalls.sh`.
