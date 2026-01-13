@@ -22,6 +22,8 @@ entitlements remain deny-by-default) with:
 
 ```bash
 python3 tools/macos/entitlements/validate_entitlements.py
+# Or:
+./tools/macos/entitlements/validate_entitlements.py
 ```
 
 ## Editing notes
