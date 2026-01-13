@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::layout::fragmentation::FragmentationOptions;
 use crate::style::display::{Display, FormattingContextType};
-use crate::style::types::{AlignItems, BreakBetween, FlexDirection, FlexWrap};
+use crate::style::types::{AlignItems, BreakBetween, BreakInside, FlexDirection, FlexWrap};
 use crate::style::values::Length;
 use crate::{
   BoxNode, BoxTree, ComputedStyle, FragmentContent, FragmentNode, FragmentTree, LayoutConfig,
@@ -60,6 +60,275 @@ fn flex_item_style(width: f32, height: f32) -> Arc<ComputedStyle> {
   // Avoid flexing so line breaks are driven by the authored main sizes.
   style.flex_shrink = 0.0;
   Arc::new(style)
+}
+
+#[test]
+fn flex_column_item_break_inside_avoid_page_moves_to_next_page() {
+  const EPSILON: f32 = 0.1;
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.flex_direction = FlexDirection::Column;
+  container_style.width = Some(Length::px(100.0));
+  container_style.width_keyword = None;
+  let container_style = Arc::new(container_style);
+
+  // Page height 50:
+  // - Item A: 30px tall, fits on page 1.
+  // - Item B: 30px tall and `break-inside: avoid-page`. It would start at y=30 and be sliced by the
+  //   50px boundary, but it fits within a single page so it should move (unbroken) to page 2.
+  // - Item C: follows B and should move along with B (not overlap B on page 2).
+  let item_a = BoxNode::new_block(
+    flex_item_style(100.0, 30.0),
+    FormattingContextType::Block,
+    vec![],
+  );
+
+  let mut item_b_style = (*flex_item_style(100.0, 30.0)).clone();
+  item_b_style.break_inside = BreakInside::AvoidPage;
+  let item_b = BoxNode::new_block(Arc::new(item_b_style), FormattingContextType::Block, vec![]);
+
+  let item_c = BoxNode::new_block(
+    flex_item_style(100.0, 10.0),
+    FormattingContextType::Block,
+    vec![],
+  );
+
+  let flex = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Flex,
+    vec![item_a, item_b, item_c],
+  );
+  let root = BoxNode::new_block(
+    Arc::new(ComputedStyle::default()),
+    FormattingContextType::Block,
+    vec![flex],
+  );
+  let box_tree = BoxTree::new(root);
+
+  let flex_box = &box_tree.root.children[0];
+  let item_b_id = flex_box.children[1].id;
+  let item_c_id = flex_box.children[2].id;
+
+  let engine = LayoutEngine::new(LayoutConfig::for_pagination(Size::new(200.0, 50.0), 0.0));
+  let tree = engine.layout_tree(&box_tree).expect("layout");
+
+  assert!(
+    tree.additional_fragments.len() >= 1,
+    "expected flex container to paginate"
+  );
+  let first_page = &tree.root;
+  let second_page = &tree.additional_fragments[0];
+
+  assert!(
+    fragments_with_id(first_page, item_b_id).is_empty(),
+    "expected avoid-page flex item B to be moved wholly to page 2"
+  );
+  assert!(
+    fragments_with_id(first_page, item_c_id).is_empty(),
+    "expected following item C to move along with item B"
+  );
+
+  let b_frags = fragments_with_id(second_page, item_b_id);
+  assert_eq!(b_frags.len(), 1, "expected flex item B to appear once");
+  assert!(
+    (b_frags[0].bounds.height() - 30.0).abs() < EPSILON,
+    "expected flex item B to retain its full height when moved; got {}",
+    b_frags[0].bounds.height()
+  );
+
+  let c_frags = fragments_with_id(second_page, item_c_id);
+  assert_eq!(c_frags.len(), 1, "expected flex item C to appear once on page 2");
+  let c_offset =
+    first_fragment_offset_in_page(second_page, item_c_id).expect("expected item C on page 2");
+  assert!(
+    (c_offset.y - 30.0).abs() < EPSILON,
+    "expected item C to be positioned after the moved item B (y≈30), got y={}",
+    c_offset.y
+  );
+
+  let pages = paginated_pages(&tree);
+  for id in [item_b_id, item_c_id] {
+    let count: usize = pages
+      .iter()
+      .map(|page| fragments_with_id(page, id).len())
+      .sum();
+    assert_eq!(count, 1, "expected box id {id} to appear exactly once total");
+  }
+}
+
+#[test]
+fn flex_row_wrap_item_break_inside_avoid_page_does_not_force_siblings() {
+  const EPSILON: f32 = 0.1;
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.flex_direction = FlexDirection::Row;
+  container_style.flex_wrap = FlexWrap::Wrap;
+  container_style.align_items = AlignItems::Start;
+  container_style.width = Some(Length::px(100.0));
+  container_style.width_keyword = None;
+  let container_style = Arc::new(container_style);
+
+  // Page height 25.
+  //
+  // Line 1: A(100x10)
+  // Line 2: B(50x20, break-inside: avoid-page) + C(50x40)
+  //
+  // Line2 is taller than the page because of C, so it must fragment. `break-inside: avoid-page` on
+  // B should keep B intact by moving it to the next page *without* forcing sibling C (or the first
+  // line) onto the next page.
+  let item_a = BoxNode::new_block(
+    flex_item_style(100.0, 10.0),
+    FormattingContextType::Block,
+    vec![],
+  );
+
+  let mut item_b_style = (*flex_item_style(50.0, 20.0)).clone();
+  item_b_style.break_inside = BreakInside::AvoidPage;
+  let item_b = BoxNode::new_block(Arc::new(item_b_style), FormattingContextType::Block, vec![]);
+
+  let item_c = BoxNode::new_block(
+    flex_item_style(50.0, 40.0),
+    FormattingContextType::Block,
+    vec![],
+  );
+
+  let flex = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Flex,
+    vec![item_a, item_b, item_c],
+  );
+  let root = BoxNode::new_block(
+    Arc::new(ComputedStyle::default()),
+    FormattingContextType::Block,
+    vec![flex],
+  );
+  let box_tree = BoxTree::new(root);
+
+  let flex_box = &box_tree.root.children[0];
+  let item_b_id = flex_box.children[1].id;
+  let item_c_id = flex_box.children[2].id;
+
+  let engine = LayoutEngine::new(LayoutConfig::for_pagination(Size::new(200.0, 25.0), 0.0));
+  let tree = engine.layout_tree(&box_tree).expect("layout");
+
+  assert!(
+    tree.additional_fragments.len() >= 1,
+    "expected flex container to paginate"
+  );
+  let first_page = &tree.root;
+  let second_page = &tree.additional_fragments[0];
+
+  assert!(
+    fragments_with_id(first_page, item_b_id).is_empty(),
+    "expected avoid-page flex item B to move to page 2 (not be sliced on page 1)"
+  );
+  // Sibling item C is taller than the page; it should still have a fragment on page 1.
+  let c_first = fragments_with_id(first_page, item_c_id);
+  assert_eq!(
+    c_first.len(),
+    1,
+    "expected tall sibling flex item C to remain on page 1"
+  );
+  assert!(
+    (c_first[0].bounds.height() - 15.0).abs() < EPSILON,
+    "expected C to be clipped to the remaining space on page 1 (height≈15), got {}",
+    c_first[0].bounds.height()
+  );
+
+  let b_second = fragments_with_id(second_page, item_b_id);
+  assert_eq!(b_second.len(), 1, "expected B to appear exactly once on page 2");
+  assert!(
+    (b_second[0].bounds.height() - 20.0).abs() < EPSILON,
+    "expected B to retain its full height on page 2; got {}",
+    b_second[0].bounds.height()
+  );
+  let b_offset =
+    first_fragment_offset_in_page(second_page, item_b_id).expect("expected B on page 2");
+  assert!(
+    b_offset.y.abs() < EPSILON,
+    "expected B to start at the top of page 2; got y={}",
+    b_offset.y
+  );
+
+  let c_second = fragments_with_id(second_page, item_c_id);
+  assert_eq!(
+    c_second.len(),
+    1,
+    "expected C to have a continuation fragment on page 2"
+  );
+  assert!(
+    (c_second[0].bounds.height() - 25.0).abs() < EPSILON,
+    "expected C's continuation to fill the page (height≈25), got {}",
+    c_second[0].bounds.height()
+  );
+
+  let pages = paginated_pages(&tree);
+  // B should appear exactly once total (moved), while C should appear twice (fragmented).
+  let b_total: usize = pages
+    .iter()
+    .map(|page| fragments_with_id(page, item_b_id).len())
+    .sum();
+  assert_eq!(b_total, 1, "expected B to appear exactly once total");
+  let c_total: usize = pages
+    .iter()
+    .map(|page| fragments_with_id(page, item_c_id).len())
+    .sum();
+  assert_eq!(c_total, 2, "expected C to be fragmented across two pages");
+}
+
+#[test]
+fn flex_item_break_inside_avoid_page_can_fragment_when_taller_than_page() {
+  const EPSILON: f32 = 0.1;
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.flex_direction = FlexDirection::Column;
+  container_style.width = Some(Length::px(100.0));
+  container_style.width_keyword = None;
+  let container_style = Arc::new(container_style);
+
+  // A single 80px-tall flex item with `break-inside: avoid-page` should still fragment across 50px
+  // pages because it cannot fit in a single fragmentainer.
+  let mut item_style = (*flex_item_style(100.0, 80.0)).clone();
+  item_style.break_inside = BreakInside::AvoidPage;
+  let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
+
+  let flex = BoxNode::new_block(container_style, FormattingContextType::Flex, vec![item]);
+  let root = BoxNode::new_block(
+    Arc::new(ComputedStyle::default()),
+    FormattingContextType::Block,
+    vec![flex],
+  );
+  let box_tree = BoxTree::new(root);
+
+  let item_id = box_tree.root.children[0].children[0].id;
+
+  let engine = LayoutEngine::new(LayoutConfig::for_pagination(Size::new(200.0, 50.0), 0.0));
+  let tree = engine.layout_tree(&box_tree).expect("layout");
+
+  assert!(
+    tree.additional_fragments.len() >= 1,
+    "expected tall avoid-page flex item to paginate"
+  );
+  let pages = paginated_pages(&tree);
+  let item_fragments: Vec<&FragmentNode> = pages
+    .iter()
+    .flat_map(|page| fragments_with_id(page, item_id))
+    .collect();
+  assert!(
+    item_fragments.len() >= 2,
+    "expected tall avoid-page flex item to be fragmented across multiple pages"
+  );
+
+  // At least one fragment should be clipped (height < original 80px).
+  assert!(
+    item_fragments
+      .iter()
+      .any(|frag| frag.bounds.height() < 80.0 - EPSILON),
+    "expected at least one fragment slice to be clipped"
+  );
 }
 
 #[test]

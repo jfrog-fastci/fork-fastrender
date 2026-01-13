@@ -1491,6 +1491,7 @@ impl FragmentationAnalyzer {
       &axis,
       axis.block_size(&root.bounds),
       context,
+      false,
     );
 
     collection.opportunities.sort_by(|a, b| {
@@ -5095,6 +5096,7 @@ fn collect_atomic_candidate_for_node(
   parent_block_size: f32,
   candidates: &mut Vec<AtomicCandidate>,
   context: FragmentationContext,
+  suppress_break_inside_avoid: bool,
 ) {
   let node_block_size = axis.block_size(&node.bounds);
   let start = abs_start;
@@ -5168,8 +5170,15 @@ fn collect_atomic_candidate_for_node(
   } else {
     style.break_inside
   };
-  let avoid_inside = avoids_break_inside(break_inside, context) || table_row_like;
-  if avoid_inside {
+  let avoid_inside = avoids_break_inside(break_inside, context);
+  // Flex items in row-direction flex containers establish parallel fragmentation flows (similar to
+  // grid items). `break-inside: avoid*` should apply *within* the item (i.e. move/suppress its own
+  // fragmentation) but must not clamp the parent flow's global boundary selection, or unrelated
+  // sibling flex items/lines would be forced onto the next page.
+  //
+  // We still treat table-row-like fragments as atomic: they are not flex items and must remain
+  // unbroken in the parent flow when they fit.
+  if table_row_like || (avoid_inside && !suppress_break_inside_avoid) {
     let required = (end - start).max(0.0);
     candidates.push(AtomicCandidate {
       range: AtomicRange { start, end },
@@ -5270,6 +5279,7 @@ fn collect_atomic_candidates_with_axis(
   axis: &FragmentAxis,
   parent_block_size: f32,
   context: FragmentationContext,
+  suppress_break_inside_avoid: bool,
 ) {
   collect_atomic_candidate_for_node(
     node,
@@ -5278,6 +5288,7 @@ fn collect_atomic_candidates_with_axis(
     parent_block_size,
     candidates,
     context,
+    suppress_break_inside_avoid,
   );
 
   let node_block_size = axis.block_size(&node.bounds);
@@ -5288,6 +5299,7 @@ fn collect_atomic_candidates_with_axis(
     .as_ref()
     .map(|s| s.as_ref())
     .unwrap_or(default_style);
+  let node_is_row_flex_container = is_row_flex_container(style);
   if style.float.is_floating() {
     return;
   }
@@ -5335,6 +5347,9 @@ fn collect_atomic_candidates_with_axis(
       axis,
       node_block_size,
       context,
+      matches!(context, FragmentationContext::Page)
+        && node_is_row_flex_container
+        && is_in_flow_flex_child(&child.content, child_style),
     );
   }
 }
