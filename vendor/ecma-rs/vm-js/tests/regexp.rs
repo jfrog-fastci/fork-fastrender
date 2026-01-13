@@ -325,6 +325,24 @@ fn regexp_unicode_mode_allows_null_escape_0() {
 }
 
 #[test]
+fn regexp_unicode_mode_allows_high_index_backreferences_when_in_range() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        [
+          new RegExp("(a)(b)(c)(d)(e)(f)(g)(h)\\8", "u").test("abcdefghh"),
+          new RegExp("(a)(b)(c)(d)(e)(f)(g)(h)\\8", "v").test("abcdefghh"),
+          new RegExp("(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)\\10", "u").test("abcdefghijj"),
+          new RegExp("(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)\\10", "v").test("abcdefghijj"),
+        ].join(",")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "true,true,true,true");
+}
+
+#[test]
 fn regexp_unicode_mode_rejects_legacy_octal_escape_sequence_00() {
   let mut rt = new_runtime();
   let value = rt
