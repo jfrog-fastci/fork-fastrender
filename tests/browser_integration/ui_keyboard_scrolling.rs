@@ -6,8 +6,8 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use super::support::{
-  create_tab_msg_with_cancel, format_messages, key_action, navigate_msg, scroll_msg,
-  viewport_changed_msg, DEFAULT_TIMEOUT,
+  create_tab_msg_with_cancel, drain_for, format_messages, key_action, navigate_msg, rgba_at, scroll_msg,
+  viewport_changed_msg, TempSite, DEFAULT_TIMEOUT,
 };
 
 fn wait_for_initial_frame(
@@ -384,6 +384,138 @@ fn space_scrolls_when_link_is_focused() {
     frame_y <= 1.0,
     "expected Shift+Space to scroll back to the top when a link is focused, got {frame_y}"
   );
+
+  drop(tx);
+  join.join().unwrap();
+}
+
+#[test]
+fn video_controls_consume_space_and_arrow_keys() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  let fastrender::ui::BrowserWorkerHandle { tx, rx, join } =
+    spawn_browser_worker().expect("spawn browser worker");
+
+  let tab_id = TabId(1);
+  let cancel = CancelGens::new();
+  tx.send(create_tab_msg_with_cancel(tab_id, None, cancel))
+    .unwrap();
+  let viewport_css = (200, 100);
+  tx.send(viewport_changed_msg(tab_id, viewport_css, 1.0))
+    .unwrap();
+
+  let site = TempSite::new();
+  let url = site.write(
+    "index.html",
+    r#"<!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            html, body { margin: 0; padding: 0; }
+            #v {
+              display: block;
+              width: 200px;
+              height: 40px;
+              margin: 0;
+              padding: 0;
+              border: 0;
+              background: rgb(0, 0, 0);
+            }
+            #marker { width: 200px; height: 20px; background: rgb(255, 0, 0); }
+            video:focus + #marker { background: rgb(0, 255, 0); }
+            #spacer { height: 5000px; }
+          </style>
+        </head>
+        <body>
+          <video id="v" controls tabindex="0"></video>
+          <div id="marker"></div>
+          <div id="spacer"></div>
+        </body>
+      </html>"#,
+  );
+
+  tx.send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .unwrap();
+
+  let frame0 = wait_for_initial_frame(&rx, tab_id);
+  assert!(
+    frame0.scroll_metrics.bounds_css.max_y > 100.0,
+    "expected test page to be scrollable, got scroll metrics {:?}",
+    frame0.scroll_metrics
+  );
+  assert_eq!(
+    rgba_at(&frame0.pixmap, 10, 50),
+    [255, 0, 0, 255],
+    "expected marker to start red before the video is focused"
+  );
+
+  // Drain the initial ScrollStateUpdated so subsequent waits don't accidentally match it.
+  let _ = super::support::recv_for_tab(&rx, tab_id, DEFAULT_TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
+  });
+
+  // Focus the video element with Tab.
+  tx.send(key_action(tab_id, fastrender::interaction::KeyAction::Tab))
+    .unwrap();
+  let frame1 = wait_for_initial_frame(&rx, tab_id);
+  assert_eq!(
+    rgba_at(&frame1.pixmap, 10, 50),
+    [0, 255, 0, 255],
+    "expected marker to turn green once the <video> is focused"
+  );
+  let baseline_viewport = frame1.scroll_state.viewport;
+
+  // Ensure any follow-up paint/scroll messages from focusing are drained before the scroll-key
+  // assertions below.
+  let _ = drain_for(&rx, Duration::from_millis(200));
+
+  let assert_no_viewport_scroll_change = |msgs: &[WorkerToUi]| {
+    for msg in msgs {
+      match msg {
+        WorkerToUi::ScrollStateUpdated { tab_id: got, scroll } if *got == tab_id => {
+          assert!(
+            (scroll.viewport.x - baseline_viewport.x).abs() < 1e-3
+              && (scroll.viewport.y - baseline_viewport.y).abs() < 1e-3,
+            "expected viewport scroll state to remain unchanged (baseline {:?}), got {:?}\nmessages:\n{}",
+            baseline_viewport,
+            scroll.viewport,
+            format_messages(msgs)
+          );
+        }
+        WorkerToUi::FrameReady { tab_id: got, frame } if *got == tab_id => {
+          assert!(
+            (frame.scroll_state.viewport.x - baseline_viewport.x).abs() < 1e-3
+              && (frame.scroll_state.viewport.y - baseline_viewport.y).abs() < 1e-3,
+            "expected FrameReady viewport scroll state to remain unchanged (baseline {:?}), got {:?}\nmessages:\n{}",
+            baseline_viewport,
+            frame.scroll_state.viewport,
+            format_messages(msgs)
+          );
+        }
+        _ => {}
+      }
+    }
+  };
+
+  // Space should not trigger worker fallback page scrolling when video controls are focused.
+  tx.send(key_action(
+    tab_id,
+    fastrender::interaction::KeyAction::Space,
+  ))
+  .unwrap();
+  let msgs = drain_for(&rx, Duration::from_secs(1));
+  assert_no_viewport_scroll_change(&msgs);
+
+  // ArrowDown should not trigger worker fallback page scrolling when video controls are focused.
+  tx.send(key_action(
+    tab_id,
+    fastrender::interaction::KeyAction::ArrowDown,
+  ))
+  .unwrap();
+  let msgs = drain_for(&rx, Duration::from_secs(1));
+  assert_no_viewport_scroll_change(&msgs);
 
   drop(tx);
   join.join().unwrap();

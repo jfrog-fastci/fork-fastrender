@@ -540,6 +540,13 @@ fn dom_is_button(node: &crate::dom::DomNode) -> bool {
     .is_some_and(|tag| tag.eq_ignore_ascii_case("button"))
 }
 
+fn dom_is_video_controls(node: &crate::dom::DomNode) -> bool {
+  node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("video"))
+    && node.get_attribute_ref("controls").is_some()
+}
+
 fn mouse_event_button(button: PointerButton) -> i16 {
   match button {
     PointerButton::Primary => 0,
@@ -4959,6 +4966,7 @@ impl BrowserRuntime {
           focused_is_textarea,
           focused_is_select,
           focused_is_button,
+          focused_is_video_controls,
         ) = focused
           .and_then(|focused_id| {
             crate::dom::find_node_mut_by_preorder_id(dom, focused_id).map(|node| {
@@ -4969,10 +4977,11 @@ impl BrowserRuntime {
                 dom_is_textarea(node),
                 dom_is_select(node),
                 dom_is_button(node),
+                dom_is_video_controls(node),
               )
             })
           })
-          .unwrap_or((None, false, false, false, false, false));
+          .unwrap_or((None, false, false, false, false, false, false));
         let focus_scroll = match &action {
           InteractionAction::FocusChanged {
             node_id: Some(node_id),
@@ -4999,6 +5008,7 @@ impl BrowserRuntime {
             focused_is_textarea,
             focused_is_select,
             focused_is_button,
+            focused_is_video_controls,
           ),
         )
       });
@@ -5015,6 +5025,7 @@ impl BrowserRuntime {
         focused_is_textarea,
         focused_is_select,
         focused_is_button,
+        focused_is_video_controls,
       ) = match result {
         Ok(result) => result,
         Err(_) => {
@@ -5028,6 +5039,7 @@ impl BrowserRuntime {
           let mut focused_is_textarea = false;
           let mut focused_is_select = false;
           let mut focused_is_button = false;
+          let mut focused_is_video_controls = false;
           let changed = doc.mutate_dom(|dom| {
             let (dom_changed, next_action) =
               tab
@@ -5041,7 +5053,8 @@ impl BrowserRuntime {
                 .map(|id| id.to_string())
             });
             focused = tab.interaction.focused_node_id();
-            let (id, is_text_input, is_input, is_textarea, is_select, is_button) = focused
+            let (id, is_text_input, is_input, is_textarea, is_select, is_button, is_video_controls) =
+              focused
               .and_then(|focused_id| {
                 crate::dom::find_node_mut_by_preorder_id(dom, focused_id).map(|node| {
                   (
@@ -5051,16 +5064,18 @@ impl BrowserRuntime {
                     dom_is_textarea(node),
                     dom_is_select(node),
                     dom_is_button(node),
+                    dom_is_video_controls(node),
                   )
                 })
               })
-              .unwrap_or((None, false, false, false, false, false));
+              .unwrap_or((None, false, false, false, false, false, false));
             focused_element_id = id;
             focused_is_text_input = is_text_input;
             focused_is_input = is_input;
             focused_is_textarea = is_textarea;
             focused_is_select = is_select;
             focused_is_button = is_button;
+            focused_is_video_controls = is_video_controls;
             dom_changed
           });
           (
@@ -5076,6 +5091,7 @@ impl BrowserRuntime {
             focused_is_textarea,
             focused_is_select,
             focused_is_button,
+            focused_is_video_controls,
           )
         }
       };
@@ -5408,10 +5424,17 @@ impl BrowserRuntime {
           // focused).
           if action_is_none {
             let focus_consumes_space =
-              focused_is_input || focused_is_textarea || focused_is_select || focused_is_button;
-            let focus_consumes_arrows = focused_is_input || focused_is_textarea || focused_is_select;
+              focused_is_input
+                || focused_is_textarea
+                || focused_is_select
+                || focused_is_button
+                || focused_is_video_controls;
+            let focus_consumes_arrows =
+              focused_is_input || focused_is_textarea || focused_is_select || focused_is_video_controls;
             let focus_consumes_home_end = focus_consumes_arrows;
-            let focus_consumes_page = focus_consumes_arrows;
+            // PageUp/PageDown are not commonly consumed by media controls, so keep their behaviour
+            // aligned with other non-button form controls.
+            let focus_consumes_page = focused_is_input || focused_is_textarea || focused_is_select;
 
             let allow_scroll = match key {
               crate::interaction::KeyAction::Space | crate::interaction::KeyAction::ShiftSpace => {
