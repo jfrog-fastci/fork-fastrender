@@ -55,6 +55,10 @@ impl OmniboxInputResolution {
 /// This is intended for URLs originating from the address bar / command-line `browser [<url>]`
 /// argument. It rejects opaque schemes like `javascript:` even though `url::Url` can parse them.
 ///
+/// Note: this intentionally rejects privileged internal schemes reserved for renderer-chrome such
+/// as `chrome://` (built-in UI assets) and `chrome-action:` (chrome UI actions). See
+/// `docs/renderer_chrome_schemes.md`.
+///
 /// For programmatic navigations (e.g. link clicks) the worker still validates schemes independently.
 pub fn validate_user_navigation_url_scheme(url: &str) -> Result<(), String> {
   let parsed = Url::parse(url).map_err(|err| err.to_string())?;
