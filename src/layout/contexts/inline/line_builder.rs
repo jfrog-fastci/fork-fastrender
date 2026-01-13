@@ -1501,14 +1501,11 @@ impl TextItem {
       saw_run = true;
     }
 
-    // Cache each run's inline axis so we don't rescan glyphs per cluster.
-    let mut axes: Vec<Option<InlineAxis>> = vec![None; runs.len()];
-
     if can_stream_without_sort {
       #[cfg(test)]
       let mut cluster_count = 0usize;
 
-      let mut pending: Option<(usize, usize, bool)> = None;
+      let mut pending: Option<(usize, usize, bool, InlineAxis)> = None;
       for run_idx in 0..runs.len() {
         if runs[run_idx].glyphs.is_empty() {
           continue;
@@ -1516,17 +1513,11 @@ impl TextItem {
 
         // If there is a cluster before this run, it is not the final cluster overall, so apply
         // spacing to it now.
-        if let Some((pending_run_idx, glyph_end, is_space)) = pending.take() {
+        if let Some((pending_run_idx, glyph_end, is_space, axis)) = pending.take() {
           let extra = letter_spacing + if is_space { word_spacing } else { 0.0 };
           if extra != 0.0 {
             if let Some(run) = runs.get_mut(pending_run_idx) {
               if !run.glyphs.is_empty() {
-                let axis = axes[pending_run_idx].unwrap_or_else(|| {
-                  let axis = run_inline_axis(run);
-                  axes[pending_run_idx] = Some(axis);
-                  axis
-                });
-
                 let last_glyph_idx = glyph_end
                   .saturating_sub(1)
                   .min(run.glyphs.len().saturating_sub(1));
@@ -1540,15 +1531,9 @@ impl TextItem {
           }
         }
 
-        let (run_start, run_len, axis) = {
-          let run = &mut runs[run_idx];
-          let axis = axes[run_idx].unwrap_or_else(|| {
-            let axis = run_inline_axis(run);
-            axes[run_idx] = Some(axis);
-            axis
-          });
-          (run.start, run.glyphs.len(), axis)
-        };
+        let axis = run_inline_axis(&runs[run_idx]);
+        let run_start = runs[run_idx].start;
+        let run_len = runs[run_idx].glyphs.len();
 
         let run = &mut runs[run_idx];
         let mut prev_cluster: Option<(usize, bool)> = None;
@@ -1586,7 +1571,7 @@ impl TextItem {
         }
 
         if let Some((glyph_end, is_space)) = prev_cluster {
-          pending = Some((run_idx, glyph_end, is_space));
+          pending = Some((run_idx, glyph_end, is_space, axis));
         }
       }
 
@@ -1597,6 +1582,10 @@ impl TextItem {
 
       return;
     }
+
+    // Cache each run's inline axis so we don't rescan glyphs per cluster in the slower fallback
+    // path.
+    let mut axes: Vec<Option<InlineAxis>> = vec![None; runs.len()];
 
     // Fallback: collect all clusters and sort if we observe any non-monotonic offsets. This handles
     // RTL runs, mixed-direction segments, and any unexpected shaping output ordering.
@@ -2168,11 +2157,12 @@ impl TextItem {
     //   considered when measuring whether the line fits, even though they still paint.
     //
     // Spec: https://drafts.csswg.org/css-text-3/#white-space-processing
-    let trims_or_hangs_trailing_spaces = matches!(
-      self.style.white_space,
-      WhiteSpace::Normal | WhiteSpace::Nowrap | WhiteSpace::PreLine
-    ) || (matches!(self.style.white_space, WhiteSpace::PreWrap)
-      && !matches!(self.style.text_wrap, TextWrap::NoWrap));
+    let trims_or_hangs_trailing_spaces =
+      matches!(
+        self.style.white_space,
+        WhiteSpace::Normal | WhiteSpace::Nowrap | WhiteSpace::PreLine
+      ) || (matches!(self.style.white_space, WhiteSpace::PreWrap)
+        && !matches!(self.style.text_wrap, TextWrap::NoWrap));
     if trims_or_hangs_trailing_spaces {
       if let Some(prefix) = self.text.get(..offset) {
         let trimmed_len = prefix.trim_end_matches(' ').len();
@@ -11186,12 +11176,8 @@ mod tests {
     let ltr_end = text.find('א').expect("has rtl char boundary");
     let (ltr_text, rtl_text) = text.split_at(ltr_end);
 
-    let ltr_run = make_synthetic_run_with_byte_clusters(
-      ltr_text,
-      0,
-      10.0,
-      PipelineDirection::LeftToRight,
-    );
+    let ltr_run =
+      make_synthetic_run_with_byte_clusters(ltr_text, 0, 10.0, PipelineDirection::LeftToRight);
     let rtl_run = make_synthetic_run_with_byte_clusters(
       rtl_text,
       ltr_end,
@@ -11206,7 +11192,10 @@ mod tests {
     TextItem::apply_spacing_to_runs(&mut runs, text, 2.0, 3.0);
     let (sorts, clusters) = take_apply_spacing_diagnostics();
 
-    assert_eq!(sorts, 1, "expected mixed-direction / out-of-order runs to sort");
+    assert_eq!(
+      sorts, 1,
+      "expected mixed-direction / out-of-order runs to sort"
+    );
     assert_eq!(clusters, text.chars().count());
 
     let spaced_width: f32 = runs.iter().map(|r| r.advance).sum();
