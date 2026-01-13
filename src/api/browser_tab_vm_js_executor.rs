@@ -592,11 +592,16 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       )
       .map_err(|err| Error::Other(err.to_string()))?;
 
+      #[cfg(feature = "direct_websocket")]
+      let ws_env = WindowWebSocketEnv::for_document(Arc::clone(&fetcher), Some(url.to_string()));
+      #[cfg(not(feature = "direct_websocket"))]
+      let ws_env = WindowWebSocketEnv::for_document(Some(url.to_string()));
+
       let websocket_bindings = install_window_websocket_bindings_with_guard::<BrowserTabHost>(
         vm,
         realm_ref,
         heap,
-        WindowWebSocketEnv::for_document(Arc::clone(&fetcher), Some(url.to_string())),
+        ws_env,
       )
       .map_err(|err| Error::Other(err.to_string()))?;
 

@@ -796,11 +796,17 @@ impl WindowHostState {
         }
       };
 
+      #[cfg(feature = "direct_websocket")]
+      let ws_env =
+        WindowWebSocketEnv::for_document(Arc::clone(&host_fetcher), Some(document_url.clone()));
+      #[cfg(not(feature = "direct_websocket"))]
+      let ws_env = WindowWebSocketEnv::for_document(Some(document_url.clone()));
+
       let websocket_bindings = match install_window_websocket_bindings_with_guard::<WindowHostState>(
         vm,
         realm,
         heap,
-        WindowWebSocketEnv::for_document(Arc::clone(&host_fetcher), Some(document_url.clone())),
+        ws_env,
       ) {
         Ok(bindings) => bindings,
         Err(err) => {
