@@ -20,6 +20,7 @@ mod generate_regexp_unicode_property_strings;
 mod generate_regexp_unicode_tables;
 mod import_page_fixture;
 mod js;
+mod lint_no_merge_conflicts;
 mod lint_no_openssl;
 mod lint_no_panics;
 mod lint_test_global_state;
@@ -88,6 +89,10 @@ fn main() -> Result<()> {
     Commands::LintNoOpenssl(args) => {
       let repo_root = repo_root();
       lint_no_openssl::run_lint_no_openssl(&repo_root, args)
+    }
+    Commands::LintNoMergeConflicts(args) => {
+      let repo_root = repo_root();
+      lint_no_merge_conflicts::run_lint_no_merge_conflicts(&repo_root, args)
     }
     Commands::GenerateEmojiTables(args) => generate_emoji_tables::run_generate_emoji_tables(args),
     Commands::GenerateRegExpUnicodePropertyStrings(args) => {
@@ -198,6 +203,11 @@ enum Commands {
   LintTestGlobalState(lint_test_global_state::LintTestGlobalStateArgs),
   /// Fail CI if the dependency graph includes `openssl-sys` (and thus requires system OpenSSL headers).
   LintNoOpenssl(lint_no_openssl::LintNoOpenSslArgs),
+  /// Fail CI if tracked Rust sources contain unresolved git merge-conflict markers.
+  ///
+  /// This is intentionally scoped to `*.rs`/`*.toml` to avoid false positives from large vendored
+  /// corpora that may intentionally embed these strings.
+  LintNoMergeConflicts(lint_no_merge_conflicts::LintNoMergeConflictsArgs),
   /// Generate deterministic WebIDL metadata from vendored WHATWG specs.
   #[command(alias = "webidl")]
   WebIdlCodegen(webidl_codegen::WebIdlCodegenArgs),

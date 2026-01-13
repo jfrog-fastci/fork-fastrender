@@ -35,6 +35,7 @@ fn help_lists_commands() {
       && stdout.contains("\n  js\n")
       && stdout.contains("perf-smoke")
       && stdout.contains("ui-perf-smoke")
+      && stdout.contains("lint-no-merge-conflicts")
       && stdout.contains("validate-page-fixtures")
       && stdout.contains("recapture-page-fixtures")
       && stdout.contains("import-page-fixture"),

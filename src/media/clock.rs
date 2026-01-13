@@ -663,6 +663,8 @@ mod tests {
     assert_eq!(clock.now(), Duration::from_secs(160));
   }
 
+  }
+
   #[test]
   fn playback_clock_pause_seek_rate() {
     let master = Arc::new(VirtualClock::new());

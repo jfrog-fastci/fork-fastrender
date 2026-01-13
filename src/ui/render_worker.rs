@@ -42,9 +42,9 @@ use crate::ui::messages::{
 };
 use super::router_coalescer::UiToWorkerRouterCoalescer;
 use crate::ui::protocol_limits::{MAX_FAVICON_BYTES, MAX_FAVICON_EDGE_PX};
+use crate::ui::url::navigation_to_file_is_allowed;
 #[cfg(feature = "browser_ui")]
 use crate::ui::page_accesskit_subtree;
-use crate::ui::url::navigation_to_file_is_allowed;
 use crate::ui::{resolve_link_url, validate_user_navigation_url_scheme};
 use crate::web::events as web_events;
 use image::imageops::FilterType;
@@ -10546,6 +10546,7 @@ impl BrowserRuntime {
       .document
       .as_ref()
       .and_then(|doc| compute_page_accessibility_snapshot(doc, &tab.interaction, &tab.scroll_state));
+
     let mut msgs = Vec::new();
     msgs.push(WorkerToUi::NavigationFailed {
       tab_id,
