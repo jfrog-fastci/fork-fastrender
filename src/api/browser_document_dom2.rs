@@ -573,6 +573,9 @@ impl BrowserDocumentDom2 {
   where
     F: FnOnce(&mut crate::dom2::Document) -> bool,
   {
+    let generation_before = self.dom.mutation_generation();
+    let generation_in_sync_before =
+      generation_before == self.last_seen_dom_mutation_generation;
     let changed = f(self.dom.as_mut());
     if changed {
       let mutations = self.dom.take_mutations();
@@ -581,7 +584,17 @@ impl BrowserDocumentDom2 {
         // edits). Fall back to a full invalidation to preserve correctness.
         self.invalidate_all();
       } else {
-        self.apply_mutation_log(mutations);
+        let render_affecting = self.apply_mutation_log(mutations);
+        if !render_affecting && generation_in_sync_before {
+          // `dom2::Document` bumps `mutation_generation` for *all* mutations, including changes in
+          // disconnected/inert subtrees. `apply_mutation_log` filters these changes out because they
+          // cannot affect rendering, so keep the host "clean" by recording that we've already seen
+          // this generation.
+          //
+          // Guard against clearing a generation mismatch that predates this `mutate_dom` call (for
+          // example: out-of-band mutations performed through a raw `dom2::Document` pointer).
+          self.last_seen_dom_mutation_generation = self.dom.mutation_generation();
+        }
       }
     } else {
       // Ensure no stale mutation records linger across no-op closures.
@@ -2366,15 +2379,18 @@ impl BrowserDocumentDom2 {
       || self.dom.mutation_generation() != self.last_seen_dom_mutation_generation
   }
 
-  fn apply_mutation_log(&mut self, mutations: crate::dom2::MutationLog) {
+  fn apply_mutation_log(&mut self, mutations: crate::dom2::MutationLog) -> bool {
     if mutations.unclassified {
       self.invalidate_all();
-      return;
+      // Treat unclassified changes as render-affecting so generation-based dirtiness is preserved.
+      return true;
     }
 
+    let mut render_affecting = false;
     // Treat changes in disconnected/inert subtrees as non-render-affecting.
     for node in mutations.attribute_changed {
       if self.dom.is_connected_for_scripting(node) {
+        render_affecting = true;
         self.dirty_style_nodes.insert(node);
       }
     }
@@ -2383,6 +2399,7 @@ impl BrowserDocumentDom2 {
       if !self.dom.is_connected_for_scripting(node) {
         continue;
       }
+      render_affecting = true;
       // Text changes inside <style> elements affect the stylesheet and require a full restyle.
       if self.text_node_affects_stylesheet(node) {
         self.dirty_style_nodes.insert(node);
@@ -2393,6 +2410,7 @@ impl BrowserDocumentDom2 {
 
     for parent in mutations.child_list_changed {
       if self.dom.is_connected_for_scripting(parent) {
+        render_affecting = true;
         self.dirty_structure_nodes.insert(parent);
       }
     }
@@ -2402,13 +2420,15 @@ impl BrowserDocumentDom2 {
       self.style_dirty = true;
       self.layout_dirty = true;
       self.paint_dirty = true;
-      return;
+      return render_affecting;
     }
 
     if !self.dirty_text_nodes.is_empty() {
       self.layout_dirty = true;
       self.paint_dirty = true;
     }
+
+    render_affecting
   }
 
   fn text_node_affects_stylesheet(&self, node: crate::dom2::NodeId) -> bool {
@@ -2678,13 +2698,19 @@ impl crate::js::DomHost for BrowserDocumentDom2 {
   where
     F: FnOnce(&mut crate::dom2::Document) -> (R, bool),
   {
+    let generation_before = self.dom.mutation_generation();
+    let generation_in_sync_before =
+      generation_before == self.last_seen_dom_mutation_generation;
     let (result, changed) = f(self.dom.as_mut());
     if changed {
       let mutations = self.dom.take_mutations();
       if mutations.is_empty() {
         self.invalidate_all();
       } else {
-        self.apply_mutation_log(mutations);
+        let render_affecting = self.apply_mutation_log(mutations);
+        if !render_affecting && generation_in_sync_before {
+          self.last_seen_dom_mutation_generation = self.dom.mutation_generation();
+        }
       }
     } else {
       self.dom.clear_mutations();
@@ -2727,6 +2753,22 @@ mod tests {
     while let Some(id) = stack.pop() {
       let node = doc.node(id);
       if matches!(node.kind, crate::dom2::NodeKind::Text { .. }) {
+        return Some(id);
+      }
+      for &child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    None
+  }
+
+  fn first_text_node_in_inert_template(doc: &crate::dom2::Document) -> Option<crate::dom2::NodeId> {
+    let mut stack = vec![doc.root()];
+    while let Some(id) = stack.pop() {
+      let node = doc.node(id);
+      if matches!(node.kind, crate::dom2::NodeKind::Text { .. })
+        && doc.is_descendant_of_inert_template(id)
+      {
         return Some(id);
       }
       for &child in node.children.iter().rev() {
@@ -3088,6 +3130,56 @@ mod tests {
     let changed = doc.mutate_dom(|dom| dom.append_child(body, child).expect("append child"));
     assert!(!changed);
     assert!(doc.render_if_needed().unwrap().is_none());
+  }
+
+  #[test]
+  fn mutate_dom_detached_attribute_change_does_not_invalidate() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body><div>Hello</div></body></html>",
+      RenderOptions::new().with_viewport(32, 32),
+    )?;
+
+    // Create a detached element up front (using dom_mut() for convenience).
+    let detached = doc.dom_mut().create_element("div", "");
+    assert!(!doc.dom().is_connected_for_scripting(detached));
+
+    // First render commits a clean layout.
+    doc.render_frame()?;
+    let before = doc.invalidation_counters();
+
+    // Mutating attributes on a detached node bumps `dom2::Document`'s mutation generation, but must
+    // not force a renderer layout/paint.
+    let changed = doc.mutate_dom(|dom| dom.set_attribute(detached, "class", "changed").expect("set attribute"));
+    assert!(changed);
+    assert!(doc.render_if_needed()?.is_none());
+    assert_eq!(doc.invalidation_counters(), before);
+    Ok(())
+  }
+
+  #[test]
+  fn mutate_dom_template_text_change_does_not_invalidate() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body><template>hello</template><div>visible</div></body></html>",
+      RenderOptions::new().with_viewport(32, 32),
+    )?;
+
+    doc.render_frame()?;
+    let before = doc.invalidation_counters();
+
+    let template_text = first_text_node_in_inert_template(doc.dom()).expect("template text node");
+    assert!(!doc.dom().is_connected_for_scripting(template_text));
+
+    let changed = doc
+      .mutate_dom(|dom| dom.set_text_data(template_text, "updated").expect("set text"));
+    assert!(changed);
+
+    assert!(doc.render_if_needed()?.is_none());
+    assert_eq!(doc.invalidation_counters(), before);
+    Ok(())
   }
 
   #[test]
