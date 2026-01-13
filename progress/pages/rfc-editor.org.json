@@ -14,14 +14,15 @@
     "layout": 8.025792621359225,
     "paint": 94.30306330097088
   },
-  "notes": "Visually good. Remaining ~14% pixel diffs vs Chrome at tolerance=0 are dominated by text rasterization/hinting differences and subtle box-shadow blur/rounding differences (plus a few 1px edge shifts on some images). No clear missing layout/paint primitives identified.",
+  "notes": "Visually good. Remaining ~14% pixel diffs vs Chrome at tolerance=0 are dominated by text rasterization/hinting differences plus minor blur/rounding differences in box-shadows and small subpixel-positioned icons/images (e.g. the 14×14 RSS widget icon). No clear missing layout/paint primitives identified.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 135802,
-    "diff_percent": 14.146,
-    "perceptual": 0.133,
+    "diff_pixels": 130207,
+    "diff_percent": 13.5632,
+    "perceptual": 0.038,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 56,
+      "x": 51,
       "y": 0,
       "baseline_rgba": [
         255,
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "59f1f9050cfd986dc05b3a15a94d544dcf56994e"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "paint",
   "failure_stage": null,
