@@ -7126,4 +7126,51 @@ mod tests {
     assert_eq!(err.thrown_value(), Some(Value::Number(2.0)));
     Ok(())
   }
+
+  #[test]
+  fn compiled_try_optional_catch_binding() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = exec_compiled(
+      &mut rt,
+      "function f(){ try { throw 1; } catch { return 2; } } f();",
+    )?;
+    assert_eq!(v, Value::Number(2.0));
+    Ok(())
+  }
+
+  #[test]
+  fn compiled_catch_param_not_visible_after_catch() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = exec_compiled(
+      &mut rt,
+      "function f(){ try { throw 1; } catch(e) {} return typeof e; } f();",
+    )?;
+    let Value::String(s) = v else {
+      return Err(VmError::InvariantViolation("expected typeof result to be a string"));
+    };
+    assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "undefined");
+    Ok(())
+  }
+
+  #[test]
+  fn compiled_finally_runs_on_break() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = exec_compiled(
+      &mut rt,
+      "function f(){ globalThis._ran = 0; for(let i=0;i<1;i++){ try { break; } finally { globalThis._ran = 1; } } return globalThis._ran; } f();",
+    )?;
+    assert_eq!(v, Value::Number(1.0));
+    Ok(())
+  }
+
+  #[test]
+  fn compiled_finally_runs_on_continue() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = exec_compiled(
+      &mut rt,
+      "function f(){ globalThis._ran = 0; for(let i=0;i<1;i++){ try { continue; } finally { globalThis._ran = 1; } } return globalThis._ran; } f();",
+    )?;
+    assert_eq!(v, Value::Number(1.0));
+    Ok(())
+  }
 }
