@@ -1,7 +1,12 @@
+use crate::debug::runtime::runtime_toggles;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
+use std::fs::{self, File};
+use std::io::{self, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
+use thiserror::Error;
 
 #[inline]
 fn sanitize_mix_sample(x: f32) -> f32 {
@@ -317,6 +322,36 @@ fn duration_to_frames_floor(duration: Duration, sample_rate_hz: u32) -> u64 {
   u64::try_from(frames).unwrap_or(u64::MAX)
 }
 
+// === Backends =================================================================
+
+#[derive(Error, Debug)]
+pub enum AudioBackendError {
+  #[error("unknown audio backend: {0}")]
+  UnknownBackend(String),
+
+  #[error("FASTR_AUDIO_WAV_PATH must be set when FASTR_AUDIO_BACKEND=wav")]
+  MissingWavPath,
+
+  #[error(transparent)]
+  Io(#[from] io::Error),
+}
+
+pub type AudioBackendResult<T> = std::result::Result<T, AudioBackendError>;
+
+pub trait AudioBackend: Send + Sync {
+  fn mixer(&self) -> &AudioMixer;
+
+  fn create_stream(&self) -> AudioStreamHandle {
+    self.mixer().create_stream()
+  }
+
+  /// Render `frames` frames of mixed output.
+  ///
+  /// Implementations may have side effects (e.g. writing to a file) but should always return the
+  /// mixed samples for test/debug inspection.
+  fn render_frames(&self, frames: usize) -> AudioBackendResult<Vec<f32>>;
+}
+
 /// A backend that does not talk to a real audio device.
 ///
 /// Tests can call [`Self::render`] to simulate audio callbacks.
@@ -363,6 +398,188 @@ impl NullAudioBackend {
     *last_time = now;
     let frames = duration_to_frames_floor(delta, self.mixer.sample_rate_hz()) as usize;
     self.render(frames)
+  }
+}
+
+impl AudioBackend for NullAudioBackend {
+  fn mixer(&self) -> &AudioMixer {
+    &self.mixer
+  }
+
+  fn render_frames(&self, frames: usize) -> AudioBackendResult<Vec<f32>> {
+    Ok(self.render(frames))
+  }
+}
+
+#[derive(Debug)]
+struct WavState {
+  file: File,
+  data_bytes_written: u64,
+}
+
+/// Deterministic offline audio backend that writes 16-bit PCM `.wav`.
+///
+/// Intended for CI + media regression tests where OS audio devices are unavailable.
+#[derive(Debug)]
+pub struct WavAudioBackend {
+  mixer: AudioMixer,
+  path: PathBuf,
+  state: Mutex<WavState>,
+}
+
+impl WavAudioBackend {
+  pub fn new(
+    sample_rate_hz: u32,
+    channels: usize,
+    path: impl AsRef<Path>,
+  ) -> AudioBackendResult<Self> {
+    let path = path.as_ref().to_path_buf();
+    if let Some(parent) = path.parent() {
+      if !parent.as_os_str().is_empty() {
+        fs::create_dir_all(parent)?;
+      }
+    }
+
+    let mut file = File::create(&path)?;
+    write_pcm16_wav_header(&mut file, sample_rate_hz, channels, 0)?;
+
+    Ok(Self {
+      mixer: AudioMixer::new(sample_rate_hz, channels),
+      path,
+      state: Mutex::new(WavState {
+        file,
+        data_bytes_written: 0,
+      }),
+    })
+  }
+
+  #[must_use]
+  pub fn path(&self) -> &Path {
+    &self.path
+  }
+
+  fn finalize_header(&self) -> io::Result<()> {
+    let mut state = self.state.lock();
+    let end_pos = state.file.seek(SeekFrom::End(0))?;
+    state.file.seek(SeekFrom::Start(0))?;
+
+    let data_size_u32 = u32::try_from(state.data_bytes_written).unwrap_or(u32::MAX);
+    write_pcm16_wav_header(
+      &mut state.file,
+      self.mixer.sample_rate_hz(),
+      self.mixer.channels(),
+      data_size_u32,
+    )?;
+
+    state.file.seek(SeekFrom::Start(end_pos))?;
+    state.file.flush()?;
+    Ok(())
+  }
+}
+
+impl Drop for WavAudioBackend {
+  fn drop(&mut self) {
+    // Best effort: Drop cannot report errors. Tests verify header correctness.
+    let _ = self.finalize_header();
+  }
+}
+
+impl AudioBackend for WavAudioBackend {
+  fn mixer(&self) -> &AudioMixer {
+    &self.mixer
+  }
+
+  fn render_frames(&self, frames: usize) -> AudioBackendResult<Vec<f32>> {
+    let mixed = self.mixer.mix(frames);
+
+    let mut buf = Vec::with_capacity(mixed.len() * 2);
+    for &sample in &mixed {
+      let pcm = f32_to_pcm16(sample);
+      buf.extend_from_slice(&pcm.to_le_bytes());
+    }
+
+    let mut state = self.state.lock();
+    state.file.write_all(&buf)?;
+    state.data_bytes_written = state
+      .data_bytes_written
+      .saturating_add(u64::try_from(buf.len()).unwrap_or(u64::MAX));
+    Ok(mixed)
+  }
+}
+
+fn f32_to_pcm16(sample: f32) -> i16 {
+  let clamped = sample.clamp(-1.0, 1.0);
+  if clamped <= -1.0 {
+    i16::MIN
+  } else if clamped >= 1.0 {
+    i16::MAX
+  } else {
+    (clamped * (i16::MAX as f32)).round() as i16
+  }
+}
+
+fn write_pcm16_wav_header(
+  mut w: impl Write,
+  sample_rate_hz: u32,
+  channels: usize,
+  data_bytes: u32,
+) -> io::Result<()> {
+  let channels_u16 = u16::try_from(channels).unwrap_or(u16::MAX);
+  let bits_per_sample: u16 = 16;
+  let block_align: u16 = channels_u16.saturating_mul(bits_per_sample / 8);
+  let byte_rate: u32 = sample_rate_hz.saturating_mul(u32::from(block_align));
+
+  // RIFF chunk.
+  w.write_all(b"RIFF")?;
+  w.write_all(&(36u32.saturating_add(data_bytes)).to_le_bytes())?;
+  w.write_all(b"WAVE")?;
+
+  // fmt chunk.
+  w.write_all(b"fmt ")?;
+  w.write_all(&16u32.to_le_bytes())?; // PCM fmt chunk size.
+  w.write_all(&1u16.to_le_bytes())?; // PCM format tag.
+  w.write_all(&channels_u16.to_le_bytes())?;
+  w.write_all(&sample_rate_hz.to_le_bytes())?;
+  w.write_all(&byte_rate.to_le_bytes())?;
+  w.write_all(&block_align.to_le_bytes())?;
+  w.write_all(&bits_per_sample.to_le_bytes())?;
+
+  // data chunk.
+  w.write_all(b"data")?;
+  w.write_all(&data_bytes.to_le_bytes())?;
+  Ok(())
+}
+
+/// Create an audio backend based on the active runtime toggles (`FASTR_*` env vars).
+///
+/// - `FASTR_AUDIO_BACKEND=wav` + `FASTR_AUDIO_WAV_PATH=...` → [`WavAudioBackend`]
+/// - otherwise → [`NullAudioBackend`]
+pub fn audio_backend_from_env(
+  sample_rate_hz: u32,
+  channels: usize,
+) -> AudioBackendResult<Box<dyn AudioBackend>> {
+  // Prefer the active runtime toggles so library users (and tests) can override env-derived
+  // behavior without mutating the process environment.
+  let toggles = runtime_toggles();
+  let backend = toggles
+    .get("FASTR_AUDIO_BACKEND")
+    .unwrap_or("null")
+    .trim()
+    .to_ascii_lowercase();
+
+  match backend.as_str() {
+    "" | "null" | "none" | "off" => Ok(Box::new(NullAudioBackend::new(sample_rate_hz, channels))),
+    "wav" => {
+      let Some(path) = toggles.get("FASTR_AUDIO_WAV_PATH") else {
+        return Err(AudioBackendError::MissingWavPath);
+      };
+      Ok(Box::new(WavAudioBackend::new(
+        sample_rate_hz,
+        channels,
+        path,
+      )?))
+    }
+    other => Err(AudioBackendError::UnknownBackend(other.to_string())),
   }
 }
 
