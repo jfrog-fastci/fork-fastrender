@@ -6917,21 +6917,14 @@ impl<'a> Evaluator<'a> {
       len: super_root_len,
     };
 
-    // Count instance **public** fields so the class constructor wrapper can preallocate its hidden
-    // native-slot storage.
+    // Count instance fields (including private fields) so the class constructor wrapper can
+    // preallocate its hidden native-slot storage.
     let mut instance_field_count: usize = 0;
     for member in members {
       if member.stx.static_ {
         continue;
       }
       if !matches!(&member.stx.val, ClassOrObjVal::Prop(_)) {
-        continue;
-      }
-      let is_private_field = matches!(
-        &member.stx.key,
-        ClassOrObjKey::Direct(direct) if direct.stx.tt == TT::PrivateMember
-      );
-      if is_private_field {
         continue;
       }
       instance_field_count = instance_field_count
@@ -7653,10 +7646,7 @@ impl<'a> Evaluator<'a> {
             //
             // Private fields are handled separately so we can enforce the correct property
             // attributes (notably non-enumerable and non-configurable for private static fields).
-            if is_private_key {
-              if !member.stx.static_ {
-                return Err(VmError::Unimplemented("private instance fields"));
-              }
+            if is_private_key && member.stx.static_ {
               let PropertyKey::Symbol(sym) = key else {
                 return Err(VmError::InvariantViolation(
                   "private field key is not a symbol",

@@ -243,6 +243,10 @@ mod error_coercion_tests;
 #[path = "../tests/logical_assignment.rs"]
 mod logical_assignment_tests;
 
+#[cfg(test)]
+#[path = "../tests/unit/private_brand_check_in_operator.rs"]
+mod private_brand_check_in_operator_tests;
+
 pub use crate::handle::EnvRootId;
 
 pub use crate::agent::format_termination;

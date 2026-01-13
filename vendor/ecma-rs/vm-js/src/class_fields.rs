@@ -126,7 +126,26 @@ pub(crate) fn initialize_instance_fields_with_host_and_hooks(
     };
 
     init_scope.push_root(value)?;
-    init_scope.create_data_property_or_throw(receiver, key, value)?;
+    // Private fields are stored as symbol-keyed properties using internal symbols so they are
+    // filtered out by `[[OwnPropertyKeys]]` (`Object.getOwnPropertySymbols`, `Reflect.ownKeys`, ...).
+    //
+    // Unlike public fields, they must be non-enumerable and non-configurable.
+    let is_private_field = matches!(key, PropertyKey::Symbol(sym) if init_scope.heap().is_internal_symbol(sym));
+    if is_private_field {
+      init_scope.define_property_or_throw(
+        receiver,
+        key,
+        crate::PropertyDescriptorPatch {
+          value: Some(value),
+          writable: Some(true),
+          enumerable: Some(false),
+          configurable: Some(false),
+          ..Default::default()
+        },
+      )?;
+    } else {
+      init_scope.create_data_property_or_throw(receiver, key, value)?;
+    }
   }
 
   Ok(())
