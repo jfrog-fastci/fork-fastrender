@@ -76,6 +76,18 @@ pub struct OpenTabSnapshot {
   pub site_key: Option<String>,
   /// Renderer process identifier assigned to this tab (if multiprocess is enabled).
   pub renderer_process: Option<u64>,
+  /// Whether the UI believes this tab is currently loading.
+  pub loading: bool,
+  /// Whether the tab is currently in a crashed state (user-visible crash page).
+  pub crashed: bool,
+  /// Whether the browser UI watchdog considers this tab unresponsive.
+  pub unresponsive: bool,
+  /// Whether the renderer was terminated/detached due to a protocol violation.
+  pub renderer_crashed: bool,
+  /// Optional crash reason, if the tab is in a crashed state.
+  pub crash_reason: Option<String>,
+  /// Optional renderer protocol violation detail (best-effort).
+  pub renderer_protocol_violation: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -990,10 +1002,14 @@ fn processes_html() -> String {
   let mut unknown_windows = 0usize;
   let mut renderer_processes = std::collections::BTreeMap::<u64, RendererProcessGroup>::new();
   let mut unassigned_tabs = 0usize;
+  let mut loading_tabs = 0usize;
+  let mut crashed_tabs = 0usize;
+  let mut unresponsive_tabs = 0usize;
+  let mut renderer_crashed_tabs = 0usize;
 
   let mut rows = String::new();
   if snapshot.open_tabs.is_empty() {
-    rows.push_str("<tr><td colspan=\"6\" class=\"empty\">No tab snapshot is available.</td></tr>");
+    rows.push_str("<tr><td colspan=\"7\" class=\"empty\">No tab snapshot is available.</td></tr>");
   } else {
     for tab in &snapshot.open_tabs {
       let safe_window = escape_html(tab.window_id.as_deref().unwrap_or("-"));
@@ -1014,6 +1030,51 @@ fn processes_html() -> String {
         Some(id) => format!("<code>{id}</code>"),
         None => "<span class=\"muted\">(unassigned)</span>".to_string(),
       };
+      let state = {
+        let mut out = String::new();
+        let mut any_flag = false;
+        for (enabled, label) in [
+          (tab.loading, "loading"),
+          (tab.unresponsive, "unresponsive"),
+          (tab.crashed, "crashed"),
+          (tab.renderer_crashed, "renderer_crashed"),
+        ] {
+          if !enabled {
+            continue;
+          }
+          any_flag = true;
+          if !out.is_empty() {
+            out.push(' ');
+          }
+          out.push_str(&format!("<code>{label}</code>"));
+        }
+        if !any_flag {
+          out.push_str("<span class=\"muted\">ok</span>");
+        }
+        if let Some(reason) = tab
+          .crash_reason
+          .as_deref()
+          .map(str::trim)
+          .filter(|s| !s.is_empty())
+        {
+          out.push_str(&format!(
+            "<div class=\"detail muted\">crash: <code>{}</code></div>",
+            escape_html(reason)
+          ));
+        }
+        if let Some(violation) = tab
+          .renderer_protocol_violation
+          .as_deref()
+          .map(str::trim)
+          .filter(|s| !s.is_empty())
+        {
+          out.push_str(&format!(
+            "<div class=\"detail muted\">violation: <code>{}</code></div>",
+            escape_html(violation)
+          ));
+        }
+        out
+      };
       rows.push_str(&format!(
         "<tr>
           <td><code>{safe_window}</code></td>
@@ -1021,10 +1082,24 @@ fn processes_html() -> String {
           <td><a href=\"{}\"><code>{}</code></a></td>
           <td>{site_cell}</td>
           <td>{renderer}</td>
+          <td>{state}</td>
           <td class=\"muted\">(not implemented)</td>
         </tr>",
         tab.tab_id, safe_url, safe_url
       ));
+
+      if tab.loading {
+        loading_tabs += 1;
+      }
+      if tab.crashed {
+        crashed_tabs += 1;
+      }
+      if tab.unresponsive {
+        unresponsive_tabs += 1;
+      }
+      if tab.renderer_crashed {
+        renderer_crashed_tabs += 1;
+      }
 
       if let Some(window_id) = tab
         .window_id
@@ -1111,6 +1186,10 @@ fn processes_html() -> String {
         · Windows: <code>{window_count}</code>
         · Renderer processes: <code>{renderer_process_count}</code>
         · Unassigned tabs: <code>{unassigned_tabs}</code>
+        · Loading: <code>{loading_tabs}</code>
+        · Crashed: <code>{crashed_tabs}</code>
+        · Unresponsive: <code>{unresponsive_tabs}</code>
+        · Renderer crashed: <code>{renderer_crashed_tabs}</code>
         · Tabs missing window id: <code>{unknown_windows}</code>
         {registry_stats_html}
       </p>
@@ -1138,6 +1217,7 @@ fn processes_html() -> String {
             <th>URL</th>
             <th>Site</th>
             <th>Renderer</th>
+            <th>State</th>
             <th>Network</th>
           </tr>
         </thead>
@@ -1168,6 +1248,7 @@ fn processes_html() -> String {
 .proc-table code {
   word-break: break-all;
 }
+.detail { margin-top: 4px; font-size: 12px; }
 .muted { color: var(--about-muted); }
 .empty { color: var(--about-muted); padding: 10px 0; }
 "#,

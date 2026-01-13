@@ -4406,6 +4406,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               url: url.to_string(),
               site_key,
               renderer_process,
+              loading: tab.loading,
+              crashed: tab.crashed,
+              unresponsive: tab.unresponsive,
+              renderer_crashed: tab.renderer_crashed,
+              crash_reason: tab.crash_reason.clone(),
+              renderer_protocol_violation: tab
+                .renderer_protocol_violation
+                .as_ref()
+                .map(|v| v.to_string()),
             });
           }
         }
