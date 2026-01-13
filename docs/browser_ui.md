@@ -735,7 +735,7 @@ Front-ends are encouraged to print these to stderr while developing new protocol
     smoke test); the windowed UI does not execute author scripts yet.
 - **Interaction gaps** (non-JS): the windowed UI forwards pointer/keyboard input to the browser
   worker, which applies basic hit-testing + form interactions. Some interactions are still
-  incomplete (e.g. select dropdown UI, rich text editing, complex focus traversal).
+  incomplete (e.g. rich text editing, complex focus traversal).
 - **Limited form support** (non-JS):
   - text input is intentionally minimal
     - basic caret movement + selection are supported for focused `<input>`/`<textarea>` (arrow keys,
