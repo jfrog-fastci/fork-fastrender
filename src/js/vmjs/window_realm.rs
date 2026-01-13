@@ -5836,17 +5836,8 @@ fn history_state_structured_clone_inner(
         return Ok(out);
       }
 
-      // Date objects in `vm-js` store an internal numeric payload on a global symbol
-      // "vm-js.internal.DateData".
-      let date_data_value = {
-        let marker = scope.alloc_string("vm-js.internal.DateData")?;
-        scope.push_root(Value::String(marker))?;
-        let marker_sym = scope.heap_mut().symbol_for(marker)?;
-        let marker_key = PropertyKey::from_symbol(marker_sym);
-        scope
-          .heap()
-          .object_get_own_data_property_value(obj, &marker_key)?
-      };
+      // Date objects are branded by an internal `[[DateValue]]` slot in `vm-js`.
+      let date_value = scope.heap().date_value(obj)?;
 
       // Allocate the clone now and insert into `seen` before cloning properties so cyclic graphs are
       // supported.
@@ -5864,6 +5855,13 @@ fn history_state_structured_clone_inner(
           .heap_mut()
           .object_set_prototype(arr, Some(intr.array_prototype()))?;
         (arr, true)
+      } else if let Some(time) = date_value {
+        let date = scope.alloc_date(time)?;
+        scope.push_root(Value::Object(date))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(date, Some(intr.date_prototype()))?;
+        (date, false)
       } else {
         let cloned = scope.alloc_object()?;
         scope.push_root(Value::Object(cloned))?;
@@ -5875,29 +5873,6 @@ fn history_state_structured_clone_inner(
 
       let out = Value::Object(cloned_obj);
       seen.insert(obj, out);
-
-      // Re-create Date internal slots before copying enumerable properties.
-      if let Some(Value::Number(time)) = date_data_value {
-        let marker = scope.alloc_string("vm-js.internal.DateData")?;
-        scope.push_root(Value::String(marker))?;
-        let marker_sym = scope.heap_mut().symbol_for(marker)?;
-        let marker_key = PropertyKey::from_symbol(marker_sym);
-        scope.define_property(
-          cloned_obj,
-          marker_key,
-          PropertyDescriptor {
-            enumerable: false,
-            configurable: false,
-            kind: PropertyKind::Data {
-              value: Value::Number(time),
-              writable: true,
-            },
-          },
-        )?;
-        scope
-          .heap_mut()
-          .object_set_prototype(cloned_obj, Some(intr.date_prototype()))?;
-      }
 
       // Copy own enumerable string-keyed properties.
       //

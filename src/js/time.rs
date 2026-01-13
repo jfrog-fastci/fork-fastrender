@@ -1282,15 +1282,12 @@ fn date_get_time_native(
       "Date.prototype.getTime called on non-object",
     ));
   };
-  let marker = scope.alloc_string("vm-js.internal.DateData")?;
-  let marker_sym = scope.heap_mut().symbol_for(marker)?;
-  let marker_key = PropertyKey::from_symbol(marker_sym);
-  match scope
-    .heap()
-    .object_get_own_data_property_value(obj, &marker_key)?
-  {
-    Some(Value::Number(n)) => Ok(Value::Number(n)),
-    _ => Err(VmError::TypeError(
+  // `vm-js` models Date as a branded object kind (`ObjectKind::Date`) with an internal `[[DateValue]]`
+  // slot, not as a plain object with a hidden symbol-keyed property. Read the internal slot so
+  // `new Date().getTime()` works with both intrinsic and wrapped Date constructors.
+  match scope.heap().date_value(obj)? {
+    Some(v) => Ok(Value::Number(v)),
+    None => Err(VmError::TypeError(
       "Date.prototype.getTime called on non-Date object",
     )),
   }
