@@ -3724,6 +3724,38 @@ fn apply_request_init(
               return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
             }
             data.to_vec()
+          } else if scope.heap().is_typed_array_object(obj) {
+            // BufferSource (ArrayBufferView): copy the visible bytes.
+            let byte_length = scope.heap().typed_array_byte_length(obj)?;
+            if byte_length > max_body_bytes {
+              return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
+            }
+            let byte_offset = scope.heap().typed_array_byte_offset(obj)?;
+            let buffer = scope.heap().typed_array_buffer(obj)?;
+            let data = scope.heap().array_buffer_data(buffer)?;
+            let end = byte_offset
+              .checked_add(byte_length)
+              .ok_or(VmError::TypeError("TypedArray byte offset overflow"))?;
+            let slice = data
+              .get(byte_offset..end)
+              .ok_or(VmError::TypeError("TypedArray view out of bounds"))?;
+            slice.to_vec()
+          } else if scope.heap().is_data_view_object(obj) {
+            // BufferSource (DataView): copy the visible bytes.
+            let byte_length = scope.heap().data_view_byte_length(obj)?;
+            if byte_length > max_body_bytes {
+              return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
+            }
+            let byte_offset = scope.heap().data_view_byte_offset(obj)?;
+            let buffer = scope.heap().data_view_buffer(obj)?;
+            let data = scope.heap().array_buffer_data(buffer)?;
+            let end = byte_offset
+              .checked_add(byte_length)
+              .ok_or(VmError::TypeError("DataView byte offset overflow"))?;
+            let slice = data
+              .get(byte_offset..end)
+              .ok_or(VmError::TypeError("DataView view out of bounds"))?;
+            slice.to_vec()
           } else if let Some(serialized) =
             window_url::serialize_url_search_params_for_fetch(vm, scope.heap(), obj)?
           {
@@ -7349,6 +7381,38 @@ fn response_ctor_construct(
               return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
             }
             data.to_vec()
+          } else if scope.heap().is_typed_array_object(obj) {
+            // BufferSource (ArrayBufferView): copy the visible bytes.
+            let byte_length = scope.heap().typed_array_byte_length(obj)?;
+            if byte_length > max_body_bytes {
+              return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
+            }
+            let byte_offset = scope.heap().typed_array_byte_offset(obj)?;
+            let buffer = scope.heap().typed_array_buffer(obj)?;
+            let data = scope.heap().array_buffer_data(buffer)?;
+            let end = byte_offset
+              .checked_add(byte_length)
+              .ok_or(VmError::TypeError("TypedArray byte offset overflow"))?;
+            let slice = data
+              .get(byte_offset..end)
+              .ok_or(VmError::TypeError("TypedArray view out of bounds"))?;
+            slice.to_vec()
+          } else if scope.heap().is_data_view_object(obj) {
+            // BufferSource (DataView): copy the visible bytes.
+            let byte_length = scope.heap().data_view_byte_length(obj)?;
+            if byte_length > max_body_bytes {
+              return Err(VmError::TypeError(FETCH_BODY_TOO_LONG_ERROR));
+            }
+            let byte_offset = scope.heap().data_view_byte_offset(obj)?;
+            let buffer = scope.heap().data_view_buffer(obj)?;
+            let data = scope.heap().array_buffer_data(buffer)?;
+            let end = byte_offset
+              .checked_add(byte_length)
+              .ok_or(VmError::TypeError("DataView byte offset overflow"))?;
+            let slice = data
+              .get(byte_offset..end)
+              .ok_or(VmError::TypeError("DataView view out of bounds"))?;
+            slice.to_vec()
           } else if let Some(serialized) =
             window_url::serialize_url_search_params_for_fetch(vm, scope.heap(), obj)?
           {
@@ -15169,6 +15233,58 @@ mod tests {
   }
 
   #[test]
+  fn response_ctor_accepts_data_view_body() -> Result<(), VmError> {
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
+    let env = WindowFetchEnv::for_document(fetcher, Some("https://example.invalid/".to_string()));
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)?
+    };
+
+    let promise = host.window.exec_script(
+      "(function(){\
+         const buf = new ArrayBuffer(4);\
+         const u8 = new Uint8Array(buf);\
+         u8[0] = 1;\
+         u8[1] = 2;\
+         u8[2] = 3;\
+         u8[3] = 4;\
+         const view = new DataView(buf, 1, 2);\
+         return new Response(view).arrayBuffer();\
+       })()",
+    )?;
+    let Value::Object(promise_obj) = promise else {
+      return Err(VmError::InvariantViolation(
+        "Response.arrayBuffer must return a Promise object",
+      ));
+    };
+    assert_eq!(
+      host.window.heap().promise_state(promise_obj)?,
+      PromiseState::Fulfilled
+    );
+    let Some(result) = host.window.heap().promise_result(promise_obj)? else {
+      return Err(VmError::InvariantViolation(
+        "Response.arrayBuffer promise missing result",
+      ));
+    };
+    let Value::Object(ab_obj) = result else {
+      return Err(VmError::InvariantViolation(
+        "Response.arrayBuffer must resolve to an ArrayBuffer object",
+      ));
+    };
+
+    let (_vm, _realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(ab_obj))?;
+    assert!(scope.heap().is_array_buffer_object(ab_obj));
+    assert_eq!(scope.heap().array_buffer_data(ab_obj)?, &[2, 3]);
+
+    Ok(())
+  }
+
+  #[test]
   fn response_bytes_resolves_to_uint8_array_for_uint8_array_body() -> Result<(), VmError> {
     let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
 
@@ -16592,6 +16708,118 @@ mod tests {
     assert_eq!(
       header_value(&captured.headers, "content-type"),
       Some("text/plain;charset=UTF-8"),
+      "headers={:?}",
+      captured.headers
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn fetch_data_view_body_sends_visible_bytes() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EventLoopHost>::with_clock(clock);
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher = Arc::new(CaptureHttpRequestFetcher::default());
+    let env = WindowFetchEnv::for_document(
+      fetcher.clone(),
+      Some("https://example.invalid/".to_string()),
+    );
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?
+    };
+
+    {
+      let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host)?;
+      hooks.set_event_loop(&mut event_loop);
+      let EventLoopHost { host_ctx, window } = &mut host;
+      window
+        .exec_script_with_host_and_hooks(
+          host_ctx,
+          &mut hooks,
+          r#"
+            const buf = new ArrayBuffer(4);
+            const u8 = new Uint8Array(buf);
+            u8[0] = 10;
+            u8[1] = 11;
+            u8[2] = 12;
+            u8[3] = 13;
+            const view = new DataView(buf, 1, 2);
+            fetch('https://example.invalid/dataview', { method: 'POST', body: view });
+          "#,
+        )
+        .unwrap();
+    }
+
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    let captured = fetcher.take().expect("expected fetch_http_request call");
+    assert_eq!(captured.method, "POST");
+    assert_eq!(captured.url, "https://example.invalid/dataview");
+    assert_eq!(captured.body.as_deref(), Some(&[11u8, 12][..]));
+    assert_eq!(
+      header_value(&captured.headers, "content-type"),
+      None,
+      "headers={:?}",
+      captured.headers
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn fetch_typed_array_body_sends_visible_bytes() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EventLoopHost>::with_clock(clock);
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher = Arc::new(CaptureHttpRequestFetcher::default());
+    let env = WindowFetchEnv::for_document(
+      fetcher.clone(),
+      Some("https://example.invalid/".to_string()),
+    );
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?
+    };
+
+    {
+      let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host)?;
+      hooks.set_event_loop(&mut event_loop);
+      let EventLoopHost { host_ctx, window } = &mut host;
+      window
+        .exec_script_with_host_and_hooks(
+          host_ctx,
+          &mut hooks,
+          r#"
+            const buf = new ArrayBuffer(6);
+            const u8 = new Uint8Array(buf);
+            u8[0] = 0;
+            u8[1] = 1;
+            u8[2] = 2;
+            u8[3] = 3;
+            u8[4] = 4;
+            u8[5] = 5;
+            const view = new Uint16Array(buf, 2, 1);
+            fetch('https://example.invalid/u16', { method: 'POST', body: view });
+          "#,
+        )
+        .unwrap();
+    }
+
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    let captured = fetcher.take().expect("expected fetch_http_request call");
+    assert_eq!(captured.method, "POST");
+    assert_eq!(captured.url, "https://example.invalid/u16");
+    assert_eq!(captured.body.as_deref(), Some(&[2u8, 3][..]));
+    assert_eq!(
+      header_value(&captured.headers, "content-type"),
+      None,
       "headers={:?}",
       captured.headers
     );
