@@ -28,12 +28,46 @@ use crate::heap::{Trace, Tracer};
 use crate::promise_jobs::new_promise_reaction_job;
 use crate::promise_jobs::new_promise_resolve_thenable_job;
 use crate::{
-  GcObject, Heap, Job, JobCallback, PromiseHandle, PromiseRejectionOperation, Value, VmError,
-  VmHostHooks,
+  GcObject, Heap, Job, JobCallback, PromiseHandle, PromiseRejectionOperation, RootId, Value, VmError,
+  VmHostHooks, VmJobContext,
 };
 use std::cell::RefCell;
 use std::mem;
 use std::rc::Rc;
+
+struct EnqueueCtx<'a> {
+  heap: &'a mut Heap,
+}
+
+impl VmJobContext for EnqueueCtx<'_> {
+  fn call(
+    &mut self,
+    _host: &mut dyn VmHostHooks,
+    _callee: Value,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    Err(VmError::Unimplemented("EnqueueCtx::call"))
+  }
+
+  fn construct(
+    &mut self,
+    _host: &mut dyn VmHostHooks,
+    _callee: Value,
+    _args: &[Value],
+    _new_target: Value,
+  ) -> Result<Value, VmError> {
+    Err(VmError::Unimplemented("EnqueueCtx::construct"))
+  }
+
+  fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+    self.heap.add_root(value)
+  }
+
+  fn remove_root(&mut self, id: RootId) {
+    self.heap.remove_root(id);
+  }
+}
 
 /// The value of a Promise object's `[[PromiseState]]` internal slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -258,7 +292,9 @@ impl Promise {
     }
 
     for reaction in reactions {
-      host.host_enqueue_promise_job(new_promise_reaction_job(heap, reaction, reason)?, None);
+      let job = new_promise_reaction_job(heap, reaction, reason)?;
+      let mut ctx = EnqueueCtx { heap: &mut *heap };
+      host.host_enqueue_promise_job_fallible(&mut ctx, job, None)?;
     }
 
     Ok(())
@@ -307,7 +343,8 @@ impl Promise {
           inner.is_handled = true;
         }
         drop(inner);
-        host.host_enqueue_promise_job(job, None);
+        let mut ctx = EnqueueCtx { heap: &mut *heap };
+        host.host_enqueue_promise_job_fallible(&mut ctx, job, None)?;
       }
       PromiseRecordState::Rejected(r) => {
         let job = new_promise_reaction_job(heap, reject_reaction, r)?;
@@ -318,7 +355,8 @@ impl Promise {
           }
         }
         drop(inner);
-        host.host_enqueue_promise_job(job, None);
+        let mut ctx = EnqueueCtx { heap: &mut *heap };
+        host.host_enqueue_promise_job_fallible(&mut ctx, job, None)?;
       }
     }
 

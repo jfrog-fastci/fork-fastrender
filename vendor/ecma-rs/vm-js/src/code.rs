@@ -256,14 +256,14 @@ impl CompiledScript {
       let mut tick = || vm.tick();
       detect_use_strict_directive(&parsed.stx.body, &mut tick)?
     };
-    let has_await = parsed.stx.body.iter().any(stmt_contains_await);
+    let has_top_level_await = parsed.stx.body.iter().any(stmt_contains_await);
     {
       let mut tick = || vm.tick();
       crate::early_errors::validate_top_level(
         &parsed.stx.body,
         crate::early_errors::EarlyErrorOptions {
           strict,
-          allow_top_level_await: has_await,
+          allow_top_level_await: has_top_level_await,
           is_module: false,
           allow_super_call: false,
         },
@@ -288,7 +288,7 @@ impl CompiledScript {
       contains_generators,
       contains_async_functions,
       requires_ast_fallback,
-      contains_top_level_await: has_await,
+      contains_top_level_await: has_top_level_await,
       source_type: SourceType::Script,
       external_memory,
     })?)

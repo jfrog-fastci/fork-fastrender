@@ -509,6 +509,44 @@ mod tests {
     ctx.heap.collect_garbage();
     assert_eq!(weak_view.upgrade(&ctx.heap), None);
     assert_eq!(weak_buffer.upgrade(&ctx.heap), None);
+
+    Ok(())
+  }
+
+  #[test]
+  fn host_enqueue_promise_job_fallible_discards_job_and_cleans_roots_on_oom() -> Result<(), VmError> {
+    let mut ctx = TestContext::new();
+    let mut queue = MicrotaskQueue::new();
+
+    // Create a job that owns a persistent root so we can detect leaks.
+    let obj = {
+      let mut scope = ctx.heap.scope();
+      scope.alloc_object()?
+    };
+    let weak = WeakGcObject::from(obj);
+
+    let mut job = Job::new(JobKind::Promise, |_ctx, _host| Ok(()))?;
+    job.add_root(&mut ctx, Value::Object(obj))?;
+
+    // The job holds a persistent root, so a GC cycle should not collect the object yet.
+    ctx.heap.collect_garbage();
+    assert_eq!(weak.upgrade(&ctx.heap), Some(obj));
+
+    // Simulate allocator OOM while trying to enqueue the job.
+    let _guard = FailAllocsGuard::new();
+    let err = queue
+      .host_enqueue_promise_job_fallible(&mut ctx, job, None)
+      .expect_err("expected OOM error");
+    drop(_guard);
+
+    assert!(matches!(err, VmError::OutOfMemory));
+    assert!(queue.is_empty());
+
+    // The enqueue path must discard the job and unregister its persistent roots, making the object
+    // collectible again.
+    ctx.heap.collect_garbage();
+    assert_eq!(weak.upgrade(&ctx.heap), None);
+
     Ok(())
   }
 }
@@ -516,6 +554,24 @@ mod tests {
 impl VmHostHooks for MicrotaskQueue {
   fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>) {
     self.enqueue_promise_job(job, realm);
+  }
+
+  fn host_enqueue_promise_job_fallible(
+    &mut self,
+    ctx: &mut dyn VmJobContext,
+    job: Job,
+    realm: Option<RealmId>,
+  ) -> Result<(), VmError> {
+    // `VecDeque::push_back` aborts the process on allocator OOM; reserve fallibly so we can surface
+    // a recoverable `VmError::OutOfMemory`.
+    if self.queue.try_reserve(1).is_err() {
+      // If we can't enqueue, discard the job so we don't leak any persistent roots it owns.
+      job.discard(ctx);
+      return Err(VmError::OutOfMemory);
+    }
+    // `try_reserve(1)` guarantees `push_back` won't grow/reallocate the buffer.
+    self.queue.push_back((realm, job));
+    Ok(())
   }
 
   fn host_call_job_callback(

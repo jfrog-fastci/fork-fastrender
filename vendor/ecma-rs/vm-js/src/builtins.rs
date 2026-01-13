@@ -11,7 +11,7 @@ use crate::{
   heap::TypedArrayKind,
   ExternalMemoryToken, GcObject, GcString, Job, JobKind, PromiseCapability, PromiseHandle,
   PromiseReaction, PromiseReactionType, PromiseRejectionOperation, PromiseState, RealmId, RootId, Scope,
-  SourceText, Value, Vm, VmError, VmHost, VmHostHooks,
+  SourceText, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext,
 };
 use parse_js::ast::expr::Expr;
 use parse_js::ast::func::FuncBody;
@@ -6720,7 +6720,43 @@ fn enqueue_promise_reaction_job(
   }
 
   let job = job.with_roots(roots);
-  host.host_enqueue_promise_job(job, realm);
+  struct EnqueueCtx<'a> {
+    heap: &'a mut crate::Heap,
+  }
+  impl VmJobContext for EnqueueCtx<'_> {
+    fn call(
+      &mut self,
+      _host: &mut dyn VmHostHooks,
+      _callee: Value,
+      _this: Value,
+      _args: &[Value],
+    ) -> Result<Value, VmError> {
+      Err(VmError::Unimplemented("EnqueueCtx::call"))
+    }
+
+    fn construct(
+      &mut self,
+      _host: &mut dyn VmHostHooks,
+      _callee: Value,
+      _args: &[Value],
+      _new_target: Value,
+    ) -> Result<Value, VmError> {
+      Err(VmError::Unimplemented("EnqueueCtx::construct"))
+    }
+
+    fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+      self.heap.add_root(value)
+    }
+
+    fn remove_root(&mut self, id: RootId) {
+      self.heap.remove_root(id);
+    }
+  }
+
+  let mut ctx = EnqueueCtx {
+    heap: root_scope.heap_mut(),
+  };
+  host.host_enqueue_promise_job_fallible(&mut ctx, job, realm)?;
   Ok(())
 }
 
@@ -6951,7 +6987,43 @@ fn resolve_promise(
   }
 
   let job = job.with_roots(roots);
-  hooks.host_enqueue_promise_job(job, realm);
+  struct EnqueueCtx<'a> {
+    heap: &'a mut crate::Heap,
+  }
+  impl VmJobContext for EnqueueCtx<'_> {
+    fn call(
+      &mut self,
+      _host: &mut dyn VmHostHooks,
+      _callee: Value,
+      _this: Value,
+      _args: &[Value],
+    ) -> Result<Value, VmError> {
+      Err(VmError::Unimplemented("EnqueueCtx::call"))
+    }
+
+    fn construct(
+      &mut self,
+      _host: &mut dyn VmHostHooks,
+      _callee: Value,
+      _args: &[Value],
+      _new_target: Value,
+    ) -> Result<Value, VmError> {
+      Err(VmError::Unimplemented("EnqueueCtx::construct"))
+    }
+
+    fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+      self.heap.add_root(value)
+    }
+
+    fn remove_root(&mut self, id: RootId) {
+      self.heap.remove_root(id);
+    }
+  }
+
+  let mut ctx = EnqueueCtx {
+    heap: root_scope.heap_mut(),
+  };
+  hooks.host_enqueue_promise_job_fallible(&mut ctx, job, realm)?;
   Ok(())
 }
 

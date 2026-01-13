@@ -3,7 +3,7 @@ use crate::fallible_format;
 use crate::heap::ModuleNamespaceExportValue;
 use crate::function::ThisMode;
 use crate::property_descriptor_ops;
-use crate::{GcObject, GcString, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+use crate::{GcObject, GcString, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext};
 use std::collections::{HashMap, HashSet};
 
 fn fnv1a_hash_code_units(units: &[u16]) -> u64 {
@@ -1603,10 +1603,56 @@ impl<'a> Scope<'a> {
             );
             // Merge any Promise jobs that native code enqueued directly onto the VM-owned queue
             // while it was temporarily moved out.
+            struct DrainCtx<'a> {
+              heap: &'a mut crate::Heap,
+            }
+            impl VmJobContext for DrainCtx<'_> {
+              fn call(
+                &mut self,
+                _hooks: &mut dyn VmHostHooks,
+                _callee: Value,
+                _this: Value,
+                _args: &[Value],
+              ) -> Result<Value, VmError> {
+                Err(VmError::Unimplemented("DrainCtx::call"))
+              }
+
+              fn construct(
+                &mut self,
+                _hooks: &mut dyn VmHostHooks,
+                _callee: Value,
+                _args: &[Value],
+                _new_target: Value,
+              ) -> Result<Value, VmError> {
+                Err(VmError::Unimplemented("DrainCtx::construct"))
+              }
+
+              fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+                self.heap.add_root(value)
+              }
+
+              fn remove_root(&mut self, id: RootId) {
+                self.heap.remove_root(id);
+              }
+            }
+
+            let mut ctx = DrainCtx {
+              heap: scope.heap_mut(),
+            };
+            let mut drain_err: Option<VmError> = None;
             while let Some((realm, job)) = vm.microtask_queue_mut().pop_front() {
-              hooks.enqueue_promise_job(job, realm);
+              if let Err(err) = hooks.host_enqueue_promise_job_fallible(&mut ctx, job, realm) {
+                drain_err = Some(err);
+                break;
+              }
+            }
+            if drain_err.is_some() {
+              vm.microtask_queue_mut().teardown(&mut ctx);
             }
             *vm.microtask_queue_mut() = hooks;
+            if let Some(err) = drain_err {
+              return Err(err);
+            }
             result?;
           }
 

@@ -707,6 +707,28 @@ pub trait VmHostHooks {
   /// [microtask checkpoints](https://html.spec.whatwg.org/multipage/webappapis.html#perform-a-microtask-checkpoint).
   fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>);
 
+  /// Fallible variant of [`VmHostHooks::host_enqueue_promise_job`].
+  ///
+  /// # OOM safety / rooting
+  ///
+  /// Enqueueing a Promise job is allowed to allocate (e.g. growing a host-side queue). Under
+  /// allocator OOM, hosts should return [`VmError::OutOfMemory`] rather than aborting the process.
+  ///
+  /// The provided [`VmJobContext`] allows the host to discard `job` on enqueue failure via
+  /// [`Job::discard`], ensuring any persistent roots owned by the job are unregistered.
+  ///
+  /// The default implementation delegates to the infallible legacy hook and returns `Ok(())`.
+  #[inline]
+  fn host_enqueue_promise_job_fallible(
+    &mut self,
+    _ctx: &mut dyn VmJobContext,
+    job: Job,
+    realm: Option<RealmId>,
+  ) -> Result<(), VmError> {
+    self.host_enqueue_promise_job(job, realm);
+    Ok(())
+  }
+
   /// Optional host hook for `Math.random()`.
   ///
   /// If provided, this hook supplies raw pseudorandom bits that will be converted into a
@@ -866,6 +888,15 @@ pub trait VmHostHooks {
     impl<H: VmHostHooks + ?Sized> VmHostHooks for HostProxy<'_, H> {
       fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>) {
         self.0.host_enqueue_promise_job(job, realm);
+      }
+
+      fn host_enqueue_promise_job_fallible(
+        &mut self,
+        ctx: &mut dyn VmJobContext,
+        job: Job,
+        realm: Option<RealmId>,
+      ) -> Result<(), VmError> {
+        self.0.host_enqueue_promise_job_fallible(ctx, job, realm)
       }
 
       fn host_math_random_u64(&mut self) -> Option<u64> {
@@ -1092,6 +1123,15 @@ pub trait VmHostHooks {
     impl<H: VmHostHooks + ?Sized> VmHostHooks for HostProxy<'_, H> {
       fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>) {
         self.0.host_enqueue_promise_job(job, realm);
+      }
+
+      fn host_enqueue_promise_job_fallible(
+        &mut self,
+        ctx: &mut dyn VmJobContext,
+        job: Job,
+        realm: Option<RealmId>,
+      ) -> Result<(), VmError> {
+        self.0.host_enqueue_promise_job_fallible(ctx, job, realm)
       }
 
       fn host_math_random_u64(&mut self) -> Option<u64> {

@@ -2023,10 +2023,60 @@ impl JsRuntime {
       let mut hooks = mem::take(self.vm.microtask_queue_mut());
       let result = self.exec_script_source_with_host_and_hooks(host, &mut hooks, source);
       // Drain any Promise jobs that were enqueued onto the VM-owned queue while it was moved out.
+      struct DrainCtx<'a> {
+        heap: &'a mut Heap,
+      }
+      impl VmJobContext for DrainCtx<'_> {
+        fn call(
+          &mut self,
+          _hooks: &mut dyn VmHostHooks,
+          _callee: Value,
+          _this: Value,
+          _args: &[Value],
+        ) -> Result<Value, VmError> {
+          Err(VmError::Unimplemented("DrainCtx::call"))
+        }
+
+        fn construct(
+          &mut self,
+          _hooks: &mut dyn VmHostHooks,
+          _callee: Value,
+          _args: &[Value],
+          _new_target: Value,
+        ) -> Result<Value, VmError> {
+          Err(VmError::Unimplemented("DrainCtx::construct"))
+        }
+
+        fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+          self.heap.add_root(value)
+        }
+
+        fn remove_root(&mut self, id: RootId) {
+          self.heap.remove_root(id);
+        }
+      }
+
+      let mut ctx = DrainCtx { heap: &mut self.heap };
+      let mut drain_err: Option<VmError> = None;
       while let Some((realm, job)) = self.vm.microtask_queue_mut().pop_front() {
-        hooks.enqueue_promise_job(job, realm);
+        if let Err(err) = hooks.host_enqueue_promise_job_fallible(&mut ctx, job, realm) {
+          drain_err = Some(err);
+          break;
+        }
+      }
+      if drain_err.is_some() {
+        // Discard any remaining jobs in the temporary VM-owned queue so we don't leak persistent
+        // roots when we restore/overwrite it below.
+        self.vm.microtask_queue_mut().teardown(&mut ctx);
       }
       *self.vm.microtask_queue_mut() = hooks;
+
+      if let Some(err) = drain_err {
+        // Treat allocator OOM while draining as a hard stop: discard any queued jobs so persistent
+        // roots are cleaned up.
+        self.vm.teardown_microtasks(&mut self.heap);
+        return Err(err);
+      }
 
       if let Err(err) = &result {
         if is_hard_stop_error(err) {
@@ -2092,11 +2142,57 @@ impl JsRuntime {
       // As a safety net, drain any Promise jobs that were enqueued onto the VM-owned microtask queue
       // (for example by native handlers calling `vm.microtask_queue_mut()` while the queue was moved
       // out) into `hooks` before restoring it.
+      struct DrainCtx<'a> {
+        heap: &'a mut Heap,
+      }
+      impl VmJobContext for DrainCtx<'_> {
+        fn call(
+          &mut self,
+          _hooks: &mut dyn VmHostHooks,
+          _callee: Value,
+          _this: Value,
+          _args: &[Value],
+        ) -> Result<Value, VmError> {
+          Err(VmError::Unimplemented("DrainCtx::call"))
+        }
+
+        fn construct(
+          &mut self,
+          _hooks: &mut dyn VmHostHooks,
+          _callee: Value,
+          _args: &[Value],
+          _new_target: Value,
+        ) -> Result<Value, VmError> {
+          Err(VmError::Unimplemented("DrainCtx::construct"))
+        }
+
+        fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+          self.heap.add_root(value)
+        }
+
+        fn remove_root(&mut self, id: RootId) {
+          self.heap.remove_root(id);
+        }
+      }
+
+      let mut ctx = DrainCtx { heap: &mut self.heap };
+      let mut drain_err: Option<VmError> = None;
       while let Some((realm, job)) = vm_ctx.microtask_queue_mut().pop_front() {
-        hooks.enqueue_promise_job(job, realm);
+        if let Err(err) = hooks.host_enqueue_promise_job_fallible(&mut ctx, job, realm) {
+          drain_err = Some(err);
+          break;
+        }
+      }
+      if drain_err.is_some() {
+        vm_ctx.microtask_queue_mut().teardown(&mut ctx);
       }
       // Restore the VM's microtask queue so the embedding can run a microtask checkpoint later.
       *vm_ctx.microtask_queue_mut() = hooks;
+
+      let result = match drain_err {
+        Some(err) => Err(err),
+        None => result,
+      };
 
       drop(vm_ctx);
       let restore_res = self.vm.restore_realm_state(&mut self.heap, prev_state);
@@ -2113,7 +2209,6 @@ impl JsRuntime {
         self.vm.teardown_microtasks(&mut self.heap);
       }
     }
-
     result
   }
 
@@ -2199,8 +2294,52 @@ impl JsRuntime {
 
     // As a safety net, drain any Promise jobs that were enqueued onto the VM-owned microtask queue
     // into the embedding's host hook implementation.
+    struct DrainCtx<'a> {
+      heap: &'a mut Heap,
+    }
+    impl VmJobContext for DrainCtx<'_> {
+      fn call(
+        &mut self,
+        _host: &mut dyn VmHostHooks,
+        _callee: Value,
+        _this: Value,
+        _args: &[Value],
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("DrainCtx::call"))
+      }
+
+      fn construct(
+        &mut self,
+        _host: &mut dyn VmHostHooks,
+        _callee: Value,
+        _args: &[Value],
+        _new_target: Value,
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("DrainCtx::construct"))
+      }
+
+      fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+        self.heap.add_root(value)
+      }
+
+      fn remove_root(&mut self, id: RootId) {
+        self.heap.remove_root(id);
+      }
+    }
+
+    let mut ctx = DrainCtx { heap: &mut self.heap };
+    let mut drain_err: Option<VmError> = None;
     while let Some((realm, job)) = self.vm.microtask_queue_mut().pop_front() {
-      hooks.host_enqueue_promise_job(job, realm);
+      if let Err(err) = hooks.host_enqueue_promise_job_fallible(&mut ctx, job, realm) {
+        drain_err = Some(err);
+        break;
+      }
+    }
+    if drain_err.is_some() {
+      self.vm.microtask_queue_mut().teardown(&mut ctx);
+    }
+    if let Some(err) = drain_err {
+      return Err(err);
     }
 
     result
@@ -2804,11 +2943,57 @@ impl JsRuntime {
       // As a safety net, drain any Promise jobs that were enqueued onto the VM-owned microtask queue
       // (for example by native handlers calling `vm.microtask_queue_mut()` while the queue was moved
       // out) into `hooks` before restoring it.
+      struct DrainCtx<'a> {
+        heap: &'a mut Heap,
+      }
+      impl VmJobContext for DrainCtx<'_> {
+        fn call(
+          &mut self,
+          _hooks: &mut dyn VmHostHooks,
+          _callee: Value,
+          _this: Value,
+          _args: &[Value],
+        ) -> Result<Value, VmError> {
+          Err(VmError::Unimplemented("DrainCtx::call"))
+        }
+
+        fn construct(
+          &mut self,
+          _hooks: &mut dyn VmHostHooks,
+          _callee: Value,
+          _args: &[Value],
+          _new_target: Value,
+        ) -> Result<Value, VmError> {
+          Err(VmError::Unimplemented("DrainCtx::construct"))
+        }
+
+        fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+          self.heap.add_root(value)
+        }
+
+        fn remove_root(&mut self, id: RootId) {
+          self.heap.remove_root(id);
+        }
+      }
+
+      let mut ctx = DrainCtx { heap: &mut self.heap };
+      let mut drain_err: Option<VmError> = None;
       while let Some((realm, job)) = vm_ctx.microtask_queue_mut().pop_front() {
-        hooks.enqueue_promise_job(job, realm);
+        if let Err(err) = hooks.host_enqueue_promise_job_fallible(&mut ctx, job, realm) {
+          drain_err = Some(err);
+          break;
+        }
+      }
+      if drain_err.is_some() {
+        vm_ctx.microtask_queue_mut().teardown(&mut ctx);
       }
       // Restore the VM's microtask queue so the embedding can run a microtask checkpoint later.
       *vm_ctx.microtask_queue_mut() = hooks;
+
+      let result = match drain_err {
+        Some(err) => Err(err),
+        None => result,
+      };
 
       drop(vm_ctx);
       let restore_res = self.vm.restore_realm_state(&mut self.heap, prev_state);
@@ -2825,7 +3010,6 @@ impl JsRuntime {
         self.vm.teardown_microtasks(&mut self.heap);
       }
     }
-
     result
   }
 
@@ -3289,8 +3473,52 @@ impl JsRuntime {
 
     // As a safety net, drain any Promise jobs that were enqueued onto the VM-owned microtask queue
     // into the embedding's host hook implementation.
+    struct DrainCtx<'a> {
+      heap: &'a mut Heap,
+    }
+    impl VmJobContext for DrainCtx<'_> {
+      fn call(
+        &mut self,
+        _host: &mut dyn VmHostHooks,
+        _callee: Value,
+        _this: Value,
+        _args: &[Value],
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("DrainCtx::call"))
+      }
+
+      fn construct(
+        &mut self,
+        _host: &mut dyn VmHostHooks,
+        _callee: Value,
+        _args: &[Value],
+        _new_target: Value,
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("DrainCtx::construct"))
+      }
+
+      fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+        self.heap.add_root(value)
+      }
+
+      fn remove_root(&mut self, id: RootId) {
+        self.heap.remove_root(id);
+      }
+    }
+
+    let mut ctx = DrainCtx { heap: &mut self.heap };
+    let mut drain_err: Option<VmError> = None;
     while let Some((realm, job)) = self.vm.microtask_queue_mut().pop_front() {
-      hooks.host_enqueue_promise_job(job, realm);
+      if let Err(err) = hooks.host_enqueue_promise_job_fallible(&mut ctx, job, realm) {
+        drain_err = Some(err);
+        break;
+      }
+    }
+    if drain_err.is_some() {
+      self.vm.microtask_queue_mut().teardown(&mut ctx);
+    }
+    if let Some(err) = drain_err {
+      return Err(err);
     }
 
     result
@@ -3502,8 +3730,55 @@ impl JsRuntime {
 
     // As a safety net, drain any Promise jobs that were enqueued onto the VM-owned microtask queue
     // into the embedding's host hook implementation.
+    struct DrainCtx<'a> {
+      heap: &'a mut Heap,
+    }
+    impl VmJobContext for DrainCtx<'_> {
+      fn call(
+        &mut self,
+        _host: &mut dyn VmHostHooks,
+        _callee: Value,
+        _this: Value,
+        _args: &[Value],
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("DrainCtx::call"))
+      }
+
+      fn construct(
+        &mut self,
+        _host: &mut dyn VmHostHooks,
+        _callee: Value,
+        _args: &[Value],
+        _new_target: Value,
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("DrainCtx::construct"))
+      }
+
+      fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+        self.heap.add_root(value)
+      }
+
+      fn remove_root(&mut self, id: RootId) {
+        self.heap.remove_root(id);
+      }
+    }
+
+    let mut ctx = DrainCtx { heap: &mut self.heap };
+    let mut drain_err: Option<VmError> = None;
     while let Some((realm, job)) = self.vm.microtask_queue_mut().pop_front() {
-      hooks.host_enqueue_promise_job(job, realm);
+      if let Err(err) = hooks.host_enqueue_promise_job_fallible(&mut ctx, job, realm) {
+        drain_err = Some(err);
+        break;
+      }
+    }
+    if drain_err.is_some() {
+      self.vm.microtask_queue_mut().teardown(&mut ctx);
+    }
+    if let Some(err) = drain_err {
+      // Treat enqueue failures as a hard stop and tear down queued jobs/continuations so persistent
+      // roots are cleaned up.
+      self.vm.teardown_microtasks(&mut self.heap);
+      return Err(err);
     }
 
     result
@@ -3595,10 +3870,55 @@ impl JsRuntime {
     let result = self.exec_module_source_with_host_and_hooks(host, &mut hooks, source);
 
     // Drain any Promise jobs that were enqueued onto the VM-owned queue while it was moved out.
+    struct DrainCtx<'a> {
+      heap: &'a mut Heap,
+    }
+    impl VmJobContext for DrainCtx<'_> {
+      fn call(
+        &mut self,
+        _host: &mut dyn VmHostHooks,
+        _callee: Value,
+        _this: Value,
+        _args: &[Value],
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("DrainCtx::call"))
+      }
+
+      fn construct(
+        &mut self,
+        _host: &mut dyn VmHostHooks,
+        _callee: Value,
+        _args: &[Value],
+        _new_target: Value,
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("DrainCtx::construct"))
+      }
+
+      fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+        self.heap.add_root(value)
+      }
+
+      fn remove_root(&mut self, id: RootId) {
+        self.heap.remove_root(id);
+      }
+    }
+
+    let mut ctx = DrainCtx { heap: &mut self.heap };
+    let mut drain_err: Option<VmError> = None;
     while let Some((realm, job)) = self.vm.microtask_queue_mut().pop_front() {
-      hooks.enqueue_promise_job(job, realm);
+      if let Err(err) = hooks.host_enqueue_promise_job_fallible(&mut ctx, job, realm) {
+        drain_err = Some(err);
+        break;
+      }
+    }
+    if drain_err.is_some() {
+      self.vm.microtask_queue_mut().teardown(&mut ctx);
     }
     *self.vm.microtask_queue_mut() = hooks;
+    let result = match drain_err {
+      Some(err) => Err(err),
+      None => result,
+    };
 
     if let Err(err) = &result {
       if is_hard_stop_error(err) {

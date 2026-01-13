@@ -15,7 +15,7 @@ use crate::handle::GcModuleNamespaceExports;
 use crate::{
   EnvRootId, GcBigInt, GcEnv, GcObject, GcString, GcSymbol, HeapId, Job, JobKind, RealmId, RootId,
   Value, Vm, WellKnownSymbols,
-  VmError, VmHost, VmHostHooks, WeakGcObject,
+  VmError, VmHost, VmHostHooks, VmJobContext, WeakGcObject,
   WeakGcSymbol,
 };
 use std::cell::Cell;
@@ -1767,7 +1767,42 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
         }
       };
 
-      hooks.host_enqueue_promise_job(job, realm);
+      struct EnqueueCtx<'a> {
+        heap: &'a mut Heap,
+      }
+
+      impl VmJobContext for EnqueueCtx<'_> {
+        fn call(
+          &mut self,
+          _hooks: &mut dyn VmHostHooks,
+          _callee: Value,
+          _this: Value,
+          _args: &[Value],
+        ) -> Result<Value, VmError> {
+          Err(VmError::Unimplemented("EnqueueCtx::call"))
+        }
+
+        fn construct(
+          &mut self,
+          _hooks: &mut dyn VmHostHooks,
+          _callee: Value,
+          _args: &[Value],
+          _new_target: Value,
+        ) -> Result<Value, VmError> {
+          Err(VmError::Unimplemented("EnqueueCtx::construct"))
+        }
+
+        fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+          self.heap.add_root(value)
+        }
+
+        fn remove_root(&mut self, id: RootId) {
+          self.heap.remove_root(id);
+        }
+      }
+
+      let mut ctx = EnqueueCtx { heap: &mut *self };
+      hooks.host_enqueue_promise_job_fallible(&mut ctx, job, realm)?;
     }
 
     // Keep the heap-level flag in sync with whether any registry still has pending cleanup work.

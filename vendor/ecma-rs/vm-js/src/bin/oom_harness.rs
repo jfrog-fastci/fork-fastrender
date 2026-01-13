@@ -18,7 +18,7 @@ fn microtask_job_erroring(
   let remaining = MICROTASK_ERRORS_REMAINING.fetch_sub(1, Ordering::Relaxed);
   if remaining > 1 {
     let job = Job::new(JobKind::Promise, microtask_job_erroring)?;
-    host.host_enqueue_promise_job(job, None);
+    host.host_enqueue_promise_job_fallible(_ctx, job, None)?;
   }
   Err(VmError::TypeError("microtask job error"))
 }

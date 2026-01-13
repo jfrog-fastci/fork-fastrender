@@ -1537,16 +1537,46 @@ impl Vm {
         }
       }
 
-      fn drain_into(&mut self, queue: &mut MicrotaskQueue) {
+      fn drain_into(
+        &mut self,
+        ctx: &mut dyn VmJobContext,
+        queue: &mut MicrotaskQueue,
+      ) -> Result<(), VmError> {
         while let Some((realm, job)) = self.pending.pop_front() {
-          queue.enqueue_promise_job(job, realm);
+          if let Err(err) = queue.host_enqueue_promise_job_fallible(ctx, job, realm) {
+            // Best-effort cleanup: if we can't enqueue remaining jobs, discard them so we don't leak
+            // persistent roots.
+            while let Some((_realm, job)) = self.pending.pop_front() {
+              job.discard(ctx);
+            }
+            return Err(err);
+          }
         }
+        Ok(())
       }
     }
 
     impl VmHostHooks for LocalHost {
       fn host_enqueue_promise_job(&mut self, job: crate::Job, realm: Option<RealmId>) {
         self.pending.push_back((realm, job));
+      }
+
+      fn host_enqueue_promise_job_fallible(
+        &mut self,
+        ctx: &mut dyn VmJobContext,
+        job: crate::Job,
+        realm: Option<RealmId>,
+      ) -> Result<(), VmError> {
+        // `VecDeque::push_back` aborts the process on allocator OOM; reserve fallibly so we can
+        // surface a recoverable `VmError::OutOfMemory`.
+        if self.pending.try_reserve(1).is_err() {
+          // If we can't enqueue, discard the job so we don't leak any persistent roots it owns.
+          job.discard(ctx);
+          return Err(VmError::OutOfMemory);
+        }
+        // `try_reserve(1)` guarantees `push_back` won't grow/reallocate the buffer.
+        self.pending.push_back((realm, job));
+        Ok(())
       }
 
       fn host_call_job_callback(
@@ -1590,7 +1620,50 @@ impl Vm {
       if self.microtasks.is_empty() {
         let mut fr_hooks = LocalHost::new();
         let enqueue_result = heap.enqueue_finalization_registry_cleanup_jobs(self, &mut fr_hooks);
-        fr_hooks.drain_into(&mut self.microtasks);
+        let drain_result = {
+          struct DrainCtx<'a> {
+            heap: &'a mut Heap,
+          }
+          impl VmJobContext for DrainCtx<'_> {
+            fn call(
+              &mut self,
+              _hooks: &mut dyn VmHostHooks,
+              _callee: Value,
+              _this: Value,
+              _args: &[Value],
+            ) -> Result<Value, VmError> {
+              Err(VmError::Unimplemented("DrainCtx::call"))
+            }
+
+            fn construct(
+              &mut self,
+              _hooks: &mut dyn VmHostHooks,
+              _callee: Value,
+              _args: &[Value],
+              _new_target: Value,
+            ) -> Result<Value, VmError> {
+              Err(VmError::Unimplemented("DrainCtx::construct"))
+            }
+
+            fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+              self.heap.add_root(value)
+            }
+
+            fn remove_root(&mut self, id: RootId) {
+              self.heap.remove_root(id)
+            }
+          }
+
+          let mut ctx = DrainCtx { heap };
+          fr_hooks.drain_into(&mut ctx, &mut self.microtasks)
+        };
+
+        if let Err(err) = drain_result {
+          // Treat enqueue/transfer OOM as a hard stop: discard remaining jobs so we don't leak
+          // persistent roots.
+          termination_err = Some(err);
+          break;
+        }
 
         match enqueue_result {
           Ok(()) => {}
@@ -1626,9 +1699,19 @@ impl Vm {
         // Some job types may schedule new Promise jobs via `VmHostHooks`; enqueue them into the VM's
         // microtask queue before proceeding (or before discarding the remaining queue on
         // termination).
-        hooks.drain_into(&mut ctx.vm.microtasks);
-
-        job_result
+        // Borrow-split `ctx` from `ctx.vm.microtasks` so we can pass both as mutable references.
+        // `VmJobContext` methods may call back into `ctx.vm`, so borrowing the queue directly would
+        // conflict with the `&mut ctx` borrow.
+        let drain_result = {
+          let mut microtasks = std::mem::take(&mut ctx.vm.microtasks);
+          let drain_result = hooks.drain_into(&mut ctx, &mut microtasks);
+          ctx.vm.microtasks = microtasks;
+          drain_result
+        };
+        match drain_result {
+          Ok(()) => job_result,
+          Err(e) => Err(e),
+        }
       };
 
       match job_result {
@@ -2960,10 +3043,55 @@ impl Vm {
     };
     // If a native handler enqueued jobs directly onto the VM-owned microtask queue while it was
     // temporarily moved out (via `vm.microtask_queue_mut()`), merge them back before restoring.
+    struct MergeCtx<'a> {
+      heap: &'a mut Heap,
+    }
+    impl VmJobContext for MergeCtx<'_> {
+      fn call(
+        &mut self,
+        _hooks: &mut dyn VmHostHooks,
+        _callee: Value,
+        _this: Value,
+        _args: &[Value],
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("MergeCtx::call"))
+      }
+
+      fn construct(
+        &mut self,
+        _hooks: &mut dyn VmHostHooks,
+        _callee: Value,
+        _args: &[Value],
+        _new_target: Value,
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("MergeCtx::construct"))
+      }
+
+      fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+        self.heap.add_root(value)
+      }
+
+      fn remove_root(&mut self, id: RootId) {
+        self.heap.remove_root(id);
+      }
+    }
+
+    let mut ctx = MergeCtx { heap: scope.heap_mut() };
+    let mut merge_err: Option<VmError> = None;
     while let Some((realm, job)) = self.microtasks.pop_front() {
-      hooks.enqueue_promise_job(job, realm);
+      if let Err(err) = hooks.host_enqueue_promise_job_fallible(&mut ctx, job, realm) {
+        merge_err = Some(err);
+        break;
+      }
+    }
+    if merge_err.is_some() {
+      // Discard any remaining jobs in the temporary queue before restoring the main queue.
+      self.microtasks.teardown(&mut ctx);
     }
     self.microtasks = hooks;
+    if let Some(err) = merge_err {
+      return Err(err);
+    }
     result
   }
 
@@ -3583,10 +3711,54 @@ impl Vm {
       let mut vm_hooks = self.push_active_host_hooks_guard(&mut hooks);
       vm_hooks.construct_impl(host, scope, &mut hooks, callee, args, new_target, call_site)
     };
+    struct MergeCtx<'a> {
+      heap: &'a mut Heap,
+    }
+    impl VmJobContext for MergeCtx<'_> {
+      fn call(
+        &mut self,
+        _hooks: &mut dyn VmHostHooks,
+        _callee: Value,
+        _this: Value,
+        _args: &[Value],
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("MergeCtx::call"))
+      }
+
+      fn construct(
+        &mut self,
+        _hooks: &mut dyn VmHostHooks,
+        _callee: Value,
+        _args: &[Value],
+        _new_target: Value,
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("MergeCtx::construct"))
+      }
+
+      fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+        self.heap.add_root(value)
+      }
+
+      fn remove_root(&mut self, id: RootId) {
+        self.heap.remove_root(id);
+      }
+    }
+
+    let mut ctx = MergeCtx { heap: scope.heap_mut() };
+    let mut merge_err: Option<VmError> = None;
     while let Some((realm, job)) = self.microtasks.pop_front() {
-      hooks.enqueue_promise_job(job, realm);
+      if let Err(err) = hooks.host_enqueue_promise_job_fallible(&mut ctx, job, realm) {
+        merge_err = Some(err);
+        break;
+      }
+    }
+    if merge_err.is_some() {
+      self.microtasks.teardown(&mut ctx);
     }
     self.microtasks = hooks;
+    if let Some(err) = merge_err {
+      return Err(err);
+    }
     result
   }
 
