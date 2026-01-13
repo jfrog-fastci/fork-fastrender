@@ -957,13 +957,13 @@ impl Document {
       .then(|| utf16_len(data))
       .unwrap_or(0);
 
+    if has_live_ranges {
+      self.live_range_replace_data_steps(node_id, offset, removed_len, inserted_len);
+    }
     if has_live_subscribers {
       self
         .live_mutation
         .replace_data(node_id, offset, removed_len, inserted_len);
-    }
-    if has_live_ranges {
-      self.live_range_replace_data_steps(node_id, offset, removed_len, inserted_len);
     }
 
     {

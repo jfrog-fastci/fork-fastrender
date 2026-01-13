@@ -35920,6 +35920,84 @@ fn range_extract_contents_native(
   Ok(fragment_wrapper)
 }
 
+fn range_create_contextual_fragment_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = range_handle_from_this(vm, scope, this, ILLEGAL_INVOCATION_ERROR)?;
+
+  let html_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let html_s = scope.to_string(vm, host, hooks, html_value)?;
+  let html: String = scope
+    .heap()
+    .get_string(html_s)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  // Range.createContextualFragment creates a detached DocumentFragment; it must not trigger
+  // renderer invalidation or MutationObserver microtask scheduling.
+  let fragment_res = if is_host_document_id(vm, handle.document_id) {
+    mutate_dom_for_vm_host(host, |dom| {
+      let res = (|| {
+        let context_node = dom.range_start_container(handle.range_id)?;
+        dom.create_contextual_fragment(context_node, &html)
+      })();
+      (res, false)
+    })
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?
+  } else {
+    let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, handle.document_id)
+      .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+
+    let fragment = (|| {
+      let context_node = dom.range_start_container(handle.range_id)?;
+      dom.create_contextual_fragment(context_node, &html)
+    })();
+
+    // Owned documents: skip MutationObserver microtask scheduling.
+    let _ = dom.take_mutation_observer_microtask_needed();
+    fragment
+  };
+
+  let fragment_id = match fragment_res {
+    Ok(id) => id,
+    Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
+  };
+
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), fragment_id)
+}
+
+fn range_common_ancestor_container_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = range_handle_from_this(vm, scope, this, ILLEGAL_INVOCATION_ERROR)?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let node_id = dom
+    .range_common_ancestor_container(handle.range_id)
+    .map_err(|_| VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
+  get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), node_id)
+}
+
 fn range_insert_node_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -50860,6 +50938,40 @@ fn init_window_globals(
         scope.push_root(Value::Object(func))?;
         let key = alloc_key(&mut scope, "extractContents")?;
         scope.define_property(range_proto, key, data_desc(Value::Object(func)))?;
+      }
+
+      // Range.prototype.createContextualFragment()
+      {
+        let call_id = vm.register_native_call(range_create_contextual_fragment_native)?;
+        let name_s = scope.alloc_string("createContextualFragment")?;
+        scope.push_root(Value::String(name_s))?;
+        let func = scope.alloc_native_function(call_id, None, name_s, 1)?;
+        scope.heap_mut().object_set_prototype(
+          func,
+          Some(realm.intrinsics().function_prototype()),
+        )?;
+        scope.push_root(Value::Object(func))?;
+        let key = alloc_key(&mut scope, "createContextualFragment")?;
+        scope.define_property(range_proto, key, data_desc(Value::Object(func)))?;
+      }
+
+      // Range.prototype.commonAncestorContainer (getter).
+      {
+        let call_id = vm.register_native_call(range_common_ancestor_container_get_native)?;
+        let name_s = scope.alloc_string("get commonAncestorContainer")?;
+        scope.push_root(Value::String(name_s))?;
+        let func = scope.alloc_native_function(call_id, None, name_s, 0)?;
+        scope.heap_mut().object_set_prototype(
+          func,
+          Some(realm.intrinsics().function_prototype()),
+        )?;
+        scope.push_root(Value::Object(func))?;
+        let key = alloc_key(&mut scope, "commonAncestorContainer")?;
+        scope.define_property(
+          range_proto,
+          key,
+          idl_attribute_desc(Value::Object(func), Value::Undefined),
+        )?;
       }
 
       // Range.prototype.insertNode(node)
