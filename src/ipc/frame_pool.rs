@@ -83,6 +83,18 @@ enum ShmemBacking {
 }
 
 impl ShmemRegion {
+  /// Create and map a new shared-memory region of `len` bytes.
+  ///
+  /// Security: we explicitly zero-initialize the mapping before returning. Even though most OS
+  /// APIs hand out zeroed pages for new mappings, making the invariant explicit avoids leaking
+  /// previous-process memory (or stale named-shm contents) if a backing name/path is ever reused
+  /// accidentally.
+  pub fn create(len: u64) -> Result<Self, IpcError> {
+    let mut region = Self::create_temp_mapped(len)?;
+    region.as_bytes_mut().fill(0);
+    Ok(region)
+  }
+
   fn create_temp_mapped(len: u64) -> Result<Self, IpcError> {
     let len_usize = usize::try_from(len).map_err(|_| IpcError::ArithmeticOverflow)?;
 
@@ -182,7 +194,7 @@ impl BrowserFramePool {
     let mut descs = Vec::with_capacity(count);
 
     for index in 0..count {
-      let region = ShmemRegion::create_temp_mapped(layout.byte_len)?;
+      let region = ShmemRegion::create(layout.byte_len)?;
       let desc = FrameBufferDesc {
         index: index as u32,
         width_px: layout.width_px,
@@ -478,6 +490,15 @@ mod tests {
     assert!(
       crate::ipc::sync::shm_consume_count_for_test() > consume_before,
       "expected browser consume fence to run when reading buffer bytes"
+    );
+  }
+
+  #[test]
+  fn shmem_region_create_zero_initializes() {
+    let region = ShmemRegion::create(128).expect("create shmem region");
+    assert!(
+      region.as_bytes().iter().all(|b| *b == 0),
+      "newly created shared-memory region should be zero-initialized"
     );
   }
 }
