@@ -55073,6 +55073,41 @@ mod tests {
   }
 
   #[test]
+  fn range_detach_is_legacy_noop() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const range = document.createRange();
+        const before = [
+          range.startContainer.nodeType,
+          range.startOffset,
+          range.endContainer.nodeType,
+          range.endOffset,
+          range.collapsed,
+        ];
+        const ret = range.detach();
+        const after = [
+          range.startContainer.nodeType,
+          range.startOffset,
+          range.endContainer.nodeType,
+          range.endOffset,
+          range.collapsed,
+        ];
+        if (ret !== undefined) return false;
+        for (let i = 0; i < before.length; i++) {
+          if (before[i] !== after[i]) return false;
+        }
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn traversal_interface_objects_exist_and_are_illegal_constructors() -> Result<(), VmError> {
     let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
     let result = realm.exec_script(
