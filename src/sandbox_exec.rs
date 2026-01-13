@@ -16,6 +16,42 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output};
 
+/// Standard Seatbelt parameters passed to sandbox profiles.
+///
+/// `sandbox-exec` exposes these through `-D KEY=value` and SBPL can reference them via `(param
+/// "KEY")`. Keeping them out of the profile string avoids string-interpolation and escaping bugs
+/// (especially when values contain spaces or quotes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SeatbeltParameters {
+  home: String,
+  tmpdir: String,
+}
+
+impl SeatbeltParameters {
+  fn from_env() -> Self {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/Users".to_string());
+    let tmpdir =
+      std::env::var("TMPDIR").unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().into_owned());
+    Self { home, tmpdir }
+  }
+
+  fn sandbox_exec_definitions(&self) -> Vec<String> {
+    vec![
+      "-D".to_string(),
+      format!("HOME={}", self.home),
+      "-D".to_string(),
+      format!("TMPDIR={}", self.tmpdir),
+    ]
+  }
+}
+
+fn push_sandbox_exec_parameters(cmd: &mut Command, params: &SeatbeltParameters) {
+  // `sandbox-exec` uses getopt: each `-D` consumes the following argv entry.
+  for def in params.sandbox_exec_definitions() {
+    cmd.arg(def);
+  }
+}
+
 /// Seatbelt profile selection for `sandbox-exec`.
 #[derive(Debug, Clone)]
 pub enum SandboxExecProfile {
@@ -80,6 +116,11 @@ impl SandboxExecCommand {
       SandboxExecProfile::Custom(contents) => {
         use std::os::unix::fs::PermissionsExt;
 
+        // Make common Seatbelt parameters available to the profile via `(param "HOME")`, etc.
+        // Do this before `-f` so the resulting argv is:
+        // `sandbox-exec -D HOME=... -D TMPDIR=... -f <profile> -- <program> ...`.
+        push_sandbox_exec_parameters(&mut cmd, &SeatbeltParameters::from_env());
+
         let mut tmp = tempfile::Builder::new()
           .prefix("fastr-sandbox-profile-")
           .suffix(".sb")
@@ -140,3 +181,61 @@ impl SandboxExecCommand {
   }
 }
 
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn sandbox_exec_definitions_preserve_spaces() {
+    let params = SeatbeltParameters {
+      home: "/Users/Test User".to_string(),
+      tmpdir: "/var/folders/xx/Some Tmp".to_string(),
+    };
+
+    assert_eq!(
+      params.sandbox_exec_definitions(),
+      vec![
+        "-D",
+        "HOME=/Users/Test User",
+        "-D",
+        "TMPDIR=/var/folders/xx/Some Tmp"
+      ]
+    );
+  }
+
+  #[test]
+  fn sandbox_exec_arg_construction_keeps_spacey_values_as_single_argv_entries() {
+    let params = SeatbeltParameters {
+      home: "/Users/Test User".to_string(),
+      tmpdir: "/var/folders/xx/Some Tmp".to_string(),
+    };
+
+    let mut cmd = Command::new("sandbox-exec");
+    push_sandbox_exec_parameters(&mut cmd, &params);
+    cmd
+      .arg("-f")
+      .arg("/tmp/profile.sb")
+      .arg("--")
+      .arg("echo")
+      .arg("hello");
+
+    let args: Vec<String> = cmd
+      .get_args()
+      .map(|arg| arg.to_string_lossy().into_owned())
+      .collect();
+    assert_eq!(
+      args,
+      vec![
+        "-D",
+        "HOME=/Users/Test User",
+        "-D",
+        "TMPDIR=/var/folders/xx/Some Tmp",
+        "-f",
+        "/tmp/profile.sb",
+        "--",
+        "echo",
+        "hello"
+      ]
+    );
+  }
+}

@@ -82,6 +82,7 @@ const RENDERER_SYSTEM_FONTS_PROFILE: &str = r#"(version 1)
 
 ;; Explicitly deny reads from user-controlled / sensitive locations.
 (deny file-read* (subpath (param "HOME")))
+(deny file-read* (subpath (param "TMPDIR")))
 (deny file-read* (subpath "/Users"))
 (deny file-read* (subpath "/Volumes"))
 (deny file-read* (subpath "/private/etc"))
@@ -330,8 +331,19 @@ fn apply_profile_source_with_home_param(profile_source: &str) -> io::Result<()> 
     CString::new(home).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "HOME contains NUL"))?;
   let key = CString::new("HOME").expect("static cstr should not contain NUL");
 
+  let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().into_owned());
+  let tmpdir = CString::new(tmpdir)
+    .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "TMPDIR contains NUL"))?;
+  let tmpdir_key = CString::new("TMPDIR").expect("static cstr should not contain NUL");
+
   // `sandbox_init_with_parameters` expects a NULL-terminated list: [key, value, key, value, NULL].
-  let params: [*const libc::c_char; 3] = [key.as_ptr(), home.as_ptr(), std::ptr::null()];
+  let params: [*const libc::c_char; 5] = [
+    key.as_ptr(),
+    home.as_ptr(),
+    tmpdir_key.as_ptr(),
+    tmpdir.as_ptr(),
+    std::ptr::null(),
+  ];
   sandbox_init_profile_with_parameters(&profile_source, SANDBOX_PROFILE, &params)
 }
 
