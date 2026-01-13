@@ -90,9 +90,14 @@ impl AudioMixer {
 
   /// Mix into `out` aligned to an absolute device frame counter.
   ///
-  /// `device_frame` should typically represent the *playback* (heard) frame index on the output
-  /// device clock, not merely the callback/write cursor. Callers can compute this using
-  /// [`AudioClock::frames`] and [`AudioOutputInfo::estimated_latency_frames`].
+  /// `device_frame` is the absolute frame index on the *output timeline* corresponding to the
+  /// first frame in `out`.
+  ///
+  /// Notes:
+  /// - Some backends expose a frame counter for "frames written into the callback". That value is a
+  ///   good `device_frame` when mixing *the next output buffer*.
+  /// - For A/V sync or `currentTime`, callers often need a "time heard now" estimate, which is
+  ///   typically `frames_written - estimated_latency_frames`.
   pub fn mix_into_frames(&mut self, out: &mut [f32], device_frame: u64, frames: usize) {
     let channels = self.channels as usize;
     let needed = frames.saturating_mul(channels);
@@ -124,6 +129,9 @@ impl AudioMixer {
   }
 
   /// Convenience wrapper that mixes based on an [`AudioClock`] + output latency estimate.
+  ///
+  /// This uses `clock.frames() - output_info.estimated_latency_frames()` to align to an estimated
+  /// "frames currently being heard" timeline.
   pub fn mix_into_from_backend_clock(
     &mut self,
     out: &mut [f32],
@@ -134,6 +142,16 @@ impl AudioMixer {
     let played = clock.frames();
     let latency = output_info.estimated_latency_frames();
     let device_frame = played.saturating_sub(latency);
+    self.mix_into_frames(out, device_frame, frames);
+  }
+
+  /// Convenience wrapper that mixes based on the backend's raw output-frame counter.
+  ///
+  /// This aligns `device_frame` to `clock.frames()` without applying the latency estimate. This is
+  /// typically appropriate when mixing the *next* buffer to hand to the output backend (the backend
+  /// will play it after its internal latency).
+  pub fn mix_into_from_output_frames(&mut self, out: &mut [f32], clock: &AudioClock, frames: usize) {
+    let device_frame = clock.frames();
     self.mix_into_frames(out, device_frame, frames);
   }
 }
@@ -286,5 +304,33 @@ mod tests {
     // played=4, latency=2 => device_frame=2 => should read samples [3,4].
     mixer.mix_into_from_backend_clock(&mut out, &clock, &output_info, 2);
     assert_eq!(out, vec![3.0, 4.0]);
+  }
+
+  #[test]
+  fn mix_from_output_frames_uses_write_cursor() {
+    let mut mixer = AudioMixer::new(1, 10, Duration::from_secs(10));
+    mixer.add_stream(
+      1,
+      AudioStreamParams {
+        pts_offset_ns: 0,
+        gain: 1.0,
+      },
+    );
+    mixer
+      .stream_queue_mut(1)
+      .unwrap()
+      .push_segment(seg(0, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 10))
+      .unwrap();
+
+    let frames_played = Arc::new(AtomicU64::new(4));
+    let clock = AudioClock::OutputFrames {
+      frames_played,
+      sample_rate_hz: 10,
+    };
+
+    let mut out = vec![0.0; 2];
+    // frames_written=4 => next buffer should start at frame 4 (samples 5 and 6).
+    mixer.mix_into_from_output_frames(&mut out, &clock, 2);
+    assert_eq!(out, vec![5.0, 6.0]);
   }
 }
