@@ -5,11 +5,33 @@ use fastrender::ui::messages::{
   DownloadOutcome, NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
+use std::path::Path;
 use std::time::Duration;
 use tempfile::tempdir;
 use url::Url;
 
 const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
+
+fn assert_path_in_download_dir(path: &Path, download_dir: &Path) {
+  let download_dir = std::fs::canonicalize(download_dir).unwrap_or_else(|err| {
+    panic!(
+      "failed to canonicalize download dir {}: {err}",
+      download_dir.display()
+    )
+  });
+  let path = std::fs::canonicalize(path).unwrap_or_else(|err| {
+    panic!(
+      "failed to canonicalize download path {}: {err}",
+      path.display()
+    )
+  });
+  assert!(
+    path.starts_with(&download_dir),
+    "expected download path {} to be inside download dir {}",
+    path.display(),
+    download_dir.display()
+  );
+}
 
 #[test]
 fn ui_worker_download_cancel_cleans_up() {
@@ -89,15 +111,35 @@ fn ui_worker_download_cancel_cleans_up() {
     })
     .unwrap();
 
-  let progress = support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::DownloadProgress { .. })
+  let started = support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::DownloadStarted { .. })
   })
-  .unwrap_or_else(|| panic!("timed out waiting for DownloadProgress after clicking download link"));
+  .unwrap_or_else(|| panic!("timed out waiting for DownloadStarted after clicking download link"));
 
-  let download_id = match progress {
-    WorkerToUi::DownloadProgress { download_id, .. } => download_id,
+  let (download_id, path) = match started {
+    WorkerToUi::DownloadStarted {
+      download_id, path, ..
+    } => (download_id, path),
     other => panic!("unexpected worker message: {other:?}"),
   };
+
+  assert_path_in_download_dir(&path, download_dir.path());
+
+  // Wait for progress so we know the download thread actually began writing to disk (cancellation
+  // before the first write would make cleanup assertions vacuous).
+  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(
+      msg,
+      WorkerToUi::DownloadProgress {
+        download_id: got,
+        received_bytes,
+        ..
+      } if *got == download_id && *received_bytes > 0
+    )
+  })
+  .unwrap_or_else(|| {
+    panic!("timed out waiting for DownloadProgress after DownloadStarted for download {download_id:?}")
+  });
 
   ui_tx
     .send(UiToWorker::CancelDownload { tab_id, download_id })
