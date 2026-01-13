@@ -174,6 +174,10 @@ impl TimedAudioQueue {
   ///
   /// This is a convenience wrapper around [`Self::push_segment`].
   pub fn push_packet(&mut self, start_pts: Duration, samples: &[f32]) -> Result<(), PushError> {
+    let channels = usize::from(self.channels);
+    if channels == 0 || (samples.len() % channels) != 0 {
+      return Err(PushError::InvalidSamples);
+    }
     self.push_segment(TimedAudioSegment {
       start_pts: start_pts,
       samples: samples.to_vec(),
@@ -302,6 +306,7 @@ impl TimedAudioQueue {
   pub fn pop_into(&mut self, target_pts: Duration, out: &mut [f32]) -> PopResult {
     let channels = self.channels as usize;
     if channels == 0 {
+      out.fill(0.0);
       return PopResult::default();
     }
     let frames = out.len() / channels;
@@ -309,6 +314,9 @@ impl TimedAudioQueue {
       out.fill(0.0);
       return PopResult::default();
     }
+    // Ensure the entire buffer is deterministically initialized even if the caller passes a slice
+    // whose length is not a multiple of `channels`.
+    out.fill(0.0);
 
     let dropped_before = self.dropped_frames;
     let res = self.read_into(out, target_pts, frames);
@@ -609,7 +617,7 @@ mod tests {
 
   #[test]
   fn timed_audio_queue_exact_alignment() {
-    let mut q = TimedAudioQueue::with_max_buffered_duration(2, 10, Duration::from_secs(10));
+    let mut q = TimedAudioQueue::new(2, 10);
     let samples = vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
     q.push_packet(Duration::ZERO, &samples).unwrap();
 
@@ -623,7 +631,7 @@ mod tests {
 
   #[test]
   fn timed_audio_queue_gap_insertion() {
-    let mut q = TimedAudioQueue::with_max_buffered_duration(1, 10, Duration::from_secs(10));
+    let mut q = TimedAudioQueue::new(1, 10);
     q.push_packet(Duration::from_secs(1), &[1.0, 2.0, 3.0])
       .unwrap();
 
@@ -639,7 +647,7 @@ mod tests {
 
   #[test]
   fn timed_audio_queue_overlap_drops() {
-    let mut q = TimedAudioQueue::with_max_buffered_duration(1, 10, Duration::from_secs(10));
+    let mut q = TimedAudioQueue::new(1, 10);
     q.push_packet(Duration::ZERO, &[1.0, 2.0, 3.0, 4.0, 5.0])
       .unwrap(); // frames 0..5
     q.push_packet(Duration::from_millis(300), &[10.0, 11.0, 12.0, 13.0])
@@ -651,6 +659,40 @@ mod tests {
     assert_eq!(out, [1.0, 2.0, 3.0, 4.0, 5.0, 12.0, 13.0]);
     assert_eq!(q.inserted_silence_frames(), 0);
     assert_eq!(q.dropped_frames(), 2);
+  }
+
+  #[test]
+  fn timed_audio_queue_out_of_order_packets() {
+    let mut q = TimedAudioQueue::new(1, 10);
+    // Push later audio first.
+    q.push_packet(Duration::from_secs(1), &[10.0, 11.0]).unwrap();
+    q.push_packet(Duration::ZERO, &[1.0, 2.0]).unwrap();
+
+    let mut out = vec![0.0; 12];
+    q.pop_into(Duration::ZERO, &mut out);
+
+    assert_eq!(out[..2], [1.0, 2.0]);
+    assert_eq!(out[2..10], [0.0; 8]);
+    assert_eq!(out[10..], [10.0, 11.0]);
+    assert_eq!(q.inserted_silence_frames(), 8);
+    assert_eq!(q.dropped_frames(), 0);
+  }
+
+  #[test]
+  fn timed_audio_queue_partial_consumption_continues() {
+    let mut q = TimedAudioQueue::new(1, 10);
+    q.push_packet(Duration::ZERO, &[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
+
+    let mut out1 = vec![0.0; 2];
+    q.pop_into(Duration::ZERO, &mut out1);
+    assert_eq!(out1, [1.0, 2.0]);
+
+    // Next read starts exactly at frame 2 => 200ms at 10Hz.
+    let mut out2 = vec![0.0; 3];
+    q.pop_into(Duration::from_millis(200), &mut out2);
+    assert_eq!(out2, [3.0, 4.0, 5.0]);
+    assert_eq!(q.inserted_silence_frames(), 0);
+    assert_eq!(q.dropped_frames(), 0);
   }
 
   #[test]
