@@ -169,13 +169,6 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
     }
   };
 
-  if read_len == 0 {
-    return Err(io::Error::new(
-      io::ErrorKind::UnexpectedEof,
-      "peer closed socket while receiving fd",
-    ));
-  }
-
   // Parse and wrap any SCM_RIGHTS fds *before* checking MSG_CTRUNC/MSG_TRUNC so we reliably close
   // them on protocol errors (fd leak defense).
   let control_len = (msg.msg_controllen as usize).min(CONTROL_LEN);
@@ -269,6 +262,30 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
   if let Some(err) = protocol_error {
     drop(fds_out);
     return Err(err);
+  }
+
+  if read_len == 0 {
+    // EOF is a valid outcome when the peer closed the socket without sending a message.
+    // However, be defensive: if we somehow received fds with a zero-length payload, treat it as a
+    // protocol violation and ensure all fds are closed.
+    if fds_out.is_empty() {
+      return Err(io::Error::new(
+        io::ErrorKind::UnexpectedEof,
+        "peer closed socket while receiving fd",
+      ));
+    }
+    drop(fds_out);
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidData,
+      "received SCM_RIGHTS file descriptor without payload bytes",
+    ));
+  }
+
+  if fds_out.is_empty() {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidData,
+      "missing SCM_RIGHTS control message",
+    ));
   }
 
   if fds_out.len() != 1 {
