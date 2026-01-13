@@ -10,6 +10,8 @@ publish = false
 members = [
   "xtask",
   "crates/js-wpt-dom-runner",
+  "crates/fastrender-ipc",
+  "crates/fastrender-renderer",
 ]
 # NOTE: WebIDL/JS infrastructure should live in `vendor/ecma-rs/` per
 # instructions/ecma_rs_ownership.md and instructions/webidl_consolidation.md.

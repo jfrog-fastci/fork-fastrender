@@ -1756,6 +1756,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastrender-ipc"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "fastrender-renderer"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "fastrender-ipc",
+ "serde",
+]
+
+[[package]]
 name = "fax"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
