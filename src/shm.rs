@@ -206,11 +206,18 @@ mod imp {
 
     /// Query the current `F_SEAL_*` bitmask.
     pub fn seals(&self) -> Result<libc::c_int, SharedMemoryError> {
-      // SAFETY: `fcntl(F_GET_SEALS)` takes no extra args.
-      let rc = unsafe { libc::fcntl(self.file.as_raw_fd(), libc::F_GET_SEALS) };
-      if rc < 0 {
-        return Err(SharedMemoryError::SealQuery(io::Error::last_os_error()));
-      }
+      let rc = loop {
+        // SAFETY: `fcntl(F_GET_SEALS)` takes no extra args.
+        let rc = unsafe { libc::fcntl(self.file.as_raw_fd(), libc::F_GET_SEALS) };
+        if rc >= 0 {
+          break rc;
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::Interrupted {
+          continue;
+        }
+        return Err(SharedMemoryError::SealQuery(err));
+      };
       Ok(rc)
     }
 
@@ -276,9 +283,15 @@ mod imp {
         return self.lock_seals();
       }
 
-      let rc = unsafe { libc::fcntl(self.file.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_WRITE) };
-      if rc == -1 {
+      loop {
+        let rc = unsafe { libc::fcntl(self.file.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_WRITE) };
+        if rc != -1 {
+          break;
+        }
         let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::Interrupted {
+          continue;
+        }
         if err.raw_os_error() == Some(libc::EBUSY) {
           return Err(SharedMemoryError::SealReadOnlyBusy(err));
         }
@@ -310,11 +323,17 @@ mod imp {
     }
 
     fn add_seals_raw(&self, seals: libc::c_int) -> io::Result<()> {
-      let rc = unsafe { libc::fcntl(self.file.as_raw_fd(), libc::F_ADD_SEALS, seals) };
-      if rc == -1 {
-        return Err(io::Error::last_os_error());
+      loop {
+        let rc = unsafe { libc::fcntl(self.file.as_raw_fd(), libc::F_ADD_SEALS, seals) };
+        if rc != -1 {
+          return Ok(());
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::Interrupted {
+          continue;
+        }
+        return Err(err);
       }
-      Ok(())
     }
   }
 
