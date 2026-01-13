@@ -145,6 +145,9 @@ Linux implementation checklist (shared memory + FD passing footguns): [`docs/ipc
 | macOS | Seatbelt (`sandbox_init` / `sandbox-exec`), App Sandbox |
 | Windows | Job objects, AppContainer, LPAC |
 
+See also: [docs/sandboxing.md](../docs/sandboxing.md) for repo-specific sandbox implementation notes
+(including the Windows debug escape hatch).
+
 macOS note: FastRender prefers the system-provided Seatbelt profile `pure-computation` when
 applying a strict sandbox. Some macOS versions do not ship that named profile (or treat it as
 invalid), so the implementation falls back to an embedded SBPL profile string with:
