@@ -7,8 +7,8 @@
   OS access (networking, file access, windowing, persistent storage, etc.).
 
   In the first `.app` bundling iteration we expect the browser process to be
-  *not* App-Sandboxed. Passing this file to `codesign --entitlements` should
-  result in a signed binary with no App Sandbox entitlement.
+  *not* App-Sandboxed. Passing this file to `codesign` (with an entitlements
+  plist) should result in a signed binary with no App Sandbox entitlement.
 
   TODO(macos-app):
   - Re-evaluate whether the browser process should also be sandboxed (e.g. for
@@ -24,4 +24,3 @@
   <dict>
   </dict>
 </plist>
-
