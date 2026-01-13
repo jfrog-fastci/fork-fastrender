@@ -123,11 +123,13 @@ pub(in super::super) struct GridItem {
   /// same key).
   ///
   /// Cached values:
-  /// - `Size<f32>`: axis sums including `extra_margin`, excluding baseline shims.
-  /// - `Point<f32>`: resolved *start* margins (`left`, `top`) excluding `extra_margin` and baseline
-  ///   shims. Used by baseline shimming, which sanitizes non-finite values per-side before adding
-  ///   `extra_margin`.
-  pub resolved_margin_axis_sums_cache: Option<(Option<u32>, Size<f32>, Point<f32>)>,
+  /// - `Option<Size<f32>>`: axis sums including `extra_margin`, excluding baseline shims. This is
+  ///   `None` when we've only cached the start margin(s) (for example from baseline shimming) and
+  ///   have not yet computed full axis sums.
+  /// - `Point<Option<f32>>`: resolved *start* margins (`left`, `top`) excluding `extra_margin` and
+  ///   baseline shims. Used by baseline shimming, which sanitizes non-finite values per-side before
+  ///   adding `extra_margin`.
+  pub resolved_margin_axis_sums_cache: Option<(Option<u32>, Option<Size<f32>>, Point<Option<f32>>)>,
 
   /// Final y position. Used to compute baseline alignment for the container.
   pub y_position: f32,
@@ -493,20 +495,29 @@ impl GridItem {
 
     let key = canonicalize_inner_node_width(inner_node_width);
     let base_sums = match self.resolved_margin_axis_sums_cache {
-      Some((cached_key, cached_sums, _)) if cached_key == key => cached_sums,
+      Some((cached_key, Some(cached_sums), _)) if cached_key == key => cached_sums,
       _ => {
-        let left = self
-          .margin
-          .left
-          .resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis));
+        let cached_start_margins = match self.resolved_margin_axis_sums_cache {
+          Some((cached_key, _, cached_start)) if cached_key == key => cached_start,
+          _ => Point::NONE,
+        };
+
+        let left = cached_start_margins.x.unwrap_or_else(|| {
+          self
+            .margin
+            .left
+            .resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis))
+        });
+        let top = cached_start_margins.y.unwrap_or_else(|| {
+          self
+            .margin
+            .top
+            .resolve_or_zero(inner_node_width, |val, basis| tree.calc(val, basis))
+        });
         let right = self
           .margin
           .right
           .resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis));
-        let top = self
-          .margin
-          .top
-          .resolve_or_zero(inner_node_width, |val, basis| tree.calc(val, basis));
         let bottom = self
           .margin
           .bottom
@@ -519,9 +530,15 @@ impl GridItem {
           bottom,
         } + self.extra_margin)
           .sum_axes();
-        let resolved_start_margins = Point { x: left, y: top };
 
-        self.resolved_margin_axis_sums_cache = Some((key, resolved_sums, resolved_start_margins));
+        self.resolved_margin_axis_sums_cache = Some((
+          key,
+          Some(resolved_sums),
+          Point {
+            x: Some(left),
+            y: Some(top),
+          },
+        ));
         resolved_sums
       }
     };
@@ -543,18 +560,71 @@ impl GridItem {
     inner_node_width: Option<f32>,
     tree: &impl LayoutPartialTree,
   ) -> f32 {
-    // Ensure the shared margin cache is populated for this key so we can reuse the resolved start
-    // margin without re-running percent/calc resolution.
-    let _ = self.margins_axis_sums_with_baseline_shims_cached(inner_node_width, tree);
-    let resolved_start_margins = self
-      .resolved_margin_axis_sums_cache
-      .map(|(_, _, start)| start)
-      .unwrap_or(Point::ZERO);
-
-    match axis {
-      AbstractAxis::Inline => resolved_start_margins.y,
-      AbstractAxis::Block => resolved_start_margins.x,
+    #[inline(always)]
+    fn canonicalize_inner_node_width(width: Option<f32>) -> Option<u32> {
+      width.map(|w| {
+        let w = if w == 0.0 { 0.0 } else { w };
+        w.to_bits()
+      })
     }
+
+    let key = canonicalize_inner_node_width(inner_node_width);
+    if let Some((cached_key, cached_sums, cached_start)) = self.resolved_margin_axis_sums_cache {
+      if cached_key == key {
+        let cached_value = match axis {
+          AbstractAxis::Inline => cached_start.y,
+          AbstractAxis::Block => cached_start.x,
+        };
+        if let Some(val) = cached_value {
+          return val;
+        }
+
+        // Need to compute the missing start margin, but we can preserve any existing cached values
+        // for this key.
+        let computed = match axis {
+          AbstractAxis::Inline => self
+            .margin
+            .top
+            .resolve_or_zero(inner_node_width, |val, basis| tree.calc(val, basis)),
+          AbstractAxis::Block => self
+            .margin
+            .left
+            .resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis)),
+        };
+        let mut new_start = cached_start;
+        match axis {
+          AbstractAxis::Inline => new_start.y = Some(computed),
+          AbstractAxis::Block => new_start.x = Some(computed),
+        }
+        self.resolved_margin_axis_sums_cache = Some((key, cached_sums, new_start));
+        return computed;
+      }
+    }
+
+    // No cache for this key yet: compute only the requested start margin and store it (without
+    // forcing full axis-sum resolution).
+    let computed = match axis {
+      AbstractAxis::Inline => self
+        .margin
+        .top
+        .resolve_or_zero(inner_node_width, |val, basis| tree.calc(val, basis)),
+      AbstractAxis::Block => self
+        .margin
+        .left
+        .resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis)),
+    };
+    let start = match axis {
+      AbstractAxis::Inline => Point {
+        x: None,
+        y: Some(computed),
+      },
+      AbstractAxis::Block => Point {
+        x: Some(computed),
+        y: None,
+      },
+    };
+    self.resolved_margin_axis_sums_cache = Some((key, None, start));
+    computed
   }
 
   /// Compute the item's min content contribution from the provided parameters
@@ -1048,8 +1118,11 @@ mod tests {
       cache_after_first,
       Some((
         Some(100.0f32.to_bits()),
-        Size { width: 8.0, height: 37.0 },
-        Point { x: 0.0, y: 10.0 }
+        Some(Size { width: 8.0, height: 37.0 }),
+        Point {
+          x: Some(0.0),
+          y: Some(10.0)
+        }
       ))
     );
 
@@ -1065,8 +1138,11 @@ mod tests {
       item.resolved_margin_axis_sums_cache,
       Some((
         Some(200.0f32.to_bits()),
-        Size { width: 8.0, height: 67.0 },
-        Point { x: 0.0, y: 20.0 }
+        Some(Size { width: 8.0, height: 67.0 }),
+        Point {
+          x: Some(0.0),
+          y: Some(20.0)
+        }
       ))
     );
   }
