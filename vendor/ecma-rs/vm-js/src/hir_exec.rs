@@ -496,10 +496,12 @@ impl<'vm> HirEvaluator<'vm> {
         .set_function_bound_new_target(func_obj, self.new_target)?;
     }
 
-    // Constructable ordinary functions get a `.prototype` object so `instanceof` works per spec.
+    // Constructable functions get a `.prototype` object so `instanceof` works per spec.
     //
-    // Note: method/getter/setter functions are not constructable and must *not* have an own
-    // `"prototype"` property.
+    // `OrdinaryHasInstance` requires `C.prototype` to be an object (and throws if it isn't). Some
+    // callable function kinds (arrow functions, object literal methods/accessors, class methods)
+    // are not constructable and do *not* have an own `"prototype"` property unless user code adds
+    // one, so gate this initialization on the constructability metadata from HIR lowering.
     if is_constructable {
       let _ = crate::function_properties::make_constructor(&mut scope, func_obj)?;
     }
