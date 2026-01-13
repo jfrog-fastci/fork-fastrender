@@ -425,6 +425,10 @@ name = "paint_benches"
 harness = false
 
 [[bench]]
+name = "scroll_blit_bench"
+harness = false
+
+[[bench]]
 name = "gradient_raster"
 harness = false
 
