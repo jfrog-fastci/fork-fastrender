@@ -90,8 +90,9 @@ fn clicking_omnibox_suggestion_emits_chrome_action_url() -> Result<()> {
       click_point,
       PointerButton::Primary,
       PointerModifiers::NONE,
-      "",
-      "",
+      false,
+      "chrome://frame",
+      "chrome://frame",
     );
     changed |= changed_up;
     (changed, action)
