@@ -960,6 +960,7 @@ impl Intrinsics {
       vm.register_native_call(builtins::function_prototype_symbol_has_instance)?;
     let throw_type_error_intrinsic_call =
       vm.register_native_call(builtins::throw_type_error_intrinsic)?;
+    let promise_species_get_call = vm.register_native_call(builtins::promise_species_get)?;
     let array_prototype_at = vm.register_native_call(builtins::array_prototype_at)?;
     let array_prototype_map = vm.register_native_call(builtins::array_prototype_map)?;
     let array_prototype_for_each = vm.register_native_call(builtins::array_prototype_for_each)?;
@@ -5006,10 +5007,9 @@ impl Intrinsics {
 
     // Map[@@species]
     {
-      let species_call = vm.register_native_call(builtins::promise_species_get)?;
       let species_name = scope.alloc_string("get [Symbol.species]")?;
       let species_getter =
-        alloc_rooted_native_function(scope, roots, species_call, None, species_name, 0)?;
+        alloc_rooted_native_function(scope, roots, promise_species_get_call, None, species_name, 0)?;
       scope
         .heap_mut()
         .object_set_prototype(species_getter, Some(function_prototype))?;
@@ -5309,10 +5309,9 @@ impl Intrinsics {
 
     // Set[@@species]
     {
-      let species_call = vm.register_native_call(builtins::promise_species_get)?;
       let species_name = scope.alloc_string("get [Symbol.species]")?;
       let species_getter =
-        alloc_rooted_native_function(scope, roots, species_call, None, species_name, 0)?;
+        alloc_rooted_native_function(scope, roots, promise_species_get_call, None, species_name, 0)?;
       scope
         .heap_mut()
         .object_set_prototype(species_getter, Some(function_prototype))?;
@@ -6479,12 +6478,11 @@ impl Intrinsics {
     // Spec: `get Promise [ @@species ]` (ECMA-262).
     //
     // The getter returns the receiver and is used by `SpeciesConstructor`.
-    let promise_species_call = vm.register_native_call(builtins::promise_species_get)?;
     let promise_species_name = scope.alloc_string("get [Symbol.species]")?;
     let promise_species_getter = alloc_rooted_native_function(
       scope,
       roots,
-      promise_species_call,
+      promise_species_get_call,
       None,
       promise_species_name,
       0,

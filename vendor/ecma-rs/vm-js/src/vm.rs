@@ -3606,6 +3606,32 @@ mod tests {
   }
 
   #[test]
+  fn intrinsics_do_not_register_duplicate_native_calls() -> Result<(), VmError> {
+    fn count_native_call(vm: &Vm, f: NativeCall) -> usize {
+      vm.native_calls
+        .iter()
+        .filter(|&&call| std::ptr::fn_addr_eq(call, f))
+        .count()
+    }
+
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(crate::HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    let rt = crate::JsRuntime::new(vm, heap)?;
+
+    assert_eq!(count_native_call(&rt.vm, crate::builtins::array_prototype_at), 1);
+    assert_eq!(count_native_call(&rt.vm, crate::builtins::promise_all), 1);
+    assert_eq!(count_native_call(&rt.vm, crate::builtins::promise_race), 1);
+    assert_eq!(
+      count_native_call(&rt.vm, crate::builtins::promise_all_settled),
+      1
+    );
+    assert_eq!(count_native_call(&rt.vm, crate::builtins::promise_any), 1);
+    assert_eq!(count_native_call(&rt.vm, crate::builtins::promise_species_get), 1);
+
+    Ok(())
+  }
+
+  #[test]
   fn async_from_sync_iterator_internal_native_call_ids_are_cached() -> Result<(), VmError> {
     let mut vm = Vm::new(VmOptions::default());
 
