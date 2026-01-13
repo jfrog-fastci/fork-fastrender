@@ -577,11 +577,14 @@ jobs:
           # Keep this job lightweight: do not enable browser_ui / GUI features.
           # AppContainer smoke: spawns the test harness inside an AppContainer and ensures the
           # renderer can initialize + render a minimal document.
-          bash scripts/cargo_agent.sh test --locked -p fastrender --no-default-features --test windows_appcontainer_sandbox_smoke -- --nocapture
+          bash scripts/cargo_agent.sh test --locked -p fastrender --no-default-features --test windows_sandbox_appcontainer_spawn -- --nocapture
 
           # Security regression: ensure a sandboxed child cannot OpenProcess() the parent with
           # high-privilege access rights (PROCESS_VM_READ / PROCESS_DUP_HANDLE).
           bash scripts/cargo_agent.sh test --locked -p fastrender --no-default-features --test integration sandbox:: -- --nocapture
+
+          # Job object regression tests: kill-on-close + active-process limit enforcement.
+          bash scripts/cargo_agent.sh test --locked -p win-sandbox --test job_limits -- --nocapture
 
   # ===========================================================================
   # macOS sandbox - Ensure Seatbelt sandboxing continues to work

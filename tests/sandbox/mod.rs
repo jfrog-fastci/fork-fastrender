@@ -17,3 +17,9 @@ mod windows_renderer_smoke;
 
 #[cfg(windows)]
 mod windows_handle_inheritance;
+
+#[cfg(windows)]
+mod windows_job_kill_on_close;
+
+#[cfg(windows)]
+mod windows_network_denial;
