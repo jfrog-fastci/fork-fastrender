@@ -18,6 +18,9 @@ fn ui_perf_smoke_emits_tab_switch_scenario_summary() {
       "--iterations",
       "1",
     ])
+    // Keep the harness deterministic and avoid depending on system fonts.
+    .env("FASTR_USE_BUNDLED_FONTS", "1")
+    .env("RAYON_NUM_THREADS", "1")
     .stdout(Stdio::null())
     .output()
     .expect("run ui_perf_smoke");
@@ -103,6 +106,9 @@ fn ui_perf_smoke_records_isolate_and_warmup_overrides() {
       "ttfp_newtab",
       "--no-fail-on-failure",
     ])
+    // Keep the harness deterministic and avoid depending on system fonts.
+    .env("FASTR_USE_BUNDLED_FONTS", "1")
+    .env("RAYON_NUM_THREADS", "1")
     .stdout(Stdio::null())
     .output()
     .expect("run ui_perf_smoke --isolate");
