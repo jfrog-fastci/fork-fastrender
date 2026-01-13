@@ -2721,8 +2721,8 @@ impl BrowserDocumentDom2 {
           if tag_name.eq_ignore_ascii_case("input") {
             let ty = attributes
               .iter()
-              .find(|(k, _)| k.eq_ignore_ascii_case("type"))
-              .map(|(_, v)| v.as_str())
+              .find(|attr| attr.local_name.eq_ignore_ascii_case("type"))
+              .map(|attr| attr.value.as_str())
               .unwrap_or("text");
             !(ty.eq_ignore_ascii_case("hidden")
               || ty.eq_ignore_ascii_case("image")

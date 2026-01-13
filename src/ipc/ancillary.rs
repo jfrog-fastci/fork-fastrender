@@ -151,10 +151,11 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
     // the flag and set FD_CLOEXEC manually on the received fd.
     if err.raw_os_error() == Some(libc::EINVAL) && (flags & libc::MSG_CMSG_CLOEXEC) != 0 {
       need_manual_cloexec = true;
-      loop {
+      let rc2 = loop {
         msg.msg_controllen = CONTROL_LEN;
         msg.msg_flags = 0;
-        let rc2 = unsafe { libc::recvmsg(sock.as_raw_fd(), &mut msg, flags & !libc::MSG_CMSG_CLOEXEC) };
+        let rc2 =
+          unsafe { libc::recvmsg(sock.as_raw_fd(), &mut msg, flags & !libc::MSG_CMSG_CLOEXEC) };
         if rc2 >= 0 {
           break 'recvmsg rc2 as usize;
         }
@@ -163,7 +164,8 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
           continue;
         }
         return Err(err2);
-      }
+      };
+      break rc2;
     } else {
       return Err(err);
     }

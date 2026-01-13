@@ -20614,6 +20614,7 @@ pub(crate) fn paint_tree_display_list_into_rgba_with_resources_scaled_offset_dep
   background: Rgba,
   font_ctx: FontContext,
   image_cache: ImageCache,
+  media_provider: Option<Arc<dyn crate::media::MediaFrameProvider>>,
   scale: f32,
   offset: Point,
   paint_parallelism: PaintParallelism,
@@ -20643,6 +20644,7 @@ pub(crate) fn paint_tree_display_list_into_rgba_with_resources_scaled_offset_dep
         .with_svg_id_defs_raw(tree.svg_id_defs_raw.clone())
         .with_appearance_none_form_controls(tree.appearance_none_form_controls.clone())
         .with_scroll_state(scroll_state.clone())
+        .with_media_provider(media_provider.clone())
         .with_device_pixel_ratio(scale)
         .with_parallelism(&paint_parallelism)
         .with_max_iframe_depth(max_iframe_depth)
@@ -20684,6 +20686,7 @@ pub(crate) fn paint_tree_display_list_into_rgba_with_resources_scaled_offset_dep
           background,
           font_ctx,
           image_cache,
+          media_provider.clone(),
           scale,
           offset,
           scroll_state,
