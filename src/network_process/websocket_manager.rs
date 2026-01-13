@@ -61,6 +61,11 @@ pub enum WebSocketEvent {
     conn_id: WebSocketConnId,
     message: &'static str,
   },
+  /// Indicates that `bytes` have been flushed from the send buffer.
+  SendAck {
+    conn_id: WebSocketConnId,
+    bytes: usize,
+  },
   /// WebSocket close notification.
   Close {
     conn_id: WebSocketConnId,
@@ -94,11 +99,25 @@ const REJECT_CLOSE_CODE: u16 = 1008; // Policy Violation.
 const REJECT_REASON_DUPLICATE_CONN_ID: &str = "websocket conn_id already in use";
 const REJECT_REASON_PER_RENDERER: &str = "websocket connection limit exceeded";
 const REJECT_REASON_GLOBAL: &str = "global websocket connection limit exceeded";
+const REJECT_REASON_BUFFERED_AMOUNT: &str = "WebSocket bufferedAmount limit exceeded";
+
+/// Hard upper bound on the total number of bytes that may be buffered for outgoing sends per
+/// WebSocket connection in the network process.
+///
+/// This is defense-in-depth: the renderer process is untrusted and must not be able to enqueue
+/// unbounded outbound message buffers that could OOM the network process.
+const MAX_WEBSOCKET_BUFFERED_AMOUNT_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WebSocketConnState {
   Open,
   Closing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WebSocketConnEntry {
+  state: WebSocketConnState,
+  buffered_amount: usize,
 }
 
 /// Renderer-side event router for WebSocket IPC.
@@ -124,6 +143,7 @@ impl RendererWebSocketBackend {
   pub fn handle_event(&mut self, event: &WebSocketEvent) -> bool {
     let conn_id = match *event {
       WebSocketEvent::Error { conn_id, .. } => conn_id,
+      WebSocketEvent::SendAck { conn_id, .. } => conn_id,
       WebSocketEvent::Close { conn_id, .. } => conn_id,
     };
     self.conns.contains_key(&conn_id)
@@ -138,7 +158,7 @@ pub struct WebSocketManager<B: WebSocketBackend> {
   limits: WebSocketManagerLimits,
   backend: B,
   active_total: usize,
-  active_connections: HashMap<RendererChannelId, HashMap<WebSocketConnId, WebSocketConnState>>,
+  active_connections: HashMap<RendererChannelId, HashMap<WebSocketConnId, WebSocketConnEntry>>,
 }
 
 impl<B: WebSocketBackend> WebSocketManager<B> {
@@ -189,14 +209,30 @@ impl<B: WebSocketBackend> WebSocketManager<B> {
     match cmd {
       WebSocketCommand::Connect { conn_id } => self.handle_connect(renderer, conn_id, sink),
       WebSocketCommand::SendText { conn_id, text } => {
-        let Some(state) = self
-          .active_connections
-          .get(&renderer)
-          .and_then(|m| m.get(&conn_id))
-        else {
-          return;
+        let len = text.as_bytes().len();
+        let should_send = {
+          let Some(entry) = self
+            .active_connections
+            .get_mut(&renderer)
+            .and_then(|m| m.get_mut(&conn_id))
+          else {
+            return;
+          };
+          if entry.state != WebSocketConnState::Open {
+            return;
+          }
+          let next_buffered = entry.buffered_amount.saturating_add(len);
+          if next_buffered > MAX_WEBSOCKET_BUFFERED_AMOUNT_BYTES {
+            sink.send(WebSocketEvent::Error {
+              conn_id,
+              message: REJECT_REASON_BUFFERED_AMOUNT,
+            });
+            return;
+          }
+          entry.buffered_amount = next_buffered;
+          true
         };
-        if *state == WebSocketConnState::Open {
+        if should_send {
           self.backend.send_text(renderer, conn_id, text);
         }
       }
@@ -247,7 +283,13 @@ impl<B: WebSocketBackend> WebSocketManager<B> {
       .active_connections
       .entry(renderer)
       .or_default()
-      .insert(conn_id, WebSocketConnState::Open);
+      .insert(
+        conn_id,
+        WebSocketConnEntry {
+          state: WebSocketConnState::Open,
+          buffered_amount: 0,
+        },
+      );
     self.active_total = self.active_total.saturating_add(1);
 
     self.backend.connect(renderer, conn_id);
@@ -294,18 +336,45 @@ impl<B: WebSocketBackend> WebSocketManager<B> {
   }
 
   fn request_close_if_tracked(&mut self, renderer: RendererChannelId, conn_id: WebSocketConnId) {
-    let Some(state) = self
+    let Some(entry) = self
       .active_connections
       .get_mut(&renderer)
       .and_then(|m| m.get_mut(&conn_id))
     else {
       return;
     };
-    if *state == WebSocketConnState::Closing {
+    if entry.state == WebSocketConnState::Closing {
       return;
     }
-    *state = WebSocketConnState::Closing;
+    entry.state = WebSocketConnState::Closing;
     self.backend.request_close(renderer, conn_id);
+  }
+
+  /// Notify the manager that `bytes` have been flushed from the send buffer for a connection.
+  ///
+  /// The network backend should call this as it completes writes so the renderer can implement
+  /// `bufferedAmount` / backpressure without the network process accumulating unbounded queued
+  /// buffers.
+  pub fn on_send_ack(
+    &mut self,
+    renderer: RendererChannelId,
+    conn_id: WebSocketConnId,
+    bytes: usize,
+    sink: &mut dyn WebSocketEventSink,
+  ) {
+    let Some(entry) = self
+      .active_connections
+      .get_mut(&renderer)
+      .and_then(|m| m.get_mut(&conn_id))
+    else {
+      return;
+    };
+    let actual = bytes.min(entry.buffered_amount);
+    if actual == 0 {
+      return;
+    }
+    entry.buffered_amount -= actual;
+    sink.send(WebSocketEvent::SendAck { conn_id, bytes: actual });
   }
 }
 
@@ -447,6 +516,7 @@ mod tests {
       fn send(&mut self, event: WebSocketEvent) {
         match event {
           WebSocketEvent::Error { .. } => self.error += 1,
+          WebSocketEvent::SendAck { .. } => {}
           WebSocketEvent::Close { .. } => self.close += 1,
         }
       }
@@ -556,5 +626,134 @@ mod tests {
       reason: "",
     };
     assert!(backend.handle_event(&known));
+  }
+
+  #[test]
+  fn buffered_amount_cap_rejects_send_and_recovers_after_ack() {
+    #[derive(Default)]
+    struct ByteCountingBackend {
+      send_calls: usize,
+    }
+
+    impl WebSocketBackend for ByteCountingBackend {
+      fn connect(&mut self, _renderer: RendererChannelId, _conn_id: WebSocketConnId) {}
+
+      fn send_text(&mut self, _renderer: RendererChannelId, _conn_id: WebSocketConnId, _text: String) {
+        self.send_calls += 1;
+      }
+
+      fn request_close(&mut self, _renderer: RendererChannelId, _conn_id: WebSocketConnId) {}
+    }
+
+    let limits = WebSocketManagerLimits {
+      max_active_per_renderer: 10,
+      max_active_total: 10,
+    };
+    let backend = ByteCountingBackend::default();
+    let mut mgr = WebSocketManager::new(limits, backend);
+    let mut sink = FakeSink::default();
+    let renderer = RendererChannelId(1);
+    let conn_id: WebSocketConnId = 42;
+
+    mgr.handle_command(renderer, &mut sink, WebSocketCommand::Connect { conn_id });
+    assert!(sink.events.is_empty());
+
+    // Fill buffered amount up to the cap with 1 MiB chunks.
+    let chunk_len = 1024 * 1024;
+    let chunks = MAX_WEBSOCKET_BUFFERED_AMOUNT_BYTES / chunk_len;
+    assert!(chunks > 1, "test assumes cap is larger than a single chunk");
+
+    for _ in 0..chunks {
+      mgr.handle_command(
+        renderer,
+        &mut sink,
+        WebSocketCommand::SendText {
+          conn_id,
+          text: "a".repeat(chunk_len),
+        },
+      );
+    }
+
+    assert_eq!(mgr.backend().send_calls, chunks);
+    assert!(sink.events.is_empty());
+    assert_eq!(
+      mgr
+        .active_connections
+        .get(&renderer)
+        .and_then(|m| m.get(&conn_id))
+        .map(|e| e.buffered_amount),
+      Some(MAX_WEBSOCKET_BUFFERED_AMOUNT_BYTES),
+    );
+
+    // Next send would exceed the cap and should be rejected without incrementing buffered_amount or
+    // calling the backend.
+    mgr.handle_command(
+      renderer,
+      &mut sink,
+      WebSocketCommand::SendText {
+        conn_id,
+        text: "b".repeat(chunk_len),
+      },
+    );
+    assert_eq!(
+      sink.events,
+      vec![WebSocketEvent::Error {
+        conn_id,
+        message: REJECT_REASON_BUFFERED_AMOUNT,
+      }]
+    );
+    sink.events.clear();
+    assert_eq!(mgr.backend().send_calls, chunks);
+    assert_eq!(
+      mgr
+        .active_connections
+        .get(&renderer)
+        .and_then(|m| m.get(&conn_id))
+        .map(|e| e.buffered_amount),
+      Some(MAX_WEBSOCKET_BUFFERED_AMOUNT_BYTES),
+    );
+
+    // After acking all bytes, further sends should be accepted.
+    mgr.on_send_ack(
+      renderer,
+      conn_id,
+      MAX_WEBSOCKET_BUFFERED_AMOUNT_BYTES,
+      &mut sink,
+    );
+    assert_eq!(
+      sink.events,
+      vec![WebSocketEvent::SendAck {
+        conn_id,
+        bytes: MAX_WEBSOCKET_BUFFERED_AMOUNT_BYTES,
+      }]
+    );
+    sink.events.clear();
+    assert_eq!(
+      mgr
+        .active_connections
+        .get(&renderer)
+        .and_then(|m| m.get(&conn_id))
+        .map(|e| e.buffered_amount),
+      Some(0),
+    );
+
+    mgr.handle_command(
+      renderer,
+      &mut sink,
+      WebSocketCommand::SendText {
+        conn_id,
+        text: "c".repeat(chunk_len),
+      },
+    );
+    assert!(sink.events.is_empty());
+    assert_eq!(mgr.backend().send_calls, chunks + 1);
+    assert_eq!(
+      mgr
+        .active_connections
+        .get(&renderer)
+        .and_then(|m| m.get(&conn_id))
+        .map(|e| e.buffered_amount),
+      Some(chunk_len),
+    );
   }
 }
