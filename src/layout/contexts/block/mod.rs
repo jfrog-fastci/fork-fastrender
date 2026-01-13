@@ -16175,6 +16175,12 @@ mod tests {
       counters.work_items > 0,
       "expected parallel intrinsic sizing to record debug work items"
     );
+    assert_eq!(
+      counters.work_items,
+      root.children.len(),
+      "expected parallel intrinsic sizing to record one work item per segment (segments={})",
+      root.children.len()
+    );
 
     const EPS: f32 = 1e-3;
     assert!(
