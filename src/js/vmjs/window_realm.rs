@@ -49187,6 +49187,7 @@ mod tests {
         <div id=host2><template shadowroot=open><span>shadow</span></template>\
           <span id=a></span><span id=b></span>\
         </div>\
+        <div id=host3><template shadowroot=closed><span>shadow</span></template></div>\
       </body></html>",
     )
     .unwrap();
@@ -49201,6 +49202,7 @@ mod tests {
       "(() => {\n\
         const host1 = document.getElementById('host1');\n\
         const host2 = document.getElementById('host2');\n\
+        const host3 = document.getElementById('host3');\n\
         const a = document.getElementById('a');\n\
         const b = document.getElementById('b');\n\
         return host1.firstChild === null\n\
@@ -49210,9 +49212,50 @@ mod tests {
           && a.previousSibling === null\n\
           && a.nextSibling === b\n\
           && b.previousSibling === a\n\
-          && b.nextSibling === null;\n\
+          && b.nextSibling === null\n\
+          && host3.firstChild === null\n\
+          && host3.lastChild === null;\n\
       })()",
     )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn node_traversal_accessors_hide_shadow_root_from_host_element_declarative() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body>\
+        <div id=host1><template shadowroot=open><span>shadow</span></template></div>\
+        <div id=host2><template shadowroot=open><span>shadow</span></template><span id=a></span><span id=b></span></div>\
+        <div id=host3><template shadowroot=closed><span>shadow</span></template></div>\
+      </body></html>",
+    )
+    .unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const host1 = document.getElementById('host1');\n\
+        const host2 = document.getElementById('host2');\n\
+        const host3 = document.getElementById('host3');\n\
+        const a = document.getElementById('a');\n\
+        const b = document.getElementById('b');\n\
+        return host1.firstChild === null\n\
+          && host1.lastChild === null\n\
+          && host2.firstChild === a\n\
+          && host2.lastChild === b\n\
+          && a.previousSibling === null\n\
+          && a.nextSibling === b\n\
+          && b.previousSibling === a\n\
+          && b.nextSibling === null\n\
+          && host3.firstChild === null\n\
+          && host3.lastChild === null;\n\
+      })()",
+    )?;
+
     assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
