@@ -213,6 +213,7 @@ pub use crate::handle::EnvRootId;
 pub use crate::agent::format_termination;
 pub use crate::agent::Agent;
 pub use crate::agent::HostHooks;
+pub use crate::agent::VmErrorReport;
 pub use crate::code::CompiledFunctionRef;
 pub use crate::code::CompiledScript;
 pub use crate::env::EnvBinding;

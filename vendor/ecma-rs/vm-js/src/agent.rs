@@ -1,16 +1,35 @@
 use crate::fallible_alloc::arc_try_new_vm;
 use crate::fallible_format;
 use crate::property::{PropertyKey, PropertyKind};
-use crate::source::format_stack_trace;
+use crate::source::{format_stack_trace, StackFrame};
 use crate::{
-  Budget, CompiledScript, Heap, HeapLimits, JsRuntime, Realm, SourceText, Termination, Value, Vm,
-  VmError, VmOptions,
+  Budget, CompiledScript, Heap, HeapLimits, JsRuntime, Realm, SourceText, Termination,
+  TerminationReason, Value, Vm, VmError, VmOptions,
 };
 use std::sync::Arc;
 
 const OOM_PLACEHOLDER: &str = "<oom>";
 const INVALID_STRING_PLACEHOLDER: &str = "<invalid string>";
 const UNCAUGHT_EXCEPTION_PLACEHOLDER: &str = "uncaught exception";
+
+/// Structured, host-friendly telemetry for a [`VmError`].
+///
+/// This report is **best-effort**:
+/// - It never invokes user code (`ToString`, getters, Proxy traps).
+/// - Host allocations are fallible; if formatting runs out of memory, fields may be empty.
+///
+/// The `kind` field is a stable, JSON-friendly string (e.g. `"throw"`, `"termination"`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VmErrorReport {
+  /// Stable error kind string suitable for telemetry.
+  pub kind: &'static str,
+  /// A bounded, host-owned UTF-8 message.
+  pub message: String,
+  /// Captured stack frames when available.
+  pub stack: Vec<StackFrame>,
+  /// For `kind == "termination"`, the termination reason.
+  pub termination_reason: Option<TerminationReason>,
+}
 
 fn format_value_debug_best_effort(value: Value) -> String {
   #[inline]
@@ -141,6 +160,22 @@ fn push_char_best_effort(out: &mut String, ch: char) -> bool {
   }
   out.push(ch);
   true
+}
+
+#[inline]
+fn clone_stack_best_effort(stack: &[StackFrame]) -> Vec<StackFrame> {
+  if stack.is_empty() {
+    return Vec::new();
+  }
+
+  let mut out: Vec<StackFrame> = Vec::new();
+  if out.try_reserve_exact(stack.len()).is_err() {
+    return Vec::new();
+  }
+  for frame in stack {
+    out.push(frame.clone());
+  }
+  out
 }
 
 /// Host integration hooks for [`Agent`] script execution.
@@ -496,6 +531,153 @@ impl Agent {
     }
   }
 
+  /// Formats a VM error into a structured, host-owned report.
+  ///
+  /// This is intended for embeddings that want actionable telemetry (exception message + stack
+  /// frames) without invoking user code. Like [`Agent::format_vm_error`], this is best-effort under
+  /// host OOM: it returns partial/empty fields rather than aborting.
+  pub fn error_report(&mut self, err: &VmError) -> VmErrorReport {
+    match err {
+      VmError::Throw(value) => VmErrorReport {
+        kind: "throw",
+        message: self.format_thrown_value(*value),
+        stack: Vec::new(),
+        termination_reason: None,
+      },
+      VmError::ThrowWithStack { value, stack } => VmErrorReport {
+        kind: "throw",
+        message: self.format_thrown_value(*value),
+        stack: clone_stack_best_effort(stack),
+        termination_reason: None,
+      },
+      VmError::Termination(term) => {
+        let reason_str = match term.reason {
+          TerminationReason::OutOfFuel => "execution terminated: out of fuel",
+          TerminationReason::DeadlineExceeded => "execution terminated: deadline exceeded",
+          TerminationReason::Interrupted => "execution terminated: interrupted",
+          TerminationReason::OutOfMemory => "execution terminated: out of memory",
+          TerminationReason::StackOverflow => "execution terminated: stack overflow",
+        };
+        VmErrorReport {
+          kind: "termination",
+          message: string_from_str_best_effort(reason_str),
+          stack: clone_stack_best_effort(&term.stack),
+          termination_reason: Some(term.reason),
+        }
+      }
+      VmError::Syntax(_) => VmErrorReport {
+        kind: "syntax",
+        message: string_from_str_best_effort("syntax error"),
+        stack: Vec::new(),
+        termination_reason: None,
+      },
+      VmError::OutOfMemory => VmErrorReport {
+        kind: "out_of_memory",
+        message: string_from_str_best_effort("out of memory"),
+        stack: Vec::new(),
+        termination_reason: None,
+      },
+      VmError::InvariantViolation(msg) => VmErrorReport {
+        kind: "invariant_violation",
+        message: fallible_format::try_format_error_message("invariant violation: ", msg, "")
+          .unwrap_or_default(),
+        stack: Vec::new(),
+        termination_reason: None,
+      },
+      VmError::LimitExceeded(msg) => VmErrorReport {
+        kind: "limit_exceeded",
+        message: fallible_format::try_format_error_message("limit exceeded: ", msg, "")
+          .unwrap_or_default(),
+        stack: Vec::new(),
+        termination_reason: None,
+      },
+      VmError::InvalidHandle { location } => {
+        // Mirror the `Display` impl ("invalid handle ({location})") without infallible formatting.
+        let mut message = String::new();
+        let ok = fallible_format::try_push_str(&mut message, "invalid handle (")
+          .and_then(|_| fallible_format::try_push_str(&mut message, location.file()))
+          .and_then(|_| fallible_format::try_push_char(&mut message, ':'))
+          .and_then(|_| fallible_format::try_write_u32(&mut message, location.line()))
+          .and_then(|_| fallible_format::try_push_char(&mut message, ':'))
+          .and_then(|_| fallible_format::try_write_u32(&mut message, location.column()))
+          .and_then(|_| fallible_format::try_push_char(&mut message, ')'))
+          .is_ok();
+        if !ok {
+          message = String::new();
+        }
+        VmErrorReport {
+          kind: "invalid_handle",
+          message,
+          stack: Vec::new(),
+          termination_reason: None,
+        }
+      }
+      VmError::PrototypeCycle => VmErrorReport {
+        kind: "prototype_cycle",
+        message: string_from_str_best_effort("prototype cycle"),
+        stack: Vec::new(),
+        termination_reason: None,
+      },
+      VmError::PrototypeChainTooDeep => VmErrorReport {
+        kind: "prototype_chain_too_deep",
+        message: string_from_str_best_effort("prototype chain too deep"),
+        stack: Vec::new(),
+        termination_reason: None,
+      },
+      VmError::Unimplemented(msg) => VmErrorReport {
+        kind: "unimplemented",
+        message: fallible_format::try_format_error_message("unimplemented: ", msg, "")
+          .unwrap_or_default(),
+        stack: Vec::new(),
+        termination_reason: None,
+      },
+      VmError::InvalidPropertyDescriptorPatch => VmErrorReport {
+        kind: "invalid_property_descriptor_patch",
+        message: string_from_str_best_effort(
+          "invalid property descriptor patch: cannot mix data and accessor fields",
+        ),
+        stack: Vec::new(),
+        termination_reason: None,
+      },
+      VmError::PropertyNotFound => VmErrorReport {
+        kind: "property_not_found",
+        message: string_from_str_best_effort("property not found"),
+        stack: Vec::new(),
+        termination_reason: None,
+      },
+      VmError::PropertyNotData => VmErrorReport {
+        kind: "property_not_data",
+        message: string_from_str_best_effort("property is not a data property"),
+        stack: Vec::new(),
+        termination_reason: None,
+      },
+      VmError::TypeError(msg) => VmErrorReport {
+        kind: "type_error",
+        message: fallible_format::try_format_error_message("type error: ", msg, "").unwrap_or_default(),
+        stack: Vec::new(),
+        termination_reason: None,
+      },
+      VmError::RangeError(msg) => VmErrorReport {
+        kind: "range_error",
+        message: fallible_format::try_format_error_message("range error: ", msg, "").unwrap_or_default(),
+        stack: Vec::new(),
+        termination_reason: None,
+      },
+      VmError::NotCallable => VmErrorReport {
+        kind: "not_callable",
+        message: string_from_str_best_effort("value is not callable"),
+        stack: Vec::new(),
+        termination_reason: None,
+      },
+      VmError::NotConstructable => VmErrorReport {
+        kind: "not_constructable",
+        message: string_from_str_best_effort("value is not a constructor"),
+        stack: Vec::new(),
+        termination_reason: None,
+      },
+    }
+  }
+
   fn format_thrown_value(&mut self, value: Value) -> String {
     match value {
       Value::Object(obj) if self.heap().is_error_object(obj) => self
@@ -690,4 +872,86 @@ pub fn format_termination(term: &Termination) -> String {
   }
   let _ = push_str_best_effort(&mut out, &stack_trace);
   out
+}
+
+#[cfg(test)]
+mod error_report_tests {
+  use crate::{Budget, HeapLimits, TerminationReason, VmError, VmOptions};
+
+  use super::{Agent, VmErrorReport};
+
+  fn new_agent() -> Agent {
+    Agent::with_options(
+      VmOptions::default(),
+      HeapLimits::new(1024 * 1024, 1024 * 1024),
+    )
+    .expect("create agent")
+  }
+
+  #[test]
+  fn agent_error_report_throw_error_object_includes_message_and_stack() {
+    let mut agent = new_agent();
+
+    let err = agent
+      .run_script(
+        "throw.js",
+        "function a() { throw new TypeError('boom'); }\na();",
+        Budget::unlimited(1),
+        None,
+      )
+      .unwrap_err();
+
+    let report: VmErrorReport = agent.error_report(&err);
+    assert_eq!(report.kind, "throw");
+    assert!(
+      report.message.contains("TypeError") && report.message.contains("boom"),
+      "expected message to contain error name and message, got: {:?}",
+      report.message
+    );
+    assert!(
+      !report.stack.is_empty(),
+      "expected stack frames for thrown error, got empty stack"
+    );
+    assert!(
+      report.stack.iter().any(|f| &*f.source == "throw.js"),
+      "expected stack to reference source name, got: {:#?}",
+      report.stack
+    );
+    assert_eq!(report.termination_reason, None);
+  }
+
+  #[test]
+  fn agent_error_report_termination_includes_reason() {
+    let mut agent = new_agent();
+
+    let err = agent
+      .run_script(
+        "fuel.js",
+        "1",
+        Budget {
+          fuel: Some(0),
+          deadline: None,
+          check_time_every: 1,
+        },
+        None,
+      )
+      .unwrap_err();
+
+    let report = agent.error_report(&err);
+    assert_eq!(report.kind, "termination");
+    assert_eq!(report.termination_reason, Some(TerminationReason::OutOfFuel));
+  }
+
+  #[test]
+  fn agent_error_report_internal_error_kinds() {
+    let mut agent = new_agent();
+
+    let invalid = VmError::invalid_handle();
+    let report = agent.error_report(&invalid);
+    assert_eq!(report.kind, "invalid_handle");
+
+    let inv = VmError::InvariantViolation("boom");
+    let report = agent.error_report(&inv);
+    assert_eq!(report.kind, "invariant_violation");
+  }
 }
