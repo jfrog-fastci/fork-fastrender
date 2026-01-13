@@ -3862,6 +3862,98 @@ mod tests {
   }
 
   #[test]
+  fn queue_ws_task_close_is_queued_even_when_socket_is_closed() -> Result<()> {
+    // `queue_ws_task` is used for delivering WebSocket events from network threads into the
+    // renderer's event loop. Many error paths mark the socket as `CLOSED` before queuing
+    // `error`/`close` event delivery tasks.
+    //
+    // Ensure close/error delivery tasks (`WsTaskKind::Close`) are still accepted even when the
+    // socket state is already closed. This is why callers must use `WsTaskKind::Close` for the
+    // invalid subprotocol handshake path (and similar early failures).
+    struct Cleanup(u64);
+    impl Drop for Cleanup {
+      fn drop(&mut self) {
+        unregister_window_websocket_env(self.0);
+      }
+    }
+
+    let event_loop: EventLoop<WindowHost> = EventLoop::new();
+    let task_queue = event_loop.external_task_queue_handle();
+
+    let env_id = NEXT_ENV_ID.fetch_add(1, Ordering::Relaxed);
+    let _cleanup = Cleanup(env_id);
+
+    {
+      let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      let fetcher: Arc<dyn ResourceFetcher> = Arc::new(IpcNoopFetcher);
+      lock.insert(env_id, EnvState::new(WindowWebSocketEnv::for_document(fetcher, None)));
+    }
+
+    let ws_id = with_env_state_mut(env_id, |state| {
+      let ws_id = state.alloc_id();
+      let mut heap = Heap::new(vm_js::HeapLimits::new(1024 * 1024, 512 * 1024));
+      let mut scope = heap.scope();
+      let dummy_obj = scope.alloc_object()?;
+      state.sockets.insert(
+        ws_id,
+        WebSocketState {
+          weak_obj: WeakGcObject::new(dummy_obj),
+          url: "ws://example.invalid/".to_string(),
+          protocol: String::new(),
+          ready_state: WS_CLOSED,
+          buffered_amount: 0,
+          pending_events: 0,
+          close_task_queued: false,
+          forced_close: None,
+          cmd_tx: None,
+          thread: None,
+        },
+      );
+      Ok(ws_id)
+    })
+    .expect("register websocket state");
+
+    let outcome_normal = queue_ws_task::<WindowHost>(
+      &task_queue,
+      env_id,
+      ws_id,
+      WsTaskKind::Normal,
+      |_vm_host, _heap, _vm, _hooks, _ws_obj| Ok(()),
+    );
+    assert_eq!(outcome_normal, QueueWsTaskOutcome::Skipped);
+    with_env_state(env_id, |state| {
+      let ws = state.sockets.get(&ws_id).expect("ws state present");
+      assert_eq!(ws.pending_events, 0);
+      assert!(!ws.close_task_queued);
+      Ok(())
+    })
+    .expect("inspect websocket state (normal task)");
+
+    let outcome_close = queue_ws_task::<WindowHost>(
+      &task_queue,
+      env_id,
+      ws_id,
+      WsTaskKind::Close,
+      |_vm_host, _heap, _vm, _hooks, _ws_obj| Ok(()),
+    );
+    assert_eq!(outcome_close, QueueWsTaskOutcome::Queued);
+    with_env_state(env_id, |state| {
+      let ws = state.sockets.get(&ws_id).expect("ws state present");
+      assert_eq!(ws.pending_events, 1);
+      assert!(ws.close_task_queued);
+      Ok(())
+    })
+    .expect("inspect websocket state (close task)");
+
+    // Ensure any queued tasks are dropped before we unregister the env (avoids running tasks after
+    // the env has been removed from `ENVS` and ensures the queued closures are released promptly).
+    drop(task_queue);
+    drop(event_loop);
+
+    Ok(())
+  }
+
+  #[test]
   fn websocket_ctor_rejects_empty_protocol_string() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = make_host(dom, "https://example.invalid/")?;
