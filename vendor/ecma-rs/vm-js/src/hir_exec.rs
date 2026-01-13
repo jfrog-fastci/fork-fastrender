@@ -8,7 +8,7 @@ use crate::module_loading;
 use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
 use crate::tick::DEFAULT_TICK_EVERY;
 use crate::tick::vec_try_extend_from_slice_with_ticks;
-use crate::{EnvBinding, GcEnv, GcObject, Scope, ScriptOrModule, Value, Vm, VmError, VmHost, VmHostHooks};
+use crate::{EnvBinding, GcBigInt, GcEnv, GcObject, Scope, ScriptOrModule, Value, Vm, VmError, VmHost, VmHostHooks};
 use std::collections::HashSet;
 use std::cmp::Ordering;
 use std::sync::Arc;
@@ -36,6 +36,12 @@ impl Flow {
       other => other,
     }
   }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum NumericValue {
+  Number(f64),
+  BigInt(GcBigInt),
 }
 
 fn throw_reference_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmError, VmError> {
@@ -2179,8 +2185,8 @@ impl<'vm> HirEvaluator<'vm> {
     prefix: bool,
   ) -> Result<Value, VmError> {
     let delta = match op {
-      hir_js::UpdateOp::Increment => 1.0,
-      hir_js::UpdateOp::Decrement => -1.0,
+      hir_js::UpdateOp::Increment => 1i8,
+      hir_js::UpdateOp::Decrement => -1i8,
     };
 
     let target_expr = self.get_expr(body, expr)?;
@@ -2188,28 +2194,44 @@ impl<'vm> HirEvaluator<'vm> {
       hir_js::ExprKind::Ident(name_id) => {
         let name = self.resolve_name(*name_id)?;
 
+        // Use a nested scope so any temporary roots created by `ToPrimitive`/BigInt arithmetic are
+        // popped before returning to the caller.
+        let mut update_scope = scope.reborrow();
+
         // Root the name as `ResolvedBinding` borrows it and `env` operations can invoke user code.
         let reference = self.env.resolve_binding_reference(
           self.vm,
           &mut *self.host,
           &mut *self.hooks,
-          scope,
+          &mut update_scope,
           name.as_str(),
         )?;
 
-        let old_value = self.get_value_from_resolved_binding(scope, reference)?;
-        let old_num = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, old_value)?;
-        let new_num = old_num + delta;
-        let new_value = Value::Number(new_num);
+        let old_value = self.get_value_from_resolved_binding(&mut update_scope, reference)?;
+        let old_numeric = self.to_numeric(&mut update_scope, old_value)?;
+        let (old_out, new_value) = match old_numeric {
+          NumericValue::Number(n) => {
+            let new_n = n + f64::from(delta);
+            (Value::Number(n), Value::Number(new_n))
+          }
+          NumericValue::BigInt(b) => {
+            let delta_bigint = crate::JsBigInt::from_i128(delta as i128)?;
+            let out = {
+              let bi = update_scope.heap().get_bigint(b)?;
+              bi.add(&delta_bigint)?
+            };
+            let out = update_scope.alloc_bigint(out)?;
+            (Value::BigInt(b), Value::BigInt(out))
+          }
+        };
 
         // Assignment can invoke user code (e.g. setters via `with` envs). Root the value first.
-        let mut assign_scope = scope.reborrow();
-        assign_scope.push_root(new_value)?;
+        update_scope.push_root(new_value)?;
         self.env.set_resolved_binding(
           self.vm,
           &mut *self.host,
           &mut *self.hooks,
-          &mut assign_scope,
+          &mut update_scope,
           reference,
           new_value,
           self.strict,
@@ -2218,7 +2240,7 @@ impl<'vm> HirEvaluator<'vm> {
         if prefix {
           Ok(new_value)
         } else {
-          Ok(Value::Number(old_num))
+          Ok(old_out)
         }
       }
       hir_js::ExprKind::Member(member) => {
@@ -2243,9 +2265,25 @@ impl<'vm> HirEvaluator<'vm> {
           receiver,
         )?;
 
-        let old_num = update_scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, old_value)?;
-        let new_num = old_num + delta;
-        let new_value = Value::Number(new_num);
+        let old_numeric = self.to_numeric(&mut update_scope, old_value)?;
+        let (old_out, new_value) = match old_numeric {
+          NumericValue::Number(n) => {
+            let new_n = n + f64::from(delta);
+            (Value::Number(n), Value::Number(new_n))
+          }
+          NumericValue::BigInt(b) => {
+            let delta_bigint = crate::JsBigInt::from_i128(delta as i128)?;
+            let out = {
+              let bi = update_scope.heap().get_bigint(b)?;
+              bi.add(&delta_bigint)?
+            };
+            let out = update_scope.alloc_bigint(out)?;
+            (Value::BigInt(b), Value::BigInt(out))
+          }
+        };
+
+        // Root the new value in case `[[Set]]` invokes accessors and triggers GC.
+        update_scope.push_root(new_value)?;
 
         let ok = crate::spec_ops::internal_set_with_host_and_hooks(
           self.vm,
@@ -2264,7 +2302,7 @@ impl<'vm> HirEvaluator<'vm> {
         if prefix {
           Ok(new_value)
         } else {
-          Ok(Value::Number(old_num))
+          Ok(old_out)
         }
       }
       _ => Err(VmError::Unimplemented("update target (hir-js compiled path)")),
@@ -3035,10 +3073,43 @@ impl<'vm> HirEvaluator<'vm> {
       let out = concat_strings(&mut scope, ls, rs, || self.vm.tick())?;
       Ok(Value::String(out))
     } else {
-      let mut tick = || self.vm.tick();
-      let ln = crate::ops::to_number_with_tick(scope.heap_mut(), lp, &mut tick)?;
-      let rn = crate::ops::to_number_with_tick(scope.heap_mut(), rp, &mut tick)?;
-      Ok(Value::Number(ln + rn))
+      let left_num = self.to_numeric(&mut scope, lp)?;
+      let right_num = self.to_numeric(&mut scope, rp)?;
+      match (left_num, right_num) {
+        (NumericValue::Number(a), NumericValue::Number(b)) => Ok(Value::Number(a + b)),
+        (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+          let out = {
+            let a = scope.heap().get_bigint(a)?;
+            let b = scope.heap().get_bigint(b)?;
+            a.add(b)?
+          };
+          let out = scope.alloc_bigint(out)?;
+          Ok(Value::BigInt(out))
+        }
+        _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+      }
+    }
+  }
+
+  fn to_numeric(&mut self, scope: &mut Scope<'_>, value: Value) -> Result<NumericValue, VmError> {
+    // ECMA-262 `ToNumeric`: ToPrimitive (hint Number), then return BigInt directly or convert to
+    // Number.
+    let prim = scope.to_primitive(
+      self.vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      value,
+      ToPrimitiveHint::Number,
+    )?;
+    match prim {
+      Value::BigInt(b) => {
+        // Root the BigInt handle for the duration of `scope`: subsequent arithmetic can allocate.
+        scope.push_root(Value::BigInt(b))?;
+        Ok(NumericValue::BigInt(b))
+      }
+      other => Ok(NumericValue::Number(
+        scope.heap_mut().to_number_with_tick(other, || self.vm.tick())?,
+      )),
     }
   }
 

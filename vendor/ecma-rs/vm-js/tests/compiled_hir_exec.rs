@@ -1349,6 +1349,29 @@ fn compiled_member_update_expression_executes() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_bigint_update_expression_executes() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let i = 1n;
+      i++;
+      i
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let mut scope = rt.heap_mut().scope();
+  let expected = scope.alloc_bigint_from_u128(2)?;
+  assert!(result.same_value(Value::BigInt(expected), scope.heap()));
+  Ok(())
+}
+
+#[test]
 fn compiled_numeric_add_assign_executes() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
@@ -1366,6 +1389,29 @@ fn compiled_numeric_add_assign_executes() -> Result<(), VmError> {
 
   let result = rt.exec_compiled_script(script)?;
   assert_eq!(result, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_bigint_add_assign_executes() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let i = 1n;
+      i += 2n;
+      i
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let mut scope = rt.heap_mut().scope();
+  let expected = scope.alloc_bigint_from_u128(3)?;
+  assert!(result.same_value(Value::BigInt(expected), scope.heap()));
   Ok(())
 }
 
