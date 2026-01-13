@@ -12435,7 +12435,9 @@ mod select_dropdown_a11y_tests {
 
 #[cfg(all(test, feature = "browser_ui"))]
 mod page_form_popup_focus_tests {
-  use super::{close_date_time_picker_popup, DateTimePickerState, OpenDateTimePicker};
+  use super::{
+    close_date_time_picker_popup, egui_focused_widget_id, DateTimePickerState, OpenDateTimePicker,
+  };
   use fastrender::geometry::Rect;
   use fastrender::ui::messages::DateTimeInputKind;
   use fastrender::ui::TabId;
