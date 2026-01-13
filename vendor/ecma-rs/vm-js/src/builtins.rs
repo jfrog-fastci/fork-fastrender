@@ -760,7 +760,10 @@ pub fn object_constructor_call(
         marker_key,
         data_desc(Value::String(s), true, false, false),
       )?;
-      // `Object("str")` must produce a String exotic object with a `length` data property.
+      // Mirror `new String(value)` semantics: `Object("str")` boxes to a String object with an
+      // own, non-writable, non-enumerable, non-configurable `length` data property whose value is
+      // the string length in UTF-16 code units. This is required for generic array-like builtins
+      // (e.g. `Array.prototype.at.call("abc", 1)`).
       let len = scope.heap().get_string(s)?.len_code_units();
       let length_key = string_key(&mut scope, "length")?;
       scope.define_property(
