@@ -3,6 +3,7 @@
 //! These were migrated from the old standalone SVG integration-test harness so they compile as part
 //! of the library test suite.
 mod filter_region;
+mod filter_result_cache_deadline;
 mod filter_tests;
 mod filter_turbulence;
 mod filter_turbulence_clamping_reference;

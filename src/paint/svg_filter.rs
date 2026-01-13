@@ -219,11 +219,11 @@ struct SvgFilterCacheKey {
   bbox: [u32; 4],
 }
 
-fn pixel_fingerprint_in_region(pixmap: &Pixmap, region: Rect) -> u64 {
+fn pixel_fingerprint_in_region(pixmap: &Pixmap, region: Rect) -> RenderResult<u64> {
   let width = pixmap.width() as i32;
   let height = pixmap.height() as i32;
   if width == 0 || height == 0 {
-    return 0;
+    return Ok(0);
   }
 
   let min_x = region.min_x().floor() as i32;
@@ -236,29 +236,28 @@ fn pixel_fingerprint_in_region(pixmap: &Pixmap, region: Rect) -> u64 {
   let clamped_max_x = max_x.clamp(0, width);
   let clamped_max_y = max_y.clamp(0, height);
 
-  if clamped_min_x == 0 && clamped_min_y == 0 && clamped_max_x == width && clamped_max_y == height {
-    return pixel_fingerprint(pixmap.data());
-  }
-
   let region_w = (clamped_max_x - clamped_min_x).max(0) as usize;
   let region_h = (clamped_max_y - clamped_min_y).max(0) as usize;
   let bytes_per_row = region_w * 4;
   let total_len = bytes_per_row * region_h;
   if total_len == 0 {
-    return 0;
+    return Ok(0);
   }
 
   let data = pixmap.data();
   let row_stride = pixmap.width() as usize * 4;
   let mut hasher = PixelFingerprintHasher::new(total_len);
 
-  for y in clamped_min_y..clamped_max_y {
+  for (row_idx, y) in (clamped_min_y..clamped_max_y).enumerate() {
+    if row_idx % FILTER_DEADLINE_STRIDE == 0 {
+      check_active(RenderStage::Paint)?;
+    }
     let start = y as usize * row_stride + clamped_min_x as usize * 4;
     let end = start + bytes_per_row;
     hasher.write(&data[start..end]);
   }
 
-  hasher.finish()
+  Ok(hasher.finish())
 }
 
 impl SvgFilterCacheKey {
@@ -273,21 +272,24 @@ impl SvgFilterCacheKey {
     surface_origin_css: (f32, f32),
     bbox: Rect,
     filter_region: Rect,
-  ) -> Option<Self> {
+  ) -> RenderResult<Option<Self>> {
     if pixmap.width() == 0 || pixmap.height() == 0 {
-      return None;
+      return Ok(None);
     }
     debug_assert_eq!(
       filter.fingerprint,
       svg_filter_fingerprint(filter),
       "SvgFilter fingerprint out of date; call SvgFilter::refresh_fingerprint after mutating"
     );
-    Some(Self {
+    let source_hash = pixel_fingerprint_in_region(pixmap, filter_region)?;
+    let backdrop_hash = match backdrop {
+      Some(pixmap) => pixel_fingerprint_in_region(pixmap, filter_region)?,
+      None => 0,
+    };
+    Ok(Some(Self {
       filter_hash: filter.fingerprint,
-      source_hash: pixel_fingerprint_in_region(pixmap, filter_region),
-      backdrop_hash: backdrop
-        .map(|pixmap| pixel_fingerprint_in_region(pixmap, filter_region))
-        .unwrap_or(0),
+      source_hash,
+      backdrop_hash,
       fill_paint: fill_paint.unwrap_or(0),
       stroke_paint: stroke_paint.unwrap_or(0),
       scale_x_bits: f32_to_canonical_bits(scale_x),
@@ -302,7 +304,7 @@ impl SvgFilterCacheKey {
         f32_to_canonical_bits(bbox.width()),
         f32_to_canonical_bits(bbox.height()),
       ],
-    })
+    }))
   }
 }
 
@@ -3718,7 +3720,7 @@ fn apply_svg_filter_scaled(
       surface_origin_css,
       css_bbox,
       filter_region,
-    )
+    )?
   } else {
     None
   };
