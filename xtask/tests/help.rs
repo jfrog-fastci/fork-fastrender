@@ -187,6 +187,28 @@ fn js_wpt_dom_help_mentions_flags() {
 }
 
 #[test]
+fn browser_help_mentions_instrumentation_flags() {
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .args(["browser", "--help"])
+    .output()
+    .expect("run xtask browser --help");
+
+  assert!(
+    output.status.success(),
+    "browser help should exit successfully"
+  );
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  assert!(
+    stdout.contains("--hud")
+      && stdout.contains("--perf-log")
+      && stdout.contains("--perf-log-out")
+      && stdout.contains("--trace-out"),
+    "browser help should mention instrumentation flags; got:\n{stdout}"
+  );
+}
+
+#[test]
 fn js_wpt_dom_smoke_sync_pass_reports_pass() {
   let dir = tempfile::TempDir::new().expect("tempdir");
   let report_path = dir.path().join("wpt_dom_report.json");
