@@ -3572,7 +3572,13 @@ mod tests {
       ..Default::default()
     };
 
-    let children: Vec<NodeId> = (0..4).map(|_| tree.new_leaf(leaf_style.clone())).collect();
+    // Use a larger number of children so this test is sensitive to measure-call fanout.
+    // If min-content sizing accidentally regresses to performing duplicate measurements, the
+    // overage scales with the number of items and will reliably trip the assertion.
+    const NUM_CHILDREN: usize = 64;
+    let children: Vec<NodeId> = (0..NUM_CHILDREN)
+      .map(|_| tree.new_leaf(leaf_style.clone()))
+      .collect();
     let root = tree.new_with_children(
       Style {
         display: Display::Flex,
