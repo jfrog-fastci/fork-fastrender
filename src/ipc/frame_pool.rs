@@ -1,0 +1,456 @@
+//! Shared-memory frame buffer pool management for multiprocess rendering.
+//!
+//! This module is designed to be reused by both the browser process (frame buffer allocation +
+//! mapping) and the renderer process (buffer acquisition + release/ack tracking).
+
+use crate::ipc::IpcError;
+use crate::paint::pixmap::MAX_PIXMAP_BYTES;
+use memmap2::MmapMut;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashSet, VecDeque};
+use std::fs::{File, OpenOptions};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use tempfile::NamedTempFile;
+
+const BYTES_PER_PIXEL: u64 = 4;
+
+// Keep this conservative; we only expect double/triple buffering.
+const MAX_FRAME_BUFFERS: usize = 8;
+
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameBufferLayout {
+  pub width_px: u32,
+  pub height_px: u32,
+  pub stride_bytes: u32,
+  pub byte_len: u64,
+}
+
+/// Descriptor that the browser can send to the renderer so it can open and map a frame buffer.
+///
+/// Note: The transport of these descriptors is out of scope for this module; it simply provides
+/// stable data that can be sent over an IPC channel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FrameBufferDesc {
+  pub index: u32,
+  pub width_px: u32,
+  pub height_px: u32,
+  pub stride_bytes: u32,
+  pub byte_len: u64,
+  pub path: PathBuf,
+}
+
+impl FrameBufferDesc {
+  pub fn layout(&self) -> Result<FrameBufferLayout, IpcError> {
+    frame_buffer_layout(self.width_px, self.height_px)
+  }
+}
+
+#[derive(Debug)]
+pub struct ShmemRegion {
+  mmap: MmapMut,
+  backing: ShmemBacking,
+  path: PathBuf,
+}
+
+#[derive(Debug)]
+enum ShmemBacking {
+  Temp(NamedTempFile),
+  File(File),
+}
+
+impl ShmemRegion {
+  fn create_temp_mapped(len: u64) -> Result<Self, IpcError> {
+    let len_usize = usize::try_from(len).map_err(|_| IpcError::InvalidParameters {
+      message: format!("shared memory length {len} does not fit in usize"),
+    })?;
+
+    let mut tmp = tempfile::Builder::new()
+      .prefix("fastr_framebuf_")
+      .tempfile()?;
+
+    tmp.as_file_mut().set_len(len)?;
+    let path = tmp.path().to_path_buf();
+
+    // SAFETY: We just sized the file to `len` and keep the handle alive, so the mapping length
+    // remains valid for the lifetime of the mapping.
+    let mmap = unsafe { MmapMut::map_mut(tmp.as_file())? };
+    if mmap.len() != len_usize {
+      return Err(IpcError::Io(std::io::Error::new(
+        std::io::ErrorKind::Other,
+        format!(
+          "memory map length mismatch: expected {len_usize} bytes, got {} bytes",
+          mmap.len()
+        ),
+      )));
+    }
+
+    Ok(Self {
+      mmap,
+      backing: ShmemBacking::Temp(tmp),
+      path,
+    })
+  }
+
+  fn open_mapped(path: &Path, len: u64) -> Result<Self, IpcError> {
+    let len_usize = usize::try_from(len).map_err(|_| IpcError::InvalidParameters {
+      message: format!("shared memory length {len} does not fit in usize"),
+    })?;
+
+    let file = OpenOptions::new().read(true).write(true).open(path)?;
+
+    // SAFETY: The mapping length is checked against the expected descriptor length immediately
+    // after mapping. The file handle is kept alive to reduce platform-specific surprises.
+    let mmap = unsafe { MmapMut::map_mut(&file)? };
+    if mmap.len() != len_usize {
+      return Err(IpcError::ProtocolViolation {
+        message: format!(
+          "shared memory size mismatch for {}: expected {len_usize} bytes, got {} bytes",
+          path.display(),
+          mmap.len()
+        ),
+      });
+    }
+
+    Ok(Self {
+      mmap,
+      backing: ShmemBacking::File(file),
+      path: path.to_path_buf(),
+    })
+  }
+
+  pub fn as_bytes(&self) -> &[u8] {
+    &self.mmap
+  }
+
+  pub fn as_bytes_mut(&mut self) -> &mut [u8] {
+    &mut self.mmap
+  }
+
+  pub fn path(&self) -> &Path {
+    &self.path
+  }
+}
+
+/// Browser-side pool: owns and keeps a set of shared-memory frame buffers mapped.
+#[derive(Debug)]
+pub struct BrowserFramePool {
+  pub generation: u64,
+  buffers: Vec<ShmemRegion>,
+  descs: Vec<FrameBufferDesc>,
+}
+
+impl BrowserFramePool {
+  pub fn new_for_viewport(
+    count: usize,
+    viewport_css: (u32, u32),
+    dpr: f32,
+  ) -> Result<Self, IpcError> {
+    if count == 0 {
+      return Err(IpcError::InvalidParameters {
+        message: "frame pool buffer count must be > 0".to_string(),
+      });
+    }
+    if count > MAX_FRAME_BUFFERS {
+      return Err(IpcError::InvalidParameters {
+        message: format!(
+          "frame pool buffer count {count} exceeds maximum supported ({MAX_FRAME_BUFFERS})"
+        ),
+      });
+    }
+
+    let (width_px, height_px) = viewport_to_device_px(viewport_css, dpr)?;
+    let layout = frame_buffer_layout(width_px, height_px)?;
+
+    let mut buffers = Vec::with_capacity(count);
+    let mut descs = Vec::with_capacity(count);
+
+    for index in 0..count {
+      let region = ShmemRegion::create_temp_mapped(layout.byte_len)?;
+      let desc = FrameBufferDesc {
+        index: u32::try_from(index).map_err(|_| IpcError::InvalidParameters {
+          message: "frame pool buffer count does not fit in u32".to_string(),
+        })?,
+        width_px: layout.width_px,
+        height_px: layout.height_px,
+        stride_bytes: layout.stride_bytes,
+        byte_len: layout.byte_len,
+        path: region.path().to_path_buf(),
+      };
+      buffers.push(region);
+      descs.push(desc);
+    }
+
+    Ok(Self {
+      generation: NEXT_GENERATION.fetch_add(1, Ordering::Relaxed),
+      buffers,
+      descs,
+    })
+  }
+
+  pub fn descriptors(&self) -> &[FrameBufferDesc] {
+    &self.descs
+  }
+
+  pub fn buffer_bytes(&self, index: u32) -> Option<&[u8]> {
+    let idx = usize::try_from(index).ok()?;
+    self.buffers.get(idx).map(ShmemRegion::as_bytes)
+  }
+}
+
+/// Renderer-side pool: maps shared buffers and tracks free/in-flight indices to prevent overwrites.
+#[derive(Debug)]
+pub struct RendererFramePool {
+  pub generation: u64,
+  buffers: Vec<ShmemRegion>,
+  descs: Vec<FrameBufferDesc>,
+  free: VecDeque<u32>,
+  writing: HashSet<u32>,
+  in_use: HashSet<u32>,
+}
+
+impl RendererFramePool {
+  pub fn install(generation: u64, descs: Vec<FrameBufferDesc>) -> Result<Self, IpcError> {
+    if descs.is_empty() {
+      return Err(IpcError::InvalidParameters {
+        message: "frame pool descriptors must be non-empty".to_string(),
+      });
+    }
+    if descs.len() > MAX_FRAME_BUFFERS {
+      return Err(IpcError::InvalidParameters {
+        message: format!(
+          "frame pool descriptor count {} exceeds maximum supported ({MAX_FRAME_BUFFERS})",
+          descs.len()
+        ),
+      });
+    }
+
+    // Validate descriptors are contiguous and consistent. This keeps index handling simple and
+    // ensures protocol violations are caught eagerly.
+    for (pos, desc) in descs.iter().enumerate() {
+      let expected = u32::try_from(pos).map_err(|_| IpcError::InvalidParameters {
+        message: "frame pool descriptor count does not fit in u32".to_string(),
+      })?;
+      if desc.index != expected {
+        return Err(IpcError::ProtocolViolation {
+          message: format!(
+            "frame buffer descriptor index mismatch at position {pos}: expected {expected}, got {}",
+            desc.index
+          ),
+        });
+      }
+      let layout = desc.layout()?;
+      if layout.byte_len != desc.byte_len {
+        return Err(IpcError::ProtocolViolation {
+          message: format!(
+            "frame buffer descriptor {} byte_len mismatch: expected {}, got {}",
+            desc.index, layout.byte_len, desc.byte_len
+          ),
+        });
+      }
+    }
+
+    // Also ensure all descriptors share the same layout (single viewport).
+    let first_layout = descs[0].layout()?;
+    for desc in &descs[1..] {
+      if desc.width_px != first_layout.width_px
+        || desc.height_px != first_layout.height_px
+        || desc.stride_bytes != first_layout.stride_bytes
+        || desc.byte_len != first_layout.byte_len
+      {
+        return Err(IpcError::ProtocolViolation {
+          message: "frame buffer descriptors have inconsistent layouts".to_string(),
+        });
+      }
+    }
+
+    let mut buffers = Vec::with_capacity(descs.len());
+    for desc in &descs {
+      buffers.push(ShmemRegion::open_mapped(&desc.path, desc.byte_len)?);
+    }
+
+    let mut free = VecDeque::with_capacity(descs.len());
+    for idx in 0..descs.len() {
+      free.push_back(idx as u32);
+    }
+
+    Ok(Self {
+      generation,
+      buffers,
+      descs,
+      free,
+      writing: HashSet::new(),
+      in_use: HashSet::new(),
+    })
+  }
+
+  pub fn acquire(&mut self) -> Option<(u32, &mut [u8], FrameBufferLayout)> {
+    let idx = self.free.pop_front()?;
+
+    // Maintain internal invariants (never hand out the same buffer twice).
+    debug_assert!(!self.writing.contains(&idx));
+    debug_assert!(!self.in_use.contains(&idx));
+    self.writing.insert(idx);
+
+    let layout = self.descs.get(idx as usize).and_then(|d| d.layout().ok())?;
+    let bytes = self.buffers.get_mut(idx as usize)?.as_bytes_mut();
+    Some((idx, bytes, layout))
+  }
+
+  pub fn mark_sent(&mut self, idx: u32) -> Result<(), IpcError> {
+    self.ensure_index(idx)?;
+
+    if !self.writing.remove(&idx) {
+      return Err(IpcError::ProtocolViolation {
+        message: format!("mark_sent for buffer {idx} that is not currently acquired for writing"),
+      });
+    }
+    if !self.in_use.insert(idx) {
+      return Err(IpcError::ProtocolViolation {
+        message: format!("mark_sent for buffer {idx} that is already in_use"),
+      });
+    }
+    Ok(())
+  }
+
+  pub fn release(&mut self, idx: u32) -> Result<(), IpcError> {
+    self.ensure_index(idx)?;
+
+    if !self.in_use.remove(&idx) {
+      return Err(IpcError::ProtocolViolation {
+        message: format!("release for buffer {idx} that is not currently in_use"),
+      });
+    }
+    if self.writing.contains(&idx) {
+      return Err(IpcError::ProtocolViolation {
+        message: format!("release for buffer {idx} that is still marked as writing"),
+      });
+    }
+
+    self.free.push_back(idx);
+    Ok(())
+  }
+
+  fn ensure_index(&self, idx: u32) -> Result<(), IpcError> {
+    let idx_usize = usize::try_from(idx).map_err(|_| IpcError::ProtocolViolation {
+      message: format!("frame buffer index {idx} does not fit in usize"),
+    })?;
+    if idx_usize >= self.buffers.len() {
+      return Err(IpcError::ProtocolViolation {
+        message: format!(
+          "frame buffer index {idx} out of bounds (buffer count {})",
+          self.buffers.len()
+        ),
+      });
+    }
+    Ok(())
+  }
+}
+
+fn viewport_to_device_px(viewport_css: (u32, u32), dpr: f32) -> Result<(u32, u32), IpcError> {
+  let dpr = if dpr.is_finite() && dpr > 0.0 {
+    dpr
+  } else {
+    1.0
+  };
+  let w_css = viewport_css.0.max(1) as f64;
+  let h_css = viewport_css.1.max(1) as f64;
+
+  let w_f = (w_css * (dpr as f64)).round();
+  let h_f = (h_css * (dpr as f64)).round();
+
+  if !w_f.is_finite() || !h_f.is_finite() {
+    return Err(IpcError::InvalidParameters {
+      message: "viewport size is not finite".to_string(),
+    });
+  }
+
+  let w = u32::try_from(w_f as u64).map_err(|_| IpcError::InvalidParameters {
+    message: format!("viewport width out of range: {w_f}"),
+  })?;
+  let h = u32::try_from(h_f as u64).map_err(|_| IpcError::InvalidParameters {
+    message: format!("viewport height out of range: {h_f}"),
+  })?;
+
+  Ok((w.max(1), h.max(1)))
+}
+
+fn frame_buffer_layout(width_px: u32, height_px: u32) -> Result<FrameBufferLayout, IpcError> {
+  if width_px == 0 || height_px == 0 {
+    return Err(IpcError::InvalidParameters {
+      message: format!("frame buffer size is zero ({width_px}x{height_px})"),
+    });
+  }
+
+  let stride_bytes = width_px
+    .checked_mul(BYTES_PER_PIXEL as u32)
+    .ok_or_else(|| IpcError::InvalidParameters {
+      message: format!("frame buffer stride overflow for width {width_px}"),
+    })?;
+
+  let byte_len = (stride_bytes as u64)
+    .checked_mul(height_px as u64)
+    .ok_or_else(|| IpcError::InvalidParameters {
+      message: format!("frame buffer byte size overflow for {width_px}x{height_px}"),
+    })?;
+
+  if byte_len > MAX_PIXMAP_BYTES {
+    return Err(IpcError::InvalidParameters {
+      message: format!(
+        "frame buffer {}x{} would require {} bytes (limit {})",
+        width_px, height_px, byte_len, MAX_PIXMAP_BYTES
+      ),
+    });
+  }
+
+  Ok(FrameBufferLayout {
+    width_px,
+    height_px,
+    stride_bytes,
+    byte_len,
+  })
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn acquiring_and_releasing_reuses_buffers() {
+    let browser = BrowserFramePool::new_for_viewport(2, (32, 16), 1.0).unwrap();
+    let mut renderer =
+      RendererFramePool::install(browser.generation, browser.descriptors().to_vec()).unwrap();
+
+    let (idx0, buf0, _) = renderer.acquire().unwrap();
+    buf0[0] = 1;
+    renderer.mark_sent(idx0).unwrap();
+
+    let (idx1, buf1, _) = renderer.acquire().unwrap();
+    buf1[0] = 2;
+    renderer.mark_sent(idx1).unwrap();
+
+    assert_ne!(idx0, idx1);
+
+    renderer.release(idx0).unwrap();
+
+    let (idx2, _, _) = renderer.acquire().unwrap();
+    assert_eq!(idx2, idx0);
+  }
+
+  #[test]
+  fn renderer_cannot_acquire_when_all_buffers_in_use() {
+    let browser = BrowserFramePool::new_for_viewport(2, (32, 16), 1.0).unwrap();
+    let mut renderer =
+      RendererFramePool::install(browser.generation, browser.descriptors().to_vec()).unwrap();
+
+    let (idx0, _, _) = renderer.acquire().unwrap();
+    renderer.mark_sent(idx0).unwrap();
+
+    let (idx1, _, _) = renderer.acquire().unwrap();
+    renderer.mark_sent(idx1).unwrap();
+
+    assert!(renderer.acquire().is_none());
+  }
+}

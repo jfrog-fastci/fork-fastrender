@@ -20487,7 +20487,6 @@ mod tests {
   use crate::style::types::BorderImageSliceValue;
   use crate::style::types::BorderImageSource;
   use crate::style::types::ClipPath;
-  use crate::text::caret::CaretAffinity;
   use crate::style::types::FilterShadow;
   use crate::style::types::ImageRendering;
   use crate::style::types::Isolation;

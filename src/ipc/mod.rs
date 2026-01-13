@@ -5,6 +5,7 @@
 
 pub mod error;
 pub mod framing;
+pub mod frame_pool;
 pub mod protocol;
 
 pub use error::IpcError;
