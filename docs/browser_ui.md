@@ -652,7 +652,7 @@ Manual testing checklist (smoke):
   - Verify you can traverse chrome controls and the address bar is announced as “Address bar”
     (e.g. after Cmd+L).
   - Navigate to a simple page (e.g. `about:test-form`) and verify the page region is discoverable
-    and has a meaningful label.
+    and has a meaningful label (currently: “Web page content (rendered image)”).
   - If your build includes injected page semantics, verify VoiceOver can traverse basic document
     content (headings/links/form controls) and trigger focus/activate on at least one control.
 - **Windows (Narrator):**
@@ -664,6 +664,10 @@ Manual testing checklist (smoke):
   - Verify basic traversal/announcement works for chrome controls and the page region (backend
     support depends on your `winit`/X11/Wayland environment).
   - If your build includes injected page semantics, verify focus/activate works on at least one page control.
+
+If you need a lower-level view than screen reader announcements, use a platform accessibility
+inspector (e.g. macOS Accessibility Inspector, Windows Inspect.exe, Linux Accerciser) to confirm
+the chrome widget nodes and the page region/subtree structure.
 
 ## Code layout
 
