@@ -1,15 +1,16 @@
+#![cfg(windows)]
+
+use std::ffi::OsString;
+use std::os::windows::io::AsRawHandle;
 use std::path::PathBuf;
 use std::process::Command;
 
-use windows_sys::Win32::Foundation::{CloseHandle, BOOL};
-use windows_sys::Win32::System::JobObjects::{
-  AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject, JobObjectExtendedLimitInformation,
-  JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
+use fastrender::sandbox::windows::spawn_sandboxed;
+use windows_sys::Win32::Foundation::{
+  SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
 };
-use windows_sys::Win32::System::Threading::{
-  GetCurrentProcess, ProcessChildProcessPolicy, SetProcessMitigationPolicy,
-  PROCESS_MITIGATION_CHILD_PROCESS_POLICY,
-};
+use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
+use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
 
 const CHILD_ENV: &str = "FASTR_TEST_WIN_SANDBOX_NO_CHILD_PROCESS_CHILD";
 
@@ -58,105 +59,37 @@ fn assert_cmd_spawn_works(cmd_exe: &PathBuf) {
   );
 }
 
-fn apply_child_process_policy() -> Result<(), String> {
-  // `PROCESS_MITIGATION_CHILD_PROCESS_POLICY` bit 0 = NoChildProcessCreation.
-  let policy = PROCESS_MITIGATION_CHILD_PROCESS_POLICY { Flags: 1 };
-  // SAFETY: Windows API call; we pass a valid pointer/length to a POD struct.
-  let ok: BOOL = unsafe {
-    SetProcessMitigationPolicy(
-      ProcessChildProcessPolicy,
-      &policy as *const _ as *const std::ffi::c_void,
-      std::mem::size_of::<PROCESS_MITIGATION_CHILD_PROCESS_POLICY>(),
-    )
-  };
-  if ok == 0 {
-    return Err(format!(
-      "SetProcessMitigationPolicy(ProcessChildProcessPolicy) failed: {}",
-      std::io::Error::last_os_error()
-    ));
-  }
-  Ok(())
-}
-
-struct JobHandle(windows_sys::Win32::Foundation::HANDLE);
-
-impl Drop for JobHandle {
-  fn drop(&mut self) {
-    // SAFETY: closing an owned HANDLE.
-    unsafe {
-      let _ = CloseHandle(self.0);
-    }
-  }
-}
-
-fn apply_job_active_process_limit_one() -> Result<JobHandle, String> {
-  // SAFETY: Windows API call; passing null security attributes + name creates an unnamed job object.
-  let job = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
-  if job == 0 {
-    return Err(format!(
-      "CreateJobObjectW failed: {}",
-      std::io::Error::last_os_error()
-    ));
-  }
-
-  let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
-  info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
-  info.BasicLimitInformation.ActiveProcessLimit = 1;
-
-  // SAFETY: Windows API call; struct is initialized and buffer length matches.
-  let ok: BOOL = unsafe {
-    SetInformationJobObject(
-      job,
-      JobObjectExtendedLimitInformation,
-      &mut info as *mut _ as *mut std::ffi::c_void,
-      std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-    )
-  };
-  if ok == 0 {
-    return Err(format!(
-      "SetInformationJobObject(JobObjectExtendedLimitInformation) failed: {}",
-      std::io::Error::last_os_error()
-    ));
-  }
-
-  // SAFETY: `GetCurrentProcess` returns a pseudo-handle for the current process.
-  let ok: BOOL = unsafe { AssignProcessToJobObject(job, GetCurrentProcess()) };
-  if ok == 0 {
-    return Err(format!(
-      "AssignProcessToJobObject failed: {}",
-      std::io::Error::last_os_error()
-    ));
-  }
-
-  Ok(JobHandle(job))
-}
-
-fn apply_no_child_process_sandbox() -> Result<Option<JobHandle>, String> {
-  let mut applied_any = false;
-  let mut job_guard = None;
-
-  match apply_child_process_policy() {
-    Ok(()) => applied_any = true,
-    Err(err) => {
-      eprintln!("warning: failed to apply child-process mitigation policy: {err}");
-    }
-  }
-
-  match apply_job_active_process_limit_one() {
-    Ok(handle) => {
-      job_guard = Some(handle);
-      applied_any = true;
-    }
-    Err(err) => {
-      eprintln!("warning: failed to apply job object active-process limit: {err}");
-    }
-  }
-
-  if applied_any {
-    Ok(job_guard)
+fn std_handle(kind: u32) -> Option<HANDLE> {
+  // SAFETY: Win32 call; returns INVALID_HANDLE_VALUE / null on error.
+  let h = unsafe { GetStdHandle(kind) };
+  if h == 0 || h == INVALID_HANDLE_VALUE {
+    None
   } else {
-    Err("failed to apply any Windows no-child-process sandbox policy".to_string())
+    Some(h)
   }
+}
+
+fn collect_inheritable_std_handles() -> Vec<std::os::windows::io::RawHandle> {
+  let mut handles: Vec<HANDLE> = Vec::new();
+  for h in [
+    std_handle(STD_INPUT_HANDLE),
+    std_handle(STD_OUTPUT_HANDLE),
+    std_handle(STD_ERROR_HANDLE),
+  ]
+  .into_iter()
+  .flatten()
+  {
+    if !handles.contains(&h) {
+      // Ensure the handle is inheritable so it can be included in the restricted handle list.
+      //
+      // Best-effort: some environments may not allow changing inherit flags on std handles.
+      // SAFETY: Win32 call; valid handle value.
+      let _ = unsafe { SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
+      handles.push(h);
+    }
+  }
+
+  handles.into_iter().map(|h| h as _).collect()
 }
 
 #[test]
@@ -165,9 +98,6 @@ fn sandboxed_renderer_cannot_spawn_child_process() {
 
   let is_child = std::env::var_os(CHILD_ENV).is_some();
   if is_child {
-    let _job_guard =
-      apply_no_child_process_sandbox().expect("apply Windows no-child-process sandbox policy");
-
     match Command::new(&cmd_exe).arg("/C").arg("exit 0").status() {
       Ok(status) => panic!(
         "sandbox allowed spawning a child process (cmd.exe). cmd={}, status={:?}",
@@ -198,18 +128,34 @@ fn sandboxed_renderer_cannot_spawn_child_process() {
 
   let exe = std::env::current_exe().expect("current test exe path");
   let test_name = "sandbox::windows_no_child_process::sandboxed_renderer_cannot_spawn_child_process";
-  let output = Command::new(exe)
-    .env(CHILD_ENV, "1")
-    .arg("--exact")
-    .arg(test_name)
-    .arg("--nocapture")
-    .output()
-    .expect("spawn sandboxed child test process");
 
-  assert!(
-    output.status.success(),
-    "sandboxed child process should exit successfully (stdout={}, stderr={})",
-    String::from_utf8_lossy(&output.stdout),
-    String::from_utf8_lossy(&output.stderr)
+  let inherit_handles = collect_inheritable_std_handles();
+  let args = vec![
+    OsString::from("--exact"),
+    OsString::from(test_name),
+    OsString::from("--nocapture"),
+  ];
+
+  let child = crate::common::with_env_vars(&[(CHILD_ENV, "1")], || {
+    spawn_sandboxed(&exe, &args, &inherit_handles).expect("spawn sandboxed child test process")
+  });
+
+  let timeout_ms: u32 = 10_000;
+  // SAFETY: waiting on a valid process handle.
+  let wait_rc = unsafe { WaitForSingleObject(child.process.as_raw_handle() as HANDLE, timeout_ms) };
+  if wait_rc != 0 {
+    panic!(
+      "sandboxed child did not exit cleanly within {timeout_ms}ms (WaitForSingleObject rc={wait_rc})"
+    );
+  }
+
+  let mut exit_code: u32 = 0;
+  // SAFETY: querying exit code for a valid process handle.
+  let ok = unsafe { GetExitCodeProcess(child.process.as_raw_handle() as HANDLE, &mut exit_code) };
+  assert!(ok != 0, "GetExitCodeProcess failed");
+  assert_eq!(
+    exit_code, 0,
+    "sandboxed child process exited non-zero (exit_code={exit_code}, pid={}, level={:?})",
+    child.pid, child.level
   );
 }
