@@ -46,6 +46,12 @@ const MAX_WEBSOCKET_URL_BYTES: usize = 8 * 1024;
 const MAX_WEBSOCKET_PROTOCOL_BYTES: usize = 1 * 1024;
 const MAX_WEBSOCKET_PROTOCOLS: u32 = 32;
 const MAX_WEBSOCKET_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+/// Hard upper bound on the total number of bytes that may be queued for sending (`bufferedAmount`)
+/// per WebSocket.
+///
+/// This prevents untrusted scripts from enqueueing multi-GiB send queues even with a per-message
+/// size limit.
+const MAX_WEBSOCKET_BUFFERED_AMOUNT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_WEBSOCKET_CLOSE_REASON_BYTES: usize = 123;
 const MAX_QUEUED_WEBSOCKET_SEND_COMMANDS: usize = 1_024;
 const MAX_QUEUED_WEBSOCKET_EVENTS_PER_SOCKET: usize = 1_024;
@@ -906,7 +912,13 @@ fn websocket_send<Host: WindowRealmHost + 'static>(
     if ws.ready_state != WS_OPEN {
       return Err(VmError::TypeError("WebSocket is not open"));
     }
-    ws.buffered_amount = ws.buffered_amount.saturating_add(byte_len);
+    let next_buffered = ws.buffered_amount.saturating_add(byte_len);
+    if next_buffered > MAX_WEBSOCKET_BUFFERED_AMOUNT_BYTES {
+      return Err(VmError::TypeError(
+        "WebSocket bufferedAmount limit exceeded",
+      ));
+    }
+    ws.buffered_amount = next_buffered;
     if let Some(ipc) = state.ipc.as_ref() {
       Ok(SendQueue::Ipc(ipc.cmd_tx.clone()))
     } else {
@@ -2154,6 +2166,212 @@ mod tests {
       "websocket env teardown took too long (connect timeout not enforced?)",
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn websocket_buffered_amount_cap() -> Result<()> {
+    let _lock = net_test_lock();
+    let Some(listener) = try_bind_localhost("websocket_buffered_amount_cap") else {
+      return Ok(());
+    };
+    listener.set_nonblocking(true).expect("set_nonblocking");
+    let addr = listener.local_addr().expect("local_addr");
+
+    let server = std::thread::spawn(move || {
+      let deadline = Instant::now() + Duration::from_secs(5);
+      loop {
+        match listener.accept() {
+          Ok((stream, _)) => {
+            let mut stream = stream;
+            // Keep the test deterministic (no indefinite blocking on slow/absent client I/O).
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+            let mut ws = tungstenite::accept(stream).expect("accept websocket");
+
+            let read_deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+              match ws.read_message() {
+                Ok(tungstenite::Message::Close(frame)) => {
+                  let _ = ws.close(frame);
+                  break;
+                }
+                Ok(tungstenite::Message::Ping(payload)) => {
+                  let _ = ws.write_message(tungstenite::Message::Pong(payload));
+                }
+                Ok(tungstenite::Message::Text(_)) | Ok(tungstenite::Message::Binary(_)) => {
+                  // Discard; we're only exercising the client's send queue behaviour.
+                }
+                Ok(tungstenite::Message::Pong(_)) => {}
+                Err(tungstenite::Error::Io(ref err))
+                  if matches!(err.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) =>
+                {
+                  if Instant::now() >= read_deadline {
+                    panic!("server read timed out");
+                  }
+                }
+                Err(err) => panic!("server read failed: {err}"),
+                _ => {}
+              }
+            }
+            break;
+          }
+          Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            if Instant::now() >= deadline {
+              panic!("accept timed out");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+          }
+          Err(e) => panic!("accept failed: {e}"),
+        }
+      }
+    });
+
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    let msg_size = MAX_WEBSOCKET_MESSAGE_BYTES;
+    let cap = MAX_WEBSOCKET_BUFFERED_AMOUNT_BYTES;
+
+    host.exec_script(&format!(
+      r#"
+      globalThis.__done = false;
+      globalThis.__err = "";
+      globalThis.__threw = false;
+      globalThis.__throwName = "";
+      globalThis.__throwMessage = "";
+      globalThis.__bufferedAtThrow = 0;
+      globalThis.__maxBuffered = 0;
+      globalThis.__afterDrainOk = false;
+      globalThis.__afterDrainError = "";
+      globalThis.__closeBuffered = -1;
+
+      globalThis.__ws = new WebSocket("ws://{addr}/");
+      const ws = globalThis.__ws;
+      const msg = new Uint8Array({msg_size});
+
+      ws.onopen = function () {{
+        for (let i = 0; i < 32; i++) {{
+          try {{
+            ws.send(msg);
+            if (ws.bufferedAmount > globalThis.__maxBuffered) {{
+              globalThis.__maxBuffered = ws.bufferedAmount;
+            }}
+          }} catch (e) {{
+            globalThis.__threw = true;
+            globalThis.__throwName = String(e && e.name);
+            globalThis.__throwMessage = String(e && e.message);
+            globalThis.__bufferedAtThrow = ws.bufferedAmount;
+            break;
+          }}
+        }}
+
+        if (!globalThis.__threw) {{
+          globalThis.__err = "did_not_throw";
+          ws.close();
+          return;
+        }}
+
+        function poll() {{
+          if (ws.bufferedAmount === 0) {{
+            try {{
+              ws.send(msg);
+              globalThis.__afterDrainOk = true;
+            }} catch (e) {{
+              globalThis.__afterDrainOk = false;
+              globalThis.__afterDrainError = String(e && e.message);
+            }}
+            ws.close();
+            return;
+          }}
+          setTimeout(poll, 10);
+        }}
+
+        setTimeout(poll, 10);
+      }};
+
+      ws.onerror = function () {{
+        globalThis.__err = "error";
+        globalThis.__done = true;
+      }};
+      ws.onclose = function () {{
+        globalThis.__closeBuffered = ws.bufferedAmount;
+        globalThis.__done = true;
+      }};
+      "#,
+    ))?;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+      let _ = host.run_until_idle(RunLimits {
+        max_tasks: 200,
+        max_microtasks: 2000,
+        max_wall_time: Some(Duration::from_millis(50)),
+      })?;
+
+      let done = get_global_prop_utf8(&mut host, "__done").unwrap_or_default();
+      if done == "true" {
+        break;
+      }
+      if Instant::now() >= deadline {
+        break;
+      }
+      std::thread::sleep(Duration::from_millis(10));
+    }
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__err").unwrap_or_default(),
+      "",
+      "unexpected websocket error: {:?}",
+      get_global_prop_utf8(&mut host, "__err")
+    );
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__threw").unwrap_or_default(),
+      "true",
+      "expected send() to throw once bufferedAmount exceeds cap"
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__throwName").as_deref(),
+      Some("TypeError")
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__throwMessage").as_deref(),
+      Some("WebSocket bufferedAmount limit exceeded")
+    );
+
+    let max_buffered: f64 = get_global_prop_utf8(&mut host, "__maxBuffered")
+      .unwrap_or_else(|| "0".to_string())
+      .parse()
+      .unwrap_or(0.0);
+    let at_throw: f64 = get_global_prop_utf8(&mut host, "__bufferedAtThrow")
+      .unwrap_or_else(|| "0".to_string())
+      .parse()
+      .unwrap_or(0.0);
+
+    assert!(
+      max_buffered <= cap as f64,
+      "max bufferedAmount exceeded cap (max={max_buffered}, cap={cap})"
+    );
+    assert!(
+      at_throw <= cap as f64,
+      "bufferedAmount at throw exceeded cap (at_throw={at_throw}, cap={cap})"
+    );
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__afterDrainOk").as_deref(),
+      Some("true"),
+      "expected send() to succeed after bufferedAmount drains; error={:?}",
+      get_global_prop_utf8(&mut host, "__afterDrainError")
+    );
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__closeBuffered").as_deref(),
+      Some("0"),
+      "expected bufferedAmount to be reset to 0 on close"
+    );
+
+    server.join().expect("server thread panicked");
     Ok(())
   }
 }
