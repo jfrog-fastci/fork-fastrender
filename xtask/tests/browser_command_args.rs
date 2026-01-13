@@ -69,6 +69,31 @@ fn browser_command_wraps_cargo_with_run_limited_and_cargo_agent() {
     Some(repo_root.clone()),
     "expected command to run from repo root"
   );
+
+  assert!(
+    cmd_env(&cmd, FASTR_BROWSER_HUD_ENV).is_none(),
+    "expected default browser command not to set {FASTR_BROWSER_HUD_ENV}"
+  );
+  assert!(
+    cmd_env(&cmd, FASTR_PERF_LOG_ENV).is_none(),
+    "expected default browser command not to set {FASTR_PERF_LOG_ENV}"
+  );
+  assert!(
+    cmd_env(&cmd, FASTR_PERF_LOG_OUT_ENV).is_none(),
+    "expected default browser command not to set {FASTR_PERF_LOG_OUT_ENV}"
+  );
+  assert!(
+    cmd_env(&cmd, FASTR_BROWSER_TRACE_OUT_ENV).is_none(),
+    "expected default browser command not to set {FASTR_BROWSER_TRACE_OUT_ENV}"
+  );
+  assert!(
+    cmd_env(&cmd, FASTR_BROWSER_MEM_LIMIT_MB_ENV).is_none(),
+    "expected default browser command not to set {FASTR_BROWSER_MEM_LIMIT_MB_ENV}"
+  );
+  assert!(
+    cmd_env(&cmd, FASTR_TEST_BROWSER_HEADLESS_SMOKE_ENV).is_none(),
+    "expected default browser command not to set {FASTR_TEST_BROWSER_HEADLESS_SMOKE_ENV}"
+  );
 }
 
 #[test]

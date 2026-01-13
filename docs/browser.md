@@ -209,6 +209,11 @@ To capture machine-readable browser responsiveness metrics:
 ```bash
 scripts/capture_browser_perf_log.sh --url about:test-scroll --out target/browser_perf.jsonl
 
+# Wrapper-friendly helper (sets env vars for you):
+bash scripts/cargo_agent.sh xtask browser --release \
+  --perf-log --perf-log-out target/browser_perf.jsonl \
+  about:test-scroll
+
 # Manual invocation:
 FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
   bash scripts/run_limited.sh --as 64G -- \
