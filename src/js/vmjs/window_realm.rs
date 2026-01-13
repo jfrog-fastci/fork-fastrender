@@ -32102,7 +32102,7 @@ fn range_set_start_native(
     .require_node_handle(scope.heap(), node_value)
     .map_err(|_| VmError::TypeError("Illegal invocation"))?;
   if node_key.document_id != handle.document_id {
-    return Err(VmError::Throw(make_dom_exception(scope, "WrongDocumentError", "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, "WrongDocumentError", "")?));
   }
 
   let offset_value = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -32127,14 +32127,15 @@ fn range_set_start_native(
   match result {
     Ok(()) => Ok(Value::Undefined),
     Err(dom2::DomError::IndexSizeError) => {
-      Err(VmError::Throw(make_dom_exception(scope, "IndexSizeError", "")?))
+      Err(VmError::Throw(make_dom_exception(vm, scope, "IndexSizeError", "")?))
     }
     Err(dom2::DomError::InvalidNodeType) => Err(VmError::Throw(make_dom_exception(
+      vm,
       scope,
       "InvalidNodeTypeError",
       "",
     )?)),
-    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    Err(err) => Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
   }
 }
 
@@ -32155,7 +32156,7 @@ fn range_set_end_native(
     .require_node_handle(scope.heap(), node_value)
     .map_err(|_| VmError::TypeError("Illegal invocation"))?;
   if node_key.document_id != handle.document_id {
-    return Err(VmError::Throw(make_dom_exception(scope, "WrongDocumentError", "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, "WrongDocumentError", "")?));
   }
 
   let offset_value = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -32180,14 +32181,15 @@ fn range_set_end_native(
   match result {
     Ok(()) => Ok(Value::Undefined),
     Err(dom2::DomError::IndexSizeError) => {
-      Err(VmError::Throw(make_dom_exception(scope, "IndexSizeError", "")?))
+      Err(VmError::Throw(make_dom_exception(vm, scope, "IndexSizeError", "")?))
     }
     Err(dom2::DomError::InvalidNodeType) => Err(VmError::Throw(make_dom_exception(
+      vm,
       scope,
       "InvalidNodeTypeError",
       "",
     )?)),
-    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    Err(err) => Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
   }
 }
 
@@ -32206,14 +32208,14 @@ fn range_compare_boundary_points_native(
   let how = webidl_to_uint16(scope, how_value)?;
 
   if how > 3 {
-    return Err(VmError::Throw(make_dom_exception(scope, "NotSupportedError", "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, "NotSupportedError", "")?));
   }
 
   let source_value = args.get(1).copied().unwrap_or(Value::Undefined);
   let source_handle = range_handle_from_this(vm, scope, source_value, "Illegal invocation")?;
 
   if source_handle.document_id != handle.document_id {
-    return Err(VmError::Throw(make_dom_exception(scope, "WrongDocumentError", "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, "WrongDocumentError", "")?));
   }
 
   let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
@@ -32237,7 +32239,7 @@ fn range_compare_boundary_points_native(
   let this_root = dom.tree_root_for_range(this_start.node);
   let other_root = dom.tree_root_for_range(other_start.node);
   if this_root != other_root {
-    return Err(VmError::Throw(make_dom_exception(scope, "WrongDocumentError", "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, "WrongDocumentError", "")?));
   }
 
   let (this_point, other_point) = match how {
@@ -37643,7 +37645,7 @@ fn named_node_map_remove_named_item_native(
   }
 
   let Some((name, value)) = found else {
-    return Err(VmError::Throw(make_dom_exception(scope, "NotFoundError", "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, "NotFoundError", "")?));
   };
 
   let name = if is_html {
