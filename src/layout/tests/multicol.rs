@@ -1787,6 +1787,10 @@ fn column_rule_is_segmented_around_spanners() {
       }
       .spanner {
         column-span: all;
+        height: 40px;
+        margin: 0;
+      }
+      .spanner > .marker {
         width: 60px;
         height: 40px;
         background: rgb(255, 255, 0);
@@ -1795,7 +1799,7 @@ fn column_rule_is_segmented_around_spanners() {
     <div id="multi">
       <div class="left"></div>
       <div class="right"></div>
-      <div class="spanner"></div>
+      <div class="spanner"><div class="marker"></div></div>
       <div class="left"></div>
       <div class="right"></div>
     </div>
