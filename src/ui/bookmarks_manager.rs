@@ -1088,7 +1088,9 @@ fn build_visible_rows(
       .collect();
   }
 
-  let mut out: Vec<BookmarkRow> = Vec::with_capacity(store.nodes.len().max(store.roots.len()));
+  // Avoid preallocating `store.nodes.len()` here: large bookmark stores can have many nodes hidden
+  // behind collapsed folders, and the flattened list is only as big as the *visible* rows.
+  let mut out: Vec<BookmarkRow> = Vec::with_capacity(store.roots.len().max(256));
   // Depth-first traversal: push roots in reverse so `pop()` visits them in store order.
   let mut stack: Vec<(usize, BookmarkId)> = store
     .roots
@@ -1116,6 +1118,10 @@ fn build_visible_rows(
         });
 
         if folder_open(ctx, folder.id) {
+          // Make the common case (opening a large folder) cheaper by reserving for its direct
+          // children. This avoids repeated reallocations while keeping collapsed trees cheap.
+          out.reserve(folder.children.len());
+          stack.reserve(folder.children.len());
           stack.extend(
             folder
               .children
