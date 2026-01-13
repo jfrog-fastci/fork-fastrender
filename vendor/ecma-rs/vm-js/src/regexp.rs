@@ -3263,7 +3263,7 @@ impl<'a> Parser<'a> {
 
         if self.peek().is_some_and(is_octal_digit) {
           let v = self.parse_legacy_octal_escape_after_first(x)?;
-          return Ok(Atom::Literal(v as u32));
+          return Ok(Atom::Literal(v));
         }
         Ok(Atom::Literal(0x0000))
       }
