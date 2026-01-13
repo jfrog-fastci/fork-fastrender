@@ -154,6 +154,11 @@ invalid), so the implementation falls back to an embedded SBPL profile string wi
 
 See `src/sandbox/macos.rs` (`apply_strict_sandbox`) for details.
 
+App Sandbox note: when FastRender is eventually shipped as a macOS `.app`, we expect to sandbox
+the untrusted renderer helper process using **App Sandbox entitlements embedded in the code
+signature**. Placeholder entitlement files live in [`tools/macos/entitlements/`](../tools/macos/entitlements/)
+and are documented in [`docs/security/macos_renderer_sandbox.md`](../docs/security/macos_renderer_sandbox.md).
+
 ## Priority order
 
 ### P0: Process separation (no sandbox yet)

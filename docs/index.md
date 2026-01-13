@@ -39,6 +39,7 @@ If a document can’t be kept accurate, delete it and replace it with something 
 - Sandboxing overview (renderer process): [sandboxing.md](sandboxing.md)
 - Linux seccomp allowlist maintenance: [seccomp_allowlist.md](seccomp_allowlist.md)
 - macOS Seatbelt sandboxing (overview + probe tool): [macos_sandbox.md](macos_sandbox.md)
+- macOS App Sandbox entitlements (future `.app` renderer sandboxing): [security/macos_renderer_sandbox.md](security/macos_renderer_sandbox.md)
 - IPC transport invariants (framing, `SCM_RIGHTS`, `memfd`): [ipc.md](ipc.md)
 - Renderer chrome (future): [`instructions/renderer_chrome.md`](../instructions/renderer_chrome.md)
 - Renderer-chrome internal schemes (`chrome://` assets, `chrome-action:` actions): [renderer_chrome_schemes.md](renderer_chrome_schemes.md)
