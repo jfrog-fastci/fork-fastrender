@@ -10908,6 +10908,44 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       self.schedule_media_wakeup(*tab_id, *after);
     }
 
+    if matches!(&msg, fastrender::ui::WorkerToUi::DownloadStarted { .. }) {
+      let before_downloads_open = self.downloads_panel_open;
+      let before_history_open = self.history_panel_open;
+      let before_bookmarks_open = self.bookmarks_panel_open;
+
+      let output = fastrender::ui::downloads_panel_policy::on_download_started(
+        fastrender::ui::downloads_panel_policy::DownloadsPanelPolicyInput {
+          window_is_active: self.window_focused,
+          chrome_has_text_focus: self.chrome_has_text_focus,
+          history_panel_open: self.history_panel_open,
+          bookmarks_panel_open: self.bookmarks_panel_open,
+          downloads_panel_open: self.downloads_panel_open,
+          downloads_panel_request_focus: self.downloads_panel_request_focus,
+        },
+      );
+
+      self.history_panel_open = output.history_panel_open;
+      self.bookmarks_panel_open = output.bookmarks_panel_open;
+      self.downloads_panel_open = output.downloads_panel_open;
+      self.downloads_panel_request_focus = output.downloads_panel_request_focus;
+
+      let opened_downloads_panel = !before_downloads_open && self.downloads_panel_open;
+      let closed_other_panels = (before_history_open && !self.history_panel_open)
+        || (before_bookmarks_open && !self.bookmarks_panel_open);
+
+      if opened_downloads_panel || closed_other_panels {
+        // Match `ChromeAction::ToggleDownloadsPanel`: downloads share the right-side panel space
+        // with history/bookmarks.
+        self.history_panel_request_focus_search = false;
+        self.bookmarks_manager.clear_transient();
+      }
+      if opened_downloads_panel {
+        // When the downloads panel auto-opens and intends to take focus (when allowed), do not keep
+        // forwarding keyboard focus to the rendered page.
+        self.page_has_focus = false;
+      }
+    }
+
     // Navigations reset a tab's favicon; drop any cached favicon assets eagerly so we don't render
     // stale icons while a new page is loading (and so GPU resources don't accumulate when switching
     // between many pages).
