@@ -290,6 +290,47 @@ fn extract_buffer_source_bytes(
   Ok(None)
 }
 
+fn buffer_source_byte_length(scope: &Scope<'_>, chunk: Value) -> Result<Option<usize>, VmError> {
+  let heap = scope.heap();
+  let Value::Object(chunk_obj) = chunk else {
+    return Ok(None);
+  };
+
+  if heap.is_uint8_array_object(chunk_obj) {
+    let data = heap.uint8_array_data(chunk_obj)?;
+    if data.len() > MAX_READABLE_STREAM_BYTE_CHUNK_BYTES {
+      return Err(VmError::TypeError("ReadableStream chunk too large"));
+    }
+    return Ok(Some(data.len()));
+  }
+
+  if heap.is_typed_array_object(chunk_obj) {
+    let (_buffer_obj, _byte_offset, byte_len) = heap.typed_array_view_bytes(chunk_obj)?;
+    if byte_len > MAX_READABLE_STREAM_BYTE_CHUNK_BYTES {
+      return Err(VmError::TypeError("ReadableStream chunk too large"));
+    }
+    return Ok(Some(byte_len));
+  }
+
+  if heap.is_data_view_object(chunk_obj) {
+    let byte_len = heap.data_view_byte_length(chunk_obj)?;
+    if byte_len > MAX_READABLE_STREAM_BYTE_CHUNK_BYTES {
+      return Err(VmError::TypeError("ReadableStream chunk too large"));
+    }
+    return Ok(Some(byte_len));
+  }
+
+  if heap.is_array_buffer_object(chunk_obj) {
+    let data = heap.array_buffer_data(chunk_obj)?;
+    if data.len() > MAX_READABLE_STREAM_BYTE_CHUNK_BYTES {
+      return Err(VmError::TypeError("ReadableStream chunk too large"));
+    }
+    return Ok(Some(data.len()));
+  }
+
+  Ok(None)
+}
+
 fn utf8_len_from_utf16_units(units: &[u16]) -> Result<usize, VmError> {
   let mut len: usize = 0;
   for unit in char::decode_utf16(units.iter().copied()) {
@@ -3760,20 +3801,84 @@ fn readable_stream_controller_enqueue_native(
 
   // Resolve kind based on the stream's current kind and (for uninitialized streams) the first
   // enqueued chunk type.
-  let kind = with_realm_state_mut(vm, scope, callee, |state, _heap| {
-    let stream_state = state
-      .streams
-      .get(&WeakGcObject::from(stream_obj))
-      .ok_or(VmError::TypeError(
-        "ReadableStreamDefaultController.enqueue: invalid stream",
-      ))?;
-    Ok(stream_state.kind)
-  })?;
+  let (
+    kind,
+    lifecycle_state,
+    close_requested,
+    buffered_byte_len,
+    byte_queue_len,
+    buffered_string_len,
+    string_queue_len,
+  ) =
+    with_realm_state_mut(vm, scope, callee, |state, _heap| {
+      let stream_state = state
+        .streams
+        .get(&WeakGcObject::from(stream_obj))
+        .ok_or(VmError::TypeError(
+          "ReadableStreamDefaultController.enqueue: invalid stream",
+        ))?;
+
+      Ok((
+        stream_state.kind,
+        stream_state.state,
+        stream_state.close_requested,
+        stream_state.buffered_byte_len,
+        stream_state.byte_queue.len(),
+        stream_state.buffered_string_len,
+        stream_state.strings.len(),
+      ))
+    })?;
+
+  if lifecycle_state != StreamLifecycleState::Readable || close_requested {
+    return Err(VmError::TypeError("ReadableStream is closed"));
+  }
 
   let pending = match kind {
     StreamKind::Values => enqueue_value_into_readable_stream(vm, scope, callee, stream_obj, chunk)?,
     StreamKind::Bytes => {
-      if let Some(bytes) = extract_buffer_source_bytes(scope, chunk)? {
+      if let Some(byte_len) = buffer_source_byte_length(scope, chunk)? {
+        let new_total = buffered_byte_len.checked_add(byte_len).ok_or(VmError::OutOfMemory)?;
+        let additional_chunks = if byte_len == 0 || byte_len <= STREAM_CHUNK_BYTES {
+          1
+        } else {
+          byte_len
+            .checked_add(STREAM_CHUNK_BYTES - 1)
+            .ok_or(VmError::OutOfMemory)?
+            / STREAM_CHUNK_BYTES
+        };
+        let new_chunk_total = byte_queue_len
+          .checked_add(additional_chunks)
+          .ok_or(VmError::OutOfMemory)?;
+
+        if new_total > MAX_READABLE_STREAM_QUEUED_BYTES
+          || new_chunk_total > MAX_READABLE_STREAM_QUEUED_CHUNKS
+        {
+          let pending = error_readable_stream(
+            vm,
+            scope,
+            callee,
+            stream_obj,
+            READABLE_STREAM_QUEUE_LIMIT_ERROR.to_string(),
+          )?;
+          if let Some(pending) = pending {
+            settle_pending_read(
+              vm,
+              scope,
+              host,
+              hooks,
+              pending.reader,
+              pending.roots,
+              pending.outcome,
+            )?;
+          }
+          return Ok(Value::Undefined);
+        }
+
+        let Some(bytes) = extract_buffer_source_bytes(scope, chunk)? else {
+          return Err(VmError::InvariantViolation(
+            "ReadableStream BufferSource byte length detected but extraction failed",
+          ));
+        };
         enqueue_bytes_into_readable_stream(vm, scope, callee, stream_obj, bytes)?
       } else {
         // For non-BufferSource chunks, fall back to object-mode streams (values).
@@ -3787,13 +3892,84 @@ fn readable_stream_controller_enqueue_native(
         if byte_len > MAX_READABLE_STREAM_STRING_CHUNK_BYTES {
           return Err(VmError::TypeError("ReadableStream chunk too large"));
         }
+
+        let new_total = buffered_string_len
+          .checked_add(byte_len)
+          .ok_or(VmError::OutOfMemory)?;
+        let new_chunk_total = string_queue_len.checked_add(1).ok_or(VmError::OutOfMemory)?;
+        if new_total > MAX_READABLE_STREAM_QUEUED_BYTES
+          || new_chunk_total > MAX_READABLE_STREAM_QUEUED_CHUNKS
+        {
+          let pending = error_readable_stream(
+            vm,
+            scope,
+            callee,
+            stream_obj,
+            READABLE_STREAM_QUEUE_LIMIT_ERROR.to_string(),
+          )?;
+          if let Some(pending) = pending {
+            settle_pending_read(
+              vm,
+              scope,
+              host,
+              hooks,
+              pending.reader,
+              pending.roots,
+              pending.outcome,
+            )?;
+          }
+          return Ok(Value::Undefined);
+        }
+
         let chunk_string = utf16_units_to_utf8_string_lossy(code_units, byte_len)?;
         enqueue_string_into_readable_stream(vm, scope, callee, stream_obj, chunk_string)?
       }
       _ => enqueue_value_into_readable_stream(vm, scope, callee, stream_obj, chunk)?,
     },
     StreamKind::Uninitialized => {
-      if let Some(bytes) = extract_buffer_source_bytes(scope, chunk)? {
+      if let Some(byte_len) = buffer_source_byte_length(scope, chunk)? {
+        let new_total = buffered_byte_len.checked_add(byte_len).ok_or(VmError::OutOfMemory)?;
+        let additional_chunks = if byte_len == 0 || byte_len <= STREAM_CHUNK_BYTES {
+          1
+        } else {
+          byte_len
+            .checked_add(STREAM_CHUNK_BYTES - 1)
+            .ok_or(VmError::OutOfMemory)?
+            / STREAM_CHUNK_BYTES
+        };
+        let new_chunk_total = byte_queue_len
+          .checked_add(additional_chunks)
+          .ok_or(VmError::OutOfMemory)?;
+
+        if new_total > MAX_READABLE_STREAM_QUEUED_BYTES
+          || new_chunk_total > MAX_READABLE_STREAM_QUEUED_CHUNKS
+        {
+          let pending = error_readable_stream(
+            vm,
+            scope,
+            callee,
+            stream_obj,
+            READABLE_STREAM_QUEUE_LIMIT_ERROR.to_string(),
+          )?;
+          if let Some(pending) = pending {
+            settle_pending_read(
+              vm,
+              scope,
+              host,
+              hooks,
+              pending.reader,
+              pending.roots,
+              pending.outcome,
+            )?;
+          }
+          return Ok(Value::Undefined);
+        }
+
+        let Some(bytes) = extract_buffer_source_bytes(scope, chunk)? else {
+          return Err(VmError::InvariantViolation(
+            "ReadableStream BufferSource byte length detected but extraction failed",
+          ));
+        };
         enqueue_bytes_into_readable_stream(vm, scope, callee, stream_obj, bytes)?
       } else if let Value::String(s) = chunk {
         let code_units = scope.heap().get_string(s)?.as_code_units();
@@ -3801,6 +3977,35 @@ fn readable_stream_controller_enqueue_native(
         if byte_len > MAX_READABLE_STREAM_STRING_CHUNK_BYTES {
           return Err(VmError::TypeError("ReadableStream chunk too large"));
         }
+
+        let new_total = buffered_string_len
+          .checked_add(byte_len)
+          .ok_or(VmError::OutOfMemory)?;
+        let new_chunk_total = string_queue_len.checked_add(1).ok_or(VmError::OutOfMemory)?;
+        if new_total > MAX_READABLE_STREAM_QUEUED_BYTES
+          || new_chunk_total > MAX_READABLE_STREAM_QUEUED_CHUNKS
+        {
+          let pending = error_readable_stream(
+            vm,
+            scope,
+            callee,
+            stream_obj,
+            READABLE_STREAM_QUEUE_LIMIT_ERROR.to_string(),
+          )?;
+          if let Some(pending) = pending {
+            settle_pending_read(
+              vm,
+              scope,
+              host,
+              hooks,
+              pending.reader,
+              pending.roots,
+              pending.outcome,
+            )?;
+          }
+          return Ok(Value::Undefined);
+        }
+
         let chunk_string = utf16_units_to_utf8_string_lossy(code_units, byte_len)?;
         enqueue_string_into_readable_stream(vm, scope, callee, stream_obj, chunk_string)?
       } else {
