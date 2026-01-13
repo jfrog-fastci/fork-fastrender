@@ -2,6 +2,7 @@ use crate::layout::constraints::LayoutConstraints;
 use crate::layout::contexts::grid::GridFormattingContext;
 use crate::layout::formatting_context::IntrinsicSizingMode;
 use crate::style::display::Display;
+use crate::style::position::Position;
 use crate::style::types::AlignItems;
 use crate::style::types::AspectRatio;
 use crate::style::types::Direction;
@@ -30,9 +31,7 @@ fn synthesize_area_line_names(style: &mut ComputedStyle) {
   if style.grid_template_areas.is_empty() {
     return;
   }
-  if let Some(bounds) =
-    crate::style::grid::validate_area_rectangles(&style.grid_template_areas)
-  {
+  if let Some(bounds) = crate::style::grid::validate_area_rectangles(&style.grid_template_areas) {
     let ensure_line = |lines: &mut Vec<Vec<String>>,
                        names: &mut HashMap<String, Vec<usize>>,
                        idx: usize,
@@ -89,6 +88,227 @@ fn synthesize_area_line_names(style: &mut ComputedStyle) {
       );
     }
   }
+}
+
+#[test]
+fn subgrid_area_line_name_inheritance_clamps_partial_overlap_columns() {
+  let mut parent_style = ComputedStyle::default();
+  parent_style.display = Display::Grid;
+  parent_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(10.0)),
+    GridTrack::Length(Length::px(20.0)),
+    GridTrack::Length(Length::px(30.0)),
+    GridTrack::Length(Length::px(40.0)),
+    GridTrack::Length(Length::px(50.0)),
+  ];
+  parent_style.grid_template_rows = vec![GridTrack::Auto];
+  parent_style.grid_template_areas = vec![vec![
+    Some("main".into()),
+    Some("main".into()),
+    Some("main".into()),
+    Some("main".into()),
+    Some("main".into()),
+  ]];
+  parent_style.width = Some(Length::px(150.0));
+  synthesize_area_line_names(&mut parent_style);
+
+  let mut subgrid_style = ComputedStyle::default();
+  subgrid_style.display = Display::Grid;
+  subgrid_style.grid_column_subgrid = true;
+  // Parent columns: [10,20,30,40,50]. Span columns 2-4 (start/end lie *inside* the `main` area).
+  subgrid_style.grid_column_start = 2;
+  subgrid_style.grid_column_end = 5;
+  subgrid_style.grid_row_start = 1;
+  subgrid_style.grid_row_end = 2;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  child_style.height = Some(Length::px(10.0));
+  child_style.grid_column_raw = Some("main-start / main-end".into());
+  child_style.grid_row_start = 1;
+  child_style.grid_row_end = 2;
+  let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+
+  let subgrid = BoxNode::new_block(
+    Arc::new(subgrid_style),
+    FormattingContextType::Grid,
+    vec![child],
+  );
+  let grid = BoxNode::new_block(
+    Arc::new(parent_style),
+    FormattingContextType::Grid,
+    vec![subgrid],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(200.0, 200.0))
+    .expect("layout succeeds");
+
+  let subgrid_fragment = &fragment.children[0];
+  let child_fragment = &subgrid_fragment.children[0];
+
+  assert_approx(
+    subgrid_fragment.bounds.x(),
+    10.0,
+    "subgrid begins after the first parent column",
+  );
+  assert_approx(
+    child_fragment.bounds.x(),
+    0.0,
+    "main-start clamps to the subgrid start line",
+  );
+  assert_approx(
+    child_fragment.bounds.width(),
+    90.0,
+    "main-end clamps to the subgrid end line",
+  );
+}
+
+#[test]
+fn subgrid_area_line_name_inheritance_clamps_partial_overlap_rows() {
+  let mut parent_style = ComputedStyle::default();
+  parent_style.display = Display::Grid;
+  parent_style.grid_template_columns = vec![GridTrack::Length(Length::px(80.0))];
+  parent_style.grid_template_rows = vec![
+    GridTrack::Length(Length::px(10.0)),
+    GridTrack::Length(Length::px(20.0)),
+    GridTrack::Length(Length::px(30.0)),
+    GridTrack::Length(Length::px(40.0)),
+  ];
+  parent_style.grid_template_areas = vec![
+    vec![Some("main".into())],
+    vec![Some("main".into())],
+    vec![Some("main".into())],
+    vec![None],
+  ];
+  parent_style.width = Some(Length::px(80.0));
+  parent_style.height = Some(Length::px(100.0));
+  synthesize_area_line_names(&mut parent_style);
+
+  let mut subgrid_style = ComputedStyle::default();
+  subgrid_style.display = Display::Grid;
+  subgrid_style.grid_row_subgrid = true;
+  // Parent rows: [10,20,30,40]. Span rows 2-4 (start lies inside `main`).
+  subgrid_style.grid_row_start = 2;
+  subgrid_style.grid_row_end = 5;
+  subgrid_style.grid_column_start = 1;
+  subgrid_style.grid_column_end = 2;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  child_style.grid_row_raw = Some("main-start / main-end".into());
+  child_style.grid_column_start = 1;
+  child_style.grid_column_end = 2;
+  let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+
+  let subgrid = BoxNode::new_block(
+    Arc::new(subgrid_style),
+    FormattingContextType::Grid,
+    vec![child],
+  );
+  let grid = BoxNode::new_block(
+    Arc::new(parent_style),
+    FormattingContextType::Grid,
+    vec![subgrid],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(200.0, 200.0))
+    .expect("layout succeeds");
+
+  let subgrid_fragment = &fragment.children[0];
+  let child_fragment = &subgrid_fragment.children[0];
+
+  assert_approx(
+    subgrid_fragment.bounds.y(),
+    10.0,
+    "subgrid begins after the first parent row",
+  );
+  assert_approx(
+    child_fragment.bounds.y(),
+    0.0,
+    "main-start clamps to the subgrid start line",
+  );
+  assert_approx(
+    child_fragment.bounds.height(),
+    50.0,
+    "main-end uses the parent's area end line within the subgrid",
+  );
+}
+
+#[test]
+fn subgrid_area_line_names_resolve_for_absolute_static_position() {
+  let mut parent_style = ComputedStyle::default();
+  parent_style.display = Display::Grid;
+  parent_style.position = Position::Relative;
+  parent_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(10.0)),
+    GridTrack::Length(Length::px(20.0)),
+    GridTrack::Length(Length::px(30.0)),
+    GridTrack::Length(Length::px(40.0)),
+    GridTrack::Length(Length::px(50.0)),
+  ];
+  parent_style.grid_template_rows = vec![GridTrack::Length(Length::px(10.0))];
+  parent_style.grid_template_areas = vec![vec![
+    None,
+    None,
+    Some("mid".into()),
+    Some("mid".into()),
+    Some("mid".into()),
+  ]];
+  parent_style.width = Some(Length::px(150.0));
+  parent_style.height = Some(Length::px(10.0));
+  synthesize_area_line_names(&mut parent_style);
+
+  let mut subgrid_style = ComputedStyle::default();
+  subgrid_style.display = Display::Grid;
+  subgrid_style.grid_column_subgrid = true;
+  // Span parent columns 2-4 so `mid-end` lies outside the subgrid and must clamp to its end line.
+  subgrid_style.grid_column_start = 2;
+  subgrid_style.grid_column_end = 5;
+  subgrid_style.grid_row_start = 1;
+  subgrid_style.grid_row_end = 2;
+
+  let mut abs_style = ComputedStyle::default();
+  abs_style.display = Display::Block;
+  abs_style.position = Position::Absolute;
+  abs_style.width = Some(Length::px(5.0));
+  abs_style.height = Some(Length::px(5.0));
+  abs_style.grid_column_raw = Some("mid-start / mid-end".into());
+  abs_style.grid_row_start = 1;
+  abs_style.grid_row_end = 2;
+  let abs = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
+
+  let subgrid = BoxNode::new_block(
+    Arc::new(subgrid_style),
+    FormattingContextType::Grid,
+    vec![abs],
+  );
+  let grid = BoxNode::new_block(
+    Arc::new(parent_style),
+    FormattingContextType::Grid,
+    vec![subgrid],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(200.0, 200.0))
+    .expect("layout succeeds");
+
+  let subgrid_fragment = &fragment.children[0];
+  assert_eq!(
+    subgrid_fragment.children.len(),
+    1,
+    "subgrid has exactly one absolutely-positioned child fragment"
+  );
+  let abs_fragment = &subgrid_fragment.children[0];
+  assert_approx(
+    abs_fragment.bounds.x(),
+    20.0,
+    "absolute child resolves `mid-start / mid-end` to the subgrid-clamped area",
+  );
 }
 
 #[test]

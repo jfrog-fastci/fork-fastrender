@@ -13368,6 +13368,46 @@ fn resolve_effective_grid_line_names_for_node_axis(
       result.push(names);
     }
 
+    // CSS Grid 2 §7.12.1 “subgrid-area-inheritance”:
+    // When a subgrid begins/ends inside a named grid area, implicit `<area>-start`/`<area>-end`
+    // line names must be clamped to the subgrid boundaries so that descendants can resolve
+    // placements like `grid-column: main-start / main-end` even for partial overlaps.
+    if let Some(parent_ptr) = taffy.get_node_context(parent_id).copied() {
+      let parent_node = unsafe { &*parent_ptr };
+      if !parent_node.style.grid_template_areas.is_empty() {
+        if let Some(bounds) = validate_area_rectangles(&parent_node.style.grid_template_areas) {
+          for (name, (top, bottom, left, right)) in bounds {
+            let (area_start, area_end) = match axis {
+              CssGridAxis::Column => (left.saturating_add(1), right.saturating_add(2)),
+              CssGridAxis::Row => (top.saturating_add(1), bottom.saturating_add(2)),
+            };
+            let Some(area_start) = u16::try_from(area_start).ok() else {
+              continue;
+            };
+            let Some(area_end) = u16::try_from(area_end).ok() else {
+              continue;
+            };
+
+            let clamped_start = area_start.max(start_line);
+            let clamped_end = area_end.min(end_line);
+            if clamped_end <= clamped_start {
+              continue;
+            }
+
+            let local_start = (clamped_start - start_line) as usize;
+            let local_end = (clamped_end - start_line) as usize;
+
+            if let Some(target) = result.get_mut(local_start) {
+              target.push(format!("{name}-start"));
+            }
+            if let Some(target) = result.get_mut(local_end) {
+              target.push(format!("{name}-end"));
+            }
+          }
+        }
+      }
+    }
+
     let extra = axis.subgrid_extra_line_names(&node.style);
     if !extra.is_empty() {
       merge_line_names(&mut result, extra);

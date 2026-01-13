@@ -3,8 +3,8 @@
 use crate::geometry::{AbsoluteAxis, AbstractAxis, InBothAbsAxis};
 use crate::geometry::{Line, Point, Rect, Size};
 use crate::style::{
-  AlignItems, AlignSelf, AvailableSpace, GridTemplateComponent, LengthPercentage, Overflow,
-  Position,
+  AlignItems, AlignSelf, AvailableSpace, GridTemplateArea, GridTemplateComponent, LengthPercentage,
+  Overflow, Position,
 };
 use crate::tree::{
   Layout, LayoutInput, LayoutOutput, LayoutPartialTreeExt, NodeId, RunMode, SizingMode,
@@ -19,7 +19,10 @@ use crate::{
   style_helpers::*, AlignContent, BoxGenerationMode, BoxSizing, CoreStyle, GridContainerStyle,
   GridItemStyle, JustifyContent, LayoutGridContainer, Style, TrackSizingFunction,
 };
-use crate::{sys::DefaultCheapStr, tree::LayoutPartialTree};
+use crate::{
+  sys::{format, DefaultCheapStr},
+  tree::LayoutPartialTree,
+};
 use alignment::{align_and_position_item, align_tracks};
 use explicit_grid::{
   compute_explicit_grid_size_in_axis, initialize_grid_tracks, AutoRepeatStrategy,
@@ -234,6 +237,67 @@ fn inherited_line_names(
   }
 
   merge_line_names(&mut result, extra);
+  result
+}
+
+fn inherited_area_line_names(
+  span: u16,
+  start: OriginZeroLine,
+  parent_areas: &[GridTemplateArea<Ident>],
+  axis: AbstractAxis,
+) -> Vec<Vec<Ident>> {
+  use core::cmp::{max, min};
+
+  let mut result: Vec<Vec<Ident>> = Vec::with_capacity(span as usize + 1);
+  for _ in 0..=span {
+    result.push(Vec::new());
+  }
+
+  if parent_areas.is_empty() {
+    return result;
+  }
+
+  let sub_start = start;
+  let sub_end = start + span;
+
+  for area in parent_areas.iter() {
+    let (axis_start, axis_end) = match axis {
+      AbstractAxis::Inline => (area.column_start, area.column_end),
+      AbstractAxis::Block => (area.row_start, area.row_end),
+    };
+
+    // Convert 1-indexed grid line numbers into OriginZero coordinates, clamping to the i16 range
+    // used by `OriginZeroLine`.
+    let axis_start_oz = OriginZeroLine(
+      ((axis_start as i32).saturating_sub(1)).clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+    );
+    let axis_end_oz = OriginZeroLine(
+      ((axis_end as i32).saturating_sub(1)).clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+    );
+
+    // CSS Grid 2 §7.12.1 “subgrid-area-inheritance”: when a subgrid begins/ends inside a named
+    // grid area, clamp the area's implicit edge line names to the subgrid boundaries.
+    let clamped_start = max(axis_start_oz, sub_start);
+    let clamped_end = min(axis_end_oz, sub_end);
+    if clamped_end <= clamped_start {
+      continue;
+    }
+
+    let local_start = (clamped_start.0 - sub_start.0) as usize;
+    let local_end = (clamped_end.0 - sub_start.0) as usize;
+
+    let base: &str = area.name.as_ref();
+    let start_name = Ident::from(format!("{base}-start"));
+    let end_name = Ident::from(format!("{base}-end"));
+
+    if let Some(target) = result.get_mut(local_start) {
+      target.push(start_name);
+    }
+    if let Some(target) = result.get_mut(local_end) {
+      target.push(end_name);
+    }
+  }
+
   result
 }
 
@@ -764,6 +828,7 @@ fn record_subgrid_overrides<
   items: &[GridItem],
   parent_row_names: &[Vec<Ident>],
   parent_col_names: &[Vec<Ident>],
+  parent_template_areas: &[GridTemplateArea<Ident>],
   rows: &[GridTrack],
   columns: &[GridTrack],
   record_rows: bool,
@@ -802,7 +867,14 @@ fn record_subgrid_overrides<
         }
       }
       let child_extra = collect_child_subgrid_line_names(child_style_ref, AbstractAxis::Block);
-      let line_names = inherited_line_names(row_span, span_start, parent_row_names, &child_extra);
+      let mut extra = inherited_area_line_names(
+        row_span,
+        span_start,
+        parent_template_areas,
+        AbstractAxis::Block,
+      );
+      merge_line_names(&mut extra, &child_extra);
+      let line_names = inherited_line_names(row_span, span_start, parent_row_names, &extra);
       let override_data = SubgridAxisOverride {
         track_sizes,
         line_names,
@@ -824,7 +896,14 @@ fn record_subgrid_overrides<
         }
       }
       let child_extra = collect_child_subgrid_line_names(child_style_ref, AbstractAxis::Inline);
-      let line_names = inherited_line_names(col_span, span_start, parent_col_names, &child_extra);
+      let mut extra = inherited_area_line_names(
+        col_span,
+        span_start,
+        parent_template_areas,
+        AbstractAxis::Inline,
+      );
+      merge_line_names(&mut extra, &child_extra);
+      let line_names = inherited_line_names(col_span, span_start, parent_col_names, &extra);
       let override_data = SubgridAxisOverride {
         track_sizes,
         line_names,
@@ -867,13 +946,13 @@ mod alignment;
 mod explicit_grid;
 mod implicit_grid;
 mod placement;
-mod track_sizing;
-mod types;
-mod util;
 #[cfg(test)]
 mod rerun_detection_tests;
 #[cfg(all(test, feature = "taffy_tree"))]
 mod rerun_measure_tests;
+mod track_sizing;
+mod types;
+mod util;
 
 /// Grid layout algorithm
 /// This consists of a few phases:
@@ -1280,6 +1359,7 @@ where
     &items,
     &parent_row_line_names,
     &parent_col_line_names,
+    style.grid_template_areas.as_slice(),
     &rows,
     &columns,
     record_rows,
@@ -1400,8 +1480,7 @@ where
       let mut running_flex = 0u32;
       let mut running_nonflex = 0u32;
       for track in columns.iter() {
-        let flex_relevant =
-          track.is_flexible() && track.min_track_sizing_function.is_intrinsic();
+        let flex_relevant = track.is_flexible() && track.min_track_sizing_function.is_intrinsic();
         let nonflex_relevant = track.min_track_sizing_function.is_intrinsic()
           || !track
             .max_track_sizing_function
@@ -1412,9 +1491,8 @@ where
         prefix_flex_probe_relevant.push(running_flex);
         prefix_nonflex_probe_relevant.push(running_nonflex);
       }
-      let range_has_any = |prefix: &[u32], start: usize, end: usize| -> bool {
-        prefix[end] - prefix[start] > 0
-      };
+      let range_has_any =
+        |prefix: &[u32], start: usize, end: usize| -> bool { prefix[end] - prefix[start] > 0 };
 
       // Note: we must iterate *all* probed items to update their intrinsic-contribution caches.
       // `GridItem` caches are keyed only by axis (not by available-space). If we short-circuit on
@@ -1442,7 +1520,8 @@ where
           } else {
             range_has_any(&prefix_nonflex_probe_relevant, range.start, range.end)
           }
-        }) {
+        })
+      {
         let range = item.track_range_excluding_lines(AbstractAxis::Block);
         let other_axis_sum = row_prefix_sum[range.end] - row_prefix_sum[range.start];
         let mut available_space = Size::NONE;
@@ -1505,6 +1584,7 @@ where
       &items,
       &parent_row_line_names,
       &parent_col_line_names,
+      style.grid_template_areas.as_slice(),
       &rows,
       &columns,
       record_rows,
@@ -1531,8 +1611,9 @@ where
   if !rerun_row_sizing {
     // As with the inline-axis rerun check above, avoid remeasuring every item unless it could
     // legitimately have a cross-axis dependency (aspect ratio).
-    let has_aspect_ratio_crossing_intrinsic_row =
-      items.iter().any(|item| item.crosses_intrinsic_row && item.aspect_ratio.is_some());
+    let has_aspect_ratio_crossing_intrinsic_row = items
+      .iter()
+      .any(|item| item.crosses_intrinsic_row && item.aspect_ratio.is_some());
 
     if has_aspect_ratio_crossing_intrinsic_row {
       // Precompute prefix sums of the other-axis track sizes so each item's spanned other-axis
@@ -1561,8 +1642,7 @@ where
       let mut running_flex = 0u32;
       let mut running_nonflex = 0u32;
       for track in rows.iter() {
-        let flex_relevant =
-          track.is_flexible() && track.min_track_sizing_function.is_intrinsic();
+        let flex_relevant = track.is_flexible() && track.min_track_sizing_function.is_intrinsic();
         let nonflex_relevant = track.min_track_sizing_function.is_intrinsic()
           || !track
             .max_track_sizing_function
@@ -1573,9 +1653,8 @@ where
         prefix_flex_probe_relevant.push(running_flex);
         prefix_nonflex_probe_relevant.push(running_nonflex);
       }
-      let range_has_any = |prefix: &[u32], start: usize, end: usize| -> bool {
-        prefix[end] - prefix[start] > 0
-      };
+      let range_has_any =
+        |prefix: &[u32], start: usize, end: usize| -> bool { prefix[end] - prefix[start] > 0 };
 
       // As with the inline-axis rerun probe, we must iterate all probed items to refresh their
       // axis-specific intrinsic contribution caches before running the rerun sizing pass.
@@ -1598,7 +1677,8 @@ where
           } else {
             range_has_any(&prefix_nonflex_probe_relevant, range.start, range.end)
           }
-        }) {
+        })
+      {
         let range = item.track_range_excluding_lines(AbstractAxis::Inline);
         let other_axis_sum = column_prefix_sum[range.end] - column_prefix_sum[range.start];
         let mut available_space = Size::NONE;
@@ -1656,6 +1736,7 @@ where
     &items,
     &parent_row_line_names,
     &parent_col_line_names,
+    style.grid_template_areas.as_slice(),
     &rows,
     &columns,
     true,
