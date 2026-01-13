@@ -216,8 +216,11 @@ Security invariants:
 
 1. **Only `SCM_RIGHTS` is allowed.** Reject other ancillary message types.
 2. **Bound the count:** accept at most `MAX_FDS_PER_MESSAGE` per message.
-   - There is no FD-passing transport in-tree yet; when introducing it, define this constant in the
-     transport module. Recommended value: **≤ 4**.
+   - For most message types this should be **0 or 1**.
+   - Recommended global cap: **≤ 4**.
+   - Repo reality: `src/ipc/fd_passing.rs` provides a defensive `recv_msg(sock_fd, max_fds)` helper
+     that enforces `max_fds` (and has an internal absolute ceiling). Keep `max_fds` small at call
+     sites.
 3. **Message types must define the FD arity.**
    - For a given message type, the receiver knows exactly how many FDs to expect (usually 0 or 1).
 4. **Close unexpected FDs immediately.**
@@ -230,8 +233,11 @@ Security invariants:
      - closed before returning from the receive handler.
 6. **CLOEXEC everywhere.**
    - Create sockets with `SOCK_CLOEXEC` where possible.
-   - Receive FDs with `recvmsg(MSG_CMSG_CLOEXEC)` so `FD_CLOEXEC` is applied **atomically**.
+   - Prefer receiving FDs with `recvmsg(MSG_CMSG_CLOEXEC)` so `FD_CLOEXEC` is applied **atomically**.
      - Do not rely on a follow-up `fcntl(FD_CLOEXEC)` in another step (TOCTOU footgun).
+   - Repo reality note: `src/ipc/fd_passing.rs` currently calls `recvmsg` with flags `0` (no
+     `MSG_CMSG_CLOEXEC`). Until that is upgraded, callers must ensure passed FDs are already CLOEXEC
+     (e.g. created with `O_CLOEXEC` / `MFD_CLOEXEC`) or set `FD_CLOEXEC` immediately after receipt.
 
 Why this matters:
 
@@ -246,7 +252,7 @@ Why this matters:
 Long-term, large IPC payloads (pixels, blobs, network bodies, etc.) should not be transferred inline.
 Use shared memory and pass the `memfd` via `SCM_RIGHTS`.
 
-### Repo reality (today): tempfile-backed shared memory (no FD passing yet)
+### Repo reality (today): tempfile-backed shared memory (no FD passing in this path yet)
 
 The in-tree multiprocess frame-buffer pool currently uses **temporary files + `memmap2`** as a
 cross-platform shared-memory stand-in:
