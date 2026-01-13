@@ -823,6 +823,32 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
 
   // Already done at this point. See resolve_item_baselines function.
 
+  // Fast path: if there are no intrinsic track sizing functions in this axis for this sizing pass,
+  // the intrinsic track sizing algorithm cannot change any track's base size or growth limit.
+  //
+  // We must still perform CSS Grid step 11.5 "Step 5" to ensure that flex tracks do not get
+  // expanded by the "Maximise Tracks" step (which distributes free space to tracks with infinite
+  // growth limits).
+  let axis_inner_node_size = inner_node_size.get(axis);
+  let should_treat_percentage_tracks_as_intrinsic = axis_inner_node_size.is_none();
+  let has_intrinsic_tracks_for_this_pass = axis_tracks.iter().any(|track| {
+    track.min_track_sizing_function.is_intrinsic()
+      || track.max_track_sizing_function.is_intrinsic()
+      || (should_treat_percentage_tracks_as_intrinsic
+        && track.kind == GridTrackKind::Track
+        && track.uses_percentage())
+  });
+  if !has_intrinsic_tracks_for_this_pass {
+    // Step 5. If any track still has an infinite growth limit (because, for example, it had no items placed
+    // in it or it is a flexible track), set its growth limit to its base size.
+    // NOTE: this step is super-important to ensure that the "Maximise Tracks" step doesn't affect flexible tracks
+    axis_tracks
+      .iter_mut()
+      .filter(|track| track.growth_limit == f32::INFINITY)
+      .for_each(|track| track.growth_limit = track.base_size);
+    return;
+  }
+
   // Step 2.
 
   // The track sizing algorithm requires us to iterate through the items in ascendeding order of the number of
@@ -841,7 +867,6 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
   // to the min-content contribution—but can differ in some cases, see §6.6 Automatic Minimum Size of Grid Items.
   // Also, minimum contribution <= min-content contribution <= max-content contribution.
 
-  let axis_inner_node_size = inner_node_size.get(axis);
   let gutter_percentage_basis = Some(inner_node_size.get(AbstractAxis::Inline).unwrap_or(0.0));
   let percentage_basis = |track: &GridTrack| {
     if track.kind == GridTrackKind::Gutter {
@@ -3034,5 +3059,118 @@ mod tests {
       (reference - optimised).abs() <= EPS,
       "mismatch (reference: {reference}, optimised: {optimised})"
     );
+  }
+
+  #[test]
+  fn intrinsic_sizing_is_skipped_when_axis_has_no_intrinsic_tracks() {
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let child_style = Style {
+      size: Size::from_lengths(10.0, 10.0),
+      ..Default::default()
+    };
+
+    let child_start_2 = taffy.new_leaf(child_style.clone()).unwrap();
+    let child_start_1 = taffy.new_leaf(child_style.clone()).unwrap();
+
+    // Two minmax(0, 1fr)-equivalent tracks plus gutters/lines.
+    let mut columns = vec![
+      super::GridTrack::gutter(LengthPercentage::ZERO),
+      super::GridTrack::new(MinTrackSizingFunction::length(0.0), MaxTrackSizingFunction::fr(1.0)),
+      super::GridTrack::gutter(LengthPercentage::ZERO),
+      super::GridTrack::new(MinTrackSizingFunction::length(0.0), MaxTrackSizingFunction::fr(1.0)),
+      super::GridTrack::gutter(LengthPercentage::ZERO),
+    ];
+
+    // A single fixed-size row track plus gutters/lines.
+    let mut rows = vec![
+      super::GridTrack::gutter(LengthPercentage::ZERO),
+      super::GridTrack::new(
+        MinTrackSizingFunction::length(0.0),
+        MaxTrackSizingFunction::length(0.0),
+      ),
+      super::GridTrack::gutter(LengthPercentage::ZERO),
+    ];
+
+    // Items intentionally out-of-order by `placement(axis).start` (start-2 item first).
+    let mut items = vec![
+      super::GridItem::new_with_placement_style_and_order(
+        child_start_2,
+        Line {
+          start: OriginZeroLine(1),
+          end: OriginZeroLine(2),
+        },
+        Line {
+          start: OriginZeroLine(0),
+          end: OriginZeroLine(1),
+        },
+        child_style.clone(),
+        AlignItems::Stretch,
+        AlignItems::Stretch,
+        0,
+      ),
+      super::GridItem::new_with_placement_style_and_order(
+        child_start_1,
+        Line {
+          start: OriginZeroLine(0),
+          end: OriginZeroLine(1),
+        },
+        Line {
+          start: OriginZeroLine(0),
+          end: OriginZeroLine(1),
+        },
+        child_style,
+        AlignItems::Stretch,
+        AlignItems::Stretch,
+        1,
+      ),
+    ];
+
+    assert!(
+      items[0].placement(AbstractAxis::Inline).start > items[1].placement(AbstractAxis::Inline).start
+    );
+
+    super::resolve_item_track_indexes(
+      items.as_mut_slice(),
+      super::TrackCounts::from_raw(0, 2, 0),
+      super::TrackCounts::from_raw(0, 1, 0),
+    );
+    super::determine_if_item_crosses_flexible_or_intrinsic_tracks(&mut items, &columns, &rows);
+
+    let initial_order: Vec<NodeId> = items.iter().map(|item| item.node).collect();
+
+    let mut tree = taffy.as_layout_tree();
+    super::track_sizing_algorithm(
+      &mut tree,
+      AbstractAxis::Inline,
+      None,
+      None,
+      AlignContent::Start,
+      AlignContent::Start,
+      Size {
+        width: AvailableSpace::Definite(100.0),
+        height: AvailableSpace::Definite(100.0),
+      },
+      Size {
+        width: Some(100.0),
+        height: Some(100.0),
+      },
+      &mut columns,
+      &mut rows,
+      items.as_mut_slice(),
+      |track: &super::GridTrack, _parent_size: Option<f32>, _tree| Some(track.base_size),
+      false, // has_baseline_aligned_item
+    );
+
+    // If `resolve_intrinsic_track_sizes` ran its normal path, it would have sorted `items`.
+    let final_order: Vec<NodeId> = items.iter().map(|item| item.node).collect();
+    assert_eq!(final_order, initial_order);
+
+    // Basic sizing sanity check: both `1fr` tracks should divide the available space equally.
+    let fr_track_sum: f32 = columns
+      .iter()
+      .filter(|track| track.kind == super::GridTrackKind::Track)
+      .map(|track| track.base_size)
+      .sum();
+    assert!((fr_track_sum - 100.0).abs() < 0.01);
   }
 }
