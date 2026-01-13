@@ -341,6 +341,11 @@ fn run(cli: Cli) -> Result<(), String> {
                 samples.coalesced_frames.push(frames as f64);
               }
             }
+            BrowserPerfLogEventV2::MemorySummary { rss_bytes, .. } => {
+              if let Some(rss) = rss_bytes {
+                samples.rss_bytes.push(rss);
+              }
+            }
             BrowserPerfLogEventV2::IdleSample { .. } | BrowserPerfLogEventV2::Unknown => {
               unknown_events = unknown_events.saturating_add(1);
             }

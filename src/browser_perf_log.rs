@@ -77,6 +77,14 @@ pub enum BrowserPerfLogEventV2 {
     #[serde(default)]
     uploaded_bytes: Option<u64>,
   },
+  MemorySummary {
+    /// Resident set size in bytes (Linux-only in the browser; nullable elsewhere).
+    #[serde(default)]
+    rss_bytes: Option<u64>,
+    /// Convenience conversion of `rss_bytes` to MiB (`rss_bytes / 1024^2`).
+    #[serde(default)]
+    rss_mb: Option<f64>,
+  },
   #[serde(other)]
   Unknown,
 }
@@ -142,4 +150,51 @@ pub enum BrowserPerfLogEventV1 {
   /// Catch-all for forward-compatible parsing. Unknown events are ignored by aggregation tools.
   #[serde(other)]
   Unknown,
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn parses_memory_summary_v2_with_nulls() {
+    let json = r#"{
+      "event":"memory_summary",
+      "schema_version":2,
+      "ts_ms":100,
+      "window_id":"process",
+      "rss_bytes":null,
+      "rss_mb":null
+    }"#;
+
+    let event: BrowserPerfLogEvent = serde_json::from_str(json).expect("parse event");
+    match event {
+      BrowserPerfLogEvent::V2(BrowserPerfLogEventV2::MemorySummary { rss_bytes, rss_mb }) => {
+        assert!(rss_bytes.is_none());
+        assert!(rss_mb.is_none());
+      }
+      other => panic!("unexpected event parsed: {other:?}"),
+    }
+  }
+
+  #[test]
+  fn parses_memory_summary_v2_with_values() {
+    let json = r#"{
+      "event":"memory_summary",
+      "schema_version":2,
+      "ts_ms":200,
+      "window_id":"process",
+      "rss_bytes":1048576,
+      "rss_mb":1.0
+    }"#;
+
+    let event: BrowserPerfLogEvent = serde_json::from_str(json).expect("parse event");
+    match event {
+      BrowserPerfLogEvent::V2(BrowserPerfLogEventV2::MemorySummary { rss_bytes, rss_mb }) => {
+        assert_eq!(rss_bytes, Some(1048576));
+        assert_eq!(rss_mb, Some(1.0));
+      }
+      other => panic!("unexpected event parsed: {other:?}"),
+    }
+  }
 }
