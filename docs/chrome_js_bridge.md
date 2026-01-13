@@ -67,6 +67,9 @@ The `chrome` bridge is the trust boundary: it is effectively “native code capa
   pages is privilege escalation).
   - Treat tab titles, URLs, error strings, and any other renderer-provided data as **attacker
     controlled** and render with `textContent` (or equivalent escaping).
+- Chrome pages should not embed untrusted documents in a way that inherits privileges.
+  - If the chrome UI needs to display untrusted HTML (e.g. remote content), it should be rendered in
+    a separate, unprivileged realm/document where `globalThis.chrome` is **not** installed.
 
 ---
 
