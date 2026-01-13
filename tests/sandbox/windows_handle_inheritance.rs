@@ -6,7 +6,6 @@ use std::mem;
 use std::os::windows::io::{AsRawHandle, RawHandle};
 use std::path::Path;
 use std::ptr;
-use win_sandbox::SandboxSupport;
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::System::Threading::{
@@ -76,11 +75,9 @@ fn create_event(inheritable: bool) -> HandleGuard {
 
 #[test]
 fn sandbox_spawn_selective_handle_inheritance_proc_thread_attribute_handle_list() {
-  let support = SandboxSupport::detect();
-  if support != SandboxSupport::Full {
-    eprintln!(
-      "skipping Windows handle inheritance sandbox test: Windows sandbox is unavailable ({support})"
-    );
+  if !crate::common::windows_sandbox::require_full_windows_sandbox(
+    "sandbox_spawn_selective_handle_inheritance_proc_thread_attribute_handle_list",
+  ) {
     return;
   }
 
@@ -125,11 +122,9 @@ fn sandbox_spawn_selective_handle_inheritance_proc_thread_attribute_handle_list(
 
 #[test]
 fn sandbox_spawn_empty_inherit_handle_list_does_not_leak_inheritable_handles() {
-  let support = SandboxSupport::detect();
-  if support != SandboxSupport::Full {
-    eprintln!(
-      "skipping Windows handle inheritance sandbox test: Windows sandbox is unavailable ({support})"
-    );
+  if !crate::common::windows_sandbox::require_full_windows_sandbox(
+    "sandbox_spawn_empty_inherit_handle_list_does_not_leak_inheritable_handles",
+  ) {
     return;
   }
 

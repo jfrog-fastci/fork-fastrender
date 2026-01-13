@@ -422,11 +422,9 @@ fn appcontainer_denies_filesystem_and_network() {
     return;
   }
 
-  let support = win_sandbox::SandboxSupport::detect();
-  if support != win_sandbox::SandboxSupport::Full {
-    eprintln!(
-      "skipping AppContainer filesystem/network denial test: Windows sandbox is unavailable ({support})"
-    );
+  if !crate::common::windows_sandbox::require_full_windows_sandbox(
+    "appcontainer_denies_filesystem_and_network",
+  ) {
     return;
   }
 
@@ -512,9 +510,9 @@ fn job_object_kill_on_close_terminates_child() {
     }
   }
 
-  let support = win_sandbox::SandboxSupport::detect();
-  if support != win_sandbox::SandboxSupport::Full {
-    eprintln!("skipping JobObject kill-on-close test: Windows sandbox is unavailable ({support})");
+  if !crate::common::windows_sandbox::require_full_windows_sandbox(
+    "job_object_kill_on_close_terminates_child",
+  ) {
     return;
   }
 

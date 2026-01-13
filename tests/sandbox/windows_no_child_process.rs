@@ -6,7 +6,6 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use fastrender::sandbox::windows::{spawn_sandboxed, WindowsSandboxLevel};
-use win_sandbox::SandboxSupport;
 use windows_sys::Win32::Foundation::{
   GetHandleInformation, SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
 };
@@ -181,11 +180,9 @@ fn sandboxed_renderer_cannot_spawn_child_process() {
     return;
   }
 
-  let support = SandboxSupport::detect();
-  if support != SandboxSupport::Full {
-    eprintln!(
-      "skipping sandbox child-process denial test: Windows sandbox is unavailable ({support})"
-    );
+  if !crate::common::windows_sandbox::require_full_windows_sandbox(
+    "sandboxed_renderer_cannot_spawn_child_process",
+  ) {
     return;
   }
 

@@ -367,11 +367,9 @@ fn appcontainer_renderer_can_render_minimal_html() {
     "FASTR_ALLOW_UNSANDBOXED_RENDERER",
   ]);
 
-  let support = win_sandbox::SandboxSupport::detect();
-  if support != win_sandbox::SandboxSupport::Full {
-    eprintln!(
-      "skipping appcontainer renderer smoke test: Windows sandbox is unavailable ({support})"
-    );
+  if !crate::common::windows_sandbox::require_full_windows_sandbox(
+    "appcontainer_renderer_can_render_minimal_html",
+  ) {
     return;
   }
 

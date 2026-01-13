@@ -69,11 +69,9 @@ fn collect_stdio_handles_for_inheritance() -> (Vec<RawHandle>, HandleInheritGuar
 
 #[test]
 fn appcontainer_temp_dir_is_writable() {
-  let support = win_sandbox::SandboxSupport::detect();
-  if support != win_sandbox::SandboxSupport::Full {
-    eprintln!(
-      "skipping AppContainer temp dir test: Windows sandbox is unavailable ({support})"
-    );
+  if !crate::common::windows_sandbox::require_full_windows_sandbox(
+    "appcontainer_temp_dir_is_writable",
+  ) {
     return;
   }
 

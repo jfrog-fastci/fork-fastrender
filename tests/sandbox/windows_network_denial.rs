@@ -16,7 +16,6 @@ use std::os::windows::io::{AsRawHandle, RawHandle};
 use std::time::Duration;
 
 use fastrender::sandbox::windows::spawn_sandboxed;
-use win_sandbox::SandboxSupport;
 use windows_sys::Win32::Foundation::{
   CloseHandle, GetHandleInformation, SetHandleInformation, ERROR_INSUFFICIENT_BUFFER, HANDLE,
   HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
@@ -306,11 +305,9 @@ fn collect_stdio_handles_for_inheritance() -> (Vec<RawHandle>, HandleInheritGuar
 
 #[test]
 fn appcontainer_denies_outbound_tcp_connect() {
-  let support = SandboxSupport::detect();
-  if support != SandboxSupport::Full {
-    eprintln!(
-      "skipping AppContainer network denial test: Windows sandbox is unavailable ({support})"
-    );
+  if !crate::common::windows_sandbox::require_full_windows_sandbox(
+    "appcontainer_denies_outbound_tcp_connect",
+  ) {
     return;
   }
 
@@ -325,18 +322,6 @@ fn appcontainer_denies_outbound_tcp_connect() {
     };
   let port = listener.local_addr().map(|addr| addr.port()).unwrap_or(0);
   assert!(port != 0, "expected listener to have a non-zero port");
-
-  // Ensure developer environment overrides don't silently change test semantics.
-  //
-  // We explicitly test the *default* "fail-closed" behavior: this test should only run when the
-  // host supports the full Windows sandbox.
-  let support = win_sandbox::SandboxSupport::detect();
-  if support != win_sandbox::SandboxSupport::Full {
-    eprintln!(
-      "skipping AppContainer network denial test: Windows sandbox is unavailable ({support})"
-    );
-    return;
-  }
 
   let exe = std::env::current_exe().expect("current test exe path");
   let test_name = "sandbox::windows_network_denial::appcontainer_network_denied_child";

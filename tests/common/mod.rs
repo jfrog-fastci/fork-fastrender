@@ -12,6 +12,9 @@ pub(crate) mod rayon;
 pub(crate) mod rayon_test_util;
 pub(crate) mod stack;
 
+#[cfg(windows)]
+pub(crate) mod windows_sandbox;
+
 pub(crate) use global_state::{
   global_test_lock, with_current_dir, with_env_vars, with_global_lock, CurrentDirGuard, EnvVarGuard,
   EnvVarsGuard, GlobalTestLockGuard, ScopedEnv, StageListenerGuard,
