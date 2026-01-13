@@ -174,3 +174,26 @@ impl From<bincode::Error> for IpcError {
     Self::Codec(err)
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::IpcError;
+
+  #[test]
+  fn ipc_error_display_strings_are_stable() {
+    assert_eq!(
+      IpcError::InvalidParameters {
+        message: "oops".to_string()
+      }
+      .to_string(),
+      "invalid IPC parameters: oops"
+    );
+    assert_eq!(
+      IpcError::ProtocolViolation {
+        message: "bad message".to_string()
+      }
+      .to_string(),
+      "IPC protocol violation: bad message"
+    );
+  }
+}
