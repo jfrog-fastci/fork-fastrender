@@ -862,6 +862,8 @@ impl Document {
   }
 
   pub fn set_script_force_async(&mut self, node: NodeId, value: bool) -> Result<(), DomError> {
+    // This is a per-script-element internal slot that does not affect rendering. Avoid bumping the
+    // mutation generation so hosts can use it to detect *real* DOM changes.
     let is_script = {
       let node = self.node_checked(node)?;
       self.kind_is_html_script(&node.kind)
@@ -882,6 +884,8 @@ impl Document {
     Ok(node.script_parser_document)
   }
   pub fn set_script_parser_document(&mut self, node: NodeId, value: bool) -> Result<(), DomError> {
+    // This is a per-script-element internal slot that does not affect rendering. Avoid bumping the
+    // mutation generation so hosts can use it to detect *real* DOM changes.
     let is_script = {
       let node = self.node_checked(node)?;
       self.kind_is_html_script(&node.kind)
