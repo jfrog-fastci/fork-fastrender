@@ -433,35 +433,17 @@ function assert_throws_dom(name, target, func, message) {
   //
   // Legacy DOMException code string -> modern DOMException name.
   //
-  // Upstream WPT tests still use the historical "FOO_ERR" names in many places (e.g. Range tests
-  // expect `assert_throws_dom("INDEX_SIZE_ERR", ...)`). Modern DOMException instances use names like
-  // "IndexSizeError", so we translate legacy constants to their modern equivalents.
+  // Many upstream WPT DOM Range tests still use the historical "FOO_ERR" names (e.g.
+  // `assert_throws_dom("INDEX_SIZE_ERR", ...)`). Modern DOMException instances use names like
+  // "IndexSizeError", so we translate the legacy constants to their modern equivalents.
   var __dom_exception_legacy_name_map = {
-    INDEX_SIZE_ERR: "IndexSizeError",
-    DOMSTRING_SIZE_ERR: "DOMStringSizeError",
     HIERARCHY_REQUEST_ERR: "HierarchyRequestError",
-    WRONG_DOCUMENT_ERR: "WrongDocumentError",
-    INVALID_CHARACTER_ERR: "InvalidCharacterError",
-    NO_DATA_ALLOWED_ERR: "NoDataAllowedError",
-    NO_MODIFICATION_ALLOWED_ERR: "NoModificationAllowedError",
+    INDEX_SIZE_ERR: "IndexSizeError",
+    INVALID_STATE_ERR: "InvalidStateError",
+    INVALID_NODE_TYPE_ERR: "InvalidNodeTypeError",
     NOT_FOUND_ERR: "NotFoundError",
     NOT_SUPPORTED_ERR: "NotSupportedError",
-    INUSE_ATTRIBUTE_ERR: "InUseAttributeError",
-    INVALID_STATE_ERR: "InvalidStateError",
-    SYNTAX_ERR: "SyntaxError",
-    INVALID_MODIFICATION_ERR: "InvalidModificationError",
-    NAMESPACE_ERR: "NamespaceError",
-    INVALID_ACCESS_ERR: "InvalidAccessError",
-    VALIDATION_ERR: "ValidationError",
-    TYPE_MISMATCH_ERR: "TypeMismatchError",
-    SECURITY_ERR: "SecurityError",
-    NETWORK_ERR: "NetworkError",
-    ABORT_ERR: "AbortError",
-    URL_MISMATCH_ERR: "URLMismatchError",
-    QUOTA_EXCEEDED_ERR: "QuotaExceededError",
-    TIMEOUT_ERR: "TimeoutError",
-    INVALID_NODE_TYPE_ERR: "InvalidNodeTypeError",
-    DATA_CLONE_ERR: "DataCloneError",
+    WRONG_DOCUMENT_ERR: "WrongDocumentError",
   };
   //
   var expected_name = name;
