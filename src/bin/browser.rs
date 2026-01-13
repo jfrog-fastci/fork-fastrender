@@ -5003,8 +5003,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 );
               }
 
+              let window_is_active = active_window_id == Some(window_id);
               let result = match item {
-                QueuedMsg::Worker(msg) => win.app.handle_worker_message(msg),
+                QueuedMsg::Worker(msg) => win.app.handle_worker_message(msg, window_is_active),
                 QueuedMsg::Clipboard(update) => win.app.handle_worker_clipboard_update(update),
               };
               request_redraw |= result.request_redraw;
@@ -11341,7 +11342,11 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     }
   }
 
-  fn handle_worker_message(&mut self, msg: fastrender::ui::WorkerToUi) -> WorkerMessageResult {
+  fn handle_worker_message(
+    &mut self,
+    msg: fastrender::ui::WorkerToUi,
+    window_is_active: bool,
+  ) -> WorkerMessageResult {
     // Worker-initiated tab creation/navigation.
     let msg = match msg {
       fastrender::ui::WorkerToUi::RequestOpenInNewTab { tab_id, url } => {
@@ -11484,7 +11489,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
 
       let output = fastrender::ui::downloads_panel_policy::on_download_started(
         fastrender::ui::downloads_panel_policy::DownloadsPanelPolicyInput {
-          window_is_active: self.window_focused,
+          window_is_active,
           chrome_has_text_focus: self.chrome_has_text_focus,
           history_panel_open: self.history_panel_open,
           bookmarks_panel_open: self.bookmarks_panel_open,
