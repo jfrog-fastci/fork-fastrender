@@ -1173,6 +1173,11 @@ pub struct RenderOptions {
   pub paint_parallelism: Option<PaintParallelism>,
   /// Optional override for layout fan-out parallelism.
   pub layout_parallelism: Option<LayoutParallelism>,
+  /// Optional iframe embedder hook invoked during paint.
+  ///
+  /// This can be used to implement site isolation by returning
+  /// [`crate::paint::iframe::IframePaintAction::RemotePlaceholder`] for cross-origin iframes.
+  pub iframe_embedder: Option<Arc<dyn crate::paint::iframe::IframeEmbedder>>,
 }
 
 impl Default for RenderOptions {
@@ -1204,6 +1209,7 @@ impl Default for RenderOptions {
       runtime_toggles: None,
       paint_parallelism: None,
       layout_parallelism: None,
+      iframe_embedder: None,
     }
   }
 }
@@ -1249,6 +1255,10 @@ impl std::fmt::Debug for RenderOptions {
       )
       .field("paint_parallelism", &self.paint_parallelism)
       .field("layout_parallelism", &self.layout_parallelism)
+      .field(
+        "iframe_embedder",
+        &self.iframe_embedder.as_ref().map(|_| "<iframe_embedder>"),
+      )
       .finish()
   }
 }
@@ -1407,6 +1417,15 @@ impl RenderOptions {
   /// Provide a cooperative cancellation callback that returns true when rendering should stop.
   pub fn with_cancel_callback(mut self, callback: Option<Arc<CancelCallback>>) -> Self {
     self.cancel_callback = callback;
+    self
+  }
+
+  /// Installs an iframe embedder callback invoked during paint.
+  pub fn with_iframe_embedder(
+    mut self,
+    embedder: Option<Arc<dyn crate::paint::iframe::IframeEmbedder>>,
+  ) -> Self {
+    self.iframe_embedder = embedder;
     self
   }
 
@@ -2179,6 +2198,8 @@ pub struct ResourceContext {
   pub csp: Option<CspPolicy>,
   pub diagnostics: Option<SharedRenderDiagnostics>,
   pub iframe_depth_remaining: Option<usize>,
+  /// Optional paint-time iframe embedder hook.
+  pub iframe_embedder: Option<Arc<dyn crate::paint::iframe::IframeEmbedder>>,
 }
 
 fn extract_status_from_message(message: &str) -> Option<u16> {
@@ -2355,6 +2376,7 @@ impl ResourceContext {
       csp: self.csp.clone(),
       diagnostics: self.diagnostics.clone(),
       iframe_depth_remaining: self.iframe_depth_remaining,
+      iframe_embedder: self.iframe_embedder.clone(),
     }
   }
 }
@@ -8298,6 +8320,7 @@ impl FastRender {
       initial_referrer_policy,
     );
     built.csp = initial_csp;
+    built.iframe_embedder = options.iframe_embedder.clone();
     let context = Some(built);
     let (prev_self, prev_image, prev_layout_image, prev_font) = self.push_resource_context(context);
     let result = self.render_html_internal(
@@ -8471,12 +8494,14 @@ impl FastRender {
         initial_referrer_policy,
       );
       inlining_context.csp = initial_csp.clone();
+      inlining_context.iframe_embedder = options.iframe_embedder.clone();
       let mut built = self.build_resource_context(
         self.document_url_hint(),
         shared_diagnostics,
         initial_referrer_policy,
       );
       built.csp = initial_csp;
+      built.iframe_embedder = options.iframe_embedder.clone();
       let context = Some(built);
       let (prev_self_ctx, prev_image, prev_layout_image, prev_font) =
         self.push_resource_context(context);
@@ -9605,6 +9630,7 @@ impl FastRender {
         initial_referrer_policy,
       );
       built.csp = initial_csp;
+      built.iframe_embedder = options.iframe_embedder.clone();
       let context = Some(built);
       let (prev_self, prev_image, prev_layout_image, prev_font) =
         self.push_resource_context(context);
@@ -9643,11 +9669,13 @@ impl FastRender {
         .map(|diag| SharedRenderDiagnostics {
           inner: Arc::clone(diag),
         });
-      let context = Some(self.build_resource_context(
+      let mut built = self.build_resource_context(
         self.document_url_hint(),
         shared_diagnostics,
         ReferrerPolicy::default(),
-      ));
+      );
+      built.iframe_embedder = options.iframe_embedder.clone();
+      let context = Some(built);
       let (prev_self, prev_image, prev_layout_image, prev_font) =
         self.push_resource_context(context);
 
@@ -13066,6 +13094,7 @@ impl FastRender {
         initial_referrer_policy,
       );
       built.csp = CspPolicy::from_response_headers(resource);
+      built.iframe_embedder = options.iframe_embedder.clone();
       let context = Some(built);
       let (prev_self, prev_image, prev_layout_image, prev_font) =
         self.push_resource_context(context);
@@ -16104,6 +16133,7 @@ impl FastRender {
       csp: None,
       diagnostics,
       iframe_depth_remaining: Some(self.max_iframe_depth),
+      iframe_embedder: None,
     }
   }
 
@@ -26462,6 +26492,7 @@ mod tests {
         inner: Arc::clone(&sink),
       }),
       iframe_depth_remaining: None,
+      iframe_embedder: None,
     };
     let loader = CssImportFetcher::new(
       Some("https://example.com/".to_string()),
@@ -26500,6 +26531,7 @@ mod tests {
         inner: Arc::clone(&sink),
       }),
       iframe_depth_remaining: None,
+      iframe_embedder: None,
     };
     let loader = CssImportFetcher::new(
       Some("https://example.com/".to_string()),
@@ -26708,6 +26740,7 @@ mod tests {
       csp: None,
       diagnostics: None,
       iframe_depth_remaining: None,
+      iframe_embedder: None,
     };
     let loader = CssImportFetcher::new(
       Some("https://example.com/root.css".to_string()),
@@ -32866,6 +32899,7 @@ mod tests {
       csp: None,
       diagnostics: None,
       iframe_depth_remaining: None,
+      iframe_embedder: None,
     };
 
     assert!(
@@ -32917,6 +32951,7 @@ mod tests {
       csp: None,
       diagnostics: None,
       iframe_depth_remaining: None,
+      iframe_embedder: None,
     };
     assert!(
       ctx
@@ -32937,6 +32972,7 @@ mod tests {
       csp: None,
       diagnostics: None,
       iframe_depth_remaining: None,
+      iframe_embedder: None,
     };
     assert!(
       ctx
@@ -33017,6 +33053,7 @@ mod tests {
       csp: None,
       diagnostics: None,
       iframe_depth_remaining: None,
+      iframe_embedder: None,
     };
 
     assert!(
@@ -33967,6 +34004,7 @@ mod tests {
       csp: None,
       diagnostics: None,
       iframe_depth_remaining: None,
+      iframe_embedder: None,
     };
 
     let mut diagnostics = RenderDiagnostics::default();
@@ -34328,6 +34366,7 @@ mod tests {
       csp: None,
       diagnostics: None,
       iframe_depth_remaining: None,
+      iframe_embedder: None,
     };
 
     let mut diagnostics = RenderDiagnostics::default();

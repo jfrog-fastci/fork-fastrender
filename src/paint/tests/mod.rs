@@ -5,5 +5,6 @@
 //! allows `cargo test --lib` to exercise paint regressions.
 
 mod backdrop;
+mod iframe_embedder;
 mod legacy;
 mod paint;

@@ -6,6 +6,7 @@ use crate::html::content_security_policy::CspPolicy;
 use crate::html::encoding::decode_html_bytes;
 use crate::html::iframe_url::{iframe_navigation_from_src, IframeNavigation};
 use crate::image_loader::ImageCache;
+use crate::paint::display_list::BorderRadii;
 use crate::paint::display_list::ImageData;
 use crate::paint::pixmap::new_pixmap;
 use crate::render_control;
@@ -30,6 +31,158 @@ use std::time::Duration;
 use tiny_skia::Pixmap;
 
 const IFRAME_NESTING_LIMIT_MESSAGE: &str = "iframe nesting limit exceeded";
+
+/// Paint-time metadata for an iframe replaced element.
+///
+/// This is surfaced to embedders so browsers can:
+/// - decide whether to render the iframe inline (same process), or
+/// - treat it as an out-of-process frame and composite it separately.
+#[derive(Debug, Clone)]
+pub struct IframePaintInfo {
+  /// Stable identifier for the iframe element within the document.
+  ///
+  /// This is derived from the iframe's per-document `frame_token` (styled DOM pre-order id) when
+  /// available, falling back to the originating box id.
+  pub stable_id: usize,
+  /// Resolved iframe URL (e.g. `src` resolved against the document base URL, or `about:blank`).
+  pub url: String,
+  /// Content box rect in CSS pixels.
+  pub content_rect: Rect,
+  /// Content box corner radii in CSS pixels (after subtracting border/padding).
+  ///
+  /// This matches the clip that would be applied for `overflow: clip`/`hidden` (and is typically
+  /// non-zero when the iframe has `border-radius`).
+  pub clip_radii: BorderRadii,
+  /// True when the iframe uses `srcdoc`.
+  pub is_srcdoc: bool,
+}
+
+/// Result of an embedder iframe paint hook.
+#[derive(Debug, Clone)]
+pub enum IframePaintAction {
+  /// Paint the iframe inline using the returned raster surface.
+  Inline(Arc<ImageData>),
+  /// Do not render the iframe in-process; the embedder will composite it separately.
+  RemotePlaceholder,
+  /// The embedder did not handle this iframe; fall back to the renderer's existing behavior
+  /// (e.g. attempt to treat `src` as SVG/image content).
+  Fallback,
+}
+
+/// Embedder callback invoked when an iframe replaced element is encountered during paint.
+///
+/// Embedders (e.g. a browser UI or a renderer host process) can use this hook to implement site
+/// isolation: cross-origin iframes can be rendered out-of-process and composited by the browser
+/// instead of being fetched/rendered recursively inside the parent frame's renderer.
+pub trait IframeEmbedder: Send + Sync {
+  fn iframe_paint_action(
+    &self,
+    info: &IframePaintInfo,
+    srcdoc_html: Option<&str>,
+    style: Option<&ComputedStyle>,
+    image_cache: &ImageCache,
+    font_ctx: &FontContext,
+    device_pixel_ratio: f32,
+    max_iframe_depth: usize,
+    referrer_policy: Option<ReferrerPolicy>,
+  ) -> IframePaintAction;
+}
+
+/// Default iframe embedder implementation that preserves current single-process behavior.
+///
+/// This implementation:
+/// - renders `srcdoc` iframes inline via [`render_iframe_srcdoc`],
+/// - otherwise renders the iframe `src` URL inline via [`render_iframe_src`],
+/// - and returns [`IframePaintAction::Fallback`] when the iframe cannot be rendered as a document
+///   (allowing legacy fallback behavior such as trying to decode the URL as an image).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DefaultIframeEmbedder;
+
+impl IframeEmbedder for DefaultIframeEmbedder {
+  fn iframe_paint_action(
+    &self,
+    info: &IframePaintInfo,
+    srcdoc_html: Option<&str>,
+    style: Option<&ComputedStyle>,
+    image_cache: &ImageCache,
+    font_ctx: &FontContext,
+    device_pixel_ratio: f32,
+    max_iframe_depth: usize,
+    referrer_policy: Option<ReferrerPolicy>,
+  ) -> IframePaintAction {
+    if info.content_rect.width() <= 0.0 || info.content_rect.height() <= 0.0 {
+      return IframePaintAction::Fallback;
+    }
+
+    if let Some(html) = srcdoc_html {
+      if let Some(image) = render_iframe_srcdoc(
+        html,
+        Some(info.url.as_str()),
+        referrer_policy,
+        info.content_rect,
+        style,
+        image_cache,
+        font_ctx,
+        device_pixel_ratio,
+        max_iframe_depth,
+      ) {
+        return IframePaintAction::Inline(image);
+      }
+      return IframePaintAction::Fallback;
+    }
+
+    if let Some(image) = render_iframe_src(
+      info.url.as_str(),
+      referrer_policy,
+      info.content_rect,
+      style,
+      image_cache,
+      font_ctx,
+      device_pixel_ratio,
+      max_iframe_depth,
+    ) {
+      return IframePaintAction::Inline(image);
+    }
+
+    IframePaintAction::Fallback
+  }
+}
+
+/// Returns `true` when `iframe_url` should be treated as cross-origin relative to `document_origin`
+/// for site isolation purposes.
+///
+/// Notes:
+/// - `about:blank` and `about:srcdoc` inherit the initiator origin in browsers and are treated as
+///   same-origin for the initial MVP.
+pub fn iframe_is_cross_origin(
+  document_origin: Option<&crate::resource::DocumentOrigin>,
+  iframe_url: &str,
+) -> bool {
+  if is_about_like_url(iframe_url, "about:blank") || is_about_like_url(iframe_url, "about:srcdoc")
+  {
+    return false;
+  }
+  let Some(document_origin) = document_origin else {
+    return false;
+  };
+  let Some(target_origin) = origin_from_url(iframe_url) else {
+    return false;
+  };
+  !document_origin.same_origin(&target_origin)
+}
+
+fn is_about_like_url(url: &str, prefix: &str) -> bool {
+  let Some(head) = url.get(..prefix.len()) else {
+    return false;
+  };
+  if !head.eq_ignore_ascii_case(prefix) {
+    return false;
+  }
+  matches!(
+    url.as_bytes().get(prefix.len()),
+    None | Some(b'#') | Some(b'?')
+  )
+}
 
 const DEFAULT_IFRAME_RENDER_CACHE_MAX_ENTRIES: usize = 128;
 const DEFAULT_IFRAME_RENDER_CACHE_MAX_BYTES: usize = 128 * 1024 * 1024;
@@ -1462,6 +1615,7 @@ mod tests {
       csp: None,
       diagnostics: None,
       iframe_depth_remaining: None,
+      iframe_embedder: None,
     }));
     render_iframe_src(
       iframe_url,
@@ -1487,6 +1641,7 @@ mod tests {
       csp: None,
       diagnostics: None,
       iframe_depth_remaining: None,
+      iframe_embedder: None,
     }));
     render_iframe_src(
       iframe_url,
@@ -1555,6 +1710,7 @@ mod tests {
       csp: None,
       diagnostics: None,
       iframe_depth_remaining: None,
+      iframe_embedder: None,
     }));
     render_iframe_src(
       iframe_url,
@@ -1580,6 +1736,7 @@ mod tests {
       csp: None,
       diagnostics: None,
       iframe_depth_remaining: None,
+      iframe_embedder: None,
     }));
     render_iframe_src(
       iframe_url,
@@ -1649,6 +1806,7 @@ mod tests {
       csp: None,
       diagnostics: None,
       iframe_depth_remaining: None,
+      iframe_embedder: None,
     }));
     let rect = Rect::from_xywh(0.0, 0.0, 16.0, 16.0);
 
@@ -1728,6 +1886,7 @@ mod tests {
       csp: None,
       diagnostics: None,
       iframe_depth_remaining: None,
+      iframe_embedder: None,
     }));
 
     let rect = Rect::from_xywh(0.0, 0.0, 16.0, 16.0);

@@ -59,7 +59,10 @@ use crate::paint::gradient::{
   GradientStats,
 };
 use crate::paint::homography::{quad_bounds, rect_corners, Homography};
-use crate::paint::iframe::{render_iframe_src, render_iframe_srcdoc};
+use crate::paint::iframe::{
+  render_iframe_src, render_iframe_srcdoc, DefaultIframeEmbedder, IframeEmbedder, IframePaintAction,
+  IframePaintInfo,
+};
 use crate::paint::object_fit::compute_object_fit;
 use crate::paint::object_fit::default_object_position;
 use crate::paint::optimize::DisplayListOptimizer;
@@ -8820,6 +8823,7 @@ impl Painter {
     // legacy painter.
     let mut clip_mask_guard: Option<BackgroundClipMaskGuard> = None;
     let mut clip_mask: Option<&Mask> = None;
+    let mut clip_radii_css = BorderRadii::ZERO;
     if let (Some(style), Some(rects)) = (style, rects.as_ref()) {
       let mut clip_x = matches!(
         style.overflow_x,
@@ -8888,12 +8892,12 @@ impl Painter {
         let canvas_w = self.pixmap.width();
         let canvas_h = self.pixmap.height();
         let mut clip_rect = self.device_rect(clip_bounds);
-        let clip_radii = if clip_x && clip_y && allow_radii {
+        clip_radii_css = if clip_x && clip_y && allow_radii {
           resolve_clip_radii(style, rects, clip_box_for_radii, Some(viewport))
         } else {
           BorderRadii::ZERO
         };
-        let clip_radii = self.device_radii(clip_radii);
+        let clip_radii = self.device_radii(clip_radii_css);
         if !clip_x {
           clip_rect.origin.x = 0.0;
           clip_rect.size.width = canvas_w as f32;
@@ -9017,27 +9021,72 @@ impl Painter {
         srcdoc: Some(html),
         src,
         referrer_policy,
+        frame_token,
         ..
       } => {
-        if let Some(image) =
-          self.render_iframe_srcdoc(html, src, *referrer_policy, content_rect, style)
-        {
-          if let Some(pixmap) =
-            PixmapRef::from_bytes(image.pixels.as_ref(), image.width, image.height)
-          {
-            let device_x = self.device_x(content_rect.x());
-            let device_y = self.device_y(content_rect.y());
-            let paint = PixmapPaint::default();
-            self.pixmap.draw_pixmap(
-              device_x as i32,
-              device_y as i32,
-              pixmap,
-              &paint,
-              Transform::identity(),
-              clip_mask,
-            );
-            return;
+        let context = self.image_cache.resource_context();
+        let remaining_depth = self.iframe_depth_remaining(context.as_ref());
+        let resolved_url = self.image_cache.resolve_url(src);
+        let stable_id = frame_token
+          .as_ref()
+          .and_then(|token| usize::try_from(*token).ok())
+          .or(box_id)
+          .unwrap_or(0);
+        let info = IframePaintInfo {
+          stable_id,
+          url: resolved_url,
+          content_rect,
+          clip_radii: clip_radii_css,
+          is_srcdoc: true,
+        };
+        let action = context
+          .as_ref()
+          .and_then(|ctx| ctx.iframe_embedder.as_ref())
+          .map(|embedder| {
+            embedder.iframe_paint_action(
+              &info,
+              Some(html),
+              style,
+              &self.image_cache,
+              &self.font_ctx,
+              self.scale,
+              remaining_depth,
+              *referrer_policy,
+            )
+          })
+          .unwrap_or_else(|| {
+            DefaultIframeEmbedder.iframe_paint_action(
+              &info,
+              Some(html),
+              style,
+              &self.image_cache,
+              &self.font_ctx,
+              self.scale,
+              remaining_depth,
+              *referrer_policy,
+            )
+          });
+        match action {
+          IframePaintAction::Inline(image) => {
+            if let Some(pixmap) =
+              PixmapRef::from_bytes(image.pixels.as_ref(), image.width, image.height)
+            {
+              let device_x = self.device_x(content_rect.x());
+              let device_y = self.device_y(content_rect.y());
+              let paint = PixmapPaint::default();
+              self.pixmap.draw_pixmap(
+                device_x as i32,
+                device_y as i32,
+                pixmap,
+                &paint,
+                Transform::identity(),
+                clip_mask,
+              );
+              return;
+            }
           }
+          IframePaintAction::RemotePlaceholder => return,
+          IframePaintAction::Fallback => {}
         }
 
         if self.paint_svg(
@@ -9131,26 +9180,72 @@ impl Painter {
         src: content,
         srcdoc: None,
         referrer_policy,
+        frame_token,
         ..
       } => {
-        if let Some(image) = self.render_iframe_src(content, *referrer_policy, content_rect, style)
-        {
-          if let Some(pixmap) =
-            PixmapRef::from_bytes(image.pixels.as_ref(), image.width, image.height)
-          {
-            let device_x = self.device_x(content_rect.x());
-            let device_y = self.device_y(content_rect.y());
-            let paint = PixmapPaint::default();
-            self.pixmap.draw_pixmap(
-              device_x as i32,
-              device_y as i32,
-              pixmap,
-              &paint,
-              Transform::identity(),
-              clip_mask,
-            );
-            return;
+        let context = self.image_cache.resource_context();
+        let remaining_depth = self.iframe_depth_remaining(context.as_ref());
+        let resolved_url = self.image_cache.resolve_url(content);
+        let stable_id = frame_token
+          .as_ref()
+          .and_then(|token| usize::try_from(*token).ok())
+          .or(box_id)
+          .unwrap_or(0);
+        let info = IframePaintInfo {
+          stable_id,
+          url: resolved_url,
+          content_rect,
+          clip_radii: clip_radii_css,
+          is_srcdoc: false,
+        };
+        let action = context
+          .as_ref()
+          .and_then(|ctx| ctx.iframe_embedder.as_ref())
+          .map(|embedder| {
+            embedder.iframe_paint_action(
+              &info,
+              None,
+              style,
+              &self.image_cache,
+              &self.font_ctx,
+              self.scale,
+              remaining_depth,
+              *referrer_policy,
+            )
+          })
+          .unwrap_or_else(|| {
+            DefaultIframeEmbedder.iframe_paint_action(
+              &info,
+              None,
+              style,
+              &self.image_cache,
+              &self.font_ctx,
+              self.scale,
+              remaining_depth,
+              *referrer_policy,
+            )
+          });
+        match action {
+          IframePaintAction::Inline(image) => {
+            if let Some(pixmap) =
+              PixmapRef::from_bytes(image.pixels.as_ref(), image.width, image.height)
+            {
+              let device_x = self.device_x(content_rect.x());
+              let device_y = self.device_y(content_rect.y());
+              let paint = PixmapPaint::default();
+              self.pixmap.draw_pixmap(
+                device_x as i32,
+                device_y as i32,
+                pixmap,
+                &paint,
+                Transform::identity(),
+                clip_mask,
+              );
+              return;
+            }
           }
+          IframePaintAction::RemotePlaceholder => return,
+          IframePaintAction::Fallback => {}
         }
 
         if self.paint_svg(

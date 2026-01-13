@@ -102,7 +102,9 @@ use crate::paint::display_list::TransformItem;
 use crate::paint::display_list_renderer::{PaintParallelism, PaintParallelismMode};
 use crate::paint::filter_outset::filter_halo_outset_with_bounds;
 use crate::paint::filter_outset::filter_outset_with_bounds;
-use crate::paint::iframe::{render_iframe_src, render_iframe_srcdoc};
+use crate::paint::iframe::{
+  render_iframe_src, DefaultIframeEmbedder, IframeEmbedder, IframePaintAction, IframePaintInfo,
+};
 use crate::paint::object_fit::compute_object_fit;
 use crate::paint::object_fit::default_object_position;
 use crate::paint::painter::{
@@ -7057,7 +7059,7 @@ impl DisplayListBuilder {
         }
       }
 
-      FragmentContent::Replaced { replaced_type, .. } => {
+      FragmentContent::Replaced { box_id, replaced_type, .. } => {
         let style_for_image = fragment.style.as_deref();
 
         'paint: {
@@ -7383,7 +7385,7 @@ impl DisplayListBuilder {
             srcdoc,
             sandbox,
             referrer_policy,
-            frame_token: _,
+            frame_token,
             ..
           } = replaced_type
           {
@@ -7462,36 +7464,85 @@ impl DisplayListBuilder {
                 }
               }
 
-              let (content_rect, _) = self.replaced_content_rect_and_radii(rect, style_for_image);
-              if let Some(image) = srcdoc.as_deref().and_then(|html| {
-                render_iframe_srcdoc(
-                  html,
-                  Some(src.as_str()),
-                  *referrer_policy,
-                  content_rect,
-                  style_for_image,
-                  cache,
-                  &self.font_ctx,
-                  self.device_pixel_ratio,
-                  self.max_iframe_depth,
-                )
-              }) {
-                self.emit_iframe_image(image, rect, style_for_image);
-                break 'paint;
-              }
-
-              if let Some(image) = render_iframe_src(
-                src,
-                *referrer_policy,
+              let (content_rect, clip_radii) =
+                self.replaced_content_rect_and_radii(rect, style_for_image);
+              let context = cache.resource_context();
+              let remaining_depth = context
+                .as_ref()
+                .and_then(|ctx| ctx.iframe_depth_remaining)
+                .unwrap_or(self.max_iframe_depth);
+              let resolved_url = cache.resolve_url(src);
+              let stable_id = frame_token
+                .as_ref()
+                .and_then(|token| usize::try_from(*token).ok())
+                .or_else(|| *box_id)
+                .unwrap_or(0);
+              let info = IframePaintInfo {
+                stable_id,
+                url: resolved_url.clone(),
                 content_rect,
-                style_for_image,
-                cache,
-                &self.font_ctx,
-                self.device_pixel_ratio,
-                self.max_iframe_depth,
-              ) {
-                self.emit_iframe_image(image, rect, style_for_image);
-                break 'paint;
+                clip_radii,
+                is_srcdoc: srcdoc.is_some(),
+              };
+
+              let action = context
+                .as_ref()
+                .and_then(|ctx| ctx.iframe_embedder.as_ref())
+                .map(|embedder| {
+                  embedder.iframe_paint_action(
+                    &info,
+                    srcdoc.as_deref(),
+                    style_for_image,
+                    cache,
+                    &self.font_ctx,
+                    self.device_pixel_ratio,
+                    remaining_depth,
+                    *referrer_policy,
+                  )
+                })
+                .unwrap_or_else(|| {
+                  DefaultIframeEmbedder.iframe_paint_action(
+                    &info,
+                    srcdoc.as_deref(),
+                    style_for_image,
+                    cache,
+                    &self.font_ctx,
+                    self.device_pixel_ratio,
+                    remaining_depth,
+                    *referrer_policy,
+                  )
+                });
+
+              match action {
+                IframePaintAction::Inline(image) => {
+                  self.emit_iframe_image(image, rect, style_for_image);
+                  break 'paint;
+                }
+                IframePaintAction::RemotePlaceholder => {
+                  let clip_item = Self::replaced_content_clip_item(
+                    style_for_image,
+                    content_rect,
+                    content_rect,
+                    clip_radii,
+                  );
+                  let clip = clip_item.and_then(|item| match item.shape {
+                    ClipShape::Rect { rect, radii } => Some(crate::paint::display_list::RemoteFrameClip {
+                      rect,
+                      radii,
+                    }),
+                    _ => None,
+                  });
+                  self.list.push(DisplayItem::RemoteFrameSlot(
+                    crate::paint::display_list::RemoteFrameSlotItem {
+                      slot_index: 0,
+                      src: resolved_url,
+                      rect: content_rect,
+                      clip,
+                    },
+                  ));
+                  break 'paint;
+                }
+                IframePaintAction::Fallback => {}
               }
             }
           }
