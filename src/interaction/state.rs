@@ -562,12 +562,24 @@ pub(crate) fn document_selection_contains_point_dom2(
   point: DocumentSelectionPointDom2,
   mapping: &RendererDomMapping,
 ) -> bool {
+  // If the point is not present in the current renderer snapshot, it cannot be part of the painted
+  // document selection highlight.
+  if mapping.preorder_for_node_id(point.node_id).is_none() {
+    return false;
+  }
   match selection {
     DocumentSelectionStateDom2::All => true,
     DocumentSelectionStateDom2::Ranges(ranges) => ranges.ranges.iter().any(|range| {
       // Collapsed ranges represent a caret without any selected text; starting a drag-drop from such
       // a point would be surprising when other ranges in the selection are highlighted.
       if range.start == range.end {
+        return false;
+      }
+      // Ignore ranges whose endpoints are not present in the current snapshot. Without a preorder
+      // mapping we cannot derive a meaningful DOM order (and must not fall back to `NodeId::index()`).
+      if mapping.preorder_for_node_id(range.start.node_id).is_none()
+        || mapping.preorder_for_node_id(range.end.node_id).is_none()
+      {
         return false;
       }
       let range = range.normalized(mapping);

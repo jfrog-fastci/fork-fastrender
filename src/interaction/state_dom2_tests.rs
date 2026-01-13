@@ -209,6 +209,61 @@ fn interaction_state_dom2_projection_prunes_detached_document_selection() {
 }
 
 #[test]
+fn document_selection_contains_point_dom2_returns_false_for_unmappable_points() {
+  use crate::interaction::state::document_selection_contains_point_dom2;
+
+  let html = "<!doctype html><html><body><div id=a>hello</div></body></html>";
+  let mut doc = crate::dom2::parse_html(html).unwrap();
+
+  // Create a detached text node and use it for a bogus selection.
+  let detached = doc.create_text("detached");
+  assert!(
+    !doc.is_connected(detached),
+    "newly-created node should be disconnected until inserted"
+  );
+
+  let selection = DocumentSelectionStateDom2::Ranges(DocumentSelectionRangesDom2 {
+    ranges: vec![DocumentSelectionRangeDom2 {
+      start: DocumentSelectionPointDom2 {
+        node_id: detached,
+        char_offset: 0,
+      },
+      end: DocumentSelectionPointDom2 {
+        node_id: detached,
+        char_offset: 1,
+      },
+    }],
+    primary: 0,
+    anchor: DocumentSelectionPointDom2 {
+      node_id: detached,
+      char_offset: 0,
+    },
+    focus: DocumentSelectionPointDom2 {
+      node_id: detached,
+      char_offset: 1,
+    },
+  });
+
+  let snapshot = doc.to_renderer_dom_with_mapping();
+  assert!(
+    snapshot.mapping.preorder_for_node_id(detached).is_none(),
+    "detached nodes should not map to renderer preorder ids"
+  );
+
+  assert!(
+    !document_selection_contains_point_dom2(
+      &selection,
+      DocumentSelectionPointDom2 {
+        node_id: detached,
+        char_offset: 0,
+      },
+      &snapshot.mapping
+    ),
+    "unmappable points must not be treated as inside selection highlights"
+  );
+}
+
+#[test]
 fn interaction_state_dom2_projection_updates_preorder_ids_after_dom_mutation() {
   let html = concat!(
     "<!doctype html>",
