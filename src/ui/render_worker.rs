@@ -7291,7 +7291,7 @@ impl BrowserRuntime {
       let snapshot = dom2.to_renderer_dom_with_mapping();
       let mut dom_snapshot = snapshot.dom;
       let mapping = snapshot.mapping;
-      patch_dom2_form_control_state_into_renderer_dom(dom2, &mut dom_snapshot, &mapping);
+      dom2.project_form_control_state_into_renderer_dom_snapshot(&mut dom_snapshot, &mapping);
       (dom_snapshot, mapping, generation)
     };
     // Keep our cached generation in sync with whatever ran during the pump so subsequent ticks
