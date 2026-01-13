@@ -1476,41 +1476,110 @@ impl<'vm> HirEvaluator<'vm> {
         }
       }
       hir_js::StmtKind::While { test, body: inner } => {
-        loop {
-          // Ensure empty loops still consume budget.
-          self.vm.tick()?;
-          let test_value = self.eval_expr(scope, body, *test)?;
-          if !scope.heap().to_boolean(test_value)? {
-            return Ok(Flow::empty());
+        // ECMA-262 `LoopEvaluation` tracks a running completion value `V` starting at `undefined`.
+        // Unlike block statement lists, loop statements never complete with an empty value.
+        let v_root = scope.heap_mut().add_root(Value::Undefined)?;
+        let mut v = Value::Undefined;
+
+        let result = (|| -> Result<Flow, VmError> {
+          loop {
+            // Ensure empty loops still consume budget.
+            self.vm.tick()?;
+            let test_value = self.eval_expr(scope, body, *test)?;
+            if !scope.heap().to_boolean(test_value)? {
+              return Ok(Flow::Normal(Some(v)));
+            }
+
+            match self.eval_stmt(scope, body, *inner)? {
+              Flow::Normal(value) => {
+                if let Some(value) = value {
+                  v = value;
+                  scope.heap_mut().set_root(v_root, value);
+                }
+              }
+              Flow::Continue(None, value) => {
+                if let Some(value) = value {
+                  v = value;
+                  scope.heap_mut().set_root(v_root, value);
+                }
+              }
+              Flow::Continue(Some(label), value) if label_set.iter().any(|l| *l == label) => {
+                if let Some(value) = value {
+                  v = value;
+                  scope.heap_mut().set_root(v_root, value);
+                }
+              }
+              Flow::Continue(Some(label), value) => {
+                return Ok(Flow::Continue(Some(label), value).update_empty(Some(v)))
+              }
+              Flow::Break(None, break_value) => {
+                let out = break_value.unwrap_or(v);
+                v = out;
+                scope.heap_mut().set_root(v_root, out);
+                return Ok(Flow::Normal(Some(out)));
+              }
+              Flow::Break(Some(label), break_value) => {
+                return Ok(Flow::Break(Some(label), break_value).update_empty(Some(v)))
+              }
+              Flow::Return(v) => return Ok(Flow::Return(v)),
+            }
           }
-          match self.eval_stmt(scope, body, *inner)? {
-            Flow::Normal(_) => {}
-            Flow::Continue(None, _) => {}
-            Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {}
-            Flow::Continue(Some(label), value) => return Ok(Flow::Continue(Some(label), value)),
-            Flow::Break(None, _) => return Ok(Flow::empty()),
-            Flow::Break(Some(label), value) => return Ok(Flow::Break(Some(label), value)),
-            Flow::Return(v) => return Ok(Flow::Return(v)),
-          }
-        }
+        })();
+
+        scope.heap_mut().remove_root(v_root);
+        result
       }
       hir_js::StmtKind::DoWhile { test, body: inner } => {
-        loop {
-          self.vm.tick()?;
-          match self.eval_stmt(scope, body, *inner)? {
-            Flow::Normal(_) => {}
-            Flow::Continue(None, _) => {}
-            Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {}
-            Flow::Continue(Some(label), value) => return Ok(Flow::Continue(Some(label), value)),
-            Flow::Break(None, _) => return Ok(Flow::empty()),
-            Flow::Break(Some(label), value) => return Ok(Flow::Break(Some(label), value)),
-            Flow::Return(v) => return Ok(Flow::Return(v)),
+        // ECMA-262 `LoopEvaluation` running completion value `V`.
+        let v_root = scope.heap_mut().add_root(Value::Undefined)?;
+        let mut v = Value::Undefined;
+
+        let result = (|| -> Result<Flow, VmError> {
+          loop {
+            self.vm.tick()?;
+            match self.eval_stmt(scope, body, *inner)? {
+              Flow::Normal(value) => {
+                if let Some(value) = value {
+                  v = value;
+                  scope.heap_mut().set_root(v_root, value);
+                }
+              }
+              Flow::Continue(None, value) => {
+                if let Some(value) = value {
+                  v = value;
+                  scope.heap_mut().set_root(v_root, value);
+                }
+              }
+              Flow::Continue(Some(label), value) if label_set.iter().any(|l| *l == label) => {
+                if let Some(value) = value {
+                  v = value;
+                  scope.heap_mut().set_root(v_root, value);
+                }
+              }
+              Flow::Continue(Some(label), value) => {
+                return Ok(Flow::Continue(Some(label), value).update_empty(Some(v)))
+              }
+              Flow::Break(None, break_value) => {
+                let out = break_value.unwrap_or(v);
+                v = out;
+                scope.heap_mut().set_root(v_root, out);
+                return Ok(Flow::Normal(Some(out)));
+              }
+              Flow::Break(Some(label), break_value) => {
+                return Ok(Flow::Break(Some(label), break_value).update_empty(Some(v)))
+              }
+              Flow::Return(v) => return Ok(Flow::Return(v)),
+            }
+
+            let test_value = self.eval_expr(scope, body, *test)?;
+            if !scope.heap().to_boolean(test_value)? {
+              return Ok(Flow::Normal(Some(v)));
+            }
           }
-          let test_value = self.eval_expr(scope, body, *test)?;
-          if !scope.heap().to_boolean(test_value)? {
-            return Ok(Flow::empty());
-          }
-        }
+        })();
+
+        scope.heap_mut().remove_root(v_root);
+        result
       }
       hir_js::StmtKind::For {
         init,
@@ -1531,6 +1600,10 @@ impl<'vm> HirEvaluator<'vm> {
 
         if let Some(init_decl) = lexical_init {
           let outer_lex = self.env.lexical_env();
+          // ECMA-262 `LoopEvaluation` running completion value `V`.
+          let v_root = scope.heap_mut().add_root(Value::Undefined)?;
+          let mut v = Value::Undefined;
+
           let result = (|| -> Result<Flow, VmError> {
             // Create a loop-scoped declarative environment for the lexical declaration and evaluate
             // the initializer with TDZ semantics.
@@ -1576,17 +1649,41 @@ impl<'vm> HirEvaluator<'vm> {
               if let Some(test) = test {
                 let test_value = self.eval_expr(scope, body, *test)?;
                 if !scope.heap().to_boolean(test_value)? {
-                  return Ok(Flow::empty());
+                  return Ok(Flow::Normal(Some(v)));
                 }
               }
 
               match self.eval_stmt(scope, body, *inner)? {
-                Flow::Normal(_) => {}
-                Flow::Continue(None, _) => {}
-                Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {}
-                Flow::Continue(Some(label), value) => return Ok(Flow::Continue(Some(label), value)),
-                Flow::Break(None, _) => return Ok(Flow::empty()),
-                Flow::Break(Some(label), value) => return Ok(Flow::Break(Some(label), value)),
+                Flow::Normal(value) => {
+                  if let Some(value) = value {
+                    v = value;
+                    scope.heap_mut().set_root(v_root, value);
+                  }
+                }
+                Flow::Continue(None, value) => {
+                  if let Some(value) = value {
+                    v = value;
+                    scope.heap_mut().set_root(v_root, value);
+                  }
+                }
+                Flow::Continue(Some(label), value) if label_set.iter().any(|l| *l == label) => {
+                  if let Some(value) = value {
+                    v = value;
+                    scope.heap_mut().set_root(v_root, value);
+                  }
+                }
+                Flow::Continue(Some(label), value) => {
+                  return Ok(Flow::Continue(Some(label), value).update_empty(Some(v)))
+                }
+                Flow::Break(None, break_value) => {
+                  let out = break_value.unwrap_or(v);
+                  v = out;
+                  scope.heap_mut().set_root(v_root, out);
+                  return Ok(Flow::Normal(Some(out)));
+                }
+                Flow::Break(Some(label), break_value) => {
+                  return Ok(Flow::Break(Some(label), break_value).update_empty(Some(v)))
+                }
                 Flow::Return(v) => return Ok(Flow::Return(v)),
               }
 
@@ -1604,6 +1701,7 @@ impl<'vm> HirEvaluator<'vm> {
           // Always restore the outer lexical environment so later statements run in the correct
           // scope.
           self.env.set_lexical_env(scope.heap_mut(), outer_lex);
+          scope.heap_mut().remove_root(v_root);
           return result;
         }
         if let Some(init) = init {
@@ -1617,30 +1715,63 @@ impl<'vm> HirEvaluator<'vm> {
           }
         }
 
-        loop {
-          // Ensure empty loops still consume budget.
-          self.vm.tick()?;
-          if let Some(test) = test {
-            let test_value = self.eval_expr(scope, body, *test)?;
-            if !scope.heap().to_boolean(test_value)? {
-              return Ok(Flow::empty());
+        // ECMA-262 `LoopEvaluation` running completion value `V`.
+        let v_root = scope.heap_mut().add_root(Value::Undefined)?;
+        let mut v = Value::Undefined;
+
+        let result = (|| -> Result<Flow, VmError> {
+          loop {
+            // Ensure empty loops still consume budget.
+            self.vm.tick()?;
+            if let Some(test) = test {
+              let test_value = self.eval_expr(scope, body, *test)?;
+              if !scope.heap().to_boolean(test_value)? {
+                return Ok(Flow::Normal(Some(v)));
+              }
+            }
+
+            match self.eval_stmt(scope, body, *inner)? {
+              Flow::Normal(value) => {
+                if let Some(value) = value {
+                  v = value;
+                  scope.heap_mut().set_root(v_root, value);
+                }
+              }
+              Flow::Continue(None, value) => {
+                if let Some(value) = value {
+                  v = value;
+                  scope.heap_mut().set_root(v_root, value);
+                }
+              }
+              Flow::Continue(Some(label), value) if label_set.iter().any(|l| *l == label) => {
+                if let Some(value) = value {
+                  v = value;
+                  scope.heap_mut().set_root(v_root, value);
+                }
+              }
+              Flow::Continue(Some(label), value) => {
+                return Ok(Flow::Continue(Some(label), value).update_empty(Some(v)))
+              }
+              Flow::Break(None, break_value) => {
+                let out = break_value.unwrap_or(v);
+                v = out;
+                scope.heap_mut().set_root(v_root, out);
+                return Ok(Flow::Normal(Some(out)));
+              }
+              Flow::Break(Some(label), break_value) => {
+                return Ok(Flow::Break(Some(label), break_value).update_empty(Some(v)))
+              }
+              Flow::Return(v) => return Ok(Flow::Return(v)),
+            }
+
+            if let Some(update) = update {
+              let _ = self.eval_expr(scope, body, *update)?;
             }
           }
+        })();
 
-          match self.eval_stmt(scope, body, *inner)? {
-            Flow::Normal(_) => {}
-            Flow::Continue(None, _) => {}
-            Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {}
-            Flow::Continue(Some(label), value) => return Ok(Flow::Continue(Some(label), value)),
-            Flow::Break(None, _) => return Ok(Flow::empty()),
-            Flow::Break(Some(label), value) => return Ok(Flow::Break(Some(label), value)),
-            Flow::Return(v) => return Ok(Flow::Return(v)),
-          }
-
-          if let Some(update) = update {
-            let _ = self.eval_expr(scope, body, *update)?;
-          }
-        }
+        scope.heap_mut().remove_root(v_root);
+        result
       }
       hir_js::StmtKind::ForIn {
         left,
@@ -1673,6 +1804,11 @@ impl<'vm> HirEvaluator<'vm> {
           // Root the current iteration value across binding + body evaluation.
           let iter_value_root_idx = iter_scope.heap().root_stack.len();
           iter_scope.push_root(Value::Undefined)?;
+
+          // ECMA-262 `LoopEvaluation` running completion value `V`.
+          let v_root_idx = iter_scope.heap().root_stack.len();
+          iter_scope.push_root(Value::Undefined)?;
+          let mut v = Value::Undefined;
 
           // Per-iteration lexical environments for `let`/`const` in the head.
           let outer_lex: GcEnv = self.env.lexical_env();
@@ -1772,11 +1908,27 @@ impl<'vm> HirEvaluator<'vm> {
             }
 
             match flow {
-              Flow::Normal(_) => {}
-              Flow::Continue(None, _) => {}
-              Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {}
+              Flow::Normal(value) => {
+                if let Some(value) = value {
+                  v = value;
+                  iter_scope.heap_mut().root_stack[v_root_idx] = value;
+                }
+              }
+              Flow::Continue(None, value) => {
+                if let Some(value) = value {
+                  v = value;
+                  iter_scope.heap_mut().root_stack[v_root_idx] = value;
+                }
+              }
+              Flow::Continue(Some(label), value) if label_set.iter().any(|l| *l == label) => {
+                if let Some(value) = value {
+                  v = value;
+                  iter_scope.heap_mut().root_stack[v_root_idx] = value;
+                }
+              }
               Flow::Continue(Some(label), value) => {
-                if let Some(v) = value {
+                let out_flow = Flow::Continue(Some(label), value).update_empty(Some(v));
+                if let Some(v) = out_flow.value() {
                   iter_scope.push_root(v)?;
                 }
                 if let Err(err) = iterator::iterator_close(
@@ -1789,23 +1941,11 @@ impl<'vm> HirEvaluator<'vm> {
                 ) {
                   return Err(err);
                 }
-                return Ok(Flow::Continue(Some(label), value));
+                return Ok(out_flow);
               }
-              Flow::Break(None, _) => {
-                if let Err(err) = iterator::iterator_close(
-                  self.vm,
-                  &mut *self.host,
-                  &mut *self.hooks,
-                  &mut iter_scope,
-                  &iterator_record,
-                  iterator::CloseCompletionKind::NonThrow,
-                ) {
-                  return Err(err);
-                }
-                return Ok(Flow::empty());
-              }
-              Flow::Break(Some(label), value) => {
-                if let Some(v) = value {
+              Flow::Break(None, break_value) => {
+                let out = break_value.unwrap_or(v);
+                if let Some(v) = break_value {
                   iter_scope.push_root(v)?;
                 }
                 if let Err(err) = iterator::iterator_close(
@@ -1818,7 +1958,24 @@ impl<'vm> HirEvaluator<'vm> {
                 ) {
                   return Err(err);
                 }
-                return Ok(Flow::Break(Some(label), value));
+                return Ok(Flow::Normal(Some(out)));
+              }
+              Flow::Break(Some(label), break_value) => {
+                let out_flow = Flow::Break(Some(label), break_value).update_empty(Some(v));
+                if let Some(v) = out_flow.value() {
+                  iter_scope.push_root(v)?;
+                }
+                if let Err(err) = iterator::iterator_close(
+                  self.vm,
+                  &mut *self.host,
+                  &mut *self.hooks,
+                  &mut iter_scope,
+                  &iterator_record,
+                  iterator::CloseCompletionKind::NonThrow,
+                ) {
+                  return Err(err);
+                }
+                return Ok(out_flow);
               }
               Flow::Return(v) => {
                 // Root the return value across iterator closing.
@@ -1838,7 +1995,7 @@ impl<'vm> HirEvaluator<'vm> {
             }
           }
 
-          Ok(Flow::empty())
+          Ok(Flow::Normal(Some(v)))
         } else {
           // --- for..in ---
           let rhs_value = self.eval_expr(scope, body, *right)?;
@@ -1864,6 +2021,11 @@ impl<'vm> HirEvaluator<'vm> {
           // Root the current key value across binding + body evaluation.
           let key_value_root_idx = iter_scope.heap().root_stack.len();
           iter_scope.push_root(Value::Undefined)?;
+
+          // ECMA-262 `LoopEvaluation` running completion value `V`.
+          let v_root_idx = iter_scope.heap().root_stack.len();
+          iter_scope.push_root(Value::Undefined)?;
+          let mut v = Value::Undefined;
 
           // Per-iteration lexical environments for `let`/`const` in the head.
           let outer_lex: GcEnv = self.env.lexical_env();
@@ -1927,17 +2089,39 @@ impl<'vm> HirEvaluator<'vm> {
             }
 
             match flow {
-              Flow::Normal(_) => {}
-              Flow::Continue(None, _) => {}
-              Flow::Continue(Some(label), _) if label_set.iter().any(|l| *l == label) => {}
-              Flow::Continue(Some(label), value) => return Ok(Flow::Continue(Some(label), value)),
-              Flow::Break(None, _) => return Ok(Flow::empty()),
-              Flow::Break(Some(label), value) => return Ok(Flow::Break(Some(label), value)),
+              Flow::Normal(value) => {
+                if let Some(value) = value {
+                  v = value;
+                  iter_scope.heap_mut().root_stack[v_root_idx] = value;
+                }
+              }
+              Flow::Continue(None, value) => {
+                if let Some(value) = value {
+                  v = value;
+                  iter_scope.heap_mut().root_stack[v_root_idx] = value;
+                }
+              }
+              Flow::Continue(Some(label), value) if label_set.iter().any(|l| *l == label) => {
+                if let Some(value) = value {
+                  v = value;
+                  iter_scope.heap_mut().root_stack[v_root_idx] = value;
+                }
+              }
+              Flow::Continue(Some(label), value) => {
+                return Ok(Flow::Continue(Some(label), value).update_empty(Some(v)))
+              }
+              Flow::Break(None, break_value) => {
+                let out = break_value.unwrap_or(v);
+                return Ok(Flow::Normal(Some(out)));
+              }
+              Flow::Break(Some(label), break_value) => {
+                return Ok(Flow::Break(Some(label), break_value).update_empty(Some(v)))
+              }
               Flow::Return(v) => return Ok(Flow::Return(v)),
             }
           }
 
-          Ok(Flow::empty())
+          Ok(Flow::Normal(Some(v)))
         }
       }
       hir_js::StmtKind::Switch { discriminant, cases } => {
