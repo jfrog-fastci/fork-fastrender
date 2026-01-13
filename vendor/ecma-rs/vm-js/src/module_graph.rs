@@ -16,7 +16,7 @@ use crate::heap::{ModuleNamespaceExport, ModuleNamespaceExportValue};
 use crate::fallible_alloc::arc_try_new_vm;
 use crate::{
   cmp_utf16, ExecutionContext, GcEnv, GcObject, LoadedModuleRequest, ModuleId, ModuleRequest,
-  RealmId, RootId, Scope, StackFrame, Value, Vm, VmError,
+  RealmId, RootId, Scope, ScriptId, StackFrame, Value, Vm, VmError,
 };
 use crate::{Heap, VmHost, VmHostHooks};
 use core::mem;
@@ -282,6 +282,23 @@ pub struct ModuleGraph {
   /// ready SCCs. We must not recursively drain the queue in that case, otherwise newly-ready SCCs
   /// could execute ahead of already-ready SCCs with a lower `[[AsyncEvaluationOrder]]`.
   processing_ready_scc_queue: bool,
+
+  /// Spec `[[LoadedModules]]` cache for Script Records.
+  ///
+  /// ECMA-262 requires `FinishLoadingImportedModule` to memoize successful `(referrer, request)`
+  /// resolutions for **all** referrer kinds (Script, Module, Realm). Module referrers store their
+  /// `[[LoadedModules]]` list in the module record itself (`SourceTextModuleRecord.loaded_modules`),
+  /// but scripts do not yet have a concrete record type in the VM.
+  ///
+  /// This graph-owned cache provides equivalent memoization for Script referrers so repeated
+  /// dynamic `import()` from the same script with the same `ModuleRequest` is idempotent.
+  script_loaded_modules: HashMap<ScriptId, Vec<LoadedModuleRequest<ModuleId>>>,
+
+  /// Spec `[[LoadedModules]]` cache for Realm Records.
+  ///
+  /// Like [`ModuleGraph::script_loaded_modules`], this is used solely to enforce the
+  /// `FinishLoadingImportedModule` caching invariant for Realm referrers.
+  realm_loaded_modules: HashMap<RealmId, Vec<LoadedModuleRequest<ModuleId>>>,
 }
 
 impl Default for ModuleGraph {
@@ -305,6 +322,8 @@ impl Default for ModuleGraph {
       async_eval_states: Vec::new(),
       ready_scc_queue: Vec::new(),
       processing_ready_scc_queue: false,
+      script_loaded_modules: HashMap::new(),
+      realm_loaded_modules: HashMap::new(),
     }
   }
 }
@@ -332,6 +351,42 @@ impl ModuleGraph {
   /// recomputed before module evaluation.
   pub(crate) fn mark_scc_dirty(&mut self) {
     self.scc_dirty = true;
+  }
+
+  pub(crate) fn script_loaded_modules_mut(
+    &mut self,
+    script: ScriptId,
+  ) -> Result<&mut Vec<LoadedModuleRequest<ModuleId>>, VmError> {
+    if !self.script_loaded_modules.contains_key(&script) {
+      // `HashMap::insert` can abort on allocator OOM; reserve fallibly first.
+      self
+        .script_loaded_modules
+        .try_reserve(1)
+        .map_err(|_| VmError::OutOfMemory)?;
+      self.script_loaded_modules.insert(script, Vec::new());
+    }
+    // Safe: we inserted the key above if it was missing.
+    Ok(self
+      .script_loaded_modules
+      .get_mut(&script)
+      .expect("script_loaded_modules missing key after insertion"))
+  }
+
+  pub(crate) fn realm_loaded_modules_mut(
+    &mut self,
+    realm: RealmId,
+  ) -> Result<&mut Vec<LoadedModuleRequest<ModuleId>>, VmError> {
+    if !self.realm_loaded_modules.contains_key(&realm) {
+      self
+        .realm_loaded_modules
+        .try_reserve(1)
+        .map_err(|_| VmError::OutOfMemory)?;
+      self.realm_loaded_modules.insert(realm, Vec::new());
+    }
+    Ok(self
+      .realm_loaded_modules
+      .get_mut(&realm)
+      .expect("realm_loaded_modules missing key after insertion"))
   }
   pub fn set_global_lexical_env(&mut self, env: GcEnv) {
     self.global_lexical_env = Some(env);

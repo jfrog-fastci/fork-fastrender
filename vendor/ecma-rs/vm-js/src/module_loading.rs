@@ -1169,10 +1169,41 @@ pub fn finish_loading_imported_module_with_host_and_hooks(
   let result = match (|| -> Result<ModuleCompletion, VmError> {
     Ok(match result {
       Ok(loaded) => {
-        if let ModuleReferrer::Module(referrer) = referrer {
-          if let Some(referrer_module) = modules.get_module_mut(referrer) {
-            if let Some(existing) = referrer_module
-              .loaded_modules
+        match referrer {
+          ModuleReferrer::Module(referrer) => {
+            if let Some(referrer_module) = modules.get_module_mut(referrer) {
+              if let Some(existing) = referrer_module
+                .loaded_modules
+                .iter()
+                .find(|record| record.request.spec_equal(&module_request))
+              {
+                if existing.module != loaded {
+                  Err(VmError::InvariantViolation(
+                    "FinishLoadingImportedModule invariant violation: module request resolved to different modules",
+                  ))
+                } else {
+                  Ok(loaded)
+                }
+              } else {
+                referrer_module
+                  .loaded_modules
+                  .try_reserve(1)
+                  .map_err(|_| VmError::OutOfMemory)?;
+                referrer_module
+                  .loaded_modules
+                  .push(LoadedModuleRequest::new(module_request, loaded));
+                // `[[LoadedModules]]` edges affect SCC membership and therefore module evaluation order;
+                // invalidate cached SCC structure when new edges are added during host-driven loading.
+                modules.mark_scc_dirty();
+                Ok(loaded)
+              }
+            } else {
+              Ok(loaded)
+            }
+          }
+          ModuleReferrer::Script(script) => {
+            let loaded_modules = modules.script_loaded_modules_mut(script)?;
+            if let Some(existing) = loaded_modules
               .iter()
               .find(|record| record.request.spec_equal(&module_request))
             {
@@ -1184,23 +1215,34 @@ pub fn finish_loading_imported_module_with_host_and_hooks(
                 Ok(loaded)
               }
             } else {
-              referrer_module
-                .loaded_modules
+              loaded_modules
                 .try_reserve(1)
                 .map_err(|_| VmError::OutOfMemory)?;
-              referrer_module
-                .loaded_modules
-                .push(LoadedModuleRequest::new(module_request, loaded));
-              // `[[LoadedModules]]` edges affect SCC membership and therefore module evaluation order;
-              // invalidate cached SCC structure when new edges are added during host-driven loading.
-              modules.mark_scc_dirty();
+              loaded_modules.push(LoadedModuleRequest::new(module_request, loaded));
               Ok(loaded)
             }
-          } else {
-            Ok(loaded)
           }
-        } else {
-          Ok(loaded)
+          ModuleReferrer::Realm(realm) => {
+            let loaded_modules = modules.realm_loaded_modules_mut(realm)?;
+            if let Some(existing) = loaded_modules
+              .iter()
+              .find(|record| record.request.spec_equal(&module_request))
+            {
+              if existing.module != loaded {
+                Err(VmError::InvariantViolation(
+                  "FinishLoadingImportedModule invariant violation: module request resolved to different modules",
+                ))
+              } else {
+                Ok(loaded)
+              }
+            } else {
+              loaded_modules
+                .try_reserve(1)
+                .map_err(|_| VmError::OutOfMemory)?;
+              loaded_modules.push(LoadedModuleRequest::new(module_request, loaded));
+              Ok(loaded)
+            }
+          }
         }
       }
       Err(e) => Err(e),
