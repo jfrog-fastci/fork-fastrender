@@ -1,4 +1,5 @@
 use crate::error::{RenderError, RenderStage};
+use serde::{Deserialize, Serialize};
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -174,7 +175,8 @@ pub struct StageListenerGuard {
 }
 
 /// Stages surfaced via heartbeat callbacks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum StageHeartbeat {
   ReadCache,
   FollowRedirects,

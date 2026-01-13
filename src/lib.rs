@@ -243,6 +243,7 @@ pub mod ipc;
 pub(crate) mod testing;
 pub mod js;
 pub mod memory;
+pub mod perf_log_schema;
 pub mod multiprocess;
 pub mod net;
 pub mod network_process;

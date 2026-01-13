@@ -4,6 +4,10 @@ Helpful environment variables for profiling layout/cascade on large pages. The c
 
 When using `render_pages`/`fetch_and_render`, per-page logs are written to `fetches/renders/<page>.log` and a summary to `fetches/renders/_summary.log`; review these alongside the flags below when investigating slow or blank renders.
 
+## Browser perf JSONL logs (`FASTR_PERF_LOG`)
+
+The windowed `browser` UI can emit newline-delimited JSON (`.jsonl`) perf events when `FASTR_PERF_LOG` is enabled. The event schema is defined in Rust in [`fastrender::perf_log_schema`](../src/perf_log_schema.rs) and versioned by `fastrender::perf_log_schema::PERF_LOG_VERSION`. `run_start` events must include the current schema version so offline tooling can validate compatibility.
+
 - `FASTR_CASCADE_PROFILE=1`
   - Enables cascade profiling. Logs node count, candidate/match counts, and timing breakdown for selector matching, declaration application, and pseudo computation at the end of `apply_styles`.
 
