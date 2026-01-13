@@ -150,8 +150,9 @@ reason = "Document.getElementsByName is not implemented yet (including live Node
 
 [[expectations]]
 id = "dom/collections/getelementsbytagnamens.window.js"
+backend = "quickjs"
 status = "xfail"
-reason = "Document/Element.getElementsByTagNameNS is not implemented yet (including live HTMLCollection semantics and template inert-subtree behavior)."
+reason = "QuickJS backend does not implement Document/Element.getElementsByTagNameNS yet."
 
 [[expectations]]
 id = "dom/queryselector_invalid_selector_domexception.window.js"

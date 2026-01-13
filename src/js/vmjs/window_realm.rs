@@ -3075,6 +3075,10 @@ const NODE_CHILDREN_KEY: &str = "__fastrender_node_children";
 const HTML_COLLECTION_PROTOTYPE_KEY: &str = "__fastrender_html_collection_prototype";
 const HTML_OPTIONS_COLLECTION_PROTOTYPE_KEY: &str = "__fastrender_html_options_collection_prototype";
 const HTML_COLLECTION_ROOT_KEY: &str = "__fastrender_html_collection_root";
+const HTML_COLLECTION_QUERY_KIND_KEY: &str = "__fastrender_html_collection_query_kind";
+const HTML_COLLECTION_QUERY_NAMESPACE_KEY: &str = "__fastrender_html_collection_query_namespace";
+const HTML_COLLECTION_QUERY_LOCAL_NAME_KEY: &str = "__fastrender_html_collection_query_local_name";
+const HTML_COLLECTION_QUERY_GENERATION_KEY: &str = "__fastrender_html_collection_query_generation";
 const NODE_LIST_ROOT_KEY: &str = "__fastrender_node_list_root";
 /// Internal length slot for live/static collection objects (NodeList/HTMLCollection shims).
 ///
@@ -29291,10 +29295,163 @@ fn node_child_nodes_get_native(
   Ok(Value::Object(list_obj))
 }
 
-fn html_collection_item_native(
-  _vm: &mut Vm,
+fn sync_html_collection_query_if_needed(
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
+  host: &mut dyn VmHost,
+  collection_obj: GcObject,
+) -> Result<(), VmError> {
+  // Only HTMLCollection objects created by query APIs (e.g. getElementsByTagNameNS) participate in
+  // this lazy live-sync mechanism. Other HTMLCollection-like objects (ParentNode.children,
+  // HTMLSelectElement.options, etc) use eagerly-updated cached numeric/length properties and do not
+  // store query metadata.
+  let kind_key = alloc_key(scope, HTML_COLLECTION_QUERY_KIND_KEY)?;
+  let Some(Value::String(kind_s)) = scope
+    .heap()
+    .object_get_own_data_property_value(collection_obj, &kind_key)?
+  else {
+    return Ok(());
+  };
+  let kind = scope
+    .heap()
+    .get_string(kind_s)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+  if kind.as_ref() != "tag_name_ns" {
+    return Ok(());
+  }
+
+  // Root while allocating property keys / wrappers.
+  scope.push_root(Value::Object(collection_obj))?;
+
+  let root_key = alloc_key(scope, HTML_COLLECTION_ROOT_KEY)?;
+  let Some(Value::Object(root_wrapper)) = scope
+    .heap()
+    .object_get_own_data_property_value(collection_obj, &root_key)?
+  else {
+    return Ok(());
+  };
+  scope.push_root(Value::Object(root_wrapper))?;
+
+  let handle = node_handle_from_wrapper_obj(vm, scope, root_wrapper, "Illegal invocation")?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let current_generation = dom.mutation_generation();
+
+  let gen_key = alloc_key(scope, HTML_COLLECTION_QUERY_GENERATION_KEY)?;
+  let last_generation = match scope
+    .heap()
+    .object_get_own_data_property_value(collection_obj, &gen_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as u64,
+    _ => u64::MAX,
+  };
+  if last_generation == current_generation {
+    return Ok(());
+  }
+
+  let ns_key = alloc_key(scope, HTML_COLLECTION_QUERY_NAMESPACE_KEY)?;
+  let namespace = match scope
+    .heap()
+    .object_get_own_data_property_value(collection_obj, &ns_key)?
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Null => None,
+    Value::String(s) => Some(
+      scope
+        .heap()
+        .get_string(s)
+        .map(|s| s.to_utf8_lossy())
+        .unwrap_or_default(),
+    ),
+    _ => None,
+  };
+
+  let local_name_key = alloc_key(scope, HTML_COLLECTION_QUERY_LOCAL_NAME_KEY)?;
+  let local_name_s = match scope
+    .heap()
+    .object_get_own_data_property_value(collection_obj, &local_name_key)?
+  {
+    Some(Value::String(s)) => s,
+    _ => return Ok(()),
+  };
+  let local_name = scope
+    .heap()
+    .get_string(local_name_s)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let results = dom.get_elements_by_tag_name_ns_from(
+    handle.node_id,
+    namespace.as_deref(),
+    local_name.as_ref(),
+  );
+
+  scope.push_root(Value::Object(handle.document_obj))?;
+
+  let length_key = alloc_key(scope, COLLECTION_LENGTH_KEY)?;
+  let old_len = match scope
+    .heap()
+    .object_get_own_data_property_value(collection_obj, &length_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => 0,
+  };
+
+  // Overwrite / populate indices.
+  let mut idx_buf = [0u8; 20];
+  for (idx, node_id) in results.iter().copied().enumerate() {
+    let idx_str = decimal_str_for_usize(idx, &mut idx_buf);
+    let key = alloc_key(scope, idx_str)?;
+    let wrapper = get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), node_id)?;
+    scope.define_property(collection_obj, key, data_desc(wrapper))?;
+  }
+
+  // Delete leftover indices when the list shrinks.
+  for idx in results.len()..old_len {
+    let idx_str = decimal_str_for_usize(idx, &mut idx_buf);
+    let key = alloc_key(scope, idx_str)?;
+    scope.heap_mut().delete_property_or_throw(collection_obj, key)?;
+  }
+
+  // Store derived state.
+  scope.define_property(
+    collection_obj,
+    length_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(results.len() as f64),
+        // Writable so subsequent syncs can update the cached length even though the property is
+        // non-configurable.
+        writable: true,
+      },
+    },
+  )?;
+  scope.define_property(
+    collection_obj,
+    gen_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(current_generation as f64),
+        writable: true,
+      },
+    },
+  )?;
+
+  Ok(())
+}
+
+fn html_collection_item_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
@@ -29303,6 +29460,8 @@ fn html_collection_item_native(
   let Value::Object(collection_obj) = this else {
     return Err(VmError::TypeError("Illegal invocation"));
   };
+
+  sync_html_collection_query_if_needed(vm, scope, host, collection_obj)?;
 
   let index_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let mut n = scope.heap_mut().to_number(index_value)?;
@@ -29506,6 +29665,139 @@ fn parent_node_children_get_native(
   };
 
   sync_children_collection(vm, scope, document_obj, dom, node_id, collection)?;
+  Ok(Value::Object(collection))
+}
+
+fn parent_node_get_elements_by_tag_name_ns_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let handle = node_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  // ParentNode implementers only.
+  match &dom.node(handle.node_id).kind {
+    NodeKind::Document { .. }
+    | NodeKind::DocumentFragment
+    | NodeKind::Element { .. }
+    | NodeKind::Slot { .. } => {}
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  }
+
+  // WebIDL: `namespace` is a nullable DOMString; `null` means query for the null namespace.
+  let namespace_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let namespace_value = if matches!(namespace_value, Value::Null) {
+    Value::Null
+  } else {
+    let s = match namespace_value {
+      Value::String(s) => s,
+      other => scope.heap_mut().to_string(other)?,
+    };
+    Value::String(s)
+  };
+
+  let local_name_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let local_name_s = match local_name_value {
+    Value::String(s) => s,
+    other => scope.heap_mut().to_string(other)?,
+  };
+  scope.push_root(namespace_value)?;
+  scope.push_root(Value::String(local_name_s))?;
+
+  let collection = scope.alloc_object()?;
+
+  // Root objects while allocating keys and syncing.
+  scope.push_root(Value::Object(wrapper_obj))?;
+  scope.push_root(Value::Object(handle.document_obj))?;
+  scope.push_root(Value::Object(collection))?;
+
+  // Use the realm's HTMLCollection prototype so `instanceof HTMLCollection` works.
+  let proto_key = alloc_key(scope, HTML_COLLECTION_PROTOTYPE_KEY)?;
+  let proto = match scope
+    .heap()
+    .object_get_own_data_property_value(handle.document_obj, &proto_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Err(VmError::InvariantViolation("missing HTMLCollection prototype")),
+  };
+  scope
+    .heap_mut()
+    .object_set_prototype(collection, Some(proto))?;
+
+  // Keep the root wrapper alive even if the caller only holds the collection object.
+  let root_key = alloc_key(scope, HTML_COLLECTION_ROOT_KEY)?;
+  scope.define_property(
+    collection,
+    root_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(wrapper_obj),
+        writable: false,
+      },
+    },
+  )?;
+
+  let kind_key = alloc_key(scope, HTML_COLLECTION_QUERY_KIND_KEY)?;
+  let kind_s = scope.alloc_string("tag_name_ns")?;
+  scope.push_root(Value::String(kind_s))?;
+  scope.define_property(
+    collection,
+    kind_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::String(kind_s),
+        writable: false,
+      },
+    },
+  )?;
+
+  let namespace_key = alloc_key(scope, HTML_COLLECTION_QUERY_NAMESPACE_KEY)?;
+  scope.define_property(
+    collection,
+    namespace_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: namespace_value,
+        writable: false,
+      },
+    },
+  )?;
+
+  let local_name_key = alloc_key(scope, HTML_COLLECTION_QUERY_LOCAL_NAME_KEY)?;
+  scope.define_property(
+    collection,
+    local_name_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::String(local_name_s),
+        writable: false,
+      },
+    },
+  )?;
+
+  // Populate numeric indices/length cache.
+  sync_html_collection_query_if_needed(vm, scope, host, collection)?;
+
   Ok(Value::Object(collection))
 }
 
@@ -45516,6 +45808,37 @@ fn init_window_globals(
               set: Value::Undefined,
             },
           },
+        )?;
+      }
+    }
+
+    // ParentNode.getElementsByTagNameNS(namespace, localName)
+    let get_elements_by_tag_name_ns_call_id =
+      vm.register_native_call(parent_node_get_elements_by_tag_name_ns_native)?;
+    let get_elements_by_tag_name_ns_name = scope.alloc_string("getElementsByTagNameNS")?;
+    scope.push_root(Value::String(get_elements_by_tag_name_ns_name))?;
+    let get_elements_by_tag_name_ns_func = scope.alloc_native_function(
+      get_elements_by_tag_name_ns_call_id,
+      None,
+      get_elements_by_tag_name_ns_name,
+      2,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      get_elements_by_tag_name_ns_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(get_elements_by_tag_name_ns_func))?;
+    let get_elements_by_tag_name_ns_key = alloc_key(&mut scope, "getElementsByTagNameNS")?;
+    for proto in [element_proto, document_proto, document_fragment_proto] {
+      if scope
+        .heap()
+        .object_get_own_property(proto, &get_elements_by_tag_name_ns_key)?
+        .is_none()
+      {
+        scope.define_property(
+          proto,
+          get_elements_by_tag_name_ns_key,
+          data_desc(Value::Object(get_elements_by_tag_name_ns_func)),
         )?;
       }
     }
