@@ -217,6 +217,7 @@ pub mod ipc;
 pub(crate) mod testing;
 pub mod ipc;
 pub mod js;
+pub mod ipc;
 pub mod memory;
 pub mod multiprocess;
 pub mod net;
