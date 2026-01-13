@@ -658,12 +658,6 @@ impl InteractionState {
         "focus_chain missing cached membership for {id}"
       );
     }
-    for &id in &self.focus_chain_membership {
-      debug_assert!(
-        self.focus_chain.contains(&id),
-        "focus_chain_membership contains stale id {id}"
-      );
-    }
 
     debug_assert_eq!(
       self.hover_chain.len(),
@@ -676,12 +670,6 @@ impl InteractionState {
         "hover_chain missing cached membership for {id}"
       );
     }
-    for &id in &self.hover_chain_membership {
-      debug_assert!(
-        self.hover_chain.contains(&id),
-        "hover_chain_membership contains stale id {id}"
-      );
-    }
 
     debug_assert_eq!(
       self.active_chain.len(),
@@ -692,12 +680,6 @@ impl InteractionState {
       debug_assert!(
         self.active_chain_membership.contains(&id),
         "active_chain missing cached membership for {id}"
-      );
-    }
-    for &id in &self.active_chain_membership {
-      debug_assert!(
-        self.active_chain.contains(&id),
-        "active_chain_membership contains stale id {id}"
       );
     }
   }
