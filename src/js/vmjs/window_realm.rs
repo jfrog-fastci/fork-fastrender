@@ -3113,6 +3113,7 @@ const WRAPPER_SHARED_METHOD_KEYS: &[&str] = &[
   HTML_COLLECTION_PROTOTYPE_KEY,
   NODE_LIST_PROTOTYPE_KEY,
   MUTATION_RECORD_PROTOTYPE_KEY,
+  RANGE_PROTOTYPE_KEY,
   // HTMLFormElement/HTMLInputElement/HTMLTextAreaElement helpers.
   INPUT_VALUE_GET_KEY,
   INPUT_VALUE_SET_KEY,
@@ -3159,8 +3160,11 @@ const MUTATION_OBSERVER_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMMOB"); // Mut
 const MUTATION_RECORD_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMMRC"); // MutationRecord
 const NODE_LIST_PROTOTYPE_KEY: &str = "__fastrender_node_list_prototype";
 const MUTATION_RECORD_PROTOTYPE_KEY: &str = "__fastrender_mutation_record_prototype";
+const RANGE_PROTOTYPE_KEY: &str = "__fastrender_range_prototype";
 const ATTR_PROTOTYPE_KEY: &str = "__fastrender_attr_prototype";
 const NAMED_NODE_MAP_PROTOTYPE_KEY: &str = "__fastrender_named_node_map_prototype";
+
+const RANGE_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMRNG"); // Range
 
 const NODE_LIST_ITERATOR_LIST_KEY: &str = "__fastrender_node_list_iterator_list";
 const NODE_LIST_ITERATOR_INDEX_KEY: &str = "__fastrender_node_list_iterator_index";
@@ -30356,6 +30360,13 @@ struct NodeHandle {
   document_obj: GcObject,
 }
 
+#[derive(Clone, Copy)]
+struct RangeHandle {
+  document_id: DocumentId,
+  document_obj: GcObject,
+  range_id: dom2::RangeId,
+}
+
 fn is_host_document_id(vm: &mut Vm, document_id: DocumentId) -> bool {
   let Some(data) = vm.user_data::<WindowRealmUserData>() else {
     return false;
@@ -30572,6 +30583,490 @@ fn dom_ptr_for_document_id_mut(
     }
   }
   dom_from_vm_host_mut(host).map(NonNull::from)
+}
+
+fn range_handle_from_this(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  this: Value,
+  error_message: &'static str,
+) -> Result<RangeHandle, VmError> {
+  let Value::Object(range_obj) = this else {
+    return Err(VmError::TypeError(error_message));
+  };
+
+  let slots = match host_slots_for_object(scope, range_obj)? {
+    Some(slots) => slots,
+    None => return Err(VmError::TypeError(error_message)),
+  };
+  if slots.b != RANGE_HOST_TAG {
+    return Err(VmError::TypeError(error_message));
+  }
+
+  let range_id = dom2::RangeId::from_u64(slots.a);
+
+  let document_obj = {
+    let key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+    match scope
+      .heap()
+      .object_get_own_data_property_value(range_obj, &key)?
+    {
+      Some(Value::Object(obj)) => obj,
+      _ => return Err(VmError::TypeError(error_message)),
+    }
+  };
+
+  let document_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError(error_message))?
+    .require_document_handle(scope.heap(), Value::Object(document_obj))
+    .map_err(|_| VmError::TypeError(error_message))?
+    .document_id;
+
+  Ok(RangeHandle {
+    document_id,
+    document_obj,
+    range_id,
+  })
+}
+
+fn range_prototype_from_document(scope: &mut Scope<'_>, document_obj: GcObject) -> Result<GcObject, VmError> {
+  let key = alloc_key(scope, RANGE_PROTOTYPE_KEY)?;
+  match object_get_data_property_value(scope.heap(), document_obj, &key)? {
+    Some(Value::Object(obj)) => Ok(obj),
+    _ => Err(VmError::InvariantViolation("missing Range prototype")),
+  }
+}
+
+fn create_range_wrapper(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  document_obj: GcObject,
+  range_id: dom2::RangeId,
+) -> Result<GcObject, VmError> {
+  let range_proto = range_prototype_from_document(scope, document_obj)?;
+
+  // Root values while allocating property keys / objects: those operations can trigger GC.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(document_obj))?;
+  scope.push_root(Value::Object(range_proto))?;
+
+  let range_obj = scope.alloc_object_with_prototype(Some(range_proto))?;
+  scope.push_root(Value::Object(range_obj))?;
+
+  scope.heap_mut().object_set_host_slots(
+    range_obj,
+    HostSlots {
+      a: range_id.as_u64(),
+      b: RANGE_HOST_TAG,
+    },
+  )?;
+
+  let wrapper_document_key = alloc_key(&mut scope, WRAPPER_DOCUMENT_KEY)?;
+  scope.define_property(
+    range_obj,
+    wrapper_document_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(document_obj),
+        writable: false,
+      },
+    },
+  )?;
+
+  Ok(range_obj)
+}
+
+#[inline]
+fn webidl_to_uint16(scope: &mut Scope<'_>, value: Value) -> Result<u16, VmError> {
+  // WebIDL `unsigned short`: ToNumber + ToUint16.
+  let number = scope.heap_mut().to_number(value)?;
+  if !number.is_finite() || number == 0.0 {
+    return Ok(0);
+  }
+  let int = number.trunc();
+  const TWO_16: f64 = 65_536.0;
+  let mut int = int % TWO_16;
+  if int < 0.0 {
+    int += TWO_16;
+  }
+  Ok(int as u16)
+}
+
+fn document_create_range_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Err(VmError::TypeError(
+      "document.createRange must be called on a document object",
+    ));
+  };
+
+  let document_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError(
+      "document.createRange must be called on a document object",
+    ))?
+    .require_document_handle(scope.heap(), Value::Object(document_obj))
+    .map_err(|_| VmError::TypeError("document.createRange must be called on a document object"))?
+    .document_id;
+
+  let range_id = if is_host_document_id(vm, document_id) {
+    mutate_dom_for_vm_host(host, |dom| (dom.create_range(), false))
+      .ok_or(VmError::TypeError(
+        "document.createRange requires a DOM-backed document",
+      ))?
+  } else {
+    let mut dom_ptr =
+      dom_ptr_for_document_id_mut(vm, host, document_id).ok_or(VmError::TypeError(
+        "document.createRange requires a DOM-backed document",
+      ))?;
+    // SAFETY: `dom_ptr` points at the `dom2::Document` backing this document ID, and we have
+    // exclusive access for the duration of this native call.
+    let dom_mut = unsafe { dom_ptr.as_mut() };
+    let range_id = dom_mut.create_range();
+    // Owned documents: skip MutationObserver microtask scheduling.
+    let _ = dom_mut.take_mutation_observer_microtask_needed();
+    range_id
+  };
+
+  let range_obj = create_range_wrapper(vm, scope, document_obj, range_id)?;
+  Ok(Value::Object(range_obj))
+}
+
+const RANGE_CONSTRUCTOR_DOCUMENT_SLOT: usize = 0;
+
+fn range_constructor_construct_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  // Host `window.document` wrapper object.
+  let document_obj = {
+    let slots = scope.heap().get_function_native_slots(callee)?;
+    match slots
+      .get(RANGE_CONSTRUCTOR_DOCUMENT_SLOT)
+      .copied()
+      .unwrap_or(Value::Undefined)
+    {
+      Value::Object(obj) => Some(obj),
+      _ => None,
+    }
+    .or_else(|| vm.user_data::<WindowRealmUserData>().and_then(|data| data.document_obj))
+    .ok_or(VmError::InvariantViolation(
+      "Range constructor requires window.document",
+    ))?
+  };
+
+  let document_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_document_handle(scope.heap(), Value::Object(document_obj))
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?
+    .document_id;
+
+  let range_id = if is_host_document_id(vm, document_id) {
+    mutate_dom_for_vm_host(host, |dom| (dom.create_range(), false))
+      .ok_or(VmError::TypeError("Illegal invocation"))?
+  } else {
+    let mut dom_ptr =
+      dom_ptr_for_document_id_mut(vm, host, document_id).ok_or(VmError::TypeError(
+        "Range constructor requires a DOM-backed document",
+      ))?;
+    // SAFETY: `dom_ptr` points at the `dom2::Document` backing this document ID, and we have
+    // exclusive access for the duration of this native call.
+    let dom_mut = unsafe { dom_ptr.as_mut() };
+    let range_id = dom_mut.create_range();
+    // Owned documents: skip MutationObserver microtask scheduling.
+    let _ = dom_mut.take_mutation_observer_microtask_needed();
+    range_id
+  };
+
+  let range_obj = create_range_wrapper(vm, scope, document_obj, range_id)?;
+  Ok(Value::Object(range_obj))
+}
+
+fn range_start_container_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let node_id = dom
+    .range_start_container(handle.range_id)
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+  get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), node_id)
+}
+
+fn range_start_offset_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let offset = dom
+    .range_start_offset(handle.range_id)
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+  Ok(Value::Number(offset as f64))
+}
+
+fn range_end_container_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let node_id = dom
+    .range_end_container(handle.range_id)
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+  get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), node_id)
+}
+
+fn range_end_offset_get_native(
+  vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = range_handle_from_this(vm, _scope, this, "Illegal invocation")?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let offset = dom
+    .range_end_offset(handle.range_id)
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+  Ok(Value::Number(offset as f64))
+}
+
+fn range_collapsed_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let start = dom
+    .range_start(handle.range_id)
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+  let end = dom
+    .range_end(handle.range_id)
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+  Ok(Value::Bool(start == end))
+}
+
+fn range_set_start_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+
+  let node_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let node_key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_handle(scope.heap(), node_value)
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+  if node_key.document_id != handle.document_id {
+    return Err(VmError::Throw(make_dom_exception(scope, "WrongDocumentError", "")?));
+  }
+
+  let offset_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let offset = webidl_to_uint32(scope, offset_value)? as usize;
+
+  let result = if is_host_document_id(vm, handle.document_id) {
+    mutate_dom_for_vm_host(host, |dom| (dom.range_set_start(handle.range_id, node_key.node_id, offset), false))
+      .ok_or(VmError::TypeError("Illegal invocation"))?
+  } else {
+    let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
+      return Err(VmError::TypeError("Illegal invocation"));
+    };
+    // SAFETY: `dom_ptr` points at the `dom2::Document` backing this document ID, and we have
+    // exclusive access for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+    let result = dom.range_set_start(handle.range_id, node_key.node_id, offset);
+    // Owned documents: skip MutationObserver microtask scheduling.
+    let _ = dom.take_mutation_observer_microtask_needed();
+    result
+  };
+
+  match result {
+    Ok(()) => Ok(Value::Undefined),
+    Err(dom2::DomError::IndexSizeError) => {
+      Err(VmError::Throw(make_dom_exception(scope, "IndexSizeError", "")?))
+    }
+    Err(dom2::DomError::InvalidNodeType) => Err(VmError::Throw(make_dom_exception(
+      scope,
+      "InvalidNodeTypeError",
+      "",
+    )?)),
+    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  }
+}
+
+fn range_set_end_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+
+  let node_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let node_key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_handle(scope.heap(), node_value)
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+  if node_key.document_id != handle.document_id {
+    return Err(VmError::Throw(make_dom_exception(scope, "WrongDocumentError", "")?));
+  }
+
+  let offset_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let offset = webidl_to_uint32(scope, offset_value)? as usize;
+
+  let result = if is_host_document_id(vm, handle.document_id) {
+    mutate_dom_for_vm_host(host, |dom| (dom.range_set_end(handle.range_id, node_key.node_id, offset), false))
+      .ok_or(VmError::TypeError("Illegal invocation"))?
+  } else {
+    let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
+      return Err(VmError::TypeError("Illegal invocation"));
+    };
+    // SAFETY: `dom_ptr` points at the `dom2::Document` backing this document ID, and we have
+    // exclusive access for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+    let result = dom.range_set_end(handle.range_id, node_key.node_id, offset);
+    // Owned documents: skip MutationObserver microtask scheduling.
+    let _ = dom.take_mutation_observer_microtask_needed();
+    result
+  };
+
+  match result {
+    Ok(()) => Ok(Value::Undefined),
+    Err(dom2::DomError::IndexSizeError) => {
+      Err(VmError::Throw(make_dom_exception(scope, "IndexSizeError", "")?))
+    }
+    Err(dom2::DomError::InvalidNodeType) => Err(VmError::Throw(make_dom_exception(
+      scope,
+      "InvalidNodeTypeError",
+      "",
+    )?)),
+    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  }
+}
+
+fn range_compare_boundary_points_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+
+  let how_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let how = webidl_to_uint16(scope, how_value)?;
+
+  if how > 3 {
+    return Err(VmError::Throw(make_dom_exception(scope, "NotSupportedError", "")?));
+  }
+
+  let source_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let source_handle = range_handle_from_this(vm, scope, source_value, "Illegal invocation")?;
+
+  if source_handle.document_id != handle.document_id {
+    return Err(VmError::Throw(make_dom_exception(scope, "WrongDocumentError", "")?));
+  }
+
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let this_start = dom
+    .range_start(handle.range_id)
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+  let this_end = dom
+    .range_end(handle.range_id)
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+  let other_start = dom
+    .range_start(source_handle.range_id)
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+  let other_end = dom
+    .range_end(source_handle.range_id)
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+
+  let this_root = dom.tree_root_for_range(this_start.node);
+  let other_root = dom.tree_root_for_range(other_start.node);
+  if this_root != other_root {
+    return Err(VmError::Throw(make_dom_exception(scope, "WrongDocumentError", "")?));
+  }
+
+  let (this_point, other_point) = match how {
+    0 => (this_start, other_start),
+    1 => (this_end, other_start),
+    2 => (this_end, other_end),
+    3 => (this_start, other_end),
+    _ => unreachable!("how validated to 0..=3"),
+  };
+
+  let ordering = dom.compare_boundary_points(this_point, other_point);
+  Ok(Value::Number(match ordering {
+    std::cmp::Ordering::Less => -1.0,
+    std::cmp::Ordering::Equal => 0.0,
+    std::cmp::Ordering::Greater => 1.0,
+  }))
 }
 
 fn html_element_handle_from_this(
@@ -39579,6 +40074,26 @@ fn init_window_globals(
     data_desc(Value::Object(elements_from_point_func)),
   )?;
 
+  if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
+    // document.createRange
+    let create_range_key = alloc_key(&mut scope, "createRange")?;
+    let create_range_call_id = vm.register_native_call(document_create_range_native)?;
+    let create_range_name = scope.alloc_string("createRange")?;
+    scope.push_root(Value::String(create_range_name))?;
+    let create_range_func =
+      scope.alloc_native_function(create_range_call_id, None, create_range_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      create_range_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(create_range_func))?;
+    scope.define_property(
+      document_obj,
+      create_range_key,
+      data_desc(Value::Object(create_range_func)),
+    )?;
+  }
+
   // document.createElement
   let create_element_key = alloc_key(&mut scope, "createElement")?;
   let create_element_call_id = vm.register_native_call(document_create_element_native)?;
@@ -43035,6 +43550,208 @@ fn init_window_globals(
         },
       },
     )?;
+
+    // Range prototype + constructor.
+    if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
+      let range_proto = scope.alloc_object()?;
+      scope.push_root(Value::Object(range_proto))?;
+      scope.heap_mut().object_set_prototype(
+        range_proto,
+        Some(realm.intrinsics().object_prototype()),
+      )?;
+
+      // Range.prototype.startContainer
+      let start_container_call_id = vm.register_native_call(range_start_container_get_native)?;
+      let start_container_name = scope.alloc_string("get startContainer")?;
+      scope.push_root(Value::String(start_container_name))?;
+      let start_container_func =
+        scope.alloc_native_function(start_container_call_id, None, start_container_name, 0)?;
+      scope.heap_mut().object_set_prototype(
+        start_container_func,
+        Some(realm.intrinsics().function_prototype()),
+      )?;
+      scope.push_root(Value::Object(start_container_func))?;
+      let start_container_key = alloc_key(&mut scope, "startContainer")?;
+      scope.define_property(
+        range_proto,
+        start_container_key,
+        idl_attribute_desc(Value::Object(start_container_func), Value::Undefined),
+      )?;
+
+      // Range.prototype.startOffset
+      let start_offset_call_id = vm.register_native_call(range_start_offset_get_native)?;
+      let start_offset_name = scope.alloc_string("get startOffset")?;
+      scope.push_root(Value::String(start_offset_name))?;
+      let start_offset_func =
+        scope.alloc_native_function(start_offset_call_id, None, start_offset_name, 0)?;
+      scope.heap_mut().object_set_prototype(
+        start_offset_func,
+        Some(realm.intrinsics().function_prototype()),
+      )?;
+      scope.push_root(Value::Object(start_offset_func))?;
+      let start_offset_key = alloc_key(&mut scope, "startOffset")?;
+      scope.define_property(
+        range_proto,
+        start_offset_key,
+        idl_attribute_desc(Value::Object(start_offset_func), Value::Undefined),
+      )?;
+
+      // Range.prototype.endContainer
+      let end_container_call_id = vm.register_native_call(range_end_container_get_native)?;
+      let end_container_name = scope.alloc_string("get endContainer")?;
+      scope.push_root(Value::String(end_container_name))?;
+      let end_container_func =
+        scope.alloc_native_function(end_container_call_id, None, end_container_name, 0)?;
+      scope.heap_mut().object_set_prototype(
+        end_container_func,
+        Some(realm.intrinsics().function_prototype()),
+      )?;
+      scope.push_root(Value::Object(end_container_func))?;
+      let end_container_key = alloc_key(&mut scope, "endContainer")?;
+      scope.define_property(
+        range_proto,
+        end_container_key,
+        idl_attribute_desc(Value::Object(end_container_func), Value::Undefined),
+      )?;
+
+      // Range.prototype.endOffset
+      let end_offset_call_id = vm.register_native_call(range_end_offset_get_native)?;
+      let end_offset_name = scope.alloc_string("get endOffset")?;
+      scope.push_root(Value::String(end_offset_name))?;
+      let end_offset_func =
+        scope.alloc_native_function(end_offset_call_id, None, end_offset_name, 0)?;
+      scope.heap_mut().object_set_prototype(
+        end_offset_func,
+        Some(realm.intrinsics().function_prototype()),
+      )?;
+      scope.push_root(Value::Object(end_offset_func))?;
+      let end_offset_key = alloc_key(&mut scope, "endOffset")?;
+      scope.define_property(
+        range_proto,
+        end_offset_key,
+        idl_attribute_desc(Value::Object(end_offset_func), Value::Undefined),
+      )?;
+
+      // Range.prototype.collapsed
+      let collapsed_call_id = vm.register_native_call(range_collapsed_get_native)?;
+      let collapsed_name = scope.alloc_string("get collapsed")?;
+      scope.push_root(Value::String(collapsed_name))?;
+      let collapsed_func =
+        scope.alloc_native_function(collapsed_call_id, None, collapsed_name, 0)?;
+      scope.heap_mut().object_set_prototype(
+        collapsed_func,
+        Some(realm.intrinsics().function_prototype()),
+      )?;
+      scope.push_root(Value::Object(collapsed_func))?;
+      let collapsed_key = alloc_key(&mut scope, "collapsed")?;
+      scope.define_property(
+        range_proto,
+        collapsed_key,
+        idl_attribute_desc(Value::Object(collapsed_func), Value::Undefined),
+      )?;
+
+      // Range.prototype.setStart
+      let set_start_call_id = vm.register_native_call(range_set_start_native)?;
+      let set_start_name = scope.alloc_string("setStart")?;
+      scope.push_root(Value::String(set_start_name))?;
+      let set_start_func =
+        scope.alloc_native_function(set_start_call_id, None, set_start_name, 2)?;
+      scope.heap_mut().object_set_prototype(
+        set_start_func,
+        Some(realm.intrinsics().function_prototype()),
+      )?;
+      scope.push_root(Value::Object(set_start_func))?;
+      let set_start_key = alloc_key(&mut scope, "setStart")?;
+      scope.define_property(range_proto, set_start_key, data_desc(Value::Object(set_start_func)))?;
+
+      // Range.prototype.setEnd
+      let set_end_call_id = vm.register_native_call(range_set_end_native)?;
+      let set_end_name = scope.alloc_string("setEnd")?;
+      scope.push_root(Value::String(set_end_name))?;
+      let set_end_func = scope.alloc_native_function(set_end_call_id, None, set_end_name, 2)?;
+      scope.heap_mut().object_set_prototype(
+        set_end_func,
+        Some(realm.intrinsics().function_prototype()),
+      )?;
+      scope.push_root(Value::Object(set_end_func))?;
+      let set_end_key = alloc_key(&mut scope, "setEnd")?;
+      scope.define_property(range_proto, set_end_key, data_desc(Value::Object(set_end_func)))?;
+
+      // Range.prototype.compareBoundaryPoints.
+      {
+        let call_id = vm.register_native_call(range_compare_boundary_points_native)?;
+        let name_s = scope.alloc_string("compareBoundaryPoints")?;
+        scope.push_root(Value::String(name_s))?;
+        let func = scope.alloc_native_function(call_id, None, name_s, 2)?;
+        scope.heap_mut().object_set_prototype(
+          func,
+          Some(realm.intrinsics().function_prototype()),
+        )?;
+        scope.push_root(Value::Object(func))?;
+        let key = alloc_key(&mut scope, "compareBoundaryPoints")?;
+        scope.define_property(range_proto, key, data_desc(Value::Object(func)))?;
+      }
+
+      // Range constructor.
+      let range_ctor_call_id = vm.register_native_call(illegal_dom_constructor_native)?;
+      let range_ctor_construct_id =
+        vm.register_native_construct(range_constructor_construct_native)?;
+      let range_ctor_name = scope.alloc_string("Range")?;
+      scope.push_root(Value::String(range_ctor_name))?;
+      let range_ctor_func = scope.alloc_native_function_with_slots(
+        range_ctor_call_id,
+        Some(range_ctor_construct_id),
+        range_ctor_name,
+        0,
+        &[Value::Object(document_obj)],
+      )?;
+      scope.heap_mut().object_set_prototype(
+        range_ctor_func,
+        Some(realm.intrinsics().function_prototype()),
+      )?;
+      scope.push_root(Value::Object(range_ctor_func))?;
+      scope.define_property(
+        range_ctor_func,
+        prototype_key,
+        ctor_link_desc(Value::Object(range_proto)),
+      )?;
+      scope.define_property(
+        range_proto,
+        constructor_key,
+        ctor_link_desc(Value::Object(range_ctor_func)),
+      )?;
+      let range_key = alloc_key(&mut scope, "Range")?;
+      scope.define_property(global, range_key, data_desc(Value::Object(range_ctor_func)))?;
+
+      // Range boundary point comparison constants.
+      for (name, value) in [
+        ("START_TO_START", 0.0),
+        ("START_TO_END", 1.0),
+        ("END_TO_END", 2.0),
+        ("END_TO_START", 3.0),
+      ] {
+        let key = alloc_key(&mut scope, name)?;
+        let desc = const_desc(Value::Number(value));
+        scope.define_property(range_ctor_func, key, desc.clone())?;
+        scope.define_property(range_proto, key, desc)?;
+      }
+
+      // Cache Range.prototype on the canonical document wrapper so `document.createRange()` (and
+      // node wrapper helpers) can allocate branded range objects.
+      let range_proto_key = alloc_key(&mut scope, RANGE_PROTOTYPE_KEY)?;
+      scope.define_property(
+        document_obj,
+        range_proto_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: false,
+          kind: PropertyKind::Data {
+            value: Value::Object(range_proto),
+            writable: false,
+          },
+        },
+      )?;
+    }
 
     // Node prototype accessors and methods used by WPT DOM tests.
     if config.dom_bindings_backend == DomBindingsBackend::Handwritten {

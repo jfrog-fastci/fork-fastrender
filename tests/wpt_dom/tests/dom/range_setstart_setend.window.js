@@ -145,3 +145,35 @@ test(() => {
     "END_TO_END compares this.end to source.end"
   );
 }, "Range.compareBoundaryPoints constants and ordering");
+
+test(() => {
+  clear_children(document.body);
+
+  const text = document.createTextNode("abc");
+  document.body.appendChild(text);
+
+  const r1 = document.createRange();
+  const r2 = document.createRange();
+
+  // WebIDL unsigned short conversion: "5" -> 5 -> invalid, must throw NotSupportedError.
+  assert_throws_dom_exception_name(
+    () => r1.compareBoundaryPoints("5", r2),
+    "NotSupportedError",
+    'compareBoundaryPoints("5", r2) should throw NotSupportedError'
+  );
+}, "Range.compareBoundaryPoints converts how as unsigned short and throws NotSupportedError for invalid values");
+
+test(() => {
+  clear_children(document.body);
+
+  const text = document.createTextNode("abc");
+  document.body.appendChild(text);
+
+  const range = document.createRange();
+  // WebIDL unsigned long conversion: -1 wraps to 2^32-1 and then fails boundary point validation.
+  assert_throws_dom_exception_name(
+    () => range.setStart(text, -1),
+    "IndexSizeError",
+    "setStart(text, -1) should throw IndexSizeError after unsigned long conversion"
+  );
+}, "Range.setStart converts offset as unsigned long (ToUint32) and wraps negatives");

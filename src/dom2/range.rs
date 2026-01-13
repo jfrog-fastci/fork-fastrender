@@ -151,7 +151,7 @@ impl Document {
     node.parent
   }
 
-  fn node_length(&self, node: NodeId) -> DomResult<usize> {
+  pub(crate) fn node_length(&self, node: NodeId) -> DomResult<usize> {
     let node = self.node_checked(node)?;
     Ok(match &node.kind {
       NodeKind::Document { .. }
@@ -163,6 +163,22 @@ impl Document {
       NodeKind::ProcessingInstruction { data, .. } => data.encode_utf16().count(),
       NodeKind::Doctype { .. } => 0,
     })
+  }
+
+  /// Compare two boundary points within the same tree root (DOM Range ordering).
+  ///
+  /// Returns `Ordering::Less` when `a` is before `b`, `Ordering::Equal` when equal, and
+  /// `Ordering::Greater` when after.
+  ///
+  /// Callers are responsible for checking the two boundary points share the same
+  /// [`tree_root_for_range`]; this mirrors the DOM Standard's requirements and keeps the internal
+  /// comparison helper infallible.
+  pub(crate) fn compare_boundary_points(&self, a: BoundaryPoint, b: BoundaryPoint) -> Ordering {
+    match self.boundary_point_position(a, b) {
+      BoundaryPointPosition::Before => Ordering::Less,
+      BoundaryPointPosition::Equal => Ordering::Equal,
+      BoundaryPointPosition::After => Ordering::Greater,
+    }
   }
 
   fn node_index(&self, node: NodeId) -> Option<usize> {
