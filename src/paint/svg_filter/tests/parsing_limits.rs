@@ -8,7 +8,7 @@ fn convolve_matrix_massive_order_is_rejected_without_panic() {
       <defs>
         <filter id="f">
           <feFlood flood-color="red" />
-          <feConvolveMatrix order="1000000000" kernelMatrix="1" />
+          <feConvolveMatrix order="10000000000 10000000000" kernelMatrix="1" />
         </filter>
       </defs>
     </svg>

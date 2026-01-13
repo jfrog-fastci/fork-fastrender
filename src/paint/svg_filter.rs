@@ -49,6 +49,8 @@ const MAX_CONVOLVE_MATRIX_ORDER: usize = 64;
 const MAX_CONVOLVE_MATRIX_TAPS: usize = 4096;
 // Guard against unbounded allocations / CPU in feComponentTransfer parsing.
 const MAX_COMPONENT_TRANSFER_TABLE_VALUES: usize = 1024;
+// Allow some slack for invalid tokens while still bounding CPU spent splitting/parsing.
+const MAX_COMPONENT_TRANSFER_TABLE_TOKENS: usize = MAX_COMPONENT_TRANSFER_TABLE_VALUES * 4;
 const FILTER_DEADLINE_STRIDE: usize = 256;
 const MAX_SVG_FILTER_DEPTH: usize = 128;
 
@@ -2676,6 +2678,7 @@ fn parse_transfer_fn(node: &roxmltree::Node) -> Option<TransferFn> {
       .unwrap_or("")
       .split(|c: char| c.is_ascii_whitespace() || c == ',')
       .filter(|s| !s.is_empty())
+      .take(MAX_COMPONENT_TRANSFER_TABLE_TOKENS)
       .filter_map(|v| v.parse::<f32>().ok())
       .take(MAX_COMPONENT_TRANSFER_TABLE_VALUES)
       .collect::<Vec<f32>>()
@@ -2924,20 +2927,16 @@ fn parse_fe_convolve_matrix(node: &roxmltree::Node) -> Option<FilterPrimitive> {
 
   // `kernelMatrix` must contain exactly `order_x * order_y` values. Parse at most one more than
   // expected so hostile markup cannot force an unbounded allocation for mismatched lists.
+  let max_kernel_tokens = total_taps.saturating_mul(4).saturating_add(1);
   let kernel = node
     .attribute("kernelMatrix")
     .unwrap_or("")
     .split(|c: char| {
       matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ') || c == ','
     })
-    .filter_map(|v| {
-      let trimmed = trim_ascii_whitespace(v);
-      if trimmed.is_empty() {
-        None
-      } else {
-        trimmed.parse::<f32>().ok()
-      }
-    })
+    .filter(|v| !trim_ascii_whitespace(v).is_empty())
+    .take(max_kernel_tokens)
+    .filter_map(|v| trim_ascii_whitespace(v).parse::<f32>().ok())
     .take(total_taps + 1)
     .collect::<Vec<f32>>();
   if kernel.len() != total_taps {
