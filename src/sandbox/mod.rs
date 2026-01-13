@@ -46,11 +46,12 @@ mod linux_prelude;
 #[cfg(target_os = "linux")]
 pub mod linux_landlock;
 
+pub mod linux_namespaces;
+
 // macOS Seatbelt sandbox support lives in `macos.rs`. Keep it behind a cfg so the crate still
 // builds on non-macOS targets without linking against `libsandbox`.
 #[cfg(target_os = "macos")]
 pub mod macos;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxStatus {
   Disabled,
@@ -104,12 +105,14 @@ impl Default for NetworkPolicy {
 #[derive(Debug, Clone, Copy)]
 pub struct RendererSandboxConfig {
   pub network_policy: NetworkPolicy,
+  pub linux_namespaces: linux_namespaces::LinuxNamespacesConfig,
 }
 
 impl Default for RendererSandboxConfig {
   fn default() -> Self {
     Self {
       network_policy: NetworkPolicy::DenyAllSockets,
+      linux_namespaces: linux_namespaces::LinuxNamespacesConfig::default(),
     }
   }
 }
@@ -317,6 +320,10 @@ pub fn apply_renderer_sandbox(
 ) -> Result<SandboxStatus, SandboxError> {
   #[cfg(target_os = "linux")]
   {
+    // Best-effort defense-in-depth: isolate networking via a new network namespace when permitted.
+    // This must run before seccomp, since the seccomp filter may block `unshare(2)`.
+    let _ = linux_namespaces::apply_namespaces(config.linux_namespaces);
+
     // Apply Landlock as defense-in-depth. This doesn't affect already-open FDs (pipes, sockets,
     // memfd, etc.) because Landlock mediates path-based filesystem operations.
     match linux_landlock::apply(&linux_landlock::LandlockConfig::default()) {
@@ -358,7 +365,6 @@ mod linux_seccomp;
 pub mod macos_spawn;
 #[cfg(target_os = "windows")]
 pub mod windows;
-
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
   use super::*;
@@ -456,6 +462,7 @@ mod tests {
     if is_child {
       match linux_seccomp::apply_renderer_sandbox_linux(RendererSandboxConfig {
         network_policy: NetworkPolicy::AllowUnixSocketsOnly,
+        ..Default::default()
       }) {
         Ok(SandboxStatus::Applied) => {}
         Ok(SandboxStatus::Disabled | SandboxStatus::Unsupported) => return,
