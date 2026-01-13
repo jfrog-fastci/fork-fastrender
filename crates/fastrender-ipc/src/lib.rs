@@ -1717,6 +1717,7 @@ impl HoverRouter {
     self.pointer_root = Some((x, y));
 
     let hit = hit_tester.hit_test_with_coords(x, y);
+    let prev_hit_frame = self.hit_frame;
     self.hit_frame = hit.frame_id;
 
     let mut targets = vec![(self.root, x, y)];
@@ -1724,10 +1725,17 @@ impl HoverRouter {
       targets.push((hit.frame_id, hit.x, hit.y));
     }
 
-    let effective = self.effective_hover();
-    let emit = if effective != self.last_effective {
-      self.last_effective = effective.clone();
-      Some(effective)
+    // When the hit-tested frame changes (e.g. moving into/out of an OOPIF), any cached hover state
+    // for the newly hit frame may be stale (from a prior pointer position). Emit a conservative
+    // reset to the default cursor and wait for a fresh `HoverChanged` from the new deepest frame.
+    let emit = if self.hit_frame != prev_hit_frame {
+      let effective = HoverState::default();
+      if effective != self.last_effective {
+        self.last_effective = effective.clone();
+        Some(effective)
+      } else {
+        None
+      }
     } else {
       None
     };
@@ -1757,14 +1765,6 @@ impl HoverRouter {
     } else {
       None
     }
-  }
-
-  fn effective_hover(&self) -> HoverState {
-    self
-      .hover_by_frame
-      .get(&self.hit_frame)
-      .cloned()
-      .unwrap_or_default()
   }
 }
 
@@ -2513,6 +2513,102 @@ mod frame_hit_testing_tests {
     let last_x = MAX_SUBFRAMES_PER_FRAME as f32 + 0.5;
     let last_child = FrameId((MAX_SUBFRAMES_PER_FRAME as u64) + 2);
     assert_eq!(tester.hit_test(last_x, 0.5), last_child);
+  }
+}
+
+#[cfg(test)]
+mod hover_router_tests {
+  use super::*;
+
+  #[test]
+  fn entering_frame_does_not_use_stale_cached_hover_state() {
+    let root = FrameId(1);
+    let child = FrameId(2);
+
+    let mut tester = FrameHitTester::new(root);
+    tester.set_frame_size(root, 100, 100);
+    tester.set_frame_size(child, 10, 10);
+    tester.set_subframes(
+      root,
+      vec![SubframeInfo {
+        child,
+        src: None,
+        transform: AffineTransform::IDENTITY,
+        clip_stack: vec![],
+        z_index: 0,
+        hit_testable: true,
+        referrer_policy: None,
+        sandbox_flags: SandboxFlags::NONE,
+        opaque_origin: false,
+      }],
+    );
+
+    let mut router = HoverRouter::new(root);
+
+    // A stale hover update from a previous time the pointer was inside the child.
+    assert!(
+      router
+        .on_hover_changed(child, None, CursorKind::Text)
+        .is_none(),
+      "child hover should be ignored while root is hit"
+    );
+
+    // Move pointer into the child. The router should *not* immediately emit `Text` cursor from the
+    // stale cache; it should wait for a fresh HoverChanged from the renderer.
+    let (_targets, emit) = router.on_pointer_move(&tester, 1.0, 1.0);
+    assert!(
+      emit.is_none(),
+      "expected entering a frame to not emit a stale cached hover state"
+    );
+
+    // Fresh hover update from child should now be forwarded.
+    let effective = router
+      .on_hover_changed(child, None, CursorKind::Text)
+      .expect("expected hover update for hit frame");
+    assert_eq!(effective.cursor, CursorKind::Text);
+  }
+
+  #[test]
+  fn leaving_frame_resets_to_default_instead_of_stale_parent_hover() {
+    let root = FrameId(1);
+    let child = FrameId(2);
+
+    let mut tester = FrameHitTester::new(root);
+    tester.set_frame_size(root, 100, 100);
+    tester.set_frame_size(child, 10, 10);
+    tester.set_subframes(
+      root,
+      vec![SubframeInfo {
+        child,
+        src: None,
+        transform: AffineTransform::IDENTITY,
+        clip_stack: vec![],
+        z_index: 0,
+        hit_testable: true,
+        referrer_policy: None,
+        sandbox_flags: SandboxFlags::NONE,
+        opaque_origin: false,
+      }],
+    );
+
+    let mut router = HoverRouter::new(root);
+
+    // Root previously hovered a link (stale state while pointer is inside the child).
+    router.on_hover_changed(
+      root,
+      Some("https://root.example/old".to_string()),
+      CursorKind::Pointer,
+    );
+
+    // Enter child and receive a child hover state.
+    let _ = router.on_pointer_move(&tester, 1.0, 1.0);
+    let _ = router.on_hover_changed(child, None, CursorKind::Text);
+
+    // Leaving the child should emit a conservative reset to default, not the stale root link.
+    let (_targets, emit) = router.on_pointer_move(&tester, 50.0, 50.0);
+    let emitted = emit.expect("expected reset emission on frame change");
+    assert_eq!(emitted.cursor, CursorKind::Default);
+    assert_eq!(emitted.hovered_url, None);
   }
 }
 
