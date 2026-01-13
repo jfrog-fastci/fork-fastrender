@@ -3462,6 +3462,38 @@ fn readable_stream_controller_enqueue_native(
         let bytes = data.to_vec();
         enqueue_bytes_into_readable_stream(vm, scope, callee, stream_obj, bytes)?
       }
+      Value::Object(chunk_obj) if scope.heap().is_typed_array_object(chunk_obj) => {
+        let (buffer_obj, byte_offset, byte_len) = scope.heap().typed_array_view_bytes(chunk_obj)?;
+        if byte_len > MAX_READABLE_STREAM_BYTE_CHUNK_BYTES {
+          return Err(VmError::TypeError("ReadableStream chunk too large"));
+        }
+        let data = scope.heap().array_buffer_data(buffer_obj)?;
+        let end = byte_offset.checked_add(byte_len).ok_or(VmError::InvariantViolation(
+          "TypedArray byte offset overflow while enqueuing ReadableStream chunk",
+        ))?;
+        let slice = data.get(byte_offset..end).ok_or(VmError::InvariantViolation(
+          "TypedArray view out of bounds while enqueuing ReadableStream chunk",
+        ))?;
+        let bytes = slice.to_vec();
+        enqueue_bytes_into_readable_stream(vm, scope, callee, stream_obj, bytes)?
+      }
+      Value::Object(chunk_obj) if scope.heap().is_data_view_object(chunk_obj) => {
+        let buffer_obj = scope.heap().data_view_buffer(chunk_obj)?;
+        let byte_offset = scope.heap().data_view_byte_offset(chunk_obj)?;
+        let byte_len = scope.heap().data_view_byte_length(chunk_obj)?;
+        if byte_len > MAX_READABLE_STREAM_BYTE_CHUNK_BYTES {
+          return Err(VmError::TypeError("ReadableStream chunk too large"));
+        }
+        let data = scope.heap().array_buffer_data(buffer_obj)?;
+        let end = byte_offset.checked_add(byte_len).ok_or(VmError::InvariantViolation(
+          "DataView byte offset overflow while enqueuing ReadableStream chunk",
+        ))?;
+        let slice = data.get(byte_offset..end).ok_or(VmError::InvariantViolation(
+          "DataView view out of bounds while enqueuing ReadableStream chunk",
+        ))?;
+        let bytes = slice.to_vec();
+        enqueue_bytes_into_readable_stream(vm, scope, callee, stream_obj, bytes)?
+      }
       Value::Object(chunk_obj) if scope.heap().is_array_buffer_object(chunk_obj) => {
         let data = scope.heap().array_buffer_data(chunk_obj)?;
         if data.len() > MAX_READABLE_STREAM_BYTE_CHUNK_BYTES {
@@ -3472,7 +3504,7 @@ fn readable_stream_controller_enqueue_native(
       }
       _ => {
         return Err(VmError::TypeError(
-          "ReadableStreamDefaultController.enqueue expects a Uint8Array or ArrayBuffer",
+          "ReadableStreamDefaultController.enqueue expects a BufferSource",
         ))
       }
     },

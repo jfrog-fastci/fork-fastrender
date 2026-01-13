@@ -117,6 +117,44 @@ const MAX_TEXT_ENCODER_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 /// attacker-controlled byte chunks.
 const MAX_TEXT_DECODER_STREAM_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 
+fn buffer_source_bytes<'a>(
+  heap: &'a Heap,
+  value: Value,
+  type_error_msg: &'static str,
+) -> Result<&'a [u8], VmError> {
+  match value {
+    Value::Undefined => Ok(&[][..]),
+    Value::Object(obj) => {
+      if heap.is_array_buffer_object(obj) {
+        heap.array_buffer_data(obj)
+      } else if heap.is_typed_array_object(obj) {
+        let (buffer_obj, byte_offset, byte_len) = heap.typed_array_view_bytes(obj)?;
+        let data = heap.array_buffer_data(buffer_obj)?;
+        let end = byte_offset.checked_add(byte_len).ok_or(VmError::InvariantViolation(
+          "TypedArray byte offset overflow while decoding BufferSource",
+        ))?;
+        data.get(byte_offset..end).ok_or(VmError::InvariantViolation(
+          "TypedArray view out of bounds while decoding BufferSource",
+        ))
+      } else if heap.is_data_view_object(obj) {
+        let buffer_obj = heap.data_view_buffer(obj)?;
+        let byte_offset = heap.data_view_byte_offset(obj)?;
+        let byte_len = heap.data_view_byte_length(obj)?;
+        let data = heap.array_buffer_data(buffer_obj)?;
+        let end = byte_offset.checked_add(byte_len).ok_or(VmError::InvariantViolation(
+          "DataView byte offset overflow while decoding BufferSource",
+        ))?;
+        data.get(byte_offset..end).ok_or(VmError::InvariantViolation(
+          "DataView view out of bounds while decoding BufferSource",
+        ))
+      } else {
+        Err(VmError::TypeError(type_error_msg))
+      }
+    }
+    _ => Err(VmError::TypeError(type_error_msg)),
+  }
+}
+
 fn data_desc(value: Value) -> PropertyDescriptor {
   PropertyDescriptor {
     enumerable: false,
@@ -1058,25 +1096,11 @@ fn text_decoder_stream_transform(
   };
 
   let heap = scope.heap();
-  let data = match chunk {
-    Value::Undefined => &[][..],
-    Value::Object(input_obj) => {
-      if heap.is_array_buffer_object(input_obj) {
-        heap.array_buffer_data(input_obj)?
-      } else if heap.is_uint8_array_object(input_obj) {
-        heap.uint8_array_data(input_obj)?
-      } else {
-        return Err(VmError::TypeError(
-          "TextDecoderStream expects an ArrayBuffer or Uint8Array",
-        ));
-      }
-    }
-    _ => {
-      return Err(VmError::TypeError(
-        "TextDecoderStream expects an ArrayBuffer or Uint8Array",
-      ))
-    }
-  };
+  let data = buffer_source_bytes(
+    heap,
+    chunk,
+    "TextDecoderStream expects an ArrayBuffer, TypedArray, or DataView",
+  )?;
 
   if data.len() > MAX_TEXT_DECODER_INPUT_BYTES {
     return Err(VmError::TypeError("TextDecoderStream chunk too large"));
@@ -1753,25 +1777,11 @@ fn text_decoder_decode(
   };
 
   let heap = scope.heap();
-  let data = match input {
-    Value::Undefined => &[][..],
-    Value::Object(input_obj) => {
-      if heap.is_array_buffer_object(input_obj) {
-        heap.array_buffer_data(input_obj)?
-      } else if heap.is_uint8_array_object(input_obj) {
-        heap.uint8_array_data(input_obj)?
-      } else {
-        return Err(VmError::TypeError(
-          "TextDecoder.decode expects an ArrayBuffer or Uint8Array",
-        ));
-      }
-    }
-    _ => {
-      return Err(VmError::TypeError(
-        "TextDecoder.decode expects an ArrayBuffer or Uint8Array",
-      ))
-    }
-  };
+  let data = buffer_source_bytes(
+    heap,
+    input,
+    "TextDecoder.decode expects an ArrayBuffer, TypedArray, or DataView",
+  )?;
 
   if data.len() > MAX_TEXT_DECODER_INPUT_BYTES {
     return Err(VmError::TypeError("TextDecoder input too large"));
@@ -2381,10 +2391,10 @@ mod tests {
   }
 
   fn new_runtime_with_streams_and_text_encoding(
-  ) -> Result<(JsRuntime, TextEncodingBindings), VmError> {
+  ) -> Result<(Box<JsRuntime>, TextEncodingBindings), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024));
-    let mut rt = JsRuntime::new(vm, heap)?;
+    let mut rt = Box::new(JsRuntime::new(vm, heap)?);
 
     let bindings = {
       let (vm, realm, heap) = rt.vm_realm_and_heap_mut();
@@ -2571,6 +2581,114 @@ mod tests {
       &[Value::Object(u8_obj)],
     )?;
     assert_eq!(get_string(scope.heap(), decoded), "ok");
+
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn text_decoder_utf8_decodes_data_view_slice() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = vm_js::Heap::new(HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _bindings = install_window_text_encoding_bindings(&mut vm, &realm, &mut heap)?;
+
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    scope.push_root(Value::Object(global))?;
+
+    // new TextDecoder()
+    let decoder_ctor_key = alloc_key(&mut scope, "TextDecoder")?;
+    let decoder_ctor = vm.get(&mut scope, global, decoder_ctor_key)?;
+    let decoder = vm.construct_without_host(&mut scope, decoder_ctor, &[], decoder_ctor)?;
+    let Value::Object(decoder_obj) = decoder else {
+      return Err(VmError::InvariantViolation(
+        "TextDecoder must construct object",
+      ));
+    };
+    scope.push_root(Value::Object(decoder_obj))?;
+
+    // Create a backing buffer containing: "a€bc" (as UTF-8 bytes).
+    // We'll decode only the "€" bytes via a DataView slice.
+    let u8_ctor_key = alloc_key(&mut scope, "Uint8Array")?;
+    let u8_ctor = vm.get(&mut scope, global, u8_ctor_key)?;
+    let Value::Object(u8_ctor_obj) = u8_ctor else {
+      return Err(VmError::InvariantViolation("Uint8Array missing"));
+    };
+    let u8 = vm.construct_without_host(
+      &mut scope,
+      u8_ctor,
+      &[Value::Number(6.0)],
+      Value::Object(u8_ctor_obj),
+    )?;
+    let Value::Object(u8_obj) = u8 else {
+      return Err(VmError::InvariantViolation(
+        "Uint8Array construct must return object",
+      ));
+    };
+    scope.push_root(Value::Object(u8_obj))?;
+
+    let set_index = |vm: &mut Vm, scope: &mut Scope<'_>, arr: vm_js::GcObject, idx: usize, val: u8| {
+      let key_s = scope.alloc_string(&idx.to_string())?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+      scope.ordinary_set(
+        vm,
+        arr,
+        key,
+        Value::Number(val as f64),
+        Value::Object(arr),
+      )?;
+      Ok::<(), VmError>(())
+    };
+
+    // "a€bc" -> [0x61, 0xE2, 0x82, 0xAC, 0x62, 0x63]
+    set_index(&mut vm, &mut scope, u8_obj, 0, 0x61)?;
+    set_index(&mut vm, &mut scope, u8_obj, 1, 0xE2)?;
+    set_index(&mut vm, &mut scope, u8_obj, 2, 0x82)?;
+    set_index(&mut vm, &mut scope, u8_obj, 3, 0xAC)?;
+    set_index(&mut vm, &mut scope, u8_obj, 4, 0x62)?;
+    set_index(&mut vm, &mut scope, u8_obj, 5, 0x63)?;
+
+    let buffer_key = alloc_key(&mut scope, "buffer")?;
+    let buffer_val = vm.get(&mut scope, u8_obj, buffer_key)?;
+    let Value::Object(buffer_obj) = buffer_val else {
+      return Err(VmError::InvariantViolation(
+        "Uint8Array.buffer must return an object",
+      ));
+    };
+    scope.push_root(Value::Object(buffer_obj))?;
+
+    let data_view_ctor_key = alloc_key(&mut scope, "DataView")?;
+    let data_view_ctor = vm.get(&mut scope, global, data_view_ctor_key)?;
+    let Value::Object(data_view_ctor_obj) = data_view_ctor else {
+      return Err(VmError::InvariantViolation("DataView missing"));
+    };
+
+    // new DataView(buffer, 1, 3) -> view over the UTF-8 bytes for "€"
+    let view = vm.construct_without_host(
+      &mut scope,
+      data_view_ctor,
+      &[Value::Object(buffer_obj), Value::Number(1.0), Value::Number(3.0)],
+      Value::Object(data_view_ctor_obj),
+    )?;
+    let Value::Object(view_obj) = view else {
+      return Err(VmError::InvariantViolation(
+        "DataView construct must return object",
+      ));
+    };
+    scope.push_root(Value::Object(view_obj))?;
+
+    let decode_key = alloc_key(&mut scope, "decode")?;
+    let decode_fn = vm.get(&mut scope, decoder_obj, decode_key)?;
+    let decoded = vm.call_without_host(
+      &mut scope,
+      decode_fn,
+      Value::Object(decoder_obj),
+      &[Value::Object(view_obj)],
+    )?;
+    assert_eq!(get_string(scope.heap(), decoded), "€");
 
     drop(scope);
     realm.teardown(&mut heap);
@@ -3401,7 +3519,56 @@ globalThis.__error = null;
     rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
     let err = rt.exec_script("globalThis.__error")?;
-    assert_eq!(err, Value::Null, "expected no error, got {err:?}");
+    if err != Value::Null {
+      let err_msg = rt.exec_script("globalThis.__error && String(globalThis.__error)")?;
+      panic!(
+        "expected no error, got {err:?} ({})",
+        get_string(rt.heap(), err_msg)
+      );
+    }
+    let out = rt.exec_script("globalThis.__result")?;
+    assert_eq!(get_string(rt.heap(), out), "hello");
+    Ok(())
+  }
+
+  #[test]
+  fn text_decoder_stream_decodes_data_view_chunks_via_pipe_through() -> Result<(), VmError> {
+    let (mut rt, _bindings) = new_runtime_with_streams_and_text_encoding()?;
+
+    rt.exec_script(
+      r#"
+globalThis.__result = null;
+globalThis.__error = null;
+(async () => {
+  const src = new ReadableStream({
+    start(controller) {
+      const buf = new Uint8Array([0, 104, 101, 108, 108, 111, 0]).buffer;
+      controller.enqueue(new DataView(buf, 1, 5)); // "hello"
+      controller.close();
+    },
+  });
+  const decoded = src.pipeThrough(new TextDecoderStream());
+  const reader = decoded.getReader();
+  let out = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    out += value;
+  }
+  return out;
+})().then((v) => { globalThis.__result = v; }, (e) => { globalThis.__error = e; });
+"#,
+    )?;
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let err = rt.exec_script("globalThis.__error")?;
+    if err != Value::Null {
+      let err_msg = rt.exec_script("globalThis.__error && String(globalThis.__error)")?;
+      panic!(
+        "expected no error, got {err:?} ({})",
+        get_string(rt.heap(), err_msg)
+      );
+    }
     let out = rt.exec_script("globalThis.__result")?;
     assert_eq!(get_string(rt.heap(), out), "hello");
     Ok(())
