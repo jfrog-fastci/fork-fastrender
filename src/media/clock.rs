@@ -482,7 +482,6 @@ fn scale_nanos(nanos: u64, rate: f64) -> u64 {
   // Round to the nearest nanosecond.
   u64::try_from(scaled.round() as u128).unwrap_or(u64::MAX)
 }
-
 #[cfg(test)]
 mod tests {
   use super::*;

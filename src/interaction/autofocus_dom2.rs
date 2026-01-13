@@ -39,7 +39,7 @@ fn node_has_attr(doc: &Document, node: &crate::dom2::Node, name: &str) -> bool {
   };
   attrs
     .iter()
-    .any(|(k, _)| if is_html { k.eq_ignore_ascii_case(name) } else { k == name })
+    .any(|attr| attr.qualified_name_matches(name, is_html))
 }
 
 fn node_get_attr<'a>(doc: &Document, node: &'a crate::dom2::Node, name: &str) -> Option<&'a str> {
@@ -53,8 +53,8 @@ fn node_get_attr<'a>(doc: &Document, node: &'a crate::dom2::Node, name: &str) ->
   };
   attrs
     .iter()
-    .find(|(k, _)| if is_html { k.eq_ignore_ascii_case(name) } else { k == name })
-    .map(|(_, v)| v.as_str())
+    .find(|attr| attr.qualified_name_matches(name, is_html))
+    .map(|attr| attr.value.as_str())
 }
 
 fn parse_tabindex(doc: &Document, node: &crate::dom2::Node) -> Option<i32> {
