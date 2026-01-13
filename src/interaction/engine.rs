@@ -22,6 +22,7 @@ use crate::interaction::selection_serialize::{
   serialize_document_selection, DocumentSelection, DocumentSelectionPoint, DocumentSelectionRange,
 };
 use rustc_hash::FxHashSet;
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -2162,6 +2163,117 @@ fn content_type_for_path(path: &std::path::Path) -> String {
     _ => "application/octet-stream",
   };
   mime.to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FileAcceptToken {
+  Extension(String),
+  MimeExact(String),
+  MimeWildcard(String),
+}
+
+fn parse_file_accept_tokens(accept: &str) -> Vec<FileAcceptToken> {
+  accept
+    .split(',')
+    .filter_map(|raw| {
+      let token = trim_ascii_whitespace(raw);
+      if token.is_empty() {
+        return None;
+      }
+
+      if let Some(ext) = token.strip_prefix('.') {
+        let ext = trim_ascii_whitespace(ext);
+        if ext.is_empty() {
+          return None;
+        }
+        return Some(FileAcceptToken::Extension(ext.to_ascii_lowercase()));
+      }
+
+      let (ty, sub) = token.split_once('/')?;
+      let ty = trim_ascii_whitespace(ty);
+      let sub = trim_ascii_whitespace(sub);
+      if ty.is_empty() || sub.is_empty() {
+        return None;
+      }
+      let ty = ty.to_ascii_lowercase();
+      let sub = sub.to_ascii_lowercase();
+      if sub == "*" {
+        Some(FileAcceptToken::MimeWildcard(ty))
+      } else {
+        Some(FileAcceptToken::MimeExact(format!("{ty}/{sub}")))
+      }
+    })
+    .collect()
+}
+
+fn file_path_matches_accept(path: &std::path::Path, tokens: &[FileAcceptToken]) -> bool {
+  if tokens.is_empty() {
+    return true;
+  }
+
+  let mut ext: Option<String> = None;
+  let mut mime: Option<String> = None;
+
+  for token in tokens {
+    match token {
+      FileAcceptToken::Extension(want_ext) => {
+        if ext.is_none() {
+          ext = path
+            .extension()
+            .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
+            .filter(|ext| !ext.is_empty());
+        }
+        if ext.as_deref() == Some(want_ext.as_str()) {
+          return true;
+        }
+      }
+      FileAcceptToken::MimeExact(want) => {
+        if mime.is_none() {
+          mime = Some(content_type_for_path(path));
+        }
+        if mime.as_deref() == Some(want.as_str()) {
+          return true;
+        }
+      }
+      FileAcceptToken::MimeWildcard(major) => {
+        if mime.is_none() {
+          mime = Some(content_type_for_path(path));
+        }
+        let Some(mime) = mime.as_deref() else {
+          continue;
+        };
+        if mime
+          .split_once('/')
+          .is_some_and(|(got_major, _)| got_major.eq_ignore_ascii_case(major))
+        {
+          return true;
+        }
+      }
+    }
+  }
+
+  false
+}
+
+fn filter_paths_by_file_accept<'a>(
+  paths: &'a [PathBuf],
+  accept: Option<&str>,
+) -> Cow<'a, [PathBuf]> {
+  let accept = accept.map(trim_ascii_whitespace).filter(|v| !v.is_empty());
+  let Some(accept) = accept else {
+    return Cow::Borrowed(paths);
+  };
+  let tokens = parse_file_accept_tokens(accept);
+  if tokens.is_empty() {
+    return Cow::Borrowed(paths);
+  }
+
+  let filtered: Vec<PathBuf> = paths
+    .iter()
+    .filter(|path| file_path_matches_accept(path, &tokens))
+    .cloned()
+    .collect();
+  Cow::Owned(filtered)
 }
 
 fn build_file_selections_from_paths(paths: &[PathBuf], multiple: bool) -> Vec<FileSelection> {
@@ -7755,7 +7867,11 @@ impl InteractionEngine {
       .node(target_id)
       .is_some_and(|node| node.get_attribute_ref("multiple").is_some());
 
-    let selected = build_file_selections_from_paths(paths, multiple);
+    let accept = index
+      .node(target_id)
+      .and_then(|node| node.get_attribute_ref("accept"));
+    let filtered_paths = filter_paths_by_file_accept(paths, accept);
+    let selected = build_file_selections_from_paths(filtered_paths.as_ref(), multiple);
     let selection_unchanged = match self.state.form_state.file_inputs.get(&target_id) {
       Some(prev) => prev.as_slice() == selected.as_slice(),
       None => selected.is_empty(),
@@ -7823,7 +7939,11 @@ impl InteractionEngine {
     let multiple = index
       .node(input_node_id)
       .is_some_and(|node| node.get_attribute_ref("multiple").is_some());
-    let selected = build_file_selections_from_paths(paths, multiple);
+    let accept = index
+      .node(input_node_id)
+      .and_then(|node| node.get_attribute_ref("accept"));
+    let filtered_paths = filter_paths_by_file_accept(paths, accept);
+    let selected = build_file_selections_from_paths(filtered_paths.as_ref(), multiple);
     let selection_unchanged = match self.state.form_state.file_inputs.get(&input_node_id) {
       Some(prev) => prev.as_slice() == selected.as_slice(),
       None => selected.is_empty(),
