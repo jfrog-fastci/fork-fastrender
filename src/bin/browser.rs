@@ -1338,9 +1338,9 @@ mod protocol_payload_sanitization_tests {
 }
 
 #[cfg(feature = "browser_ui")]
-use arboard::Clipboard;
-#[cfg(feature = "browser_ui")]
 use clap::Parser;
+#[cfg(feature = "browser_ui")]
+use fastrender::ui::os_clipboard;
 
 #[cfg(feature = "browser_ui")]
 #[derive(Debug, Clone)]
@@ -4786,9 +4786,6 @@ struct App {
   resize_burst_active: bool,
   resize_dpr_scale: f32,
   modifiers: winit::event::ModifiersState,
-  /// Clipboard text received from the worker that should be forwarded to the OS clipboard on the
-  /// next egui frame.
-  pending_clipboard_text: Option<String>,
   /// Whether the current frame should ignore `egui::Event::Paste` events.
   ///
   /// We handle Ctrl/Cmd+V ourselves (reading the OS clipboard and sending `UiToWorker::Paste`) when
@@ -5405,7 +5402,6 @@ impl App {
       resize_burst_active: false,
       resize_dpr_scale: resize_dpr_scale_from_env(),
       modifiers: winit::event::ModifiersState::default(),
-      pending_clipboard_text: None,
       suppress_paste_events: false,
       window_focused: true,
       window_occluded: false,
@@ -6857,13 +6853,15 @@ impl App {
     }
 
     if let fastrender::ui::WorkerToUi::SetClipboardText { text, .. } = &msg {
-      // Defer OS clipboard writes to the next egui frame so we can use egui-winit's platform output
+      // Clamp worker-provided clipboard text to a reasonable size, then write to the OS clipboard
+      // immediately (best-effort). Writing directly keeps clipboard support working for non-egui
+      // frontends (e.g. compositor backends) that do not have egui-winit's `PlatformOutput`
       // plumbing.
-      self.pending_clipboard_text = Some(fastrender::ui::untrusted::clamp_untrusted_utf8(
+      let text = fastrender::ui::untrusted::clamp_untrusted_utf8(
         text,
         fastrender::ui::protocol_limits::MAX_CLIPBOARD_TEXT_BYTES,
-      ));
-      request_redraw = true;
+      );
+      os_clipboard::write_text(&text);
     }
 
     let update = self.browser_state.apply_worker_msg(msg);
@@ -8655,10 +8653,8 @@ impl App {
         self.send_worker_msg(UiToWorker::Cut { tab_id });
       }
       PageContextMenuAction::Paste => {
-        if let Ok(mut clipboard) = Clipboard::new() {
-          if let Ok(text) = clipboard.get_text() {
-            self.send_worker_msg(UiToWorker::Paste { tab_id, text });
-          }
+        if let Some(text) = os_clipboard::read_text() {
+          self.send_worker_msg(UiToWorker::Paste { tab_id, text });
         }
       }
       PageContextMenuAction::SelectAll => {
@@ -10962,13 +10958,11 @@ impl App {
                     self.send_worker_msg(fastrender::ui::UiToWorker::SelectAll { tab_id })
                   }
                   ShortcutAction::Paste => {
-                    if let Ok(mut clipboard) = Clipboard::new() {
-                      if let Ok(text) = clipboard.get_text() {
-                        // egui-winit can also emit `egui::Event::Paste` from Ctrl/Cmd+V. Suppress
-                        // it for this frame to avoid double pastes.
-                        self.suppress_paste_events = true;
-                        self.send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
-                      }
+                    if let Some(text) = os_clipboard::read_text() {
+                      // egui-winit can also emit `egui::Event::Paste` from Ctrl/Cmd+V. Suppress it
+                      // for this frame to avoid double pastes.
+                      self.suppress_paste_events = true;
+                      self.send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
                     }
                   }
                   _ => {}
@@ -12416,10 +12410,8 @@ impl App {
                     ctx.input_mut(|i| i.events.push(egui::Event::Cut));
                   }
                   fastrender::ui::MenuCommand::Paste => {
-                    if let Ok(mut clipboard) = Clipboard::new() {
-                      if let Ok(text) = clipboard.get_text() {
-                        ctx.input_mut(|i| i.events.push(egui::Event::Paste(text)));
-                      }
+                    if let Some(text) = os_clipboard::read_text() {
+                      ctx.input_mut(|i| i.events.push(egui::Event::Paste(text)));
                     }
                   }
                   fastrender::ui::MenuCommand::Undo => {
@@ -12445,10 +12437,8 @@ impl App {
                     self.send_worker_msg(fastrender::ui::UiToWorker::Cut { tab_id });
                   }
                   fastrender::ui::MenuCommand::Paste => {
-                    if let Ok(mut clipboard) = Clipboard::new() {
-                      if let Ok(text) = clipboard.get_text() {
-                        self.send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
-                      }
+                    if let Some(text) = os_clipboard::read_text() {
+                      self.send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
                     }
                   }
                   fastrender::ui::MenuCommand::SelectAll => {
@@ -13295,9 +13285,6 @@ impl App {
       self.egui_ctx.end_frame()
     };
     let repaint_after = full_output.repaint_after;
-    if let Some(text) = self.pending_clipboard_text.take() {
-      full_output.platform_output.copied_text = text;
-    }
     self.egui_state.handle_platform_output(
       &self.window,
       &self.egui_ctx,

@@ -61,6 +61,11 @@ mod tab_accessible_label;
 
 pub mod a11y_labels;
 
+// OS clipboard access (arboard). Kept behind `browser_ui` so core renderer builds don't pull in
+// windowing/clipboard system dependencies.
+#[cfg(feature = "browser_ui")]
+pub mod os_clipboard;
+
 // egui widget accessibility helpers (AccessKit).
 #[cfg(feature = "browser_ui")]
 pub mod a11y;
