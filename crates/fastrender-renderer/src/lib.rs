@@ -26,6 +26,17 @@ impl FrameState {
     }
   }
 
+  fn url_hash(url: &str) -> u32 {
+    // Deterministic 32-bit FNV-1a. We only need a stable mixing function to make navigations
+    // observable in unit tests without pulling in extra hashing dependencies.
+    let mut hash: u32 = 0x811c9dc5;
+    for &b in url.as_bytes() {
+      hash ^= u32::from(b);
+      hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
+  }
+
   pub fn render_placeholder(&self, frame_id: FrameId) -> Result<FrameBuffer, String> {
     let (width, height) = self.viewport_css;
     let len = (width as usize)
@@ -41,9 +52,10 @@ impl FrameState {
 
     // Deterministic per-frame fill color to help catch cross-talk in tests/debugging.
     let id = frame_id.0;
-    let r = (id & 0xFF) as u8;
-    let g = ((id >> 8) & 0xFF) as u8;
-    let b = ((id >> 16) & 0xFF) as u8;
+    let url_hash = self.url.as_deref().map(Self::url_hash).unwrap_or(0);
+    let r = (id as u8) ^ (url_hash as u8);
+    let g = ((id >> 8) as u8) ^ ((url_hash >> 8) as u8);
+    let b = ((id >> 16) as u8) ^ ((url_hash >> 16) as u8);
     let a = 0xFF;
 
     let mut rgba8 = vec![0u8; len];
@@ -237,5 +249,107 @@ mod tests {
     to_renderer_tx.send(BrowserToRenderer::Shutdown).unwrap();
     join.join().unwrap();
   }
-}
 
+  #[test]
+  fn navigate_affects_only_target_frame() {
+    let (to_renderer_tx, to_renderer_rx) = mpsc::channel();
+    let (to_browser_tx, to_browser_rx) = mpsc::channel();
+
+    let join = std::thread::spawn(move || {
+      let transport = ChannelTransport {
+        rx: to_renderer_rx,
+        tx: to_browser_tx,
+      };
+      RendererMainLoop::new(transport).run().unwrap();
+    });
+
+    let frame = FrameId(42);
+    to_renderer_tx
+      .send(BrowserToRenderer::CreateFrame { frame_id: frame })
+      .unwrap();
+    // Keep the payload tiny so we can compare buffers cheaply.
+    to_renderer_tx
+      .send(BrowserToRenderer::Resize {
+        frame_id: frame,
+        width: 1,
+        height: 1,
+        dpr: 1.0,
+      })
+      .unwrap();
+
+    to_renderer_tx
+      .send(BrowserToRenderer::RequestRepaint { frame_id: frame })
+      .unwrap();
+    let first = match to_browser_rx.recv_timeout(Duration::from_secs(1)).unwrap() {
+      RendererToBrowser::FrameReady { frame_id, buffer } => {
+        assert_eq!(frame_id, frame);
+        buffer
+      }
+      other => panic!("unexpected message: {other:?}"),
+    };
+
+    to_renderer_tx
+      .send(BrowserToRenderer::Navigate {
+        frame_id: frame,
+        url: "https://example.test/".to_string(),
+      })
+      .unwrap();
+    to_renderer_tx
+      .send(BrowserToRenderer::RequestRepaint { frame_id: frame })
+      .unwrap();
+    let second = match to_browser_rx.recv_timeout(Duration::from_secs(1)).unwrap() {
+      RendererToBrowser::FrameReady { frame_id, buffer } => {
+        assert_eq!(frame_id, frame);
+        buffer
+      }
+      other => panic!("unexpected message: {other:?}"),
+    };
+
+    assert_ne!(
+      first.rgba8, second.rgba8,
+      "expected Navigate to affect per-frame render output"
+    );
+
+    to_renderer_tx.send(BrowserToRenderer::Shutdown).unwrap();
+    join.join().unwrap();
+  }
+
+  #[test]
+  fn destroyed_frame_does_not_render() {
+    let (to_renderer_tx, to_renderer_rx) = mpsc::channel();
+    let (to_browser_tx, to_browser_rx) = mpsc::channel();
+
+    let join = std::thread::spawn(move || {
+      let transport = ChannelTransport {
+        rx: to_renderer_rx,
+        tx: to_browser_tx,
+      };
+      RendererMainLoop::new(transport).run().unwrap();
+    });
+
+    let frame = FrameId(7);
+    to_renderer_tx
+      .send(BrowserToRenderer::CreateFrame { frame_id: frame })
+      .unwrap();
+    to_renderer_tx
+      .send(BrowserToRenderer::DestroyFrame { frame_id: frame })
+      .unwrap();
+    to_renderer_tx
+      .send(BrowserToRenderer::RequestRepaint { frame_id: frame })
+      .unwrap();
+
+    let msg = to_browser_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    match msg {
+      RendererToBrowser::Error {
+        frame_id: Some(got),
+        message: _,
+      } => {
+        assert_eq!(got, frame);
+      }
+      other => panic!("expected Error for destroyed frame, got {other:?}"),
+    }
+
+    to_renderer_tx.send(BrowserToRenderer::Shutdown).unwrap();
+    join.join().unwrap();
+  }
+}
