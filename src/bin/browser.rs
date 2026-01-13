@@ -1294,6 +1294,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               &msg,
               fastrender::ui::WorkerToUi::NavigationCommitted { .. }
                 | fastrender::ui::WorkerToUi::RequestOpenInNewTab { .. }
+                | fastrender::ui::WorkerToUi::RequestOpenInNewTabRequest { .. }
             );
 
             let result = win.app.handle_worker_message(msg);
@@ -3225,6 +3226,7 @@ impl App {
       | UiToWorker::CloseTab { tab_id }
       | UiToWorker::SetActiveTab { tab_id }
       | UiToWorker::Navigate { tab_id, .. }
+      | UiToWorker::NavigateRequest { tab_id, .. }
       | UiToWorker::GoBack { tab_id }
       | UiToWorker::GoForward { tab_id }
       | UiToWorker::Reload { tab_id }
@@ -3265,6 +3267,7 @@ impl App {
         match &msg {
           // Navigations should cancel any in-flight navigation + paint work.
           UiToWorker::Navigate { .. }
+          | UiToWorker::NavigateRequest { .. }
           | UiToWorker::GoBack { .. }
           | UiToWorker::GoForward { .. }
           | UiToWorker::Reload { .. }
@@ -3744,15 +3747,82 @@ impl App {
     true
   }
 
+  /// Open a navigation request in a new tab and focus the page.
+  ///
+  /// This is used for form submissions with `target=_blank` that carry an explicit request (notably
+  /// POST submissions).
+  fn open_request_in_new_tab(&mut self, request: fastrender::interaction::FormSubmission) -> bool {
+    use fastrender::ui::cancel::CancelGens;
+    use fastrender::ui::messages::{NavigationReason, RepaintReason, UiToWorker};
+    use fastrender::ui::{BrowserTabState, PointerButton, TabId};
+
+    // Close any transient UI state before switching tabs.
+    if self.open_select_dropdown.is_some() {
+      self.cancel_select_dropdown();
+    }
+    if self.open_date_time_picker.is_some() {
+      self.cancel_date_time_picker();
+    }
+    if self.pointer_captured {
+      self.cancel_pointer_capture();
+    }
+
+    let url = request.url.clone();
+    let new_tab_id = TabId::new();
+    let mut tab_state = BrowserTabState::new(new_tab_id, url.clone());
+    tab_state.loading = true;
+    let cancel: CancelGens = tab_state.cancel.clone();
+    self.tab_cancel.insert(new_tab_id, cancel.clone());
+    self.browser_state.push_tab(tab_state, true);
+
+    // Reset per-tab cached state; mimic `ChromeAction::NewTab`/`ActivateTab` behaviour.
+    self.page_has_focus = true;
+    self.viewport_cache_tab = None;
+    self.pointer_captured = false;
+    self.captured_button = PointerButton::None;
+    self.cursor_in_page = false;
+    self.hover_sync_pending = true;
+    self.pending_pointer_move = None;
+
+    self.send_worker_msg(UiToWorker::CreateTab {
+      tab_id: new_tab_id,
+      initial_url: None,
+      cancel,
+    });
+    self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_tab_id });
+    self.send_worker_msg(UiToWorker::NavigateRequest {
+      tab_id: new_tab_id,
+      request,
+      reason: NavigationReason::LinkClick,
+    });
+    self.send_worker_msg(UiToWorker::RequestRepaint {
+      tab_id: new_tab_id,
+      reason: RepaintReason::Explicit,
+    });
+    self.window.request_redraw();
+
+    true
+  }
+
   fn handle_worker_message(&mut self, msg: fastrender::ui::WorkerToUi) -> WorkerMessageResult {
     // Worker-initiated tab creation/navigation.
-    if let fastrender::ui::WorkerToUi::RequestOpenInNewTab { tab_id: _, url } = msg {
-      self.open_url_in_new_tab(url);
-      return WorkerMessageResult {
-        request_redraw: true,
-        history_changed: false,
-      };
-    }
+    let msg = match msg {
+      fastrender::ui::WorkerToUi::RequestOpenInNewTab { tab_id: _, url } => {
+        self.open_url_in_new_tab(url);
+        return WorkerMessageResult {
+          request_redraw: true,
+          history_changed: false,
+        };
+      }
+      fastrender::ui::WorkerToUi::RequestOpenInNewTabRequest { tab_id: _, request } => {
+        self.open_request_in_new_tab(request);
+        return WorkerMessageResult {
+          request_redraw: true,
+          history_changed: false,
+        };
+      }
+      msg => msg,
+    };
 
     // UI-only side effects that depend on the raw message before the shared reducer consumes it.
     match &msg {
@@ -4288,7 +4358,7 @@ impl App {
               let icon_resp = fastrender::ui::icon_tinted(ui, icon, icon_side, accent_color);
               let icon_a11y_label = format!("Warning: {title_text}");
               icon_resp.widget_info({
-                let label = icon_a11y_label.clone();
+                let label = icon_a11y_label;
                 move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
               });
 

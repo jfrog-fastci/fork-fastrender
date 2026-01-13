@@ -76,6 +76,7 @@ fn is_tab_effect_message(msg: &WorkerToUi, tab_id: TabId) -> bool {
     | WorkerToUi::Warning { tab_id: msg_tab, .. }
     | WorkerToUi::ContextMenu { tab_id: msg_tab, .. }
     | WorkerToUi::RequestOpenInNewTab { tab_id: msg_tab, .. }
+    | WorkerToUi::RequestOpenInNewTabRequest { tab_id: msg_tab, .. }
     | WorkerToUi::HoverChanged { tab_id: msg_tab, .. }
     | WorkerToUi::FindResult { tab_id: msg_tab, .. }
     | WorkerToUi::SetClipboardText { tab_id: msg_tab, .. }

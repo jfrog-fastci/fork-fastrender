@@ -74,6 +74,10 @@ pub enum InteractionAction {
   NavigateRequest {
     request: FormSubmission,
   },
+  /// Request that the submission be opened in a new tab (used for form `target=_blank` with POST).
+  OpenInNewTabRequest {
+    request: FormSubmission,
+  },
   FocusChanged {
     node_id: Option<usize>,
   },
@@ -3731,6 +3735,26 @@ fn find_ancestor_select(index: &DomIndexMut, mut node_id: usize) -> Option<usize
   None
 }
 
+fn submission_target_is_blank(
+  index: &DomIndexMut,
+  submitter_id: Option<usize>,
+  form_id: usize,
+) -> bool {
+  if let Some(submitter_id) = submitter_id {
+    if let Some(submitter) = index.node(submitter_id) {
+      // `formtarget` on the submitter overrides the form's `target` (even when empty/invalid).
+      if let Some(target) = submitter.get_attribute_ref("formtarget") {
+        return trim_ascii_whitespace(target).eq_ignore_ascii_case("_blank");
+      }
+    }
+  }
+
+  index
+    .node(form_id)
+    .and_then(|form| form.get_attribute_ref("target"))
+    .is_some_and(|target| trim_ascii_whitespace(target).eq_ignore_ascii_case("_blank"))
+}
+
 // `SelectControl` uses Strings/Vecs and does not contain floats, so its derived `PartialEq` is a
 // full equivalence relation. Mark it as `Eq` so interaction actions can remain `Eq` as well.
 impl Eq for SelectControl {}
@@ -5766,16 +5790,22 @@ impl InteractionEngine {
                   form_submission(dom, target_id, image_coords, document_url, base_url)
                 {
                   self.last_form_submitter = Some(target_id);
+                  let target_blank = resolve_form_owner(&index, target_id)
+                    .is_some_and(|form_id| submission_target_is_blank(&index, Some(target_id), form_id));
                   match submission.method {
                     FormSubmissionMethod::Get => {
-                      action = InteractionAction::Navigate {
-                        href: submission.url,
-                      };
+                      if target_blank {
+                        action = InteractionAction::OpenInNewTab { href: submission.url };
+                      } else {
+                        action = InteractionAction::Navigate { href: submission.url };
+                      }
                     }
                     FormSubmissionMethod::Post => {
-                      action = InteractionAction::NavigateRequest {
-                        request: submission,
-                      };
+                      if target_blank {
+                        action = InteractionAction::OpenInNewTabRequest { request: submission };
+                      } else {
+                        action = InteractionAction::NavigateRequest { request: submission };
+                      }
                     }
                   }
                 }
@@ -7446,16 +7476,22 @@ impl InteractionEngine {
               .then_some((0, 0));
             if let Some(submission) = form_submission(dom, focused, image_coords, document_url, base_url) {
               self.last_form_submitter = Some(focused);
+              let target_blank = resolve_form_owner(&index, focused)
+                .is_some_and(|form_id| submission_target_is_blank(&index, Some(focused), form_id));
               match submission.method {
                 FormSubmissionMethod::Get => {
-                  action = InteractionAction::Navigate {
-                    href: submission.url,
-                  };
+                  if target_blank {
+                    action = InteractionAction::OpenInNewTab { href: submission.url };
+                  } else {
+                    action = InteractionAction::Navigate { href: submission.url };
+                  }
                 }
                 FormSubmissionMethod::Post => {
-                  action = InteractionAction::NavigateRequest {
-                    request: submission,
-                  };
+                  if target_blank {
+                    action = InteractionAction::OpenInNewTabRequest { request: submission };
+                  } else {
+                    action = InteractionAction::NavigateRequest { request: submission };
+                  }
                 }
               }
             }
@@ -7469,6 +7505,7 @@ impl InteractionEngine {
             changed |= self.mark_form_user_validity(&index, focused);
             if let Some(form_id) = resolve_form_owner(&index, focused) {
               let submitter_id = find_default_form_submitter(&index, form_id);
+              let target_blank = submission_target_is_blank(&index, submitter_id, form_id);
               let submission = match submitter_id {
                 Some(submitter_id) => {
                   let image_coords = index
@@ -7485,14 +7522,18 @@ impl InteractionEngine {
                 }
                 match submission.method {
                   FormSubmissionMethod::Get => {
-                    action = InteractionAction::Navigate {
-                      href: submission.url,
-                    };
+                    if target_blank {
+                      action = InteractionAction::OpenInNewTab { href: submission.url };
+                    } else {
+                      action = InteractionAction::Navigate { href: submission.url };
+                    }
                   }
                   FormSubmissionMethod::Post => {
-                    action = InteractionAction::NavigateRequest {
-                      request: submission,
-                    };
+                    if target_blank {
+                      action = InteractionAction::OpenInNewTabRequest { request: submission };
+                    } else {
+                      action = InteractionAction::NavigateRequest { request: submission };
+                    }
                   }
                 }
               }
@@ -7576,16 +7617,22 @@ impl InteractionEngine {
               .then_some((0, 0));
             if let Some(submission) = form_submission(dom, focused, image_coords, document_url, base_url) {
               self.last_form_submitter = Some(focused);
+              let target_blank = resolve_form_owner(&index, focused)
+                .is_some_and(|form_id| submission_target_is_blank(&index, Some(focused), form_id));
               match submission.method {
                 FormSubmissionMethod::Get => {
-                  action = InteractionAction::Navigate {
-                    href: submission.url,
-                  };
+                  if target_blank {
+                    action = InteractionAction::OpenInNewTab { href: submission.url };
+                  } else {
+                    action = InteractionAction::Navigate { href: submission.url };
+                  }
                 }
                 FormSubmissionMethod::Post => {
-                  action = InteractionAction::NavigateRequest {
-                    request: submission,
-                  };
+                  if target_blank {
+                    action = InteractionAction::OpenInNewTabRequest { request: submission };
+                  } else {
+                    action = InteractionAction::NavigateRequest { request: submission };
+                  }
                 }
               }
             }
@@ -7601,6 +7648,7 @@ impl InteractionEngine {
       action,
       InteractionAction::Navigate { .. }
         | InteractionAction::OpenInNewTab { .. }
+        | InteractionAction::OpenInNewTabRequest { .. }
         | InteractionAction::Download { .. }
         | InteractionAction::NavigateRequest { .. }
     ) && self.state.focused != prev_focus
@@ -7784,14 +7832,22 @@ impl InteractionEngine {
               .then_some((0, 0));
             if let Some(submission) = form_submission(dom, focused, image_coords, document_url, base_url) {
               self.last_form_submitter = Some(focused);
+              let target_blank = resolve_form_owner(&index, focused)
+                .is_some_and(|form_id| submission_target_is_blank(&index, Some(focused), form_id));
               match submission.method {
                 FormSubmissionMethod::Get => {
-                  action = InteractionAction::Navigate {
-                    href: submission.url,
-                  };
+                  if target_blank {
+                    action = InteractionAction::OpenInNewTab { href: submission.url };
+                  } else {
+                    action = InteractionAction::Navigate { href: submission.url };
+                  }
                 }
                 FormSubmissionMethod::Post => {
-                  action = InteractionAction::NavigateRequest { request: submission };
+                  if target_blank {
+                    action = InteractionAction::OpenInNewTabRequest { request: submission };
+                  } else {
+                    action = InteractionAction::NavigateRequest { request: submission };
+                  }
                 }
               }
             }
@@ -7805,6 +7861,7 @@ impl InteractionEngine {
             changed |= self.mark_form_user_validity(&index, focused);
             if let Some(form_id) = resolve_form_owner(&index, focused) {
               let submitter_id = find_default_form_submitter(&index, form_id);
+              let target_blank = submission_target_is_blank(&index, submitter_id, form_id);
               let submission = match submitter_id {
                 Some(submitter_id) => {
                   let image_coords = index
@@ -7821,12 +7878,18 @@ impl InteractionEngine {
                 }
                 match submission.method {
                   FormSubmissionMethod::Get => {
-                    action = InteractionAction::Navigate {
-                      href: submission.url,
-                    };
+                    if target_blank {
+                      action = InteractionAction::OpenInNewTab { href: submission.url };
+                    } else {
+                      action = InteractionAction::Navigate { href: submission.url };
+                    }
                   }
                   FormSubmissionMethod::Post => {
-                    action = InteractionAction::NavigateRequest { request: submission };
+                    if target_blank {
+                      action = InteractionAction::OpenInNewTabRequest { request: submission };
+                    } else {
+                      action = InteractionAction::NavigateRequest { request: submission };
+                    }
                   }
                 }
               }
@@ -7900,14 +7963,22 @@ impl InteractionEngine {
               .then_some((0, 0));
             if let Some(submission) = form_submission(dom, focused, image_coords, document_url, base_url) {
               self.last_form_submitter = Some(focused);
+              let target_blank = resolve_form_owner(&index, focused)
+                .is_some_and(|form_id| submission_target_is_blank(&index, Some(focused), form_id));
               match submission.method {
                 FormSubmissionMethod::Get => {
-                  action = InteractionAction::Navigate {
-                    href: submission.url,
-                  };
+                  if target_blank {
+                    action = InteractionAction::OpenInNewTab { href: submission.url };
+                  } else {
+                    action = InteractionAction::Navigate { href: submission.url };
+                  }
                 }
                 FormSubmissionMethod::Post => {
-                  action = InteractionAction::NavigateRequest { request: submission };
+                  if target_blank {
+                    action = InteractionAction::OpenInNewTabRequest { request: submission };
+                  } else {
+                    action = InteractionAction::NavigateRequest { request: submission };
+                  }
                 }
               }
             }
@@ -7923,6 +7994,7 @@ impl InteractionEngine {
       action,
       InteractionAction::Navigate { .. }
         | InteractionAction::OpenInNewTab { .. }
+        | InteractionAction::OpenInNewTabRequest { .. }
         | InteractionAction::NavigateRequest { .. }
     ) && self.state.focused != prev_focus
     {

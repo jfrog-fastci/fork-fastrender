@@ -11,6 +11,7 @@ use std::sync::Mutex;
 
 pub use crate::interaction::KeyAction;
 pub use crate::interaction::DateTimeInputKind;
+pub use crate::interaction::FormSubmission;
 use tiny_skia::Pixmap;
 
 static NEXT_TAB_ID: AtomicU64 = AtomicU64::new(1);
@@ -260,6 +261,12 @@ pub enum UiToWorker {
   Navigate {
     tab_id: TabId,
     url: String,
+    reason: NavigationReason,
+  },
+  /// Navigate using an explicit request (method + headers + optional body), e.g. form POST.
+  NavigateRequest {
+    tab_id: TabId,
+    request: FormSubmission,
     reason: NavigationReason,
   },
   /// Navigate to the previous history entry for this tab.
@@ -604,6 +611,14 @@ pub enum WorkerToUi {
   RequestOpenInNewTab {
     tab_id: TabId,
     url: String,
+  },
+  /// Request that the UI open a new tab and perform the provided navigation request.
+  ///
+  /// This is used for form submissions with `target=_blank` when the submission is not a plain GET
+  /// (notably POST).
+  RequestOpenInNewTabRequest {
+    tab_id: TabId,
+    request: FormSubmission,
   },
   ScrollStateUpdated {
     tab_id: TabId,

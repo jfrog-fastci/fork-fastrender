@@ -477,6 +477,7 @@ fn submit_prevent_default_blocks_enter_form_submission_navigation_without_submit
           | WorkerToUi::NavigationCommitted { .. }
           | WorkerToUi::NavigationFailed { .. }
           | WorkerToUi::RequestOpenInNewTab { .. }
+          | WorkerToUi::RequestOpenInNewTabRequest { .. }
       )
     }),
     "expected Enter key submission to honor submit preventDefault and suppress navigation to {next_url}; got:\n{}",
@@ -576,6 +577,7 @@ fn submit_prevent_default_blocks_click_submit_navigation() {
           | WorkerToUi::NavigationCommitted { .. }
           | WorkerToUi::NavigationFailed { .. }
           | WorkerToUi::RequestOpenInNewTab { .. }
+          | WorkerToUi::RequestOpenInNewTabRequest { .. }
       )
     }),
     "expected submit preventDefault to suppress navigation to {next_url}; got:\n{}",
@@ -681,6 +683,7 @@ fn submit_prevent_default_blocks_enter_form_submission_navigation() {
           | WorkerToUi::NavigationCommitted { .. }
           | WorkerToUi::NavigationFailed { .. }
           | WorkerToUi::RequestOpenInNewTab { .. }
+          | WorkerToUi::RequestOpenInNewTabRequest { .. }
       )
     }),
     "expected submit preventDefault to suppress navigation to {next_url}; got:\n{}",

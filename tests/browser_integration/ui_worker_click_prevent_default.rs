@@ -92,6 +92,7 @@ fn ui_worker_click_prevent_default_blocks_navigation() {
           | WorkerToUi::NavigationCommitted { .. }
           | WorkerToUi::NavigationFailed { .. }
           | WorkerToUi::RequestOpenInNewTab { .. }
+          | WorkerToUi::RequestOpenInNewTabRequest { .. }
       )
     }),
     "expected click preventDefault to suppress navigation to {next_url}; got:\n{}",
@@ -187,6 +188,7 @@ fn ui_worker_enter_on_focused_link_respects_click_prevent_default() {
           | WorkerToUi::NavigationCommitted { .. }
           | WorkerToUi::NavigationFailed { .. }
           | WorkerToUi::RequestOpenInNewTab { .. }
+          | WorkerToUi::RequestOpenInNewTabRequest { .. }
       )
     }),
     "expected Enter key activation to respect click preventDefault and suppress navigation to {next_url}; got:\n{}",

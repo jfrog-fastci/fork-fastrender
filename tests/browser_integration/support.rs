@@ -437,6 +437,9 @@ fn worker_to_ui_tab_id(msg: &WorkerToUi) -> Option<TabId> {
   if let WorkerToUi::RequestOpenInNewTab { tab_id, .. } = msg {
     return Some(*tab_id);
   }
+  if let WorkerToUi::RequestOpenInNewTabRequest { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
   if let WorkerToUi::ScrollStateUpdated { tab_id, .. } = msg {
     return Some(*tab_id);
   }

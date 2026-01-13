@@ -92,6 +92,7 @@ mod ui_worker_favicon;
 mod ui_worker_focus_scroll;
 mod ui_worker_image_input_submit;
 mod ui_worker_form_submit;
+mod ui_worker_form_target_blank;
 mod ui_worker_fragment_navigation;
 mod ui_worker_history;
 mod ui_worker_hover_active;

@@ -175,6 +175,11 @@ impl BrowserTabController {
         url,
         reason,
       } if tab_id == self.tab_id => self.navigate(&url, reason),
+      UiToWorker::NavigateRequest {
+        tab_id,
+        request,
+        reason,
+      } if tab_id == self.tab_id => self.handle_navigation_request_action(request, reason),
       UiToWorker::RequestRepaint { tab_id, .. } if tab_id == self.tab_id => self.force_repaint(),
       _ => Ok(Vec::new()),
     }
@@ -637,6 +642,16 @@ impl BrowserTabController {
         }
         Ok(out)
       }
+      InteractionAction::OpenInNewTabRequest { request } => {
+        let mut out = vec![WorkerToUi::RequestOpenInNewTabRequest {
+          tab_id: self.tab_id,
+          request,
+        }];
+        if changed {
+          out.extend(self.paint_if_needed()?);
+        }
+        Ok(out)
+      }
       InteractionAction::NavigateRequest { request } => {
         return self.handle_navigation_request_action(request, NavigationReason::LinkClick);
       }
@@ -850,6 +865,12 @@ impl BrowserTabController {
         out.push(WorkerToUi::RequestOpenInNewTab {
           tab_id: self.tab_id,
           url: href,
+        });
+      }
+      InteractionAction::OpenInNewTabRequest { request } => {
+        out.push(WorkerToUi::RequestOpenInNewTabRequest {
+          tab_id: self.tab_id,
+          request,
         });
       }
       InteractionAction::NavigateRequest { request } => {

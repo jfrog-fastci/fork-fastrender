@@ -1817,7 +1817,7 @@ impl BrowserAppState {
           height,
         });
       }
-      WorkerToUi::RequestOpenInNewTab { .. } => {
+      WorkerToUi::RequestOpenInNewTab { .. } | WorkerToUi::RequestOpenInNewTabRequest { .. } => {
         // The UI owns tab identifiers; front-ends are expected to handle this message directly by
         // allocating a new tab id and issuing `CreateTab`/`Navigate`. The shared state model does
         // not automatically create tabs.

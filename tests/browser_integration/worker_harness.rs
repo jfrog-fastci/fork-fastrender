@@ -4,8 +4,8 @@ use fastrender::render_control::StageHeartbeat;
 use fastrender::scroll::ScrollState;
 use fastrender::tree::box_tree::SelectControl;
 use fastrender::ui::messages::{
-  CursorKind, DateTimeInputKind, DownloadId, DownloadOutcome, RenderedFrame, TabId, UiToWorker,
-  WorkerToUi,
+  CursorKind, DateTimeInputKind, DownloadId, DownloadOutcome, FormSubmission, RenderedFrame, TabId,
+  UiToWorker, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
 use std::path::PathBuf;
@@ -43,6 +43,10 @@ pub enum WorkerToUiEvent {
   RequestOpenInNewTab {
     tab_id: TabId,
     url: String,
+  },
+  RequestOpenInNewTabRequest {
+    tab_id: TabId,
+    request: FormSubmission,
   },
   NavigationStarted {
     tab_id: TabId,
@@ -136,6 +140,7 @@ pub enum WorkerEventKind {
   FrameReady,
   OpenSelectDropdown,
   RequestOpenInNewTab,
+  RequestOpenInNewTabRequest,
   NavigationStarted,
   NavigationCommitted,
   NavigationFailed,
@@ -163,6 +168,7 @@ impl WorkerToUiEvent {
       WorkerToUiEvent::FrameReady { .. } => WorkerEventKind::FrameReady,
       WorkerToUiEvent::OpenSelectDropdown { .. } => WorkerEventKind::OpenSelectDropdown,
       WorkerToUiEvent::RequestOpenInNewTab { .. } => WorkerEventKind::RequestOpenInNewTab,
+      WorkerToUiEvent::RequestOpenInNewTabRequest { .. } => WorkerEventKind::RequestOpenInNewTabRequest,
       WorkerToUiEvent::NavigationStarted { .. } => WorkerEventKind::NavigationStarted,
       WorkerToUiEvent::NavigationCommitted { .. } => WorkerEventKind::NavigationCommitted,
       WorkerToUiEvent::NavigationFailed { .. } => WorkerEventKind::NavigationFailed,
@@ -237,6 +243,10 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
     WorkerToUi::RequestOpenInNewTab { tab_id, url } => {
       (WorkerToUiEvent::RequestOpenInNewTab { tab_id, url }, None)
     }
+    WorkerToUi::RequestOpenInNewTabRequest { tab_id, request } => (
+      WorkerToUiEvent::RequestOpenInNewTabRequest { tab_id, request },
+      None,
+    ),
     WorkerToUi::NavigationStarted { tab_id, url } => {
       (WorkerToUiEvent::NavigationStarted { tab_id, url }, None)
     }

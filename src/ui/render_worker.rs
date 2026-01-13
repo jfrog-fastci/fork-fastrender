@@ -1187,6 +1187,13 @@ impl BrowserRuntime {
       } => {
         self.schedule_navigation(tab_id, url, reason);
       }
+      UiToWorker::NavigateRequest {
+        tab_id,
+        request,
+        reason,
+      } => {
+        self.schedule_navigation_request(tab_id, request, reason);
+      }
       UiToWorker::GoBack { tab_id } => {
         let url = {
           let Some(tab) = self.tabs.get_mut(&tab_id) else {
@@ -3572,6 +3579,7 @@ impl BrowserRuntime {
     let mut navigate_to: Option<String> = None;
     let mut navigate_request: Option<FormSubmission> = None;
     let mut open_in_new_tab: Option<String> = None;
+    let mut open_in_new_tab_request: Option<FormSubmission> = None;
     let mut download_to_start: Option<(String, Option<String>)> = None;
 
     match action {
@@ -3585,6 +3593,14 @@ impl BrowserRuntime {
       InteractionAction::OpenInNewTab { href } => {
         if default_allowed {
           open_in_new_tab = Some(href);
+        }
+        if dom_changed || scroll_changed {
+          tab.needs_repaint = true;
+        }
+      }
+      InteractionAction::OpenInNewTabRequest { request } => {
+        if default_allowed {
+          open_in_new_tab_request = Some(request);
         }
         if dom_changed || scroll_changed {
           tab.needs_repaint = true;
@@ -3672,6 +3688,11 @@ impl BrowserRuntime {
     }
     if let Some(url) = open_in_new_tab {
       let _ = self.ui_tx.send(WorkerToUi::RequestOpenInNewTab { tab_id, url });
+    }
+    if let Some(request) = open_in_new_tab_request {
+      let _ = self
+        .ui_tx
+        .send(WorkerToUi::RequestOpenInNewTabRequest { tab_id, request });
     }
     if let Some(url) = navigate_to {
       self.schedule_navigation(tab_id, url, NavigationReason::LinkClick);
@@ -4263,6 +4284,7 @@ impl BrowserRuntime {
         action,
         InteractionAction::Navigate { .. }
           | InteractionAction::OpenInNewTab { .. }
+          | InteractionAction::OpenInNewTabRequest { .. }
           | InteractionAction::Download { .. }
           | InteractionAction::NavigateRequest { .. }
       ) {
@@ -4307,7 +4329,10 @@ impl BrowserRuntime {
         && matches!(key, crate::interaction::KeyAction::Enter)
         && matches!(
           action,
-          InteractionAction::Navigate { .. } | InteractionAction::NavigateRequest { .. }
+          InteractionAction::Navigate { .. }
+            | InteractionAction::OpenInNewTab { .. }
+            | InteractionAction::NavigateRequest { .. }
+            | InteractionAction::OpenInNewTabRequest { .. }
         )
       {
         submit_source_id = focused;
@@ -4351,6 +4376,17 @@ impl BrowserRuntime {
             let _ = self
               .ui_tx
               .send(WorkerToUi::RequestOpenInNewTab { tab_id, url: href });
+          }
+          if changed || scroll_changed {
+            tab.cancel.bump_paint();
+            tab.needs_repaint = true;
+          }
+        }
+        InteractionAction::OpenInNewTabRequest { request } => {
+          if default_allowed {
+            let _ = self
+              .ui_tx
+              .send(WorkerToUi::RequestOpenInNewTabRequest { tab_id, request });
           }
           if changed || scroll_changed {
             tab.cancel.bump_paint();
