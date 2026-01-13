@@ -6142,6 +6142,9 @@ impl App {
   fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
     self.last_resize_event_at = Some(std::time::Instant::now());
     if new_size.width == 0 || new_size.height == 0 {
+      // Window minimization can transiently report a 0×0 size; clear any pending configure request
+      // so we don't reconfigure the surface at a stale size while minimized.
+      self.surface_needs_configure = false;
       return;
     }
 
@@ -13677,6 +13680,9 @@ impl App {
         surface_texture_result,
         Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated)
       ) {
+        if self.window_minimized {
+          return session_dirty;
+        }
         if !surface_configured_this_frame {
           self.configure_surface("lost/outdated");
           surface_configured_this_frame = true;
