@@ -167,6 +167,7 @@ impl OmniboxProvider for AboutPagesProvider {
       (about_pages::ABOUT_HELP, "Help"),
       (about_pages::ABOUT_VERSION, "Version"),
       (about_pages::ABOUT_GPU, "GPU"),
+      (about_pages::ABOUT_PROCESSES, "Processes"),
     ];
 
     let mut out = Vec::new();

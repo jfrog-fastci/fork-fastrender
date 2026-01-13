@@ -4,6 +4,7 @@ pub const ABOUT_SETTINGS: &str = "about:settings";
 pub const ABOUT_HELP: &str = "about:help";
 pub const ABOUT_VERSION: &str = "about:version";
 pub const ABOUT_GPU: &str = "about:gpu";
+pub const ABOUT_PROCESSES: &str = "about:processes";
 pub const ABOUT_ERROR: &str = "about:error";
 pub const ABOUT_HISTORY: &str = "about:history";
 pub const ABOUT_BOOKMARKS: &str = "about:bookmarks";
@@ -22,6 +23,7 @@ pub const ABOUT_PAGE_URLS: &[&str] = &[
   ABOUT_HELP,
   ABOUT_VERSION,
   ABOUT_GPU,
+  ABOUT_PROCESSES,
   ABOUT_ERROR,
   ABOUT_HISTORY,
   ABOUT_BOOKMARKS,
@@ -36,9 +38,11 @@ use std::time::SystemTime;
 
 use super::string_match::contains_ascii_case_insensitive;
 use crate::ui::html_escape::escape_html;
-use crate::ui::{BookmarkId, BookmarkNode, BookmarkStore, GlobalHistoryStore};
-use crate::ui::theme_parsing::{RgbaColor, ENV_BROWSER_ACCENT, ENV_BROWSER_HIGH_CONTRAST, ENV_BROWSER_THEME};
+use crate::ui::theme_parsing::{
+  RgbaColor, ENV_BROWSER_ACCENT, ENV_BROWSER_HIGH_CONTRAST, ENV_BROWSER_THEME,
+};
 use crate::ui::url::DEFAULT_SEARCH_ENGINE_TEMPLATE;
+use crate::ui::{BookmarkId, BookmarkNode, BookmarkStore, GlobalHistoryStore};
 
 #[derive(Debug, Clone, Default)]
 pub struct AboutPageSnapshot {
@@ -48,8 +52,19 @@ pub struct AboutPageSnapshot {
   /// This is expected to be ordered by recency (newest first), but about pages should remain robust
   /// even when callers provide unsorted data.
   pub history: Vec<HistorySnapshot>,
+  /// Best-effort snapshot of currently open tabs, for debug `about:` pages.
+  ///
+  /// This is optional (front-ends may not populate it) and intentionally kept independent of any UI
+  /// toolkit types so it can be updated across the UI↔worker boundary.
+  pub open_tabs: Vec<OpenTabSnapshot>,
   /// Effective browser chrome accent color (used to theme `about:` pages).
   pub chrome_accent: Option<RgbaColor>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OpenTabSnapshot {
+  pub tab_id: u64,
+  pub url: String,
 }
 
 #[derive(Debug, Clone)]
@@ -86,10 +101,16 @@ pub fn set_about_page_snapshot(snapshot: AboutPageSnapshot) {
 #[cfg(feature = "browser_ui")]
 pub fn set_about_snapshot_from_stores(bookmarks: &BookmarkStore, history: &GlobalHistoryStore) {
   // Preserve any separately-updated chrome settings (e.g. accent color) across snapshot refreshes.
-  let chrome_accent = about_page_snapshot_lock().read().chrome_accent;
+  // Similarly, keep optional debug snapshots (open tabs) intact unless explicitly overwritten by
+  // callers.
+  let (chrome_accent, open_tabs) = {
+    let snapshot = about_page_snapshot_lock().read();
+    (snapshot.chrome_accent, snapshot.open_tabs.clone())
+  };
   set_about_page_snapshot(AboutPageSnapshot {
     bookmarks: bookmark_snapshots_from_store(bookmarks),
     history: history_snapshots_from_global_history_store(history),
+    open_tabs,
     chrome_accent,
   });
 }
@@ -109,6 +130,10 @@ pub fn sync_about_page_snapshot_bookmarks_from_bookmark_store(store: &BookmarkSt
 #[cfg(feature = "browser_ui")]
 pub fn sync_about_page_snapshot_chrome_accent(accent: Option<RgbaColor>) {
   about_page_snapshot_lock().write().chrome_accent = accent;
+}
+
+pub fn sync_about_page_snapshot_open_tabs(open_tabs: Vec<OpenTabSnapshot>) {
+  about_page_snapshot_lock().write().open_tabs = open_tabs;
 }
 
 fn bookmark_snapshots_from_store(bookmarks: &BookmarkStore) -> Vec<BookmarkSnapshot> {
@@ -391,7 +416,11 @@ fn about_header_html(current: &str) -> String {
   ];
   let mut links = String::with_capacity(256);
   for (url, label) in items {
-    let aria = if url == current { " aria-current=\"page\"" } else { "" };
+    let aria = if url == current {
+      " aria-current=\"page\""
+    } else {
+      ""
+    };
     links.push_str(&format!("<a href=\"{url}\"{aria}>{label}</a>"));
   }
   format!(
@@ -542,6 +571,7 @@ pub fn html_for_about_url(url: &str) -> Option<String> {
     ABOUT_HELP => Some(help_html()),
     ABOUT_VERSION => Some(version_html()),
     ABOUT_GPU => Some(gpu_html()),
+    ABOUT_PROCESSES => Some(processes_html()),
     ABOUT_ERROR => Some(error_html("Navigation error", None, None)),
     ABOUT_HISTORY => Some(history_html(url)),
     ABOUT_BOOKMARKS => Some(bookmarks_html(url)),
@@ -604,16 +634,19 @@ fn newtab_html() -> String {
   const MAX_HISTORY: usize = 12;
 
   let snapshot = about_page_snapshot();
-  let omnibox_modifier = if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" };
+  let omnibox_modifier = if cfg!(target_os = "macos") {
+    "Cmd"
+  } else {
+    "Ctrl"
+  };
   use std::fmt::Write;
 
-  let search_form = search_form_config_from_template(DEFAULT_SEARCH_ENGINE_TEMPLATE).unwrap_or(
-    SearchFormConfig {
+  let search_form =
+    search_form_config_from_template(DEFAULT_SEARCH_ENGINE_TEMPLATE).unwrap_or(SearchFormConfig {
       action: "https://duckduckgo.com/".to_string(),
       query_param: "q".to_string(),
       hidden_inputs: Vec::new(),
-    },
-  );
+    });
   let safe_search_action = escape_html(&search_form.action);
   let safe_search_param = escape_html(&search_form.query_param);
   let mut hidden_inputs_html = String::new();
@@ -686,12 +719,14 @@ fn newtab_html() -> String {
       .filter(|t| !t.is_empty())
       .map(str::to_string);
 
-    let slot = merged_by_url.entry(url.to_string()).or_insert_with(|| HistoryMerged {
-      url: url.to_string(),
-      title: title.clone(),
-      last_visited: entry.last_visited,
-      first_idx: idx,
-    });
+    let slot = merged_by_url
+      .entry(url.to_string())
+      .or_insert_with(|| HistoryMerged {
+        url: url.to_string(),
+        title: title.clone(),
+        last_visited: entry.last_visited,
+        first_idx: idx,
+      });
 
     // Prefer the newest `last_visited` timestamp; break ties by keeping the first seen entry so
     // behaviour is deterministic even when timestamps are missing.
@@ -744,9 +779,7 @@ fn newtab_html() -> String {
   let history_body = if history_count == 0 {
     "<p>No history yet.</p>".to_string()
   } else {
-    format!(
-      r#"<div class="about-actions" aria-label="Recently visited">{history_tiles}</div>"#
-    )
+    format!(r#"<div class="about-actions" aria-label="Recently visited">{history_tiles}</div>"#)
   };
 
   about_layout_html(
@@ -1032,7 +1065,7 @@ fn gpu_html() -> String {
         info.instance_backends.as_str(),
       ),
       None => ("unknown", "unknown", "unknown", "unknown", "unknown"),
-  };
+    };
   let safe_name = escape_html(adapter_name);
   let safe_backend = escape_html(backend);
   let safe_power_preference = escape_html(power_preference);
@@ -1054,6 +1087,80 @@ fn gpu_html() -> String {
       </table>"
     ),
     "",
+  )
+}
+
+fn processes_html() -> String {
+  let snapshot = about_page_snapshot();
+
+  let mut rows = String::new();
+  if snapshot.open_tabs.is_empty() {
+    rows.push_str("<tr><td colspan=\"5\" class=\"empty\">No tab snapshot is available.</td></tr>");
+  } else {
+    for tab in snapshot.open_tabs {
+      let safe_url = escape_html(&tab.url);
+      rows.push_str(&format!(
+        "<tr>
+          <td><code>{}</code></td>
+          <td><a href=\"{}\"><code>{}</code></a></td>
+          <td class=\"muted\">(not implemented)</td>
+          <td class=\"muted\">(not implemented)</td>
+          <td class=\"muted\">(not implemented)</td>
+        </tr>",
+        tab.tab_id, safe_url, safe_url
+      ));
+    }
+  }
+
+  about_layout_html(
+    "Processes",
+    ABOUT_PROCESSES,
+    &format!(
+      "<h1>Processes</h1>
+      <p class=\"sub\">
+        This page is a placeholder. It will eventually show renderer/network processes and the
+        tab→process assignment used by FastRender&rsquo;s multiprocess model.
+      </p>
+
+      <h2>Tabs</h2>
+      <table class=\"proc-table\">
+        <thead>
+          <tr>
+            <th>Tab</th>
+            <th>URL</th>
+            <th>Site</th>
+            <th>Renderer</th>
+            <th>Network</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows}
+        </tbody>
+      </table>"
+    ),
+    r#"
+.sub { color: var(--about-muted); margin: 0 0 14px; }
+.proc-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.proc-table th,
+.proc-table td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--about-border);
+  vertical-align: top;
+}
+.proc-table th {
+  font-weight: 650;
+  color: var(--about-muted);
+}
+.proc-table code {
+  word-break: break-all;
+}
+.muted { color: var(--about-muted); }
+.empty { color: var(--about-muted); padding: 10px 0; }
+"#,
   )
 }
 
@@ -1269,7 +1376,12 @@ fn bookmarks_html(full_url: &str) -> String {
     </form>
     {body}"
   );
-  about_layout_html("Bookmarks", ABOUT_BOOKMARKS, &page_body, ABOUT_SEARCH_PAGE_CSS)
+  about_layout_html(
+    "Bookmarks",
+    ABOUT_BOOKMARKS,
+    &page_body,
+    ABOUT_SEARCH_PAGE_CSS,
+  )
 }
 
 fn error_html(title: &str, message: Option<&str>, retry_url: Option<&str>) -> String {
@@ -1427,7 +1539,9 @@ fn test_scroll_html() -> String {
 fn test_heavy_html() -> String {
   // Large DOM used by cancellation tests. Keep this deterministic and offline.
   let mut out = String::with_capacity(256 * 1024);
-  out.push_str("<!doctype html><html><head><meta charset=\"utf-8\"><title>Heavy Test</title><style>");
+  out.push_str(
+    "<!doctype html><html><head><meta charset=\"utf-8\"><title>Heavy Test</title><style>",
+  );
   out.push_str(about_shared_css());
   out.push_str(
     "body{margin:0;padding:0;font:14px/1.3 system-ui, -apple-system, Segoe UI, sans-serif;}\
@@ -1558,25 +1672,25 @@ mod tests {
   fn history_snapshot_rebuild_preserves_recency_order_and_visit_counts() {
     let mut history = GlobalHistoryStore::default();
     history.entries = vec![
-        GlobalHistoryEntry {
-          url: "https://old.example/".to_string(),
-          title: Some("Old".to_string()),
-          visited_at_ms: 1,
-          visit_count: 2,
-        },
-        GlobalHistoryEntry {
-          url: "https://mid.example/".to_string(),
-          title: None,
-          visited_at_ms: 2,
-          visit_count: 1,
-        },
-        GlobalHistoryEntry {
-          url: "https://new.example/".to_string(),
-          title: Some("New".to_string()),
-          visited_at_ms: 3,
-          visit_count: 9,
-        },
-      ];
+      GlobalHistoryEntry {
+        url: "https://old.example/".to_string(),
+        title: Some("Old".to_string()),
+        visited_at_ms: 1,
+        visit_count: 2,
+      },
+      GlobalHistoryEntry {
+        url: "https://mid.example/".to_string(),
+        title: None,
+        visited_at_ms: 2,
+        visit_count: 1,
+      },
+      GlobalHistoryEntry {
+        url: "https://new.example/".to_string(),
+        title: Some("New".to_string()),
+        visited_at_ms: 3,
+        visit_count: 9,
+      },
+    ];
 
     let snapshot = super::history_snapshots_from_global_history_store(&history);
     assert_eq!(snapshot.len(), 3);
@@ -1603,11 +1717,11 @@ mod tests {
   fn history_snapshot_rebuild_uses_normalized_urls_without_fragments() {
     let mut history = GlobalHistoryStore::default();
     history.entries = vec![GlobalHistoryEntry {
-        url: "https://example.test/a#frag".to_string(),
-        title: None,
-        visited_at_ms: 1,
-        visit_count: 1,
-      }];
+      url: "https://example.test/a#frag".to_string(),
+      title: None,
+      visited_at_ms: 1,
+      visit_count: 1,
+    }];
     history.normalize_in_place();
 
     let snapshot = super::history_snapshots_from_global_history_store(&history);
@@ -1628,6 +1742,7 @@ mod tests {
       (ABOUT_HELP, Some("Help")),
       (ABOUT_VERSION, Some("Version")),
       (ABOUT_GPU, Some("GPU")),
+      (ABOUT_PROCESSES, Some("Processes")),
       (ABOUT_ERROR, Some("Navigation error")),
       (ABOUT_HISTORY, Some("History")),
       (ABOUT_BOOKMARKS, Some("Bookmarks")),
@@ -1691,7 +1806,10 @@ mod tests {
     use url::Url;
 
     let html = html_for_about_url(ABOUT_NEWTAB).unwrap();
-    assert!(html.contains("<form"), "expected about:newtab to include a <form>");
+    assert!(
+      html.contains("<form"),
+      "expected about:newtab to include a <form>"
+    );
     assert!(
       html.contains("method=\"get\""),
       "expected about:newtab search form to use method=get"
@@ -1716,7 +1834,8 @@ mod tests {
         break;
       }
     }
-    let query_param = query_param.expect("expected search template to include {query} as a query param value");
+    let query_param =
+      query_param.expect("expected search template to include {query} as a query param value");
 
     url.set_query(None);
     url.set_fragment(None);
@@ -1745,7 +1864,11 @@ mod tests {
   #[test]
   fn newtab_keyboard_hint_uses_platform_correct_modifier() {
     let html = html_for_about_url(ABOUT_NEWTAB).unwrap();
-    let expected = if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" };
+    let expected = if cfg!(target_os = "macos") {
+      "Cmd"
+    } else {
+      "Ctrl"
+    };
     assert!(
       html.contains(&format!("<span class=\"about-kbd\">{expected}</span>")),
       "expected about:newtab to contain platform modifier key hint {expected}, got: {html}"
@@ -1875,8 +1998,16 @@ mod tests {
     );
 
     let html = html_for_about_url(ABOUT_NEWTAB).unwrap();
-    for needle in ["https://example.test/a", "A2", "https://example.test/b", "B"] {
-      assert!(html.contains(needle), "expected about:newtab to contain {needle}");
+    for needle in [
+      "https://example.test/a",
+      "A2",
+      "https://example.test/b",
+      "B",
+    ] {
+      assert!(
+        html.contains(needle),
+        "expected about:newtab to contain {needle}"
+      );
     }
 
     set_about_page_snapshot(before);
@@ -1940,6 +2071,7 @@ mod tests {
       ABOUT_HELP,
       ABOUT_VERSION,
       ABOUT_GPU,
+      ABOUT_PROCESSES,
       ABOUT_ERROR,
       ABOUT_TEST_SCROLL,
       ABOUT_TEST_HEAVY,
@@ -2217,6 +2349,7 @@ mod tests {
       ABOUT_HELP,
       ABOUT_VERSION,
       ABOUT_GPU,
+      ABOUT_PROCESSES,
       ABOUT_ERROR,
       ABOUT_HISTORY,
       ABOUT_BOOKMARKS,
