@@ -881,9 +881,22 @@ impl<Host: 'static> EventLoop<Host> {
   /// - Callbacks scheduled while executing the frame are deferred to the next frame.
   /// - All callbacks in the same frame observe the same timestamp argument.
   pub fn run_animation_frame(&mut self, host: &mut Host) -> Result<RunAnimationFrameOutcome> {
-    match self.run_animation_frame_inner(host) {
-      Ok(outcome) => Ok(outcome),
-      Err(err) => Err(err),
+    let frame_result = self.run_animation_frame_inner(host);
+    // HTML event loop semantics: an animation frame "turn" ends with a microtask checkpoint.
+    // This checkpoint must run even when there were no rAF callbacks (e.g. microtasks queued by
+    // the embedder before driving `run_animation_frame`).
+    let microtask_result = self.perform_microtask_checkpoint(host);
+    // Prefer surfacing the callback error if both the frame and checkpoint failed: this mirrors
+    // `run_next_task` error precedence.
+    match frame_result {
+      Ok(outcome) => {
+        microtask_result?;
+        Ok(outcome)
+      }
+      Err(err) => {
+        let _ = microtask_result;
+        Err(err)
+      }
     }
   }
 
@@ -899,7 +912,14 @@ impl<Host: 'static> EventLoop<Host> {
   where
     F: FnMut(Error),
   {
-    self.run_animation_frame_inner_with_error_handler(host, Some(&mut on_error))
+    let frame_result = self.run_animation_frame_inner_with_error_handler(host, Some(&mut on_error));
+    // Like the post-task microtask checkpoint, HTML performs a microtask checkpoint at the end of
+    // each animation frame turn. Any errors surfaced by the checkpoint are treated as uncaught
+    // exceptions for this stepping API.
+    if let Err(err) = self.perform_microtask_checkpoint(host) {
+      on_error(err);
+    }
+    frame_result
   }
 
   /// Perform a microtask checkpoint (HTML Standard terminology).
@@ -4266,6 +4286,64 @@ mod tests {
     );
 
     assert_eq!(host.observed, vec![10.0, 10.0]);
+    Ok(())
+  }
+
+  #[test]
+  fn animation_frame_performs_microtask_checkpoint_after_frame() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      log: Vec<&'static str>,
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+
+    event_loop.request_animation_frame(|host, event_loop, _ts| {
+      host.log.push("raf1");
+      event_loop.queue_microtask(|host, _event_loop| {
+        host.log.push("microtask");
+        Ok(())
+      })?;
+      host.log.push("raf1_end");
+      Ok(())
+    })?;
+
+    event_loop.request_animation_frame(|host, _event_loop, _ts| {
+      host.log.push("raf2");
+      Ok(())
+    })?;
+
+    let mut host = Host::default();
+    assert_eq!(
+      event_loop.run_animation_frame(&mut host)?,
+      RunAnimationFrameOutcome::Ran { callbacks: 2 }
+    );
+    // The microtask queued by the first callback must not run until after the second callback.
+    assert_eq!(host.log, vec!["raf1", "raf1_end", "raf2", "microtask"]);
+    Ok(())
+  }
+
+  #[test]
+  fn animation_frame_microtask_checkpoint_runs_even_when_no_callbacks() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      log: Vec<&'static str>,
+    }
+
+    let mut event_loop = EventLoop::<Host>::new();
+    event_loop.queue_microtask(|host, _event_loop| {
+      host.log.push("microtask");
+      Ok(())
+    })?;
+
+    let mut host = Host::default();
+    assert_eq!(
+      event_loop.run_animation_frame(&mut host)?,
+      RunAnimationFrameOutcome::Idle
+    );
+    assert_eq!(host.log, vec!["microtask"]);
     Ok(())
   }
 

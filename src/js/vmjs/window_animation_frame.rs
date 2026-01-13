@@ -627,6 +627,29 @@ mod tests {
     Ok(Value::Undefined)
   }
 
+  fn cb_log(
+    _vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    callee: vm_js::GcObject,
+    _this: Value,
+    args: &[Value],
+  ) -> VmResult<Value> {
+    let Value::Object(global) = get_prop(scope, callee, CALLBACK_GLOBAL_KEY) else {
+      return Ok(Value::Undefined);
+    };
+
+    let label_value = args.get(0).copied().unwrap_or(Value::Undefined);
+    let label = match label_value {
+      Value::String(s) => scope.heap().get_string(s)?.to_utf8_lossy(),
+      _ => "<non-string>".into(),
+    };
+
+    push_log(scope, global, label.as_ref());
+    Ok(Value::Undefined)
+  }
+
   fn cb_raf_enqueue_job(
     _vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -1189,27 +1212,133 @@ mod tests {
       let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
       read_log(heap, realm)
     };
-    assert_eq!(log, vec!["sync", "raf"]);
+    assert_eq!(log, vec!["sync", "raf", "job"]);
 
     let budget = host.window.vm().budget();
     assert!(
       budget.fuel.is_none() && budget.deadline.is_none(),
-      "expected requestAnimationFrame callback budget to be restored"
+      "expected requestAnimationFrame callback + microtask budget to be restored"
     );
+    Ok(())
+  }
 
-    // Promise jobs are queued into the FastRender microtask queue; draining it should run the job.
-    event_loop.perform_microtask_checkpoint(&mut host)?;
+  #[test]
+  fn request_animation_frame_drains_promise_jobs_automatically() -> RenderResult<()> {
+    let clock = Arc::new(VirtualClock::new());
+    clock.set_now(Duration::from_millis(1));
+    let clock_for_loop: Arc<dyn crate::js::Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+    let mut host = Host::new();
 
-    let budget = host.window.vm().budget();
-    assert!(
-      budget.fuel.is_none() && budget.deadline.is_none(),
-      "expected Promise job budget to be restored"
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_animation_frame_bindings::<Host>(vm, realm, heap)
+        .map_err(|e| Error::Other(e.to_string()))?;
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      init_log(&mut scope, global);
+
+      let log_cb = make_callback(vm, &mut scope, realm, global, "__log", cb_log);
+      set_prop(&mut scope, global, "__log", Value::Object(log_cb));
+    }
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
+      hooks.set_event_loop(event_loop);
+      let result = host.window.exec_script_with_hooks(
+        &mut hooks,
+        "requestAnimationFrame(() => {\n\
+           __log('raf_start');\n\
+           Promise.resolve().then(() => __log('promise'));\n\
+           __log('raf_end');\n\
+         });\n\
+         __log('sync');\n",
+      );
+      if let Some(err) = hooks.finish(host.window.heap_mut()) {
+        return Err(err);
+      }
+      result.map(|_| ()).map_err(|e| Error::Other(e.to_string()))
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
     );
     let log = {
       let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
       read_log(heap, realm)
     };
-    assert_eq!(log, vec!["sync", "raf", "job"]);
+    assert_eq!(log, vec!["sync"]);
+
+    assert_eq!(
+      event_loop.run_animation_frame(&mut host)?,
+      crate::js::RunAnimationFrameOutcome::Ran { callbacks: 1 }
+    );
+    // The Promise job must run by the end of the animation frame without an explicit
+    // `event_loop.perform_microtask_checkpoint()` call.
+    let log = {
+      let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
+      read_log(heap, realm)
+    };
+    assert_eq!(log, vec!["sync", "raf_start", "raf_end", "promise"]);
+    Ok(())
+  }
+
+  #[test]
+  fn request_animation_frame_microtasks_do_not_run_between_callbacks() -> RenderResult<()> {
+    let clock = Arc::new(VirtualClock::new());
+    clock.set_now(Duration::from_millis(1));
+    let clock_for_loop: Arc<dyn crate::js::Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+    let mut host = Host::new();
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_animation_frame_bindings::<Host>(vm, realm, heap)
+        .map_err(|e| Error::Other(e.to_string()))?;
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      init_log(&mut scope, global);
+
+      let log_cb = make_callback(vm, &mut scope, realm, global, "__log", cb_log);
+      set_prop(&mut scope, global, "__log", Value::Object(log_cb));
+    }
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
+      hooks.set_event_loop(event_loop);
+      let result = host.window.exec_script_with_hooks(
+        &mut hooks,
+        "requestAnimationFrame(() => {\n\
+           __log('raf1');\n\
+           Promise.resolve().then(() => __log('p1'));\n\
+         });\n\
+         requestAnimationFrame(() => { __log('raf2'); });\n\
+         __log('sync');\n",
+      );
+      if let Some(err) = hooks.finish(host.window.heap_mut()) {
+        return Err(err);
+      }
+      result.map(|_| ()).map_err(|e| Error::Other(e.to_string()))
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    assert_eq!(
+      event_loop.run_animation_frame(&mut host)?,
+      crate::js::RunAnimationFrameOutcome::Ran { callbacks: 2 }
+    );
+
+    let log = {
+      let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
+      read_log(heap, realm)
+    };
+    // The Promise job queued by the first callback must not run until the end of the frame (after
+    // the second callback has run).
+    assert_eq!(log, vec!["sync", "raf1", "raf2", "p1"]);
     Ok(())
   }
 
