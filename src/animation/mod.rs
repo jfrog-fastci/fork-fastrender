@@ -2501,8 +2501,9 @@ fn interpolate_transform_value(
       let interpolated = interpolate_transform_lists(ta, tb, t).unwrap_or_else(|| {
         let ma = compose_transform_list(ta);
         let mb = compose_transform_list(tb);
+        let m = interpolate_matrix_decomposition(&ma, &mb, t).unwrap_or_else(|| lerp_matrix(&ma, &mb, t));
         vec![crate::css::types::Transform::Matrix3d(
-          lerp_matrix(&ma, &mb, t).m,
+          m.m,
         )]
       });
       Some(AnimatedValue::Transform(interpolated))
@@ -4503,6 +4504,432 @@ fn compose_transform_list(list: &[crate::css::types::Transform]) -> Transform3D 
     ts = ts.multiply(&next);
   }
   ts
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DecomposedTransform3D {
+  translation: [f32; 3],
+  scale: [f32; 3],
+  skew: [f32; 3],        // XY, XZ, YZ
+  perspective: [f32; 4], // x, y, z, w
+  quaternion: [f32; 4],  // x, y, z, w
+}
+
+fn vec3_dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+  a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn vec3_cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+  [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ]
+}
+
+fn vec3_len(v: [f32; 3]) -> f32 {
+  vec3_dot(v, v).sqrt()
+}
+
+fn vec3_normalize(v: [f32; 3]) -> Option<[f32; 3]> {
+  const EPS: f32 = 1e-12;
+  let len = vec3_len(v);
+  if !len.is_finite() || len.abs() <= EPS {
+    return None;
+  }
+  Some([v[0] / len, v[1] / len, v[2] / len])
+}
+
+fn vec3_combine(a: [f32; 3], b: [f32; 3], ascl: f32, bscl: f32) -> [f32; 3] {
+  [
+    ascl * a[0] + bscl * b[0],
+    ascl * a[1] + bscl * b[1],
+    ascl * a[2] + bscl * b[2],
+  ]
+}
+
+fn vec4_dot(a: [f32; 4], b: [f32; 4]) -> f32 {
+  a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
+}
+
+fn vec4_normalize(v: [f32; 4]) -> Option<[f32; 4]> {
+  const EPS: f32 = 1e-12;
+  let len = vec4_dot(v, v).sqrt();
+  if !len.is_finite() || len.abs() <= EPS {
+    return None;
+  }
+  Some([v[0] / len, v[1] / len, v[2] / len, v[3] / len])
+}
+
+fn det_upper_3x3(m: &Transform3D) -> f32 {
+  // Convert the upper-left 3x3 to row-major scalars for readability:
+  // [ a b c ]
+  // [ d e f ]
+  // [ g h i ]
+  let a = m.m[0];
+  let d = m.m[1];
+  let g = m.m[2];
+  let b = m.m[4];
+  let e = m.m[5];
+  let h = m.m[6];
+  let c = m.m[8];
+  let f = m.m[9];
+  let i = m.m[10];
+  a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+}
+
+fn invert_affine_matrix(m: &Transform3D) -> Option<Transform3D> {
+  // Assumes the last row is [0, 0, 0, 1] (i.e. no projective component).
+  const EPS: f32 = 1e-12;
+  // Upper-left 3x3 in row-major.
+  let a = m.m[0];
+  let d = m.m[1];
+  let g = m.m[2];
+  let b = m.m[4];
+  let e = m.m[5];
+  let h = m.m[6];
+  let c = m.m[8];
+  let f = m.m[9];
+  let i = m.m[10];
+  let det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+  if !det.is_finite() || det.abs() <= EPS {
+    return None;
+  }
+  let inv_det = 1.0 / det;
+
+  // Inverse of 3x3 (row-major).
+  let inv00 = (e * i - f * h) * inv_det;
+  let inv01 = (c * h - b * i) * inv_det;
+  let inv02 = (b * f - c * e) * inv_det;
+  let inv10 = (f * g - d * i) * inv_det;
+  let inv11 = (a * i - c * g) * inv_det;
+  let inv12 = (c * d - a * f) * inv_det;
+  let inv20 = (d * h - e * g) * inv_det;
+  let inv21 = (b * g - a * h) * inv_det;
+  let inv22 = (a * e - b * d) * inv_det;
+
+  let tx = m.m[12];
+  let ty = m.m[13];
+  let tz = m.m[14];
+  if !(tx.is_finite() && ty.is_finite() && tz.is_finite()) {
+    return None;
+  }
+
+  // inv_t = -(invA * t)
+  let inv_tx = -(inv00 * tx + inv01 * ty + inv02 * tz);
+  let inv_ty = -(inv10 * tx + inv11 * ty + inv12 * tz);
+  let inv_tz = -(inv20 * tx + inv21 * ty + inv22 * tz);
+
+  let out = Transform3D {
+    m: [
+      inv00, inv10, inv20, 0.0, // column 1
+      inv01, inv11, inv21, 0.0, // column 2
+      inv02, inv12, inv22, 0.0, // column 3
+      inv_tx, inv_ty, inv_tz, 1.0, // column 4
+    ],
+  };
+  out.m.iter().all(|v| v.is_finite()).then_some(out)
+}
+
+fn mat4_mul_vec4(m: &Transform3D, v: [f32; 4]) -> Option<[f32; 4]> {
+  if !v.iter().all(|c| c.is_finite()) {
+    return None;
+  }
+  let x = m.m[0] * v[0] + m.m[4] * v[1] + m.m[8] * v[2] + m.m[12] * v[3];
+  let y = m.m[1] * v[0] + m.m[5] * v[1] + m.m[9] * v[2] + m.m[13] * v[3];
+  let z = m.m[2] * v[0] + m.m[6] * v[1] + m.m[10] * v[2] + m.m[14] * v[3];
+  let w = m.m[3] * v[0] + m.m[7] * v[1] + m.m[11] * v[2] + m.m[15] * v[3];
+  (x.is_finite() && y.is_finite() && z.is_finite() && w.is_finite()).then_some([x, y, z, w])
+}
+
+fn decompose_transform_matrix3d(matrix: &Transform3D) -> Option<DecomposedTransform3D> {
+  if !matrix.m.iter().all(|v| v.is_finite()) {
+    return None;
+  }
+
+  // Normalize the matrix by m44.
+  let mut m = *matrix;
+  let m44 = m.m[15];
+  if !m44.is_finite() || m44.abs() <= f32::EPSILON {
+    return None;
+  }
+  for v in &mut m.m {
+    *v /= m44;
+  }
+
+  // `perspective_matrix` is used to solve for perspective, but also provides an easy way to test
+  // for singularity of the upper 3x3 component. It is the affine matrix obtained by zeroing the
+  // bottom row of the first three columns.
+  let mut perspective_matrix = m;
+  perspective_matrix.m[3] = 0.0;
+  perspective_matrix.m[7] = 0.0;
+  perspective_matrix.m[11] = 0.0;
+  perspective_matrix.m[15] = 1.0;
+
+  // Singular / degenerate transforms cannot be decomposed reliably.
+  let det = det_upper_3x3(&perspective_matrix);
+  if !det.is_finite() || det.abs() <= 1e-12 {
+    return None;
+  }
+
+  // Isolate perspective.
+  let has_perspective = m.m[3].abs() > 1e-12 || m.m[7].abs() > 1e-12 || m.m[11].abs() > 1e-12;
+  let perspective = if has_perspective {
+    let rhs = [m.m[3], m.m[7], m.m[11], m.m[15]];
+    let inv = invert_affine_matrix(&perspective_matrix)?;
+    let perspective = mat4_mul_vec4(&inv, rhs)?;
+
+    // Clear the perspective partition so the remaining decomposition steps see an affine matrix.
+    m.m[3] = 0.0;
+    m.m[7] = 0.0;
+    m.m[11] = 0.0;
+    m.m[15] = 1.0;
+    perspective
+  } else {
+    [0.0, 0.0, 0.0, 1.0]
+  };
+
+  let translation = [m.m[12], m.m[13], m.m[14]];
+  if !translation.iter().all(|v| v.is_finite()) {
+    return None;
+  }
+
+  // Get scale and shear. Note: despite the variable name `row` in the spec, these are the 3
+  // column vectors from the upper-left 3x3 portion of the matrix.
+  let mut row0 = [m.m[0], m.m[1], m.m[2]];
+  let mut row1 = [m.m[4], m.m[5], m.m[6]];
+  let mut row2 = [m.m[8], m.m[9], m.m[10]];
+
+  // Compute X scale factor and normalize first column.
+  let scale_x = vec3_len(row0);
+  row0 = vec3_normalize(row0)?;
+
+  // Compute XY shear factor and make 2nd column orthogonal to 1st.
+  let mut skew_xy = vec3_dot(row0, row1);
+  row1 = vec3_combine(row1, row0, 1.0, -skew_xy);
+
+  // Compute Y scale and normalize 2nd column.
+  let scale_y = vec3_len(row1);
+  row1 = vec3_normalize(row1)?;
+  skew_xy /= scale_y;
+
+  // Compute XZ and YZ shears, orthogonalize 3rd column.
+  let mut skew_xz = vec3_dot(row0, row2);
+  row2 = vec3_combine(row2, row0, 1.0, -skew_xz);
+  let mut skew_yz = vec3_dot(row1, row2);
+  row2 = vec3_combine(row2, row1, 1.0, -skew_yz);
+
+  // Compute Z scale and normalize 3rd column.
+  let scale_z = vec3_len(row2);
+  row2 = vec3_normalize(row2)?;
+  skew_xz /= scale_z;
+  skew_yz /= scale_z;
+
+  let mut scale = [scale_x, scale_y, scale_z];
+  let skew = [skew_xy, skew_xz, skew_yz];
+
+  // Check for a coordinate system flip. If the determinant is -1, negate the matrix and scaling.
+  let pdum3 = vec3_cross(row1, row2);
+  if vec3_dot(row0, pdum3) < 0.0 {
+    for s in &mut scale {
+      *s *= -1.0;
+    }
+    row0 = [-row0[0], -row0[1], -row0[2]];
+    row1 = [-row1[0], -row1[1], -row1[2]];
+    row2 = [-row2[0], -row2[1], -row2[2]];
+  }
+
+  // Now, get the rotations out (as a quaternion).
+  let mut quaternion = [0.0f32; 4];
+  quaternion[0] = 0.5 * (1.0 + row0[0] - row1[1] - row2[2]).max(0.0).sqrt();
+  quaternion[1] = 0.5 * (1.0 - row0[0] + row1[1] - row2[2]).max(0.0).sqrt();
+  quaternion[2] = 0.5 * (1.0 - row0[0] - row1[1] + row2[2]).max(0.0).sqrt();
+  quaternion[3] = 0.5 * (1.0 + row0[0] + row1[1] + row2[2]).max(0.0).sqrt();
+
+  if row2[1] > row1[2] {
+    quaternion[0] = -quaternion[0];
+  }
+  if row0[2] > row2[0] {
+    quaternion[1] = -quaternion[1];
+  }
+  if row1[0] > row0[1] {
+    quaternion[2] = -quaternion[2];
+  }
+
+  let quaternion = vec4_normalize(quaternion)?;
+
+  if !scale.iter().all(|v| v.is_finite())
+    || !skew.iter().all(|v| v.is_finite())
+    || !perspective.iter().all(|v| v.is_finite())
+    || !quaternion.iter().all(|v| v.is_finite())
+  {
+    return None;
+  }
+
+  Some(DecomposedTransform3D {
+    translation,
+    scale,
+    skew,
+    perspective,
+    quaternion,
+  })
+}
+
+fn quaternion_slerp(a: [f32; 4], b: [f32; 4], t: f32) -> Option<[f32; 4]> {
+  if !t.is_finite() {
+    return None;
+  }
+  let mut qa = a;
+  let mut qb = b;
+  if !qa.iter().all(|v| v.is_finite()) || !qb.iter().all(|v| v.is_finite()) {
+    return None;
+  }
+
+  // Quaternions have a double-cover: q and -q represent the same rotation. Flip the destination
+  // quaternion when needed so interpolation takes the shorter arc.
+  let mut dot = vec4_dot(qa, qb);
+  if dot < 0.0 {
+    dot = -dot;
+    qb = [-qb[0], -qb[1], -qb[2], -qb[3]];
+  }
+
+  dot = dot.clamp(-1.0, 1.0);
+
+  // If the quaternions are (nearly) identical, fall back to normalized linear interpolation to
+  // avoid precision issues.
+  if dot.abs() >= 0.999999 {
+    let out = [
+      lerp(qa[0], qb[0], t),
+      lerp(qa[1], qb[1], t),
+      lerp(qa[2], qb[2], t),
+      lerp(qa[3], qb[3], t),
+    ];
+    return vec4_normalize(out);
+  }
+
+  let theta = dot.acos();
+  let sin_theta = theta.sin();
+  if !theta.is_finite() || !sin_theta.is_finite() || sin_theta.abs() <= 1e-12 {
+    return None;
+  }
+  let w1 = ((1.0 - t) * theta).sin() / sin_theta;
+  let w2 = (t * theta).sin() / sin_theta;
+  let out = [
+    qa[0] * w1 + qb[0] * w2,
+    qa[1] * w1 + qb[1] * w2,
+    qa[2] * w1 + qb[2] * w2,
+    qa[3] * w1 + qb[3] * w2,
+  ];
+  vec4_normalize(out)
+}
+
+fn rotation_matrix_from_quaternion(quaternion: [f32; 4]) -> Option<Transform3D> {
+  let q = vec4_normalize(quaternion)?;
+  let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
+
+  let r00 = 1.0 - 2.0 * (y * y + z * z);
+  let r01 = 2.0 * (x * y - z * w);
+  let r02 = 2.0 * (x * z + y * w);
+  let r10 = 2.0 * (x * y + z * w);
+  let r11 = 1.0 - 2.0 * (x * x + z * z);
+  let r12 = 2.0 * (y * z - x * w);
+  let r20 = 2.0 * (x * z - y * w);
+  let r21 = 2.0 * (y * z + x * w);
+  let r22 = 1.0 - 2.0 * (x * x + y * y);
+
+  let out = Transform3D {
+    m: [
+      r00, r10, r20, 0.0, // column 1
+      r01, r11, r21, 0.0, // column 2
+      r02, r12, r22, 0.0, // column 3
+      0.0, 0.0, 0.0, 1.0, // column 4
+    ],
+  };
+  out.m.iter().all(|v| v.is_finite()).then_some(out)
+}
+
+fn recompose_transform_matrix3d(decomp: &DecomposedTransform3D) -> Option<Transform3D> {
+  if !decomp.translation.iter().all(|v| v.is_finite())
+    || !decomp.scale.iter().all(|v| v.is_finite())
+    || !decomp.skew.iter().all(|v| v.is_finite())
+    || !decomp.perspective.iter().all(|v| v.is_finite())
+    || !decomp.quaternion.iter().all(|v| v.is_finite())
+  {
+    return None;
+  }
+
+  let mut matrix = Transform3D::identity();
+
+  // Apply perspective by setting the bottom row.
+  matrix.m[3] = decomp.perspective[0];
+  matrix.m[7] = decomp.perspective[1];
+  matrix.m[11] = decomp.perspective[2];
+  matrix.m[15] = decomp.perspective[3];
+
+  // Apply translation.
+  matrix = matrix.multiply(&Transform3D::translate(
+    decomp.translation[0],
+    decomp.translation[1],
+    decomp.translation[2],
+  ));
+
+  // Apply rotation.
+  let rotation = rotation_matrix_from_quaternion(decomp.quaternion)?;
+  matrix = matrix.multiply(&rotation);
+
+  // Apply skew (YZ, XZ, XY).
+  if decomp.skew[2] != 0.0 {
+    let mut temp = Transform3D::identity();
+    // temp[2][1] = skew[2]
+    temp.m[9] = decomp.skew[2];
+    matrix = matrix.multiply(&temp);
+  }
+  if decomp.skew[1] != 0.0 {
+    let mut temp = Transform3D::identity();
+    // temp[2][0] = skew[1]
+    temp.m[8] = decomp.skew[1];
+    matrix = matrix.multiply(&temp);
+  }
+  if decomp.skew[0] != 0.0 {
+    let mut temp = Transform3D::identity();
+    // temp[1][0] = skew[0]
+    temp.m[4] = decomp.skew[0];
+    matrix = matrix.multiply(&temp);
+  }
+
+  // Apply scale.
+  matrix = matrix.multiply(&Transform3D::scale(
+    decomp.scale[0],
+    decomp.scale[1],
+    decomp.scale[2],
+  ));
+
+  matrix.m.iter().all(|v| v.is_finite()).then_some(matrix)
+}
+
+fn interpolate_matrix_decomposition(a: &Transform3D, b: &Transform3D, t: f32) -> Option<Transform3D> {
+  let da = decompose_transform_matrix3d(a)?;
+  let db = decompose_transform_matrix3d(b)?;
+
+  let mut out = DecomposedTransform3D {
+    translation: [0.0; 3],
+    scale: [0.0; 3],
+    skew: [0.0; 3],
+    perspective: [0.0; 4],
+    quaternion: [0.0; 4],
+  };
+
+  for i in 0..3 {
+    out.translation[i] = lerp(da.translation[i], db.translation[i], t);
+    out.scale[i] = lerp(da.scale[i], db.scale[i], t);
+    out.skew[i] = lerp(da.skew[i], db.skew[i], t);
+  }
+  for i in 0..4 {
+    out.perspective[i] = lerp(da.perspective[i], db.perspective[i], t);
+  }
+  out.quaternion = quaternion_slerp(da.quaternion, db.quaternion, t)?;
+
+  recompose_transform_matrix3d(&out)
 }
 
 fn lerp_matrix(a: &Transform3D, b: &Transform3D, t: f32) -> Transform3D {

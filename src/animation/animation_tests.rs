@@ -1278,6 +1278,92 @@ fn keyframes_interpolate_transform_lists() {
 }
 
 #[test]
+fn transform_matrix_decomposition_interpolates_rotation_without_shrinking() {
+  let sheet = parse_stylesheet(
+    "@keyframes rot { from { transform: rotate(0deg); } to { transform: matrix(0, -1, 1, 0, 0, 0); } }",
+  )
+  .unwrap();
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = &keyframes[0];
+  let sampled = sample_keyframes(
+    rule,
+    0.5,
+    &ComputedStyle::default(),
+    Size::new(800.0, 600.0),
+    Size::new(120.0, 80.0),
+  );
+  let transform = match sampled.get("transform") {
+    Some(AnimatedValue::Transform(t)) => t,
+    other => panic!("unexpected value {other:?}"),
+  };
+
+  let matrix = crate::animation::compose_transform_list(transform);
+  let v = matrix.transform_direction(1.0, 0.0, 0.0);
+  let expected = 0.5_f32.sqrt(); // cos(45deg) == sin(45deg)
+  assert!(
+    (v[0] - expected).abs() < 1e-3,
+    "expected x≈{expected}, got {}",
+    v[0]
+  );
+  assert!(
+    (v[1] - expected).abs() < 1e-3,
+    "expected y≈{expected}, got {}",
+    v[1]
+  );
+  let len = (v[0] * v[0] + v[1] * v[1]).sqrt();
+  assert!(
+    (len - 1.0).abs() < 1e-3,
+    "expected unit-length direction vector, got len={len}"
+  );
+}
+
+#[test]
+fn transform_matrix_decomposition_handles_list_length_mismatch() {
+  let sheet = parse_stylesheet(
+    "@keyframes mix { from { transform: translateX(100px) rotate(0deg); } to { transform: rotate(90deg); } }",
+  )
+  .unwrap();
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = &keyframes[0];
+  let sampled = sample_keyframes(
+    rule,
+    0.5,
+    &ComputedStyle::default(),
+    Size::new(800.0, 600.0),
+    Size::new(120.0, 80.0),
+  );
+  let transform = match sampled.get("transform") {
+    Some(AnimatedValue::Transform(t)) => t,
+    other => panic!("unexpected value {other:?}"),
+  };
+
+  let matrix = crate::animation::compose_transform_list(transform);
+
+  let (tx, ty, _tz, tw) = matrix.transform_point(0.0, 0.0, 0.0);
+  assert!((tw - 1.0).abs() < 1e-6, "expected w≈1, got {tw}");
+  assert!((tx - 50.0).abs() < 1e-3, "expected tx≈50, got {tx}");
+  assert!(ty.abs() < 1e-3, "expected ty≈0, got {ty}");
+
+  let v = matrix.transform_direction(1.0, 0.0, 0.0);
+  let expected = 0.5_f32.sqrt();
+  assert!(
+    (v[0] - expected).abs() < 1e-3,
+    "expected x≈{expected}, got {}",
+    v[0]
+  );
+  assert!(
+    (v[1] - expected).abs() < 1e-3,
+    "expected y≈{expected}, got {}",
+    v[1]
+  );
+  let len = (v[0] * v[0] + v[1] * v[1]).sqrt();
+  assert!(
+    (len - 1.0).abs() < 1e-3,
+    "expected unit-length direction vector, got len={len}"
+  );
+}
+
+#[test]
 fn keyframes_interpolate_filters() {
   let sheet =
     parse_stylesheet("@keyframes blur { from { filter: blur(0px); } to { filter: blur(10px); } }")
