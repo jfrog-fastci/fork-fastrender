@@ -19,6 +19,7 @@ pub mod frame_pool;
 pub mod network;
 pub mod network_service;
 pub mod pixels;
+pub mod limits;
 pub mod protocol;
 pub mod received_frame;
 pub mod session;
@@ -49,8 +50,9 @@ pub use error::IpcError;
 pub use framing::{
   decode_bincode_payload, decode_bincode_payload_with_limit, encode_bincode_payload,
   encode_bincode_payload_with_limit, read_bincode_frame, read_frame, read_frame_with_max,
-  write_bincode_frame, write_frame, write_frame_with_max, MAX_IPC_MESSAGE_BYTES,
+  write_bincode_frame, write_frame, write_frame_with_max,
 };
+pub use limits::MAX_IPC_MESSAGE_BYTES;
 pub use network::{NetworkToRenderer, RendererToNetwork};
 pub use network_service::IpcFetchServer;
 pub use received_frame::{FrameMeta, ReceivedFrame, ShmemSliceView};

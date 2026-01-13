@@ -149,6 +149,8 @@ IPC transport invariants (framing + size caps + shared memory safety): [`docs/ip
 
 Linux implementation checklist (shared memory + FD passing footguns): [`docs/ipc_linux_fd_passing.md`](../docs/ipc_linux_fd_passing.md).
 
+Browser↔renderer shared-memory frame transport protocol (framing + buffer lifecycle): [`docs/ipc_frame_transport.md`](../docs/ipc_frame_transport.md).
+
 ### Sandbox technologies
 
 | Platform | Sandbox mechanism |

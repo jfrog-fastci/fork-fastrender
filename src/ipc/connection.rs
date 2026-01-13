@@ -2,13 +2,14 @@
 //!
 //! This module provides:
 //! - [`IpcConnection`], a small wrapper that sends/receives length-prefixed JSON messages while
-//!   enforcing [`crate::ipc::framing::MAX_IPC_MESSAGE_BYTES`] (both before sending and before
+//!   enforcing [`crate::ipc::limits::MAX_IPC_MESSAGE_BYTES`] (both before sending and before
 //!   decoding).
 //! - In-memory decode helpers that operate on borrowed byte slices (useful for fuzzing and other
 //!   non-streaming contexts).
 
 use super::error::IpcError;
-use super::framing::{self, read_frame, write_frame, MAX_IPC_MESSAGE_BYTES};
+use super::framing::{self, read_frame, write_frame};
+use super::limits::MAX_IPC_MESSAGE_BYTES;
 use super::protocol;
 use serde::de::DeserializeOwned;
 use serde::Serialize;

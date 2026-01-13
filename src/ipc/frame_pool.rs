@@ -9,6 +9,7 @@
 //! `ipc::protocol::renderer::BrowserToRenderer::FrameAck { frame_seq }`).
 
 use crate::ipc::IpcError;
+use crate::ipc::limits::{BYTES_PER_PIXEL, MAX_FRAME_BUFFERS};
 use crate::ipc::sync;
 use crate::paint::pixmap::MAX_PIXMAP_BYTES;
 use memmap2::MmapMut;
@@ -18,11 +19,6 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tempfile::NamedTempFile;
-
-const BYTES_PER_PIXEL: u64 = 4;
-
-// Keep this conservative; we only expect double/triple buffering.
-const MAX_FRAME_BUFFERS: usize = 8;
 
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 

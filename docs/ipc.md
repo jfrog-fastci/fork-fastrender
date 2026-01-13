@@ -206,7 +206,7 @@ These caps are **security limits**; do not increase casually. Keep the sender + 
 | Channel | Max payload bytes | Where enforced |
 |---|---:|---|
 | Browser ↔ renderer (stdio + bincode, dev) | 64 MiB | `fastrender_ipc::MAX_IPC_MESSAGE_BYTES` in [`crates/fastrender-ipc/src/lib.rs`](../crates/fastrender-ipc/src/lib.rs) (checked in [`crates/fastrender-renderer/src/main.rs`](../crates/fastrender-renderer/src/main.rs)) |
-| Generic framing helper (`read_frame`/`write_frame`) | 8 MiB | `crate::ipc::framing::MAX_IPC_MESSAGE_BYTES` in [`src/ipc/framing.rs`](../src/ipc/framing.rs) |
+| Generic framing helper (`read_frame`/`write_frame`) | 8 MiB | `crate::ipc::MAX_IPC_MESSAGE_BYTES` in [`src/ipc/limits.rs`](../src/ipc/limits.rs) (enforced by [`src/ipc/framing.rs`](../src/ipc/framing.rs)) |
 | Renderer ↔ network (`IpcResourceFetcher`, JSON over TCP) | 8 MiB inbound / 80 MiB outbound | `IPC_MAX_INBOUND_FRAME_BYTES` / `IPC_MAX_OUTBOUND_FRAME_BYTES` in [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs) |
 | Browser ↔ network (`network` subprocess prototype, JSON over TCP) | 8 MiB inbound / 80 MiB outbound | `MAX_INBOUND_FRAME_BYTES` / `MAX_OUTBOUND_FRAME_BYTES` in [`src/network_process/ipc.rs`](../src/network_process/ipc.rs) |
 

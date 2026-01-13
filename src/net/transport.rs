@@ -3,7 +3,8 @@ use std::io::{Read, Write};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
-use crate::ipc::framing::{read_frame, write_frame, MAX_IPC_MESSAGE_BYTES};
+use crate::ipc::framing::{read_frame, write_frame};
+use crate::ipc::MAX_IPC_MESSAGE_BYTES;
 use crate::ipc::IpcError;
 use http::{header::HeaderName, Method};
 use serde::{Deserialize, Serialize};

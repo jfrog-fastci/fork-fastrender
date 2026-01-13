@@ -4,19 +4,10 @@ use bincode::Options;
 use serde::{de::DeserializeOwned, Serialize};
 
 use super::error::IpcError;
+use super::limits::MAX_IPC_MESSAGE_BYTES;
 
 /// Number of bytes in the length prefix header.
 pub const IPC_LENGTH_PREFIX_BYTES: usize = 4;
-
-/// Maximum payload size accepted by the IPC framing layer.
-///
-/// This is intentionally small to cap memory usage and avoid unbounded allocations when parsing a
-/// length-prefixed protocol.
-///
-/// The cap is sized to safely accommodate the largest *allowed* WebSocket payload (4 MiB) plus
-/// serialization overhead for IPC envelopes. Keep this value in sync with any IPC-level limits
-/// enforced by the network process once WebSocket traffic is proxied over renderer↔network IPC.
-pub const MAX_IPC_MESSAGE_BYTES: usize = 8 * 1024 * 1024; // 8 MiB
 
 fn bincode_options_with_limit(limit_bytes: usize) -> impl Options {
   // Use fixed-width integer encoding to keep the wire format predictable and easy to reason about
