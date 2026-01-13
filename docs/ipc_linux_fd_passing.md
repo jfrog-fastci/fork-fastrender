@@ -82,6 +82,10 @@ Important footgun from `memfd_create(2)`:
 
 `F_SEAL_SEAL` prevents adding additional seals later. If there’s any chance you’ll want to add `F_SEAL_WRITE` in a later phase, **do not** apply `F_SEAL_SEAL` at creation time.
 
+When using **pooled/reusable** shared buffers that must remain writable (e.g. browser-allocated
+frame slots), it can still be correct to apply `F_SEAL_SEAL` *after* `F_SEAL_SHRINK|F_SEAL_GROW` to
+prevent an untrusted peer from later adding `F_SEAL_WRITE` and permanently breaking reuse.
+
 ### If you don’t use `F_SEAL_WRITE`, assume the contents are mutable
 
 With only size-stability seals (`F_SEAL_SHRINK|F_SEAL_GROW`), the peer can still modify the file
