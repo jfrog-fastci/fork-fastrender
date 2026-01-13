@@ -244,6 +244,7 @@ pub struct ScrollStateMinimal {
 
 /// Messages sent from the (trusted) browser process to the (sandboxed) renderer process.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum BrowserToRenderer {
   /// Initial handshake from browser → renderer.
   Hello {
@@ -370,6 +371,7 @@ impl BrowserToRenderer {
 
 /// Messages sent from the renderer process to the browser process.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum RendererToBrowser {
   /// Handshake response from renderer → browser.
   HelloAck {},
