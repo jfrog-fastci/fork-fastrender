@@ -6300,13 +6300,6 @@ impl App {
   }
 
   fn drive_media_wakeups(&mut self) {
-    // Keep behaviour consistent with the existing tick driver: don't run worker ticks when the
-    // window is not in a state where we expect animations to be active (avoids surprising "background"
-    // ticking when a window is unfocused/occluded).
-    if self.window_occluded || self.window_minimized || !self.window_focused {
-      return;
-    }
-
     if self.next_media_wakeup.is_empty() {
       return;
     }
@@ -6517,13 +6510,11 @@ impl App {
     }
 
     // Worker-requested media wakeups (tickless scheduling).
-    if !(self.window_occluded || self.window_minimized || !self.window_focused) {
-      if let Some(media_deadline) = self.next_media_wakeup.values().copied().min() {
-        deadline = Some(match deadline {
-          Some(existing) => existing.min(media_deadline),
-          None => media_deadline,
-        });
-      }
+    if let Some(media_deadline) = self.next_media_wakeup.values().copied().min() {
+      deadline = Some(match deadline {
+        Some(existing) => existing.min(media_deadline),
+        None => media_deadline,
+      });
     }
 
     // Egui repaint scheduling (focus changes, animated widgets like spinners, etc).
