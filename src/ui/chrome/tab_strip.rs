@@ -1590,7 +1590,7 @@ pub(super) fn tab_strip_ui(
               let next = (prev + delta_x).clamp(0.0, pinned_max_scroll_x);
               if (next - prev).abs() > 0.01 {
                 scroll_state.offset.x = next;
-                scroll_state.store(ui.ctx(), scroll_output.response.id);
+                scroll_state.store(ui.ctx(), scroll_output.id);
                 ui.ctx().request_repaint();
               }
             }
@@ -1813,7 +1813,7 @@ pub(super) fn tab_strip_ui(
 
       // Use the scroll area's actual widget id for programmatic state updates, rather than
       // assuming how `id_source` is transformed internally by egui.
-      let scroll_state_id = scroll_output.response.id;
+      let scroll_state_id = scroll_output.id;
 
       // While dragging an unpinned tab, auto-scroll the overflowing scroll area when the pointer is
       // near the left/right edge of the unpinned viewport (standard browser UX).
