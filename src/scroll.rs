@@ -1509,6 +1509,7 @@ pub fn apply_scroll_offsets(tree: &mut FragmentTree, scroll: &ScrollState) {
     apply_element_scroll_offsets(fragment, scroll, Point::ZERO, false);
   }
 }
+
 fn apply_viewport_scroll_cancel_to_fixed(
   node: &mut FragmentNode,
   viewport_scroll: Point,
