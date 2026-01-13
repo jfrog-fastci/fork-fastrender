@@ -14,7 +14,7 @@
     "layout": 48.00554360655738,
     "paint": 28.003233770491807
   },
-  "notes": "",
+  "notes": "Remaining diffs vs Chrome are largely text rasterization/hinting: ~83% of differing pixels fall inside FastRender text/list-marker bounds on this fixture. Overall layout (float + negative-margin two-column structure, box borders/backgrounds, logo/RSS images) looks correct; non-text diffs are mostly small paint details (inline <code> background padding/extent, list marker glyph raster, a few 1px borders).",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 231308,
