@@ -58,6 +58,8 @@ mod regression_tests;
 mod webidl_union_record_tests;
 #[cfg(test)]
 mod window_host_installer_tests;
+#[cfg(test)]
+mod to_string_tag_tests;
 
 #[cfg(test)]
 mod tests {
