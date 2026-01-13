@@ -14,7 +14,7 @@
     "layout": 138.0003143929961,
     "paint": 26.00005923346304
   },
-  "notes": "",
+  "notes": "Multicol demos appear correct; remaining diffs likely due to MDN chrome/other missing features. Checked fixture examples: #col (column-count), #wid (column-width), #col_short/#columns_4/#columns_12 (columns shorthand), #column_gap (column-gap).",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 104592,
