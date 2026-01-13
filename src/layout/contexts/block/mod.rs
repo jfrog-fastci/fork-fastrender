@@ -3256,6 +3256,7 @@ impl BlockFormattingContext {
               | FormattingContextType::Flex
               | FormattingContextType::Grid
               | FormattingContextType::Inline
+              | FormattingContextType::Table
           );
 
           let (layout_positioned_style, mut result) =
@@ -4544,14 +4545,16 @@ impl BlockFormattingContext {
               | FormattingContextType::Flex
               | FormattingContextType::Grid
               | FormattingContextType::Inline
+              | FormattingContextType::Table
           );
+          let is_table = matches!(fc_type, FormattingContextType::Table);
           let measure_constraints = child_constraints
             .with_width(AvailableSpace::Definite(border_size.width))
             .with_height(AvailableSpace::Indefinite)
             .with_used_border_box_size(Some(border_size.width), None);
           if supports_used_border_box
-            && layout_child.style.width.is_none()
-            && layout_child.style.width_keyword.is_none()
+            && (is_table
+              || (layout_child.style.width.is_none() && layout_child.style.width_keyword.is_none()))
           {
             child_fragment = fc.layout(&layout_child, &measure_constraints)?;
           } else {
@@ -4587,14 +4590,16 @@ impl BlockFormattingContext {
               | FormattingContextType::Flex
               | FormattingContextType::Grid
               | FormattingContextType::Inline
+              | FormattingContextType::Table
           );
+          let is_table = matches!(fc_type, FormattingContextType::Table);
           let relayout_constraints = child_constraints
             .with_used_border_box_size(Some(border_size.width), Some(border_size.height));
           let width_auto =
             layout_child.style.width.is_none() && layout_child.style.width_keyword.is_none();
           let height_auto =
             layout_child.style.height.is_none() && layout_child.style.height_keyword.is_none();
-          if supports_used_border_box && width_auto && height_auto {
+          if supports_used_border_box && (is_table || (width_auto && height_auto)) {
             child_fragment = fc.layout(&layout_child, &relayout_constraints)?;
           } else {
             let mut relayout_style = layout_child.style.clone();
@@ -10905,6 +10910,7 @@ impl FormattingContext for BlockFormattingContext {
               | FormattingContextType::Flex
               | FormattingContextType::Grid
               | FormattingContextType::Inline
+              | FormattingContextType::Table
           );
 
           let (layout_positioned_style, mut result) =

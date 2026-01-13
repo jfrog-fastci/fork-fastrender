@@ -15388,6 +15388,7 @@ impl InlineFormattingContext {
             | FormattingContextType::Flex
             | FormattingContextType::Grid
             | FormattingContextType::Inline
+            | FormattingContextType::Table
         );
         let (mut layout_positioned_style, mut result) =
           crate::layout::absolute_positioning::layout_absolute_with_position_try_fallbacks(
@@ -15435,7 +15436,8 @@ impl InlineFormattingContext {
             layout_child.style.width.is_none() && layout_child.style.width_keyword.is_none();
           let height_auto =
             layout_child.style.height.is_none() && layout_child.style.height_keyword.is_none();
-          if supports_used_border_box && width_auto && height_auto {
+          let is_table = matches!(fc_type, FormattingContextType::Table);
+          if supports_used_border_box && (is_table || (width_auto && height_auto)) {
             child_fragment = fc.layout(&layout_child, &measure_constraints)?;
           } else {
             let mut measure_child = layout_child.clone();
@@ -15499,7 +15501,8 @@ impl InlineFormattingContext {
             layout_child.style.width.is_none() && layout_child.style.width_keyword.is_none();
           let height_auto =
             layout_child.style.height.is_none() && layout_child.style.height_keyword.is_none();
-          if supports_used_border_box && width_auto && height_auto {
+          let is_table = matches!(fc_type, FormattingContextType::Table);
+          if supports_used_border_box && (is_table || (width_auto && height_auto)) {
             child_fragment = fc.layout(&layout_child, &relayout_constraints)?;
           } else {
             let mut relayout_style = layout_child.style.clone();

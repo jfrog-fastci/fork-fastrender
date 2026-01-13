@@ -7393,6 +7393,7 @@ impl FormattingContext for TableFormattingContext {
               | FormattingContextType::Flex
               | FormattingContextType::Grid
               | FormattingContextType::Inline
+              | FormattingContextType::Table
           );
           let layout_with_fc = |node: &BoxNode,
                                 constraints: &LayoutConstraints|
