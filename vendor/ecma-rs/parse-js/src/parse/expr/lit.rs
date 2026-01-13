@@ -1318,8 +1318,7 @@ fn validate_regex_pattern(
         });
       }
       if b == b'\\' {
-        // Allow escapes inside the disjunction; validate `\u`/`\x` shapes so we don't accept
-        // obvious unterminated sequences.
+        // Validate escapes inside the disjunction using the UnicodeMode escape grammar.
         let esc_start = j;
         j += 1;
         if j >= bytes.len() {
@@ -1331,100 +1330,184 @@ fn validate_regex_pattern(
         }
         let esc = pattern[j..].chars().next().unwrap();
         let esc_len = esc.len_utf8();
-        if esc == 'u' {
-          let after_u = j + esc_len;
-          if after_u >= bytes.len() {
-            return Err(RegexError {
-              kind: RegexErrorKind::InvalidPattern,
-              offset: base_offset + escape_start,
-              len: after_u.saturating_sub(escape_start),
-            });
-          }
-          if bytes[after_u] == b'{' {
-            let mut k = after_u + 1;
-            let mut digits = 0usize;
-            while k < bytes.len() && bytes[k] != b'}' {
-              let c = bytes[k] as char;
-              if !c.is_ascii_hexdigit() {
+        match esc {
+          'u' => {
+            let after_u = j + esc_len;
+            if after_u >= bytes.len() {
+              return Err(RegexError {
+                kind: RegexErrorKind::InvalidPattern,
+                offset: base_offset + escape_start,
+                len: after_u.saturating_sub(escape_start),
+              });
+            }
+            if bytes[after_u] == b'{' {
+              let mut k = after_u + 1;
+              let mut digits = 0usize;
+              let mut value: u32 = 0;
+              while k < bytes.len() && bytes[k] != b'}' {
+                let b = bytes[k];
+                let d = match b {
+                  b'0'..=b'9' => (b - b'0') as u32,
+                  b'a'..=b'f' => (b - b'a' + 10) as u32,
+                  b'A'..=b'F' => (b - b'A' + 10) as u32,
+                  _ => {
+                    return Err(RegexError {
+                      kind: RegexErrorKind::InvalidPattern,
+                      offset: base_offset + escape_start,
+                      len: k + 1 - escape_start,
+                    });
+                  }
+                };
+                digits += 1;
+                value = value.saturating_mul(16).saturating_add(d);
+                if value > 0x10FFFF {
+                  return Err(RegexError {
+                    kind: RegexErrorKind::InvalidPattern,
+                    offset: base_offset + escape_start,
+                    len: k + 1 - escape_start,
+                  });
+                }
+                k += 1;
+              }
+              if k >= bytes.len() || digits == 0 {
                 return Err(RegexError {
                   kind: RegexErrorKind::InvalidPattern,
                   offset: base_offset + escape_start,
-                  len: k + 1 - escape_start,
+                  len: k.saturating_sub(escape_start),
                 });
               }
-              digits += 1;
+              j = k + 1;
+              segment_characters += 1;
+              continue;
+            }
+            // `\uXXXX` (optionally followed by a second `\uXXXX` to form a surrogate pair).
+            let mut k = after_u;
+            let mut v: u32 = 0;
+            for _ in 0..4 {
+              if k >= bytes.len() || !(bytes[k] as char).is_ascii_hexdigit() {
+                return Err(RegexError {
+                  kind: RegexErrorKind::InvalidPattern,
+                  offset: base_offset + escape_start,
+                  len: k.saturating_sub(escape_start),
+                });
+              }
+              v = (v << 4) | (bytes[k] as char).to_digit(16).unwrap();
               k += 1;
             }
-            if k >= bytes.len() || digits == 0 {
-              return Err(RegexError {
-                kind: RegexErrorKind::InvalidPattern,
-                offset: base_offset + escape_start,
-                len: k.saturating_sub(escape_start),
-              });
+            if (0xD800..=0xDBFF).contains(&v)
+              && k + 6 <= bytes.len()
+              && bytes[k] == b'\\'
+              && bytes[k + 1] == b'u'
+            {
+              let mut k2 = k + 2;
+              let mut low: u32 = 0;
+              let mut ok = true;
+              for _ in 0..4 {
+                if k2 >= bytes.len() || !(bytes[k2] as char).is_ascii_hexdigit() {
+                  ok = false;
+                  break;
+                }
+                low = (low << 4) | (bytes[k2] as char).to_digit(16).unwrap();
+                k2 += 1;
+              }
+              if ok && (0xDC00..=0xDFFF).contains(&low) {
+                k = k2;
+              }
             }
-            j = k + 1;
+            j = k;
             segment_characters += 1;
             continue;
           }
-          // `\uXXXX` (optionally followed by a second `\uXXXX` to form a surrogate pair).
-          let mut k = after_u;
-          let mut v: u32 = 0;
-          for _ in 0..4 {
-            if k >= bytes.len() || !(bytes[k] as char).is_ascii_hexdigit() {
-              return Err(RegexError {
-                kind: RegexErrorKind::InvalidPattern,
-                offset: base_offset + escape_start,
-                len: k.saturating_sub(escape_start),
-              });
-            }
-            v = (v << 4) | (bytes[k] as char).to_digit(16).unwrap();
-            k += 1;
-          }
-          if (0xD800..=0xDBFF).contains(&v)
-            && k + 6 <= bytes.len()
-            && bytes[k] == b'\\'
-            && bytes[k + 1] == b'u'
-          {
-            let mut k2 = k + 2;
-            let mut low: u32 = 0;
-            let mut ok = true;
-            for _ in 0..4 {
-              if k2 >= bytes.len() || !(bytes[k2] as char).is_ascii_hexdigit() {
-                ok = false;
-                break;
+          'x' => {
+            let after_x = j + esc_len;
+            let mut k = after_x;
+            for _ in 0..2 {
+              if k >= bytes.len() || !(bytes[k] as char).is_ascii_hexdigit() {
+                return Err(RegexError {
+                  kind: RegexErrorKind::InvalidPattern,
+                  offset: base_offset + escape_start,
+                  len: k.saturating_sub(escape_start),
+                });
               }
-              low = (low << 4) | (bytes[k2] as char).to_digit(16).unwrap();
-              k2 += 1;
+              k += 1;
             }
-            if ok && (0xDC00..=0xDFFF).contains(&low) {
-              k = k2;
-            }
+            j = k;
+            segment_characters += 1;
+            continue;
           }
-          j = k;
-          segment_characters += 1;
-          continue;
-        }
-        if esc == 'x' {
-          let after_x = j + esc_len;
-          let mut k = after_x;
-          for _ in 0..2 {
-            if k >= bytes.len() || !(bytes[k] as char).is_ascii_hexdigit() {
+          // ControlEscape (CharacterEscape)
+          'f' | 'n' | 'r' | 't' | 'v' => {
+            j += esc_len;
+            segment_characters += 1;
+            continue;
+          }
+          // `\b` is explicitly allowed in ClassSetCharacter.
+          'b' => {
+            j += esc_len;
+            segment_characters += 1;
+            continue;
+          }
+          // `\0` (null escape) is allowed only when not followed by a decimal digit.
+          '0' => {
+            let after = j + esc_len;
+            let next_is_digit = after < pattern.len()
+              && pattern[after..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit());
+            if next_is_digit {
               return Err(RegexError {
                 kind: RegexErrorKind::InvalidPattern,
                 offset: base_offset + escape_start,
-                len: k.saturating_sub(escape_start),
+                len: 2 + esc_len,
               });
             }
-            k += 1;
+            j += esc_len;
+            segment_characters += 1;
+            continue;
           }
-          j = k;
-          segment_characters += 1;
-          continue;
+          // `\c` AsciiLetter
+          'c' => {
+            let after_c = j + esc_len;
+            if after_c >= pattern.len() {
+              return Err(RegexError {
+                kind: RegexErrorKind::InvalidPattern,
+                offset: base_offset + escape_start,
+                len: pattern.len().saturating_sub(escape_start),
+              });
+            }
+            let ctrl = pattern[after_c..].chars().next().unwrap();
+            if !ctrl.is_ascii_alphabetic() {
+              return Err(RegexError {
+                kind: RegexErrorKind::InvalidPattern,
+                offset: base_offset + escape_start,
+                len: after_c + ctrl.len_utf8() - escape_start,
+              });
+            }
+            j = after_c + ctrl.len_utf8();
+            segment_characters += 1;
+            continue;
+          }
+          // ClassSetReservedPunctuator
+          '&' | '-' | '!' | '#' | '%' | ',' | ':' | ';' | '<' | '=' | '>' | '@' | '`' | '~' => {
+            j += esc_len;
+            segment_characters += 1;
+            continue;
+          }
+          // IdentityEscape[+UnicodeMode]
+          _ if is_regex_identity_escape_unicode_mode(esc) => {
+            j += esc_len;
+            segment_characters += 1;
+            continue;
+          }
+          _ => {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + escape_start,
+              len: esc_start + 1 - escape_start,
+            });
+          }
         }
-        // Other escapes: just skip the escaped code point.
-        j += esc_len;
-        segment_characters += 1;
-        continue;
       }
       // Any other source character inside the disjunction counts as one `ClassSetCharacter`.
       let ch = pattern[j..].chars().next().unwrap();
