@@ -994,6 +994,7 @@ impl WorkerToUi {
       | WorkerToUi::LoadingState { tab_id, .. }
       | WorkerToUi::Warning { tab_id, .. }
       | WorkerToUi::DebugLog { tab_id, .. }
+      | WorkerToUi::RequestWakeAfter { tab_id, .. }
       | WorkerToUi::SelectDropdownOpened { tab_id, .. }
       | WorkerToUi::SelectDropdownClosed { tab_id }
       | WorkerToUi::DateTimePickerOpened { tab_id, .. }
