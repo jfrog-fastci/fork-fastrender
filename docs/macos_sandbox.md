@@ -32,7 +32,8 @@ system “sandboxd” machinery + kernel enforcement). There are two common inte
     - `fastrender::sandbox::macos_spawn::sandbox_exec_command(...)` (convenience wrapper for the
       `pure-computation` profile).
     - `fastrender::sandbox::macos_spawn::wrap_command_with_sandbox_exec(...)` (rewrites an existing
-      `std::process::Command` into `sandbox-exec -p <sbpl> -- <exe> <args...>`).
+      `std::process::Command` into `sandbox-exec -D HOME=... -D TMPDIR=... -p <sbpl> -- <exe> <args...>`
+      so SBPL can reference common parameters via `(param "HOME")` / `(param "TMPDIR")`).
       - Opt-in gate: `FASTR_MACOS_USE_SANDBOX_EXEC=1` + `maybe_wrap_command_with_sandbox_exec(...)`.
 
 Critically:
