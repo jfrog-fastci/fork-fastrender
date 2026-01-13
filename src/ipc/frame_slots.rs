@@ -668,4 +668,15 @@ mod tests {
 
     Ok(())
   }
+
+  #[test]
+  fn send_with_fds_rejects_fd_only_messages() -> Result<(), Error> {
+    let (sock, _peer) = UnixSeqpacket::pair()?;
+    let shm = SharedMemory::new(1024)?;
+    let err = sock
+      .send_with_fds(&[], &[shm.as_raw_fd()])
+      .expect_err("expected fd-only send to be rejected");
+    assert!(matches!(err, Error::Other(_)), "unexpected error: {err:?}");
+    Ok(())
+  }
 }
