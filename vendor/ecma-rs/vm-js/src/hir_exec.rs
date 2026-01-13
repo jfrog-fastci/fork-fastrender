@@ -639,6 +639,9 @@ impl<'vm> HirEvaluator<'vm> {
         .set_function_bound_new_target(func_obj, self.new_target)?;
     }
 
+    // `Heap::alloc_user_function_with_env` already creates `.prototype` for constructable user
+    // functions. Do not create it here, otherwise non-constructable functions (e.g. method
+    // functions) incorrectly get an own `"prototype"` property.
     // Best-effort function `[[Prototype]]` / `[[Realm]]` metadata.
     if let Some(intr) = self.vm.intrinsics() {
       scope
@@ -3603,22 +3606,33 @@ impl<'vm> HirEvaluator<'vm> {
             Ok(Value::Number(to_int32(a).wrapping_shl(shift) as f64))
           }
           (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
-            let shift = {
-              let b = scope.heap().get_bigint(b)?;
-              if b.is_negative() {
-                return Err(VmError::RangeError("BigInt shift count must be >= 0"));
-              }
-              let Some(shift) = b.try_to_i128() else {
-                return Err(VmError::OutOfMemory);
-              };
-              if shift > u64::MAX as i128 {
-                return Err(VmError::OutOfMemory);
-              }
-              shift as u64
-            };
             let out = {
               let a = scope.heap().get_bigint(a)?;
-              a.shl(shift)?
+              let b = scope.heap().get_bigint(b)?;
+
+              // Match the interpreter `exec.rs` semantics: negative shift counts reverse the shift
+              // direction, and extremely large magnitudes saturate to `u64::MAX` (the underlying
+              // BigInt ops can still report OOM if needed).
+              let (shift_negative, shift): (bool, u64) = match b.try_to_i128() {
+                Some(shift_i) => {
+                  let shift_mag: u128 = if shift_i == i128::MIN {
+                    1u128 << 127
+                  } else if shift_i < 0 {
+                    (-shift_i) as u128
+                  } else {
+                    shift_i as u128
+                  };
+                  let shift = u64::try_from(shift_mag).unwrap_or(u64::MAX);
+                  (shift_i < 0, shift)
+                }
+                None => (b.is_negative(), u64::MAX),
+              };
+
+              if shift_negative {
+                a.shr(shift)?
+              } else {
+                a.shl(shift)?
+              }
             };
             let out = scope.alloc_bigint(out)?;
             Ok(Value::BigInt(out))
@@ -3637,22 +3651,32 @@ impl<'vm> HirEvaluator<'vm> {
             Ok(Value::Number(to_int32(a).wrapping_shr(shift) as f64))
           }
           (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
-            let shift = {
-              let b = scope.heap().get_bigint(b)?;
-              if b.is_negative() {
-                return Err(VmError::RangeError("BigInt shift count must be >= 0"));
-              }
-              let Some(shift) = b.try_to_i128() else {
-                return Err(VmError::OutOfMemory);
-              };
-              if shift > u64::MAX as i128 {
-                return Err(VmError::OutOfMemory);
-              }
-              shift as u64
-            };
             let out = {
               let a = scope.heap().get_bigint(a)?;
-              a.shr(shift)?
+              let b = scope.heap().get_bigint(b)?;
+
+              // Match the interpreter `exec.rs` semantics: negative shift counts reverse the shift
+              // direction, and extremely large magnitudes saturate to `u64::MAX`.
+              let (shift_negative, shift): (bool, u64) = match b.try_to_i128() {
+                Some(shift_i) => {
+                  let shift_mag: u128 = if shift_i == i128::MIN {
+                    1u128 << 127
+                  } else if shift_i < 0 {
+                    (-shift_i) as u128
+                  } else {
+                    shift_i as u128
+                  };
+                  let shift = u64::try_from(shift_mag).unwrap_or(u64::MAX);
+                  (shift_i < 0, shift)
+                }
+                None => (b.is_negative(), u64::MAX),
+              };
+
+              if shift_negative {
+                a.shl(shift)?
+              } else {
+                a.shr(shift)?
+              }
             };
             let out = scope.alloc_bigint(out)?;
             Ok(Value::BigInt(out))
@@ -3661,13 +3685,20 @@ impl<'vm> HirEvaluator<'vm> {
         }
       }
       hir_js::BinaryOp::ShiftRightUnsigned => {
-        // `>>>` always performs `ToNumber` and does not support BigInt.
         let mut scope = scope.reborrow();
         scope.push_roots(&[l, r])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, l)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, r)?;
-        let shift = to_uint32(rn) & 0x1f;
-        Ok(Value::Number(to_uint32(ln).wrapping_shr(shift) as f64))
+        let ln = self.to_numeric(&mut scope, l)?;
+        let rn = self.to_numeric(&mut scope, r)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => {
+            let shift = to_uint32(b) & 0x1f;
+            Ok(Value::Number((to_uint32(a) >> shift) as f64))
+          }
+          (NumericValue::BigInt(_), NumericValue::BigInt(_)) => Err(VmError::TypeError(
+            "BigInt does not support unsigned right shift",
+          )),
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::BinaryOp::BitOr => {
         let mut scope = scope.reborrow();

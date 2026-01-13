@@ -438,6 +438,18 @@ fn compiled_bigint_shift_left_executes() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_bigint_shift_left_negative_count_reverses_direction() -> Result<(), VmError> {
+  // Match interpreter semantics: `x << -y` is `x >> y`.
+  assert_compiled_script_bigint("8n << -1n", 4)
+}
+
+#[test]
+fn compiled_bigint_shift_right_negative_count_reverses_direction() -> Result<(), VmError> {
+  // Match interpreter semantics: `x >> -y` is `x << y`.
+  assert_compiled_script_bigint("8n >> -1n", 16)
+}
+
+#[test]
 fn compiled_new_target_is_undefined_in_normal_call() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(
