@@ -7,7 +7,7 @@ publish = false
 license = "BSD-3-Clause"
 links = "vpx"
 build = "build.rs"
+readme = "README.md"
 
 [dependencies]
 libc = "0.2"
-
