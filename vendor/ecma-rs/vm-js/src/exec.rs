@@ -7394,7 +7394,33 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     body: &ForBody,
   ) -> Result<Completion, VmError> {
-    self.eval_stmt_list(scope, &body.body)
+    if body.body.is_empty() {
+      return Ok(Completion::empty());
+    }
+
+    // For-body `{ ... }` is block-scoped, but `parse-js` does not represent it as a `Stmt::Block`.
+    // Mirror `eval_block_stmt` so lexical declarations inside the body are instantiated in a fresh
+    // lexical environment each time the body is evaluated (i.e. per loop iteration).
+    let needs_lexical_env = body.body.iter().any(|stmt| match &*stmt.stx {
+      Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
+      Stmt::ClassDecl(_) => true,
+      Stmt::FunctionDecl(_) => self.strict,
+      _ => false,
+    });
+    if !needs_lexical_env {
+      return self.eval_stmt_list(scope, &body.body);
+    }
+
+    let outer = self.env.lexical_env;
+    let block_env = scope.env_create(Some(outer))?;
+    self.env.set_lexical_env(scope.heap_mut(), block_env);
+
+    let result = self
+      .instantiate_block_decls_in_stmt_list(scope, block_env, &body.body)
+      .and_then(|_| self.eval_stmt_list(scope, &body.body));
+
+    self.env.set_lexical_env(scope.heap_mut(), outer);
+    result
   }
 
   fn eval_label(
@@ -15683,7 +15709,42 @@ fn async_eval_for_body(
   scope: &mut Scope<'_>,
   body: &ForBody,
 ) -> Result<AsyncEval<Completion>, VmError> {
-  async_eval_stmt_list(evaluator, scope, &body.body)
+  if body.body.is_empty() {
+    return Ok(AsyncEval::Complete(Completion::empty()));
+  }
+
+  // `parse-js` represents `for (...) { ... }` bodies as `ForBody` instead of `Stmt::Block`. Mirror
+  // `async_eval_block_stmt` so block-scoped declarations are instantiated in a fresh lexical
+  // environment for each evaluation of the body (i.e. per loop iteration).
+  let needs_lexical_env = body.body.iter().any(|stmt| match &*stmt.stx {
+    Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
+    Stmt::ClassDecl(_) => true,
+    Stmt::FunctionDecl(_) => evaluator.strict,
+    _ => false,
+  });
+  if !needs_lexical_env {
+    return async_eval_stmt_list(evaluator, scope, &body.body);
+  }
+
+  let outer = evaluator.env.lexical_env;
+  let block_env = scope.env_create(Some(outer))?;
+  evaluator.env.set_lexical_env(scope.heap_mut(), block_env);
+
+  if let Err(err) = evaluator.instantiate_block_decls_in_stmt_list(scope, block_env, &body.body) {
+    evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+    return Err(err);
+  }
+
+  match async_eval_stmt_list(evaluator, scope, &body.body)? {
+    AsyncEval::Complete(c) => {
+      evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      Ok(AsyncEval::Complete(c))
+    }
+    AsyncEval::Suspend(mut suspend) => {
+      async_frames_push(&mut suspend.frames, AsyncFrame::RestoreLexEnv { outer })?;
+      Ok(AsyncEval::Suspend(suspend))
+    }
+  }
 }
 
 fn async_eval_for_triple(
@@ -26926,7 +26987,42 @@ fn gen_eval_for_body(
   scope: &mut Scope<'_>,
   body: &ForBody,
 ) -> Result<GenEval<Completion>, VmError> {
-  gen_eval_stmt_list(evaluator, scope, &body.body)
+  if body.body.is_empty() {
+    return Ok(GenEval::Complete(Completion::empty()));
+  }
+
+  // `parse-js` represents `for (...) { ... }` bodies as `ForBody` instead of `Stmt::Block`. Mirror
+  // `gen_eval_block_stmt` so block-scoped declarations are instantiated in a fresh lexical
+  // environment for each evaluation of the body (i.e. per loop iteration).
+  let needs_lexical_env = body.body.iter().any(|stmt| match &*stmt.stx {
+    Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
+    Stmt::ClassDecl(_) => true,
+    Stmt::FunctionDecl(_) => evaluator.strict,
+    _ => false,
+  });
+  if !needs_lexical_env {
+    return gen_eval_stmt_list(evaluator, scope, &body.body);
+  }
+
+  let outer = evaluator.env.lexical_env;
+  let block_env = scope.env_create(Some(outer))?;
+  evaluator.env.set_lexical_env(scope.heap_mut(), block_env);
+
+  if let Err(err) = evaluator.instantiate_block_decls_in_stmt_list(scope, block_env, &body.body) {
+    evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+    return Err(err);
+  }
+
+  match gen_eval_stmt_list(evaluator, scope, &body.body)? {
+    GenEval::Complete(c) => {
+      evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      Ok(GenEval::Complete(c))
+    }
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(&mut suspend.frames, GenFrame::RestoreLexEnv { outer })?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
 }
 
 fn gen_eval_for_of(
