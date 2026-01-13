@@ -14258,80 +14258,94 @@ mod tests {
 
   #[test]
   fn overflow_auto_child_does_not_enter_convergence_loop_under_overlay_scrollbars() {
-    reset_overflow_auto_child_layout_passes();
+    // Keep this test independent of process-wide env state by explicitly using a fresh
+    // (toggle-free) thread-local runtime config.
+    runtime::with_thread_runtime_toggles(
+      Arc::new(runtime::RuntimeToggles::from_map(HashMap::new())),
+      || {
+        reset_overflow_auto_child_layout_passes();
 
-    let mut parent_style = ComputedStyle::default();
-    parent_style.display = Display::Block;
+        let mut parent_style = ComputedStyle::default();
+        parent_style.display = Display::Block;
 
-    let mut child_style = ComputedStyle::default();
-    child_style.display = Display::Block;
-    child_style.overflow_y = Overflow::Auto;
-    child_style.height = Some(Length::px(50.0));
+        let mut child_style = ComputedStyle::default();
+        child_style.display = Display::Block;
+        child_style.overflow_y = Overflow::Auto;
+        child_style.height = Some(Length::px(50.0));
 
-    let mut inner_style = ComputedStyle::default();
-    inner_style.display = Display::Block;
-    inner_style.height = Some(Length::px(10.0));
+        let mut inner_style = ComputedStyle::default();
+        inner_style.display = Display::Block;
+        inner_style.height = Some(Length::px(10.0));
 
-    let inner = BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Block, vec![]);
-    let child = BoxNode::new_block(
-      Arc::new(child_style),
-      FormattingContextType::Block,
-      vec![inner],
-    );
-    let parent = BoxNode::new_block(
-      Arc::new(parent_style),
-      FormattingContextType::Block,
-      vec![child],
-    );
+        let inner =
+          BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Block, vec![]);
+        let child = BoxNode::new_block(
+          Arc::new(child_style),
+          FormattingContextType::Block,
+          vec![inner],
+        );
+        let parent = BoxNode::new_block(
+          Arc::new(parent_style),
+          FormattingContextType::Block,
+          vec![child],
+        );
 
-    let fc = BlockFormattingContext::new();
-    let constraints = LayoutConstraints::definite_width(200.0);
-    fc.layout(&parent, &constraints).unwrap();
+        let fc = BlockFormattingContext::new();
+        let constraints = LayoutConstraints::definite_width(200.0);
+        fc.layout(&parent, &constraints).unwrap();
 
-    assert_eq!(
-      overflow_auto_child_layout_passes(),
-      0,
-      "expected overflow:auto blocks to skip the convergence reflow loop under the default overlay scrollbar model"
+        assert_eq!(
+          overflow_auto_child_layout_passes(),
+          0,
+          "expected overflow:auto blocks to skip the convergence reflow loop under the default overlay scrollbar model"
+        );
+      },
     );
   }
 
   #[test]
   fn overflow_auto_child_skips_convergence_loop_even_when_overflowing() {
-    reset_overflow_auto_child_layout_passes();
+    runtime::with_thread_runtime_toggles(
+      Arc::new(runtime::RuntimeToggles::from_map(HashMap::new())),
+      || {
+        reset_overflow_auto_child_layout_passes();
 
-    let mut parent_style = ComputedStyle::default();
-    parent_style.display = Display::Block;
+        let mut parent_style = ComputedStyle::default();
+        parent_style.display = Display::Block;
 
-    let mut child_style = ComputedStyle::default();
-    child_style.display = Display::Block;
-    child_style.overflow_y = Overflow::Auto;
-    child_style.height = Some(Length::px(50.0));
+        let mut child_style = ComputedStyle::default();
+        child_style.display = Display::Block;
+        child_style.overflow_y = Overflow::Auto;
+        child_style.height = Some(Length::px(50.0));
 
-    // Force vertical overflow so the legacy convergence loop would attempt multiple passes.
-    let mut inner_style = ComputedStyle::default();
-    inner_style.display = Display::Block;
-    inner_style.height = Some(Length::px(200.0));
+        // Force vertical overflow so the legacy convergence loop would attempt multiple passes.
+        let mut inner_style = ComputedStyle::default();
+        inner_style.display = Display::Block;
+        inner_style.height = Some(Length::px(200.0));
 
-    let inner = BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Block, vec![]);
-    let child = BoxNode::new_block(
-      Arc::new(child_style),
-      FormattingContextType::Block,
-      vec![inner],
-    );
-    let parent = BoxNode::new_block(
-      Arc::new(parent_style),
-      FormattingContextType::Block,
-      vec![child],
-    );
+        let inner =
+          BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Block, vec![]);
+        let child = BoxNode::new_block(
+          Arc::new(child_style),
+          FormattingContextType::Block,
+          vec![inner],
+        );
+        let parent = BoxNode::new_block(
+          Arc::new(parent_style),
+          FormattingContextType::Block,
+          vec![child],
+        );
 
-    let fc = BlockFormattingContext::new();
-    let constraints = LayoutConstraints::definite_width(200.0);
-    fc.layout(&parent, &constraints).unwrap();
+        let fc = BlockFormattingContext::new();
+        let constraints = LayoutConstraints::definite_width(200.0);
+        fc.layout(&parent, &constraints).unwrap();
 
-    assert_eq!(
-      overflow_auto_child_layout_passes(),
-      0,
-      "expected overflow:auto blocks to skip the convergence reflow loop under the default overlay scrollbar model, even when content overflows"
+        assert_eq!(
+          overflow_auto_child_layout_passes(),
+          0,
+          "expected overflow:auto blocks to skip the convergence reflow loop under the default overlay scrollbar model, even when content overflows"
+        );
+      },
     );
   }
 
