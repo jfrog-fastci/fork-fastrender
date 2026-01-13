@@ -12346,9 +12346,7 @@ mod select_dropdown_a11y_tests {
 
 #[cfg(all(test, feature = "browser_ui"))]
 mod page_form_popup_focus_tests {
-  use super::{
-    close_date_time_picker_popup, egui_focused_widget_id, DateTimePickerState, OpenDateTimePicker,
-  };
+  use super::{close_date_time_picker_popup, DateTimePickerState, OpenDateTimePicker};
   use fastrender::geometry::Rect;
   use fastrender::ui::messages::DateTimeInputKind;
   use fastrender::ui::TabId;
@@ -12380,12 +12378,14 @@ mod page_form_popup_focus_tests {
     });
     let _ = ctx.end_frame();
 
-    assert_eq!(egui_focused_widget_id(&ctx), Some(picker_text_id));
+    assert!(
+      ctx.memory(|mem| mem.has_focus(picker_text_id)),
+      "expected the picker text edit to hold egui focus"
+    );
     assert!(
       ctx.wants_keyboard_input(),
       "expected the picker text edit to claim keyboard focus"
     );
-
     // Simulate the browser closing the picker with no previous focused id.
     let mut open_picker = Some(OpenDateTimePicker {
       tab_id: TabId(1),
@@ -12411,6 +12411,10 @@ mod page_form_popup_focus_tests {
     let _ = ctx.end_frame();
 
     assert!(
+      !ctx.memory(|mem| mem.has_focus(picker_text_id)),
+      "expected closing the picker to clear focus from the removed picker text edit"
+    );
+    assert!(
       !ctx.wants_keyboard_input(),
       "expected closing the picker to clear egui keyboard focus"
     );
@@ -12431,7 +12435,7 @@ mod page_form_popup_focus_tests {
       ui.add(egui::TextEdit::singleline(&mut prev_text).id(prev_id));
     });
     let _ = ctx.end_frame();
-    assert_eq!(egui_focused_widget_id(&ctx), Some(prev_id));
+    assert!(ctx.memory(|mem| mem.has_focus(prev_id)));
 
     // Frame 2: picker opens and takes focus.
     begin_frame(&ctx);
@@ -12441,7 +12445,7 @@ mod page_form_popup_focus_tests {
       ui.add(egui::TextEdit::singleline(&mut picker_text).id(picker_text_id));
     });
     let _ = ctx.end_frame();
-    assert_eq!(egui_focused_widget_id(&ctx), Some(picker_text_id));
+    assert!(ctx.memory(|mem| mem.has_focus(picker_text_id)));
 
     // Close picker: focus should be restored to the previous widget.
     let mut open_picker = Some(OpenDateTimePicker {
@@ -12464,7 +12468,10 @@ mod page_form_popup_focus_tests {
     });
     let _ = ctx.end_frame();
 
-    assert_eq!(egui_focused_widget_id(&ctx), Some(prev_id));
+    assert!(
+      ctx.memory(|mem| mem.has_focus(prev_id)),
+      "expected closing the picker to restore focus to the previously focused widget"
+    );
     assert!(
       ctx.wants_keyboard_input(),
       "expected focus restore to keep keyboard input routed to the previous TextEdit"
