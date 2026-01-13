@@ -806,6 +806,20 @@ fn sanitize_worker_to_ui_for_windowed_browser(
         anchor_css,
       })
     }
+    WorkerToUi::MediaControlsOpened {
+      tab_id,
+      node_id,
+      kind,
+      anchor_css,
+    } => {
+      let anchor_css = sanitize_anchor_css_rect(anchor_css);
+      Some(WorkerToUi::MediaControlsOpened {
+        tab_id,
+        node_id,
+        kind,
+        anchor_css,
+      })
+    }
     other => Some(other),
   }
 }
