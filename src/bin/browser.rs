@@ -5416,7 +5416,15 @@ impl App {
             format!("Debug log ({})", self.debug_log.len())
           };
           let button = egui::Button::new(egui::RichText::new(label).small());
-          if ui.add(button).clicked() {
+          let resp = ui.add(button);
+          let a11y_label = if self.debug_log.is_empty() {
+            "Open debug log".to_string()
+          } else {
+            format!("Open debug log ({} lines)", self.debug_log.len())
+          };
+          resp
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label));
+          if resp.clicked() {
             self.debug_log_ui_open = true;
           }
         });
@@ -5456,11 +5464,21 @@ impl App {
       .show(ctx, |ui| {
         let mut wants_copy = false;
         ui.horizontal(|ui| {
-          if ui.button("Clear").clicked() {
+          let clear_resp = ui.button("Clear");
+          clear_resp
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Clear debug log"));
+          if clear_resp.clicked() {
             self.debug_log.clear();
           }
 
-          wants_copy = ui.button("Copy all").clicked();
+          let copy_resp = ui.button("Copy all");
+          copy_resp.widget_info(|| {
+            egui::WidgetInfo::labeled(
+              egui::WidgetType::Button,
+              "Copy all debug log lines to clipboard",
+            )
+          });
+          wants_copy = copy_resp.clicked();
 
           ui.separator();
 
