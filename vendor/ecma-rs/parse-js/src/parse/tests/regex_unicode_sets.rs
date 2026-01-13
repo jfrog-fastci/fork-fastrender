@@ -239,6 +239,8 @@ fn accepts_unicode_sets_examples() {
   assert!(parse_with_options("let r = /^[[0-9]_]+$/v;", opts).is_ok());
   assert!(parse_with_options("let r = /^[\\q{0|2|4|9\\uFE0F\\u20E3}_]+$/v;", opts).is_ok());
   assert!(parse_with_options("let r = /^[\\p{ASCII_Hex_Digit}_]+$/v;", opts).is_ok());
+  assert!(parse_with_options(r"let r = /[\!!]/v;", opts).is_ok());
+  assert!(parse_with_options(r"let r = /[\&\&]/v;", opts).is_ok());
   assert!(parse_with_options("let r = /[]/v;", opts).is_ok());
 }
 
@@ -247,6 +249,10 @@ fn rejects_unicode_sets_and_operator_lookahead_early_errors() {
   let opts = ecma_script_opts();
   assert!(parse_with_options("let r = /[(a)]/v;", opts).is_err());
   assert!(parse_with_options("let r = /[a&&&b]/v;", opts).is_err());
+  assert!(parse_with_options("let r = /[ab&&c]/v;", opts).is_err());
+  assert!(parse_with_options("let r = /[a&&bc]/v;", opts).is_err());
+  assert!(parse_with_options("let r = /[ab--c]/v;", opts).is_err());
+  assert!(parse_with_options("let r = /[a--bc]/v;", opts).is_err());
 }
 
 #[test]

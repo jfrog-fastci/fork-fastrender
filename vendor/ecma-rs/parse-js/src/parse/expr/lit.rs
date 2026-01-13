@@ -1858,6 +1858,17 @@ fn validate_regex_pattern(
             return Ok((i + esc_len, None));
           }
 
+          // In UnicodeSets mode, additional punctuators can be escaped within class set
+          // expressions via `\` ClassSetReservedPunctuator.
+          if unicode_sets_mode
+            && matches!(
+              esc,
+              '&' | '!' | '#' | '%' | ',' | ':' | ';' | '<' | '=' | '>' | '@' | '`' | '~'
+            )
+          {
+            return Ok((i + esc_len, Some(esc as u32)));
+          }
+
           // IdentityEscape[+UnicodeMode] is limited to SyntaxCharacter or `/`.
           if !is_regex_identity_escape_unicode_mode(esc) {
             return Err(RegexError {
@@ -1918,6 +1929,14 @@ fn validate_regex_pattern(
       terminator: char,
     ) -> Result<(usize, bool), RegexError> {
       let mut prev = PrevToken::None;
+      #[derive(Clone, Copy, PartialEq, Eq)]
+      enum Mode {
+        Unknown,
+        Union,
+        Intersection,
+        Subtraction,
+      }
+      let mut mode = Mode::Unknown;
       let mut saw_operand = false;
       while i < pattern.len() {
         let rest = &pattern[i..];
@@ -1934,6 +1953,17 @@ fn validate_regex_pattern(
         }
 
         if rest.starts_with("&&") {
+          match mode {
+            Mode::Unknown => mode = Mode::Intersection,
+            Mode::Intersection => {}
+            _ => {
+              return Err(RegexError {
+                kind: RegexErrorKind::InvalidPattern,
+                offset: base_offset + i,
+                len: 2,
+              });
+            }
+          }
           if !matches!(prev, PrevToken::Operand { .. }) {
             return Err(RegexError {
               kind: RegexErrorKind::InvalidPattern,
@@ -1956,6 +1986,17 @@ fn validate_regex_pattern(
         }
 
         if rest.starts_with("--") {
+          match mode {
+            Mode::Unknown => mode = Mode::Subtraction,
+            Mode::Subtraction => {}
+            _ => {
+              return Err(RegexError {
+                kind: RegexErrorKind::InvalidPattern,
+                offset: base_offset + i,
+                len: 2,
+              });
+            }
+          }
           if !matches!(prev, PrevToken::Operand { .. }) {
             return Err(RegexError {
               kind: RegexErrorKind::InvalidPattern,
@@ -1977,6 +2018,14 @@ fn validate_regex_pattern(
         }
 
         if ch == '-' {
+          // Ranges (`a-b`) are only valid in `ClassUnion` expressions.
+          if matches!(mode, Mode::Intersection | Mode::Subtraction) {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + i,
+              len: 1,
+            });
+          }
           // Single `-` can only appear as a range marker.
           let PrevToken::Operand {
             range_value: Some(lhs_value),
@@ -2006,11 +2055,27 @@ fn validate_regex_pattern(
           }
           i = end;
           prev = PrevToken::Operand { range_value: None };
+          mode = Mode::Union;
           saw_operand = true;
           continue;
         }
 
         // Parse an operand.
+        if matches!(prev, PrevToken::Operand { .. }) {
+          // Adjacency forms a `ClassUnion`. Once we enter intersection/subtraction mode, union
+          // operands must be wrapped in a NestedClass (`[...]`).
+          match mode {
+            Mode::Unknown => mode = Mode::Union,
+            Mode::Union => {}
+            _ => {
+              return Err(RegexError {
+                kind: RegexErrorKind::InvalidPattern,
+                offset: base_offset + i,
+                len: ch.len_utf8(),
+              });
+            }
+          }
+        }
         let (end, range_value) =
           parse_operand(pattern, base_offset, i, unicode_mode, unicode_sets_mode, in_negated_class)?;
         i = end;
@@ -3207,6 +3272,14 @@ mod regex_validation_tests {
   }
 
   #[test]
+  fn unicode_sets_mode_accepts_reserved_punctuator_escapes() {
+    // `\!` / `\&` are not IdentityEscapes in UnicodeMode, but are allowed inside UnicodeSets
+    // character classes via ClassSetReservedPunctuator.
+    assert_valid(r"/[\!!]/v");
+    assert_valid(r"/[\&\&]/v");
+  }
+
+  #[test]
   fn unicode_sets_mode_rejects_malformed_class_string_disjunction() {
     assert_invalid(r"/[\q]/v"); // missing `{`
     assert_invalid(r"/[\q{a|b]/v"); // unterminated `}`
@@ -3214,6 +3287,17 @@ mod regex_validation_tests {
     assert_invalid(r"/[\q{&&}]/v"); // reserved double punctuator
     assert_invalid(r"/[\q{\d}]/v"); // character class escape not allowed in ClassString
     assert_invalid(r"/[\q{\q}]/v"); // invalid escape in UnicodeMode
+  }
+
+  #[test]
+  fn unicode_sets_mode_rejects_mixed_union_and_set_operators() {
+    // `&&` / `--` operate on ClassSetOperand, not on implicit unions. Unions must be wrapped in a
+    // nested class (`[...]`) before being combined with set operators.
+    assert_invalid(r"/[ab&&c]/v");
+    assert_invalid(r"/[a&&bc]/v");
+    assert_invalid(r"/[ab--c]/v");
+    assert_invalid(r"/[a--bc]/v");
+    assert_invalid(r"/[a-b&&c]/v");
   }
 }
 
