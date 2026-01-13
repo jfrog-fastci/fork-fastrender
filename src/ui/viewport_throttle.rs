@@ -17,7 +17,7 @@ pub const ENV_VIEWPORT_RESIZE_DEBOUNCE_MS: &str = "FASTR_BROWSER_VIEWPORT_RESIZE
 pub const MAX_VIEWPORT_DEBOUNCE_MS: u64 = 2000;
 
 /// Configuration knobs for [`ViewportThrottle`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ViewportThrottleConfig {
   /// Maximum number of `ViewportChanged` updates allowed per second while the viewport is changing.
   pub max_hz: u32,
@@ -276,7 +276,7 @@ impl ViewportThrottle {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::debug::runtime::{with_runtime_toggles, RuntimeToggles};
+  use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
   use std::collections::HashMap;
   use std::sync::Arc;
 
@@ -490,7 +490,7 @@ mod tests {
 
   #[test]
   fn viewport_throttle_config_from_env_uses_defaults_when_unset() {
-    with_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::new())), || {
+    with_thread_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::new())), || {
       assert_eq!(ViewportThrottleConfig::from_env(), ViewportThrottleConfig::default());
     });
   }
@@ -501,7 +501,7 @@ mod tests {
       max_hz: 12,
       debounce: Duration::from_millis(140),
     };
-    with_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::new())), || {
+    with_thread_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::new())), || {
       assert_eq!(
         ViewportThrottleConfig::resize_from_env_with_defaults(defaults),
         defaults
@@ -511,7 +511,7 @@ mod tests {
 
   #[test]
   fn viewport_throttle_config_from_env_parses_values() {
-    with_runtime_toggles(
+    with_thread_runtime_toggles(
       Arc::new(RuntimeToggles::from_map(HashMap::from([
         (ENV_VIEWPORT_MAX_HZ.to_string(), "120".to_string()),
         (ENV_VIEWPORT_DEBOUNCE_MS.to_string(), "150".to_string()),
@@ -530,7 +530,7 @@ mod tests {
 
   #[test]
   fn viewport_throttle_config_from_env_clamps_values() {
-    with_runtime_toggles(
+    with_thread_runtime_toggles(
       Arc::new(RuntimeToggles::from_map(HashMap::from([
         (ENV_VIEWPORT_MAX_HZ.to_string(), "0".to_string()),
         (ENV_VIEWPORT_DEBOUNCE_MS.to_string(), "9_999".to_string()),
@@ -545,7 +545,7 @@ mod tests {
 
   #[test]
   fn viewport_throttle_config_from_env_ignores_invalid_values() {
-    with_runtime_toggles(
+    with_thread_runtime_toggles(
       Arc::new(RuntimeToggles::from_map(HashMap::from([
         (ENV_VIEWPORT_MAX_HZ.to_string(), "nope".to_string()),
         (ENV_VIEWPORT_DEBOUNCE_MS.to_string(), "   ".to_string()),
@@ -558,7 +558,7 @@ mod tests {
 
   #[test]
   fn viewport_throttle_config_resize_from_env_overrides_normal() {
-    with_runtime_toggles(
+    with_thread_runtime_toggles(
       Arc::new(RuntimeToggles::from_map(HashMap::from([
         (ENV_VIEWPORT_MAX_HZ.to_string(), "15".to_string()),
         (ENV_VIEWPORT_DEBOUNCE_MS.to_string(), "100".to_string()),
