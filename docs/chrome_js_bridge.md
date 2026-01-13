@@ -210,6 +210,7 @@ Recommended minimal shape (embedder-defined, but should be stable within an embe
       title: "Example Domain",
       url: "https://example.com/",
       loading: false,
+      error: null, // optional string for the last navigation failure
       canGoBack: false,
       canGoForward: false,
     }
@@ -260,6 +261,12 @@ The chrome bridge is privileged, but it still validates inputs:
 - Invalid/blocked URLs passed to `chrome.navigation.navigate(...)` should throw an exception rather
   than silently doing nothing. The embedder is expected to apply its scheme allowlist (e.g.
   reject `javascript:`).
+- Unavailability is not an error:
+  - `goBack()` / `goForward()` should be no-ops if there is no history entry in that direction.
+  - `stop()` should be a no-op if nothing is loading.
+- Navigation failures that happen *after* dispatch (DNS failures, network errors, HTTP failures,
+  etc) should generally **not** throw. They should be surfaced via state/events (for example via an
+  `error` field in `chrome.getState()` or via a `chrome-navigation`/`chrome-state` event).
 
 The chrome bridge is primarily **command-oriented**. Chrome pages should not rely on return values;
 instead, treat calls as “fire-and-forget” and reflect resulting state changes via events/state
