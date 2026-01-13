@@ -6594,13 +6594,25 @@ impl InteractionEngine {
             )
             .unwrap_or((0, CaretAffinity::Downstream));
 
-            dom_changed |= self.insert_text_into_text_control_at_caret(
-              &mut index,
-              target_id,
-              &active.text,
-              caret,
-              caret_affinity,
-            );
+            let force_copy = modifiers.command();
+            let same_control = target_id == active.node_id;
+            if same_control && !force_copy {
+              dom_changed |= self.move_selected_text_within_text_control_for_drag_drop(
+                &mut index,
+                target_id,
+                active.selection,
+                &active.text,
+                caret,
+              );
+            } else {
+              dom_changed |= self.insert_text_into_text_control_at_caret(
+                &mut index,
+                target_id,
+                &active.text,
+                caret,
+                caret_affinity,
+              );
+            }
           }
         }
       }
@@ -7365,6 +7377,136 @@ impl InteractionEngine {
         set_node_attr(node_mut, "data-fastr-file-value", &value_string)
       };
       changed |= attr_changed;
+    }
+
+    changed
+  }
+
+  fn move_selected_text_within_text_control_for_drag_drop(
+    &mut self,
+    index: &mut DomIndexMut,
+    node_id: usize,
+    selection: (usize, usize),
+    text: &str,
+    caret: usize,
+  ) -> bool {
+    let Some(node) = index.node(node_id) else {
+      return false;
+    };
+    let is_text_input = is_text_input(node);
+    let is_textarea = is_textarea(node);
+    if !(is_text_input || is_textarea) {
+      return false;
+    }
+    if text.is_empty() {
+      return false;
+    }
+    if node_or_ancestor_is_inert(index, node_id) || node_is_disabled(index, node_id) {
+      return false;
+    }
+    if node_is_readonly(index, node_id) {
+      return false;
+    }
+
+    self.ensure_form_default_snapshot_for_control(index, node_id);
+
+    let current = if is_textarea {
+      textarea_value_for_editing(node)
+    } else {
+      node.get_attribute_ref("value").unwrap_or("").to_string()
+    };
+    let current_len = current.chars().count();
+
+    let (sel_start, sel_end) = selection;
+    let sel_start = sel_start.min(current_len);
+    let sel_end = sel_end.min(current_len);
+    if sel_start >= sel_end {
+      return false;
+    }
+
+    let caret = caret.min(current_len);
+    // Browser-like behavior: dropping within the original selection is a no-op.
+    if caret >= sel_start && caret <= sel_end {
+      return false;
+    }
+
+    // Any direct text mutation cancels an in-progress IME preedit string.
+    let mut changed = self.ime_cancel_internal();
+
+    let mut edit = self.text_edit.unwrap_or(TextEditState {
+      node_id,
+      caret: current_len,
+      caret_affinity: CaretAffinity::Downstream,
+      selection_anchor: None,
+      preferred_x: None,
+    });
+    if edit.node_id != node_id {
+      edit = TextEditState {
+        node_id,
+        caret: current_len,
+        caret_affinity: CaretAffinity::Downstream,
+        selection_anchor: None,
+        preferred_x: None,
+      };
+    }
+    edit.caret = edit.caret.min(current_len);
+    edit.selection_anchor = edit.selection_anchor.map(|a| a.min(current_len));
+
+    let start_byte = byte_offset_for_char_idx(&current, sel_start);
+    let end_byte = byte_offset_for_char_idx(&current, sel_end);
+    if start_byte >= end_byte || end_byte > current.len() {
+      return changed;
+    }
+
+    let mut without_selection =
+      String::with_capacity(current.len().saturating_sub(end_byte.saturating_sub(start_byte)));
+    without_selection.push_str(&current[..start_byte]);
+    without_selection.push_str(&current[end_byte..]);
+
+    let removed_chars = sel_end.saturating_sub(sel_start);
+    let without_len_chars = current_len.saturating_sub(removed_chars);
+    let insert_at = if caret > sel_end {
+      caret.saturating_sub(removed_chars)
+    } else {
+      caret
+    }
+    .min(without_len_chars);
+
+    let insert_byte = byte_offset_for_char_idx(&without_selection, insert_at);
+    let mut next = String::with_capacity(without_selection.len().saturating_add(text.len()));
+    next.push_str(&without_selection[..insert_byte]);
+    next.push_str(text);
+    next.push_str(&without_selection[insert_byte..]);
+
+    let next_len = next.chars().count();
+    let inserted_chars = text.chars().count();
+    let next_caret = insert_at.saturating_add(inserted_chars).min(next_len);
+
+    let Some(node_mut) = index.node_mut(node_id) else {
+      return changed;
+    };
+    if next != current {
+      self.record_text_undo_snapshot(node_id, &current, &edit);
+    }
+    let changed_value = if is_text_input {
+      set_node_attr(node_mut, "value", &next)
+    } else {
+      set_node_attr(node_mut, "data-fastr-value", &next)
+    };
+    changed |= changed_value;
+    if changed_value {
+      changed |= self.mark_user_validity(node_id);
+    }
+
+    if self.state.focused == Some(node_id) {
+      self.text_edit = Some(TextEditState {
+        node_id,
+        caret: next_caret,
+        caret_affinity: CaretAffinity::Upstream,
+        selection_anchor: None,
+        preferred_x: None,
+      });
+      changed |= self.sync_text_edit_paint_state();
     }
 
     changed

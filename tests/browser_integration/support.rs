@@ -952,6 +952,22 @@ pub fn pointer_up(tab_id: TabId, pos_css: (f32, f32), button: PointerButton) -> 
   }
 }
 
+/// Construct a `UiToWorker::PointerUp` message with explicit modifier metadata.
+#[cfg(feature = "browser_ui")]
+pub fn pointer_up_with(
+  tab_id: TabId,
+  pos_css: (f32, f32),
+  button: PointerButton,
+  modifiers: PointerModifiers,
+) -> UiToWorker {
+  UiToWorker::PointerUp {
+    tab_id,
+    pos_css,
+    button,
+    modifiers,
+  }
+}
+
 /// Construct a `UiToWorker::TextInput` message.
 #[cfg(feature = "browser_ui")]
 pub fn text_input(tab_id: TabId, text: impl Into<String>) -> UiToWorker {

@@ -19,6 +19,104 @@ fn find_element_by_id<'a>(dom: &'a DomNode, element_id: &str) -> &'a DomNode {
   panic!("expected element with id={element_id:?}");
 }
 
+fn drag_drop_selected_text_within_single_text_input(
+  up_modifiers: PointerModifiers,
+  expected_value: &str,
+) -> Result<()> {
+  let tab_id = TabId(1);
+  let viewport_css = (320, 100);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          input {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 260px;
+            height: 40px;
+            padding: 0;
+            border: 0;
+            outline: none;
+            font-family: "Noto Sans Mono";
+            font-size: 24px;
+          }
+        </style>
+      </head>
+      <body>
+        <input id="src" value="hello">
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Focus the input.
+  let focus_point = (10.0, 20.0);
+  let _ = controller.handle_message(support::pointer_down(
+    tab_id,
+    focus_point,
+    PointerButton::Primary,
+  ))?;
+  let _ = controller.handle_message(support::pointer_up(
+    tab_id,
+    focus_point,
+    PointerButton::Primary,
+  ))?;
+
+  // Select "ell" via keyboard: place caret after "h", then shift-select three characters.
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Home))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowRight))?;
+  for _ in 0..3 {
+    let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ShiftArrowRight))?;
+  }
+  assert_eq!(
+    controller
+      .interaction_state()
+      .text_edit
+      .as_ref()
+      .and_then(|state| state.selection),
+    Some((1, 4)),
+    "expected selection to cover \"ell\""
+  );
+
+  // Drag the selection to the end of the same input.
+  let drag_start = (20.0, 20.0);
+  let drop_end = (250.0, 20.0);
+  let _ = controller.handle_message(support::pointer_down(
+    tab_id,
+    drag_start,
+    PointerButton::Primary,
+  ))?;
+  let _ = controller.handle_message(support::pointer_move(
+    tab_id,
+    drop_end,
+    PointerButton::Primary,
+  ))?;
+  let _ = controller.handle_message(support::pointer_up_with(
+    tab_id,
+    drop_end,
+    PointerButton::Primary,
+    up_modifiers,
+  ))?;
+
+  let src = find_element_by_id(controller.document().dom(), "src");
+  assert_eq!(src.get_attribute_ref("value"), Some(expected_value));
+  Ok(())
+}
+
 #[test]
 fn drag_drop_selected_text_between_text_inputs_copies_text() -> Result<()> {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
@@ -108,6 +206,21 @@ fn drag_drop_selected_text_between_text_inputs_copies_text() -> Result<()> {
   assert_eq!(src.get_attribute_ref("value"), Some("hello"));
   assert_eq!(dst.get_attribute_ref("value"), Some("hello"));
   Ok(())
+}
+
+#[test]
+fn drag_drop_selected_text_within_text_input_moves_text_by_default() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  drag_drop_selected_text_within_single_text_input(PointerModifiers::NONE, "hoell")
+}
+
+#[test]
+fn drag_drop_selected_text_within_text_input_with_command_copies_text() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let cmd_mods = PointerModifiers::CTRL | PointerModifiers::META;
+  drag_drop_selected_text_within_single_text_input(cmd_mods, "helloell")
 }
 
 #[test]
