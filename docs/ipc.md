@@ -236,6 +236,8 @@ Additional (important) size limits that sit *on top* of framing:
 | Browser↔network cookie string max (in-tree protocol schema) | 4 KiB | `MAX_COOKIE_STRING_BYTES` in [`src/ipc/protocol/network.rs`](../src/ipc/protocol/network.rs) |
 | Linux shared memory hard ceiling | 256 MiB | `MAX_SHM_SIZE` in [`src/ipc/shm.rs`](../src/ipc/shm.rs) |
 | Default max un-acked frames in flight (renderer-side flow control) | 2 | `DEFAULT_MAX_FRAMES_IN_FLIGHT` in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) |
+| Browser-side compositor max subframes per frame (stdio prototype) | 256 | `MAX_SUBFRAMES_PER_FRAME` in [`crates/fastrender-ipc/src/lib.rs`](../crates/fastrender-ipc/src/lib.rs) |
+| Browser-side compositor max clip items per subframe (stdio prototype) | 64 | `MAX_SUBFRAME_CLIP_STACK_DEPTH` in [`crates/fastrender-ipc/src/lib.rs`](../crates/fastrender-ipc/src/lib.rs) |
 | WebSocket URL bytes (renderer→network) | 8 KiB | `MAX_WEBSOCKET_URL_BYTES` in [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) |
 | WebSocket protocol count (renderer→network) | 32 | `MAX_WEBSOCKET_PROTOCOLS` in [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) |
 | WebSocket protocol string bytes (renderer→network) | 1 KiB | `MAX_WEBSOCKET_PROTOCOL_BYTES` in [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) |
