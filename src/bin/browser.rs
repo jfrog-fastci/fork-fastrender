@@ -15966,6 +15966,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           self.close_media_controls();
           self.window.request_redraw();
           if clicked_media_element {
+            // Swallow the matching release event too so the toggle-close click is fully UI-owned
+            // (prevents page-side `pointerup`/`mouseup` observers from seeing a partial click).
+            self.media_controls_overlay_pointer_capture = true;
             return;
           }
         }
