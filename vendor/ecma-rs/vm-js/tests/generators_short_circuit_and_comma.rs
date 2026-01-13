@@ -265,6 +265,74 @@ fn generator_short_circuit_uses_comma_result_after_yield_in_operand() {
 }
 
 #[test]
+fn generator_short_circuit_skips_rhs_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g_and(){ return false && (yield* [1, 2]); }
+      var it_and = g_and();
+      var r_and = it_and.next();
+
+      function* g_or(){ return true || (yield* [1, 2]); }
+      var it_or = g_or();
+      var r_or = it_or.next();
+
+      function* g_nullish(){ return 0 ?? (yield* [1, 2]); }
+      var it_nullish = g_nullish();
+      var r_nullish = it_nullish.next();
+
+      r_and.done === true && r_and.value === false &&
+      r_or.done === true && r_or.value === true &&
+      r_nullish.done === true && r_nullish.value === 0
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_short_circuit_evaluates_rhs_yield_star_when_needed() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g_and(){ return true && (yield* [1, 2]); }
+      var it_and = g_and();
+      var a1 = it_and.next();
+      var a2 = it_and.next();
+      var a3 = it_and.next();
+
+      function* g_or(){ return false || (yield* [1, 2]); }
+      var it_or = g_or();
+      var b1 = it_or.next();
+      var b2 = it_or.next();
+      var b3 = it_or.next();
+
+      function* g_nullish(){ return null ?? (yield* [1, 2]); }
+      var it_nullish = g_nullish();
+      var c1 = it_nullish.next();
+      var c2 = it_nullish.next();
+      var c3 = it_nullish.next();
+
+      a1.value === 1 && a1.done === false &&
+      a2.value === 2 && a2.done === false &&
+      a3.value === undefined && a3.done === true &&
+
+      b1.value === 1 && b1.done === false &&
+      b2.value === 2 && b2.done === false &&
+      b3.value === undefined && b3.done === true &&
+
+      c1.value === 1 && c1.done === false &&
+      c2.value === 2 && c2.done === false &&
+      c3.value === undefined && c3.done === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_comma_operator_with_yield_on_lhs() {
   let mut rt = new_runtime();
   let value = rt
