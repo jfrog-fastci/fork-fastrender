@@ -84,6 +84,7 @@ pub struct SearchSuggestUpdate {
 #[derive(Debug)]
 pub struct SearchSuggestService {
   latest_gen: Arc<AtomicU64>,
+  next_gen: u64,
   request_tx: Option<mpsc::Sender<SearchSuggestRequest>>,
   update_rx: Option<mpsc::Receiver<SearchSuggestUpdate>>,
   worker_join: Option<std::thread::JoinHandle<()>>,
@@ -111,6 +112,7 @@ impl SearchSuggestService {
     if !config.enabled {
       return Self {
         latest_gen,
+        next_gen: 0,
         request_tx: None,
         update_rx: None,
         worker_join: None,
@@ -129,6 +131,7 @@ impl SearchSuggestService {
 
     Self {
       latest_gen,
+      next_gen: 0,
       request_tx: Some(request_tx),
       update_rx: Some(update_rx),
       worker_join,
@@ -152,7 +155,12 @@ impl SearchSuggestService {
     self.last_requested_query.clear();
     self.last_requested_query.push_str(&query);
 
-    let gen = self.latest_gen.fetch_add(1, Ordering::SeqCst) + 1;
+    // `request` takes `&mut self`, so we can keep a non-atomic counter on the UI thread and only
+    // publish the latest generation to the worker via an atomic store (cheaper than an RMW
+    // `fetch_add` on every keystroke).
+    self.next_gen = self.next_gen.wrapping_add(1);
+    let gen = self.next_gen;
+    self.latest_gen.store(gen, Ordering::Release);
     let _ = tx.send(SearchSuggestRequest { gen, query });
   }
 
