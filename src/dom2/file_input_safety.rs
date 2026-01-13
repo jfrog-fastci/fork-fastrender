@@ -1,4 +1,4 @@
-use super::{Document, NodeKind};
+use super::{Document, NodeKind, NULL_NAMESPACE};
 
 fn trim_ascii_whitespace(value: &str) -> &str {
   // HTML attribute parsing ignores leading/trailing ASCII whitespace (TAB/LF/FF/CR/SPACE) but does
@@ -31,19 +31,22 @@ pub(super) fn strip_authored_file_input_state(doc: &mut Document) {
 
     let input_type = attributes
       .iter()
-      .find(|(k, _)| k.eq_ignore_ascii_case("type"))
-      .map(|(_, v)| v.as_str())
+      .find(|attr| attr.namespace == NULL_NAMESPACE && attr.local_name.eq_ignore_ascii_case("type"))
+      .map(|attr| attr.value.as_str())
       .unwrap_or("");
     if !trim_ascii_whitespace(input_type).eq_ignore_ascii_case("file") {
       continue;
     }
 
-    attributes.retain(|(k, _)| {
-      if k.eq_ignore_ascii_case("value") {
+    attributes.retain(|attr| {
+      if attr.namespace != NULL_NAMESPACE {
+        return true;
+      }
+      if attr.local_name.eq_ignore_ascii_case("value") {
         return false;
       }
       for &internal in &INTERNAL_FILE_SELECTION_ATTRS {
-        if k.eq_ignore_ascii_case(internal) {
+        if attr.local_name.eq_ignore_ascii_case(internal) {
           return false;
         }
       }

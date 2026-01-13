@@ -2835,11 +2835,11 @@ impl BrowserDocumentDom2 {
       return Ok(false);
     };
 
-    fn attrs_get_ci<'a>(attrs: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    fn attrs_get_ci<'a>(attrs: &'a [crate::dom2::Attribute], name: &str) -> Option<&'a str> {
       attrs
         .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case(name))
-        .map(|(_, v)| v.as_str())
+        .find(|attr| attr.namespace == crate::dom2::NULL_NAMESPACE && attr.local_name.eq_ignore_ascii_case(name))
+        .map(|attr| attr.value.as_str())
     }
 
     fn collect_descendant_text(doc: &crate::dom2::Document, root: crate::dom2::NodeId) -> String {

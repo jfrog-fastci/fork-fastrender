@@ -20,9 +20,9 @@ fn clone_node_data(doc: &Document, src: &Node, parent: Option<NodeId>) -> CloneN
     let NodeKind::Element { attributes, .. } = &src.kind else {
       unreachable!(); // fastrender-allow-panic
     };
-    !attributes
-      .iter()
-      .any(|(name, _)| name.eq_ignore_ascii_case("async"))
+    !attributes.iter().any(|attr| {
+      attr.namespace == super::NULL_NAMESPACE && attr.local_name.eq_ignore_ascii_case("async")
+    })
   } else {
     false
   };

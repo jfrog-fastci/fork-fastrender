@@ -8,7 +8,7 @@
 //! re-rendering when an operation is a no-op.
 
 use crate::dom::HTML_NAMESPACE;
-use crate::dom2::{DomError, NodeId, NodeKind, NULL_NAMESPACE};
+use crate::dom2::{Attribute, DomError, NodeId, NodeKind, NULL_NAMESPACE};
 use crate::js::DomHost;
 use crate::web::dom::DomException;
 
@@ -217,7 +217,7 @@ pub(crate) fn is_equal_node_from_dom(
 
   fn element_like<'a>(
     kind: &'a NodeKind,
-  ) -> Option<(&'a str, Option<&'a str>, &'a str, &'a [(String, String)])> {
+  ) -> Option<(&'a str, Option<&'a str>, &'a str, &'a [Attribute])> {
     match kind {
       NodeKind::Element {
         tag_name,
@@ -239,17 +239,21 @@ pub(crate) fn is_equal_node_from_dom(
     }
   }
 
-  fn attrs_equal(a: &[(String, String)], b: &[(String, String)]) -> bool {
+  fn attrs_equal(a: &[Attribute], b: &[Attribute]) -> bool {
     if a.len() != b.len() {
       return false;
     }
     let mut matched = vec![false; b.len()];
-    'outer: for (name_a, value_a) in a.iter() {
-      for (idx, (name_b, value_b)) in b.iter().enumerate() {
+    'outer: for attr_a in a.iter() {
+      let ns_a = normalize_namespace(&attr_a.namespace);
+      for (idx, attr_b) in b.iter().enumerate() {
         if matched[idx] {
           continue;
         }
-        if name_a == name_b && value_a == value_b {
+        if ns_a == normalize_namespace(&attr_b.namespace)
+          && attr_a.local_name == attr_b.local_name
+          && attr_a.value == attr_b.value
+        {
           matched[idx] = true;
           continue 'outer;
         }

@@ -308,17 +308,7 @@ fn dom_get_attribute(
   };
   let name = scope.heap().get_string(name)?.to_utf8_lossy();
 
-  let attrs = match &ctx.dom.node(node_id).kind {
-    NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes,
-    _ => return Ok(Value::Null),
-  };
-
-  let value = attrs
-    .iter()
-    .find(|(k, _)| k.eq_ignore_ascii_case(&name))
-    .map(|(_k, v)| v.as_str());
-
-  let Some(value) = value else {
+  let Ok(Some(value)) = ctx.dom.get_attribute(node_id, &name) else {
     return Ok(Value::Null);
   };
 

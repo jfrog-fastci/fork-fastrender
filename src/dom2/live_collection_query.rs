@@ -217,13 +217,16 @@ impl Document {
       };
 
       let is_html = self.is_html_case_insensitive_namespace(namespace);
-      let Some(class_value) = attributes.iter().find_map(|(name, value)| {
+      let Some(class_value) = attributes.iter().find_map(|attr| {
+        if attr.namespace != NULL_NAMESPACE {
+          return None;
+        }
         let name_ok = if is_html {
-          name.eq_ignore_ascii_case("class")
+          attr.local_name.eq_ignore_ascii_case("class")
         } else {
-          name == "class"
+          attr.local_name == "class"
         };
-        name_ok.then_some(value.as_str())
+        name_ok.then_some(attr.value.as_str())
       }) else {
         return false;
       };
@@ -271,13 +274,16 @@ impl Document {
       };
 
       let is_html = self.is_html_case_insensitive_namespace(namespace);
-      attributes.iter().any(|(attr_name, value)| {
+      attributes.iter().any(|attr| {
+        if attr.namespace != NULL_NAMESPACE {
+          return false;
+        }
         let name_ok = if is_html {
-          attr_name.eq_ignore_ascii_case("name")
+          attr.local_name.eq_ignore_ascii_case("name")
         } else {
-          attr_name == "name"
+          attr.local_name == "name"
         };
-        name_ok && value == name
+        name_ok && attr.value == name
       })
     })
   }

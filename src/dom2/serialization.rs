@@ -1,4 +1,4 @@
-use super::{Document, NodeId, NodeKind};
+use super::{Attribute, Document, NodeId, NodeKind};
 
 fn is_void_html_element(tag_name: &str) -> bool {
   // https://html.spec.whatwg.org/multipage/syntax.html#void-elements
@@ -59,7 +59,7 @@ fn serialize_start_tag(
   out: &mut String,
   tag_name: &str,
   namespace: &str,
-  attributes: &[(String, String)],
+  attributes: &[Attribute],
 ) -> bool {
   let is_html = doc.is_html_case_insensitive_namespace(namespace);
   let is_void = is_html && is_void_html_element(tag_name);
@@ -72,15 +72,16 @@ fn serialize_start_tag(
   }
 
   // Preserve stored attribute order for deterministic output.
-  for (name, value) in attributes {
+  for attr in attributes {
     out.push(' ');
+    let name = attr.qualified_name();
     if is_html {
-      push_lowercase_ascii(out, name);
+      push_lowercase_ascii(out, name.as_ref());
     } else {
-      out.push_str(name);
+      out.push_str(name.as_ref());
     }
     out.push_str("=\"");
-    escape_attr_value(out, value);
+    escape_attr_value(out, &attr.value);
     out.push('"');
   }
 

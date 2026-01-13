@@ -1,4 +1,4 @@
-use super::{Document, DomError, NodeId, NodeKind};
+use super::{Attribute, Document, DomError, NodeId, NodeKind, NULL_NAMESPACE};
 
 #[inline]
 fn name_matches(existing: &str, query: &str, is_html: bool) -> bool {
@@ -29,8 +29,8 @@ impl Document {
     Ok(
       attrs
         .iter()
-        .find(|(k, _)| name_matches(k.as_str(), name, is_html))
-        .map(|(_, v)| v.as_str()),
+        .find(|attr| attr.qualified_name_matches(name, is_html))
+        .map(|attr| attr.value.as_str()),
     )
   }
 
@@ -50,7 +50,7 @@ impl Document {
     Ok(
       attrs
         .iter()
-        .any(|(k, _)| name_matches(k.as_str(), name, is_html)),
+        .any(|attr| attr.qualified_name_matches(name, is_html)),
     )
   }
 
@@ -71,9 +71,14 @@ impl Document {
     };
     let is_html = self.is_html_case_insensitive_namespace(namespace);
     if is_html {
-      Ok(attrs.iter().map(|(k, _)| k.to_ascii_lowercase()).collect())
+      Ok(
+        attrs
+          .iter()
+          .map(|attr| attr.qualified_name().to_ascii_lowercase())
+          .collect(),
+      )
     } else {
-      Ok(attrs.iter().map(|(k, _)| k.clone()).collect())
+      Ok(attrs.iter().map(|attr| attr.qualified_name().into_owned()).collect())
     }
   }
 
@@ -105,19 +110,19 @@ impl Document {
         _ => return Err(DomError::InvalidNodeTypeError),
       };
 
-      if let Some((_, existing)) = attrs
+      if let Some(existing) = attrs
         .iter_mut()
-        .find(|(k, _)| name_matches(k.as_str(), name, is_html))
+        .find(|attr| attr.namespace == NULL_NAMESPACE && name_matches(attr.local_name.as_str(), name, is_html))
       {
-        if existing == value {
+        if existing.value == value {
           return Ok(false);
         }
-        let old_value = Some(existing.clone());
-        existing.clear();
-        existing.push_str(value);
+        let old_value = Some(existing.value.clone());
+        existing.value.clear();
+        existing.value.push_str(value);
         (true, old_value)
       } else {
-        attrs.push((name.to_string(), value.to_string()));
+        attrs.push(Attribute::new_no_namespace(name, value));
         // HTML: adding the `async` attribute to a <script> clears the "force async" internal slot.
         if is_script && name.eq_ignore_ascii_case("async") {
           node.script_force_async = false;
@@ -178,9 +183,9 @@ impl Document {
 
       if let Some(idx) = attrs
         .iter()
-        .position(|(k, _)| name_matches(k.as_str(), name, is_html))
+        .position(|attr| attr.namespace == NULL_NAMESPACE && name_matches(attr.local_name.as_str(), name, is_html))
       {
-        let old_value = Some(attrs[idx].1.clone());
+        let old_value = Some(attrs[idx].value.clone());
         attrs.remove(idx);
         (true, old_value)
       } else {
@@ -249,13 +254,12 @@ impl Document {
           NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes,
           _ => return Err(DomError::InvalidNodeTypeError),
         };
-        if attrs
-          .iter()
-          .any(|(k, _)| name_matches(k.as_str(), name, is_html))
-        {
+        if attrs.iter().any(|attr| {
+          attr.namespace == NULL_NAMESPACE && name_matches(attr.local_name.as_str(), name, is_html)
+        }) {
           false
         } else {
-          attrs.push((name.to_string(), String::new()));
+          attrs.push(Attribute::new_no_namespace(name, ""));
           // HTML: adding the `async` attribute to a <script> clears the "force async" internal slot.
           if is_script && name.eq_ignore_ascii_case("async") {
             node.script_force_async = false;
@@ -274,6 +278,156 @@ impl Document {
     } else {
       self.remove_attribute(node, name)
     }
+  }
+
+  pub fn get_attribute_ns(
+    &self,
+    node: NodeId,
+    namespace: &str,
+    local_name: &str,
+  ) -> Result<Option<&str>, DomError> {
+    let node = self.node_checked(node)?;
+    let (element_ns, attrs) = match &node.kind {
+      NodeKind::Element {
+        namespace,
+        attributes,
+        ..
+      }
+      | NodeKind::Slot {
+        namespace,
+        attributes,
+        ..
+      } => (namespace.as_str(), attributes.as_slice()),
+      _ => return Err(DomError::InvalidNodeTypeError),
+    };
+
+    let is_html = self.is_html_case_insensitive_namespace(element_ns);
+    let ci = namespace == NULL_NAMESPACE && is_html;
+    Ok(
+      attrs
+        .iter()
+        .find(|attr| {
+          attr.namespace == namespace && name_matches(attr.local_name.as_str(), local_name, ci)
+        })
+        .map(|attr| attr.value.as_str()),
+    )
+  }
+
+  pub fn set_attribute_ns(
+    &mut self,
+    node: NodeId,
+    namespace: &str,
+    prefix: Option<&str>,
+    local_name: &str,
+    value: &str,
+  ) -> Result<bool, DomError> {
+    let node_id = node;
+    let (is_html, is_script) = {
+      let node = self.node_checked(node_id)?;
+      match &node.kind {
+        NodeKind::Element {
+          tag_name,
+          namespace: element_ns,
+          ..
+        } => {
+          let is_html = self.is_html_case_insensitive_namespace(element_ns);
+          let is_script = is_html && tag_name.eq_ignore_ascii_case("script");
+          (is_html, is_script)
+        }
+        NodeKind::Slot { namespace: element_ns, .. } => {
+          (self.is_html_case_insensitive_namespace(element_ns), false)
+        }
+        _ => return Err(DomError::InvalidNodeTypeError),
+      }
+    };
+
+    let ci = namespace == NULL_NAMESPACE && is_html;
+    let (changed, old_value) = {
+      let node = self.node_checked_mut(node_id)?;
+      let attrs = match &mut node.kind {
+        NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes,
+        _ => return Err(DomError::InvalidNodeTypeError),
+      };
+
+      if let Some(existing) = attrs.iter_mut().find(|attr| {
+        attr.namespace == namespace && name_matches(attr.local_name.as_str(), local_name, ci)
+      }) {
+        if existing.value == value && existing.prefix.as_deref() == prefix {
+          return Ok(false);
+        }
+        let old_value = Some(existing.value.clone());
+        existing.value.clear();
+        existing.value.push_str(value);
+        existing.prefix = prefix.map(|p| p.to_string());
+        (true, old_value)
+      } else {
+        attrs.push(Attribute::new(namespace, prefix, local_name, value));
+        // HTML: adding the `async` attribute to a <script> clears the "force async" internal slot.
+        if namespace == NULL_NAMESPACE && is_script && local_name.eq_ignore_ascii_case("async") {
+          node.script_force_async = false;
+        }
+        (true, None)
+      }
+    };
+
+    if changed {
+      if namespace == NULL_NAMESPACE {
+        let _ = self.sync_form_control_state_after_attr_mutation(node_id, local_name);
+      }
+      self.record_attribute_mutation(node_id, local_name);
+      self.bump_mutation_generation_classified();
+      let _ = self.queue_mutation_record_attributes(node_id, local_name, old_value);
+    }
+
+    Ok(changed)
+  }
+
+  pub fn remove_attribute_ns(
+    &mut self,
+    node: NodeId,
+    namespace: &str,
+    local_name: &str,
+  ) -> Result<bool, DomError> {
+    let node_id = node;
+    let is_html = {
+      let node = self.node_checked(node_id)?;
+      match &node.kind {
+        NodeKind::Element { namespace, .. } | NodeKind::Slot { namespace, .. } => {
+          self.is_html_case_insensitive_namespace(namespace)
+        }
+        _ => return Err(DomError::InvalidNodeTypeError),
+      }
+    };
+
+    let ci = namespace == NULL_NAMESPACE && is_html;
+    let (changed, old_value) = {
+      let node = self.node_checked_mut(node_id)?;
+      let attrs = match &mut node.kind {
+        NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes,
+        _ => return Err(DomError::InvalidNodeTypeError),
+      };
+
+      if let Some(idx) = attrs.iter().position(|attr| {
+        attr.namespace == namespace && name_matches(attr.local_name.as_str(), local_name, ci)
+      }) {
+        let old_value = Some(attrs[idx].value.clone());
+        attrs.remove(idx);
+        (true, old_value)
+      } else {
+        (false, None)
+      }
+    };
+
+    if changed {
+      if namespace == NULL_NAMESPACE {
+        let _ = self.sync_form_control_state_after_attr_mutation(node_id, local_name);
+      }
+      self.record_attribute_mutation(node_id, local_name);
+      self.bump_mutation_generation_classified();
+      let _ = self.queue_mutation_record_attributes(node_id, local_name, old_value);
+    }
+
+    Ok(changed)
   }
 
   pub fn id(&self, node: NodeId) -> Result<Option<&str>, DomError> {

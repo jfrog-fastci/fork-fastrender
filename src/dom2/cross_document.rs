@@ -108,9 +108,9 @@ fn clone_node_shallow_from_other_document(
           };
           // HTML: script element cloning steps recompute the "force async" flag from the presence
           // of an `async` content attribute.
-          !attributes
-            .iter()
-            .any(|(name, _)| name.eq_ignore_ascii_case("async"))
+          !attributes.iter().any(|attr| {
+            attr.namespace == super::NULL_NAMESPACE && attr.local_name.eq_ignore_ascii_case("async")
+          })
         } else {
           false
         }

@@ -2,7 +2,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::dom::ShadowRootMode;
 
-use super::{Document, DomError, NodeId, NodeKind};
+use super::{Attribute, Document, DomError, NodeId, NodeKind, NULL_NAMESPACE};
 
 /// ShadowRoot slot assignment mode.
 ///
@@ -40,11 +40,11 @@ pub(crate) struct SlottingState {
   pub(crate) assigned_slot_for_slottable: FxHashMap<NodeId, NodeId>,
 }
 
-fn get_attribute_value<'a>(attrs: &'a [(String, String)], name: &str) -> Option<&'a str> {
+fn get_attribute_value<'a>(attrs: &'a [Attribute], name: &str) -> Option<&'a str> {
   attrs
     .iter()
-    .find(|(k, _)| k.eq_ignore_ascii_case(name))
-    .map(|(_, v)| v.as_str())
+    .find(|attr| attr.namespace == NULL_NAMESPACE && attr.local_name.eq_ignore_ascii_case(name))
+    .map(|attr| attr.value.as_str())
 }
 
 fn slot_name<'a>(kind: &'a NodeKind) -> Option<&'a str> {

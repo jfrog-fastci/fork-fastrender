@@ -1,4 +1,4 @@
-use super::{Document, DomError, NodeId, NodeKind, RendererDomMapping};
+use super::{Attribute, Document, DomError, NodeId, NodeKind, RendererDomMapping, NULL_NAMESPACE};
 use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,16 +22,18 @@ pub(crate) struct OptionState {
 }
 
 #[inline]
-fn attrs_get_ci<'a>(attrs: &'a [(String, String)], name: &str) -> Option<&'a str> {
+fn attrs_get_ci<'a>(attrs: &'a [Attribute], name: &str) -> Option<&'a str> {
   attrs
     .iter()
-    .find(|(k, _)| k.eq_ignore_ascii_case(name))
-    .map(|(_, v)| v.as_str())
+    .find(|attr| attr.namespace == NULL_NAMESPACE && attr.local_name.eq_ignore_ascii_case(name))
+    .map(|attr| attr.value.as_str())
 }
 
 #[inline]
-fn attrs_has_ci(attrs: &[(String, String)], name: &str) -> bool {
-  attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case(name))
+fn attrs_has_ci(attrs: &[Attribute], name: &str) -> bool {
+  attrs
+    .iter()
+    .any(|attr| attr.namespace == NULL_NAMESPACE && attr.local_name.eq_ignore_ascii_case(name))
 }
 
 fn is_input_checkable(type_attr: Option<&str>) -> bool {

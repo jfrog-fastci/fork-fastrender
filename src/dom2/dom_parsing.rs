@@ -14,7 +14,7 @@ fn document_quirks_mode(doc: &Document) -> QuirksMode {
 fn element_context(
   doc: &Document,
   context: NodeId,
-) -> Result<(&str, &str, &[(String, String)]), DomError> {
+) -> Result<(&str, &str, Vec<(String, String)>), DomError> {
   let node = doc
     .nodes
     .get(context.index())
@@ -25,13 +25,27 @@ fn element_context(
       namespace,
       attributes,
       ..
-    } => Ok((tag_name.as_str(), namespace.as_str(), attributes.as_slice())),
+    } => Ok((
+      tag_name.as_str(),
+      namespace.as_str(),
+      attributes
+        .iter()
+        .map(|attr| (attr.qualified_name().into_owned(), attr.value.clone()))
+        .collect(),
+    )),
     // `NodeKind::Slot` does not store its tag name, but today it always represents `<slot>`.
     NodeKind::Slot {
       namespace,
       attributes,
       ..
-    } => Ok(("slot", namespace.as_str(), attributes.as_slice())),
+    } => Ok((
+      "slot",
+      namespace.as_str(),
+      attributes
+        .iter()
+        .map(|attr| (attr.qualified_name().into_owned(), attr.value.clone()))
+        .collect(),
+    )),
     _ => Err(DomError::InvalidNodeTypeError),
   }
 }
@@ -54,7 +68,7 @@ pub(super) fn parse_html_fragment_as_fragment(
     html,
     context_tag,
     context_namespace,
-    context_attributes,
+    context_attributes.as_slice(),
     doc.scripting_enabled,
     quirks_mode,
   )

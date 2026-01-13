@@ -216,11 +216,12 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
             let prefix_str = prefix.as_deref();
 
             // Validate any explicit `xmlns` attribute matches the element's actual namespace.
-            let explicit_xmlns = attributes.iter().find_map(|(name, value)| {
+            let explicit_xmlns = attributes.iter().find_map(|attr| {
+              let name = attr.qualified_name();
               if is_html {
-                name.eq_ignore_ascii_case("xmlns").then_some(value.as_str())
+                name.eq_ignore_ascii_case("xmlns").then_some(attr.value.as_str())
               } else {
-                (name == "xmlns").then_some(value.as_str())
+                (name.as_ref() == "xmlns").then_some(attr.value.as_str())
               }
             });
             if let Some(explicit) = explicit_xmlns {
@@ -232,11 +233,12 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
             // Validate any explicit `xmlns:prefix` matches the element's namespace.
             let prefix_xmlns_name = prefix_str.map(|p| format!("xmlns:{p}"));
             let explicit_prefix_xmlns = prefix_xmlns_name.as_deref().and_then(|expected| {
-              attributes.iter().find_map(|(name, value)| {
+              attributes.iter().find_map(|attr| {
+                let name = attr.qualified_name();
                 if is_html {
-                  name.eq_ignore_ascii_case(expected).then_some(value.as_str())
+                  name.eq_ignore_ascii_case(expected).then_some(attr.value.as_str())
                 } else {
-                  (name == expected).then_some(value.as_str())
+                  (name.as_ref() == expected).then_some(attr.value.as_str())
                 }
               })
             });
@@ -298,15 +300,16 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
             }
 
             // Preserve stored attribute order for deterministic output.
-            for (name, value) in attributes {
+            for attr in attributes {
+              let name = attr.qualified_name();
               out.push(' ');
               if is_html {
-                push_lowercase_ascii(&mut out, name);
+                push_lowercase_ascii(&mut out, name.as_ref());
               } else {
-                out.push_str(name);
+                out.push_str(name.as_ref());
               }
               out.push_str("=\"");
-              escape_attr_value(&mut out, value);
+              escape_attr_value(&mut out, &attr.value);
               out.push('"');
             }
 
@@ -338,11 +341,12 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
             let ns_uri = namespace_uri_for_storage(namespace.as_str());
             let expected_xmlns_value = ns_uri.unwrap_or("");
 
-            let explicit_xmlns = attributes.iter().find_map(|(name, value)| {
+            let explicit_xmlns = attributes.iter().find_map(|attr| {
+              let name = attr.qualified_name();
               if is_html {
-                name.eq_ignore_ascii_case("xmlns").then_some(value.as_str())
+                name.eq_ignore_ascii_case("xmlns").then_some(attr.value.as_str())
               } else {
-                (name == "xmlns").then_some(value.as_str())
+                (name.as_ref() == "xmlns").then_some(attr.value.as_str())
               }
             });
             if let Some(explicit) = explicit_xmlns {
@@ -369,15 +373,16 @@ fn serialize_node(doc: &Document, node: NodeId) -> Result<String, DomException> 
               out.push('"');
             }
 
-            for (name, value) in attributes {
+            for attr in attributes {
+              let name = attr.qualified_name();
               out.push(' ');
               if is_html {
-                push_lowercase_ascii(&mut out, name);
+                push_lowercase_ascii(&mut out, name.as_ref());
               } else {
-                out.push_str(name);
+                out.push_str(name.as_ref());
               }
               out.push_str("=\"");
-              escape_attr_value(&mut out, value);
+              escape_attr_value(&mut out, &attr.value);
               out.push('"');
             }
 

@@ -4310,17 +4310,18 @@ pub(crate) fn named_node_map_exotic_get(
         namespace,
         attributes,
         ..
-      } => (namespace.as_str(), attributes.as_slice()),
+    } => (namespace.as_str(), attributes.as_slice()),
       _ => return None,
     };
-    let (name, value) = attrs.get(idx)?;
+    let attr = attrs.get(idx)?;
     let is_html = dom.is_html_case_insensitive_namespace(namespace);
+    let name = attr.qualified_name();
     let name = if is_html {
-      name.to_ascii_lowercase()
+      name.as_ref().to_ascii_lowercase()
     } else {
-      name.clone()
+      name.into_owned()
     };
-    Some((name, value.clone(), is_html))
+    Some((name, attr.value.clone(), is_html))
   };
 
   let (name, value, _is_html) = if let Some(dom) = ctx.owned_dom2_documents.borrow().get(&document_id) {
@@ -40795,7 +40796,7 @@ fn named_node_map_item_native(
       attributes,
       ..
     }
-    | NodeKind::Slot {
+  | NodeKind::Slot {
       namespace,
       attributes,
       ..
@@ -40803,15 +40804,16 @@ fn named_node_map_item_native(
     _ => return Err(VmError::TypeError("Illegal invocation")),
   };
 
-  let Some((name, value)) = attrs.get(idx) else {
+  let Some(attr) = attrs.get(idx) else {
     return Ok(Value::Null);
   };
 
   let is_html = dom.is_html_case_insensitive_namespace(namespace);
+  let name = attr.qualified_name();
   let name = if is_html {
-    name.to_ascii_lowercase()
+    name.as_ref().to_ascii_lowercase()
   } else {
-    name.clone()
+    name.into_owned()
   };
 
   let attr_obj = make_attr_obj(
@@ -40819,7 +40821,7 @@ fn named_node_map_item_native(
     attr_proto,
     slots.a,
     &name,
-    value,
+    &attr.value,
     Value::Object(owner_element),
   )?;
   Ok(Value::Object(attr_obj))
@@ -40862,26 +40864,28 @@ fn named_node_map_get_named_item_native(
   };
 
   let is_html = dom.is_html_case_insensitive_namespace(namespace);
-  let mut found: Option<(&String, &String)> = None;
-  for (k, v) in attrs {
+  let mut found: Option<&dom2::Attribute> = None;
+  for attr in attrs {
+    let attr_name = attr.qualified_name();
     let matches = if is_html {
-      k.eq_ignore_ascii_case(&query)
+      attr_name.as_ref().eq_ignore_ascii_case(&query)
     } else {
-      k == &query
+      attr_name.as_ref() == query
     };
     if matches {
-      found = Some((k, v));
+      found = Some(attr);
       break;
     }
   }
 
-  let Some((name, value)) = found else {
+  let Some(attr) = found else {
     return Ok(Value::Null);
   };
+  let name = attr.qualified_name();
   let name = if is_html {
-    name.to_ascii_lowercase()
+    name.as_ref().to_ascii_lowercase()
   } else {
-    name.clone()
+    name.into_owned()
   };
 
   let attr_obj = make_attr_obj(
@@ -40889,7 +40893,7 @@ fn named_node_map_get_named_item_native(
     attr_proto,
     slots.a,
     &name,
-    value,
+    &attr.value,
     Value::Object(owner_element),
   )?;
   Ok(Value::Object(attr_obj))
@@ -40979,19 +40983,20 @@ fn named_node_map_set_named_item_native(
 
   let is_html = dom.is_html_case_insensitive_namespace(namespace);
   let mut replaced: Option<(String, String)> = None;
-  for (k, v) in attrs {
+  for attr in attrs {
+    let attr_name = attr.qualified_name();
     let matches = if is_html {
-      k.eq_ignore_ascii_case(&name)
+      attr_name.as_ref().eq_ignore_ascii_case(&name)
     } else {
-      k == &name
+      attr_name.as_ref() == name
     };
     if matches {
-      let k = if is_html {
-        k.to_ascii_lowercase()
+      let old_name = if is_html {
+        attr_name.as_ref().to_ascii_lowercase()
       } else {
-        k.clone()
+        attr_name.into_owned()
       };
-      replaced = Some((k, v.clone()));
+      replaced = Some((old_name, attr.value.clone()));
       break;
     }
   }
@@ -41078,31 +41083,33 @@ fn named_node_map_remove_named_item_native(
   };
 
   let is_html = dom.is_html_case_insensitive_namespace(namespace);
-  let mut found: Option<(&String, &String)> = None;
-  for (k, v) in attrs {
+  let mut found: Option<&dom2::Attribute> = None;
+  for attr in attrs {
+    let attr_name = attr.qualified_name();
     let matches = if is_html {
-      k.eq_ignore_ascii_case(&query)
+      attr_name.as_ref().eq_ignore_ascii_case(&query)
     } else {
-      k == &query
+      attr_name.as_ref() == query
     };
     if matches {
-      found = Some((k, v));
+      found = Some(attr);
       break;
     }
   }
 
-  let Some((name, value)) = found else {
+  let Some(attr) = found else {
     return Err(VmError::Throw(make_dom_exception(vm, scope, "NotFoundError", "")?));
   };
 
+  let name = attr.qualified_name();
   let name = if is_html {
-    name.to_ascii_lowercase()
+    name.as_ref().to_ascii_lowercase()
   } else {
-    name.clone()
+    name.into_owned()
   };
 
   // Return the removed Attr (with ownerElement null).
-  let removed_attr = make_attr_obj(scope, attr_proto, slots.a, &name, value, Value::Null)?;
+  let removed_attr = make_attr_obj(scope, attr_proto, slots.a, &name, &attr.value, Value::Null)?;
 
   let name_s = scope.alloc_string(&name)?;
   scope.push_root(Value::String(name_s))?;
@@ -41301,8 +41308,15 @@ fn element_get_attribute_ns_native(
     "Element.getAttributeNS must be called on an element object",
   )?;
 
-  // NOTE: `dom2` does not currently track attribute namespace/prefix separately. For now we treat
-  // `getAttributeNS` as a lookup by the provided `localName` using the same dom2 name matching rules.
+  let namespace_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let namespace: Option<String> = match namespace_value {
+    Value::Null | Value::Undefined => None,
+    other => {
+      let ns = value_to_rust_utf16_string(vm, scope, other)?;
+      (!ns.is_empty()).then_some(ns)
+    }
+  };
+
   let local_name_value = args.get(1).copied().unwrap_or(Value::Undefined);
   let local_name_value = scope.heap_mut().to_string(local_name_value)?;
   let local_name = scope
@@ -41317,7 +41331,13 @@ fn element_get_attribute_ns_native(
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let dom = unsafe { dom_ptr.as_ref() };
 
-  match dom.get_attribute(handle.node_id, &local_name) {
+  let ns_for_dom2 = match namespace.as_deref() {
+    Some(ns) if ns == crate::dom::HTML_NAMESPACE => "",
+    Some(ns) => ns,
+    None => dom2::NULL_NAMESPACE,
+  };
+
+  match dom.get_attribute_ns(handle.node_id, ns_for_dom2, &local_name) {
     Ok(Some(value)) => Ok(Value::String(scope.alloc_string(value)?)),
     Ok(None) => Ok(Value::Null),
     Err(err) => Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
@@ -41346,14 +41366,22 @@ fn element_set_attribute_ns_native(
     "Element.setAttributeNS must be called on an element object",
   )?;
 
-  // Namespace argument is currently ignored; see `element_get_attribute_ns_native`.
+  let namespace_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let namespace: Option<String> = match namespace_value {
+    Value::Null | Value::Undefined => None,
+    other => {
+      let ns = value_to_rust_utf16_string(vm, scope, other)?;
+      (!ns.is_empty()).then_some(ns)
+    }
+  };
+
   let qualified_name_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let qualified_name_value = scope.heap_mut().to_string(qualified_name_value)?;
-  let qualified_name = scope
-    .heap()
-    .get_string(qualified_name_value)
-    .map(|s| s.to_utf8_lossy())
-    .unwrap_or_default();
+  let qualified_name = value_to_rust_utf16_string(vm, scope, qualified_name_value)?;
+  let dom2::ParsedQualifiedName { prefix, local_name } =
+    match dom2::validate_and_extract_attribute(namespace.as_deref(), &qualified_name) {
+      Ok(v) => v,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
+    };
 
   let value_value = args.get(2).copied().unwrap_or(Value::Undefined);
   let value_value = scope.heap_mut().to_string(value_value)?;
@@ -41363,16 +41391,22 @@ fn element_set_attribute_ns_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
+  let ns_for_dom2 = match namespace.as_deref() {
+    Some(ns) if ns == crate::dom::HTML_NAMESPACE => "",
+    Some(ns) => ns,
+    None => dom2::NULL_NAMESPACE,
+  };
+
   if is_host_document_id(vm, handle.document_id) {
     if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
       let node_id = handle.node_id;
       let dom_ptr = document.dom_non_null();
 
-      let should_run_src_attribute_changed_steps = qualified_name.eq_ignore_ascii_case("src")
+      let should_run_src_attribute_changed_steps = namespace.is_none() && local_name.eq_ignore_ascii_case("src")
         && is_html_script_element(document.dom(), node_id);
 
       let (result, needs_microtask) = crate::js::DomHost::mutate_dom(document, |dom| {
-        match dom.set_attribute(node_id, &qualified_name, &value) {
+        match dom.set_attribute_ns(node_id, ns_for_dom2, prefix.as_deref(), &local_name, &value) {
           Ok(changed) => {
             let needs_microtask = dom.take_mutation_observer_microtask_needed();
             ((Ok(changed), needs_microtask), changed)
@@ -41412,8 +41446,13 @@ fn element_set_attribute_ns_native(
   let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, handle.document_id).ok_or(VmError::TypeError(
     "Element.setAttributeNS requires a DOM-backed document",
   ))?;
-  let changed = match unsafe { dom_ptr.as_mut() }.set_attribute(handle.node_id, &qualified_name, &value)
-  {
+  let changed = match unsafe { dom_ptr.as_mut() }.set_attribute_ns(
+    handle.node_id,
+    ns_for_dom2,
+    prefix.as_deref(),
+    &local_name,
+    &value,
+  ) {
     Ok(v) => v,
     Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
   };
@@ -41422,7 +41461,7 @@ fn element_set_attribute_ns_native(
     let _ = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
     return Ok(Value::Undefined);
   }
-  let should_run_src_attribute_changed_steps = qualified_name.eq_ignore_ascii_case("src")
+  let should_run_src_attribute_changed_steps = namespace.is_none() && local_name.eq_ignore_ascii_case("src")
     && is_html_script_element(unsafe { dom_ptr.as_ref() }, handle.node_id);
 
   if changed && should_run_src_attribute_changed_steps {
@@ -41471,7 +41510,15 @@ fn element_remove_attribute_ns_native(
     "Element.removeAttributeNS must be called on an element object",
   )?;
 
-  // Namespace argument is currently ignored; see `element_get_attribute_ns_native`.
+  let namespace_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let namespace: Option<String> = match namespace_value {
+    Value::Null | Value::Undefined => None,
+    other => {
+      let ns = value_to_rust_utf16_string(vm, scope, other)?;
+      (!ns.is_empty()).then_some(ns)
+    }
+  };
+
   let local_name_value = args.get(1).copied().unwrap_or(Value::Undefined);
   let local_name_value = scope.heap_mut().to_string(local_name_value)?;
   let local_name = scope
@@ -41480,16 +41527,22 @@ fn element_remove_attribute_ns_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
+  let ns_for_dom2 = match namespace.as_deref() {
+    Some(ns) if ns == crate::dom::HTML_NAMESPACE => "",
+    Some(ns) => ns,
+    None => dom2::NULL_NAMESPACE,
+  };
+
   if is_host_document_id(vm, handle.document_id) {
     if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
       let node_id = handle.node_id;
       let dom_ptr = document.dom_non_null();
 
       let should_run_src_attribute_changed_steps =
-        local_name.eq_ignore_ascii_case("src") && is_html_script_element(document.dom(), node_id);
+        namespace.is_none() && local_name.eq_ignore_ascii_case("src") && is_html_script_element(document.dom(), node_id);
 
       let (result, needs_microtask) = crate::js::DomHost::mutate_dom(document, |dom| {
-        match dom.remove_attribute(node_id, &local_name) {
+        match dom.remove_attribute_ns(node_id, ns_for_dom2, &local_name) {
           Ok(changed) => {
             let needs_microtask = dom.take_mutation_observer_microtask_needed();
             ((Ok(changed), needs_microtask), changed)
@@ -41530,7 +41583,7 @@ fn element_remove_attribute_ns_native(
     dom_ptr_for_document_id_mut(vm, host, handle.document_id).ok_or(VmError::TypeError(
       "Element.removeAttributeNS requires a DOM-backed document",
     ))?;
-  let changed = match unsafe { dom_ptr.as_mut() }.remove_attribute(handle.node_id, &local_name) {
+  let changed = match unsafe { dom_ptr.as_mut() }.remove_attribute_ns(handle.node_id, ns_for_dom2, &local_name) {
     Ok(v) => v,
     Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
   };
@@ -41540,7 +41593,7 @@ fn element_remove_attribute_ns_native(
     return Ok(Value::Undefined);
   }
 
-  let should_run_src_attribute_changed_steps = local_name.eq_ignore_ascii_case("src")
+  let should_run_src_attribute_changed_steps = namespace.is_none() && local_name.eq_ignore_ascii_case("src")
     && is_html_script_element(unsafe { dom_ptr.as_ref() }, handle.node_id);
 
   if changed && should_run_src_attribute_changed_steps {

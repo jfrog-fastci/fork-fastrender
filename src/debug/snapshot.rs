@@ -525,7 +525,7 @@ fn snapshot_dom2_kind(kind: &crate::dom2::NodeKind) -> Dom2NodeKindSnapshot {
       assigned,
     } => Dom2NodeKindSnapshot::Slot {
       namespace: namespace.clone(),
-      attributes: snapshot_attributes(attributes),
+      attributes: snapshot_dom2_attributes(attributes),
       assigned: *assigned,
     },
     crate::dom2::NodeKind::Element {
@@ -536,7 +536,7 @@ fn snapshot_dom2_kind(kind: &crate::dom2::NodeKind) -> Dom2NodeKindSnapshot {
     } => Dom2NodeKindSnapshot::Element {
       tag_name: tag_name.clone(),
       namespace: namespace.clone(),
-      attributes: snapshot_attributes(attributes),
+      attributes: snapshot_dom2_attributes(attributes),
     },
     crate::dom2::NodeKind::Text { content } => Dom2NodeKindSnapshot::Text {
       content: truncate_dom2_snapshot_text(content),
@@ -662,6 +662,18 @@ fn snapshot_attributes(attributes: &[(String, String)]) -> Vec<AttributeSnapshot
     .map(|(k, v)| AttributeSnapshot {
       name: k.clone(),
       value: v.clone(),
+    })
+    .collect();
+  attrs.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.value.cmp(&b.value)));
+  attrs
+}
+
+fn snapshot_dom2_attributes(attributes: &[crate::dom2::Attribute]) -> Vec<AttributeSnapshot> {
+  let mut attrs: Vec<_> = attributes
+    .iter()
+    .map(|attr| AttributeSnapshot {
+      name: attr.qualified_name().into_owned(),
+      value: attr.value.clone(),
     })
     .collect();
   attrs.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.value.cmp(&b.value)));

@@ -3,7 +3,7 @@ use crate::dom::HTML_NAMESPACE;
 use crate::xml::{markup_for_roxmltree_with_doctypes, ExtractedDoctype};
 use roxmltree::Document as RoDocument;
 
-use super::{Document, NodeId, NodeKind, NULL_NAMESPACE};
+use super::{Attribute, Document, NodeId, NodeKind, NULL_NAMESPACE};
 
 #[derive(Clone, Copy)]
 enum TopLevel<'a, 'input> {
@@ -37,10 +37,27 @@ fn import_roxmltree_subtree(doc: &mut Document, parent: NodeId, root: roxmltree:
       if namespace == NULL_NAMESPACE {
         prefix = None;
       }
-      let mut attributes: Vec<(String, String)> = Vec::new();
+      let mut attributes: Vec<Attribute> = Vec::new();
       attributes.reserve(node.attributes().len());
       for attr in node.attributes() {
-        attributes.push((attr.name().to_string(), attr.value().to_string()));
+        let (mut prefix, local_name) = match attr.name().split_once(':') {
+          Some((prefix, local_name)) => (Some(prefix.to_string()), local_name.to_string()),
+          None => (None, attr.name().to_string()),
+        };
+        let namespace = match attr.namespace() {
+          None => NULL_NAMESPACE.to_string(),
+          Some(ns) if ns == HTML_NAMESPACE => String::new(),
+          Some(ns) => ns.to_string(),
+        };
+        if namespace == NULL_NAMESPACE {
+          prefix = None;
+        }
+        attributes.push(Attribute {
+          namespace,
+          prefix,
+          local_name,
+          value: attr.value().to_string(),
+        });
       }
       let kind =
         if namespace.is_empty() && local_name.eq_ignore_ascii_case("slot") && prefix.is_none() {

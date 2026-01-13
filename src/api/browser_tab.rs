@@ -1196,8 +1196,8 @@ impl BrowserTabHost {
     };
     let Some(media_attr) = attributes
       .iter()
-      .find(|(name, _)| name.eq_ignore_ascii_case("media"))
-      .map(|(_, value)| value.as_str())
+      .find(|attr| attr.namespace == crate::dom2::NULL_NAMESPACE && attr.local_name.eq_ignore_ascii_case("media"))
+      .map(|attr| attr.value.as_str())
     else {
       return true;
     };
@@ -2128,14 +2128,20 @@ impl BrowserTabHost {
           attributes,
           ..
         } => {
-          base_url_tracker.on_element_inserted(
-            tag_name,
-            namespace,
-            attributes,
-            in_head,
-            in_foreign_namespace,
-            in_template,
-          );
+          if tag_name.eq_ignore_ascii_case("base") {
+            let attrs_for_tracker: Vec<(String, String)> = attributes
+              .iter()
+              .map(|attr| (attr.qualified_name().into_owned(), attr.value.clone()))
+              .collect();
+            base_url_tracker.on_element_inserted(
+              tag_name,
+              namespace,
+              attrs_for_tracker.as_slice(),
+              in_head,
+              in_foreign_namespace,
+              in_template,
+            );
+          }
 
           if tag_name.eq_ignore_ascii_case("script") && is_html_namespace(namespace) {
             // Reuse the shared dom2 parse-time `<script>` normalization logic so best-effort DOM
@@ -2163,17 +2169,8 @@ impl BrowserTabHost {
         }
         NodeKind::Slot {
           namespace,
-          attributes,
           ..
         } => {
-          base_url_tracker.on_element_inserted(
-            "slot",
-            namespace,
-            attributes,
-            in_head,
-            in_foreign_namespace,
-            in_template,
-          );
           next_in_foreign_namespace = in_foreign_namespace || !is_html_namespace(namespace);
         }
         _ => {}
@@ -2268,14 +2265,22 @@ impl BrowserTabHost {
             attributes,
             ..
           } => {
-            base_url_tracker.on_element_inserted(
-              tag_name,
-              namespace,
-              attributes,
-              in_head,
-              in_foreign_namespace,
-              in_template,
-            );
+            if tag_name.eq_ignore_ascii_case("base") {
+              // `BaseUrlTracker` operates on renderer-style `(name, value)` attributes. Convert on
+              // demand so `discover_scripts_best_effort` remains cheap for non-`<base>` elements.
+              let attrs_for_tracker: Vec<(String, String)> = attributes
+                .iter()
+                .map(|attr| (attr.qualified_name().into_owned(), attr.value.clone()))
+                .collect();
+              base_url_tracker.on_element_inserted(
+                tag_name,
+                namespace,
+                attrs_for_tracker.as_slice(),
+                in_head,
+                in_foreign_namespace,
+                in_template,
+              );
+            }
 
             if tag_name.eq_ignore_ascii_case("script")
               && is_html_namespace(namespace)
@@ -2315,17 +2320,8 @@ impl BrowserTabHost {
           }
           NodeKind::Slot {
             namespace,
-            attributes,
             ..
           } => {
-            base_url_tracker.on_element_inserted(
-              "slot",
-              namespace,
-              attributes,
-              in_head,
-              in_foreign_namespace,
-              in_template,
-            );
             next_in_foreign_namespace = in_foreign_namespace || !is_html_namespace(namespace);
           }
           _ => {}

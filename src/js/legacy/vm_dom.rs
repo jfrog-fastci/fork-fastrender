@@ -1,5 +1,5 @@
 use crate::dom::HTML_NAMESPACE;
-use crate::dom2::{Document, DomError, NodeId, NodeKind};
+use crate::dom2::{Attribute, Document, DomError, NodeId, NodeKind, NULL_NAMESPACE};
 use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
 use crate::js::CurrentScriptState;
@@ -152,7 +152,7 @@ fn split_dom_ascii_whitespace(input: &str) -> Vec<&str> {
   out
 }
 
-fn element_kind_parts(kind: &NodeKind) -> Option<(&str, &str, &Vec<(String, String)>)> {
+fn element_kind_parts(kind: &NodeKind) -> Option<(&str, &str, &Vec<Attribute>)> {
   match kind {
     NodeKind::Element {
       tag_name,
@@ -173,7 +173,7 @@ fn live_collection_matches(
   kind: &LiveCollectionKind,
   tag: &str,
   namespace: &str,
-  attrs: &[(String, String)],
+  attrs: &[Attribute],
 ) -> bool {
   match kind {
     LiveCollectionKind::TagName { qualified_name } => {
@@ -222,14 +222,17 @@ fn live_collection_matches(
 
       let class_attr = attrs
         .iter()
-        .find(|(name, _)| {
+        .find(|attr| {
+          if attr.namespace != NULL_NAMESPACE {
+            return false;
+          }
           if is_html_namespace(namespace) {
-            name.eq_ignore_ascii_case("class")
+            attr.local_name.eq_ignore_ascii_case("class")
           } else {
-            name == "class"
+            attr.local_name == "class"
           }
         })
-        .map(|(_, value)| value.as_str());
+        .map(|attr| attr.value.as_str());
       let Some(class_attr) = class_attr else {
         return false;
       };
@@ -239,12 +242,16 @@ fn live_collection_matches(
         .iter()
         .all(|required| have.iter().any(|token| token == required))
     }
-    LiveCollectionKind::Name { name } => attrs.iter().any(|(attr_name, value)| {
-      (if is_html_namespace(namespace) {
-        attr_name.eq_ignore_ascii_case("name")
+    LiveCollectionKind::Name { name } => attrs.iter().any(|attr| {
+      if attr.namespace != NULL_NAMESPACE {
+        return false;
+      }
+      let name_ok = if is_html_namespace(namespace) {
+        attr.local_name.eq_ignore_ascii_case("name")
       } else {
-        attr_name == "name"
-      }) && value == name
+        attr.local_name == "name"
+      };
+      name_ok && attr.value == *name
     }),
   }
 }

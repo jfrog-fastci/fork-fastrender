@@ -1,7 +1,14 @@
 use crate::dom::{DomNode, DomNodeType};
 use selectors::context::QuirksMode;
 
-use super::{Document, DocumentKind, NodeId, NodeKind, SlotAssignmentMode};
+use super::{Attribute, Document, DocumentKind, NodeId, NodeKind, SlotAssignmentMode};
+
+fn import_renderer_attributes(attributes: &[(String, String)]) -> Vec<Attribute> {
+  attributes
+    .iter()
+    .map(|(name, value)| Attribute::new_no_namespace(name, value))
+    .collect()
+}
 
 struct Frame {
   src: *const DomNode,
@@ -36,7 +43,7 @@ fn push_imported_node(doc: &mut Document, parent: NodeId, src: &DomNode) -> Node
       if doc.is_html_document() {
         NodeKind::Slot {
           namespace: namespace.clone(),
-          attributes: attributes.clone(),
+          attributes: import_renderer_attributes(attributes),
           assigned: *assigned,
         }
       } else {
@@ -44,7 +51,7 @@ fn push_imported_node(doc: &mut Document, parent: NodeId, src: &DomNode) -> Node
           tag_name: "slot".to_string(),
           namespace: namespace.clone(),
           prefix: None,
-          attributes: attributes.clone(),
+          attributes: import_renderer_attributes(attributes),
         }
       }
     }
@@ -56,7 +63,7 @@ fn push_imported_node(doc: &mut Document, parent: NodeId, src: &DomNode) -> Node
       tag_name: tag_name.clone(),
       namespace: namespace.clone(),
       prefix: None,
-      attributes: attributes.clone(),
+      attributes: import_renderer_attributes(attributes),
     },
     DomNodeType::Text { content } => NodeKind::Text {
       content: content.clone(),

@@ -105,6 +105,64 @@ struct NodeIteratorState {
 pub const NULL_NAMESPACE: &str = "\u{0000}";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attribute {
+  /// Internal namespace string for the attribute.
+  ///
+  /// Uses the same sentinel scheme as element namespaces:
+  /// - [`NULL_NAMESPACE`] represents a DOM `null` namespace.
+  /// - `""` represents the HTML namespace (XHTML) for compatibility with FastRender's renderer DOM.
+  /// - Any other string is stored verbatim.
+  pub namespace: String,
+  pub prefix: Option<String>,
+  pub local_name: String,
+  pub value: String,
+}
+
+impl Attribute {
+  pub fn new(namespace: &str, prefix: Option<&str>, local_name: &str, value: &str) -> Self {
+    Self {
+      namespace: namespace.to_string(),
+      prefix: prefix.map(|p| p.to_string()),
+      local_name: local_name.to_string(),
+      value: value.to_string(),
+    }
+  }
+
+  pub fn new_no_namespace(local_name: &str, value: &str) -> Self {
+    Self::new(NULL_NAMESPACE, None, local_name, value)
+  }
+
+  pub fn qualified_name(&self) -> std::borrow::Cow<'_, str> {
+    match self.prefix.as_deref() {
+      Some(prefix) => std::borrow::Cow::Owned(format!("{prefix}:{}", self.local_name)),
+      None => std::borrow::Cow::Borrowed(self.local_name.as_str()),
+    }
+  }
+
+  pub fn qualified_name_matches(&self, query: &str, is_html: bool) -> bool {
+    match self.prefix.as_deref() {
+      Some(prefix) => {
+        let Some((query_prefix, query_local)) = query.split_once(':') else {
+          return false;
+        };
+        if is_html {
+          prefix.eq_ignore_ascii_case(query_prefix) && self.local_name.eq_ignore_ascii_case(query_local)
+        } else {
+          prefix == query_prefix && self.local_name == query_local
+        }
+      }
+      None => {
+        if is_html {
+          self.local_name.eq_ignore_ascii_case(query)
+        } else {
+          self.local_name == query
+        }
+      }
+    }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeKind {
   Document {
     quirks_mode: QuirksMode,
@@ -156,14 +214,14 @@ pub enum NodeKind {
   },
   Slot {
     namespace: String,
-    attributes: Vec<(String, String)>,
+    attributes: Vec<Attribute>,
     assigned: bool,
   },
   Element {
     tag_name: String,
     namespace: String,
     prefix: Option<String>,
-    attributes: Vec<(String, String)>,
+    attributes: Vec<Attribute>,
   },
   Text {
     content: String,
@@ -1086,12 +1144,14 @@ impl Document {
       } = &node.kind
       {
         let is_html = self.is_html_case_insensitive_namespace(namespace);
-        if attributes.iter().any(|(name, value)| {
-          (if is_html {
-            name.eq_ignore_ascii_case("id")
-          } else {
-            name == "id"
-          }) && value == id
+        if attributes.iter().any(|attr| {
+          attr.namespace == NULL_NAMESPACE
+            && (if is_html {
+              attr.local_name.eq_ignore_ascii_case("id")
+            } else {
+              attr.local_name == "id"
+            })
+            && attr.value == id
         }) {
           return Some(node_id);
         }
@@ -1249,7 +1309,7 @@ impl Document {
     node_id: NodeId,
     tag_name: &str,
     namespace: &str,
-    attributes: &[(String, String)],
+    attributes: &[Attribute],
   ) -> Vec<(String, String)> {
     fn trim_ascii_whitespace_html(value: &str) -> &str {
       // HTML attribute parsing ignores leading/trailing ASCII whitespace (TAB/LF/FF/CR/SPACE) but
@@ -1291,7 +1351,10 @@ impl Document {
       ty.eq_ignore_ascii_case("checkbox") || ty.eq_ignore_ascii_case("radio")
     }
 
-    let mut attrs = attributes.to_vec();
+    let mut attrs: Vec<(String, String)> = attributes
+      .iter()
+      .map(|attr| (attr.qualified_name().into_owned(), attr.value.clone()))
+      .collect();
 
     if !self.is_html_case_insensitive_namespace(namespace) {
       return attrs;
@@ -1411,7 +1474,10 @@ impl Document {
           assigned,
         } => DomNodeType::Slot {
           namespace: namespace.clone(),
-          attributes: attributes.clone(),
+          attributes: attributes
+            .iter()
+            .map(|attr| (attr.qualified_name().into_owned(), attr.value.clone()))
+            .collect(),
           assigned: *assigned,
         },
         NodeKind::Element {
@@ -1560,7 +1626,10 @@ impl Document {
           assigned,
         } => DomNodeType::Slot {
           namespace: namespace.clone(),
-          attributes: attributes.clone(),
+          attributes: attributes
+            .iter()
+            .map(|attr| (attr.qualified_name().into_owned(), attr.value.clone()))
+            .collect(),
           assigned: *assigned,
         },
         NodeKind::Element {
@@ -1963,7 +2032,7 @@ impl Document {
       remaining -= 1;
 
       let node = self.node(node_id);
-      let attrs: &[(String, String)] = match &node.kind {
+      let attrs: &[Attribute] = match &node.kind {
         NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes,
         _ => {
           current = node.parent;
@@ -1971,23 +2040,27 @@ impl Document {
         }
       };
 
-      for (name, value) in attrs {
-        if name == "xmlns" {
+      for attr in attrs {
+        if attr.namespace != XMLNS_NAMESPACE {
+          continue;
+        }
+        if attr.prefix.is_none() && attr.local_name == "xmlns" {
           if !default_ns_seen {
             default_ns_seen = true;
             // `xmlns=""` unbinds the default namespace.
-            if value.is_empty() {
+            if attr.value.is_empty() {
               default_ns = None;
             } else {
-              default_ns = Some(value.clone());
+              default_ns = Some(attr.value.clone());
             }
           }
           continue;
         }
 
-        let Some(prefix) = name.strip_prefix("xmlns:") else {
+        let Some(_xmlns) = attr.prefix.as_deref().filter(|p| *p == "xmlns") else {
           continue;
         };
+        let prefix = attr.local_name.as_str();
         // Ignore malformed namespace declarations (empty prefix or multiple colons).
         if prefix.is_empty() || prefix.contains(':') {
           continue;
@@ -2007,10 +2080,10 @@ impl Document {
         prefixes_seen.insert(prefix.to_string());
 
         // `xmlns:prefix=""` unbinds the prefix; treat it as shadowing any ancestor binding.
-        if value.is_empty() {
+        if attr.value.is_empty() {
           continue;
         }
-        prefixes.insert(prefix.to_string(), value.clone());
+        prefixes.insert(prefix.to_string(), attr.value.clone());
       }
 
       current = node.parent;

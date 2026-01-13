@@ -1,6 +1,6 @@
 use crate::dom::{is_valid_shadow_host_name, ShadowRootMode};
 
-use super::{Document, DomError, NodeId, NodeKind, SlotAssignmentMode};
+use super::{Attribute, DomError, Document, NodeId, NodeKind, SlotAssignmentMode, NULL_NAMESPACE};
 
 fn node_is_element_like(kind: &NodeKind) -> bool {
   matches!(kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
@@ -35,15 +35,17 @@ fn node_is_valid_shadow_host(doc: &Document, kind: &NodeKind) -> bool {
   }
 }
 
-fn get_attribute<'a>(attrs: &'a [(String, String)], name: &str) -> Option<&'a str> {
+fn get_attribute<'a>(attrs: &'a [Attribute], name: &str) -> Option<&'a str> {
   attrs
     .iter()
-    .find(|(k, _)| k.eq_ignore_ascii_case(name))
-    .map(|(_, v)| v.as_str())
+    .find(|attr| attr.namespace == NULL_NAMESPACE && attr.local_name.eq_ignore_ascii_case(name))
+    .map(|attr| attr.value.as_str())
 }
 
-fn has_attribute(attrs: &[(String, String)], name: &str) -> bool {
-  attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case(name))
+fn has_attribute(attrs: &[Attribute], name: &str) -> bool {
+  attrs
+    .iter()
+    .any(|attr| attr.namespace == NULL_NAMESPACE && attr.local_name.eq_ignore_ascii_case(name))
 }
 
 fn parse_shadow_root_definition(

@@ -412,8 +412,8 @@ fn script_source_snapshot(dom: &Document, script: NodeId) -> ScriptSourceSnapsho
   // identifying an external script (even if empty, as the fetch would still resolve).
   let src = attributes
     .iter()
-    .find(|(k, _)| k.eq_ignore_ascii_case("src"))
-    .map(|(_, v)| v.to_string());
+    .find(|attr| attr.namespace == crate::dom2::NULL_NAMESPACE && attr.local_name.eq_ignore_ascii_case("src"))
+    .map(|attr| attr.value.to_string());
   match src {
     Some(url) => ScriptSourceSnapshot::Url { url },
     None => ScriptSourceSnapshot::Inline,

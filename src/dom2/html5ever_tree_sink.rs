@@ -5,7 +5,7 @@ use crate::html::base_url_tracker::BaseUrlTracker;
 use html5ever::tendril::StrTendril;
 use html5ever::tree_builder::{ElementFlags, NodeOrText, QuirksMode as HtmlQuirksMode, TreeSink};
 use markup5ever::interface::tree_builder::ElemName;
-use markup5ever::interface::Attribute;
+use markup5ever::interface::Attribute as HtmlAttribute;
 use markup5ever::{LocalName, Namespace, QualName};
 use rustc_hash::FxHashSet;
 use selectors::context::QuirksMode as SelectorQuirksMode;
@@ -14,7 +14,7 @@ use std::cell::{Ref, RefCell, RefMut};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use super::{live_mutation::utf16_len, Document, NodeId, NodeKind, SlotAssignmentMode};
+use super::{live_mutation::utf16_len, Attribute, Document, NodeId, NodeKind, SlotAssignmentMode, NULL_NAMESPACE};
 
 /// Sentinel handle returned by TreeSink hooks for node types that are intentionally ignored during
 /// parsing (currently: processing instructions).
@@ -181,7 +181,7 @@ impl Dom2TreeSink {
     (in_head, in_foreign_namespace, in_template)
   }
 
-  fn element_info<'a>(kind: &'a NodeKind) -> Option<(&'a str, &'a str, &'a [(String, String)])> {
+  fn element_info<'a>(kind: &'a NodeKind) -> Option<(&'a str, &'a str, &'a [Attribute])> {
     match kind {
       NodeKind::Element {
         tag_name,
@@ -554,10 +554,14 @@ impl Dom2TreeSink {
       };
 
     if tag_name.eq_ignore_ascii_case("base") {
+      let attrs_for_tracker: Vec<(String, String)> = attrs
+        .iter()
+        .map(|attr| (attr.qualified_name().into_owned(), attr.value.clone()))
+        .collect();
       self.base_url_tracker.borrow_mut().on_element_inserted(
         tag_name,
         namespace,
-        attrs,
+        attrs_for_tracker.as_slice(),
         in_head,
         in_foreign_namespace,
         in_template,
@@ -571,14 +575,20 @@ impl Dom2TreeSink {
 
       let rel_value = attrs
         .iter()
-        .find_map(|(name, value)| name.eq_ignore_ascii_case("rel").then_some(value.as_str()));
+        .find_map(|attr| {
+          (attr.namespace == NULL_NAMESPACE && attr.local_name.eq_ignore_ascii_case("rel"))
+            .then_some(attr.value.as_str())
+        });
       if !rel_value.is_some_and(link_rel_is_stylesheet) {
         return;
       }
 
       let Some(href_raw) = attrs
         .iter()
-        .find_map(|(name, value)| name.eq_ignore_ascii_case("href").then_some(value.as_str()))
+        .find_map(|attr| {
+          (attr.namespace == NULL_NAMESPACE && attr.local_name.eq_ignore_ascii_case("href"))
+            .then_some(attr.value.as_str())
+        })
       else {
         return;
       };
@@ -677,7 +687,7 @@ impl TreeSink for Dom2TreeSink {
     &self,
     location: &NodeId,
     template: &NodeId,
-    attrs: &[Attribute],
+    attrs: &[HtmlAttribute],
   ) -> bool {
     let mode_attr = attrs.iter().find_map(|attr| {
       attr
@@ -815,7 +825,7 @@ impl TreeSink for Dom2TreeSink {
     }
   }
 
-  fn create_element(&self, name: QualName, attrs: Vec<Attribute>, flags: ElementFlags) -> NodeId {
+  fn create_element(&self, name: QualName, attrs: Vec<HtmlAttribute>, flags: ElementFlags) -> NodeId {
     let (namespace, is_html_namespace) = {
       let doc = self.document.borrow();
       let namespace = Self::normalize_namespace_for_storage(&doc, name.ns.as_ref());
@@ -824,7 +834,26 @@ impl TreeSink for Dom2TreeSink {
     };
     let mut attributes = Vec::with_capacity(attrs.len());
     for attr in attrs {
-      attributes.push((attr.name.local.to_string(), attr.value.to_string()));
+      // `markup5ever` uses the empty namespace for "no namespace"; `dom2` needs a distinct sentinel
+      // because it uses the empty string to represent the HTML namespace.
+      let ns_uri = attr.name.ns.as_ref();
+      let namespace = if ns_uri.is_empty() {
+        NULL_NAMESPACE.to_string()
+      } else if ns_uri == HTML_NAMESPACE {
+        String::new()
+      } else {
+        ns_uri.to_string()
+      };
+      let mut prefix = attr.name.prefix.as_ref().map(|p| p.to_string());
+      if namespace == NULL_NAMESPACE {
+        prefix = None;
+      }
+      attributes.push(Attribute {
+        namespace,
+        prefix,
+        local_name: attr.name.local.to_string(),
+        value: attr.value.to_string(),
+      });
     }
 
     let is_html_slot = name.local.as_ref().eq_ignore_ascii_case("slot") && is_html_namespace;
@@ -1099,7 +1128,7 @@ impl TreeSink for Dom2TreeSink {
     }
   }
 
-  fn add_attrs_if_missing(&self, target: &NodeId, attrs: Vec<Attribute>) {
+  fn add_attrs_if_missing(&self, target: &NodeId, attrs: Vec<HtmlAttribute>) {
     let Some(is_html) = (|| {
       let doc = self.document.borrow();
       if target.index() >= doc.nodes_len() {
@@ -1126,18 +1155,38 @@ impl TreeSink for Dom2TreeSink {
     };
 
     for attr in attrs {
-      let name = attr.name.local.to_string();
-      let present = existing.iter().any(|(k, _)| {
-        if is_html {
-          k.eq_ignore_ascii_case(name.as_str())
-        } else {
-          k == &name
-        }
+      let ns_uri = attr.name.ns.as_ref();
+      let namespace = if ns_uri.is_empty() {
+        NULL_NAMESPACE.to_string()
+      } else if ns_uri == HTML_NAMESPACE {
+        String::new()
+      } else {
+        ns_uri.to_string()
+      };
+      let mut prefix = attr.name.prefix.as_ref().map(|p| p.to_string());
+      if namespace == NULL_NAMESPACE {
+        prefix = None;
+      }
+
+      let local_name = attr.name.local.to_string();
+      let ci = is_html && namespace == NULL_NAMESPACE;
+      let present = existing.iter().any(|existing_attr| {
+        existing_attr.namespace == namespace
+          && if ci {
+            existing_attr.local_name.eq_ignore_ascii_case(local_name.as_str())
+          } else {
+            existing_attr.local_name == local_name
+          }
       });
       if present {
         continue;
       }
-      existing.push((name, attr.value.to_string()));
+      existing.push(Attribute {
+        namespace,
+        prefix,
+        local_name,
+        value: attr.value.to_string(),
+      });
     }
   }
 
