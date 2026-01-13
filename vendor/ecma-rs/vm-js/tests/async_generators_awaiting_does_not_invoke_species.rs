@@ -48,8 +48,12 @@ fn is_unimplemented_async_generator_error(rt: &mut JsRuntime, err: &VmError) -> 
 fn async_generators_supported(rt: &mut JsRuntime) -> Result<bool, VmError> {
   // Detect runtime async-generator support, not just parsing/prototype wiring. vm-js may accept the
   // syntax and create function objects before it implements the execution semantics.
-  match rt.exec_script("async function* __ag_support() { yield 1; } __ag_support();") {
-    Ok(_) => Ok(true),
+  match rt.exec_script("async function* __ag_support() { yield 1; }\n__ag_support().next();") {
+    Ok(_) => {
+      // Drain any jobs scheduled by the `.next()` probe so it does not perturb later assertions.
+      rt.teardown_microtasks();
+      Ok(true)
+    }
     Err(err) if is_unimplemented_async_generator_error(rt, &err)? => Ok(false),
     Err(err) => Err(err),
   }

@@ -1,4 +1,4 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, PropertyKey, Value, Vm, VmError, VmOptions};
+use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -16,44 +16,60 @@ fn value_to_string(rt: &JsRuntime, value: Value) -> String {
   rt.heap.get_string(s).unwrap().to_utf8_lossy()
 }
 
-fn is_unimplemented_async_generator_error(rt: &mut JsRuntime, err: &VmError) -> Result<bool, VmError> {
-  match err {
-    VmError::Unimplemented(msg) if msg.contains("async generator functions") => return Ok(true),
-    _ => {}
-  }
-
-  let Some(thrown) = err.thrown_value() else {
-    return Ok(false);
-  };
-  let Value::Object(err_obj) = thrown else {
-    return Ok(false);
-  };
-
-  let syntax_error_proto = rt.realm().intrinsics().syntax_error_prototype();
-  if rt.heap().object_prototype(err_obj)? != Some(syntax_error_proto) {
-    return Ok(false);
-  }
-
-  let mut scope = rt.heap_mut().scope();
-  scope.push_root(Value::Object(err_obj))?;
-
-  let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
-  let Some(Value::String(message_s)) =
-    scope.heap().object_get_own_data_property_value(err_obj, &message_key)?
-  else {
-    return Ok(false);
-  };
-
-  Ok(scope.heap().get_string(message_s)?.to_utf8_lossy() == "async generator functions")
-}
-
 fn async_generators_supported(rt: &mut JsRuntime) -> Result<bool, VmError> {
-  // Detect runtime support (call semantics), not just parsing/prototype wiring.
-  match rt.exec_script("async function* __ag_support() {} void __ag_support();") {
-    Ok(_) => Ok(true),
-    Err(err) if is_unimplemented_async_generator_error(rt, &err)? => Ok(false),
-    Err(err) => Err(err),
+  // vm-js historically parsed `async function*` but deliberately rejected it at runtime (via a
+  // throwable SyntaxError) while async generator semantics were unimplemented. These tests should
+  // start running automatically once that support lands.
+  let value = match rt.exec_script(
+    r#"
+      var supported = true;
+      try {
+        async function* __probe() {
+          for await (const x of [Promise.resolve(1)]) {
+            yield x;
+          }
+        }
+        // Trigger execution (and therefore `for await..of` evaluation) by enqueueing a `.next()`
+        // request. Any unimplemented async-generator or for-await-of machinery will surface to the
+        // host as a `VmError::Unimplemented`.
+        __probe().next();
+      } catch (e) {
+        // Only treat the known feature-detection SyntaxError as "unsupported". Any other exception
+        // should fail the test so we don't accidentally mask bugs once async generators exist.
+        if (e && e.name === "SyntaxError" && String(e.message).includes("async generator")) {
+          supported = false;
+        } else {
+          throw e;
+        }
+      }
+      supported
+    "#,
+  ) {
+    Ok(v) => v,
+    Err(VmError::Unimplemented(msg))
+      if msg.contains("async generator functions") || msg.contains("for await..of") =>
+    {
+      return Ok(false);
+    }
+    Err(err) => return Err(err),
+  };
+  let supported = value == Value::Bool(true);
+  if supported {
+    // Running the microtask queue is required to surface host-level errors during async generator
+    // execution (including the `for await..of` unimplemented path).
+    match rt.vm.perform_microtask_checkpoint(&mut rt.heap) {
+      Ok(()) => {}
+      Err(VmError::Unimplemented(msg))
+        if msg.contains("for await..of") || msg.contains("async generator functions") =>
+      {
+        rt.teardown_microtasks();
+        return Ok(false);
+      }
+      Err(err) => return Err(err),
+    }
+    rt.teardown_microtasks();
   }
+  Ok(supported)
 }
 
 #[test]

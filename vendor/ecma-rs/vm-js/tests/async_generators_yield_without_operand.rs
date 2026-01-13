@@ -17,7 +17,8 @@ fn async_generators_supported(rt: &mut JsRuntime) -> Result<bool, VmError> {
     r#"
       (() => {
         try {
-          (async function* () {})();
+          // Call `.next()` so we detect execution support, not just syntax acceptance.
+          (async function* () { yield 1; })().next();
           return true;
         } catch (e) {
           // Preserve unexpected failures (e.g. if parsing or error objects regress).
@@ -29,11 +30,17 @@ fn async_generators_supported(rt: &mut JsRuntime) -> Result<bool, VmError> {
       })()
     "#,
   ) {
-    Ok(value) => value,
-    Err(VmError::Unimplemented(msg)) if msg.contains("async generator functions") => return Ok(false),
+    Ok(v) => v,
+    Err(VmError::Unimplemented(msg)) if msg.contains("async generator functions") => {
+      return Ok(false);
+    }
     Err(err) => return Err(err),
   };
-  Ok(supported == Value::Bool(true))
+  let supported = supported == Value::Bool(true);
+  if supported {
+    rt.teardown_microtasks();
+  }
+  Ok(supported)
 }
 
 #[test]

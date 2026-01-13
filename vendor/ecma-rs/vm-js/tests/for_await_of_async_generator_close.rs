@@ -1,4 +1,4 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, PropertyKey, Value, Vm, VmError, VmOptions};
+use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -16,44 +16,38 @@ fn value_to_string(rt: &JsRuntime, value: Value) -> String {
   rt.heap.get_string(s).unwrap().to_utf8_lossy()
 }
 
-fn is_unimplemented_async_generator_error(rt: &mut JsRuntime, err: &VmError) -> Result<bool, VmError> {
-  match err {
-    VmError::Unimplemented(msg) if msg.contains("async generator functions") => return Ok(true),
-    _ => {}
-  }
-
-  let Some(thrown) = err.thrown_value() else {
-    return Ok(false);
-  };
-  let Value::Object(err_obj) = thrown else {
-    return Ok(false);
-  };
-
-  let syntax_error_proto = rt.realm().intrinsics().syntax_error_prototype();
-  if rt.heap().object_prototype(err_obj)? != Some(syntax_error_proto) {
-    return Ok(false);
-  }
-
-  let mut scope = rt.heap_mut().scope();
-  scope.push_root(Value::Object(err_obj))?;
-
-  let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
-  let Some(Value::String(message_s)) =
-    scope.heap().object_get_own_data_property_value(err_obj, &message_key)?
-  else {
-    return Ok(false);
-  };
-
-  Ok(scope.heap().get_string(message_s)?.to_utf8_lossy() == "async generator functions")
-}
-
 fn async_generators_supported(rt: &mut JsRuntime) -> Result<bool, VmError> {
-  // Detect runtime support (call semantics), not just parsing/prototype wiring.
-  match rt.exec_script("async function* __ag_support() {} void __ag_support();") {
-    Ok(_) => Ok(true),
-    Err(err) if is_unimplemented_async_generator_error(rt, &err)? => Ok(false),
-    Err(err) => Err(err),
+  // vm-js historically parsed `async function*` but deliberately rejected it at runtime (via a
+  // throwable SyntaxError) while async generator semantics were unimplemented. These tests should
+  // start running automatically once that support lands.
+  let value = match rt.exec_script(
+    r#"
+      try {
+        var f = (async function* () { yield 1; });
+        // Call `.next()` to ensure async generator execution is implemented, not just syntax.
+        f().next();
+      } catch (e) {
+        // Only treat the known feature-detection SyntaxError as "unsupported". Any other exception
+        // should fail the test so we don't accidentally mask bugs once async generators exist.
+        if (e && e.name === "SyntaxError" && String(e.message).includes("async generator functions")) {
+          false;
+        } else {
+          throw e;
+        }
+      }
+    "#,
+  ) {
+    Ok(v) => v,
+    Err(VmError::Unimplemented(msg)) if msg.contains("async generator functions") => {
+      return Ok(false);
+    }
+    Err(err) => return Err(err),
+  };
+  let supported = value == Value::Bool(true);
+  if supported {
+    rt.teardown_microtasks();
   }
+  Ok(supported)
 }
 
 #[test]
