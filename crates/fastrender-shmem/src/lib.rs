@@ -42,24 +42,31 @@
 //!
 //! ```no_run
 //! # use std::process::Command;
+//! # #[cfg(unix)]
 //! # use std::os::unix::process::CommandExt;
 //! # use fastrender_shmem::{ShmemBackend, ShmemRegion};
+//! # #[cfg(target_os = "linux")]
 //! # fn run() -> std::io::Result<()> {
-//! let (_region, handle) = ShmemRegion::create(ShmemBackend::default(), 4096)?;
+//! let (_region, handle) = ShmemRegion::create(ShmemBackend::LinuxMemfd, 4096)?;
 //! // Clear CLOEXEC immediately before exec so the FD is inherited by the renderer.
-//! let fd = handle.fd().expect("memfd backend");
 //! let len = handle.len();
 //! let mut cmd = Command::new("fastrender-renderer");
-//! cmd.env("FASTR_RENDER_SHMEM_FD", fd.to_string());
+//! // Use a stable, non-conflicting FD number for the inherited memfd.
+//! // (If you also inherit an IPC socket at fd=3, prefer fd=4 or higher here.)
+//! const SHMEM_FD: i32 = 4;
+//! cmd.env("FASTR_RENDER_SHMEM_FD", SHMEM_FD.to_string());
 //! cmd.env("FASTR_RENDER_SHMEM_LEN", len.to_string());
 //! // Safety: the `pre_exec` hook runs in the child after `fork` and before `exec`, so the closure
-//! // must only perform async-signal-safe operations (here: `fcntl` via `clear_cloexec`).
+//! // must only perform async-signal-safe operations (here: `dup2` + `fcntl`).
 //! unsafe {
-//!   cmd.pre_exec(move || handle.clear_cloexec());
+//!   cmd.pre_exec(move || handle.dup_to_fd(SHMEM_FD));
 //! }
 //! let _child = cmd.spawn()?;
 //! # Ok(())
 //! # }
+//! #
+//! # #[cfg(not(target_os = "linux"))]
+//! # fn run() -> std::io::Result<()> { Ok(()) }
 //! ```
 //!
 //! The renderer then reads `FASTR_RENDER_SHMEM_FD`/`_LEN` and maps the region via
@@ -166,6 +173,27 @@ impl ShmemHandle {
       #[cfg(unix)]
       ShmemHandle::PosixShm { .. } => None,
     }
+  }
+
+  /// Duplicate this handle's FD onto `target_fd` and ensure it is *not* `CLOEXEC`.
+  ///
+  /// This is a convenience helper for FD inheritance across `exec`: callers can choose a stable FD
+  /// number (e.g. `3` for IPC, `4` for shared memory) and set an env/arg accordingly.
+  ///
+  /// This is designed to be called from `CommandExt::pre_exec` in the browser process.
+  #[cfg(target_os = "linux")]
+  pub fn dup_to_fd(&self, target_fd: RawFd) -> io::Result<()> {
+    let Some(fd) = self.fd() else {
+      return Ok(());
+    };
+    // SAFETY: `dup2` is an FFI boundary; on success it duplicates `fd` onto `target_fd` in the
+    // current process (closing the previous `target_fd` if it was open).
+    let rc = unsafe { libc::dup2(fd, target_fd) };
+    if rc < 0 {
+      return Err(io::Error::last_os_error());
+    }
+    // `dup2` does not clear CLOEXEC when `fd == target_fd`, so explicitly clear it.
+    clear_fd_cloexec(target_fd)
   }
 
   /// Clears `FD_CLOEXEC` on this handle's FD.
@@ -577,5 +605,38 @@ mod tests {
     let rc = unsafe { libc::fcntl(fd, libc::F_ADD_SEALS, libc::F_SEAL_WRITE) };
     assert_eq!(rc, -1);
     assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::EPERM));
+  }
+
+  #[cfg(target_os = "linux")]
+  #[test]
+  fn linux_memfd_dup_to_fd_clears_cloexec() {
+    let (mut region, handle) =
+      ShmemRegion::create(ShmemBackend::LinuxMemfd, 4096).expect("create memfd shmem");
+    region.as_mut_slice()[0..4].copy_from_slice(b"TEST");
+
+    let src_fd = handle.fd().expect("memfd handle fd");
+    let target_fd = unsafe { libc::fcntl(src_fd, libc::F_DUPFD_CLOEXEC, 100) };
+    assert!(target_fd >= 0, "F_DUPFD_CLOEXEC failed: {}", std::io::Error::last_os_error());
+
+    let flags = unsafe { libc::fcntl(target_fd, libc::F_GETFD) };
+    assert!(flags & libc::FD_CLOEXEC != 0);
+
+    handle
+      .dup_to_fd(target_fd)
+      .expect("dup memfd to target fd and clear cloexec");
+    let flags = unsafe { libc::fcntl(target_fd, libc::F_GETFD) };
+    assert_eq!(flags & libc::FD_CLOEXEC, 0);
+
+    let dup_handle = ShmemHandle::LinuxMemfd {
+      fd: target_fd,
+      len: handle.len(),
+    };
+    let other = ShmemRegion::map(&dup_handle).expect("map dup fd handle");
+    assert_eq!(&other.as_slice()[0..4], b"TEST");
+
+    // Clean up our manually-duplicated fd.
+    unsafe {
+      libc::close(target_fd);
+    }
   }
 }
