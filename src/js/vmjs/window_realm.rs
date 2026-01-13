@@ -55117,6 +55117,55 @@ mod tests {
     crate::js::HostDocumentState::from_renderer_dom(&renderer_dom)
   }
 
+  #[test]
+  fn character_data_insert_data_throws_domexception_index_size_error() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let value = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"
+        (() => {
+          const t = document.createTextNode("abc");
+          try {
+            t.insertData(10, "x");
+            return false;
+          } catch (e) {
+            return e instanceof DOMException && e.name === "IndexSizeError";
+          }
+        })()
+      "#,
+    )?;
+    assert_eq!(value, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn named_node_map_remove_missing_throws_domexception_not_found_error() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let value = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"
+        (() => {
+          const el = document.createElement("div");
+          const attrs = el.attributes;
+          try {
+            attrs.removeNamedItem("nope");
+            return false;
+          } catch (e) {
+            return e instanceof DOMException && e.name === "NotFoundError";
+          }
+        })()
+      "#,
+    )?;
+    assert_eq!(value, Value::Bool(true));
+    Ok(())
+  }
+
   // Multi-document DOM regression tests.
   //
   // The vm-js DOM shims are currently single-document (host-only) and do not yet expose:
