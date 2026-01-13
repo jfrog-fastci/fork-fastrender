@@ -7174,6 +7174,9 @@ impl<'vm> HirEvaluator<'vm> {
           // Methods use the property key as the function `name`.
           if *method {
             if let Value::Object(func_obj) = v {
+              member_scope
+                .heap_mut()
+                .set_function_home_object(func_obj, Some(obj_val))?;
               crate::function_properties::set_function_name(&mut member_scope, func_obj, key, None)?;
             }
           }
@@ -7215,9 +7218,12 @@ impl<'vm> HirEvaluator<'vm> {
             /* name_binding */ None,
             EcmaFunctionKind::ObjectMember,
           )?;
+          member_scope.push_root(Value::Object(func_obj))?;
+          member_scope
+            .heap_mut()
+            .set_function_home_object(func_obj, Some(obj_val))?;
           crate::function_properties::set_function_name(&mut member_scope, func_obj, key, Some("get"))?;
           crate::function_properties::set_function_length(&mut member_scope, func_obj, 0)?;
-          member_scope.push_root(Value::Object(func_obj))?;
 
           member_scope.define_property(
             obj_val,
@@ -7253,9 +7259,12 @@ impl<'vm> HirEvaluator<'vm> {
             /* name_binding */ None,
             EcmaFunctionKind::ObjectMember,
           )?;
+          member_scope.push_root(Value::Object(func_obj))?;
+          member_scope
+            .heap_mut()
+            .set_function_home_object(func_obj, Some(obj_val))?;
           crate::function_properties::set_function_name(&mut member_scope, func_obj, key, Some("set"))?;
           crate::function_properties::set_function_length(&mut member_scope, func_obj, 1)?;
-          member_scope.push_root(Value::Object(func_obj))?;
 
           member_scope.define_property(
             obj_val,
@@ -8066,6 +8075,7 @@ impl<'vm> HirEvaluator<'vm> {
     let saved_this = self.this;
     let saved_this_initialized = self.this_initialized;
     let saved_new_target = self.new_target;
+    let saved_home_object = self.home_object;
     let saved_lex = self.env.lexical_env();
     let saved_var_env = self.env.var_env();
 
@@ -8073,6 +8083,7 @@ impl<'vm> HirEvaluator<'vm> {
       self.this = Value::Object(receiver);
       self.this_initialized = true;
       self.new_target = Value::Undefined;
+      self.home_object = Some(receiver);
 
       let var_env = block_scope.env_create(Some(saved_lex))?;
       let body_lex = block_scope.env_create(Some(var_env))?;
@@ -8107,6 +8118,7 @@ impl<'vm> HirEvaluator<'vm> {
     self.this = saved_this;
     self.this_initialized = saved_this_initialized;
     self.new_target = saved_new_target;
+    self.home_object = saved_home_object;
 
     match res? {
       Flow::Normal(_) => Ok(()),
