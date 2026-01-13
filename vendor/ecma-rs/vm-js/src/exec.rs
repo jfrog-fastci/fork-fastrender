@@ -12203,6 +12203,48 @@ impl<'a> Evaluator<'a> {
         ))
       }
       OperatorName::In => {
+        // `#x in obj` is a private brand check, not a normal property-name `in` operation.
+        //
+        // The LHS is syntactically a private identifier, not an expression to be evaluated as an
+        // identifier reference.
+        let private_name = match &*expr.left.stx {
+          Expr::Id(id) if id.stx.name.starts_with('#') => Some(id.stx.name.as_str()),
+          Expr::IdPat(id) if id.stx.name.starts_with('#') => Some(id.stx.name.as_str()),
+          _ => None,
+        };
+
+        if let Some(private_name) = private_name {
+          let right = self.eval_expr(scope, &expr.right)?;
+          let Value::Object(obj) = right else {
+            return Err(throw_type_error(
+              self.vm,
+              scope,
+              "Right-hand side of 'in' should be an object",
+            )?);
+          };
+
+          // Root the RHS object across private-name resolution and own-property lookup, which may
+          // allocate/tick.
+          let mut rhs_scope = scope.reborrow();
+          rhs_scope.push_root(Value::Object(obj))?;
+
+          let sym = rhs_scope
+            .heap()
+            .resolve_private_name_symbol(self.env.lexical_env, private_name)?
+            .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+
+          // Private elements are not accessible through Proxy objects; `#x in proxy` always fails
+          // the brand check without consulting any traps.
+          if rhs_scope.heap().is_proxy_object(obj) {
+            return Ok(Value::Bool(false));
+          }
+
+          rhs_scope.push_root(Value::Symbol(sym))?;
+          let key = PropertyKey::from_symbol(sym);
+          let has = rhs_scope.heap().get_own_property(obj, key)?.is_some();
+          return Ok(Value::Bool(has));
+        }
+
         let left = self.eval_expr(scope, &expr.left)?;
         // Root `left` across evaluation of `right` in case the RHS allocates and triggers GC.
         let mut rhs_scope = scope.reborrow();

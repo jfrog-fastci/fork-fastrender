@@ -217,6 +217,10 @@ mod class_static_block_hir_exec_tests;
 #[path = "../tests/unit/typed_array_dataview_rooting_gc.rs"]
 mod typed_array_dataview_rooting_gc_tests;
 
+#[cfg(test)]
+#[path = "../tests/unit/private_in.rs"]
+mod private_in_tests;
+
 pub use crate::handle::EnvRootId;
 
 pub use crate::agent::format_termination;
