@@ -721,7 +721,11 @@ explicit about which layer you are modifying and why.
   - Must keep `KILL_ON_JOB_CLOSE` and `ACTIVE_PROCESS_LIMIT=1`.
   - Must not enable breakaway (`JOB_OBJECT_LIMIT_BREAKAWAY_OK` / `SILENT_BREAKAWAY_OK`).
   - If the child cannot be assigned to the Job (nested-job restrictions), treat it as a sandbox
-    degradation (today it’s a warning); consider whether the caller should fail-closed in the future.
+    boundary failure:
+    - **Default:** fail closed (terminate the child and return an error; avoids silently losing
+      kill-on-close / active-process enforcement).
+    - **Opt-in only:** when `FASTR_ALLOW_UNSANDBOXED_RENDERER=1` is set (or sandboxing is explicitly
+      disabled for debugging), the spawner may continue jobless and prints a warning.
 
 - **Handle inheritance**
   - Must use `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` for an explicit allowlist.
