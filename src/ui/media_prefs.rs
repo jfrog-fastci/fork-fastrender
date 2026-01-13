@@ -92,25 +92,64 @@ pub(crate) fn runtime_toggles_with_browser_media_prefs(
 ) -> Arc<RuntimeToggles> {
   let effective = merge_media_prefs_with_env_overrides(&base.config().media, ui_defaults);
 
-  let mut raw = base.raw_clone();
-  raw.insert(
-    "FASTR_PREFERS_COLOR_SCHEME".to_string(),
-    effective.prefers_color_scheme.to_string(),
-  );
-  raw.insert(
-    "FASTR_PREFERS_CONTRAST".to_string(),
-    effective.prefers_contrast.to_string(),
-  );
-  raw.insert(
-    "FASTR_PREFERS_REDUCED_MOTION".to_string(),
-    if effective.prefers_reduced_motion {
-      "reduce".to_string()
-    } else {
-      "no-preference".to_string()
-    },
-  );
+  // Prefer returning the base `Arc` when applying browser defaults would not change the effective
+  // runtime environment. This keeps `Arc::ptr_eq` stable, which is important for
+  // `debug::runtime::with_runtime_toggles` deadlock avoidance when callers scope a global override
+  // and then drive the UI worker from another thread.
+  //
+  // See: `tests/browser_integration/ui_worker_media_prefs.rs::ui_worker_media_preferences_do_not_override_explicit_renderer_env`
+  //
+  // When a preference is not explicitly overridden by env vars, `MediaContext::screen()` provides
+  // stable defaults (light / no-preference / no-reduce). Avoid inserting "default" overrides so
+  // the derived toggle set remains pointer-identical to `base` when possible.
+  let mut raw: Option<std::collections::HashMap<String, String>> = None;
+  let mut changed = false;
 
-  Arc::new(RuntimeToggles::from_map(raw))
+  let mut maybe_insert = |key: &str, value: String| {
+    if !changed {
+      raw = Some(base.raw_clone());
+      changed = true;
+    }
+    raw
+      .as_mut()
+      .expect("raw initialized")
+      .insert(key.to_string(), value);
+  };
+
+  // `prefers-color-scheme`: only insert when no env override exists and UI wants a non-default
+  // value.
+  if base.config().media.prefers_color_scheme.is_none()
+    && effective.prefers_color_scheme != ColorScheme::Light
+  {
+    maybe_insert(
+      "FASTR_PREFERS_COLOR_SCHEME",
+      effective.prefers_color_scheme.to_string(),
+    );
+  }
+
+  // `prefers-contrast`: only insert when no env override exists and UI wants a non-default value.
+  if base.config().media.prefers_contrast.is_none()
+    && effective.prefers_contrast != ContrastPreference::NoPreference
+  {
+    maybe_insert(
+      "FASTR_PREFERS_CONTRAST",
+      effective.prefers_contrast.to_string(),
+    );
+  }
+
+  // `prefers-reduced-motion`: only insert when no env override exists and UI wants a non-default
+  // value (reduce = true).
+  if base.config().media.prefers_reduced_motion.is_none() && effective.prefers_reduced_motion {
+    maybe_insert("FASTR_PREFERS_REDUCED_MOTION", "reduce".to_string());
+  }
+
+  if changed {
+    Arc::new(RuntimeToggles::from_map(
+      raw.expect("raw initialized when changed"),
+    ))
+  } else {
+    Arc::clone(base)
+  }
 }
 
 #[cfg(test)]

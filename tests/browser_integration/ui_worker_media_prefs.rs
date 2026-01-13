@@ -12,27 +12,32 @@ use std::time::Duration;
 // Keep this generous: these tests do real rendering work and can contend for CPU under CI.
 const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
 
-fn media_fixture() -> (support::TempSite, String) {
+fn media_fixture_for_query(media_query: &str) -> (support::TempSite, String) {
   let site = support::TempSite::new();
-  let url = site.write(
-    "index.html",
+  let html = format!(
     r#"<!doctype html>
 <html>
   <head>
     <meta charset="utf-8">
     <style>
-      html, body { margin: 0; padding: 0; width: 100%; height: 100%; }
-      body { background: rgb(255, 255, 255); }
-      @media (prefers-color-scheme: dark) {
-        body { background: rgb(0, 0, 0); }
-      }
+      html, body {{ margin: 0; padding: 0; width: 100%; height: 100%; }}
+      body {{ background: rgb(255, 255, 255); }}
+      @media {} {{
+        body {{ background: rgb(0, 0, 0); }}
+      }}
     </style>
   </head>
   <body></body>
 </html>
 "#,
+    media_query
   );
+  let url = site.write("index.html", &html);
   (site, url)
+}
+
+fn media_fixture() -> (support::TempSite, String) {
+  media_fixture_for_query("(prefers-color-scheme: dark)")
 }
 
 fn wait_for_frame(
@@ -113,6 +118,116 @@ fn ui_worker_media_preferences_update_triggers_restyle_for_prefers_color_scheme(
     support::rgba_at(&frame1.pixmap, 1, 1),
     [0, 0, 0, 255],
     "expected restyle to use dark prefers-color-scheme"
+  );
+
+  drop(ui_tx);
+  join.join().expect("join ui worker thread");
+}
+
+#[test]
+fn ui_worker_media_preferences_update_triggers_restyle_for_prefers_contrast() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  let (_site, url) = media_fixture_for_query("(prefers-contrast: more)");
+  let handle = spawn_ui_worker("ui_worker_media_prefs_contrast").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+
+  let tab_id = TabId::new();
+  ui_tx
+    .send(support::create_tab_msg(tab_id, None))
+    .expect("CreateTab");
+  ui_tx
+    .send(support::viewport_changed_msg(tab_id, (64, 64), 1.0))
+    .expect("ViewportChanged");
+  ui_tx
+    .send(support::navigate_msg(
+      tab_id,
+      url,
+      NavigationReason::TypedUrl,
+    ))
+    .expect("Navigate");
+
+  let frame0 = wait_for_frame(&ui_rx, tab_id);
+  assert_eq!(
+    support::rgba_at(&frame0.pixmap, 1, 1),
+    [255, 255, 255, 255],
+    "expected initial render to use no-preference prefers-contrast"
+  );
+
+  // Drain any queued follow-up messages (scroll state updates, etc) so the next FrameReady we
+  // observe is caused by the preference update.
+  let _ = support::drain_for(&ui_rx, Duration::from_millis(200));
+
+  ui_tx
+    .send(UiToWorker::SetMediaPreferences {
+      prefs: BrowserMediaPreferences {
+        prefers_color_scheme: ColorScheme::Light,
+        prefers_contrast: ContrastPreference::More,
+        prefers_reduced_motion: false,
+      },
+    })
+    .expect("SetMediaPreferences");
+
+  let frame1 = wait_for_frame(&ui_rx, tab_id);
+  assert_eq!(
+    support::rgba_at(&frame1.pixmap, 1, 1),
+    [0, 0, 0, 255],
+    "expected restyle to use prefers-contrast: more"
+  );
+
+  drop(ui_tx);
+  join.join().expect("join ui worker thread");
+}
+
+#[test]
+fn ui_worker_media_preferences_update_triggers_restyle_for_prefers_reduced_motion() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  let (_site, url) = media_fixture_for_query("(prefers-reduced-motion: reduce)");
+  let handle = spawn_ui_worker("ui_worker_media_prefs_reduced_motion").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+
+  let tab_id = TabId::new();
+  ui_tx
+    .send(support::create_tab_msg(tab_id, None))
+    .expect("CreateTab");
+  ui_tx
+    .send(support::viewport_changed_msg(tab_id, (64, 64), 1.0))
+    .expect("ViewportChanged");
+  ui_tx
+    .send(support::navigate_msg(
+      tab_id,
+      url,
+      NavigationReason::TypedUrl,
+    ))
+    .expect("Navigate");
+
+  let frame0 = wait_for_frame(&ui_rx, tab_id);
+  assert_eq!(
+    support::rgba_at(&frame0.pixmap, 1, 1),
+    [255, 255, 255, 255],
+    "expected initial render to use no-preference prefers-reduced-motion"
+  );
+
+  let _ = support::drain_for(&ui_rx, Duration::from_millis(200));
+
+  ui_tx
+    .send(UiToWorker::SetMediaPreferences {
+      prefs: BrowserMediaPreferences {
+        prefers_color_scheme: ColorScheme::Light,
+        prefers_contrast: ContrastPreference::NoPreference,
+        prefers_reduced_motion: true,
+      },
+    })
+    .expect("SetMediaPreferences");
+
+  let frame1 = wait_for_frame(&ui_rx, tab_id);
+  assert_eq!(
+    support::rgba_at(&frame1.pixmap, 1, 1),
+    [0, 0, 0, 255],
+    "expected restyle to use prefers-reduced-motion: reduce"
   );
 
   drop(ui_tx);
