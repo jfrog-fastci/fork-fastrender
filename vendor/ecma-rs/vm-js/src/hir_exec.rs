@@ -10611,9 +10611,10 @@ pub(crate) fn run_compiled_script(
 
 /// Execute a pre-compiled module body (HIR) in an already-instantiated module environment.
 ///
-/// This is analogous to `exec::run_module` for the compiled executor: it evaluates the module's
-/// statement list in strict mode with `this = undefined` and an active `ScriptOrModule::Module`
-/// execution context so `import.meta` and dynamic `import()` can resolve module-scoped state.
+/// This is analogous to [`crate::exec::run_module`] for the compiled executor: it evaluates the
+/// module's statement list in strict mode with `this = undefined` and an active
+/// `ScriptOrModule::Module` execution context so `import.meta` and dynamic `import()` can resolve
+/// module-scoped state.
 ///
 /// Note: the compiled executor does **not** currently support top-level await; callers must fall
 /// back to the AST async evaluator for modules with `[[HasTLA]] = true`.
@@ -10628,6 +10629,7 @@ pub(crate) fn run_compiled_module(
   module_env: GcEnv,
   script: Arc<CompiledScript>,
 ) -> Result<(), VmError> {
+  // Ensure module execution reports an active ScriptOrModule so `import.meta` can consult it.
   let exec_ctx = ExecutionContext {
     realm: realm_id,
     script_or_module: Some(ScriptOrModule::Module(module_id)),
@@ -10635,16 +10637,14 @@ pub(crate) fn run_compiled_module(
   vm.push_execution_context(exec_ctx)?;
 
   let result = (|| -> Result<(), VmError> {
-    let mut env =
-      RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, module_env, module_env)?;
+    let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, module_env, module_env)?;
     env.set_source_info(script.source.clone(), 0, 0);
 
     let result = (|| -> Result<(), VmError> {
-      let source = script.source.clone();
-      let (line, col) = source.line_col(0);
+      let (line, col) = script.source.line_col(0);
       let frame = StackFrame {
         function: None,
-        source: source.name.clone(),
+        source: script.source.name.clone(),
         line,
         col,
       };
@@ -10657,7 +10657,7 @@ pub(crate) fn run_compiled_module(
         env: &mut env,
         // Modules are always strict mode.
         strict: true,
-        // Per ECMA-262, module top-level `this` is `undefined`.
+        // Per ECMAScript, module top-level `this` is `undefined`.
         this: Value::Undefined,
         this_initialized: true,
         class_constructor: None,
@@ -10709,7 +10709,6 @@ pub(crate) fn run_compiled_module(
   let popped = vm.pop_execution_context();
   debug_assert_eq!(popped, Some(exec_ctx));
   debug_assert!(popped.is_some(), "module execution popped no execution context");
-
   result
 }
 

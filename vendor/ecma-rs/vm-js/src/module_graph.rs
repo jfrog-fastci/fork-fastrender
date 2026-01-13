@@ -14,9 +14,9 @@ use crate::module_record::SourceTextModuleRecord;
 use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
 use crate::{
   cmp_utf16, ExecutionContext, GcEnv, GcObject, LoadedModuleRequest, ModuleId, ModuleRequest,
-  RealmId, RootId, Scope, ScriptId, StackFrame, Value, Vm, VmError,
+  RealmId, RootId, Scope, ScriptId, SourceText, StackFrame, Value, Vm, VmError,
 };
-use crate::{ExternalMemoryToken, Heap, SourceText, VmHost, VmHostHooks};
+use crate::{ExternalMemoryToken, Heap, VmHost, VmHostHooks};
 use core::mem;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -1870,18 +1870,46 @@ impl ModuleGraph {
 
       // Instantiate local declarations (creates bindings + hoists function objects).
       if let Some(ast) = ast {
-        instantiate_module_decls(vm, scope, global_object, module, module_env, source, &ast.stx.body)?;
-      } else if let Some(compiled) = compiled {
-        instantiate_compiled_module_decls(vm, scope, global_object, module, module_env, compiled)?;
+        instantiate_module_decls(
+          vm,
+          scope,
+          global_object,
+          module,
+          module_env,
+          source,
+          &ast.stx.body,
+        )?;
       } else {
-        // No compiled HIR is available, and we don't retain an AST by default. Parse/charge the AST
-        // on demand so the interpreter instantiation path can run.
-        self.ensure_module_ast(vm, scope.heap_mut(), module)?;
-        let ast = self.modules[idx]
-          .ast
-          .clone()
-          .ok_or(VmError::Unimplemented("module AST missing"))?;
-        instantiate_module_decls(vm, scope, global_object, module, module_env, source, &ast.stx.body)?;
+        let has_tla = self.modules[idx].has_tla;
+        let compiled = self.modules[idx].compiled.clone();
+        match compiled {
+          Some(script) if !script.requires_ast_fallback && !has_tla && !has_default_export => {
+            instantiate_compiled_module_decls(vm, scope, global_object, module, module_env, script)?;
+          }
+          _ => {
+            // Either:
+            // - no compiled module payload exists, or
+            // - this module must run through the AST evaluator (top-level await, async/generator
+            //   fallback, default export, ...).
+            //
+            // Modules normally do not retain an AST after parsing. Parse/charge it on demand so the
+            // interpreter instantiation path can run.
+            self.ensure_module_ast(vm, scope.heap_mut(), module)?;
+            let ast = self.modules[idx]
+              .ast
+              .clone()
+              .ok_or(VmError::Unimplemented("module AST missing"))?;
+            instantiate_module_decls(
+              vm,
+              scope,
+              global_object,
+              module,
+              module_env,
+              source,
+              &ast.stx.body,
+            )?;
+          }
+        }
       }
       Ok(())
     })();
@@ -2561,15 +2589,20 @@ impl ModuleGraph {
       let idx = module_index(module);
 
       // Execute the module body.
-      let (has_tla, env_root, source, ast, compiled) = {
+      let (has_tla, env_root, source, has_default_export, ast, compiled) = {
         let record = self
           .modules
           .get(idx)
           .ok_or_else(|| VmError::invalid_handle())?;
+        let has_default_export = record
+          .local_export_entries
+          .iter()
+          .any(|e| e.local_name == "*default*");
         (
           record.has_tla,
           record.environment,
           record.source.clone(),
+          has_default_export,
           record.ast.clone(),
           record.compiled.clone(),
         )
@@ -2684,34 +2717,36 @@ impl ModuleGraph {
         }
       } else {
         // Non-TLA modules can execute via either:
-        // - the compiled executor (HIR), if present, or
+        // - the compiled executor (HIR), if present and safe, or
         // - the AST interpreter (fallback).
-        if let Some(compiled) = compiled {
-          match crate::hir_exec::run_compiled_module(
-            vm,
-            scope,
-            host,
-            hooks,
-            state.global_object,
-            state.realm_id,
-            module,
-            module_env,
-            compiled,
-          ) {
-            Ok(()) => {
-              state.next_member_index = state.next_member_index.saturating_add(1);
-              continue;
-            }
-            Err(err) => {
-              let reason = if let Some(thrown) = err.thrown_value() {
-                thrown
-              } else {
-                self.cache_module_error_from_err(vm, scope, idx, &err)?;
-                self.module_errored_value(vm, scope, idx)?
-              };
-              self.scc_eval_states[root_idx] = None;
-              self.fail_scc(vm, scope, scc_root, host, hooks, reason, Some(&err))?;
-              return Ok(());
+        if let Some(compiled) = compiled.clone() {
+          if !compiled.requires_ast_fallback && !has_default_export {
+            match crate::hir_exec::run_compiled_module(
+              vm,
+              scope,
+              host,
+              hooks,
+              state.global_object,
+              state.realm_id,
+              module,
+              module_env,
+              compiled,
+            ) {
+              Ok(()) => {
+                state.next_member_index = state.next_member_index.saturating_add(1);
+                continue;
+              }
+              Err(err) => {
+                let reason = if let Some(thrown) = err.thrown_value() {
+                  thrown
+                } else {
+                  self.cache_module_error_from_err(vm, scope, idx, &err)?;
+                  self.module_errored_value(vm, scope, idx)?
+                };
+                self.scc_eval_states[root_idx] = None;
+                self.fail_scc(vm, scope, scc_root, host, hooks, reason, Some(&err))?;
+                return Ok(());
+              }
             }
           }
         }
@@ -3133,42 +3168,52 @@ impl ModuleGraph {
         .get_env_root(env_root)
         .ok_or_else(|| VmError::invalid_handle())?;
 
-      if let Some(compiled) = self.modules[idx].compiled.clone() {
-        crate::hir_exec::run_compiled_module(
-          vm,
-          scope,
-          host,
-          hooks,
-          global_object,
-          realm_id,
-          module,
-          module_env,
-          compiled,
-        )?;
-      } else {
-        // Ensure we have an AST for interpreter execution.
-        self.ensure_module_ast(vm, scope.heap_mut(), module)?;
+      let compiled = self.modules[idx].compiled.clone();
+      let has_tla = self.modules[idx].has_tla;
+      let has_default_export = self.modules[idx]
+        .local_export_entries
+        .iter()
+        .any(|e| e.local_name == "*default*");
+      match compiled {
+        Some(script) if !script.requires_ast_fallback && !has_tla && !has_default_export => {
+          crate::hir_exec::run_compiled_module(
+            vm,
+            scope,
+            host,
+            hooks,
+            global_object,
+            realm_id,
+            module,
+            module_env,
+            script,
+          )?;
+        }
+        _ => {
+          // Ensure we have an AST for interpreter execution.
+          self.ensure_module_ast(vm, scope.heap_mut(), module)?;
 
-        let source = self.modules[idx]
-          .source
-          .clone()
-          .ok_or(VmError::Unimplemented("module source missing"))?;
-        let ast = self.modules[idx]
-          .ast
-          .clone()
-          .ok_or(VmError::Unimplemented("module AST missing"))?;
-        run_module(
-          vm,
-          scope,
-          host,
-          hooks,
-          global_object,
-          realm_id,
-          module,
-          module_env,
-          source,
-          &ast.stx.body,
-        )?;
+          let source = self.modules[idx]
+            .source
+            .clone()
+            .or_else(|| self.modules[idx].compiled.as_ref().map(|c| c.source.clone()))
+            .ok_or(VmError::Unimplemented("module source missing"))?;
+          let ast = self.modules[idx]
+            .ast
+            .clone()
+            .ok_or(VmError::Unimplemented("module AST missing"))?;
+          run_module(
+            vm,
+            scope,
+            host,
+            hooks,
+            global_object,
+            realm_id,
+            module,
+            module_env,
+            source,
+            &ast.stx.body,
+          )?;
+        }
       }
       Ok(())
     })();
