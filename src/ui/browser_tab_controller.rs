@@ -1242,32 +1242,62 @@ impl BrowserTabController {
 
   fn handle_text_input(&mut self, text: &str) -> Result<Vec<WorkerToUi>> {
     let prev_open = self.datalist_open_input;
+    let scroll_snapshot = self.scroll_state.clone();
     let mut datalist_open: Option<(usize, Vec<DatalistOption>)> = None;
     // Prefer using cached layout artifacts when available so `<select>` typeahead can use the
     // painted option list (skipping options hidden via computed `display:none`, etc).
     let engine = &mut self.interaction;
-    let changed = match self
+    let result = self
       .document
-      .mutate_dom_with_layout_artifacts(|dom, box_tree, _fragment_tree| {
+      .mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
         let changed = engine.text_input_with_box_tree(dom, Some(box_tree), text);
         if changed {
           if let Some(focused) = engine.focused_node_id() {
             datalist_open = datalist_popup_options(dom, focused).map(|options| (focused, options));
           }
         }
-        (changed, changed)
-      }) {
-      Ok(changed) => changed,
-      Err(_) => self.document.mutate_dom(|dom| {
-        let changed = engine.text_input(dom, text);
-        if changed {
-          if let Some(focused) = engine.focused_node_id() {
-            datalist_open = datalist_popup_options(dom, focused).map(|options| (focused, options));
+        let caret_scroll =
+          crate::interaction::textarea_caret_scroll::textarea_scroll_y_to_reveal_focused_caret(
+            dom,
+            engine.interaction_state(),
+            box_tree,
+            fragment_tree,
+            &scroll_snapshot,
+          );
+        (changed, (changed, caret_scroll))
+      });
+    let (changed, caret_scroll) = match result {
+      Ok(result) => result,
+      Err(_) => {
+        let changed = self.document.mutate_dom(|dom| {
+          let changed = engine.text_input(dom, text);
+          if changed {
+            if let Some(focused) = engine.focused_node_id() {
+              datalist_open = datalist_popup_options(dom, focused).map(|options| (focused, options));
+            }
           }
-        }
-        changed
-      }),
+          changed
+        });
+        (changed, None)
+      }
     };
+
+    let mut scroll_changed = false;
+    if let Some((textarea_box_id, next_y)) = caret_scroll {
+      let mut next_state = self.scroll_state.clone();
+      let existing = next_state.element_offset(textarea_box_id);
+      let next_offset = Point::new(existing.x, next_y);
+      if next_offset == Point::ZERO {
+        next_state.elements.remove(&textarea_box_id);
+      } else {
+        next_state.elements.insert(textarea_box_id, next_offset);
+      }
+      if next_state != self.scroll_state {
+        self.scroll_state = next_state;
+        self.document.set_scroll_state(self.scroll_state.clone());
+        scroll_changed = true;
+      }
+    }
 
     let mut out = Vec::new();
     if let Some((input_node_id, options)) = datalist_open {
@@ -1283,11 +1313,9 @@ impl BrowserTabController {
       out.push(WorkerToUi::DatalistClosed { tab_id: self.tab_id });
       self.datalist_open_input = None;
     }
-
-    if changed {
+    if changed || scroll_changed {
       out.extend(self.paint_if_needed()?);
     }
-
     Ok(out)
   }
 
@@ -1352,10 +1380,49 @@ impl BrowserTabController {
   }
 
   fn handle_select_all(&mut self) -> Result<Vec<WorkerToUi>> {
-    let changed = self
+    let scroll_snapshot = self.scroll_state.clone();
+    let result = self
       .document
-      .mutate_dom(|dom| self.interaction.clipboard_select_all(dom));
-    if changed {
+      .mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+        let dom_changed = self.interaction.clipboard_select_all(dom);
+        let caret_scroll =
+          crate::interaction::textarea_caret_scroll::textarea_scroll_y_to_reveal_focused_caret(
+            dom,
+            self.interaction.interaction_state(),
+            box_tree,
+            fragment_tree,
+            &scroll_snapshot,
+          );
+        (dom_changed, (dom_changed, caret_scroll))
+      });
+    let (changed, caret_scroll) = match result {
+      Ok(result) => result,
+      Err(_) => {
+        let changed = self
+          .document
+          .mutate_dom(|dom| self.interaction.clipboard_select_all(dom));
+        (changed, None)
+      }
+    };
+
+    let mut scroll_changed = false;
+    if let Some((textarea_box_id, next_y)) = caret_scroll {
+      let mut next_state = self.scroll_state.clone();
+      let existing = next_state.element_offset(textarea_box_id);
+      let next_offset = Point::new(existing.x, next_y);
+      if next_offset == Point::ZERO {
+        next_state.elements.remove(&textarea_box_id);
+      } else {
+        next_state.elements.insert(textarea_box_id, next_offset);
+      }
+      if next_state != self.scroll_state {
+        self.scroll_state = next_state;
+        self.document.set_scroll_state(self.scroll_state.clone());
+        scroll_changed = true;
+      }
+    }
+
+    if changed || scroll_changed {
       self.paint_if_needed()
     } else {
       Ok(Vec::new())
@@ -1391,11 +1458,33 @@ impl BrowserTabController {
 
   fn handle_cut(&mut self) -> Result<Vec<WorkerToUi>> {
     let mut cut_text: Option<String> = None;
-    let changed = self.document.mutate_dom(|dom| {
-      let (dom_changed, text) = self.interaction.clipboard_cut(dom);
-      cut_text = text;
-      dom_changed
-    });
+    let scroll_snapshot = self.scroll_state.clone();
+    let result = self
+      .document
+      .mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+        let (dom_changed, text) = self.interaction.clipboard_cut(dom);
+        cut_text = text;
+        let caret_scroll =
+          crate::interaction::textarea_caret_scroll::textarea_scroll_y_to_reveal_focused_caret(
+            dom,
+            self.interaction.interaction_state(),
+            box_tree,
+            fragment_tree,
+            &scroll_snapshot,
+          );
+        (dom_changed, (dom_changed, caret_scroll))
+      });
+    let (changed, caret_scroll) = match result {
+      Ok(result) => result,
+      Err(_) => {
+        let changed = self.document.mutate_dom(|dom| {
+          let (dom_changed, text) = self.interaction.clipboard_cut(dom);
+          cut_text = text;
+          dom_changed
+        });
+        (changed, None)
+      }
+    };
 
     let mut out = Vec::new();
     if let Some(mut text) = cut_text {
@@ -1405,7 +1494,25 @@ impl BrowserTabController {
         text,
       });
     }
-    if changed {
+
+    let mut scroll_changed = false;
+    if let Some((textarea_box_id, next_y)) = caret_scroll {
+      let mut next_state = self.scroll_state.clone();
+      let existing = next_state.element_offset(textarea_box_id);
+      let next_offset = Point::new(existing.x, next_y);
+      if next_offset == Point::ZERO {
+        next_state.elements.remove(&textarea_box_id);
+      } else {
+        next_state.elements.insert(textarea_box_id, next_offset);
+      }
+      if next_state != self.scroll_state {
+        self.scroll_state = next_state;
+        self.document.set_scroll_state(self.scroll_state.clone());
+        scroll_changed = true;
+      }
+    }
+
+    if changed || scroll_changed {
       out.extend(self.paint_if_needed()?);
     }
     Ok(out)
@@ -1413,10 +1520,49 @@ impl BrowserTabController {
 
   fn handle_paste(&mut self, text: &str) -> Result<Vec<WorkerToUi>> {
     let text = clipboard::clamp_clipboard_text(text);
-    let changed = self
+    let scroll_snapshot = self.scroll_state.clone();
+    let result = self
       .document
-      .mutate_dom(|dom| self.interaction.clipboard_paste(dom, text));
-    if changed {
+      .mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+        let dom_changed = self.interaction.clipboard_paste(dom, text);
+        let caret_scroll =
+          crate::interaction::textarea_caret_scroll::textarea_scroll_y_to_reveal_focused_caret(
+            dom,
+            self.interaction.interaction_state(),
+            box_tree,
+            fragment_tree,
+            &scroll_snapshot,
+          );
+        (dom_changed, (dom_changed, caret_scroll))
+      });
+    let (changed, caret_scroll) = match result {
+      Ok(result) => result,
+      Err(_) => {
+        let changed = self
+          .document
+          .mutate_dom(|dom| self.interaction.clipboard_paste(dom, text));
+        (changed, None)
+      }
+    };
+
+    let mut scroll_changed = false;
+    if let Some((textarea_box_id, next_y)) = caret_scroll {
+      let mut next_state = self.scroll_state.clone();
+      let existing = next_state.element_offset(textarea_box_id);
+      let next_offset = Point::new(existing.x, next_y);
+      if next_offset == Point::ZERO {
+        next_state.elements.remove(&textarea_box_id);
+      } else {
+        next_state.elements.insert(textarea_box_id, next_offset);
+      }
+      if next_state != self.scroll_state {
+        self.scroll_state = next_state;
+        self.document.set_scroll_state(self.scroll_state.clone());
+        scroll_changed = true;
+      }
+    }
+
+    if changed || scroll_changed {
       self.paint_if_needed()
     } else {
       Ok(Vec::new())
@@ -1470,12 +1616,22 @@ impl BrowserTabController {
           _ => None,
         };
 
+        let caret_scroll =
+          crate::interaction::textarea_caret_scroll::textarea_scroll_y_to_reveal_focused_caret(
+            dom,
+            self.interaction.interaction_state(),
+            box_tree,
+            fragment_tree,
+            focus_scroll.as_ref().unwrap_or(&scroll_snapshot),
+          );
+
         (
           dom_changed,
           (
             dom_changed,
             action,
             focus_scroll,
+            caret_scroll,
             focused_is_input,
             focused_is_textarea,
             focused_is_select,
@@ -1488,6 +1644,7 @@ impl BrowserTabController {
       changed,
       action,
       focus_scroll,
+      caret_scroll,
       focused_is_input,
       focused_is_textarea,
       focused_is_select,
@@ -1530,6 +1687,7 @@ impl BrowserTabController {
           changed,
           action,
           None,
+          None,
           focused_is_input,
           focused_is_textarea,
           focused_is_select,
@@ -1542,6 +1700,21 @@ impl BrowserTabController {
     if let Some(next_scroll) = focus_scroll {
       if next_scroll != self.scroll_state {
         self.scroll_state = next_scroll;
+        self.document.set_scroll_state(self.scroll_state.clone());
+        scroll_changed = true;
+      }
+    }
+    if let Some((textarea_box_id, next_y)) = caret_scroll {
+      let mut next_state = self.scroll_state.clone();
+      let existing = next_state.element_offset(textarea_box_id);
+      let next_offset = Point::new(existing.x, next_y);
+      if next_offset == Point::ZERO {
+        next_state.elements.remove(&textarea_box_id);
+      } else {
+        next_state.elements.insert(textarea_box_id, next_offset);
+      }
+      if next_state != self.scroll_state {
+        self.scroll_state = next_state;
         self.document.set_scroll_state(self.scroll_state.clone());
         scroll_changed = true;
       }

@@ -1391,3 +1391,61 @@ fn text_input_auto_scrolls_horizontally_to_keep_caret_visible() -> Result<()> {
 
   Ok(())
 }
+
+#[test]
+fn textarea_auto_scrolls_after_caret_moves_to_end_across_wrapped_lines() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (240, 160);
+  let url = "https://example.com/index.html";
+
+  let long_text = "a".repeat(400);
+  let html = format!(
+    r#"<!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            html, body {{ margin: 0; padding: 0; }}
+            #ta {{ position: absolute; left: 0; top: 0; width: 180px; height: 60px; font-family: "Noto Sans Mono"; font-size: 20px; }}
+          </style>
+        </head>
+        <body>
+          <textarea id="ta">{long_text}</textarea>
+        </body>
+      </html>
+    "#
+  );
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    &html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Focus near the start of the textarea.
+  let click = (10.0, 10.0);
+  let _ =
+    controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+
+  // Move caret to end; this should scroll within the textarea because the content wraps into many
+  // visual lines.
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::End))?;
+
+  assert!(
+    controller
+      .scroll_state()
+      .elements
+      .values()
+      .any(|offset| offset.y > 0.0),
+    "expected textarea to auto-scroll after moving caret to end; got {:?}",
+    controller.scroll_state().elements
+  );
+
+  Ok(())
+}

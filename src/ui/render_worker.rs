@@ -6944,55 +6944,102 @@ impl BrowserRuntime {
     };
 
     let prev_open = tab.datalist_open_input;
+    let scroll_snapshot = tab.scroll_state.clone();
     let mut datalist_open: Option<(usize, Vec<DatalistOption>)> = None;
-    let box_tree_ptr = doc
-      .prepared()
-      .map(|prepared| prepared.box_tree() as *const crate::BoxTree);
-    let changed = doc.mutate_dom(|dom| {
+    let result = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
       // Prefer using cached layout artifacts when available so `<select>` typeahead can use the
       // painted option list (skipping options hidden via computed `display:none`, etc).
-      let changed = match box_tree_ptr {
-        Some(box_tree_ptr) => tab
-          .interaction
-          .text_input_with_box_tree(dom, Some(unsafe { &*box_tree_ptr }), text),
-        None => tab.interaction.text_input(dom, text),
-      };
+      let changed = tab
+        .interaction
+        .text_input_with_box_tree(dom, Some(box_tree), text);
+
       if changed {
-        let Some(input_node_id) = tab.interaction.focused_node_id() else {
-          return changed;
-        };
+        if let Some(input_node_id) = tab.interaction.focused_node_id() {
+          let index = crate::interaction::dom_index::DomIndex::build(dom);
+          if let Some(input) = index.node(input_node_id).filter(|node| dom_is_text_input(node)) {
+            let query = input.get_attribute_ref("value").unwrap_or("");
+            if let Some(datalist_node_id) =
+              crate::interaction::engine::resolve_associated_datalist(dom, input_node_id)
+            {
+              let mut options = Vec::new();
+              for entry in
+                crate::interaction::engine::collect_datalist_option_entries(dom, datalist_node_id)
+              {
+                if !crate::interaction::engine::datalist_option_matches_input_value(&entry.option, query)
+                {
+                  continue;
+                }
+                options.push(DatalistOption {
+                  option_node_id: entry.node_id,
+                  value: entry.option.value,
+                  disabled: entry.option.disabled,
+                });
+              }
 
-        let index = crate::interaction::dom_index::DomIndex::build(dom);
-        let Some(input) = index.node(input_node_id).filter(|node| dom_is_text_input(node)) else {
-          return changed;
-        };
-
-        let query = input.get_attribute_ref("value").unwrap_or("");
-        let Some(datalist_node_id) =
-          crate::interaction::engine::resolve_associated_datalist(dom, input_node_id)
-        else {
-          return changed;
-        };
-
-        let mut options = Vec::new();
-        for entry in crate::interaction::engine::collect_datalist_option_entries(dom, datalist_node_id)
-        {
-          if !crate::interaction::engine::datalist_option_matches_input_value(&entry.option, query) {
-            continue;
+              if !options.is_empty() {
+                datalist_open = Some((input_node_id, options));
+              }
+            }
           }
-          options.push(DatalistOption {
-            option_node_id: entry.node_id,
-            value: entry.option.value,
-            disabled: entry.option.disabled,
-          });
-        }
-
-        if !options.is_empty() {
-          datalist_open = Some((input_node_id, options));
         }
       }
-      changed
+
+      let caret_scroll =
+        crate::interaction::textarea_caret_scroll::textarea_scroll_y_to_reveal_focused_caret(
+          dom,
+          tab.interaction.interaction_state(),
+          box_tree,
+          fragment_tree,
+          &scroll_snapshot,
+        );
+      (changed, (changed, caret_scroll))
     });
+    let (changed, caret_scroll) = match result {
+      Ok(result) => result,
+      Err(_) => {
+        let changed = doc.mutate_dom(|dom| {
+          let changed = tab.interaction.text_input(dom, text);
+          if changed {
+            let Some(input_node_id) = tab.interaction.focused_node_id() else {
+              return changed;
+            };
+
+            let index = crate::interaction::dom_index::DomIndex::build(dom);
+            let Some(input) = index.node(input_node_id).filter(|node| dom_is_text_input(node)) else {
+              return changed;
+            };
+
+            let query = input.get_attribute_ref("value").unwrap_or("");
+            let Some(datalist_node_id) =
+              crate::interaction::engine::resolve_associated_datalist(dom, input_node_id)
+            else {
+              return changed;
+            };
+
+            let mut options = Vec::new();
+            for entry in
+              crate::interaction::engine::collect_datalist_option_entries(dom, datalist_node_id)
+            {
+              if !crate::interaction::engine::datalist_option_matches_input_value(&entry.option, query)
+              {
+                continue;
+              }
+              options.push(DatalistOption {
+                option_node_id: entry.node_id,
+                value: entry.option.value,
+                disabled: entry.option.disabled,
+              });
+            }
+
+            if !options.is_empty() {
+              datalist_open = Some((input_node_id, options));
+            }
+          }
+          changed
+        });
+        (changed, None)
+      }
+    };
 
     if let Some((input_node_id, options)) = datalist_open {
       let anchor_css = doc
@@ -7021,6 +7068,27 @@ impl BrowserRuntime {
       tab.datalist_open_input = None;
     }
 
+    let mut scroll_changed = false;
+    if let Some((textarea_box_id, next_y)) = caret_scroll {
+      let mut next_state = tab.scroll_state.clone();
+      let existing = next_state.element_offset(textarea_box_id);
+      let next_offset = Point::new(existing.x, next_y);
+      if next_offset == Point::ZERO {
+        next_state.elements.remove(&textarea_box_id);
+      } else {
+        next_state.elements.insert(textarea_box_id, next_offset);
+      }
+      if next_state != tab.scroll_state {
+        tab.scroll_state = next_state;
+        doc.set_scroll_state(tab.scroll_state.clone());
+        scroll_changed = true;
+        let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
+          tab_id,
+          scroll: tab.scroll_state.clone(),
+        });
+      }
+    }
+
     if changed {
       if let (Some(focused), Some(js_tab)) = (tab.interaction.focused_node_id(), tab.js_tab.as_mut())
       {
@@ -7036,6 +7104,9 @@ impl BrowserRuntime {
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
+    }
+
+    if changed || scroll_changed {
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
     }
@@ -7167,7 +7238,48 @@ impl BrowserRuntime {
       return;
     };
 
-    let changed = doc.mutate_dom(|dom| tab.interaction.ime_commit(dom, text));
+    let scroll_snapshot = tab.scroll_state.clone();
+    let result = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+      let dom_changed = tab.interaction.ime_commit(dom, text);
+      let caret_scroll =
+        crate::interaction::textarea_caret_scroll::textarea_scroll_y_to_reveal_focused_caret(
+          dom,
+          tab.interaction.interaction_state(),
+          box_tree,
+          fragment_tree,
+          &scroll_snapshot,
+        );
+      (dom_changed, (dom_changed, caret_scroll))
+    });
+    let (changed, caret_scroll) = match result {
+      Ok(result) => result,
+      Err(_) => {
+        let changed = doc.mutate_dom(|dom| tab.interaction.ime_commit(dom, text));
+        (changed, None)
+      }
+    };
+
+    let mut scroll_changed = false;
+    if let Some((textarea_box_id, next_y)) = caret_scroll {
+      let mut next_state = tab.scroll_state.clone();
+      let existing = next_state.element_offset(textarea_box_id);
+      let next_offset = Point::new(existing.x, next_y);
+      if next_offset == Point::ZERO {
+        next_state.elements.remove(&textarea_box_id);
+      } else {
+        next_state.elements.insert(textarea_box_id, next_offset);
+      }
+      if next_state != tab.scroll_state {
+        tab.scroll_state = next_state;
+        doc.set_scroll_state(tab.scroll_state.clone());
+        scroll_changed = true;
+        let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
+          tab_id,
+          scroll: tab.scroll_state.clone(),
+        });
+      }
+    }
+
     if changed {
       if let (Some(focused), Some(js_tab)) = (tab.interaction.focused_node_id(), tab.js_tab.as_mut())
       {
@@ -7183,6 +7295,9 @@ impl BrowserRuntime {
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
+    }
+
+    if changed || scroll_changed {
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
     }
@@ -7213,8 +7328,49 @@ impl BrowserRuntime {
 
     // Selecting text updates the focused control's caret/selection data attributes so the painter
     // can render highlights/caret state, but it should not require a full navigation refresh.
-    let changed = doc.mutate_dom(|dom| tab.interaction.clipboard_select_all(dom));
-    if changed {
+    let scroll_snapshot = tab.scroll_state.clone();
+    let result = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+      let dom_changed = tab.interaction.clipboard_select_all(dom);
+      let caret_scroll =
+        crate::interaction::textarea_caret_scroll::textarea_scroll_y_to_reveal_focused_caret(
+          dom,
+          tab.interaction.interaction_state(),
+          box_tree,
+          fragment_tree,
+          &scroll_snapshot,
+        );
+      (dom_changed, (dom_changed, caret_scroll))
+    });
+    let (changed, caret_scroll) = match result {
+      Ok(result) => result,
+      Err(_) => {
+        let changed = doc.mutate_dom(|dom| tab.interaction.clipboard_select_all(dom));
+        (changed, None)
+      }
+    };
+
+    let mut scroll_changed = false;
+    if let Some((textarea_box_id, next_y)) = caret_scroll {
+      let mut next_state = tab.scroll_state.clone();
+      let existing = next_state.element_offset(textarea_box_id);
+      let next_offset = Point::new(existing.x, next_y);
+      if next_offset == Point::ZERO {
+        next_state.elements.remove(&textarea_box_id);
+      } else {
+        next_state.elements.insert(textarea_box_id, next_offset);
+      }
+      if next_state != tab.scroll_state {
+        tab.scroll_state = next_state;
+        doc.set_scroll_state(tab.scroll_state.clone());
+        scroll_changed = true;
+        let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
+          tab_id,
+          scroll: tab.scroll_state.clone(),
+        });
+      }
+    }
+
+    if changed || scroll_changed {
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
     }
@@ -7263,17 +7419,58 @@ impl BrowserRuntime {
     };
 
     let mut cut_text: Option<String> = None;
-    let changed = doc.mutate_dom(|dom| {
+    let scroll_snapshot = tab.scroll_state.clone();
+    let result = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
       let (dom_changed, text) = tab.interaction.clipboard_cut(dom);
       cut_text = text;
-      dom_changed
+      let caret_scroll =
+        crate::interaction::textarea_caret_scroll::textarea_scroll_y_to_reveal_focused_caret(
+          dom,
+          tab.interaction.interaction_state(),
+          box_tree,
+          fragment_tree,
+          &scroll_snapshot,
+        );
+      (dom_changed, (dom_changed, caret_scroll))
     });
+    let (changed, caret_scroll) = match result {
+      Ok(result) => result,
+      Err(_) => {
+        let changed = doc.mutate_dom(|dom| {
+          let (dom_changed, text) = tab.interaction.clipboard_cut(dom);
+          cut_text = text;
+          dom_changed
+        });
+        (changed, None)
+      }
+    };
 
     if let Some(mut text) = cut_text {
       clipboard::clamp_clipboard_text_in_place(&mut text);
       let _ = self
         .ui_tx
         .send(WorkerToUi::SetClipboardText { tab_id, text });
+    }
+
+    let mut scroll_changed = false;
+    if let Some((textarea_box_id, next_y)) = caret_scroll {
+      let mut next_state = tab.scroll_state.clone();
+      let existing = next_state.element_offset(textarea_box_id);
+      let next_offset = Point::new(existing.x, next_y);
+      if next_offset == Point::ZERO {
+        next_state.elements.remove(&textarea_box_id);
+      } else {
+        next_state.elements.insert(textarea_box_id, next_offset);
+      }
+      if next_state != tab.scroll_state {
+        tab.scroll_state = next_state;
+        doc.set_scroll_state(tab.scroll_state.clone());
+        scroll_changed = true;
+        let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
+          tab_id,
+          scroll: tab.scroll_state.clone(),
+        });
+      }
     }
 
     if changed {
@@ -7291,6 +7488,9 @@ impl BrowserRuntime {
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
+    }
+
+    if changed || scroll_changed {
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
     }
@@ -7305,7 +7505,48 @@ impl BrowserRuntime {
     };
 
     let text = clipboard::clamp_clipboard_text(text);
-    let changed = doc.mutate_dom(|dom| tab.interaction.clipboard_paste(dom, text));
+    let scroll_snapshot = tab.scroll_state.clone();
+    let result = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+      let dom_changed = tab.interaction.clipboard_paste(dom, text);
+      let caret_scroll =
+        crate::interaction::textarea_caret_scroll::textarea_scroll_y_to_reveal_focused_caret(
+          dom,
+          tab.interaction.interaction_state(),
+          box_tree,
+          fragment_tree,
+          &scroll_snapshot,
+        );
+      (dom_changed, (dom_changed, caret_scroll))
+    });
+    let (changed, caret_scroll) = match result {
+      Ok(result) => result,
+      Err(_) => {
+        let changed = doc.mutate_dom(|dom| tab.interaction.clipboard_paste(dom, text));
+        (changed, None)
+      }
+    };
+
+    let mut scroll_changed = false;
+    if let Some((textarea_box_id, next_y)) = caret_scroll {
+      let mut next_state = tab.scroll_state.clone();
+      let existing = next_state.element_offset(textarea_box_id);
+      let next_offset = Point::new(existing.x, next_y);
+      if next_offset == Point::ZERO {
+        next_state.elements.remove(&textarea_box_id);
+      } else {
+        next_state.elements.insert(textarea_box_id, next_offset);
+      }
+      if next_state != tab.scroll_state {
+        tab.scroll_state = next_state;
+        doc.set_scroll_state(tab.scroll_state.clone());
+        scroll_changed = true;
+        let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
+          tab_id,
+          scroll: tab.scroll_state.clone(),
+        });
+      }
+    }
+
     if changed {
       if let (Some(focused), Some(js_tab)) = (tab.interaction.focused_node_id(), tab.js_tab.as_mut())
       {
@@ -7321,6 +7562,9 @@ impl BrowserRuntime {
         );
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
+    }
+
+    if changed || scroll_changed {
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
     }
@@ -7533,12 +7777,21 @@ impl BrowserRuntime {
           ),
           _ => None,
         };
+        let caret_scroll =
+          crate::interaction::textarea_caret_scroll::textarea_scroll_y_to_reveal_focused_caret(
+            dom,
+            tab.interaction.interaction_state(),
+            box_tree,
+            fragment_tree,
+            focus_scroll.as_ref().unwrap_or(&scroll_snapshot),
+          );
         (
           dom_changed,
           (
             dom_changed,
             action,
             focus_scroll,
+            caret_scroll,
             submitter,
             submitter_element_id,
             focused,
@@ -7556,6 +7809,7 @@ impl BrowserRuntime {
         changed,
         action,
         focus_scroll,
+        caret_scroll,
         form_submitter,
         form_submitter_element_id,
         focused,
@@ -7622,6 +7876,7 @@ impl BrowserRuntime {
             changed,
             action,
             None,
+            None,
             submitter,
             submitter_element_id,
             focused,
@@ -7647,6 +7902,25 @@ impl BrowserRuntime {
           scroll: tab.scroll_state.clone(),
         });
         tab.last_reported_scroll_state = tab.scroll_state.clone();
+      }
+      if let Some((textarea_box_id, next_y)) = caret_scroll {
+        let mut next_state = tab.scroll_state.clone();
+        let existing = next_state.element_offset(textarea_box_id);
+        let next_offset = Point::new(existing.x, next_y);
+        if next_offset == Point::ZERO {
+          next_state.elements.remove(&textarea_box_id);
+        } else {
+          next_state.elements.insert(textarea_box_id, next_offset);
+        }
+        if next_state != tab.scroll_state {
+          tab.scroll_state = next_state;
+          doc.set_scroll_state(tab.scroll_state.clone());
+          scroll_changed = true;
+          let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
+            tab_id,
+            scroll: tab.scroll_state.clone(),
+          });
+        }
       }
 
       // Datalist popup should close when the focused input loses focus (e.g. Tab traversal).
