@@ -8,9 +8,10 @@ and the practical debugging knobs.
 
 - The windowed `browser` app still runs the “renderer” on a worker thread, not a separate OS
   process.
-- The Windows sandbox code in [`src/sandbox/windows.rs`](../src/sandbox/windows.rs) currently
-  implements *sandbox selection* plus a debug escape hatch. Spawn-time enforcement is expected to be
-  wired up as the renderer process model lands.
+- The OS sandbox helpers in `src/sandbox/` are used primarily by **tests/tooling** today and are
+  intended to be reused by the future renderer *process* model.
+  - Windows: [`src/sandbox/windows.rs`](../src/sandbox/windows.rs) exposes a `spawn_sandboxed(...)`
+    helper that applies AppContainer/restricted-token sandboxing plus a Job Object.
 
 Related docs (other platforms / tooling):
 
@@ -73,6 +74,10 @@ silent.
 
 Note: this escape hatch disables the *token/AppContainer* restrictions; the renderer may still be
 run inside a Job Object (kill-on-close, active-process cap) for lifecycle safety.
+
+To debug why AppContainer/restricted-token spawning is failing, enable verbose sandbox logs:
+
+- `FASTR_LOG_SANDBOX=1`
 
 ## Linux sandbox implementation
 

@@ -55,6 +55,7 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
 - `FASTR_DISABLE_RENDERER_SANDBOX=0|1` – **Windows-only** debug escape hatch: disable the Windows renderer sandbox (AppContainer/restricted-token).
   - Alias: `FASTR_WINDOWS_RENDERER_SANDBOX=off`
   - When set, FastRender logs a warning to stderr so insecure runs are not silent.
+- `FASTR_LOG_SANDBOX=0|1` – **Windows-only**: enable verbose Windows sandbox spawn logging (useful when debugging AppContainer/restricted-token failures).
 - `FASTR_PERF_SMOKE_PAGESET_GUARDRAILS_MANIFEST=/path/to/pageset_guardrails.json` – override the guardrails manifest consumed by the `perf_smoke` binary for the `--suite pageset-guardrails` suite. `FASTR_PERF_SMOKE_PAGESET_TIMEOUT_MANIFEST` is accepted as a legacy alias.
 
 ## Browser UI (`browser` binary)
