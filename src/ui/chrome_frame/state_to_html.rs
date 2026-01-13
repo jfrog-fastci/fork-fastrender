@@ -305,10 +305,10 @@ mod tests {
     assert!(html.contains("chrome-action:close-tab?tab=2"));
     assert!(html.contains("chrome-action:close-tab?tab=3"));
 
-    // Favicons use stable chrome://favicons/<tab_id>.png URLs (no embedded data URLs).
-    assert!(html.contains("chrome://favicons/1.png"));
-    assert!(html.contains("chrome://favicons/2.png"));
-    assert!(html.contains("chrome://favicons/3.png"));
+    // Favicons use stable chrome://favicon/<tab_id> URLs (no embedded data URLs).
+    assert!(html.contains("chrome://favicon/1"));
+    assert!(html.contains("chrome://favicon/2"));
+    assert!(html.contains("chrome://favicon/3"));
 
     // Titles are escaped.
     assert!(html.contains("Rust &amp; &lt;Friends&gt;"));

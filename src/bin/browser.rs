@@ -10282,7 +10282,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           if let Ok(png_bytes) =
             fastrender::image_output::encode_image(&pixmap, fastrender::OutputFormat::Png)
           {
-            // Best-effort: renderer-chrome uses stable `chrome://favicons/<tab_id>.png` URLs instead
+            // Best-effort: renderer-chrome uses stable `chrome://favicon/<tab_id>` URLs instead
             // of re-encoding large data URLs each frame.
             let _ = self.chrome_dynamic_fetcher.set_tab_favicon_png(
               favicon_ready.tab_id,

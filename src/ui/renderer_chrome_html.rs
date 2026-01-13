@@ -12,7 +12,7 @@ use crate::ui::html_escape::escape_html;
 ///
 /// The structure is intentionally simple for now:
 /// - Each tab has `data-tab-id`.
-/// - Favicons are referenced via a stable `chrome://favicons/<tab_id>.png` URL.
+/// - Favicons are referenced via a stable `chrome://favicon/<tab_id>` URL.
 pub fn tab_strip_html(app: &BrowserAppState) -> String {
   let active = app.active_tab_id();
   let mut html = String::new();
