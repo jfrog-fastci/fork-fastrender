@@ -3184,6 +3184,15 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
     return;
   }
 
+  // If the env (or the socket entry) has already been torn down while we were connecting/handshaking
+  // (e.g. renderer teardown raced the connect thread), stop immediately. The `WebSocket` object is
+  // no longer observable, and continuing to drain queued commands would only delay teardown.
+  let still_registered = with_env_state(env_id, |state| Ok(state.sockets.contains_key(&ws_id)))
+    .unwrap_or(false);
+  if !still_registered {
+    return;
+  }
+
   // Keep the socket responsive to shutdown by using small I/O timeouts.
   //
   // NOTE: This is best-effort. For TLS streams we still attempt to apply the timeout to the
@@ -3208,6 +3217,14 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
   let mut closing: Option<(u16, String)> = None;
 
   loop {
+    // If the env is unregistered (teardown) or the JS wrapper has been swept, exit quickly so
+    // `unregister_window_websocket_env` cannot hang waiting for this thread.
+    let still_registered = with_env_state(env_id, |state| Ok(state.sockets.contains_key(&ws_id)))
+      .unwrap_or(false);
+    if !still_registered {
+      break;
+    }
+
     // If the renderer has requested a forced close (e.g. because the renderer-side event queue is
     // overflowing), stop immediately and initiate the close handshake.
     //
