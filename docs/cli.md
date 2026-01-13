@@ -750,7 +750,7 @@ bash scripts/cargo_agent.sh xtask import-page-fixture target/bundles/example.com
 
 ## Offline / cached captures
 
-- Use `bundle_page fetch` to save a single reproducible capture (HTML bytes, content-type + final URL, fetched subresources with HTTP metadata (CSS/images/fonts, plus crawl-discovered assets like media when enabled), and a manifest mapping original URLs to bundle paths). Bundles can be directories or `.tar` archives and are deterministic.
+- Use `bundle_page fetch` to save a single reproducible capture (HTML bytes, content-type + final URL, fetched subresources with HTTP metadata (CSS/images/fonts, plus crawl-prefetched assets like media when `--prefetch-media` is enabled), and a manifest mapping original URLs to bundle paths). Bundles can be directories or `.tar` archives and are deterministic.
 - Use `bundle_page cache <stem> --out <bundle>` to convert an already-warmed pageset cache entry (cached HTML + disk-backed assets) into a portable bundle **without network access**.
 - Replay with `bundle_page render <bundle> --out out.png` to render strictly from the bundle with zero network calls.
 - For larger batch workflows, offline captures are also available via the existing on-disk caches:
