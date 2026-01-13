@@ -1463,13 +1463,160 @@ impl TextItem {
       is_space: bool,
     }
 
+    let wants_word_spacing = word_spacing != 0.0;
+    let text_bytes = text.as_bytes();
+
+    let is_space_like_at_offset = |offset: usize| -> bool {
+      if offset >= text_bytes.len() {
+        return false;
+      }
+      match text_bytes[offset] {
+        b' ' | b'\t' => true,
+        // U+00A0 NBSP = 0xC2 0xA0
+        0xC2 => text_bytes.get(offset + 1) == Some(&0xA0),
+        _ => false,
+      }
+    };
+
+    // Fast path for the common case: all shaped runs are already in logical LTR order, so we can
+    // stream clusters without collecting/sorting a temporary vec.
+    //
+    // (Cluster values inside a LTR HarfBuzz buffer are monotonic under the default cluster level.)
+    let mut can_stream_without_sort = true;
+    let mut saw_run = false;
+    let mut last_run_start = 0usize;
+    for run in runs.iter() {
+      if run.glyphs.is_empty() {
+        continue;
+      }
+      if run.direction != crate::text::pipeline::Direction::LeftToRight {
+        can_stream_without_sort = false;
+        break;
+      }
+      if saw_run && run.start < last_run_start {
+        can_stream_without_sort = false;
+        break;
+      }
+      last_run_start = run.start;
+      saw_run = true;
+    }
+
+    // Cache each run's inline axis so we don't rescan glyphs per cluster.
+    let mut axes: Vec<Option<InlineAxis>> = vec![None; runs.len()];
+
+    if can_stream_without_sort {
+      #[cfg(test)]
+      let mut cluster_count = 0usize;
+
+      let mut pending: Option<(usize, usize, bool)> = None;
+      for run_idx in 0..runs.len() {
+        if runs[run_idx].glyphs.is_empty() {
+          continue;
+        }
+
+        // If there is a cluster before this run, it is not the final cluster overall, so apply
+        // spacing to it now.
+        if let Some((pending_run_idx, glyph_end, is_space)) = pending.take() {
+          let extra = letter_spacing + if is_space { word_spacing } else { 0.0 };
+          if extra != 0.0 {
+            if let Some(run) = runs.get_mut(pending_run_idx) {
+              if !run.glyphs.is_empty() {
+                let axis = axes[pending_run_idx].unwrap_or_else(|| {
+                  let axis = run_inline_axis(run);
+                  axes[pending_run_idx] = Some(axis);
+                  axis
+                });
+
+                let last_glyph_idx = glyph_end.saturating_sub(1);
+                if let Some(glyph) = run
+                  .glyphs
+                  .get_mut(last_glyph_idx)
+                  .or_else(|| run.glyphs.last_mut())
+                {
+                  let before = glyph_inline_advance(glyph, axis);
+                  add_inline_advance(glyph, axis, extra);
+                  let after = glyph_inline_advance(glyph, axis);
+                  run.advance += after - before;
+                } else {
+                  run.advance += extra;
+                }
+              }
+            }
+          }
+        }
+
+        let (run_start, run_len, axis) = {
+          let run = &mut runs[run_idx];
+          let axis = axes[run_idx].unwrap_or_else(|| {
+            let axis = run_inline_axis(run);
+            axes[run_idx] = Some(axis);
+            axis
+          });
+          (run.start, run.glyphs.len(), axis)
+        };
+
+        let run = &mut runs[run_idx];
+        let mut prev_cluster: Option<(usize, bool)> = None;
+        let mut idx = 0;
+        while idx < run_len {
+          let cluster_value = run.glyphs[idx].cluster;
+          while idx < run_len && run.glyphs[idx].cluster == cluster_value {
+            idx += 1;
+          }
+          let glyph_end = idx;
+
+          #[cfg(test)]
+          {
+            cluster_count = cluster_count.saturating_add(1);
+          }
+
+          let offset = run_start.saturating_add(cluster_value as usize);
+          let is_space = wants_word_spacing && is_space_like_at_offset(offset);
+
+          if let Some((prev_end, prev_is_space)) = prev_cluster.take() {
+            let extra = letter_spacing + if prev_is_space { word_spacing } else { 0.0 };
+            if extra != 0.0 {
+              let last_glyph_idx = prev_end.saturating_sub(1);
+              if let Some(glyph) = run
+                .glyphs
+                .get_mut(last_glyph_idx)
+                .or_else(|| run.glyphs.last_mut())
+              {
+                let before = glyph_inline_advance(glyph, axis);
+                add_inline_advance(glyph, axis, extra);
+                let after = glyph_inline_advance(glyph, axis);
+                run.advance += after - before;
+              } else {
+                run.advance += extra;
+              }
+            }
+          }
+
+          prev_cluster = Some((glyph_end, is_space));
+        }
+
+        if let Some((glyph_end, is_space)) = prev_cluster {
+          pending = Some((run_idx, glyph_end, is_space));
+        }
+      }
+
+      #[cfg(test)]
+      APPLY_SPACING_CLUSTER_COUNT.with(|count| {
+        count.set(count.get().saturating_add(cluster_count));
+      });
+
+      return;
+    }
+
+    // Fallback: collect all clusters and sort if we observe any non-monotonic offsets. This handles
+    // RTL runs, mixed-direction segments, and any unexpected shaping output ordering.
+    //
     // Most runs are cluster-trivial (1 cluster per glyph). Reserve to avoid repeated reallocation on
-    // long LTR paragraphs.
+    // long paragraphs.
     let mut clusters: Vec<ClusterRef> =
       Vec::with_capacity(runs.iter().map(|r| r.glyphs.len()).sum());
     let mut last_offset: Option<usize> = None;
     let mut needs_sort = false;
-    let wants_word_spacing = word_spacing != 0.0;
 
     for (run_idx, run) in runs.iter().enumerate() {
       if run.glyphs.is_empty() {
@@ -1485,12 +1632,7 @@ impl TextItem {
         let glyph_end = idx;
 
         let offset = run.start.saturating_add(cluster_value as usize);
-        let is_space = if wants_word_spacing {
-          let ch = text.get(offset..).and_then(|s| s.chars().next());
-          matches!(ch, Some(' ') | Some('\u{00A0}') | Some('\t'))
-        } else {
-          false
-        };
+        let is_space = wants_word_spacing && is_space_like_at_offset(offset);
 
         if let Some(prev) = last_offset {
           if offset < prev {
@@ -1523,15 +1665,9 @@ impl TextItem {
       APPLY_SPACING_SORT_COUNT.with(|count| count.set(count.get().saturating_add(1)));
     }
 
-    // Cache each run's inline axis so we don't rescan glyphs per cluster.
-    let mut axes: Vec<Option<InlineAxis>> = vec![None; runs.len()];
-
     // Apply spacing to the last glyph of each cluster (except the final cluster).
     for cluster in clusters.iter().take(clusters.len().saturating_sub(1)) {
-      let mut extra = letter_spacing;
-      if cluster.is_space {
-        extra += word_spacing;
-      }
+      let extra = letter_spacing + if cluster.is_space { word_spacing } else { 0.0 };
       if extra == 0.0 {
         continue;
       }
