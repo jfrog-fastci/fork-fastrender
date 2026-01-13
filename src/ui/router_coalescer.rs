@@ -230,36 +230,29 @@ impl UiToWorkerRouterCoalescer {
     let pointer_css = pointer_css.filter(|(x, y)| x.is_finite() && y.is_finite());
     let seq = self.next_seq();
 
-    let can_merge = self
-      .tabs
-      .get(&tab_id)
-      .and_then(|tab| tab.scroll.as_ref())
-      .is_some_and(|pending| pending.pointer_css == pointer_css);
-
-    if !can_merge {
-      // We can't safely merge this scroll into the pending accumulator. Flush the existing pending
-      // state so we don't drop scroll delta, then start a new accumulator for this scroll message.
-      let out = self.flush();
-      self.tab_mut(tab_id).scroll = Some(PendingScroll {
-        seq,
-        delta_css: (dx, dy),
-        pointer_css,
-      });
-      return out;
-    }
-
     let tab = self.tab_mut(tab_id);
-    if let Some(pending) = tab.scroll.as_mut() {
-      pending.delta_css.0 += dx;
-      pending.delta_css.1 += dy;
-      pending.seq = seq;
-    } else {
-      tab.scroll = Some(PendingScroll {
-        seq,
-        delta_css: (dx, dy),
-        pointer_css,
-      });
+
+    match tab.scroll.as_mut() {
+      Some(pending) if pending.pointer_css == pointer_css => {
+        // Safe case: when pointer position is stable, the worker's scroll targeting semantics
+        // (element-under-pointer scrolling vs viewport scrolling) will be consistent, so summing
+        // deltas preserves the user's scroll distance while bounding queue growth.
+        pending.delta_css.0 += dx;
+        pending.delta_css.1 += dy;
+        pending.seq = seq;
+      }
+      _ => {
+        // Unsafe case: if the pointer position changes, the worker may target a different scroll
+        // container. To avoid unbounded message growth while the runtime thread is busy, keep only
+        // the latest scroll delta for this tab in the current coalescing window.
+        tab.scroll = Some(PendingScroll {
+          seq,
+          delta_css: (dx, dy),
+          pointer_css,
+        });
+      }
     }
+
     Vec::new()
   }
 
@@ -486,7 +479,7 @@ mod tests {
   }
 
   #[test]
-  fn flushes_pending_scroll_when_pointer_differs() {
+  fn keeps_latest_scroll_when_pointer_differs() {
     let mut c = UiToWorkerRouterCoalescer::new();
     assert!(c
       .push(UiToWorker::Scroll {
@@ -496,24 +489,14 @@ mod tests {
       })
       .is_empty());
 
+    // Pointer change is treated as "unsafe to sum": keep only the latest scroll delta in the
+    // current coalescing window.
     let out = c.push(UiToWorker::Scroll {
       tab_id: TabId(1),
       delta_css: (0.0, 2.0),
       pointer_css: Some((2.0, 2.0)),
     });
-    assert_eq!(out.len(), 1);
-    match &out[0] {
-      UiToWorker::Scroll {
-        tab_id,
-        delta_css,
-        pointer_css,
-      } => {
-        assert_eq!(*tab_id, TabId(1));
-        assert_eq!(*delta_css, (1.0, 0.0));
-        assert_eq!(*pointer_css, Some((1.0, 1.0)));
-      }
-      other => panic!("expected Scroll, got {other:?}"),
-    }
+    assert!(out.is_empty());
 
     let out2 = c.flush();
     assert_eq!(out2.len(), 1);
@@ -737,4 +720,3 @@ mod tests {
     assert!(!c.has_pending());
   }
 }
-
