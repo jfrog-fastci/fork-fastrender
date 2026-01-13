@@ -116,17 +116,20 @@ struct BookmarksListCache {
 struct BookmarksFolderCache {
   folder_revision: u64,
   folder_options: Vec<(Option<BookmarkId>, String)>,
-  folder_labels: HashMap<Option<BookmarkId>, String>,
+  folder_label_indices: HashMap<Option<BookmarkId>, usize>,
 }
 
 impl BookmarksFolderCache {
   fn new(store: &BookmarkStore) -> Self {
     let folder_options = folder_options(store);
-    let folder_labels = folder_options.iter().cloned().collect::<HashMap<_, _>>();
+    let mut folder_label_indices = HashMap::with_capacity(folder_options.len());
+    for (idx, (id, _)) in folder_options.iter().enumerate() {
+      folder_label_indices.insert(*id, idx);
+    }
     Self {
       folder_revision: store.folder_revision(),
       folder_options,
-      folder_labels,
+      folder_label_indices,
     }
   }
 
@@ -137,11 +140,20 @@ impl BookmarksFolderCache {
     }
     self.folder_revision = revision;
     self.folder_options = folder_options(store);
-    self.folder_labels = self
+    let mut indices = HashMap::with_capacity(self.folder_options.len());
+    for (idx, (id, _)) in self.folder_options.iter().enumerate() {
+      indices.insert(*id, idx);
+    }
+    self.folder_label_indices = indices;
+  }
+
+  fn label_for_parent(&self, parent: Option<BookmarkId>) -> &str {
+    let idx = self.folder_label_indices.get(&parent).copied().unwrap_or(0);
+    self
       .folder_options
-      .iter()
-      .cloned()
-      .collect::<HashMap<_, _>>();
+      .get(idx)
+      .map(|(_, label)| label.as_str())
+      .unwrap_or("Root")
   }
 }
 
@@ -493,8 +505,7 @@ pub fn bookmarks_manager_side_panel(
       // -----------------------------------------------------------------------
       folder_cache.ensure_up_to_date(store);
       {
-        let folder_labels = &folder_cache.folder_labels;
-        bookmarks_list(ui, state, store, folder_labels, &mut out);
+        bookmarks_list(ui, state, store, &folder_cache, &mut out);
       }
     });
 
@@ -845,7 +856,7 @@ fn bookmarks_list(
   ui: &mut egui::Ui,
   state: &mut BookmarksManagerState,
   store: &mut BookmarkStore,
-  folder_labels: &HashMap<Option<BookmarkId>, String>,
+  folder_cache: &BookmarksFolderCache,
   out: &mut BookmarksManagerOutput,
 ) {
   let visuals = ui.visuals();
@@ -959,10 +970,7 @@ fn bookmarks_list(
             BookmarkRowKind::Bookmark => {
               let delete_clicked = match store.nodes.get(&row.id) {
                 Some(BookmarkNode::Bookmark(entry)) => {
-                  let parent_label = folder_labels
-                    .get(&entry.parent)
-                    .map(String::as_str)
-                    .unwrap_or("Root");
+                  let parent_label = folder_cache.label_for_parent(entry.parent);
                   render_bookmark_row(ui, state, entry, row.depth, parent_label, out)
                 }
                 _ => {
