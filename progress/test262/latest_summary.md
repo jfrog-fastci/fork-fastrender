@@ -66,8 +66,8 @@ CARGO_TARGET_DIR=../../target timeout -k 10 600 bash scripts/cargo_agent.sh run 
 | Metric | Count |
 | --- | ---: |
 | Total cases | 17318 |
-| Matched upstream expected | 15665 (90.46%) |
-| Mismatched upstream expected | 1653 (9.54%) |
+| Matched upstream expected | 15685 (90.57%) |
+| Mismatched upstream expected | 1633 (9.43%) |
 | Timeouts | 0 |
 | Skipped | 40 |
 | Unexpected mismatches | 672 |
@@ -76,8 +76,8 @@ CARGO_TARGET_DIR=../../target timeout -k 10 600 bash scripts/cargo_agent.sh run 
 
 | Outcome | Count |
 | --- | ---: |
-| passed | 15625 |
-| failed | 1653 |
+| passed | 15645 |
+| failed | 1633 |
 | timed_out | 0 |
 | skipped | 40 |
 
@@ -85,8 +85,8 @@ CARGO_TARGET_DIR=../../target timeout -k 10 600 bash scripts/cargo_agent.sh run 
 
 | Kind | Count |
 | --- | ---: |
-| pass | 8696 |
-| xfail | 8582 |
+| pass | 8700 |
+| xfail | 8578 |
 | skip | 40 |
 | flaky | 0 |
 
@@ -94,29 +94,29 @@ CARGO_TARGET_DIR=../../target timeout -k 10 600 bash scripts/cargo_agent.sh run 
 
 | Status | Count |
 | --- | ---: |
-| PASS | 8024 |
+| PASS | 8028 |
 | FAIL (unexpected) | 672 |
-| XFAIL | 981 |
-| XPASS | 7601 |
+| XFAIL | 961 |
+| XPASS | 7617 |
 | SKIP | 40 |
 
 ## Breakdown by major area
 
 | Area | Total | Matched | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| language | 10128 | 8907 | 1221 | 12.06% | 1786 | 666 | 555 | 7121 | 0 |
-| built-ins | 7185 | 6753 | 432 | 6.01% | 6233 | 6 | 426 | 480 | 40 |
+| language | 10128 | 8927 | 1201 | 11.86% | 1786 | 666 | 535 | 7141 | 0 |
+| built-ins | 7185 | 6753 | 432 | 6.01% | 6237 | 6 | 426 | 476 | 40 |
 | staging | 5 | 5 | 0 | 0.00% | 5 | 0 | 0 | 0 | 0 |
 
 ## Top failing buckets (by mismatched cases)
 
 | Bucket | Total | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `language/statements` | 7161 | 1110 | 15.50% | 754 | 666 | 444 | 5297 | 0 |
+| `language/statements` | 7161 | 1090 | 15.22% | 754 | 666 | 424 | 5317 | 0 |
 | `built-ins/Set` | 764 | 306 | 40.05% | 388 | 2 | 304 | 70 | 0 |
 | `built-ins/Object` | 1692 | 110 | 6.50% | 1330 | 2 | 108 | 252 | 0 |
 | `language/expressions` | 2337 | 103 | 4.41% | 1032 | 0 | 103 | 1202 | 0 |
-| `built-ins/Array` | 1503 | 6 | 0.40% | 1453 | 0 | 6 | 4 | 40 |
+| `built-ins/Array` | 1503 | 6 | 0.40% | 1457 | 0 | 6 | 0 | 40 |
 | `language/directive-prologue` | 62 | 6 | 9.68% | 0 | 0 | 6 | 56 | 0 |
 | `built-ins/Map` | 405 | 4 | 0.99% | 401 | 2 | 2 | 0 | 0 |
 | `built-ins/String` | 820 | 4 | 0.49% | 814 | 0 | 4 | 2 | 0 |
@@ -128,9 +128,9 @@ CARGO_TARGET_DIR=../../target timeout -k 10 600 bash scripts/cargo_agent.sh run 
 ## Top mismatch reasons (first line of `error`)
 
 Mismatched cases by high-level bucket:
-- exception/other: 1017 (61.52%)
-- VmError::Unimplemented: 613 (37.08%)
-- termination: 23 (1.39%)
+- exception/other: 1017 (62.28%)
+- VmError::Unimplemented: 593 (36.31%)
+- termination: 23 (1.41%)
 
 ### Top 20
 
@@ -149,13 +149,13 @@ Mismatched cases by high-level bucket:
 | 11 | exception/other | 42 | `Expected SameValue(«"undefined"», «"function"») to be true` |
 | 12 | exception/other | 35 | `Expected a ReferenceError to be thrown but no exception was thrown at all` |
 | 13 | termination | 23 | `execution terminated: stack overflow` |
-| 14 | VmError::Unimplemented | 20 | `unimplemented: binary operator` |
-| 15 | exception/other | 16 | `Expected true but got false` |
-| 16 | exception/other | 16 | `desc.writable Expected SameValue(«true», «false») to be true` |
-| 17 | exception/other | 14 | `Built-in objects must be extensible. Expected SameValue(«false», «true») to be true` |
-| 18 | exception/other | 14 | `GetSetRecord coerces size Expected SameValue(«0», «1») to be true` |
-| 19 | exception/other | 14 | `isConstructor invoked with a non-function value` |
-| 20 | VmError::Unimplemented | 11 | `unimplemented: yield in expression type` |
+| 14 | exception/other | 16 | `Expected true but got false` |
+| 15 | exception/other | 16 | `desc.writable Expected SameValue(«true», «false») to be true` |
+| 16 | exception/other | 14 | `Built-in objects must be extensible. Expected SameValue(«false», «true») to be true` |
+| 17 | exception/other | 14 | `GetSetRecord coerces size Expected SameValue(«0», «1») to be true` |
+| 18 | exception/other | 14 | `isConstructor invoked with a non-function value` |
+| 19 | VmError::Unimplemented | 11 | `unimplemented: yield in expression type` |
+| 20 | exception/other | 10 | `#18: value === undefined. Actual: value ===value` |
 
 ## Timed-out tests
 
