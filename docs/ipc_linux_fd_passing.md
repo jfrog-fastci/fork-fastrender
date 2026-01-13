@@ -10,6 +10,19 @@ Assumption: the **renderer is untrusted / potentially compromised**. Anything th
 
 For this project, prefer `memfd_create(2)` over `shm_open(3)` / POSIX shared memory.
 
+### Creation template (recommended)
+
+Create memfds with:
+
+- `memfd_create("…", MFD_CLOEXEC | MFD_ALLOW_SEALING)`
+
+Footguns:
+
+- If you forget `MFD_ALLOW_SEALING`, the file is created with the `F_SEAL_SEAL` seal already applied (meaning **you can’t add any other seals later**).
+- If you forget `MFD_CLOEXEC`, the FD can leak across unrelated `execve()` in the creating process (or any thread racing an exec).
+
+After creation, set the size with `ftruncate(2)` *before* `mmap(2)`, and treat size as a security boundary (tight upper bounds, overflow-checked calculations).
+
 ### Why `memfd_create` is a better default here
 
 - **No global name / namespace**: `shm_open()` objects live in a global namespace (typically mounted at `/dev/shm`). If you need a name, you need a naming scheme, collision avoidance, and cleanup. `memfd_create()` gives you an anonymous file referenced only by an FD.
@@ -23,6 +36,7 @@ If you *cannot* pass an FD (no authenticated UNIX domain socket, unrelated proce
 
 References:
 - `memfd_create(2)`: https://man7.org/linux/man-pages/man2/memfd_create.2.html
+- `ftruncate(2)`: https://man7.org/linux/man-pages/man2/ftruncate.2.html
 - `shm_open(3)`: https://man7.org/linux/man-pages/man3/shm_open.3.html
 
 ---
@@ -39,6 +53,8 @@ When using a memfd for shared memory, **always** apply:
 Rationale:
 - Prevents a malicious peer from changing the file length after the receiver validated it.
 - Avoids `SIGBUS` hazards when a mapped region is shrunk out from under the receiver.
+
+Practical rule: apply these seals **after** `ftruncate()` and **before** sending the FD to the peer.
 
 ### Apply `F_SEAL_WRITE` when data must become immutable
 
@@ -105,6 +121,7 @@ When parsing `SCM_RIGHTS`:
 
 - Enforce a strict **maximum expected FD count** (per-message).
 - If more FDs are received than expected, **close the extras immediately** and treat the message as invalid (or at minimum treat it as “unexpected/ignore”).
+- Reject malformed control messages (e.g. `cmsg_len` that is not a multiple of `sizeof(int)` for `SCM_RIGHTS`).
 
 Even though the kernel enforces a hard ceiling (`SCM_MAX_FD`, currently 253), that is far larger than any sane protocol message. “Accepting whatever count arrives” is an easy DoS vector.
 
@@ -169,4 +186,3 @@ If renderer→browser FD flow is unavoidable (e.g. dynamic buffer resizing), tre
 - enforce tight bounds
 - require seals
 - fail closed on any mismatch
-
