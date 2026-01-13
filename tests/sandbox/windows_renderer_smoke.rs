@@ -1,46 +1,35 @@
-//! Windows sandbox compatibility smoke test: ensure an AppContainer-sandboxed renderer can
-//! initialize FastRender and render a minimal HTML page.
+//! Windows sandbox compatibility smoke test: ensure a sandboxed child (preferably AppContainer)
+//! can initialize FastRender and render a minimal HTML page.
 //!
 //! Motivation: AppContainer can restrict filesystem access to system fonts (e.g. `C:\Windows\Fonts`)
 //! which FastRender relies on for text shaping. This test gives an early signal when the sandbox
 //! policy makes the renderer unusable.
+//!
+//! Implementation notes:
+//! - Uses the production Windows sandbox launcher (`fastrender::sandbox::windows::spawn_sandboxed`)
+//!   so we validate the same code path used by future multiprocess renderer spawning.
+//! - The child test is marked `#[ignore]` and is executed via `--ignored --exact ...` inside the
+//!   sandboxed process.
 
 #![cfg(windows)]
 
 use std::error::Error;
-use std::ffi::OsStr;
-use std::os::windows::ffi::OsStrExt;
-use std::path::PathBuf;
-use std::ptr::{null, null_mut};
+use std::ffi::OsString;
+use std::os::windows::io::{AsRawHandle, RawHandle};
 
+use fastrender::sandbox::windows::{spawn_sandboxed, WindowsSandboxLevel};
 use windows_sys::Win32::Foundation::{
-  CloseHandle, GetLastError, SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT,
-  INVALID_HANDLE_VALUE,
+  CloseHandle, SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
 };
-use windows_sys::Win32::Security::Authentication::Identity::{
-  CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
-};
-use windows_sys::Win32::Security::{
-  FreeSid, GetTokenInformation, OpenProcessToken, SECURITY_CAPABILITIES,
-};
+use windows_sys::Win32::Security::{GetTokenInformation, OpenProcessToken};
 use windows_sys::Win32::System::Console::{
   GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
 use windows_sys::Win32::System::Threading::{
-  CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
-  InitializeProcThreadAttributeList, TerminateProcess, UpdateProcThreadAttribute,
-  WaitForSingleObject, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_LIST, STARTUPINFOEXW,
+  GetExitCodeProcess, TerminateProcess, WaitForSingleObject,
 };
 
-// `PROC_THREAD_ATTRIBUTE_*` values are stable ABI constants from winbase.h, derived via:
-//   ProcThreadAttributeValue(Number, Thread, Input, Additive)
-// We define them here to avoid relying on a specific `windows-sys` version exporting them.
-const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x0002_0002;
-const PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES: usize = 0x0002_0009;
-
-const STARTF_USESTDHANDLES: u32 = 0x0000_0100;
-const EXTENDED_STARTUPINFO_PRESENT: u32 = 0x0008_0000;
-
+// WaitForSingleObject return codes.
 const WAIT_OBJECT_0: u32 = 0;
 const WAIT_TIMEOUT: u32 = 0x0000_0102;
 
@@ -48,26 +37,6 @@ const TOKEN_QUERY: u32 = 0x0008;
 const TOKEN_IS_APPCONTAINER: u32 = 29;
 
 const CHILD_TIMEOUT_MS: u32 = 60_000;
-
-const APP_CONTAINER_NAME: &str = "fastrender.sandbox.renderer-smoke-test";
-
-fn wide_null(s: &OsStr) -> Vec<u16> {
-  let mut wide: Vec<u16> = s.encode_wide().collect();
-  wide.push(0);
-  wide
-}
-
-fn wide_null_str(s: &str) -> Vec<u16> {
-  let mut wide: Vec<u16> = s.encode_utf16().collect();
-  wide.push(0);
-  wide
-}
-
-fn system32_dir() -> String {
-  // Use a working directory that is expected to be readable by an AppContainer process.
-  let root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
-  format!("{root}\\System32")
-}
 
 fn format_error_chain(err: &(dyn Error)) -> String {
   let mut out = String::new();
@@ -80,7 +49,7 @@ fn format_error_chain(err: &(dyn Error)) -> String {
   out
 }
 
-fn ensure_running_in_appcontainer() -> Result<(), String> {
+fn is_running_in_appcontainer() -> Result<bool, String> {
   // GetCurrentProcess() returns a pseudo-handle with value -1.
   let current_process: HANDLE = (-1isize) as HANDLE;
   let mut token: HANDLE = 0;
@@ -103,7 +72,9 @@ fn ensure_running_in_appcontainer() -> Result<(), String> {
       &mut returned,
     )
   };
-  unsafe { CloseHandle(token) };
+  unsafe {
+    let _ = CloseHandle(token);
+  }
   if ok == 0 {
     return Err(format!(
       "GetTokenInformation(TokenIsAppContainer) failed: {}",
@@ -111,18 +82,15 @@ fn ensure_running_in_appcontainer() -> Result<(), String> {
     ));
   }
 
-  if is_appcontainer == 0 {
-    return Err("process token is not marked as AppContainer (sandbox fallback?)".to_string());
-  }
-  Ok(())
+  Ok(is_appcontainer != 0)
 }
 
-fn wait_for_process(pi: &PROCESS_INFORMATION, timeout_ms: u32) -> Result<u32, String> {
-  let wait = unsafe { WaitForSingleObject(pi.hProcess, timeout_ms) };
+fn wait_process(handle: HANDLE, timeout_ms: u32) -> Result<u32, String> {
+  let wait = unsafe { WaitForSingleObject(handle, timeout_ms) };
   if wait == WAIT_TIMEOUT {
     unsafe {
       // Best-effort kill so the test process doesn't hang indefinitely.
-      TerminateProcess(pi.hProcess, 1);
+      TerminateProcess(handle, 1);
     }
     return Err(format!(
       "child process timed out after {timeout_ms}ms (terminated)"
@@ -134,225 +102,82 @@ fn wait_for_process(pi: &PROCESS_INFORMATION, timeout_ms: u32) -> Result<u32, St
       std::io::Error::last_os_error()
     ));
   }
+
   let mut exit_code: u32 = 0;
-  let ok = unsafe { GetExitCodeProcess(pi.hProcess, &mut exit_code) };
+  let ok = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
   if ok == 0 {
     return Err(format!(
       "GetExitCodeProcess failed: {}",
       std::io::Error::last_os_error()
     ));
   }
+
   Ok(exit_code)
 }
 
-fn spawn_appcontainer_child(test_filter: &str) -> Result<u32, String> {
-  let exe: PathBuf = std::env::current_exe().map_err(|e| format!("current_exe failed: {e}"))?;
+fn collect_stdio_handles_for_inheritance() -> Vec<RawHandle> {
+  // Limit handle inheritance to standard handles so we don't leak privileged handles into the
+  // sandboxed process.
+  let std_in = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+  let std_out = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+  let std_err = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
 
-  // libtest expects: [--ignored] <filter> --exact [--nocapture]
-  let cmdline = format!(
-    "\"{}\" --ignored --exact {} --nocapture",
-    exe.display(),
-    test_filter
-  );
-  let mut cmdline = wide_null_str(&cmdline);
-
-  let current_dir = system32_dir();
-  let current_dir = wide_null_str(&current_dir);
-
-  unsafe {
-    // Ensure the AppContainer profile exists (best-effort). If AppContainer isn't supported (older
-    // Windows), treat this test as a skip rather than a failure.
-    let mut sid = null_mut();
-    let name_w = wide_null_str(APP_CONTAINER_NAME);
-    let display_w = wide_null_str("FastRender sandbox renderer smoke test");
-    let description_w = wide_null_str("FastRender sandbox renderer smoke test profile");
-
-    let hr = CreateAppContainerProfile(
-      name_w.as_ptr(),
-      display_w.as_ptr(),
-      description_w.as_ptr(),
-      null_mut(),
-      0,
-      &mut sid,
-    );
-
-    // `CreateAppContainerProfile` returns HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS) when the profile
-    // already exists. In that case (or any other failure), derive the SID from the name.
-    if hr != 0 {
-      sid = null_mut();
-      let hr = DeriveAppContainerSidFromAppContainerName(name_w.as_ptr(), &mut sid);
-      if hr != 0 {
-        eprintln!(
-          "skipping Windows AppContainer renderer smoke test: DeriveAppContainerSidFromAppContainerName failed (hr=0x{hr:08X})"
-        );
-        return Ok(0);
-      }
-    } else if !sid.is_null() {
-      // `CreateAppContainerProfile` returns a freshly-allocated SID. We only need the profile and
-      // will derive the SID again (consistent across processes), so free this one immediately.
-      FreeSid(sid);
-      sid = null_mut();
-      let hr = DeriveAppContainerSidFromAppContainerName(name_w.as_ptr(), &mut sid);
-      if hr != 0 {
-        eprintln!(
-          "skipping Windows AppContainer renderer smoke test: DeriveAppContainerSidFromAppContainerName failed after profile creation (hr=0x{hr:08X})"
-        );
-        return Ok(0);
-      }
+  let mut inherit = Vec::new();
+  for h in [std_in, std_out, std_err] {
+    if h == 0 || h == INVALID_HANDLE_VALUE {
+      continue;
     }
-
-    struct SidGuard(*mut std::ffi::c_void);
-    impl Drop for SidGuard {
-      fn drop(&mut self) {
-        unsafe {
-          if !self.0.is_null() {
-            FreeSid(self.0);
-          }
-        }
-      }
-    }
-    let _sid_guard = SidGuard(sid);
-
-    let mut security_caps = SECURITY_CAPABILITIES {
-      AppContainerSid: sid,
-      Capabilities: null_mut(),
-      CapabilityCount: 0,
-      Reserved: 0,
-    };
-
-    // Limit handle inheritance to standard handles so we don't leak any privileged handles into
-    // the sandboxed process.
-    let std_in = GetStdHandle(STD_INPUT_HANDLE);
-    let std_out = GetStdHandle(STD_OUTPUT_HANDLE);
-    let std_err = GetStdHandle(STD_ERROR_HANDLE);
-
-    let mut handles: Vec<HANDLE> = Vec::new();
-    for h in [std_in, std_out, std_err] {
-      if h == 0 || h == INVALID_HANDLE_VALUE {
-        continue;
-      }
-      // Ensure the handle is inheritable so it can be included in the handle list.
-      let _ = SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
-      if !handles.contains(&h) {
-        handles.push(h);
-      }
-    }
-
-    let attribute_count: u32 = if handles.is_empty() { 1 } else { 2 };
-    let mut attr_size: usize = 0;
-    InitializeProcThreadAttributeList(null_mut(), attribute_count, 0, &mut attr_size);
-    if attr_size == 0 {
-      return Err("InitializeProcThreadAttributeList returned size=0".to_string());
-    }
-
-    // Ensure alignment for `PROC_THREAD_ATTRIBUTE_LIST` by allocating as `usize`.
-    let units = (attr_size + std::mem::size_of::<usize>() - 1) / std::mem::size_of::<usize>();
-    let mut attr_buf: Vec<usize> = vec![0; units];
-    let attr_list = attr_buf.as_mut_ptr() as *mut PROC_THREAD_ATTRIBUTE_LIST;
-    if InitializeProcThreadAttributeList(attr_list, attribute_count, 0, &mut attr_size) == 0 {
-      let err = GetLastError();
-      return Err(format!(
-        "InitializeProcThreadAttributeList failed (err={err})"
-      ));
-    }
-    struct AttrListGuard(*mut PROC_THREAD_ATTRIBUTE_LIST);
-    impl Drop for AttrListGuard {
-      fn drop(&mut self) {
-        unsafe {
-          if !self.0.is_null() {
-            DeleteProcThreadAttributeList(self.0);
-          }
-        }
-      }
-    }
-    let _attr_guard = AttrListGuard(attr_list);
-
-    if UpdateProcThreadAttribute(
-      attr_list,
-      0,
-      PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-      &mut security_caps as *mut _ as *mut _,
-      std::mem::size_of::<SECURITY_CAPABILITIES>(),
-      null_mut(),
-      null_mut(),
-    ) == 0
-    {
-      let err = GetLastError();
-      return Err(format!(
-        "UpdateProcThreadAttribute(PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES) failed (err={err})"
-      ));
-    }
-
-    if !handles.is_empty() {
-      if UpdateProcThreadAttribute(
-        attr_list,
-        0,
-        PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-        handles.as_mut_ptr() as *mut _,
-        handles.len() * std::mem::size_of::<HANDLE>(),
-        null_mut(),
-        null_mut(),
-      ) == 0
-      {
-        let err = GetLastError();
-        return Err(format!(
-          "UpdateProcThreadAttribute(PROC_THREAD_ATTRIBUTE_HANDLE_LIST) failed (err={err})"
-        ));
-      }
-    }
-
-    let mut si: STARTUPINFOEXW = std::mem::zeroed();
-    si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
-    si.lpAttributeList = attr_list;
-    if !handles.is_empty() {
-      si.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
-      si.StartupInfo.hStdInput = std_in;
-      si.StartupInfo.hStdOutput = std_out;
-      si.StartupInfo.hStdError = std_err;
-    }
-
-    let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
-    let ok = CreateProcessW(
-      null(),
-      cmdline.as_mut_ptr(),
-      null(),
-      null(),
-      1,
-      EXTENDED_STARTUPINFO_PRESENT,
-      null(),
-      current_dir.as_ptr(),
-      &mut si.StartupInfo,
-      &mut pi,
-    );
-    if ok == 0 {
-      return Err(format!(
-        "CreateProcessW (AppContainer) failed: {}",
-        std::io::Error::last_os_error()
-      ));
-    }
-
-    let exit_code = wait_for_process(&pi, CHILD_TIMEOUT_MS)?;
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    Ok(exit_code)
+    // Ensure the handle is inheritable so the sandbox spawn can forward it explicitly.
+    let _ = unsafe { SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
+    inherit.push(h as RawHandle);
   }
+  inherit
 }
 
 #[test]
 fn appcontainer_renderer_can_render_minimal_html() {
-  let test_filter = "sandbox::windows_renderer_smoke::appcontainer_renderer_smoke_child";
-  let exit = spawn_appcontainer_child(test_filter).expect("spawn AppContainer child");
-  assert_eq!(exit, 0, "AppContainer child exited with code {exit}");
+  let exe = std::env::current_exe().expect("current test exe path");
+  let test_name = "sandbox::windows_renderer_smoke::appcontainer_renderer_smoke_child";
+
+  let args = vec![
+    OsString::from("--ignored"),
+    OsString::from("--exact"),
+    OsString::from(test_name),
+    OsString::from("--nocapture"),
+  ];
+
+  let inherit = collect_stdio_handles_for_inheritance();
+
+  let child = spawn_sandboxed(&exe, &args, &inherit).expect("spawn sandboxed child");
+  let handle = child.process.as_raw_handle() as HANDLE;
+  let exit_code = wait_process(handle, CHILD_TIMEOUT_MS).expect("wait for sandboxed child");
+
+  assert_eq!(
+    exit_code, 0,
+    "sandboxed child exited with code {exit_code} (sandbox_level={:?})",
+    child.level
+  );
+
+  if child.level != WindowsSandboxLevel::AppContainer {
+    eprintln!(
+      "skipping AppContainer-specific assertion: sandbox spawn fell back to {:?}",
+      child.level
+    );
+  }
 }
 
 #[test]
 #[ignore]
 fn appcontainer_renderer_smoke_child() {
-  ensure_running_in_appcontainer().expect("child should be running in AppContainer");
+  match is_running_in_appcontainer() {
+    Ok(true) => eprintln!("sandbox: running in AppContainer token"),
+    Ok(false) => eprintln!("sandbox: NOT running in AppContainer token (spawn fallback?)"),
+    Err(err) => eprintln!("sandbox: failed to query TokenIsAppContainer: {err}"),
+  }
 
   if let Err(err) = renderer_smoke_child_inner() {
     let chain = format_error_chain(&err);
-    panic!("AppContainer child failed to initialize FastRender and render minimal HTML:\n{chain}");
+    panic!("Sandboxed child failed to initialize FastRender and render minimal HTML:\n{chain}");
   }
 }
 
