@@ -127,6 +127,10 @@ pub mod page_a11y;
 #[cfg(feature = "browser_ui")]
 pub mod a11y;
 
+// Accessibility tree → AccessKit mapping helpers (used by the windowed browser UI).
+#[cfg(feature = "browser_ui")]
+pub mod accesskit_mapping;
+
 // Minimal AccessKit integration for the compositor (non-egui) browser UI backend.
 #[cfg(feature = "browser_ui_base")]
 pub mod compositor_accessibility;
