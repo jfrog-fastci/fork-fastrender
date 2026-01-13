@@ -65,6 +65,7 @@ fn text_emphasis_marks_follow_grapheme_clusters_even_when_harfbuzz_clusters_span
     synthetic_bold: 0.0,
     synthetic_oblique: 0.0,
     rotation: RunRotation::None,
+    vertical: false,
     palette_index: 0,
     palette_overrides: Arc::new(Vec::new()),
     palette_override_hash: 0,

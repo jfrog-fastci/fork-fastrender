@@ -937,6 +937,7 @@ fn sideways_writing_mode_emits_vertical_text_and_decorations() {
     synthetic_oblique: 0.0,
     // Sideways writing modes keep horizontal shaping but rotate the run during paint.
     rotation: RunRotation::Cw90,
+    vertical: false,
     palette_index: 1,
     palette_overrides: Arc::new(Vec::new()),
     palette_override_hash: 0,
@@ -1018,6 +1019,7 @@ fn vertical_text_underline_position_respects_left_right() {
     synthetic_bold: 0.0,
     synthetic_oblique: 0.0,
     rotation: RunRotation::None,
+    vertical: false,
     palette_index: 0,
     palette_overrides: Arc::new(Vec::new()),
     palette_override_hash: 0,

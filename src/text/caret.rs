@@ -567,6 +567,7 @@ mod tests {
       synthetic_bold: 0.0,
       synthetic_oblique: 0.0,
       rotation: RunRotation::None,
+      vertical: false,
       palette_index: 0,
       palette_overrides: Arc::new(Vec::<(u16, Rgba)>::new()),
       palette_override_hash: 0,

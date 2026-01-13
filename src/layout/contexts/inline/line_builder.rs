@@ -2664,7 +2664,7 @@ impl ReshapeCache {
 }
 
 fn run_inline_axis(run: &ShapedRun) -> InlineAxis {
-  if run.glyphs.iter().any(|g| g.y_advance.abs() > f32::EPSILON) {
+  if run.vertical {
     InlineAxis::Vertical
   } else {
     InlineAxis::Horizontal
@@ -7228,6 +7228,7 @@ mod tests {
       synthetic_bold: 0.0,
       synthetic_oblique: 0.0,
       rotation: RunRotation::None,
+      vertical: false,
       palette_index: 0,
       palette_overrides: Arc::new(Vec::new()),
       palette_override_hash: 0,
@@ -7272,6 +7273,7 @@ mod tests {
       synthetic_bold: 0.0,
       synthetic_oblique: 0.0,
       rotation: RunRotation::None,
+      vertical: false,
       palette_index: 0,
       palette_overrides: Arc::new(Vec::new()),
       palette_override_hash: 0,

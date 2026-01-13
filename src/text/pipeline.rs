@@ -5760,7 +5760,7 @@ pub struct ShapedRun {
   pub direction: Direction,
   /// Bidi level.
   pub level: u8,
-  /// Total horizontal advance of this run.
+  /// Total advance of this run along its inline axis.
   pub advance: f32,
   /// Font used for this run.
   pub font: Arc<LoadedFont>,
@@ -5778,6 +5778,8 @@ pub struct ShapedRun {
   pub synthetic_oblique: f32,
   /// Optional rotation to apply when painting.
   pub rotation: RunRotation,
+  /// Whether this run uses vertical shaping metrics (inline advances stored in `y_advance`).
+  pub vertical: bool,
 
   /// Palette index for color glyph rendering.
   pub palette_index: u16,
@@ -5973,6 +5975,7 @@ fn synthesize_notdef_run(run: &FontRun) -> ShapedRun {
     synthetic_bold: run.synthetic_bold,
     synthetic_oblique: run.synthetic_oblique,
     rotation: run.rotation,
+    vertical: run.vertical,
     palette_index: run.palette_index,
     palette_overrides: Arc::clone(&run.palette_overrides),
     palette_override_hash: run.palette_override_hash,
@@ -6236,6 +6239,7 @@ fn shape_font_run(run: &FontRun) -> Result<ShapedRun> {
     synthetic_bold: run.synthetic_bold,
     synthetic_oblique: run.synthetic_oblique,
     rotation: run.rotation,
+    vertical: run.vertical,
     palette_index: run.palette_index,
     palette_overrides: Arc::clone(&run.palette_overrides),
     palette_override_hash: run.palette_override_hash,
@@ -6947,6 +6951,7 @@ impl ShapingPipeline {
         }
       };
       shaped.rotation = run.rotation;
+      shaped.vertical = run.vertical;
       shaped_runs.push(shaped);
     }
 
@@ -7788,6 +7793,7 @@ mod tests {
       synthetic_bold: 0.0,
       synthetic_oblique: 0.0,
       rotation: RunRotation::None,
+      vertical: false,
       palette_index: 0,
       palette_overrides: Arc::new(Vec::new()),
       palette_override_hash: 0,
@@ -9690,6 +9696,7 @@ mod tests {
         synthetic_bold: 0.0,
         synthetic_oblique: 0.0,
         rotation: RunRotation::None,
+        vertical: false,
         palette_index: 0,
         palette_overrides: Arc::new(Vec::new()),
         palette_override_hash: 0,

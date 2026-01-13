@@ -74,6 +74,7 @@ fn shaped_run(font: &LoadedFont, ch: char, font_size: f32, palette_index: u16) -
     synthetic_bold: 0.0,
     synthetic_oblique: 0.0,
     rotation: RunRotation::None,
+    vertical: false,
     palette_index,
     palette_overrides: Arc::new(Vec::new()),
     palette_override_hash: 0,

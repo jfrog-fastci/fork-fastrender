@@ -456,6 +456,7 @@ fn hash_shaped_runs(hasher: &mut FingerprintHasher, runs: &Vec<ShapedRun>) {
     hasher.write_f32(run.synthetic_bold);
     hasher.write_f32(run.synthetic_oblique);
     hash_run_rotation(hasher, run.rotation);
+    hasher.write_u8(u8::from(run.vertical));
     hasher.write_u16(run.palette_index);
     hasher.write_u64(run.palette_override_hash);
     hasher.write_f32(run.scale);

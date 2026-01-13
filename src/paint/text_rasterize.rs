@@ -2127,9 +2127,7 @@ impl TextRasterizer {
         pixmap,
         TextRenderState::default(),
       )?;
-      let total_x_advance: f32 = run.glyphs.iter().map(|g| g.x_advance.abs()).sum();
-      let total_y_advance: f32 = run.glyphs.iter().map(|g| g.y_advance.abs()).sum();
-      if total_y_advance > total_x_advance {
+      if run.vertical {
         cursor_y += advance;
       } else {
         cursor_x += advance;

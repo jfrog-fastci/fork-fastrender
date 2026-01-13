@@ -15312,7 +15312,11 @@ impl DisplayListBuilder {
           if slice.is_empty() {
             continue;
           }
-          let advance: f32 = slice.iter().map(|g| g.x_advance).sum();
+          let advance: f32 = if run.vertical {
+            slice.iter().map(|g| g.y_advance).sum()
+          } else {
+            slice.iter().map(|g| g.x_advance).sum()
+          };
           line_runs.push(ShapedRun {
             text: String::new(),
             start: 0,
@@ -15329,6 +15333,7 @@ impl DisplayListBuilder {
             synthetic_bold: run.synthetic_bold,
             synthetic_oblique: run.synthetic_oblique,
             rotation: run.rotation,
+            vertical: run.vertical,
             palette_index: run.palette_index,
             palette_overrides: Arc::clone(&run.palette_overrides),
             palette_override_hash: run.palette_override_hash,
@@ -17368,6 +17373,7 @@ mod tests {
       synthetic_bold: 0.0,
       synthetic_oblique: 0.0,
       rotation: crate::text::pipeline::RunRotation::None,
+      vertical: false,
       palette_index: 0,
       palette_overrides: Arc::new(Vec::new()),
       palette_override_hash: 0,
@@ -22177,6 +22183,7 @@ mod tests {
       synthetic_bold: 0.0,
       synthetic_oblique: 0.0,
       rotation: crate::text::pipeline::RunRotation::None,
+      vertical: false,
       palette_index: 0,
       palette_overrides: Arc::new(Vec::new()),
       palette_override_hash: 0,

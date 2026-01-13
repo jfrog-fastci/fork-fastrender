@@ -6510,6 +6510,7 @@ impl InlineFormattingContext {
       synthetic_bold: 0.0,
       synthetic_oblique: 0.0,
       rotation: crate::text::pipeline::RunRotation::None,
+      vertical: false,
       palette_index: 0,
       palette_overrides: Arc::new(Vec::new()),
       palette_override_hash: 0,
