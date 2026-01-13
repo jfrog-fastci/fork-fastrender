@@ -21,6 +21,7 @@ Implementation map (keep these modules aligned with this doc):
 * `src/media/audio/drift.rs` — audio drift correction (target-buffer controller + drift-aware resampling helper)
 * `src/media/audio/null_backend.rs` — `NullAudioBackend` (silence / CI fallback)
 * `src/media/audio/cpal_backend.rs` — CPAL output backend (feature = `audio_cpal`)
+* `src/media/audio/wav_backend.rs` — WAV file output backend (feature = `audio_wav`)
 * `src/media/av_sync.rs` — video scheduling + correction policy (drop/hold/delay)
 * `src/js/clock.rs` — existing `Clock` + `VirtualClock` pattern used for deterministic time in tests
   (media clocking should mirror this pattern)
