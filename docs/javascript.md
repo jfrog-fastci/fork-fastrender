@@ -9,6 +9,7 @@ Workstreams/spec anchors:
 - ecma-rs ownership: [`docs/ecma_rs_ownership.md`](ecma_rs_ownership.md)
 - Renderer pipeline overview: [`docs/architecture.md`](architecture.md)
 - Conformance matrix (repo reality): [`docs/conformance.md`](conformance.md)
+- Runtime/container map (which public types have JS + event loop + live DOM mutations): [`docs/runtime_stacks.md`](runtime_stacks.md)
 
 ## 1) The pipeline becomes “staged + mutable”
 

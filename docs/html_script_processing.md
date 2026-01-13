@@ -12,6 +12,9 @@ This document is a spec-mapped design for that integration. It is written to pre
 implementers from having to “rediscover” scattered HTML Standard details when extending and refining
 support for module scripts and end-to-end import map integration.
 
+If you’re trying to pick the right public API container (document vs tab, JS vs no JS), start with:
+[`docs/runtime_stacks.md`](runtime_stacks.md).
+
 ## Status in this repository (reality check)
 FastRender has the **core building blocks** for a spec-shaped, streaming, parse-time classic
 `<script>` pipeline (pause/resume parsing at `</script>`, schedule parser-blocking/`async`/`defer`
