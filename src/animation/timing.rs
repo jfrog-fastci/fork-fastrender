@@ -223,6 +223,13 @@ impl AnimationTimingState {
       return;
     };
 
+    // If we don't yet have a timeline time to anchor the adjustment, and the
+    // animation is currently playing (no hold time), keep the pending playback
+    // rate around so we can apply it once timeline time becomes available.
+    if timeline_time.is_unresolved() && self.hold_time.is_unresolved() {
+      return;
+    }
+
     // Calculate the current time using the existing playback rate so we can
     // preserve it once the pending rate is applied.
     let current = self.current_time_at_timeline_time(timeline_time);
@@ -796,6 +803,34 @@ mod tests {
     assert_eq!(
       state.current_time_at_timeline_time(TimeValue::UNRESOLVED),
       TimeValue::resolved(20.0)
+    );
+  }
+
+  #[test]
+  fn set_playback_rate_non_monotonic_defers_until_timeline_time_is_resolved() {
+    let mut state = AnimationTimingState {
+      start_time: TimeValue::resolved(0.0),
+      hold_time: TimeValue::UNRESOLVED,
+      playback_rate: 1.0,
+      ..AnimationTimingState::new()
+    };
+    state.set_timeline_time(TimeValue::resolved(50.0));
+
+    state.set_playback_rate(2.0, TimeValue::UNRESOLVED, false);
+
+    // While the timeline time is unresolved, we keep a pending playback rate so
+    // we can apply it once we have a timeline time to anchor the adjustment.
+    assert_eq!(state.playback_rate(), 1.0);
+    assert_eq!(state.pending_playback_rate(), Some(2.0));
+
+    // Once timeline time becomes available, apply the pending rate while
+    // preserving the current time at that moment.
+    state.set_timeline_time(TimeValue::resolved(60.0));
+    assert_eq!(state.pending_playback_rate(), None);
+    assert_eq!(state.playback_rate(), 2.0);
+    assert_eq!(
+      state.current_time_at_timeline_time(TimeValue::resolved(60.0)),
+      TimeValue::resolved(60.0)
     );
   }
 
