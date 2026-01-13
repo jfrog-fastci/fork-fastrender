@@ -439,7 +439,7 @@ mod input_focus_helpers_tests {
 
 #[cfg(test)]
 mod global_session_settings_tests {
-  use super::apply_global_appearance;
+  use super::{apply_global_appearance, apply_global_value};
   use fastrender::ui::appearance::AppearanceSettings;
   use fastrender::ui::theme_parsing::BrowserTheme;
 
@@ -466,6 +466,30 @@ mod global_session_settings_tests {
     let (new_global, updates) = apply_global_appearance(&global, None, &windows);
 
     assert_eq!(new_global, global.sanitized());
+    assert_eq!(updates, vec![false, true]);
+  }
+
+  #[test]
+  fn home_url_change_updates_global_and_other_windows() {
+    let global = "about:newtab".to_string();
+    let changed = "https://example.com".to_string();
+
+    let windows = vec![global.clone(), changed.clone()];
+    let (new_global, updates) = apply_global_value(&global, Some(changed.clone()), &windows);
+
+    assert_eq!(new_global, changed);
+    assert_eq!(updates, vec![true, false]);
+  }
+
+  #[test]
+  fn home_url_is_applied_to_new_windows_without_overwriting_global() {
+    let global = "https://example.com".to_string();
+    let stale_new_window = "about:newtab".to_string();
+
+    let windows = vec![global.clone(), stale_new_window];
+    let (new_global, updates) = apply_global_value(&global, None, &windows);
+
+    assert_eq!(new_global, global);
     assert_eq!(updates, vec![false, true]);
   }
 }
