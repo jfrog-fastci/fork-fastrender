@@ -1,5 +1,6 @@
 use super::{Body, Headers, HeadersGuard, WebFetchLimits};
 use crate::resource::{FetchCredentialsMode, ReferrerPolicy};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestMode {
@@ -36,7 +37,7 @@ impl From<FetchCredentialsMode> for RequestCredentials {
   }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RequestRedirect {
   Follow,
   Error,

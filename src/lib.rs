@@ -380,7 +380,7 @@ pub use paint::text_rasterize::TextRasterizer;
 // Resource fetching
 pub use resource::{
   AllowedSchemes, CachingFetcher, CachingFetcherConfig, FetchPolicy, FetchedResource, HttpFetcher,
-  ResourceFetcher, ResourcePolicy,
+  IpcResourceFetcher, ResourceFetcher, ResourcePolicy,
 };
 // Style types
 pub use style::color::{Color, ColorParseError, Hsla, Rgba};

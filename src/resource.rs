@@ -60,11 +60,13 @@ pub mod bundle;
 mod cors;
 mod curl_backend;
 pub(crate) mod data_url;
+pub mod ipc_fetcher;
 #[cfg(feature = "disk_cache")]
 pub mod disk_cache;
 pub mod web_fetch;
 pub mod web_url;
 pub use cors::{cors_enforcement_enabled, validate_cors_allow_origin, CorsMode};
+pub use ipc_fetcher::IpcResourceFetcher;
 #[cfg(feature = "disk_cache")]
 pub use disk_cache::{DiskCacheConfig, DiskCachingFetcher};
 
@@ -994,7 +996,7 @@ fn http_browser_schemeful_same_site_from_origins(
   referrer_site == target_site
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FetchDestination {
   Document,
   /// Top-level document navigation without user activation (e.g. `<meta http-equiv=refresh>` or
@@ -1044,7 +1046,7 @@ pub enum FetchDestination {
 /// Credentials mode for a fetch request (roughly aligned with the Fetch spec).
 ///
 /// This is primarily used to partition caches for requests that may carry cookies/auth headers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FetchCredentialsMode {
   /// Do not include credentials (anonymous).
   Omit,
@@ -1228,7 +1230,7 @@ pub(crate) fn http_browser_request_profile_for_url(url: &str) -> FetchDestinatio
 /// This models the [Referrer Policy specification](https://www.w3.org/TR/referrer-policy/) token
 /// values. The [`ReferrerPolicy::EmptyString`] variant represents the empty-string state used by
 /// the spec (meaning "use the default policy").
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ReferrerPolicy {
   /// Empty-string / unspecified referrer policy ("use default").
   EmptyString,
@@ -3337,7 +3339,7 @@ pub fn parse_cached_html_meta(meta: &str) -> CachedHtmlMetadata {
 /// This is intentionally defined in the `resource` layer (instead of reusing `api::ResourceKind`)
 /// to avoid cyclic dependencies: low-level fetch/caching code must not depend on the public API
 /// module.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FetchContextKind {
   Document,
   /// Subframe document navigation (e.g. `<iframe src=...>`).
@@ -3392,7 +3394,7 @@ impl FetchContextKind {
 /// These are keyed by the tuple `(FetchContextKind, url)` (plus any disk cache namespace) but use a
 /// different on-disk entry key than the primary resource bytes so they do not interfere with
 /// `fetch()` / `fetch_partial()` semantics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CacheArtifactKind {
   /// Serialized image probe metadata (intrinsic dimensions, EXIF orientation, etc.).
   ///
