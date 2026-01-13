@@ -288,8 +288,7 @@ fn main() {
 
     let (vm, realm, heap) = agent.vm_realm_and_heap_mut();
     let global = realm.global_object();
-    let realm_id = realm.id();
-    let result = graph.link(vm, heap, global, realm_id, root_id);
+    let result = graph.link(vm, heap, global, realm.id(), root_id);
     match result {
       Ok(()) => {
         eprintln!("oom_harness: unexpected success in moduleLink scenario");

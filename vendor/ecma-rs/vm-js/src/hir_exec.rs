@@ -1290,24 +1290,28 @@ impl<'vm> HirEvaluator<'vm> {
             let loop_env = scope.env_create(Some(outer_lex))?;
             self.env.set_lexical_env(scope.heap_mut(), loop_env);
 
-            // Bind names in TDZ before evaluating initializers (only identifier patterns for now).
+            // Bind names in TDZ before evaluating initializers.
+            //
+            // This is required so default destructuring initializers like `let {x = x} = {}` throw
+            // a ReferenceError instead of resolving `x` from an outer scope.
             for declarator in &init_decl.declarators {
               self.vm.tick()?;
-              let pat = self.get_pat(body, declarator.pat)?;
-              let hir_js::PatKind::Ident(name_id) = pat.kind else {
-                return Err(VmError::Unimplemented(
-                  "non-identifier for-loop bindings (hir-js compiled path)",
-                ));
-              };
-              let name = self.resolve_name(name_id)?;
-              match init_decl.kind {
-                hir_js::VarDeclKind::Let => {
-                  scope.env_create_mutable_binding(loop_env, name.as_str())?;
+              let mut names: Vec<hir_js::NameId> = Vec::new();
+              self.collect_pat_idents(body, declarator.pat, &mut names)?;
+              for name_id in names {
+                let name = self.resolve_name(name_id)?;
+                if scope.heap().env_has_binding(loop_env, name.as_str())? {
+                  continue;
                 }
-                hir_js::VarDeclKind::Const => {
-                  scope.env_create_immutable_binding(loop_env, name.as_str())?;
+                match init_decl.kind {
+                  hir_js::VarDeclKind::Let => {
+                    scope.env_create_mutable_binding(loop_env, name.as_str())?;
+                  }
+                  hir_js::VarDeclKind::Const => {
+                    scope.env_create_immutable_binding(loop_env, name.as_str())?;
+                  }
+                  _ => unreachable!("checked in lexical_init match"),
                 }
-                _ => unreachable!("checked in lexical_init match"),
               }
             }
 
@@ -1918,8 +1922,19 @@ impl<'vm> HirEvaluator<'vm> {
             let catch_result = (|| -> Result<Flow, VmError> {
               if let Some(param_pat_id) = catch_clause.param {
                 // Catch bindings accept any binding pattern (identifier, object/array destructuring,
-                // rest, etc). Bind into the catch environment we just installed as the current
-                // lexical environment.
+                // rest, etc).
+                //
+                // Catch parameters allow default initializers. Per spec, all bound names must be
+                // created in TDZ before default initializers run, so defaults like
+                // `catch ({x = x}) {}` observe the TDZ rather than resolving `x` from an outer scope.
+                let mut names: Vec<hir_js::NameId> = Vec::new();
+                self.collect_pat_idents(body, param_pat_id, &mut names)?;
+                for name_id in names {
+                  let name = self.resolve_name(name_id)?;
+                  if !catch_scope.heap().env_has_binding(catch_env, name.as_str())? {
+                    catch_scope.env_create_mutable_binding(catch_env, name.as_str())?;
+                  }
+                }
                 self.bind_pattern(
                   &mut catch_scope,
                   body,
@@ -2047,6 +2062,29 @@ impl<'vm> HirEvaluator<'vm> {
             "for-in/of loop head initializers (hir-js compiled path)",
           ));
         }
+
+        // For `let`/`const` bindings (including destructuring patterns), create all bound names in
+        // TDZ before binding initialization. This ensures defaults like `for (let {x = x} of xs) {}`
+        // correctly throw a ReferenceError instead of resolving `x` from an outer scope.
+        if matches!(var_decl.kind, hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const) {
+          let env_rec = self.env.lexical_env();
+          let mut names: Vec<hir_js::NameId> = Vec::new();
+          self.collect_pat_idents(body, declarator.pat, &mut names)?;
+          for name_id in names {
+            let name = self.resolve_name(name_id)?;
+            if scope.heap().env_has_binding(env_rec, name.as_str())? {
+              continue;
+            }
+            match var_decl.kind {
+              hir_js::VarDeclKind::Let => scope.env_create_mutable_binding(env_rec, name.as_str())?,
+              hir_js::VarDeclKind::Const => {
+                scope.env_create_immutable_binding(env_rec, name.as_str())?
+              }
+              _ => unreachable!(),
+            }
+          }
+        }
+
         self.bind_var_decl_pat(
           scope,
           body,
@@ -4023,20 +4061,20 @@ impl<'vm> HirEvaluator<'vm> {
 
             let v = self.eval_expr(&mut scope, body, value)?;
             scope.push_root(v)?;
-            self.maybe_set_anonymous_function_name_for_assignment(&mut scope, &reference, v)?;
-            self.put_value_to_assignment_reference(&mut scope, &reference, v)?;
-            Ok(v)
-          }
-          _ => {
-            // Root the RHS across pattern assignment evaluation in case it allocates and triggers GC.
-            let mut scope = scope.reborrow();
-            let v = self.eval_expr(&mut scope, body, value)?;
-            scope.push_root(v)?;
-            self.assign_to_pat(&mut scope, body, target, v)?;
-            Ok(v)
-          }
-        }
-      }
+             self.maybe_set_anonymous_function_name_for_assignment(&mut scope, &reference, v)?;
+             self.put_value_to_assignment_reference(&mut scope, &reference, v)?;
+             Ok(v)
+           }
+           _ => {
+             // Root the RHS across pattern assignment evaluation in case it allocates and triggers GC.
+             let mut scope = scope.reborrow();
+             let v = self.eval_expr(&mut scope, body, value)?;
+             scope.push_root(v)?;
+             self.assign_to_pat(&mut scope, body, target, v)?;
+             Ok(v)
+           }
+         }
+       }
       hir_js::AssignOp::AddAssign
       | hir_js::AssignOp::SubAssign
       | hir_js::AssignOp::MulAssign

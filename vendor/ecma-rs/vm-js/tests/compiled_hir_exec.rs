@@ -6085,3 +6085,91 @@ fn compiled_strict_assignment_to_primitive_throws() -> Result<(), VmError> {
   assert_eq!(thrown_proto, Some(type_error_proto));
   Ok(())
 }
+
+#[test]
+fn compiled_catch_object_destructuring_executes() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        try { throw {x: 1}; } catch ({x}) { return x; }
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_catch_object_destructuring_default_observes_tdz() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        let x = 1;
+        let threw = false;
+        try {
+          try { throw {}; } catch ({x = x}) {}
+        } catch (e) {
+          threw = true;
+        }
+        return threw;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_for_loop_lexical_init_object_destructuring_executes() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        let out = 0;
+        for (let {x} = {x: 2}; ; ) { out = x; break; }
+        return out;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(2.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_for_of_head_let_object_destructuring_executes() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        let out = 0;
+        for (let {x} of [{x: 3}]) { out = x; }
+        return out;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_for_of_head_let_destructuring_default_observes_tdz() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        let x = 1;
+        let threw = false;
+        try {
+          for (let {x = x} of [{}]) {}
+        } catch (e) {
+          threw = true;
+        }
+        return threw;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
