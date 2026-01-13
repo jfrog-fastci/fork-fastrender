@@ -165,6 +165,13 @@ pub trait WebIdlJsRuntime: JsRuntime {
   fn limits(&self) -> WebIdlLimits;
   fn hooks(&self) -> &dyn WebIdlHooks<Self::JsValue>;
 
+  /// ECMAScript `PromiseResolve(%Promise%, value)` (ECMA-262).
+  ///
+  /// WebIDL `Promise<T>` conversions use this to coerce any ECMAScript value into a Promise object.
+  ///
+  /// Implementations should use the intrinsic `%Promise%` constructor of the current realm.
+  fn promise_resolve(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error>;
+
   /// `%Symbol.iterator%`.
   fn symbol_iterator(&mut self) -> Result<Self::PropertyKey, Self::Error>;
   /// `%Symbol.asyncIterator%`.

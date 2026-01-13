@@ -26,6 +26,19 @@ pub use crate::IntegerConversionAttrs;
 const BYTESTRING_INVALID_CODE_UNITS: &str =
   "ByteString value must only contain code units in range 0..=255";
 
+/// Stable TypeError message used when `async sequence<T>` conversion cannot find an iterator method.
+///
+/// This is intentionally short and deterministic so bindings/codegen can rely on it.
+const ASYNC_SEQUENCE_NOT_ITERABLE: &str = "Value is not async iterable nor iterable";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsyncSequenceKind {
+  /// The input object had a callable `@@asyncIterator` method.
+  Async,
+  /// The input object did not have `@@asyncIterator` but did have a callable `@@iterator` method.
+  Sync,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConvertedValue<V> {
   Undefined,
@@ -51,6 +64,21 @@ pub enum ConvertedValue<V> {
   Any(V),
   Object(V),
   PlatformObject(PlatformObject),
+
+  Promise {
+    /// The `T` in `Promise<T>` (metadata; not converted eagerly).
+    inner_ty: Box<IdlType>,
+    /// A Promise object (`PromiseResolve(%Promise%, value)`).
+    promise: V,
+  },
+
+  AsyncSequence {
+    /// The element type `T` in `async sequence<T>` (metadata; elements are not converted eagerly).
+    elem_ty: Box<IdlType>,
+    /// The object returned by `ToObject(value)` (or the input value if it was already an object).
+    object: V,
+    kind: AsyncSequenceKind,
+  },
 
   Sequence {
     elem_ty: Box<IdlType>,
@@ -336,9 +364,28 @@ fn convert_to_idl_inner<R: WebIdlJsRuntime>(
       convert_to_record(rt, v, key_ty, value_ty, ctx, typedef_stack)
     }
 
-    // Non-MVP types.
-    IdlType::AsyncSequence(_) | IdlType::Promise(_) => {
-      Err(rt.throw_type_error("WebIDL type conversion is not supported yet"))
+    IdlType::Promise(inner_ty) => {
+      if !state.int_attrs.is_empty() {
+        return Err(rt.throw_type_error("[Clamp]/[EnforceRange] annotations cannot apply to `Promise`"));
+      }
+      // Spec: https://webidl.spec.whatwg.org/#es-promise
+      //
+      // WebIDL `Promise<T>` conversion:
+      // 1. Let `promise` be ? PromiseResolve(%Promise%, V).
+      let promise = rt.with_stack_roots(&[v], |rt| rt.promise_resolve(v))?;
+      Ok(ConvertedValue::Promise {
+        inner_ty: Box::new((**inner_ty).clone()),
+        promise,
+      })
+    }
+
+    IdlType::AsyncSequence(elem_ty) => {
+      if !state.int_attrs.is_empty() {
+        return Err(rt.throw_type_error(
+          "[Clamp]/[EnforceRange] annotations cannot apply to `async sequence`",
+        ));
+      }
+      convert_to_async_sequence(rt, v, elem_ty)
     }
   }
 }
@@ -633,6 +680,8 @@ fn append_converted_value_roots<V: Copy>(roots: &mut Vec<V>, v: &ConvertedValue<
     ConvertedValue::Any(value) | ConvertedValue::Object(value) => {
       roots.push(*value);
     }
+    ConvertedValue::Promise { promise, .. } => roots.push(*promise),
+    ConvertedValue::AsyncSequence { object, .. } => roots.push(*object),
     ConvertedValue::Sequence { values, .. } => {
       for v in values {
         append_converted_value_roots(roots, v);
@@ -922,6 +971,39 @@ fn convert_to_sequence<R: WebIdlJsRuntime>(
   })
 }
 
+fn convert_to_async_sequence<R: WebIdlJsRuntime>(
+  rt: &mut R,
+  v: R::JsValue,
+  elem_ty: &IdlType,
+) -> Result<ConvertedValue<R::JsValue>, R::Error> {
+  // WebIDL async sequence conversion is specified in terms of the async iterable protocol, which
+  // uses `GetMethod` and therefore performs `ToObject(V)` internally. Accept primitives here.
+  //
+  // Spec: <https://webidl.spec.whatwg.org/#js-to-async-iterable>
+  let obj = rt.to_object(v)?;
+  rt.with_stack_roots(&[obj], |rt| {
+    let async_iter_key = rt.symbol_async_iterator()?;
+    if rt.get_method(obj, async_iter_key)?.is_some() {
+      return Ok(ConvertedValue::AsyncSequence {
+        elem_ty: Box::new(elem_ty.clone()),
+        object: obj,
+        kind: AsyncSequenceKind::Async,
+      });
+    }
+
+    let iter_key = rt.symbol_iterator()?;
+    if rt.get_method(obj, iter_key)?.is_some() {
+      return Ok(ConvertedValue::AsyncSequence {
+        elem_ty: Box::new(elem_ty.clone()),
+        object: obj,
+        kind: AsyncSequenceKind::Sync,
+      });
+    }
+
+    Err(rt.throw_type_error(ASYNC_SEQUENCE_NOT_ITERABLE))
+  })
+}
+
 fn create_sequence_from_iterable<R: WebIdlJsRuntime>(
   rt: &mut R,
   iterable: R::JsValue,
@@ -1145,6 +1227,45 @@ fn convert_to_union_inner<R: WebIdlJsRuntime>(
           return Ok(ConvertedValue::Union {
             member_ty: Box::new(ty.clone()),
             value: Box::new(ConvertedValue::Object(v)),
+          });
+        }
+      }
+    }
+
+    // async sequence
+    if let Some(async_seq_ty) = flattened.iter().find(|t| matches!(t, IdlType::AsyncSequence(_))) {
+      // Distinguishability requirement (d):
+      // If the union also includes a string type, then String objects must be treated as strings
+      // and must not be probed for iterator methods.
+      let includes_string = flattened.iter().any(|t| is_string_type(t, ctx));
+      if !includes_string || !rt.is_string_object(v) {
+        let async_iter_key = rt.symbol_async_iterator()?;
+        if rt.get_method(v, async_iter_key)?.is_some() {
+          let IdlType::AsyncSequence(elem_ty) = async_seq_ty else {
+            unreachable!();
+          };
+          return Ok(ConvertedValue::Union {
+            member_ty: Box::new(async_seq_ty.clone()),
+            value: Box::new(ConvertedValue::AsyncSequence {
+              elem_ty: Box::new((**elem_ty).clone()),
+              object: v,
+              kind: AsyncSequenceKind::Async,
+            }),
+          });
+        }
+
+        let iter_key = rt.symbol_iterator()?;
+        if rt.get_method(v, iter_key)?.is_some() {
+          let IdlType::AsyncSequence(elem_ty) = async_seq_ty else {
+            unreachable!();
+          };
+          return Ok(ConvertedValue::Union {
+            member_ty: Box::new(async_seq_ty.clone()),
+            value: Box::new(ConvertedValue::AsyncSequence {
+              elem_ty: Box::new((**elem_ty).clone()),
+              object: v,
+              kind: AsyncSequenceKind::Sync,
+            }),
           });
         }
       }

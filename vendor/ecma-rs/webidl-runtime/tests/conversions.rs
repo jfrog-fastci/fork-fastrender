@@ -10,6 +10,7 @@ use webidl_runtime::{
   convert_arguments, convert_to_idl, ArgumentSchema, ConvertedValue, JsRuntime, VmJsRuntime,
   WebIdlJsRuntime, WebIdlLimits,
 };
+use webidl_runtime::conversions::AsyncSequenceKind;
 
 fn error_to_string(rt: &mut VmJsRuntime, err: VmError) -> String {
   let Some(thrown) = err.thrown_value() else {
@@ -850,4 +851,105 @@ fn conversion_limits_are_enforced() {
     panic!("expected record, got {converted:?}");
   };
   assert_eq!(entries, vec![("a".to_string(), ConvertedValue::Long(1))]);
+}
+
+#[test]
+fn promise_any_conversion_returns_promise_object() {
+  let mut rt = VmJsRuntime::new();
+  let ctx = TypeContext::default();
+
+  let ty = IdlType::Promise(Box::new(IdlType::Any));
+  let converted = convert_to_idl(&mut rt, Value::Number(1.0), &ty, &ctx).unwrap();
+  let ConvertedValue::Promise { inner_ty, promise } = converted else {
+    panic!("expected Promise conversion, got {converted:?}");
+  };
+  assert_eq!(*inner_ty, IdlType::Any);
+
+  let Value::Object(obj) = promise else {
+    panic!("expected Promise conversion to return an object");
+  };
+  assert!(rt.heap().is_promise_object(obj));
+}
+
+#[test]
+fn async_sequence_conversion_prefers_async_iterator_then_falls_back_to_sync_iterator() {
+  let mut rt = VmJsRuntime::new();
+  let ctx = TypeContext::default();
+
+  let elem_ty = IdlType::String(StringType::DomString);
+  let ty = IdlType::AsyncSequence(Box::new(elem_ty.clone()));
+
+  // ---- prefers @@asyncIterator ----
+  let obj = rt.alloc_object_value().unwrap();
+  let async_method = rt
+    .alloc_function_value(|_rt, _this, _args| Ok(Value::Undefined))
+    .unwrap();
+  let async_key = rt.symbol_async_iterator().unwrap();
+  rt.define_data_property(obj, async_key, async_method, true)
+    .unwrap();
+
+  let converted = convert_to_idl(&mut rt, obj, &ty, &ctx).unwrap();
+  let ConvertedValue::AsyncSequence {
+    object,
+    kind,
+    elem_ty: out_elem_ty,
+  } = converted
+  else {
+    panic!("expected async sequence, got {converted:?}");
+  };
+  assert_eq!(*out_elem_ty, elem_ty);
+  assert_eq!(object, obj);
+  assert_eq!(kind, AsyncSequenceKind::Async);
+
+  // ---- falls back to @@iterator ----
+  let obj2 = rt.alloc_object_value().unwrap();
+  let iter_method = rt
+    .alloc_function_value(|_rt, _this, _args| Ok(Value::Undefined))
+    .unwrap();
+  let iter_key = rt.symbol_iterator().unwrap();
+  rt.define_data_property(obj2, iter_key, iter_method, true)
+    .unwrap();
+
+  let converted = convert_to_idl(&mut rt, obj2, &ty, &ctx).unwrap();
+  let ConvertedValue::AsyncSequence { object, kind, .. } = converted else {
+    panic!("expected async sequence, got {converted:?}");
+  };
+  assert_eq!(object, obj2);
+  assert_eq!(kind, AsyncSequenceKind::Sync);
+}
+
+#[test]
+fn union_async_sequence_string_object_special_case_does_not_probe_iterators() {
+  let mut rt = VmJsRuntime::new();
+  let ctx = TypeContext::default();
+
+  let union_ty = IdlType::Union(vec![
+    IdlType::AsyncSequence(Box::new(IdlType::String(StringType::DomString))),
+    IdlType::String(StringType::DomString),
+  ]);
+
+  // Create a String object wrapper.
+  let s = rt.alloc_string_value("hello").unwrap();
+  let string_obj = rt.to_object(s).unwrap();
+
+  // If the union conversion tried to probe iterator methods, it would trigger this getter and
+  // throw. The special-case (d) must skip probing for String objects when a string member is
+  // present.
+  let throwing_getter = rt
+    .alloc_function_value(|rt, _this, _args| Err(rt.throw_type_error("getter must not run")))
+    .unwrap();
+  let async_key = rt.symbol_async_iterator().unwrap();
+  rt.define_accessor_property(string_obj, async_key, throwing_getter, Value::Undefined, true)
+    .unwrap();
+
+  let iter_key = rt.symbol_iterator().unwrap();
+  rt.define_accessor_property(string_obj, iter_key, throwing_getter, Value::Undefined, true)
+    .unwrap();
+
+  let converted = convert_to_idl(&mut rt, string_obj, &union_ty, &ctx).unwrap();
+  let ConvertedValue::Union { member_ty, value } = converted else {
+    panic!("expected union, got {converted:?}");
+  };
+  assert_eq!(*member_ty, IdlType::String(StringType::DomString));
+  assert_eq!(*value, ConvertedValue::String("hello".to_string()));
 }

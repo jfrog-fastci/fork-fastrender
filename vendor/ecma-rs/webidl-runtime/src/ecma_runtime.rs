@@ -1536,6 +1536,35 @@ impl WebIdlJsRuntime for VmJsRuntime {
     self
   }
 
+  fn promise_resolve(&mut self, value: Value) -> Result<Value, VmError> {
+    // Spec: https://tc39.es/ecma262/#sec-promise-resolve
+    //
+    // This legacy heap-only runtime does not execute JS, so we implement the shape of
+    // `PromiseResolve(%Promise%, value)` with a minimal semantic subset:
+    // - If `value` is already a Promise object, return it.
+    // - Otherwise allocate a new already-fulfilled Promise with `[[PromiseResult]] = value`.
+    //
+    // This is sufficient for WebIDL `Promise<T>` *argument* conversion, where bindings primarily
+    // need a Promise object handle to pass through to the host.
+    self.with_stack_roots([value], |rt| {
+      if let Value::Object(obj) = value {
+        if rt.heap.is_promise_object(obj) {
+          return Ok(value);
+        }
+      }
+
+      // Root `value` across Promise allocation under aggressive GC settings.
+      rt.with_stack_roots([value], |rt| {
+        let promise = {
+          let mut scope = rt.heap.scope();
+          scope.alloc_promise()?
+        };
+        rt.heap.promise_fulfill(promise, value)?;
+        Ok(Value::Object(promise))
+      })
+    })
+  }
+
   fn symbol_iterator(&mut self) -> Result<PropertyKey, VmError> {
     if let Some(sym) = self.well_known_iterator {
       return Ok(PropertyKey::Symbol(sym));
