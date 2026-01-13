@@ -139,9 +139,12 @@ pub fn spawn_child_with_ipc(
         return Err(io::Error::last_os_error());
       }
 
-      // dup2() does not clear FD_CLOEXEC when src_fd == dst_fd. Ensure the target FD
-      // is not CLOEXEC so it survives exec().
-      set_cloexec(INHERITED_IPC_FD, false)?;
+      // `dup2()` clears `FD_CLOEXEC` on the new descriptor, except when `src_fd == dst_fd` (in
+      // which case no duplication occurs). Only do the extra `fcntl` in that rare case to keep the
+      // `pre_exec` closure minimal.
+      if src_fd == INHERITED_IPC_FD {
+        set_cloexec(INHERITED_IPC_FD, false)?;
+      }
 
       Ok(())
     });
@@ -249,4 +252,3 @@ mod tests {
     Ok(())
   }
 }
-
