@@ -25906,11 +25906,53 @@ impl App {
     // panel".
     if !self.clear_browsing_data_dialog_open
       && (self.bookmarks_panel_open || self.history_panel_open)
-      && !(address_bar_has_focus || tab_search_open || find_in_page_open)
-      && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
     {
-      close_bookmarks_panel |= self.bookmarks_panel_open;
-      close_history_panel |= self.history_panel_open;
+      if self.history_panel_open {
+        match fastrender::ui::panel_escape::history_panel_escape_action(
+          ctx.wants_keyboard_input(),
+          self.browser_state.chrome.history_search_text.is_empty(),
+          address_bar_has_focus,
+          tab_search_open,
+          find_in_page_open,
+        ) {
+          fastrender::ui::panel_escape::PanelEscapeAction::ClearSearch => {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+              self.browser_state.chrome.history_search_text.clear();
+              // Ensure the input stays focused after clearing, matching common browser UX.
+              self.history_panel_request_focus_search = true;
+            }
+          }
+          fastrender::ui::panel_escape::PanelEscapeAction::ClosePanel => {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+              close_history_panel = true;
+            }
+          }
+          fastrender::ui::panel_escape::PanelEscapeAction::Noop => {}
+        }
+      }
+
+      if self.bookmarks_panel_open {
+        match fastrender::ui::panel_escape::bookmarks_panel_escape_action(
+          ctx.wants_keyboard_input(),
+          self.bookmarks_manager.search.is_empty(),
+          address_bar_has_focus,
+          tab_search_open,
+          find_in_page_open,
+        ) {
+          fastrender::ui::panel_escape::PanelEscapeAction::ClearSearch => {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+              self.bookmarks_manager.search.clear();
+              self.bookmarks_manager.request_focus_search();
+            }
+          }
+          fastrender::ui::panel_escape::PanelEscapeAction::ClosePanel => {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+              close_bookmarks_panel = true;
+            }
+          }
+          fastrender::ui::panel_escape::PanelEscapeAction::Noop => {}
+        }
+      }
     }
 
     if close_bookmarks_panel {

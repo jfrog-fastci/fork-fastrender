@@ -18,6 +18,33 @@ pub enum PanelEscapeAction {
   Noop,
 }
 
+/// Decide how the Bookmarks Manager side panel should respond to Escape.
+///
+/// Semantics:
+/// - If another chrome text surface is active (address bar, tab search, find-in-page), do not
+///   handle Escape here (return [`PanelEscapeAction::Noop`]).
+/// - Otherwise, if the bookmarks search query is non-empty and egui is in a keyboard-input state,
+///   clear the search query (return [`PanelEscapeAction::ClearSearch`]).
+/// - Otherwise close the panel (return [`PanelEscapeAction::ClosePanel`]).
+#[must_use]
+pub fn bookmarks_panel_escape_action(
+  ctx_wants_keyboard_input: bool,
+  bookmarks_search_is_empty: bool,
+  address_bar_has_focus: bool,
+  tab_search_open: bool,
+  find_in_page_open: bool,
+) -> PanelEscapeAction {
+  if address_bar_has_focus || tab_search_open || find_in_page_open {
+    return PanelEscapeAction::Noop;
+  }
+
+  if ctx_wants_keyboard_input && !bookmarks_search_is_empty {
+    PanelEscapeAction::ClearSearch
+  } else {
+    PanelEscapeAction::ClosePanel
+  }
+}
+
 /// Decide how the History side panel should respond to Escape.
 ///
 /// Semantics:
@@ -67,7 +94,10 @@ pub fn downloads_panel_should_close_on_escape(
 
 #[cfg(test)]
 mod tests {
-  use super::{downloads_panel_should_close_on_escape, history_panel_escape_action, PanelEscapeAction};
+  use super::{
+    bookmarks_panel_escape_action, downloads_panel_should_close_on_escape, history_panel_escape_action,
+    PanelEscapeAction,
+  };
 
   #[test]
   fn non_empty_search_clears() {
@@ -105,6 +135,46 @@ mod tests {
   fn find_in_page_open_is_noop() {
     assert_eq!(
       history_panel_escape_action(true, false, false, false, true),
+      PanelEscapeAction::Noop
+    );
+  }
+
+  #[test]
+  fn bookmarks_non_empty_search_clears() {
+    assert_eq!(
+      bookmarks_panel_escape_action(true, false, false, false, false),
+      PanelEscapeAction::ClearSearch
+    );
+  }
+
+  #[test]
+  fn bookmarks_empty_search_closes_panel() {
+    assert_eq!(
+      bookmarks_panel_escape_action(true, true, false, false, false),
+      PanelEscapeAction::ClosePanel
+    );
+  }
+
+  #[test]
+  fn bookmarks_address_bar_focus_is_noop() {
+    assert_eq!(
+      bookmarks_panel_escape_action(true, false, true, false, false),
+      PanelEscapeAction::Noop
+    );
+  }
+
+  #[test]
+  fn bookmarks_tab_search_open_is_noop() {
+    assert_eq!(
+      bookmarks_panel_escape_action(true, false, false, true, false),
+      PanelEscapeAction::Noop
+    );
+  }
+
+  #[test]
+  fn bookmarks_find_open_is_noop() {
+    assert_eq!(
+      bookmarks_panel_escape_action(true, false, false, false, true),
       PanelEscapeAction::Noop
     );
   }
