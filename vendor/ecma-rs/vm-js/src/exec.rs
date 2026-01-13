@@ -11623,6 +11623,107 @@ impl<'a> Evaluator<'a> {
           Ok(value)
         }
       },
+      OperatorName::AssignmentBitwiseLeftShift
+      | OperatorName::AssignmentBitwiseRightShift
+      | OperatorName::AssignmentBitwiseUnsignedRightShift => match &*expr.left.stx {
+        Expr::ObjPat(_) | Expr::ArrPat(_) => Err(VmError::Unimplemented(
+          "assignment bitwise shift to destructuring patterns",
+        )),
+        _ => {
+          let reference = self.eval_reference(scope, &expr.left)?;
+          let mut op_scope = scope.reborrow();
+          self.root_reference(&mut op_scope, &reference)?;
+
+          let left = self.get_value_from_reference(&mut op_scope, &reference)?;
+          // Root `left` across evaluation of the RHS in case it allocates and triggers GC.
+          op_scope.push_root(left)?;
+          let right = self.eval_expr(&mut op_scope, &expr.right)?;
+          // Root `right` across `ToNumeric` and BigInt arithmetic.
+          op_scope.push_root(right)?;
+
+          let left_num = self.to_numeric(&mut op_scope, left)?;
+          let right_num = self.to_numeric(&mut op_scope, right)?;
+          let value = match (left_num, right_num) {
+            (NumericValue::Number(a), NumericValue::Number(b)) => Ok({
+              let shift = (to_uint32(b) & 0x1f) as u32;
+              match expr.operator {
+                OperatorName::AssignmentBitwiseLeftShift => {
+                  let a = to_int32(a);
+                  Value::Number(a.wrapping_shl(shift) as f64)
+                }
+                OperatorName::AssignmentBitwiseRightShift => {
+                  let a = to_int32(a);
+                  Value::Number(a.wrapping_shr(shift) as f64)
+                }
+                OperatorName::AssignmentBitwiseUnsignedRightShift => {
+                  let a = to_uint32(a);
+                  Value::Number((a >> shift) as f64)
+                }
+                _ => unreachable!(),
+              }
+            }),
+            (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+              if matches!(expr.operator, OperatorName::AssignmentBitwiseUnsignedRightShift) {
+                Err(throw_type_error(
+                  self.vm,
+                  &mut op_scope,
+                  "BigInt does not support unsigned right shift",
+                )?)
+              } else {
+                let out = {
+                  let a = op_scope.heap().get_bigint(a)?;
+                  let b = op_scope.heap().get_bigint(b)?;
+
+                  let (shift_negative, shift): (bool, u64) = match b.try_to_i128() {
+                    Some(shift_i) => {
+                      let shift_mag: u128 = if shift_i == i128::MIN {
+                        1u128 << 127
+                      } else if shift_i < 0 {
+                        (-shift_i) as u128
+                      } else {
+                        shift_i as u128
+                      };
+                      let shift = u64::try_from(shift_mag).unwrap_or(u64::MAX);
+                      (shift_i < 0, shift)
+                    }
+                    None => (b.is_negative(), u64::MAX),
+                  };
+
+                  match expr.operator {
+                    OperatorName::AssignmentBitwiseLeftShift => {
+                      if shift_negative {
+                        a.shr(shift)?
+                      } else {
+                        a.shl(shift)?
+                      }
+                    }
+                    OperatorName::AssignmentBitwiseRightShift => {
+                      if shift_negative {
+                        a.shl(shift)?
+                      } else {
+                        a.shr(shift)?
+                      }
+                    }
+                    OperatorName::AssignmentBitwiseUnsignedRightShift => unreachable!(),
+                    _ => unreachable!(),
+                  }
+                };
+                let out = op_scope.alloc_bigint(out)?;
+                Ok(Value::BigInt(out))
+              }
+            }
+            _ => Err(throw_type_error(
+              self.vm,
+              &mut op_scope,
+              "Cannot mix BigInt and other types",
+            )?),
+          }?;
+
+          op_scope.push_root(value)?;
+          self.put_value_to_reference(&mut op_scope, &reference, value)?;
+          Ok(value)
+        }
+      },
       OperatorName::LogicalAnd => {
         let left = self.eval_expr(scope, &expr.left)?;
         if !to_boolean(scope.heap(), left)? {
