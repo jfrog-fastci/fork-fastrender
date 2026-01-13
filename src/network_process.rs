@@ -1,0 +1,490 @@
+use crate::error::{Error, Result};
+use crate::resource::{FetchedResource, ResourceFetcher};
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine as _;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use std::io::{BufRead, Read, Write};
+use std::net::{SocketAddr, TcpStream};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tungstenite::client::IntoClientRequest;
+use tungstenite::protocol::{CloseFrame, Message as TungsteniteMessage};
+use tungstenite::Error as TungsteniteError;
+
+/// Configuration for spawning the `network` subprocess.
+#[derive(Debug, Clone)]
+pub struct NetworkProcessConfig {
+  /// Explicit path to the `network` binary.
+  ///
+  /// When unset, `spawn_network_process` tries (in order):
+  /// - `CARGO_BIN_EXE_network` (set by Cargo for integration tests)
+  /// - `../network` relative to the current executable (common in `target/debug/deps/*` layouts)
+  pub binary_path: Option<PathBuf>,
+  /// Maximum time to wait for the network process to report its listening address.
+  pub startup_timeout: Duration,
+  /// How long to wait when establishing a new IPC connection to the network process.
+  pub connect_timeout: Duration,
+  /// Whether to inherit the child's stderr instead of discarding it.
+  pub inherit_stderr: bool,
+}
+
+impl Default for NetworkProcessConfig {
+  fn default() -> Self {
+    Self {
+      binary_path: None,
+      startup_timeout: Duration::from_secs(5),
+      connect_timeout: Duration::from_secs(5),
+      inherit_stderr: true,
+    }
+  }
+}
+
+fn exe_with_platform_suffix(stem: &str) -> String {
+  if cfg!(windows) {
+    format!("{stem}.exe")
+  } else {
+    stem.to_string()
+  }
+}
+
+fn resolve_network_binary_path(config: &NetworkProcessConfig) -> Result<PathBuf> {
+  if let Some(path) = &config.binary_path {
+    return Ok(path.clone());
+  }
+
+  if let Some(path) = std::env::var_os("CARGO_BIN_EXE_network") {
+    return Ok(PathBuf::from(path));
+  }
+
+  // Best-effort fallback for non-test callers: derive `target/<profile>/network` from the current
+  // executable path (which is often `target/<profile>/deps/<test-binary>` when running tests).
+  let exe = std::env::current_exe().map_err(Error::Io)?;
+  let exe_dir = exe.parent().ok_or_else(|| {
+    Error::Other("failed to resolve network binary: current_exe has no parent dir".to_string())
+  })?;
+  let profile_dir = if exe_dir
+    .file_name()
+    .is_some_and(|name| name == std::ffi::OsStr::new("deps"))
+  {
+    exe_dir.parent().ok_or_else(|| {
+      Error::Other("failed to resolve network binary: deps dir has no parent".to_string())
+    })?
+  } else {
+    exe_dir
+  };
+  let candidate = profile_dir.join(exe_with_platform_suffix("network"));
+  if candidate.exists() {
+    return Ok(candidate);
+  }
+
+  Err(Error::Other(
+    "failed to resolve network binary path; set NetworkProcessConfig::binary_path or CARGO_BIN_EXE_network"
+      .to_string(),
+  ))
+}
+
+/// Spawn the `network` subprocess and return a handle to manage it.
+///
+/// This is a convenience wrapper that panics on failure (suitable for tests).
+/// Call [`try_spawn_network_process`] to handle errors explicitly.
+pub fn spawn_network_process(config: NetworkProcessConfig) -> NetworkProcessHandle {
+  try_spawn_network_process(config).expect("spawn network process")
+}
+
+/// Fallible variant of [`spawn_network_process`].
+pub fn try_spawn_network_process(config: NetworkProcessConfig) -> Result<NetworkProcessHandle> {
+  let binary_path = resolve_network_binary_path(&config)?;
+
+  let mut cmd = Command::new(binary_path);
+  cmd.arg("--bind").arg("127.0.0.1:0");
+  cmd.stdin(Stdio::null());
+  cmd.stdout(Stdio::piped());
+  if config.inherit_stderr {
+    cmd.stderr(Stdio::inherit());
+  } else {
+    cmd.stderr(Stdio::null());
+  }
+
+  let mut child = cmd.spawn().map_err(Error::Io)?;
+  let pid = child.id();
+
+  let stdout = child.stdout.take().ok_or_else(|| {
+    Error::Other("network subprocess stdout was not captured".to_string())
+  })?;
+
+  let (tx, rx) = std::sync::mpsc::channel::<std::io::Result<String>>();
+  std::thread::spawn(move || {
+    let mut reader = std::io::BufReader::new(stdout);
+    let mut line = String::new();
+    let res = reader.read_line(&mut line).map(|_| line);
+    let _ = tx.send(res);
+  });
+
+  let line = rx
+    .recv_timeout(config.startup_timeout)
+    .map_err(|_| Error::Other("timed out waiting for network subprocess handshake".to_string()))?
+    .map_err(Error::Io)?;
+
+  let addr: SocketAddr = line.trim().parse().map_err(|err| {
+    Error::Other(format!(
+      "network subprocess reported invalid socket address {line:?}: {err}"
+    ))
+  })?;
+
+  Ok(NetworkProcessHandle {
+    addr,
+    connect_timeout: config.connect_timeout,
+    pid,
+    child: Mutex::new(Some(child)),
+  })
+}
+
+/// A handle that owns the spawned network process.
+///
+/// Dropping the handle attempts to terminate the subprocess (best-effort).
+pub struct NetworkProcessHandle {
+  addr: SocketAddr,
+  connect_timeout: Duration,
+  pid: u32,
+  child: Mutex<Option<Child>>,
+}
+
+impl NetworkProcessHandle {
+  /// Create a new IPC client object.
+  pub fn connect_client(&self) -> NetworkClient {
+    NetworkClient {
+      addr: self.addr,
+      connect_timeout: self.connect_timeout,
+    }
+  }
+
+  /// Address the network process is listening on.
+  pub fn addr(&self) -> SocketAddr {
+    self.addr
+  }
+
+  /// PID of the spawned network process.
+  pub fn pid(&self) -> u32 {
+    self.pid
+  }
+}
+
+impl Drop for NetworkProcessHandle {
+  fn drop(&mut self) {
+    let child = self
+      .child
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .take();
+    let Some(mut child) = child else {
+      return;
+    };
+
+    // Best-effort graceful shutdown first.
+    let _ = TcpStream::connect_timeout(&self.addr, self.connect_timeout).and_then(|mut stream| {
+      stream
+        .set_nodelay(true)
+        .unwrap_or_else(|_| ()); // ignore
+      let _ = ipc::write_frame(&mut stream, &ipc::NetworkRequest::Shutdown);
+      Ok(())
+    });
+
+    // Then hard kill if still running.
+    let _ = child.kill();
+    let _ = child.wait();
+  }
+}
+
+/// Client factory for network-process services (resource fetcher, WebSocket backend, downloads).
+#[derive(Debug, Clone, Copy)]
+pub struct NetworkClient {
+  addr: SocketAddr,
+  connect_timeout: Duration,
+}
+
+impl NetworkClient {
+  /// Return an IPC-backed [`ResourceFetcher`] that forwards requests to the network process.
+  pub fn resource_fetcher(&self) -> Arc<dyn ResourceFetcher> {
+    Arc::new(IpcResourceFetcher {
+      addr: self.addr,
+      connect_timeout: self.connect_timeout,
+    })
+  }
+
+  /// Return a WebSocket backend.
+  ///
+  /// Today this is a direct (in-process) backend; it is expected to be replaced by an IPC-backed
+  /// implementation as multiprocess network isolation is built out.
+  pub fn websocket_backend(&self) -> Arc<dyn WebSocketBackend> {
+    Arc::new(DirectWebSocketBackend)
+  }
+
+  /// Create a simple download client backed by this client's [`ResourceFetcher`].
+  pub fn download_client(&self) -> DownloadClient {
+    DownloadClient {
+      fetcher: self.resource_fetcher(),
+    }
+  }
+}
+
+/// IPC-backed resource fetcher used by [`NetworkClient`].
+#[derive(Debug, Clone, Copy)]
+pub struct IpcResourceFetcher {
+  addr: SocketAddr,
+  connect_timeout: Duration,
+}
+
+impl IpcResourceFetcher {
+  fn round_trip(&self, req: ipc::NetworkRequest) -> Result<ipc::NetworkResponse> {
+    let mut stream =
+      TcpStream::connect_timeout(&self.addr, self.connect_timeout).map_err(Error::Io)?;
+    stream.set_nodelay(true).map_err(Error::Io)?;
+
+    ipc::write_frame(&mut stream, &req).map_err(Error::Io)?;
+    let res: ipc::NetworkResponse = ipc::read_frame(&mut stream).map_err(Error::Io)?;
+    Ok(res)
+  }
+}
+
+impl ResourceFetcher for IpcResourceFetcher {
+  fn fetch(&self, url: &str) -> Result<FetchedResource> {
+    let res = self.round_trip(ipc::NetworkRequest::Fetch {
+      url: url.to_string(),
+    })?;
+
+    match res {
+      ipc::NetworkResponse::FetchOk { resource } => resource.into_fetched(),
+      ipc::NetworkResponse::Error { message } => Err(Error::Other(format!(
+        "network process fetch failed for {url}: {message}"
+      ))),
+      other => Err(Error::Other(format!(
+        "network process returned unexpected response to fetch: {other:?}"
+      ))),
+    }
+  }
+}
+
+/// WebSocket messages exposed by [`WebSocketBackend`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WebSocketMessage {
+  Text(String),
+  Binary(Vec<u8>),
+  Ping(Vec<u8>),
+  Pong(Vec<u8>),
+  Close {
+    code: u16,
+    reason: Option<String>,
+  },
+}
+
+/// An abstract WebSocket connection.
+pub trait WebSocketStream: Send {
+  fn send(&mut self, message: WebSocketMessage) -> Result<()>;
+  fn recv(&mut self) -> Result<WebSocketMessage>;
+  fn close(&mut self, code: Option<u16>, reason: Option<String>) -> Result<()>;
+  fn protocol(&self) -> &str;
+}
+
+/// WebSocket backend abstraction.
+pub trait WebSocketBackend: Send + Sync {
+  fn connect(&self, url: &str, protocols: &[String]) -> Result<Box<dyn WebSocketStream>>;
+}
+
+struct DirectWebSocketBackend;
+
+struct DirectWebSocketStream {
+  socket: tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
+  protocol: String,
+}
+
+fn map_tungstenite_err(err: TungsteniteError) -> Error {
+  match err {
+    TungsteniteError::Io(err) => Error::Io(err),
+    other => Error::Other(other.to_string()),
+  }
+}
+
+impl WebSocketBackend for DirectWebSocketBackend {
+  fn connect(&self, url: &str, protocols: &[String]) -> Result<Box<dyn WebSocketStream>> {
+    let mut req = url
+      .into_client_request()
+      .map_err(|err| Error::Other(err.to_string()))?;
+    if !protocols.is_empty() {
+      let joined = protocols.join(", ");
+      req.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        http::HeaderValue::from_str(&joined).map_err(|err| Error::Other(err.to_string()))?,
+      );
+    }
+
+    let (socket, response) =
+      tungstenite::connect(req).map_err(map_tungstenite_err)?;
+    let protocol = response
+      .headers()
+      .get("sec-websocket-protocol")
+      .and_then(|h| h.to_str().ok())
+      .unwrap_or("")
+      .to_string();
+
+    Ok(Box::new(DirectWebSocketStream { socket, protocol }))
+  }
+}
+
+impl WebSocketStream for DirectWebSocketStream {
+  fn send(&mut self, message: WebSocketMessage) -> Result<()> {
+    let msg = match message {
+      WebSocketMessage::Text(text) => TungsteniteMessage::Text(text),
+      WebSocketMessage::Binary(bytes) => TungsteniteMessage::Binary(bytes),
+      WebSocketMessage::Ping(bytes) => TungsteniteMessage::Ping(bytes),
+      WebSocketMessage::Pong(bytes) => TungsteniteMessage::Pong(bytes),
+      WebSocketMessage::Close { code, reason } => TungsteniteMessage::Close(Some(CloseFrame {
+        code: tungstenite::protocol::frame::coding::CloseCode::from(code),
+        reason: reason.unwrap_or_default().into(),
+      })),
+    };
+
+    self.socket.write_message(msg).map_err(map_tungstenite_err)?;
+    Ok(())
+  }
+
+  fn recv(&mut self) -> Result<WebSocketMessage> {
+    let msg = self
+      .socket
+      .read_message()
+      .map_err(map_tungstenite_err)?;
+    Ok(match msg {
+      TungsteniteMessage::Text(text) => WebSocketMessage::Text(text),
+      TungsteniteMessage::Binary(bytes) => WebSocketMessage::Binary(bytes),
+      TungsteniteMessage::Ping(bytes) => WebSocketMessage::Ping(bytes),
+      TungsteniteMessage::Pong(bytes) => WebSocketMessage::Pong(bytes),
+      TungsteniteMessage::Close(frame) => {
+        let frame = frame.unwrap_or_else(|| CloseFrame {
+          code: tungstenite::protocol::frame::coding::CloseCode::Normal,
+          reason: "".into(),
+        });
+        WebSocketMessage::Close {
+          code: frame.code.into(),
+          reason: (!frame.reason.is_empty()).then_some(frame.reason.to_string()),
+        }
+      }
+      TungsteniteMessage::Frame(_) => {
+        return Err(Error::Other(
+          "unexpected raw WebSocket frame from tungstenite".to_string(),
+        ));
+      }
+    })
+  }
+
+  fn close(&mut self, code: Option<u16>, reason: Option<String>) -> Result<()> {
+    let frame = code.map(|code| CloseFrame {
+      code: tungstenite::protocol::frame::coding::CloseCode::from(code),
+      reason: reason.unwrap_or_default().into(),
+    });
+    self
+      .socket
+      .close(frame)
+      .map_err(map_tungstenite_err)?;
+    Ok(())
+  }
+
+  fn protocol(&self) -> &str {
+    &self.protocol
+  }
+}
+
+/// Simple download helper used by consumers of [`NetworkClient`].
+#[derive(Clone)]
+pub struct DownloadClient {
+  fetcher: Arc<dyn ResourceFetcher>,
+}
+
+impl DownloadClient {
+  pub fn download_to_path(&self, url: &str, path: impl AsRef<Path>) -> Result<()> {
+    let res = self.fetcher.fetch(url)?;
+    std::fs::write(path, &res.bytes).map_err(Error::Io)?;
+    Ok(())
+  }
+}
+
+/// Internal IPC framing and wire types shared between the library API and the `network` binary.
+#[doc(hidden)]
+pub mod ipc {
+  use super::*;
+
+  #[derive(Debug, Serialize, Deserialize)]
+  #[serde(tag = "type", rename_all = "snake_case")]
+  pub enum NetworkRequest {
+    Fetch { url: String },
+    Shutdown,
+  }
+
+  #[derive(Debug, Serialize, Deserialize)]
+  #[serde(tag = "type", rename_all = "snake_case")]
+  pub enum NetworkResponse {
+    FetchOk { resource: IpcFetchedResource },
+    Ok,
+    Error { message: String },
+  }
+
+  #[derive(Debug, Clone, Serialize, Deserialize)]
+  pub struct IpcFetchedResource {
+    pub bytes_base64: String,
+    pub content_type: Option<String>,
+    pub status: Option<u16>,
+    pub final_url: Option<String>,
+    pub response_headers: Option<Vec<(String, String)>>,
+  }
+
+  impl IpcFetchedResource {
+    pub fn from_fetched(resource: FetchedResource) -> Self {
+      Self {
+        bytes_base64: BASE64_STANDARD.encode(&resource.bytes),
+        content_type: resource.content_type,
+        status: resource.status,
+        final_url: resource.final_url,
+        response_headers: resource.response_headers,
+      }
+    }
+
+    pub fn into_fetched(self) -> Result<FetchedResource> {
+      let bytes = BASE64_STANDARD
+        .decode(self.bytes_base64.as_bytes())
+        .map_err(|err| Error::Other(format!("invalid base64 bytes from network process: {err}")))?;
+      let mut res = FetchedResource::new(bytes, self.content_type);
+      res.status = self.status;
+      res.final_url = self.final_url;
+      res.response_headers = self.response_headers;
+      Ok(res)
+    }
+  }
+
+  fn serde_err_to_io(err: serde_json::Error) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, err)
+  }
+
+  /// Write a length-prefixed JSON message.
+  pub fn write_frame<W: Write, T: Serialize>(writer: &mut W, msg: &T) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec(msg).map_err(serde_err_to_io)?;
+    let len: u32 = bytes
+      .len()
+      .try_into()
+      .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "frame too large"))?;
+    writer.write_all(&len.to_be_bytes())?;
+    writer.write_all(&bytes)?;
+    writer.flush()?;
+    Ok(())
+  }
+
+  /// Read a length-prefixed JSON message.
+  pub fn read_frame<R: Read, T: DeserializeOwned>(reader: &mut R) -> std::io::Result<T> {
+    let mut len_buf = [0u8; 4];
+    reader.read_exact(&mut len_buf)?;
+    let len = u32::from_be_bytes(len_buf) as usize;
+    let mut buf = vec![0u8; len];
+    reader.read_exact(&mut buf)?;
+    serde_json::from_slice(&buf).map_err(serde_err_to_io)
+  }
+}
