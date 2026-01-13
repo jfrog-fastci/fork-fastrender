@@ -26,6 +26,7 @@ use std::alloc::alloc;
 
 mod case_folding;
 mod unicode_string_property;
+#[cfg(test)]
 pub(crate) use unicode_string_property::{resolve_unicode_string_property, UnicodeStringProperty};
 
 #[derive(Debug, Clone)]
