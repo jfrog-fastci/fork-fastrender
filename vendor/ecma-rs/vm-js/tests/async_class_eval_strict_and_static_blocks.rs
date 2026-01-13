@@ -131,3 +131,95 @@ fn script_await_in_class_static_block_runs_as_async_script() -> Result<(), VmErr
   assert_eq!(value_to_string(&rt, out), "ab");
   Ok(())
 }
+
+#[test]
+fn async_class_can_extend_awaited_expression_and_wires_prototypes() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        class B {}
+        class D extends (await Promise.resolve(B)) {}
+        out += (Object.getPrototypeOf(D) === B ? "S" : "s");
+        out += (Object.getPrototypeOf(D.prototype) === B.prototype ? "I" : "i");
+        return out;
+      }
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "SI");
+  Ok(())
+}
+
+#[test]
+fn async_class_heritage_must_be_constructor() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        try {
+          class D extends (await Promise.resolve(1)) {}
+          return "no";
+        } catch (e) {
+          return e.message;
+        }
+      }
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(
+    value_to_string(&rt, out),
+    "Class extends value is not a constructor"
+  );
+  Ok(())
+}
+
+#[test]
+fn async_class_explicit_constructor_body_supports_super_call() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        class B { constructor(){ this.x = "b"; } }
+        class D extends (await Promise.resolve(B)) {
+          constructor() { super(); this.y = "d"; }
+        }
+        var d = new D();
+        out += d.x + d.y;
+        out += (Object.getPrototypeOf(D) === B ? "S" : "s");
+        out += (Object.getPrototypeOf(D.prototype) === B.prototype ? "I" : "i");
+        return out;
+      }
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "bdSI");
+  Ok(())
+}
