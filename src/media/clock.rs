@@ -257,6 +257,13 @@ impl MediaClock for AudioStreamClock {
   }
 }
 
+/// Playback state for [`PlaybackClock`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackState {
+  Playing,
+  Paused,
+}
+
 /// Mapping from a chosen *master clock* (audio device clock or system monotonic clock) to a media
 /// **timeline time** that supports pause/seek/playbackRate.
 ///
@@ -335,6 +342,14 @@ impl PlaybackClock {
       rate: AtomicU64::new(1.0_f64.to_bits()),
       playing: AtomicBool::new(true),
       last_now: AtomicU64::new(start_nanos),
+    }
+  }
+
+  pub fn state(&self) -> PlaybackState {
+    if self.playing.load(Ordering::Relaxed) {
+      PlaybackState::Playing
+    } else {
+      PlaybackState::Paused
     }
   }
 

@@ -28,7 +28,7 @@ fn browser_tab_controller_tab_focus_scrolls_viewport_to_reveal_focused_element()
   let tab_id = TabId(1);
   let viewport_css = (200, 200);
 
-  let html = r#"<!doctype html>
+  let html = r##"<!doctype html>
     <html>
       <head>
         <style>
