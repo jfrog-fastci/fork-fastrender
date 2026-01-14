@@ -31,6 +31,7 @@ use crate::ui::url::{http_fallback_url_for_failed_https, resolve_omnibox_search_
 use crate::ui::zoom;
 use crate::ui::ChromeAction;
 use crate::ui::{icon_button, icon_button_with_id, icon_tinted, spinner, BrowserIcon};
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 const ADDRESS_BAR_DISPLAY_MAX_CHARS: usize = 80;
@@ -292,6 +293,31 @@ impl AddressBarPlaceholderGalleyCache {
       .as_ref()
       .expect("AddressBarPlaceholderGalleyCache::update must be called before galley()")
       .clone()
+  }
+}
+
+#[derive(Debug, Clone, Default)]
+struct FindInPageMatchLabelCache {
+  active_idx: usize,
+  match_count: usize,
+  label: String,
+}
+
+impl FindInPageMatchLabelCache {
+  fn label(&mut self, active_idx: usize, match_count: usize) -> &str {
+    if self.active_idx == active_idx && self.match_count == match_count && !self.label.is_empty() {
+      return self.label.as_str();
+    }
+
+    // Reserve enough space for typical `123/456` strings to avoid reallocation churn.
+    if self.label.capacity() < 16 {
+      self.label.reserve(16 - self.label.capacity());
+    }
+    self.label.clear();
+    let _ = write!(&mut self.label, "{active_idx}/{match_count}");
+    self.active_idx = active_idx;
+    self.match_count = match_count;
+    self.label.as_str()
   }
 }
 
@@ -3297,7 +3323,14 @@ pub fn chrome_ui_with_bookmarks(
 
           let match_count = tab.find.match_count;
           let active_idx = tab.find.active_match_index.map(|i| i + 1).unwrap_or(0);
-          ui.label(format!("{active_idx}/{match_count}"));
+          {
+            let cache_id = find_id.with("match_label_cache");
+            let mut cache: FindInPageMatchLabelCache = ctx.data_mut(|d| {
+              std::mem::take(d.get_temp_mut_or_default::<FindInPageMatchLabelCache>(cache_id))
+            });
+            ui.label(cache.label(active_idx, match_count));
+            ctx.data_mut(|d| d.insert_temp(cache_id, cache));
+          }
 
           let prev_enabled = !tab.find.query.trim().is_empty() && match_count > 0;
           let next_enabled = prev_enabled;
