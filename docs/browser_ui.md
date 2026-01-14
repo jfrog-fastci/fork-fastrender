@@ -682,9 +682,13 @@ Accessibility sources:
   `ui::browser_app::PageAccessibilitySnapshot`. Per-element OS-facing page content exposure is still
   in progress (see [page_accessibility.md](page_accessibility.md)).
 
-When wiring up a page subtree, AccessKit node IDs are expected to be derived from `(tab_id,
-dom_node_id)` (see `ui::page_accesskit_ids`) so OS action requests can be routed back to the correct
-tab + DOM node.
+When wiring up a page subtree, AccessKit node IDs are expected to be derived from
+`(tab_id, document_generation, dom_node_id)` using `ui::encode_page_node_id` (see `ui::page_a11y`)
+so OS action requests can be routed back to the correct tab/DOM node and stale requests from
+previous navigations can be ignored (generation mismatch).
+
+Note: `ui::page_accesskit_ids` also defines an alternative tag-bit encoding (`(tab_id, dom_node_id)`)
+that is reversible and collision-resistant, but it does not include a generation.
 
 For background and developer workflow:
 
