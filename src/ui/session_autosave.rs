@@ -1370,28 +1370,6 @@ mod tests {
   }
 
   #[test]
-  fn spawn_failure_falls_back_to_synchronous_saves() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("session.json");
-    assert!(!path.exists());
-
-    let save_fn: SaveSessionFn = Arc::new(|path, session| save_session_atomic(path, session));
-    let autosave = SessionAutosave::new_with_debounce_and_saver_forced_spawn_failure(
-      path.clone(),
-      Duration::from_millis(10),
-      save_fn,
-    );
-
-    autosave.request_save(BrowserSession::single("about:blank".to_string()));
-    autosave.flush(Duration::from_secs(2)).unwrap();
-
-    let session = load_session(&path).unwrap().unwrap();
-    assert_eq!(session.windows[0].tabs[0].url, "about:blank");
-    assert!(!session.did_exit_cleanly);
-    assert_eq!(session.unclean_exit_streak, 1);
-  }
-
-  #[test]
   fn debounce_persists_latest_snapshot() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("session.json");

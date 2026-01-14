@@ -296,8 +296,15 @@ impl<'a> Parser<'a> {
               let body = match body {
                 Ok(body) => body,
                 Err(err)
-                  if err.actual_token == Some(TT::KeywordAwait)
-                    && matches!(err.typ, SyntaxErrorType::ExpectedSyntax("expression operand")) =>
+                  if !block_ctx.rules.await_expr_allowed
+                    && err.actual_token == Some(TT::KeywordAwait)
+                    && matches!(
+                      err.typ,
+                      SyntaxErrorType::ExpectedSyntax("expression operand")
+                        | SyntaxErrorType::ExpectedSyntax(
+                          "`for await` is only valid in async contexts",
+                        )
+                    ) =>
                 {
                   return Err(err.loc.error(
                     SyntaxErrorType::ExpectedSyntax(

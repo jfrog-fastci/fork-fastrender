@@ -641,6 +641,26 @@ fn for_await_of_is_syntax_error_in_static_block() {
 }
 
 #[test]
+fn for_await_of_is_syntax_error_in_static_block_inside_function() {
+  let src = r#"
+    function f() {
+      class C {
+        static {
+          for await (const x of []) {}
+        }
+      }
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let res = parser.parse_top_level();
+  assert!(res.is_err(), "parse unexpectedly succeeded: {res:?}");
+}
+
+#[test]
 fn for_await_of_is_allowed_in_static_block_inside_async_function() {
   let src = r#"
     async function f() {
