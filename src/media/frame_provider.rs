@@ -246,7 +246,8 @@ fn video_entry_mut<'a>(
   box_id: Option<usize>,
   src: &str,
 ) -> &'a mut VideoEntry {
-  // `std::collections::HashMap` does not expose `raw_entry_mut`/`RawEntryMut` on stable Rust.
+  // `std::collections::HashMap` did not expose `raw_entry_mut`/`RawEntryMut` on Rust 1.70 (our
+  // MSRV), so we use only the stable `entry` API.
   //
   // We want to avoid allocating a new `Arc<str>` when the entry already exists, so we scan the
   // (typically tiny) map first. Only allocate/insert on a miss.
@@ -265,8 +266,7 @@ fn video_entry_mut<'a>(
     box_id,
     src: Arc::clone(&src_arc),
   };
-  map.entry(key)
-    .or_insert_with(|| VideoEntry::new(src_arc))
+  map.entry(key).or_insert_with(|| VideoEntry::new(src_arc))
 }
 
 fn clamp_target_dimension(value: f32) -> Option<u32> {
@@ -430,6 +430,25 @@ fn downscale_frame_to_bounds(
 mod tests {
   use super::*;
   use crate::geometry::Size;
+
+  #[test]
+  fn video_frame_reuses_entry_for_same_key() {
+    let provider = SizeHintMediaFrameProvider::new();
+
+    let box_id = Some(7);
+    let src = "v.mp4";
+
+    assert!(provider.video_frame(box_id, src, None).is_none());
+    assert_eq!(provider.videos.lock().len(), 1);
+
+    // Repeated paint calls should not create duplicate entries for the same key.
+    assert!(provider.video_frame(box_id, src, None).is_none());
+    assert_eq!(provider.videos.lock().len(), 1);
+
+    // A different key should create a new entry.
+    assert!(provider.video_frame(Some(8), src, None).is_none());
+    assert_eq!(provider.videos.lock().len(), 2);
+  }
 
   #[test]
   fn size_hint_downscales_video_frames() {
