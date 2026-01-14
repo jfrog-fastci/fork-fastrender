@@ -347,6 +347,35 @@ mod tests {
   }
 
   #[test]
+  fn coalescing_multiple_started_events_accumulates_more_count() {
+    let (kind1, text1) = coalesce_download_toast(
+      None,
+      DownloadEvent::Started {
+        file_name: "a.txt".to_string(),
+      },
+    );
+    let toast1 = toast(kind1, &text1);
+
+    let (kind2, text2) = coalesce_download_toast(
+      Some(&toast1),
+      DownloadEvent::Started {
+        file_name: "b.txt".to_string(),
+      },
+    );
+    let toast2 = toast(kind2, &text2);
+
+    let (kind3, text3) = coalesce_download_toast(
+      Some(&toast2),
+      DownloadEvent::Started {
+        file_name: "c.txt".to_string(),
+      },
+    );
+
+    assert_eq!(kind3, ToastKind::Info);
+    assert_eq!(text3, "Downloading c.txt… (+2 more)");
+  }
+
+  #[test]
   fn coalescing_same_file_does_not_increment_more() {
     let existing = toast(ToastKind::Info, "Downloading a.txt…");
     let (kind, text) = coalesce_download_toast(
@@ -358,6 +387,38 @@ mod tests {
     );
     assert_eq!(kind, ToastKind::Info);
     assert_eq!(text, "Downloaded a.txt");
+  }
+
+  #[test]
+  fn coalescing_multiple_completed_events_accumulates_more_count() {
+    let (kind1, text1) = coalesce_download_toast(
+      None,
+      DownloadEvent::Finished {
+        file_name: "a.txt".to_string(),
+        outcome: DownloadOutcome::Completed,
+      },
+    );
+    let toast1 = toast(kind1, &text1);
+
+    let (kind2, text2) = coalesce_download_toast(
+      Some(&toast1),
+      DownloadEvent::Finished {
+        file_name: "b.txt".to_string(),
+        outcome: DownloadOutcome::Completed,
+      },
+    );
+    let toast2 = toast(kind2, &text2);
+
+    let (kind3, text3) = coalesce_download_toast(
+      Some(&toast2),
+      DownloadEvent::Finished {
+        file_name: "c.txt".to_string(),
+        outcome: DownloadOutcome::Completed,
+      },
+    );
+
+    assert_eq!(kind3, ToastKind::Info);
+    assert_eq!(text3, "Downloaded c.txt (+2 more)");
   }
 
   #[test]
