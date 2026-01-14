@@ -729,3 +729,80 @@ fn generators_yield_in_array_literals_gc_safety() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generators_yield_in_object_literals() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        // { [(yield "a")]: 1 }
+        function* computed_key() {
+          const o = { [(yield "a")]: 1 };
+          return o.b === 1 && o.a === undefined;
+        }
+        const it1 = computed_key();
+        const a1 = it1.next();
+        const a2 = it1.next("b");
+        const ok1 = a1.value === "a" && a1.done === false && a2.value === true && a2.done === true;
+
+        // { a: (yield 1) }
+        function* prop_value() {
+          const o = { a: (yield 1) };
+          return o.a === 42;
+        }
+        const it2 = prop_value();
+        const b1 = it2.next();
+        const b2 = it2.next(42);
+        const ok2 = b1.value === 1 && b1.done === false && b2.value === true && b2.done === true;
+
+        // { ...(yield "spread"), x: 1 }
+        function* spread_prop() {
+          const o = { ...(yield "spread"), x: 1 };
+          return o.b === 2 && o.x === 1;
+        }
+        const it3 = spread_prop();
+        const c1 = it3.next();
+        const c2 = it3.next({ b: 2 });
+        const ok3 = c1.value === "spread" && c1.done === false && c2.value === true && c2.done === true;
+
+        // { [(yield)]() { ... } }
+        // Note: `parse-js` currently rejects `yield <expr>` in computed method names; `yield`
+        // (no operand) is still a real `YieldExpression` and exercises generator continuation.
+        function* method_computed_key() {
+          const o = { [(yield)]() { return 1; } };
+          return typeof o.foo === "function" && o.foo() === 1;
+        }
+        const it4 = method_computed_key();
+        const d1 = it4.next();
+        const d2 = it4.next("foo");
+        const ok4 = d1.value === undefined && d1.done === false && d2.value === true && d2.done === true;
+
+        // { get [(yield)]() { ... } }
+        function* getter_computed_key() {
+          const o = { get [(yield)]() { return 7; } };
+          return o.bar === 7;
+        }
+        const it5 = getter_computed_key();
+        const e1 = it5.next();
+        const e2 = it5.next("bar");
+        const ok5 = e1.value === undefined && e1.done === false && e2.value === true && e2.done === true;
+
+        // { set [(yield)](v) { ... } }
+        function* setter_computed_key() {
+          let captured = 0;
+          const o = { set [(yield)](v) { captured = v; } };
+          o.baz = 9;
+          return captured === 9;
+        }
+        const it6 = setter_computed_key();
+        const f1 = it6.next();
+        const f2 = it6.next("baz");
+        const ok6 = f1.value === undefined && f1.done === false && f2.value === true && f2.done === true;
+
+        ok1 && ok2 && ok3 && ok4 && ok5 && ok6
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
