@@ -1273,7 +1273,7 @@ impl<'a> Parser<'a> {
       p.new_target_allowed += 1;
       p.super_prop_allowed += 1;
       p.super_call_allowed = 0;
-      let res = (|| {
+      let res = p.with_arguments_bound_in_class_init(|p| {
         p.require(TT::ParenthesisOpen)?;
         // Setters are not generators or async, so yield/await can be used as identifiers
         let is_module = p.is_module();
@@ -1426,7 +1426,7 @@ impl<'a> Parser<'a> {
           return_type: None,
           body,
         })
-      })();
+      });
       p.new_target_allowed = prev_new_target_allowed;
       p.super_prop_allowed = prev_super_prop_allowed;
       p.super_call_allowed = prev_super_call_allowed;

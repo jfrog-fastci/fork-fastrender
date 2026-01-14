@@ -422,6 +422,16 @@ impl<'a> Parser<'a> {
     Ok(())
   }
 
+  pub(crate) fn with_arguments_bound_in_class_init<R>(
+    &mut self,
+    f: impl FnOnce(&mut Self) -> SyntaxResult<R>,
+  ) -> SyntaxResult<R> {
+    let prev_disallow_arguments_in_class_init = self.disallow_arguments_in_class_init;
+    self.disallow_arguments_in_class_init = 0;
+    let res = f(self);
+    self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
+    res
+  }
   fn validate_strict_assignment_target_name(&self, loc: Loc, name: &str) -> SyntaxResult<()> {
     if !self.is_strict_ecmascript() || !self.is_strict_mode() {
       return Ok(());
