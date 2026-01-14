@@ -14,7 +14,7 @@
     "layout": 15.311025654895497,
     "paint": 67.45129576975751
   },
-  "notes": "",
+  "notes": "Fixture is Bloomberg’s PerimeterX anti-bot CAPTCHA interstitial (“Are you a robot?” / unusual activity), not the real homepage.\nDiff is relatively low because the captured page is mostly static text/layout; remaining mismatches are minor raster/text AA differences.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 54806,
