@@ -1,4 +1,6 @@
-use vm_js::{CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+use vm_js::{
+  CallHandler, CompiledScript, FunctionData, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions,
+};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -6,6 +8,26 @@ fn new_runtime() -> JsRuntime {
   // minimal 1MiB used by some unit tests to avoid spurious OOMs as builtin surface area grows.
   let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
+}
+
+fn assert_compiled_async_fn(rt: &JsRuntime, value: Value, name: &str) -> Result<(), VmError> {
+  let Value::Object(func_obj) = value else {
+    panic!("expected {name} to evaluate to a function object, got {value:?}");
+  };
+  let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+  assert!(
+    matches!(call_handler, CallHandler::User(_)),
+    "expected {name} to use the compiled (HIR) call handler; got {call_handler:?}"
+  );
+  let data = rt.heap.get_function_data(func_obj)?;
+  assert!(
+    !matches!(
+      data,
+      FunctionData::EcmaFallback { .. } | FunctionData::AsyncEcmaFallback { .. }
+    ),
+    "expected {name} to execute via the compiled async evaluator (no AST fallback tag); got {data:?}"
+  );
+  Ok(())
 }
 
 #[test]
@@ -40,12 +62,12 @@ fn compiled_script_does_not_fall_back_for_async_function_defs() -> Result<(), Vm
 
       f().then(v => { result += v; });
       // Ensure explicit receiver binding is preserved when async function bodies execute via
-      // call-time AST fallback.
+      // the compiled async evaluator.
       f.call(thisObj).then(v => { result += v; });
       g().then(v => { result += v; });
       g.call(thisObj).then(v => { result += v; });
-      // Async arrow functions execute via call-time AST fallback; ensure they still use *lexical*
-      // `this` rather than the call-site receiver (even when invoked via `.call`).
+      // Async arrow functions execute via the compiled async evaluator; ensure they still use
+      // *lexical* `this` rather than the call-site receiver (even when invoked via `.call`).
       h.call({}).then(v => { result += v; });
       obj.m().then(v => { result += v; });
       inst.m().then(v => { result += v; });
@@ -62,6 +84,16 @@ fn compiled_script_does_not_fall_back_for_async_function_defs() -> Result<(), Vm
   );
 
   rt.exec_compiled_script(script)?;
+
+  // Prove that async functions allocated during compiled script execution are backed by compiled
+  // HIR (CallHandler::User) and do not opt into per-function AST fallback.
+  let f = rt.exec_script("f")?;
+  assert_compiled_async_fn(&rt, f, "f")?;
+  let g = rt.exec_script("g")?;
+  assert_compiled_async_fn(&rt, g, "g")?;
+  let h = rt.exec_script("h")?;
+  assert_compiled_async_fn(&rt, h, "h")?;
+
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
   let value = rt.exec_script("result")?;
