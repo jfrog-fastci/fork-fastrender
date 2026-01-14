@@ -1445,7 +1445,10 @@ impl ModuleGraph {
     self.modules[module_index(referrer)]
       .loaded_modules
       .iter()
-      .find(|loaded| loaded.request.spec_equal(request))
+      // `ModuleRequest`s stored by the VM are canonicalized (attribute list sorting), so a direct
+      // equality check is equivalent to `ModuleRequestsEqual` while avoiding the quadratic
+      // order-insensitive comparison in `spec_equal`.
+      .find(|loaded| &loaded.request == request)
       .map(|loaded| loaded.module)
   }
 

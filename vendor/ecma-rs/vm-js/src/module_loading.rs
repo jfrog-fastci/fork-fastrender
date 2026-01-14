@@ -1250,7 +1250,10 @@ pub fn finish_loading_imported_module_with_host_and_hooks(
               if let Some(existing) = referrer_module
                 .loaded_modules
                 .iter()
-                .find(|record| record.request.spec_equal(&module_request))
+                // `ModuleRequest`s stored by the VM are canonicalized (attribute list sorting), so a
+                // direct equality check is equivalent to `ModuleRequestsEqual` while avoiding the
+                // quadratic order-insensitive comparison in `spec_equal`.
+                .find(|record| record.request == module_request)
               {
                 if existing.module != loaded {
                   Err(VmError::InvariantViolation(
@@ -1280,7 +1283,10 @@ pub fn finish_loading_imported_module_with_host_and_hooks(
             let loaded_modules = modules.script_loaded_modules_mut(script)?;
             if let Some(existing) = loaded_modules
               .iter()
-              .find(|record| record.request.spec_equal(&module_request))
+              // `ModuleRequest`s stored by the VM are canonicalized (attribute list sorting), so a
+              // direct equality check is equivalent to `ModuleRequestsEqual` while avoiding the
+              // quadratic order-insensitive comparison in `spec_equal`.
+              .find(|record| record.request == module_request)
             {
               if existing.module != loaded {
                 Err(VmError::InvariantViolation(
@@ -1301,7 +1307,10 @@ pub fn finish_loading_imported_module_with_host_and_hooks(
             let loaded_modules = modules.realm_loaded_modules_mut(realm)?;
             if let Some(existing) = loaded_modules
               .iter()
-              .find(|record| record.request.spec_equal(&module_request))
+              // `ModuleRequest`s stored by the VM are canonicalized (attribute list sorting), so a
+              // direct equality check is equivalent to `ModuleRequestsEqual` while avoiding the
+              // quadratic order-insensitive comparison in `spec_equal`.
+              .find(|record| record.request == module_request)
             {
               if existing.module != loaded {
                 Err(VmError::InvariantViolation(
