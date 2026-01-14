@@ -6450,13 +6450,14 @@ impl BrowserRuntime {
               &scroll_snapshot,
               viewport_point,
             );
-            let mut fragment_tree_for_cursor = fragment_tree_before;
-            let mut scroll_for_cursor = &scroll_snapshot;
-            if let Some(scroll_after) = next_scroll.as_ref() {
-              let fragment_tree_after = hit_tree_after.as_deref().unwrap_or(fragment_tree);
-              let (changed_after, hit_after, hover_is_drop_target_after) =
-                engine.pointer_move_and_hit_and_drop_target(
-                  dom,
+
+          let mut fragment_tree_for_cursor = fragment_tree_before;
+          let mut scroll_for_cursor = &scroll_snapshot;
+          if let Some(scroll_after) = next_scroll.as_ref() {
+            let fragment_tree_after = hit_tree_after.as_deref().unwrap_or(fragment_tree);
+            let (changed_after, hit_after, hover_is_drop_target_after) =
+              engine.pointer_move_and_hit_and_drop_target(
+                dom,
                 box_tree,
                 fragment_tree_after,
                 scroll_after,
