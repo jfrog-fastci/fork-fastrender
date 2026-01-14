@@ -2990,17 +2990,21 @@ impl ModuleGraph {
         // that become ready while executing will be appended and picked up by the next loop
         // iteration.
         let orders = &self.async_eval_states;
-        self.ready_scc_queue.sort_unstable_by(|a, b| {
-          let a_order = orders
-            .get(module_index(*a))
-            .and_then(|s| s.async_evaluation_order.as_integer())
-            .unwrap_or(u64::MAX);
-          let b_order = orders
-            .get(module_index(*b))
-            .and_then(|s| s.async_evaluation_order.as_integer())
-            .unwrap_or(u64::MAX);
-          a_order.cmp(&b_order).then_with(|| a.to_raw().cmp(&b.to_raw()))
-        });
+        crate::tick::sort_unstable_by_with_ticks(
+          &mut self.ready_scc_queue,
+          |a, b| {
+            let a_order = orders
+              .get(module_index(*a))
+              .and_then(|s| s.async_evaluation_order.as_integer())
+              .unwrap_or(u64::MAX);
+            let b_order = orders
+              .get(module_index(*b))
+              .and_then(|s| s.async_evaluation_order.as_integer())
+              .unwrap_or(u64::MAX);
+            a_order.cmp(&b_order).then_with(|| a.to_raw().cmp(&b.to_raw()))
+          },
+          || vm.tick(),
+        )?;
         let next = self.ready_scc_queue.remove(0);
         self.execute_scc(vm, scope, next, host, hooks)?;
       }
