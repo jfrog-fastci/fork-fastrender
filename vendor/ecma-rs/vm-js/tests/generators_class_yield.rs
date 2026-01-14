@@ -156,9 +156,9 @@ fn generator_object_literal_anonymous_class_inferred_name_across_yield_in_comput
 }
 
 #[test]
-fn generator_object_literal_anonymous_class_inferred_name_across_yield_in_static_block() {
+fn generator_object_literal_anonymous_class_yield_in_static_block_is_syntax_error() {
   let mut rt = new_runtime();
-  let value = rt
+  let err = rt
     .exec_script(
       r#"
       function* g() {
@@ -174,19 +174,11 @@ fn generator_object_literal_anonymous_class_inferred_name_across_yield_in_static
         };
         return obj.a;
       }
-      var it = g();
-      var r1 = it.next();
-      var r2 = it.next(7);
-      var C = r2.value;
-      r1.value === 1 && r1.done === false &&
-      r2.done === true &&
-      globalThis.saw === "a" &&
-      globalThis.v === 7 &&
-      C.name === "a"
+      g();
     "#,
     )
-    .unwrap();
-  assert_eq!(value, Value::Bool(true));
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
 }
 
 #[test]
@@ -393,9 +385,9 @@ fn generator_object_destructuring_default_anonymous_class_inferred_name_across_y
 }
 
 #[test]
-fn generator_class_yield_in_static_block() {
+fn generator_class_yield_in_static_block_is_syntax_error() {
   let mut rt = new_runtime();
-  let value = rt
+  let err = rt
     .exec_script(
       r#"
         function* g() {
@@ -406,15 +398,11 @@ fn generator_class_yield_in_static_block() {
           }
           return C.x;
         }
-        var it = g();
-        var r1 = it.next();
-        var r2 = it.next(7);
-        r1.value === 1 && r1.done === false &&
-        r2.value === 7 && r2.done === true
+        g();
       "#,
     )
-    .unwrap();
-  assert_eq!(value, Value::Bool(true));
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
 }
 
 #[test]
