@@ -536,3 +536,62 @@ fn async_super_member_calls_in_derived_ctor_arrow_uses_get_this_binding() -> Res
 
   Ok(())
 }
+
+#[test]
+fn async_super_computed_member_call_in_derived_ctor_arrow_uses_get_this_binding() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        let log1 = "";
+        class B {
+          constructor() { this._x = 0; }
+          m(v) { this._x += v; return this._x; }
+        }
+
+        // Before `super()`: must throw a ReferenceError *before* evaluating the computed key
+        // expression (so the await/thenable must not run).
+        class D1 extends B {
+          constructor() {
+            let thenable = { get then() { log1 += "T"; return (resolve) => resolve("m"); } };
+            let p = (async () => { return super[await thenable](1); })();
+            super();
+            this.p = p;
+          }
+        }
+        let d1 = new D1();
+        let r1;
+        try { r1 = await d1.p; } catch (e) { r1 = e.name; }
+
+        // After `super()`: should work across await and call with the real receiver.
+        let log2 = "";
+        class D2 extends B {
+          constructor() {
+            super();
+            let thenable = { get then() { log2 += "T"; return (resolve) => resolve("m"); } };
+            this._x = 0;
+            this.p = (async () => { return super[await thenable](2); })();
+          }
+        }
+        let d2 = new D2();
+        let r2 = await d2.p;
+
+        return r1 + ":" + log1 + "," + r2 + ":" + log2;
+      }
+      f().then(v => out = String(v));
+    "#,
+  )?;
+
+  // No microtasks run yet.
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "ReferenceError:,2:T");
+
+  Ok(())
+}
