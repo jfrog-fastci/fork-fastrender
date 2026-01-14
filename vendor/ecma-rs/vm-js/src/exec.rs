@@ -32208,15 +32208,36 @@ fn async_resume_from_frames(
             }
             Ok(crate::hir_exec::HirAsyncResult::CompleteOk(v)) => {
               hir_state.teardown(scope.heap_mut());
-              return Ok(AsyncBodyResult::CompleteOk(v));
+              if frames.is_empty() {
+                return Ok(AsyncBodyResult::CompleteOk(v));
+              }
+              // If there are remaining async frames after the HIR async evaluator, propagate the
+              // completion through them (e.g. `RootModuleBody` needs to translate throw completions
+              // into `VmError::ThrowWithStack` for module execution).
+              state = AsyncState::Completion(Completion::Normal(Some(v)));
             }
             Ok(crate::hir_exec::HirAsyncResult::CompleteThrow(reason)) => {
               hir_state.teardown(scope.heap_mut());
-              return Ok(AsyncBodyResult::CompleteThrow(reason));
+              if frames.is_empty() {
+                return Ok(AsyncBodyResult::CompleteThrow(reason));
+              }
+              let stack = evaluator.vm.capture_stack();
+              state = AsyncState::Completion(Completion::Throw(Thrown { value: reason, stack }));
             }
-            Err(VmError::Throw(value) | VmError::ThrowWithStack { value, .. }) => {
+            Err(VmError::Throw(value)) => {
               hir_state.teardown(scope.heap_mut());
-              return Ok(AsyncBodyResult::CompleteThrow(value));
+              if frames.is_empty() {
+                return Ok(AsyncBodyResult::CompleteThrow(value));
+              }
+              let stack = evaluator.vm.capture_stack();
+              state = AsyncState::Completion(Completion::Throw(Thrown { value, stack }));
+            }
+            Err(VmError::ThrowWithStack { value, stack }) => {
+              hir_state.teardown(scope.heap_mut());
+              if frames.is_empty() {
+                return Ok(AsyncBodyResult::CompleteThrow(value));
+              }
+              state = AsyncState::Completion(Completion::Throw(Thrown { value, stack }));
             }
             Err(err) => {
               hir_state.teardown(scope.heap_mut());

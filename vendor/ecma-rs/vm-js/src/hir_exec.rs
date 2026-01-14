@@ -217,8 +217,8 @@ fn compiled_constructor_body_construct(
         }
       }
 
-      // ECMA-262: if a derived constructor returns a non-object value other than `undefined`,
-      // `new` must throw a TypeError (even if `super()` was never called).
+      // ECMA-262: derived constructors may only return an Object or `undefined`
+      // (even if `super()` was never called).
       _ => Err(throw_type_error(
         vm,
         &mut scope,
@@ -15527,7 +15527,14 @@ impl HirAsyncState {
                     self.next_stmt_index = self.next_stmt_index.saturating_add(1);
                     continue;
                   }
-                  Flow::Return(v) => return Ok(HirAsyncResult::CompleteOk(v)),
+                  Flow::Return(v) => {
+                    if !self.in_root_stmt_list {
+                      return Ok(HirAsyncResult::CompleteOk(v));
+                    }
+                    return Err(VmError::InvariantViolation(
+                      "async compiled module/script body produced Return completion (early errors should prevent this)",
+                    ));
+                  }
                   Flow::Break(..) | Flow::Continue(..) => {
                     return Err(VmError::InvariantViolation(
                       "async compiled function body produced break/continue completion",
@@ -16972,6 +16979,48 @@ impl HirAsyncState {
         continue;
       }
 
+      // Fast-path `var`/`let`/`const` statements whose initializer is a direct `await` expression
+      // (e.g. `const x = await foo();`).
+      if let hir_js::StmtKind::Var(var_decl) = &stmt.kind {
+        // Budget once for the statement itself, matching `eval_stmt`.
+        evaluator.vm.tick()?;
+        for (j, declarator) in var_decl.declarators.iter().enumerate() {
+          // Match `eval_var_decl`'s per-declarator tick.
+          evaluator.vm.tick()?;
+          let init_missing = declarator.init.is_none();
+          if let Some(init) = declarator.init {
+            let init_expr = evaluator.get_expr(body, init)?;
+            if let hir_js::ExprKind::Await { expr: awaited_expr } = init_expr.kind {
+              // Budget once for the await expression itself.
+              evaluator.vm.tick()?;
+              let await_value = evaluator.eval_expr(scope, body, awaited_expr)?;
+              self.active = Some(HirAsyncActive::AwaitVarDecl {
+                stmt_index: self.next_stmt_index,
+                declarator_index: j,
+              });
+              return Ok(HirAsyncResult::Await {
+                kind: crate::exec::AsyncSuspendKind::Await,
+                await_value,
+              });
+            }
+          }
+          let value = match declarator.init {
+            Some(init) => evaluator.eval_expr(scope, body, init)?,
+            None => Value::Undefined,
+          };
+          evaluator.bind_var_decl_pat(
+            scope,
+            body,
+            declarator.pat,
+            var_decl.kind,
+            init_missing,
+            value,
+          )?;
+        }
+        self.next_stmt_index = self.next_stmt_index.saturating_add(1);
+        continue;
+      }
+
       // Evaluate non-awaiting statements synchronously.
       let stmt_result = if self.in_root_stmt_list {
         evaluator.eval_root_stmt(scope, body, stmt_id)
@@ -16983,7 +17032,14 @@ impl HirAsyncState {
           Flow::Normal(_) => {
             self.next_stmt_index = self.next_stmt_index.saturating_add(1);
           }
-          Flow::Return(v) => return Ok(HirAsyncResult::CompleteOk(v)),
+          Flow::Return(v) => {
+            if !self.in_root_stmt_list {
+              return Ok(HirAsyncResult::CompleteOk(v));
+            }
+            return Err(VmError::InvariantViolation(
+              "async compiled module/script body produced Return completion (early errors should prevent this)",
+            ));
+          }
           Flow::Break(..) | Flow::Continue(..) => {
             return Err(VmError::InvariantViolation(
               "async compiled function body produced break/continue completion",
@@ -17578,7 +17634,7 @@ pub(crate) fn run_compiled_script(
 /// module-scoped state.
 ///
 /// For modules with `[[HasTLA]] = true`, use [`start_compiled_module_tla_evaluation`] instead so
-/// execution can suspend/resume without falling back to the async AST evaluator.
+/// evaluation can suspend/resume without falling back to the async AST evaluator.
 pub(crate) fn run_compiled_module(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -17984,10 +18040,18 @@ pub(crate) fn start_compiled_module_tla_evaluation(
           let awaited_promise = match awaited_promise_res {
             Ok(p) => p,
             Err(VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. }) => {
-              // Resume immediately with a throw completion.
+              // Treat PromiseResolve throw as an immediate throw completion at the await site.
+              // Root the thrown value while resuming: resumption can allocate/GC while propagating
+              // the thrown completion through the statement list (e.g. `try/catch` around `await`).
+              let mut resume_scope = scope.reborrow();
+              if let Err(err) = resume_scope.push_root(reason) {
+                state.teardown(resume_scope.heap_mut());
+                env.teardown(resume_scope.heap_mut());
+                return Err(err);
+              }
               next = state.resume(
                 &mut *vm_frame,
-                scope,
+                &mut resume_scope,
                 host,
                 hooks,
                 &mut env,
@@ -18030,13 +18094,13 @@ pub(crate) fn start_compiled_module_tla_evaluation(
           for &value in &values {
             match root_scope.heap_mut().add_root(value) {
               Ok(id) => roots.push(id),
-              Err(e) => {
+              Err(err) => {
                 for id in roots.drain(..) {
                   root_scope.heap_mut().remove_root(id);
                 }
                 state.teardown(root_scope.heap_mut());
                 env.teardown(root_scope.heap_mut());
-                return Err(e);
+                return Err(err);
               }
             }
           }
@@ -18053,7 +18117,7 @@ pub(crate) fn start_compiled_module_tla_evaluation(
           }
 
           let mut frames: VecDeque<crate::exec::AsyncFrame> = VecDeque::new();
-          if frames.try_reserve(1).is_err() {
+          if frames.try_reserve(2).is_err() {
             for id in roots.drain(..) {
               root_scope.heap_mut().remove_root(id);
             }
@@ -18062,6 +18126,7 @@ pub(crate) fn start_compiled_module_tla_evaluation(
             return Err(VmError::OutOfMemory);
           }
           frames.push_back(crate::exec::AsyncFrame::HirAsync { state });
+          frames.push_back(crate::exec::AsyncFrame::RootModuleBody);
 
           let cont = AsyncContinuation {
             env: env.clone(),

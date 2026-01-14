@@ -2876,7 +2876,9 @@ impl ModuleGraph {
         //
         // The fallback path uses the async AST evaluator, which supports arbitrary `await` shapes
         // but stores raw pointers into the `parse-js` AST in its continuation frames.
-        let step = if let Some(compiled) = compiled.filter(|c| !c.top_level_await_requires_ast_fallback) {
+        let step = if let Some(compiled) = compiled.filter(|c| {
+          !c.contains_async_generators && !c.requires_ast_fallback && !c.top_level_await_requires_ast_fallback
+        }) {
           crate::hir_exec::start_compiled_module_tla_evaluation(
             vm,
             scope,
@@ -2893,9 +2895,9 @@ impl ModuleGraph {
           //
           // If the module record does not retain an AST (e.g. compiled modules that discard parse
           // trees after linking), parse it on demand and retain it across async suspension. The async
-          // evaluator stores raw pointers into the AST statement list (`AsyncFrame::StmtList`), so the
-          // backing `Arc<Node<TopLevel>>` must remain alive until the continuation completes or is
-          // aborted.
+           // evaluator stores raw pointers into the AST statement list (`AsyncFrame::StmtList`), so the
+           // backing `Arc<Node<TopLevel>>` must remain alive until the continuation completes or is
+           // aborted.
           let ast = match ast {
             Some(ast) => ast,
             None => {
@@ -2905,7 +2907,6 @@ impl ModuleGraph {
               ast
             }
           };
-
           start_module_tla_evaluation(
             vm,
             scope,
@@ -4504,6 +4505,204 @@ mod tests {
 
     realm.teardown(&mut heap);
     Ok(())
+  }
+
+  #[test]
+  fn compiled_module_top_level_await_executes_without_ast_fallback() -> Result<(), VmError> {
+    // Use a heap limit that is:
+    // - large enough to hold the realm + compiled module source/HIR, but
+    // - small enough that parsing/retaining an AST for top-level await fallback would exceed it.
+    //
+    // This ensures we exercise the compiled-module TLA execution path and would have failed before
+    // compiled TLA support was implemented (the old path always parsed a fallback AST for TLA).
+    let max_bytes = 32 * 1024 * 1024; // 32 MiB
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(max_bytes, max_bytes));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+ 
+    let mut graph = ModuleGraph::new();
+    graph.set_global_lexical_env(realm.global_lexical_env());
+
+    let mut host = ();
+    let mut hooks = MicrotaskQueue::new();
+
+    let result = (|| -> Result<(), VmError> {
+      // Module A: compiled, contains top-level await in an exported binding initializer.
+      let filler = "a".repeat(1_500_000);
+      let src_a = format!("export const x = await Promise.resolve(1); /*{filler}*/");
+      let fallback_ast_bytes = src_a.len().saturating_mul(4);
+      let source_a = SourceText::new_charged_arc(&mut heap, "a", src_a)?;
+      let mut record_a = SourceTextModuleRecord::compile_source(&mut heap, source_a)?;
+      // Simulate an embedding that discards parse trees after compilation/linking.
+      record_a.ast = None;
+      record_a.source = None;
+      let _module_a = graph.add_module_with_specifier("a", record_a)?;
+
+      // Module B imports from A, ensuring the import binding observes the awaited value.
+      let source_b = SourceText::new_charged_arc(
+        &mut heap,
+        "b",
+        r#"import { x } from "a"; export const y = x;"#,
+      )?;
+      let record_b = SourceTextModuleRecord::parse_source(&mut heap, source_b)?;
+      let module_b = graph.add_module_with_specifier("b", record_b)?;
+
+      // Populate `[[LoadedModules]]` edges for this in-memory graph.
+      graph.link_all_by_specifier();
+
+      // Ensure we do not accidentally exercise the AST fallback path for top-level await.
+      //
+      // The fallback path charges a conservative estimate for a retained `parse-js` AST
+      // (`source_len * 4`). Charge most of the remaining heap limit up-front so attempting the
+      // fallback would deterministically fail with `VmError::OutOfMemory`.
+      let cushion = 4 * 1024 * 1024; // leave headroom for module evaluation + microtasks
+      if fallback_ast_bytes <= cushion {
+        return Err(VmError::InvariantViolation(
+          "test invariant: expected fallback AST charge to exceed cushion",
+        ));
+      }
+      let before = heap.estimated_total_bytes();
+      let fill_bytes = max_bytes
+        .saturating_sub(before)
+        .saturating_sub(cushion);
+      let _fallback_guard = if fill_bytes == 0 {
+        None
+      } else {
+        Some(heap.charge_external(fill_bytes)?)
+      };
+
+      let _promise = graph.evaluate(
+        &mut vm,
+        &mut heap,
+        realm.global_object(),
+        realm.id(),
+        module_b,
+        &mut host,
+        &mut hooks,
+      )?;
+
+      // Drain Promise jobs until evaluation completes.
+      struct JobCtx<'a> {
+        vm: &'a mut Vm,
+        heap: &'a mut Heap,
+        host: &'a mut (),
+      }
+      impl crate::VmJobContext for JobCtx<'_> {
+        fn call(
+          &mut self,
+          host_hooks: &mut dyn VmHostHooks,
+          callee: Value,
+          this: Value,
+          args: &[Value],
+        ) -> Result<Value, VmError> {
+          let mut scope = self.heap.scope();
+          self
+            .vm
+            .call_with_host_and_hooks(self.host, &mut scope, host_hooks, callee, this, args)
+        }
+
+        fn construct(
+          &mut self,
+          host_hooks: &mut dyn VmHostHooks,
+          callee: Value,
+          args: &[Value],
+          new_target: Value,
+        ) -> Result<Value, VmError> {
+          let mut scope = self.heap.scope();
+          self.vm.construct_with_host_and_hooks(
+            self.host,
+            &mut scope,
+            host_hooks,
+            callee,
+            args,
+            new_target,
+          )
+        }
+
+        fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+          self.heap.add_root(value)
+        }
+
+        fn remove_root(&mut self, id: RootId) {
+          self.heap.remove_root(id);
+        }
+      }
+
+      let errors = {
+        let mut ctx = JobCtx {
+          vm: &mut vm,
+          heap: &mut heap,
+          host: &mut host,
+        };
+        hooks.perform_microtask_checkpoint(&mut ctx)
+      };
+      assert!(
+        errors.is_empty(),
+        "expected no microtask failures, got: {errors:?}"
+      );
+
+      // Read the imported binding value.
+      {
+        let mut scope = heap.scope();
+        let ns = graph.get_module_namespace(module_b, &mut vm, &mut scope)?;
+        scope.push_root(Value::Object(ns))?;
+        let key_s = scope.alloc_string("y")?;
+        scope.push_root(Value::String(key_s))?;
+        let key = PropertyKey::from_string(key_s);
+        let v = crate::spec_ops::internal_get_with_host_and_hooks(
+          &mut vm,
+          &mut scope,
+          &mut host,
+          &mut hooks,
+          ns,
+          key,
+          Value::Object(ns),
+        )?;
+        assert_eq!(v, Value::Number(1.0));
+      }
+
+      Ok(())
+    })();
+
+    graph.teardown(&mut vm, &mut heap);
+
+    // Discard any remaining microtasks (should be empty once evaluation completes).
+    {
+      struct TeardownCtx<'a> {
+        heap: &'a mut Heap,
+      }
+      impl crate::VmJobContext for TeardownCtx<'_> {
+        fn call(
+          &mut self,
+          _host: &mut dyn VmHostHooks,
+          _callee: Value,
+          _this: Value,
+          _args: &[Value],
+        ) -> Result<Value, VmError> {
+          Err(VmError::Unimplemented("microtask teardown ctx call"))
+        }
+        fn construct(
+          &mut self,
+          _host: &mut dyn VmHostHooks,
+          _callee: Value,
+          _args: &[Value],
+          _new_target: Value,
+        ) -> Result<Value, VmError> {
+          Err(VmError::Unimplemented("microtask teardown ctx construct"))
+        }
+        fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+          self.heap.add_root(value)
+        }
+        fn remove_root(&mut self, id: RootId) {
+          self.heap.remove_root(id);
+        }
+      }
+      let mut ctx = TeardownCtx { heap: &mut heap };
+      hooks.teardown(&mut ctx);
+    }
+
+    realm.teardown(&mut heap);
+    result
   }
 
   #[test]
