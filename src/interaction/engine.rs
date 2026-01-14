@@ -1178,6 +1178,26 @@ mod tests {
   }
 
   #[test]
+  fn word_keys_cancel_ime_preedit_for_focused_input() {
+    let mut dom = crate::dom::parse_html(
+      "<html><body><input value=\"hello world\"></body></html>",
+    )
+    .expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    // Place caret at end so WordLeft will move.
+    set_text_selection_caret(&mut engine, &mut dom, input_id, "hello world".chars().count());
+
+    engine.ime_preedit(&mut dom, "あ", None);
+    assert!(engine.state.ime_preedit.is_some());
+
+    assert!(engine.key_action(&mut dom, KeyAction::WordLeft));
+    assert!(engine.state.ime_preedit.is_none());
+  }
+
+  #[test]
   fn pointer_caret_placement_cancels_ime_preedit_for_focused_input() {
     use crate::style::display::FormattingContextType;
     use crate::tree::fragment_tree::FragmentNode;
