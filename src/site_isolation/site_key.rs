@@ -626,6 +626,35 @@ mod tests {
   }
 
   #[test]
+  fn file_origin_is_cached_once() {
+    let a = SiteKeyFactory::file_origin().unwrap() as *const DocumentOrigin;
+    let b = SiteKeyFactory::file_origin().unwrap() as *const DocumentOrigin;
+    assert_eq!(a, b);
+  }
+
+  #[test]
+  fn different_file_paths_share_site_key_in_single_site_mode() {
+    let dir = tempdir().expect("temp dir");
+    let a = dir.path().join("a.txt");
+    let b = dir.path().join("b.txt");
+    std::fs::write(&a, "a").unwrap();
+    std::fs::write(&b, "b").unwrap();
+
+    let url_a = Url::from_file_path(&a).unwrap();
+    let url_b = Url::from_file_path(&b).unwrap();
+
+    let factory = SiteKeyFactory::new_with_seed_and_file_url_isolation(
+      1,
+      FileUrlSiteIsolation::SingleSite,
+    );
+
+    let key_a = factory.site_key_for_navigation(url_a.as_str(), None, false);
+    let key_b = factory.site_key_for_navigation(url_b.as_str(), None, false);
+    assert_eq!(key_a, key_b);
+    assert_eq!(key_a.to_string(), "file://");
+  }
+
+  #[test]
   fn unparseable_urls_are_opaque() {
     let factory = SiteKeyFactory::new_with_seed(9);
 
