@@ -14044,7 +14044,8 @@ impl DisplayListBuilder {
           cloned
         };
         // HTML `<input>` controls paint their value as a single line without wrapping; overflow is
-        // handled via clipping/scrolling rather than soft line breaks.
+        // handled via clipping/scrolling rather than soft line breaks. This keeps caret/selection
+        // geometry (and scroll_x behavior) consistent with browsers and the legacy backend.
         text_style.white_space = crate::style::types::WhiteSpace::Nowrap;
         text_style.text_wrap = crate::style::types::TextWrap::NoWrap;
 
