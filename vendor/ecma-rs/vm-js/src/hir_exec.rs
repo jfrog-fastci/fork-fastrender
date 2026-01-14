@@ -13281,6 +13281,14 @@ impl<'vm> HirEvaluator<'vm> {
         .set_meta_property_context(MetaPropertyContext::METHOD);
 
       let var_env = block_scope.env_create(Some(saved_lex))?;
+      // Mark the static-block var environment as a "this environment" so arrow functions created
+      // in the block resolve their lexical `this`/`new.target` to the class constructor.
+      block_scope
+        .heap_mut()
+        .env_set_this_value(var_env, Some(Value::Object(receiver)))?;
+      block_scope
+        .heap_mut()
+        .env_set_new_target(var_env, Some(Value::Undefined))?;
       let body_lex = block_scope.env_create(Some(var_env))?;
       // Mark the static block lexical environment as a "this environment" so arrow functions created
       // within the block resolve lexical `this` / `new.target` to the class constructor object.
@@ -20914,6 +20922,15 @@ impl AsyncClassStaticBlockState {
             "missing async class static block saved env",
           ))?;
           let var_env = block_scope.env_create(Some(saved_lex))?;
+          // Mark the static-block var environment as a "this environment" so arrow functions
+          // created in the block resolve their lexical `this`/`new.target` to the class
+          // constructor.
+          block_scope
+            .heap_mut()
+            .env_set_this_value(var_env, Some(Value::Object(self.receiver)))?;
+          block_scope
+            .heap_mut()
+            .env_set_new_target(var_env, Some(Value::Undefined))?;
           let body_lex = block_scope.env_create(Some(var_env))?;
           evaluator.env.set_var_env(VarEnv::Env(var_env));
           evaluator.env.set_lexical_env(block_scope.heap_mut(), body_lex);

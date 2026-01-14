@@ -10897,6 +10897,14 @@ impl<'a> Evaluator<'a> {
       .set_meta_property_context(MetaPropertyContext::METHOD);
 
     let var_env = block_scope.env_create(Some(saved_lex))?;
+    // Mark the static-block var environment as a "this environment" so arrow functions created in
+    // the block resolve their lexical `this`/`new.target` to the class constructor.
+    block_scope
+      .heap_mut()
+      .env_set_this_value(var_env, Some(Value::Object(receiver)))?;
+    block_scope
+      .heap_mut()
+      .env_set_new_target(var_env, Some(Value::Undefined))?;
     let body_lex = block_scope.env_create(Some(var_env))?;
     // Mark the static block lexical environment as a "this environment" so arrow functions created
     // within the block resolve lexical `this` / `new.target` to the class constructor object.
@@ -25344,6 +25352,14 @@ fn async_eval_class_static_init_from(
           .set_meta_property_context(MetaPropertyContext::METHOD);
 
         let var_env = block_scope.env_create(Some(saved_lex))?;
+        // Mark the static-block var environment as a "this environment" so arrow functions created
+        // in the block resolve their lexical `this`/`new.target` to the class constructor.
+        block_scope
+          .heap_mut()
+          .env_set_this_value(var_env, Some(Value::Object(func_obj)))?;
+        block_scope
+          .heap_mut()
+          .env_set_new_target(var_env, Some(Value::Undefined))?;
         let body_lex = block_scope.env_create(Some(var_env))?;
         // Mark the static block lexical environment as a "this environment" so arrow functions
         // created within the block resolve lexical `this` / `new.target` to the class constructor.
@@ -45068,6 +45084,14 @@ fn gen_eval_class_static_inits_from(
           .set_meta_property_context(MetaPropertyContext::METHOD);
 
         let var_env = block_scope.env_create(Some(saved_lex))?;
+        // Mark the static-block var environment as a "this environment" so arrow functions created
+        // in the block resolve their lexical `this`/`new.target` to the class constructor.
+        block_scope
+          .heap_mut()
+          .env_set_this_value(var_env, Some(Value::Object(func_obj)))?;
+        block_scope
+          .heap_mut()
+          .env_set_new_target(var_env, Some(Value::Undefined))?;
         let body_lex = block_scope.env_create(Some(var_env))?;
         // Mark the static block lexical environment as a "this environment" so arrow functions
         // created within the block resolve lexical `this` / `new.target` to the class constructor.
