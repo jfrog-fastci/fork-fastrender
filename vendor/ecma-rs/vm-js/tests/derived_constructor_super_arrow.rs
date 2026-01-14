@@ -201,6 +201,35 @@ fn derived_constructor_super_property_operations_use_initialized_this() -> Resul
 }
 
 #[test]
+fn derived_constructor_direct_eval_in_arrow_observes_initialized_this_and_super() -> Result<(), VmError> {
+  assert_true_in_ast_and_compiled(
+    r#"
+      class B { m(){ return this; } }
+      class C extends B {
+        constructor() {
+          let getThis = () => eval("this");
+          let callSuper = () => eval("super.m()");
+          let beforeThis, beforeSuper;
+          try { getThis(); beforeThis = "no"; } catch (e) { beforeThis = e.name; }
+          try { callSuper(); beforeSuper = "no"; } catch (e) { beforeSuper = e.name; }
+          super();
+          this.getThis = getThis;
+          this.callSuper = callSuper;
+          this.beforeThis = beforeThis;
+          this.beforeSuper = beforeSuper;
+        }
+      }
+      let o = new C();
+      o.beforeThis === "ReferenceError" &&
+        o.beforeSuper === "ReferenceError" &&
+        o.getThis() === o &&
+        o.callSuper() === o
+    "#,
+  )?;
+  Ok(())
+}
+
+#[test]
 fn derived_constructor_async_arrow_super_property_ops_use_initialized_this() -> Result<(), VmError> {
   assert_async_out_in_ast_and_compiled(
     r#"
