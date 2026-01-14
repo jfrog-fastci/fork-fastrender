@@ -523,6 +523,8 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
 - Use **Clear completed** (panel header) to remove completed entries from the list.
 - **Show downloads folder** opens the currently configured download directory (as resolved from
   `--download-dir` / `FASTR_BROWSER_DOWNLOAD_DIR` / OS Downloads / working directory).
+- **Change download folder…** opens a native folder picker dialog and updates where future downloads
+  are saved (applies to the current window; newly opened windows inherit the folder of their parent).
 
 ## Keyboard / mouse shortcuts
 

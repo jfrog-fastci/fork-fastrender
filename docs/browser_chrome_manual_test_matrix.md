@@ -345,6 +345,11 @@ available). This should surface a user-visible error and must not crash the brow
 ### Downloads folder / directory configuration
 
 - [ ] “Show downloads folder” opens the current download directory in the OS file manager.
+- [ ] “Change download folder…” (panel header) opens a native folder picker:
+  - [ ] Cancel leaves the current folder unchanged.
+  - [ ] Selecting a folder updates where new downloads are saved (and what “Show downloads folder”
+    opens).
+  - [ ] If the native dialog fails to open, an error toast is shown and the browser does not crash.
 - [ ] Overriding the downloads directory works:
   - [ ] Run with `browser --download-dir <path>` (or `FASTR_BROWSER_DOWNLOAD_DIR=<path>`).
   - [ ] Start a new download and verify the file lands in the configured directory.
