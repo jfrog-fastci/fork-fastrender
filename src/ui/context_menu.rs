@@ -134,11 +134,10 @@ pub fn format_page_context_menu_a11y_label(
   checked: bool,
 ) -> String {
   match action {
-    PageContextMenuAction::ToggleHistoryPanel => {
-      if checked { "History panel: shown" } else { "History panel: hidden" }.to_string()
-    }
-    PageContextMenuAction::ToggleBookmarksPanel => {
-      if checked { "Bookmarks panel: shown" } else { "Bookmarks panel: hidden" }.to_string()
+    // Toggle panel visibility. The visible label already reflects the action ("Show/Hide ..."), so
+    // reuse it for the a11y label.
+    PageContextMenuAction::ToggleHistoryPanel | PageContextMenuAction::ToggleBookmarksPanel => {
+      base_label.to_string()
     }
     PageContextMenuAction::BookmarkLink(_) => {
       if checked { "Bookmark link: on" } else { "Bookmark link: off" }.to_string()
@@ -314,22 +313,22 @@ mod a11y_label_tests {
   use super::*;
 
   #[test]
-  fn format_page_context_menu_a11y_label_includes_toggle_state() {
+  fn format_page_context_menu_a11y_label_echoes_toggle_label() {
     assert_eq!(
       format_page_context_menu_a11y_label(
         "Show History",
         &PageContextMenuAction::ToggleHistoryPanel,
         true
       ),
-      "History panel: shown"
+      "Show History"
     );
     assert_eq!(
       format_page_context_menu_a11y_label(
-        "Show History",
+        "Hide History",
         &PageContextMenuAction::ToggleHistoryPanel,
         false
       ),
-      "History panel: hidden"
+      "Hide History"
     );
 
     assert_eq!(
@@ -338,15 +337,15 @@ mod a11y_label_tests {
         &PageContextMenuAction::ToggleBookmarksPanel,
         true
       ),
-      "Bookmarks panel: shown"
+      "Show Bookmarks"
     );
     assert_eq!(
       format_page_context_menu_a11y_label(
-        "Show Bookmarks",
+        "Hide Bookmarks",
         &PageContextMenuAction::ToggleBookmarksPanel,
         false
       ),
-      "Bookmarks panel: hidden"
+      "Hide Bookmarks"
     );
   }
 
