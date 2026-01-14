@@ -163,6 +163,10 @@ Current behavior:
 - Sample bytes:
   - Reads each sample by `seek`ing to its byte offset and copying `size` bytes into an owned buffer
     (`MediaData::Owned`).
+- Safety:
+  - Rejects oversized per-sample payloads (see `MAX_MP4_SAMPLE_BYTES` in `src/media/demux/mp4parse.rs`).
+  - Rejects MP4s with excessively large per-track/total sample tables (see `MAX_MP4_SAMPLES_PER_TRACK`
+    / `MAX_MP4_TOTAL_SAMPLES` in `src/media/demux/mp4parse.rs`).
 
 Codec-private (`MediaTrackInfo.codec_private`) formats produced today:
 
@@ -202,6 +206,8 @@ Other MP4 demuxers in-tree (not currently used by `NativeBackend`):
   - rejects encrypted/protected tracks using mp4parse metadata,
   - can attach mp4parse-derived DTS/PTS/duration and do best-effort keyframe seeking, but
   - falls back to mp4-crate timestamps when sample tables are unavailable.
+  - (best-effort) rejects oversized packet payloads (see `MAX_MP4_PACKET_BYTES` in `src/media/demuxer.rs`);
+    note the `mp4` crate may still allocate large sample buffers before we can enforce this cap.
 - [`src/media/demux/mp4.rs`](../src/media/demux/mp4.rs): a pure-Rust MP4 box parser/demuxer that:
   - reads the full file into an `Arc<[u8]>`,
   - emits `MediaPacket` with `MediaData::Shared` ranges,
