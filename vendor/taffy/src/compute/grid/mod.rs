@@ -798,11 +798,14 @@ fn collect_subgrid_virtual_items_recursive<
   } else {
     container_style_ref
       .grid_template_rows()
-      .map(|iter| iter.count() as u16)
+      .map(|iter| iter.count().min(i16::MAX as usize) as u16)
       .unwrap_or(0)
   };
   if row_explicit == 0 {
-    row_explicit = row_line_names.len().saturating_sub(1) as u16;
+    row_explicit = row_line_names
+      .len()
+      .saturating_sub(1)
+      .min(i16::MAX as usize) as u16;
   }
   if row_explicit == 0 {
     row_explicit = 1;
@@ -813,11 +816,14 @@ fn collect_subgrid_virtual_items_recursive<
   } else {
     container_style_ref
       .grid_template_columns()
-      .map(|iter| iter.count() as u16)
+      .map(|iter| iter.count().min(i16::MAX as usize) as u16)
       .unwrap_or(0)
   };
   if col_explicit == 0 {
-    col_explicit = col_line_names.len().saturating_sub(1) as u16;
+    col_explicit = col_line_names
+      .len()
+      .saturating_sub(1)
+      .min(i16::MAX as usize) as u16;
   }
   if col_explicit == 0 {
     col_explicit = 1;
@@ -1019,7 +1025,7 @@ fn collect_subgrid_virtual_items_recursive<
     sub_item.row = mapped_row;
     sub_item.column = mapped_col;
     sub_item.is_virtual = true;
-    sub_item.source_order = index as u16;
+    sub_item.source_order = index.min(u16::MAX as usize) as u16;
     out.push(sub_item);
   }
 }

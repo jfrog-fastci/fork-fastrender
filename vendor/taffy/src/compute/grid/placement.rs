@@ -781,7 +781,7 @@ fn record_grid_placement<S: GridItemStyle>(
     style,
     parent_align_items,
     parent_justify_items,
-    index as u16,
+    index.min(u16::MAX as usize) as u16,
   ));
 
   #[cfg(all(test, feature = "debug"))]
@@ -1673,6 +1673,74 @@ mod tests {
 
       assert_eq!(resolved.start.0, i16::MAX - 1);
       assert_eq!(resolved.end.0, i16::MAX);
+    }
+
+    #[test]
+    fn grid_item_source_order_saturates_instead_of_wrapping_on_usize_overflow() {
+      // Regression: `source_order` is stored as u16 to keep GridItem small. If we cast the child
+      // index directly, `usize -> u16` truncation can wrap and reorder items unexpectedly when the
+      // tree has more than 65535 children.
+      //
+      // Clamp to `u16::MAX` instead so ordering is stable and does not wrap back to zero.
+      let large_index = (u16::MAX as usize) + 1;
+      let children: Vec<(usize, Style, ExpectedPlacement)> = vec![
+        (
+          0,
+          (line(1), line(2), line(1), line(2)).into_grid_child(),
+          (0, 1, 0, 1),
+        ),
+        (
+          large_index,
+          (line(1), line(2), line(1), line(2)).into_grid_child(),
+          (0, 1, 0, 1),
+        ),
+      ];
+
+      // Setup test
+      let children_iter = || {
+        children
+          .iter()
+          .map(|(index, style, _)| (*index, NodeId::from(*index), style))
+      };
+      let child_styles_iter = children
+        .iter()
+        .map(|(index, style, _)| (NodeId::from(*index), style));
+      let estimated_sizes = compute_grid_size_estimate(1, 1, child_styles_iter, |_| {
+        crate::geometry::InBothAbsAxis {
+          horizontal: None,
+          vertical: None,
+        }
+      });
+      let mut items = Vec::new();
+      let mut cell_occupancy_matrix =
+        CellOccupancyMatrix::with_track_counts(estimated_sizes.0, estimated_sizes.1);
+      let mut name_resolver = NamedLineResolver::new(&Style::DEFAULT, 0, 0);
+      name_resolver.set_explicit_column_count(1);
+      name_resolver.set_explicit_row_count(1);
+
+      place_grid_items(
+        &mut cell_occupancy_matrix,
+        &mut items,
+        children_iter,
+        GridAutoFlow::Row,
+        AlignSelf::Start,
+        AlignSelf::Start,
+        &name_resolver,
+        crate::geometry::InBothAbsAxis {
+          horizontal: false,
+          vertical: false,
+        },
+        |_| crate::geometry::InBothAbsAxis {
+          horizontal: None,
+          vertical: None,
+        },
+      );
+
+      let large_item = items
+        .iter()
+        .find(|item| item.node == NodeId::from(large_index))
+        .expect("expected item to be placed");
+      assert_eq!(large_item.source_order, u16::MAX);
     }
   }
 }
