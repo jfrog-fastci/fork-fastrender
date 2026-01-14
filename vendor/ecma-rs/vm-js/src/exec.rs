@@ -20800,6 +20800,10 @@ fn async_generator_handle_execution_result(
         // (e.g. by `AsyncIteratorClose`); do not call `PromiseResolve` again, or we'd observe
         // `promise.constructor` twice.
         let awaited_promise = if kind == AsyncSuspendKind::AwaitResolved {
+          debug_assert!(
+            matches!(await_value, Value::Object(obj) if scope.heap().is_promise_object(obj)),
+            "AwaitResolved suspension must carry a Promise object"
+          );
           await_value
         } else {
           match promise_resolve_for_await_with_host_and_hooks(vm, scope, host, hooks, await_value) {
@@ -20827,37 +20831,6 @@ fn async_generator_handle_execution_result(
         };
 
         // Suspend: store frames in the VM and wire a Promise job to resume.
-        cont.env.teardown(scope.heap_mut());
-        scope
-          .heap_mut()
-          .async_generator_set_continuation(gen_obj, Some(cont))?;
-
-        async_generator_schedule_await(
-          vm,
-          scope,
-          host,
-          hooks,
-          gen_obj,
-          awaited_promise,
-          AsyncGeneratorResumeKind::Await,
-          state,
-        )?;
-        return Ok(false);
-      }
-      AsyncBodyResult::Await {
-        kind: AsyncSuspendKind::AwaitResolved,
-        await_value: awaited_promise,
-        frames,
-      } => {
-        state.frames = frames;
-
-        // `AwaitResolved` means the internal `PromiseResolve` step of `Await` has already happened
-        // (e.g. `AsyncIteratorClose` during `for await..of`), so we must not call `PromiseResolve`
-        // again.
-        debug_assert!(
-          matches!(awaited_promise, Value::Object(obj) if scope.heap().is_promise_object(obj)),
-          "AwaitResolved suspension must carry a Promise object"
-        );
         cont.env.teardown(scope.heap_mut());
         scope
           .heap_mut()
