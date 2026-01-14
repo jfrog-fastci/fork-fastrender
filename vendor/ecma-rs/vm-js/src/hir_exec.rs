@@ -11873,6 +11873,269 @@ mod async_function_ast_fallback_tests {
   }
 }
 
+#[cfg(test)]
+mod compiled_hir_async_await_semantics_tests {
+  use crate::function::{CallHandler, FunctionData};
+  use crate::property::{PropertyKey, PropertyKind};
+  use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOptions};
+ 
+  #[derive(Clone, Copy, Debug)]
+  enum ExpectedValue {
+    Number(f64),
+    String(&'static str),
+  }
+ 
+  fn get_global_data_property(rt: &mut JsRuntime, name: &str) -> Result<Value, VmError> {
+    let global = rt.realm().global_object();
+    let mut scope = rt.heap.scope();
+    let key_s = scope.alloc_string(name)?;
+    let key = PropertyKey::from_string(key_s);
+    let desc = scope
+      .heap()
+      .get_own_property(global, key)?
+      .unwrap_or_else(|| panic!("expected global property {name}"));
+    let PropertyKind::Data { value, .. } = desc.kind else {
+      panic!("expected global property {name} to be a data property");
+    };
+    Ok(value)
+  }
+ 
+  fn run_compiled_async_fn_case(script_src: &str, expected: ExpectedValue) -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+ 
+    let script = CompiledScript::compile_script(&mut rt.heap, "<inline>", script_src)?;
+    assert!(
+      !script.requires_ast_fallback,
+      "async/await regression tests must execute in the compiled (HIR) script path"
+    );
+ 
+    let result = rt.exec_compiled_script(script)?;
+    let Value::Object(returned_promise) = result else {
+      panic!("expected script to evaluate to a Promise object, got {result:?}");
+    };
+    assert!(
+      rt.heap.is_promise_object(returned_promise),
+      "expected script to evaluate to a Promise object, got {result:?}"
+    );
+ 
+    // Assert the tested async function executes via the compiled (HIR) evaluator, not the
+    // call-time AST fallback (`FunctionData::EcmaFallback`).
+    let func_value = get_global_data_property(&mut rt, "__f")?;
+    let Value::Object(func_obj) = func_value else {
+      panic!("expected __f to be a function object, got {func_value:?}");
+    };
+ 
+    let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+    assert!(
+      matches!(call_handler, CallHandler::User(_)),
+      "expected __f to be a compiled user function, got {call_handler:?}"
+    );
+ 
+    let func_data = rt.heap.get_function_data(func_obj)?;
+    assert!(
+      !matches!(func_data, FunctionData::EcmaFallback { .. }),
+      "expected __f to execute via compiled async/await semantics, got {func_data:?}"
+    );
+ 
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+ 
+    let promise_value = get_global_data_property(&mut rt, "__p")?;
+    let Value::Object(promise_obj) = promise_value else {
+      panic!("expected __p to be a Promise object, got {promise_value:?}");
+    };
+    assert!(
+      rt.heap.is_promise_object(promise_obj),
+      "expected __p to be a Promise object, got {promise_value:?}"
+    );
+    assert_eq!(
+      promise_obj, returned_promise,
+      "expected script completion value to equal global __p promise"
+    );
+ 
+    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+    let resolved = rt
+      .heap
+      .promise_result(promise_obj)?
+      .expect("fulfilled Promise missing [[PromiseResult]]");
+ 
+    match expected {
+      ExpectedValue::Number(n) => {
+        assert!(
+          matches!(resolved, Value::Number(m) if m == n),
+          "expected Promise to fulfill with {n}, got {resolved:?}"
+        );
+      }
+      ExpectedValue::String(s) => {
+        let Value::String(str_obj) = resolved else {
+          panic!("expected Promise to fulfill with a String, got {resolved:?}");
+        };
+        assert_eq!(rt.heap.get_string(str_obj)?.to_utf8_lossy(), s);
+      }
+    }
+ 
+    Ok(())
+  }
+ 
+  #[test]
+  fn compiled_async_arrow_expr_body_await() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        let f = async () => (await Promise.resolve(1)) + 2;
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::Number(3.0),
+    )
+  }
+ 
+  #[test]
+  fn compiled_async_nested_await() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f() { return await (await Promise.resolve(1)); }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::Number(1.0),
+    )
+  }
+ 
+  #[test]
+  fn compiled_async_await_in_computed_member_key_assignment() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f() {
+          let o = {};
+          o[await Promise.resolve('k')] = 1;
+          return o.k;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::Number(1.0),
+    )
+  }
+ 
+  #[test]
+  fn compiled_async_await_in_destructuring_default() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f() {
+          let { x = await Promise.resolve(1) } = {};
+          return x;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::Number(1.0),
+    )
+  }
+ 
+  #[test]
+  fn compiled_async_await_in_while_condition() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f() {
+          let i = 0;
+          while (await Promise.resolve(i < 3)) {
+            i++;
+          }
+          return i;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::Number(3.0),
+    )
+  }
+ 
+  #[test]
+  fn compiled_async_try_finally_ordering() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f() {
+          let log = '';
+          try {
+            await Promise.resolve(0);
+            log += 't';
+          } finally {
+            log += 'f';
+          }
+          return log;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::String("tf"),
+    )
+  }
+ 
+  #[test]
+  fn compiled_async_for_await_of_with_await_in_body() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f() {
+          let s = 0;
+          for await (const x of [Promise.resolve(1), Promise.resolve(2)]) {
+            s += await Promise.resolve(x);
+          }
+          return s;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::Number(3.0),
+    )
+  }
+ 
+  #[test]
+  fn compiled_top_level_await_script_resolves_completion_value() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+ 
+    let script = CompiledScript::compile_script(
+      &mut rt.heap,
+      "<inline>",
+      r#"
+        let x = await Promise.resolve(1);
+        x + 1;
+      "#,
+    )?;
+    assert!(script.contains_top_level_await);
+    assert!(!script.requires_ast_fallback);
+ 
+    let value = rt.exec_compiled_script(script)?;
+    let Value::Object(promise_obj) = value else {
+      panic!("expected top-level await script to evaluate to a Promise object, got {value:?}");
+    };
+    assert!(rt.heap.is_promise_object(promise_obj));
+ 
+    // Root the completion promise across the microtask checkpoint so it remains valid even if the
+    // checkpoint triggers GC after the script settles.
+    let promise_root = rt.heap.add_root(Value::Object(promise_obj))?;
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+ 
+    let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+      panic!("expected rooted completion Promise to remain live");
+    };
+    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+    assert_eq!(rt.heap.promise_result(promise_obj)?, Some(Value::Number(2.0)));
+ 
+    rt.heap.remove_root(promise_root);
+    Ok(())
+  }
+}
+ 
 #[derive(Debug, Clone, Copy)]
 enum HirAsyncResumePoint {
   /// Resume statement-list evaluation after completing a top-level `await` *expression statement*.
