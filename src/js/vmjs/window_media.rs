@@ -61,8 +61,6 @@ impl MediaElementState {
       clock,
       muted: false,
       volume: 1.0,
-      muted: false,
-      volume: 1.0,
       src_url: None,
       network_state: NETWORK_EMPTY,
       ready_state: HAVE_NOTHING,
