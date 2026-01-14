@@ -56966,7 +56966,7 @@ fn gen_resume_from_frames(
 
       GenFrame::AssignAfterRhsBinding { expr, name } => match state {
         Completion::Normal(v) => {
-          let expr = unsafe { &*expr };
+          let _expr = unsafe { &*expr };
           let name = unsafe { &*name };
           let value = v.unwrap_or(Value::Undefined);
           let mut reference = Reference::Binding(name.as_str());
