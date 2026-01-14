@@ -13,16 +13,16 @@ use std::sync::Arc;
 use std::thread;
 use vm_js::format_stack_trace;
 use vm_js::{
-  finish_loading_imported_module, HostDefined, ImportAttribute, ImportMetaProperty, Job, ModuleGraph, ModuleId,
-  ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, RealmId, RootId, VmHost, VmHostHooks,
-  VmJobContext,
+  finish_loading_imported_module, HostDefined, ImportAttribute, ImportMetaProperty, Job,
+  ModuleGraph, ModuleId, ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, RealmId,
+  RootId, VmHost, VmHostHooks, VmJobContext,
 };
 use vm_js::{
-  GcObject, Heap, HeapLimits, Intrinsics, MicrotaskQueue, PropertyDescriptor, PropertyKey, PropertyKind, Realm,
-  SourceText, SourceTextModuleRecord,
-  StackFrame, TerminationReason, Value, Vm, VmError, VmOptions,
+  GcObject, Heap, HeapLimits, Intrinsics, MicrotaskQueue, PropertyDescriptor, PropertyKey,
+  PropertyKind, Realm, SourceText, SourceTextModuleRecord, StackFrame, TerminationReason, Value,
+  Vm, VmError, VmOptions,
 };
-  
+
 // Some test262 cases intentionally construct very large strings (e.g. using
 // `"0".repeat(2 ** 24)` to stress parser scanning logic). Keep the default heap
 // large enough that those tests exercise the VM rather than failing with OOM in
@@ -235,8 +235,15 @@ impl Test262ModuleHooks {
     self.module_urls.insert(id, url);
   }
 
-  fn register_module_cache(&mut self, path: PathBuf, attributes: Vec<ImportAttribute>, id: ModuleId) {
-    self.module_cache.insert(ModuleCacheKey { path, attributes }, id);
+  fn register_module_cache(
+    &mut self,
+    path: PathBuf,
+    attributes: Vec<ImportAttribute>,
+    id: ModuleId,
+  ) {
+    self
+      .module_cache
+      .insert(ModuleCacheKey { path, attributes }, id);
   }
 
   fn module_url_for_path(&self, path: &Path) -> String {
@@ -270,10 +277,7 @@ impl Test262ModuleHooks {
     }
   }
 
-  fn perform_microtask_checkpoint(
-    &mut self,
-    ctx: &mut dyn VmJobContext,
-  ) -> Vec<VmError> {
+  fn perform_microtask_checkpoint(&mut self, ctx: &mut dyn VmJobContext) -> Vec<VmError> {
     if !self.microtasks.begin_checkpoint() {
       return Vec::new();
     }
@@ -353,7 +357,11 @@ impl VmHostHooks for Test262ModuleHooks {
 
     // Validate the import specifier before touching the filesystem.
     if specifier.is_empty() {
-      let result = Err(module_load_type_error(vm, scope, "import specifier must not be empty")?);
+      let result = Err(module_load_type_error(
+        vm,
+        scope,
+        "import specifier must not be empty",
+      )?);
       return finish_loading_imported_module(
         vm,
         scope,
@@ -366,7 +374,11 @@ impl VmHostHooks for Test262ModuleHooks {
       );
     }
     if specifier.as_code_units().iter().any(|&u| u == 0) {
-      let result = Err(module_load_type_error(vm, scope, "import specifier contains NUL")?);
+      let result = Err(module_load_type_error(
+        vm,
+        scope,
+        "import specifier contains NUL",
+      )?);
       return finish_loading_imported_module(
         vm,
         scope,
@@ -379,7 +391,11 @@ impl VmHostHooks for Test262ModuleHooks {
       );
     }
     if is_absolute_filesystem_specifier(&specifier_utf8) {
-      let result = Err(module_load_type_error(vm, scope, "import specifier must not be an absolute path")?);
+      let result = Err(module_load_type_error(
+        vm,
+        scope,
+        "import specifier must not be an absolute path",
+      )?);
       return finish_loading_imported_module(
         vm,
         scope,
@@ -581,7 +597,11 @@ impl VmHostHooks for Test262ModuleHooks {
     let source = match String::from_utf8(bytes) {
       Ok(s) => s,
       Err(_) => {
-        let result = Err(module_load_type_error(vm, scope, "module source was not valid UTF-8")?);
+        let result = Err(module_load_type_error(
+          vm,
+          scope,
+          "module source was not valid UTF-8",
+        )?);
         return finish_loading_imported_module(
           vm,
           scope,
@@ -595,10 +615,12 @@ impl VmHostHooks for Test262ModuleHooks {
       }
     };
 
-    let source_name: Arc<str> = Arc::from(canonical.to_string_lossy().into_owned());
+    // Avoid infallible `Arc<str>` allocation: `SourceText::new_charged_arc` performs fallible
+    // allocation internally.
+    let source_name = canonical.to_string_lossy();
     let source_text = match kind {
       RequestedModuleKind::JavaScript => {
-        SourceText::new_charged_arc(scope.heap_mut(), source_name.clone(), source)?
+        SourceText::new_charged_arc(scope.heap_mut(), source_name.as_ref(), source)?
       }
       RequestedModuleKind::Json => {
         let json: JsonValue = match serde_json::from_str(&source) {
@@ -645,7 +667,7 @@ impl VmHostHooks for Test262ModuleHooks {
           }
         };
         let synthesized = format!("export default {json_expr};\n");
-        SourceText::new_charged_arc(scope.heap_mut(), source_name.clone(), synthesized)?
+        SourceText::new_charged_arc(scope.heap_mut(), source_name.as_ref(), synthesized)?
       }
     };
 
@@ -697,7 +719,16 @@ impl VmHostHooks for Test262ModuleHooks {
     self.register_module_path(id, canonical.clone());
     self.register_module_cache(canonical, module_request.attributes.clone(), id);
 
-    finish_loading_imported_module(vm, scope, modules, self, referrer, module_request, payload, Ok(id))
+    finish_loading_imported_module(
+      vm,
+      scope,
+      modules,
+      self,
+      referrer,
+      module_request,
+      payload,
+      Ok(id),
+    )
   }
 }
 
@@ -707,10 +738,7 @@ fn derive_test_root_dir(case_path: &Path) -> PathBuf {
       return ancestor.to_path_buf();
     }
   }
-  case_path
-    .parent()
-    .unwrap_or(case_path)
-    .to_path_buf()
+  case_path.parent().unwrap_or(case_path).to_path_buf()
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -721,7 +749,9 @@ fn normalize_path(path: &Path) -> PathBuf {
       Component::ParentDir => {
         let _ = out.pop();
       }
-      Component::Prefix(_) | Component::RootDir | Component::Normal(_) => out.push(component.as_os_str()),
+      Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+        out.push(component.as_os_str())
+      }
     }
   }
   out
@@ -745,7 +775,7 @@ fn is_absolute_filesystem_specifier(specifier: &str) -> bool {
 pub struct VmJsExecutor {
   heap_limits: HeapLimits,
 }
- 
+
 impl Default for VmJsExecutor {
   fn default() -> Self {
     Self {
@@ -755,7 +785,12 @@ impl Default for VmJsExecutor {
 }
 
 impl VmJsExecutor {
-  fn execute_in_current_thread(&self, case: &TestCase, source: &str, cancel: &Arc<AtomicBool>) -> ExecResult {
+  fn execute_in_current_thread(
+    &self,
+    case: &TestCase,
+    source: &str,
+    cancel: &Arc<AtomicBool>,
+  ) -> ExecResult {
     if cancel.load(Ordering::Relaxed) {
       return Err(ExecError::Cancelled);
     }
@@ -815,8 +850,8 @@ impl VmJsExecutor {
 
       let mut hooks = Test262ModuleHooks::new(&case.path);
       let outcome: ExecResult = (|| {
-        let source_text = match SourceText::new_charged(&mut runtime.heap, file_name, source) {
-          Ok(source_text) => Arc::new(source_text),
+        let source_text = match SourceText::new_charged_arc(&mut runtime.heap, file_name, source) {
+          Ok(source_text) => source_text,
           Err(err) => return Err(map_vm_error(case, source, cancel, &mut runtime, err)),
         };
         let result = runtime.exec_script_source_with_hooks(&mut hooks, source_text);
@@ -834,7 +869,9 @@ impl VmJsExecutor {
               wait_for_done(case, source, cancel, &mut runtime, &mut hooks)?;
             } else {
               drain_microtasks_into_hooks(&mut runtime, &mut hooks);
-              if let Some(err) = handle_microtask_errors(case, source, cancel, &mut runtime, &mut hooks) {
+              if let Some(err) =
+                handle_microtask_errors(case, source, cancel, &mut runtime, &mut hooks)
+              {
                 return Err(err);
               }
             }
@@ -867,7 +904,7 @@ impl VmJsExecutor {
     execute_module(case, &file_name, source, cancel, is_async, &mut runtime)
   }
 }
- 
+
 impl Executor for VmJsExecutor {
   fn execute(&self, case: &TestCase, source: &str, cancel: &Arc<AtomicBool>) -> ExecResult {
     // To avoid aborting the entire process on a host stack overflow, run each test case on a fresh
@@ -878,17 +915,19 @@ impl Executor for VmJsExecutor {
     if cancel.load(Ordering::Relaxed) {
       return Err(ExecError::Cancelled);
     }
- 
+
     // Use scoped threads so we can reuse the caller's `&TestCase` / `&str` without cloning large
     // sources or test bodies.
     thread::scope(|scope| {
       let cancel_for_thread = Arc::clone(cancel);
       let exec = *self;
- 
+
       let handle = thread::Builder::new()
         .stack_size(TEST_CASE_THREAD_STACK_SIZE)
-        .spawn_scoped(scope, move || exec.execute_in_current_thread(case, source, &cancel_for_thread));
- 
+        .spawn_scoped(scope, move || {
+          exec.execute_in_current_thread(case, source, &cancel_for_thread)
+        });
+
       let handle = match handle {
         Ok(handle) => handle,
         Err(err) => {
@@ -903,14 +942,14 @@ impl Executor for VmJsExecutor {
           )));
         }
       };
- 
+
       match handle.join() {
         Ok(result) => result,
         Err(payload) => {
           if cancel.load(Ordering::Relaxed) {
             return Err(ExecError::Cancelled);
           }
- 
+
           let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
             (*s).to_string()
           } else if let Some(s) = payload.downcast_ref::<String>() {
@@ -918,7 +957,7 @@ impl Executor for VmJsExecutor {
           } else {
             "<non-string panic payload>".to_string()
           };
- 
+
           Err(ExecError::Js(JsError::new(
             ExecPhase::Runtime,
             None,
@@ -944,7 +983,9 @@ fn data_desc(
 }
 
 fn global_data_desc(value: Value) -> PropertyDescriptor {
-  data_desc(value, /* writable */ true, /* enumerable */ false, /* configurable */ true)
+  data_desc(
+    value, /* writable */ true, /* enumerable */ false, /* configurable */ true,
+  )
 }
 
 fn install_test262_host_object_for_realm(
@@ -1063,9 +1104,9 @@ fn test262_create_realm(
     ));
   };
 
-  let caller_realm = vm
-    .current_realm()
-    .ok_or(VmError::InvariantViolation("$262.createRealm requires an active realm"))?;
+  let caller_realm = vm.current_realm().ok_or(VmError::InvariantViolation(
+    "$262.createRealm requires an active realm",
+  ))?;
 
   // Create the new realm on the same heap/agent (shared symbol registry).
   let mut realm = match Realm::new(vm, scope.heap_mut()) {
@@ -1079,15 +1120,16 @@ fn test262_create_realm(
   let realm_id = realm.id();
   let global_object = realm.global_object();
   let intr = *realm.intrinsics();
-  let obj_262 = match install_test262_host_object_for_realm(vm, scope, realm_id, global_object, intr) {
-    Ok(obj) => obj,
-    Err(err) => {
-      realm.teardown(scope.heap_mut());
-      vm.teardown_realm(scope.heap_mut(), realm_id);
-      let _ = vm.load_realm_state(scope.heap_mut(), caller_realm);
-      return Err(err);
-    }
-  };
+  let obj_262 =
+    match install_test262_host_object_for_realm(vm, scope, realm_id, global_object, intr) {
+      Ok(obj) => obj,
+      Err(err) => {
+        realm.teardown(scope.heap_mut());
+        vm.teardown_realm(scope.heap_mut(), realm_id);
+        let _ = vm.load_realm_state(scope.heap_mut(), caller_realm);
+        return Err(err);
+      }
+    };
   scope.push_root(Value::Object(obj_262))?;
 
   // Store the realm so its persistent roots can be torn down after the test completes.
@@ -1130,10 +1172,14 @@ fn test262_detach_array_buffer(
 ) -> Result<Value, VmError> {
   let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
   let Value::Object(obj) = arg0 else {
-    return Err(VmError::TypeError("$262.detachArrayBuffer requires an ArrayBuffer object"));
+    return Err(VmError::TypeError(
+      "$262.detachArrayBuffer requires an ArrayBuffer object",
+    ));
   };
   if !scope.heap().is_array_buffer_object(obj) {
-    return Err(VmError::TypeError("$262.detachArrayBuffer requires an ArrayBuffer object"));
+    return Err(VmError::TypeError(
+      "$262.detachArrayBuffer requires an ArrayBuffer object",
+    ));
   }
   scope.heap_mut().detach_array_buffer(obj)?;
   Ok(Value::Undefined)
@@ -1165,176 +1211,166 @@ fn execute_module(
 
   let mut hooks = Test262ModuleHooks::new(&case.path);
   let result: ExecResult = (|| {
+    // 1) Run the harness prelude as a classic script to populate the global object.
+    if !harness_src.trim().is_empty() {
+      let harness_name = format!("{file_name}#harness");
+      let harness_source =
+        match SourceText::new_charged_arc(&mut runtime.heap, harness_name, harness_src) {
+          Ok(source) => source,
+          Err(err) => return Err(map_vm_error(case, harness_src, cancel, runtime, err)),
+        };
+      let result = runtime.exec_script_source_with_hooks(&mut hooks, harness_source);
 
-  // 1) Run the harness prelude as a classic script to populate the global object.
-  if !harness_src.trim().is_empty() {
-    let harness_name = format!("{file_name}#harness");
-    let harness_source = match SourceText::new_charged(&mut runtime.heap, harness_name, harness_src) {
-      Ok(source) => Arc::new(source),
-      Err(err) => return Err(map_vm_error(case, harness_src, cancel, runtime, err)),
-    };
-    let result = runtime.exec_script_source_with_hooks(&mut hooks, harness_source);
+      if cancel.load(Ordering::Relaxed) {
+        return Err(ExecError::Cancelled);
+      }
 
-    if cancel.load(Ordering::Relaxed) {
-      return Err(ExecError::Cancelled);
-    }
+      if let Err(err) = result {
+        return Err(map_vm_error(case, harness_src, cancel, runtime, err));
+      }
 
-    if let Err(err) = result {
-      return Err(map_vm_error(case, harness_src, cancel, runtime, err));
-    }
-
-    drain_microtasks_into_hooks(runtime, &mut hooks);
-    if let Some(err) = handle_microtask_errors(case, source, cancel, runtime, &mut hooks) {
-      return Err(err);
-    }
-  }
-
-  // 2) Parse the module source text.
-  let module_source = match SourceText::new_charged(&mut runtime.heap, file_name.to_string(), module_src) {
-    Ok(source) => Arc::new(source),
-    Err(err) => return Err(map_vm_error(case, module_src, cancel, runtime, err)),
-  };
-  let record = match SourceTextModuleRecord::parse_source_with_vm(&mut runtime.vm, module_source) {
-    Ok(record) => record,
-    Err(err) => return Err(map_vm_error(case, module_src, cancel, runtime, err)),
-  };
-
-  let module_id = match runtime.modules_mut().add_module(record) {
-    Ok(id) => id,
-    Err(err) => return Err(map_vm_error(case, module_src, cancel, runtime, err)),
-  };
-
-  // Record path metadata for relative import resolution (and cache the root module for cycles).
-  let root_path = match std::fs::canonicalize(&case.path) {
-    Ok(p) => p,
-    Err(_) => case.path.clone(),
-  };
-  hooks.register_module_path(module_id, root_path.clone());
-  hooks.register_module_cache(root_path, Vec::new(), module_id);
-
-  // 3) Load requested (static) modules.
-  let load_promise = {
-    // Do not map errors to `ExecError` while holding a `Scope` borrow of `runtime.heap`.
-    let result: Result<Value, VmError> = {
-      let (vm, modules, heap) = runtime.vm_modules_and_heap_mut();
-      let mut scope = heap.scope();
-      vm_js::load_requested_modules(vm, &mut scope, modules, &mut hooks, module_id, HostDefined::default())
-    };
-    match result {
-      Ok(v) => v,
-      Err(err) => {
-        return Err(map_vm_error_with_phase(
-          case,
-          module_src,
-          cancel,
-          runtime,
-          ExecPhase::Resolution,
-          err,
-        ))
+      drain_microtasks_into_hooks(runtime, &mut hooks);
+      if let Some(err) = handle_microtask_errors(case, source, cancel, runtime, &mut hooks) {
+        return Err(err);
       }
     }
-  };
 
-  let Value::Object(load_promise_obj) = load_promise else {
-    return Err(ExecError::Js(JsError::new(
-      ExecPhase::Resolution,
-      None,
-      "LoadRequestedModules returned a non-object promise",
-    )));
-  };
+    // 2) Parse the module source text.
+    let module_source = match SourceText::new_charged_arc(&mut runtime.heap, file_name, module_src)
+    {
+      Ok(source) => source,
+      Err(err) => return Err(map_vm_error(case, module_src, cancel, runtime, err)),
+    };
+    let record = match SourceTextModuleRecord::parse_source_with_vm(&mut runtime.vm, module_source)
+    {
+      Ok(record) => record,
+      Err(err) => return Err(map_vm_error(case, module_src, cancel, runtime, err)),
+    };
 
-  let load_promise_root = add_persistent_root(
-    case,
-    module_src,
-    cancel,
-    runtime,
-    ExecPhase::Resolution,
-    Value::Object(load_promise_obj),
-  )?;
+    let module_id = match runtime.modules_mut().add_module(record) {
+      Ok(id) => id,
+      Err(err) => return Err(map_vm_error(case, module_src, cancel, runtime, err)),
+    };
 
-  let load_outcome: ExecResult = (|| {
-    if cancel.load(Ordering::Relaxed) {
-      return Err(ExecError::Cancelled);
-    }
+    // Record path metadata for relative import resolution (and cache the root module for cycles).
+    let root_path = match std::fs::canonicalize(&case.path) {
+      Ok(p) => p,
+      Err(_) => case.path.clone(),
+    };
+    hooks.register_module_path(module_id, root_path.clone());
+    hooks.register_module_cache(root_path, Vec::new(), module_id);
 
-    drain_microtasks_into_hooks(runtime, &mut hooks);
-    if let Some(err) = handle_microtask_errors(case, source, cancel, runtime, &mut hooks) {
-      return Err(err);
-    }
-
-    match runtime.heap.promise_state(load_promise_obj) {
-      Ok(PromiseState::Fulfilled) => Ok(()),
-      Ok(PromiseState::Rejected) => {
-        let reason = runtime
-          .heap
-          .promise_result(load_promise_obj)
-          .map_err(|err| {
-            map_vm_error_with_phase(case, module_src, cancel, runtime, ExecPhase::Resolution, err)
-          })?
-          .unwrap_or(Value::Undefined);
-        let (typ, message, stack) = describe_thrown_value_with_stack(runtime, reason);
-        Err(ExecError::Js(JsError {
-          phase: ExecPhase::Resolution,
-          typ,
-          message,
-          stack,
-        }))
+    // 3) Load requested (static) modules.
+    let load_promise = {
+      // Do not map errors to `ExecError` while holding a `Scope` borrow of `runtime.heap`.
+      let result: Result<Value, VmError> = {
+        let (vm, modules, heap) = runtime.vm_modules_and_heap_mut();
+        let mut scope = heap.scope();
+        vm_js::load_requested_modules(
+          vm,
+          &mut scope,
+          modules,
+          &mut hooks,
+          module_id,
+          HostDefined::default(),
+        )
+      };
+      match result {
+        Ok(v) => v,
+        Err(err) => {
+          return Err(map_vm_error_with_phase(
+            case,
+            module_src,
+            cancel,
+            runtime,
+            ExecPhase::Resolution,
+            err,
+          ))
+        }
       }
-      Ok(PromiseState::Pending) => Err(ExecError::Js(JsError::new(
+    };
+
+    let Value::Object(load_promise_obj) = load_promise else {
+      return Err(ExecError::Js(JsError::new(
         ExecPhase::Resolution,
         None,
-        "module loading promise remained pending after microtask checkpoint",
-      ))),
-      Err(err) => Err(map_vm_error_with_phase(
-        case,
-        module_src,
-        cancel,
-        runtime,
-        ExecPhase::Resolution,
-        err,
-      )),
-    }
-  })();
-
-  runtime.heap.remove_root(load_promise_root);
-  load_outcome?;
-
-  // 3.5) Link the module graph (instantiation). This ensures link-time failures are reported as
-  // `negative.phase: resolution` in test262.
-  {
-    let global_object = runtime.realm().global_object();
-    let realm_id = runtime.realm().id();
-    let link_result: Result<(), VmError> = {
-      let (vm, modules, heap) = runtime.vm_modules_and_heap_mut();
-      modules.link(vm, heap, global_object, realm_id, module_id)
-    };
-    if let Err(err) = link_result {
-      return Err(map_vm_error_with_phase(
-        case,
-        module_src,
-        cancel,
-        runtime,
-        ExecPhase::Resolution,
-        err,
-      ));
-    }
-  }
-
-  // 4) Evaluate the root module (promise-returning API).
-  let eval_promise = {
-    let global_object = runtime.realm().global_object();
-    let realm_id = runtime.realm().id();
-
-    // Avoid mapping to `ExecError` while holding the borrow-split `(&mut Vm, &mut ModuleGraph, &mut Heap)`.
-    let eval_result: Result<Value, VmError> = {
-      let (vm, modules, heap) = runtime.vm_modules_and_heap_mut();
-      let mut dummy_host = ();
-      modules.evaluate(vm, heap, global_object, realm_id, module_id, &mut dummy_host, &mut hooks)
+        "LoadRequestedModules returned a non-object promise",
+      )));
     };
 
-    match eval_result {
-      Ok(v) => v,
-      Err(err) => {
+    let load_promise_root = add_persistent_root(
+      case,
+      module_src,
+      cancel,
+      runtime,
+      ExecPhase::Resolution,
+      Value::Object(load_promise_obj),
+    )?;
+
+    let load_outcome: ExecResult = (|| {
+      if cancel.load(Ordering::Relaxed) {
+        return Err(ExecError::Cancelled);
+      }
+
+      drain_microtasks_into_hooks(runtime, &mut hooks);
+      if let Some(err) = handle_microtask_errors(case, source, cancel, runtime, &mut hooks) {
+        return Err(err);
+      }
+
+      match runtime.heap.promise_state(load_promise_obj) {
+        Ok(PromiseState::Fulfilled) => Ok(()),
+        Ok(PromiseState::Rejected) => {
+          let reason = runtime
+            .heap
+            .promise_result(load_promise_obj)
+            .map_err(|err| {
+              map_vm_error_with_phase(
+                case,
+                module_src,
+                cancel,
+                runtime,
+                ExecPhase::Resolution,
+                err,
+              )
+            })?
+            .unwrap_or(Value::Undefined);
+          let (typ, message, stack) = describe_thrown_value_with_stack(runtime, reason);
+          Err(ExecError::Js(JsError {
+            phase: ExecPhase::Resolution,
+            typ,
+            message,
+            stack,
+          }))
+        }
+        Ok(PromiseState::Pending) => Err(ExecError::Js(JsError::new(
+          ExecPhase::Resolution,
+          None,
+          "module loading promise remained pending after microtask checkpoint",
+        ))),
+        Err(err) => Err(map_vm_error_with_phase(
+          case,
+          module_src,
+          cancel,
+          runtime,
+          ExecPhase::Resolution,
+          err,
+        )),
+      }
+    })();
+
+    runtime.heap.remove_root(load_promise_root);
+    load_outcome?;
+
+    // 3.5) Link the module graph (instantiation). This ensures link-time failures are reported as
+    // `negative.phase: resolution` in test262.
+    {
+      let global_object = runtime.realm().global_object();
+      let realm_id = runtime.realm().id();
+      let link_result: Result<(), VmError> = {
+        let (vm, modules, heap) = runtime.vm_modules_and_heap_mut();
+        modules.link(vm, heap, global_object, realm_id, module_id)
+      };
+      if let Err(err) = link_result {
         return Err(map_vm_error_with_phase(
           case,
           module_src,
@@ -1342,37 +1378,71 @@ fn execute_module(
           runtime,
           ExecPhase::Resolution,
           err,
-        ))
+        ));
       }
     }
-  };
 
-  let Value::Object(eval_promise_obj) = eval_promise else {
-    return Err(ExecError::Js(JsError::new(
+    // 4) Evaluate the root module (promise-returning API).
+    let eval_promise = {
+      let global_object = runtime.realm().global_object();
+      let realm_id = runtime.realm().id();
+
+      // Avoid mapping to `ExecError` while holding the borrow-split `(&mut Vm, &mut ModuleGraph, &mut Heap)`.
+      let eval_result: Result<Value, VmError> = {
+        let (vm, modules, heap) = runtime.vm_modules_and_heap_mut();
+        let mut dummy_host = ();
+        modules.evaluate(
+          vm,
+          heap,
+          global_object,
+          realm_id,
+          module_id,
+          &mut dummy_host,
+          &mut hooks,
+        )
+      };
+
+      match eval_result {
+        Ok(v) => v,
+        Err(err) => {
+          return Err(map_vm_error_with_phase(
+            case,
+            module_src,
+            cancel,
+            runtime,
+            ExecPhase::Resolution,
+            err,
+          ))
+        }
+      }
+    };
+
+    let Value::Object(eval_promise_obj) = eval_promise else {
+      return Err(ExecError::Js(JsError::new(
+        ExecPhase::Runtime,
+        None,
+        "module evaluation did not return a promise object",
+      )));
+    };
+
+    let eval_promise_root = add_persistent_root(
+      case,
+      module_src,
+      cancel,
+      runtime,
       ExecPhase::Runtime,
-      None,
-      "module evaluation did not return a promise object",
-    )));
-  };
+      Value::Object(eval_promise_obj),
+    )?;
 
-  let eval_promise_root = add_persistent_root(
-    case,
-    module_src,
-    cancel,
-    runtime,
-    ExecPhase::Runtime,
-    Value::Object(eval_promise_obj),
-  )?;
+    let eval_outcome: ExecResult = (|| {
+      if cancel.load(Ordering::Relaxed) {
+        return Err(ExecError::Cancelled);
+      }
 
-  let eval_outcome: ExecResult = (|| {
-    if cancel.load(Ordering::Relaxed) {
-      return Err(ExecError::Cancelled);
-    }
-
-    drain_microtasks_into_hooks(runtime, &mut hooks);
-    if let Some(err) = handle_microtask_errors(case, source, cancel, runtime, &mut hooks) {
-      return Err(err);
-    }
+      drain_microtasks_into_hooks(runtime, &mut hooks);
+      if let Some(err) = handle_microtask_errors(case, source, cancel, runtime, &mut hooks) {
+        return Err(err);
+      }
 
       match runtime.heap.promise_state(eval_promise_obj) {
         Ok(PromiseState::Fulfilled) => Ok(()),
@@ -1380,46 +1450,46 @@ fn execute_module(
           let reason = runtime
             .heap
             .promise_result(eval_promise_obj)
-          .map_err(|err| {
-            map_vm_error_with_phase(case, module_src, cancel, runtime, ExecPhase::Runtime, err)
-          })?
-          .unwrap_or(Value::Undefined);
-        let (typ, message, stack) = describe_thrown_value_with_stack(runtime, reason);
-        Err(ExecError::Js(JsError {
-          phase: ExecPhase::Runtime,
-          typ,
-          message,
-          stack,
-        }))
-      }
-      Ok(PromiseState::Pending) => {
-        let (vm, modules, heap) = runtime.vm_modules_and_heap_mut();
-        modules.abort_tla_evaluation(vm, heap, module_id);
-        Err(ExecError::Js(JsError::new(
+            .map_err(|err| {
+              map_vm_error_with_phase(case, module_src, cancel, runtime, ExecPhase::Runtime, err)
+            })?
+            .unwrap_or(Value::Undefined);
+          let (typ, message, stack) = describe_thrown_value_with_stack(runtime, reason);
+          Err(ExecError::Js(JsError {
+            phase: ExecPhase::Runtime,
+            typ,
+            message,
+            stack,
+          }))
+        }
+        Ok(PromiseState::Pending) => {
+          let (vm, modules, heap) = runtime.vm_modules_and_heap_mut();
+          modules.abort_tla_evaluation(vm, heap, module_id);
+          Err(ExecError::Js(JsError::new(
+            ExecPhase::Runtime,
+            None,
+            "module evaluation promise remained pending after microtask checkpoint",
+          )))
+        }
+        Err(err) => Err(map_vm_error_with_phase(
+          case,
+          module_src,
+          cancel,
+          runtime,
           ExecPhase::Runtime,
-          None,
-          "module evaluation promise remained pending after microtask checkpoint",
-        )))
+          err,
+        )),
       }
-      Err(err) => Err(map_vm_error_with_phase(
-        case,
-        module_src,
-        cancel,
-        runtime,
-        ExecPhase::Runtime,
-        err,
-      )),
+    })();
+
+    runtime.heap.remove_root(eval_promise_root);
+    eval_outcome?;
+
+    if is_async {
+      wait_for_done(case, source, cancel, runtime, &mut hooks)?;
     }
-  })();
 
-  runtime.heap.remove_root(eval_promise_root);
-  eval_outcome?;
-
-  if is_async {
-    wait_for_done(case, source, cancel, runtime, &mut hooks)?;
-  }
-
-  Ok(())
+    Ok(())
   })();
 
   if result.is_err() {
@@ -1584,7 +1654,11 @@ fn wait_for_done(
   outcome
 }
 
-fn module_load_type_error(vm: &mut Vm, scope: &mut vm_js::Scope<'_>, message: &str) -> Result<VmError, VmError> {
+fn module_load_type_error(
+  vm: &mut Vm,
+  scope: &mut vm_js::Scope<'_>,
+  message: &str,
+) -> Result<VmError, VmError> {
   let intr = vm
     .intrinsics()
     .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
@@ -1592,7 +1666,11 @@ fn module_load_type_error(vm: &mut Vm, scope: &mut vm_js::Scope<'_>, message: &s
   Ok(VmError::Throw(value))
 }
 
-fn module_load_syntax_error(vm: &mut Vm, scope: &mut vm_js::Scope<'_>, err: &VmError) -> Result<VmError, VmError> {
+fn module_load_syntax_error(
+  vm: &mut Vm,
+  scope: &mut vm_js::Scope<'_>,
+  err: &VmError,
+) -> Result<VmError, VmError> {
   module_load_syntax_error_message(vm, scope, &err.to_string())
 }
 
@@ -1624,7 +1702,8 @@ fn describe_thrown_value_with_stack(
       let message = get_object_string_data_property(&mut scope, obj, "message")
         .or_else(|| typ.clone())
         .unwrap_or_else(|| "<object>".to_string());
-      let stack = get_object_string_data_property(&mut scope, obj, "stack").filter(|s| !s.is_empty());
+      let stack =
+        get_object_string_data_property(&mut scope, obj, "stack").filter(|s| !s.is_empty());
       (typ, message, stack)
     }
     other => {
@@ -1656,7 +1735,10 @@ fn map_vm_error_with_phase(
         stack,
       })
     }
-    VmError::ThrowWithStack { value: thrown, stack } => {
+    VmError::ThrowWithStack {
+      value: thrown,
+      stack,
+    } => {
       let (typ, message, _) = describe_thrown_value_with_stack(runtime, thrown);
       ExecError::Js(JsError {
         phase,
@@ -1687,7 +1769,7 @@ fn map_vm_error(
   if cancel.load(Ordering::Relaxed) {
     return ExecError::Cancelled;
   }
- 
+
   match err {
     VmError::Syntax(mut diags) => {
       let file_name = if case.id.is_empty() {
@@ -1696,14 +1778,14 @@ fn map_vm_error(
         case.id.as_str()
       };
       let message = render_syntax_diagnostics(file_name, source, &mut diags);
- 
+
       ExecError::Js(JsError::new(
         ExecPhase::Parse,
         Some("SyntaxError".to_string()),
         message,
       ))
     }
- 
+
     VmError::Throw(thrown) => {
       let (typ, message) = describe_thrown_value(runtime, thrown);
       let stack = stack_from_frames(runtime.vm.capture_stack());
@@ -1715,7 +1797,10 @@ fn map_vm_error(
       })
     }
 
-    VmError::ThrowWithStack { value: thrown, stack } => {
+    VmError::ThrowWithStack {
+      value: thrown,
+      stack,
+    } => {
       let (typ, message) = describe_thrown_value(runtime, thrown);
       let stack = stack_from_frames(stack);
       ExecError::Js(JsError {
@@ -1725,12 +1810,12 @@ fn map_vm_error(
         stack,
       })
     }
- 
+
     VmError::Termination(term) => match term.reason {
-      TerminationReason::Interrupted | TerminationReason::DeadlineExceeded | TerminationReason::OutOfFuel => {
-        ExecError::Cancelled
-      }
- 
+      TerminationReason::Interrupted
+      | TerminationReason::DeadlineExceeded
+      | TerminationReason::OutOfFuel => ExecError::Cancelled,
+
       // `vm-js` reports stack overflows via `TerminationReason::StackOverflow`, but test262 expects
       // a JS-level `RangeError` (and the runner treats `ExecError::Cancelled` as a timeout).
       //
@@ -1742,7 +1827,7 @@ fn map_vm_error(
         message: term.to_string(),
         stack: stack_from_frames(term.stack),
       }),
- 
+
       // Chosen mapping: treat OOM as a `RangeError` (resource exhaustion), which
       // is also where we classify stack overflow.
       TerminationReason::OutOfMemory => ExecError::Js(JsError {
@@ -1752,7 +1837,7 @@ fn map_vm_error(
         stack: stack_from_frames(term.stack),
       }),
     },
- 
+
     VmError::NotCallable
     | VmError::NotConstructable
     | VmError::PrototypeCycle
@@ -1764,14 +1849,14 @@ fn map_vm_error(
       message: err.to_string(),
       stack: stack_from_frames(runtime.vm.capture_stack()),
     }),
- 
+
     VmError::PrototypeChainTooDeep => ExecError::Js(JsError {
       phase: ExecPhase::Runtime,
       typ: Some("RangeError".to_string()),
       message: err.to_string(),
       stack: stack_from_frames(runtime.vm.capture_stack()),
     }),
- 
+
     // Chosen mapping: treat OOM as a `RangeError` (resource exhaustion), which
     // is also where we classify stack overflow.
     VmError::OutOfMemory => ExecError::Js(JsError {
@@ -1780,14 +1865,14 @@ fn map_vm_error(
       message: err.to_string(),
       stack: stack_from_frames(runtime.vm.capture_stack()),
     }),
- 
+
     VmError::Unimplemented(_) => ExecError::Js(JsError {
       phase: ExecPhase::Runtime,
       typ: None,
       message: err.to_string(),
       stack: stack_from_frames(runtime.vm.capture_stack()),
     }),
- 
+
     other => ExecError::Js(JsError {
       phase: ExecPhase::Runtime,
       typ: None,
@@ -1813,7 +1898,7 @@ fn render_syntax_diagnostics(
     .collect::<Vec<_>>()
     .join("\n\n")
 }
- 
+
 fn describe_thrown_value(runtime: &mut vm_js::JsRuntime, value: Value) -> (Option<String>, String) {
   // Root the thrown value while we allocate property keys so GC cannot collect
   // it out from under us.
@@ -1829,7 +1914,7 @@ fn describe_thrown_value(runtime: &mut vm_js::JsRuntime, value: Value) -> (Optio
         .unwrap_or_else(|| "<object>".to_string());
       (typ, message)
     }
- 
+
     Value::Undefined => (None, "undefined".to_string()),
     Value::Null => (None, "null".to_string()),
     Value::Bool(b) => (None, b.to_string()),
@@ -1855,14 +1940,20 @@ fn describe_thrown_value(runtime: &mut vm_js::JsRuntime, value: Value) -> (Optio
       let msg = scope
         .heap()
         .symbol_description(sym)
-        .and_then(|desc| scope.heap().get_string(desc).ok().map(|s| s.to_utf8_lossy()))
+        .and_then(|desc| {
+          scope
+            .heap()
+            .get_string(desc)
+            .ok()
+            .map(|s| s.to_utf8_lossy())
+        })
         .map(|desc| format!("Symbol({desc})"))
         .unwrap_or_else(|| "Symbol()".to_string());
       (None, msg)
     }
   }
 }
- 
+
 fn get_object_string_data_property(
   scope: &mut vm_js::Scope<'_>,
   obj: vm_js::GcObject,
@@ -1892,14 +1983,17 @@ fn get_object_data_property(
   }
 }
 
-fn get_object_constructor_name(scope: &mut vm_js::Scope<'_>, obj: vm_js::GcObject) -> Option<String> {
+fn get_object_constructor_name(
+  scope: &mut vm_js::Scope<'_>,
+  obj: vm_js::GcObject,
+) -> Option<String> {
   let ctor = get_object_data_property(scope, obj, "constructor")?;
   let Value::Object(ctor_obj) = ctor else {
     return None;
   };
   get_object_string_data_property(scope, ctor_obj, "name")
 }
- 
+
 fn format_js_number(n: f64) -> String {
   if n.is_nan() {
     return "NaN".to_string();
@@ -1915,7 +2009,7 @@ fn format_js_number(n: f64) -> String {
   // about (`1`, `-0`, etc).
   n.to_string()
 }
- 
+
 fn stack_from_frames(frames: Vec<StackFrame>) -> Option<String> {
   if frames.is_empty() {
     return None;
@@ -1927,17 +2021,17 @@ fn stack_from_frames(frames: Vec<StackFrame>) -> Option<String> {
     Some(formatted)
   }
 }
- 
+
 #[cfg(test)]
 mod tests {
   use super::*;
   use crate::frontmatter::Frontmatter;
-  use crate::report::ExpectedOutcome;
   use crate::harness::{assemble_source, HarnessMode};
-  use std::path::PathBuf;
+  use crate::report::ExpectedOutcome;
   use std::fs;
+  use std::path::PathBuf;
   use tempfile::tempdir;
-  
+
   fn test_case(id: &str) -> TestCase {
     TestCase {
       id: id.to_string(),
@@ -1948,15 +2042,17 @@ mod tests {
       body: String::new(),
     }
   }
- 
+
   #[test]
   fn cancellation_flag_short_circuits() {
     let exec = VmJsExecutor::default();
     let cancel = Arc::new(AtomicBool::new(true));
-    let err = exec.execute(&test_case("cancel.js"), "1;", &cancel).unwrap_err();
+    let err = exec
+      .execute(&test_case("cancel.js"), "1;", &cancel)
+      .unwrap_err();
     assert!(matches!(err, ExecError::Cancelled));
   }
- 
+
   #[test]
   fn syntax_error_maps_to_parse_syntaxerror() {
     let exec = VmJsExecutor::default();
@@ -1975,7 +2071,7 @@ mod tests {
       js.message
     );
   }
- 
+
   #[test]
   fn throw_number_maps_to_runtime_error() {
     let exec = VmJsExecutor::default();
@@ -2122,7 +2218,10 @@ assert.sameValue(realm2.global.Object !== other.Object, true, 'createRealm is re
   #[test]
   fn create_realm_teardown_clears_vm_owned_state() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
-    let heap = Heap::new(HeapLimits::new(DEFAULT_HEAP_MAX_BYTES, DEFAULT_HEAP_GC_THRESHOLD_BYTES));
+    let heap = Heap::new(HeapLimits::new(
+      DEFAULT_HEAP_MAX_BYTES,
+      DEFAULT_HEAP_GC_THRESHOLD_BYTES,
+    ));
     let mut runtime = vm_js::JsRuntime::new(vm, heap)?;
     install_test262_host_object(&mut runtime)?;
 
@@ -2168,7 +2267,10 @@ assert.sameValue(realm2.global.Object !== other.Object, true, 'createRealm is re
       .vm
       .load_realm_state(&mut runtime.heap, created_realm_id)
       .expect_err("expected load_realm_state to fail after realm teardown");
-    assert!(matches!(err, VmError::InvariantViolation("unknown realm id")));
+    assert!(matches!(
+      err,
+      VmError::InvariantViolation("unknown realm id")
+    ));
 
     Ok(())
   }
@@ -2399,7 +2501,10 @@ var assert = {
     fs::write(test_dir.join("dep.js"), "export const x = 1;\n").unwrap();
 
     let vm = Vm::new(VmOptions::default());
-    let heap = Heap::new(HeapLimits::new(DEFAULT_HEAP_MAX_BYTES, DEFAULT_HEAP_GC_THRESHOLD_BYTES));
+    let heap = Heap::new(HeapLimits::new(
+      DEFAULT_HEAP_MAX_BYTES,
+      DEFAULT_HEAP_GC_THRESHOLD_BYTES,
+    ));
     let mut runtime = vm_js::JsRuntime::new(vm, heap).unwrap();
     let mut hooks = Test262ModuleHooks::new(&test_path);
 
@@ -2413,9 +2518,7 @@ var assert = {
         );
     "#;
 
-    let source_text = Arc::new(
-      SourceText::new_charged(&mut runtime.heap, "case.js", source).unwrap(),
-    );
+    let source_text = SourceText::new_charged_arc(&mut runtime.heap, "case.js", source).unwrap();
     runtime
       .exec_script_source_with_hooks(&mut hooks, source_text)
       .unwrap();

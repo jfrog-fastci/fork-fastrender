@@ -27,7 +27,6 @@ pub mod native_js_runner;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::{collections::HashMap, mem};
 
 use diagnostics::{Diagnostic, FileId, Span, TextRange};
@@ -36,9 +35,9 @@ use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
 use vm_js::{
   finish_loading_imported_module, format_stack_trace, format_termination, load_requested_modules,
   GcObject, Heap, HeapLimits, HostDefined, Job, JsRuntime, MicrotaskQueue, ModuleGraph, ModuleId,
-  ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, RealmId, RootId, Scope, SourceText,
-  SourceTextInput, SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext,
-  VmOptions,
+  ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, RealmId, RootId, Scope,
+  SourceText, SourceTextInput, SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks,
+  VmJobContext, VmOptions,
 };
 
 const OBSERVE_SCRIPT: &str = "String(globalThis.__native_result)";
@@ -139,7 +138,11 @@ impl std::fmt::Display for TsToJsError {
         Ok(())
       }
       TsToJsError::Emit(diag) => {
-        write!(f, "emit-js TS→JS emission failed: {}: {}", diag.code, diag.message)
+        write!(
+          f,
+          "emit-js TS→JS emission failed: {}: {}",
+          diag.code, diag.message
+        )
       }
       #[cfg(feature = "optimize-js-fallback")]
       TsToJsError::Optimize(diagnostics) => {
@@ -275,8 +278,12 @@ fn erase_with_optimize_js_fallback(
     SourceType::Module => TopLevelMode::Module,
   };
   let program = compile_source(source, mode, false).map_err(TsToJsError::Optimize)?;
-  let bytes = program_to_js(&program, &DecompileOptions::default(), EmitOptions::minified())
-    .map_err(TsToJsError::OptimizeEmit)?;
+  let bytes = program_to_js(
+    &program,
+    &DecompileOptions::default(),
+    EmitOptions::minified(),
+  )
+  .map_err(TsToJsError::OptimizeEmit)?;
   Ok(String::from_utf8(bytes).expect("optimize-js emits UTF-8"))
 }
 
@@ -471,9 +478,7 @@ fn attach_stdio(outcome: RunOutcome, stdout: String, stderr: String) -> RunOutco
       stdout,
       stderr,
     },
-    RunOutcome::Throw {
-      message, stack, ..
-    } => RunOutcome::Throw {
+    RunOutcome::Throw { message, stack, .. } => RunOutcome::Throw {
       message,
       stack,
       stdout,
@@ -609,10 +614,7 @@ pub fn compare_run_outcomes(
       }
       Ok(())
     }
-    (
-      RunOutcome::CompileError { diagnostic: ed },
-      RunOutcome::CompileError { diagnostic: ad },
-    ) => {
+    (RunOutcome::CompileError { diagnostic: ed }, RunOutcome::CompileError { diagnostic: ad }) => {
       // Spans can differ between compilers/backends; compare only the stable diagnostic identity.
       if ed.code != ad.code || ed.message != ad.message {
         return Err(format!(
@@ -649,11 +651,10 @@ pub fn run_fixture_with_options(
   options: &OracleHarnessOptions,
 ) -> Result<String, OracleHarnessError> {
   let path = path.as_ref();
-  let source_name: Arc<str> = path
+  let source_name = path
     .file_name()
     .and_then(|s| s.to_str())
-    .unwrap_or("<fixture>")
-    .into();
+    .unwrap_or("<fixture>");
   let source_text = fs::read_to_string(path)?;
   let ext = path.extension().and_then(|ext| ext.to_str());
   if matches!(ext, Some("ts") | Some("tsx")) {
@@ -674,13 +675,15 @@ pub fn run_fixture_outcome(path: impl AsRef<Path>) -> RunOutcome {
   run_fixture_outcome_with_options(path, &OracleHarnessOptions::default())
 }
 
-pub fn run_fixture_outcome_with_options(path: impl AsRef<Path>, options: &OracleHarnessOptions) -> RunOutcome {
+pub fn run_fixture_outcome_with_options(
+  path: impl AsRef<Path>,
+  options: &OracleHarnessOptions,
+) -> RunOutcome {
   let path = path.as_ref();
-  let source_name: Arc<str> = path
+  let source_name = path
     .file_name()
     .and_then(|s| s.to_str())
-    .unwrap_or("<fixture>")
-    .into();
+    .unwrap_or("<fixture>");
   let source_text = match fs::read_to_string(path) {
     Ok(src) => src,
     Err(err) => {
@@ -739,8 +742,8 @@ pub fn run_js_source_outcome_with_options<'a>(
       return vm_error_to_outcome(&mut rt, err);
     }
 
-    let source = match SourceText::new_charged(&mut rt.heap, source_name, source_text) {
-      Ok(source) => Arc::new(source),
+    let source = match SourceText::new_charged_arc(&mut rt.heap, source_name, source_text) {
+      Ok(source) => source,
       Err(err) => return vm_error_to_outcome(&mut rt, err),
     };
     let value = match rt.exec_script_source(source) {
@@ -782,13 +785,12 @@ pub fn run_js_source_with_options<'a>(
   let mut rt = new_runtime_with_options(options).map_err(|e| OracleHarnessError::Vm {
     message: e.to_string(),
   })?;
-  let source = Arc::new(
-    SourceText::new_charged(&mut rt.heap, source_name, source_text).map_err(|err| {
+  let source =
+    SourceText::new_charged_arc(&mut rt.heap, source_name, source_text).map_err(|err| {
       OracleHarnessError::Vm {
         message: err.to_string(),
       }
-    })?,
-  );
+    })?;
 
   let result = rt.exec_script_source(source);
   let out = match result {
@@ -833,10 +835,8 @@ pub fn run_js_source_capture_stdout_with_options<'a>(
   let out = (|| {
     install_native_builtins(&mut rt).map_err(|err| map_vm_error(&mut rt, err))?;
 
-    let source = Arc::new(
-      SourceText::new_charged(&mut rt.heap, source_name, source_text)
-        .map_err(|err| map_vm_error(&mut rt, err))?,
-    );
+    let source = SourceText::new_charged_arc(&mut rt.heap, source_name, source_text)
+      .map_err(|err| map_vm_error(&mut rt, err))?;
     rt.exec_script_source(source)
       .map_err(|err| map_vm_error(&mut rt, err))?;
 
@@ -845,8 +845,7 @@ pub fn run_js_source_capture_stdout_with_options<'a>(
       .map_err(|err| map_vm_error(&mut rt, err))?;
 
     let capture =
-      rt
-        .vm
+      rt.vm
         .take_user_data::<ConsoleCapture>()
         .ok_or_else(|| OracleHarnessError::Vm {
           message: "stdout capture buffer missing".to_string(),
@@ -884,11 +883,10 @@ pub fn run_fixture_capture_stdout_with_options(
   options: &OracleHarnessOptions,
 ) -> Result<String, OracleHarnessError> {
   let path = path.as_ref();
-  let source_name: Arc<str> = path
+  let source_name = path
     .file_name()
     .and_then(|s| s.to_str())
-    .unwrap_or("<fixture>")
-    .into();
+    .unwrap_or("<fixture>");
   let source_text = fs::read_to_string(path)?;
   let ext = path.extension().and_then(|ext| ext.to_str());
   if matches!(ext, Some("ts") | Some("tsx")) {
@@ -933,21 +931,17 @@ pub fn run_js_source_with_native_builtins_capture_stdout_with_options<'a>(
     rt.register_global_native_function(NATIVE_EPRINT_NAME, native_eprint, 0)
       .map_err(|err| map_vm_error(&mut rt, err))?;
 
-    let prelude = Arc::new(
-      SourceText::new_charged(
-        &mut rt.heap,
-        NATIVE_BUILTINS_PRELUDE_SOURCE_NAME,
-        NATIVE_BUILTINS_PRELUDE_SCRIPT,
-      )
-      .map_err(|err| map_vm_error(&mut rt, err))?,
-    );
+    let prelude = SourceText::new_charged_arc(
+      &mut rt.heap,
+      NATIVE_BUILTINS_PRELUDE_SOURCE_NAME,
+      NATIVE_BUILTINS_PRELUDE_SCRIPT,
+    )
+    .map_err(|err| map_vm_error(&mut rt, err))?;
     rt.exec_script_source(prelude)
       .map_err(|err| map_vm_error(&mut rt, err))?;
 
-    let source = Arc::new(
-      SourceText::new_charged(&mut rt.heap, source_name, source_text)
-        .map_err(|err| map_vm_error(&mut rt, err))?,
-    );
+    let source = SourceText::new_charged_arc(&mut rt.heap, source_name, source_text)
+      .map_err(|err| map_vm_error(&mut rt, err))?;
     rt.exec_script_source(source)
       .map_err(|err| map_vm_error(&mut rt, err))?;
 
@@ -956,8 +950,7 @@ pub fn run_js_source_with_native_builtins_capture_stdout_with_options<'a>(
       .map_err(|err| map_vm_error(&mut rt, err))?;
 
     let capture =
-      rt
-        .vm
+      rt.vm
         .take_user_data::<ConsoleCapture>()
         .ok_or_else(|| OracleHarnessError::Vm {
           message: "stdout capture buffer missing".to_string(),
@@ -988,11 +981,7 @@ pub fn run_typescript_source_with_native_builtins_capture_stdout_with_options<'a
   options: &OracleHarnessOptions,
 ) -> Result<String, OracleHarnessError> {
   let js = erase_typescript_to_js(source_text)?;
-  run_js_source_with_native_builtins_capture_stdout_with_options(
-    source_name,
-    js,
-    options,
-  )
+  run_js_source_with_native_builtins_capture_stdout_with_options(source_name, js, options)
 }
 
 fn value_to_fixture_string(
@@ -1003,8 +992,7 @@ fn value_to_fixture_string(
   // Fast path: synchronous string.
   if let Value::String(s) = value {
     return Ok(
-      rt
-        .heap()
+      rt.heap()
         .get_string(s)
         .map(|js| js.to_utf8_lossy())
         .map_err(|e| OracleHarnessError::Vm {
@@ -1082,8 +1070,7 @@ fn wait_for_promise(
           return Err(OracleHarnessError::NonStringPromiseFulfillment { value });
         };
         return Ok(
-          rt
-            .heap()
+          rt.heap()
             .get_string(s)
             .map(|js| js.to_utf8_lossy())
             .map_err(|e| OracleHarnessError::Vm {
@@ -1494,8 +1481,8 @@ impl NativeRunner for VmJsOracleRunner {
       return Err(finish_err(&mut rt, diag));
     }
 
-    let fixture_source = match SourceText::new_charged(&mut rt.heap, "<fixture>", js) {
-      Ok(source) => Arc::new(source),
+    let fixture_source = match SourceText::new_charged_arc(&mut rt.heap, "<fixture>", js) {
+      Ok(source) => source,
       Err(err) => {
         let diag = vm_error_to_diagnostic(&rt, err);
         return Err(finish_err(&mut rt, diag));
@@ -1567,8 +1554,8 @@ pub fn run_fixture_ts_outcome_with_name_and_options(
       return vm_error_to_outcome(&mut rt, err);
     }
 
-    let fixture_source = match SourceText::new_charged(&mut rt.heap, name, js) {
-      Ok(source) => Arc::new(source),
+    let fixture_source = match SourceText::new_charged_arc(&mut rt.heap, name, js) {
+      Ok(source) => source,
       Err(err) => return vm_error_to_outcome(&mut rt, err),
     };
     if let Err(err) = rt.exec_script_source(fixture_source) {
@@ -1579,11 +1566,11 @@ pub fn run_fixture_ts_outcome_with_name_and_options(
       return vm_error_to_outcome(&mut rt, err);
     }
 
-    let observe_source = match SourceText::new_charged(&mut rt.heap, OBSERVE_SOURCE_NAME, OBSERVE_SCRIPT)
-    {
-      Ok(source) => Arc::new(source),
-      Err(err) => return vm_error_to_outcome(&mut rt, err),
-    };
+    let observe_source =
+      match SourceText::new_charged_arc(&mut rt.heap, OBSERVE_SOURCE_NAME, OBSERVE_SCRIPT) {
+        Ok(source) => source,
+        Err(err) => return vm_error_to_outcome(&mut rt, err),
+      };
     let value = match rt.exec_script_source(observe_source) {
       Ok(v) => v,
       Err(err) => return vm_error_to_outcome(&mut rt, err),
@@ -1762,8 +1749,8 @@ impl NativeRunner for NativeJsRunner {
     opts.opt_level = self.opt_level;
     opts.debug = self.debug;
 
-    let output = native_js::compiler::compile_typescript_to_artifact(&ts, opts, None).map_err(|err| {
-      match err {
+    let output = native_js::compiler::compile_typescript_to_artifact(&ts, opts, None).map_err(
+      |err| match err {
         native_js::NativeJsError::Parse(parse_err) => parse_err.to_diagnostic(FileId(0)),
         other => {
           if let Some(diags) = other.diagnostics() {
@@ -1772,8 +1759,8 @@ impl NativeRunner for NativeJsRunner {
             harness_error(format!("native-js compilation failed: {other}"))
           }
         }
-      }
-    })?;
+      },
+    )?;
 
     let exe_path = output.path.clone();
     let llvm_ir_path = self
@@ -2021,10 +2008,8 @@ pub fn run_fixture_ts_with_name_and_options(
   let mut rt = new_runtime_with_options(options)
     .map_err(|err| harness_error(format!("failed to init vm-js: {err}")))?;
 
-  let fixture_source = Arc::new(
-    SourceText::new_charged(&mut rt.heap, name, js)
-      .map_err(|err| harness_error(format!("{err}")))?,
-  );
+  let fixture_source = SourceText::new_charged_arc(&mut rt.heap, name, js)
+    .map_err(|err| harness_error(format!("{err}")))?;
   if let Err(err) = rt.exec_script_source(fixture_source) {
     let diag = vm_error_to_diagnostic(&rt, err);
     teardown_microtasks(&mut rt);
@@ -2037,13 +2022,14 @@ pub fn run_fixture_ts_with_name_and_options(
     return Err(diag);
   }
 
-  let observe_source = match SourceText::new_charged(&mut rt.heap, OBSERVE_SOURCE_NAME, OBSERVE_SCRIPT) {
-    Ok(source) => Arc::new(source),
-    Err(err) => {
-      teardown_microtasks(&mut rt);
-      return Err(harness_error(format!("{err}")));
-    }
-  };
+  let observe_source =
+    match SourceText::new_charged_arc(&mut rt.heap, OBSERVE_SOURCE_NAME, OBSERVE_SCRIPT) {
+      Ok(source) => source,
+      Err(err) => {
+        teardown_microtasks(&mut rt);
+        return Err(harness_error(format!("{err}")));
+      }
+    };
   let value = match rt.exec_script_source(observe_source) {
     Ok(v) => v,
     Err(err) => {
@@ -2080,7 +2066,12 @@ fn path_to_forward_slash_string(path: &Path) -> String {
     .join("/")
 }
 
-fn stringify_value_with_vm_and_heap(vm: &mut Vm, heap: &mut Heap, value: Value, depth: usize) -> String {
+fn stringify_value_with_vm_and_heap(
+  vm: &mut Vm,
+  heap: &mut Heap,
+  value: Value,
+  depth: usize,
+) -> String {
   const MAX_DEPTH: usize = 8;
   if depth >= MAX_DEPTH {
     return format!("{value:?}");
@@ -2165,15 +2156,17 @@ impl FixtureModuleLoader {
   }
 
   fn register_module_path(&mut self, module: ModuleId, canonical_path: PathBuf) {
-    self.module_ids_by_path.insert(canonical_path.clone(), module);
+    self
+      .module_ids_by_path
+      .insert(canonical_path.clone(), module);
     self.module_paths_by_id.insert(module, canonical_path);
   }
 
-  fn stable_source_name(&self, canonical_path: &Path) -> Result<Arc<str>, VmError> {
+  fn stable_source_name(&self, canonical_path: &Path) -> Result<String, VmError> {
     let rel = canonical_path.strip_prefix(&self.root_dir).map_err(|_| {
       VmError::InvariantViolation("module path is not under the fixture root directory")
     })?;
-    Ok(Arc::<str>::from(path_to_forward_slash_string(rel)))
+    Ok(path_to_forward_slash_string(rel))
   }
 
   fn base_dir_for_referrer(&self, referrer: ModuleReferrer) -> Result<PathBuf, VmError> {
@@ -2290,8 +2283,11 @@ impl VmHostHooks for FixtureModuleLoader {
       let intr = vm
         .intrinsics()
         .ok_or(VmError::Unimplemented("module loading requires intrinsics"))?;
-      let err =
-        vm_js::new_type_error_object(scope, &intr, "module specifier must include a file extension")?;
+      let err = vm_js::new_type_error_object(
+        scope,
+        &intr,
+        "module specifier must include a file extension",
+      )?;
       return self.finish_with_error(vm, scope, modules, referrer, module_request, payload, err);
     }
 
@@ -2384,7 +2380,7 @@ impl VmHostHooks for FixtureModuleLoader {
     };
 
     let name = self.stable_source_name(&canonical)?;
-    let source_text = SourceText::new_charged_arc(scope.heap_mut(), name, js)?;
+    let source_text = SourceText::new_charged_arc(scope.heap_mut(), &name, js)?;
 
     let record = match SourceTextModuleRecord::parse_source_with_vm(vm, source_text) {
       Ok(record) => record,
@@ -2430,8 +2426,12 @@ impl VmHostHooks for FixtureModuleLoader {
 /// Other modules are loaded on-demand from the same directory via relative `import` specifiers.
 pub fn run_fixture_ts_module_dir(dir: impl AsRef<Path>) -> Result<String, Diagnostic> {
   let dir = dir.as_ref();
-  let root_dir = fs::canonicalize(dir)
-    .map_err(|err| harness_error(format!("failed to canonicalize fixture dir {}: {err}", dir.display())))?;
+  let root_dir = fs::canonicalize(dir).map_err(|err| {
+    harness_error(format!(
+      "failed to canonicalize fixture dir {}: {err}",
+      dir.display()
+    ))
+  })?;
 
   let entry_path = ["entry.ts", "entry.tsx", "entry.js"]
     .into_iter()
@@ -2459,11 +2459,11 @@ pub fn run_fixture_ts_module_dir(dir: impl AsRef<Path>) -> Result<String, Diagno
     )));
   }
 
-  let entry_name = Arc::<str>::from(path_to_forward_slash_string(
+  let entry_name = path_to_forward_slash_string(
     entry_path
       .strip_prefix(&root_dir)
       .expect("already checked starts_with"),
-  ));
+  );
 
   let options = OracleHarnessOptions::default();
   let mut rt = new_runtime_with_options(&options)
@@ -2477,18 +2477,20 @@ pub fn run_fixture_ts_module_dir(dir: impl AsRef<Path>) -> Result<String, Diagno
     let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
 
     // Load + parse the entry module.
-    let entry_src = fs::read_to_string(&entry_path)
-      .map_err(|err| harness_error(format!("failed to read entry module {}: {err}", entry_path.display())))?;
+    let entry_src = fs::read_to_string(&entry_path).map_err(|err| {
+      harness_error(format!(
+        "failed to read entry module {}: {err}",
+        entry_path.display()
+      ))
+    })?;
     let entry_ext = entry_path.extension().and_then(|ext| ext.to_str());
     let entry_js = if matches!(entry_ext, Some("ts") | Some("tsx")) {
       ts_to_js_with_source_type(&entry_src, SourceType::Module)?
     } else {
       entry_src
     };
-    let entry_source_text = Arc::new(
-      SourceText::new_charged(heap, entry_name, entry_js)
-        .map_err(|err| vm_error_to_diagnostic_with_heap(&*heap, err))?,
-    );
+    let entry_source_text = SourceText::new_charged_arc(heap, &entry_name, entry_js)
+      .map_err(|err| vm_error_to_diagnostic_with_heap(&*heap, err))?;
     let entry_record = SourceTextModuleRecord::parse_source_with_vm(vm, entry_source_text)
       .map_err(|err| vm_error_to_diagnostic_with_heap(&*heap, err))?;
     let entry_id = modules
@@ -2499,15 +2501,26 @@ pub fn run_fixture_ts_module_dir(dir: impl AsRef<Path>) -> Result<String, Diagno
     // Load the static module graph.
     let load_promise_value = {
       let mut scope = heap.scope();
-      load_requested_modules(vm, &mut scope, modules, &mut loader, entry_id, HostDefined::default())
-        .map_err(|err| vm_error_to_diagnostic_with_heap(scope.heap(), err))?
+      load_requested_modules(
+        vm,
+        &mut scope,
+        modules,
+        &mut loader,
+        entry_id,
+        HostDefined::default(),
+      )
+      .map_err(|err| vm_error_to_diagnostic_with_heap(scope.heap(), err))?
     };
 
     let Value::Object(load_promise) = load_promise_value else {
-      return Err(harness_error("module graph loading returned a non-object value"));
+      return Err(harness_error(
+        "module graph loading returned a non-object value",
+      ));
     };
     if !heap.is_promise(load_promise) {
-      return Err(harness_error("module graph loading returned a non-promise object"));
+      return Err(harness_error(
+        "module graph loading returned a non-promise object",
+      ));
     }
 
     match heap
@@ -2568,10 +2581,14 @@ pub fn run_fixture_ts_module_dir(dir: impl AsRef<Path>) -> Result<String, Diagno
     };
 
     let Value::Object(eval_promise) = eval_promise_value else {
-      return Err(harness_error("module evaluation did not return a promise object"));
+      return Err(harness_error(
+        "module evaluation did not return a promise object",
+      ));
     };
     if !heap.is_promise(eval_promise) {
-      return Err(harness_error("module evaluation returned a non-promise object"));
+      return Err(harness_error(
+        "module evaluation returned a non-promise object",
+      ));
     }
 
     // Root the evaluation promise while running microtasks; it may otherwise be collected.
@@ -2641,14 +2658,15 @@ pub fn run_fixture_ts_module_dir(dir: impl AsRef<Path>) -> Result<String, Diagno
     return Err(diag);
   }
 
-  let observe_source = match SourceText::new_charged(&mut rt.heap, OBSERVE_SOURCE_NAME, OBSERVE_SCRIPT) {
-    Ok(source) => Arc::new(source),
-    Err(err) => {
-      let diag = vm_error_to_diagnostic(&rt, err);
-      teardown_microtasks(&mut rt);
-      return Err(diag);
-    }
-  };
+  let observe_source =
+    match SourceText::new_charged_arc(&mut rt.heap, OBSERVE_SOURCE_NAME, OBSERVE_SCRIPT) {
+      Ok(source) => source,
+      Err(err) => {
+        let diag = vm_error_to_diagnostic(&rt, err);
+        teardown_microtasks(&mut rt);
+        return Err(diag);
+      }
+    };
   let value = match rt.exec_script_source(observe_source) {
     Ok(v) => v,
     Err(err) => {
@@ -2709,8 +2727,8 @@ mod tests {
     );
 
     for fixture in fixtures {
-      let source =
-        std::fs::read_to_string(&fixture).unwrap_or_else(|err| panic!("failed to read fixture {fixture:?}: {err}"));
+      let source = std::fs::read_to_string(&fixture)
+        .unwrap_or_else(|err| panic!("failed to read fixture {fixture:?}: {err}"));
       let js = erase_typescript_to_js(&source)
         .unwrap_or_else(|err| panic!("failed to erase fixture {fixture:?}: {err}"));
 
@@ -2719,18 +2737,20 @@ mod tests {
         ..vm_js::VmOptions::default()
       });
       let heap = vm_js::Heap::new(vm_js::HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024));
-      let mut runtime =
-        vm_js::JsRuntime::new(vm, heap).unwrap_or_else(|err| panic!("failed to create oracle runtime for {fixture:?}: {err:?}"));
-      runtime
-        .exec_script(&js)
-        .unwrap_or_else(|err| panic!("oracle execution failed for {fixture:?}: {err:?}\nJS:\n{js}"));
+      let mut runtime = vm_js::JsRuntime::new(vm, heap)
+        .unwrap_or_else(|err| panic!("failed to create oracle runtime for {fixture:?}: {err:?}"));
+      runtime.exec_script(&js).unwrap_or_else(|err| {
+        panic!("oracle execution failed for {fixture:?}: {err:?}\nJS:\n{js}")
+      });
 
       // Drain any Promise jobs queued by the fixture so we don't drop `Job` values that still hold
       // persistent roots.
       runtime
         .vm
         .perform_microtask_checkpoint(&mut runtime.heap)
-        .unwrap_or_else(|err| panic!("oracle microtask checkpoint failed for {fixture:?}: {err:?}\nJS:\n{js}"));
+        .unwrap_or_else(|err| {
+          panic!("oracle microtask checkpoint failed for {fixture:?}: {err:?}\nJS:\n{js}")
+        });
     }
   }
 
@@ -2750,7 +2770,9 @@ mod tests {
           source_type: parse_js::SourceType::Module,
         },
       )
-      .unwrap_or_else(|err| panic!("erased JS should parse as an ECMAScript module: {err}\nJS:\n{js}"));
+      .unwrap_or_else(|err| {
+        panic!("erased JS should parse as an ECMAScript module: {err}\nJS:\n{js}")
+      });
     }
   }
 
@@ -2771,7 +2793,9 @@ mod tests {
         panic!("expected TsToJsError::Erase for {label}, got {err:?}");
       };
       assert!(
-        diags.iter().any(|diag| diag.code.as_str() == "MINIFYTS0001"),
+        diags
+          .iter()
+          .any(|diag| diag.code.as_str() == "MINIFYTS0001"),
         "expected MINIFYTS0001 diagnostic for {label}, got: {diags:?}"
       );
     }
