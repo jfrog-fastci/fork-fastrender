@@ -16175,6 +16175,13 @@ pub(crate) enum GenFrame {
     delta: i8,
     prefix: bool,
   },
+  /// Continue an update expression on a `super[expr]` reference after evaluating the computed member
+  /// key expression.
+  UpdateSuperComputedMemberAfterMember {
+    expr: *const ComputedMemberExpr,
+    delta: i8,
+    prefix: bool,
+  },
 
   /// Continue a member access after evaluating the base value.
   MemberAfterBase { expr: *const MemberExpr },
@@ -16185,6 +16192,9 @@ pub(crate) enum GenFrame {
     expr: *const ComputedMemberExpr,
     base: Value,
   },
+  /// Continue evaluating a `super[expr]` computed member access after evaluating the member key
+  /// expression.
+  SuperComputedMemberAfterMember { expr: *const ComputedMemberExpr },
 
   /// Continue a conditional expression after evaluating the test.
   CondAfterTest { expr: *const CondExpr },
@@ -16314,6 +16324,12 @@ pub(crate) enum GenFrame {
     expr: *const CallExpr,
     member: *const ComputedMemberExpr,
     base: Value,
+  },
+  /// Continue evaluating a `super[expr](...)` call after evaluating the computed member key
+  /// expression.
+  CallSuperComputedMemberAfterMember {
+    expr: *const CallExpr,
+    member: *const ComputedMemberExpr,
   },
   CallArgs {
     expr: *const CallExpr,
@@ -35837,6 +35853,9 @@ fn gen_eval_expr_chain(
         Ok(GenEval::Suspend(suspend))
       }
     },
+    Expr::ComputedMember(member) if matches!(&*member.stx.object.stx, Expr::Super(_)) => {
+      gen_eval_super_computed_member(evaluator, scope, &member.stx)
+    }
     Expr::ComputedMember(member) => match gen_eval_chain_base(evaluator, scope, &member.stx.object)?
     {
       GenEval::Complete(c) => match c {
@@ -36461,6 +36480,14 @@ fn gen_eval_update_expression(
         ));
       }
 
+      // `super[expr]++` / `++super[expr]` in generator mode.
+      //
+      // The update expression as a whole may contain `yield` in the computed key expression, but
+      // `super` itself is not a normal expression and must not be evaluated via `gen_eval_expr`.
+      if matches!(&*member.object.stx, Expr::Super(_)) {
+        return gen_eval_update_super_computed_member(evaluator, scope, member, delta, prefix);
+      }
+
       match gen_eval_expr(evaluator, scope, &member.object)? {
         GenEval::Complete(c) => match c {
           Completion::Normal(v) => gen_update_computed_member_after_base(
@@ -36487,6 +36514,53 @@ fn gen_eval_update_expression(
       }
     }
     _ => Err(VmError::Unimplemented("expression is not a reference")),
+  }
+}
+
+fn gen_eval_update_super_computed_member(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  member: &ComputedMemberExpr,
+  delta: i8,
+  prefix: bool,
+) -> Result<GenEval<Completion>, VmError> {
+  if member.optional_chaining {
+    return Err(VmError::InvariantViolation(
+      "optional chaining used with super computed property",
+    ));
+  }
+
+  // Evaluating a `super[expr]` reference requires an initialized `this` binding. In derived
+  // constructors before `super()`, this check happens before evaluating the computed key expression
+  // (and any yield within it).
+  let _ = evaluator.get_this_binding(scope)?;
+
+  match gen_eval_expr(evaluator, scope, &member.member)? {
+    GenEval::Complete(c) => match c {
+      Completion::Normal(v) => {
+        let member_value = v.unwrap_or(Value::Undefined);
+        match (|| -> Result<Value, VmError> {
+          let reference =
+            gen_reference_from_super_computed_member_after_member(evaluator, scope, member_value)?;
+          gen_apply_update_to_reference(evaluator, scope, &reference, delta, prefix)
+        })() {
+          Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
+          Err(err) => Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?)),
+        }
+      }
+      abrupt => Ok(GenEval::Complete(abrupt)),
+    },
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::UpdateSuperComputedMemberAfterMember {
+          expr: member as *const ComputedMemberExpr,
+          delta,
+          prefix,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
   }
 }
 
@@ -36917,6 +36991,84 @@ fn gen_computed_member_after_member(
   let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
   let reference = Reference::Property { base, key };
   evaluator.get_value_from_reference(&mut key_scope, &reference)
+}
+
+fn gen_reference_from_super_computed_member_after_member(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  member_value: Value,
+) -> Result<Reference<'static>, VmError> {
+  // `GetThisBinding` must run before `ToPropertyKey` and `GetSuperBase` so derived constructors throw
+  // before any key conversion work.
+  let receiver = evaluator.get_this_binding(scope)?;
+
+  let mut key_scope = scope.reborrow();
+  key_scope.push_roots(&[receiver, member_value])?;
+  let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
+
+  // Root the property key across `GetSuperBase()` which can invoke proxy traps.
+  match key {
+    PropertyKey::String(s) => {
+      key_scope.push_root(Value::String(s))?;
+    }
+    PropertyKey::Symbol(s) => {
+      key_scope.push_root(Value::Symbol(s))?;
+    }
+  }
+
+  let base = evaluator.get_super_base(&mut key_scope)?;
+  Ok(Reference::SuperProperty { base, key, receiver })
+}
+
+fn gen_super_computed_member_after_member(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  member_value: Value,
+) -> Result<Value, VmError> {
+  let mut super_scope = scope.reborrow();
+  let reference =
+    gen_reference_from_super_computed_member_after_member(evaluator, &mut super_scope, member_value)?;
+  evaluator.get_value_from_reference(&mut super_scope, &reference)
+}
+
+fn gen_eval_super_computed_member(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &ComputedMemberExpr,
+) -> Result<GenEval<Completion>, VmError> {
+  if expr.optional_chaining {
+    return Err(VmError::InvariantViolation(
+      "optional chaining used with super computed property",
+    ));
+  }
+
+  // Evaluating a `super[expr]` reference requires an initialized `this` binding. In derived
+  // constructors before `super()`, this check happens before evaluating the computed key expression
+  // (and any yield within it).
+  let _ = evaluator.get_this_binding(scope)?;
+
+  match gen_eval_expr(evaluator, scope, &expr.member)? {
+    GenEval::Complete(c) => match c {
+      Completion::Normal(v) => match gen_super_computed_member_after_member(evaluator, scope, v.unwrap_or(Value::Undefined))
+      {
+        Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
+        Err(err) => {
+          let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+          Ok(GenEval::Complete(completion_from_expr_result(Err(err))?))
+        }
+      },
+      abrupt => Ok(GenEval::Complete(abrupt)),
+    },
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::SuperComputedMemberAfterMember {
+          expr: expr as *const ComputedMemberExpr,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
 }
 
 fn gen_eval_assignment_expr(
@@ -37714,6 +37866,9 @@ fn gen_eval_call(
   let callee_is_parenthesized = expr.callee.assoc.get::<ParenthesizedExpr>().is_some();
 
   match &*expr.callee.stx {
+    Expr::Member(member) if !callee_is_parenthesized && matches!(&*member.stx.left.stx, Expr::Super(_)) => {
+      gen_call_super_member(evaluator, scope, expr, &member.stx)
+    }
     Expr::Member(member) if !callee_is_parenthesized => {
       match gen_eval_chain_base(evaluator, scope, &member.stx.left)? {
       GenEval::Complete(c) => match c {
@@ -37736,7 +37891,12 @@ fn gen_eval_call(
         )?;
         Ok(GenEval::Suspend(suspend))
       }
+      }
     }
+    Expr::ComputedMember(member)
+      if !callee_is_parenthesized && matches!(&*member.stx.object.stx, Expr::Super(_)) =>
+    {
+      gen_call_super_computed_member(evaluator, scope, expr, &member.stx)
     }
     Expr::ComputedMember(member) if !callee_is_parenthesized => {
       match gen_eval_chain_base(evaluator, scope, &member.stx.object)? {
@@ -37934,6 +38094,131 @@ fn gen_call_computed_member_after_member(
 
   drop(key_scope);
   gen_call_begin(evaluator, scope, call, callee_value, base)
+}
+
+fn gen_call_super_member(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  call: &CallExpr,
+  member: &MemberExpr,
+) -> Result<GenEval<Completion>, VmError> {
+  if member.optional_chaining {
+    return Err(VmError::InvariantViolation(
+      "optional chaining used with super property",
+    ));
+  }
+  if member.right.starts_with('#') {
+    return Err(VmError::InvariantViolation(
+      "super private-name member access should be rejected by early errors",
+    ));
+  }
+
+  // `GetThisBinding` must run before any further evaluation (including allocating the property key
+  // string) so derived constructors throw before `super()` as required by ECMA-262.
+  let receiver = evaluator.get_this_binding(scope)?;
+
+  let mut super_scope = scope.reborrow();
+  super_scope.push_root(receiver)?;
+  let key_s = super_scope.alloc_string(&member.right)?;
+  super_scope.push_root(Value::String(key_s))?;
+  let key = PropertyKey::from_string(key_s);
+
+  let base = match evaluator.get_super_base(&mut super_scope) {
+    Ok(v) => v,
+    Err(err) => {
+      let err = coerce_error_to_throw_for_async(evaluator.vm, &mut super_scope, err);
+      return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
+    }
+  };
+
+  let reference = Reference::SuperProperty { base, key, receiver };
+  let callee_value = match evaluator.get_value_from_reference(&mut super_scope, &reference) {
+    Ok(v) => v,
+    Err(err) => {
+      let err = coerce_error_to_throw_for_async(evaluator.vm, &mut super_scope, err);
+      return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
+    }
+  };
+
+  drop(super_scope);
+  gen_call_begin(evaluator, scope, call, callee_value, receiver)
+}
+
+fn gen_call_super_computed_member(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  call: &CallExpr,
+  member: &ComputedMemberExpr,
+) -> Result<GenEval<Completion>, VmError> {
+  if member.optional_chaining {
+    return Err(VmError::InvariantViolation(
+      "optional chaining used with super computed property",
+    ));
+  }
+
+  // Evaluating a `super[expr]` reference requires an initialized `this` binding. In derived
+  // constructors before `super()`, this check happens before evaluating the computed key expression
+  // (and any yield within it).
+  let _ = evaluator.get_this_binding(scope)?;
+
+  match gen_eval_expr(evaluator, scope, &member.member)? {
+    GenEval::Complete(c) => match c {
+      Completion::Normal(v) => {
+        gen_call_super_computed_member_after_member(evaluator, scope, call, v.unwrap_or(Value::Undefined))
+      }
+      abrupt => Ok(GenEval::Complete(abrupt)),
+    },
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::CallSuperComputedMemberAfterMember {
+          expr: call as *const CallExpr,
+          member: member as *const ComputedMemberExpr,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_call_super_computed_member_after_member(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  call: &CallExpr,
+  member_value: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  let mut super_scope = scope.reborrow();
+  let reference = match gen_reference_from_super_computed_member_after_member(
+    evaluator,
+    &mut super_scope,
+    member_value,
+  ) {
+    Ok(r) => r,
+    Err(err) => {
+      let err = coerce_error_to_throw_for_async(evaluator.vm, &mut super_scope, err);
+      return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
+    }
+  };
+
+  let this_value = match reference {
+    Reference::SuperProperty { receiver, .. } => receiver,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "expected super property reference for super computed member call",
+      ))
+    }
+  };
+
+  let callee_value = match evaluator.get_value_from_reference(&mut super_scope, &reference) {
+    Ok(v) => v,
+    Err(err) => {
+      let err = coerce_error_to_throw_for_async(evaluator.vm, &mut super_scope, err);
+      return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
+    }
+  };
+
+  drop(super_scope);
+  gen_call_begin(evaluator, scope, call, callee_value, this_value)
 }
 
 fn gen_call_begin(
@@ -39297,6 +39582,31 @@ fn gen_resume_from_frames(
         abrupt => state = abrupt,
       },
 
+      GenFrame::UpdateSuperComputedMemberAfterMember {
+        expr: _expr,
+        delta,
+        prefix,
+      } => match state {
+        Completion::Normal(v) => {
+          let member_value = v.unwrap_or(Value::Undefined);
+          match (|| {
+            let reference = gen_reference_from_super_computed_member_after_member(
+              evaluator,
+              scope,
+              member_value,
+            )?;
+            gen_apply_update_to_reference(evaluator, scope, &reference, delta, prefix)
+          })() {
+            Ok(v) => state = Completion::normal(v),
+            Err(err) => {
+              let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+              state = completion_from_expr_result(Err(err))?;
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
       GenFrame::MemberAfterBase { expr } => match state {
         Completion::Normal(v) => {
           let expr = unsafe { &*expr };
@@ -39341,6 +39651,20 @@ fn gen_resume_from_frames(
             base,
             v.unwrap_or(Value::Undefined),
           ) {
+            Ok(v) => state = Completion::normal(v),
+            Err(err) => {
+              let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+              state = completion_from_expr_result(Err(err))?;
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::SuperComputedMemberAfterMember { expr: _expr } => match state {
+        Completion::Normal(v) => {
+          let member_value = v.unwrap_or(Value::Undefined);
+          match gen_super_computed_member_after_member(evaluator, scope, member_value) {
             Ok(v) => state = Completion::normal(v),
             Err(err) => {
               let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
@@ -40207,6 +40531,29 @@ fn gen_resume_from_frames(
             expr,
             member,
             base,
+            v.unwrap_or(Value::Undefined),
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::CallSuperComputedMemberAfterMember {
+        expr,
+        member: _member,
+      } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          match gen_call_super_computed_member_after_member(
+            evaluator,
+            scope,
+            expr,
             v.unwrap_or(Value::Undefined),
           ) {
             Ok(GenEval::Complete(c)) => state = c,
