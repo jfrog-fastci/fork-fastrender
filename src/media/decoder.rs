@@ -327,7 +327,6 @@ fn parse_h264_codec_private(data: &[u8]) -> MediaResult<H264CodecConfig> {
     pps,
   })
 }
-
 #[cfg(test)]
 mod tests {
   use super::validate_decoded_rgba_frame_size;

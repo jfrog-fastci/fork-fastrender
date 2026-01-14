@@ -379,6 +379,33 @@ fn native_backend_decodes_mp4_vp9_first_frame_is_red() -> MediaResult<()> {
   ))
 }
 
+#[test]
+fn webm_vp9_first_frame_has_nonzero_alpha() -> MediaResult<()> {
+  let file = File::open("tests/fixtures/media/test_vp9_opus.webm")?;
+  let demuxer = fastrender::media::demux::webm::WebmDemuxer::open(BufReader::new(file))?;
+  let mut pipeline = MediaDecodePipeline::new(Box::new(demuxer))?;
+
+  for _ in 0..128 {
+    let Some(item) = pipeline.next_decoded()? else {
+      break;
+    };
+    if let DecodedItem::Video(frame) = item {
+      assert!(frame.width > 0);
+      assert!(frame.height > 0);
+      assert_eq!(frame.rgba.len(), (frame.width * frame.height * 4) as usize);
+      assert!(
+        frame.rgba[3..].iter().step_by(4).any(|a| *a != 0),
+        "expected VP9 decoder to emit non-zero alpha values; got all-zero alpha channel"
+      );
+      return Ok(());
+    }
+  }
+
+  Err(MediaError::Decode(
+    "did not decode a VP9 video frame within limit".into(),
+  ))
+}
+
 #[cfg(feature = "media_ffmpeg_cli")]
 mod ffmpeg_cli {
   use super::*;
