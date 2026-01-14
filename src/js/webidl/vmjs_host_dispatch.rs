@@ -7328,7 +7328,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         Ok(Value::Object(walker_obj))
       },
       ("Range", "selectNodeContents", 0) => {
-        let (range_id, document_id) = require_range_receiver(vm, scope, receiver)?;
+        let state = self.require_range_state(vm, scope, receiver)?;
 
         let node_val = args.get(0).copied().unwrap_or(Value::Undefined);
         let node_handle = {
@@ -7336,48 +7336,49 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           platform.require_node_handle(scope.heap(), node_val)?
         };
 
-        if node_handle.document_id != document_id {
+        // Spec: Range.selectNodeContents requires the node to be in the same document/root.
+        if node_handle.document_id != state.document_id {
           return Err(self.dom_error_to_vm_error(vm, scope, DomError::WrongDocumentError));
         }
 
         let owned_result: Option<Result<(), DomError>> = vm
           .user_data_mut::<WindowRealmUserData>()
           .and_then(|data| {
-            data.with_owned_dom2_document_mut(document_id, |dom| {
-              dom.range_select_node_contents(range_id, node_handle.node_id)
+            data.with_owned_dom2_document_mut(state.document_id, |dom| {
+              dom.range_select_node_contents(state.range_id, node_handle.node_id)
             })
           });
-
         let result = if let Some(result) = owned_result {
           result
         } else {
           self.with_dom_host(vm, |host| {
             Ok(host.mutate_dom(|dom| {
-              let out = dom.range_select_node_contents(range_id, node_handle.node_id);
-              (out, false)
+              let result = dom.range_select_node_contents(state.range_id, node_handle.node_id);
+              (result, false)
             }))
           })?
         };
 
         match result {
-          Ok(()) => Ok(Value::Undefined),
+          Ok(()) => {
+            Ok(Value::Undefined)
+          }
           Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
         }
       },
 
       ("Range", "toString", 0) => {
-        let (range_id, document_id) = require_range_receiver(vm, scope, receiver)?;
+        let state = self.require_range_state(vm, scope, receiver)?;
 
         let owned_result: Option<Result<String, DomError>> = vm
           .user_data_mut::<WindowRealmUserData>()
-          .and_then(|data| data.with_owned_dom2_document(document_id, |dom| dom.range_to_string(range_id)));
+          .and_then(|data| data.with_owned_dom2_document(state.document_id, |dom| dom.range_to_string(state.range_id)));
 
         let result = if let Some(result) = owned_result {
           result
         } else {
-          self.with_dom_host(vm, |host| Ok(host.with_dom(|dom| dom.range_to_string(range_id))))?
+          self.with_dom_host(vm, |host| Ok(host.with_dom(|dom| dom.range_to_string(state.range_id))))?
         };
-
         match result {
           Ok(s) => Ok(Value::String(scope.alloc_string(&s)?)),
           Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
@@ -7388,17 +7389,19 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let document_obj = Self::require_receiver_object(receiver)?;
         scope.push_root(Value::Object(document_obj))?;
 
-        let document_id = {
-          let platform = require_dom_platform_mut(vm)?;
-          platform
-            .require_document_handle(scope.heap(), Value::Object(document_obj))?
-            .document_id
-        };
-
         let proto = self.range_proto_from_global(vm, scope)?;
         scope.push_root(Value::Object(proto))?;
         let range_obj = scope.alloc_object_with_prototype(Some(proto))?;
         scope.push_root(Value::Object(range_obj))?;
+
+        // Ensure `Object.create(document)` aliases behave like documents for Range creation.
+        let document_id = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform.maybe_register_document_alias_wrapper(scope, document_obj)?;
+          platform
+            .require_document_handle(scope.heap(), Value::Object(document_obj))?
+            .document_id
+        };
 
         // Like the handwritten vm-js Range bindings, store a back-reference to the owning Document
         // wrapper so subsequent Range operations can resolve the correct `dom2::Document` arena.
@@ -10423,7 +10426,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       }
 
       ("Range", "setStart", 0) | ("Range", "setEnd", 0) => {
-        let (range_id, document_id) = require_range_receiver(vm, scope, receiver)?;
+        let state = self.require_range_state(vm, scope, receiver)?;
 
         let node_val = args.get(0).copied().unwrap_or(Value::Undefined);
         let node_handle = {
@@ -10431,7 +10434,8 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           platform.require_node_handle(scope.heap(), node_val)?
         };
 
-        if node_handle.document_id != document_id {
+        // Spec: Range.setStart/setEnd requires the node to be in the same document/root.
+        if node_handle.document_id != state.document_id {
           return Err(self.dom_error_to_vm_error(vm, scope, DomError::WrongDocumentError));
         }
 
@@ -10443,11 +10447,11 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let owned_result: Option<Result<(), DomError>> = vm
           .user_data_mut::<WindowRealmUserData>()
           .and_then(|data| {
-            data.with_owned_dom2_document_mut(document_id, |dom| {
+            data.with_owned_dom2_document_mut(state.document_id, |dom| {
               if is_start {
-                dom.range_set_start(range_id, node_handle.node_id, offset)
+                dom.range_set_start(state.range_id, node_handle.node_id, offset)
               } else {
-                dom.range_set_end(range_id, node_handle.node_id, offset)
+                dom.range_set_end(state.range_id, node_handle.node_id, offset)
               }
             })
           });
@@ -10458,9 +10462,9 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           self.with_dom_host(vm, |host| {
             Ok(host.mutate_dom(|dom| {
               let result = if is_start {
-                dom.range_set_start(range_id, node_handle.node_id, offset)
+                dom.range_set_start(state.range_id, node_handle.node_id, offset)
               } else {
-                dom.range_set_end(range_id, node_handle.node_id, offset)
+                dom.range_set_end(state.range_id, node_handle.node_id, offset)
               };
               (result, false)
             }))
@@ -12532,6 +12536,45 @@ mod window_document_tests {
     }
     let dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(window.global_object());
     Ok((window, dom_host, dispatch))
+  }
+
+  #[test]
+  fn webidl_document_create_range_creates_live_range() -> Result<(), VmError> {
+    let (mut window, mut dom_host, mut webidl_host) = make_webidl_window_dom_host_and_dispatch()?;
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut dom_host,
+      &mut window,
+      Some(&mut webidl_host),
+    );
+    let out = window.exec_script_with_host_and_hooks(
+      &mut dom_host,
+      &mut hooks,
+      r#"
+      (() => {
+        try {
+          const r1 = document.createRange();
+          if (!(r1 instanceof Range)) return false;
+          if (!r1.collapsed) return false;
+          if (r1.startContainer !== document) return false;
+          if (r1.startOffset !== 0) return false;
+          if (r1.endContainer !== document) return false;
+          if (r1.endOffset !== 0) return false;
+          if (r1.toString() !== "") return false;
+
+          const doc2 = Object.create(document);
+          const r2 = doc2.createRange();
+          if (!(r2 instanceof Range)) return false;
+          if (r2.startContainer !== doc2) return false;
+          if (r2.endContainer !== doc2) return false;
+          return true;
+        } catch (e) {
+          return false;
+        }
+      })()
+      "#,
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
   }
 
   #[test]
