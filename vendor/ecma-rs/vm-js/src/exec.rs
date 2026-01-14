@@ -45601,6 +45601,29 @@ mod tests {
     assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
     Ok(())
   }
+
+  #[test]
+  fn arrow_this_in_derived_constructor_arrow_escapes_and_sees_initialized_this_after_ctor_returns(
+  ) -> Result<(), VmError> {
+    let source = r#"
+      let f;
+      class B {}
+      class D extends B {
+        constructor() {
+          // Creating (and even escaping) an arrow that closes over `this` before `super()` is called
+          // must not throw. The `this` access is deferred until the arrow is invoked.
+          f = () => this;
+          super();
+        }
+      }
+      new D();
+      f() instanceof D
+    "#;
+
+    assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
+    assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
+    Ok(())
+  }
 }
 
 #[cfg(test)]
