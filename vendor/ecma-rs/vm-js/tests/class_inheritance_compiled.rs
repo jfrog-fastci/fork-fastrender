@@ -737,3 +737,50 @@ fn derived_ctor_arrow_super_computed_nullish_assignment_before_super_does_not_ev
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn derived_ctor_param_this_before_super_throws_reference_error_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var base_called = false;
+      var ok = false;
+      class B { constructor() { base_called = true; } }
+      class D extends B {
+        constructor(x = this) {
+          super();
+        }
+      }
+      try { new D(); } catch (e) { ok = e instanceof ReferenceError; }
+      ok && base_called === false
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn derived_ctor_param_super_property_before_super_throws_reference_error_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var base_called = false;
+      var ok = false;
+      class B {
+        constructor() { base_called = true; }
+        __m() { return 1; }
+      }
+      class D extends B {
+        constructor(x = super.__m()) {
+          super();
+        }
+      }
+      try { new D(); } catch (e) { ok = e instanceof ReferenceError; }
+      ok && base_called === false
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
