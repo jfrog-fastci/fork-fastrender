@@ -93,6 +93,9 @@ struct InternalSymbols {
   iterator_helper_done: Option<GcSymbol>,
   iterator_helper_remaining: Option<GcSymbol>,
   iterator_helper_running: Option<GcSymbol>,
+  iterator_helper_callback: Option<GcSymbol>,
+  iterator_helper_this_arg: Option<GcSymbol>,
+  iterator_helper_counter: Option<GcSymbol>,
 
   // RegExp string iterator (`/re/g[Symbol.matchAll](...)`) internal slots.
   regexp_string_iterator_iterating_regexp: Option<GcSymbol>,
@@ -1548,6 +1551,9 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
         internal.iterator_helper_done,
         internal.iterator_helper_remaining,
         internal.iterator_helper_running,
+        internal.iterator_helper_callback,
+        internal.iterator_helper_this_arg,
+        internal.iterator_helper_counter,
         internal.regexp_string_iterator_iterating_regexp,
         internal.regexp_string_iterator_iterated_string,
         internal.regexp_string_iterator_global,
@@ -7966,6 +7972,36 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
       "vm-js.internal.IteratorHelperRunning",
       |s| s.iterator_helper_running,
       |s, sym| s.iterator_helper_running = Some(sym),
+    )
+  }
+
+  pub(crate) fn ensure_internal_iterator_helper_callback_symbol(
+    &mut self,
+  ) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.IteratorHelperCallback",
+      |s| s.iterator_helper_callback,
+      |s, sym| s.iterator_helper_callback = Some(sym),
+    )
+  }
+
+  pub(crate) fn ensure_internal_iterator_helper_this_arg_symbol(
+    &mut self,
+  ) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.IteratorHelperThisArg",
+      |s| s.iterator_helper_this_arg,
+      |s, sym| s.iterator_helper_this_arg = Some(sym),
+    )
+  }
+
+  pub(crate) fn ensure_internal_iterator_helper_counter_symbol(
+    &mut self,
+  ) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.IteratorHelperCounter",
+      |s| s.iterator_helper_counter,
+      |s, sym| s.iterator_helper_counter = Some(sym),
     )
   }
 

@@ -178,6 +178,8 @@ pub struct Intrinsics {
   iterator_drop_helper_return_call: NativeFunctionId,
   iterator_take_helper_next_call: NativeFunctionId,
   iterator_take_helper_return_call: NativeFunctionId,
+  iterator_map_helper_next_call: NativeFunctionId,
+  iterator_map_helper_return_call: NativeFunctionId,
 
   // Revocation function created by `Proxy.revocable`.
   proxy_revoker_call: NativeFunctionId,
@@ -1100,6 +1102,7 @@ impl Intrinsics {
       vm.register_native_call(builtins::iterator_prototype_to_array)?;
     let iterator_prototype_drop_call = vm.register_native_call(builtins::iterator_prototype_drop)?;
     let iterator_prototype_take_call = vm.register_native_call(builtins::iterator_prototype_take)?;
+    let iterator_prototype_map_call = vm.register_native_call(builtins::iterator_prototype_map)?;
     let iterator_from_call = vm.register_native_call(builtins::iterator_from)?;
     let iterator_drop_helper_next_call = vm.register_native_call(builtins::iterator_drop_helper_next)?;
     let iterator_drop_helper_return_call =
@@ -1107,6 +1110,9 @@ impl Intrinsics {
     let iterator_take_helper_next_call = vm.register_native_call(builtins::iterator_take_helper_next)?;
     let iterator_take_helper_return_call =
       vm.register_native_call(builtins::iterator_take_helper_return)?;
+    let iterator_map_helper_next_call = vm.register_native_call(builtins::iterator_map_helper_next)?;
+    let iterator_map_helper_return_call =
+      vm.register_native_call(builtins::iterator_map_helper_return)?;
     let wrap_for_valid_iterator_next_call =
       vm.register_native_call(builtins::wrap_for_valid_iterator_next)?;
     let wrap_for_valid_iterator_return_call =
@@ -1477,6 +1483,22 @@ impl Intrinsics {
         iterator_prototype,
         PropertyKey::from_string(take_name),
         data_desc(Value::Object(take_fn), true, false, true),
+      )?;
+    }
+
+    // `%IteratorPrototype%.map` (iterator helpers proposal).
+    {
+      let map_name = scope.alloc_string("map")?;
+      scope.push_root(Value::String(map_name))?;
+      let map_fn = scope.alloc_native_function(iterator_prototype_map_call, None, map_name, 1)?;
+      scope.push_root(Value::Object(map_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(map_fn, Some(function_prototype))?;
+      scope.define_property(
+        iterator_prototype,
+        PropertyKey::from_string(map_name),
+        data_desc(Value::Object(map_fn), true, false, true),
       )?;
     }
 
@@ -8958,6 +8980,8 @@ impl Intrinsics {
       iterator_drop_helper_return_call,
       iterator_take_helper_next_call,
       iterator_take_helper_return_call,
+      iterator_map_helper_next_call,
+      iterator_map_helper_return_call,
       proxy_revoker_call,
 
       class_constructor_call,
@@ -9502,6 +9526,14 @@ impl Intrinsics {
 
   pub(crate) fn iterator_take_helper_return_call(&self) -> NativeFunctionId {
     self.iterator_take_helper_return_call
+  }
+
+  pub(crate) fn iterator_map_helper_next_call(&self) -> NativeFunctionId {
+    self.iterator_map_helper_next_call
+  }
+
+  pub(crate) fn iterator_map_helper_return_call(&self) -> NativeFunctionId {
+    self.iterator_map_helper_return_call
   }
 
   pub(crate) fn class_constructor_call(&self) -> NativeFunctionId {
