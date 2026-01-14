@@ -27618,32 +27618,28 @@ fn async_eval_expr_chain(
     Expr::ComputedMember(member) => {
       // `super[expr]` computed member access is not a normal property reference: it resolves
       // against `[[HomeObject]].[[Prototype]]` and uses the current `this` binding as the receiver.
-      if matches!(&*member.stx.object.stx, Expr::Super(_)) {
-        if member.stx.optional_chaining {
-          return Err(VmError::Unimplemented(
-            "optional chaining super computed member access",
-          ));
-        }
-        // Spec: `super[expr]` evaluates `GetThisBinding` before evaluating the computed key
-        // expression. In derived constructors, this must throw before any `await` in the key.
-        let _ = async_get_super_receiver(evaluator, scope)?;
-
-        let mut member_scope = scope.reborrow();
-        // Root the raw `this` binding (which may be a derived-constructor state cell) and home
-        // object across `GetThisBinding` and key evaluation, which can allocate and trigger GC.
-        member_scope.push_root(evaluator.this)?;
-        if let Some(home) = evaluator.home_object {
-          member_scope.push_root(Value::Object(home))?;
-        }
-        // `GetThisBinding` must run before evaluating the key expression.
-        let _ = async_get_super_receiver(evaluator, &mut member_scope)?;
-
-        match async_eval_expr(evaluator, &mut member_scope, &member.stx.member)? {
-          AsyncEval::Complete(member_value) => {
-            let value =
-              async_super_computed_member_after_member(evaluator, &mut member_scope, member_value)?;
-            Ok(AsyncEval::Complete(value))
+        if matches!(&*member.stx.object.stx, Expr::Super(_)) {
+          if member.stx.optional_chaining {
+            return Err(VmError::Unimplemented(
+              "optional chaining super computed member access",
+            ));
           }
+          let mut member_scope = scope.reborrow();
+          // Root the raw `this` binding (which may be a derived-constructor state cell) and home
+          // object across `GetThisBinding` and key evaluation, which can allocate and trigger GC.
+          member_scope.push_root(evaluator.this)?;
+          if let Some(home) = evaluator.home_object {
+            member_scope.push_root(Value::Object(home))?;
+          }
+          // `GetThisBinding` must run before evaluating the key expression.
+          let _ = async_get_super_receiver(evaluator, &mut member_scope)?;
+
+          match async_eval_expr(evaluator, &mut member_scope, &member.stx.member)? {
+            AsyncEval::Complete(member_value) => {
+              let value =
+                async_super_computed_member_after_member(evaluator, &mut member_scope, member_value)?;
+              Ok(AsyncEval::Complete(value))
+            }
           AsyncEval::Suspend(mut suspend) => {
             async_frames_push(
               &mut suspend.frames,
@@ -29190,8 +29186,6 @@ fn async_eval_assignment_to_computed_member(
   if matches!(&*member.object.stx, Expr::Super(_)) {
     // Spec: `super[expr]` evaluates `GetThisBinding` before evaluating the computed key expression.
     // In derived constructors, this must throw before any `await`/side effects in the key.
-    let _ = async_get_super_receiver(evaluator, scope)?;
-
     let mut member_scope = scope.reborrow();
     // Root the raw `this` binding (which may be a derived-constructor state cell) and home object
     // across `GetThisBinding` and key evaluation, which can allocate and trigger GC.
@@ -30006,7 +30000,6 @@ fn async_eval_update_expression(
       if matches!(&*member.object.stx, Expr::Super(_)) {
         // Spec: `super[expr]` evaluates `GetThisBinding` before evaluating the computed key
         // expression. In derived constructors, this must throw before any `await` in the key.
-        let _ = async_get_super_receiver(evaluator, scope)?;
 
         let mut member_scope = scope.reborrow();
         // Root the raw `this` binding (which may be a derived-constructor state cell) and home object

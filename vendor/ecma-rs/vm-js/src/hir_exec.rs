@@ -21607,7 +21607,6 @@ mod compiled_hir_async_await_semantics_tests {
       rt.heap.is_promise_object(returned_promise),
       "expected script to evaluate to a Promise object, got {result:?}"
     );
-
     // Ensure the async function was allocated as a compiled user function by the HIR script path.
     //
     // Note: async functions may still execute via the call-time AST fallback

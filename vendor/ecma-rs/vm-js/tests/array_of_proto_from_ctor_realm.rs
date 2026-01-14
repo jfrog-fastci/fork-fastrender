@@ -3,9 +3,10 @@ use vm_js::{Heap, HeapLimits, PropertyKey, Realm, RootId, Value, Vm, VmError, Vm
 #[test]
 fn array_of_proto_from_ctor_realm() -> Result<(), VmError> {
   let mut vm = Vm::new(VmOptions::default());
-  // This test constructs two realms and uses the Function constructor; this can exceed 1MB on
-  // debug/profile builds as more intrinsics are added.
-  let mut heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
+  // This test initializes two full realms (two copies of the intrinsic object graph) and uses the
+  // Function constructor. Use a slightly larger heap than the 1MiB baseline used by many tests to
+  // avoid spurious OOMs as builtin surface area grows (especially on debug/profile builds).
+  let mut heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
 
   // Create the "other" realm first so we can construct `C = new other.Function()` while that realm
   // is active.

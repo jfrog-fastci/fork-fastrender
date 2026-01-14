@@ -5351,7 +5351,9 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     //
     // Note: `Array.isArray(proxy_to_array)` is implemented elsewhere (`IsArray`), which *does*
     // follow Proxy targets per spec.
-    if matches!(self.get_heap_object(obj.0)?, HeapObject::Proxy(_)) {
+    // Proxy exotic objects are not Array exotic objects themselves (even if they wrap an Array),
+    // and `ObjectBase` access is not valid for proxies.
+    if self.is_proxy_object(obj) {
       return Ok(false);
     }
     Ok(self.get_object_base(obj)?.array_length().is_some())

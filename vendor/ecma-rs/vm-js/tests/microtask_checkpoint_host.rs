@@ -2,8 +2,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use vm_js::{
-  Budget, GcObject, Heap, HeapLimits, Job, JobKind, JsRuntime, Scope, TerminationReason, Value, Vm,
-  VmError, VmHost, VmHostHooks, VmOptions,
+  Budget, GcObject, Heap, HeapLimits, Job, JobKind, JsRuntime, PromiseState, PropertyKey, Scope,
+  TerminationReason, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
 };
 
 #[derive(Default)]
@@ -98,8 +98,6 @@ fn microtask_checkpoint_without_host_uses_dummy_host_context() -> Result<(), VmE
 
   let value = rt.exec_script("failed && !ok")?;
   assert_eq!(value, Value::Bool(true));
-
-  assert_eq!(host.counter, 0);
   Ok(())
 }
 

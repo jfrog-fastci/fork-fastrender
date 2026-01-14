@@ -54,7 +54,10 @@ fn for_triple_restores_lexical_env_on_uncatchable_error() {
     // lexical environment before unwinding.
     .exec_script(r#"for (let i = 0; i < 1; i++) { __test_unimplemented(); }"#)
     .unwrap_err();
-  assert!(matches!(err, VmError::Throw(_) | VmError::ThrowWithStack { .. }));
+  assert!(
+    matches!(err, VmError::Throw(_) | VmError::ThrowWithStack { .. }),
+    "expected JS throw, got {err:?}"
+  );
 
   // If the loop's lexical environment is not restored when the body returns an uncatchable error,
   // the loop variable binding would leak into subsequent script executions.

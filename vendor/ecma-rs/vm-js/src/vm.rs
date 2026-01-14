@@ -4856,6 +4856,19 @@ impl Vm {
       // ReferenceError.
       Value::Undefined => {
         if derived_constructor {
+          // Per ECMA-262, derived constructors must not return non-object values other than
+          // `undefined`.
+          if !matches!(return_value, Value::Undefined) {
+            let intr = self
+              .intrinsics()
+              .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+            let err = crate::new_type_error(
+              &mut this_scope,
+              intr,
+              "Derived constructor returned non-object",
+            )?;
+            return Err(VmError::Throw(err));
+          }
           let this_root_idx = this_root_idx.ok_or(VmError::InvariantViolation(
             "derived constructor missing this root slot",
           ))?;

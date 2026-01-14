@@ -100,7 +100,9 @@ fn number_conversion_large_string_does_not_abort_on_oom() {
 #[test]
 fn parse_float_large_string_does_not_abort_on_oom() {
   // Large `parseFloat(string)` should not abort under memory pressure.
-  run_oom_harness("parseFloat", 25_000_000);
+  // Keep this below the input-string allocation failure threshold so the harness can reliably
+  // allocate the initial `S` string before the actual parseFloat call runs.
+  run_oom_harness("parseFloat", 22_000_000);
 }
 
 #[test]
@@ -117,13 +119,12 @@ fn array_map_large_length_does_not_abort_on_oom() {
   //
   // Use a slightly larger length to reduce total runtime: a larger backing string leaves less
   // headroom under RLIMIT_AS, so the per-iteration key allocations hit OOM sooner.
-  // Keep this below the input-string allocation failure threshold (observed at ~26M code units
-  // with the current RLIMIT_AS and filler settings) so the harness can reliably allocate the
-  // initial `S` string before the actual test loop runs.
+  // Keep this below the input-string allocation failure threshold so the harness can reliably
+  // allocate the initial `S` string before the actual test loop runs.
   //
   // This threshold is sensitive to runtime/library initialization overhead (and may vary slightly
   // across environments), so keep a bit of slack to avoid flakiness.
-  run_oom_harness("arrayMap", 25_000_000);
+  run_oom_harness("arrayMap", 22_000_000);
 }
 
 #[test]
@@ -273,7 +274,10 @@ fn register_ecma_function_does_not_abort_on_oom() {
   //
   // Use a more aggressive filler buffer so we reliably hit allocator OOM quickly (otherwise this
   // test can take a very long time to complete when `Function('')` creation succeeds).
-  const REGISTER_FILLER_BYTES: usize = 168 * 1024 * 1024;
+  //
+  // Leave enough headroom under RLIMIT_AS for the Agent/VM to initialize on smaller/fragmented
+  // allocators.
+  const REGISTER_FILLER_BYTES: usize = 160 * 1024 * 1024;
   run_oom_harness_with_limits(
     "register_ecma_function",
     200_000,

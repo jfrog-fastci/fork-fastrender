@@ -3,7 +3,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use vm_js::{
   ExecutionContext, GcObject, Heap, HeapLimits, Job, JobKind, JsRuntime, MicrotaskQueue, RealmId,
-  RootId, Scope, SourceText, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, VmOptions,
+  PropertyKey, RootId, Scope, SourceText, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext,
+  VmOptions,
 };
 
 #[derive(Debug, Default)]

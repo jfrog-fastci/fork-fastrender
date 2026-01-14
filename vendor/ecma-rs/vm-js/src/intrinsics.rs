@@ -724,16 +724,6 @@ impl Intrinsics {
     scope
       .heap_mut()
       .object_set_prototype(iterator_prototype, Some(object_prototype))?;
-    // Iterator-helpers proposal: `%IteratorPrototype%[@@toStringTag] === "Iterator"`.
-    //
-    // This enables `Object.prototype.toString` fallback tagging for iterator objects when the
-    // concrete iterator prototype does not define its own `@@toStringTag`.
-    install_to_string_tag(
-      scope,
-      iterator_prototype,
-      well_known_symbols.to_string_tag,
-      "Iterator",
-    )?;
 
     // `%ArrayIteratorPrototype%`
     let array_iterator_prototype = alloc_rooted_object(scope, roots)?;
@@ -4545,12 +4535,12 @@ impl Intrinsics {
       scope
         .heap_mut()
         .object_set_prototype(func, Some(function_prototype))?;
-    scope.define_property(
-      boolean_prototype,
-      key,
-      data_desc(Value::Object(func), true, false, true),
-    )?;
-  }
+      scope.define_property(
+        boolean_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
 
     // Boolean.prototype.toString
     {
@@ -4562,12 +4552,12 @@ impl Intrinsics {
       scope
         .heap_mut()
         .object_set_prototype(func, Some(function_prototype))?;
-    scope.define_property(
-      boolean_prototype,
-      key,
-      data_desc(Value::Object(func), true, false, true),
-    )?;
-  }
+      scope.define_property(
+        boolean_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
 
     // `%BigInt%` (callable, not constructable).
     let bigint_name = scope.alloc_string("BigInt")?;

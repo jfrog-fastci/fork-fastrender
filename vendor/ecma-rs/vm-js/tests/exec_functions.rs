@@ -1,5 +1,6 @@
 use vm_js::{
-  GcObject, Heap, HeapLimits, JsRuntime, Scope, Value, Vm, VmError, VmHostHooks, VmHost, VmOptions,
+  GcObject, Heap, HeapLimits, JsRuntime, PropertyKey, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
+  VmOptions,
 };
 
 fn new_runtime_with_vm(vm: Vm) -> JsRuntime {
@@ -176,8 +177,9 @@ fn promise_then_handler_runs_in_microtask_checkpoint() {
 
 #[test]
 fn recursion_triggers_stack_overflow_range_error() {
+  let max_stack_depth = 8;
   let mut opts = VmOptions::default();
-  opts.max_stack_depth = 8;
+  opts.max_stack_depth = max_stack_depth;
   let vm = Vm::new(opts);
   let mut rt = new_runtime_with_vm(vm);
 
@@ -193,19 +195,38 @@ fn recursion_triggers_stack_overflow_range_error() {
     panic!("expected thrown value to be object, got {value:?}");
   };
   let range_error_proto = rt.realm().intrinsics().range_error_prototype();
-  let mut scope = rt.heap.scope();
-  scope.push_root(value).unwrap();
-  assert_eq!(
-    scope.heap().object_prototype(thrown_obj).unwrap(),
-    Some(range_error_proto)
-  );
-  assert_eq!(stack.len(), 8);
+  {
+    let mut scope = rt.heap.scope();
+    scope.push_root(value).unwrap();
+    assert_eq!(
+      scope.heap().object_prototype(thrown_obj).unwrap(),
+      Some(range_error_proto)
+    );
+  }
+  assert_eq!(stack.len(), max_stack_depth);
   assert!(
     stack
       .iter()
       .any(|f| f.function.as_deref() == Some("recurse") && f.source.as_ref() == "<inline>"),
     "stack trace should include interpreted call frames"
   );
+
+  let Value::Object(thrown) = value else {
+    panic!("expected thrown object, got {value:?}");
+  };
+
+  // Assert the thrown value is a RangeError without invoking user code.
+  let mut scope = rt.heap.scope();
+  // Root the thrown object across string allocation (`alloc_string` can trigger GC).
+  scope.push_root(Value::Object(thrown)).unwrap();
+  let key_s = scope.alloc_string("name").unwrap();
+  let name_key = PropertyKey::from_string(key_s);
+  let name = scope.heap().get(thrown, &name_key).unwrap();
+  let Value::String(name) = name else {
+    panic!("expected error.name string, got {name:?}");
+  };
+  let name = scope.heap().get_string(name).unwrap().to_utf8_lossy();
+  assert_eq!(name, "RangeError");
 }
 
 #[test]
