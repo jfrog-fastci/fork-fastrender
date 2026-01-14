@@ -9444,7 +9444,7 @@ fn run_headless_smoke_mode(
   >,
 ) -> Result<(), Box<dyn std::error::Error>> {
   use fastrender::ui::cancel::CancelGens;
-  use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
+  use fastrender::ui::messages::{NavigationReason, RepaintReason, TabId, UiToWorker, WorkerToUi};
   use std::sync::mpsc::RecvTimeoutError;
   use std::time::Instant;
 
@@ -9540,118 +9540,178 @@ fn run_headless_smoke_mode(
   let expected_pixmap_h = ((VIEWPORT_CSS.1 as f32) * DPR).round().max(1.0) as u32;
 
   let active_window_idx = session.active_window_index;
-  let active_window = &session.windows[active_window_idx];
-
-  let active_idx = active_window
-    .active_tab_index
-    .min(active_window.tabs.len().saturating_sub(1));
-  let active_url = active_window
-    .tabs
-    .get(active_idx)
-    .map(|t| t.url.as_str())
-    .unwrap_or(fastrender::ui::about_pages::ABOUT_NEWTAB);
+  let (tab_count, active_idx, active_url) = {
+    let active_window = &session.windows[active_window_idx];
+    let tab_count = active_window.tabs.len();
+    let active_idx = active_window
+      .active_tab_index
+      .min(tab_count.saturating_sub(1));
+    let active_url = active_window
+      .tabs
+      .get(active_idx)
+      .map(|tab| tab.url.clone())
+      .unwrap_or_else(|| fastrender::ui::about_pages::ABOUT_NEWTAB.to_string());
+    (tab_count, active_idx, active_url)
+  };
 
   // Test hook: simulate the renderer worker being disabled/unavailable. When this is enabled, the
   // headless smoke path should still succeed for trusted `about:` pages.
   let worker_disabled = std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_SMOKE_DISABLE_WORKER")
     .is_some_and(|v| !v.is_empty());
 
-  let (pixmap_w, pixmap_h, viewport_css, dpr) = if fastrender::ui::about_pages::is_about_url(
-    active_url,
-  ) {
-    // Trusted about: rendering: do not spawn the renderer worker and do not send any navigation
-    // messages. This keeps bookmarks/history data in the browser process.
-    let mut renderer = fastrender::FastRender::new()?;
-    renderer.set_base_url(fastrender::ui::about_pages::ABOUT_BASE_URL.to_string());
-    let html = fastrender::ui::about_pages::html_for_about_url(active_url).unwrap_or_else(|| {
-      fastrender::ui::about_pages::error_page_html(
-        "Unknown about page",
-        &format!("Unknown URL: {active_url}"),
-        None,
-      )
-    });
-    let pixmap = renderer.render_html_with_options(
-      &html,
-      fastrender::RenderOptions::new()
-        .with_viewport(VIEWPORT_CSS.0, VIEWPORT_CSS.1)
-        .with_device_pixel_ratio(DPR),
-    )?;
-    let pixmap_px = (pixmap.width(), pixmap.height());
-    if pixmap_px != (expected_pixmap_w, expected_pixmap_h) {
-      return Err(
-        format!(
-          "unexpected pixmap size from trusted about renderer: got {}x{}, expected {}x{}",
-          pixmap_px.0, pixmap_px.1, expected_pixmap_w, expected_pixmap_h
-        )
-        .into(),
-      );
+  // Test hook: drive a scroll operation and persist the observed scroll offset into the on-disk
+  // session file. Integration tests use this to prove end-to-end scroll persistence across runs.
+  const SCROLL_TO_Y_ENV: &str = "FASTR_TEST_BROWSER_HEADLESS_SMOKE_SCROLL_TO_Y";
+  let scroll_to_y_css = match std::env::var(SCROLL_TO_Y_ENV) {
+    Ok(raw) => {
+      let raw_trimmed = raw.trim();
+      if raw_trimmed.is_empty() {
+        None
+      } else {
+        // Accept underscore separators for convenience (e.g. `1_000`).
+        let cleaned = raw_trimmed.replace('_', "");
+        let parsed = cleaned
+          .parse::<f32>()
+          .map_err(|_| format!("{SCROLL_TO_Y_ENV}: invalid value {raw_trimmed:?}; expected f32"))?;
+        if !parsed.is_finite() {
+          return Err(
+            format!("{SCROLL_TO_Y_ENV}: invalid value {raw_trimmed:?}; expected finite f32").into(),
+          );
+        }
+        if parsed < 0.0 {
+          return Err(
+            format!("{SCROLL_TO_Y_ENV}: invalid value {raw_trimmed:?}; expected >= 0").into(),
+          );
+        }
+        (parsed > 0.0).then_some(parsed)
+      }
     }
-    (pixmap_px.0, pixmap_px.1, VIEWPORT_CSS, DPR)
-  } else {
-    if worker_disabled {
-      return Err(
-        format!("renderer worker disabled, but active URL is not an about: page ({active_url})")
+    Err(_) => None,
+  };
+  let wants_scroll_persist = scroll_to_y_css.is_some();
+
+  let (pixmap_w, pixmap_h, viewport_css, dpr) =
+    if fastrender::ui::about_pages::is_about_url(&active_url) && !wants_scroll_persist {
+      // Trusted about: rendering: do not spawn the renderer worker and do not send any navigation
+      // messages. This keeps bookmarks/history data in the browser process.
+      let mut renderer = fastrender::FastRender::new()?;
+      renderer.set_base_url(fastrender::ui::about_pages::ABOUT_BASE_URL.to_string());
+      let html =
+        fastrender::ui::about_pages::html_for_about_url(&active_url).unwrap_or_else(|| {
+          fastrender::ui::about_pages::error_page_html(
+            "Unknown about page",
+            &format!("Unknown URL: {active_url}"),
+            None,
+          )
+        });
+      let pixmap = renderer.render_html_with_options(
+        &html,
+        fastrender::RenderOptions::new()
+          .with_viewport(VIEWPORT_CSS.0, VIEWPORT_CSS.1)
+          .with_device_pixel_ratio(DPR),
+      )?;
+      let pixmap_px = (pixmap.width(), pixmap.height());
+      if pixmap_px != (expected_pixmap_w, expected_pixmap_h) {
+        return Err(
+          format!(
+            "unexpected pixmap size from trusted about renderer: got {}x{}, expected {}x{}",
+            pixmap_px.0, pixmap_px.1, expected_pixmap_w, expected_pixmap_h
+          )
           .into(),
-      );
-    }
+        );
+      }
+      (pixmap_px.0, pixmap_px.1, VIEWPORT_CSS, DPR)
+    } else {
+      if worker_disabled {
+        return Err(
+          format!(
+            "renderer worker disabled, but headless smoke needs the worker (active_url={active_url}, scroll_persist={wants_scroll_persist})"
+          )
+          .into(),
+        );
+      }
 
-    let renderer_backend = fastrender::ui::ThreadRendererBackend::spawn_browser_ui_worker(
-      "fastr-browser-headless-smoke-worker",
-    )?;
+      let renderer_backend = fastrender::ui::ThreadRendererBackend::spawn_browser_ui_worker(
+        "fastr-browser-headless-smoke-worker",
+      )?;
 
-    fastrender::ui::about_pages::sync_about_page_snapshot_download_dir(Some(
-      download_dir.display().to_string(),
-    ));
-    renderer_backend.send(UiToWorker::SetDownloadDirectory { path: download_dir })?;
+      fastrender::ui::about_pages::sync_about_page_snapshot_download_dir(Some(
+        download_dir.display().to_string(),
+      ));
+      renderer_backend.send(UiToWorker::SetDownloadDirectory { path: download_dir })?;
 
-    let mut tab_ids = Vec::with_capacity(active_window.tabs.len());
-    for _tab in &active_window.tabs {
-      let tab_id = TabId::new();
-      tab_ids.push(tab_id);
-      renderer_backend.send(UiToWorker::CreateTab {
-        tab_id,
-        // Do not start navigation until after the headless harness has applied viewport/DPR. This
-        // avoids a race where the worker begins rendering with its default (800x600, DPR=1) and only
-        // later receives the `ViewportChanged` message, which can make the smoke test slow/flaky on
-        // debug builds / constrained CI.
-        initial_url: None,
-        cancel: CancelGens::new(),
+      let mut tab_ids = Vec::with_capacity(tab_count);
+      for _ in 0..tab_count {
+        let tab_id = TabId::new();
+        tab_ids.push(tab_id);
+        renderer_backend.send(UiToWorker::CreateTab {
+          tab_id,
+          // Do not start navigation until after the headless harness has applied viewport/DPR. This
+          // avoids a race where the worker begins rendering with its default (800x600, DPR=1) and only
+          // later receives the `ViewportChanged` message, which can make the smoke test slow/flaky on
+          // debug builds / constrained CI.
+          initial_url: None,
+          cancel: CancelGens::new(),
+        })?;
+      }
+
+      let active_tab_id = tab_ids[active_idx.min(tab_ids.len().saturating_sub(1))];
+      renderer_backend.send(UiToWorker::ViewportChanged {
+        tab_id: active_tab_id,
+        viewport_css: VIEWPORT_CSS,
+        dpr: DPR,
       })?;
-    }
-
-    let active_idx = active_window
-      .active_tab_index
-      .min(tab_ids.len().saturating_sub(1));
-    let active_tab_id = tab_ids[active_idx];
-    renderer_backend.send(UiToWorker::ViewportChanged {
-      tab_id: active_tab_id,
-      viewport_css: VIEWPORT_CSS,
-      dpr: DPR,
-    })?;
-    renderer_backend.send(UiToWorker::SetActiveTab {
-      tab_id: active_tab_id,
-    })?;
-    if let Some(tab) = active_window.tabs.get(active_idx) {
+      renderer_backend.send(UiToWorker::SetActiveTab {
+        tab_id: active_tab_id,
+      })?;
       renderer_backend.send(UiToWorker::Navigate {
         tab_id: active_tab_id,
-        url: tab.url.clone(),
+        url: active_url.clone(),
         reason: NavigationReason::TypedUrl,
       })?;
-    }
 
-    // Close the UI→worker channel so the worker thread exits after completing the above messages.
-    renderer_backend.shutdown();
+      // In the common smoke-test case we close the UI→worker channel so the worker thread exits
+      // after completing the above messages. When scroll persistence is enabled we keep the channel
+      // open long enough to send ScrollTo + RequestRepaint.
+      if !wants_scroll_persist {
+        renderer_backend.shutdown();
+      }
 
-    let mut smoke_summary: Option<(u32, u32, (u32, u32), f32)> = None;
-    let mut last_frame_meta: Option<(u32, u32, (u32, u32), f32)> = None;
-    let mut frames_seen: u32 = 0;
+      let mut smoke_summary: Option<(u32, u32, (u32, u32), f32)> = None;
+      let mut last_frame_meta: Option<(u32, u32, (u32, u32), f32)> = None;
+      let mut frames_seen: u32 = 0;
 
-    match renderer_watchdog_timeout {
-      Some(timeout) => {
-        let deadline = Instant::now() + timeout;
-        while Instant::now() < deadline {
-          let remaining = deadline.saturating_duration_since(Instant::now());
-          match renderer_backend.recv_timeout(remaining) {
+      match renderer_watchdog_timeout {
+        Some(timeout) => {
+          let deadline = Instant::now() + timeout;
+          while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match renderer_backend.recv_timeout(remaining) {
+              Ok(WorkerToUi::FrameReady {
+                tab_id: msg_tab,
+                frame,
+              }) if msg_tab == active_tab_id => {
+                let pixmap_px = (frame.pixmap.width(), frame.pixmap.height());
+                frames_seen += 1;
+                last_frame_meta = Some((pixmap_px.0, pixmap_px.1, frame.viewport_css, frame.dpr));
+                if frame.viewport_css == VIEWPORT_CSS
+                  && (frame.dpr - DPR).abs() <= 0.01
+                  && pixmap_px == (expected_pixmap_w, expected_pixmap_h)
+                {
+                  smoke_summary = last_frame_meta;
+                  break;
+                }
+              }
+              Ok(_) => {}
+              Err(RecvTimeoutError::Timeout) => break,
+              Err(RecvTimeoutError::Disconnected) => {
+                return Err("headless smoke worker disconnected before FrameReady".into());
+              }
+            }
+          }
+        }
+        None => loop {
+          match renderer_backend.recv() {
             Ok(WorkerToUi::FrameReady {
               tab_id: msg_tab,
               frame,
@@ -9668,46 +9728,21 @@ fn run_headless_smoke_mode(
               }
             }
             Ok(_) => {}
-            Err(RecvTimeoutError::Timeout) => break,
-            Err(RecvTimeoutError::Disconnected) => {
+            Err(_) => {
               return Err("headless smoke worker disconnected before FrameReady".into());
             }
           }
-        }
+        },
       }
-      None => loop {
-        match renderer_backend.recv() {
-          Ok(WorkerToUi::FrameReady {
-            tab_id: msg_tab,
-            frame,
-          }) if msg_tab == active_tab_id => {
-            let pixmap_px = (frame.pixmap.width(), frame.pixmap.height());
-            frames_seen += 1;
-            last_frame_meta = Some((pixmap_px.0, pixmap_px.1, frame.viewport_css, frame.dpr));
-            if frame.viewport_css == VIEWPORT_CSS
-              && (frame.dpr - DPR).abs() <= 0.01
-              && pixmap_px == (expected_pixmap_w, expected_pixmap_h)
-            {
-              smoke_summary = last_frame_meta;
-              break;
-            }
-          }
-          Ok(_) => {}
-          Err(_) => {
-            return Err("headless smoke worker disconnected before FrameReady".into());
-          }
-        }
-      },
-    }
 
-    let Some((pixmap_w, pixmap_h, viewport_css, dpr)) = smoke_summary else {
-      let hint = match last_frame_meta {
+      let Some((pixmap_w, pixmap_h, viewport_css, dpr)) = smoke_summary else {
+        let hint = match last_frame_meta {
           Some((w, h, viewport, dpr)) => format!(
             " (saw {frames_seen} FrameReady; last was viewport_css={viewport:?} dpr={dpr} pixmap_px={w}x{h})"
           ),
           None => " (saw no FrameReady messages)".to_string(),
         };
-      return Err(
+        return Err(
           match renderer_watchdog_timeout {
             Some(timeout) => format!(
               "timed out after {timeout:?} waiting for WorkerToUi::FrameReady matching viewport_css={VIEWPORT_CSS:?} dpr={DPR} pixmap_px={expected_pixmap_w}x{expected_pixmap_h}{hint}"
@@ -9718,37 +9753,117 @@ fn run_headless_smoke_mode(
           }
           .into(),
         );
+      };
+
+      if viewport_css != VIEWPORT_CSS {
+        return Err(
+          format!(
+            "unexpected viewport_css from FrameReady: got {:?}, expected {:?}",
+            viewport_css, VIEWPORT_CSS
+          )
+          .into(),
+        );
+      }
+      if pixmap_w != expected_pixmap_w || pixmap_h != expected_pixmap_h {
+        return Err(
+          format!(
+            "unexpected pixmap size from FrameReady: got {}x{}, expected {}x{}",
+            pixmap_w, pixmap_h, expected_pixmap_w, expected_pixmap_h
+          )
+          .into(),
+        );
+      }
+      if (dpr - DPR).abs() > 0.01 {
+        return Err(format!("unexpected dpr from FrameReady: got {dpr}, expected {DPR}").into());
+      }
+
+      if let Some(scroll_to_y_css) = scroll_to_y_css {
+        renderer_backend.send(UiToWorker::ScrollTo {
+          tab_id: active_tab_id,
+          pos_css: (0.0, scroll_to_y_css),
+        })?;
+        renderer_backend.send(UiToWorker::RequestRepaint {
+          tab_id: active_tab_id,
+          reason: RepaintReason::Scroll,
+        })?;
+
+        let mut observed_scroll: Option<(f32, f32)> = None;
+        let mut frames_seen_after_scroll: u32 = 0;
+
+        let mut handle_scroll_msg = |msg: WorkerToUi| match msg {
+          WorkerToUi::FrameReady { tab_id: msg_tab, frame } if msg_tab == active_tab_id => {
+            frames_seen_after_scroll = frames_seen_after_scroll.saturating_add(1);
+            let pixmap_px = (frame.pixmap.width(), frame.pixmap.height());
+            if frame.viewport_css != VIEWPORT_CSS
+              || (frame.dpr - DPR).abs() > 0.01
+              || pixmap_px != (expected_pixmap_w, expected_pixmap_h)
+            {
+              return;
+            }
+
+            let pos_css = (frame.scroll_state.viewport.x, frame.scroll_state.viewport.y);
+            if (pos_css.1 - scroll_to_y_css).abs() <= 2.0 {
+              observed_scroll = Some(pos_css);
+            }
+          }
+          _ => {}
+        };
+
+        match renderer_watchdog_timeout {
+          Some(timeout) => {
+            let deadline = Instant::now() + timeout;
+            while Instant::now() < deadline && observed_scroll.is_none() {
+              let remaining = deadline.saturating_duration_since(Instant::now());
+              match renderer_backend.recv_timeout(
+                remaining.min(std::time::Duration::from_millis(200)),
+              ) {
+                Ok(msg) => handle_scroll_msg(msg),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                  return Err("headless smoke worker disconnected before scroll FrameReady".into());
+                }
+              }
+            }
+          }
+          None => {
+            while observed_scroll.is_none() {
+              match renderer_backend.recv() {
+                Ok(msg) => handle_scroll_msg(msg),
+                Err(_) => {
+                  return Err("headless smoke worker disconnected before scroll FrameReady".into());
+                }
+              }
+            }
+          }
+        }
+
+        let Some(observed_scroll) = observed_scroll else {
+          return Err(
+            format!(
+              "timed out waiting for FrameReady with scroll_state.viewport.y ~= {scroll_to_y_css} (saw {frames_seen_after_scroll} frames after ScrollTo)"
+            )
+            .into(),
+          );
+        };
+
+        if let Some(tab) = session
+          .windows
+          .get_mut(active_window_idx)
+          .and_then(|window| window.tabs.get_mut(active_idx))
+        {
+          tab.scroll_css = Some(observed_scroll);
+        }
+
+        renderer_backend.shutdown();
+      }
+
+      match renderer_backend.join() {
+        Ok(()) => {}
+        Err(_) => return Err("headless smoke worker panicked".into()),
+      }
+
+      (pixmap_w, pixmap_h, viewport_css, dpr)
     };
-
-    if viewport_css != VIEWPORT_CSS {
-      return Err(
-        format!(
-          "unexpected viewport_css from FrameReady: got {:?}, expected {:?}",
-          viewport_css, VIEWPORT_CSS
-        )
-        .into(),
-      );
-    }
-    if pixmap_w != expected_pixmap_w || pixmap_h != expected_pixmap_h {
-      return Err(
-        format!(
-          "unexpected pixmap size from FrameReady: got {}x{}, expected {}x{}",
-          pixmap_w, pixmap_h, expected_pixmap_w, expected_pixmap_h
-        )
-        .into(),
-      );
-    }
-    if (dpr - DPR).abs() > 0.01 {
-      return Err(format!("unexpected dpr from FrameReady: got {dpr}, expected {DPR}").into());
-    }
-
-    match renderer_backend.join() {
-      Ok(()) => {}
-      Err(_) => return Err("headless smoke worker panicked".into()),
-    }
-
-    (pixmap_w, pixmap_h, viewport_css, dpr)
-  };
 
   session.did_exit_cleanly = true;
   if let Err(err) = fastrender::ui::session::save_session_atomic(&session_path, &session) {
