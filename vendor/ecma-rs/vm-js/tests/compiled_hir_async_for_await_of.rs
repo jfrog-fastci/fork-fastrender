@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use vm_js::{
-  CompiledFunctionRef, CompiledScript, Heap, HeapLimits, JsRuntime, PromiseState, PropertyKey, Value, Vm, VmError,
+  CompiledFunctionRef, CompiledScript, Heap, HeapLimits, PromiseState, PropertyKey, Value, Vm, VmError,
   VmOptions,
 };
 
@@ -546,15 +546,11 @@ fn compiled_async_for_await_of_break_closes_sync_iterator_via_async_from_sync_it
 
 #[test]
 fn compiled_async_for_await_of_throw_closes_iterator_before_catch() -> Result<(), VmError> {
-  // `for await..of` nested within a `try` block is currently not supported by the compiled async
-  // executor (HIR). Ensure we exercise the intended call-time AST fallback by executing the
-  // compiled script normally and calling the resulting function object.
-  let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
-  let mut rt = JsRuntime::new(vm, heap)?;
-
+  // `for await..of` nested within a `try` block must await `AsyncIteratorClose` before the catch
+  // clause runs.
+  let mut heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
   let script = CompiledScript::compile_script(
-    &mut rt.heap,
+    &mut heap,
     "compiled_async_for_await_of_throw_closes_iterator_before_catch.js",
     r#"
       async function f() {
@@ -585,34 +581,46 @@ fn compiled_async_for_await_of_throw_closes_iterator_before_catch() -> Result<()
         }
         return out;
       }
-      f;
     "#,
   )?;
+  let f_body = find_function_body(&script, "f");
 
-  let result = rt.exec_compiled_script(script)?;
-  let Value::Object(func_obj) = result else {
-    panic!("expected compiled script to evaluate to a function object, got {result:?}");
+  let mut vm = Vm::new(VmOptions::default());
+  let mut realm = vm_js::Realm::new(&mut vm, &mut heap)?;
+
+  let promise_root = {
+    let mut scope = heap.scope();
+    let name = scope.alloc_string("f")?;
+    let f = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script: script.clone(),
+        body: f_body,
+        ast_fallback: None,
+      },
+      name,
+      0,
+    )?;
+    let promise = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+    scope.push_root(promise)?;
+    scope.heap_mut().add_root(promise)?
   };
 
-  let promise = {
-    let mut scope = rt.heap.scope();
-    rt.vm
-      .call_without_host(&mut scope, Value::Object(func_obj), Value::Undefined, &[])?
-  };
-  let promise_root = rt.heap.add_root(promise)?;
+  vm.perform_microtask_checkpoint(&mut heap)?;
 
-  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
-
-  let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
-    panic!("expected async function call to return a Promise object");
+  let promise = heap
+    .get_root(promise_root)
+    .ok_or(VmError::InvariantViolation("missing promise root"))?;
+  let Value::Object(promise_obj) = promise else {
+    panic!("expected promise object, got {promise:?}");
   };
-  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
-  assert_eq!(
-    rt.heap
-      .promise_result(promise_obj)?
-      .ok_or(VmError::InvariantViolation("missing promise result"))?,
-    Value::Bool(true)
-  );
-  rt.heap.remove_root(promise_root);
+
+  assert_eq!(heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let result = heap
+    .promise_result(promise_obj)?
+    .ok_or(VmError::InvariantViolation("missing promise result"))?;
+  assert_eq!(result, Value::Bool(true));
+
+  heap.remove_root(promise_root);
+  realm.teardown(&mut heap);
   Ok(())
 }
