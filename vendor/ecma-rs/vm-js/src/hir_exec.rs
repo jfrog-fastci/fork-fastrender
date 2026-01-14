@@ -14386,80 +14386,121 @@ impl ForTripleAwaitState {
                         await_value,
                       });
                     }
-                    hir_js::ExprKind::Assignment {
-                      op: hir_js::AssignOp::Assign,
-                      target,
-                      value,
-                    } => {
-                      let rhs = evaluator.get_expr(body, *value)?;
-                      if let hir_js::ExprKind::Await { expr: awaited_expr } = &rhs.kind {
-                        // Budget once for the init expression and once for the await expression node.
-                        evaluator.vm.tick()?;
-                        evaluator.vm.tick()?;
+                    hir_js::ExprKind::Assignment { op, target, value } => {
+                      let compound_op = matches!(
+                        op,
+                        hir_js::AssignOp::AddAssign
+                          | hir_js::AssignOp::SubAssign
+                          | hir_js::AssignOp::MulAssign
+                          | hir_js::AssignOp::DivAssign
+                          | hir_js::AssignOp::RemAssign
+                          | hir_js::AssignOp::ExponentAssign
+                          | hir_js::AssignOp::ShiftLeftAssign
+                          | hir_js::AssignOp::ShiftRightAssign
+                          | hir_js::AssignOp::ShiftRightUnsignedAssign
+                          | hir_js::AssignOp::BitOrAssign
+                          | hir_js::AssignOp::BitAndAssign
+                          | hir_js::AssignOp::BitXorAssign
+                      );
+                      if *op == hir_js::AssignOp::Assign || compound_op {
+                        let rhs = evaluator.get_expr(body, *value)?;
+                        if let hir_js::ExprKind::Await { expr: awaited_expr } = &rhs.kind {
+                          // Budget once for the init expression and once for the await expression node.
+                          evaluator.vm.tick()?;
+                          evaluator.vm.tick()?;
 
-                        let reference = evaluator.eval_assignment_reference(scope, body, *target)?;
+                          let reference = evaluator.eval_assignment_reference(scope, body, *target)?;
 
-                        let mut await_scope = scope.reborrow();
-                        evaluator.root_assignment_reference(&mut await_scope, &reference)?;
-                        let await_value =
-                          evaluator.eval_expr(&mut await_scope, body, *awaited_expr)?;
-                        await_scope.push_root(await_value)?;
+                          let mut await_scope = scope.reborrow();
+                          evaluator.root_assignment_reference(&mut await_scope, &reference)?;
 
-                        let mut base_root = None;
-                        let mut key_root = None;
-                        match &reference {
-                          AssignmentReference::Binding(_) => {}
-                          AssignmentReference::Property { base, key } => {
-                            let key_value = match key {
-                              PropertyKey::String(s) => Value::String(*s),
-                              PropertyKey::Symbol(s) => Value::Symbol(*s),
-                            };
-                            // Root base+key across root registration.
-                            await_scope.push_roots(&[*base, key_value])?;
-                            let base_id = await_scope.heap_mut().add_root(*base)?;
-                            let key_id = match await_scope.heap_mut().add_root(key_value) {
-                              Ok(id) => id,
-                              Err(err) => {
-                                await_scope.heap_mut().remove_root(base_id);
-                                return Err(err);
-                              }
-                            };
-                            base_root = Some(base_id);
-                            key_root = Some(key_id);
+                          let mut left_root: Option<RootId> = None;
+                          let assign_op = compound_op.then_some(*op);
+                          if let Some(_op) = assign_op {
+                            let left =
+                              evaluator.get_value_from_assignment_reference(&mut await_scope, &reference)?;
+                            await_scope.push_root(left)?;
+                            left_root = Some(await_scope.heap_mut().add_root(left)?);
                           }
-                          AssignmentReference::SuperProperty { super_base, key, .. } => {
-                            let key_value = match key {
-                              PropertyKey::String(s) => Value::String(*s),
-                              PropertyKey::Symbol(s) => Value::Symbol(*s),
-                            };
-                            let base_value =
-                              (*super_base).map(Value::Object).unwrap_or(Value::Null);
-                            await_scope.push_roots(&[base_value, key_value])?;
-                            let base_id = await_scope.heap_mut().add_root(base_value)?;
-                            let key_id = match await_scope.heap_mut().add_root(key_value) {
-                              Ok(id) => id,
-                              Err(err) => {
-                                await_scope.heap_mut().remove_root(base_id);
-                                return Err(err);
+
+                          let await_value = match evaluator.eval_expr(&mut await_scope, body, *awaited_expr) {
+                            Ok(v) => v,
+                            Err(err) => {
+                              if let Some(id) = left_root.take() {
+                                await_scope.heap_mut().remove_root(id);
                               }
-                            };
-                            base_root = Some(base_id);
-                            key_root = Some(key_id);
+                              return Err(err);
+                            }
+                          };
+                          await_scope.push_root(await_value)?;
+
+                          let mut base_root: Option<RootId> = None;
+                          let mut key_root: Option<RootId> = None;
+                          let assign_root_res: Result<(), VmError> = (|| {
+                            match &reference {
+                              AssignmentReference::Binding(_) => {}
+                              AssignmentReference::Property { base, key } => {
+                                let key_value = match key {
+                                  PropertyKey::String(s) => Value::String(*s),
+                                  PropertyKey::Symbol(s) => Value::Symbol(*s),
+                                };
+                                // Root base+key across root registration.
+                                await_scope.push_roots(&[*base, key_value])?;
+                                let base_id = await_scope.heap_mut().add_root(*base)?;
+                                match await_scope.heap_mut().add_root(key_value) {
+                                  Ok(id) => {
+                                    base_root = Some(base_id);
+                                    key_root = Some(id);
+                                  }
+                                  Err(err) => {
+                                    await_scope.heap_mut().remove_root(base_id);
+                                    return Err(err);
+                                  }
+                                }
+                              }
+                              AssignmentReference::SuperProperty { super_base, key, .. } => {
+                                let key_value = match key {
+                                  PropertyKey::String(s) => Value::String(*s),
+                                  PropertyKey::Symbol(s) => Value::Symbol(*s),
+                                };
+                                let base_value = (*super_base).map(Value::Object).unwrap_or(Value::Null);
+                                await_scope.push_roots(&[base_value, key_value])?;
+                                let base_id = await_scope.heap_mut().add_root(base_value)?;
+                                match await_scope.heap_mut().add_root(key_value) {
+                                  Ok(id) => {
+                                    base_root = Some(base_id);
+                                    key_root = Some(id);
+                                  }
+                                  Err(err) => {
+                                    await_scope.heap_mut().remove_root(base_id);
+                                    return Err(err);
+                                  }
+                                }
+                              }
+                            }
+                            Ok(())
+                          })();
+
+                          if let Err(err) = assign_root_res {
+                            if let Some(id) = left_root.take() {
+                              await_scope.heap_mut().remove_root(id);
+                            }
+                            return Err(err);
                           }
+
+                          self.pending_assign = Some(PendingAssignment {
+                            reference,
+                            assign_op,
+                            base_root,
+                            key_root,
+                            left_root,
+                          });
+                          self.stage = ForTripleAwaitStage::AwaitInitAssign;
+                          return Ok(ForTripleAwaitPoll::Await {
+                            kind: crate::exec::AsyncSuspendKind::Await,
+                            await_value,
+                          });
                         }
-
-                        self.pending_assign = Some(PendingAssignment {
-                          reference,
-                          assign_op: None,
-                          base_root,
-                          key_root,
-                          left_root: None,
-                        });
-                        self.stage = ForTripleAwaitStage::AwaitInitAssign;
-                        return Ok(ForTripleAwaitPoll::Await {
-                          kind: crate::exec::AsyncSuspendKind::Await,
-                          await_value,
-                        });
                       }
                       // No await in RHS; fall through to synchronous eval below.
                       let _ = evaluator.eval_expr(scope, body, *expr_id)?;
@@ -14513,24 +14554,53 @@ impl ForTripleAwaitState {
               }
             };
 
-            let mut assign_scope = scope.reborrow();
             let mut pending = self
               .pending_assign
               .take()
               .ok_or(VmError::InvariantViolation("missing pending init assignment"))?;
-            evaluator.root_assignment_reference(&mut assign_scope, &pending.reference)?;
-            assign_scope.push_root(resumed_value)?;
-            evaluator.maybe_set_anonymous_function_name_for_assignment(
-              &mut assign_scope,
-              &pending.reference,
-              resumed_value,
-            )?;
-            evaluator.put_value_to_assignment_reference(
-              &mut assign_scope,
-              &pending.reference,
-              resumed_value,
-            )?;
-            pending.teardown(assign_scope.heap_mut());
+
+            let assign_res: Result<(), VmError> = (|| {
+              let mut assign_scope = scope.reborrow();
+              evaluator.root_assignment_reference(&mut assign_scope, &pending.reference)?;
+
+              if let Some(op) = pending.assign_op {
+                let left_root = pending.left_root.ok_or(VmError::InvariantViolation(
+                  "for-triple compound assignment missing left value root",
+                ))?;
+                let left = assign_scope.heap().get_root(left_root).ok_or(VmError::InvariantViolation(
+                  "for-triple compound assignment missing left value root value",
+                ))?;
+
+                assign_scope.push_roots(&[left, resumed_value])?;
+                let out = evaluator.apply_compound_assignment_op(&mut assign_scope, op, left, resumed_value)?;
+                assign_scope.push_root(out)?;
+                evaluator.put_value_to_assignment_reference(&mut assign_scope, &pending.reference, out)?;
+              } else {
+                assign_scope.push_root(resumed_value)?;
+                evaluator.maybe_set_anonymous_function_name_for_assignment(
+                  &mut assign_scope,
+                  &pending.reference,
+                  resumed_value,
+                )?;
+                evaluator.put_value_to_assignment_reference(
+                  &mut assign_scope,
+                  &pending.reference,
+                  resumed_value,
+                )?;
+              }
+
+              Ok(())
+            })();
+
+            match assign_res {
+              Ok(()) => {
+                pending.teardown(scope.heap_mut());
+              }
+              Err(err) => {
+                pending.teardown(scope.heap_mut());
+                return Err(err);
+              }
+            }
 
             self.stage = ForTripleAwaitStage::Test;
             continue;
@@ -14697,77 +14767,120 @@ impl ForTripleAwaitState {
                     await_value,
                   });
                 }
-                hir_js::ExprKind::Assignment {
-                  op: hir_js::AssignOp::Assign,
-                  target,
-                  value,
-                } => {
-                  let rhs = evaluator.get_expr(body, *value)?;
-                  if let hir_js::ExprKind::Await { expr: awaited_expr } = &rhs.kind {
-                    // Budget once for the update expression and once for the await expression node.
-                    evaluator.vm.tick()?;
-                    evaluator.vm.tick()?;
+                hir_js::ExprKind::Assignment { op, target, value } => {
+                  let compound_op = matches!(
+                    op,
+                    hir_js::AssignOp::AddAssign
+                      | hir_js::AssignOp::SubAssign
+                      | hir_js::AssignOp::MulAssign
+                      | hir_js::AssignOp::DivAssign
+                      | hir_js::AssignOp::RemAssign
+                      | hir_js::AssignOp::ExponentAssign
+                      | hir_js::AssignOp::ShiftLeftAssign
+                      | hir_js::AssignOp::ShiftRightAssign
+                      | hir_js::AssignOp::ShiftRightUnsignedAssign
+                      | hir_js::AssignOp::BitOrAssign
+                      | hir_js::AssignOp::BitAndAssign
+                      | hir_js::AssignOp::BitXorAssign
+                  );
+                  if *op == hir_js::AssignOp::Assign || compound_op {
+                    let rhs = evaluator.get_expr(body, *value)?;
+                    if let hir_js::ExprKind::Await { expr: awaited_expr } = &rhs.kind {
+                      // Budget once for the update expression and once for the await expression node.
+                      evaluator.vm.tick()?;
+                      evaluator.vm.tick()?;
 
-                    let reference = evaluator.eval_assignment_reference(scope, body, *target)?;
+                      let reference = evaluator.eval_assignment_reference(scope, body, *target)?;
 
-                    let mut await_scope = scope.reborrow();
-                    evaluator.root_assignment_reference(&mut await_scope, &reference)?;
-                    let await_value = evaluator.eval_expr(&mut await_scope, body, *awaited_expr)?;
-                    await_scope.push_root(await_value)?;
+                      let mut await_scope = scope.reborrow();
+                      evaluator.root_assignment_reference(&mut await_scope, &reference)?;
 
-                    let mut base_root = None;
-                    let mut key_root = None;
-                    match &reference {
-                      AssignmentReference::Binding(_) => {}
-                      AssignmentReference::Property { base, key } => {
-                        let key_value = match key {
-                          PropertyKey::String(s) => Value::String(*s),
-                          PropertyKey::Symbol(s) => Value::Symbol(*s),
-                        };
-                        await_scope.push_roots(&[*base, key_value])?;
-                        let base_id = await_scope.heap_mut().add_root(*base)?;
-                        let key_id = match await_scope.heap_mut().add_root(key_value) {
-                          Ok(id) => id,
-                          Err(err) => {
-                            await_scope.heap_mut().remove_root(base_id);
-                            return Err(err);
-                          }
-                        };
-                        base_root = Some(base_id);
-                        key_root = Some(key_id);
+                      let mut left_root: Option<RootId> = None;
+                      let assign_op = compound_op.then_some(*op);
+                      if let Some(_op) = assign_op {
+                        let left =
+                          evaluator.get_value_from_assignment_reference(&mut await_scope, &reference)?;
+                        await_scope.push_root(left)?;
+                        left_root = Some(await_scope.heap_mut().add_root(left)?);
                       }
-                      AssignmentReference::SuperProperty { super_base, key, .. } => {
-                        let key_value = match key {
-                          PropertyKey::String(s) => Value::String(*s),
-                          PropertyKey::Symbol(s) => Value::Symbol(*s),
-                        };
-                        let base_value = (*super_base).map(Value::Object).unwrap_or(Value::Null);
-                        await_scope.push_roots(&[base_value, key_value])?;
-                        let base_id = await_scope.heap_mut().add_root(base_value)?;
-                        let key_id = match await_scope.heap_mut().add_root(key_value) {
-                          Ok(id) => id,
-                          Err(err) => {
-                            await_scope.heap_mut().remove_root(base_id);
-                            return Err(err);
+
+                      let await_value = match evaluator.eval_expr(&mut await_scope, body, *awaited_expr) {
+                        Ok(v) => v,
+                        Err(err) => {
+                          if let Some(id) = left_root.take() {
+                            await_scope.heap_mut().remove_root(id);
                           }
-                        };
-                        base_root = Some(base_id);
-                        key_root = Some(key_id);
+                          return Err(err);
+                        }
+                      };
+                      await_scope.push_root(await_value)?;
+
+                      let mut base_root: Option<RootId> = None;
+                      let mut key_root: Option<RootId> = None;
+                      let assign_root_res: Result<(), VmError> = (|| {
+                        match &reference {
+                          AssignmentReference::Binding(_) => {}
+                          AssignmentReference::Property { base, key } => {
+                            let key_value = match key {
+                              PropertyKey::String(s) => Value::String(*s),
+                              PropertyKey::Symbol(s) => Value::Symbol(*s),
+                            };
+                            await_scope.push_roots(&[*base, key_value])?;
+                            let base_id = await_scope.heap_mut().add_root(*base)?;
+                            match await_scope.heap_mut().add_root(key_value) {
+                              Ok(id) => {
+                                base_root = Some(base_id);
+                                key_root = Some(id);
+                              }
+                              Err(err) => {
+                                await_scope.heap_mut().remove_root(base_id);
+                                return Err(err);
+                              }
+                            }
+                          }
+                          AssignmentReference::SuperProperty { super_base, key, .. } => {
+                            let key_value = match key {
+                              PropertyKey::String(s) => Value::String(*s),
+                              PropertyKey::Symbol(s) => Value::Symbol(*s),
+                            };
+                            let base_value = (*super_base).map(Value::Object).unwrap_or(Value::Null);
+                            await_scope.push_roots(&[base_value, key_value])?;
+                            let base_id = await_scope.heap_mut().add_root(base_value)?;
+                            match await_scope.heap_mut().add_root(key_value) {
+                              Ok(id) => {
+                                base_root = Some(base_id);
+                                key_root = Some(id);
+                              }
+                              Err(err) => {
+                                await_scope.heap_mut().remove_root(base_id);
+                                return Err(err);
+                              }
+                            }
+                          }
+                        }
+                        Ok(())
+                      })();
+
+                      if let Err(err) = assign_root_res {
+                        if let Some(id) = left_root.take() {
+                          await_scope.heap_mut().remove_root(id);
+                        }
+                        return Err(err);
                       }
+
+                      self.pending_assign = Some(PendingAssignment {
+                        reference,
+                        assign_op,
+                        base_root,
+                        key_root,
+                        left_root,
+                      });
+                      self.stage = ForTripleAwaitStage::AwaitUpdateAssign;
+                      return Ok(ForTripleAwaitPoll::Await {
+                        kind: crate::exec::AsyncSuspendKind::Await,
+                        await_value,
+                      });
                     }
-
-                    self.pending_assign = Some(PendingAssignment {
-                      reference,
-                      assign_op: None,
-                      base_root,
-                      key_root,
-                      left_root: None,
-                    });
-                    self.stage = ForTripleAwaitStage::AwaitUpdateAssign;
-                    return Ok(ForTripleAwaitPoll::Await {
-                      kind: crate::exec::AsyncSuspendKind::Await,
-                      await_value,
-                    });
                   }
                   // No await in RHS; fall through to synchronous eval below.
                   let _ = evaluator.eval_expr(scope, body, update_id)?;
@@ -14816,24 +14929,51 @@ impl ForTripleAwaitState {
               }
             };
 
-            let mut assign_scope = scope.reborrow();
             let mut pending = self
               .pending_assign
               .take()
               .ok_or(VmError::InvariantViolation("missing pending update assignment"))?;
-            evaluator.root_assignment_reference(&mut assign_scope, &pending.reference)?;
-            assign_scope.push_root(resumed_value)?;
-            evaluator.maybe_set_anonymous_function_name_for_assignment(
-              &mut assign_scope,
-              &pending.reference,
-              resumed_value,
-            )?;
-            evaluator.put_value_to_assignment_reference(
-              &mut assign_scope,
-              &pending.reference,
-              resumed_value,
-            )?;
-            pending.teardown(assign_scope.heap_mut());
+            let assign_res: Result<(), VmError> = (|| {
+              let mut assign_scope = scope.reborrow();
+              evaluator.root_assignment_reference(&mut assign_scope, &pending.reference)?;
+
+              if let Some(op) = pending.assign_op {
+                let left_root = pending.left_root.ok_or(VmError::InvariantViolation(
+                  "for-triple compound assignment missing left value root",
+                ))?;
+                let left = assign_scope.heap().get_root(left_root).ok_or(VmError::InvariantViolation(
+                  "for-triple compound assignment missing left value root value",
+                ))?;
+                assign_scope.push_roots(&[left, resumed_value])?;
+                let out = evaluator.apply_compound_assignment_op(&mut assign_scope, op, left, resumed_value)?;
+                assign_scope.push_root(out)?;
+                evaluator.put_value_to_assignment_reference(&mut assign_scope, &pending.reference, out)?;
+              } else {
+                assign_scope.push_root(resumed_value)?;
+                evaluator.maybe_set_anonymous_function_name_for_assignment(
+                  &mut assign_scope,
+                  &pending.reference,
+                  resumed_value,
+                )?;
+                evaluator.put_value_to_assignment_reference(
+                  &mut assign_scope,
+                  &pending.reference,
+                  resumed_value,
+                )?;
+              }
+
+              Ok(())
+            })();
+
+            match assign_res {
+              Ok(()) => {
+                pending.teardown(scope.heap_mut());
+              }
+              Err(err) => {
+                pending.teardown(scope.heap_mut());
+                return Err(err);
+              }
+            }
 
             self.stage = ForTripleAwaitStage::Test;
             continue;
@@ -15397,14 +15537,27 @@ impl HirAsyncState {
             let expr = evaluator.get_expr(body, *expr_id)?;
             match &expr.kind {
               hir_js::ExprKind::Await { .. } => has_await = true,
-              hir_js::ExprKind::Assignment {
-                op: hir_js::AssignOp::Assign,
-                value,
-                ..
-              } => {
-                let rhs = evaluator.get_expr(body, *value)?;
-                if matches!(rhs.kind, hir_js::ExprKind::Await { .. }) {
-                  has_await = true;
+              hir_js::ExprKind::Assignment { op, value, .. } => {
+                let compound_op = matches!(
+                  op,
+                  hir_js::AssignOp::AddAssign
+                    | hir_js::AssignOp::SubAssign
+                    | hir_js::AssignOp::MulAssign
+                    | hir_js::AssignOp::DivAssign
+                    | hir_js::AssignOp::RemAssign
+                    | hir_js::AssignOp::ExponentAssign
+                    | hir_js::AssignOp::ShiftLeftAssign
+                    | hir_js::AssignOp::ShiftRightAssign
+                    | hir_js::AssignOp::ShiftRightUnsignedAssign
+                    | hir_js::AssignOp::BitOrAssign
+                    | hir_js::AssignOp::BitAndAssign
+                    | hir_js::AssignOp::BitXorAssign
+                );
+                if *op == hir_js::AssignOp::Assign || compound_op {
+                  let rhs = evaluator.get_expr(body, *value)?;
+                  if matches!(rhs.kind, hir_js::ExprKind::Await { .. }) {
+                    has_await = true;
+                  }
                 }
               }
               _ => {}
@@ -15438,14 +15591,27 @@ impl HirAsyncState {
           let update_expr = evaluator.get_expr(body, *update)?;
           match &update_expr.kind {
             hir_js::ExprKind::Await { .. } => has_await = true,
-            hir_js::ExprKind::Assignment {
-              op: hir_js::AssignOp::Assign,
-              value,
-              ..
-            } => {
-              let rhs = evaluator.get_expr(body, *value)?;
-              if matches!(rhs.kind, hir_js::ExprKind::Await { .. }) {
-                has_await = true;
+            hir_js::ExprKind::Assignment { op, value, .. } => {
+              let compound_op = matches!(
+                op,
+                hir_js::AssignOp::AddAssign
+                  | hir_js::AssignOp::SubAssign
+                  | hir_js::AssignOp::MulAssign
+                  | hir_js::AssignOp::DivAssign
+                  | hir_js::AssignOp::RemAssign
+                  | hir_js::AssignOp::ExponentAssign
+                  | hir_js::AssignOp::ShiftLeftAssign
+                  | hir_js::AssignOp::ShiftRightAssign
+                  | hir_js::AssignOp::ShiftRightUnsignedAssign
+                  | hir_js::AssignOp::BitOrAssign
+                  | hir_js::AssignOp::BitAndAssign
+                  | hir_js::AssignOp::BitXorAssign
+              );
+              if *op == hir_js::AssignOp::Assign || compound_op {
+                let rhs = evaluator.get_expr(body, *value)?;
+                if matches!(rhs.kind, hir_js::ExprKind::Await { .. }) {
+                  has_await = true;
+                }
               }
             }
             _ => {}

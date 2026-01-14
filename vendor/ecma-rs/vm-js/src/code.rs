@@ -691,24 +691,6 @@ fn expr_is_direct_await_without_nested_await(expr: &Node<Expr>) -> bool {
   expr_direct_await_arg(expr).is_some_and(|arg| !expr_contains_await(arg))
 }
 
-fn expr_is_assignment_with_direct_await_rhs_without_nested_await(expr: &Node<Expr>) -> bool {
-  let Expr::Binary(binary) = &*expr.stx else {
-    return false;
-  };
-  if binary.stx.operator != OperatorName::Assignment {
-    return false;
-  }
-  let Some(arg) = expr_direct_await_arg(&binary.stx.right) else {
-    return false;
-  };
-  if !expr_is_supported_assignment_target_for_hir_async_scripts(&binary.stx.left) {
-    return false;
-  }
-  // The compiled evaluator does not support nested `await` within the assignment target (including
-  // computed member keys) or within the awaited operand.
-  !expr_contains_await(&binary.stx.left) && !expr_contains_await(arg)
-}
-
 fn expr_is_supported_assignment_with_direct_await_rhs_without_nested_await(expr: &Node<Expr>) -> bool {
   let Expr::Binary(binary) = &*expr.stx else {
     return false;
@@ -1087,7 +1069,7 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
     if expr_is_direct_await_without_nested_await(expr) {
       return true;
     }
-    allow_assignment && expr_is_assignment_with_direct_await_rhs_without_nested_await(expr)
+    allow_assignment && expr_is_supported_assignment_with_direct_await_rhs_without_nested_await(expr)
   }
 
   fn for_triple_stmt_supported(for_stmt: &Node<ForTripleStmt>) -> bool {
@@ -1315,7 +1297,7 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
       // `for (init; test; update) { ... }` loops at top-level.
       //
       // The compiled evaluator supports suspension/resumption at direct `await` boundaries (and
-      // simple `x = await <expr>` assignments) in the loop head, but does not yet support `await`
+      // simple `x = await <expr>` / `x += await <expr>` assignments) in the loop head, but does not yet support `await`
       // inside the loop body or within initializer declarations.
       Stmt::ForTriple(for_stmt) => {
         for_triple_stmt_supported(for_stmt)
