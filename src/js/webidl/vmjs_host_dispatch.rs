@@ -5014,6 +5014,9 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let parent_id = parent_handle.node_id;
         let document_id = parent_handle.document_id;
         let child_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let Value::Object(child_wrapper_obj) = child_value else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
         let child_id = platform.require_node_id(scope.heap(), child_value)?;
 
         let result: Result<(), DomError> = self.with_dom_host(vm, |host| {
@@ -5041,19 +5044,8 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               document_id,
             )?;
             self.sync_live_html_collections(vm, scope)?;
-            let primary = self.with_dom_host(vm, |host| {
-              Ok(host.with_dom(|dom| {
-                if child_id.index() >= dom.nodes_len() {
-                  DomInterface::Node
-                } else {
-                  DomInterface::primary_for_node_kind(&dom.node(child_id).kind)
-                }
-              }))
-            })?;
-            let wrapper =
-              require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(scope, document_id, child_id, primary)?;
-            scope.push_root(Value::Object(wrapper))?;
-            Ok(Value::Object(wrapper))
+            // Per DOM, `removeChild` returns the removed child (preserving object identity).
+            Ok(Value::Object(child_wrapper_obj))
           }
           Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
         }
@@ -10546,17 +10538,17 @@ mod window_document_tests {
           const a = document.createElement('span');
           const b = document.createElement('span');
           node.appendChild(a);
-          node.appendChild(b);
-          if (list1.length !== 2) return false;
-          if (list1.item(0) !== a) return false;
-          if (list1.item(1) !== b) return false;
+           node.appendChild(b);
+           if (list1.length !== 2) return false;
+           if (list1.item(0) !== a) return false;
+           if (list1.item(1) !== b) return false;
 
-          node.removeChild(a);
-          if (list1.length !== 1) return false;
-          if (list1.item(0) !== b) return false;
-          if (node.childNodes !== list1) return false;
-          return true;
-        } catch (e) {
+           if (node.removeChild(a) !== a) return false;
+           if (list1.length !== 1) return false;
+           if (list1.item(0) !== b) return false;
+           if (node.childNodes !== list1) return false;
+           return true;
+         } catch (e) {
           return false;
         }
       })()
