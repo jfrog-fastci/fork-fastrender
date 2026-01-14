@@ -65,8 +65,11 @@ struct Args {
   #[arg(long, value_name = "N")]
   rayon_threads: Option<usize>,
 
-  /// Allow http(s) network access (disabled by default).
-  #[arg(long, action = ArgAction::SetTrue)]
+  /// Allow network fetches (http/https) when running the harness locally.
+  ///
+  /// By default, `ui_perf_smoke` runs in a deterministic offline mode (http/https disabled) so it
+  /// can be safely used in CI and local runs without accidental network fetches.
+  #[arg(long, action = ArgAction::SetTrue, visible_alias = "http")]
   allow_network: bool,
 
   /// Optional baseline JSON to compare against.
@@ -165,6 +168,37 @@ struct ScenarioSummary {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+struct ResourcePolicySummary {
+  allow_http: bool,
+  allow_https: bool,
+  allow_file: bool,
+  allow_data: bool,
+}
+
+impl Default for ResourcePolicySummary {
+  fn default() -> Self {
+    // Deterministic/offline by default: match the `ui_perf_smoke` default policy.
+    Self {
+      allow_http: false,
+      allow_https: false,
+      allow_file: true,
+      allow_data: true,
+    }
+  }
+}
+
+impl From<&ResourcePolicy> for ResourcePolicySummary {
+  fn from(policy: &ResourcePolicy) -> Self {
+    Self {
+      allow_http: policy.allowed_schemes.http,
+      allow_https: policy.allowed_schemes.https,
+      allow_file: policy.allowed_schemes.file,
+      allow_data: policy.allowed_schemes.data,
+    }
+  }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 struct RunConfig {
   rayon_threads: usize,
   #[serde(default)]
@@ -177,6 +211,8 @@ struct RunConfig {
   isolate: bool,
   #[serde(default)]
   allow_network: bool,
+  #[serde(default)]
+  resource_policy: ResourcePolicySummary,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   iterations: Option<usize>,
 }
@@ -190,6 +226,7 @@ impl Default for RunConfig {
       warmup: 0,
       isolate: false,
       allow_network: false,
+      resource_policy: ResourcePolicySummary::default(),
       iterations: None,
     }
   }
@@ -272,6 +309,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   let fail_on_failure = resolve_fail_on_failure(&args);
 
   let mut scenarios = Vec::new();
+  let policy = resource_policy_for_allow_network(args.allow_network);
   let run_config = RunConfig {
     rayon_threads: effective_rayon_threads,
     rayon_threads_source: rayon_threads_decision.source,
@@ -279,10 +317,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     warmup: args.warmup,
     isolate,
     allow_network: args.allow_network,
+    resource_policy: ResourcePolicySummary::from(&policy),
     iterations: args.iterations,
   };
 
-  let factory = build_ui_worker_factory(args.allow_network)?;
+  let factory = build_ui_worker_factory(policy)?;
 
   if isolate {
     for name in &scenario_names {
@@ -399,12 +438,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   Ok(())
 }
 
-fn build_ui_worker_factory(allow_network: bool) -> fastrender::Result<FastRenderFactory> {
-  let mut policy = ResourcePolicy::default();
-  if !allow_network {
-    policy = policy.allow_http(false).allow_https(false);
-  }
+fn resource_policy_for_allow_network(allow_network: bool) -> ResourcePolicy {
+  ResourcePolicy::default()
+    .allow_http(allow_network)
+    .allow_https(allow_network)
+    .allow_file(true)
+    .allow_data(true)
+}
 
+fn build_ui_worker_factory(policy: ResourcePolicy) -> fastrender::Result<FastRenderFactory> {
   let renderer_config = FastRenderConfig::default()
     .with_font_sources(FontConfig::bundled_only())
     .with_resource_policy(policy);
@@ -1891,6 +1933,42 @@ mod tests {
   fn parses_rayon_threads_flag() {
     let args = Args::try_parse_from(["ui_perf_smoke", "--rayon-threads", "1"]).expect("parse args");
     assert_eq!(args.rayon_threads, Some(1));
+  }
+
+  #[test]
+  fn default_cli_disables_http_and_https_in_output_config() {
+    let args = Args::parse_from(["ui_perf_smoke"]);
+    let policy = resource_policy_for_allow_network(args.allow_network);
+    let summary = UiPerfSmokeSummary {
+      schema_version: UI_PERF_SMOKE_SCHEMA_VERSION,
+      run_config: RunConfig {
+        rayon_threads: 1,
+        warmup: args.warmup,
+        isolate: false,
+        allow_network: args.allow_network,
+        resource_policy: ResourcePolicySummary::from(&policy),
+        iterations: args.iterations,
+      },
+      scenarios: Vec::new(),
+    };
+
+    let value = serde_json::to_value(&summary).expect("serialize JSON");
+    assert_eq!(
+      value["run_config"]["resource_policy"]["allow_http"].as_bool(),
+      Some(false)
+    );
+    assert_eq!(
+      value["run_config"]["resource_policy"]["allow_https"].as_bool(),
+      Some(false)
+    );
+    assert_eq!(
+      value["run_config"]["resource_policy"]["allow_file"].as_bool(),
+      Some(true)
+    );
+    assert_eq!(
+      value["run_config"]["resource_policy"]["allow_data"].as_bool(),
+      Some(true)
+    );
   }
 
   #[test]

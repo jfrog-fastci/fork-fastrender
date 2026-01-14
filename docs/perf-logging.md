@@ -135,6 +135,11 @@ Filtering options (see `browser_perf_log_summary --help`):
 For automated/regression-friendly measurements, use the headless harness `ui_perf_smoke`. It runs a
 small scripted set of UI scenarios and writes a single JSON summary.
 
+By default, `ui_perf_smoke` runs in a deterministic **offline** mode: `http://` and `https://`
+subresource fetches are disabled via `ResourcePolicy` (while `file://` and `data:` remain allowed
+for local fixtures). To opt into real network benchmarking locally, pass `--allow-network` (alias:
+`--http`).
+
 On Linux, each per-scenario summary also includes RSS snapshots to help catch memory growth:
 `rss_bytes_start`, `rss_bytes_end`, and `rss_bytes_peak` (nullable elsewhere).
 
