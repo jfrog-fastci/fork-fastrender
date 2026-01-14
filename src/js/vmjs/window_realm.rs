@@ -37262,13 +37262,10 @@ fn range_collapsed_get_native(
     .ok_or(VmError::TypeError("Illegal invocation"))?;
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let dom = unsafe { dom_ptr.as_ref() };
-  let start = dom
-    .range_start(handle.range_id)
+  let collapsed = dom
+    .range_collapsed(handle.range_id)
     .map_err(|_| VmError::TypeError("Illegal invocation"))?;
-  let end = dom
-    .range_end(handle.range_id)
-    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
-  Ok(Value::Bool(start == end))
+  Ok(Value::Bool(collapsed))
 }
 
 fn range_set_start_native(
@@ -37747,10 +37744,9 @@ fn range_insert_node_native(
   let start = dom
     .range_start(handle.range_id)
     .map_err(|_| VmError::TypeError("Illegal invocation"))?;
-  let end = dom
-    .range_end(handle.range_id)
+  let collapsed = dom
+    .range_collapsed(handle.range_id)
     .map_err(|_| VmError::TypeError("Illegal invocation"))?;
-  let collapsed = start == end;
 
   // Per DOM: throw HierarchyRequestError if the start node is a Comment/PI, a detached Text node,
   // or the node being inserted.
