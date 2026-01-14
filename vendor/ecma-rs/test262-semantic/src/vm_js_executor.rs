@@ -671,8 +671,11 @@ impl VmHostHooks for Test262ModuleHooks {
       }
     };
 
-    let record =
-      match SourceTextModuleRecord::parse_source_with_vm(vm, scope.heap_mut(), Arc::clone(&source_text)) {
+    let record = match SourceTextModuleRecord::parse_source_with_vm(
+      vm,
+      scope.heap_mut(),
+      Arc::clone(&source_text),
+    ) {
       Ok(record) => record,
       Err(VmError::Syntax(mut diags)) => {
         // Preserve parse diagnostics when rejecting the module-loading promise.
@@ -857,15 +860,18 @@ impl VmJsExecutor {
         };
         let result = runtime.exec_script_source_with_hooks(&mut hooks, source_text);
 
-        // Cancellation should win over any other outcome (including parse/runtime errors).
-        if cancel.load(Ordering::Relaxed) {
-          drain_microtasks_into_hooks(&mut runtime, &mut hooks);
-          hooks.microtasks.teardown(&mut runtime);
-          return Err(ExecError::Cancelled);
-        }
-
         match result {
           Ok(_) => {
+            // Cancellation should win over successful execution so the runner can surface
+            // `timed_out` outcomes deterministically. However, if execution already produced an
+            // error (especially stack overflow), we must map that error before checking
+            // cancellation so it is not misclassified as a timeout.
+            if cancel.load(Ordering::Relaxed) {
+              drain_microtasks_into_hooks(&mut runtime, &mut hooks);
+              hooks.microtasks.teardown(&mut runtime);
+              return Err(ExecError::Cancelled);
+            }
+
             if is_async {
               wait_for_done(case, source, cancel, &mut runtime, &mut hooks)?;
             } else {
@@ -1222,12 +1228,12 @@ fn execute_module(
         };
       let result = runtime.exec_script_source_with_hooks(&mut hooks, harness_source);
 
-      if cancel.load(Ordering::Relaxed) {
-        return Err(ExecError::Cancelled);
-      }
-
       if let Err(err) = result {
         return Err(map_vm_error(case, harness_src, cancel, runtime, err));
+      }
+
+      if cancel.load(Ordering::Relaxed) {
+        return Err(ExecError::Cancelled);
       }
 
       drain_microtasks_into_hooks(runtime, &mut hooks);
@@ -1246,8 +1252,7 @@ fn execute_module(
       &mut runtime.vm,
       &mut runtime.heap,
       module_source,
-    )
-    {
+    ) {
       Ok(record) => record,
       Err(err) => return Err(map_vm_error(case, module_src, cancel, runtime, err)),
     };
@@ -1314,6 +1319,27 @@ fn execute_module(
 
     let load_outcome: ExecResult = (|| {
       if cancel.load(Ordering::Relaxed) {
+        // Cancellation normally wins so the runner can surface timeouts deterministically.
+        //
+        // However, if the module-loading promise has already settled with a stack overflow, report
+        // that as a JS-visible RangeError instead of `Cancelled` so stack overflow is not
+        // misclassified as a timeout.
+        if let Ok(PromiseState::Rejected) = runtime.heap.promise_state(load_promise_obj) {
+          if let Ok(reason) = runtime.heap.promise_result(load_promise_obj) {
+            let reason = reason.unwrap_or(Value::Undefined);
+            let (typ, message, stack) = describe_thrown_value_with_stack(runtime, reason);
+            if matches!(typ.as_deref(), Some("RangeError") | Some("Error"))
+              && is_stack_overflow_message(&message)
+            {
+              return Err(ExecError::Js(JsError {
+                phase: ExecPhase::Resolution,
+                typ: Some("RangeError".to_string()),
+                message,
+                stack,
+              }));
+            }
+          }
+        }
         return Err(ExecError::Cancelled);
       }
 
@@ -1441,6 +1467,27 @@ fn execute_module(
 
     let eval_outcome: ExecResult = (|| {
       if cancel.load(Ordering::Relaxed) {
+        // Cancellation normally wins so the runner can surface timeouts deterministically.
+        //
+        // However, if the module-evaluation promise has already settled with a stack overflow,
+        // report that as a JS-visible RangeError instead of `Cancelled` so stack overflow is not
+        // misclassified as a timeout.
+        if let Ok(PromiseState::Rejected) = runtime.heap.promise_state(eval_promise_obj) {
+          if let Ok(reason) = runtime.heap.promise_result(eval_promise_obj) {
+            let reason = reason.unwrap_or(Value::Undefined);
+            let (typ, message, stack) = describe_thrown_value_with_stack(runtime, reason);
+            if matches!(typ.as_deref(), Some("RangeError") | Some("Error"))
+              && is_stack_overflow_message(&message)
+            {
+              return Err(ExecError::Js(JsError {
+                phase: ExecPhase::Runtime,
+                typ: Some("RangeError".to_string()),
+                message,
+                stack,
+              }));
+            }
+          }
+        }
         return Err(ExecError::Cancelled);
       }
 
@@ -1562,20 +1609,32 @@ fn handle_microtask_errors(
 
   // Stack overflow should never be reported as a timeout/cancellation, even if the cancel flag is
   // set (e.g. due to a race with the cooperative timeout).
-  if let Some(err) = errors.iter().find(|err| {
-    matches!(
-      err,
-      VmError::Termination(term) if matches!(term.reason, TerminationReason::StackOverflow)
-    )
-  }) {
-    return Some(map_vm_error_with_phase(
-      case,
-      source,
-      cancel,
-      runtime,
-      ExecPhase::Runtime,
-      err.clone(),
-    ));
+  for err in errors.iter() {
+    let is_stack_overflow = match err {
+      VmError::Termination(term) if matches!(term.reason, TerminationReason::StackOverflow) => true,
+      VmError::RangeError(message) => is_stack_overflow_message(message),
+      VmError::Throw(thrown) => {
+        let (typ, message) = describe_thrown_value(runtime, *thrown);
+        matches!(typ.as_deref(), Some("RangeError") | Some("Error"))
+          && is_stack_overflow_message(&message)
+      }
+      VmError::ThrowWithStack { value: thrown, .. } => {
+        let (typ, message) = describe_thrown_value(runtime, *thrown);
+        matches!(typ.as_deref(), Some("RangeError") | Some("Error"))
+          && is_stack_overflow_message(&message)
+      }
+      _ => false,
+    };
+    if is_stack_overflow {
+      return Some(map_vm_error_with_phase(
+        case,
+        source,
+        cancel,
+        runtime,
+        ExecPhase::Runtime,
+        err.clone(),
+      ));
+    }
   }
 
   // Cancellation should win for other failures.
@@ -1745,6 +1804,11 @@ fn describe_thrown_value_with_stack(
   }
 }
 
+fn is_stack_overflow_message(message: &str) -> bool {
+  let message_lc = message.to_ascii_lowercase();
+  message_lc.contains("call stack") || message_lc.contains("stack overflow")
+}
+
 fn map_vm_error_with_phase(
   case: &TestCase,
   source: &str,
@@ -1765,12 +1829,30 @@ fn map_vm_error_with_phase(
       })
     }
 
-    // Treat cancellation/timeout as higher priority than other failures so the runner can surface
-    // a `timed_out` outcome deterministically.
-    _ if cancel.load(Ordering::Relaxed) => ExecError::Cancelled,
-
+    // Exceeding `VmOptions::max_stack_depth` is surfaced as a JS `RangeError` (via
+    // `coerce_error_to_throw_with_stack` at host boundaries). Ensure it is never misclassified as a
+    // timeout/cancellation, even if the cancel flag is set.
+    VmError::RangeError(message) if is_stack_overflow_message(message) => ExecError::Js(JsError {
+      phase,
+      typ: Some("RangeError".to_string()),
+      message: format!("range error: {message}"),
+      stack: stack_from_frames(runtime.vm.capture_stack()),
+    }),
     VmError::Throw(thrown) => {
       let (typ, message, stack) = describe_thrown_value_with_stack(runtime, thrown);
+      if matches!(typ.as_deref(), Some("RangeError") | Some("Error"))
+        && is_stack_overflow_message(&message)
+      {
+        return ExecError::Js(JsError {
+          phase,
+          typ: Some("RangeError".to_string()),
+          message,
+          stack,
+        });
+      }
+      if cancel.load(Ordering::Relaxed) {
+        return ExecError::Cancelled;
+      }
       ExecError::Js(JsError {
         phase,
         typ,
@@ -1783,6 +1865,19 @@ fn map_vm_error_with_phase(
       stack,
     } => {
       let (typ, message, _) = describe_thrown_value_with_stack(runtime, thrown);
+      if matches!(typ.as_deref(), Some("RangeError") | Some("Error"))
+        && is_stack_overflow_message(&message)
+      {
+        return ExecError::Js(JsError {
+          phase,
+          typ: Some("RangeError".to_string()),
+          message,
+          stack: stack_from_frames(stack),
+        });
+      }
+      if cancel.load(Ordering::Relaxed) {
+        return ExecError::Cancelled;
+      }
       ExecError::Js(JsError {
         phase,
         typ,
@@ -1790,6 +1885,10 @@ fn map_vm_error_with_phase(
         stack: stack_from_frames(stack),
       })
     }
+
+    // Treat cancellation/timeout as higher priority than other failures so the runner can surface
+    // a `timed_out` outcome deterministically.
+    _ if cancel.load(Ordering::Relaxed) => ExecError::Cancelled,
     other => {
       let mapped = map_vm_error(case, source, cancel, runtime, other);
       if let ExecError::Js(mut js) = mapped {
@@ -1821,6 +1920,65 @@ fn map_vm_error(
       })
     }
 
+    // Exceeding `VmOptions::max_stack_depth` is surfaced as a JS `RangeError` (via
+    // `coerce_error_to_throw_with_stack` at host boundaries). Ensure it is never misclassified as a
+    // timeout/cancellation, even if the cancel flag is set.
+    VmError::RangeError(message) if is_stack_overflow_message(message) => ExecError::Js(JsError {
+      phase: ExecPhase::Runtime,
+      typ: Some("RangeError".to_string()),
+      message: format!("range error: {message}"),
+      stack: stack_from_frames(runtime.vm.capture_stack()),
+    }),
+    VmError::Throw(thrown) => {
+      let (typ, message) = describe_thrown_value(runtime, thrown);
+      if matches!(typ.as_deref(), Some("RangeError") | Some("Error"))
+        && is_stack_overflow_message(&message)
+      {
+        return ExecError::Js(JsError {
+          phase: ExecPhase::Runtime,
+          typ: Some("RangeError".to_string()),
+          message,
+          stack: stack_from_frames(runtime.vm.capture_stack()),
+        });
+      }
+      if cancel.load(Ordering::Relaxed) {
+        return ExecError::Cancelled;
+      }
+      let stack = stack_from_frames(runtime.vm.capture_stack());
+      ExecError::Js(JsError {
+        phase: ExecPhase::Runtime,
+        typ,
+        message,
+        stack,
+      })
+    }
+    VmError::ThrowWithStack {
+      value: thrown,
+      stack,
+    } => {
+      let (typ, message) = describe_thrown_value(runtime, thrown);
+      if matches!(typ.as_deref(), Some("RangeError") | Some("Error"))
+        && is_stack_overflow_message(&message)
+      {
+        return ExecError::Js(JsError {
+          phase: ExecPhase::Runtime,
+          typ: Some("RangeError".to_string()),
+          message,
+          stack: stack_from_frames(stack),
+        });
+      }
+      if cancel.load(Ordering::Relaxed) {
+        return ExecError::Cancelled;
+      }
+      let stack = stack_from_frames(stack);
+      ExecError::Js(JsError {
+        phase: ExecPhase::Runtime,
+        typ,
+        message,
+        stack,
+      })
+    }
+
     // Treat cancellation/timeout as higher priority than other failures so the runner can surface
     // a `timed_out` outcome deterministically.
     _ if cancel.load(Ordering::Relaxed) => ExecError::Cancelled,
@@ -1838,31 +1996,6 @@ fn map_vm_error(
         Some("SyntaxError".to_string()),
         message,
       ))
-    }
-
-    VmError::Throw(thrown) => {
-      let (typ, message) = describe_thrown_value(runtime, thrown);
-      let stack = stack_from_frames(runtime.vm.capture_stack());
-      ExecError::Js(JsError {
-        phase: ExecPhase::Runtime,
-        typ,
-        message,
-        stack,
-      })
-    }
-
-    VmError::ThrowWithStack {
-      value: thrown,
-      stack,
-    } => {
-      let (typ, message) = describe_thrown_value(runtime, thrown);
-      let stack = stack_from_frames(stack);
-      ExecError::Js(JsError {
-        phase: ExecPhase::Runtime,
-        typ,
-        message,
-        stack,
-      })
     }
 
     VmError::Termination(term) => match term.reason {
@@ -2292,34 +2425,152 @@ f(2000);
   }
 
   #[test]
+  fn thrown_stack_overflow_maps_to_rangeerror_even_when_cancelled() {
+    let case = test_case("thrown_stack_overflow.js");
+
+    for cancelled in [false, true] {
+      let cancel = Arc::new(AtomicBool::new(cancelled));
+
+      let vm = Vm::new(VmOptions::default());
+      let heap = Heap::new(HeapLimits::new(
+        DEFAULT_HEAP_MAX_BYTES,
+        DEFAULT_HEAP_GC_THRESHOLD_BYTES,
+      ));
+      let mut runtime = vm_js::JsRuntime::new(vm, heap).expect("init runtime");
+
+      let intr = runtime.vm.intrinsics().expect("intrinsics initialized");
+      let (thrown, root): (Value, RootId) = {
+        let mut scope = runtime.heap.scope();
+        let value =
+          vm_js::new_range_error(&mut scope, intr, "Maximum call stack size exceeded").unwrap();
+        let _ = scope.push_root(value);
+        let root = scope.heap_mut().add_root(value).expect("add root");
+        (value, root)
+      };
+
+      let err = map_vm_error(
+        &case,
+        "",
+        &cancel,
+        &mut runtime,
+        VmError::ThrowWithStack {
+          value: thrown,
+          stack: Vec::new(),
+        },
+      );
+      let ExecError::Js(js) = err else {
+        panic!("expected JS error, got {err:?} (cancelled={cancelled})");
+      };
+      assert_eq!(js.phase, ExecPhase::Runtime);
+      assert_eq!(js.typ.as_deref(), Some("RangeError"));
+      assert!(
+        js.message.to_ascii_lowercase().contains("call stack")
+          || js.message.to_ascii_lowercase().contains("stack overflow"),
+        "expected stack overflow message, got: {} (cancelled={cancelled})",
+        js.message
+      );
+
+      // Ensure `map_vm_error_with_phase` also preserves stack overflow when cancelled.
+      let err = map_vm_error_with_phase(
+        &case,
+        "",
+        &cancel,
+        &mut runtime,
+        ExecPhase::Resolution,
+        VmError::ThrowWithStack {
+          value: thrown,
+          stack: Vec::new(),
+        },
+      );
+      let ExecError::Js(js) = err else {
+        panic!("expected JS error, got {err:?} (cancelled={cancelled})");
+      };
+      assert_eq!(js.phase, ExecPhase::Resolution);
+      assert_eq!(js.typ.as_deref(), Some("RangeError"));
+      assert!(
+        js.message.to_ascii_lowercase().contains("call stack")
+          || js.message.to_ascii_lowercase().contains("stack overflow"),
+        "expected stack overflow message, got: {} (cancelled={cancelled})",
+        js.message
+      );
+
+      runtime.heap.remove_root(root);
+    }
+  }
+
+  #[test]
+  fn microtask_range_error_stack_overflow_maps_to_rangeerror_even_when_cancelled() {
+    let case = test_case("microtask_range_error_stack_overflow.js");
+    let source = "// dummy source";
+
+    for cancelled in [false, true] {
+      let cancel = Arc::new(AtomicBool::new(cancelled));
+
+      let vm = Vm::new(VmOptions::default());
+      let heap = Heap::new(HeapLimits::new(
+        DEFAULT_HEAP_MAX_BYTES,
+        DEFAULT_HEAP_GC_THRESHOLD_BYTES,
+      ));
+      let mut runtime = vm_js::JsRuntime::new(vm, heap).expect("init runtime");
+
+      let path = PathBuf::from("test/microtask_range_error_stack_overflow.js");
+      let mut hooks = Test262ModuleHooks::new(&path);
+
+      let job = Job::new(vm_js::JobKind::Promise, move |_ctx, _host| {
+        Err(VmError::RangeError("Maximum call stack size exceeded"))
+      })
+      .expect("alloc job");
+
+      hooks.host_enqueue_promise_job(job, None);
+
+      let err = handle_microtask_errors(&case, source, &cancel, &mut runtime, &mut hooks)
+        .unwrap_or_else(|| panic!("expected microtask error (cancelled={cancelled})"));
+
+      let ExecError::Js(js) = err else {
+        panic!("expected JS error, got {err:?} (cancelled={cancelled})");
+      };
+      assert_eq!(js.phase, ExecPhase::Runtime);
+      assert_eq!(js.typ.as_deref(), Some("RangeError"));
+      assert!(
+        js.message.to_ascii_lowercase().contains("call stack")
+          || js.message.to_ascii_lowercase().contains("stack overflow"),
+        "expected stack overflow message, got: {} (cancelled={cancelled})",
+        js.message
+      );
+    }
+  }
+
+  #[test]
   fn range_error_variant_maps_to_rangeerror_type() {
-    let cancel = Arc::new(AtomicBool::new(false));
     let case = test_case("range_error_variant.js");
+    for cancelled in [false, true] {
+      let cancel = Arc::new(AtomicBool::new(cancelled));
 
-    let vm = Vm::new(VmOptions::default());
-    let heap = Heap::new(HeapLimits::new(
-      DEFAULT_HEAP_MAX_BYTES,
-      DEFAULT_HEAP_GC_THRESHOLD_BYTES,
-    ));
-    let mut runtime = vm_js::JsRuntime::new(vm, heap).expect("init runtime");
+      let vm = Vm::new(VmOptions::default());
+      let heap = Heap::new(HeapLimits::new(
+        DEFAULT_HEAP_MAX_BYTES,
+        DEFAULT_HEAP_GC_THRESHOLD_BYTES,
+      ));
+      let mut runtime = vm_js::JsRuntime::new(vm, heap).expect("init runtime");
 
-    let err = map_vm_error(
-      &case,
-      "",
-      &cancel,
-      &mut runtime,
-      VmError::RangeError("Maximum call stack size exceeded"),
-    );
-    let ExecError::Js(js) = err else {
-      panic!("expected JS error, got {err:?}");
-    };
-    assert_eq!(js.phase, ExecPhase::Runtime);
-    assert_eq!(js.typ.as_deref(), Some("RangeError"));
-    assert!(
-      js.message.to_ascii_lowercase().contains("call stack"),
-      "expected call stack message, got: {}",
-      js.message
-    );
+      let err = map_vm_error(
+        &case,
+        "",
+        &cancel,
+        &mut runtime,
+        VmError::RangeError("Maximum call stack size exceeded"),
+      );
+      let ExecError::Js(js) = err else {
+        panic!("expected JS error, got {err:?} (cancelled={cancelled})");
+      };
+      assert_eq!(js.phase, ExecPhase::Runtime);
+      assert_eq!(js.typ.as_deref(), Some("RangeError"));
+      assert!(
+        js.message.to_ascii_lowercase().contains("call stack"),
+        "expected call stack message, got: {} (cancelled={cancelled})",
+        js.message
+      );
+    }
   }
 
   #[test]
