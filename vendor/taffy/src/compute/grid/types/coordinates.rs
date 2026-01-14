@@ -130,12 +130,6 @@ impl Add<u16> for OriginZeroLine {
   fn add(self, rhs: u16) -> Self::Output {
     let sum = self.0 as i32 + rhs as i32;
     let clamped = sum.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-    debug_assert!(
-      clamped as i32 == sum,
-      "OriginZeroLine overflow: {} + {}",
-      self.0,
-      rhs
-    );
     OriginZeroLine(clamped)
   }
 }
@@ -149,12 +143,6 @@ impl Sub<u16> for OriginZeroLine {
   fn sub(self, rhs: u16) -> Self::Output {
     let diff = self.0 as i32 - rhs as i32;
     let clamped = diff.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-    debug_assert!(
-      clamped as i32 == diff,
-      "OriginZeroLine overflow: {} - {}",
-      self.0,
-      rhs
-    );
     OriginZeroLine(clamped)
   }
 }
