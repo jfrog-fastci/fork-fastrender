@@ -490,3 +490,81 @@ fn generators_parenthesized_call_after_computed_optional_chain_base_short_circui
 
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generators_optional_member_optional_call_short_circuits_and_skips_yield_in_arg() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          const o = (yield 0);
+          const r = o?.m?.(yield "should-not-yield-arg");
+          return r === undefined;
+        }
+
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next({}); // m is undefined => optional call short-circuits
+
+        r1.value === 0 && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generators_optional_member_optional_call_preserves_this_binding() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() { const o = (yield 0); return o?.m?.(); }
+
+        const obj = {
+          m: function () {
+            'use strict';
+            return this === obj;
+          }
+        };
+
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next(obj);
+
+        r1.value === 0 && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generators_parenthesized_optional_member_then_optional_call_loses_this_binding() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() { const o = (yield 0); return (o?.m)?.(); }
+
+        const obj = {
+          m: function () {
+            'use strict';
+            return this === undefined;
+          }
+        };
+
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next(obj);
+
+        r1.value === 0 && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
