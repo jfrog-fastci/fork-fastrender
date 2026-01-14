@@ -12591,78 +12591,6 @@ mod compiled_hir_async_await_semantics_tests {
       ExpectedValue::Number(1.0),
     )
   }
-
-  #[test]
-  fn compiled_async_await_in_destructuring_assignment_default() -> Result<(), VmError> {
-    run_compiled_async_fn_case(
-      r#"
-        async function f() {
-          let x;
-          ({x = await Promise.resolve(1)} = {});
-          return x;
-        }
-        this.__f = f;
-        this.__p = f();
-        this.__p;
-      "#,
-      ExpectedValue::Number(1.0),
-    )
-  }
-
-  #[test]
-  fn compiled_async_await_in_destructuring_assignment_computed_key() -> Result<(), VmError> {
-    run_compiled_async_fn_case(
-      r#"
-        async function f() {
-          let x;
-          ({[await Promise.resolve('k')]: x} = {k: 2});
-          return x;
-        }
-        this.__f = f;
-        this.__p = f();
-        this.__p;
-      "#,
-      ExpectedValue::Number(2.0),
-    )
-  }
-
-  #[test]
-  fn compiled_async_for_of_head_destructuring_default_can_await() -> Result<(), VmError> {
-    run_compiled_async_fn_case(
-      r#"
-        async function f() {
-          let out = '';
-          for (const {x = await Promise.resolve(1)} of [{}, {}]) {
-            out += x;
-          }
-          return out;
-        }
-        this.__f = f;
-        this.__p = f();
-        this.__p;
-      "#,
-      ExpectedValue::String("11"),
-    )
-  }
-
-  #[test]
-  fn compiled_async_for_await_of_head_destructuring_default_can_await() -> Result<(), VmError> {
-    run_compiled_async_fn_case(
-      r#"
-        async function f() {
-          let out = '';
-          for await (const {x = await Promise.resolve(1)} of [Promise.resolve({}), Promise.resolve({})]) {
-            out += x;
-          }
-          return out;
-        }
-        this.__f = f;
-        this.__p = f();
-        this.__p;
-      "#,
-      ExpectedValue::String("11"),
-    )
-  }
   
   #[test]
   fn compiled_async_await_in_while_condition() -> Result<(), VmError> {
@@ -12948,6 +12876,153 @@ mod compiled_hir_async_await_semantics_tests {
  
     rt.heap.remove_root(promise_root);
     Ok(())
+  }
+}
+
+#[cfg(test)]
+mod hir_async_await_in_pattern_binding_regression_tests {
+  use crate::function::{CallHandler, FunctionData};
+  use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOptions};
+
+  #[derive(Clone, Copy, Debug)]
+  enum ExpectedValue {
+    Number(f64),
+    String(&'static str),
+  }
+
+  fn run_compiled_async_fn_case(script_src: &str, expected: ExpectedValue) -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let script = CompiledScript::compile_script(&mut rt.heap, "<inline>", script_src)?;
+    assert!(
+      !script.requires_ast_fallback,
+      "async/await regression tests must execute in the compiled (HIR) script path"
+    );
+
+    let func_value = rt.exec_compiled_script(script)?;
+    let Value::Object(func_obj) = func_value else {
+      panic!("expected script to evaluate to a function object, got {func_value:?}");
+    };
+
+    let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+    assert!(
+      matches!(call_handler, CallHandler::User(_)),
+      "expected async function to be a compiled user function, got {call_handler:?}"
+    );
+
+    // Async functions may still be tagged for call-time AST fallback; clear that marker so this test
+    // exercises the compiled async/await evaluator.
+    //
+    // When compiled async function execution is enabled by default, this becomes a no-op.
+    if matches!(
+      rt.heap.get_function_data(func_obj)?,
+      FunctionData::EcmaFallback { .. }
+    ) {
+      rt.heap.set_function_data(func_obj, FunctionData::None)?;
+    }
+
+    // Calling the async function should execute via the HIR async evaluator and produce a Promise.
+    let promise = {
+      let mut scope = rt.heap.scope();
+      rt.vm
+        .call_without_host(&mut scope, Value::Object(func_obj), Value::Undefined, &[])?
+    };
+    let promise_root = rt.heap.add_root(promise)?;
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+      panic!("expected async function call to return a Promise object");
+    };
+    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+    let resolved = rt
+      .heap
+      .promise_result(promise_obj)?
+      .expect("fulfilled Promise missing [[PromiseResult]]");
+
+    match expected {
+      ExpectedValue::Number(n) => {
+        assert!(
+          matches!(resolved, Value::Number(m) if m == n),
+          "expected Promise to fulfill with {n}, got {resolved:?}"
+        );
+      }
+      ExpectedValue::String(s) => {
+        let Value::String(str_obj) = resolved else {
+          panic!("expected Promise to fulfill with a String, got {resolved:?}");
+        };
+        assert_eq!(rt.heap.get_string(str_obj)?.to_utf8_lossy(), s);
+      }
+    }
+
+    rt.heap.remove_root(promise_root);
+    Ok(())
+  }
+
+  #[test]
+  fn destructuring_assignment_default_with_await() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f(){
+          let x;
+          ({x = await Promise.resolve(1)} = {});
+          return x;
+        }
+        f;
+      "#,
+      ExpectedValue::Number(1.0),
+    )
+  }
+
+  #[test]
+  fn destructuring_assignment_computed_key_with_await() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f(){
+          let x;
+          ({[await Promise.resolve('k')]: x} = {k: 2});
+          return x;
+        }
+        f;
+      "#,
+      ExpectedValue::Number(2.0),
+    )
+  }
+
+  #[test]
+  fn for_of_head_destructuring_default_with_await() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f(){
+          let out = '';
+          for (const {x = await Promise.resolve(1)} of [{}, {}]) {
+            out += x;
+          }
+          return out;
+        }
+        f;
+      "#,
+      ExpectedValue::String("11"),
+    )
+  }
+
+  #[test]
+  fn for_await_of_head_destructuring_default_with_await() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f(){
+          let out='';
+          for await (const {x = await Promise.resolve(1)} of [Promise.resolve({}), Promise.resolve({})]) {
+            out += x;
+          }
+          return out;
+        }
+        f;
+      "#,
+      ExpectedValue::String("11"),
+    )
   }
 }
  
