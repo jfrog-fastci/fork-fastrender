@@ -15,6 +15,7 @@ fn json_output_parses_and_contains_expected_keys() {
 
 {"type":"ui_frame_time","frame_time_ms":30.0,"ts_ms":3}
 {"type":"resource_sample","cpu_percent":20.0,"rss_bytes":2000,"unknown":true}
+{"event":"memory_summary","rss_bytes":3000,"rss_mb":0.0}
 {"type":"future_event","foo":1,"bar":"baz"}
 "#;
 
@@ -57,6 +58,10 @@ fn json_output_parses_and_contains_expected_keys() {
     "coalesced_frames",
     "cpu_percent",
     "rss_bytes",
+    "rss_mb",
+    "rss_first_mb",
+    "rss_last_mb",
+    "rss_delta_mb",
   ] {
     assert!(
       value.get(key).is_some(),
@@ -64,4 +69,12 @@ fn json_output_parses_and_contains_expected_keys() {
       String::from_utf8_lossy(&output.stdout)
     );
   }
+
+  // Ensure `memory_summary` RSS samples (schema v2) are included in RSS aggregation (alongside the
+  // legacy `resource_sample` events).
+  let rss_bytes = &value["rss_bytes"];
+  assert_eq!(rss_bytes["count"].as_u64(), Some(2));
+  assert_eq!(rss_bytes["min"].as_u64(), Some(2000));
+  assert_eq!(rss_bytes["max"].as_u64(), Some(3000));
+  assert_eq!(rss_bytes["mean"].as_f64(), Some(2500.0));
 }

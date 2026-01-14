@@ -167,7 +167,14 @@ for local fixtures). To opt into real network benchmarking locally, pass `--allo
 `--http`).
 
 On Linux, each per-scenario summary also includes RSS snapshots to help catch memory growth:
-`rss_bytes_start`, `rss_bytes_end`, and `rss_bytes_peak` (nullable elsewhere).
+`rss_bytes_start`, `rss_bytes_end`, and `rss_bytes_peak` (nullable elsewhere). The scenario summary
+also includes `rss_after_bytes` as a convenience alias for `rss_bytes_end`.
+
+The top-level summary includes two run-level RSS snapshots:
+
+- `rss_start_bytes`: RSS sampled when the harness starts (before the warmup/scenarios).
+- `rss_after_warmup_bytes`: RSS sampled after a best-effort `about:newtab` warmup, so you can
+  distinguish one-time startup allocations from per-scenario growth.
 
 Via `xtask` (recommended):
 

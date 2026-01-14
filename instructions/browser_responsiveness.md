@@ -59,7 +59,7 @@ A change counts if it lands at least one of:
 | Input latency | <50ms | ? | Headless: `scripts/cargo_agent.sh xtask ui-perf-smoke` (`input_latency_*`).<br>Windowed: `scripts/capture_browser_perf_log.sh` + `browser_perf_log_summary` (`input_to_present_ms`). |
 | Time to first paint (TTFP) | <100ms | ? | Headless: `scripts/cargo_agent.sh xtask ui-perf-smoke` (`ttfp_*`).<br>Windowed: `scripts/capture_browser_perf_log.sh` + `browser_perf_log_summary` (`ttfp_ms`). |
 | Idle CPU | ~0% | ? | `scripts/capture_browser_perf_log.sh` + `browser_perf_log_summary` (`cpu_summary.cpu_percent_recent`).<br>Also confirm in an OS profiler while idle. |
-| Memory growth (RSS) | ? | ? | Headless (Linux): `scripts/cargo_agent.sh xtask ui-perf-smoke` per-scenario `rss_bytes_start`/`rss_bytes_end`/`rss_bytes_peak`.<br>Windowed (Linux): `scripts/capture_browser_perf_log.sh` + `browser_perf_log_summary --only-event memory_summary` (`rss_mb` + `rss_delta_mb`). |
+| Memory growth (RSS) | ? | ? | Headless (Linux): `scripts/cargo_agent.sh xtask ui-perf-smoke` run-level `rss_start_bytes`/`rss_after_warmup_bytes` plus per-scenario `rss_bytes_start`/`rss_bytes_end`/`rss_bytes_peak` (also `rss_after_bytes` alias).<br>Windowed (Linux): `scripts/capture_browser_perf_log.sh` + `browser_perf_log_summary --only-event memory_summary` (`rss_mb` + `rss_delta_mb`). |
 
 ### Profiling tools
 
