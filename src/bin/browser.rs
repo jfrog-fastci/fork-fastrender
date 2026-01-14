@@ -15761,27 +15761,21 @@ impl App {
     kind: PageExportKind,
     result: Result<std::path::PathBuf, String>,
   ) {
-    use fastrender::ui::{ToastKind, TOAST_DEFAULT_TTL};
-
-    let now = std::time::Instant::now();
+    use fastrender::ui::ToastKind;
     match result {
       Ok(path) => {
         let label = match kind {
           PageExportKind::SavePage => format!("Saved page to {}", path.display()),
           PageExportKind::Print => format!("Printed page to {}", path.display()),
         };
-        self
-          .chrome_toast
-          .show(ToastKind::Info, label, now, TOAST_DEFAULT_TTL);
+        self.show_chrome_toast_kind(ToastKind::Info, label);
       }
       Err(err) => {
         let label = match kind {
           PageExportKind::SavePage => format!("Save failed: {err}"),
           PageExportKind::Print => format!("Print failed: {err}"),
         };
-        self
-          .chrome_toast
-          .show(ToastKind::Error, label, now, TOAST_DEFAULT_TTL);
+        self.show_chrome_toast_kind(ToastKind::Error, label);
       }
     }
   }
