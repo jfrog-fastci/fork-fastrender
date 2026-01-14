@@ -4310,7 +4310,6 @@ mod profile_update_redraw_tests {
     );
   }
 }
-
 #[cfg(feature = "browser_ui")]
 use arboard::Clipboard;
 #[cfg(feature = "browser_ui")]
@@ -24061,7 +24060,10 @@ impl App {
         let Some(delta_css) = mapping.wheel_delta_to_delta_css(wheel_delta) else {
           return;
         };
-        let delta_css = remap_wheel_delta_for_shift(delta_css, self.modifiers.shift());
+        let delta_css = fastrender::ui::input_mapping::remap_wheel_delta_for_shift(
+          delta_css,
+          self.modifiers.shift(),
+        );
         if delta_css.0 == 0.0 && delta_css.1 == 0.0 {
           return;
         }
@@ -28619,7 +28621,10 @@ impl App {
                   else {
                     continue;
                   };
-                  let (dx, dy) = remap_wheel_delta_for_shift((dx, dy), modifiers.shift);
+                  let (dx, dy) = fastrender::ui::input_mapping::remap_wheel_delta_for_shift(
+                    (dx, dy),
+                    modifiers.shift,
+                  );
                   delta_css.0 += dx;
                   delta_css.1 += dy;
                 }

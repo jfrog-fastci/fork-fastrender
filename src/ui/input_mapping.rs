@@ -48,6 +48,9 @@ impl WheelDelta {
   }
 }
 
+#[doc(inline)]
+pub use super::remap_wheel_delta_for_shift;
+
 /// Maps egui input coordinates (points) into page-space CSS pixels.
 ///
 /// The UI draws a page pixmap (physical px) into an `egui::Rect` (points). The render worker,
