@@ -103,9 +103,9 @@ The exact schema evolves, but each JSON line is intended to be self-describing. 
 include:
 
 - `schema_version` (integer) — currently `2` (omitted on some legacy/diagnostic events).
-- `event` (string) — event kind (current: `frame`, `input`, `resize`, `navigation`, `ttfp`, `stage`; plus
-  periodic diagnostics like `idle_sample` (legacy alias: `idle_summary`) / `worker_wake_summary` / `cpu_summary` /
-  `memory_summary`).
+- `event` (string) — event kind (common: `frame`, `input`, `resize`, `tab_switch`, `navigation`, `ttfp`, `stage`;
+  periodic diagnostics like `idle_sample` (legacy alias: `idle_summary`) / `cpu_summary` / `memory_summary`; and
+  upload diagnostics like `frame_upload`).
 - `t_ms` (integer) — monotonic timestamp in milliseconds since process start (some events use `ts_ms`).
 - `window_id` (string) — identifier for the window instance (or `"process"` for process-wide
   summaries).
@@ -138,6 +138,9 @@ timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_l
 ```
 
 The summary output includes both `rss_bytes` and a convenience `rss_mb` row.
+
+For idle diagnostics, you can also summarize `idle_sample` events; the summary output reports
+`idle_fps` (lower is better; ideally the browser is not drawing frames at all while idle).
 
 Note: the perf log contains additional event types (e.g. `worker_wake_summary`) that are currently
 not summarized by `browser_perf_log_summary`; use `jq`/pandas for custom analysis.
