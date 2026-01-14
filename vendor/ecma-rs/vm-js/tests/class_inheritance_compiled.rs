@@ -248,3 +248,50 @@ fn derived_ctor_arrow_super_method_call_before_super_throws_reference_error_comp
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn derived_ctor_arrow_this_can_escape_constructor_after_super_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class B {}
+      class D extends B {
+        constructor() {
+          let f = () => this;
+          super();
+          return f;
+        }
+      }
+      const f = new D();
+      const o = f();
+      o instanceof D
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn derived_ctor_arrow_this_escapes_without_super_and_throws_when_called_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var ok = false;
+      class B {}
+      class D extends B {
+        constructor() {
+          let f = () => this;
+          // Returning an object without calling super() is allowed in derived constructors.
+          return f;
+        }
+      }
+      const f = new D();
+      try { f(); } catch (e) { ok = e instanceof ReferenceError; }
+      ok
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
