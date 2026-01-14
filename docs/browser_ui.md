@@ -407,7 +407,7 @@ The windowed `browser` app uses a background autosave helper (`SessionAutosave` 
   `did_exit_cleanly=false` and increments `unclean_exit_streak`. If the process is terminated
   unexpectedly, these values remain on disk so the next launch can detect the unclean exit.
   - UX (when restoring an unclean session): the active window shows a crash-recovery infobar/toast
-    (including a **Start new session** option).
+    (including a **Start new session** option that discards restored tabs across all windows).
   - Crash-loop breaker: after a threshold number of consecutive unclean exits, the browser may skip
     auto-restoring tabs and start with a safe new tab instead (use `--restore` to force restoring
     anyway).
