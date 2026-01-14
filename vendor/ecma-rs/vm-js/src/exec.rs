@@ -16012,17 +16012,17 @@ impl<'a> Evaluator<'a> {
               Reference::Property { key, .. } => {
                 self.eval_expr_named(&mut rhs_scope, &expr.right, key)?
               }
-              // `super[expr]` defers `ToPropertyKey` until `PutValue` to preserve correct evaluation
-              // order (and to avoid running user code during key conversion before base validation).
-              //
-              // Only apply inferred naming when the computed key is already a safe property key
-              // (`String`/`Symbol`); otherwise, evaluate the RHS without `NamedEvaluation`.
-              Reference::SuperProperty { key: key_value, .. } => match key_value {
+              Reference::SuperProperty { key, .. } => match key {
+                // `super[expr]` defers `ToPropertyKey` until `PutValue`, so only apply
+                // assignment-name inference when the referenced name is already a property key
+                // (String/Symbol).
                 Value::String(s) => {
-                  self.eval_expr_named(&mut rhs_scope, &expr.right, PropertyKey::String(s))?
+                  let key = PropertyKey::from_string(s);
+                  self.eval_expr_named(&mut rhs_scope, &expr.right, key)?
                 }
                 Value::Symbol(sym) => {
-                  self.eval_expr_named(&mut rhs_scope, &expr.right, PropertyKey::Symbol(sym))?
+                  let key = PropertyKey::from_symbol(sym);
+                  self.eval_expr_named(&mut rhs_scope, &expr.right, key)?
                 }
                 _ => self.eval_expr(&mut rhs_scope, &expr.right)?,
               },
@@ -16389,7 +16389,23 @@ impl<'a> Evaluator<'a> {
             }
             // Logical assignment to member expressions participates in `NamedEvaluation` (and
             // therefore `SetFunctionName`) when the operator actually assigns.
-            Reference::Property { key, .. } => self.eval_expr_named(&mut op_scope, &expr.right, key)?,
+            Reference::Property { key, .. } => {
+              self.eval_expr_named(&mut op_scope, &expr.right, key)?
+            }
+            Reference::SuperProperty { key, .. } => match key {
+              // As in `eval_binary` `=` assignments: `super[expr]` defers `ToPropertyKey` until
+              // `PutValue`, so only use keys that are already property keys (String/Symbol) for
+              // assignment-name inference.
+              Value::String(s) => {
+                let key = PropertyKey::from_string(s);
+                self.eval_expr_named(&mut op_scope, &expr.right, key)?
+              }
+              Value::Symbol(sym) => {
+                let key = PropertyKey::from_symbol(sym);
+                self.eval_expr_named(&mut op_scope, &expr.right, key)?
+              }
+              _ => self.eval_expr(&mut op_scope, &expr.right)?,
+            },
             _ => self.eval_expr(&mut op_scope, &expr.right)?,
           };
 

@@ -43,7 +43,7 @@ fn named_evaluation_set_function_name_matches_node() {
       let C3 = (0, class {});
       check(C3.name === "");
 
-       // --- Assignment: binding targets infer names, property targets do not ---
+       // --- Assignment: binding + member targets infer names ---
        out = undefined;
        let C4;
        C4 = class { static { out = this.name } };
@@ -57,11 +57,11 @@ fn named_evaluation_set_function_name_matches_node() {
        check(out === "");
        check(C5.name === "");
 
-       out = undefined;
-       let o = {};
-       o.a = class { static { out = this.name } };
-       check(out === "");
-       check(o.a.name === "");
+        out = undefined;
+        let o = {};
+        o.a = class { static { out = this.name } };
+        check(out === "a");
+        check(o.a.name === "a");
 
       // --- No dynamic post-hoc renaming ---
       let g = (0, function(){});
@@ -116,10 +116,10 @@ fn named_evaluation_set_function_name_matches_node() {
        check(out === "");
        check(L2.name === "");
 
-       out = undefined;
-        o.b ||= class { static { out = this.name } };
-        check(out === "");
-        check(o.b.name === "");
+        out = undefined;
+         o.b ||= class { static { out = this.name } };
+         check(out === "b");
+         check(o.b.name === "b");
 
       return ok;
     })()
