@@ -1823,17 +1823,54 @@ impl<'a> Parser<'a> {
           // If the preceding expression cannot be a tag and there is a LineTerminator, allow
           // ASI to split statements (e.g. `a++\n\`x\`` should parse as `a++; \`x\``).
           let is_parenthesized = left.assoc.get::<ParenthesizedExpr>().is_some();
-          let is_optional_chain = match left.stx.as_ref() {
-            Expr::Call(call) => call.stx.optional_chaining,
-            Expr::ComputedMember(member) => member.stx.optional_chaining,
-            Expr::Member(member) => member.stx.optional_chaining,
-            _ => false,
+          let is_optional_chain = {
+            let mut cur = &left;
+            let mut has_optional_chaining = false;
+            loop {
+              if cur.assoc.get::<ParenthesizedExpr>().is_some() {
+                break;
+              }
+              match cur.stx.as_ref() {
+                Expr::Call(call) => {
+                  if call.stx.optional_chaining {
+                    has_optional_chaining = true;
+                    break;
+                  }
+                  cur = &call.stx.callee;
+                }
+                Expr::ComputedMember(member) => {
+                  if member.stx.optional_chaining {
+                    has_optional_chaining = true;
+                    break;
+                  }
+                  cur = &member.stx.object;
+                }
+                Expr::Member(member) => {
+                  if member.stx.optional_chaining {
+                    has_optional_chaining = true;
+                    break;
+                  }
+                  cur = &member.stx.left;
+                }
+                Expr::Instantiation(inst) => {
+                  cur = inst.stx.expression.as_ref();
+                }
+                Expr::NonNullAssertion(assertion) => {
+                  cur = assertion.stx.expression.as_ref();
+                }
+                _ => break,
+              }
+            }
+            has_optional_chaining
           };
+          if is_optional_chain {
+            return Err(t.error(SyntaxErrorType::ExpectedSyntax("parenthesized expression")));
+          }
           let is_valid_tag_expr = is_parenthesized
             || match left.stx.as_ref() {
-              Expr::Call(call) => !call.stx.optional_chaining,
-              Expr::ComputedMember(member) => !member.stx.optional_chaining,
-              Expr::Member(member) => !member.stx.optional_chaining,
+              Expr::Call(_call) => true,
+              Expr::ComputedMember(_member) => true,
+              Expr::Member(_member) => true,
               Expr::Unary(unary) => unary.stx.operator == OperatorName::New,
               Expr::Class(_)
               | Expr::Func(_)
@@ -1864,10 +1901,6 @@ impl<'a> Parser<'a> {
               _ => false,
             };
           if !is_valid_tag_expr {
-            // Optional chaining cannot be used as a tagged template (even across a LineTerminator).
-            if is_optional_chain {
-              return Err(t.error(SyntaxErrorType::ExpectedSyntax("parenthesized expression")));
-            }
             if asi_allowed && t.preceded_by_line_terminator {
               self.restore_checkpoint(cp);
               asi.did_end_with_asi = true;

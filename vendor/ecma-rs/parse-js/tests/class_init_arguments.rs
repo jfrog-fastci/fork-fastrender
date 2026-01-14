@@ -20,10 +20,7 @@ fn arguments_identifier_reference_is_syntax_error_in_class_static_block_ecma() {
   let err = parser
     .parse_top_level()
     .expect_err("parse unexpectedly succeeded");
-  assert_eq!(
-    err.typ,
-    SyntaxErrorType::ArgumentsNotAllowedInClassInit
-  );
+  assert_eq!(err.typ, SyntaxErrorType::ArgumentsNotAllowedInClassInit);
   assert_eq!(err.actual_token, None);
 }
 
