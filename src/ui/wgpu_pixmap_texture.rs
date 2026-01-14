@@ -222,12 +222,16 @@ impl WgpuPixmapTexture {
       PAGE_TEXTURE_FILTER_MODE,
     );
 
-    let padded_bytes_per_row = align_to(w.saturating_mul(4), wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    // Pre-size staging for the full bucketed allocation to avoid reallocations while the window is
+    // being resized (content height changes frequently, but `alloc_size_px` grows in coarse
+    // buckets).
+    let alloc_stride = alloc_size_px.0.saturating_mul(4);
+    let padded_bytes_per_row = align_to(alloc_stride, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
     let mut staging = Vec::new();
     // Pre-reserve the expected size so the first upload can grow `staging` without reallocating,
     // but keep `len == 0` so we don't treat the allocation as initialized until we actually write
     // into it.
-    staging.reserve_exact(staging_len(padded_bytes_per_row, h));
+    staging.reserve_exact(staging_len(padded_bytes_per_row, alloc_size_px.1));
 
     Self {
       texture,
@@ -349,16 +353,12 @@ impl WgpuPixmapTexture {
       }
     }
 
-    // Upload staging buffers are based on *content* dimensions, not allocation size.
-    let padded_bytes_per_row = align_to(src_stride, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-    self.padded_bytes_per_row = padded_bytes_per_row;
-
     // Fast path: if the source row stride is already 256-byte aligned, we can upload directly
     // from the pixmap's backing bytes (no staging copy).
-    if padded_bytes_per_row == src_stride {
+    if src_stride % wgpu::COPY_BYTES_PER_ROW_ALIGNMENT == 0 {
       // Preserve shrinking behavior from the previous `Vec::resize` implementation, but avoid any
       // growth/initialization (staging is unused in this fast path).
-      let expected_len = staging_len(padded_bytes_per_row, h);
+      let expected_len = staging_len(src_stride, h);
       if self.staging.len() > expected_len {
         self.staging.truncate(expected_len);
       }
@@ -384,6 +384,29 @@ impl WgpuPixmapTexture {
       );
       return recreated;
     }
+
+    // Staging buffers are sized so resize bursts don't cause per-frame reallocations:
+    // - For exact textures (favicons), the allocation matches the content size.
+    // - For page textures, the allocation grows in coarse buckets; size staging for the full
+    //   bucketed capacity so intermediate content sizes reuse the same allocation.
+    let padded_bytes_per_row = match self.allocation {
+      WgpuPixmapTextureAllocation::Exact => {
+        align_to(src_stride, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+      }
+      WgpuPixmapTextureAllocation::PageBucketed => {
+        let alloc_stride = self.alloc_size_px.0.saturating_mul(4);
+        let desired = align_to(alloc_stride, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        // Defensive: ensure the staging stride is large enough for the active content.
+        let min_required = align_to(src_stride, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        desired.max(min_required)
+      }
+    };
+    self.padded_bytes_per_row = padded_bytes_per_row;
+
+    let staging_capacity_target = staging_len(padded_bytes_per_row, self.alloc_size_px.1);
+    self
+      .staging
+      .reserve_exact(staging_capacity_target.saturating_sub(self.staging.len()));
 
     // Ensure staging is correctly sized even if the pixmap dimensions match but the alignment
     // constant changes (unlikely) or we loaded older serialized state.
