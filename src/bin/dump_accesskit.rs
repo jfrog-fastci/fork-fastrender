@@ -281,6 +281,79 @@ mod enabled {
       assert!(toggled.is_none());
       assert!(pressed.is_none());
     }
+
+    #[test]
+    fn snapshot_serialization_skips_optional_state_fields_when_empty() {
+      let snapshot = AccessKitNodeSnapshot {
+        id: "1".to_string(),
+        role: "Button".to_string(),
+        name: "".to_string(),
+        expanded: None,
+        selected: None,
+        checked: None,
+        toggled: None,
+        pressed: None,
+        disabled: false,
+        value: None,
+        numeric_value: None,
+        supports_expand: false,
+        supports_collapse: false,
+      };
+
+      let json = serde_json::to_value(&snapshot).expect("snapshot should serialize");
+      let obj = json.as_object().expect("expected JSON object");
+      assert!(obj.contains_key("id"));
+      assert!(obj.contains_key("role"));
+      assert!(!obj.contains_key("name"));
+      assert!(!obj.contains_key("expanded"));
+      assert!(!obj.contains_key("selected"));
+      assert!(!obj.contains_key("checked"));
+      assert!(!obj.contains_key("toggled"));
+      assert!(!obj.contains_key("pressed"));
+      assert!(!obj.contains_key("disabled"));
+      assert!(!obj.contains_key("value"));
+      assert!(!obj.contains_key("numeric_value"));
+      assert!(!obj.contains_key("supports_expand"));
+      assert!(!obj.contains_key("supports_collapse"));
+    }
+
+    #[test]
+    fn snapshot_serialization_includes_state_fields_when_set() {
+      let snapshot = AccessKitNodeSnapshot {
+        id: "1".to_string(),
+        role: "CheckBox".to_string(),
+        name: "Example".to_string(),
+        expanded: Some(true),
+        selected: Some(false),
+        checked: Some("mixed".to_string()),
+        toggled: Some("true".to_string()),
+        pressed: Some("false".to_string()),
+        disabled: true,
+        value: Some("hello".to_string()),
+        numeric_value: Some(1.5),
+        supports_expand: true,
+        supports_collapse: true,
+      };
+
+      let json = serde_json::to_value(&snapshot).expect("snapshot should serialize");
+      let obj = json.as_object().expect("expected JSON object");
+      assert_eq!(obj.get("expanded").and_then(|v| v.as_bool()), Some(true));
+      assert_eq!(obj.get("selected").and_then(|v| v.as_bool()), Some(false));
+      assert_eq!(obj.get("checked").and_then(|v| v.as_str()), Some("mixed"));
+      assert_eq!(obj.get("toggled").and_then(|v| v.as_str()), Some("true"));
+      assert_eq!(obj.get("pressed").and_then(|v| v.as_str()), Some("false"));
+      assert_eq!(obj.get("disabled").and_then(|v| v.as_bool()), Some(true));
+      assert_eq!(obj.get("value").and_then(|v| v.as_str()), Some("hello"));
+      assert_eq!(obj.get("numeric_value").and_then(|v| v.as_f64()), Some(1.5));
+      assert_eq!(
+        obj.get("supports_expand").and_then(|v| v.as_bool()),
+        Some(true)
+      );
+      assert_eq!(
+        obj.get("supports_collapse").and_then(|v| v.as_bool()),
+        Some(true)
+      );
+    }
   }
 }
 
