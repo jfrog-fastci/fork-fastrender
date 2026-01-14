@@ -497,6 +497,25 @@ mod tests {
   }
 
   #[test]
+  fn wav_backend_clock_advances_after_render() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let wav_path = dir.path().join("out.wav");
+    let backend = WavAudioBackend::new(&wav_path).expect("backend");
+
+    let output = backend.output_config();
+    let AudioClock::OutputFrames { clock } = backend.clock() else {
+      panic!("expected WavAudioBackend to return an OutputFrames clock");
+    };
+
+    assert_eq!(clock.sample_rate_hz(), output.sample_rate_hz);
+    assert_eq!(clock.frames_written(), 0);
+
+    backend.render(10).expect("render");
+
+    assert_eq!(clock.frames_written(), 10);
+  }
+
+  #[test]
   fn wav_backend_trace_emits_audio_callback_and_mix() {
     let dir = tempfile::tempdir().expect("tempdir");
     let wav_path = dir.path().join("out.wav");
