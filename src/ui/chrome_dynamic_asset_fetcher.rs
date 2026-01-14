@@ -182,10 +182,13 @@ impl ChromeDynamicAssetFetcher {
     }
     .unwrap_or_else(|| transparent_png_bytes().clone());
 
+    // Canonicalize the final URL so caches/consumers treat legacy aliases (e.g.
+    // `chrome://favicons/<id>.png`) and mixed-case variants as the same resource.
+    let final_url = ChromeDynamicAssetFetcher::favicon_url(tab_id);
     Some(Ok(FetchedResource::with_final_url(
       bytes,
       Some(FAVICON_CONTENT_TYPE.to_string()),
-      Some(url.to_string()),
+      Some(final_url),
     )))
   }
 }
@@ -402,6 +405,12 @@ mod tests {
     let res = fetcher
       .fetch("chrome://favicons/123.png")
       .expect("fetch favicon with legacy suffix");
+    let expected = ChromeDynamicAssetFetcher::favicon_url(tab_id);
+    assert_eq!(
+      res.final_url.as_deref(),
+      Some(expected.as_str()),
+      "expected legacy favicon URL to canonicalize"
+    );
     assert_eq!(res.content_type.as_deref(), Some("image/png"));
     assert_eq!(res.bytes, png);
   }
@@ -414,6 +423,11 @@ mod tests {
     let res = fetcher
       .fetch("chrome://favicon/999")
       .expect("missing favicon should return transparent PNG");
+    assert_eq!(
+      res.final_url.as_deref(),
+      Some("chrome://favicon/999"),
+      "expected favicon final_url to remain canonical"
+    );
     assert_eq!(res.content_type.as_deref(), Some("image/png"));
     assert!(res.bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
 

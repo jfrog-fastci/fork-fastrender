@@ -284,17 +284,18 @@ impl ResourceFetcher for ChromeAssetsFetcher {
     let url = trim_ascii_whitespace(url);
     let parsed = parse_chrome_url(url)?;
     let host = parsed.host.to_ascii_lowercase();
+    let canonical_url = format!("chrome://{host}{}", parsed.path);
 
     match (host.as_str(), parsed.path) {
       ("styles", "/chrome.css") => Ok(FetchedResource::with_final_url(
         CHROME_CSS.as_bytes().to_vec(),
         Some("text/css".to_string()),
-        Some(url.to_string()),
+        Some(canonical_url.clone()),
       )),
       ("styles", "/about.css") => Ok(FetchedResource::with_final_url(
         ABOUT_CSS.as_bytes().to_vec(),
         Some("text/css".to_string()),
-        Some(url.to_string()),
+        Some(canonical_url.clone()),
       )),
       ("icons", path) => {
         let Some(bytes) = chrome_icon_bytes(path) else {
@@ -306,13 +307,13 @@ impl ResourceFetcher for ChromeAssetsFetcher {
         Ok(FetchedResource::with_final_url(
           bytes.to_vec(),
           Some(SVG_MIME.to_string()),
-          Some(url.to_string()),
+          Some(canonical_url.clone()),
         ))
       }
       ("scripts", "/chrome.js") => Ok(FetchedResource::with_final_url(
         CHROME_JS.as_bytes().to_vec(),
         Some("text/javascript".to_string()),
-        Some(url.to_string()),
+        Some(canonical_url),
       )),
       _ => Err(Error::Resource(ResourceError::new(
         url,
@@ -345,6 +346,16 @@ mod tests {
     let fetcher = ChromeAssetsFetcher::new();
     let url = " \nchrome://styles/chrome.css\t";
     let res = fetcher.fetch(url).expect("fetch chrome.css with whitespace");
+    assert_eq!(res.content_type.as_deref(), Some("text/css"));
+    assert_eq!(res.final_url.as_deref(), Some("chrome://styles/chrome.css"));
+  }
+
+  #[test]
+  fn fetch_chrome_css_canonicalizes_scheme_and_host_case() {
+    let fetcher = ChromeAssetsFetcher::new();
+    let res = fetcher
+      .fetch("CHROME://STYLES/chrome.css")
+      .expect("fetch chrome.css with mixed-case URL");
     assert_eq!(res.content_type.as_deref(), Some("text/css"));
     assert_eq!(res.final_url.as_deref(), Some("chrome://styles/chrome.css"));
   }
