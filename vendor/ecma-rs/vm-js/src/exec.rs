@@ -16703,6 +16703,43 @@ pub(crate) enum GenFrame {
     args: Vec<Value>,
     arg_index: usize,
   },
+
+  /// Continue evaluating an array literal after a single element expression completes.
+  LitArrAfterSingle {
+    expr: *const LitArrExpr,
+    arr: GcObject,
+    next_elem_index: usize,
+    next_index: u32,
+    idx: u32,
+  },
+  /// Continue evaluating an array literal after a spread element expression completes.
+  LitArrAfterSpread {
+    expr: *const LitArrExpr,
+    arr: GcObject,
+    next_elem_index: usize,
+    next_index: u32,
+  },
+
+  /// Continue evaluating an object literal after a computed key expression completes.
+  LitObjAfterComputedKey {
+    expr: *const LitObjExpr,
+    obj: GcObject,
+    member_index: usize,
+  },
+  /// Continue evaluating an object literal after a property value expression completes.
+  LitObjAfterPropValue {
+    expr: *const LitObjExpr,
+    obj: GcObject,
+    next_member_index: usize,
+    key: PropertyKey,
+    is_proto_setter: bool,
+  },
+  /// Continue evaluating an object literal after a spread property expression completes.
+  LitObjAfterSpread {
+    expr: *const LitObjExpr,
+    obj: GcObject,
+    next_member_index: usize,
+  },
 }
 
 impl Trace for GenFrame {
@@ -16813,9 +16850,20 @@ impl Trace for GenFrame {
       GenFrame::BindArrAfterDefault { value, .. } | GenFrame::BindArrContinue { value, .. } => {
         tracer.trace_value(*value);
       }
-      GenFrame::YieldStar {
-        iterator_record, ..
-      } => {
+      GenFrame::LitArrAfterSingle { arr, .. } | GenFrame::LitArrAfterSpread { arr, .. } => {
+        tracer.trace_value(Value::Object(*arr));
+      }
+      GenFrame::LitObjAfterComputedKey { obj, .. } | GenFrame::LitObjAfterSpread { obj, .. } => {
+        tracer.trace_value(Value::Object(*obj));
+      }
+      GenFrame::LitObjAfterPropValue { obj, key, .. } => {
+        tracer.trace_value(Value::Object(*obj));
+        match key {
+          PropertyKey::String(s) => tracer.trace_value(Value::String(*s)),
+          PropertyKey::Symbol(s) => tracer.trace_value(Value::Symbol(*s)),
+        }
+      }
+      GenFrame::YieldStar { iterator_record, .. } => {
         tracer.trace_value(iterator_record.iterator);
         tracer.trace_value(iterator_record.next_method);
       }
@@ -36505,6 +36553,8 @@ fn gen_eval_expr_chain(
         Ok(GenEval::Suspend(suspend))
       }
     },
+    Expr::LitArr(arr) => gen_eval_lit_arr(evaluator, scope, &arr.stx),
+    Expr::LitObj(obj) => gen_eval_lit_obj(evaluator, scope, &obj.stx),
     _ => Err(VmError::Unimplemented("yield in expression type")),
   };
 
@@ -36521,6 +36571,434 @@ fn gen_eval_expr_chain(
         other => Err(other),
       }
     }
+  }
+}
+
+fn gen_eval_lit_arr(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &LitArrExpr,
+) -> Result<GenEval<Completion>, VmError> {
+  let mut arr_scope = scope.reborrow();
+  let arr = arr_scope.alloc_array(0)?;
+  arr_scope.push_root(Value::Object(arr))?;
+  let intr = evaluator
+    .vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  arr_scope
+    .heap_mut()
+    .object_set_prototype(arr, Some(intr.array_prototype()))?;
+  gen_eval_lit_arr_from(evaluator, &mut arr_scope, expr, arr, 0, 0)
+}
+
+fn gen_eval_lit_arr_from(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &LitArrExpr,
+  arr: GcObject,
+  start_elem_index: usize,
+  mut next_index: u32,
+) -> Result<GenEval<Completion>, VmError> {
+  for (elem_index, elem) in expr.elements.iter().enumerate().skip(start_elem_index) {
+    match elem {
+      LitArrElem::Empty => {
+        evaluator.tick()?;
+        next_index = next_index.saturating_add(1);
+      }
+      LitArrElem::Single(elem_expr) => {
+        let idx = next_index;
+        next_index = next_index.saturating_add(1);
+
+        match gen_eval_expr(evaluator, scope, elem_expr)? {
+          GenEval::Complete(c) => match c {
+            Completion::Normal(v) => {
+              let value = v.unwrap_or(Value::Undefined);
+              let create_res: Result<(), VmError> = (|| {
+                let mut elem_scope = scope.reborrow();
+                elem_scope.push_root(Value::Object(arr))?;
+                elem_scope.push_root(value)?;
+                let key_s = elem_scope.alloc_u32_index_string(idx)?;
+                elem_scope.push_root(Value::String(key_s))?;
+                let key = PropertyKey::from_string(key_s);
+                elem_scope.create_data_property_or_throw(arr, key, value)?;
+                Ok(())
+              })();
+              if let Err(err) = create_res {
+                return Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?));
+              }
+            }
+            abrupt => return Ok(GenEval::Complete(abrupt)),
+          },
+          GenEval::Suspend(mut suspend) => {
+            gen_frames_push(
+              &mut suspend.frames,
+              GenFrame::LitArrAfterSingle {
+                expr: expr as *const LitArrExpr,
+                arr,
+                next_elem_index: elem_index.saturating_add(1),
+                next_index,
+                idx,
+              },
+            )?;
+            return Ok(GenEval::Suspend(suspend));
+          }
+        }
+      }
+      LitArrElem::Rest(rest_expr) => match gen_eval_expr(evaluator, scope, rest_expr)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(v) => {
+            let spread_value = v.unwrap_or(Value::Undefined);
+            let spread_res: Result<u32, VmError> = (|| {
+              let mut spread_scope = scope.reborrow();
+              spread_scope.push_root(Value::Object(arr))?;
+              spread_scope.push_root(spread_value)?;
+
+              let mut iter = iterator::get_iterator(
+                evaluator.vm,
+                &mut *evaluator.host,
+                &mut *evaluator.hooks,
+                &mut spread_scope,
+                spread_value,
+              )?;
+              spread_scope.push_roots(&[iter.iterator, iter.next_method])?;
+
+              while let Some(value) = iterator::iterator_step_value(
+                evaluator.vm,
+                &mut *evaluator.host,
+                &mut *evaluator.hooks,
+                &mut spread_scope,
+                &mut iter,
+              )? {
+                evaluator.tick()?;
+                let idx = next_index;
+                next_index = next_index.saturating_add(1);
+
+                let mut elem_scope = spread_scope.reborrow();
+                elem_scope.push_root(value)?;
+                let key_s = elem_scope.alloc_u32_index_string(idx)?;
+                elem_scope.push_root(Value::String(key_s))?;
+                let key = PropertyKey::from_string(key_s);
+                elem_scope.create_data_property_or_throw(arr, key, value)?;
+              }
+
+              Ok(next_index)
+            })();
+            match spread_res {
+              Ok(updated_next_index) => next_index = updated_next_index,
+              Err(err) => return Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?)),
+            }
+          }
+          abrupt => return Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::LitArrAfterSpread {
+              expr: expr as *const LitArrExpr,
+              arr,
+              next_elem_index: elem_index.saturating_add(1),
+              next_index,
+            },
+          )?;
+          return Ok(GenEval::Suspend(suspend));
+        }
+      },
+    }
+  }
+
+  let length_res: Result<(), VmError> = (|| {
+    let mut length_scope = scope.reborrow();
+    length_scope.push_root(Value::Object(arr))?;
+    let length_key_s = length_scope.alloc_string("length")?;
+    let length_desc = PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(next_index as f64),
+        writable: true,
+      },
+    };
+    length_scope.define_property(arr, PropertyKey::from_string(length_key_s), length_desc)?;
+    Ok(())
+  })();
+  if let Err(err) = length_res {
+    return Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?));
+  }
+
+  Ok(GenEval::Complete(Completion::normal(Value::Object(arr))))
+}
+
+fn gen_eval_lit_obj(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &LitObjExpr,
+) -> Result<GenEval<Completion>, VmError> {
+  let mut obj_scope = scope.reborrow();
+  let obj = obj_scope.alloc_object()?;
+  obj_scope.push_root(Value::Object(obj))?;
+  let intr = evaluator
+    .vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  obj_scope
+    .heap_mut()
+    .object_set_prototype(obj, Some(intr.object_prototype()))?;
+
+  gen_eval_lit_obj_from(evaluator, &mut obj_scope, expr, obj, 0)
+}
+
+fn gen_eval_lit_obj_from(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &LitObjExpr,
+  obj: GcObject,
+  start_member_index: usize,
+) -> Result<GenEval<Completion>, VmError> {
+  for (member_index, member_node) in expr.members.iter().enumerate().skip(start_member_index) {
+    evaluator.tick()?;
+
+    match &member_node.stx.typ {
+      ObjMemberType::Valued { key, val } => {
+        let is_proto_setter = matches!(key, ClassOrObjKey::Direct(direct) if direct.stx.key == "__proto__")
+          && matches!(val, ClassOrObjVal::Prop(Some(_)));
+
+        let key = match key {
+          ClassOrObjKey::Direct(direct) => {
+            let mut key_scope = scope.reborrow();
+            key_scope.push_root(Value::Object(obj))?;
+            let key_s = if let Some(units) = literal_string_code_units(&direct.assoc) {
+              key_scope.alloc_string_from_code_units(units)?
+            } else if direct.stx.tt == TT::LiteralNumber {
+              let n = direct
+                .stx
+                .key
+                .parse::<f64>()
+                .map_err(|_| VmError::Unimplemented("numeric literal property name parse"))?;
+              key_scope.heap_mut().to_string(Value::Number(n))?
+            } else {
+              key_scope.alloc_string(&direct.stx.key)?
+            };
+            PropertyKey::from_string(key_s)
+          }
+          ClassOrObjKey::Computed(key_expr) => match gen_eval_expr(evaluator, scope, key_expr)? {
+            GenEval::Complete(c) => match c {
+              Completion::Normal(v) => {
+                let key_value = v.unwrap_or(Value::Undefined);
+                let mut key_scope = scope.reborrow();
+                key_scope.push_root(key_value)?;
+                match evaluator.to_property_key_operator(&mut key_scope, key_value) {
+                  Ok(k) => k,
+                  Err(err) => {
+                    return Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut key_scope, err)?))
+                  }
+                }
+              }
+              abrupt => return Ok(GenEval::Complete(abrupt)),
+            },
+            GenEval::Suspend(mut suspend) => {
+              gen_frames_push(
+                &mut suspend.frames,
+                GenFrame::LitObjAfterComputedKey {
+                  expr: expr as *const LitObjExpr,
+                  obj,
+                  member_index,
+                },
+              )?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+          },
+        };
+
+        match gen_eval_lit_obj_apply_valued_member(
+          evaluator,
+          scope,
+          expr,
+          obj,
+          member_index,
+          key,
+          is_proto_setter,
+          val,
+        )? {
+          GenEval::Complete(c) => match c {
+            Completion::Normal(_) => {}
+            abrupt => return Ok(GenEval::Complete(abrupt)),
+          },
+          GenEval::Suspend(suspend) => return Ok(GenEval::Suspend(suspend)),
+        }
+      }
+      ObjMemberType::Shorthand { id } => {
+        let shorthand_res: Result<(), VmError> = (|| {
+          let mut member_scope = scope.reborrow();
+          member_scope.push_root(Value::Object(obj))?;
+          let key_s = member_scope.alloc_string(&id.stx.name)?;
+          member_scope.push_root(Value::String(key_s))?;
+          let key = PropertyKey::from_string(key_s);
+          let value = evaluator.eval_id(&mut member_scope, &id.stx)?;
+          member_scope.push_root(value)?;
+          member_scope.create_data_property_or_throw(obj, key, value)?;
+          Ok(())
+        })();
+        if let Err(err) = shorthand_res {
+          return Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?));
+        }
+      }
+      ObjMemberType::Rest { val } => match gen_eval_expr(evaluator, scope, val)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(v) => {
+            let spread_value = v.unwrap_or(Value::Undefined);
+            let spread_res: Result<(), VmError> = (|| {
+              let mut spread_scope = scope.reborrow();
+              spread_scope.push_root(Value::Object(obj))?;
+              spread_scope.push_root(spread_value)?;
+              crate::spec_ops::copy_data_properties_with_host_and_hooks(
+                evaluator.vm,
+                &mut spread_scope,
+                &mut *evaluator.host,
+                &mut *evaluator.hooks,
+                obj,
+                spread_value,
+                &[],
+              )?;
+              Ok(())
+            })();
+            if let Err(err) = spread_res {
+              return Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?));
+            }
+          }
+          abrupt => return Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::LitObjAfterSpread {
+              expr: expr as *const LitObjExpr,
+              obj,
+              next_member_index: member_index.saturating_add(1),
+            },
+          )?;
+          return Ok(GenEval::Suspend(suspend));
+        }
+      },
+    }
+  }
+
+  Ok(GenEval::Complete(Completion::normal(Value::Object(obj))))
+}
+
+fn gen_eval_lit_obj_apply_valued_member(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &LitObjExpr,
+  obj: GcObject,
+  member_index: usize,
+  key: PropertyKey,
+  is_proto_setter: bool,
+  val: &ClassOrObjVal,
+) -> Result<GenEval<Completion>, VmError> {
+  let next_member_index = member_index.saturating_add(1);
+
+  match val {
+    ClassOrObjVal::Prop(Some(value_expr)) => {
+      if expr_contains_yield(value_expr) {
+        match gen_eval_expr(evaluator, scope, value_expr)? {
+          GenEval::Complete(c) => match c {
+            Completion::Normal(v) => {
+              let value = v.unwrap_or(Value::Undefined);
+              let apply_res: Result<(), VmError> = (|| {
+                let mut member_scope = scope.reborrow();
+                member_scope.push_root(Value::Object(obj))?;
+                member_scope.push_root(value)?;
+                match &key {
+                  PropertyKey::String(s) => member_scope.push_root(Value::String(*s))?,
+                  PropertyKey::Symbol(s) => member_scope.push_root(Value::Symbol(*s))?,
+                };
+
+                if is_proto_setter {
+                  match value {
+                    Value::Object(proto) => member_scope.heap_mut().object_set_prototype(obj, Some(proto))?,
+                    Value::Null => member_scope.heap_mut().object_set_prototype(obj, None)?,
+                    _ => {}
+                  }
+                } else {
+                  member_scope.create_data_property_or_throw(obj, key, value)?;
+                }
+                Ok(())
+              })();
+              if let Err(err) = apply_res {
+                return Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?));
+              }
+              Ok(GenEval::Complete(Completion::empty()))
+            }
+            abrupt => Ok(GenEval::Complete(abrupt)),
+          },
+          GenEval::Suspend(mut suspend) => {
+            gen_frames_push(
+              &mut suspend.frames,
+              GenFrame::LitObjAfterPropValue {
+                expr: expr as *const LitObjExpr,
+                obj,
+                next_member_index,
+                key,
+                is_proto_setter,
+              },
+            )?;
+            Ok(GenEval::Suspend(suspend))
+          }
+        }
+      } else {
+        let value_res: Result<Value, VmError> = (|| {
+          let mut member_scope = scope.reborrow();
+          member_scope.push_root(Value::Object(obj))?;
+          match &key {
+            PropertyKey::String(s) => member_scope.push_root(Value::String(*s))?,
+            PropertyKey::Symbol(s) => member_scope.push_root(Value::Symbol(*s))?,
+          };
+
+          if is_proto_setter {
+            evaluator.eval_expr(&mut member_scope, value_expr)
+          } else {
+            evaluator.eval_expr_named(&mut member_scope, value_expr, key)
+          }
+        })();
+
+        let value = match value_res {
+          Ok(v) => v,
+          Err(err) => return Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?)),
+        };
+
+        let apply_res: Result<(), VmError> = (|| {
+          let mut member_scope = scope.reborrow();
+          member_scope.push_root(Value::Object(obj))?;
+          member_scope.push_root(value)?;
+          match &key {
+            PropertyKey::String(s) => member_scope.push_root(Value::String(*s))?,
+            PropertyKey::Symbol(s) => member_scope.push_root(Value::Symbol(*s))?,
+          };
+
+          if is_proto_setter {
+            match value {
+              Value::Object(proto) => member_scope.heap_mut().object_set_prototype(obj, Some(proto))?,
+              Value::Null => member_scope.heap_mut().object_set_prototype(obj, None)?,
+              _ => {}
+            }
+          } else {
+            member_scope.create_data_property_or_throw(obj, key, value)?;
+          }
+          Ok(())
+        })();
+        if let Err(err) = apply_res {
+          return Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?));
+        }
+        Ok(GenEval::Complete(Completion::empty()))
+      }
+    }
+    ClassOrObjVal::Prop(None) => Err(VmError::Unimplemented(
+      "object literal property without initializer",
+    )),
+    _ => Err(VmError::Unimplemented(
+      "yield in object literal member type",
+    )),
   }
 }
 
@@ -40931,6 +41409,251 @@ fn gen_resume_from_frames(
         abrupt => state = abrupt,
       },
 
+      GenFrame::LitArrAfterSingle {
+        expr,
+        arr,
+        next_elem_index,
+        next_index,
+        idx,
+      } => match state {
+        Completion::Normal(v) => {
+          let value = v.unwrap_or(Value::Undefined);
+          let prop_res: Result<(), VmError> = (|| {
+            let mut elem_scope = scope.reborrow();
+            elem_scope.push_root(Value::Object(arr))?;
+            elem_scope.push_root(value)?;
+            let key_s = elem_scope.alloc_u32_index_string(idx)?;
+            elem_scope.push_root(Value::String(key_s))?;
+            let key = PropertyKey::from_string(key_s);
+            elem_scope.create_data_property_or_throw(arr, key, value)?;
+            Ok(())
+          })();
+          if let Err(err) = prop_res {
+            state = gen_error_to_completion(evaluator, scope, err)?;
+            continue;
+          }
+
+          let expr = unsafe { &*expr };
+          match gen_eval_lit_arr_from(evaluator, scope, expr, arr, next_elem_index, next_index)? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::LitArrAfterSpread {
+        expr,
+        arr,
+        next_elem_index,
+        mut next_index,
+      } => match state {
+        Completion::Normal(v) => {
+          let spread_value = v.unwrap_or(Value::Undefined);
+          let spread_res: Result<u32, VmError> = (|| {
+            let mut spread_scope = scope.reborrow();
+            spread_scope.push_root(Value::Object(arr))?;
+            spread_scope.push_root(spread_value)?;
+
+            let mut iter = iterator::get_iterator(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              &mut spread_scope,
+              spread_value,
+            )?;
+            spread_scope.push_roots(&[iter.iterator, iter.next_method])?;
+
+            while let Some(value) = iterator::iterator_step_value(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              &mut spread_scope,
+              &mut iter,
+            )? {
+              evaluator.tick()?;
+              let idx = next_index;
+              next_index = next_index.saturating_add(1);
+
+              let mut elem_scope = spread_scope.reborrow();
+              elem_scope.push_root(value)?;
+              let key_s = elem_scope.alloc_u32_index_string(idx)?;
+              elem_scope.push_root(Value::String(key_s))?;
+              let key = PropertyKey::from_string(key_s);
+              elem_scope.create_data_property_or_throw(arr, key, value)?;
+            }
+            Ok(next_index)
+          })();
+          match spread_res {
+            Ok(updated_next_index) => next_index = updated_next_index,
+            Err(err) => {
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+          }
+
+          let expr = unsafe { &*expr };
+          match gen_eval_lit_arr_from(evaluator, scope, expr, arr, next_elem_index, next_index)? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::LitObjAfterComputedKey {
+        expr,
+        obj,
+        member_index,
+      } => match state {
+        Completion::Normal(v) => {
+          let key_value = v.unwrap_or(Value::Undefined);
+          let key = {
+            let mut key_scope = scope.reborrow();
+            key_scope.push_root(key_value)?;
+            match evaluator.to_property_key_operator(&mut key_scope, key_value) {
+              Ok(k) => k,
+              Err(err) => {
+                state = gen_error_to_completion(evaluator, &mut key_scope, err)?;
+                continue;
+              }
+            }
+          };
+
+          let expr = unsafe { &*expr };
+          let member_node = expr
+            .members
+            .get(member_index)
+            .ok_or(VmError::InvariantViolation(
+              "generator object literal continuation out of bounds",
+            ))?;
+          let ObjMemberType::Valued { val, .. } = &member_node.stx.typ else {
+            return Err(VmError::InvariantViolation(
+              "generator object literal computed-key continuation for non-valued member",
+            ));
+          };
+          match gen_eval_lit_obj_apply_valued_member(
+            evaluator,
+            scope,
+            expr,
+            obj,
+            member_index,
+            key,
+            /* is_proto_setter */ false,
+            val,
+          )? {
+            GenEval::Complete(c) => match c {
+              Completion::Normal(_) => {
+                match gen_eval_lit_obj_from(evaluator, scope, expr, obj, member_index.saturating_add(1))? {
+                  GenEval::Complete(c) => state = c,
+                  GenEval::Suspend(mut suspend) => {
+                    suspend.frames.append(&mut frames);
+                    return Ok(GenEval::Suspend(suspend));
+                  }
+                }
+              }
+              abrupt => state = abrupt,
+            },
+            GenEval::Suspend(mut suspend) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::LitObjAfterPropValue {
+        expr,
+        obj,
+        next_member_index,
+        key,
+        is_proto_setter,
+      } => match state {
+        Completion::Normal(v) => {
+          let value = v.unwrap_or(Value::Undefined);
+          let apply_res: Result<(), VmError> = (|| {
+            let mut member_scope = scope.reborrow();
+            member_scope.push_root(Value::Object(obj))?;
+            member_scope.push_root(value)?;
+            match &key {
+              PropertyKey::String(s) => member_scope.push_root(Value::String(*s))?,
+              PropertyKey::Symbol(s) => member_scope.push_root(Value::Symbol(*s))?,
+            };
+
+            if is_proto_setter {
+              match value {
+                Value::Object(proto) => member_scope.heap_mut().object_set_prototype(obj, Some(proto))?,
+                Value::Null => member_scope.heap_mut().object_set_prototype(obj, None)?,
+                _ => {}
+              }
+            } else {
+              member_scope.create_data_property_or_throw(obj, key, value)?;
+            }
+            Ok(())
+          })();
+          if let Err(err) = apply_res {
+            state = gen_error_to_completion(evaluator, scope, err)?;
+            continue;
+          }
+
+          let expr = unsafe { &*expr };
+          match gen_eval_lit_obj_from(evaluator, scope, expr, obj, next_member_index)? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::LitObjAfterSpread {
+        expr,
+        obj,
+        next_member_index,
+      } => match state {
+        Completion::Normal(v) => {
+          let spread_value = v.unwrap_or(Value::Undefined);
+          let spread_res: Result<(), VmError> = (|| {
+            let mut member_scope = scope.reborrow();
+            member_scope.push_root(Value::Object(obj))?;
+            member_scope.push_root(spread_value)?;
+            crate::spec_ops::copy_data_properties_with_host_and_hooks(
+              evaluator.vm,
+              &mut member_scope,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              obj,
+              spread_value,
+              &[],
+            )?;
+            Ok(())
+          })();
+          if let Err(err) = spread_res {
+            state = gen_error_to_completion(evaluator, scope, err)?;
+            continue;
+          }
+
+          let expr = unsafe { &*expr };
+          match gen_eval_lit_obj_from(evaluator, scope, expr, obj, next_member_index)? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
       GenFrame::CallAfterCallee { expr } => match state {
         Completion::Normal(v) => {
           let expr = unsafe { &*expr };
@@ -41776,6 +42499,19 @@ fn gen_root_values_for_continuation(
       GenFrame::NewArgs { callee, args, .. } => {
         values.push(*callee);
         values.extend_from_slice(args);
+      }
+      GenFrame::LitArrAfterSingle { arr, .. } | GenFrame::LitArrAfterSpread { arr, .. } => {
+        values.push(Value::Object(*arr));
+      }
+      GenFrame::LitObjAfterComputedKey { obj, .. } | GenFrame::LitObjAfterSpread { obj, .. } => {
+        values.push(Value::Object(*obj));
+      }
+      GenFrame::LitObjAfterPropValue { obj, key, .. } => {
+        values.push(Value::Object(*obj));
+        values.push(match key {
+          PropertyKey::String(s) => Value::String(*s),
+          PropertyKey::Symbol(s) => Value::Symbol(*s),
+        });
       }
       _ => {}
     }
