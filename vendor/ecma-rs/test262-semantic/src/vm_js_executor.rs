@@ -1731,6 +1731,11 @@ fn map_vm_error(
         ExecError::Cancelled
       }
  
+      // `vm-js` reports stack overflows via `TerminationReason::StackOverflow`, but test262 expects
+      // a JS-level `RangeError` (and the runner treats `ExecError::Cancelled` as a timeout).
+      //
+      // Preserve the termination message (`execution terminated: stack overflow`) so failures still
+      // clearly indicate the root cause in JSON reports.
       TerminationReason::StackOverflow => ExecError::Js(JsError {
         phase: ExecPhase::Runtime,
         typ: Some("RangeError".to_string()),
@@ -2009,9 +2014,12 @@ f(2000);
     };
     assert_eq!(js.phase, ExecPhase::Runtime);
     assert_eq!(js.typ.as_deref(), Some("RangeError"));
+    // Depending on where the VM detects the overflow, this may come from:
+    // - the VM's own max-stack-depth guard ("Maximum call stack size exceeded"), or
+    // - a hard termination converted into a RangeError ("execution terminated: stack overflow").
     let message_lc = js.message.to_ascii_lowercase();
     assert!(
-      message_lc.contains("stack overflow") || message_lc.contains("call stack"),
+      message_lc.contains("call stack") || message_lc.contains("stack overflow"),
       "expected stack overflow message, got: {}",
       js.message
     );

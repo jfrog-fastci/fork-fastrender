@@ -77,7 +77,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-ecma-rs-vm-js-target-1.92.0-
 
-      - name: cargo check (vm-js, parse-js, test262-semantic)
+      - name: cargo check + tests (vm-js, parse-js, test262-semantic)
         env:
           # Keep cargo_agent locks within the ecma-rs workspace target dir.
           FASTR_CARGO_LOCK_DIR: target/.cargo_agent_locks
@@ -85,7 +85,11 @@ jobs:
           set -euo pipefail
           timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh check -p vm-js
           timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh check -p parse-js
-          timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh check -p test262-semantic
+          # Run the `test262-semantic` unit tests (including stack overflow regression coverage).
+          timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p test262-semantic --lib --tests
+          # Also run in release mode so the stack overflow mapping remains consistent with the
+          # `js_test262` workflow (which executes `test262-semantic` via `cargo run --release`).
+          timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p test262-semantic --release --lib --tests
 
   ecma-rs-native:
     name: ecma-rs native (Rust 1.92.0)

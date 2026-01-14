@@ -86,6 +86,34 @@ jobs:
       - name: Validate generated RegExp Unicode property-of-strings tables
         run: cargo xtask generate-regexp-unicode-property-strings --check
 
+      - name: Smoke deep recursion case (no abort, no timeout classification)
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo_root="${GITHUB_WORKSPACE:-$(pwd)}"
+          report_rel="target/js/test262_deep_recursion.json"
+          report="${repo_root}/${report_rel}"
+          rm -f "${report}"
+          mkdir -p "$(dirname "${report}")"
+          chmod +x scripts/run_limited.sh
+          scripts/run_limited.sh --as 64G -- \
+            bash scripts/cargo_agent.sh run --release -p test262-semantic -- \
+              --test262-dir "${repo_root}/vendor/ecma-rs/test262-semantic/data" \
+              --harness test262 \
+              --filter language/expressions/comma/tco-final.js \
+              --fail-on none \
+              --report-path "${report}"
+          test -s "${report}"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path("target/js/test262_deep_recursion.json").read_text())
+          assert data.get("schema_version") == 1
+          summary = data.get("summary", {})
+          assert summary.get("total", 0) >= 1, summary
+          assert summary.get("timed_out", 0) == 0, summary
+          PY
+
       - name: Run curated test262 semantics suite
         shell: bash
         run: |
