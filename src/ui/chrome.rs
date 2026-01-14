@@ -3337,7 +3337,7 @@ pub fn chrome_ui_with_bookmarks(
 
       if !popup_focus_ids.is_empty() {
         ctx.data_mut(|d| {
-          d.insert_temp(menu_focus_ids_id, popup_focus_ids.clone());
+          d.insert_temp(menu_focus_ids_id, popup_focus_ids);
         });
       }
 
@@ -4119,7 +4119,7 @@ pub fn chrome_ui_with_bookmarks(
 
   if !popup_focus_ids.is_empty() {
     ctx.data_mut(|d| {
-      d.insert_temp(appearance_focus_ids_id, popup_focus_ids.clone());
+      d.insert_temp(appearance_focus_ids_id, popup_focus_ids);
     });
   }
   if appearance_open_prev && !app.chrome.appearance_popup_open {
@@ -4420,11 +4420,11 @@ pub fn chrome_ui_with_bookmarks(
           })
         });
 
-      if !popup_focus_ids.is_empty() {
-        ctx.data_mut(|d| {
-          d.insert_temp(menu_focus_ids_id, popup_focus_ids.clone());
-        });
-      }
+        if !popup_focus_ids.is_empty() {
+          ctx.data_mut(|d| {
+            d.insert_temp(menu_focus_ids_id, popup_focus_ids);
+          });
+        }
 
       if app.chrome.open_tab_context_menu.is_none() {
         let opener = if restore_focus_on_close {
