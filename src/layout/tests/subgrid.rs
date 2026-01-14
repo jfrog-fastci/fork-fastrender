@@ -2137,6 +2137,169 @@ fn column_subgrid_with_mismatched_writing_mode_transposes_tracks() {
 }
 
 #[test]
+fn subgrid_writing_mode_mismatch_keeps_parent_axis_mapping_for_mirroring() {
+  // Regression coverage for subgrid writing-mode mismatch handling.
+  //
+  // When a subgrid specifies a different `writing-mode` than its parent, its track definitions
+  // (including gaps) remain in the parent grid's axis space. Post-processing (mirroring, etc.) must
+  // therefore use the same effective grid axes that were used for Taffy layout.
+  let mut parent_style = ComputedStyle::default();
+  parent_style.display = Display::Grid;
+  parent_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(40.0)),
+    GridTrack::Length(Length::px(60.0)),
+  ];
+  parent_style.grid_template_rows = vec![GridTrack::Length(Length::px(70.0))];
+  parent_style.grid_column_gap = Length::px(10.0);
+  parent_style.width = Some(Length::px(110.0));
+  parent_style.height = Some(Length::px(70.0));
+
+  let mut subgrid_style = ComputedStyle::default();
+  subgrid_style.display = Display::Grid;
+  subgrid_style.writing_mode = WritingMode::VerticalRl;
+  subgrid_style.grid_column_subgrid = true;
+  subgrid_style.grid_row_subgrid = true;
+  subgrid_style.grid_column_start = 1;
+  subgrid_style.grid_column_end = 3;
+  subgrid_style.grid_row_start = 1;
+  subgrid_style.grid_row_end = 2;
+
+  let mut left_style = ComputedStyle::default();
+  left_style.display = Display::Block;
+  left_style.grid_column_start = 1;
+  left_style.grid_column_end = 2;
+  left_style.grid_row_start = 1;
+  left_style.grid_row_end = 2;
+
+  let mut right_style = ComputedStyle::default();
+  right_style.display = Display::Block;
+  right_style.grid_column_start = 2;
+  right_style.grid_column_end = 3;
+  right_style.grid_row_start = 1;
+  right_style.grid_row_end = 2;
+
+  let left = BoxNode::new_block(Arc::new(left_style), FormattingContextType::Block, vec![]);
+  let right = BoxNode::new_block(Arc::new(right_style), FormattingContextType::Block, vec![]);
+
+  let subgrid = BoxNode::new_block(
+    Arc::new(subgrid_style),
+    FormattingContextType::Grid,
+    vec![left, right],
+  );
+
+  let grid = BoxNode::new_block(
+    Arc::new(parent_style),
+    FormattingContextType::Grid,
+    vec![subgrid],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(200.0, 200.0))
+    .expect("layout succeeds");
+
+  let subgrid_fragment = &fragment.children[0];
+  assert_eq!(subgrid_fragment.children.len(), 2);
+  let left = &subgrid_fragment.children[0];
+  let right = &subgrid_fragment.children[1];
+
+  assert_approx(left.bounds.x(), 0.0, "first column origin");
+  assert_approx(left.bounds.width(), 40.0, "first column width");
+  assert_approx(right.bounds.x(), 50.0, "second column offset includes gap");
+  assert_approx(right.bounds.width(), 60.0, "second column width");
+}
+
+#[test]
+fn nested_subgrid_writing_mode_mismatch_keeps_parent_axis_mapping_for_mirroring() {
+  let mut parent_style = ComputedStyle::default();
+  parent_style.display = Display::Grid;
+  parent_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(28.0)),
+    GridTrack::Length(Length::px(42.0)),
+  ];
+  parent_style.grid_template_rows = vec![GridTrack::Auto];
+  parent_style.grid_column_gap = Length::px(5.0);
+  parent_style.width = Some(Length::px(75.0));
+
+  let mut outer_subgrid_style = ComputedStyle::default();
+  outer_subgrid_style.display = Display::Grid;
+  outer_subgrid_style.writing_mode = WritingMode::VerticalRl;
+  outer_subgrid_style.grid_column_subgrid = true;
+  outer_subgrid_style.grid_row_subgrid = true;
+  outer_subgrid_style.grid_column_start = 1;
+  outer_subgrid_style.grid_column_end = 3;
+  outer_subgrid_style.grid_row_start = 1;
+  outer_subgrid_style.grid_row_end = 2;
+
+  let mut inner_subgrid_style = ComputedStyle::default();
+  inner_subgrid_style.display = Display::Grid;
+  inner_subgrid_style.writing_mode = WritingMode::VerticalRl;
+  inner_subgrid_style.grid_column_subgrid = true;
+  inner_subgrid_style.grid_row_subgrid = true;
+  inner_subgrid_style.grid_column_start = 1;
+  inner_subgrid_style.grid_column_end = 3;
+  inner_subgrid_style.grid_row_start = 1;
+  inner_subgrid_style.grid_row_end = 2;
+
+  let mut first_child = ComputedStyle::default();
+  first_child.display = Display::Block;
+  first_child.grid_column_start = 1;
+  first_child.grid_column_end = 2;
+  first_child.height = Some(Length::px(12.0));
+
+  let mut second_child = ComputedStyle::default();
+  second_child.display = Display::Block;
+  second_child.grid_column_start = 2;
+  second_child.grid_column_end = 3;
+  second_child.height = Some(Length::px(12.0));
+
+  let child1 = BoxNode::new_block(Arc::new(first_child), FormattingContextType::Block, vec![]);
+  let child2 = BoxNode::new_block(Arc::new(second_child), FormattingContextType::Block, vec![]);
+
+  let inner_subgrid = BoxNode::new_block(
+    Arc::new(inner_subgrid_style),
+    FormattingContextType::Grid,
+    vec![child1, child2],
+  );
+
+  let outer_subgrid = BoxNode::new_block(
+    Arc::new(outer_subgrid_style),
+    FormattingContextType::Grid,
+    vec![inner_subgrid],
+  );
+
+  let grid = BoxNode::new_block(
+    Arc::new(parent_style),
+    FormattingContextType::Grid,
+    vec![outer_subgrid],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(200.0, 200.0))
+    .expect("layout succeeds");
+
+  let outer_fragment = &fragment.children[0];
+  let inner_fragment = &outer_fragment.children[0];
+  assert_eq!(inner_fragment.children.len(), 2);
+
+  let first = &inner_fragment.children[0];
+  let second = &inner_fragment.children[1];
+  assert_approx(first.bounds.x(), 0.0, "first track starts at origin");
+  assert_approx(first.bounds.width(), 28.0, "first track inherits parent sizing");
+  assert_approx(
+    second.bounds.x(),
+    33.0,
+    "gap and first track size carry through nested subgrid",
+  );
+  assert_approx(
+    second.bounds.width(),
+    42.0,
+    "second track inherits parent sizing",
+  );
+}
+
+#[test]
 fn nested_subgrid_propagates_descendant_sizes() {
   let mut parent_style = ComputedStyle::default();
   parent_style.display = Display::Grid;

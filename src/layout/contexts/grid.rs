@@ -292,6 +292,67 @@ impl GridAxisStyle {
     }
   }
 
+  /// Returns the effective axis style that was used when mapping this grid container's CSS axes
+  /// (rows/columns) into Taffy's fixed horizontal/vertical axes.
+  ///
+  /// Subgrids inherit axis mapping from their parent grid so that shared tracks (including gaps and
+  /// named lines) stay in the same coordinate space.
+  ///
+  /// This mirrors the inheritance rule implemented by `effective_for_grid_container`, but derives
+  /// the parent axis by walking the Taffy parent chain while the current node is a subgrid.
+  ///
+  /// Note: traversal is bounded to avoid pathological cycles if the Taffy tree is corrupted.
+  fn effective_for_grid_layout_node(
+    taffy: &TaffyTree<*const BoxNode>,
+    node_id: TaffyNodeId,
+    fallback_style: &ComputedStyle,
+  ) -> Self {
+    const MAX_SUBGRID_ANCESTORS: usize = 64;
+
+    let mut effective_writing_mode = fallback_style.writing_mode;
+    let mut effective_direction = fallback_style.direction;
+    // Direction is only inherited when the inline axis is inherited
+    // (`grid-template-columns: subgrid` / `grid_column_subgrid`).
+    let mut inherit_direction = fallback_style.grid_column_subgrid && !fallback_style.containment.layout;
+
+    let mut current_style = fallback_style;
+    let mut current_id = node_id;
+    let mut current_is_subgrid = (current_style.grid_row_subgrid || current_style.grid_column_subgrid)
+      && !current_style.containment.layout;
+    let mut depth = 0usize;
+
+    while current_is_subgrid && depth < MAX_SUBGRID_ANCESTORS {
+      let Some(parent_id) = taffy.parent(current_id) else {
+        break;
+      };
+      if parent_id == current_id {
+        break;
+      }
+      let Some(parent_ptr) = taffy.get_node_context(parent_id).copied() else {
+        break;
+      };
+      let parent_box_node = unsafe { &*parent_ptr };
+      let parent_style: &ComputedStyle = &parent_box_node.style;
+
+      effective_writing_mode = parent_style.writing_mode;
+      if inherit_direction {
+        effective_direction = parent_style.direction;
+        inherit_direction = parent_style.grid_column_subgrid && !parent_style.containment.layout;
+      }
+
+      current_style = parent_style;
+      current_id = parent_id;
+      current_is_subgrid = (current_style.grid_row_subgrid || current_style.grid_column_subgrid)
+        && !current_style.containment.layout;
+      depth += 1;
+    }
+
+    Self {
+      writing_mode: effective_writing_mode,
+      direction: effective_direction,
+    }
+  }
+
   fn inline_is_horizontal(self) -> bool {
     matches!(self.writing_mode, WritingMode::HorizontalTb)
   }
@@ -6702,7 +6763,8 @@ impl GridFormattingContext {
       PhysicalAxis::X => root_layout.size.width,
       PhysicalAxis::Y => root_layout.size.height,
     };
-    let root_axis_style = GridAxisStyle::from_style(box_node.style.as_ref());
+    let root_axis_style =
+      GridAxisStyle::effective_for_grid_layout_node(taffy, root_id, box_node.style.as_ref());
     let root_inline_is_horizontal = root_axis_style.inline_is_horizontal();
     let mut mirror_x = false;
     let mut mirror_y = false;
@@ -6803,7 +6865,8 @@ impl GridFormattingContext {
       && container_block_size.is_finite()
     {
       if is_grid_style {
-        let axis_style = GridAxisStyle::from_style(&box_node.style);
+        let axis_style =
+          GridAxisStyle::effective_for_grid_layout_node(taffy, root_id, box_node.style.as_ref());
         let area_bounds: Option<Vec<Rect>> = container_style.and_then(|container_style| {
           if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(root_id) {
             if info.items.len() != child_count {
@@ -7409,7 +7472,8 @@ impl GridFormattingContext {
     let has_in_flow_children = !fragment.children.is_empty();
 
     if is_grid_style {
-      let axis_style = GridAxisStyle::from_style(&box_node.style);
+      let axis_style =
+        GridAxisStyle::effective_for_grid_layout_node(taffy, root_id, box_node.style.as_ref());
       if let Err(err) = self.apply_grid_baseline_alignment(
         taffy,
         root_id,

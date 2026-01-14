@@ -62070,6 +62070,8 @@ mod tests {
           .dom_platform
           .as_mut()
           .expect("expected dom platform to be installed");
+        // Clone the concrete clock type then coerce into a trait object so the Arc can be shared
+        // across the media element state registry.
         let master: Arc<dyn crate::media::clock::MediaClock> = data.media_master_clock.clone();
         let registry = &mut data.media_element_state_registry;
 
@@ -62788,6 +62790,7 @@ mod tests {
 
     let clock: Arc<dyn Clock> = Arc::new(VirtualClock::new());
     let mut config = WindowRealmConfig::new("https://example.com/");
+    // Clone the concrete clock, then coerce into the trait-object type used by the realm config.
     config.clock = clock.clone();
     let mut realm = new_realm(config)?;
 
