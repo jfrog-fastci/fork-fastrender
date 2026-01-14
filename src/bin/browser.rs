@@ -20850,6 +20850,10 @@ impl App {
           path.display(),
           self.download_dir.display()
         );
+        self.show_chrome_toast_kind(
+          fastrender::ui::ToastKind::Warning,
+          "Blocked attempt to open a download outside the configured download directory",
+        );
       }
     }
     for path in output.reveal_requests {
@@ -20878,6 +20882,10 @@ impl App {
           "warning: ignoring download reveal request for path outside configured download dirs: {} (current download dir: {})",
           path.display(),
           self.download_dir.display()
+        );
+        self.show_chrome_toast_kind(
+          fastrender::ui::ToastKind::Warning,
+          "Blocked attempt to show a download outside the configured download directory",
         );
       }
     }
