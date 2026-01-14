@@ -1563,33 +1563,22 @@ where
               let frame_counter_time = frames_to_duration(sample_rate_hz, clock.frames_written());
               let buffer_duration = frames_to_duration(sample_rate_hz, frames);
 
-              match playback_origin.as_ref() {
-                Some(origin) => match playback.duration_since(origin) {
-                  Some(since_origin) => {
-                    // If playback timestamps jitter backwards, the derived device timeline could go
-                    // backwards and stall the interpolated clock (which is monotonic by design).
-                    // Clamp so we never lag behind the frame counter.
-                    let frames_end = frame_counter_time.saturating_add(buffer_duration);
-                    let device_end = playback_origin_offset
-                      .saturating_add(since_origin)
-                      .saturating_add(buffer_duration);
-                    Some(device_end.max(frames_end))
-                  }
-                  None => {
-                    // Playback timestamps went backwards (device restart/glitch). Re-anchor and
-                    // align to the frame counter so timestamp-based clocking can resume without a
-                    // discontinuity.
-                    playback_origin = Some(playback);
-                    playback_origin_offset = frame_counter_time;
-                    Some(frame_counter_time.saturating_add(buffer_duration))
-                  }
-                },
-                None => {
-                  playback_origin = Some(playback);
-                  playback_origin_offset = frame_counter_time;
-                  Some(frame_counter_time.saturating_add(buffer_duration))
-                }
+              let since_origin = playback_origin
+                .as_ref()
+                .and_then(|origin| playback.duration_since(origin));
+
+              let (device_time_at_end, origin_update) = device_time_at_end_from_playback(
+                since_origin,
+                buffer_duration,
+                frame_counter_time,
+                &mut playback_origin_offset,
+              );
+
+              if matches!(origin_update, PlaybackOriginUpdate::Reset) {
+                playback_origin = Some(playback);
               }
+
+              Some(device_time_at_end)
             };
 
             clock.on_callback_end_at(callback_end, frames_u32, device_time_at_end);
@@ -1661,6 +1650,41 @@ fn duration_to_nanos_u64(duration: Duration) -> u64 {
   u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaybackOriginUpdate {
+  Keep,
+  Reset,
+}
+
+fn device_time_at_end_from_playback(
+  since_origin: Option<Duration>,
+  buffer_duration: Duration,
+  frame_counter_time: Duration,
+  playback_origin_offset: &mut Duration,
+) -> (Duration, PlaybackOriginUpdate) {
+  match since_origin {
+    Some(since_origin) => {
+      // If playback timestamps jitter backwards, the derived device timeline could go backwards and
+      // stall the interpolated clock (which is monotonic by design). Clamp so we never lag behind
+      // the frame counter.
+      let frames_end = frame_counter_time.saturating_add(buffer_duration);
+      let device_end = playback_origin_offset
+        .saturating_add(since_origin)
+        .saturating_add(buffer_duration);
+      (device_end.max(frames_end), PlaybackOriginUpdate::Keep)
+    }
+    None => {
+      // Playback timestamps went backwards or we do not have an origin yet. Re-anchor and align to
+      // the frame counter so timestamp-based clocking can resume without a discontinuity.
+      *playback_origin_offset = frame_counter_time;
+      (
+        frame_counter_time.saturating_add(buffer_duration),
+        PlaybackOriginUpdate::Reset,
+      )
+    }
+  }
+}
+
 fn f32_to_i16(value: f32) -> i16 {
   let value = sanitize_sample(value);
   (value * i16::MAX as f32) as i16
@@ -1698,8 +1722,15 @@ impl OutputSample for u16 {
 #[cfg(test)]
 mod tests {
   use std::sync::atomic::Ordering;
+  use std::time::Duration;
 
-  use super::{f32_to_i16, f32_to_u16, CpalStreamDiagnostics};
+  use super::{
+    device_time_at_end_from_playback,
+    f32_to_i16,
+    f32_to_u16,
+    CpalStreamDiagnostics,
+    PlaybackOriginUpdate,
+  };
   use crate::media::audio::convert::sanitize_sample;
 
   #[test]
@@ -1727,5 +1758,60 @@ mod tests {
   fn cpal_backend_panic_flag_starts_false() {
     let diag = CpalStreamDiagnostics::new();
     assert!(!diag.panic_in_callback.load(Ordering::Relaxed));
+  }
+
+  #[test]
+  fn playback_device_time_initializes_origin_offset() {
+    let mut offset = Duration::ZERO;
+    let (out, update) = device_time_at_end_from_playback(
+      None,
+      Duration::from_millis(10),
+      Duration::from_millis(100),
+      &mut offset,
+    );
+    assert_eq!(out, Duration::from_millis(110));
+    assert_eq!(update, PlaybackOriginUpdate::Reset);
+    assert_eq!(offset, Duration::from_millis(100));
+  }
+
+  #[test]
+  fn playback_device_time_clamps_to_frame_counter() {
+    let mut offset = Duration::ZERO;
+    let (out, update) = device_time_at_end_from_playback(
+      Some(Duration::from_millis(90)),
+      Duration::from_millis(10),
+      Duration::from_millis(100),
+      &mut offset,
+    );
+    // Derived device time would be 100ms, but the frame counter says we're at 110ms.
+    assert_eq!(out, Duration::from_millis(110));
+    assert_eq!(update, PlaybackOriginUpdate::Keep);
+  }
+
+  #[test]
+  fn playback_device_time_prefers_timestamp_when_ahead() {
+    let mut offset = Duration::ZERO;
+    let (out, update) = device_time_at_end_from_playback(
+      Some(Duration::from_millis(150)),
+      Duration::from_millis(10),
+      Duration::from_millis(100),
+      &mut offset,
+    );
+    assert_eq!(out, Duration::from_millis(160));
+    assert_eq!(update, PlaybackOriginUpdate::Keep);
+  }
+
+  #[test]
+  fn playback_device_time_resets_origin_on_regression() {
+    let mut offset = Duration::from_secs(5);
+    let (out, update) = device_time_at_end_from_playback(
+      None,
+      Duration::from_millis(10),
+      Duration::from_millis(200),
+      &mut offset,
+    );
+    assert_eq!(out, Duration::from_millis(210));
+    assert_eq!(update, PlaybackOriginUpdate::Reset);
+    assert_eq!(offset, Duration::from_millis(200));
   }
 }
