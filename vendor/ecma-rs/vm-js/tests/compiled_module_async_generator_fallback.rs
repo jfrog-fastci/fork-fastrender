@@ -97,10 +97,12 @@ fn compiled_modules_do_not_require_full_ast_fallback_for_async_generators() -> R
 
   let mut graph = ModuleGraph::new();
 
-  // Module `a` contains an async generator. The compiled (HIR) executor does not support executing
-  // generator bodies (`yield`/`yield*`), but generator functions are instantiated as
-  // interpreter-backed ECMAScript functions so their bodies can execute via per-function AST
-  // evaluation without forcing the entire module onto the AST path.
+  // Module `a` contains an async generator. This test ensures the module graph can still link and
+  // evaluate through the compiled (HIR) module path without forcing a full-module AST fallback.
+  //
+  // Note: async generator bodies may execute via HIR or per-function AST fallback depending on HIR
+  // feature support, but the presence of `async function*` should not by itself require parsing or
+  // retaining a full module AST.
   let compiled_a = CompiledScript::compile_module(
     &mut heap,
     "a.js",
@@ -110,9 +112,8 @@ fn compiled_modules_do_not_require_full_ast_fallback_for_async_generators() -> R
   )?;
   let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, compiled_a.source.clone())?;
   record_a.compiled = Some(compiled_a);
-  // Drop the AST + source so the module graph cannot rely on a full module AST; async generator
-  // bodies are still executed via per-function AST evaluation (parsed on demand from the compiled
-  // `SourceText` stored on the compiled payload).
+  // Drop the module AST + source so the module graph cannot rely on a full-module AST. The compiled
+  // payload retains the SourceText needed for stack traces and any per-function fallback.
   record_a.clear_ast();
   record_a.source = None;
   let a = graph.add_module_with_specifier("a.js", record_a)?;
