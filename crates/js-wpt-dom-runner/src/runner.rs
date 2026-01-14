@@ -365,7 +365,7 @@ impl Runner {
     timeout: Duration,
   ) -> RunResultResult {
     use fastrender::api::{BrowserTab, DiagnosticsLevel, RenderOptions};
-    use fastrender::js::{RunLimits, RunUntilIdleOutcome, RunUntilIdleStopReason};
+    use fastrender::js::{JsExecutionOptions, RunLimits, RunUntilIdleOutcome, RunUntilIdleStopReason};
 
     const REPORT_ATTR: &str = "data-fastrender-wpt-report";
 
@@ -428,73 +428,130 @@ impl Runner {
     options.diagnostics_level = DiagnosticsLevel::Basic;
     options.timeout = Some(timeout);
 
-    let mut tab = BrowserTab::from_html_with_vmjs_and_document_url_and_fetcher(
+    // The vm-js backend enforces a per-spin JS wall-time budget via `JsExecutionOptions`. The safe
+    // library default is intentionally short (500ms) and can interrupt larger WPT setup scripts (for
+    // example `dom/common.js` range harness). Match the test timeout so scripts can complete.
+    let mut js_execution_options = JsExecutionOptions::default();
+    js_execution_options.event_loop_run_limits.max_wall_time = Some(timeout);
+    js_execution_options.event_loop_run_limits.max_tasks = self.config.max_tasks;
+    js_execution_options.event_loop_run_limits.max_microtasks = self.config.max_microtasks;
+
+    let mut tab = match BrowserTab::from_html_with_vmjs_and_document_url_and_fetcher_and_js_execution_options(
       &patched_html,
       &test_url,
       options,
       fetcher,
-    )
-    .map_err(|err| RunError::Js(err.to_string()))?;
-
-    if let Some(payload) = take_report_from_dom(&tab) {
-      let report: WptReport = serde_json::from_str(&payload).map_err(|err| {
-        RunError::Js(format!(
-          "failed to parse WPT report JSON from {REPORT_ATTR}: {err}; payload={payload:?}"
-        ))
-      })?;
-      let outcome = outcome_from_report(&report);
-      return Ok(RunResult {
-        outcome,
-        wpt_report: Some(report),
-      });
-    }
-
-    let limits = RunLimits {
-      max_tasks: self.config.max_tasks,
-      max_microtasks: self.config.max_microtasks,
-      max_wall_time: Some(timeout),
+      js_execution_options,
+    ) {
+      Ok(tab) => tab,
+      Err(err) => {
+        let msg = err.to_string();
+        // JS execution budget exhaustion (fuel/deadline) should classify as a timeout, not a hard
+        // harness error.
+        if is_interrupt_error(&msg) {
+          return Ok(RunResult {
+            outcome: RunOutcome::Timeout,
+            wpt_report: None,
+          });
+        }
+        return Err(RunError::Js(msg));
+      }
     };
-    let outcome = tab
-      .run_event_loop_until_idle(limits)
-      .map_err(|err| RunError::Js(err.to_string()))?;
 
-    if let Some(payload) = take_report_from_dom(&tab) {
-      let report: WptReport = serde_json::from_str(&payload).map_err(|err| {
+    fn parse_report_from_payload(payload: &str) -> Result<WptReport, RunError> {
+      serde_json::from_str(payload).map_err(|err| {
         RunError::Js(format!(
           "failed to parse WPT report JSON from {REPORT_ATTR}: {err}; payload={payload:?}"
         ))
-      })?;
-      let outcome = outcome_from_report(&report);
-      return Ok(RunResult {
-        outcome,
-        wpt_report: Some(report),
-      });
+      })
     }
 
-    match outcome {
-      RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::WallTime { .. }) => Ok(RunResult {
-        outcome: RunOutcome::Timeout,
-        wpt_report: None,
-      }),
-      other => {
-        let diagnostics = tab.diagnostics_snapshot();
-        let msg = match diagnostics {
-          Some(diag) if !diag.js_exceptions.is_empty() || !diag.console_messages.is_empty() => {
-            format!(
-              "HTML test produced no WPT report payload (event loop outcome={other:?}); js_exceptions={:?} console_messages={:?}",
-              diag.js_exceptions, diag.console_messages
-            )
-          }
-          _ => format!(
-            "HTML test produced no WPT report payload (event loop outcome={other:?})"
-          ),
-        };
-        Ok(RunResult {
-          outcome: RunOutcome::Error(msg),
+    // FastRender's `BrowserTab` does not block on async work (networking, iframe loads, etc). A test
+    // may become temporarily idle while async operations are in flight, then resume later when those
+    // operations enqueue tasks from other threads. Keep driving the event loop until:
+    // - the WPT report payload appears,
+    // - we hit the overall wall-clock timeout.
+    let deadline = std::time::Instant::now()
+      .checked_add(timeout)
+      .unwrap_or_else(std::time::Instant::now);
+
+    let mut last_outcome: Option<RunUntilIdleOutcome> = None;
+    loop {
+      if let Some(payload) = take_report_from_dom(&tab) {
+        let report = parse_report_from_payload(&payload)?;
+        let outcome = outcome_from_report(&report);
+        return Ok(RunResult {
+          outcome,
+          wpt_report: Some(report),
+        });
+      }
+
+      let now = std::time::Instant::now();
+      if now >= deadline {
+        return Ok(RunResult {
+          outcome: RunOutcome::Timeout,
           wpt_report: None,
-        })
+        });
+      }
+      let remaining = deadline.duration_since(now);
+
+      let limits = RunLimits {
+        max_tasks: self.config.max_tasks,
+        max_microtasks: self.config.max_microtasks,
+        max_wall_time: Some(remaining),
+      };
+      let outcome = match tab.run_event_loop_until_idle(limits) {
+        Ok(outcome) => outcome,
+        Err(err) => {
+          let msg = err.to_string();
+          if is_interrupt_error(&msg) {
+            return Ok(RunResult {
+              outcome: RunOutcome::Timeout,
+              wpt_report: None,
+            });
+          }
+          return Err(RunError::Js(msg));
+        }
+      };
+      last_outcome = Some(outcome);
+
+      // If we ran out of wall-clock time while executing tasks, stop immediately so we don't spin
+      // until the outer `deadline` check.
+      if matches!(
+        outcome,
+        RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::WallTime { .. })
+      ) {
+        return Ok(RunResult {
+          outcome: RunOutcome::Timeout,
+          wpt_report: None,
+        });
+      }
+
+      // If the document is idle but has not produced a report, give any async tasks a chance to
+      // enqueue more work, then retry until the overall deadline.
+      if matches!(outcome, RunUntilIdleOutcome::Idle) {
+        std::thread::sleep(Duration::from_millis(1));
+      } else {
+        // Other stop reasons (max tasks/microtasks) are treated as harness errors below.
+        break;
       }
     }
+
+    let diagnostics = tab.diagnostics_snapshot();
+    let other = last_outcome.unwrap_or(RunUntilIdleOutcome::Idle);
+    let msg = match diagnostics {
+      Some(diag) if !diag.js_exceptions.is_empty() || !diag.console_messages.is_empty() => {
+        format!(
+          "HTML test produced no WPT report payload (event loop outcome={other:?}); js_exceptions={:?} console_messages={:?}",
+          diag.js_exceptions, diag.console_messages
+        )
+      }
+      _ => format!("HTML test produced no WPT report payload (event loop outcome={other:?})"),
+    };
+    Ok(RunResult {
+      outcome: RunOutcome::Error(msg),
+      wpt_report: None,
+    })
   }
 }
 

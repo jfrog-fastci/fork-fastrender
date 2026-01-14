@@ -3,7 +3,8 @@
 // The upstream `testharness.js` is large; FastRender only needs a small, spec-shaped subset:
 //
 // - synchronous tests (`test`)
-// - async tests (`async_test`) with `t.done()`, `t.step_func(cb)`, and `t.step_func_done(cb)`
+// - async tests (`async_test`) with `t.done()`, `t.step(cb)`, `t.step_func(cb)`, and
+//   `t.step_func_done(cb)`
 // - promise tests (`promise_test`)
 // - reporter callbacks (`add_result_callback`, `add_completion_callback`)
 //
@@ -39,6 +40,40 @@ var __reported_completion = false;
 //
 // Harness status object passed to completion callbacks (shape-compatible with upstream).
 var __harness_status = { status: 0, message: null, stack: null };
+//
+function __record_harness_error(err) {
+  // Match upstream harness status shape: {status, message, stack}.
+  __harness_status.status = 1;
+  __harness_status.message = __error_to_message(err);
+  __harness_status.stack = __error_to_stack(err);
+}
+//
+function setup(func_or_props, maybe_props) {
+  // Minimal `setup()` implementation used by some WPT helpers.
+  //
+  // Supported call patterns:
+  //   setup({ ...options... })         (ignored)
+  //   setup(() => { ... })             (invoked immediately)
+  //   setup(() => { ... }, { ... })    (options ignored, callback invoked immediately)
+  //   setup({ ... }, () => { ... })    (options ignored, callback invoked immediately)
+  //
+  // The full upstream harness uses `setup()` to configure harness flags and run setup callbacks
+  // before tests. The curated offline corpus relies on the setup callback running synchronously.
+  var func = null;
+  if (typeof func_or_props === "function") {
+    func = func_or_props;
+  }
+  if (typeof maybe_props === "function") {
+    func = maybe_props;
+  }
+  if (func !== null) {
+    try {
+      func();
+    } catch (e) {
+      __record_harness_error(e);
+    }
+  }
+}
 //
 function add_result_callback(fn) {
   if (typeof fn !== "function") return;
@@ -675,6 +710,7 @@ function async_test(fn, name) {
   // Assign methods without relying on function expressions (the minimal vm-js backend only supports
   // arrow functions as expressions).
   t.done = __async_test_done;
+  t.step = __async_test_step;
   t.step_func = __async_test_step_func;
   t.step_func_done = __async_test_step_func_done;
   //
@@ -728,6 +764,22 @@ function __async_test_done() {
   __pending--;
   __report_test_result(t);
   __check_complete();
+}
+//
+function __async_test_step(cb) {
+  var t = this;
+  if (!t || t._done === true) return;
+  if (typeof cb !== "function") {
+    __fail_test_record(t, Error("step: callback is not callable"));
+    t.done();
+    return;
+  }
+  try {
+    cb();
+  } catch (e) {
+    __fail_test_record(t, e);
+    t.done();
+  }
 }
 //
 // Note: This harness deliberately avoids closures to stay compatible with the in-tree vm-js
