@@ -45592,9 +45592,6 @@ fn gen_bind_object_pattern_from(
   let Some(rest_pat) = &pat.rest else {
     return Ok(GenEval::Complete(Completion::empty()));
   };
-  if pat_contains_yield(&rest_pat.stx) {
-    return Err(VmError::Unimplemented("yield in object rest pattern"));
-  }
 
   let rest_obj = scope.alloc_object()?;
   // Root the rest object only for the duration of this operation.
@@ -45658,27 +45655,18 @@ fn gen_bind_object_pattern_from(
     rest_scope.create_data_property(rest_obj, key, v)?;
   }
 
-  // Binding a rest pattern cannot itself contain yield (checked above), so we can reuse the
-  // synchronous binder.
-  let res = bind_pattern(
-    evaluator.vm,
-    &mut *evaluator.host,
-    &mut *evaluator.hooks,
+  match gen_bind_pattern(
+    evaluator,
     &mut rest_scope,
-    evaluator.env,
     &rest_pat.stx,
     Value::Object(rest_obj),
     kind,
-    evaluator.strict,
-    evaluator.this,
-  );
-  match res {
-    Ok(()) => Ok(GenEval::Complete(Completion::empty())),
-    Err(err) => Ok(GenEval::Complete(gen_error_to_completion(
-      evaluator,
-      &mut rest_scope,
-      err,
-    )?)),
+  )? {
+    GenEval::Complete(c) => Ok(GenEval::Complete(match c {
+      Completion::Normal(_) => Completion::empty(),
+      abrupt => abrupt,
+    })),
+    GenEval::Suspend(suspend) => Ok(GenEval::Suspend(suspend)),
   }
 }
 
