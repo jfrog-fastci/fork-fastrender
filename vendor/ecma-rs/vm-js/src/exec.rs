@@ -56999,6 +56999,61 @@ mod tests {
   }
 
   #[test]
+  fn arrow_this_in_derived_constructor_computed_super_property_to_property_key_side_effects_do_not_affect_captured_super_base(
+  ) -> Result<(), VmError> {
+    let source = r#"
+      let log = [];
+      let newProto = {
+        get x() { log.push('new'); return 1; }
+      };
+      function key() {
+        log.push('key');
+        return {
+          toString() {
+            log.push('toString');
+            Object.setPrototypeOf(D.prototype, newProto);
+            return 'x';
+          }
+        };
+      }
+
+      class B {
+        get x() { log.push('base'); return 0; }
+      }
+      class D extends B {
+        constructor() {
+          let f = () => super[key()];
+
+          let errName;
+          let errMsg;
+          try { f(); } catch (e) { errName = e.name; errMsg = e.message; }
+
+          super();
+          // First call captures the current super base (B.prototype) *before* ToPropertyKey.
+          // ToPropertyKey mutates D.prototype's prototype, but must not affect this call's base.
+          this.v1 = f();
+          // Second call sees the updated super base (newProto).
+          this.v2 = f();
+          this.errName = errName;
+          this.errMsg = errMsg;
+        }
+      }
+
+      let d = new D();
+      d.v1 === 0 &&
+        d.v2 === 1 &&
+        d.errName === 'ReferenceError' &&
+        d.errMsg === "Must call super constructor in derived class before accessing 'this'" &&
+        Object.getPrototypeOf(D.prototype) === newProto &&
+        log.join(',') === 'key,toString,base,key,toString,new'
+    "#;
+
+    assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
+    assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn arrow_this_in_derived_constructor_computed_super_property_set_key_not_evaluated_before_super(
   ) -> Result<(), VmError> {
     let source = r#"
