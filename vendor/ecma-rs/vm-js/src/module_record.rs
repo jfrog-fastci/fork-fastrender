@@ -441,11 +441,14 @@ impl SourceTextModuleRecord {
       dialect: Dialect::Ecma,
       source_type: SourceType::Module,
     };
-    let top = parse_with_options(&source.text, opts)
-      .map_err(|err| {
-        let diag = crate::parse_diagnostics::parse_js_error_to_diagnostic(&err, FileId(0));
-        VmError::Syntax(vec![diag])
-      })?;
+    let top = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      parse_with_options(&source.text, opts)
+    }))
+    .map_err(|_| VmError::InvariantViolation("parse-js panicked while parsing a module"))?
+    .map_err(|err| {
+      let diag = crate::parse_diagnostics::parse_js_error_to_diagnostic(&err, FileId(0));
+      VmError::Syntax(vec![diag])
+    })?;
     {
       let mut tick = || Ok(());
       crate::early_errors::validate_top_level(
