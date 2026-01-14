@@ -8808,6 +8808,7 @@ impl BrowserRuntime {
       return;
     };
     tab.datalist_open_input = None;
+    tab.datalist_popup = None;
     let Some(doc) = tab.document.as_mut() else {
       return;
     };
@@ -13202,6 +13203,57 @@ impl BrowserRuntime {
             tree,
             bounds_css,
           });
+        }
+      }
+
+      // If a datalist popup is open, re-anchor it to the freshly painted layout. This matters in
+      // particular for `ViewportChanged` (resize) repaints where element geometry can change due to
+      // reflow: the popup should stay attached to the input, or close if the input scrolls fully
+      // offscreen.
+      if let Some(mut popup) = tab.datalist_popup.take() {
+        let viewport_rect = Rect::from_xywh(
+          0.0,
+          0.0,
+          tab.viewport_css.0 as f32,
+          tab.viewport_css.1 as f32,
+        );
+
+        let anchor_css = tab
+          .document
+          .as_ref()
+          .and_then(|doc| doc.prepared())
+          .and_then(|prepared| {
+            let geom_tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
+            styled_node_anchor_css(
+              prepared.box_tree(),
+              &geom_tree,
+              &tab.scroll_state,
+              popup.input_node_id,
+            )
+          })
+          .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0);
+
+        if let Some(anchor_css) = anchor_css {
+          if !anchor_css.intersects(viewport_rect) {
+            tab.datalist_open_input = None;
+            msgs.push(WorkerToUi::DatalistClosed { tab_id });
+            // Do not restore `tab.datalist_popup`.
+          } else {
+            if anchor_css != popup.anchor_css {
+              popup.anchor_css = anchor_css;
+              msgs.push(WorkerToUi::DatalistOpened {
+                tab_id,
+                input_node_id: popup.input_node_id,
+                options: popup.options.clone(),
+                anchor_css,
+              });
+            }
+            tab.datalist_popup = Some(popup);
+          }
+        } else {
+          tab.datalist_open_input = None;
+          msgs.push(WorkerToUi::DatalistClosed { tab_id });
+          // Do not restore `tab.datalist_popup`.
         }
       }
     }
