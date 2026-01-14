@@ -693,6 +693,696 @@ impl<'vm> HirEvaluator<'vm> {
       .ok_or(VmError::InvariantViolation("hir pat id out of bounds"))
   }
 
+  fn async_analysis_tick(&mut self, steps: &mut usize) -> Result<(), VmError> {
+    // Budget async-function capability analysis so a single huge async function literal cannot do
+    // unbounded work inside one statement/expression evaluation.
+    const TICK_EVERY: usize = 64;
+    if *steps % TICK_EVERY == 0 {
+      self.vm.tick()?;
+    }
+    *steps = steps.wrapping_add(1);
+    Ok(())
+  }
+
+  fn hir_pat_contains_await_for_async_analysis(
+    &mut self,
+    script: &Arc<CompiledScript>,
+    body: &hir_js::Body,
+    pat_id: hir_js::PatId,
+    steps: &mut usize,
+  ) -> Result<bool, VmError> {
+    let mut stack: Vec<hir_js::PatId> = vec![pat_id];
+    while let Some(id) = stack.pop() {
+      self.async_analysis_tick(steps)?;
+
+      let pat = self.get_pat(body, id)?;
+      match &pat.kind {
+        hir_js::PatKind::Ident(_) => {}
+        hir_js::PatKind::Rest(inner) => stack.push(**inner),
+        hir_js::PatKind::Array(arr) => {
+          if let Some(rest) = arr.rest {
+            stack.push(rest);
+          }
+          for elem in &arr.elements {
+            let Some(elem) = elem.as_ref() else {
+              continue;
+            };
+            stack.push(elem.pat);
+            if let Some(default_value) = elem.default_value {
+              if self.hir_expr_contains_await_for_async_analysis(script, body, default_value, steps)? {
+                return Ok(true);
+              }
+            }
+          }
+        }
+        hir_js::PatKind::Object(obj) => {
+          if let Some(rest) = obj.rest {
+            stack.push(rest);
+          }
+          for prop in &obj.props {
+            if let hir_js::ObjectKey::Computed(expr) = prop.key {
+              if self.hir_expr_contains_await_for_async_analysis(script, body, expr, steps)? {
+                return Ok(true);
+              }
+            }
+            stack.push(prop.value);
+            if let Some(default_value) = prop.default_value {
+              if self.hir_expr_contains_await_for_async_analysis(script, body, default_value, steps)? {
+                return Ok(true);
+              }
+            }
+          }
+        }
+        hir_js::PatKind::Assign {
+          target,
+          default_value,
+        } => {
+          stack.push(*target);
+          if self.hir_expr_contains_await_for_async_analysis(script, body, *default_value, steps)? {
+            return Ok(true);
+          }
+        }
+        hir_js::PatKind::AssignTarget(expr_id) => {
+          if self.hir_expr_contains_await_for_async_analysis(script, body, *expr_id, steps)? {
+            return Ok(true);
+          }
+        }
+      }
+    }
+    Ok(false)
+  }
+
+  fn hir_expr_contains_await_for_async_analysis(
+    &mut self,
+    script: &Arc<CompiledScript>,
+    body: &hir_js::Body,
+    expr_id: hir_js::ExprId,
+    steps: &mut usize,
+  ) -> Result<bool, VmError> {
+    let mut stack: Vec<hir_js::ExprId> = vec![expr_id];
+    while let Some(id) = stack.pop() {
+      self.async_analysis_tick(steps)?;
+
+      let expr = self.get_expr(body, id)?;
+      match &expr.kind {
+        hir_js::ExprKind::Await { .. } | hir_js::ExprKind::Yield { .. } => return Ok(true),
+
+        hir_js::ExprKind::Unary { expr, .. }
+        | hir_js::ExprKind::Update { expr, .. }
+        | hir_js::ExprKind::NonNull { expr }
+        | hir_js::ExprKind::Instantiation { expr, .. }
+        | hir_js::ExprKind::TypeAssertion { expr, .. } => stack.push(*expr),
+
+        hir_js::ExprKind::Binary { left, right, .. } => {
+          stack.push(*left);
+          stack.push(*right);
+        }
+        hir_js::ExprKind::Assignment { target, value, .. } => {
+          if self.hir_pat_contains_await_for_async_analysis(script, body, *target, steps)? {
+            return Ok(true);
+          }
+          stack.push(*value);
+        }
+        hir_js::ExprKind::Call(call) => {
+          stack.push(call.callee);
+          for arg in &call.args {
+            stack.push(arg.expr);
+          }
+        }
+        hir_js::ExprKind::Member(member) => {
+          stack.push(member.object);
+          if let hir_js::ObjectKey::Computed(expr) = member.property {
+            stack.push(expr);
+          }
+        }
+        hir_js::ExprKind::Conditional {
+          test,
+          consequent,
+          alternate,
+        } => {
+          stack.push(*test);
+          stack.push(*consequent);
+          stack.push(*alternate);
+        }
+        hir_js::ExprKind::Array(arr) => {
+          for elem in &arr.elements {
+            match elem {
+              hir_js::ArrayElement::Expr(e) | hir_js::ArrayElement::Spread(e) => stack.push(*e),
+              hir_js::ArrayElement::Empty => {}
+            }
+          }
+        }
+        hir_js::ExprKind::Object(obj) => {
+          for prop in &obj.properties {
+            match prop {
+              hir_js::ObjectProperty::KeyValue { key, value, .. } => {
+                if let hir_js::ObjectKey::Computed(expr) = key {
+                  stack.push(*expr);
+                }
+                stack.push(*value);
+              }
+              hir_js::ObjectProperty::Getter { key, .. } | hir_js::ObjectProperty::Setter { key, .. } => {
+                if let hir_js::ObjectKey::Computed(expr) = key {
+                  stack.push(*expr);
+                }
+              }
+              hir_js::ObjectProperty::Spread(expr) => stack.push(*expr),
+            }
+          }
+        }
+
+        // Nested function bodies are not executed when the function value is created.
+        hir_js::ExprKind::FunctionExpr { .. } => {}
+
+        hir_js::ExprKind::ClassExpr { body: class_body, .. } => {
+          if self.hir_class_body_contains_await_for_async_analysis(script, *class_body, steps)? {
+            return Ok(true);
+          }
+        }
+
+        hir_js::ExprKind::Template(tpl) => {
+          for span in &tpl.spans {
+            stack.push(span.expr);
+          }
+        }
+        hir_js::ExprKind::TaggedTemplate { tag, template } => {
+          stack.push(*tag);
+          for span in &template.spans {
+            stack.push(span.expr);
+          }
+        }
+        hir_js::ExprKind::Satisfies { expr, .. } => stack.push(*expr),
+
+        hir_js::ExprKind::ImportCall { argument, attributes } => {
+          stack.push(*argument);
+          if let Some(attrs) = attributes {
+            stack.push(*attrs);
+          }
+        }
+
+        // Leaf-ish expressions.
+        hir_js::ExprKind::Missing
+        | hir_js::ExprKind::Ident(_)
+        | hir_js::ExprKind::This
+        | hir_js::ExprKind::Super
+        | hir_js::ExprKind::Literal(_)
+        | hir_js::ExprKind::ImportMeta
+        | hir_js::ExprKind::NewTarget
+        | hir_js::ExprKind::Jsx(_) => {}
+      }
+    }
+    Ok(false)
+  }
+
+  fn hir_body_contains_await_for_async_analysis(
+    &mut self,
+    script: &Arc<CompiledScript>,
+    body_id: hir_js::BodyId,
+    steps: &mut usize,
+  ) -> Result<bool, VmError> {
+    self.async_analysis_tick(steps)?;
+    let Some(body) = script.hir.body(body_id) else {
+      return Err(VmError::InvariantViolation(
+        "hir body id missing from compiled script",
+      ));
+    };
+
+    for stmt_id in &body.root_stmts {
+      if self.hir_stmt_contains_await_for_async_analysis(script, body, *stmt_id, steps)? {
+        return Ok(true);
+      }
+    }
+    Ok(false)
+  }
+
+  fn hir_class_body_contains_await_for_async_analysis(
+    &mut self,
+    script: &Arc<CompiledScript>,
+    body_id: hir_js::BodyId,
+    steps: &mut usize,
+  ) -> Result<bool, VmError> {
+    self.async_analysis_tick(steps)?;
+    let Some(body) = script.hir.body(body_id) else {
+      return Err(VmError::InvariantViolation(
+        "hir class body id missing from compiled script",
+      ));
+    };
+    let Some(class) = body.class.as_ref() else {
+      return Err(VmError::InvariantViolation("class body missing class metadata"));
+    };
+
+    // Root statements model class-level evaluation (e.g. decorator expressions).
+    for stmt_id in &body.root_stmts {
+      if self.hir_stmt_contains_await_for_async_analysis(script, body, *stmt_id, steps)? {
+        return Ok(true);
+      }
+    }
+
+    if let Some(extends) = class.extends {
+      if self.hir_expr_contains_await_for_async_analysis(script, body, extends, steps)? {
+        return Ok(true);
+      }
+    }
+
+    for member in &class.members {
+      match &member.kind {
+        hir_js::ClassMemberKind::Constructor { .. } => {}
+        hir_js::ClassMemberKind::Method { key, .. } | hir_js::ClassMemberKind::Field { key, .. } => {
+          if let hir_js::ClassMemberKey::Computed(expr) = key {
+            if self.hir_expr_contains_await_for_async_analysis(script, body, *expr, steps)? {
+              return Ok(true);
+            }
+          }
+        }
+        hir_js::ClassMemberKind::StaticBlock { body: static_body, .. } => {
+          if self.hir_body_contains_await_for_async_analysis(script, *static_body, steps)? {
+            return Ok(true);
+          }
+        }
+      }
+
+      // Field initializers are evaluated at runtime (during construction or class evaluation for
+      // static fields). Await inside them is not supported by the compiled async executor yet, so
+      // conservatively require AST fallback.
+      if let hir_js::ClassMemberKind::Field {
+        initializer: Some(init_body),
+        ..
+      } = &member.kind
+      {
+        if self.hir_body_contains_await_for_async_analysis(script, *init_body, steps)? {
+          return Ok(true);
+        }
+      }
+    }
+
+    Ok(false)
+  }
+
+  fn hir_stmt_contains_await_for_async_analysis(
+    &mut self,
+    script: &Arc<CompiledScript>,
+    body: &hir_js::Body,
+    stmt_id: hir_js::StmtId,
+    steps: &mut usize,
+  ) -> Result<bool, VmError> {
+    let mut stack: Vec<hir_js::StmtId> = vec![stmt_id];
+    while let Some(id) = stack.pop() {
+      self.async_analysis_tick(steps)?;
+      let stmt = self.get_stmt(body, id)?;
+      match &stmt.kind {
+        hir_js::StmtKind::Expr(expr_id) => {
+          if self.hir_expr_contains_await_for_async_analysis(script, body, *expr_id, steps)? {
+            return Ok(true);
+          }
+        }
+        hir_js::StmtKind::Return(Some(expr_id)) => {
+          if self.hir_expr_contains_await_for_async_analysis(script, body, *expr_id, steps)? {
+            return Ok(true);
+          }
+        }
+        hir_js::StmtKind::Throw(expr_id) => {
+          if self.hir_expr_contains_await_for_async_analysis(script, body, *expr_id, steps)? {
+            return Ok(true);
+          }
+        }
+        hir_js::StmtKind::Var(decl) => {
+          for declarator in &decl.declarators {
+            if self.hir_pat_contains_await_for_async_analysis(script, body, declarator.pat, steps)? {
+              return Ok(true);
+            }
+            if let Some(init) = declarator.init {
+              if self.hir_expr_contains_await_for_async_analysis(script, body, init, steps)? {
+                return Ok(true);
+              }
+            }
+          }
+        }
+
+        hir_js::StmtKind::Block(stmts) => {
+          for stmt_id in stmts {
+            stack.push(*stmt_id);
+          }
+        }
+        hir_js::StmtKind::If {
+          test,
+          consequent,
+          alternate,
+        } => {
+          if self.hir_expr_contains_await_for_async_analysis(script, body, *test, steps)? {
+            return Ok(true);
+          }
+          stack.push(*consequent);
+          if let Some(alt) = alternate {
+            stack.push(*alt);
+          }
+        }
+        hir_js::StmtKind::While { test, body: inner } => {
+          if self.hir_expr_contains_await_for_async_analysis(script, body, *test, steps)? {
+            return Ok(true);
+          }
+          stack.push(*inner);
+        }
+        hir_js::StmtKind::DoWhile { test, body: inner } => {
+          if self.hir_expr_contains_await_for_async_analysis(script, body, *test, steps)? {
+            return Ok(true);
+          }
+          stack.push(*inner);
+        }
+        hir_js::StmtKind::For {
+          init,
+          test,
+          update,
+          body: inner,
+        } => {
+          if let Some(init) = init {
+            match init {
+              hir_js::ForInit::Expr(expr_id) => {
+                if self.hir_expr_contains_await_for_async_analysis(script, body, *expr_id, steps)? {
+                  return Ok(true);
+                }
+              }
+              hir_js::ForInit::Var(decl) => {
+                for declarator in &decl.declarators {
+                  if self.hir_pat_contains_await_for_async_analysis(script, body, declarator.pat, steps)? {
+                    return Ok(true);
+                  }
+                  if let Some(init) = declarator.init {
+                    if self.hir_expr_contains_await_for_async_analysis(script, body, init, steps)? {
+                      return Ok(true);
+                    }
+                  }
+                }
+              }
+            }
+          }
+          if let Some(test) = test {
+            if self.hir_expr_contains_await_for_async_analysis(script, body, *test, steps)? {
+              return Ok(true);
+            }
+          }
+          if let Some(update) = update {
+            if self.hir_expr_contains_await_for_async_analysis(script, body, *update, steps)? {
+              return Ok(true);
+            }
+          }
+          stack.push(*inner);
+        }
+        hir_js::StmtKind::ForIn {
+          left,
+          right,
+          body: inner,
+          await_,
+          ..
+        } => {
+          // Treat `for await..of` as containing an await so nested uses can conservatively opt into
+          // AST fallback.
+          if *await_ {
+            return Ok(true);
+          }
+          match left {
+            hir_js::ForHead::Pat(pat) => {
+              if self.hir_pat_contains_await_for_async_analysis(script, body, *pat, steps)? {
+                return Ok(true);
+              }
+            }
+            hir_js::ForHead::Var(decl) => {
+              for declarator in &decl.declarators {
+                if self.hir_pat_contains_await_for_async_analysis(script, body, declarator.pat, steps)? {
+                  return Ok(true);
+                }
+                if let Some(init) = declarator.init {
+                  if self.hir_expr_contains_await_for_async_analysis(script, body, init, steps)? {
+                    return Ok(true);
+                  }
+                }
+              }
+            }
+          }
+          if self.hir_expr_contains_await_for_async_analysis(script, body, *right, steps)? {
+            return Ok(true);
+          }
+          stack.push(*inner);
+        }
+        hir_js::StmtKind::Switch { discriminant, cases } => {
+          if self.hir_expr_contains_await_for_async_analysis(script, body, *discriminant, steps)? {
+            return Ok(true);
+          }
+          for case in cases {
+            if let Some(test) = case.test {
+              if self.hir_expr_contains_await_for_async_analysis(script, body, test, steps)? {
+                return Ok(true);
+              }
+            }
+            for stmt_id in &case.consequent {
+              stack.push(*stmt_id);
+            }
+          }
+        }
+        hir_js::StmtKind::Try {
+          block,
+          catch,
+          finally_block,
+        } => {
+          stack.push(*block);
+          if let Some(catch) = catch {
+            if let Some(param) = catch.param {
+              if self.hir_pat_contains_await_for_async_analysis(script, body, param, steps)? {
+                return Ok(true);
+              }
+            }
+            stack.push(catch.body);
+          }
+          if let Some(finally_stmt) = finally_block {
+            stack.push(*finally_stmt);
+          }
+        }
+        hir_js::StmtKind::Decl(def_id) => {
+          // Only descend into class definitions; nested function bodies are not executed when
+          // creating the function value.
+          let def = script
+            .hir
+            .def(*def_id)
+            .ok_or(VmError::InvariantViolation("hir def id missing from compiled script"))?;
+          let Some(body_id) = def.body else {
+            continue;
+          };
+          let decl_body = script
+            .hir
+            .body(body_id)
+            .ok_or(VmError::InvariantViolation("hir body id missing from compiled script"))?;
+          if decl_body.kind == hir_js::BodyKind::Class {
+            if self.hir_class_body_contains_await_for_async_analysis(script, body_id, steps)? {
+              return Ok(true);
+            }
+          }
+        }
+        hir_js::StmtKind::Labeled { body: inner, .. } => stack.push(*inner),
+        hir_js::StmtKind::With { object, body: inner } => {
+          if self.hir_expr_contains_await_for_async_analysis(script, body, *object, steps)? {
+            return Ok(true);
+          }
+          stack.push(*inner);
+        }
+
+        // Leaf-ish statements.
+        hir_js::StmtKind::Return(None)
+        | hir_js::StmtKind::Break(_)
+        | hir_js::StmtKind::Continue(_)
+        | hir_js::StmtKind::Debugger
+        | hir_js::StmtKind::Empty => {}
+      }
+    }
+    Ok(false)
+  }
+
+  /// Returns `true` if this async function body can execute via the compiled async executor (HIR)
+  /// without hitting unsupported `await` forms.
+  fn async_function_body_is_hir_supported(
+    &mut self,
+    script: &Arc<CompiledScript>,
+    body_id: hir_js::BodyId,
+  ) -> Result<bool, VmError> {
+    let body = script
+      .hir
+      .body(body_id)
+      .ok_or(VmError::InvariantViolation(
+        "hir body id missing from compiled script",
+      ))?;
+    let Some(func_meta) = body.function.as_ref() else {
+      return Err(VmError::InvariantViolation("function body missing function metadata"));
+    };
+
+    // Only analyze async (non-generator) functions here.
+    debug_assert!(func_meta.async_);
+    debug_assert!(!func_meta.generator);
+
+    let mut steps: usize = 0;
+
+    match &func_meta.body {
+      hir_js::FunctionBody::Expr(expr_id) => {
+        let expr = self.get_expr(body, *expr_id)?;
+        if let hir_js::ExprKind::Await { expr: awaited_expr } = expr.kind {
+          // Support expression-bodied async arrow functions of the form `async () => await <expr>`.
+          // Ensure the awaited expression itself contains no await.
+          return Ok(!self.hir_expr_contains_await_for_async_analysis(
+            script,
+            body,
+            awaited_expr,
+            &mut steps,
+          )?);
+        }
+        Ok(!self.hir_expr_contains_await_for_async_analysis(
+          script,
+          body,
+          *expr_id,
+          &mut steps,
+        )?)
+      }
+      hir_js::FunctionBody::Block(stmts) => {
+        for (i, stmt_id) in stmts.iter().enumerate() {
+          // Budget per statement list entry.
+          if i % 32 == 0 {
+            self.vm.tick()?;
+          }
+
+          let stmt = self.get_stmt(body, *stmt_id)?;
+          match &stmt.kind {
+            // Supported direct await statement forms (top-level only).
+            hir_js::StmtKind::Expr(expr_id) => {
+              let expr = self.get_expr(body, *expr_id)?;
+              if let hir_js::ExprKind::Await { expr: awaited_expr } = expr.kind {
+                if self.hir_expr_contains_await_for_async_analysis(
+                  script,
+                  body,
+                  awaited_expr,
+                  &mut steps,
+                )? {
+                  return Ok(false);
+                }
+                continue;
+              }
+              if self.hir_expr_contains_await_for_async_analysis(script, body, *expr_id, &mut steps)? {
+                return Ok(false);
+              }
+            }
+            hir_js::StmtKind::Var(var_decl) => {
+              for declarator in &var_decl.declarators {
+                if self.hir_pat_contains_await_for_async_analysis(
+                  script,
+                  body,
+                  declarator.pat,
+                  &mut steps,
+                )? {
+                  return Ok(false);
+                }
+                let Some(init_id) = declarator.init else {
+                  continue;
+                };
+                let init_expr = self.get_expr(body, init_id)?;
+                if let hir_js::ExprKind::Await { expr: awaited_expr } = init_expr.kind {
+                  if self.hir_expr_contains_await_for_async_analysis(
+                    script,
+                    body,
+                    awaited_expr,
+                    &mut steps,
+                  )? {
+                    return Ok(false);
+                  }
+                  continue;
+                }
+                if self.hir_expr_contains_await_for_async_analysis(script, body, init_id, &mut steps)? {
+                  return Ok(false);
+                }
+              }
+            }
+            hir_js::StmtKind::Return(Some(expr_id)) => {
+              let expr = self.get_expr(body, *expr_id)?;
+              if let hir_js::ExprKind::Await { expr: awaited_expr } = expr.kind {
+                if self.hir_expr_contains_await_for_async_analysis(
+                  script,
+                  body,
+                  awaited_expr,
+                  &mut steps,
+                )? {
+                  return Ok(false);
+                }
+                continue;
+              }
+              if self.hir_expr_contains_await_for_async_analysis(script, body, *expr_id, &mut steps)? {
+                return Ok(false);
+              }
+            }
+            hir_js::StmtKind::Throw(expr_id) => {
+              let expr = self.get_expr(body, *expr_id)?;
+              if let hir_js::ExprKind::Await { expr: awaited_expr } = expr.kind {
+                if self.hir_expr_contains_await_for_async_analysis(
+                  script,
+                  body,
+                  awaited_expr,
+                  &mut steps,
+                )? {
+                  return Ok(false);
+                }
+                continue;
+              }
+              if self.hir_expr_contains_await_for_async_analysis(script, body, *expr_id, &mut steps)? {
+                return Ok(false);
+              }
+            }
+            hir_js::StmtKind::ForIn {
+              left,
+              right,
+              body: inner,
+              is_for_of: true,
+              await_: true,
+            } => {
+              // Support top-level `for await..of` loops as long as their head, RHS, and body do not
+              // contain nested `await` (the loop itself awaits `next()` internally).
+              match left {
+                hir_js::ForHead::Pat(pat) => {
+                  if self.hir_pat_contains_await_for_async_analysis(script, body, *pat, &mut steps)? {
+                    return Ok(false);
+                  }
+                }
+                hir_js::ForHead::Var(decl) => {
+                  for declarator in &decl.declarators {
+                    if self.hir_pat_contains_await_for_async_analysis(
+                      script,
+                      body,
+                      declarator.pat,
+                      &mut steps,
+                    )? {
+                      return Ok(false);
+                    }
+                    if let Some(init) = declarator.init {
+                      if self.hir_expr_contains_await_for_async_analysis(script, body, init, &mut steps)? {
+                        return Ok(false);
+                      }
+                    }
+                  }
+                }
+              }
+              if self.hir_expr_contains_await_for_async_analysis(script, body, *right, &mut steps)? {
+                return Ok(false);
+              }
+              if self.hir_stmt_contains_await_for_async_analysis(script, body, *inner, &mut steps)? {
+                return Ok(false);
+              }
+            }
+            // Any other statement containing await is not supported by the compiled async executor
+            // yet.
+            _ => {
+              if self.hir_stmt_contains_await_for_async_analysis(script, body, *stmt_id, &mut steps)? {
+                return Ok(false);
+              }
+            }
+          }
+        }
+        Ok(true)
+      }
+    }
+  }
+
   fn super_base_value(&mut self, scope: &mut Scope<'_>) -> Result<Value, VmError> {
     let Some(home_object) = self.home_object else {
       return Err(VmError::InvariantViolation(
@@ -1552,6 +2242,15 @@ impl<'vm> HirEvaluator<'vm> {
     // Async and generator functions are not constructable (per spec).
     let is_constructable = is_constructable && !is_async && !is_generator;
 
+    // Decide whether this async function must fall back to the AST interpreter.
+    //
+    // Avoid "partial execution then fallback" by making this decision at allocation time.
+    let async_needs_ast_fallback = if is_async && !is_generator {
+      !self.async_function_body_is_hir_supported(&script, body_id)?
+    } else {
+      false
+    };
+
     // Root inputs across string allocation + function allocation in case either triggers GC.
     let mut scope = scope.reborrow();
     let outer_env = self.env.lexical_env();
@@ -1648,13 +2347,12 @@ impl<'vm> HirEvaluator<'vm> {
         .env_initialize_binding(env, name, Value::Object(func_obj))?;
     }
 
-    // Async functions currently execute via the AST interpreter at call-time (see
-    // `Vm::call_user_function`).
+    // Some async function bodies are not yet supported by the compiled async executor (HIR).
     //
-    // For "trivial" async functions that do not contain any `await`/`for await..of` suspension
-    // points, eagerly tag them as `FunctionData::AsyncEcmaFallback` so calls can dispatch directly
-    // to the interpreter without re-scanning the compiled HIR.
-    if is_async && !is_generator && !self.hir_body_has_await_suspension(body_id)? {
+    // Allocate those functions as compiled user functions (so surrounding code can remain on the
+    // compiled path), but tag them so `Vm::call_user_function` delegates body execution to the AST
+    // interpreter.
+    if async_needs_ast_fallback {
       let code_id = self.vm.register_ecma_function(
         self.env.source(),
         def_span.start,
@@ -15218,21 +15916,120 @@ fn instantiate_compiled_module_decls_inner(
 }
 
 #[cfg(test)]
-mod async_function_ast_fallback_tests {
+mod async_function_hir_exec_tests {
+  use crate::exec::AsyncFrame;
   use crate::function::{CallHandler, FunctionData};
-  use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOptions};
+  use crate::vm::VmAsyncContinuation;
+  use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
   #[test]
-  fn compiled_script_async_function_uses_call_time_ast_fallback() -> Result<(), VmError> {
+  fn compiled_async_function_suspends_via_hir_async_frame() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
-    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    // Async functions allocate Promise/job machinery; use a slightly larger heap to avoid spurious
+    // OOMs as builtin surface area grows.
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;
 
     let script = CompiledScript::compile_script(
       &mut rt.heap,
       "<inline>",
       r#"
-        async function f() { return 1; }
+        // Keep a reference to the async function so we can inspect it from Rust after compilation.
+        var f;
+
+        async function g() {
+          // Pending promise: suspends the async function so a continuation is created.
+          await new Promise(() => {});
+          return 1;
+        }
+
+        f = g;
+        g();
+      "#,
+    )?;
+
+    assert!(script.contains_async_functions);
+    assert!(!script.contains_generators);
+    assert!(!script.contains_async_generators);
+    assert!(
+      !script.requires_ast_fallback,
+      "compiled scripts should not require AST fallback just because they contain async functions",
+    );
+
+    let result = rt.exec_compiled_script(script)?;
+    let Value::Object(promise_obj) = result else {
+      panic!("expected Promise from async function call, got {result:?}");
+    };
+    assert!(rt.heap.is_promise_object(promise_obj));
+
+    // The function object should be a compiled user function without per-function AST fallback.
+    let func_value = rt.exec_script("f")?;
+    let Value::Object(func_obj) = func_value else {
+      panic!("expected function object in global `f`, got {func_value:?}");
+    };
+    let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+    assert!(
+      matches!(call_handler, CallHandler::User(_)),
+      "expected compiled async function to be allocated as a compiled user function, got {call_handler:?}"
+    );
+    let func_data = rt.heap.get_function_data(func_obj)?;
+    assert!(
+      !matches!(
+        func_data,
+        FunctionData::EcmaFallback { .. } | FunctionData::AsyncEcmaFallback { .. }
+      ),
+      "expected async function to execute via HIR (no per-function AST fallback), got {func_data:?}"
+    );
+
+    // The suspension should create an async continuation backed by a HIR async frame.
+    let cont_ids = rt.vm.async_continuation_ids();
+    assert_eq!(
+      cont_ids.len(),
+      1,
+      "expected exactly one async continuation after a single suspension, got {cont_ids:?}"
+    );
+    let id = cont_ids[0];
+    let cont = rt
+      .vm
+      .take_async_continuation(id)
+      .expect("expected async continuation to be present in VM");
+    let VmAsyncContinuation::Ast(cont) = cont else {
+      panic!("expected async function suspension to create an AST-style async continuation");
+    };
+    assert!(
+      cont
+        .frames
+        .iter()
+        .any(|f| matches!(f, AsyncFrame::HirAsync { .. })),
+      "expected continuation to contain a HIR async frame, got frames={:?}",
+      cont.frames
+    );
+
+    // Ensure we tear down persistent roots even though the awaited promise will never settle.
+    let mut scope = rt.heap.scope();
+    crate::exec::async_teardown_continuation(&mut scope, cont);
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod async_function_ast_fallback_tests {
+  use crate::function::{CallHandler, FunctionData};
+  use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOptions};
+
+  #[test]
+  fn compiled_script_async_function_with_nested_await_uses_call_time_ast_fallback() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    // Async functions allocate Promise/job machinery; use a slightly larger heap to avoid spurious
+    // OOMs as builtin surface area grows.
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let script = CompiledScript::compile_script(
+      &mut rt.heap,
+      "<inline>",
+      r#"
+        async function f() { return await (await Promise.resolve(1)); }
         f;
       "#,
     )?;
@@ -15534,23 +16331,10 @@ mod compiled_hir_async_await_semantics_tests {
   }
  
   #[test]
-  fn compiled_async_arrow_expr_body_await() -> Result<(), VmError> {
+  fn compiled_async_arrow_expr_body_direct_await() -> Result<(), VmError> {
     run_compiled_async_fn_case(
       r#"
-        let f = async () => (await Promise.resolve(1)) + 2;
-        this.__f = f;
-        this.__p = f();
-        this.__p;
-      "#,
-      ExpectedValue::Number(3.0),
-    )
-  }
- 
-  #[test]
-  fn compiled_async_nested_await() -> Result<(), VmError> {
-    run_compiled_async_fn_case(
-      r#"
-        async function f() { return await (await Promise.resolve(1)); }
+        let f = async () => await Promise.resolve(1);
         this.__f = f;
         this.__p = f();
         this.__p;
@@ -15560,13 +16344,12 @@ mod compiled_hir_async_await_semantics_tests {
   }
  
   #[test]
-  fn compiled_async_await_in_computed_member_key_assignment() -> Result<(), VmError> {
+  fn compiled_async_direct_await_expr_stmt() -> Result<(), VmError> {
     run_compiled_async_fn_case(
       r#"
         async function f() {
-          let o = {};
-          o[await Promise.resolve('k')] = 1;
-          return o.k;
+          await Promise.resolve(0);
+          return 1;
         }
         this.__f = f;
         this.__p = f();
@@ -15577,13 +16360,10 @@ mod compiled_hir_async_await_semantics_tests {
   }
  
   #[test]
-  fn compiled_async_await_in_destructuring_default() -> Result<(), VmError> {
+  fn compiled_async_return_await() -> Result<(), VmError> {
     run_compiled_async_fn_case(
       r#"
-        async function f() {
-          let { x = await Promise.resolve(1) } = {};
-          return x;
-        }
+        async function f() { return await Promise.resolve(1); }
         this.__f = f;
         this.__p = f();
         this.__p;
@@ -15593,15 +16373,27 @@ mod compiled_hir_async_await_semantics_tests {
   }
   
   #[test]
-  fn compiled_async_await_in_while_condition() -> Result<(), VmError> {
+  fn compiled_async_throw_await() -> Result<(), VmError> {
     run_compiled_async_fn_case(
       r#"
         async function f() {
-          let i = 0;
-          while (await Promise.resolve(i < 3)) {
-            i++;
-          }
-          return i;
+          throw await Promise.resolve("boom");
+        }
+        this.__f = f;
+        this.__p = f().catch(e => e);
+        this.__p;
+      "#,
+      ExpectedValue::String("boom"),
+    )
+  }
+ 
+  #[test]
+  fn compiled_async_var_decl_await() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f() {
+          let x = await Promise.resolve(1);
+          return x + 2;
         }
         this.__f = f;
         this.__p = f();

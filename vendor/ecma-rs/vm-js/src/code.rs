@@ -52,7 +52,8 @@ pub struct CompiledScript {
   /// Notes:
   /// - Generator bodies (`yield` / `yield*`) are not supported in the compiled executor.
   /// - Private-name syntax (`#x`, `#m`, ...) is not supported in the compiled executor.
-  /// - Async function bodies execute via the AST interpreter at call-time (see
+  /// - Async (non-generator) function bodies can execute via the compiled async executor, and can
+  ///   fall back on a per-function basis when they use unsupported `await` forms (see
   ///   [`crate::Vm::call_user_function`]).
   ///
   /// Top-level await (classic scripts and modules) is handled by the compiled async executor for a

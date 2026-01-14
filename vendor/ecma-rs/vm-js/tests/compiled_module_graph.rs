@@ -2883,8 +2883,11 @@ fn compiled_module_default_export_async_function_uses_user_call_handler() -> Res
     );
     let func_data = scope.heap().get_function_data(f_obj)?;
     assert!(
-      matches!(func_data, FunctionData::AsyncEcmaFallback { .. }),
-      "expected default-exported async function to use call-time AST fallback (FunctionData::AsyncEcmaFallback); got {func_data:?}"
+      !matches!(
+        func_data,
+        FunctionData::EcmaFallback { .. } | FunctionData::AsyncEcmaFallback { .. }
+      ),
+      "expected default-exported async function to execute via the compiled async evaluator (no AST fallback tag); got {func_data:?}"
     );
 
     let Value::String(n) = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "n")? else {
