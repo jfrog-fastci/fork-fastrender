@@ -9638,6 +9638,25 @@ impl FormattingContext for BlockFormattingContext {
       // Like `layout_block_child`, track whether the block-size should establish a definite
       // percentage base for in-flow descendants (CSS2.1 §10.5).
       let mut block_size_definite_for_percentages = resolved_height.is_some();
+
+      // When flowing in a vertical/sideways writing mode, the block axis maps to the physical
+      // x-axis. `width: auto` should therefore stretch to fill the available block size of the
+      // containing block (mirroring the auto-width behavior for block boxes in horizontal writing
+      // modes) instead of collapsing to the content size.
+      //
+      // Note: This is handled for in-flow children in `layout_block_child`, but formatting context
+      // roots (including the document root `<html>`) enter through `BlockFormattingContext::layout`
+      // directly and therefore need the same safeguard here.
+      let height_auto =
+        block_length.is_none() && (block_keyword.is_none() || block_keyword_is_content_based);
+      if resolved_height.is_none()
+        && height_auto
+        && block_axis_is_horizontal(style.writing_mode)
+        && available_block_border_box.is_finite()
+      {
+        resolved_height = Some((available_block_border_box - vertical_edges).max(0.0));
+        block_size_definite_for_percentages = true;
+      }
       if reserved_horizontal_gutter > 0.0
         && block_length.is_some()
         && style.box_sizing == crate::style::types::BoxSizing::ContentBox

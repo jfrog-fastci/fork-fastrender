@@ -335,6 +335,7 @@ mod line_padding_test;
 mod list_marker_outside_whitespace;
 mod mdn_writing_mode_live_sample_table;
 mod manual_multicol_breaks;
+mod mdn_text_combine_upright;
 mod mdn_text_orientation_upright;
 mod multicol;
 mod multicol_forced_page_breaks;
