@@ -474,3 +474,65 @@ fn iterator_step_value_getter_throw_does_not_invoke_async_iterator_close_in_for_
 
   Ok(())
 }
+
+#[test]
+fn for_await_of_iterator_close_await_resolved_does_not_double_promise_constructor_get(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var constructorCalls = 0;
+      var returnCalls = 0;
+
+      const iterable = {};
+      iterable[Symbol.asyncIterator] = function () {
+        let step = 0;
+        return {
+          next() {
+            step++;
+            if (step === 1) return Promise.resolve({ value: 1, done: false });
+            return Promise.resolve({ value: undefined, done: true });
+          },
+          return() {
+            returnCalls++;
+            const p = Promise.resolve({ value: undefined, done: true });
+            Object.defineProperty(p, "constructor", {
+              get() { constructorCalls++; return Promise; },
+            });
+            return p;
+          },
+        };
+      };
+
+      async function f() {
+        for await (const _ of iterable) {
+          break;
+        }
+        out = "done";
+      }
+
+      f().then(
+        () => {},
+        e => { out = e; }
+      );
+
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "done");
+
+  let return_calls = rt.exec_script("returnCalls")?;
+  assert_eq!(return_calls, Value::Number(1.0));
+
+  let constructor_calls = rt.exec_script("constructorCalls")?;
+  assert_eq!(constructor_calls, Value::Number(1.0));
+
+  Ok(())
+}
