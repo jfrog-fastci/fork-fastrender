@@ -186,3 +186,41 @@ fn yield_in_class_field_initializer_is_syntax_error() {
     .unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
+
+#[test]
+fn yield_in_class_static_field_initializer_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(
+      r#"
+      function* g() {
+        class C { static x = yield 0; }
+      }
+    "#,
+    )
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn generator_yield_in_class_computed_field_name() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        class C { [yield 1] = 2; }
+        return new C();
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next("x");
+      var o = r2.value;
+      r1.value === 1 && r1.done === false &&
+      r2.done === true &&
+      o.x === 2
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
