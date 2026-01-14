@@ -396,3 +396,65 @@ fn script_await_in_class_heritage_runs_as_async_script() -> Result<(), VmError> 
   assert_eq!(value_to_string(&rt, out), "aSI");
   Ok(())
 }
+
+#[test]
+fn async_class_methods_support_super_property_access_in_instance_and_static() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        class B {
+          foo() { return "b"; }
+          static bar() { return "B"; }
+        }
+        class D extends (await Promise.resolve(B)) {
+          foo() { return super.foo() + "d"; }
+          static bar() { return super.bar() + "D"; }
+        }
+        out += (new D()).foo();
+        out += D.bar();
+        return out;
+      }
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "bdBD");
+  Ok(())
+}
+
+#[test]
+fn async_class_constructor_body_supports_super_property_access() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        class B { foo() { return "b"; } }
+        class D extends (await Promise.resolve(B)) {
+          constructor() { super(); this.v = super.foo(); }
+        }
+        return (new D()).v;
+      }
+      f().then(v => out = v, e => out = e.name + ":" + e.message);
+    "#,
+  )?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "b");
+  Ok(())
+}

@@ -4314,6 +4314,40 @@ impl<'a> Evaluator<'a> {
     self.vm.tick()
   }
 
+  /// Implements `GetThisBinding` for the current execution context.
+  ///
+  /// Derived class constructors have an uninitialized `this` binding until `super()` returns.
+  /// `vm-js` represents that shared state as a heap object (`DerivedConstructorState`) so nested
+  /// arrow functions and direct eval code can observe initialization.
+  ///
+  /// All operations that need the *actual* `this` value (including `this` expressions and
+  /// `super.prop` / `super[expr]` receiver resolution) should go through this helper.
+  fn get_this_binding(&mut self, scope: &mut Scope<'_>) -> Result<Value, VmError> {
+    if let Value::Object(obj) = self.this {
+      if scope.heap().is_derived_constructor_state(obj) {
+        let state = scope.heap().get_derived_constructor_state(obj)?;
+        if let Some(this_obj) = state.this_value {
+          return Ok(Value::Object(this_obj));
+        }
+        return Err(throw_reference_error(
+          self.vm,
+          scope,
+          "Must call super constructor in derived class before accessing 'this'",
+        )?);
+      }
+    }
+
+    if self.derived_constructor && !self.this_initialized {
+      return Err(throw_reference_error(
+        self.vm,
+        scope,
+        "Must call super constructor in derived class before accessing 'this'",
+      )?);
+    }
+
+    Ok(self.this)
+  }
+
   #[inline]
   fn call(
     &mut self,
@@ -10004,29 +10038,7 @@ impl<'a> Evaluator<'a> {
       Expr::TaggedTemplate(node) => {
         OptionalChainEval::Value(self.eval_tagged_template(scope, node)?)
       }
-      Expr::This(_) => {
-        if let Value::Object(obj) = self.this {
-          if scope.heap().is_derived_constructor_state(obj) {
-            let state = scope.heap().get_derived_constructor_state(obj)?;
-            if let Some(this_obj) = state.this_value {
-              return Ok(OptionalChainEval::Value(Value::Object(this_obj)));
-            }
-            return Err(throw_reference_error(
-              self.vm,
-              scope,
-              "Must call super constructor in derived class before accessing 'this'",
-            )?);
-          }
-        }
-        if self.derived_constructor && !self.this_initialized {
-          return Err(throw_reference_error(
-            self.vm,
-            scope,
-            "Must call super constructor in derived class before accessing 'this'",
-          )?);
-        }
-        OptionalChainEval::Value(self.this)
-      }
+      Expr::This(_) => OptionalChainEval::Value(self.get_this_binding(scope)?),
       Expr::NewTarget(_) => OptionalChainEval::Value(self.new_target),
       Expr::Id(node) => OptionalChainEval::Value(self.eval_id(scope, &node.stx)?),
       Expr::ImportMeta(_) => OptionalChainEval::Value(self.eval_import_meta(scope)?),
@@ -10130,15 +10142,9 @@ impl<'a> Evaluator<'a> {
         ));
       }
 
-      // Evaluating a super property reference requires an initialized `this` binding; in derived
-      // constructors before `super()`, this throws before any further evaluation.
-      if self.derived_constructor && !self.this_initialized {
-        return Err(throw_reference_error(
-          self.vm,
-          scope,
-          "Must call super constructor in derived class before accessing 'this'",
-        )?);
-      }
+      // `GetThisBinding` must run before any further evaluation (including allocating the property
+      // key string) so derived constructors throw before `super()` as required by ECMA-262.
+      let receiver = self.get_this_binding(scope)?;
 
       let home_object = self.home_object.ok_or(VmError::InvariantViolation(
         "super property access missing [[HomeObject]]",
@@ -10146,10 +10152,10 @@ impl<'a> Evaluator<'a> {
 
       // Root `this` + home object across property-key string allocation.
       let mut key_scope = scope.reborrow();
-      key_scope.push_roots(&[self.this, Value::Object(home_object)])?;
+      key_scope.push_roots(&[receiver, Value::Object(home_object)])?;
       let key_s = key_scope.alloc_string(&expr.right)?;
       let key = PropertyKey::from_string(key_s);
-      let value = self.eval_super_property_get(&mut key_scope, key)?;
+      let value = self.eval_super_property_get(&mut key_scope, receiver, key)?;
       return Ok(OptionalChainEval::Value(value));
     }
 
@@ -10203,13 +10209,8 @@ impl<'a> Evaluator<'a> {
           "optional chaining used with super computed property",
         ));
       }
-      if self.derived_constructor && !self.this_initialized {
-        return Err(throw_reference_error(
-          self.vm,
-          scope,
-          "Must call super constructor in derived class before accessing 'this'",
-        )?);
-      }
+      // `GetThisBinding` must run before evaluating the computed key expression.
+      let receiver = self.get_this_binding(scope)?;
 
       let home_object = self.home_object.ok_or(VmError::InvariantViolation(
         "super property access missing [[HomeObject]]",
@@ -10217,11 +10218,11 @@ impl<'a> Evaluator<'a> {
 
       // Root `this` + home object across evaluation of the computed member key and `ToPropertyKey`.
       let mut key_scope = scope.reborrow();
-      key_scope.push_roots(&[self.this, Value::Object(home_object)])?;
+      key_scope.push_roots(&[receiver, Value::Object(home_object)])?;
       let member_value = self.eval_expr(&mut key_scope, &expr.member)?;
       key_scope.push_root(member_value)?;
       let key = self.to_property_key_operator(&mut key_scope, member_value)?;
-      let value = self.eval_super_property_get(&mut key_scope, key)?;
+      let value = self.eval_super_property_get(&mut key_scope, receiver, key)?;
       return Ok(OptionalChainEval::Value(value));
     }
 
@@ -10249,9 +10250,9 @@ impl<'a> Evaluator<'a> {
   fn eval_super_property_get(
     &mut self,
     scope: &mut Scope<'_>,
+    receiver: Value,
     key: PropertyKey,
   ) -> Result<Value, VmError> {
-    let this_value = self.this;
     let home_object = self.home_object.ok_or(VmError::InvariantViolation(
       "super property access missing [[HomeObject]]",
     ))?;
@@ -10264,7 +10265,7 @@ impl<'a> Evaluator<'a> {
       PropertyKey::String(s) => Value::String(s),
       PropertyKey::Symbol(s) => Value::Symbol(s),
     };
-    super_scope.push_roots(&[this_value, Value::Object(home_object), key_root])?;
+    super_scope.push_roots(&[receiver, Value::Object(home_object), key_root])?;
 
     let super_base = super_scope.get_prototype_of_with_host_and_hooks(
       self.vm,
@@ -10288,7 +10289,7 @@ impl<'a> Evaluator<'a> {
       &mut *self.hooks,
       super_base,
       key,
-      this_value,
+      receiver,
     )
   }
 
@@ -10377,14 +10378,7 @@ impl<'a> Evaluator<'a> {
               "super private member access is not valid (early errors should prevent this)",
             ));
           }
-          if self.derived_constructor && !self.this_initialized {
-            return Err(throw_reference_error(
-              self.vm,
-              scope,
-              "Must call super constructor in derived class before accessing 'this'",
-            )?);
-          }
-          let receiver = self.this;
+          let receiver = self.get_this_binding(scope)?;
 
           let mut key_scope = scope.reborrow();
           key_scope.push_root(receiver)?;
@@ -10435,14 +10429,7 @@ impl<'a> Evaluator<'a> {
           // Evaluating a `super[expr]` reference requires an initialized `this` binding. In derived
           // constructors before `super()`, this check happens before evaluating the computed key
           // expression.
-          if self.derived_constructor && !self.this_initialized {
-            return Err(throw_reference_error(
-              self.vm,
-              scope,
-              "Must call super constructor in derived class before accessing 'this'",
-            )?);
-          }
-          let receiver = self.this;
+          let receiver = self.get_this_binding(scope)?;
 
           let mut key_scope = scope.reborrow();
           key_scope.push_root(receiver)?;
@@ -13101,15 +13088,9 @@ impl<'a> Evaluator<'a> {
         // in this position when the callee is not optional-chained. For derived constructors
         // before `super()`, evaluating a super property reference must throw before evaluating the
         // computed key expression.
-        if matches!(&*member.stx.object.stx, Expr::Super(_))
-          && self.derived_constructor
-          && !self.this_initialized
-        {
-          return Err(throw_reference_error(
-            self.vm,
-            scope,
-            "Must call super constructor in derived class before accessing 'this'",
-          )?);
+        if matches!(&*member.stx.object.stx, Expr::Super(_)) {
+          // `GetThisBinding` must run before evaluating the key expression.
+          let _ = self.get_this_binding(scope)?;
         }
 
         let base = match self.eval_chain_base(scope, &member.stx.object)? {
@@ -13140,14 +13121,7 @@ impl<'a> Evaluator<'a> {
               "super private member access is not valid (early errors should prevent this)",
             ));
           }
-          if self.derived_constructor && !self.this_initialized {
-            return Err(throw_reference_error(
-              self.vm,
-              scope,
-              "Must call super constructor in derived class before accessing 'this'",
-            )?);
-          }
-          let receiver = self.this;
+          let receiver = self.get_this_binding(scope)?;
 
           let mut key_scope = scope.reborrow();
           // Root receiver + key across `GetSuperBase()` and any proxy traps.
@@ -13208,14 +13182,7 @@ impl<'a> Evaluator<'a> {
       // Ordinary computed-member call (e.g. `obj[expr]()`), but with optional-chain propagation.
       Expr::ComputedMember(member) if !member.stx.optional_chaining => {
         if matches!(&*member.stx.object.stx, Expr::Super(_)) {
-          if self.derived_constructor && !self.this_initialized {
-            return Err(throw_reference_error(
-              self.vm,
-              scope,
-              "Must call super constructor in derived class before accessing 'this'",
-            )?);
-          }
-          let receiver = self.this;
+          let receiver = self.get_this_binding(scope)?;
 
           // Spec ordering: evaluate `GetThisBinding` (above) before evaluating the key expression.
           let mut key_scope = scope.reborrow();
