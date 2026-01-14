@@ -44377,13 +44377,16 @@ fn gen_reference_from_super_computed_member_after_member(
 
   let mut key_scope = scope.reborrow();
   key_scope.push_roots(&[evaluator.this, receiver, member_value])?;
-  // Spec: `GetSuperBase` must be observed before `ToPropertyKey` for computed super properties.
-  let base = evaluator.get_super_base(&mut key_scope)?;
-  // Keep the captured super base alive across `ToPropertyKey`, which can invoke user code and
-  // trigger GC.
-  key_scope.push_root(base)?;
-
+  // Spec: computed `super[expr]` performs `ToPropertyKey` before `GetSuperBase`, so prototype
+  // mutation during key conversion is observable.
   let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
+  // Root the allocated key across `GetSuperBase`, which may allocate/invoke Proxy traps.
+  match key {
+    PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
+    PropertyKey::Symbol(sym) => key_scope.push_root(Value::Symbol(sym))?,
+  };
+
+  let base = evaluator.get_super_base(&mut key_scope)?;
   Ok(Reference::SuperProperty { base, key, receiver })
 }
 
@@ -56273,6 +56276,47 @@ mod tests {
           r2.done === true &&
           r2.value === 123 &&
           log.join(",") === "toString"
+        );
+      })()
+    "#,
+    )?;
+
+    assert_eq!(value, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn generators_super_computed_member_key_mutation_affects_super_base_lookup_after_yield(
+  ) -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let value = rt.exec_script(
+      r#"
+      (() => {
+        class A {}
+        A.prototype.x = 1;
+        const newProto = { x: 2 };
+        class B extends A {
+          *g() {
+            return super[(yield {
+              toString() {
+                Object.setPrototypeOf(B.prototype, newProto);
+                return "x";
+              }
+            })];
+          }
+        }
+
+        const it = new B().g();
+        const r1 = it.next();
+        const yielded = r1.value;
+        const r2 = it.next(yielded);
+        return (
+          r1.done === false &&
+          r2.done === true &&
+          r2.value === 2
         );
       })()
     "#,
