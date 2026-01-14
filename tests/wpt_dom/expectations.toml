@@ -355,14 +355,14 @@ reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up wo
 [[expectations]]
 id = "dom/ranges/Range-cloneRange.html"
 backend = ["vmjs", "vmjs-rendered"]
-status = "xfail"
-reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+status = "pass"
+reason = "Range.cloneRange implemented (returns independent live range)."
 
 [[expectations]]
 id = "dom/ranges/Range-collapse.html"
 backend = ["vmjs", "vmjs-rendered"]
-status = "xfail"
-reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+status = "pass"
+reason = "Range.collapse implemented."
 
 [[expectations]]
 id = "dom/ranges/Range-comparePoint-2.html"

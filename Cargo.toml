@@ -400,6 +400,7 @@ test = false
 name = "browser"
 path = "src/bin/browser.rs"
 test = false
+required-features = ["browser_ui"]
 
 [[bench]]
 name = "selector_bloom_bench"

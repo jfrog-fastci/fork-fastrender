@@ -37509,6 +37509,109 @@ fn range_set_end_native(
   }
 }
 
+fn range_collapse_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+
+  // WebIDL: collapse(optional boolean toStart = false)
+  let to_start_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let to_start = if matches!(to_start_value, Value::Undefined) {
+    false
+  } else {
+    scope.heap().to_boolean(to_start_value)?
+  };
+
+  let result = if is_host_document_id(vm, handle.document_id) {
+    mutate_dom_for_vm_host(host, |dom| (dom.range_collapse(handle.range_id, to_start), false))
+      .ok_or(VmError::TypeError("Illegal invocation"))?
+  } else {
+    let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
+      return Err(VmError::TypeError("Illegal invocation"));
+    };
+    // SAFETY: `dom_ptr` points at the `dom2::Document` backing this document ID, and we have
+    // exclusive access for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+    let result = dom.range_collapse(handle.range_id, to_start);
+    // Owned documents: skip MutationObserver microtask scheduling.
+    let _ = dom.take_mutation_observer_microtask_needed();
+    result
+  };
+
+  match result {
+    Ok(()) => Ok(Value::Undefined),
+    Err(_) => Err(VmError::TypeError("Illegal invocation")),
+  }
+}
+
+fn range_clone_range_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+
+  let range_id = if is_host_document_id(vm, handle.document_id) {
+    mutate_dom_for_vm_host(host, |dom| (dom.range_clone_range(handle.range_id), false))
+      .ok_or(VmError::TypeError("Illegal invocation"))?
+  } else {
+    let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
+      return Err(VmError::TypeError("Illegal invocation"));
+    };
+    // SAFETY: `dom_ptr` points at the `dom2::Document` backing this document ID, and we have
+    // exclusive access for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+    let result = dom.range_clone_range(handle.range_id);
+    // Owned documents: skip MutationObserver microtask scheduling.
+    let _ = dom.take_mutation_observer_microtask_needed();
+    result
+  };
+
+  let range_id = range_id.map_err(|_| VmError::TypeError("Illegal invocation"))?;
+
+  // Allocate and register the JS wrapper for the new range id.
+  let range_obj = alloc_range_wrapper(scope, handle.document_obj)?;
+  scope.push_root(Value::Object(range_obj))?;
+
+  if is_host_document_id(vm, handle.document_id) {
+    mutate_dom_for_vm_host(host, |dom| {
+      dom.register_live_range_wrapper_for_id(scope.heap(), range_id, range_obj);
+      ((), false)
+    })
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  } else {
+    let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
+      return Err(VmError::TypeError("Illegal invocation"));
+    };
+    // SAFETY: `dom_ptr` points at the `dom2::Document` backing this document ID, and we have
+    // exclusive access for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+    dom.register_live_range_wrapper_for_id(scope.heap(), range_id, range_obj);
+    // Owned documents: skip MutationObserver microtask scheduling.
+    let _ = dom.take_mutation_observer_microtask_needed();
+  }
+
+  scope.heap_mut().object_set_host_slots(
+    range_obj,
+    HostSlots {
+      a: range_id.as_u64(),
+      b: RANGE_HOST_TAG,
+    },
+  )?;
+
+  Ok(Value::Object(range_obj))
+}
+
 fn range_select_node_contents_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -53176,6 +53279,22 @@ fn init_window_globals(
       let set_end_key = alloc_key(&mut scope, "setEnd")?;
       scope.define_property(range_proto, set_end_key, data_desc(Value::Object(set_end_func)))?;
 
+      // Range.prototype.collapse
+      {
+        let call_id = vm.register_native_call(range_collapse_native)?;
+        let name_s = scope.alloc_string("collapse")?;
+        scope.push_root(Value::String(name_s))?;
+        // `toStart` is optional (default false), so `length` should be 0.
+        let func = scope.alloc_native_function(call_id, None, name_s, 0)?;
+        scope.heap_mut().object_set_prototype(
+          func,
+          Some(realm.intrinsics().function_prototype()),
+        )?;
+        scope.push_root(Value::Object(func))?;
+        let key = alloc_key(&mut scope, "collapse")?;
+        scope.define_property(range_proto, key, data_desc(Value::Object(func)))?;
+      }
+
       // Range.prototype.selectNodeContents
       {
         let call_id = vm.register_native_call(range_select_node_contents_native)?;
@@ -53188,6 +53307,21 @@ fn init_window_globals(
         )?;
         scope.push_root(Value::Object(func))?;
         let key = alloc_key(&mut scope, "selectNodeContents")?;
+        scope.define_property(range_proto, key, data_desc(Value::Object(func)))?;
+      }
+
+      // Range.prototype.cloneRange
+      {
+        let call_id = vm.register_native_call(range_clone_range_native)?;
+        let name_s = scope.alloc_string("cloneRange")?;
+        scope.push_root(Value::String(name_s))?;
+        let func = scope.alloc_native_function(call_id, None, name_s, 0)?;
+        scope.heap_mut().object_set_prototype(
+          func,
+          Some(realm.intrinsics().function_prototype()),
+        )?;
+        scope.push_root(Value::Object(func))?;
+        let key = alloc_key(&mut scope, "cloneRange")?;
         scope.define_property(range_proto, key, data_desc(Value::Object(func)))?;
       }
 

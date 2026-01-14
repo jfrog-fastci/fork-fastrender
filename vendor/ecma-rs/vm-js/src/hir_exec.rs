@@ -9719,8 +9719,8 @@ impl<'vm> HirEvaluator<'vm> {
         PropertyDescriptorPatch {
           writable: Some(false),
           ..Default::default()
-         },
-       )?;
+        },
+      )?;
 
        // Wire the instance prototype chain for derived classes.
        //
