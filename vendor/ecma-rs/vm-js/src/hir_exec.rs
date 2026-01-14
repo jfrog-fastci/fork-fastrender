@@ -2832,6 +2832,25 @@ impl<'vm> HirEvaluator<'vm> {
     body: &hir_js::Body,
     stmts: &[hir_js::StmtId],
   ) -> Result<(), VmError> {
+    // Modules use a single environment record for both lexical and var-like bindings. Our
+    // `RuntimeEnv::declare_var` collision checks assume the common function-body shape where a
+    // dedicated "var-scope lexical env" sits between the VariableEnvironment and the innermost
+    // lexical environment. When `lexical_env == var_env` (as in module environments), repeatedly
+    // calling `declare_var` for the same name (e.g. `var x; var x;`) would incorrectly trip the
+    // collision logic.
+    //
+    // Avoid that by deduplicating var-declared names up-front in module-like environments and
+    // declaring each name at most once.
+    if matches!(self.env.var_env(), VarEnv::Env(var_env) if var_env == self.env.lexical_env()) {
+      let mut names: HashSet<String> = HashSet::new();
+      self.collect_var_declared_names(body, stmts, &mut names)?;
+      for name in names {
+        self.vm.tick()?;
+        self.env.declare_var(self.vm, scope, name.as_str())?;
+      }
+      return Ok(());
+    }
+
     for stmt_id in stmts {
       self.vm.tick()?;
       let stmt = self.get_stmt(body, *stmt_id)?;
