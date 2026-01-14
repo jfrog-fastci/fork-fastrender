@@ -446,6 +446,8 @@ impl<'a> Parser<'a> {
       _ => Ok(()),
     }
   }
+  // NOTE: Keep these `arguments`/class-init helpers as a single canonical implementation.
+  // During merges, duplicate copies have been accidentally reintroduced in the past.
   /// Execute `f` while treating `arguments` as disallowed in class initialization code.
   ///
   /// This models the early-error behavior for class field initializers and `static {}` blocks:
