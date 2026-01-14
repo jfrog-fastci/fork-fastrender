@@ -191,7 +191,7 @@ fn await_expression_is_syntax_error_in_static_block_inside_function() {
 }
 
 #[test]
-fn await_expression_is_syntax_error_in_static_block_inside_async_function() {
+fn await_expression_is_allowed_in_static_block_inside_async_function() {
   let src = r#"
     async function f() {
       class C {
@@ -207,11 +207,11 @@ fn await_expression_is_syntax_error_in_static_block_inside_async_function() {
   };
   let mut parser = Parser::new(Lexer::new(src), opts);
   let res = parser.parse_top_level();
-  assert!(res.is_err(), "parse unexpectedly succeeded: {res:?}");
+  assert!(res.is_ok(), "parse failed: {res:?}");
 }
 
 #[test]
-fn await_expression_is_syntax_error_in_static_block_in_module() {
+fn await_expression_is_allowed_in_static_block_in_module() {
   let src = r#"
     class C {
       static {
@@ -225,7 +225,7 @@ fn await_expression_is_syntax_error_in_static_block_in_module() {
   };
   let mut parser = Parser::new(Lexer::new(src), opts);
   let res = parser.parse_top_level();
-  assert!(res.is_err(), "parse unexpectedly succeeded: {res:?}");
+  assert!(res.is_ok(), "parse failed: {res:?}");
 }
 
 #[test]
@@ -602,4 +602,42 @@ fn for_await_of_is_syntax_error_in_static_block() {
   let mut parser = Parser::new(Lexer::new(src), opts);
   let res = parser.parse_top_level();
   assert!(res.is_err(), "parse unexpectedly succeeded: {res:?}");
+}
+
+#[test]
+fn for_await_of_is_allowed_in_static_block_inside_async_function() {
+  let src = r#"
+    async function f() {
+      class C {
+        static {
+          for await (const x of []) {}
+        }
+      }
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let res = parser.parse_top_level();
+  assert!(res.is_ok(), "parse failed: {res:?}");
+}
+
+#[test]
+fn for_await_of_is_allowed_in_static_block_in_module() {
+  let src = r#"
+    class C {
+      static {
+        for await (const x of []) {}
+      }
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Module,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let res = parser.parse_top_level();
+  assert!(res.is_ok(), "parse failed: {res:?}");
 }

@@ -2062,13 +2062,16 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     let using_mode = matches!(decl.mode, VarDeclMode::Using | VarDeclMode::AwaitUsing);
     if decl.mode == VarDeclMode::AwaitUsing {
       // Explicit Resource Management early error:
-      // `await using` declarations are only valid inside async functions and in Module code.
+      // `await using` declarations are only valid in async contexts.
       //
-      // Note: `vm-js` supports "async classic scripts" (top-level await in scripts) as an
-      // extension. Even when a script is treated as async, `await using` remains invalid because
-      // it is not part of Script goal syntax (and scripts have no module-level async disposal
-      // semantics).
-      let await_using_allowed = ctx.await_allowed && (ctx.is_module || ctx.return_allowed);
+      // In `vm-js`, this includes:
+      // - async functions,
+      // - module top-level await, and
+      // - async classic scripts (top-level await).
+      //
+      // Note: In Script goal, `using` / `await using` remain restricted to specific syntactic
+      // containers; this is enforced separately via `ctx.using_allowed`.
+      let await_using_allowed = ctx.await_allowed;
       if !await_using_allowed {
         if let Some(first) = decl.declarators.first() {
           self.push_error(
