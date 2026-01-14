@@ -135,6 +135,34 @@ fn arrow_left_right_scroll_horizontally_when_nothing_is_focused() {
     frame_x <= 1.0,
     "expected ArrowLeft to scroll back toward 0, got {frame_x}"
   );
+  x = frame_x;
+
+  // Shift+ArrowRight should behave like ArrowRight for scrolling.
+  tx.send(key_action(
+    tab_id,
+    fastrender::interaction::KeyAction::ShiftArrowRight,
+  ))
+  .unwrap();
+  let frame_x = wait_for_scroll_response_x(&rx, tab_id, DEFAULT_TIMEOUT, |next| next > x + 1.0);
+  assert!(
+    (frame_x - (x + arrow_step)).abs() < 1.0,
+    "expected ShiftArrowRight to scroll by ~{arrow_step}, got {frame_x} (from {x})"
+  );
+  x = frame_x;
+
+  // Shift+ArrowLeft should scroll back toward the left edge, clamping at 0.
+  tx.send(key_action(
+    tab_id,
+    fastrender::interaction::KeyAction::ShiftArrowLeft,
+  ))
+  .unwrap();
+  let frame_x = wait_for_scroll_response_x(&rx, tab_id, DEFAULT_TIMEOUT, |next| {
+    next < x - 1.0 || next <= 1.0
+  });
+  assert!(
+    frame_x <= 1.0,
+    "expected ShiftArrowLeft to scroll back toward 0, got {frame_x}"
+  );
 
   drop(tx);
   join.join().unwrap();

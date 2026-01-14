@@ -309,6 +309,26 @@ fn keyboard_scroll_keys_scroll_focused_scroll_container() {
     fastrender::interaction::KeyAction::ArrowDown,
   ))
   .unwrap();
+  let frame = wait_for_frame_with_scroll_state(&rx, tab_id, DEFAULT_TIMEOUT, |scroll| {
+    (scroll.viewport.y - baseline_viewport.y).abs() < 1e-3
+      && scroll
+        .elements
+        .values()
+        .any(|offset| offset.y > element_scroll_y + 1.0)
+  });
+  element_scroll_y = frame
+    .scroll_state
+    .elements
+    .values()
+    .map(|p| p.y)
+    .fold(0.0, f32::max);
+
+  // Shift+ArrowDown should behave like ArrowDown for scrolling.
+  tx.send(key_action(
+    tab_id,
+    fastrender::interaction::KeyAction::ShiftArrowDown,
+  ))
+  .unwrap();
   let _frame = wait_for_frame_with_scroll_state(&rx, tab_id, DEFAULT_TIMEOUT, |scroll| {
     (scroll.viewport.y - baseline_viewport.y).abs() < 1e-3
       && scroll

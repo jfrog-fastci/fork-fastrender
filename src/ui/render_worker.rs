@@ -11240,7 +11240,9 @@ impl BrowserRuntime {
               | crate::interaction::KeyAction::ShiftArrowDown
               | crate::interaction::KeyAction::ShiftArrowUp
               | crate::interaction::KeyAction::ArrowLeft
-              | crate::interaction::KeyAction::ArrowRight => !focus_consumes_arrows,
+              | crate::interaction::KeyAction::ShiftArrowLeft
+              | crate::interaction::KeyAction::ArrowRight
+              | crate::interaction::KeyAction::ShiftArrowRight => !focus_consumes_arrows,
               crate::interaction::KeyAction::Home
               | crate::interaction::KeyAction::End
               | crate::interaction::KeyAction::ShiftHome
@@ -11382,12 +11384,20 @@ impl BrowserRuntime {
                               }
                               _ => {
                                 let delta = match key {
-                                  crate::interaction::KeyAction::ArrowDown => Point::new(0.0, 40.0),
-                                  crate::interaction::KeyAction::ArrowUp => Point::new(0.0, -40.0),
-                                  crate::interaction::KeyAction::ArrowLeft => {
+                                  crate::interaction::KeyAction::ArrowDown
+                                  | crate::interaction::KeyAction::ShiftArrowDown => {
+                                    Point::new(0.0, 40.0)
+                                  }
+                                  crate::interaction::KeyAction::ArrowUp
+                                  | crate::interaction::KeyAction::ShiftArrowUp => {
+                                    Point::new(0.0, -40.0)
+                                  }
+                                  crate::interaction::KeyAction::ArrowLeft
+                                  | crate::interaction::KeyAction::ShiftArrowLeft => {
                                     Point::new(-40.0, 0.0)
                                   }
-                                  crate::interaction::KeyAction::ArrowRight => {
+                                  crate::interaction::KeyAction::ArrowRight
+                                  | crate::interaction::KeyAction::ShiftArrowRight => {
                                     Point::new(40.0, 0.0)
                                   }
                                   crate::interaction::KeyAction::Space
@@ -11517,12 +11527,20 @@ impl BrowserRuntime {
                               }
                               _ => {
                                 let delta = match key {
-                                  crate::interaction::KeyAction::ArrowDown => Point::new(0.0, 40.0),
-                                  crate::interaction::KeyAction::ArrowUp => Point::new(0.0, -40.0),
-                                  crate::interaction::KeyAction::ArrowLeft => {
+                                  crate::interaction::KeyAction::ArrowDown
+                                  | crate::interaction::KeyAction::ShiftArrowDown => {
+                                    Point::new(0.0, 40.0)
+                                  }
+                                  crate::interaction::KeyAction::ArrowUp
+                                  | crate::interaction::KeyAction::ShiftArrowUp => {
+                                    Point::new(0.0, -40.0)
+                                  }
+                                  crate::interaction::KeyAction::ArrowLeft
+                                  | crate::interaction::KeyAction::ShiftArrowLeft => {
                                     Point::new(-40.0, 0.0)
                                   }
-                                  crate::interaction::KeyAction::ArrowRight => {
+                                  crate::interaction::KeyAction::ArrowRight
+                                  | crate::interaction::KeyAction::ShiftArrowRight => {
                                     Point::new(40.0, 0.0)
                                   }
                                   crate::interaction::KeyAction::Space
@@ -11666,12 +11684,14 @@ impl BrowserRuntime {
                     delta_css: (0.0, -40.0),
                     pointer_css: None,
                   }),
-                  crate::interaction::KeyAction::ArrowLeft => Some(UiToWorker::Scroll {
+                  crate::interaction::KeyAction::ArrowLeft
+                  | crate::interaction::KeyAction::ShiftArrowLeft => Some(UiToWorker::Scroll {
                     tab_id,
                     delta_css: (-40.0, 0.0),
                     pointer_css: None,
                   }),
-                  crate::interaction::KeyAction::ArrowRight => Some(UiToWorker::Scroll {
+                  crate::interaction::KeyAction::ArrowRight
+                  | crate::interaction::KeyAction::ShiftArrowRight => Some(UiToWorker::Scroll {
                     tab_id,
                     delta_css: (40.0, 0.0),
                     pointer_css: None,
