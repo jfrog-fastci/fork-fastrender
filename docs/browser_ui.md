@@ -391,6 +391,9 @@ The session file format is versioned (currently v2) and includes:
 - Per-tab zoom
 - Best-effort per-tab scroll restoration
 - Pinned tabs and tab groups (when used)
+- Per-window recently closed tabs (for “Reopen closed tab”)
+- Per-window downloads history (when used)
+- Per-window bookmarks bar visibility (`bookmarks_bar_visible`)
 - Per-window menu bar visibility (`show_menu_bar`)
 - The configured home page URL
 - Best-effort window geometry (position/size/maximized) when available
