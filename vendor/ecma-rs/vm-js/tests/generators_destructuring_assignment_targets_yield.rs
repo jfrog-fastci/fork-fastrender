@@ -450,6 +450,66 @@ fn generator_array_destructuring_rest_target_super_computed_throw_closes_iterato
 }
 
 #[test]
+fn generator_object_destructuring_assignment_target_super_computed_return_aborts_before_getv() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var log = [];
+          class Base {
+            set k(v) { log.push("set"); this._k = v; }
+          }
+          class Derived extends Base {
+            *g() {
+              var src = { get a() { log.push("get"); return 7; } };
+              ({a: super[(yield 0)]} = src);
+              return "unreachable";
+            }
+          }
+          var it = (new Derived()).g();
+          var r0 = it.next();
+          if (r0.done !== false || r0.value !== 0) return false;
+          var r1 = it.return("ret");
+          return r1.done === true && r1.value === "ret" && log.length === 0;
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_object_destructuring_rest_target_super_computed_return_aborts_before_copy_data_properties() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var log = [];
+          class Base {
+            set k(v) { log.push("set"); this._k = v; }
+          }
+          class Derived extends Base {
+            *g() {
+              var src = { get a() { log.push("get"); return 1; } };
+              ({...super[(yield 0)]} = src);
+              return "unreachable";
+            }
+          }
+          var it = (new Derived()).g();
+          var r0 = it.next();
+          if (r0.done !== false || r0.value !== 0) return false;
+          var r1 = it.return("ret");
+          return r1.done === true && r1.value === "ret" && log.length === 0;
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_array_destructuring_assignment_target_super_computed_return_closes_iterator_without_next() {
   let mut rt = new_runtime();
   let value = rt
