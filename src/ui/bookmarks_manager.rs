@@ -1301,9 +1301,9 @@ fn render_folder_row(
       ui.add_space(indent);
       ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         let del = icon_button(ui, BrowserIcon::Trash, "Delete folder", true);
-        del.widget_info({
+        del.widget_info(move || {
           let label = format!("Delete folder: {title}");
-          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
+          egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
         });
         if del.clicked() {
           delete_clicked = true;
@@ -1327,9 +1327,9 @@ fn render_folder_row(
     });
   });
 
-  row_resp.widget_info({
+  row_resp.widget_info(move || {
     let label = format!("Folder: {title}");
-    move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
+    egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
   });
 
   if delete_clicked {
@@ -1416,29 +1416,29 @@ fn render_bookmark_row(
       ui.add_space(indent);
       ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         let del = icon_button(ui, BrowserIcon::Trash, "Delete bookmark", true);
-        del.widget_info({
+        del.widget_info(move || {
           let label =
             a11y_labels::bookmark_delete_label(entry.title.as_deref(), entry.url.as_str());
-          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
+          egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
         });
         if del.clicked() {
           delete_clicked = true;
         }
 
         let edit_btn = icon_button(ui, BrowserIcon::Edit, "Edit bookmark", true);
-        edit_btn.widget_info({
+        edit_btn.widget_info(move || {
           let label = a11y_labels::bookmark_edit_label(entry.title.as_deref(), entry.url.as_str());
-          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
+          egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
         });
         if edit_btn.clicked() {
           edit_clicked = true;
         }
 
         let new_tab = icon_button(ui, BrowserIcon::OpenInNewTab, "Open in new tab", true);
-        new_tab.widget_info({
+        new_tab.widget_info(move || {
           let label =
             a11y_labels::bookmark_open_in_new_tab_label(entry.title.as_deref(), entry.url.as_str());
-          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
+          egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
         });
         if new_tab.clicked() {
           open_new_tab_clicked = true;
@@ -1470,9 +1470,9 @@ fn render_bookmark_row(
   })
   .on_hover_text(entry.url.as_str());
 
-  row_resp.widget_info({
+  row_resp.widget_info(move || {
     let label = format!("Open bookmark: {title} ({})", entry.url);
-    move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
+    egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
   });
 
   if row_resp.clicked() {
