@@ -1129,8 +1129,8 @@ For deterministic, offline repros (no network), the worker supports a few `about
 
 - `about:test-scroll` — a simple tall page for scroll/viewport behavior.
 - `about:test-heavy` — a large DOM intended to make cancellation/timeout behavior observable.
-- `about:test-layout-stress` — a **width-sensitive** layout stress fixture (auto-fit grid + wrapping
-  text) used for resize/scroll responsiveness benchmarks.
+- `about:test-layout-stress` — a **width-sensitive** layout+scroll stress fixture (reflow/wrapping +
+  nested grid/flex) used for resize/scroll responsiveness benchmarks.
 - `about:test-form` — a minimal form for interaction/input testing.
 
 These are used by the browser UI integration tests, but are also handy for manual debugging in the

@@ -11,9 +11,11 @@
 /// 3. build an `accesskit::TreeUpdate` (expensive),
 /// 4. deliver it to the OS via `accesskit_winit::Adapter`.
 ///
-/// `accesskit_winit::Adapter::update_if_active` will drop updates when assistive technology is not
-/// connected. The closure-based API allows callers to keep expensive accessibility builders inside
-/// the `update_if_active` callback so no work happens while AccessKit is inactive.
+/// `accesskit_winit::Adapter::update_if_active` drops updates when assistive technology is not
+/// connected and does not invoke the provided closure.
+///
+/// This makes it a convenient performance gate: keep expensive tree/bounds/update construction
+/// inside the closure so the work is skipped when AccessKit is inactive.
 
 use accesskit::TreeUpdate;
 
@@ -51,7 +53,8 @@ pub fn update_accesskit_if_active<A, Tree, Bounds, BuildTree, BuildBounds, Build
   BuildUpdate: FnOnce(Tree, Bounds) -> TreeUpdate,
 {
   // Keep the expensive work inside the `update_if_active` closure. `accesskit_winit` will only
-  // invoke this callback when assistive technology is connected.
+  // invoke this callback when assistive technology is connected, so we avoid wasted work when
+  // inactive.
   adapter.update_if_active(|| {
     let tree = build_tree();
     let bounds = build_bounds(&tree);
