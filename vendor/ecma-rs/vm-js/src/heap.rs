@@ -80,6 +80,11 @@ struct InternalSymbols {
   string_iterator_iterated_string: Option<GcSymbol>,
   string_iterator_next_index: Option<GcSymbol>,
 
+  // Iterator helpers `WrapForValidIterator` internal slots.
+  wrap_for_valid_iterator_iterated: Option<GcSymbol>,
+  wrap_for_valid_iterator_next_method: Option<GcSymbol>,
+  wrap_for_valid_iterator_done: Option<GcSymbol>,
+
   // RegExp string iterator (`/re/g[Symbol.matchAll](...)`) internal slots.
   regexp_string_iterator_iterating_regexp: Option<GcSymbol>,
   regexp_string_iterator_iterated_string: Option<GcSymbol>,
@@ -1463,6 +1468,9 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
         internal.set_iterator_kind,
         internal.string_iterator_iterated_string,
         internal.string_iterator_next_index,
+        internal.wrap_for_valid_iterator_iterated,
+        internal.wrap_for_valid_iterator_next_method,
+        internal.wrap_for_valid_iterator_done,
         internal.regexp_string_iterator_iterating_regexp,
         internal.regexp_string_iterator_iterated_string,
         internal.regexp_string_iterator_global,
@@ -7564,6 +7572,36 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
       "vm-js.internal.StringIteratorNextIndex",
       |s| s.string_iterator_next_index,
       |s, sym| s.string_iterator_next_index = Some(sym),
+    )
+  }
+
+  pub(crate) fn ensure_internal_wrap_for_valid_iterator_iterated_symbol(
+    &mut self,
+  ) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.WrapForValidIteratorIterated",
+      |s| s.wrap_for_valid_iterator_iterated,
+      |s, sym| s.wrap_for_valid_iterator_iterated = Some(sym),
+    )
+  }
+
+  pub(crate) fn ensure_internal_wrap_for_valid_iterator_next_method_symbol(
+    &mut self,
+  ) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.WrapForValidIteratorNextMethod",
+      |s| s.wrap_for_valid_iterator_next_method,
+      |s, sym| s.wrap_for_valid_iterator_next_method = Some(sym),
+    )
+  }
+
+  pub(crate) fn ensure_internal_wrap_for_valid_iterator_done_symbol(
+    &mut self,
+  ) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.WrapForValidIteratorDone",
+      |s| s.wrap_for_valid_iterator_done,
+      |s, sym| s.wrap_for_valid_iterator_done = Some(sym),
     )
   }
 

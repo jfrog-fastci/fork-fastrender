@@ -9530,6 +9530,409 @@ pub fn iterator_prototype_iterator(
   Ok(this)
 }
 
+fn object_has_prototype_in_chain(
+  heap: &crate::heap::Heap,
+  obj: GcObject,
+  proto: GcObject,
+) -> Result<bool, VmError> {
+  let mut current: Option<GcObject> = Some(obj);
+  let mut steps = 0usize;
+  while let Some(o) = current {
+    if steps >= crate::heap::MAX_PROTOTYPE_CHAIN {
+      return Err(VmError::PrototypeChainTooDeep);
+    }
+    if o == proto {
+      return Ok(true);
+    }
+    steps += 1;
+    current = heap.object_prototype(o)?;
+  }
+  Ok(false)
+}
+
+/// `%Iterator%.from` (iterator helpers proposal).
+///
+/// Spec: https://tc39.es/proposal-iterator-helpers/#sec-iterator.from
+pub fn iterator_from(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let o = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  // Iterator.from throws on primitives except Strings.
+  match o {
+    Value::String(_) | Value::Object(_) => {}
+    _ => return Err(VmError::TypeError("Iterator.from called on non-object")),
+  }
+
+  // Root `o` for the duration of the operation: subsequent allocations (e.g. wrapper creation)
+  // must not allow it to be collected.
+  let mut scope = scope.reborrow();
+  scope.push_root(o)?;
+
+  // `GetIteratorFlattenable(O)`:
+  // - If `O[@@iterator]` is callable, use it to obtain an iterator.
+  // - If `O[@@iterator]` is null/undefined, treat `O` as an iterator directly.
+  let iter_sym = intr.well_known_symbols().iterator;
+  let method = crate::spec_ops::get_method_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    o,
+    PropertyKey::from_symbol(iter_sym),
+  )?;
+
+  let record = if let Some(method) = method {
+    crate::iterator::get_iterator_from_method(vm, host, hooks, &mut scope, o, method)?
+  } else {
+    let Value::Object(obj) = o else {
+      return Err(VmError::TypeError("Iterator.from called on non-object"));
+    };
+
+    // Root the iterator object while allocating the `"next"` property key and performing `Get`.
+    scope.push_root(Value::Object(obj))?;
+
+    let next_key = string_key(&mut scope, "next")?;
+    let next = scope.get_with_host_and_hooks(vm, host, hooks, obj, next_key, o)?;
+    crate::iterator::IteratorRecord {
+      iterator: o,
+      next_method: next,
+      done: false,
+    }
+  };
+
+  let iter = record.iterator;
+  let next_method = record.next_method;
+
+  // Root the iterator and `next` method before any further allocation (wrapper creation and
+  // internal-slot symbol initialization can allocate and GC).
+  scope.push_roots(&[iter, next_method])?;
+
+  let Value::Object(iter_obj) = iter else {
+    return Err(VmError::TypeError("Iterator.from: iterator is not an object"));
+  };
+
+  // If the iterator already inherits from `Iterator.prototype`, return it directly. Otherwise wrap
+  // it with `%WrapForValidIteratorPrototype%` so it has a valid iterator-helper prototype chain.
+  if object_has_prototype_in_chain(scope.heap(), iter_obj, intr.iterator_prototype())? {
+    return Ok(iter);
+  }
+
+  let wrapper = scope.alloc_object_with_prototype(Some(intr.wrap_for_valid_iterator_prototype()))?;
+  scope.push_root(Value::Object(wrapper))?;
+
+  let iterated_sym = scope
+    .heap_mut()
+    .ensure_internal_wrap_for_valid_iterator_iterated_symbol()?;
+  let next_method_sym = scope
+    .heap_mut()
+    .ensure_internal_wrap_for_valid_iterator_next_method_symbol()?;
+  let done_sym = scope
+    .heap_mut()
+    .ensure_internal_wrap_for_valid_iterator_done_symbol()?;
+
+  scope.define_property(
+    wrapper,
+    PropertyKey::from_symbol(iterated_sym),
+    data_desc(iter, true, false, true),
+  )?;
+  scope.define_property(
+    wrapper,
+    PropertyKey::from_symbol(next_method_sym),
+    data_desc(next_method, true, false, true),
+  )?;
+  scope.define_property(
+    wrapper,
+    PropertyKey::from_symbol(done_sym),
+    data_desc(Value::Bool(false), true, false, true),
+  )?;
+
+  Ok(Value::Object(wrapper))
+}
+
+/// `%WrapForValidIteratorPrototype%.next` (iterator helpers proposal).
+pub fn wrap_for_valid_iterator_next(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let Value::Object(this_obj) = this else {
+    return Err(VmError::TypeError(
+      "%WrapForValidIteratorPrototype%.next called on non-object",
+    ));
+  };
+
+  // Root `this` across symbol creation, internal-slot access, and any allocations performed while
+  // producing iterator result objects.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(this_obj))?;
+
+  let iterated_key = PropertyKey::from_symbol(
+    scope
+      .heap_mut()
+      .ensure_internal_wrap_for_valid_iterator_iterated_symbol()?,
+  );
+  let next_method_key = PropertyKey::from_symbol(
+    scope
+      .heap_mut()
+      .ensure_internal_wrap_for_valid_iterator_next_method_symbol()?,
+  );
+  let done_key = PropertyKey::from_symbol(
+    scope
+      .heap_mut()
+      .ensure_internal_wrap_for_valid_iterator_done_symbol()?,
+  );
+
+  let iterated = match get_data_property_value(vm, &mut scope, this_obj, &iterated_key) {
+    Ok(Some(v)) => v,
+    Ok(None) => {
+      return Err(VmError::TypeError(
+        "%WrapForValidIteratorPrototype%.next missing [[Iterated]]",
+      ))
+    }
+    Err(VmError::PropertyNotData) => {
+      return Err(VmError::TypeError(
+        "%WrapForValidIteratorPrototype%.next internal [[Iterated]] is not a data property",
+      ))
+    }
+    Err(err) => return Err(err),
+  };
+  let next_method = match get_data_property_value(vm, &mut scope, this_obj, &next_method_key) {
+    Ok(Some(v)) => v,
+    Ok(None) => {
+      return Err(VmError::TypeError(
+        "%WrapForValidIteratorPrototype%.next missing [[NextMethod]]",
+      ))
+    }
+    Err(VmError::PropertyNotData) => {
+      return Err(VmError::TypeError(
+        "%WrapForValidIteratorPrototype%.next internal [[NextMethod]] is not a data property",
+      ))
+    }
+    Err(err) => return Err(err),
+  };
+  let done = match get_data_property_value(vm, &mut scope, this_obj, &done_key) {
+    Ok(Some(Value::Bool(b))) => b,
+    Ok(Some(v)) => scope.heap().to_boolean(v)?,
+    Ok(None) => false,
+    Err(VmError::PropertyNotData) => {
+      return Err(VmError::TypeError(
+        "%WrapForValidIteratorPrototype%.next internal [[Done]] is not a data property",
+      ))
+    }
+    Err(err) => return Err(err),
+  };
+
+  if done {
+    let out = iterator_result_object(&mut scope, intr.object_prototype(), Value::Undefined, true)?;
+    return Ok(Value::Object(out));
+  }
+
+  // Call the cached `next` method with `this = [[Iterated]]`.
+  let result =
+    match vm.call_with_host_and_hooks(host, &mut scope, hooks, next_method, iterated, &[]) {
+      Ok(v) => v,
+      Err(err) => {
+        // If iteration throws, mark the wrapper as done so further calls do not keep invoking the
+        // underlying iterator.
+        scope.define_property(
+          this_obj,
+          done_key,
+          data_desc(Value::Bool(true), true, false, true),
+        )?;
+        return Err(err);
+      }
+    };
+
+  if !matches!(result, Value::Object(_)) {
+    scope.define_property(
+      this_obj,
+      done_key,
+      data_desc(Value::Bool(true), true, false, true),
+    )?;
+    return Err(VmError::TypeError(
+      "%WrapForValidIteratorPrototype%.next: iterator result is not an object",
+    ));
+  }
+
+  // If `done` is true, remember it on the wrapper.
+  let complete = match crate::iterator::iterator_complete(vm, host, hooks, &mut scope, result) {
+    Ok(v) => v,
+    Err(err) => {
+      scope.define_property(
+        this_obj,
+        done_key,
+        data_desc(Value::Bool(true), true, false, true),
+      )?;
+      return Err(err);
+    }
+  };
+  if complete {
+    scope.define_property(
+      this_obj,
+      done_key,
+      data_desc(Value::Bool(true), true, false, true),
+    )?;
+  }
+  Ok(result)
+}
+
+/// `%WrapForValidIteratorPrototype%.return` (iterator helpers proposal).
+pub fn wrap_for_valid_iterator_return(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let Value::Object(this_obj) = this else {
+    return Err(VmError::TypeError(
+      "%WrapForValidIteratorPrototype%.return called on non-object",
+    ));
+  };
+
+  // Root `this` across internal-slot access and user-observable `GetMethod`/`Call` operations.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(this_obj))?;
+
+  let iterated_key = PropertyKey::from_symbol(
+    scope
+      .heap_mut()
+      .ensure_internal_wrap_for_valid_iterator_iterated_symbol()?,
+  );
+  let done_key = PropertyKey::from_symbol(
+    scope
+      .heap_mut()
+      .ensure_internal_wrap_for_valid_iterator_done_symbol()?,
+  );
+
+  let iterated = match get_data_property_value(vm, &mut scope, this_obj, &iterated_key) {
+    Ok(Some(v)) => v,
+    Ok(None) => {
+      return Err(VmError::TypeError(
+        "%WrapForValidIteratorPrototype%.return missing [[Iterated]]",
+      ))
+    }
+    Err(VmError::PropertyNotData) => {
+      return Err(VmError::TypeError(
+        "%WrapForValidIteratorPrototype%.return internal [[Iterated]] is not a data property",
+      ))
+    }
+    Err(err) => return Err(err),
+  };
+
+  // Mark the wrapper as done.
+  scope.define_property(
+    this_obj,
+    done_key,
+    data_desc(Value::Bool(true), true, false, true),
+  )?;
+
+  // Get `return` from the underlying iterator *at call time*.
+  let return_key = string_key(&mut scope, "return")?;
+  let method = crate::spec_ops::get_method_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    iterated,
+    return_key,
+  )?;
+
+  let Some(method) = method else {
+    let out = iterator_result_object(&mut scope, intr.object_prototype(), Value::Undefined, true)?;
+    return Ok(Value::Object(out));
+  };
+
+  vm.call_with_host_and_hooks(host, &mut scope, hooks, method, iterated, &[])
+}
+
+/// `%IteratorPrototype%.toArray` (iterator helpers proposal).
+///
+/// Spec: https://tc39.es/proposal-iterator-helpers/#sec-iteratorprototype.toarray
+pub fn iterator_prototype_to_array(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let Value::Object(this_obj) = this else {
+    return Err(VmError::TypeError(
+      "Iterator.prototype.toArray called on non-object",
+    ));
+  };
+
+  // Root `this` across key allocation and `Get` of the `"next"` method.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(this_obj))?;
+
+  let next_key = string_key(&mut scope, "next")?;
+  let next_method = scope.get_with_host_and_hooks(vm, host, hooks, this_obj, next_key, this)?;
+  if !scope.heap().is_callable(next_method)? {
+    return Err(VmError::TypeError(
+      "Iterator.prototype.toArray called on object with non-callable next",
+    ));
+  }
+
+  // Root the resolved `next` method for the duration of iteration (it may come from an accessor and
+  // not otherwise be reachable from the heap).
+  scope.push_root(next_method)?;
+
+  let mut record = crate::iterator::IteratorRecord {
+    iterator: this,
+    next_method,
+    done: false,
+  };
+
+  // Create output array.
+  let out = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(out))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(out, Some(intr.array_prototype()))?;
+
+  let mut index: u32 = 0;
+  loop {
+    let next_value =
+      crate::iterator::iterator_step_value(vm, host, hooks, &mut scope, &mut record)?;
+    let Some(next_value) = next_value else {
+      break;
+    };
+
+    // Use a nested scope so temporary roots do not accumulate across potentially large iterations.
+    let mut step_scope = scope.reborrow();
+    step_scope.push_roots(&[Value::Object(out), next_value])?;
+
+    let idx_s = step_scope.alloc_u32_index_string(index)?;
+    step_scope.push_root(Value::String(idx_s))?;
+    let key = PropertyKey::from_string(idx_s);
+    step_scope.create_data_property_or_throw(out, key, next_value)?;
+
+    index = index.saturating_add(1);
+  }
+
+  Ok(Value::Object(out))
+}
+
 fn setter_that_ignores_prototype_properties(
   vm: &mut Vm,
   scope: &mut Scope<'_>,

@@ -42,6 +42,7 @@ pub struct Intrinsics {
   function_prototype: GcObject,
   throw_type_error: GcObject,
   iterator_prototype: GcObject,
+  wrap_for_valid_iterator_prototype: GcObject,
   async_iterator_prototype: GcObject,
   async_function: GcObject,
   async_function_prototype: GcObject,
@@ -734,6 +735,12 @@ impl Intrinsics {
     // `Iterator.prototype[@@toStringTag]` is installed later as an accessor property (iterator
     // helpers proposal) with a "weird setter" (see `SetterThatIgnoresPrototypeProperties`).
 
+    // `%WrapForValidIteratorPrototype%` (iterator helpers proposal).
+    let wrap_for_valid_iterator_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(wrap_for_valid_iterator_prototype, Some(iterator_prototype))?;
+
     // `%ArrayIteratorPrototype%`
     let array_iterator_prototype = alloc_rooted_object(scope, roots)?;
     scope
@@ -1074,6 +1081,13 @@ impl Intrinsics {
       vm.register_native_call(builtins::iterator_prototype_constructor_get)?;
     let iterator_prototype_constructor_set_call =
       vm.register_native_call(builtins::iterator_prototype_constructor_set)?;
+    let iterator_prototype_to_array_call =
+      vm.register_native_call(builtins::iterator_prototype_to_array)?;
+    let iterator_from_call = vm.register_native_call(builtins::iterator_from)?;
+    let wrap_for_valid_iterator_next_call =
+      vm.register_native_call(builtins::wrap_for_valid_iterator_next)?;
+    let wrap_for_valid_iterator_return_call =
+      vm.register_native_call(builtins::wrap_for_valid_iterator_return)?;
     let string_prototype_to_string = vm.register_native_call(builtins::string_prototype_to_string)?;
     let string_prototype_value_of = vm.register_native_call(builtins::string_prototype_value_of)?;
     let string_prototype_to_primitive =
@@ -1394,6 +1408,54 @@ impl Intrinsics {
       )?;
     }
 
+    // `%IteratorPrototype%.toArray` (iterator helpers proposal).
+    {
+      let to_array_name = scope.alloc_string("toArray")?;
+      scope.push_root(Value::String(to_array_name))?;
+      let to_array_fn =
+        scope.alloc_native_function(iterator_prototype_to_array_call, None, to_array_name, 0)?;
+      scope.push_root(Value::Object(to_array_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(to_array_fn, Some(function_prototype))?;
+      scope.define_property(
+        iterator_prototype,
+        PropertyKey::from_string(to_array_name),
+        data_desc(Value::Object(to_array_fn), true, false, true),
+      )?;
+    }
+
+    // `%WrapForValidIteratorPrototype%.next` / `.return` (iterator helpers proposal).
+    {
+      let next_name = scope.alloc_string("next")?;
+      scope.push_root(Value::String(next_name))?;
+      let next_fn =
+        scope.alloc_native_function(wrap_for_valid_iterator_next_call, None, next_name, 0)?;
+      scope.push_root(Value::Object(next_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(next_fn, Some(function_prototype))?;
+      scope.define_property(
+        wrap_for_valid_iterator_prototype,
+        PropertyKey::from_string(next_name),
+        data_desc(Value::Object(next_fn), true, false, true),
+      )?;
+
+      let return_name = scope.alloc_string("return")?;
+      scope.push_root(Value::String(return_name))?;
+      let return_fn =
+        scope.alloc_native_function(wrap_for_valid_iterator_return_call, None, return_name, 0)?;
+      scope.push_root(Value::Object(return_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(return_fn, Some(function_prototype))?;
+      scope.define_property(
+        wrap_for_valid_iterator_prototype,
+        PropertyKey::from_string(return_name),
+        data_desc(Value::Object(return_fn), true, false, true),
+      )?;
+    }
+
     // `%Iterator%` (iterator helpers proposal).
     //
     // This intrinsic is observable as the global `Iterator`, and also via
@@ -1415,6 +1477,22 @@ impl Intrinsics {
       common.prototype,
       data_desc(Value::Object(iterator_prototype), false, false, false),
     )?;
+
+    // `%Iterator%.from` (iterator helpers proposal).
+    {
+      let from_name = scope.alloc_string("from")?;
+      scope.push_root(Value::String(from_name))?;
+      let from_fn = scope.alloc_native_function(iterator_from_call, None, from_name, 1)?;
+      scope.push_root(Value::Object(from_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(from_fn, Some(function_prototype))?;
+      scope.define_property(
+        iterator_obj,
+        PropertyKey::from_string(from_name),
+        data_desc(Value::Object(from_fn), true, false, true),
+      )?;
+    }
     iterator = iterator_obj;
 
     // `%IteratorPrototype%.constructor` (iterator helpers proposal).
@@ -8643,6 +8721,7 @@ impl Intrinsics {
       function_prototype,
       throw_type_error,
       iterator_prototype,
+      wrap_for_valid_iterator_prototype,
       async_iterator_prototype,
       async_function,
       async_function_prototype,
@@ -8794,6 +8873,10 @@ impl Intrinsics {
 
   pub fn iterator_prototype(&self) -> GcObject {
     self.iterator_prototype
+  }
+
+  pub(crate) fn wrap_for_valid_iterator_prototype(&self) -> GcObject {
+    self.wrap_for_valid_iterator_prototype
   }
 
   pub fn async_iterator_prototype(&self) -> GcObject {
