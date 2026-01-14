@@ -10,12 +10,11 @@
 
 use crate::dom2;
 use crate::js::dom_platform::{DocumentId, DomNodeKey, DomPlatform};
+use crate::media::clock::{MediaClock, PlaybackClock, PlaybackState};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use vm_js::Heap;
-
-use crate::media::clock::{MediaClock, PlaybackClock, PlaybackState};
 
 /// Minimal backing state for an `HTMLMediaElement` (`<audio>` / `<video>`).
 ///
@@ -24,6 +23,8 @@ use crate::media::clock::{MediaClock, PlaybackClock, PlaybackState};
 #[derive(Debug)]
 pub(crate) struct MediaElementState {
   clock: PlaybackClock,
+  muted: bool,
+  volume: f64,
 }
 
 impl MediaElementState {
@@ -31,7 +32,11 @@ impl MediaElementState {
     let clock = PlaybackClock::new(master_clock, Duration::ZERO);
     // HTMLMediaElement starts out paused.
     clock.pause();
-    Self { clock }
+    Self {
+      clock,
+      muted: false,
+      volume: 1.0,
+    }
   }
 
   pub(crate) fn paused(&self) -> bool {
@@ -52,6 +57,30 @@ impl MediaElementState {
 
   pub(crate) fn pause(&self) {
     self.clock.pause();
+  }
+
+  pub(crate) fn playback_rate(&self) -> f64 {
+    self.clock.rate()
+  }
+
+  pub(crate) fn set_playback_rate(&self, rate: f64) {
+    self.clock.set_rate(rate);
+  }
+
+  pub(crate) fn muted(&self) -> bool {
+    self.muted
+  }
+
+  pub(crate) fn set_muted(&mut self, muted: bool) {
+    self.muted = muted;
+  }
+
+  pub(crate) fn volume(&self) -> f64 {
+    self.volume
+  }
+
+  pub(crate) fn set_volume(&mut self, volume: f64) {
+    self.volume = volume;
   }
 }
 

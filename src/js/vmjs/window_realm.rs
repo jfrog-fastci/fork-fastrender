@@ -40215,12 +40215,13 @@ fn html_media_element_fast_seek_native(
   if !time.is_finite() || time.is_nan() || time < 0.0 {
     time = 0.0;
   }
+  let time = seconds_f64_to_duration(time);
 
   let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
     return Err(VmError::TypeError("Illegal invocation"));
   };
-  let state = data.media_element_state_registry_mut().get_or_create(key);
-  state.current_time = time;
+  let state = data.media_element_state_mut(key);
+  state.seek(time);
 
   dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "timeupdate")?;
   Ok(Value::Undefined)
@@ -40911,6 +40912,165 @@ fn html_media_element_current_time_set_native(
   state.seek(time);
 
   dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "timeupdate")?;
+  Ok(Value::Undefined)
+}
+
+fn html_media_element_muted_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?
+    .require_html_media_element_handle(scope.heap(), this)?;
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+  };
+  let state = data.media_element_state_mut(key);
+  Ok(Value::Bool(state.muted()))
+}
+
+fn html_media_element_muted_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+  };
+  let key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?
+    .require_html_media_element_handle(scope.heap(), this)?;
+
+  let muted_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let muted = scope.heap().to_boolean(muted_value)?;
+
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+  };
+  let state = data.media_element_state_mut(key);
+  if state.muted() != muted {
+    state.set_muted(muted);
+    dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "volumechange")?;
+  }
+  Ok(Value::Undefined)
+}
+
+fn html_media_element_volume_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?
+    .require_html_media_element_handle(scope.heap(), this)?;
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+  };
+  let state = data.media_element_state_mut(key);
+  Ok(Value::Number(state.volume()))
+}
+
+fn html_media_element_volume_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+  };
+  let key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?
+    .require_html_media_element_handle(scope.heap(), this)?;
+
+  let mut volume = scope
+    .heap_mut()
+    .to_number(args.get(0).copied().unwrap_or(Value::Undefined))?;
+  if !volume.is_finite() || volume.is_nan() {
+    volume = 1.0;
+  }
+  // Clamp to the Web-exposed range.
+  volume = volume.clamp(0.0, 1.0);
+
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+  };
+  let state = data.media_element_state_mut(key);
+  if state.volume() != volume {
+    state.set_volume(volume);
+    dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "volumechange")?;
+  }
+  Ok(Value::Undefined)
+}
+
+fn html_media_element_playback_rate_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?
+    .require_html_media_element_handle(scope.heap(), this)?;
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+  };
+  let state = data.media_element_state_mut(key);
+  Ok(Value::Number(state.playback_rate()))
+}
+
+fn html_media_element_playback_rate_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+  };
+  let key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?
+    .require_html_media_element_handle(scope.heap(), this)?;
+
+  let mut rate = scope
+    .heap_mut()
+    .to_number(args.get(0).copied().unwrap_or(Value::Undefined))?;
+  if !rate.is_finite() || rate.is_nan() {
+    rate = 1.0;
+  }
+
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+  };
+  let state = data.media_element_state_mut(key);
+  let before = state.playback_rate();
+  state.set_playback_rate(rate);
+  let after = state.playback_rate();
+  if before != after {
+    dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "ratechange")?;
+  }
   Ok(Value::Undefined)
 }
 
@@ -52075,6 +52235,105 @@ fn init_window_globals(
       ),
     )?;
 
+    // HTMLMediaElement.prototype.muted
+    let muted_get_call_id = vm.register_native_call(html_media_element_muted_get_native)?;
+    let muted_get_name = scope.alloc_string("get muted")?;
+    scope.push_root(Value::String(muted_get_name))?;
+    let muted_get_func = scope.alloc_native_function(muted_get_call_id, None, muted_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      muted_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(muted_get_func))?;
+
+    let muted_set_call_id = vm.register_native_call(html_media_element_muted_set_native)?;
+    let muted_set_name = scope.alloc_string("set muted")?;
+    scope.push_root(Value::String(muted_set_name))?;
+    let muted_set_func = scope.alloc_native_function(muted_set_call_id, None, muted_set_name, 1)?;
+    scope.heap_mut().object_set_prototype(
+      muted_set_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(muted_set_func))?;
+
+    let muted_key = alloc_key(&mut scope, "muted")?;
+    scope.define_property(
+      html_media_element_proto,
+      muted_key,
+      idl_attribute_desc(Value::Object(muted_get_func), Value::Object(muted_set_func)),
+    )?;
+
+    // HTMLMediaElement.prototype.volume
+    let volume_get_call_id = vm.register_native_call(html_media_element_volume_get_native)?;
+    let volume_get_name = scope.alloc_string("get volume")?;
+    scope.push_root(Value::String(volume_get_name))?;
+    let volume_get_func = scope.alloc_native_function(volume_get_call_id, None, volume_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      volume_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(volume_get_func))?;
+
+    let volume_set_call_id = vm.register_native_call(html_media_element_volume_set_native)?;
+    let volume_set_name = scope.alloc_string("set volume")?;
+    scope.push_root(Value::String(volume_set_name))?;
+    let volume_set_func = scope.alloc_native_function(volume_set_call_id, None, volume_set_name, 1)?;
+    scope.heap_mut().object_set_prototype(
+      volume_set_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(volume_set_func))?;
+
+    let volume_key = alloc_key(&mut scope, "volume")?;
+    scope.define_property(
+      html_media_element_proto,
+      volume_key,
+      idl_attribute_desc(Value::Object(volume_get_func), Value::Object(volume_set_func)),
+    )?;
+
+    // HTMLMediaElement.prototype.playbackRate
+    let playback_rate_get_call_id =
+      vm.register_native_call(html_media_element_playback_rate_get_native)?;
+    let playback_rate_get_name = scope.alloc_string("get playbackRate")?;
+    scope.push_root(Value::String(playback_rate_get_name))?;
+    let playback_rate_get_func = scope.alloc_native_function(
+      playback_rate_get_call_id,
+      None,
+      playback_rate_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      playback_rate_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(playback_rate_get_func))?;
+
+    let playback_rate_set_call_id =
+      vm.register_native_call(html_media_element_playback_rate_set_native)?;
+    let playback_rate_set_name = scope.alloc_string("set playbackRate")?;
+    scope.push_root(Value::String(playback_rate_set_name))?;
+    let playback_rate_set_func = scope.alloc_native_function(
+      playback_rate_set_call_id,
+      None,
+      playback_rate_set_name,
+      1,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      playback_rate_set_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(playback_rate_set_func))?;
+
+    let playback_rate_key = alloc_key(&mut scope, "playbackRate")?;
+    scope.define_property(
+      html_media_element_proto,
+      playback_rate_key,
+      idl_attribute_desc(
+        Value::Object(playback_rate_get_func),
+        Value::Object(playback_rate_set_func),
+      ),
+    )?;
+
     // HTMLMediaElement.prototype.play()
     let play_call_id = vm.register_native_call(html_media_element_play_native)?;
     let play_name = scope.alloc_string("play")?;
@@ -60171,12 +60430,22 @@ mod tests {
         const networkState = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'networkState');
         const readyState = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'readyState');
         const seeking = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'seeking');
+        const paused = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'paused');
+        const muted = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'muted');
+        const volume = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'volume');
+        const playbackRate = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'playbackRate');
         if (!networkState || typeof networkState.get !== 'function' || networkState.set !== undefined) return false;
         if (!readyState || typeof readyState.get !== 'function' || readyState.set !== undefined) return false;
         if (!seeking || typeof seeking.get !== 'function' || seeking.set !== undefined) return false;
-
+        if (!paused || typeof paused.get !== 'function' || paused.set !== undefined) return false;
+        if (!muted || typeof muted.get !== 'function' || typeof muted.set !== 'function') return false;
+        if (!volume || typeof volume.get !== 'function' || typeof volume.set !== 'function') return false;
+        if (!playbackRate || typeof playbackRate.get !== 'function' || typeof playbackRate.set !== 'function') return false;
+ 
         if (typeof HTMLMediaElement.prototype.load !== 'function') return false;
-
+        if (typeof HTMLMediaElement.prototype.play !== 'function') return false;
+        if (typeof HTMLMediaElement.prototype.pause !== 'function') return false;
+ 
         // Brand checks: getters/methods must throw on non-media receivers.
         const bogus = {};
         try { networkState.get.call(bogus); return false; }
@@ -60185,7 +60454,25 @@ mod tests {
         catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
         try { seeking.get.call(bogus); return false; }
         catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
+        try { paused.get.call(bogus); return false; }
+        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
+        try { muted.get.call(bogus); return false; }
+        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
+        try { muted.set.call(bogus, true); return false; }
+        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
+        try { volume.get.call(bogus); return false; }
+        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
+        try { volume.set.call(bogus, 0.5); return false; }
+        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
+        try { playbackRate.get.call(bogus); return false; }
+        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
+        try { playbackRate.set.call(bogus, 2.0); return false; }
+        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
         try { HTMLMediaElement.prototype.load.call(bogus); return false; }
+        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
+        try { HTMLMediaElement.prototype.play.call(bogus); return false; }
+        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
+        try { HTMLMediaElement.prototype.pause.call(bogus); return false; }
         catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
         return true;
       })()"#,
@@ -60242,11 +60529,13 @@ mod tests {
         if (video.paused !== true) throw new Error(`expected paused true, got ${video.paused}`);
         let fired = 0;
         video.addEventListener('play', () => { fired++; });
-        video.play();
+        const p1 = video.play();
+        if (!(p1 instanceof Promise)) throw new Error('expected play() to return a Promise');
         if (video.paused !== false) throw new Error(`expected paused false, got ${video.paused}`);
         if (fired !== 1) throw new Error(`expected fired 1, got ${fired}`);
         // Calling play again should be a no-op for the paused state and event.
-        video.play();
+        const p2 = video.play();
+        if (!(p2 instanceof Promise)) throw new Error('expected play() to return a Promise (2)');
         if (fired !== 1) throw new Error(`expected fired 1 after second play, got ${fired}`);
         return true;
       })()"#,
@@ -60357,6 +60646,85 @@ mod tests {
     clock.advance(Duration::from_secs(1));
     let t3 = exec_script_with_dom_host(&mut realm, &mut host, "globalThis.v.currentTime")?;
     assert_eq!(t3, Value::Number(1.5));
+
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_volume_and_muted_dispatch_volumechange_event() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const video = document.createElement('video');
+        if (video.volume !== 1) throw new Error(`expected volume 1, got ${video.volume}`);
+        if (video.muted !== false) throw new Error(`expected muted false, got ${video.muted}`);
+
+        let fired = 0;
+        video.onvolumechange = () => { fired++; };
+
+        video.volume = 0.5;
+        if (video.volume !== 0.5) throw new Error(`expected volume 0.5, got ${video.volume}`);
+        if (fired !== 1) throw new Error(`expected fired 1, got ${fired}`);
+
+        // Same value should not dispatch again.
+        video.volume = 0.5;
+        if (fired !== 1) throw new Error(`expected fired 1 after redundant set, got ${fired}`);
+
+        video.muted = true;
+        if (video.muted !== true) throw new Error(`expected muted true, got ${video.muted}`);
+        if (fired !== 2) throw new Error(`expected fired 2, got ${fired}`);
+
+        // Clamp volume to [0, 1] and still dispatch when the effective value changes.
+        video.volume = 2;
+        if (video.volume !== 1) throw new Error(`expected clamped volume 1, got ${video.volume}`);
+        if (fired !== 3) throw new Error(`expected fired 3 after clamp, got ${fired}`);
+
+        video.volume = -1;
+        if (video.volume !== 0) throw new Error(`expected clamped volume 0, got ${video.volume}`);
+        if (fired !== 4) throw new Error(`expected fired 4 after clamp, got ${fired}`);
+
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_playback_rate_dispatches_ratechange_event() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const video = document.createElement('video');
+        if (video.playbackRate !== 1) throw new Error(`expected playbackRate 1, got ${video.playbackRate}`);
+
+        let fired = 0;
+        video.addEventListener('ratechange', () => { fired++; });
+
+        video.playbackRate = 2;
+        if (video.playbackRate !== 2) throw new Error(`expected playbackRate 2, got ${video.playbackRate}`);
+        if (fired !== 1) throw new Error(`expected fired 1, got ${fired}`);
+
+        // Same value should not dispatch again.
+        video.playbackRate = 2;
+        if (fired !== 1) throw new Error(`expected fired 1 after redundant set, got ${fired}`);
+
+        // Non-finite values should coerce back to 1.0.
+        video.playbackRate = NaN;
+        if (video.playbackRate !== 1) throw new Error(`expected playbackRate 1 after NaN, got ${video.playbackRate}`);
+        if (fired !== 2) throw new Error(`expected fired 2 after NaN, got ${fired}`);
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 
@@ -71064,40 +71432,6 @@ mod tests {
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
-    Ok(())
-  }
-
-  #[test]
-  fn html_media_element_play_pause_updates_paused_state() -> Result<(), VmError> {
-    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
-    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
-    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
-
-    let result = exec_script_with_dom_host(
-      &mut realm,
-      &mut host,
-      r#"(() => {
-        const video = document.createElement('video');
-        if (video.paused !== true) return 'initial-paused';
-        const p = video.play();
-        if (!(p instanceof Promise)) return 'play-not-promise';
-        if (video.paused !== false) return 'after-play';
-        if (video.pause() !== undefined) return 'pause-return';
-        if (video.paused !== true) return 'after-pause';
-
-        const desc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'paused');
-        if (!desc || typeof desc.get !== 'function' || desc.set !== undefined) return 'desc';
-        const bogus = document.createElement('div');
-        try { desc.get.call(bogus); return 'illegal_get:no'; }
-        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return 'illegal_get:' + e.name + ':' + e.message; }
-        try { HTMLMediaElement.prototype.play.call(bogus); return 'illegal_play:no'; }
-        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return 'illegal_play:' + e.name + ':' + e.message; }
-        try { HTMLMediaElement.prototype.pause.call(bogus); return 'illegal_pause:no'; }
-        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return 'illegal_pause:' + e.name + ':' + e.message; }
-        return 'ok';
-      })()"#,
-    )?;
-    assert_eq!(get_string(realm.heap(), result), "ok");
     Ok(())
   }
 
