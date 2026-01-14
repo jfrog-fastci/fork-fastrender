@@ -295,3 +295,56 @@ fn generator_array_literal_yield_in_spread_preserves_left_to_right_eval_order() 
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_array_literal_elisions_around_spread_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() { return [ , ...(yield 0), , 4 ]; }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next([1, 2]);
+      r1.value === 0 && r1.done === false &&
+      r2.done === true &&
+      Array.isArray(r2.value) &&
+      r2.value.length === 5 &&
+      Object.prototype.hasOwnProperty.call(r2.value, 0) === false &&
+      r2.value[1] === 1 &&
+      r2.value[2] === 2 &&
+      Object.prototype.hasOwnProperty.call(r2.value, 3) === false &&
+      r2.value[4] === 4
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_array_literal_multiple_yields_mixed_single_and_spread() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() { return [ (yield 1), ...(yield 2), (yield 3) ]; }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next("a");
+      var r3 = it.next([10, 20]);
+      var r4 = it.next("b");
+      r1.value === 1 && r1.done === false &&
+      r2.value === 2 && r2.done === false &&
+      r3.value === 3 && r3.done === false &&
+      r4.done === true &&
+      Array.isArray(r4.value) &&
+      r4.value.length === 4 &&
+      r4.value[0] === "a" &&
+      r4.value[1] === 10 &&
+      r4.value[2] === 20 &&
+      r4.value[3] === "b"
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
