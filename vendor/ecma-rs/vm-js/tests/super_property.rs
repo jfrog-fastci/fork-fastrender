@@ -304,6 +304,40 @@ fn super_method_call_uses_this_binding_as_receiver_compiled() -> Result<(), VmEr
 }
 
 #[test]
+fn super_method_call_uses_call_receiver() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class B { m(){ return this.v; } }
+        class D extends B {
+          g(){ return super.m(); }
+        }
+        D.prototype.g.call({ v: 3 }) === 3
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn super_method_call_uses_call_receiver_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class B { m(){ return this.v; } }
+      class D extends B {
+        g(){ return super.m(); }
+      }
+      D.prototype.g.call({ v: 3 }) === 3
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn super_method_call_in_derived_constructor_after_super_uses_this_binding() {
   let mut rt = new_runtime();
   let value = rt
@@ -385,6 +419,52 @@ fn super_property_getter_setter_use_this_binding_compiled() -> Result<(), VmErro
       var d = new D();
       d.setX(42);
       d.getX() === 42 && d._x === 42
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn super_property_getter_setter_uses_call_receiver() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class B {
+          get x(){ return this._x; }
+          set x(v){ this._x = v; }
+        }
+        class D extends B {
+          setX(v){ super.x = v; }
+          getX(){ return super.x; }
+        }
+        const o = { _x: 0 };
+        D.prototype.setX.call(o, 10);
+        D.prototype.getX.call(o) === 10 && o._x === 10
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn super_property_getter_setter_uses_call_receiver_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class B {
+        get x(){ return this._x; }
+        set x(v){ this._x = v; }
+      }
+      class D extends B {
+        setX(v){ super.x = v; }
+        getX(){ return super.x; }
+      }
+      const o = { _x: 0 };
+      D.prototype.setX.call(o, 10);
+      D.prototype.getX.call(o) === 10 && o._x === 10
     "#,
   )?;
   assert_eq!(value, Value::Bool(true));
