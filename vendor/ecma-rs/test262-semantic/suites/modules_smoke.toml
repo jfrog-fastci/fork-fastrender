@@ -47,8 +47,3 @@ include = [
   "language/import/dup-*.js",
   "language/export/escaped-*.js",
 ]
-
-# Exclude helper modules (fixtures) that live alongside tests.
-exclude = [
-  "**/*FIXTURE*.js",
-]
