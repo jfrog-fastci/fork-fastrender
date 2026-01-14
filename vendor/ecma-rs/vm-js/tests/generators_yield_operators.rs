@@ -879,3 +879,111 @@ fn generators_yield_in_object_literals() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generators_yield_in_object_literals_gc_safety() {
+  let mut rt = new_runtime_with_frequent_gc();
+  rt
+    .exec_script(
+      r#"
+        function churn() {
+          // Allocate enough to exceed the GC threshold and force a collection.
+          //
+          // Use a single large ArrayBuffer-backed TypedArray so this stays fast while still
+          // deterministically triggering a GC due to the small `gc_threshold` configured in the
+          // test runtime.
+          const buf = new Uint8Array(2 * 1024 * 1024);
+          return buf.length;
+        }
+
+        function* g() {
+          return { a: 0, ...(yield "spread"), [(yield "k")]: (yield "v"), b: 2 };
+        }
+        var it = g();
+        var r1 = it.next();
+      "#,
+    )
+    .unwrap();
+
+  let gc_before = rt.heap.gc_runs();
+  rt.exec_script("churn();").unwrap();
+  let gc_after = rt.heap.gc_runs();
+  assert!(
+    gc_after > gc_before,
+    "expected at least one GC cycle while generator is suspended in object literal (after spread yield)"
+  );
+
+  rt.exec_script(r#"var r2 = it.next({ x: 1 });"#).unwrap();
+  let gc_before = rt.heap.gc_runs();
+  rt.exec_script("churn();").unwrap();
+  let gc_after = rt.heap.gc_runs();
+  assert!(
+    gc_after > gc_before,
+    "expected at least one GC cycle while generator is suspended in object literal (after computed-key yield)"
+  );
+
+  rt.exec_script(r#"var r3 = it.next("prop");"#).unwrap();
+  let gc_before = rt.heap.gc_runs();
+  rt.exec_script("churn();").unwrap();
+  let gc_after = rt.heap.gc_runs();
+  assert!(
+    gc_after > gc_before,
+    "expected at least one GC cycle while generator is suspended in object literal (after value yield)"
+  );
+
+  let value = rt
+    .exec_script(
+      r#"
+        var r4 = it.next(10);
+        var o = r4.value;
+        r1.value === "spread" && r1.done === false &&
+        r2.value === "k" && r2.done === false &&
+        r3.value === "v" && r3.done === false &&
+        r4.done === true &&
+        o.a === 0 && o.x === 1 && o.prop === 10 && o.b === 2
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generators_yield_in_object_literals_proto_setter() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        // Direct `__proto__` property is a special-case prototype setter.
+        const proto = { marker: 1 };
+        function* direct_proto() {
+          const o = { __proto__: (yield "proto"), x: 1 };
+          return Object.getPrototypeOf(o) === proto &&
+            Object.getOwnPropertyDescriptor(o, "__proto__") === undefined &&
+            o.x === 1;
+        }
+        const it1 = direct_proto();
+        const a1 = it1.next();
+        const a2 = it1.next(proto);
+        const ok1 = a1.value === "proto" && a1.done === false && a2.value === true && a2.done === true;
+
+        // Computed `["__proto__"]` is *not* a prototype setter; it should create a data property.
+        function* computed_proto() {
+          const o = { [(yield "__proto__")]: (yield 1) };
+          return Object.getPrototypeOf(o) === Object.prototype &&
+            Object.getOwnPropertyDescriptor(o, "__proto__").value === 7;
+        }
+        const it2 = computed_proto();
+        const b1 = it2.next();
+        const b2 = it2.next("__proto__");
+        const b3 = it2.next(7);
+        const ok2 =
+          b1.value === "__proto__" && b1.done === false &&
+          b2.value === 1 && b2.done === false &&
+          b3.value === true && b3.done === true;
+
+        ok1 && ok2
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
