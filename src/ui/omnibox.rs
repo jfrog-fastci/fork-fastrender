@@ -1054,12 +1054,7 @@ fn cmp_ascii_lowercase(a: &str, b: &str) -> Ordering {
 }
 
 fn tokenize_lower<'a>(input_lower: &'a str) -> SmallVec<[&'a str; 4]> {
-  // `split_whitespace` never yields empty tokens, but keep the filter for paranoia since this
-  // function is used on hot UI paths.
-  input_lower
-    .split_whitespace()
-    .filter(|t| !t.is_empty())
-    .collect()
+  input_lower.split_whitespace().collect()
 }
 
 // -----------------------------------------------------------------------------
