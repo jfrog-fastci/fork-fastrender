@@ -3,31 +3,77 @@
 use crate::dom2;
 use std::num::NonZeroU128;
 
-/// AccessKit `NodeId` bit layout for nodes backed by `dom2::NodeId`.
+/// AccessKit `NodeId` encoding used by FastRender.
 ///
-/// We encode `dom2` node ids into AccessKit ids so that:
-/// - IDs are stable across renderer preorder changes (DOM insertions/removals).
-/// - Action routing can recover the underlying `dom2::NodeId`.
-/// - Multiple ID spaces (chrome vs content, future remote documents, etc.) can coexist without
-///   collisions by reserving high bits for a namespace.
+/// AccessKit node ids are `NonZeroU128` (`accesskit::NodeId`). When we compose multiple subtrees
+/// (egui widgets, compositor wrapper nodes, FastRender DOM nodes, JS/dom2 nodes, multiple tabs, …)
+/// into a single AccessKit tree, we must guarantee there are no `NodeId` collisions.
+///
+/// FastRender reserves the high 16 bits of the 128-bit space:
 ///
 /// Layout (big-endian, MSB → LSB):
-/// - 8 bits: fixed FastRender marker (`0xFA`) to avoid colliding with other toolkits.
+/// - 8 bits: fixed FastRender marker (`0xFA`) to avoid colliding with non-FastRender producers.
 /// - 8 bits: namespace (`FASTR_ACCESSKIT_NAMESPACE_*`).
-/// - 112 bits: payload.
+/// - 112 bits: payload (layout depends on namespace).
 ///
-/// For `dom2` nodes, the payload is `dom2::NodeId.index() + 1` (so `0` is never used, satisfying
-/// AccessKit's `NonZeroU128` requirement).
+/// This makes IDs:
+/// - collision-free across independently generated subtrees,
+/// - reversible (namespace + payload can be recovered without a global map),
+/// - stable across updates (callers choose stable payloads).
 const FASTR_ACCESSKIT_MARKER: u8 = 0xFA;
 
 /// Namespace for `dom2::NodeId`-backed nodes.
 ///
-/// Reserved high bits allow future composition of multiple FastRender trees (e.g. chrome + content)
-/// without `NodeId` collisions.
+/// Payload: `dom2::NodeId.index() + 1` (so `0` is never used, satisfying invariants even if we ever
+/// drop the fixed marker).
 const FASTR_ACCESSKIT_NAMESPACE_DOM2: u8 = 0x01;
+
+/// Namespace for chrome/compositor wrapper nodes (window root, chrome region, page region).
+///
+/// Payload: [`ChromeWrapperNode`] discriminant.
+const FASTR_ACCESSKIT_NAMESPACE_CHROME_WRAPPER: u8 = 0x02;
+
+/// Namespace for DOM pre-order ids belonging to the browser chrome document (renderer-chrome).
+///
+/// Payload: 1-indexed DOM pre-order node id.
+const FASTR_ACCESSKIT_NAMESPACE_CHROME_DOM_PREORDER: u8 = 0x03;
+
+/// Namespace for DOM pre-order ids belonging to a rendered page/document.
+///
+/// Payload layout (112 bits):
+/// - bits 111..64: tab id (48 bits, non-zero)
+/// - bits 63..32: document generation (32 bits)
+/// - bits 31..0: DOM pre-order node id (u32, non-zero; clamped from `usize`)
+const FASTR_ACCESSKIT_NAMESPACE_PAGE_DOM_PREORDER: u8 = 0x04;
 
 const PAYLOAD_BITS: u32 = 112;
 const PAYLOAD_MASK: u128 = (1u128 << PAYLOAD_BITS) - 1;
+
+const PAGE_TAB_ID_BITS: u32 = 48;
+const PAGE_TAB_ID_MAX: u64 = (1u64 << PAGE_TAB_ID_BITS) - 1;
+
+fn encode_namespaced_id(namespace: u8, payload: u128) -> accesskit::NodeId {
+  debug_assert!(
+    payload <= PAYLOAD_MASK,
+    "AccessKit id payload too large for FastRender encoding"
+  );
+  let raw = ((FASTR_ACCESSKIT_MARKER as u128) << 120)
+    | ((namespace as u128) << 112)
+    | (payload & PAYLOAD_MASK);
+  accesskit::NodeId(NonZeroU128::new(raw).expect("encoded AccessKit NodeId must be non-zero"))
+  // fastrender-allow-unwrap
+}
+
+fn decode_namespaced_id(node: accesskit::NodeId) -> Option<(u8, u128)> {
+  let raw = node.0.get();
+  let marker = (raw >> 120) as u8;
+  if marker != FASTR_ACCESSKIT_MARKER {
+    return None;
+  }
+  let namespace = ((raw >> 112) & 0xFF) as u8;
+  let payload = raw & PAYLOAD_MASK;
+  Some((namespace, payload))
+}
 
 /// Encode a stable `dom2::NodeId` as an AccessKit `NodeId`.
 pub fn accesskit_id_for_dom2(node: dom2::NodeId) -> accesskit::NodeId {
@@ -37,32 +83,181 @@ pub fn accesskit_id_for_dom2(node: dom2::NodeId) -> accesskit::NodeId {
     payload <= PAYLOAD_MASK,
     "dom2::NodeId index too large to encode into AccessKit NodeId"
   );
-
-  let raw = ((FASTR_ACCESSKIT_MARKER as u128) << 120)
-    | ((FASTR_ACCESSKIT_NAMESPACE_DOM2 as u128) << 112)
-    | (payload & PAYLOAD_MASK);
-  accesskit::NodeId(NonZeroU128::new(raw).expect("encoded AccessKit NodeId must be non-zero")) // fastrender-allow-unwrap
+  encode_namespaced_id(FASTR_ACCESSKIT_NAMESPACE_DOM2, payload)
 }
 
 /// Attempt to decode an AccessKit `NodeId` back into a stable `dom2::NodeId`.
 ///
 /// Returns `None` if the node id is not in the `dom2` namespace.
 pub fn dom2_id_from_accesskit(node: accesskit::NodeId) -> Option<dom2::NodeId> {
-  let raw = node.0.get();
-  let marker = (raw >> 120) as u8;
-  if marker != FASTR_ACCESSKIT_MARKER {
-    return None;
-  }
-
-  let namespace = ((raw >> 112) & 0xFF) as u8;
+  let (namespace, payload) = decode_namespaced_id(node)?;
   if namespace != FASTR_ACCESSKIT_NAMESPACE_DOM2 {
     return None;
   }
-
-  let payload = raw & PAYLOAD_MASK;
   let idx = payload.checked_sub(1)?;
   if idx > (usize::MAX as u128) {
     return None;
   }
   Some(dom2::NodeId::from_index(idx as usize))
+}
+
+/// Stable wrapper nodes for FastRender-driven browser chrome accessibility trees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ChromeWrapperNode {
+  /// Platform/window root node.
+  Window = 1,
+  /// Chrome region wrapper (toolbar/tab strip/etc).
+  Chrome = 2,
+  /// Page/content region wrapper.
+  Page = 3,
+}
+
+pub fn accesskit_id_for_chrome_wrapper(node: ChromeWrapperNode) -> accesskit::NodeId {
+  encode_namespaced_id(FASTR_ACCESSKIT_NAMESPACE_CHROME_WRAPPER, node as u8 as u128)
+}
+
+pub fn chrome_wrapper_from_accesskit(node: accesskit::NodeId) -> Option<ChromeWrapperNode> {
+  let (namespace, payload) = decode_namespaced_id(node)?;
+  if namespace != FASTR_ACCESSKIT_NAMESPACE_CHROME_WRAPPER {
+    return None;
+  }
+  match payload {
+    1 => Some(ChromeWrapperNode::Window),
+    2 => Some(ChromeWrapperNode::Chrome),
+    3 => Some(ChromeWrapperNode::Page),
+    _ => None,
+  }
+}
+
+/// Encode a 1-indexed DOM pre-order node id belonging to the chrome document (renderer-chrome).
+pub fn accesskit_id_for_chrome_dom_preorder(dom_node_id: usize) -> accesskit::NodeId {
+  debug_assert!(
+    dom_node_id != 0,
+    "expected DOM preorder ids to be 1-indexed"
+  );
+  encode_namespaced_id(
+    FASTR_ACCESSKIT_NAMESPACE_CHROME_DOM_PREORDER,
+    dom_node_id as u128,
+  )
+}
+
+pub fn chrome_dom_preorder_from_accesskit(node: accesskit::NodeId) -> Option<usize> {
+  let (namespace, payload) = decode_namespaced_id(node)?;
+  if namespace != FASTR_ACCESSKIT_NAMESPACE_CHROME_DOM_PREORDER {
+    return None;
+  }
+  let dom = usize::try_from(payload).ok()?;
+  if dom == 0 {
+    return None;
+  }
+  Some(dom)
+}
+
+/// Encode a 1-indexed DOM pre-order node id belonging to a rendered page/document.
+pub fn accesskit_id_for_page_dom_preorder(
+  tab_id: u64,
+  document_generation: u32,
+  dom_node_id: usize,
+) -> accesskit::NodeId {
+  assert!(
+    tab_id != 0,
+    "tab_id=0 is reserved for invalid page node ids"
+  );
+  assert!(
+    tab_id <= PAGE_TAB_ID_MAX,
+    "tab_id={tab_id} too large for FastRender AccessKit NodeId encoding (max {PAGE_TAB_ID_MAX})"
+  );
+
+  let dom_u32 = if dom_node_id > u32::MAX as usize {
+    u32::MAX
+  } else {
+    dom_node_id as u32
+  };
+
+  let payload =
+    ((tab_id as u128) << 64) | ((document_generation as u128) << 32) | (dom_u32 as u128);
+  encode_namespaced_id(FASTR_ACCESSKIT_NAMESPACE_PAGE_DOM_PREORDER, payload)
+}
+
+pub fn page_dom_preorder_from_accesskit(node: accesskit::NodeId) -> Option<(u64, u32, usize)> {
+  let (namespace, payload) = decode_namespaced_id(node)?;
+  if namespace != FASTR_ACCESSKIT_NAMESPACE_PAGE_DOM_PREORDER {
+    return None;
+  }
+  let tab_id = (payload >> 64) as u64;
+  if tab_id == 0 {
+    return None;
+  }
+  let generation = ((payload >> 32) & 0xFFFF_FFFF) as u32;
+  let dom_node_id = (payload & 0xFFFF_FFFF) as u32;
+  if dom_node_id == 0 {
+    return None;
+  }
+  Some((tab_id, generation, dom_node_id as usize))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::collections::HashSet;
+
+  #[test]
+  fn chrome_dom_preorder_round_trips_for_typical_ids() {
+    for dom in [1usize, 2, 42, 10_000] {
+      let id = accesskit_id_for_chrome_dom_preorder(dom);
+      assert_eq!(chrome_dom_preorder_from_accesskit(id), Some(dom));
+    }
+  }
+
+  #[test]
+  fn page_dom_preorder_round_trips_and_includes_tab_and_generation() {
+    let tab_id = 7u64;
+    let gen = 42u32;
+    for dom in [1usize, 2, 99, 123_456] {
+      let id = accesskit_id_for_page_dom_preorder(tab_id, gen, dom);
+      assert_eq!(
+        page_dom_preorder_from_accesskit(id),
+        Some((tab_id, gen, dom.min(u32::MAX as usize)))
+      );
+    }
+  }
+
+  #[test]
+  fn wrapper_ids_never_decode_as_dom_ids() {
+    let wrapper_ids = [
+      accesskit_id_for_chrome_wrapper(ChromeWrapperNode::Window),
+      accesskit_id_for_chrome_wrapper(ChromeWrapperNode::Chrome),
+      accesskit_id_for_chrome_wrapper(ChromeWrapperNode::Page),
+    ];
+    for id in wrapper_ids {
+      assert_eq!(chrome_dom_preorder_from_accesskit(id), None);
+      assert_eq!(page_dom_preorder_from_accesskit(id), None);
+    }
+  }
+
+  #[test]
+  fn dom_id_one_does_not_collide_with_wrapper_ids() {
+    let wrapper_ids = [
+      accesskit_id_for_chrome_wrapper(ChromeWrapperNode::Window),
+      accesskit_id_for_chrome_wrapper(ChromeWrapperNode::Chrome),
+      accesskit_id_for_chrome_wrapper(ChromeWrapperNode::Page),
+    ];
+    let page_dom_root = accesskit_id_for_page_dom_preorder(1, 1, 1);
+    for wrapper in wrapper_ids {
+      assert_ne!(page_dom_root.0.get(), wrapper.0.get());
+    }
+  }
+
+  #[test]
+  fn different_wrapper_nodes_have_distinct_ids() {
+    let mut set = HashSet::new();
+    for wrapper in [
+      ChromeWrapperNode::Window,
+      ChromeWrapperNode::Chrome,
+      ChromeWrapperNode::Page,
+    ] {
+      assert!(set.insert(accesskit_id_for_chrome_wrapper(wrapper).0.get()));
+    }
+  }
 }

@@ -7,54 +7,36 @@
 
 #[cfg(feature = "a11y_accesskit")]
 mod accesskit_ids {
+  use crate::accessibility::accesskit_ids::{
+    accesskit_id_for_chrome_wrapper, accesskit_id_for_page_dom_preorder,
+    page_dom_preorder_from_accesskit, ChromeWrapperNode,
+  };
   use crate::ui::messages::TabId;
-  use std::num::NonZeroU128;
 
   /// Encode a page accessibility node identity into an AccessKit [`accesskit::NodeId`].
   ///
-  /// Layout (u128):
-  /// - bits 127..64: tab id
-  /// - bits 63..32: document generation
-  /// - bits 31..0: DOM preorder node id (truncated to u32, but clamped instead of wrapped)
-  ///
-  /// The tab id lives in the upper 64 bits so the resulting `NodeId` is extremely unlikely to
-  /// collide with egui's widget node ids (which are typically derived from a 64-bit hash and placed
-  /// in the lower bits).
+  /// This uses FastRender's marker+namespace scheme (see
+  /// [`crate::accessibility::accesskit_ids`]) so page node ids can coexist with:
+  /// - compositor wrapper nodes,
+  /// - future renderer-chrome DOM nodes,
+  /// - dom2/JS-backed node ids,
+  /// - egui widget node ids,
+  /// without collisions.
   pub fn encode_page_node_id(
     tab_id: TabId,
     document_generation: u32,
     dom_node_id: usize,
   ) -> accesskit::NodeId {
-    let dom_node_id_u32 = if dom_node_id > u32::MAX as usize {
-      u32::MAX
-    } else {
-      dom_node_id as u32
-    };
-
-    let value = ((tab_id.0 as u128) << 64)
-      | ((document_generation as u128) << 32)
-      | (dom_node_id_u32 as u128);
-
-    // TabId is process-unique and never 0, so the packed value is non-zero.
-    accesskit::NodeId(NonZeroU128::new(value).expect("packed page node id must be non-zero"))
+    accesskit_id_for_page_dom_preorder(tab_id.0, document_generation, dom_node_id)
   }
 
   /// Decode an AccessKit [`accesskit::NodeId`] produced by [`encode_page_node_id`].
   ///
-  /// Returns `None` for node ids that do not belong to the page accessibility space (e.g. egui
-  /// chrome nodes).
+  /// Returns `None` for node ids that do not belong to the page accessibility namespace (e.g. egui
+  /// chrome widgets or compositor wrapper nodes).
   pub fn decode_page_node_id(node_id: accesskit::NodeId) -> Option<(TabId, u32, usize)> {
-    let value = node_id.0.get();
-    let tab_id = (value >> 64) as u64;
-    if tab_id == 0 {
-      return None;
-    }
-    let generation = ((value >> 32) & 0xFFFF_FFFF) as u32;
-    let dom_node_id = (value & 0xFFFF_FFFF) as u32;
-    if dom_node_id == 0 {
-      return None;
-    }
-    Some((TabId(tab_id), generation, dom_node_id as usize))
+    let (tab_id, generation, dom_node_id) = page_dom_preorder_from_accesskit(node_id)?;
+    Some((TabId(tab_id), generation, dom_node_id))
   }
 
   /// Helper for UI-side action routing: return a page DOM node id only when the action request
@@ -77,20 +59,22 @@ mod accesskit_ids {
   #[cfg(test)]
   mod tests {
     use super::*;
-    use std::num::NonZeroU128;
 
     #[test]
-    fn page_ids_do_not_collide_with_small_wrapper_ids() {
-      // The compositor (non-egui) accessibility tree reserves small integer node ids like 1/2/3 for
-      // Window/Chrome/Page wrapper nodes. Page subtree ids must never collide with those, even when
-      // the DOM node id itself is 1/2/3.
+    fn page_ids_do_not_collide_with_wrapper_ids() {
+      let wrappers = [
+        accesskit_id_for_chrome_wrapper(ChromeWrapperNode::Window),
+        accesskit_id_for_chrome_wrapper(ChromeWrapperNode::Chrome),
+        accesskit_id_for_chrome_wrapper(ChromeWrapperNode::Page),
+      ];
+
       let tab_id = TabId(1);
       let gen = 1;
       for dom in 1usize..=3 {
         let node_id = encode_page_node_id(tab_id, gen, dom);
-        assert_ne!(node_id.0.get(), 1);
-        assert_ne!(node_id.0.get(), 2);
-        assert_ne!(node_id.0.get(), 3);
+        for wrapper in wrappers {
+          assert_ne!(node_id.0.get(), wrapper.0.get());
+        }
       }
     }
 
@@ -132,15 +116,18 @@ mod accesskit_ids {
 
     #[test]
     fn wrapper_node_ids_do_not_decode_as_page_nodes() {
-      // Wrapper nodes (window/chrome/page roots) typically use small ids like `1`/`2`/`3` in the
-      // lower bits. These must never be interpreted as page/content nodes.
-      let wrapper = accesskit::NodeId(NonZeroU128::new(1).unwrap());
-      assert_eq!(decode_page_node_id(wrapper), None);
+      for wrapper in [
+        accesskit_id_for_chrome_wrapper(ChromeWrapperNode::Window),
+        accesskit_id_for_chrome_wrapper(ChromeWrapperNode::Chrome),
+        accesskit_id_for_chrome_wrapper(ChromeWrapperNode::Page),
+      ] {
+        assert_eq!(decode_page_node_id(wrapper), None);
+      }
     }
 
     #[test]
     fn dom_id_one_does_not_collide_with_wrapper_id_one() {
-      let wrapper = accesskit::NodeId(NonZeroU128::new(1).unwrap());
+      let wrapper = accesskit_id_for_chrome_wrapper(ChromeWrapperNode::Window);
       let dom_root = encode_page_node_id(TabId(1), 1, 1);
       assert_ne!(dom_root.0.get(), wrapper.0.get());
     }
@@ -151,7 +138,10 @@ mod accesskit_ids {
       let gen = 1u32;
       for dom in [1usize, 2, 42, 10_000] {
         let node_id = encode_page_node_id(tab_id, gen, dom);
-        assert_eq!(decode_page_node_id(node_id), Some((tab_id, gen, dom.min(u32::MAX as usize))));
+        assert_eq!(
+          decode_page_node_id(node_id),
+          Some((tab_id, gen, dom.min(u32::MAX as usize)))
+        );
       }
     }
   }

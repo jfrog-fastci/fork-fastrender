@@ -3,6 +3,11 @@
 //! This module defines a tag-bit (bit 127) namespacing scheme (`page_node_id` /
 //! `decode_page_node_id`) that can cheaply distinguish "page/content" nodes from chrome/egui nodes.
 //!
+//! Note: FastRender's current preferred encoding is the marker+namespace scheme in
+//! `crate::accessibility::accesskit_ids` (wrapped by `crate::ui::page_a11y`). That scheme also
+//! uses high bits, so this tag-bit variant is not sufficient to distinguish *page* nodes from
+//! other FastRender-reserved `NodeId`s (e.g. compositor wrapper nodes).
+//!
 //! Note: the windowed browser UI's injected page subtree currently uses the `(tab_id, document
 //! generation, dom_node_id)` encoding in [`crate::ui::page_a11y`] (`encode_page_node_id`) so stale
 //! action requests from previous navigations can be rejected. This tag-bit variant is kept as a
@@ -110,9 +115,9 @@ mod tests {
 
   #[test]
   fn page_ids_do_not_collide_with_small_wrapper_ids() {
-    // The compositor (non-egui) accessibility tree reserves small integer node ids like 1/2/3 for
-    // Window/Chrome/Page wrapper nodes. Page DOM nodes must never collide with these (even when the
-    // DOM node id itself is 1/2/3).
+    // Historically the compositor tree used small integer node ids like 1/2/3 for Window/Chrome/Page
+    // wrapper nodes. Even with that scheme (and with DOM node ids starting at 1), page ids must not
+    // collide.
     for dom_node_id in 1usize..=3 {
       let id = page_node_id(TabId(1), dom_node_id);
       assert!(

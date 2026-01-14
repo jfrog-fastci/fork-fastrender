@@ -1,8 +1,8 @@
 #![cfg(feature = "browser_ui_base")]
 
 use accesskit::{Action, NodeBuilder, NodeClassSet, NodeId, Rect, Role, Tree, TreeUpdate};
-use std::num::NonZeroU128;
 
+use crate::accessibility::accesskit_ids::{self, ChromeWrapperNode};
 use crate::ui::messages::ScrollMetrics;
 
 /// Stable node ids for the compositor (non-egui) browser UI accessibility tree.
@@ -11,15 +11,15 @@ use crate::ui::messages::ScrollMetrics;
 ///
 /// Note: `NodeId` wraps a `NonZeroU128` so `0` is reserved/invalid.
 pub fn root_node_id() -> NodeId {
-  NodeId(NonZeroU128::new(1).expect("nonzero")) // fastrender-allow-unwrap
+  accesskit_ids::accesskit_id_for_chrome_wrapper(ChromeWrapperNode::Window)
 }
 
 pub fn chrome_node_id() -> NodeId {
-  NodeId(NonZeroU128::new(2).expect("nonzero")) // fastrender-allow-unwrap
+  accesskit_ids::accesskit_id_for_chrome_wrapper(ChromeWrapperNode::Chrome)
 }
 
 pub fn page_node_id() -> NodeId {
-  NodeId(NonZeroU128::new(3).expect("nonzero")) // fastrender-allow-unwrap
+  accesskit_ids::accesskit_id_for_chrome_wrapper(ChromeWrapperNode::Page)
 }
 
 pub const DEFAULT_WINDOW_NAME: &str = "FastRender Browser";
@@ -366,10 +366,7 @@ mod tests {
     assert_eq!(page.scroll_y().unwrap_or(0.0), 120.0);
     assert_eq!(page.scroll_y_max().unwrap_or(0.0), 900.0);
     assert!(
-      page
-        .actions()
-        .iter()
-        .any(|a| *a == Action::SetScrollOffset),
+      page.actions().iter().any(|a| *a == Action::SetScrollOffset),
       "expected scroll actions to be advertised when scroll range is non-zero"
     );
   }

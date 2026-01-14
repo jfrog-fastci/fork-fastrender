@@ -221,7 +221,7 @@ Required conventions for dynamic rows:
 If you need to validate id stability, use `dump_accesskit` for manual inspection and add/extend headless tests like
 `error_infobar_details_toggle_keeps_focus_and_id_when_label_changes` in [`src/bin/browser.rs`](../src/bin/browser.rs).
 
-### Page/FastRender node ids (tab-safe, collision-free)
+### FastRender node ids (namespaced, collision-free)
 
 When chrome and/or page content are rendered by FastRender (instead of egui widgets), we mint
 AccessKit ids from FastRender’s own stable node identifiers (e.g. DOM pre-order ids).
@@ -232,16 +232,38 @@ we cannot store them “as-is” in `accesskit::NodeId` because:
 - chrome wrapper nodes (window/chrome/page placeholders) also need stable ids, and
 - multiple documents/tabs will reuse DOM ids starting at `1`.
 
-To avoid collisions (and to make action routing reversible without a global hashmap), page/content
-nodes use a packed `u128` encoding implemented in:
+To avoid collisions (and to make action routing reversible without a global hashmap), FastRender
+reserves the high 16 bits of AccessKit’s 128-bit `NodeId` space:
 
-- [`src/ui/page_a11y.rs`](../src/ui/page_a11y.rs) (`encode_page_node_id` / `decode_page_node_id`)
+- bits 127..120: fixed FastRender marker `0xFA`
+- bits 119..112: namespace byte
+- bits 111..0: payload (namespace-specific)
 
-#### Encoding (page/content nodes)
+This scheme lives in:
+
+- [`src/accessibility/accesskit_ids.rs`](../src/accessibility/accesskit_ids.rs)
+
+The windowed browser UI’s page subtree helpers (`encode_page_node_id` / `decode_page_node_id`) are a
+thin wrapper in:
+
+- [`src/ui/page_a11y.rs`](../src/ui/page_a11y.rs)
+
+#### Namespaces
+
+Currently reserved namespaces:
+
+- `0x01`: dom2/JS-backed nodes (`dom2::NodeId`)
+- `0x02`: compositor/chrome wrapper nodes (`ChromeWrapperNode`: Window/Chrome/Page)
+- `0x03`: chrome document DOM pre-order ids (renderer-chrome; future)
+- `0x04`: page/content DOM pre-order ids (tab + generation + dom id)
+
+#### Encoding (page/content nodes, namespace `0x04`)
 
 Layout (u128):
 
-- bits 127..64: `TabId` (u64, non-zero)
+- bits 127..120: `0xFA` marker
+- bits 119..112: namespace `0x04`
+- bits 111..64: `TabId` (48 bits, non-zero)
 - bits 63..32: document generation (u32)
 - bits 31..0: DOM pre-order node id (u32; clamped)
 
@@ -263,10 +285,11 @@ across navigations.
 #### Wrapper nodes (window/chrome/page roots)
 
 Wrapper/root nodes in the compositor/renderer-chrome accessibility tree (see
-[`src/ui/compositor_accessibility.rs`](../src/ui/compositor_accessibility.rs)) use small fixed ids
-in the “non-page” namespace (upper 64 bits are `0`, so `decode_page_node_id` returns `None`).
+[`src/ui/compositor_accessibility.rs`](../src/ui/compositor_accessibility.rs)) use stable ids in
+their own namespace (`0x02`), so `decode_page_node_id` will never interpret them as page DOM nodes.
 
-This guarantees that DOM node id `1` in any tab will never collide with wrapper/root ids like `1`/`2`/`3`.
+This guarantees that DOM node id `1` in any tab will never collide with wrapper/root nodes
+(Window/Chrome/Page).
 
 ---
 
