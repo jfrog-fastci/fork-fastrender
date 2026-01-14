@@ -128,6 +128,67 @@ fn generator_yield_in_object_destructuring_computed_key_preserves_assignment_res
 }
 
 #[test]
+fn generator_yield_in_object_destructuring_computed_key_suspends_before_next_property() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      (() => {
+        var steps = [];
+        function* g(){
+          let a = 0;
+          let b = 0;
+          let rhs = new Proxy({x: 1, b: 2}, {
+            get: function(t, k, r) {
+              steps.push("get:" + String(k));
+              return Reflect.get(t, k, r);
+            }
+          });
+          let res = ({[(steps.push("key"), (yield 1))]: a, b} = rhs);
+          return res === rhs && a === 1 && b === 2 && steps.join("|") === "key|get:x|get:b";
+        }
+        var it = g();
+        var r1 = it.next();
+        if (r1.done !== false || r1.value !== 1) return false;
+        if (steps.join("|") !== "key") return false;
+        var r2 = it.next("x");
+        return r2.done === true && r2.value === true;
+      })()
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_yield_in_object_destructuring_two_computed_keys_yields_twice_with_partial_update() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      (() => {
+        var out = {a: 0, b: 0};
+        function* g(){
+          let rhs = {x: 3, y: 4};
+          let res = ({[(yield 1)]: out.a, [(yield 2)]: out.b} = rhs);
+          return res === rhs;
+        }
+        var it = g();
+        var r1 = it.next();
+        if (r1.done !== false || r1.value !== 1) return false;
+        var r2 = it.next("x");
+        if (r2.done !== false || r2.value !== 2) return false;
+        if (out.a !== 3 || out.b !== 0) return false;
+        var r3 = it.next("y");
+        return r3.done === true && r3.value === true && out.a === 3 && out.b === 4;
+      })()
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_yield_in_object_destructuring_computed_key_then_default_yields_twice() {
   let mut rt = new_runtime();
   let value = rt
