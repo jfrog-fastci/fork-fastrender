@@ -16,7 +16,11 @@ When using `render_pages`/`fetch_and_render`, per-page logs are written to `fetc
 
 - `browser --trace-out /tmp/browser-trace.json` (preferred; env: `FASTR_BROWSER_TRACE_OUT=/tmp/browser-trace.json`, legacy alias: `FASTR_PERF_TRACE_OUT`)
   - Writes a Chrome trace of the windowed `browser` UI event loop (winit event handling, egui frame build, worker message drain, frame uploads, wgpu present). The trace is written when the browser process exits.
-  - When audio output is active, the trace can also include audio pipeline spans such as `audio.callback` (output callback CPU time), `audio.mix` (mixing), and `audio.resample` (decoder-side resampling).
+  - When audio output is active, the trace can also include audio pipeline spans such as:
+    - `audio.callback` (output callback CPU time)
+    - `audio.mix` (mixing)
+    - `audio.resample` (decoder-side resampling)
+    - `audio.sink.drop` (decoder-side pushes where the sink drops samples)
   - Tip: to quickly validate that audio spans are showing up in the trace, run the browser with `FASTR_AUDIO_TEST_TONE=1` (plays a short startup tone; requires the `audio_cpal` build).
   - Open it in Perfetto by visiting <https://ui.perfetto.dev> and using "Open trace file", or in Chromium via `chrome://tracing`.
 
