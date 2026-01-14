@@ -1,5 +1,5 @@
 use super::string_match::{
-  contains_ascii_case_insensitive, find_ascii_case_insensitive, AsciiCaseInsensitive,
+  contains_ascii_case_insensitive, find_ascii_case_insensitive, AsciiCaseInsensitiveStr,
 };
 use crate::ui::about_pages;
 use crate::ui::browser_app::{BrowserTabState, ClosedTabState, RemoteSearchSuggestCache};
@@ -365,7 +365,7 @@ impl OmniboxProvider for BookmarksProvider {
     }
 
     let mut out = Vec::with_capacity(matches.len());
-    let mut seen_urls: HashSet<AsciiCaseInsensitive<'_>, FxBuildHasher> =
+    let mut seen_urls: HashSet<AsciiCaseInsensitiveStr<'_>, FxBuildHasher> =
       HashSet::with_capacity_and_hasher(matches.len(), FxBuildHasher::default());
 
     for id in matches {
@@ -380,7 +380,7 @@ impl OmniboxProvider for BookmarksProvider {
 
       // Avoid suggesting the same URL multiple times when the bookmark store contains duplicates
       // (possible via import).
-      if !seen_urls.insert(AsciiCaseInsensitive(url)) {
+      if !seen_urls.insert(AsciiCaseInsensitiveStr(url)) {
         continue;
       }
 
