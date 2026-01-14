@@ -32,6 +32,7 @@ mod config;
 mod cpal_backend;
 mod error;
 mod latency;
+#[cfg(any(feature = "audio_cpal", test))]
 mod panic_guard;
 pub mod engine;
 pub mod limits;
