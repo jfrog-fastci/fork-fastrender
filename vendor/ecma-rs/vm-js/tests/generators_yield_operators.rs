@@ -646,13 +646,16 @@ fn generators_yield_in_array_literals_gc_safety() {
     .exec_script(
       r#"
         function churn() {
-          // Allocate enough garbage to very likely trigger a GC while the generator is suspended.
+          // Allocate enough garbage to trigger a GC while the generator is suspended.
+          //
+          // Keep references out of scope so the only long-lived root is the generator continuation.
           // If the partially-constructed array literal is not kept alive by the continuation, the
           // resume step will fail or produce incorrect results.
-          for (let i = 0; i < 4000; i++) {
-            // Force per-iteration allocations without retaining references.
-            const s = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" + i;
-            ({ s, i });
+          let base = "x";
+          for (let i = 0; i < 12; i++) base += base; // ~4096 chars
+          for (let i = 0; i < 800; i++) {
+            const s = base + i;
+            if (s === "never") throw 0;
           }
         }
 
