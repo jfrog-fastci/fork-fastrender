@@ -470,6 +470,9 @@ fn generators_yield_in_template_literals() {
         } catch (e) {
           ok4 = e instanceof TypeError;
         }
+        // After an uncaught error, the generator should be closed.
+        const after_sym = it4.next();
+        ok4 = ok4 && after_sym.value === void 0 && after_sym.done === true;
 
         // Force GC during `ToString` of a resumed yield value.
         function* tpl_tostring_gc() { return `a${yield 1}b`; }
@@ -588,7 +591,29 @@ fn generators_yield_in_template_literals() {
           l2.value === 2 && l2.done === false &&
           l3.value === "abXcdYe" && l3.done === true;
 
-        ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 && ok10 && ok11 && ok12 && ok13
+        // Re-entrancy: `ToString` is evaluated while the generator is executing. Attempting to
+        // resume the same generator from within `toString()` must throw TypeError.
+        function* tpl_reenter() { return `a${yield 1}b`; }
+        const it14 = tpl_reenter();
+        const m1 = it14.next();
+        churn();
+        const m2 = it14.next({
+          toString() {
+            let sawTypeError = false;
+            try {
+              it14.next(0);
+            } catch (e) {
+              sawTypeError = e instanceof TypeError;
+            }
+            if (!sawTypeError) throw new Error("expected TypeError");
+            return "X";
+          }
+        });
+        const ok14 =
+          m1.value === 1 && m1.done === false &&
+          m2.value === "aXb" && m2.done === true;
+
+        ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 && ok10 && ok11 && ok12 && ok13 && ok14
       "#,
     )
     .unwrap();
