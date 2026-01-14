@@ -3,6 +3,7 @@
 use crate::ui::browser_app::BrowserTabState;
 use crate::ui::string_match::find_ascii_case_insensitive;
 use crate::ui::TabId;
+use std::borrow::Cow;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TabSearchMatch {
@@ -30,7 +31,12 @@ pub fn ranked_matches_into(query: &str, tabs: &[BrowserTabState], out: &mut Vec<
     return;
   }
 
-  let needle_lower = query.to_ascii_lowercase();
+  // Most queries are already lowercase; avoid allocating unless needed.
+  let needle_lower: Cow<'_, str> = if query.as_bytes().iter().any(|b| b.is_ascii_uppercase()) {
+    Cow::Owned(query.to_ascii_lowercase())
+  } else {
+    Cow::Borrowed(query)
+  };
 
   // Over-reserve to avoid repeated growth while typing; `out` is cached by the chrome overlay.
   out.reserve(tabs.len());
@@ -56,10 +62,10 @@ pub fn ranked_matches_into(query: &str, tabs: &[BrowserTabState], out: &mut Vec<
       .unwrap_or("");
 
     let mut best: Option<u8> = None;
-    if let Some(pos) = find_ascii_case_insensitive(title, &needle_lower) {
+    if let Some(pos) = find_ascii_case_insensitive(title, needle_lower.as_ref()) {
       best = Some(if pos == 0 { 0 } else { 2 });
     }
-    if let Some(pos) = find_ascii_case_insensitive(url, &needle_lower) {
+    if let Some(pos) = find_ascii_case_insensitive(url, needle_lower.as_ref()) {
       let score = if pos == 0 { 1 } else { 3 };
       best = Some(best.map_or(score, |existing| existing.min(score)));
     }
