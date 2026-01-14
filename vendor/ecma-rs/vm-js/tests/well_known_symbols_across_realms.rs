@@ -45,7 +45,9 @@ fn get_global_symbol_static_property(
 
 #[test]
 fn well_known_symbols_are_shared_across_realms_on_same_heap() -> Result<(), VmError> {
-  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // This test constructs multiple realms (each with a full set of intrinsics). Keep the heap large
+  // enough that baseline intrinsic growth doesn't intermittently trip OOM.
+  let mut heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
   let mut vm = Vm::new(VmOptions::default());
 
   let mut realm_a = Realm::new(&mut vm, &mut heap)?;
