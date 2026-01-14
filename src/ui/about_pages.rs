@@ -1166,7 +1166,7 @@ fn help_html() -> String {
           <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>T</kbd> — New tab</li>
           <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> — Reopen last closed tab</li>
           <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>W</kbd> — Close tab</li>
-          <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Tab</kbd> / <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd> — Next/prev tab</li>
+          <li><kbd>Ctrl</kbd>+<kbd>Tab</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd> — Next/prev tab (on macOS, <kbd>Cmd</kbd>+<kbd>Tab</kbd> is reserved by the OS app switcher)</li>
           <li><kbd>Alt</kbd>+<kbd>Left</kbd> / <kbd>Alt</kbd>+<kbd>Right</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>[</kbd> / <kbd>Cmd</kbd>+<kbd>]</kbd> (macOS) — Back/forward</li>
           <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>R</kbd> / <kbd>F5</kbd> — Reload</li>
           <li><kbd>Ctrl</kbd>+<kbd>J</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>J</kbd> (macOS) — Show downloads (<code>Window → Show Downloads…</code>)</li>
@@ -3122,6 +3122,38 @@ mod tests {
     assert!(html.contains(
       r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> — Toggle bookmarks bar"#
     ));
+
+    // Tab cycling: Ctrl+Tab / Ctrl+Shift+Tab (Cmd+Tab is typically reserved by macOS).
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::Tab, Modifiers::new(true, false, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::NextTab)
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::Tab, Modifiers::new(true, true, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::PrevTab)
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::Tab, Modifiers::new(true, false, false, false)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::NextTab)
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::Tab, Modifiers::new(true, true, false, false)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::PrevTab)
+    );
+    assert!(html.contains(r#"<kbd>Ctrl</kbd>+<kbd>Tab</kbd>"#));
+    assert!(html.contains(r#"<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd>"#));
 
     // Bookmark toggle: Ctrl+D (Win/Linux); Cmd+D (macOS).
     assert_eq!(

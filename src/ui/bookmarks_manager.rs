@@ -995,7 +995,7 @@ fn bookmarks_list(
         ui,
         BrowserIcon::BookmarkOutline,
         "No bookmarks",
-        Some("Press Ctrl/Cmd+D to bookmark the current page."),
+        Some("Press Ctrl+D (Win/Linux) or Cmd+D (macOS) to bookmark the current page."),
         None,
       );
       return;
