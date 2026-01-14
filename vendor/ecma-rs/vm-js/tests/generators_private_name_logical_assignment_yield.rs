@@ -74,3 +74,36 @@ fn generator_private_field_logical_and_assignment_captures_decision_across_yield
   assert_eq!(value, Value::Bool(true));
 }
 
+#[test]
+fn generator_private_field_logical_or_assignment_captures_decision_across_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class C {
+          static #x = 0;
+          static getX(){ return this.#x; }
+          static setX(v){ this.#x = v; }
+          static *g(){
+            const r = (this.#x ||= (yield 0));
+            return r === 5 && this.#x === 5;
+          }
+        }
+
+        const it = C.g();
+        const r1 = it.next();
+
+        // Mutate after the yield but before resuming. The decision to assign was made before the
+        // yield (because #x was falsy), so the assignment must still happen.
+        C.setX(1);
+
+        const r2 = it.next(5);
+
+        r1.done === false && r1.value === 0 &&
+        r2.done === true && r2.value === true &&
+        C.getX() === 5
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

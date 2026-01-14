@@ -222,3 +222,59 @@ fn generator_super_nullish_coalescing_assignment_with_yield_in_computed_key_shor
   assert_eq!(value, Value::Bool(true));
 }
 
+#[test]
+fn generator_super_logical_or_assignment_with_yield_in_computed_key_and_rhs_captures_key_across_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        const log = [];
+        var k = "x";
+
+        class B1 {
+          get x(){ log.push("get1x"); return this._x; }
+          set x(v){ log.push("set1x:" + v); this._x = v; }
+          get y(){ log.push("get1y"); return this._y; }
+          set y(v){ log.push("set1y:" + v); this._y = v; }
+        }
+
+        class B2 {
+          get x(){ log.push("get2x"); return this._x; }
+          set x(v){ log.push("set2x:" + v); this._x = v; }
+          get y(){ log.push("get2y"); return this._y; }
+          set y(v){ log.push("set2y:" + v); this._y = v; }
+        }
+
+        class D extends B1 {
+          constructor(){ super(); this._x = 0; this._y = 0; }
+          *gen() {
+            const r = (super[(yield "key", k)] ||= (yield 0));
+            return r === 5 && this._x === 0 && this._y === 5 && log.join(",") === "get1y,set1y:5";
+          }
+        }
+
+        const d = new D();
+        const it = d.gen();
+        const r1 = it.next();
+
+        // Key is evaluated after resuming from the key-yield.
+        k = "y";
+        const r2 = it.next();
+
+        // Mutate the super base, key, and LHS value after the RHS yield but before resuming.
+        // The assignment must still happen (decision was made before yielding) and target the
+        // original super base + key.
+        d._y = 1;
+        k = "x";
+        Object.setPrototypeOf(D.prototype, B2.prototype);
+
+        const r3 = it.next(5);
+
+        r1.value === "key" && r1.done === false &&
+        r2.value === 0 && r2.done === false &&
+        r3.value === true && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
