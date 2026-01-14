@@ -14,15 +14,26 @@ fn normalize_context_title_or_url(title: Option<&str>, url: &str) -> String {
   let raw = if !title.is_empty() { title } else { url };
 
   // Strip newlines/tabs and collapse whitespace so screen readers get a concise name.
-  raw.split_whitespace().collect::<Vec<_>>().join(" ")
+  let mut out = String::with_capacity(raw.len());
+  for (idx, part) in raw.split_whitespace().enumerate() {
+    if idx > 0 {
+      out.push(' ');
+    }
+    out.push_str(part);
+  }
+  out
 }
 
 fn normalize_file_name(file_name: &str) -> String {
-  file_name
-    .trim()
-    .split_whitespace()
-    .collect::<Vec<_>>()
-    .join(" ")
+  let raw = file_name.trim();
+  let mut out = String::with_capacity(raw.len());
+  for (idx, part) in raw.split_whitespace().enumerate() {
+    if idx > 0 {
+      out.push(' ');
+    }
+    out.push_str(part);
+  }
+  out
 }
 
 pub fn history_open_label(title: Option<&str>, url: &str) -> String {
