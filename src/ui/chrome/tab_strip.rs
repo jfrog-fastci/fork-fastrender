@@ -127,6 +127,42 @@ struct GroupChipWidthCacheEntry {
   width: f32,
 }
 
+#[derive(Debug, Clone, Default)]
+struct TabStatusTooltipCache {
+  tooltip: String,
+}
+
+impl TabStatusTooltipCache {
+  fn tooltip(&mut self, title: &str, err: Option<&str>, warn: Option<&str>) -> &str {
+    let mut needed = title.len();
+    if let Some(err) = err {
+      needed += 1 + "Error: ".len() + err.len();
+    }
+    if let Some(warn) = warn {
+      needed += 1 + "Warning: ".len() + warn.len();
+    }
+
+    if self.tooltip.capacity() < needed {
+      self.tooltip.reserve(needed - self.tooltip.capacity());
+    }
+
+    self.tooltip.clear();
+    self.tooltip.push_str(title);
+    if let Some(err) = err {
+      self.tooltip.push('\n');
+      self.tooltip.push_str("Error: ");
+      self.tooltip.push_str(err);
+    }
+    if let Some(warn) = warn {
+      self.tooltip.push('\n');
+      self.tooltip.push_str("Warning: ");
+      self.tooltip.push_str(warn);
+    }
+
+    self.tooltip.as_str()
+  }
+}
+
 impl GroupChipWidthCache {
   fn width(&mut self, ui: &egui::Ui, group_id: TabGroupId, title: &str, font_id: &FontId) -> f32 {
     if self.font_id.as_ref() != Some(font_id) {
@@ -1600,14 +1636,13 @@ fn tab_ui(
       if err.is_none() && warn.is_none() {
         response = response.on_hover_text(title);
       } else {
-        let mut lines = vec![title.to_string()];
-        if let Some(err) = err {
-          lines.push(format!("Error: {err}"));
-        }
-        if let Some(warn) = warn {
-          lines.push(format!("Warning: {warn}"));
-        }
-        response = response.on_hover_text(lines.join("\n"));
+        let cache_id = egui::Id::new("tab_strip_status_tooltip_cache");
+        let mut cache: TabStatusTooltipCache = ui.ctx().data_mut(|d| {
+          std::mem::take(d.get_temp_mut_or_default::<TabStatusTooltipCache>(cache_id))
+        });
+        let tooltip = cache.tooltip(title, err, warn);
+        super::show_tooltip_on_hover_or_focus(ui, &response, tooltip);
+        ui.ctx().data_mut(|d| d.insert_temp(cache_id, cache));
       }
     }
     (has_error, has_warning)
@@ -2023,14 +2058,13 @@ fn pinned_tab_ui(
       if err.is_none() && warn.is_none() {
         response = response.on_hover_text(title);
       } else {
-        let mut lines = vec![title.to_string()];
-        if let Some(err) = err {
-          lines.push(format!("Error: {err}"));
-        }
-        if let Some(warn) = warn {
-          lines.push(format!("Warning: {warn}"));
-        }
-        response = response.on_hover_text(lines.join("\n"));
+        let cache_id = egui::Id::new("tab_strip_status_tooltip_cache");
+        let mut cache: TabStatusTooltipCache = ui.ctx().data_mut(|d| {
+          std::mem::take(d.get_temp_mut_or_default::<TabStatusTooltipCache>(cache_id))
+        });
+        let tooltip = cache.tooltip(title, err, warn);
+        super::show_tooltip_on_hover_or_focus(ui, &response, tooltip);
+        ui.ctx().data_mut(|d| d.insert_temp(cache_id, cache));
       }
     }
     (has_error, has_warning)
