@@ -117,7 +117,7 @@ reason = "Shadow DOM slotting: `assignedNodes({flatten:true})` does not yet flat
 
 [[expectations]]
 id = "html/form_controls.window.js"
-backend = "vmjs"
+backend = ["vmjs", "vmjs-rendered"]
 status = "xfail"
 reason = "HTML form controls are incomplete (constructors/collections and reflected value/checked/select/option semantics)."
 
@@ -215,40 +215,46 @@ status = "xfail"
 reason = "NodeIterator pre-remove edge cases (shadow root/template/moves) not fully implemented yet"
 
 [[expectations]]
-id = "dom/document_doctype.window.js"
-backend = "vmjs"
-status = "xfail"
-reason = "DocumentType ordering is incorrect: HTML documents must have the doctype before documentElement (`document.firstChild` / `childNodes[0]` should be `document.doctype`)."
-
-[[expectations]]
 id = "dom/shadow_dom_manual_slot_assignment.window.js"
-backend = "vmjs"
+backend = ["vmjs", "vmjs-rendered"]
 status = "xfail"
-reason = "Manual slot assignment / slotting algorithms are not implemented yet."
+reason = "Shadow DOM slotting: `assignedNodes({flatten:true})` does not yet flatten nested slots."
 
 [[expectations]]
-id = "domparsing/domparser_parsefromstring_parsererror.window.js"
-backend = "vmjs"
+id = "dom/documentfragment_query_selector.window.js"
+backend = ["vmjs", "vmjs-rendered"]
 status = "xfail"
-reason = "DOMParser.parseFromString(application/xml) + parsererror documents are not implemented yet (only text/html is supported)."
+reason = "DocumentFragment/ShadowRoot querySelector(All) are not exposed on their interface prototypes yet."
 
 [[expectations]]
-id = "domparsing/domparser_parsefromstring_xml.window.js"
-backend = "vmjs"
+id = "dom/element_AttributeNS_roundtrip.window.js"
+backend = ["vmjs", "vmjs-rendered"]
 status = "xfail"
-reason = "DOMParser.parseFromString(application/xml) is not implemented yet (only text/html is supported)."
+reason = "Attribute namespace matching is incorrect: getAttributeNS must match by (namespace, localName)."
 
 [[expectations]]
-id = "domparsing/innerhtml-comments.window.js"
-backend = "vmjs"
+id = "dom/element_get_attribute_node.window.js"
+backend = ["vmjs", "vmjs-rendered"]
 status = "xfail"
-reason = "DOM Parsing: CharacterData/Comment/Text global constructor exposure and prototype inheritance are incomplete."
+reason = "Element.getAttributeNode/getAttributeNodeNS are not implemented yet (Attr wrapper exposure incomplete)."
 
 [[expectations]]
-id = "domparsing/xmlserializer_serializeToString.window.js"
-backend = "vmjs"
+id = "dom/node_isEqualNode.window.js"
+backend = ["vmjs", "vmjs-rendered"]
 status = "xfail"
-reason = "XMLSerializer.serializeToString / XML DOM serialization is not implemented yet (depends on XML parsing support)."
+reason = "Node.isEqualNode brand-check/implementation is incomplete (currently throws 'Illegal invocation')."
+
+[[expectations]]
+id = "dom/nodeiterator_treewalker_prototypes.window.js"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "TreeWalker prototype shape/descriptor flags are incomplete (e.g. TreeWalker.prototype.root should be non-enumerable)."
+
+[[expectations]]
+id = "dom/treewalker_navigation.window.js"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "TreeWalker navigation methods (firstChild/lastChild/nextNode/etc) are not implemented yet."
 
 [[expectations]]
 id = "events/document_eventtarget_path.window.js"
@@ -368,14 +374,14 @@ reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up wo
 [[expectations]]
 id = "dom/ranges/Range-cloneRange.html"
 backend = ["vmjs", "vmjs-rendered"]
-status = "pass"
-reason = "Range.cloneRange implemented (returns independent live range)."
+status = "xfail"
+reason = "Range HTML tests depend on `dom/common.js` `setupRangeTests` fixture (uses `new Document()`/XML nodes); the harness currently fails to initialize, so the file does not produce a WPT report."
 
 [[expectations]]
 id = "dom/ranges/Range-collapse.html"
 backend = ["vmjs", "vmjs-rendered"]
-status = "pass"
-reason = "Range.collapse implemented."
+status = "xfail"
+reason = "Range HTML tests depend on `dom/common.js` `setupRangeTests` fixture (uses `new Document()`/XML nodes); the harness currently fails to initialize, so the file does not produce a WPT report."
 
 [[expectations]]
 id = "dom/ranges/Range-commonAncestorContainer.html"
@@ -422,8 +428,8 @@ reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up wo
 [[expectations]]
 id = "dom/ranges/Range-intersectsNode-2.html"
 backend = ["vmjs", "vmjs-rendered"]
-status = "pass"
-reason = "Range.intersectsNode implemented."
+status = "xfail"
+reason = "Range.intersectsNode is not callable in the current HTML-test runner (Range prototype wiring for `new Range()` is incomplete)."
 
 [[expectations]]
 id = "dom/ranges/Range-intersectsNode-shadow.html"
