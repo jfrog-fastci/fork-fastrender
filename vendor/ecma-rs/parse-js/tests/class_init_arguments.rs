@@ -23,7 +23,7 @@ fn arguments_identifier_reference_is_syntax_error_in_class_static_block_ecma() {
   assert_eq!(
     err.typ,
     SyntaxErrorType::ExpectedSyntax(
-      "`arguments` is not allowed in class field initializers or static initialization blocks"
+      "`arguments` is not allowed in class field initializers or class static initialization blocks"
     )
   );
   assert_eq!(err.actual_token, None);
