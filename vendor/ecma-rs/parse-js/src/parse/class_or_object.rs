@@ -866,10 +866,10 @@ impl<'a> Parser<'a> {
                })
              })
            })?;
-          Ok(ClassOrObjMethod { func })
-        })?;
-        Ok(ClassOrObjVal::Method(method))
-      }
+           Ok(ClassOrObjMethod { func })
+         })?;
+         Ok(ClassOrObjVal::Method(method))
+       }
       // Property with initializer
       TT::Equals => {
         self.require(TT::Equals)?;
