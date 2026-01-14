@@ -288,3 +288,46 @@ fn generator_nullish_coalescing_assignment_with_yield_in_computed_key_and_rhs_ca
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_logical_and_assignment_with_yield_in_computed_key_and_rhs_captures_base_key_and_decision_across_yield(
+) {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var o1 = { a: 0, b: 1 };
+        var o2 = { a: 0, b: 100 };
+        var o = o1;
+        var k = "a";
+
+        function* g() {
+          const r = (o[(yield "key", k)] &&= (yield 0));
+          return r === 5 && o1.a === 0 && o1.b === 5 && o2.a === 0 && o2.b === 100;
+        }
+
+        const it = g();
+        const r1 = it.next();
+
+        // Key is evaluated after resuming from the key-yield.
+        k = "b";
+        // Base is evaluated before the key-yield; rebinding it must not affect the target.
+        o = o2;
+        const r2 = it.next();
+
+        // Mutate base/key/LHS value after the RHS yield but before resuming.
+        // The assignment must still happen and target the original base+key.
+        o1.b = 0;
+        k = "a";
+        o = o2;
+
+        const r3 = it.next(5);
+
+        r1.value === "key" && r1.done === false &&
+        r2.value === 0 && r2.done === false &&
+        r3.value === true && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

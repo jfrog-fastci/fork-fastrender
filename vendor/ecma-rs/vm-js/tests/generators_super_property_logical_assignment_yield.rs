@@ -133,6 +133,47 @@ fn generator_super_logical_or_assignment_captures_super_base_and_decision_across
 }
 
 #[test]
+fn generator_super_logical_or_assignment_with_yield_in_computed_key_uses_updated_super_base_after_yield(
+) {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        const log = [];
+        class B1 {
+          get x(){ log.push("get1"); return this._x; }
+          set x(v){ log.push("set1:" + v); this._x = v; }
+        }
+        class B2 {
+          get x(){ log.push("get2"); return this._x; }
+          set x(v){ log.push("set2:" + v); this._x = v; }
+        }
+        class D extends B1 {
+          constructor(){ super(); this._x = 0; }
+          *gen() {
+            const r = (super[(yield "k")] ||= 5);
+            return r === 5 && this._x === 5 && log.join(",") === "get2,set2:5";
+          }
+        }
+
+        const d = new D();
+        const it = d.gen();
+        const r1 = it.next();
+
+        // `GetSuperBase` must run *after* the key-yield; changing the prototype chain here must
+        // affect which getter/setter are used.
+        Object.setPrototypeOf(D.prototype, B2.prototype);
+        const r2 = it.next("x");
+
+        r1.value === "k" && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_super_logical_or_assignment_with_yield_in_computed_key_short_circuits_rhs_yield() {
   let mut rt = new_runtime();
   let value = rt
