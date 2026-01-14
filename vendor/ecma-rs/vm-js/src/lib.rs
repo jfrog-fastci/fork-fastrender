@@ -375,6 +375,8 @@ pub use crate::execution_context::ModuleId;
 pub use crate::execution_context::ScriptId;
 pub use crate::execution_context::ScriptOrModule;
 pub use crate::function::EcmaFunctionId;
+pub use crate::function::CallHandler;
+pub use crate::function::FunctionData;
 pub use crate::function::NativeConstructId;
 pub use crate::function::NativeFunctionId;
 pub use crate::function::ThisMode;

@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use vm_js::{
-  CompiledScript, Heap, HeapLimits, HostDefined, JsString, MicrotaskQueue, ModuleGraph, ModuleId, ModuleLoadPayload,
-  ModuleReferrer, ModuleRequest, PromiseState, PropertyKey, Realm, Scope, SourceTextModuleRecord, Value, Vm, VmError,
-  VmHost, VmHostHooks, VmJobContext, VmOptions,
+  CallHandler, CompiledScript, FunctionData, Heap, HeapLimits, HostDefined, JsString, MicrotaskQueue, ModuleGraph,
+  ModuleId, ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, PropertyKey, Realm, Scope,
+  SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, VmOptions,
 };
 
 mod _async_generator_support;
@@ -2669,6 +2669,235 @@ fn compiled_module_supports_anonymous_default_export_generator_function_decls() 
     assert_eq!(scope.heap().get_string(n)?.to_utf8_lossy(), "default");
 
     drop(scope);
+
+    Ok(())
+  })();
+
+  graph.teardown(&mut vm, &mut heap);
+  let mut ctx = MicrotaskCtx {
+    vm: &mut vm,
+    heap: &mut heap,
+    host: &mut host,
+  };
+  hooks.teardown(&mut ctx);
+  realm.teardown(&mut heap);
+
+  result
+}
+
+#[test]
+fn compiled_module_default_export_async_function_uses_user_call_handler() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+  let mut graph = ModuleGraph::new();
+
+  let result = (|| -> Result<(), VmError> {
+    if !supports_compiled_modules(&mut vm, &mut heap, &realm) {
+      return Ok(());
+    }
+
+    let script_a = CompiledScript::compile_module(
+      &mut heap,
+      "a.js",
+      r#"
+        export default async function() { return 1; }
+      "#,
+    )?;
+    assert!(
+      !script_a.requires_ast_fallback && !script_a.contains_async_generators,
+      "modules that only *define* async functions should be executable via the compiled evaluator"
+    );
+    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    record_a.compiled = Some(script_a);
+    record_a.ast = None;
+    let a = graph.add_module_with_specifier("a", record_a)?;
+
+    let b = graph.add_module_with_specifier(
+      "b",
+      SourceTextModuleRecord::parse(
+        &mut heap,
+        r#"
+          import f from "a";
+          export { f };
+          export const n = f.name;
+        "#,
+      )?,
+    )?;
+    graph.link_all_by_specifier();
+
+    match graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), b) {
+      Ok(()) => {}
+      Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
+      Err(e) => return Err(e),
+    };
+    assert!(
+      graph.module(a).ast.is_none(),
+      "linking should not parse/retain an AST when compiled HIR is available"
+    );
+
+    let promise = match graph.evaluate(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      b,
+      &mut host,
+      &mut hooks,
+    ) {
+      Ok(p) => p,
+      Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
+      Err(e) => return Err(e),
+    };
+
+    let mut scope = heap.scope();
+    scope.push_root(promise)?;
+    let Value::Object(promise_obj) = promise else {
+      panic!("ModuleGraph::evaluate should return a Promise object");
+    };
+    if promise_rejection_message_contains(
+      &mut vm,
+      &mut host,
+      &mut hooks,
+      &mut scope,
+      promise_obj,
+      "module AST missing",
+    )? {
+      return Ok(());
+    }
+    assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+    let ns_b = graph.get_module_namespace(b, &mut vm, &mut scope)?;
+    let Value::Object(f_obj) = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "f")? else {
+      panic!("expected b.f to be a function object");
+    };
+    let call_handler = scope.heap().get_function_call_handler(f_obj)?;
+    assert!(
+      matches!(call_handler, CallHandler::User(_)),
+      "expected default-exported async function to be allocated as a compiled user function (CallHandler::User); got {call_handler:?}"
+    );
+    let func_data = scope.heap().get_function_data(f_obj)?;
+    assert!(
+      matches!(func_data, FunctionData::AsyncEcmaFallback { .. }),
+      "expected default-exported async function to use call-time AST fallback (FunctionData::AsyncEcmaFallback); got {func_data:?}"
+    );
+
+    let Value::String(n) = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "n")? else {
+      panic!("expected b.n to be a string");
+    };
+    assert_eq!(scope.heap().get_string(n)?.to_utf8_lossy(), "default");
+
+    Ok(())
+  })();
+
+  graph.teardown(&mut vm, &mut heap);
+  let mut ctx = MicrotaskCtx {
+    vm: &mut vm,
+    heap: &mut heap,
+    host: &mut host,
+  };
+  hooks.teardown(&mut ctx);
+  realm.teardown(&mut heap);
+
+  result
+}
+
+#[test]
+fn compiled_module_default_export_generator_function_uses_ecma_call_handler() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+  let mut graph = ModuleGraph::new();
+
+  let result = (|| -> Result<(), VmError> {
+    if !supports_compiled_modules(&mut vm, &mut heap, &realm) {
+      return Ok(());
+    }
+
+    let script_a = CompiledScript::compile_module(
+      &mut heap,
+      "a.js",
+      r#"
+        export default function*() {}
+      "#,
+    )?;
+    assert!(
+      script_a.requires_ast_fallback,
+      "generator syntax should require module-level AST fallback"
+    );
+    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    record_a.compiled = Some(script_a);
+    record_a.ast = None;
+    let a = graph.add_module_with_specifier("a", record_a)?;
+
+    let b = graph.add_module_with_specifier(
+      "b",
+      SourceTextModuleRecord::parse(
+        &mut heap,
+        r#"
+          import f from "a";
+          export { f };
+          export const n = f.name;
+        "#,
+      )?,
+    )?;
+    graph.link_all_by_specifier();
+
+    match graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), b) {
+      Ok(()) => {}
+      Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
+      Err(e) => return Err(e),
+    };
+    assert!(
+      graph.module(a).ast.is_some(),
+      "linking should materialize an AST when CompiledScript.requires_ast_fallback is true"
+    );
+
+    let promise = match graph.evaluate(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      b,
+      &mut host,
+      &mut hooks,
+    ) {
+      Ok(p) => p,
+      Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
+      Err(e) => return Err(e),
+    };
+
+    let mut scope = heap.scope();
+    scope.push_root(promise)?;
+    let Value::Object(promise_obj) = promise else {
+      panic!("ModuleGraph::evaluate should return a Promise object");
+    };
+    if promise_rejection_message_contains(
+      &mut vm,
+      &mut host,
+      &mut hooks,
+      &mut scope,
+      promise_obj,
+      "module AST missing",
+    )? {
+      return Ok(());
+    }
+    assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+    let ns_b = graph.get_module_namespace(b, &mut vm, &mut scope)?;
+    let Value::Object(f_obj) = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "f")? else {
+      panic!("expected b.f to be a function object");
+    };
+    let call_handler = scope.heap().get_function_call_handler(f_obj)?;
+    assert!(
+      matches!(call_handler, CallHandler::Ecma(_)),
+      "expected default-exported generator function to be interpreter-backed (CallHandler::Ecma); got {call_handler:?}"
+    );
+
+    let Value::String(n) = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "n")? else {
+      panic!("expected b.n to be a string");
+    };
+    assert_eq!(scope.heap().get_string(n)?.to_utf8_lossy(), "default");
 
     Ok(())
   })();

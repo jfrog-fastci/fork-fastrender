@@ -8936,7 +8936,12 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     }
   }
 
-  pub(crate) fn get_function_call_handler(&self, func: GcObject) -> Result<CallHandler, VmError> {
+  /// Returns the `[[Call]]` handler for a function object.
+  ///
+  /// This is primarily intended for diagnostics and tests. Embeddings should generally treat
+  /// functions as opaque and invoke them via [`Vm::call_with_host_and_hooks`] /
+  /// [`Vm::construct_with_host_and_hooks`].
+  pub fn get_function_call_handler(&self, func: GcObject) -> Result<CallHandler, VmError> {
     match self.get_heap_object(func.0)? {
       HeapObject::Function(f) => Ok(f.call.clone()),
       _ => Err(VmError::NotCallable),
@@ -9017,7 +9022,10 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     }
   }
 
-  pub(crate) fn get_function_data(&self, func: GcObject) -> Result<FunctionData, VmError> {
+  /// Returns additional per-function internal-slot-like metadata.
+  ///
+  /// This is primarily intended for diagnostics and tests.
+  pub fn get_function_data(&self, func: GcObject) -> Result<FunctionData, VmError> {
     match self.get_heap_object(func.0)? {
       HeapObject::Function(f) => Ok(f.data),
       _ => Err(VmError::invalid_handle()),

@@ -40,8 +40,12 @@ pub enum ThisMode {
   Global,
 }
 
+/// Debug-visible representation of a function object's `[[Call]]` handler.
+///
+/// This is primarily intended for testing and diagnostics (for example to verify that certain
+/// syntactic forms produce compiled functions vs interpreter-backed functions).
 #[derive(Debug, Clone)]
-pub(crate) enum CallHandler {
+pub enum CallHandler {
   Native(NativeFunctionId),
   Ecma(EcmaFunctionId),
   User(CompiledFunctionRef),
@@ -59,8 +63,13 @@ pub(crate) enum ConstructHandler {
 }
 
 /// Extra per-function internal-slot-like data used by certain built-ins.
+/// Additional per-function internal-slot-like data.
+///
+/// Most variants are VM-internal and are not part of the public API contract, but exposing this
+/// enum allows tests to assert when a function uses an AST-interpreter fallback (e.g. async
+/// functions compiled to HIR but executed by the interpreter at call time).
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum FunctionData {
+pub enum FunctionData {
   None,
   /// A compiled HIR function whose body is executed via the AST interpreter.
   ///
