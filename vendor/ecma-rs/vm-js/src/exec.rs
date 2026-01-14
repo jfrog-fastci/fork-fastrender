@@ -2328,8 +2328,12 @@ impl JsRuntime {
     script: Arc<crate::CompiledScript>,
   ) -> Result<Value, VmError> {
     if script.requires_ast_fallback {
-      // See `exec_compiled_script_with_host`: some script bodies (e.g. async/generator functions)
-      // are not yet supported in the compiled (HIR) executor.
+      // See `exec_compiled_script_with_host`: some script bodies are not yet supported by the
+      // compiled (HIR) executor (e.g. generator bodies, private names, unsupported top-level await
+      // patterns).
+      //
+      // Note: scripts that merely *define* async functions can still execute via HIR; async function
+      // bodies fall back to the AST interpreter at call-time (see `Vm::call_user_function`).
       let source = script.source.clone();
       return self.exec_script_source_with_host_and_hooks(host, hooks, source);
     }

@@ -54,7 +54,8 @@ pub struct CompiledScript {
   /// - Async function bodies execute via the AST interpreter at call-time (see
   ///   [`crate::Vm::call_user_function`]).
   ///
-  /// Classic-script top-level await fallback is tracked separately in
+  /// Classic-script top-level await is handled by the compiled async-script executor for a limited
+  /// subset of patterns; unsupported forms are tracked separately in
   /// [`CompiledScript::top_level_await_requires_ast_fallback`].
   pub requires_ast_fallback: bool,
   /// Whether this script/module contains a top-level `await` (or `for await..of`) that requires
