@@ -48,6 +48,7 @@ Examples:
 Notes:
   - Perf logs are emitted on stdout (via `browser --perf-log`) and also written to <out.jsonl> via `tee`.
   - If --trace-out is set, the browser writes a Perfetto/Chrome trace JSON file when it exits.
+    - Use `FASTR_TRACE_MAX_EVENTS=<N>` to cap retained trace events (default 200000).
   - Script progress messages (including optional summaries) are written to stderr.
 EOF
 }

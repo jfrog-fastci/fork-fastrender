@@ -735,6 +735,8 @@ struct BrowserArgs {
   ///
   /// Note: the trace file is written when the browser process exits.
   ///
+  /// Use `FASTR_TRACE_MAX_EVENTS=<N>` to cap the number of trace events retained (default 200000).
+  ///
   /// Note: relative paths are resolved relative to the repo root (where the browser runs), not the
   /// caller's current directory.
   #[arg(long, value_name = "PATH")]
