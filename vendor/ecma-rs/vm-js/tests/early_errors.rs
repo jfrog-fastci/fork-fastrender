@@ -675,6 +675,20 @@ fn escaped_eval_assignment_target_in_strict_mode_is_syntax_error() {
 }
 
 #[test]
+fn import_statement_in_script_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script(r#"import "m";"#).unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn export_statement_in_script_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script(r#"export { foo };"#).unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn strict_mode_delete_unqualified_identifier_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script(r#""use strict"; delete x;"#).unwrap_err();
@@ -754,6 +768,21 @@ fn super_call_in_non_derived_constructor_is_syntax_error() {
 fn await_as_binding_identifier_in_module_is_syntax_error() {
   let mut rt = new_runtime();
   let err = SourceTextModuleRecord::parse(&mut rt.heap, "let await = 1;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn import_statement_not_at_module_top_level_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = SourceTextModuleRecord::parse(&mut rt.heap, r#"if (true) import "m";"#).unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn export_statement_not_at_module_top_level_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err =
+    SourceTextModuleRecord::parse(&mut rt.heap, r#"if (true) export { foo };"#).unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
 
