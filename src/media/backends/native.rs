@@ -2,7 +2,6 @@ use crate::media::demux::webm::WebmDemuxer;
 #[cfg(feature = "media_mp4")]
 use crate::media::demuxer::Mp4PacketDemuxer;
 use crate::media::{MediaBackend, MediaDecodePipeline, MediaError, MediaResult, MediaSession};
-use std::io::Cursor;
 use std::sync::Arc;
 
 /// Native demux+decode backend using the in-process container parsers + codec libraries.
@@ -18,11 +17,7 @@ impl NativeBackend {
 
 #[cfg(feature = "media_mp4")]
 fn try_open_mp4(bytes: Arc<[u8]>) -> MediaResult<MediaDecodePipeline> {
-  let reader = Cursor::new(bytes);
-  let len = reader.get_ref().len() as u64;
-  let mp4 = mp4::Mp4Reader::read_header(reader, len)
-    .map_err(|e| MediaError::Demux(format!("mp4: failed to read header: {e}")))?;
-  let demuxer = Mp4PacketDemuxer::from_reader(mp4)?;
+  let demuxer = Mp4PacketDemuxer::from_bytes(bytes)?;
   MediaDecodePipeline::new(Box::new(demuxer))
 }
 
@@ -34,7 +29,7 @@ fn try_open_mp4(_bytes: Arc<[u8]>) -> MediaResult<MediaDecodePipeline> {
 }
 
 fn try_open_webm(bytes: Arc<[u8]>) -> MediaResult<MediaDecodePipeline> {
-  let demuxer = WebmDemuxer::open(Cursor::new(bytes))?;
+  let demuxer = WebmDemuxer::open(std::io::Cursor::new(bytes))?;
   MediaDecodePipeline::new(Box::new(demuxer))
 }
 

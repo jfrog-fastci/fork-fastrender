@@ -1,11 +1,11 @@
 use crate::error::{RenderError, RenderStage};
-use crate::media::{
-  MediaAudioInfo, MediaCodec, MediaError, MediaPacket, MediaResult, MediaTrackInfo, MediaTrackType,
-  MediaVideoInfo,
-};
 use crate::media::track_selection::{
   select_primary_audio_track_id, select_primary_video_track_id, TrackCandidate, TrackFilterMode,
   TrackSelectionPolicy,
+};
+use crate::media::{
+  MediaAudioInfo, MediaCodec, MediaError, MediaPacket, MediaResult, MediaTrackInfo, MediaTrackType,
+  MediaVideoInfo,
 };
 use crate::render_control::{check_root, check_root_periodic};
 use matroska_demuxer::{DemuxError, Frame, MatroskaFile, TrackType};
@@ -267,7 +267,10 @@ impl<R: Read + Seek> WebmDemuxer<R> {
 
     let mut packet_queues = HashMap::new();
     for &track_id in &active_track_ids {
-      packet_queues.insert(track_id, VecDeque::with_capacity(options.per_track_queue_capacity));
+      packet_queues.insert(
+        track_id,
+        VecDeque::with_capacity(options.per_track_queue_capacity),
+      );
     }
 
     Ok(Self {
@@ -447,9 +450,8 @@ impl<R: Read + Seek> WebmDemuxer<R> {
 
     // Convert nanoseconds to Matroska timecode units (inverse of timestamp_scale).
     // `MatroskaFile::seek()` places the cursor on the first frame with timestamp >= seek_timestamp.
-    let seek_timestamp = target_ns
-      .saturating_add(self.timestamp_scale_ns.saturating_sub(1))
-      / self.timestamp_scale_ns;
+    let seek_timestamp =
+      target_ns.saturating_add(self.timestamp_scale_ns.saturating_sub(1)) / self.timestamp_scale_ns;
 
     // Seeking invalidates any queued packets from the old position.
     for q in self.packet_queues.values_mut() {
@@ -509,7 +511,9 @@ fn vp9_is_keyframe(frame: &[u8]) -> MediaResult<bool> {
   if profile == 3 {
     let reserved = (byte0 >> 3) & 1;
     if reserved != 0 {
-      return Err(MediaError::Demux("invalid VP9 reserved profile bit".to_string()));
+      return Err(MediaError::Demux(
+        "invalid VP9 reserved profile bit".to_string(),
+      ));
     }
 
     let show_existing_frame = (byte0 >> 2) & 1;
@@ -685,7 +689,8 @@ mod tests {
     let bytes = webm_fixture_bytes("vp9_opus.webm");
     let mut demuxer = WebmDemuxer::open(Cursor::new(bytes.as_slice())).expect("open webm");
 
-    let deadline = crate::render_control::RenderDeadline::new(Some(Duration::from_millis(10)), None);
+    let deadline =
+      crate::render_control::RenderDeadline::new(Some(Duration::from_millis(10)), None);
     let err = crate::render_control::with_deadline(Some(&deadline), || demuxer.next_packet())
       .expect_err("expected timeout");
 

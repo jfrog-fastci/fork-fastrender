@@ -3,8 +3,6 @@ use super::{
   MediaVideoInfo,
 };
 #[cfg(feature = "media_mp4")]
-use super::mp4 as mp4_index;
-#[cfg(feature = "media_mp4")]
 use std::collections::HashMap;
 #[cfg(feature = "media_mp4")]
 use std::fs::File;
@@ -46,6 +44,7 @@ struct Mp4TrackCursor {
   sample_count: u32,
   next_sample: u32,
   peeked: Option<MediaPacket>,
+  track_type: MediaTrackType,
 }
 
 /// Simple MP4 packet demuxer that yields common video+audio packets in demux order.
@@ -57,7 +56,7 @@ pub struct Mp4PacketDemuxer<R: Read + Seek + Send> {
   mp4: mp4::Mp4Reader<R>,
   tracks: Vec<MediaTrackInfo>,
   cursors: Vec<Mp4TrackCursor>,
-  seek_index: Option<mp4_index::Mp4SeekIndex>,
+  sample_tables: HashMap<u32, TrackSampleTable>,
 }
 
 #[cfg(feature = "media_mp4")]
@@ -66,20 +65,11 @@ impl Mp4PacketDemuxer<BufReader<File>> {
     let mut file = File::open(path.as_ref())?;
     let len = file.metadata()?.len();
 
-    // Best-effort: read the `moov` box so we can build an efficient timestamp→sample index for
-    // seeking without scanning packets.
-    let seek_index = match read_top_level_box_bytes(&mut file, len, *b"moov") {
-      Ok(Some(moov_bytes)) => mp4_index::Mp4SeekIndex::from_bytes(&moov_bytes).ok(),
-      _ => None,
-    };
-
-    // Best-effort: parse MP4 sample descriptions via mp4parse so we can detect codecs that the `mp4`
-    // crate does not expose via `Mp4Track::media_type()` yet (notably VP9).
-    let vp9_tracks = {
+    let mp4parse_meta = {
       file.rewind()?;
-      let map = mp4parse_vp9_tracks(&mut file).unwrap_or_default();
+      let meta = mp4parse_read_meta(&mut file).unwrap_or_default();
       file.rewind()?;
-      map
+      meta
     };
 
     file.rewind()?;
@@ -87,24 +77,41 @@ impl Mp4PacketDemuxer<BufReader<File>> {
     let mp4 = mp4::Mp4Reader::read_header(reader, len)
       .map_err(|e| MediaError::Demux(format!("mp4: failed to read header: {e}")))?;
 
-    let mut demuxer = Self::from_reader_with_vp9_tracks(mp4, vp9_tracks)?;
-    demuxer.seek_index = seek_index;
-    Ok(demuxer)
+    Self::from_reader_with_meta(mp4, mp4parse_meta)
+  }
+}
+
+#[cfg(feature = "media_mp4")]
+impl Mp4PacketDemuxer<std::io::Cursor<std::sync::Arc<[u8]>>> {
+  pub fn from_bytes(bytes: std::sync::Arc<[u8]>) -> MediaResult<Self> {
+    let mut cursor = std::io::Cursor::new(std::sync::Arc::clone(&bytes));
+    let mp4parse_meta = mp4parse_read_meta(&mut cursor).unwrap_or_default();
+    cursor.set_position(0);
+
+    let len = cursor.get_ref().len() as u64;
+    let mp4 = mp4::Mp4Reader::read_header(cursor, len)
+      .map_err(|e| MediaError::Demux(format!("mp4: failed to read header: {e}")))?;
+
+    Mp4PacketDemuxer::from_reader_with_meta(mp4, mp4parse_meta)
   }
 }
 
 #[cfg(feature = "media_mp4")]
 impl<R: Read + Seek + Send> Mp4PacketDemuxer<R> {
   pub fn from_reader(mp4: mp4::Mp4Reader<R>) -> MediaResult<Self> {
-    Self::from_reader_with_vp9_tracks(mp4, HashMap::new())
+    Self::from_reader_with_meta(mp4, Mp4ParseMeta::default())
   }
 
-  fn from_reader_with_vp9_tracks(
-    mp4: mp4::Mp4Reader<R>,
-    vp9_tracks: HashMap<u32, Mp4Vp9TrackMeta>,
-  ) -> MediaResult<Self> {
+  fn from_reader_with_meta(mp4: mp4::Mp4Reader<R>, mp4parse_meta: Mp4ParseMeta) -> MediaResult<Self> {
+    let Mp4ParseMeta {
+      vp9_tracks,
+      mut sample_tables: meta_sample_tables,
+      aac_asc,
+    } = mp4parse_meta;
+
     let mut tracks = Vec::new();
     let mut cursors = Vec::new();
+    let mut sample_tables: HashMap<u32, TrackSampleTable> = HashMap::new();
 
     for (track_id, track) in mp4.tracks().iter() {
       let timescale = track.trak.mdia.mdhd.timescale;
@@ -120,9 +127,7 @@ impl<R: Read + Seek + Send> Mp4PacketDemuxer<R> {
           if vp9_tracks.contains_key(track_id) {
             None
           } else {
-            return Err(MediaError::Demux(format!(
-              "mp4: failed to get media type: {err}"
-            )));
+            return Err(MediaError::Demux(format!("mp4: failed to get media type: {err}")));
           }
         }
       };
@@ -205,7 +210,7 @@ impl<R: Read + Seek + Send> Mp4PacketDemuxer<R> {
             id: u64::from(*track_id),
             track_type: MediaTrackType::Audio,
             codec: MediaCodec::Aac,
-            codec_private: asc,
+            codec_private: aac_asc.get(track_id).cloned().unwrap_or(asc),
             codec_delay_ns: 0,
             video: None,
             audio: Some(MediaAudioInfo {
@@ -235,12 +240,21 @@ impl<R: Read + Seek + Send> Mp4PacketDemuxer<R> {
       let emit_packets = matches!(media_type, Some(mp4::MediaType::H264 | mp4::MediaType::AAC))
         || vp9_tracks.contains_key(track_id);
       if emit_packets {
+        if let Some(table) = meta_sample_tables.remove(track_id) {
+          sample_tables.insert(*track_id, table);
+        }
+
         cursors.push(Mp4TrackCursor {
           id: *track_id,
           timescale,
           sample_count,
           next_sample: 1,
           peeked: None,
+          track_type: if matches!(media_type, Some(mp4::MediaType::AAC)) {
+            MediaTrackType::Audio
+          } else {
+            MediaTrackType::Video
+          },
         });
       }
     }
@@ -252,7 +266,7 @@ impl<R: Read + Seek + Send> Mp4PacketDemuxer<R> {
       mp4,
       tracks,
       cursors,
-      seek_index: None,
+      sample_tables,
     })
   }
 }
@@ -266,10 +280,9 @@ struct Mp4Vp9TrackMeta {
 }
 
 #[cfg(feature = "media_mp4")]
-fn mp4parse_vp9_tracks<R: Read>(reader: &mut R) -> MediaResult<HashMap<u32, Mp4Vp9TrackMeta>> {
-  let ctx =
-    mp4parse::read_mp4(reader).map_err(|e| MediaError::Demux(format!("mp4parse: {e:?}")))?;
-
+fn mp4parse_vp9_tracks_from_ctx(
+  ctx: &mp4parse::MediaContext,
+) -> MediaResult<HashMap<u32, Mp4Vp9TrackMeta>> {
   let mut out = HashMap::new();
 
   for track in &ctx.tracks {
@@ -349,8 +362,329 @@ fn mp4parse_vp9_tracks<R: Read>(reader: &mut R) -> MediaResult<HashMap<u32, Mp4V
   Ok(out)
 }
 
+#[cfg(feature = "media_mp4")]
+#[derive(Debug, Default, Clone)]
+struct Mp4ParseMeta {
+  vp9_tracks: HashMap<u32, Mp4Vp9TrackMeta>,
+  sample_tables: HashMap<u32, TrackSampleTable>,
+  aac_asc: HashMap<u32, Vec<u8>>,
+}
+
+#[cfg(feature = "media_mp4")]
+fn mp4parse_read_meta<R: Read + Seek>(reader: &mut R) -> MediaResult<Mp4ParseMeta> {
+  use std::io::SeekFrom;
+
+  reader.seek(SeekFrom::Start(0))?;
+  let ctx =
+    mp4parse::read_mp4(reader).map_err(|e| MediaError::Demux(format!("mp4parse: {e:?}")))?;
+
+  let vp9_tracks = mp4parse_vp9_tracks_from_ctx(&ctx).unwrap_or_default();
+  let sample_tables = mp4parse_build_sample_tables(&ctx).unwrap_or_default();
+  let aac_asc = mp4parse_extract_aac_asc(&ctx).unwrap_or_default();
+
+  Ok(Mp4ParseMeta {
+    vp9_tracks,
+    sample_tables,
+    aac_asc,
+  })
+}
+
+#[cfg(feature = "media_mp4")]
+#[derive(Debug, Clone, Copy)]
+struct SampleTiming {
+  dts_ns: u64,
+  pts_ns: u64,
+  duration_ns: u64,
+  is_sync: bool,
+}
+
+#[cfg(feature = "media_mp4")]
+#[derive(Debug, Clone)]
+struct TrackSampleTable {
+  samples: Vec<SampleTiming>,
+  pts_ns_by_sample: Vec<u64>,
+  pts_index: PtsIndex,
+  sync_sample_indices: Vec<u32>,
+}
+
+#[cfg(feature = "media_mp4")]
+impl TrackSampleTable {
+  fn sample_index_at_or_after(&self, time_ns: u64) -> usize {
+    match &self.pts_index {
+      PtsIndex::Monotonic => self.pts_ns_by_sample.partition_point(|&pts| pts < time_ns),
+      PtsIndex::Sorted {
+        sample_indices_by_pts,
+        min_sample_index_from_pos,
+      } => {
+        let pos =
+          sample_indices_by_pts.partition_point(|&i| self.pts_ns_by_sample[i as usize] < time_ns);
+        min_sample_index_from_pos
+          .get(pos)
+          .map(|&idx| idx as usize)
+          .unwrap_or_else(|| self.pts_ns_by_sample.len())
+      }
+    }
+  }
+
+  fn sync_sample_at_or_before(&self, sample_idx0: usize) -> usize {
+    if self.sync_sample_indices.is_empty() {
+      return sample_idx0;
+    }
+    let capped = sample_idx0.min(self.samples.len().saturating_sub(1));
+    let pos = self
+      .sync_sample_indices
+      .partition_point(|&idx| idx as usize <= capped);
+    if pos == 0 {
+      0
+    } else {
+      self.sync_sample_indices[pos - 1] as usize
+    }
+  }
+}
+
+#[cfg(feature = "media_mp4")]
+#[derive(Debug, Clone)]
+enum PtsIndex {
+  Monotonic,
+  Sorted {
+    sample_indices_by_pts: Vec<u32>,
+    min_sample_index_from_pos: Vec<u32>,
+  },
+}
+
+#[cfg(feature = "media_mp4")]
+fn build_pts_index(pts_ns_by_sample: &[u64]) -> PtsIndex {
+  let mut is_monotonic = true;
+  for i in 1..pts_ns_by_sample.len() {
+    if pts_ns_by_sample[i] < pts_ns_by_sample[i - 1] {
+      is_monotonic = false;
+      break;
+    }
+  }
+  if is_monotonic {
+    return PtsIndex::Monotonic;
+  }
+
+  let mut sample_indices_by_pts = Vec::with_capacity(pts_ns_by_sample.len());
+  for i in 0..pts_ns_by_sample.len() {
+    sample_indices_by_pts.push(i as u32);
+  }
+  sample_indices_by_pts.sort_unstable_by_key(|&i| (pts_ns_by_sample[i as usize], i));
+
+  let mut min_sample_index_from_pos = vec![0_u32; sample_indices_by_pts.len()];
+  let mut min = u32::MAX;
+  for (dst, &idx) in min_sample_index_from_pos
+    .iter_mut()
+    .rev()
+    .zip(sample_indices_by_pts.iter().rev())
+  {
+    min = min.min(idx);
+    *dst = min;
+  }
+
+  PtsIndex::Sorted {
+    sample_indices_by_pts,
+    min_sample_index_from_pos,
+  }
+}
+
+#[cfg(feature = "media_mp4")]
+fn ticks_to_ns(ticks: u64, timescale: u64) -> u64 {
+  if ticks == 0 {
+    return 0;
+  }
+  let den = u128::from(timescale);
+  if den == 0 {
+    return u64::MAX;
+  }
+  let ns = u128::from(ticks)
+    .saturating_mul(1_000_000_000u128)
+    .saturating_add(den / 2)
+    / den;
+  ns.min(u128::from(u64::MAX)) as u64
+}
+
+#[cfg(feature = "media_mp4")]
+fn non_negative_i64_to_u64(v: i64) -> u64 {
+  if v <= 0 {
+    0
+  } else {
+    v as u64
+  }
+}
+
+#[cfg(feature = "media_mp4")]
+fn mp4parse_track_sample_count(track: &mp4parse::Track) -> Option<usize> {
+  // mp4parse's SampleSizeBox does not expose the `sample_count` field directly; use the
+  // `sample_sizes` vector length when present, otherwise fall back to summing stts.
+  if let Some(stsz) = track.stsz.as_ref() {
+    if stsz.sample_size == 0 && !stsz.sample_sizes.is_empty() {
+      return Some(stsz.sample_sizes.len());
+    }
+  }
+
+  track.stts.as_ref().and_then(|stts| {
+    let total: u64 = stts.samples.iter().map(|e| u64::from(e.sample_count)).sum();
+    usize::try_from(total).ok()
+  })
+}
+
+#[cfg(feature = "media_mp4")]
+fn mp4parse_build_sample_tables(
+  ctx: &mp4parse::MediaContext,
+) -> MediaResult<HashMap<u32, TrackSampleTable>> {
+  use mp4parse::unstable::{create_sample_table, CheckedInteger};
+
+  // Hard cap so a corrupted MP4 can't make us allocate an unbounded sample table.
+  const MAX_SAMPLES_PER_TRACK: usize = 2_000_000;
+  const MAX_TOTAL_SAMPLES: usize = 4_000_000;
+
+  let mut total_samples = 0_usize;
+  let mut out = HashMap::new();
+
+  for track in &ctx.tracks {
+    if !matches!(
+      track.track_type,
+      mp4parse::TrackType::Video | mp4parse::TrackType::Audio
+    ) {
+      continue;
+    }
+
+    let Some(track_id) = track.track_id else {
+      continue;
+    };
+
+    let Some(sample_count) = mp4parse_track_sample_count(track) else {
+      continue;
+    };
+    if sample_count > MAX_SAMPLES_PER_TRACK {
+      continue;
+    }
+
+    let new_total = total_samples.saturating_add(sample_count);
+    if new_total > MAX_TOTAL_SAMPLES {
+      continue;
+    }
+    total_samples = new_total;
+
+    let timescale = track.timescale.map(|t| t.0).unwrap_or(0).max(1);
+    let base_offset = CheckedInteger(0i64);
+    let Some(table) = create_sample_table(track, base_offset) else {
+      continue;
+    };
+    if table.len() != sample_count {
+      continue;
+    }
+
+    // MP4 timestamps can be negative (e.g. DTS shifted earlier so CTTS offsets are non-negative in
+    // version-0 `ctts`). Our pipeline uses unsigned nanosecond timestamps, so shift each timeline
+    // independently so the first DTS/PTS starts at 0.
+    let mut min_decode_ticks = i64::MAX;
+    let mut min_composition_ticks = i64::MAX;
+    for s in &table {
+      min_decode_ticks = min_decode_ticks.min(s.start_decode.0);
+      min_composition_ticks = min_composition_ticks.min(s.start_composition.0);
+    }
+    let dts_shift = if min_decode_ticks < 0 {
+      match min_decode_ticks.checked_neg() {
+        Some(v) => v,
+        None => continue,
+      }
+    } else {
+      0
+    };
+    let pts_shift = if min_composition_ticks < 0 {
+      match min_composition_ticks.checked_neg() {
+        Some(v) => v,
+        None => continue,
+      }
+    } else {
+      0
+    };
+
+    let mut samples = Vec::with_capacity(table.len());
+    let mut pts_ns_by_sample = Vec::with_capacity(table.len());
+    let mut sync_sample_indices = Vec::new();
+
+    for (i, s) in table.iter().enumerate() {
+      let dts_ticks_i64 = s.start_decode.0.saturating_add(dts_shift);
+      let pts_ticks_i64 = s.start_composition.0.saturating_add(pts_shift);
+      let duration_ticks_i64 = s.end_composition.0.saturating_sub(s.start_composition.0);
+
+      let dts_ticks = non_negative_i64_to_u64(dts_ticks_i64);
+      let pts_ticks = non_negative_i64_to_u64(pts_ticks_i64);
+      let duration_ticks = non_negative_i64_to_u64(duration_ticks_i64);
+
+      let dts_ns = ticks_to_ns(dts_ticks, timescale);
+      let pts_ns = ticks_to_ns(pts_ticks, timescale);
+      let duration_ns = ticks_to_ns(duration_ticks, timescale);
+
+      if s.sync {
+        sync_sample_indices.push(i as u32);
+      }
+
+      samples.push(SampleTiming {
+        dts_ns,
+        pts_ns,
+        duration_ns,
+        is_sync: s.sync,
+      });
+      pts_ns_by_sample.push(pts_ns);
+    }
+
+    let pts_index = build_pts_index(&pts_ns_by_sample);
+    out.insert(
+      track_id,
+      TrackSampleTable {
+        samples,
+        pts_ns_by_sample,
+        pts_index,
+        sync_sample_indices,
+      },
+    );
+  }
+
+  Ok(out)
+}
+
+#[cfg(feature = "media_mp4")]
+fn mp4parse_extract_aac_asc(ctx: &mp4parse::MediaContext) -> MediaResult<HashMap<u32, Vec<u8>>> {
+  let mut out = HashMap::new();
+
+  for track in &ctx.tracks {
+    if track.track_type != mp4parse::TrackType::Audio {
+      continue;
+    }
+    let Some(track_id) = track.track_id else {
+      continue;
+    };
+
+    let Some(stsd) = track.stsd.as_ref() else {
+      continue;
+    };
+    let Some(entry) = stsd.descriptions.first() else {
+      continue;
+    };
+    let mp4parse::SampleEntry::Audio(audio) = entry else {
+      continue;
+    };
+
+    let asc = match &audio.codec_specific {
+      mp4parse::AudioCodecSpecific::ES_Descriptor(esds) => esds.decoder_specific_data.clone(),
+      _ => Vec::new(),
+    };
+
+    if !asc.is_empty() {
+      out.insert(track_id, asc);
+    }
+  }
+
+  Ok(out)
+}
+
 #[cfg(all(test, feature = "media_mp4", feature = "codec_vp9_libvpx"))]
 mod tests {
+  use super::MediaDemuxer;
   use super::Mp4PacketDemuxer;
   use crate::media::decoder::create_video_decoder;
   use crate::media::{MediaCodec, MediaTrackType};
@@ -408,6 +742,139 @@ mod tests {
   }
 }
 
+#[cfg(all(test, feature = "media_mp4"))]
+mod mp4_timestamp_tests {
+  use super::MediaDemuxer;
+  use super::Mp4PacketDemuxer;
+  use crate::media::MediaCodec;
+  use std::sync::Arc;
+
+  #[test]
+  fn mp4_packets_have_non_zero_duration() {
+    let fixture_path = crate::testing::fixture_path("fixtures/media/test_h264_aac.mp4");
+    let bytes = std::fs::read(fixture_path).expect("read mp4 fixture");
+
+    let mut demuxer = Mp4PacketDemuxer::from_bytes(Arc::from(bytes)).expect("open demuxer");
+    let pkt = demuxer
+      .next_packet()
+      .expect("next packet")
+      .expect("expected packet");
+    assert!(
+      pkt.duration_ns > 0,
+      "expected non-zero duration_ns, got {}",
+      pkt.duration_ns
+    );
+  }
+
+  #[test]
+  fn mp4_b_frames_have_non_monotonic_pts_but_monotonic_dts() {
+    let fixture_path = crate::testing::fixture_path("fixtures/media/test_h264_b_frames_aac.mp4");
+    let bytes = std::fs::read(fixture_path).expect("read mp4 fixture");
+
+    let mut demuxer = Mp4PacketDemuxer::from_bytes(Arc::from(bytes)).expect("open demuxer");
+    let video_track_id = demuxer
+      .tracks()
+      .iter()
+      .find(|t| t.codec == MediaCodec::H264)
+      .map(|t| t.id)
+      .expect("H264 track");
+
+    let mut video_pts = Vec::new();
+    let mut video_dts = Vec::new();
+    for _ in 0..64 {
+      let Some(pkt) = demuxer.next_packet().expect("read packet") else {
+        break;
+      };
+      if pkt.track_id == video_track_id {
+        video_pts.push(pkt.pts_ns);
+        video_dts.push(pkt.dts_ns);
+      }
+    }
+
+    assert!(
+      video_pts.len() >= 4,
+      "expected at least 4 video packets, got {}",
+      video_pts.len()
+    );
+
+    assert!(
+      video_dts.windows(2).all(|w| w[1] >= w[0]),
+      "expected monotonic DTS: {video_dts:?}"
+    );
+
+    assert!(
+      video_pts.windows(2).any(|w| w[1] < w[0]),
+      "expected non-monotonic PTS due to B-frames, got: {video_pts:?}"
+    );
+  }
+
+  #[test]
+  fn mp4_b_frames_packets_are_emitted_in_global_decode_order_by_dts() {
+    let fixture_path = crate::testing::fixture_path("fixtures/media/test_h264_b_frames_aac.mp4");
+    let bytes = std::fs::read(fixture_path).expect("read mp4 fixture");
+
+    let mut demuxer = Mp4PacketDemuxer::from_bytes(Arc::from(bytes)).expect("open demuxer");
+
+    let mut last_dts: Option<u64> = None;
+    for _ in 0..256 {
+      let Some(pkt) = demuxer.next_packet().expect("read packet") else {
+        break;
+      };
+      if let Some(prev) = last_dts {
+        assert!(
+          pkt.dts_ns >= prev,
+          "expected demuxer to emit packets ordered by DTS (decode order); DTS decreased ({} -> {})",
+          prev,
+          pkt.dts_ns
+        );
+      }
+      last_dts = Some(pkt.dts_ns);
+    }
+  }
+}
+
+#[cfg(all(
+  test,
+  feature = "media_mp4",
+  feature = "codec_h264_openh264",
+  feature = "codec_aac"
+))]
+mod mp4_seek_preroll_tests {
+  use super::Mp4PacketDemuxer;
+  use crate::media::{DecodedItem, MediaDecodePipeline};
+  use std::sync::Arc;
+
+  #[test]
+  fn mp4_seek_to_mid_stream_decodes_from_keyframe_and_prerolls() {
+    let fixture_path = crate::testing::fixture_path("fixtures/media/test_h264_b_frames_aac.mp4");
+    let bytes = std::fs::read(fixture_path).expect("read mp4 fixture");
+
+    let demuxer = Mp4PacketDemuxer::from_bytes(Arc::from(bytes)).expect("open demuxer");
+    let mut pipeline = MediaDecodePipeline::new(Box::new(demuxer)).expect("pipeline");
+
+    let target_ns = 1_500_000_000_u64;
+    pipeline.seek(target_ns).expect("seek");
+
+    // Decode until we see a video frame at or after the seek target.
+    for _ in 0..256 {
+      let Some(item) = pipeline.next_decoded().expect("next_decoded") else {
+        break;
+      };
+      if let DecodedItem::Video(frame) = item {
+        assert!(
+          frame.pts_ns >= target_ns,
+          "expected preroll-drop to suppress frames before target ({}), got {}",
+          target_ns,
+          frame.pts_ns
+        );
+        return;
+      }
+    }
+
+    panic!("expected to decode a video frame after seek");
+  }
+}
+
 #[cfg(feature = "media_mp4")]
 impl<R: Read + Seek + Send> MediaDemuxer for Mp4PacketDemuxer<R> {
   fn tracks(&self) -> &[MediaTrackInfo] {
@@ -416,15 +883,15 @@ impl<R: Read + Seek + Send> MediaDemuxer for Mp4PacketDemuxer<R> {
 
   fn next_packet(&mut self) -> MediaResult<Option<MediaPacket>> {
     for cursor in &mut self.cursors {
-      mp4_fill_peeked(&mut self.mp4, cursor)?;
+      mp4_fill_peeked(&mut self.mp4, &self.sample_tables, cursor)?;
     }
 
-    let Some((best_idx, _)) = self
+    let Some((best_idx, _, _)) = self
       .cursors
       .iter()
       .enumerate()
-      .filter_map(|(i, c)| c.peeked.as_ref().map(|p| (i, p.pts_ns)))
-      .min_by_key(|(_, ts)| *ts)
+      .filter_map(|(i, c)| c.peeked.as_ref().map(|p| (i, p.dts_ns, p.track_id)))
+      .min_by_key(|(_, dts_ns, track_id)| (*dts_ns, *track_id))
     else {
       return Ok(None);
     };
@@ -433,114 +900,52 @@ impl<R: Read + Seek + Send> MediaDemuxer for Mp4PacketDemuxer<R> {
   }
 
   fn seek(&mut self, time_ns: u64) -> MediaResult<()> {
-    if let Some(seek_index) = self.seek_index.as_ref() {
-      for cursor in &mut self.cursors {
-        cursor.peeked = None;
-
-        if time_ns == 0 {
-          cursor.next_sample = 1;
-          continue;
-        }
-
-        let sample_idx0 = seek_index
-          .track(cursor.id)
-          .map(|t| t.sample_index_at_or_after(time_ns))
-          .unwrap_or(0);
-
-        if sample_idx0 >= cursor.sample_count as usize {
-          cursor.next_sample = cursor.sample_count.saturating_add(1);
-        } else {
-          cursor.next_sample = (sample_idx0 as u32).saturating_add(1);
-        }
-      }
-      return Ok(());
-    }
-
-    // Fallback for demuxers that weren't constructed from a file path (no prebuilt index).
     for cursor in &mut self.cursors {
-      cursor.next_sample = 1;
       cursor.peeked = None;
 
       if time_ns == 0 {
+        cursor.next_sample = 1;
         continue;
       }
 
-      loop {
-        mp4_fill_peeked(&mut self.mp4, cursor)?;
-        match cursor.peeked.as_ref() {
-          None => break,
-          Some(pkt) if pkt.pts_ns < time_ns => {
-            cursor.peeked = None;
-            continue;
+      let Some(track_table) = self.sample_tables.get(&cursor.id) else {
+        // Fallback: scan forward until the first sample with PTS >= time.
+        cursor.next_sample = 1;
+        loop {
+          mp4_fill_peeked(&mut self.mp4, &self.sample_tables, cursor)?;
+          match cursor.peeked.as_ref() {
+            None => break,
+            Some(pkt) if pkt.pts_ns < time_ns => {
+              cursor.peeked = None;
+              continue;
+            }
+            Some(_) => break,
           }
-          Some(_) => break,
         }
+        continue;
+      };
+
+      let sample_idx0 = track_table.sample_index_at_or_after(time_ns);
+      if sample_idx0 >= cursor.sample_count as usize {
+        cursor.next_sample = cursor.sample_count.saturating_add(1);
+        continue;
       }
+
+      let seek_idx0 = match cursor.track_type {
+        MediaTrackType::Video => track_table.sync_sample_at_or_before(sample_idx0),
+        MediaTrackType::Audio => sample_idx0,
+      };
+
+      cursor.next_sample = (seek_idx0 as u32).saturating_add(1);
     }
     Ok(())
   }
 }
 
 #[cfg(feature = "media_mp4")]
-fn read_top_level_box_bytes(
-  reader: &mut File,
-  file_len: u64,
-  typ: [u8; 4],
-) -> std::io::Result<Option<Vec<u8>>> {
-  use std::io::{Read, SeekFrom};
-
-  // `Mp4PacketDemuxer::open` reads the `moov` box once to build a seek index, then rewinds and lets
-  // the `mp4` crate parse the file normally. Cap how much we read for this *best-effort* index build
-  // so we don't temporarily allocate/IO huge `moov` boxes (which can be attacker-controlled).
-  //
-  // If the box is larger, we simply fall back to the old linear-scan seek path.
-  const MAX_BOX_BYTES_FOR_INDEX: u64 = 64 * 1024 * 1024;
-
-  reader.seek(SeekFrom::Start(0))?;
-  let mut pos = 0_u64;
-  while pos + 8 <= file_len {
-    reader.seek(SeekFrom::Start(pos))?;
-    let mut header = [0_u8; 8];
-    reader.read_exact(&mut header)?;
-    let size32 = u32::from_be_bytes(header[0..4].try_into().unwrap()); // fastrender-allow-unwrap
-    let name: [u8; 4] = header[4..8].try_into().unwrap(); // fastrender-allow-unwrap
-
-    let (size, header_len) = match size32 {
-      0 => (file_len.saturating_sub(pos), 8_u64),
-      1 => {
-        let mut ext = [0_u8; 8];
-        reader.read_exact(&mut ext)?;
-        (u64::from_be_bytes(ext), 16_u64)
-      }
-      n => (u64::from(n), 8_u64),
-    };
-
-    if size < header_len || pos.saturating_add(size) > file_len {
-      return Ok(None);
-    }
-
-    if name == typ {
-      if size > MAX_BOX_BYTES_FOR_INDEX {
-        return Ok(None);
-      }
-      let Ok(size_usize) = usize::try_from(size) else {
-        return Ok(None);
-      };
-      let mut buf = vec![0_u8; size_usize];
-      reader.seek(SeekFrom::Start(pos))?;
-      reader.read_exact(&mut buf)?;
-      return Ok(Some(buf));
-    }
-
-    pos = pos.saturating_add(size);
-  }
-
-  Ok(None)
-}
-
-#[cfg(feature = "media_mp4")]
 fn mp4_fill_peeked<R: Read + Seek>(
   mp4: &mut mp4::Mp4Reader<R>,
+  sample_tables: &HashMap<u32, TrackSampleTable>,
   cursor: &mut Mp4TrackCursor,
 ) -> MediaResult<()> {
   if cursor.peeked.is_some() {
@@ -553,27 +958,37 @@ fn mp4_fill_peeked<R: Read + Seek>(
 
     let Some(sample) = mp4
       .read_sample(cursor.id, sample_idx)
-      .map_err(|e| MediaError::Demux(format!("mp4: failed to read sample: {e}")))? else {
+      .map_err(|e| MediaError::Demux(format!("mp4: failed to read sample: {e}")))?
+    else {
       continue;
     };
 
-    // The mp4 crate uses time units in the track's timescale.
-    let start_time = sample.start_time;
-    let pts_ns = if cursor.timescale == 0 {
-      0
-    } else {
-      (start_time.saturating_mul(1_000_000_000)).saturating_div(u64::from(cursor.timescale))
+    let timing = sample_tables
+      .get(&cursor.id)
+      .and_then(|t| t.samples.get(sample_idx as usize - 1))
+      .copied();
+
+    let (dts_ns, pts_ns, duration_ns, is_keyframe) = match timing {
+      Some(t) => (t.dts_ns, t.pts_ns, t.duration_ns, t.is_sync),
+      None => {
+        // Fallback: treat the mp4 crate's sample time as both PTS+DTS (no CTTS support).
+        let start_time = sample.start_time;
+        let pts_ns = if cursor.timescale == 0 {
+          0
+        } else {
+          (start_time.saturating_mul(1_000_000_000)).saturating_div(u64::from(cursor.timescale))
+        };
+        (pts_ns, pts_ns, 0, sample.is_sync)
+      }
     };
 
     cursor.peeked = Some(MediaPacket {
       track_id: u64::from(cursor.id),
-      // The `mp4` crate doesn't currently expose a separate DTS/CTTS-derived composition timestamp
-      // for samples. For now we treat the track time as both decode and presentation timestamp.
-      dts_ns: pts_ns,
+      dts_ns,
       pts_ns,
-      duration_ns: 0,
+      duration_ns,
       data: sample.bytes.to_vec().into(),
-      is_keyframe: sample.is_sync,
+      is_keyframe,
     });
     return Ok(());
   }

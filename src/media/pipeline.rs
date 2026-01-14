@@ -12,6 +12,7 @@ pub struct MediaDecodePipeline {
   video_decoder: Option<Box<dyn VideoDecoder>>,
   audio_decoder: Option<Box<dyn AudioDecoder>>,
   pending: VecDeque<DecodedItem>,
+  preroll_drop_until_ns: Option<u64>,
 }
 
 impl MediaDecodePipeline {
@@ -23,6 +24,7 @@ impl MediaDecodePipeline {
       video_decoder: None,
       audio_decoder: None,
       pending: VecDeque::new(),
+      preroll_drop_until_ns: None,
     };
     pipeline.init_decoders()?;
     Ok(pipeline)
@@ -53,11 +55,28 @@ impl MediaDecodePipeline {
 
   /// Fetches the next decoded item in demux order.
   pub fn next_decoded(&mut self) -> MediaResult<Option<DecodedItem>> {
-    if let Some(item) = self.pending.pop_front() {
-      return Ok(Some(item));
-    }
-
     loop {
+      while let Some(item) = self.pending.pop_front() {
+        if let Some(target_ns) = self.preroll_drop_until_ns {
+          let pts_ns = match &item {
+            DecodedItem::Video(frame) => frame.pts_ns,
+            DecodedItem::Audio(chunk) => chunk.pts_ns,
+          };
+
+          if pts_ns < target_ns {
+            continue;
+          }
+
+          // Stop preroll dropping once we've produced a "post-seek" video frame. If there is no
+          // video track, stop once we produce any item at-or-after the target.
+          if matches!(item, DecodedItem::Video(_)) || self.video_track.is_none() {
+            self.preroll_drop_until_ns = None;
+          }
+        }
+
+        return Ok(Some(item));
+      }
+
       let Some(pkt) = self.demuxer.next_packet()? else {
         return Ok(None);
       };
@@ -80,9 +99,7 @@ impl MediaDecodePipeline {
         }
       }
 
-      if let Some(item) = self.pending.pop_front() {
-        return Ok(Some(item));
-      }
+      // Loop back around to drain `pending` (with preroll-drop filtering).
     }
   }
 
@@ -90,7 +107,7 @@ impl MediaDecodePipeline {
     self.demuxer.seek(time_ns)?;
     self.pending.clear();
     self.init_decoders()?;
+    self.preroll_drop_until_ns = if time_ns == 0 { None } else { Some(time_ns) };
     Ok(())
   }
 }
-
