@@ -205,12 +205,46 @@ fn arguments_identifier_reference_in_class_static_block_is_syntax_error() {
 }
 
 #[test]
+fn arguments_label_in_class_static_block_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("class C { static { arguments: 0; } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn arguments_identifier_reference_in_arrow_in_class_static_block_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
     .exec_script("class C { static { () => arguments; } }")
     .unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn arguments_identifier_reference_in_class_field_initializer_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("class C { x = arguments; }").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn arguments_identifier_reference_in_arrow_in_class_field_initializer_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("class C { x = () => arguments; }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn arguments_identifier_reference_in_function_in_class_field_initializer_is_allowed() {
+  let mut rt = new_runtime();
+  // Function forms are early-error boundaries for ContainsArguments.
+  rt
+    .exec_script("class C { x = function(){ arguments; }; }")
+    .unwrap();
 }
 
 #[test]
@@ -399,6 +433,15 @@ fn private_name_not_visible_across_classes_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
     .exec_script("class C { #x; } class D { m(c) { c.#x; } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn undeclared_private_member_access_in_nested_class_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("class C { m(){ class D { m(){ this.#x; } } } }")
     .unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }

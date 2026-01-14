@@ -212,9 +212,9 @@ struct ControlContext {
   super_call_allowed: bool,
   /// Whether `arguments` identifier references are permitted in the current context.
   ///
-  /// Class static initialization blocks disallow `arguments` (ECMA-262 `ContainsArguments` early
-  /// error). This restriction is lexical, so arrow functions inherit this flag from their
-  /// surrounding context.
+  /// Class field initializer expressions and class static initialization blocks disallow
+  /// `arguments` (ECMA-262 `ContainsArguments` early error). This restriction is lexical, so arrow
+  /// functions inherit this flag from their surrounding context.
   arguments_allowed: bool,
   /// Whether `return` statements are permitted in the current statement list.
   ///
@@ -1588,6 +1588,12 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     stmt: &LabelStmt,
   ) -> Result<(), VmError> {
     self.validate_reserved_identifier(ctx, loc, stmt.name.as_str())?;
+    if stmt.name == "arguments" && !ctx.arguments_allowed {
+      self.push_error(
+        loc,
+        "'arguments' is not allowed in class field initializer or static initialization block",
+      )?;
+    }
     let is_iteration = Self::is_iteration_statement(&stmt.statement);
     if ctx.labels.iter().any(|l| l.name == stmt.name) {
       let message = try_format_error_message("duplicate label '", &stmt.name, "'")?;
@@ -3113,7 +3119,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
           if id.stx.name == "arguments" && !ctx.arguments_allowed {
             self.push_error(
               id.loc,
-              "arguments is not allowed in class static initialization blocks",
+              "'arguments' is not allowed in class field initializer or static initialization block",
             )?;
           }
           if id.stx.name.starts_with('#') {
