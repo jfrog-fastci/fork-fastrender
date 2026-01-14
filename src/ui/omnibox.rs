@@ -7,6 +7,7 @@ use crate::ui::messages::TabId;
 use crate::ui::url::{resolve_omnibox_input, resolve_omnibox_search_query, OmniboxInputResolution};
 use crate::ui::visited::{VisitedUrlRecord, VisitedUrlStore};
 use crate::ui::{BookmarkNode, BookmarkStore};
+use memchr::{memchr, memchr2, memchr3};
 use rustc_hash::FxBuildHasher;
 use smallvec::SmallVec;
 use std::borrow::Cow;
@@ -727,13 +728,7 @@ fn parse_http_url_for_scoring(raw: &str) -> Option<OmniboxHttpUrl<'_>> {
   let rest = &raw[scheme_len..];
 
   // Authority ends at the first `/`, `?`, or `#` (or end of string).
-  let mut authority_end = rest.len();
-  for (i, &b) in rest.as_bytes().iter().enumerate() {
-    if matches!(b, b'/' | b'?' | b'#') {
-      authority_end = i;
-      break;
-    }
-  }
+  let authority_end = memchr3(b'/', b'?', b'#', rest.as_bytes()).unwrap_or(rest.len());
   let authority = &rest[..authority_end];
   if authority.is_empty() {
     return None;
@@ -798,36 +793,22 @@ fn parse_http_url_for_scoring(raw: &str) -> Option<OmniboxHttpUrl<'_>> {
 
   if after_auth.starts_with('/') {
     // Path ends at `?` or `#`.
-    let mut path_end = after_auth.len();
-    for (i, &b) in after_auth.as_bytes().iter().enumerate() {
-      if matches!(b, b'?' | b'#') {
-        path_end = i;
-        break;
-      }
-    }
+    let path_end = memchr2(b'?', b'#', after_auth.as_bytes()).unwrap_or(after_auth.len());
     path = &after_auth[..path_end];
 
     // Query (optional) begins after `?` and ends at `#` (or end).
     if after_auth.as_bytes().get(path_end) == Some(&b'?') {
       let query_start = path_end + 1;
-      let mut query_end = after_auth.len();
-      for (i, &b) in after_auth.as_bytes()[query_start..].iter().enumerate() {
-        if b == b'#' {
-          query_end = query_start + i;
-          break;
-        }
-      }
+      let query_end = query_start
+        + memchr(b'#', &after_auth.as_bytes()[query_start..])
+          .unwrap_or(after_auth.len() - query_start);
       query = Some(&after_auth[query_start..query_end]);
     }
   } else if after_auth.starts_with('?') {
     let query_start = 1;
-    let mut query_end = after_auth.len();
-    for (i, &b) in after_auth.as_bytes()[query_start..].iter().enumerate() {
-      if b == b'#' {
-        query_end = query_start + i;
-        break;
-      }
-    }
+    let query_end = query_start
+      + memchr(b'#', &after_auth.as_bytes()[query_start..])
+        .unwrap_or(after_auth.len() - query_start);
     query = Some(&after_auth[query_start..query_end]);
   }
 
