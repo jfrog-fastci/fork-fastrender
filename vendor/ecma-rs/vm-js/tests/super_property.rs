@@ -31,6 +31,22 @@ fn super_property_in_base_class_method_reads_from_object_prototype() {
 }
 
 #[test]
+fn super_property_in_base_class_static_method_reads_from_function_prototype() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class A {
+          static m() { return super.toString === Function.prototype.toString; }
+        }
+        A.m()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn super_method_call_uses_this_binding_as_receiver() {
   let mut rt = new_runtime();
   let value = rt
