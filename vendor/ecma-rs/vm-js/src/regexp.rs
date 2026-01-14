@@ -6614,7 +6614,12 @@ mod unicode_set_tests {
     // Leak the closure so `CompileCtx` can borrow it with a `'static` lifetime in tests.
     //
     // Tests are short-lived and this keeps the helper ergonomic.
-    let tick: &'static mut dyn FnMut() -> Result<(), VmError> = Box::leak(Box::new(|| Ok(())));
+    let tick: &'static mut dyn FnMut() -> Result<(), VmError> = {
+      // Avoid `Box::new`, which aborts the process on allocator OOM.
+      let boxed: Box<dyn FnMut() -> Result<(), VmError>> =
+        crate::fallible_alloc::box_try_new_vm(|| Ok(())).expect("alloc tick");
+      Box::leak(boxed)
+    };
     let ctx = CompileCtx::new(&heap, tick);
     (heap, ctx)
   }
