@@ -3,10 +3,10 @@
 //! This module is intentionally small: it is a single-stream (video-only) player that:
 //! - demuxes VP9 packets from WebM (`WebmDemuxer`)
 //! - decodes VP9 into RGBA8 frames (`codecs::vp9`)
-//! - schedules presentation using `av_sync::decide_video_frame`
+//! - schedules presentation using `av_sync::decide`
 //! - exposes the most recently presented frame via a non-blocking `current_frame()` API.
 
-use crate::media::av_sync::{decide_video_frame, AvSyncConfig, AvSyncDecision};
+use crate::media::av_sync::{decide, suggest_wake_after, AvSyncConfig, VideoSyncAction};
 use crate::media::codecs::vp9::Vp9Decoder;
 use crate::media::demux::webm::WebmDemuxer;
 use crate::media::{MediaCodec, MediaError, MediaResult};
@@ -256,19 +256,19 @@ impl MediaPlayer {
           break;
         };
 
-        match decide_video_frame(front.pts, timeline_now, &state.av_sync) {
-          AvSyncDecision::Present => {
+        match decide(timeline_now, front.pts, &state.av_sync) {
+          VideoSyncAction::PresentNow => {
             processed_frames += 1;
             if let Some(frame) = state.video_queue.pop_front() {
               last_presented = Some(frame.image);
             }
           }
-          AvSyncDecision::Drop => {
+          VideoSyncAction::Drop => {
             processed_frames += 1;
             let _ = state.video_queue.pop_front();
           }
-          AvSyncDecision::Hold { wake_after: wa } => {
-            wake_after = Some(wa);
+          VideoSyncAction::WaitUntil(_) => {
+            wake_after = suggest_wake_after(timeline_now, Some(front.pts), &state.av_sync);
             break;
           }
         }
