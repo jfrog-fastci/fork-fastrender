@@ -2066,9 +2066,8 @@ pub fn chrome_ui_with_bookmarks(
                 store_test_id(ctx, "chrome_try_http_button_id", resp.id);
                 store_test_rect(ctx, "chrome_try_http_button_rect", resp.rect);
               }
-              resp = resp.on_hover_text(tooltip);
               resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, label));
-              show_tooltip_on_focus(ui, &resp, tooltip);
+              show_tooltip_on_hover_or_focus(ui, &resp, tooltip);
 
               // Paint a small pill button.
               let bg_alpha = if resp.hovered() || resp.has_focus() {
@@ -2144,11 +2143,10 @@ pub fn chrome_ui_with_bookmarks(
               );
               #[cfg(test)]
               store_test_id(ctx, "chrome_bookmark_star_id", response.id);
-              response = response.on_hover_text(tooltip);
               response.widget_info(move || {
                 egui::WidgetInfo::labeled(egui::WidgetType::Button, action_label)
               });
-              show_tooltip_on_focus(ui, &response, tooltip);
+              show_tooltip_on_hover_or_focus(ui, &response, tooltip);
 
               // Micro-interaction: fade a subtle hover fill in/out.
               let highlight = can_toggle && (response.hovered() || response.has_focus());
