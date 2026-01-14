@@ -395,12 +395,11 @@ pub struct BrowserSessionTabGroup {
 
 impl BrowserSessionTabGroup {
   fn sanitized(mut self) -> Self {
-    let trimmed = self.title.trim();
-    let truncated = truncate_utf8_to_max_bytes(trimmed, MAX_SESSION_GROUP_TITLE_BYTES).trim();
-    self.title = if truncated.is_empty() {
+    let sanitized = sanitize_untrusted_text(&self.title, MAX_SESSION_GROUP_TITLE_BYTES);
+    self.title = if sanitized.is_empty() {
       default_tab_group_title()
     } else {
-      truncated.to_string()
+      sanitized
     };
     self
   }
