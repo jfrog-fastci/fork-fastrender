@@ -2978,7 +2978,26 @@ impl JsRuntime {
 
           let awaited_promise = match awaited_promise_res {
             Ok(p) => p,
-            Err(VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. }) => {
+            Err(err) if err.is_throw_completion() => {
+              let (source, offset) = source_offset_for_async_frames_best_effort(&env, &frames);
+              let err = finalize_throw_with_stack_at_source_offset_best_effort(
+                &*vm_frame,
+                &mut root_scope,
+                source.as_ref(),
+                offset,
+                err,
+              );
+              let reason = match err {
+                VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. } => reason,
+                other => {
+                  env.teardown(root_scope.heap_mut());
+                  for mut frame in frames {
+                    async_teardown_frame(root_scope.heap_mut(), &mut frame);
+                  }
+                  return Err(other);
+                }
+              };
+
               let reason = match root_scope.push_root(reason) {
                 Ok(v) => v,
                 Err(err) => {
@@ -3536,7 +3555,26 @@ impl JsRuntime {
 
           let awaited_promise = match awaited_promise_res {
             Ok(p) => p,
-            Err(VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. }) => {
+            Err(err) if err.is_throw_completion() => {
+              let (source, offset) = source_offset_for_async_frames_best_effort(&env, &frames);
+              let err = finalize_throw_with_stack_at_source_offset_best_effort(
+                &*vm_frame,
+                &mut root_scope,
+                source.as_ref(),
+                offset,
+                err,
+              );
+              let reason = match err {
+                VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. } => reason,
+                other => {
+                  env.teardown(root_scope.heap_mut());
+                  for mut frame in frames {
+                    async_teardown_frame(root_scope.heap_mut(), &mut frame);
+                  }
+                  return Err(other);
+                }
+              };
+
               let reason = match root_scope.push_root(reason) {
                 Ok(v) => v,
                 Err(err) => {
@@ -18136,7 +18174,7 @@ fn async_handle_body_result(
           resolve_res.map_err(|err| coerce_error_to_throw_for_async(vm, &mut await_scope, err))
         }
         AsyncSuspendKind::AwaitResolved => Ok(await_value),
-        AsyncSuspendKind::Yield | AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
+        AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
           "unexpected async generator yield suspension in async continuation",
         )),
         AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
@@ -53918,7 +53956,7 @@ pub(crate) fn run_module_async_start(
               coerce_error_to_throw_for_async(&mut *vm_frame, &mut await_scope, err)
             })?,
             AsyncSuspendKind::AwaitResolved => await_value,
-            AsyncSuspendKind::Yield | AsyncSuspendKind::YieldIteratorResult => {
+            AsyncSuspendKind::Yield => {
               return Err(VmError::InvariantViolation(
                 "unexpected async generator yield suspension in module start",
               ))
@@ -54088,7 +54126,7 @@ pub(crate) fn run_module_async_resume(
           )
           .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut await_scope, err))?,
           AsyncSuspendKind::AwaitResolved => await_value,
-          AsyncSuspendKind::Yield | AsyncSuspendKind::YieldIteratorResult => {
+          AsyncSuspendKind::Yield => {
             return Err(VmError::InvariantViolation(
               "unexpected async generator yield suspension in module resume",
             ))

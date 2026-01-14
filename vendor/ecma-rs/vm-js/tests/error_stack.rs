@@ -1,4 +1,4 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+use vm_js::{Heap, HeapLimits, JsRuntime, PromiseState, PropertyKey, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> Result<JsRuntime, VmError> {
   let vm = Vm::new(VmOptions::default());
@@ -170,5 +170,56 @@ f().catch(e => { captured = e.stack; });
       && captured.includes("at ")"#,
   )?;
   assert_eq!(v, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn error_stack_for_top_level_await_revoked_proxy_promise_resolve_throw_has_error_stack(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  let result = rt.exec_script("const { proxy, revoke } = Proxy.revocable({}, {});\nrevoke();\nawait proxy;")?;
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object from top-level await script, got {result:?}");
+  };
+  assert!(rt.heap.is_promise_object(promise_obj));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Rejected);
+  let reason = rt
+    .heap
+    .promise_result(promise_obj)?
+    .expect("rejected Promise should have a rejection reason");
+  let Value::Object(reason_obj) = reason else {
+    panic!("expected rejected promise reason to be an object, got {reason:?}");
+  };
+
+  let stack = {
+    let mut scope = rt.heap.scope();
+    scope.push_root(Value::Object(reason_obj))?;
+
+    let stack_key_s = scope.alloc_string("stack")?;
+    scope.push_root(Value::String(stack_key_s))?;
+    let stack_key = PropertyKey::from_string(stack_key_s);
+
+    let stack_v = scope
+      .heap()
+      .object_get_own_data_property_value(reason_obj, &stack_key)?
+      .unwrap_or(Value::Undefined);
+    let Value::String(stack_s) = stack_v else {
+      panic!("expected rejection reason to have string own `stack`, got {stack_v:?}");
+    };
+    scope.heap().get_string(stack_s)?.to_utf8_lossy()
+  };
+
+  assert!(!stack.is_empty(), "expected non-empty stack string");
+  assert!(
+    stack.contains("TypeError") && stack.contains("revoked Proxy"),
+    "expected stack string to contain error name/message, got {stack:?}"
+  );
+  assert!(
+    stack.contains("at ") && stack.contains("<inline>:3:1"),
+    "expected stack string to contain stack frames, got {stack:?}"
+  );
   Ok(())
 }
