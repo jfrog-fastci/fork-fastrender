@@ -64,7 +64,7 @@ fn wait_for_scroll_response(
 }
 
 fn wait_for_frame_with_scroll_state(
-  rx: &Receiver<WorkerToUi>,
+  rx: &impl super::support::RecvTimeout<WorkerToUi>,
   tab_id: TabId,
   timeout: Duration,
   mut pred: impl FnMut(&fastrender::scroll::ScrollState) -> bool,

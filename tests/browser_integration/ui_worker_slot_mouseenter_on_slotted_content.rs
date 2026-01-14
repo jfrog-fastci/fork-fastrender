@@ -5,12 +5,11 @@ use fastrender::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, RepaintReason, TabId, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker_with_factory;
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
 
-fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
+fn next_frame_ready(rx: &impl support::RecvTimeout<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(
       msg,
@@ -131,4 +130,3 @@ fn ui_worker_slot_mouseenter_fires_when_hovering_slotted_light_dom_content() {
   drop(ui_tx);
   join.join().expect("worker join");
 }
-

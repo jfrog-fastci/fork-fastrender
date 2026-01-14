@@ -3,14 +3,13 @@
 use fastrender::dom::{enumerate_dom_ids, parse_html_with_options, DomNode, DomParseOptions};
 use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
 
 fn wait_for_frame(
-  rx: &Receiver<WorkerToUi>,
+  rx: &impl super::support::RecvTimeout<WorkerToUi>,
   tab_id: TabId,
   timeout: Duration,
 ) -> fastrender::ui::messages::RenderedFrame {

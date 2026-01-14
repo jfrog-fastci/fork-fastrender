@@ -10,7 +10,6 @@ use fastrender::ui::spawn_ui_worker;
 use std::io;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -21,7 +20,10 @@ use super::support;
 const TIMEOUT: Duration = Duration::from_secs(20);
 const SERVER_WAIT: Duration = Duration::from_secs(10);
 
-fn next_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> String {
+fn next_navigation_committed(
+  rx: &impl support::RecvTimeout<WorkerToUi>,
+  tab_id: TabId,
+) -> String {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
     matches!(
       msg,
@@ -261,4 +263,3 @@ fn ui_worker_process_swaps_on_cross_site_redirect_commit() {
   server_a.join().expect("join server_a");
   server_b.join().expect("join server_b");
 }
-

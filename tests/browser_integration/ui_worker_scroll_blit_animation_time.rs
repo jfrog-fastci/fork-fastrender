@@ -50,7 +50,7 @@ fn animated_scroll_page() -> String {
 }
 
 fn wait_for_navigation_commit_and_frame(
-  rx: &std::sync::mpsc::Receiver<WorkerToUi>,
+  rx: &impl support::RecvTimeout<WorkerToUi>,
   tab_id: TabId,
   timeout: Duration,
 ) -> fastrender::ui::messages::RenderedFrame {

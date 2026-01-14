@@ -3,7 +3,6 @@
 use super::support;
 use fastrender::ui::messages::{NavigationReason, PointerButton, RenderedFrame, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 const TIMEOUT: Duration = Duration::from_secs(20);
@@ -15,7 +14,7 @@ fn rgba_at_css(frame: &RenderedFrame, x_css: u32, y_css: u32) -> [u8; 4] {
 }
 
 fn recv_until_frame_ready(
-  rx: &Receiver<WorkerToUi>,
+  rx: &impl support::RecvTimeout<WorkerToUi>,
   tab_id: TabId,
   deadline: Instant,
   context: &'static str,
@@ -47,7 +46,7 @@ fn recv_until_frame_ready(
 }
 
 fn recv_until_pixel(
-  rx: &Receiver<WorkerToUi>,
+  rx: &impl support::RecvTimeout<WorkerToUi>,
   tab_id: TabId,
   css_pos: (u32, u32),
   expected: [u8; 4],
@@ -63,7 +62,7 @@ fn recv_until_pixel(
 }
 
 fn recv_scroll_state_updated(
-  rx: &Receiver<WorkerToUi>,
+  rx: &impl support::RecvTimeout<WorkerToUi>,
   tab_id: TabId,
   deadline: Instant,
   context: &'static str,

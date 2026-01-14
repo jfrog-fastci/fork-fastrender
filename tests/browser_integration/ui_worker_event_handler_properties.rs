@@ -3,9 +3,8 @@
 use super::support;
 use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker_with_factory;
-use std::sync::mpsc::Receiver;
 
-fn wait_for_first_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId) {
+fn wait_for_first_frame(rx: &impl support::RecvTimeout<WorkerToUi>, tab_id: TabId) {
   let msg = support::recv_for_tab(rx, tab_id, support::DEFAULT_TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::FrameReady { .. } | WorkerToUi::NavigationFailed { .. })
   })
@@ -174,4 +173,3 @@ fn window_onresize_handler_property_fires_on_viewport_changed() {
 
   handle.join().expect("join ui worker");
 }
-

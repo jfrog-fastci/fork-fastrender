@@ -5,13 +5,12 @@ use fastrender::ui::messages::{
   CursorKind, NavigationReason, PointerButton, RepaintReason, TabId, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
-use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
 
 fn next_frame_ready(
-  rx: &Receiver<WorkerToUi>,
+  rx: &impl support::RecvTimeout<WorkerToUi>,
   tab_id: TabId,
 ) -> fastrender::ui::messages::RenderedFrame {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
@@ -32,7 +31,7 @@ fn next_frame_ready(
 }
 
 fn next_hover_changed(
-  rx: &Receiver<WorkerToUi>,
+  rx: &impl support::RecvTimeout<WorkerToUi>,
   tab_id: TabId,
 ) -> (Option<String>, CursorKind, Option<String>) {
   let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
