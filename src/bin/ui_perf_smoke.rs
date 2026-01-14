@@ -291,6 +291,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
   }
   let rayon_threads_decision = resolve_requested_rayon_threads(args.rayon_threads);
+  let requested_rayon_threads = rayon_threads_decision.requested.unwrap_or(1).max(1);
   let effective_rayon_threads = apply_rayon_threads_config(rayon_threads_decision);
 
   let scenario_names = selected_scenarios(args.only.as_deref())?;
@@ -317,7 +318,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   let mut scenarios = Vec::new();
   let policy = resource_policy_for_allow_network(args.allow_network);
   let run_config = RunConfig {
-    rayon_threads: effective_rayon_threads,
+    rayon_threads: requested_rayon_threads,
     rayon_threads_source: rayon_threads_decision.source,
     effective_rayon_threads,
     warmup: args.warmup,
