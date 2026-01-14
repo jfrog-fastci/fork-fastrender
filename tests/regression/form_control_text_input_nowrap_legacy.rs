@@ -298,3 +298,68 @@ fn legacy_text_input_scroll_x_is_clamped_when_focused() {
     "expected scrolled `<input>` value to still paint as a single line; bands={ink_bands}"
   );
 }
+
+#[test]
+fn legacy_password_input_forces_single_line_mask_no_wrap() {
+  ensure_test_env();
+
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "legacy".to_string(),
+  )]));
+
+  let mut renderer = FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .runtime_toggles(toggles.clone())
+    .resource_policy(
+      ResourcePolicy::default()
+        .allow_http(false)
+        .allow_https(false),
+    )
+    .paint_parallelism(PaintParallelism::disabled())
+    .layout_parallelism(LayoutParallelism::disabled())
+    .build()
+    .expect("renderer");
+
+  let html = r#"
+    <!doctype html>
+    <style>
+      html, body { margin: 0; background: white; }
+      input {
+        width: 30px;
+        height: 80px;
+        padding: 0;
+        border: none;
+        background: transparent;
+        font-family: "Noto Sans", sans-serif;
+        /* Wrapping-friendly authored styles; the painter must still force nowrap. */
+        white-space: pre-wrap;
+        text-wrap: wrap;
+        font-size: 16px;
+        color: black;
+      }
+    </style>
+    <input type=\"password\" value=\"this-is-a-long-password-value\" />
+  "#;
+
+  let options = RenderOptions::new()
+    .with_viewport(120, 120)
+    .with_runtime_toggles(toggles);
+  let pixmap = renderer
+    .render_html_with_options(html, options)
+    .expect("render");
+
+  let (_, min_y, _, max_y) = bbox_for_ink(&pixmap).expect("expected password text to paint ink");
+  let ink_height = max_y - min_y + 1;
+  let row_counts = ink_row_counts(&pixmap);
+  let ink_bands = count_vertical_bands(&row_counts, 5);
+
+  assert_eq!(
+    ink_bands, 1,
+    "expected `<input type=password>` mask to paint on a single band in legacy backend; bands={ink_bands}"
+  );
+  assert!(
+    ink_height < 30,
+    "expected `<input type=password>` mask to paint as a single line in legacy backend; ink height={ink_height} (y={min_y}..={max_y})"
+  );
+}
