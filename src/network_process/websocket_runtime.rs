@@ -901,7 +901,7 @@ mod tests {
             let mut ws = tungstenite::accept(stream).expect("accept websocket");
             let read_deadline = Instant::now() + Duration::from_secs(5);
             let msg = loop {
-              match ws.read_message() {
+              match ws.read() {
                 Ok(msg) => break msg,
                 Err(tungstenite::Error::Io(ref err))
                   if matches!(
@@ -916,7 +916,7 @@ mod tests {
                 Err(err) => panic!("server read failed: {err}"),
               }
             };
-            ws.write_message(msg).expect("echo");
+            ws.send(msg).expect("echo");
             let _ = ws.close(None);
             break;
           }
@@ -1308,7 +1308,7 @@ mod tests {
             let payload = vec![0u8; msg_len];
             for _ in 0..64 {
               if ws
-                .write_message(Message::Binary(payload.clone()))
+                .send(Message::Binary(payload.clone()))
                 .is_err()
               {
                 break;
@@ -1318,7 +1318,7 @@ mod tests {
             // Wait for the client to close.
             let close_deadline = Instant::now() + Duration::from_secs(5);
             loop {
-              match ws.read_message() {
+              match ws.read() {
                 Ok(Message::Close(_)) => break,
                 Ok(_) => {}
                 Err(tungstenite::Error::ConnectionClosed)

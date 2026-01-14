@@ -3358,7 +3358,7 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
       match cmd_rx.try_recv() {
         Ok(WsCommand::SendText(s)) => {
           let len = s.as_bytes().len();
-          let write_res = socket.write_message(Message::Text(s));
+          let write_res = socket.send(Message::Text(s));
           with_env_state_mut(env_id, |state| {
             if let Some(ws) = state.sockets.get_mut(&ws_id) {
               ws.buffered_amount = ws.buffered_amount.saturating_sub(len);
@@ -3373,7 +3373,7 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
         }
         Ok(WsCommand::SendBinary(bytes)) => {
           let len = bytes.len();
-          let write_res = socket.write_message(Message::Binary(bytes));
+          let write_res = socket.send(Message::Binary(bytes));
           with_env_state_mut(env_id, |state| {
             if let Some(ws) = state.sockets.get_mut(&ws_id) {
               ws.buffered_amount = ws.buffered_amount.saturating_sub(len);
@@ -3420,7 +3420,7 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
       break;
     }
 
-    match socket.read_message() {
+    match socket.read() {
       Ok(Message::Text(text)) => {
         let payload_bytes = text.as_bytes().len();
         if payload_bytes > MAX_WEBSOCKET_MESSAGE_BYTES_USIZE {
@@ -3541,7 +3541,7 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
       Ok(Message::Ping(payload)) => {
         // Per RFC 6455, the endpoint must respond to pings with a pong containing the same payload.
         // Browsers do not surface ping/pong frames to JS, so do not enqueue any JS events.
-        if socket.write_message(Message::Pong(payload)).is_err() {
+        if socket.send(Message::Pong(payload)).is_err() {
           closing = Some((1006, "".to_string()));
           break;
         }
@@ -4064,7 +4064,7 @@ mod tests {
             let mut ws = tungstenite::accept(stream).expect("accept websocket");
             let read_deadline = Instant::now() + Duration::from_secs(5);
             let msg = loop {
-              match ws.read_message() {
+              match ws.read() {
                 Ok(msg) => break msg,
                 Err(tungstenite::Error::Io(ref err))
                   if matches!(err.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) =>
@@ -4076,7 +4076,7 @@ mod tests {
                 Err(err) => panic!("server read failed: {err}"),
               }
             };
-            ws.write_message(msg).expect("echo");
+            ws.send(msg).expect("echo");
             let _ = ws.close(None);
             break;
           }
@@ -4173,7 +4173,7 @@ mod tests {
             let read_one = |ws: &mut tungstenite::WebSocket<std::net::TcpStream>| {
               let read_deadline = Instant::now() + Duration::from_secs(5);
               loop {
-                match ws.read_message() {
+                match ws.read() {
                   Ok(msg) => break msg,
                   Err(tungstenite::Error::Io(ref err))
                     if matches!(
@@ -4191,9 +4191,9 @@ mod tests {
             };
 
             let msg1 = read_one(&mut ws);
-            ws.write_message(msg1).expect("echo 1");
+            ws.send(msg1).expect("echo 1");
             let msg2 = read_one(&mut ws);
-            ws.write_message(msg2).expect("echo 2");
+            ws.send(msg2).expect("echo 2");
             let _ = ws.close(None);
             break;
           }
@@ -4350,12 +4350,12 @@ mod tests {
             let mut ws = tungstenite::accept(stream).expect("accept websocket");
 
             // Send ping and wait for matching pong.
-            ws.write_message(Message::Ping(ping_payload_server.clone()))
+            ws.send(Message::Ping(ping_payload_server.clone()))
               .expect("server ping write failed");
 
             let read_deadline = Instant::now() + Duration::from_secs(5);
             loop {
-              match ws.read_message() {
+              match ws.read() {
                 Ok(Message::Pong(payload)) => {
                   assert_eq!(payload, ping_payload_server, "pong payload mismatch");
                   break;
@@ -4594,13 +4594,13 @@ mod tests {
             let _ = ws.get_mut().set_read_timeout(Some(Duration::from_millis(50)));
 
             ws
-              .write_message(Message::Text("first".to_string()))
+              .send(Message::Text("first".to_string()))
               .expect("server write first");
 
             // Wait for the client to close promptly after being unable to enqueue the message event.
             let close_deadline = Instant::now() + Duration::from_secs(5);
             loop {
-              match ws.read_message() {
+              match ws.read() {
                 Ok(Message::Close(_)) => break,
                 Ok(_) => {}
                 Err(tungstenite::Error::Io(ref err))
@@ -4772,13 +4772,13 @@ mod tests {
             let mut ws = tungstenite::accept(stream).expect("accept websocket");
             let read_deadline = Instant::now() + Duration::from_secs(5);
             loop {
-              match ws.read_message() {
+              match ws.read() {
                 Ok(Message::Close(frame)) => {
                   let _ = ws.close(frame);
                   break;
                 }
                 Ok(Message::Ping(payload)) => {
-                  let _ = ws.write_message(Message::Pong(payload));
+                  let _ = ws.send(Message::Pong(payload));
                 }
                 Ok(_) => {}
                 Err(tungstenite::Error::ConnectionClosed)
@@ -5191,13 +5191,13 @@ mod tests {
 
             let read_deadline = Instant::now() + Duration::from_secs(5);
             loop {
-              match ws.read_message() {
+              match ws.read() {
                 Ok(tungstenite::Message::Close(frame)) => {
                   let _ = ws.close(frame);
                   break;
                 }
                 Ok(tungstenite::Message::Ping(payload)) => {
-                  let _ = ws.write_message(tungstenite::Message::Pong(payload));
+                  let _ = ws.send(tungstenite::Message::Pong(payload));
                 }
                 Ok(tungstenite::Message::Text(_)) | Ok(tungstenite::Message::Binary(_)) => {
                   // Discard; we're only exercising the client's send queue behaviour.
@@ -5398,7 +5398,7 @@ mod tests {
             // Flood the client with many small messages to exceed
             // `MAX_QUEUED_WEBSOCKET_EVENTS_PER_SOCKET` (overridden to a very low value in tests).
             for _ in 0..512 {
-              if ws.write_message(Message::Text("x".to_string())).is_err() {
+              if ws.send(Message::Text("x".to_string())).is_err() {
                 break;
               }
             }
@@ -5406,7 +5406,7 @@ mod tests {
             // Keep the connection open until the client initiates close.
             let read_deadline = Instant::now() + Duration::from_secs(5);
             loop {
-              match ws.read_message() {
+              match ws.read() {
                 Ok(Message::Close(_)) => break,
                 Ok(_) => {}
                 Err(tungstenite::Error::ConnectionClosed)
@@ -5550,7 +5550,7 @@ mod tests {
             // Two messages are enough to exceed `MAX_WEBSOCKET_PENDING_EVENT_BYTES`.
             for _ in 0..2 {
               if ws
-                .write_message(Message::Binary(payload.clone()))
+                .send(Message::Binary(payload.clone()))
                 .is_err()
               {
                 break;
@@ -5560,7 +5560,7 @@ mod tests {
             // Keep the connection open until the client initiates close.
             let read_deadline = Instant::now() + Duration::from_secs(5);
             loop {
-              match ws.read_message() {
+              match ws.read() {
                 Ok(Message::Close(_)) => break,
                 Ok(_) => {}
                 Err(tungstenite::Error::ConnectionClosed)
@@ -5694,13 +5694,13 @@ mod tests {
 
             let read_deadline = Instant::now() + Duration::from_secs(5);
             loop {
-              match ws.read_message() {
+              match ws.read() {
                 Ok(tungstenite::Message::Close(frame)) => {
                   let _ = ws.close(frame);
                   break;
                 }
                 Ok(tungstenite::Message::Ping(payload)) => {
-                  let _ = ws.write_message(tungstenite::Message::Pong(payload));
+                  let _ = ws.send(tungstenite::Message::Pong(payload));
                 }
                 Ok(_) => {}
                 Err(tungstenite::Error::Io(ref err))
@@ -5835,7 +5835,7 @@ mod tests {
             // Wait for the client to close.
             let read_deadline = Instant::now() + Duration::from_secs(5);
             loop {
-              match ws.read_message() {
+              match ws.read() {
                 Ok(Message::Close(frame)) => {
                   // Reply close.
                   let _ = ws.close(frame);

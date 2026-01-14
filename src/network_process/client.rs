@@ -630,13 +630,13 @@ impl WebSocketStream for DirectWebSocketStream {
 
     self
       .socket
-      .write_message(msg)
+      .send(msg)
       .map_err(map_tungstenite_err)?;
     Ok(())
   }
 
   fn recv(&mut self) -> Result<WebSocketMessage> {
-    let msg = self.socket.read_message().map_err(map_tungstenite_err)?;
+    let msg = self.socket.read().map_err(map_tungstenite_err)?;
     Ok(match msg {
       TungsteniteMessage::Text(text) => WebSocketMessage::Text(text),
       TungsteniteMessage::Binary(bytes) => WebSocketMessage::Binary(bytes),
