@@ -90,3 +90,48 @@ fn generator_tagged_template_yield_in_computed_member_key() -> Result<(), VmErro
   Ok(())
 }
 
+#[test]
+fn generator_tagged_template_yield_in_super_member_tag() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      class Base {
+        tag(strings, x) { return this.prefix + strings[0] + x + strings[1]; }
+      }
+      class Derived extends Base {
+        constructor() { super(); this.prefix = "P"; }
+        *g() { return super.tag`a${yield 1}b`; }
+      }
+      var it = new Derived().g();
+      var r1 = it.next();
+      var r2 = it.next("Z");
+      r1.value === 1 && r1.done === false &&
+      r2.value === "PaZb" && r2.done === true
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn generator_tagged_template_yield_in_super_computed_member_key() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      class Base {
+        tag(strings) { return this.prefix + strings[0]; }
+      }
+      class Derived extends Base {
+        constructor() { super(); this.prefix = "P"; }
+        *g() { return super[(yield 1)]`x`; }
+      }
+      var it = new Derived().g();
+      var r1 = it.next();
+      var r2 = it.next("tag");
+      r1.value === 1 && r1.done === false &&
+      r2.value === "Px" && r2.done === true
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}

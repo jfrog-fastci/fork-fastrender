@@ -16873,6 +16873,10 @@ pub(crate) enum GenFrame {
   TaggedTemplateComputedMemberAfterBase {
     expr: *const Node<TaggedTemplateExpr>,
   },
+  /// Continue a tagged template after evaluating a `super[expr]` computed member key expression.
+  TaggedTemplateSuperComputedMemberAfterMember {
+    expr: *const Node<TaggedTemplateExpr>,
+  },
   /// Continue a tagged template after evaluating a computed member key expression.
   TaggedTemplateComputedMemberAfterMember {
     expr: *const Node<TaggedTemplateExpr>,
@@ -41556,6 +41560,9 @@ fn gen_eval_tagged_template(
   expr: &Node<TaggedTemplateExpr>,
 ) -> Result<GenEval<Completion>, VmError> {
   match &*expr.stx.function.stx {
+    Expr::Member(member) if matches!(&*member.stx.left.stx, Expr::Super(_)) => {
+      gen_eval_tagged_template_super_member(evaluator, scope, expr, &member.stx)
+    }
     Expr::Member(member) => match gen_eval_expr(evaluator, scope, &member.stx.left)? {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => gen_eval_tagged_template_member_after_base(
@@ -41577,6 +41584,9 @@ fn gen_eval_tagged_template(
         Ok(GenEval::Suspend(suspend))
       }
     },
+    Expr::ComputedMember(member) if matches!(&*member.stx.object.stx, Expr::Super(_)) => {
+      gen_eval_tagged_template_super_computed_member(evaluator, scope, expr, &member.stx)
+    }
     Expr::ComputedMember(member) => match gen_eval_expr(evaluator, scope, &member.stx.object)? {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => gen_eval_tagged_template_computed_member_after_base(
@@ -41620,6 +41630,131 @@ fn gen_eval_tagged_template(
       }
     },
   }
+}
+
+fn gen_eval_tagged_template_super_member(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &Node<TaggedTemplateExpr>,
+  member: &MemberExpr,
+) -> Result<GenEval<Completion>, VmError> {
+  if member.optional_chaining {
+    return Err(VmError::InvariantViolation(
+      "optional chaining used with super property",
+    ));
+  }
+  if member.right.starts_with('#') {
+    return Err(VmError::InvariantViolation(
+      "super private-name member access should be rejected by early errors",
+    ));
+  }
+
+  // `GetThisBinding` must run before any further evaluation (including allocating the property key
+  // string) so derived constructors throw before `super()` as required by ECMA-262.
+  let receiver = evaluator.get_this_binding(scope)?;
+
+  let mut super_scope = scope.reborrow();
+  super_scope.push_root(receiver)?;
+  let key_s = super_scope.alloc_string(&member.right)?;
+  super_scope.push_root(Value::String(key_s))?;
+  let key = PropertyKey::from_string(key_s);
+
+  let base = match evaluator.get_super_base(&mut super_scope) {
+    Ok(v) => v,
+    Err(err) => {
+      let err = coerce_error_to_throw_for_async(evaluator.vm, &mut super_scope, err);
+      return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
+    }
+  };
+
+  let reference = Reference::SuperProperty { base, key, receiver };
+  let callee_value = match evaluator.get_value_from_reference(&mut super_scope, &reference) {
+    Ok(v) => v,
+    Err(err) => {
+      let err = coerce_error_to_throw_for_async(evaluator.vm, &mut super_scope, err);
+      return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
+    }
+  };
+
+  drop(super_scope);
+  gen_eval_tagged_template_with_callee(evaluator, scope, expr, callee_value, receiver)
+}
+
+fn gen_eval_tagged_template_super_computed_member(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &Node<TaggedTemplateExpr>,
+  member: &ComputedMemberExpr,
+) -> Result<GenEval<Completion>, VmError> {
+  if member.optional_chaining {
+    return Err(VmError::InvariantViolation(
+      "optional chaining used with super computed property",
+    ));
+  }
+
+  // Evaluating a `super[expr]` reference requires an initialized `this` binding. In derived
+  // constructors before `super()`, this check happens before evaluating the computed key expression
+  // (and any yield within it).
+  let _ = evaluator.get_this_binding(scope)?;
+
+  match gen_eval_expr(evaluator, scope, &member.member)? {
+    GenEval::Complete(c) => match c {
+      Completion::Normal(v) => gen_eval_tagged_template_super_computed_member_after_member(
+        evaluator,
+        scope,
+        expr,
+        v.unwrap_or(Value::Undefined),
+      ),
+      abrupt => Ok(GenEval::Complete(abrupt)),
+    },
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::TaggedTemplateSuperComputedMemberAfterMember {
+          expr: expr as *const Node<TaggedTemplateExpr>,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_eval_tagged_template_super_computed_member_after_member(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &Node<TaggedTemplateExpr>,
+  member_value: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  let mut super_scope = scope.reborrow();
+  let reference =
+    match gen_reference_from_super_computed_member_after_member(evaluator, &mut super_scope, member_value)
+    {
+      Ok(r) => r,
+      Err(err) => {
+        let err = coerce_error_to_throw_for_async(evaluator.vm, &mut super_scope, err);
+        return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
+      }
+    };
+
+  let this_value = match reference {
+    Reference::SuperProperty { receiver, .. } => receiver,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "expected super property reference for super computed member tagged template",
+      ))
+    }
+  };
+
+  let callee_value = match evaluator.get_value_from_reference(&mut super_scope, &reference) {
+    Ok(v) => v,
+    Err(err) => {
+      let err = coerce_error_to_throw_for_async(evaluator.vm, &mut super_scope, err);
+      return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
+    }
+  };
+
+  drop(super_scope);
+  gen_eval_tagged_template_with_callee(evaluator, scope, expr, callee_value, this_value)
 }
 
 fn gen_eval_tagged_template_member_after_base(
@@ -44413,6 +44548,26 @@ fn gen_resume_from_frames(
             Ok(GenEval::Complete(c)) => state = c,
             Ok(GenEval::Suspend(mut suspend)) => {
               vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::TaggedTemplateSuperComputedMemberAfterMember { expr } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          match gen_eval_tagged_template_super_computed_member_after_member(
+            evaluator,
+            scope,
+            expr,
+            v.unwrap_or(Value::Undefined),
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
               return Ok(GenEval::Suspend(suspend));
             }
             Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
