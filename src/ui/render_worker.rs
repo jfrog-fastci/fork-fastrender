@@ -4176,13 +4176,15 @@ impl BrowserRuntime {
                   Point::new(pointer_css.0, pointer_css.1),
                   delta_y,
                 );
-	                let changed = step_result.unwrap_or(false);
-	                (changed, step_result)
-	              })
-	            {
-	              scroll_handled = true;
-	              changed |= step_result;
-	            }
+                let changed = step_result.unwrap_or(false);
+                (changed, step_result)
+              })
+            {
+              if let Some(dom_changed) = step_result {
+                scroll_handled = true;
+                changed |= dom_changed;
+              }
+            }
 
             if scroll_handled {
               // Numeric stepping does not update scroll state.
