@@ -25075,14 +25075,8 @@ fn async_eval_assignment_to_member(
         "super private member access is not valid (early errors should prevent this)",
       ));
     }
-    if evaluator.derived_constructor && !evaluator.this_initialized {
-      return Err(throw_reference_error(
-        evaluator.vm,
-        scope,
-        "Must call super constructor in derived class before accessing 'this'",
-      )?);
-    }
-    let receiver = evaluator.this;
+    // `super` uses the current `this` binding as the receiver (`GetThisBinding`).
+    let receiver = async_get_super_receiver(evaluator, scope)?;
 
     let mut key_scope = scope.reborrow();
     // Root receiver + key across `GetSuperBase()` and any proxy traps.
@@ -25173,14 +25167,7 @@ fn async_eval_assignment_to_computed_member(
     // Evaluating a super property reference requires an initialized `this` binding. In derived
     // constructors before `super()`, this check happens before evaluating the computed key
     // expression.
-    if evaluator.derived_constructor && !evaluator.this_initialized {
-      return Err(throw_reference_error(
-        evaluator.vm,
-        scope,
-        "Must call super constructor in derived class before accessing 'this'",
-      )?);
-    }
-    let receiver = evaluator.this;
+    let receiver = async_get_super_receiver(evaluator, scope)?;
 
     // Spec ordering: evaluate `GetThisBinding` (above) before evaluating the key expression.
     let mut member_scope = scope.reborrow();
@@ -25944,14 +25931,7 @@ fn async_eval_update_expression(
         // Evaluating a super property reference requires an initialized `this` binding. In derived
         // constructors before `super()`, this check must happen **before** evaluating the computed
         // key expression.
-        if evaluator.derived_constructor && !evaluator.this_initialized {
-          return Err(throw_reference_error(
-            evaluator.vm,
-            scope,
-            "Must call super constructor in derived class before accessing 'this'",
-          )?);
-        }
-        let receiver = evaluator.this;
+        let receiver = async_get_super_receiver(evaluator, scope)?;
 
         // Spec ordering: evaluate `GetThisBinding` (above) before evaluating the key expression.
         let mut member_scope = scope.reborrow();
@@ -30701,20 +30681,13 @@ fn async_resume_from_frames(
               let assign_res = (|| -> Result<AsyncEval<Value>, VmError> {
                 // Reconstruct the Super Reference: `super[expr]` uses the current `this` binding as
                 // the receiver and `[[HomeObject]].[[Prototype]]` as the base.
-                if evaluator.derived_constructor && !evaluator.this_initialized {
-                  return Err(throw_reference_error(
-                    evaluator.vm,
-                    scope,
-                    "Must call super constructor in derived class before accessing 'this'",
-                  )?);
-                }
                 if member.optional_chaining {
                   return Err(VmError::InvariantViolation(
                     "optional chaining used in assignment target",
                   ));
                 }
 
-                let receiver = evaluator.this;
+                let receiver = async_get_super_receiver(evaluator, scope)?;
                 let mut key_scope = scope.reborrow();
                 key_scope.push_roots(&[receiver, member_value])?;
 
@@ -31320,20 +31293,13 @@ fn async_resume_from_frames(
               let update_res = (|| -> Result<Value, VmError> {
                 // Reconstruct the Super Reference: `super[expr]` uses the current `this` binding as
                 // the receiver and `[[HomeObject]].[[Prototype]]` as the base.
-                if evaluator.derived_constructor && !evaluator.this_initialized {
-                  return Err(throw_reference_error(
-                    evaluator.vm,
-                    scope,
-                    "Must call super constructor in derived class before accessing 'this'",
-                  )?);
-                }
                 if member.optional_chaining {
                   return Err(VmError::InvariantViolation(
                     "optional chaining used in update target",
                   ));
                 }
 
-                let receiver = evaluator.this;
+                let receiver = async_get_super_receiver(evaluator, scope)?;
                 let mut key_scope = scope.reborrow();
                 key_scope.push_roots(&[receiver, member_value])?;
 
