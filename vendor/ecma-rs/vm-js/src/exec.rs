@@ -592,16 +592,32 @@ pub(crate) fn perform_direct_eval_with_host_and_hooks(
   let prev_var_env = env.var_env();
   let prev_global_var_deletable = env.global_var_deletable();
 
-  let eval_lex = scope.env_create(Some(prev_lexical_env))?;
-  env.set_source_info(source.clone(), 0, 0);
-  env.set_lexical_env(scope.heap_mut(), eval_lex);
   // In strict eval code, var/function declarations are scoped to the eval itself. In non-strict
   // direct eval, they are scoped to the caller's VariableEnvironment.
-  env.set_var_env(if strict {
-    VarEnv::Env(eval_lex)
+  //
+  // Spec-wise, strict eval uses a single declarative environment record for both lexical and
+  // variable bindings. However, vm-js represents `var`-scoped bindings and lexical (`let`/`const`)
+  // bindings as separate environment records in most execution contexts (functions, class static
+  // blocks, ...), and `RuntimeEnv::declare_var` assumes the variable environment is distinct from
+  // the var-scope lexical environment.
+  //
+  // If we reuse a single env record for strict eval, repeated `declare_var` calls for a `var`
+  // binding (e.g. during `var x = 1` initialization) can incorrectly treat the existing *var*
+  // binding as a lexical collision and throw a `SyntaxError`.
+  //
+  // Avoid this by modeling strict eval like a function body: create a fresh var environment record
+  // (outer = caller lexical env), then a fresh lexical environment record (outer = that var env).
+  let (eval_lex, eval_var_env) = if strict {
+    let eval_var = scope.env_create(Some(prev_lexical_env))?;
+    let eval_lex = scope.env_create(Some(eval_var))?;
+    (eval_lex, VarEnv::Env(eval_var))
   } else {
-    prev_var_env
-  });
+    let eval_lex = scope.env_create(Some(prev_lexical_env))?;
+    (eval_lex, prev_var_env)
+  };
+  env.set_source_info(source.clone(), 0, 0);
+  env.set_lexical_env(scope.heap_mut(), eval_lex);
+  env.set_var_env(eval_var_env);
   // Annex B: non-strict *direct* eval in the global scope creates deletable (configurable) global
   // var/function bindings.
   env.set_global_var_deletable(!strict && matches!(prev_var_env, VarEnv::GlobalObject));
