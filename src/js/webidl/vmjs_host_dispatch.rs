@@ -415,7 +415,6 @@ fn sync_cached_child_nodes_for_wrapper(
 
   sync_dom_node_collection_object(vm, scope, list_obj, document_id, &children)
 }
-
 fn require_dom_token_list_receiver(
   scope: &Scope<'_>,
   receiver: Option<Value>,

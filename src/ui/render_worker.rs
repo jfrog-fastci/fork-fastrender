@@ -974,31 +974,35 @@ impl TabState {
     }
   }
 
-  fn sync_js_viewport_state(&mut self) {
-    let Some(js_tab) = self.js_tab.as_mut() else {
+  fn sync_js_viewport_state_for(js_tab: &mut Option<BrowserTab>, viewport_css: (u32, u32), dpr: f32) {
+    let Some(js_tab) = js_tab.as_mut() else {
       return;
     };
-    js_tab.set_viewport(self.viewport_css.0, self.viewport_css.1);
-    js_tab.set_device_pixel_ratio(self.dpr);
+    js_tab.set_viewport(viewport_css.0, viewport_css.1);
+    js_tab.set_device_pixel_ratio(dpr);
+  }
+
+  fn sync_js_scroll_state_for(js_tab: &mut Option<BrowserTab>, scroll_state: &ScrollState) {
+    let Some(js_tab) = js_tab.as_mut() else {
+      return;
+    };
+    js_tab.set_scroll_state(scroll_state.clone());
+  }
+
+  fn sync_js_viewport_state(&mut self) {
+    Self::sync_js_viewport_state_for(&mut self.js_tab, self.viewport_css, self.dpr);
   }
 
   fn sync_js_scroll_state(&mut self) {
-    let Some(js_tab) = self.js_tab.as_mut() else {
-      return;
-    };
-    js_tab.set_scroll_state(self.scroll_state.clone());
+    Self::sync_js_scroll_state_for(&mut self.js_tab, &self.scroll_state);
   }
 
   fn hit_test_fragment_tree_for_scroll(
-    &mut self,
+    cache: &mut Option<HitTestFragmentTreeCache>,
     doc: &BrowserDocument,
     scroll: &ScrollState,
   ) -> Option<Arc<crate::FragmentTree>> {
-    hit_test_fragment_tree_for_scroll_cached(
-      &mut self.hit_test_fragment_tree_cache,
-      doc,
-      scroll,
-    )
+    hit_test_fragment_tree_for_scroll_cached(cache, doc, scroll)
   }
 }
 
@@ -2232,7 +2236,6 @@ fn build_page_accesskit_subtree_for_tab(
     &a11y_tree,
   ))
 }
-
 fn scroll_anchoring_priority_candidate_for_find(
   find: &FindInPageWorkerState,
 ) -> Option<ScrollAnchoringPriorityCandidate> {
@@ -3923,11 +3926,12 @@ impl BrowserRuntime {
           // `preventDefault()`, the scroll gesture should be ignored.
           if let Some(pointer_css) = pointer_pos_css {
             if let Some(js_tab) = tab.js_tab.as_mut() {
+              let hovered_element_id = tab.last_hovered_dom_element_id.as_deref();
               let target_node = if let Some(preorder_id) = tab.last_hovered_dom_node_id {
                 js_dom_node_for_preorder_id(
                   js_tab,
                   preorder_id,
-                  tab.last_hovered_dom_element_id.as_deref(),
+                  hovered_element_id,
                   &mut tab.js_dom_mapping_generation,
                   &mut tab.js_dom_mapping,
                 )
@@ -3992,7 +3996,7 @@ impl BrowserRuntime {
             if next.viewport != prev.viewport {
               next.update_deltas_from(&prev);
               tab.scroll_state = next;
-              tab.sync_js_scroll_state();
+              TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
               if tab.loading {
                 tab
                   .history
@@ -4036,9 +4040,9 @@ impl BrowserRuntime {
                   Point::new(pointer_css.0, pointer_css.1),
                   delta_y,
                 );
-               let changed = step_result.unwrap_or(false);
-               (changed, step_result)
-             }) {
+                let changed = step_result.unwrap_or(false);
+                (changed, step_result)
+              }) {
               if let Some(dom_changed) = step_result {
                 scroll_handled = true;
                 changed |= dom_changed;
@@ -4068,9 +4072,7 @@ impl BrowserRuntime {
                     next.update_deltas_from(&current_scroll);
                     doc.set_scroll_state(next.clone());
                     tab.scroll_state = next;
-                    if let Some(js_tab) = tab.js_tab.as_mut() {
-                      js_tab.set_scroll_state(tab.scroll_state.clone());
-                    }
+                    TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
                     scroll_changed = true;
                     emit_scroll_state_updated = doc.prepared().is_some();
                     changed = true;
@@ -4162,9 +4164,7 @@ impl BrowserRuntime {
                   effective.update_deltas_from(&current_scroll);
                   doc.set_scroll_state(effective.clone());
                   tab.scroll_state = effective;
-                  if let Some(js_tab) = tab.js_tab.as_mut() {
-                    js_tab.set_scroll_state(tab.scroll_state.clone());
-                  }
+                  TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
                   scroll_changed = true;
                   emit_scroll_state_updated = true;
                   changed = true;
@@ -4182,9 +4182,7 @@ impl BrowserRuntime {
                 next.update_deltas_from(&current_scroll);
                 doc.set_scroll_state(next.clone());
                 tab.scroll_state = next;
-                if let Some(js_tab) = tab.js_tab.as_mut() {
-                  js_tab.set_scroll_state(tab.scroll_state.clone());
-                }
+                TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
                 scroll_changed = true;
                 changed = true;
                 viewport_scrolled = tab.scroll_state.viewport != current_scroll.viewport;
@@ -4301,7 +4299,7 @@ impl BrowserRuntime {
           if next.viewport != prev.viewport {
             next.update_deltas_from(&prev);
             tab.scroll_state = next;
-            tab.sync_js_scroll_state();
+            TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
             if tab.loading {
               tab
                 .history
@@ -6081,7 +6079,7 @@ impl BrowserRuntime {
       next.update_deltas_from(&prev);
       doc.set_scroll_state(next.clone());
       tab.scroll_state = next;
-      tab.sync_js_scroll_state();
+      TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
       tab
         .history
         .update_scroll_state(&tab.scroll_state);
@@ -7412,9 +7410,7 @@ impl BrowserRuntime {
       if let Some(next_scroll) = focus_scroll {
         tab.scroll_state = next_scroll;
         doc.set_scroll_state(tab.scroll_state.clone());
-        if let Some(js_tab) = tab.js_tab.as_mut() {
-          js_tab.set_scroll_state(tab.scroll_state.clone());
-        }
+        TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
         scroll_changed = true;
         let _ = self
           .ui_tx
@@ -9633,7 +9629,7 @@ impl BrowserRuntime {
       if next_scroll != tab.scroll_state {
         tab.scroll_state = next_scroll;
         doc.set_scroll_state(tab.scroll_state.clone());
-        tab.sync_js_scroll_state();
+        TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
         scroll_changed = true;
         let _ = self
           .ui_tx
@@ -9922,9 +9918,7 @@ impl BrowserRuntime {
       if let Some(next_scroll) = focus_scroll {
         tab.scroll_state = next_scroll;
         doc.set_scroll_state(tab.scroll_state.clone());
-        if let Some(js_tab) = tab.js_tab.as_mut() {
-          js_tab.set_scroll_state(tab.scroll_state.clone());
-        }
+        TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
         scroll_changed = true;
         let _ = self
           .ui_tx

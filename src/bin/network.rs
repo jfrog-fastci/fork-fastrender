@@ -1,13 +1,22 @@
+#[cfg(feature = "direct_websocket")]
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+#[cfg(feature = "direct_websocket")]
 use base64::Engine as _;
+#[cfg(feature = "direct_websocket")]
 use fastrender::network_process::ipc;
+#[cfg(feature = "direct_websocket")]
 use fastrender::resource::{HttpFetcher, ResourceFetcher};
+#[cfg(feature = "direct_websocket")]
 use std::io;
+#[cfg(feature = "direct_websocket")]
 use std::net::{TcpListener, TcpStream};
 
+#[cfg(feature = "direct_websocket")]
 const ENV_NETWORK_AUTH_TOKEN_RENDERER: &str = "FASTR_NETWORK_AUTH_TOKEN";
+#[cfg(feature = "direct_websocket")]
 const ENV_NETWORK_AUTH_TOKEN_BROWSER: &str = "FASTR_NETWORK_AUTH_TOKEN_BROWSER";
 
+#[cfg(feature = "direct_websocket")]
 fn handle_client(
   stream: TcpStream,
   fetcher: HttpFetcher,
@@ -173,6 +182,7 @@ fn handle_client(
   Ok(())
 }
 
+#[cfg(feature = "direct_websocket")]
 fn main() -> io::Result<()> {
   // Minimal arg parser:
   // - Renderer token: `--auth-token <token>` / `FASTR_NETWORK_AUTH_TOKEN`
@@ -297,4 +307,12 @@ fn main() -> io::Result<()> {
   }
 
   Ok(())
+}
+
+#[cfg(not(feature = "direct_websocket"))]
+fn main() -> std::io::Result<()> {
+  Err(std::io::Error::new(
+    std::io::ErrorKind::Other,
+    "`fastrender network` requires building with --features direct_websocket",
+  ))
 }
