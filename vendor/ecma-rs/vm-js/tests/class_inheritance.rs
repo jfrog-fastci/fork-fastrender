@@ -157,6 +157,36 @@ fn derived_default_constructor_calls_super_and_forwards_new_target_and_args_comp
   Ok(())
 }
 
+#[test]
+fn derived_default_constructor_calls_super() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class B { constructor() { this.x = 1; } }
+        class D extends B {}
+        new D().x === 1
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn derived_default_constructor_calls_super_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class B { constructor() { this.x = 1; } }
+      class D extends B {}
+      new D().x === 1
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
 // === 3. Explicit derived constructor semantics. ===
 
 #[test]
@@ -290,4 +320,3 @@ fn derived_constructor_can_return_object_without_super_compiled() -> Result<(), 
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
-
