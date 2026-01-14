@@ -8368,14 +8368,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
               drained_count = drained_count.saturating_add(1);
               if let QueuedMsg::Worker(msg) = &item {
-                session_dirty |= matches!(
-                  msg,
-                  fastrender::ui::WorkerToUi::NavigationCommitted { .. }
-                    | fastrender::ui::WorkerToUi::RequestOpenInNewTab { .. }
-                    | fastrender::ui::WorkerToUi::RequestOpenInNewTabRequest { .. }
-                    | fastrender::ui::WorkerToUi::DownloadStarted { .. }
-                    | fastrender::ui::WorkerToUi::DownloadFinished { .. }
-                );
                 match msg {
                   fastrender::ui::WorkerToUi::DownloadStarted { tab_id, .. } => {
                     // Renderer-driven downloads are untrusted. Only accept new downloads for known
