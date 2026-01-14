@@ -901,7 +901,7 @@ impl BrowserTabState {
 
   #[cfg(any(test, feature = "browser_ui"))]
   pub(crate) fn tab_close_accessible_label(&mut self, title: &str) -> std::sync::Arc<str> {
-    let close_label: &str = {
+    let close_label: &'static str = {
       #[cfg(feature = "browser_ui")]
       {
         crate::ui::BrowserIcon::CloseTab.a11y_label()
