@@ -417,6 +417,70 @@ fn compiled_script_top_level_await_in_computed_member_assignment_preserves_eval_
 }
 
 #[test]
+fn compiled_script_top_level_await_computed_member_assignment_to_property_key_is_not_recomputed_after_await(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var log = [];
+      var obj = {};
+      var key = { toString() { log.push("toString"); return "k"; } };
+      Promise.resolve().then(() => {
+        key.toString = function() { log.push("toString2"); return "x"; };
+        log.push("mt");
+      });
+      obj[key] = await Promise.resolve((log.push("rhs"), "v"));
+      log.push("after");
+      Object.keys(obj).join(",")
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await in a computed member assignment should be supported by the HIR async classic-script executor"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let result_root = rt.heap_mut().add_root(result)?;
+
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(
+    rt.heap().is_promise_object(promise_obj),
+    "expected Promise return value from async classic script"
+  );
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
+
+  // `ToPropertyKey(key)` must happen before evaluating the await operand and must not be repeated
+  // after resumption.
+  let before_log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, before_log), "toString,rhs");
+  let before_keys = rt.exec_script("Object.keys(obj).join(',')")?;
+  assert_eq!(value_to_utf8(&rt, before_keys), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let promise_result = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  assert_eq!(value_to_utf8(&rt, promise_result), "k");
+
+  let after_log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, after_log), "toString,rhs,mt,after");
+  let v = rt.exec_script("obj.k")?;
+  assert_eq!(value_to_utf8(&rt, v), "v");
+
+  rt.heap_mut().remove_root(result_root);
+  Ok(())
+}
+
+#[test]
 fn compiled_script_top_level_await_in_compound_assignment_reads_lhs_before_await() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
