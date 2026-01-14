@@ -26,14 +26,16 @@ pub fn read_text() -> Option<String> {
 
 /// Write UTF-8 text to the OS clipboard.
 ///
-/// Best-effort: errors are ignored so callers don't have to special-case headless platforms.
+/// Returns `true` when the clipboard write succeeded.
+///
+/// Best-effort: callers may ignore failures (for example in headless CI environments).
 ///
 /// Security/perf: clamp text to `ui::clipboard::MAX_CLIPBOARD_TEXT_BYTES` so callers never pass
 /// attacker-controlled huge strings into OS clipboard APIs.
-pub fn write_text(text: &str) {
+pub fn write_text(text: &str) -> bool {
   let text = crate::ui::clipboard::clamp_clipboard_text(text);
   let Ok(mut clipboard) = Clipboard::new() else {
-    return;
+    return false;
   };
-  let _ = clipboard.set_text(text.to_string());
+  clipboard.set_text(text.to_string()).is_ok()
 }

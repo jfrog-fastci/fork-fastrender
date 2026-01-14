@@ -17834,7 +17834,7 @@ impl App {
 
     // Best-effort write to the OS clipboard (bounded). Oversized payloads are dropped entirely.
     let wrote_clipboard = write_clipboard_update_if_within_limit(&clipboard_update, |text| {
-      os_clipboard::write_text(text);
+      let _ = os_clipboard::write_text(text);
     });
     if !wrote_clipboard && !clipboard_update.truncated {
       // This should be unreachable (the protocol sanitizer should guarantee the limit), but keep a
@@ -21367,8 +21367,14 @@ impl App {
     }
 
     for text in output.copy_requests {
-      os_clipboard::write_text(&text);
-      self.show_chrome_toast("Copied to clipboard");
+      if os_clipboard::write_text(&text) {
+        self.show_chrome_toast("Copied to clipboard");
+      } else {
+        self.show_chrome_toast_kind(
+          fastrender::ui::ToastKind::Warning,
+          "Failed to copy to clipboard",
+        );
+      }
     }
 
     if output.change_download_dir_requested {
