@@ -318,11 +318,19 @@ Importantly, this message is a **wake-up mechanism**, not a master time source:
   cadence/jitter.
 
 Where it comes from: the windowed `browser` app schedules ticks using winit timers
-(`ControlFlow::WaitUntil`) based on per-tab `RenderedFrame.next_tick` schedule hints from the worker
-(see `App::drive_animation_tick` in `src/bin/browser.rs`). For media, the worker may additionally
-send `WorkerToUi::RequestWakeAfter` to request one-shot wakeups (the UI typically responds by waking
-and delivering a `Tick` with `delta=Duration::ZERO`). Tick delivery is best-effort: it can jitter,
-coalesce, or pause/reset entirely, so it must never be treated as the master media timeline clock.
+(`ControlFlow::WaitUntil`) based on per-tab schedule hints from the worker:
+
+* **General time-based effects** (CSS animations/transitions, JS timers/rAF): driven by
+  `RenderedFrame.next_tick` and `WorkerToUi::TickHint` (see `App::drive_animation_tick` in
+  `src/bin/browser.rs`).
+* **Media playback deadlines** (video frame presentation / A‑V sync): driven by
+  `WorkerToUi::RequestWakeAfter { reason: WakeReason::Media }`, which requests a **one-shot** wakeup
+  even when the worker did not produce a new frame (e.g. holding the previous frame until the next
+  PTS). The UI typically responds by waking and delivering a `Tick` with `delta=Duration::ZERO`.
+  `after=Duration::MAX` is treated as "cancel pending media wake".
+
+Tick delivery is best-effort: it can jitter, coalesce, or pause/reset entirely, so it must never be
+treated as the master media timeline clock.
 
 What the tick does:
 

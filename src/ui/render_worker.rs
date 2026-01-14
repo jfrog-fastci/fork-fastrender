@@ -895,43 +895,82 @@ struct HitTestFragmentTreeCache {
 // NOTE: This is intentionally driven by a real clock (`Instant::now()`); `UiToWorker::Tick` is a
 // wake-up signal, not a time source. See `docs/media_clocking.md`.
 
-/// Default cadence used by the (currently stub) media scheduler when something is playing.
+/// Simulated video frame interval used by the (currently stub) media scheduler.
 ///
-/// Real media playback will provide more precise deadlines (next video frame, audio buffer
-/// threshold, etc). Until then, this provides a bounded periodic wakeup when media is marked as
-/// playing.
-const MEDIA_WAKE_INTERVAL: Duration = Duration::from_millis(16);
+/// Real media playback should drive scheduling based on actual decoded frame PTS values. This
+/// constant exists only so the UI worker can exercise tickless wake scheduling paths in tests and
+/// during incremental media bring-up.
+const MEDIA_SIMULATED_FRAME_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Epsilon for suppressing redundant `RequestWakeAfter` messages when the effective requested
 /// deadline has not changed meaningfully.
 const MEDIA_WAKE_DEDUP_EPSILON: Duration = Duration::from_millis(2);
 
+/// Maximum number of "present/drop and retry" iterations performed by the stub media scheduler per
+/// tick.
+///
+/// This bounds work so a pathological/buggy schedule cannot spin forever in the UI worker thread.
+const MEDIA_MAX_PRESENT_PER_TICK: usize = 32;
+
 #[derive(Debug, Clone, Copy)]
 struct TabMediaWakeState {
   playing: bool,
+  /// Timeline time at `anchor_instant`.
+  anchor_media_time: Duration,
+  /// System monotonic time corresponding to `anchor_media_time` while playing.
+  anchor_instant: Instant,
+  /// Simulated next frame presentation timestamp on the media timeline.
+  next_frame_pts: Option<Duration>,
+  av_sync: crate::media::av_sync::AvSyncConfig,
   next_deadline: Option<Instant>,
   last_requested_deadline: Option<Instant>,
+  /// Instant when the worker last handled a media wake-up tick (`UiToWorker::Tick { delta: 0 }`).
+  ///
+  /// Used to apply `MIN_WORKER_WAKE_INTERVAL` throttling to repeated immediate wake requests.
+  last_wake_tick: Option<Instant>,
 }
 
 impl Default for TabMediaWakeState {
   fn default() -> Self {
     Self {
       playing: false,
+      anchor_media_time: Duration::ZERO,
+      anchor_instant: Instant::now(),
+      next_frame_pts: None,
+      av_sync: crate::media::av_sync::AvSyncConfig::default(),
       next_deadline: None,
       last_requested_deadline: None,
+      last_wake_tick: None,
     }
   }
 }
 
 impl TabMediaWakeState {
+  fn timeline_now(&self, now: Instant) -> Duration {
+    if !self.playing {
+      return self.anchor_media_time;
+    }
+    let delta = now
+      .checked_duration_since(self.anchor_instant)
+      .unwrap_or(Duration::ZERO);
+    self.anchor_media_time.saturating_add(delta)
+  }
+
   fn handle_command(&mut self, command: MediaCommand, now: Instant) {
     match command {
       MediaCommand::TogglePlayPause => {
         if self.playing {
+          self.anchor_media_time = self.timeline_now(now);
+          self.anchor_instant = now;
           self.playing = false;
           self.next_deadline = None;
         } else {
           self.playing = true;
+          self.anchor_instant = now;
+          if self.next_frame_pts.is_none() {
+            // Prime a due-now frame so the stub scheduler can start immediately.
+            self.next_frame_pts = Some(self.anchor_media_time);
+          }
           // Prime an immediate wake so the playback pipeline can start without waiting a full
           // frame interval.
           self.next_deadline = Some(now);
@@ -950,49 +989,45 @@ impl TabMediaWakeState {
     }
   }
 
+  fn on_media_wake_tick(&mut self, now: Instant) {
+    self.last_wake_tick = Some(now);
+  }
+
   fn on_tick(&mut self, now: Instant) {
     if !self.playing {
       self.next_deadline = None;
       return;
     }
 
-    let Some(mut deadline) = self.next_deadline else {
-      self.next_deadline = now.checked_add(MEDIA_WAKE_INTERVAL);
-      return;
-    };
+    let timeline_now = self.timeline_now(now);
 
-    if now < deadline {
-      // Tick arrived early (e.g. due to CSS animation ticking); keep the existing schedule.
-      return;
+    if self.next_frame_pts.is_none() {
+      // No known next-frame PTS: treat as due-now so we don't stall indefinitely.
+      self.next_frame_pts = Some(timeline_now);
     }
 
-    // Advance by fixed intervals from the previous deadline to avoid drift/jitter. If we missed
-    // multiple intervals (e.g. tab was backgrounded), skip ahead in one step to keep this
-    // panic-free and avoid unbounded looping.
-    if MEDIA_WAKE_INTERVAL.is_zero() {
-      self.next_deadline = Some(now);
-      return;
-    }
-
-    let behind = now.duration_since(deadline);
-    let interval_ns = MEDIA_WAKE_INTERVAL.as_nanos();
-    let behind_ns = behind.as_nanos();
-    let steps = behind_ns
-      .checked_div(interval_ns)
-      .and_then(|q| q.checked_add(1))
-      .unwrap_or(1);
-    let advance_ns = steps.saturating_mul(interval_ns);
-    let advance = Duration::from_nanos(u64::try_from(advance_ns).unwrap_or(u64::MAX));
-    deadline = match deadline.checked_add(advance) {
-      Some(next) => next,
-      None => {
-        // Overflow is practically unreachable, but be defensive: disable wakeups rather than
-        // looping forever.
-        self.next_deadline = None;
-        return;
+    // Drive the scheduling policy:
+    // - When the next frame is very early, `suggest_wake_after` returns a bounded wake delay.
+    // - When a frame should be presented/dropped immediately, it returns `None`; advance the
+    //   simulated PTS and retry until we find an early frame to wait for.
+    let mut scheduled: Option<Instant> = None;
+    for _ in 0..MEDIA_MAX_PRESENT_PER_TICK {
+      let Some(next_pts) = self.next_frame_pts else {
+        break;
+      };
+      let wake_after = crate::media::av_sync::suggest_wake_after(timeline_now, Some(next_pts), &self.av_sync);
+      if let Some(after) = wake_after {
+        scheduled = now.checked_add(after);
+        break;
       }
-    };
-    self.next_deadline = Some(deadline);
+
+      // Present/drop immediately: advance PTS.
+      self.next_frame_pts = Some(next_pts.saturating_add(MEDIA_SIMULATED_FRAME_INTERVAL));
+    }
+
+    // If we failed to schedule a bounded wake (e.g. we kept "presenting" frames), fall back to an
+    // immediate wake so the pipeline continues to make progress.
+    self.next_deadline = scheduled.or(Some(now));
   }
 
   fn next_media_wake_deadline(&self) -> Option<Instant> {
@@ -5090,7 +5125,7 @@ struct BrowserRuntime {
           }));
         }
 
-        self.maybe_request_media_wakeup(tab_id);
+        self.maybe_request_media_wakeup(tab_id, now);
       }
       UiToWorker::A11ySetFocus { tab_id, node_id } => {
         self.handle_a11y_set_focus(tab_id, node_id);
@@ -6076,9 +6111,7 @@ struct BrowserRuntime {
     // previously requested media wakeups. (Fragment-only navigations above keep the current
     // document and should not affect media state.)
     if tab.media.playing || tab.media.last_requested_deadline.is_some() {
-      tab.media.playing = false;
-      tab.media.next_deadline = None;
-      tab.media.last_requested_deadline = None;
+      tab.media = TabMediaWakeState::default();
       let _ = self
         .ui_tx
         .send(WorkerToUiMsg::Single(WorkerToUi::RequestWakeAfter {
@@ -6190,6 +6223,7 @@ struct BrowserRuntime {
 
   fn handle_tick(&mut self, tab_id: TabId, delta: Duration) {
     let delta = delta.min(MAX_COALESCED_TICK_DELTA);
+    let mut now = Instant::now();
 
     {
       let Some(tab) = self.tabs.get_mut(&tab_id) else {
@@ -6248,9 +6282,14 @@ struct BrowserRuntime {
         tab.js_dom_mutation_generation = generation_after;
       }
 
+      now = Instant::now();
+      if delta == Duration::ZERO {
+        tab.media.on_media_wake_tick(now);
+      }
+
       // Advance media playback scheduling based on a real clock. `UiToWorker::Tick` is a wake-up
       // signal; media state must not treat it as a fixed-time-step update.
-      tab.media.on_tick(Instant::now());
+      tab.media.on_tick(now);
 
       // If time-based work has changed (e.g. JS timers were scheduled/cleared) but we didn't
       // schedule a repaint, notify the UI so it can update its tick cadence without relying on
@@ -6280,18 +6319,27 @@ struct BrowserRuntime {
 
     // Media wakeups should be rescheduled after *any* tick handling path (including tick
     // coalescing, which calls `handle_tick` directly).
-    self.maybe_request_media_wakeup(tab_id);
+    now = Instant::now();
+    self.maybe_request_media_wakeup(tab_id, now);
   }
 
-  fn maybe_request_media_wakeup(&mut self, tab_id: TabId) {
+  fn maybe_request_media_wakeup(&mut self, tab_id: TabId, now: Instant) {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };
 
-    let now = Instant::now();
     let desired_deadline = tab.media.next_media_wake_deadline();
+    let desired_after = match desired_deadline {
+      Some(deadline) => deadline.saturating_duration_since(now),
+      None => Duration::MAX,
+    };
 
-    let unchanged = match (tab.media.last_requested_deadline, desired_deadline) {
+    // Apply the same rate-limiting semantics the browser UI uses when translating
+    // `RequestWakeAfter` into a system timer.
+    let plan = crate::ui::repaint_scheduler::plan_worker_wake_after(now, desired_after, tab.media.last_wake_tick);
+    let planned_deadline = if plan.wake_now { Some(now) } else { plan.next_deadline };
+
+    let unchanged = match (tab.media.last_requested_deadline, planned_deadline) {
       (None, None) => true,
       (Some(prev), Some(next)) => {
         let diff = if prev >= next {
@@ -6308,8 +6356,10 @@ struct BrowserRuntime {
       return;
     }
 
-    tab.media.last_requested_deadline = desired_deadline;
-    let after = tab.media.next_media_wake_after(now);
+    tab.media.last_requested_deadline = planned_deadline;
+    let after = planned_deadline
+      .map(|deadline| deadline.saturating_duration_since(now))
+      .unwrap_or(Duration::MAX);
     let _ = self
       .ui_tx
       .send(WorkerToUiMsg::Single(WorkerToUi::RequestWakeAfter {
