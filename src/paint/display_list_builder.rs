@@ -8081,14 +8081,6 @@ impl DisplayListBuilder {
                       } {
                         image = existing;
                       } else {
-                        fn contains_foreign_object_tag(svg: &str) -> bool {
-                          const NEEDLE: &[u8] = b"foreignobject";
-                          let bytes = svg.as_bytes();
-                          bytes
-                            .windows(NEEDLE.len())
-                            .any(|window| window.eq_ignore_ascii_case(NEEDLE))
-                        }
-
                         let (render_w_unoriented, render_h_unoriented) =
                           if orientation.quarter_turns % 2 == 1 {
                             (render_h, render_w)
@@ -8096,8 +8088,8 @@ impl DisplayListBuilder {
                             (render_w, render_h)
                           };
 
-                        let svg_to_render: Cow<'_, str> = if contains_foreign_object_tag(svg_markup)
-                        {
+                        let svg_to_render: Cow<'_, str> =
+                          if crate::string_match::contains_ascii_case_insensitive(svg_markup, "foreignobject") {
                           let (rendered_w_css, rendered_h_css) =
                             if orientation.quarter_turns % 2 == 1 {
                               (dest_h, dest_w)
@@ -10301,16 +10293,9 @@ impl DisplayListBuilder {
             let Some(svg) = cached.svg_content.as_deref() else {
               break 'paint_url;
             };
-            fn contains_foreign_object_tag(svg: &str) -> bool {
-              const NEEDLE: &[u8] = b"foreignobject";
-              let bytes = svg.as_bytes();
-              bytes
-                .windows(NEEDLE.len())
-                .any(|window| window.eq_ignore_ascii_case(NEEDLE))
-            }
-
             let svg_markup = svg;
-            let resolved_svg = if contains_foreign_object_tag(svg_markup) {
+            let resolved_svg =
+              if crate::string_match::contains_ascii_case_insensitive(svg_markup, "foreignobject") {
               let base_dpr = if self.device_pixel_ratio.is_finite() && self.device_pixel_ratio > 0.0
               {
                 self.device_pixel_ratio
@@ -16476,14 +16461,6 @@ impl DisplayListBuilder {
     let trimmed = trim_ascii_whitespace_start(src);
     let inline_svg = trimmed.starts_with('<');
 
-    fn contains_foreign_object_tag(svg: &str) -> bool {
-      const NEEDLE: &[u8] = b"foreignobject";
-      let bytes = svg.as_bytes();
-      bytes
-        .windows(NEEDLE.len())
-        .any(|window| window.eq_ignore_ascii_case(NEEDLE))
-    }
-
     let (resolved_src, image) = if inline_svg {
       use std::collections::hash_map::DefaultHasher;
       use std::hash::{Hash, Hasher};
@@ -16569,7 +16546,9 @@ impl DisplayListBuilder {
       } else {
         image.svg_content.as_deref()
       };
-      if let Some(svg_markup) = svg_markup.filter(|svg| contains_foreign_object_tag(svg)) {
+      if let Some(svg_markup) = svg_markup
+        .filter(|svg| crate::string_match::contains_ascii_case_insensitive(svg, "foreignobject"))
+      {
         let base_dpr = if self.device_pixel_ratio.is_finite() && self.device_pixel_ratio > 0.0 {
           self.device_pixel_ratio
         } else {

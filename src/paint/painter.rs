@@ -6334,25 +6334,18 @@ impl Painter {
         let target_w = self.device_length(tile_w).ceil().max(1.0) as u32;
         let target_h = self.device_length(tile_h).ceil().max(1.0) as u32;
 
-        let pixmap_timer = self.diagnostics_enabled.then(Instant::now);
-        let pixmap = if image.is_vector {
-          let Some(svg) = &image.svg_content else {
-            return;
-          };
-          fn contains_foreign_object_tag(svg: &str) -> bool {
-            const NEEDLE: &[u8] = b"foreignobject";
-            let bytes = svg.as_bytes();
-            bytes
-              .windows(NEEDLE.len())
-              .any(|window| window.eq_ignore_ascii_case(NEEDLE))
-          }
-
-          let svg = svg.as_ref();
-          let resolved_svg = if contains_foreign_object_tag(svg) {
-            let foreign_object_dpr =
-              crate::paint::svg_foreign_object::foreign_object_html_device_pixel_ratio(
-                svg, self.scale, tile_w, tile_h, img_w, img_h,
-              );
+          let pixmap_timer = self.diagnostics_enabled.then(Instant::now);
+          let pixmap = if image.is_vector {
+            let Some(svg) = &image.svg_content else {
+              return;
+            };
+            let svg = svg.as_ref();
+            let resolved_svg = if crate::string_match::contains_ascii_case_insensitive(svg, "foreignobject")
+            {
+              let foreign_object_dpr =
+                crate::paint::svg_foreign_object::foreign_object_html_device_pixel_ratio(
+                  svg, self.scale, tile_w, tile_h, img_w, img_h,
+                );
             crate::paint::svg_foreign_object::inline_svg_foreign_objects_from_markup(
               svg,
               "",
@@ -12942,16 +12935,9 @@ impl Painter {
 
     if image.is_vector {
       if let Some(svg) = &image.svg_content {
-        fn contains_foreign_object_tag(svg: &str) -> bool {
-          const NEEDLE: &[u8] = b"foreignobject";
-          let bytes = svg.as_bytes();
-          bytes
-            .windows(NEEDLE.len())
-            .any(|window| window.eq_ignore_ascii_case(NEEDLE))
-        }
-
         let svg = svg.as_ref();
-        let resolved_svg = if contains_foreign_object_tag(svg) {
+        let resolved_svg =
+          if crate::string_match::contains_ascii_case_insensitive(svg, "foreignobject") {
           let foreign_object_dpr =
             crate::paint::svg_foreign_object::foreign_object_html_device_pixel_ratio(
               svg, self.scale, dest_w, dest_h, img_w_css, img_h_css,
@@ -13234,14 +13220,6 @@ impl Painter {
       return false;
     }
 
-    fn contains_foreign_object_tag(svg: &str) -> bool {
-      const NEEDLE: &[u8] = b"foreignobject";
-      let bytes = svg.as_bytes();
-      bytes
-        .windows(NEEDLE.len())
-        .any(|window| window.eq_ignore_ascii_case(NEEDLE))
-    }
-
     let trimmed = trim_ascii_whitespace_start_html_css(content);
     let inline_svg = trimmed.starts_with("<svg") || trimmed.starts_with("<?xml");
 
@@ -13289,7 +13267,8 @@ impl Painter {
         None => return false,
       };
 
-      let resolved_svg = if contains_foreign_object_tag(content) {
+      let resolved_svg = if crate::string_match::contains_ascii_case_insensitive(content, "foreignobject")
+      {
         let foreign_object_dpr =
           crate::paint::svg_foreign_object::foreign_object_html_device_pixel_ratio(
             content, self.scale, dest_w, dest_h, img_w_css, img_h_css,
@@ -13405,7 +13384,8 @@ impl Painter {
     if image.is_vector {
       if let Some(svg) = &image.svg_content {
         let svg = svg.as_ref();
-        let resolved_svg = if contains_foreign_object_tag(svg) {
+        let resolved_svg =
+          if crate::string_match::contains_ascii_case_insensitive(svg, "foreignobject") {
           let foreign_object_dpr =
             crate::paint::svg_foreign_object::foreign_object_html_device_pixel_ratio(
               svg, self.scale, dest_w, dest_h, img_w_css, img_h_css,
