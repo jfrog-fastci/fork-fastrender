@@ -8587,7 +8587,8 @@ impl<'vm> HirEvaluator<'vm> {
       }
       let raw_this = self.this;
 
-      // Root `this` + home object across key evaluation, prototype lookup, and property access.
+      // Root `this` + home object across receiver resolution, key evaluation, prototype lookup, and
+      // property access.
       let mut get_scope = scope.reborrow();
       get_scope.push_root(raw_this)?;
       if let Some(home) = self.home_object {
@@ -8680,7 +8681,8 @@ impl<'vm> HirEvaluator<'vm> {
       let raw_this = self.this;
 
       let mut scope = scope.reborrow();
-      // Root receiver + RHS across key evaluation, prototype lookup, and `[[Set]]`.
+      // Root receiver + RHS across receiver resolution, key evaluation, prototype lookup, and
+      // `[[Set]]`.
       scope.push_roots(&[raw_this, value])?;
       if let Some(home) = self.home_object {
         scope.push_root(Value::Object(home))?;
@@ -9410,7 +9412,8 @@ impl<'vm> HirEvaluator<'vm> {
             ));
           }
           let raw_this = self.this;
-          // Root `this` + home object across key evaluation, prototype lookup, and `[[Get]]`.
+          // Root `this` + home object across receiver resolution, key evaluation, prototype lookup,
+          // and `[[Get]]`.
           scope.push_root(raw_this)?;
           if let Some(home) = self.home_object {
             scope.push_root(Value::Object(home))?;

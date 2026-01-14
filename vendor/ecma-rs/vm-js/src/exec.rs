@@ -24567,9 +24567,21 @@ fn async_eval_expr_chain(
         // it).
         let _ = async_get_super_receiver(evaluator, scope)?;
 
-        match async_eval_expr(evaluator, scope, &member.stx.member)? {
+        // Evaluating a `super[expr]` reference requires an initialized `this` binding. In derived
+        // constructors (and in arrow/eval code nested within them) before `super()`, this check
+        // must happen before evaluating the computed key expression (and thus before any `await`
+        // side effects).
+        let mut member_scope = scope.reborrow();
+        member_scope.push_root(evaluator.this)?;
+        if let Some(home) = evaluator.home_object {
+          member_scope.push_root(Value::Object(home))?;
+        }
+        let _ = async_get_super_receiver(evaluator, &mut member_scope)?;
+
+        match async_eval_expr(evaluator, &mut member_scope, &member.stx.member)? {
           AsyncEval::Complete(member_value) => {
-            let value = async_super_computed_member_after_member(evaluator, scope, member_value)?;
+            let value =
+              async_super_computed_member_after_member(evaluator, &mut member_scope, member_value)?;
             Ok(AsyncEval::Complete(value))
           }
           AsyncEval::Suspend(mut suspend) => {
@@ -26078,7 +26090,7 @@ fn async_eval_assignment_to_computed_member(
 
     let mut member_scope = scope.reborrow();
     // Root the raw `this` binding (which may be a derived-constructor state cell) and home object
-    // across key evaluation, which can allocate and trigger GC.
+    // across receiver resolution and key evaluation, which can allocate and trigger GC.
     member_scope.push_root(evaluator.this)?;
     if let Some(home) = evaluator.home_object {
       member_scope.push_root(Value::Object(home))?;
@@ -26088,7 +26100,7 @@ fn async_eval_assignment_to_computed_member(
     //
     // This also ensures arrow/eval code in derived constructors observes `this` initialization
     // correctly when `evaluator.this` is a `DerivedConstructorState` cell.
-    async_get_super_receiver(evaluator, &mut member_scope)?;
+    let _ = async_get_super_receiver(evaluator, &mut member_scope)?;
     match async_eval_expr(evaluator, &mut member_scope, &member.member)? {
       AsyncEval::Complete(member_value) => {
         let mut key_scope = member_scope.reborrow();
@@ -26862,14 +26874,14 @@ fn async_eval_update_expression(
 
         let mut member_scope = scope.reborrow();
         // Root the raw `this` binding (which may be a derived-constructor state cell) and home object
-        // across key evaluation, which can allocate and trigger GC.
+        // across receiver resolution and key evaluation, which can allocate and trigger GC.
         member_scope.push_root(evaluator.this)?;
         if let Some(home) = evaluator.home_object {
           member_scope.push_root(Value::Object(home))?;
         }
         // `GetThisBinding` for Super References must throw before evaluating the computed key
-        // expression.
-        async_get_super_receiver(evaluator, &mut member_scope)?;
+        // expression (and therefore before any `await` side effects in the key).
+        let _ = async_get_super_receiver(evaluator, &mut member_scope)?;
         match async_eval_expr(evaluator, &mut member_scope, &member.member)? {
           AsyncEval::Complete(member_value) => {
             let mut key_scope = member_scope.reborrow();
@@ -28072,6 +28084,14 @@ fn async_super_get(
 
   let mut super_scope = scope.reborrow();
   // Resolve the current `this` binding used as the receiver for Super References.
+  //
+  // Note: for computed super members (`super[expr]`), `GetThisBinding` must have been observed
+  // before evaluating the computed key expression (ECMA-262 `SuperProperty : super [ Expression ]`).
+  //
+  // Call sites enforce the evaluation order by calling `async_get_super_receiver` before evaluating
+  // the key expression (so derived constructors before `super()` throw before any `await`/thenable
+  // side effects). We still resolve the receiver here because we need its value for the actual
+  // property access.
   let this_value = async_get_super_receiver(evaluator, &mut super_scope)?;
   let key_value = match key {
     PropertyKey::String(s) => Value::String(s),
@@ -28594,7 +28614,8 @@ fn async_eval_call(
       }
 
       // `super[expr](...)` requires an initialized `this` binding. In derived constructors before
-      // `super()` returns, this must throw before evaluating the computed key expression.
+      // `super()` returns, this must throw before evaluating the computed key expression (and thus
+      // before any `await`/thenable side effects in the key or argument list).
       let _ = async_get_super_receiver(evaluator, scope)?;
 
       async_call_computed_member_after_base(evaluator, scope, expr, &member.stx, Value::Undefined)
