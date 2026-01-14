@@ -498,6 +498,16 @@ mod tests {
   }
 
   #[test]
+  fn file_origin_is_parseable_and_cached() {
+    let a = SiteKeyFactory::file_origin().expect("file origin should be parseable");
+    let b = SiteKeyFactory::file_origin().expect("file origin should be memoized");
+    assert!(std::ptr::eq(a, b));
+    assert_eq!(a.scheme(), "file");
+    assert_eq!(a.host(), None);
+    assert_eq!(a.port(), None);
+  }
+
+  #[test]
   fn different_file_paths_do_not_share_site_key_in_opaque_per_url_mode() {
     let dir = tempdir().expect("temp dir");
     let a = dir.path().join("a.txt");
