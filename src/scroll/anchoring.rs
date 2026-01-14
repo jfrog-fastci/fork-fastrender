@@ -43,14 +43,6 @@ pub struct ScrollAnchorSnapshot {
   pub elements: HashMap<usize, ScrollAnchor>,
 }
 
-fn point_add(a: Point, b: Point) -> Point {
-  Point::new(a.x + b.x, a.y + b.y)
-}
-
-fn point_sub(a: Point, b: Point) -> Point {
-  Point::new(a.x - b.x, a.y - b.y)
-}
-
 fn sanitize_point(p: Point) -> Point {
   Point::new(
     if p.x.is_finite() { p.x.max(0.0) } else { 0.0 },
