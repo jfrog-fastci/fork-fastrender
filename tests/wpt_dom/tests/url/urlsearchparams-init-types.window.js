@@ -33,6 +33,27 @@ test(() => {
 }, "URLSearchParams constructor evaluates @@iterator getter only once when converting union init");
 
 test(() => {
+  let trapCalls = 0;
+  const target = {
+    [Symbol.iterator]: function* () {
+      yield ["a", "1"];
+    },
+  };
+  const iterable = new Proxy(target, {
+    get(target, prop, receiver) {
+      if (prop === Symbol.iterator) {
+        trapCalls++;
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+
+  const params = new URLSearchParams(iterable);
+  assert_equals(params.toString(), "a=1");
+  assert_equals(trapCalls, 1);
+}, "URLSearchParams constructor evaluates @@iterator Proxy get trap only once when converting union init");
+
+test(() => {
   const assert_invalid = init => {
     let threw = false;
     try {
