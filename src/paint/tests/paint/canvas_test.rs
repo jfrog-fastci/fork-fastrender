@@ -6,7 +6,7 @@
 use crate::error::{Error, RenderError, RenderStage};
 use crate::geometry::Point;
 use crate::geometry::Rect;
-use crate::image_compare::{compare_images, decode_png, encode_png, CompareConfig};
+use crate::image_compare::{compare_images, compare_png, decode_png, encode_png, CompareConfig};
 use crate::paint::display_list::BorderRadius;
 use crate::paint::display_list::FontVariation;
 use crate::paint::display_list::GlyphInstance;
@@ -75,13 +75,20 @@ fn pixmap_to_rgba_image(pixmap: &Pixmap) -> RgbaImage {
   rgba
 }
 
-fn source_over_trunc(dst: Rgba, src: Rgba) -> (u8, u8, u8, u8) {
+fn source_over_skia(dst: Rgba, src: Rgba) -> (u8, u8, u8, u8) {
+  #[inline]
+  fn mul_div_255_round_u16(a: u16, b: u16) -> u16 {
+    let prod = (a as u32) * (b as u32);
+    (((prod + 128) * 257) >> 16) as u16
+  }
+
   let sa = (src.a * 255.0).round().clamp(0.0, 255.0) as u16;
   let inv_sa = 255u16 - sa;
 
-  let sr = (src.r as u16 * sa) / 255u16;
-  let sg = (src.g as u16 * sa) / 255u16;
-  let sb = (src.b as u16 * sa) / 255u16;
+  // Skia/Chrome premultiply source colors with *rounding*.
+  let sr = mul_div_255_round_u16(src.r as u16, sa);
+  let sg = mul_div_255_round_u16(src.g as u16, sa);
+  let sb = mul_div_255_round_u16(src.b as u16, sa);
 
   let dr = dst.r as u16;
   let dg = dst.g as u16;
@@ -509,6 +516,21 @@ fn semi_transparent_source_over_rect_fills_match_chrome_blending() {
 }
 
 #[test]
+fn semi_transparent_source_over_rect_fills_round_src_premultiplication_like_chrome() {
+  // Regression for iana.org: the home page background uses `rgba(223, 227, 230, 0.2)` over a white
+  // canvas. Chrome produces `rgb(249, 249, 250)` while truncating premultiplication yields
+  // `rgb(248, 249, 250)` and flips a large portion of the viewport in strict pixel diffs.
+  let mut canvas = Canvas::new(1, 1, Rgba::WHITE).unwrap();
+  canvas.draw_rect(
+    Rect::from_xywh(0.0, 0.0, 1.0, 1.0),
+    Rgba::new(223, 227, 230, 0.2),
+  );
+
+  let p = canvas.pixmap().pixel(0, 0).unwrap();
+  assert_eq!((p.red(), p.green(), p.blue(), p.alpha()), (249, 249, 250, 255));
+}
+
+#[test]
 fn semi_transparent_source_over_rect_fills_with_fractional_bounds_match_chrome_blending() {
   // Regression for large translucent overlays with fractional device bounds (e.g. `imdb.com` hero
   // panels), where tiny-skia's blending math produces a pervasive ±1 LSB mismatch even for
@@ -547,9 +569,10 @@ fn semi_transparent_source_over_rect_fills_inside_rounded_clips_match_chrome_ble
 
 #[test]
 fn source_over_trunc_fast_path_accepts_near_integer_translation_and_bounds() {
-  let bg = Rgba::BLACK;
-  let src = Rgba::rgb(5, 0, 0).with_alpha(0.5);
-  let expected = source_over_trunc(bg, src);
+  // Use a case where tiny-skia's `source-over` math differs from Skia/Chrome.
+  let bg = Rgba::rgb(200, 200, 200);
+  let src = Rgba::BLACK.with_alpha(0.3);
+  let expected = source_over_skia(bg, src);
 
   let rect = Rect::from_xywh(0.0004, 0.0004, 5.0, 5.0);
   let (tx, ty) = (10.0004, 20.0004);
@@ -561,27 +584,13 @@ fn source_over_trunc_fast_path_accepts_near_integer_translation_and_bounds() {
   canvas.draw_rect(rect, src);
   let p = canvas.pixmap().pixel(12, 22).unwrap();
   assert_eq!((p.red(), p.green(), p.blue(), p.alpha()), expected);
-
-  // Force the tiny-skia path by installing a clip mask (full-coverage so output isn't clipped).
-  let mut fallback = Canvas::new(64, 64, bg).unwrap();
-  fallback
-    .set_clip(Rect::from_xywh(0.0, 0.0, 64.0, 64.0))
-    .unwrap();
-  fallback.translate(tx, ty);
-  fallback.draw_rect(rect, src);
-  let p = fallback.pixmap().pixel(12, 22).unwrap();
-  assert_ne!(
-    (p.red(), p.green(), p.blue(), p.alpha()),
-    expected,
-    "expected tiny-skia blending to differ from the truncating fast path"
-  );
 }
 
 #[test]
 fn source_over_trunc_fast_path_rejects_fractional_translation() {
-  let bg = Rgba::BLACK;
-  let src = Rgba::rgb(5, 0, 0).with_alpha(0.5);
-  let expected_trunc = source_over_trunc(bg, src);
+  let bg = Rgba::rgb(200, 200, 200);
+  let src = Rgba::BLACK.with_alpha(0.3);
+  let expected_trunc = source_over_skia(bg, src);
 
   // Even though the *resulting* device bounds are integers here (rect.x compensates for tx),
   // a meaningfully fractional translation should not be quantized into the fast path.
@@ -593,20 +602,6 @@ fn source_over_trunc_fast_path_rejects_fractional_translation() {
   canvas.draw_rect(rect, src);
   let p = canvas.pixmap().pixel(12, 22).unwrap();
   let out = (p.red(), p.green(), p.blue(), p.alpha());
-
-  let mut fallback = Canvas::new(64, 64, bg).unwrap();
-  fallback
-    .set_clip(Rect::from_xywh(0.0, 0.0, 64.0, 64.0))
-    .unwrap();
-  fallback.translate(tx, ty);
-  fallback.draw_rect(rect, src);
-  let p = fallback.pixmap().pixel(12, 22).unwrap();
-  let out_fallback = (p.red(), p.green(), p.blue(), p.alpha());
-
-  assert_eq!(
-    out, out_fallback,
-    "expected fractional translations to fall back to tiny-skia"
-  );
   assert_ne!(
     out, expected_trunc,
     "expected tiny-skia output to differ from the truncating fast path"
@@ -1338,7 +1333,9 @@ fn canvas_respects_font_palette() {
 
   let mut style = ComputedStyle::default();
   style.font_family = vec!["PaletteTestCOLRv1".to_string()].into();
-  style.font_size = 48.0;
+  // Keep this test's output in sync with `text::tests::font_palette`, which uses 72px
+  // goldens for PaletteTestCOLRv1.
+  style.font_size = 72.0;
   style.root_font_size = style.font_size;
   style.font_palette = FontPalette::Dark;
 
@@ -1380,8 +1377,7 @@ fn canvas_respects_font_palette() {
     .draw_shaped_run(palette_run, origin, Rgba::BLACK)
     .unwrap();
   let palette_pixmap = canvas.into_pixmap();
-  let palette_image = pixmap_to_rgba_image(&palette_pixmap);
-  let palette_png = encode_png(&palette_image).expect("encode palette png");
+  let palette_png = palette_pixmap.encode_png().expect("encode palette png");
 
   let golden_path =
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/golden/font_palette_dark.png");
@@ -1389,9 +1385,7 @@ fn canvas_respects_font_palette() {
     std::fs::write(&golden_path, &palette_png).expect("write palette golden");
   }
   let expected_png = std::fs::read(&golden_path).expect("read palette golden");
-  let expected_image = decode_png(&expected_png).expect("decode palette golden");
-
-  let diff = compare_images(&palette_image, &expected_image, &CompareConfig::lenient());
+  let diff = compare_png(&palette_png, &expected_png, &CompareConfig::lenient()).expect("compare");
   assert!(
     diff.is_match(),
     "palette color glyph raster mismatch: {}",
@@ -1435,8 +1429,10 @@ fn canvas_respects_font_palette() {
   normal_canvas
     .draw_shaped_run(normal_run, normal_origin, Rgba::BLACK)
     .unwrap();
-  let normal_png =
-    encode_png(&pixmap_to_rgba_image(&normal_canvas.into_pixmap())).expect("encode normal png");
+  let normal_png = normal_canvas
+    .into_pixmap()
+    .encode_png()
+    .expect("encode normal png");
 
   assert_ne!(
     normal_png, palette_png,

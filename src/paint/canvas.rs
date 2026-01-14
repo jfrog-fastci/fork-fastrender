@@ -119,6 +119,16 @@ thread_local! {
 /// geometry (e.g. `translateX(0.5px)` animations).
 const NEAR_INTEGER_EPSILON_PX: f32 = 1e-3;
 
+#[inline]
+fn mul_div_255_round_u16(a: u16, b: u16) -> u16 {
+  // Exact rounding division by 255 for u8 products.
+  //
+  // This implements `round((a * b) / 255)` for `a, b ∈ [0, 255]` using only
+  // multiplies/shifts. The intermediate range fits in u32.
+  let prod = (a as u32) * (b as u32);
+  (((prod + 128) * 257) >> 16) as u16
+}
+
 // ============================================================================
 // Canvas State
 // ============================================================================
@@ -2645,7 +2655,20 @@ impl Canvas {
       return false;
     };
 
-    if let Some(clip) = self.current_state.clip_rect {
+    if let Some(mut clip) = self.current_state.clip_rect {
+      // Match Chrome/Skia: rectangular clip bounds are hard-edged (non-AA) and use the same
+      // pixel-center rule as axis-aligned rect fills.
+      //
+      // Without this, fractional clip edges (e.g. `x=1.8`) behave like an anti-aliased mask and can
+      // bleed semi-transparent fills into adjacent 1px borders (regression: news.ycombinator.com).
+      if clip_mask_data.is_none() {
+        let start_x = (clip.min_x() + 0.5).floor();
+        let end_x = (clip.max_x() + 0.5).floor();
+        let start_y = (clip.min_y() + 0.5).floor();
+        let end_y = (clip.max_y() + 0.5).floor();
+        clip = Rect::from_xywh(start_x, start_y, end_x - start_x, end_y - start_y);
+      }
+
       dev_rect = match dev_rect.intersection(clip) {
         Some(r) => r,
         None => return true,
@@ -2718,9 +2741,14 @@ impl Canvas {
       }
       let sa = sa_u8 as u16;
       let inv_sa = 255u16 - sa;
-      let sr = (color.r as u16 * sa) / 255u16;
-      let sg = (color.g as u16 * sa) / 255u16;
-      let sb = (color.b as u16 * sa) / 255u16;
+      // Match Skia/Chrome: premultiply src color channels with *rounding*.
+      //
+      // This matters for colors whose `channel * alpha / 255` lands exactly above/below 0.5 and can
+      // otherwise flip by 1 across large translucent overlays (e.g. iana.org's main panel
+      // background).
+      let sr = mul_div_255_round_u16(color.r as u16, sa);
+      let sg = mul_div_255_round_u16(color.g as u16, sa);
+      let sb = mul_div_255_round_u16(color.b as u16, sa);
 
       let dr = dst[idx] as u16;
       let dg = dst[idx + 1] as u16;
@@ -2762,9 +2790,9 @@ impl Canvas {
       } else {
         let sa = sa as u16;
         let inv_sa = 255u16 - sa;
-        let sr = (color.r as u16 * sa) / 255u16;
-        let sg = (color.g as u16 * sa) / 255u16;
-        let sb = (color.b as u16 * sa) / 255u16;
+        let sr = mul_div_255_round_u16(color.r as u16, sa);
+        let sg = mul_div_255_round_u16(color.g as u16, sa);
+        let sb = mul_div_255_round_u16(color.b as u16, sa);
 
         for y in full_y0..full_y1 {
           let mut idx = y as usize * stride + full_x0 as usize * 4;
@@ -3099,9 +3127,9 @@ impl Canvas {
           }
 
           let inv_sa = 255u16 - pix_sa;
-          let sr = (cr * pix_sa) / 255u16;
-          let sg = (cg * pix_sa) / 255u16;
-          let sb = (cb * pix_sa) / 255u16;
+          let sr = mul_div_255_round_u16(cr, pix_sa);
+          let sg = mul_div_255_round_u16(cg, pix_sa);
+          let sb = mul_div_255_round_u16(cb, pix_sa);
 
           let dr = dst[dst_off] as u16;
           let dg = dst[dst_off + 1] as u16;

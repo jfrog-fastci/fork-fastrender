@@ -15,12 +15,13 @@
     "layout": 10.014243385416666,
     "paint": 58.08261163541666
   },
-  "notes": "",
+  "notes": "Fixed a large, viewport-wide background mismatch by matching Chrome/Skia source-over rounding when premultiplying src channels (e.g. rgba(223,227,230,0.2) over white -> rgb(249,249,250)). Remaining diffs are mostly minor text/SVG AA differences (notably the IANA logo).",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 81239,
-    "diff_percent": 8.4624,
-    "perceptual": 0.2299,
+    "diff_pixels": 74613,
+    "diff_percent": 7.7722,
+    "perceptual": 0.047,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 480,
       "y": 53,
@@ -39,7 +40,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "7f0de99f5592c239faf39227dbc1c5ede86d8121"
+    "computed_at_commit": "d21fa9f68ae87c74006199f37f67a28afe6661cd"
   },
   "hotspot": "paint",
   "failure_stage": null,
