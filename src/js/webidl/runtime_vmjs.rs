@@ -2404,7 +2404,6 @@ impl<Host: 'static> webidl_js_runtime::WebIdlJsRuntime for VmJsWebIdlBindingsCx<
   }
 
   fn promise_resolve(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error> {
-<<<<<<< HEAD
     // Spec: https://tc39.es/ecma262/#sec-promise-resolve
     //
     // Delegate to `vm-js`'s spec-shaped helper so:
@@ -2421,19 +2420,6 @@ impl<Host: 'static> webidl_js_runtime::WebIdlJsRuntime for VmJsWebIdlBindingsCx<
         vm_js::promise_resolve(&mut *rt.cx.vm, &mut rt.cx.scope, &mut dummy_hooks, value)
       }
     })?;
-=======
-    // Promise resolution can enqueue jobs; prefer calling through the real host hooks when
-    // available (native calls). When unavailable (e.g. conversion-only contexts), fall back to a
-    // no-op host hook implementation.
-    let mut noop_hooks = NoopVmHostHooks;
-    let hooks: &mut dyn VmHostHooks = self
-      .vm_host_hooks
-      .as_deref_mut()
-      .unwrap_or(&mut noop_hooks);
-
-    let promise = vm_js::promise_resolve(&mut *self.cx.vm, &mut self.cx.scope, hooks, value)?;
-    // Root the Promise object so WebIDL conversions can hold it across further allocations.
->>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
     self.cx.scope.push_root(promise)?;
     Ok(promise)
   }

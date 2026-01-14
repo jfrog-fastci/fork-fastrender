@@ -120,26 +120,12 @@ impl ReceivedFrame {
     }
   }
 
-<<<<<<< HEAD
   /// Convenience helper for building an acknowledgement callback that forwards
   /// [`BrowserToRenderer::FrameAck`] onto an IPC sender.
   pub fn ack_callback_to_sender(sender: mpsc::Sender<BrowserToRenderer>) -> FrameAckCallback {
     Box::new(move |frame_seq| {
       // Drop must never panic; ignore send failures (renderer gone, channel closed, etc).
       let _ = sender.send(BrowserToRenderer::FrameAck { frame_seq });
-=======
-  /// Convenience helper for building a release callback that forwards
-  /// [`BrowserToRenderer::FrameAck`] onto an IPC sender.
-  pub fn release_callback_to_sender(
-    sender: mpsc::Sender<BrowserToRenderer>,
-  ) -> FrameReleaseCallback {
-    Box::new(move |generation, buffer_index| {
-      let _ = buffer_index;
-      // Drop must never panic; ignore send failures (renderer gone, channel closed, etc).
-      let _ = sender.send(BrowserToRenderer::FrameAck {
-        frame_seq: generation,
-      });
->>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
     })
   }
 
@@ -218,14 +204,7 @@ mod tests {
     let frame = make_frame(3, 7, Arc::clone(&current_epoch), tx);
     drop(frame);
 
-<<<<<<< HEAD
     assert_eq!(rx.try_recv().unwrap(), BrowserToRenderer::FrameAck { frame_seq: 3 });
-=======
-    assert_eq!(
-      rx.try_recv().unwrap(),
-      BrowserToRenderer::FrameAck { frame_seq: 7 }
-    );
->>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
   }
 
@@ -239,23 +218,10 @@ mod tests {
     // Overwrite the old frame for the same key; this should drop and ack the previous one.
     map.insert(123, make_frame(11, 1, Arc::clone(&current_epoch), tx));
 
-<<<<<<< HEAD
     assert_eq!(rx.try_recv().unwrap(), BrowserToRenderer::FrameAck { frame_seq: 10 });
 
     drop(map);
     assert_eq!(rx.try_recv().unwrap(), BrowserToRenderer::FrameAck { frame_seq: 11 });
-=======
-    assert_eq!(
-      rx.try_recv().unwrap(),
-      BrowserToRenderer::FrameAck { frame_seq: 1 }
-    );
-
-    drop(map);
-    assert_eq!(
-      rx.try_recv().unwrap(),
-      BrowserToRenderer::FrameAck { frame_seq: 1 }
-    );
->>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
   }
 
@@ -268,14 +234,7 @@ mod tests {
     frame.ack();
     drop(frame);
 
-<<<<<<< HEAD
     assert_eq!(rx.try_recv().unwrap(), BrowserToRenderer::FrameAck { frame_seq: 42 });
-=======
-    assert_eq!(
-      rx.try_recv().unwrap(),
-      BrowserToRenderer::FrameAck { frame_seq: 9 }
-    );
->>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
     assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
   }
 

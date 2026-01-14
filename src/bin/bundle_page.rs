@@ -3251,6 +3251,7 @@ fn crawl_document(
 
         let fastrender::html::asset_discovery::HtmlAssetUrls {
           images: html_image_urls,
+          media: html_media_urls,
           documents: html_documents,
         } = fastrender::html::asset_discovery::discover_html_asset_urls(&doc.html, &doc.base_url);
         if matches!(mode, CrawlMode::BestEffort) {

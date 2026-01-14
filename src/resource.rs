@@ -14635,7 +14635,9 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
     // Range fetches intentionally bypass the single-flight map: `InFlightKey` does not encode the
     // requested byte range, so de-duplicating could return the wrong bytes or collide with full
     // fetches.
-    let fetch_result = self.inner.fetch_range_with_request(req, range, target_len);
+    let fetch_result = self
+      .inner
+      .fetch_range_with_request(req, range.clone(), target_len);
     match fetch_result {
       Ok(mut res) => {
         // Do not trust downstream implementations to always respect `max_bytes` or the requested

@@ -230,20 +230,12 @@ fn apply_paint_interaction_state_to_fragment_tree(
   fragment_tree: &mut FragmentTree,
   interaction_state: Option<&InteractionState>,
 ) {
-<<<<<<< HEAD
   // `box_tree` and `fragment_tree` are passed separately so we can read the box tree while mutating
   // the fragment tree in the same call chain.
   // Apply document selection onto the fragment tree for paint-time highlighting.
   crate::interaction::document_selection::apply_document_selection_to_fragment_tree(
     box_tree,
     fragment_tree,
-=======
-  let box_tree = &prepared.box_tree;
-  // Apply document selection onto the fragment tree for paint-time highlighting.
-  crate::interaction::document_selection::apply_document_selection_to_fragment_tree(
-    box_tree,
-    &mut prepared.fragment_tree,
->>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
     interaction_state.and_then(|state| state.document_selection.as_ref()),
   );
 

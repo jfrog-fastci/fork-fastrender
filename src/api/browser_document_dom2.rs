@@ -5679,17 +5679,12 @@ html { scroll-snap-type: y mandatory; }
     assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
 
     let prepared = doc.prepared().expect("prepared");
-<<<<<<< HEAD
     assert!(
       prepared.fragment_tree.keyframes.contains_key("fade"),
       "incremental relayout should preserve fragment-tree keyframes metadata"
     );
     let value = find_first_textarea_control_value(&prepared.box_tree().root)
       .expect("textarea form control value");
-=======
-    let value =
-      find_first_textarea_control_value(&prepared.box_tree.root).expect("textarea form control value");
->>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
     assert_eq!(value, "Updated");
     Ok(())
   }
@@ -5722,11 +5717,7 @@ html { scroll-snap-type: y mandatory; }
     assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
 
     let prepared = doc.prepared().expect("prepared");
-<<<<<<< HEAD
     let select = find_first_select_control(&prepared.box_tree().root).expect("select form control");
-=======
-    let select = find_first_select_control(&prepared.box_tree.root).expect("select form control");
->>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
     let updated_label = select.items.iter().find_map(|item| match item {
       SelectItem::Option { node_id, label, .. } if *node_id == option_preorder => Some(label.as_str()),
       _ => None,

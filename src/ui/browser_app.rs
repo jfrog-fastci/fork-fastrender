@@ -839,21 +839,11 @@ impl BrowserTabState {
 
   pub fn new_with_cancel(tab_id: TabId, initial_url: String, cancel: CancelGens) -> Self {
     let committed_url = initial_url.clone();
-<<<<<<< HEAD
     let renderer_site_key = derive_site_key_from_url(&committed_url);
     Self {
       id: tab_id,
       renderer_process: None,
       renderer_site_key,
-=======
-    let site_key = Url::parse(&committed_url).ok().map(|_| {
-      crate::site_isolation::site_key_for_navigation(&committed_url, None)
-    });
-    Self {
-      id: tab_id,
-      renderer_process: None,
-      renderer_site_key: None,
->>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
       pinned: false,
       group: None,
       cancel,
@@ -2208,11 +2198,7 @@ impl BrowserAppState {
       return false;
     };
     tab.renderer_process = Some(process_id);
-<<<<<<< HEAD
     tab.renderer_site_key = renderer_site_key;
-=======
-    tab.renderer_site_key = site_key;
->>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
     true
   }
 
@@ -3380,13 +3366,7 @@ impl BrowserAppState {
         let site_key = if url.len() > MAX_URL_BYTES {
           None
         } else {
-<<<<<<< HEAD
           safe_url.as_deref().and_then(derive_site_key_from_url)
-=======
-          safe_url
-            .as_deref()
-            .map(|url| crate::site_isolation::site_key_for_navigation(url, None))
->>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
         };
         let mut url_changed_for_session = false;
         if let Some(tab) = self.tab_mut(tab_id) {
@@ -3438,13 +3418,7 @@ impl BrowserAppState {
         let site_key = if url.len() > MAX_URL_BYTES {
           None
         } else {
-<<<<<<< HEAD
           safe_url.as_deref().and_then(derive_site_key_from_url)
-=======
-          safe_url
-            .as_deref()
-            .map(|url| crate::site_isolation::site_key_for_navigation(url, None))
->>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
         };
         let mut url_changed_for_session = false;
 
@@ -3540,13 +3514,7 @@ impl BrowserAppState {
         let site_key = if url.len() > MAX_URL_BYTES {
           None
         } else {
-<<<<<<< HEAD
           safe_url.as_deref().and_then(derive_site_key_from_url)
-=======
-          safe_url
-            .as_deref()
-            .map(|url| crate::site_isolation::site_key_for_navigation(url, None))
->>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
         };
         let mut url_changed_for_session = false;
         // Do not record failed navigations in global omnibox history.
@@ -3924,11 +3892,7 @@ mod browser_app_tests {
   use crate::geometry::Point;
 
   fn site(url: &str) -> SiteKey {
-<<<<<<< HEAD
     derive_site_key_from_url(url).expect("test url should produce a site key")
-=======
-    crate::site_isolation::site_key_for_navigation(url, None)
->>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
   }
 
   fn assert_active_is_valid(app: &BrowserAppState) {
@@ -4022,7 +3986,6 @@ mod browser_app_tests {
     let tab = BrowserTabState::new(TabId(1_000_000), about_pages::ABOUT_NEWTAB.to_string());
     assert_eq!(tab.renderer_process, None);
     assert_eq!(tab.renderer_site_key, None);
-<<<<<<< HEAD
   }
 
   #[test]
@@ -4032,8 +3995,6 @@ mod browser_app_tests {
 
     let tab = BrowserTabState::new(TabId(2), "not a url".to_string());
     assert_eq!(tab.renderer_site_key, None);
-=======
->>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
   }
 
   #[test]
@@ -4058,14 +4019,10 @@ mod browser_app_tests {
     let pid_a = RendererProcessId::new(10);
     assert!(app.set_tab_renderer(a, pid_a, Some(site("https://a.test"))));
     assert_eq!(app.tab_renderer(a), Some(pid_a));
-<<<<<<< HEAD
     assert_eq!(
       app.tab(a).unwrap().renderer_site_key,
       Some(site("https://a.test"))
     );
-=======
-    assert_eq!(app.tab(a).unwrap().renderer_site_key, Some(site("https://a.test")));
->>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
     assert_eq!(app.tab_renderer(b), None);
 
     // Missing tab id should not mutate existing tabs.
@@ -4076,14 +4033,10 @@ mod browser_app_tests {
       Some(site("https://missing.test"))
     ));
     assert_eq!(app.tab_renderer(a), Some(pid_a));
-<<<<<<< HEAD
     assert_eq!(
       app.tab(a).unwrap().renderer_site_key,
       Some(site("https://a.test"))
     );
-=======
-    assert_eq!(app.tab(a).unwrap().renderer_site_key, Some(site("https://a.test")));
->>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
     assert_eq!(app.tab_renderer(b), None);
     assert_eq!(app.tab(b).unwrap().renderer_site_key, None);
   }
@@ -4529,13 +4482,8 @@ mod browser_app_tests {
     });
 
     let tab = app.active_tab().unwrap();
-<<<<<<< HEAD
     let expected = site("https://example.com/");
     assert_eq!(tab.renderer_site_key, Some(expected));
-=======
-    let expected = crate::site_isolation::site_key_for_navigation("https://example.com/", None);
-    assert_eq!(tab.site_key, Some(expected));
->>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
 
     app.apply_worker_msg(WorkerToUi::NavigationCommitted {
       tab_id,

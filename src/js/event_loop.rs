@@ -914,19 +914,10 @@ impl<Host: 'static> EventLoop<Host> {
 
       // Reserve space up-front so we can safely move the `FnOnce` out of the external queue
       // without risking it being dropped on enqueue failure.
-<<<<<<< HEAD
       let reserved_source_idx = source.as_usize();
       self.task_queues[reserved_source_idx]
         .try_reserve(1)
         .map_err(|err| Error::Other(format!("EventLoop task queue allocation failed: {err}")))?;
-=======
-      {
-        let queue = &mut self.task_queues[source.as_usize()];
-        queue
-          .try_reserve(1)
-          .map_err(|err| Error::Other(format!("EventLoop task queue allocation failed: {err}")))?;
-      }
->>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
 
       let task = {
         let mut lock = self
@@ -946,7 +937,6 @@ impl<Host: 'static> EventLoop<Host> {
       self.next_task_seq = self.next_task_seq.wrapping_add(1);
 
       let source = task.source;
-<<<<<<< HEAD
       // `EventLoop::queue_task` does not require `Send`; erase `Send` from the boxed trait object
       // without allocating.
       let runnable: Runnable<Host> = task.runnable;
@@ -960,15 +950,6 @@ impl<Host: 'static> EventLoop<Host> {
         seq,
         runnable,
       });
-=======
-      let runnable = task.runnable;
-      // `EventLoop::queue_task` does not require `Send`, so wrap the Send task in a local closure.
-      self.task_queues[source.as_usize()].push_back(Task::new_with_seq(
-        source,
-        seq,
-        move |host, event_loop| runnable(host, event_loop),
-      ));
->>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
       self.pending_tasks += 1;
     }
 

@@ -10920,7 +10920,9 @@ impl BrowserRuntime {
             }
           } else if changed || scroll_changed {
             tab.cancel.bump_paint();
-            tab.request_non_scroll_repaint();
+            tab.needs_repaint = true;
+            tab.next_paint_is_scroll = false;
+            tab.repaint_after = None;
           }
         }
         InteractionAction::OpenInNewTab { href } => {
@@ -10934,7 +10936,9 @@ impl BrowserRuntime {
           }
           if changed || scroll_changed || visited_changed {
             tab.cancel.bump_paint();
-            tab.request_non_scroll_repaint();
+            tab.needs_repaint = true;
+            tab.next_paint_is_scroll = false;
+            tab.repaint_after = None;
           }
         }
         InteractionAction::OpenInNewWindow { href } => {
@@ -10948,7 +10952,9 @@ impl BrowserRuntime {
           }
           if changed || scroll_changed || visited_changed {
             tab.cancel.bump_paint();
-            tab.request_non_scroll_repaint();
+            tab.needs_repaint = true;
+            tab.next_paint_is_scroll = false;
+            tab.repaint_after = None;
           }
         }
         InteractionAction::OpenInNewTabRequest { request } => {
@@ -10959,7 +10965,9 @@ impl BrowserRuntime {
           }
           if changed || scroll_changed {
             tab.cancel.bump_paint();
-            tab.request_non_scroll_repaint();
+            tab.needs_repaint = true;
+            tab.next_paint_is_scroll = false;
+            tab.repaint_after = None;
           }
         }
         InteractionAction::Download { href, file_name } => {
@@ -10968,7 +10976,9 @@ impl BrowserRuntime {
           }
           if changed || scroll_changed || visited_changed {
             tab.cancel.bump_paint();
-            tab.request_non_scroll_repaint();
+            tab.needs_repaint = true;
+            tab.next_paint_is_scroll = false;
+            tab.repaint_after = None;
           }
         }
         InteractionAction::NavigateRequest { request } => {
@@ -10976,7 +10986,9 @@ impl BrowserRuntime {
             navigate_request = Some(request);
           } else if changed || scroll_changed {
             tab.cancel.bump_paint();
-            tab.request_non_scroll_repaint();
+            tab.needs_repaint = true;
+            tab.next_paint_is_scroll = false;
+            tab.repaint_after = None;
           }
         }
         InteractionAction::OpenSelectDropdown {
@@ -11007,10 +11019,12 @@ impl BrowserRuntime {
               select_node_id,
               control,
               anchor_css,
-            }));
+           }));
           if changed {
             tab.cancel.bump_paint();
-            tab.request_non_scroll_repaint();
+            tab.needs_repaint = true;
+            tab.next_paint_is_scroll = false;
+            tab.repaint_after = None;
           }
         }
         InteractionAction::OpenDateTimePicker { input_node_id, kind } => {
@@ -11059,7 +11073,9 @@ impl BrowserRuntime {
 
           if changed {
             tab.cancel.bump_paint();
-            tab.request_non_scroll_repaint();
+            tab.needs_repaint = true;
+            tab.next_paint_is_scroll = false;
+            tab.repaint_after = None;
           }
         }
         InteractionAction::OpenColorPicker { input_node_id } => {
@@ -11091,7 +11107,9 @@ impl BrowserRuntime {
 
           if changed {
             tab.cancel.bump_paint();
-            tab.request_non_scroll_repaint();
+            tab.needs_repaint = true;
+            tab.next_paint_is_scroll = false;
+            tab.repaint_after = None;
           }
         }
         InteractionAction::OpenFilePicker {
@@ -11120,7 +11138,9 @@ impl BrowserRuntime {
 
           if changed {
             tab.cancel.bump_paint();
-            tab.request_non_scroll_repaint();
+            tab.needs_repaint = true;
+            tab.next_paint_is_scroll = false;
+            tab.repaint_after = None;
           }
         }
         _ => {
@@ -11688,7 +11708,9 @@ impl BrowserRuntime {
             if tab.next_paint_is_scroll {
               tab.needs_repaint = true;
             } else {
-              tab.request_non_scroll_repaint();
+              tab.needs_repaint = true;
+              tab.next_paint_is_scroll = false;
+              tab.repaint_after = None;
             }
           }
         }
