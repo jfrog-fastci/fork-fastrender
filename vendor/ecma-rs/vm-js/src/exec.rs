@@ -64475,7 +64475,9 @@ mod tests {
         d.postMsg1 === 'Cannot delete a super property' &&
         d.postName2 === 'ReferenceError' &&
         d.postMsg2 === 'Cannot delete a super property' &&
-        d.log === 'key,toString'
+        // `delete super[expr]` evaluates `expr` for side effects, but must not apply `ToPropertyKey`
+        // (ECMA-262 `Delete` operator evaluation for Super References).
+        d.log === 'key'
     "#;
 
     assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
