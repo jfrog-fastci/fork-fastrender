@@ -367,6 +367,15 @@ fn private_name_not_visible_across_classes_is_syntax_error() {
 }
 
 #[test]
+fn nested_class_can_reference_enclosing_private_names() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script("class C { #x; m(){ class D { m(){ this.#x; } } } }")
+    .unwrap();
+  assert_eq!(value, Value::Undefined);
+}
+
+#[test]
 fn delete_private_reference_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
