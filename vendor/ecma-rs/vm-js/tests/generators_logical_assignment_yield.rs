@@ -70,6 +70,84 @@ fn generator_nullish_coalescing_assignment_short_circuits_without_yield() {
 }
 
 #[test]
+fn generator_logical_and_assignment_short_circuits_without_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          let x = 0;
+          var called = false;
+          function rhs() {
+            called = true;
+            return (function*() { yield 1; })();
+          }
+          // RHS contains a yield*, but must not be evaluated because x is falsy.
+          const r = (x &&= (yield* rhs()));
+          return r === 0 && x === 0 && called === false;
+        }
+        const it = g();
+        const r1 = it.next();
+        r1.done === true && r1.value === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_logical_or_assignment_short_circuits_without_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          let x = 1;
+          var called = false;
+          function rhs() {
+            called = true;
+            return (function*() { yield 1; })();
+          }
+          // RHS contains a yield*, but must not be evaluated because x is truthy.
+          const r = (x ||= (yield* rhs()));
+          return r === 1 && x === 1 && called === false;
+        }
+        const it = g();
+        const r1 = it.next();
+        r1.done === true && r1.value === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_nullish_coalescing_assignment_short_circuits_without_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          let x = 0;
+          var called = false;
+          function rhs() {
+            called = true;
+            return (function*() { yield 1; })();
+          }
+          // RHS contains a yield*, but must not be evaluated because x is non-nullish.
+          const r = (x ??= (yield* rhs()));
+          return r === 0 && x === 0 && called === false;
+        }
+        const it = g();
+        const r1 = it.next();
+        r1.done === true && r1.value === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_logical_or_assignment_captures_binding_and_decision_across_yield() {
   let mut rt = new_runtime();
   let value = rt
