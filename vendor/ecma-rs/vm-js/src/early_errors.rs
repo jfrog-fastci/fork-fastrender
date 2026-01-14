@@ -2042,12 +2042,11 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     // - `await` expressions are permitted only when allowed by the surrounding context (modules,
     //   async functions, and async classic scripts when top-level await is enabled),
     // - `await` is still a reserved identifier regardless (even in scripts),
-    // - `yield` expressions are permitted only when allowed by the surrounding context (generator
-    //   function),
+    // - `yield` expressions are always invalid (ClassStaticBlockStatementList is `~Yield`),
     // - `arguments` identifier references are always invalid (ECMA-262 `ContainsArguments`),
     // - `break`/`continue` target resolution must not cross static-block boundaries.
     let await_allowed = ctx.await_allowed;
-    let yield_allowed = ctx.yield_allowed;
+    let yield_allowed = false;
     let saved = self.save_and_enter_function(
       ctx,
       /* strict */ true,

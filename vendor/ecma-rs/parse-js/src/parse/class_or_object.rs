@@ -275,8 +275,7 @@ impl<'a> Parser<'a> {
               // - `await` is reserved as an identifier (even in scripts),
               // - `await`/`for await` are permitted in the same contexts as the surrounding code
               //   (async functions and modules with top-level await enabled), and
-              // - `yield` follows the enclosing grammar context (it can begin a YieldExpression when
-              //   parsing within a generator), and
+              // - `yield` expressions are never permitted (ClassStaticBlockStatementList is `~Yield`),
               // - `return` statements are never permitted (handled above via `in_function = 0`).
               let is_module = p.is_module();
               // Static blocks inherit the surrounding `await` expression context.
@@ -294,7 +293,7 @@ impl<'a> Parser<'a> {
                 await_allowed: false,
                 yield_allowed: if is_module { false } else { ctx.rules.yield_allowed },
                 await_expr_allowed,
-                yield_expr_allowed: ctx.rules.yield_expr_allowed,
+                yield_expr_allowed: false,
               });
               let body_res =
                 p.with_disallow_arguments_in_class_init(|p| p.stmts(block_ctx, TT::BraceClose));
