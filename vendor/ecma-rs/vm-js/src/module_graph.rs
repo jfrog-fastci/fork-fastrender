@@ -4312,4 +4312,63 @@ mod tests {
     assert!(matches!(err, VmError::OutOfMemory));
     Ok(())
   }
+
+  #[test]
+  fn eval_inner_returns_out_of_memory_on_dependency_list_alloc_failure() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    let mut host = ();
+    let mut hooks = MicrotaskQueue::new();
+
+    let mut graph = ModuleGraph::new();
+    let _dep = graph.add_module_with_specifier(
+      "dep.js",
+      SourceTextModuleRecord::parse(&mut heap, "export const y = 1;")?,
+    )?;
+    let root = graph.add_module_with_specifier(
+      "root.js",
+      SourceTextModuleRecord::parse(
+        &mut heap,
+        r#"
+          import { y } from "dep.js";
+          export const x = y;
+        "#,
+      )?,
+    )?;
+    graph.link_all_by_specifier();
+
+    // Ensure the module is linked successfully before simulating OOM.
+    graph.link(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      root,
+    )?;
+
+    // `eval_inner` previously cloned `requested_modules`, which could abort on OOM when cloning
+    // attacker-controlled `JsString` specifiers/attributes. Ensure it instead returns
+    // `VmError::OutOfMemory`.
+    let mut scope = heap.scope();
+    let _guard = FailAllocsGuard::new();
+    let err = graph
+      .eval_inner(
+        &mut vm,
+        &mut scope,
+        realm.global_object(),
+        realm.id(),
+        root,
+        &mut host,
+        &mut hooks,
+      )
+      .expect_err("expected OOM");
+    assert!(matches!(err, VmError::OutOfMemory));
+
+    drop(scope);
+    graph.teardown(&mut vm, &mut heap);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
 }
