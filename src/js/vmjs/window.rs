@@ -1217,8 +1217,8 @@ mod tests {
   use std::sync::Mutex;
   use std::time::{Duration, Instant};
   use vm_js::{
-    GcObject, PropertyDescriptor, PropertyKey, PropertyKind, Scope, TerminationReason, Value, Vm,
-    VmError, VmHost, VmHostHooks,
+    GcObject, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm, VmError, VmHost,
+    VmHostHooks,
   };
 
   #[derive(Debug, Default)]
@@ -1476,11 +1476,40 @@ mod tests {
       .exec_script("function f(){return f()} f()")
       .expect_err("expected recursion to terminate");
     match err {
-      VmError::Termination(term) => {
-        assert_eq!(term.reason, TerminationReason::StackOverflow);
-        assert_eq!(term.stack.len(), 16);
+      VmError::ThrowWithStack { value, stack } => {
+        assert_eq!(stack.len(), 16);
+
+        let Value::Object(err_obj) = value else {
+          panic!("expected error object, got {value:?}");
+        };
+
+        // Verify the thrown value is a RangeError without invoking user code.
+        let (_vm, _realm, heap) = window.vm_realm_and_heap_mut();
+        let mut scope = heap.scope();
+        scope
+          .push_root(Value::Object(err_obj))
+          .expect("root error object");
+        let key_s = scope.alloc_string("name").expect("alloc prop name");
+        scope
+          .push_root(Value::String(key_s))
+          .expect("root prop name");
+        let key = PropertyKey::from_string(key_s);
+        let name_val = scope
+          .heap()
+          .object_get_own_data_property_value(err_obj, &key)
+          .expect("get error.name")
+          .expect("error.name should exist");
+        let Value::String(name_s) = name_val else {
+          panic!("expected error.name to be a string, got {name_val:?}");
+        };
+        let name = scope
+          .heap()
+          .get_string(name_s)
+          .expect("get string")
+          .to_utf8_lossy();
+        assert_eq!(name, "RangeError");
       }
-      other => panic!("expected stack overflow termination, got {other:?}"),
+      other => panic!("expected stack overflow RangeError, got {other:?}"),
     }
     Ok(())
   }
@@ -7240,10 +7269,37 @@ mod tests {
     let err = host
       .exec_script("function f() { return f(); }\nf();")
       .expect_err("expected recursion to terminate");
-    assert!(
-      err.to_string().contains("stack overflow"),
-      "expected stack overflow termination, got {err}"
-    );
+    let VmError::ThrowWithStack { value, stack: _ } = err else {
+      panic!("expected stack overflow RangeError, got {err:?}");
+    };
+    let Value::Object(err_obj) = value else {
+      panic!("expected error object, got {value:?}");
+    };
+
+    // Verify the thrown value is a RangeError without invoking user code.
+    let window = host.host_mut().window_mut();
+    let (_vm, _realm, heap) = window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope
+      .push_root(Value::Object(err_obj))
+      .expect("root error object");
+    let key_s = scope.alloc_string("name").expect("alloc prop name");
+    scope.push_root(Value::String(key_s)).expect("root prop name");
+    let key = PropertyKey::from_string(key_s);
+    let name_val = scope
+      .heap()
+      .object_get_own_data_property_value(err_obj, &key)
+      .expect("get error.name")
+      .expect("error.name should exist");
+    let Value::String(name_s) = name_val else {
+      panic!("expected error.name to be a string, got {name_val:?}");
+    };
+    let name = scope
+      .heap()
+      .get_string(name_s)
+      .expect("get string")
+      .to_utf8_lossy();
+    assert_eq!(name, "RangeError");
     Ok(())
   }
 

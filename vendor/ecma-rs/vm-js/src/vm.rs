@@ -1472,7 +1472,7 @@ impl Vm {
   /// queue so queued job roots are cleaned up.
   ///
   /// [`VmError::Termination`] is different: it represents a non-catchable termination condition
-  /// (fuel exhausted, deadline exceeded, interrupt, stack overflow). Termination is treated as a
+  /// (fuel exhausted, deadline exceeded, interrupt). Termination is treated as a
   /// **hard stop**: once a job returns `Err(VmError::Termination(..))`, the checkpoint stops
   /// executing any further jobs, discards all remaining queued jobs to clean up persistent roots,
   /// and returns the termination error (even if earlier jobs already failed with a non-termination
@@ -4653,6 +4653,9 @@ impl Vm {
             .unwrap_or(Value::Undefined)
           {
             Value::Object(o) => Ok(Value::Object(o)),
+            // For derived constructors, `return;` (or no explicit return) yields `undefined` and
+            // therefore returns `this` instead. If `super()` was never called, `this` is
+            // uninitialized and this must throw a ReferenceError.
             _ => {
               let intr = self
                 .intrinsics()
@@ -4777,7 +4780,6 @@ impl Vm {
     env.teardown(this_scope.heap_mut());
 
     let (return_value, final_this) = result?;
-
     // Constructors have special return-value semantics:
     // - If the constructor returns an Object, that becomes the result.
     // - Otherwise the result is determined by the constructor kind:
@@ -4893,6 +4895,62 @@ mod tests {
     _new_target: Value,
   ) -> Result<Value, VmError> {
     panic!("host construct handler panicked");
+  }
+
+  #[test]
+  fn max_stack_depth_exceeded_surfaces_as_catchable_range_error() -> Result<(), VmError> {
+    fn new_runtime(max_stack_depth: usize) -> Result<crate::JsRuntime, VmError> {
+      let mut opts = VmOptions::default();
+      opts.max_stack_depth = max_stack_depth;
+      let vm = Vm::new(opts);
+      let heap = Heap::new(crate::HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+      crate::JsRuntime::new(vm, heap)
+    }
+
+    let max_stack_depth = 16;
+
+    // Uncaught recursion should surface to the host as a thrown RangeError, not a termination.
+    let mut rt = new_runtime(max_stack_depth)?;
+    let err = rt
+      .exec_script("function f(){ return f(); } f();")
+      .expect_err("expected recursion to throw");
+    let VmError::ThrowWithStack { value, stack } = err else {
+      panic!("expected ThrowWithStack, got: {err:?}");
+    };
+    assert_eq!(stack.len(), max_stack_depth);
+
+    let Value::Object(obj) = value else {
+      panic!("expected error object, got: {value:?}");
+    };
+
+    // Verify it's a RangeError by reading own `name` data property (no user code).
+    let mut scope = rt.heap.scope();
+    scope.push_root(Value::Object(obj))?;
+    let key_s = scope.alloc_string("name")?;
+    scope.push_root(Value::String(key_s))?;
+    let key = crate::PropertyKey::from_string(key_s);
+    let name_val = scope
+      .heap()
+      .object_get_own_data_property_value(obj, &key)?
+      .expect("error.name should exist");
+    let Value::String(name_s) = name_val else {
+      panic!("expected error.name to be a string, got {name_val:?}");
+    };
+    let name = scope.heap().get_string(name_s)?.to_utf8_lossy();
+    assert_eq!(name, "RangeError");
+
+    // The error should also be catchable inside JS.
+    let mut rt = new_runtime(max_stack_depth)?;
+    let ok = rt.exec_script(
+      r#"
+      var ok = false;
+      function f(){ return f(); }
+      try { f(); } catch (e) { ok = !!(e && e.name === 'RangeError'); }
+      ok
+      "#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
   }
 
   #[test]

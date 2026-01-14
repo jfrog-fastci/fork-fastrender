@@ -1,6 +1,5 @@
 use vm_js::{
-  GcObject, Heap, HeapLimits, JsRuntime, Scope, TerminationReason, Value, Vm, VmError, VmHostHooks,
-  VmHost, VmOptions,
+  GcObject, Heap, HeapLimits, JsRuntime, Scope, Value, Vm, VmError, VmHostHooks, VmHost, VmOptions,
 };
 
 fn new_runtime_with_vm(vm: Vm) -> JsRuntime {
@@ -176,7 +175,7 @@ fn promise_then_handler_runs_in_microtask_checkpoint() {
 }
 
 #[test]
-fn recursion_triggers_stack_overflow_termination() {
+fn recursion_triggers_stack_overflow_range_error() {
   let mut opts = VmOptions::default();
   opts.max_stack_depth = 8;
   let vm = Vm::new(opts);
@@ -186,16 +185,35 @@ fn recursion_triggers_stack_overflow_termination() {
     .exec_script("function recurse(){ return recurse(); } recurse();")
     .unwrap_err();
 
-  let VmError::Termination(term) = err else {
-    panic!("expected termination, got {err:?}");
+  let VmError::ThrowWithStack { value: _, stack } = err else {
+    panic!("expected thrown RangeError, got {err:?}");
   };
-  assert_eq!(term.reason, TerminationReason::StackOverflow);
-  assert_eq!(term.stack.len(), 8);
+  assert_eq!(stack.len(), 8);
   assert!(
-    term
-      .stack
+    stack
       .iter()
       .any(|f| f.function.as_deref() == Some("recurse") && f.source.as_ref() == "<inline>"),
-    "termination stack should include interpreted call frames"
+    "stack trace should include interpreted call frames"
   );
+}
+
+#[test]
+fn recursion_stack_overflow_is_catchable_range_error() {
+  let mut opts = VmOptions::default();
+  opts.max_stack_depth = 16;
+  let vm = Vm::new(opts);
+  let mut rt = new_runtime_with_vm(vm);
+
+  let value = rt
+    .exec_script(
+      r#"
+      var ok = false;
+      function recurse(){ return recurse(); }
+      try { recurse(); } catch (e) { ok = !!(e && e.name === 'RangeError'); }
+      ok
+      "#,
+    )
+    .unwrap();
+
+  assert_eq!(value, Value::Bool(true));
 }

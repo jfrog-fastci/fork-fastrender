@@ -1,6 +1,6 @@
 use vm_js::{
-  GcObject, Heap, HeapLimits, Scope, TerminationReason, Value, Vm, VmError, VmHost, VmHostHooks,
-  VmOptions,
+  GcObject, Heap, HeapLimits, JsRuntime, PropertyKey, PropertyKind, Scope, Value, Vm, VmError,
+  VmHost, VmHostHooks, VmOptions,
 };
 
 fn native_error(
@@ -55,33 +55,55 @@ fn recursive(
 fn vm_stack_overflow_on_deep_manual_frames() -> Result<(), VmError> {
   let max_stack_depth = 4;
 
-  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut opts = VmOptions::default();
   opts.max_stack_depth = max_stack_depth;
-  let mut vm = Vm::new(opts);
+  let vm = Vm::new(opts);
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // Create a runtime so VM intrinsics are initialized; stack overflow should surface as a thrown
+  // RangeError object rather than an internal helper error.
+  let mut rt = JsRuntime::new(vm, heap)?;
 
-  let mut scope = heap.scope();
-  let call_id = vm.register_native_call(recursive)?;
+  let mut scope = rt.heap.scope();
+  let call_id = rt.vm.register_native_call(recursive)?;
   let name = scope.alloc_string("recurse")?;
   let callee = scope.alloc_native_function(call_id, None, name, 1)?;
 
   let args = [Value::Object(callee)];
-  let err = vm
+  let err = rt
+    .vm
     .call_without_host(&mut scope, Value::Object(callee), Value::Undefined, &args)
     .unwrap_err();
 
-  let VmError::Termination(term) = err else {
-    panic!("expected termination, got: {err:?}");
+  let VmError::ThrowWithStack { value, stack } = err else {
+    panic!("expected thrown RangeError, got: {err:?}");
   };
-  assert_eq!(term.reason, TerminationReason::StackOverflow);
-  assert_eq!(term.stack.len(), max_stack_depth);
-  for frame in &term.stack {
+
+  // Best-effort validate it's a RangeError instance: check own `name` data property.
+  let Value::Object(err_obj) = value else {
+    panic!("expected error object, got: {value:?}");
+  };
+  scope.push_root(Value::Object(err_obj))?;
+  let name_key_s = scope.alloc_string("name")?;
+  scope.push_root(Value::String(name_key_s))?;
+  let name_key = PropertyKey::from_string(name_key_s);
+  let name_desc = scope
+    .heap()
+    .object_get_own_property(err_obj, &name_key)?
+    .expect("RangeError should have an own 'name' property");
+  let PropertyKind::Data { value: Value::String(name_s), .. } = name_desc.kind else {
+    panic!("expected error.name to be a string data property");
+  };
+  let name = scope.heap().get_string(name_s)?.to_utf8_lossy();
+  assert_eq!(name, "RangeError");
+
+  assert_eq!(stack.len(), max_stack_depth);
+  for frame in &stack {
     assert_eq!(frame.source.as_ref(), "<native>");
     assert_eq!(frame.function.as_deref(), Some("recurse"));
     assert_eq!(frame.line, 0);
     assert_eq!(frame.col, 0);
   }
 
-  assert!(vm.capture_stack().is_empty());
+  assert!(rt.vm.capture_stack().is_empty());
   Ok(())
 }
