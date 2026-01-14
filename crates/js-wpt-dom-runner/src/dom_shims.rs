@@ -260,6 +260,30 @@ const DOM_SHIM: &str = r##"
   function HTMLOptionsCollection() { illegal(); }
   function HTMLFormControlsCollection() { illegal(); }
   function NodeFilter() { illegal(); }
+  function Range() {
+    if (!(this instanceof Range)) {
+      throw new TypeError("Illegal constructor");
+    }
+    // Spec-aligned initial state: new Range() is collapsed at (document, 0).
+    this.startContainer = g.document;
+    this.startOffset = 0;
+    this.endContainer = g.document;
+    this.endOffset = 0;
+  }
+
+  Object.defineProperty(Range.prototype, "collapsed", {
+    get: function () {
+      return this.startContainer === this.endContainer && this.startOffset === this.endOffset;
+    },
+    configurable: true,
+  });
+  Object.defineProperty(Range.prototype, "commonAncestorContainer", {
+    get: function () {
+      // Minimal implementation for the smoke corpus; new Range() is rooted at document.
+      return this.startContainer;
+    },
+    configurable: true,
+  });
 
   Object.setPrototypeOf(Node.prototype, EventTarget.prototype);
   Object.setPrototypeOf(Document.prototype, Node.prototype);
@@ -274,7 +298,9 @@ const DOM_SHIM: &str = r##"
   Object.setPrototypeOf(HTMLOptionElement.prototype, HTMLElement.prototype);
   Object.setPrototypeOf(Text.prototype, Node.prototype);
   Object.setPrototypeOf(Comment.prototype, Node.prototype);
-  Object.setPrototypeOf(NodeList.prototype, Object.prototype);
+  // Make NodeList-backed collections usable as arrays in the QuickJS shim (so `childNodes` can be
+  // a real JS Array that is also `instanceof NodeList`).
+  Object.setPrototypeOf(NodeList.prototype, Array.prototype);
   Object.setPrototypeOf(MutationObserver.prototype, Object.prototype);
   Object.setPrototypeOf(MutationRecord.prototype, Object.prototype);
   Object.setPrototypeOf(HTMLOptionsCollection.prototype, HTMLCollection.prototype);
@@ -294,10 +320,17 @@ const DOM_SHIM: &str = r##"
   NodeFilter.FILTER_SKIP = 3;
   NodeFilter.SHOW_ALL = 0xFFFFFFFF;
   NodeFilter.SHOW_ELEMENT = 0x1;
+  NodeFilter.SHOW_ATTRIBUTE = 0x2;
   NodeFilter.SHOW_TEXT = 0x4;
+  NodeFilter.SHOW_CDATA_SECTION = 0x8;
+  NodeFilter.SHOW_ENTITY_REFERENCE = 0x10;
+  NodeFilter.SHOW_ENTITY = 0x20;
+  NodeFilter.SHOW_PROCESSING_INSTRUCTION = 0x40;
   NodeFilter.SHOW_COMMENT = 0x80;
   NodeFilter.SHOW_DOCUMENT = 0x100;
+  NodeFilter.SHOW_DOCUMENT_TYPE = 0x200;
   NodeFilter.SHOW_DOCUMENT_FRAGMENT = 0x400;
+  NodeFilter.SHOW_NOTATION = 0x800;
 
   // Attach the existing `document` object (created by Rust) to `Document.prototype`.
   if (typeof g.document !== "object" || g.document === null) {
@@ -327,11 +360,19 @@ const DOM_SHIM: &str = r##"
   // Document node id is always 0.
   g.document[NODE_ID] = 0;
   g.document.parentNode = null;
-  g.document.childNodes = [];
+  g.document.childNodes = makeChildNodeList();
   NODE_CACHE.set(0, g.document);
 
+  function makeChildNodeList() {
+    var arr = [];
+    Object.setPrototypeOf(arr, NodeList.prototype);
+    return arr;
+  }
+
   function ensureArray(o, key) {
-    if (!o[key]) o[key] = [];
+    if (!o[key]) {
+      o[key] = key === "childNodes" ? makeChildNodeList() : [];
+    }
     return o[key];
   }
 
@@ -370,7 +411,7 @@ const DOM_SHIM: &str = r##"
     NODE_CACHE.set(id, o);
     o[NODE_ID] = id;
     o.parentNode = null;
-    o.childNodes = [];
+    o.childNodes = makeChildNodeList();
     if (tagName !== undefined) {
       o.tagName = String(tagName);
     }
@@ -392,6 +433,9 @@ const DOM_SHIM: &str = r##"
     if (typeof self !== "object" || self === null) {
       throw new TypeError("Illegal invocation");
     }
+    // In the QuickJS shim, some NodeLists (notably `childNodes`) are backed by real JS arrays with
+    // their prototype set to `NodeList.prototype`.
+    if (Array.isArray(self)) return self;
     var items = self[NODELIST_ITEMS];
     if (!items || typeof items.length !== "number") {
       throw new TypeError("Illegal invocation");
@@ -898,6 +942,23 @@ const DOM_SHIM: &str = r##"
     });
   }
 
+  Object.defineProperty(Element.prototype, "children", {
+    get: function () {
+      nodeIdFromThis(this);
+      var self = this;
+      return makeLiveElementCollection(function () {
+        var out = [];
+        var nodes = self.childNodes || [];
+        for (var i = 0; i < nodes.length; i++) {
+          var n = nodes[i];
+          if (n instanceof Element) out.push(nodeIdFromThis(n));
+        }
+        return out;
+      });
+    },
+    configurable: true,
+  });
+
   Document.prototype.createElement = function (tagName) {
     var raw = String(tagName);
     var id = g.__fastrender_dom_create_element(raw);
@@ -912,6 +973,11 @@ const DOM_SHIM: &str = r##"
   Document.prototype.createTextNode = function (data) {
     var id = g.__fastrender_dom_create_text_node(String(data));
     return makeNode(Text.prototype, id);
+  };
+
+  Document.prototype.createComment = function (data) {
+    var id = g.__fastrender_dom_create_comment(String(data));
+    return makeNode(Comment.prototype, id);
   };
 
   // ----------------------------------------------------------------------------
@@ -959,9 +1025,16 @@ const DOM_SHIM: &str = r##"
     return NodeFilter.FILTER_ACCEPT;
   }
 
+  function isInertTemplate(node) {
+    // FastRender represents HTML `<template>` contents as children of the template element, marked
+    // `inert_subtree=true`. DOM traversal APIs must treat such templates as leaf nodes (equivalent
+    // to how real DOM stores template contents under `template.content`).
+    return g.__fastrender_dom_is_inert_template(nodeIdFromThis(node));
+  }
+
   function treeOrderNext(root, node) {
     if (!node) return null;
-    if (node.firstChild) return node.firstChild;
+    if (node.firstChild && !isInertTemplate(node)) return node.firstChild;
     while (node && node !== root) {
       if (node.nextSibling) return node.nextSibling;
       node = node.parentNode;
@@ -982,7 +1055,7 @@ const DOM_SHIM: &str = r##"
     if (!node || node === root) return null;
     var prev = node.previousSibling;
     if (prev) {
-      while (prev.lastChild) prev = prev.lastChild;
+      while (prev.lastChild && !isInertTemplate(prev)) prev = prev.lastChild;
       return prev;
     }
     return node.parentNode;
@@ -990,7 +1063,7 @@ const DOM_SHIM: &str = r##"
 
   function lastInclusiveDescendant(node) {
     var n = node;
-    while (n && n.lastChild) n = n.lastChild;
+    while (n && n.lastChild && !isInertTemplate(n)) n = n.lastChild;
     return n;
   }
 
@@ -1065,65 +1138,73 @@ const DOM_SHIM: &str = r##"
     configurable: true,
   });
 
-  NodeIteratorImpl.prototype.nextNode = function () {
-    var st = nodeIteratorStateFromThis(this);
-    if (st.active) throw invalidStateError();
-    st.active = true;
-    try {
-      var node = st.referenceNode;
-      var before = st.pointerBeforeReferenceNode;
-      while (true) {
-        if (before) {
-          before = false;
-        } else {
-          node = treeOrderNext(st.root, node);
-          if (!node) {
-            st.pointerBeforeReferenceNode = false;
-            return null;
+  Object.defineProperty(NodeIteratorImpl.prototype, "nextNode", {
+    value: function () {
+      var st = nodeIteratorStateFromThis(this);
+      if (st.active) throw invalidStateError();
+      st.active = true;
+      try {
+        var node = st.referenceNode;
+        var before = st.pointerBeforeReferenceNode;
+        while (true) {
+          if (before) {
+            before = false;
+          } else {
+            node = treeOrderNext(st.root, node);
+            if (!node) {
+              st.pointerBeforeReferenceNode = false;
+              return null;
+            }
           }
+
+          var res = acceptNodeWithWhatToShow(st.whatToShow, st.filter, node);
+          if (res === NodeFilter.FILTER_ACCEPT) {
+            st.referenceNode = node;
+            st.pointerBeforeReferenceNode = false;
+            return node;
+          }
+          // NodeIterator does not prune; treat non-ACCEPT as skip and continue.
         }
-
-        var res = acceptNodeWithWhatToShow(st.whatToShow, st.filter, node);
-        if (res === NodeFilter.FILTER_ACCEPT) {
-          st.referenceNode = node;
-          st.pointerBeforeReferenceNode = false;
-          return node;
-        }
-        // NodeIterator does not prune; treat non-ACCEPT as skip and continue.
+      } finally {
+        st.active = false;
       }
-    } finally {
-      st.active = false;
-    }
-  };
+    },
+    writable: true,
+    configurable: true,
+  });
 
-  NodeIteratorImpl.prototype.previousNode = function () {
-    var st = nodeIteratorStateFromThis(this);
-    if (st.active) throw invalidStateError();
-    st.active = true;
-    try {
-      var node;
-      if (!st.pointerBeforeReferenceNode) {
-        st.pointerBeforeReferenceNode = true;
-        node = st.referenceNode;
-      } else {
-        node = treeOrderPrevious(st.root, st.referenceNode);
-      }
-
-      while (node) {
-        var res = acceptNodeWithWhatToShow(st.whatToShow, st.filter, node);
-        if (res === NodeFilter.FILTER_ACCEPT) {
-          st.referenceNode = node;
+  Object.defineProperty(NodeIteratorImpl.prototype, "previousNode", {
+    value: function () {
+      var st = nodeIteratorStateFromThis(this);
+      if (st.active) throw invalidStateError();
+      st.active = true;
+      try {
+        var node;
+        if (!st.pointerBeforeReferenceNode) {
           st.pointerBeforeReferenceNode = true;
-          return node;
+          node = st.referenceNode;
+        } else {
+          node = treeOrderPrevious(st.root, st.referenceNode);
         }
-        node = treeOrderPrevious(st.root, node);
-      }
 
-      return null;
-    } finally {
-      st.active = false;
-    }
-  };
+        while (node) {
+          var res = acceptNodeWithWhatToShow(st.whatToShow, st.filter, node);
+          if (res === NodeFilter.FILTER_ACCEPT) {
+            st.referenceNode = node;
+            st.pointerBeforeReferenceNode = true;
+            return node;
+          }
+          node = treeOrderPrevious(st.root, node);
+        }
+
+        return null;
+      } finally {
+        st.active = false;
+      }
+    },
+    writable: true,
+    configurable: true,
+  });
 
   Document.prototype.createNodeIterator = function (root, whatToShow, filter) {
     nodeIdFromThis(this);
@@ -1186,25 +1267,29 @@ const DOM_SHIM: &str = r##"
     configurable: true,
   });
 
-  TreeWalkerImpl.prototype.nextNode = function () {
-    var st = treeWalkerStateFromThis(this);
-    var node = st.currentNode;
-    var skipChildren = false;
-    while (true) {
-      node = skipChildren ? treeOrderNextSkippingChildren(st.root, node) : treeOrderNext(st.root, node);
-      if (!node) return null;
+  Object.defineProperty(TreeWalkerImpl.prototype, "nextNode", {
+    value: function () {
+      var st = treeWalkerStateFromThis(this);
+      var node = st.currentNode;
+      var skipChildren = false;
+      while (true) {
+        node = skipChildren ? treeOrderNextSkippingChildren(st.root, node) : treeOrderNext(st.root, node);
+        if (!node) return null;
 
-      var res = acceptNodeWithWhatToShow(st.whatToShow, st.filter, node);
-      if (res === NodeFilter.FILTER_ACCEPT) {
-        st.currentNode = node;
-        return node;
+        var res = acceptNodeWithWhatToShow(st.whatToShow, st.filter, node);
+        if (res === NodeFilter.FILTER_ACCEPT) {
+          st.currentNode = node;
+          return node;
+        }
+
+        // FILTER_SKIP: traverse into children.
+        // FILTER_REJECT: skip this node's subtree.
+        skipChildren = (res === NodeFilter.FILTER_REJECT);
       }
-
-      // FILTER_SKIP: traverse into children.
-      // FILTER_REJECT: skip this node's subtree.
-      skipChildren = (res === NodeFilter.FILTER_REJECT);
-    }
-  };
+    },
+    writable: true,
+    configurable: true,
+  });
 
   Document.prototype.createTreeWalker = function (root, whatToShow, filter) {
     nodeIdFromThis(this);
@@ -2176,7 +2261,7 @@ const DOM_SHIM: &str = r##"
       nodeIdFromThis(this);
       if (this === g.document) return;
       var created = g.__fastrender_dom_set_text_content(nodeIdFromThis(this), String(value));
-      if (!this.childNodes) this.childNodes = [];
+      if (!this.childNodes) this.childNodes = makeChildNodeList();
       for (var i = 0; i < this.childNodes.length; i++) {
         var n = this.childNodes[i];
         if (n && typeof n === "object") n.parentNode = null;
@@ -2259,6 +2344,9 @@ const DOM_SHIM: &str = r##"
 
   Object.defineProperty(g, "Node", { value: Node, configurable: true, writable: true });
   Object.defineProperty(g, "NodeFilter", { value: NodeFilter, configurable: true, writable: true });
+  Object.defineProperty(g, "NodeIterator", { value: NodeIteratorImpl, configurable: true, writable: true });
+  Object.defineProperty(g, "TreeWalker", { value: TreeWalkerImpl, configurable: true, writable: true });
+  Object.defineProperty(g, "Range", { value: Range, configurable: true, writable: true });
   Object.defineProperty(g, "Document", { value: Document, configurable: true, writable: true });
   Object.defineProperty(g, "DocumentFragment", { value: DocumentFragment, configurable: true, writable: true });
   Object.defineProperty(g, "Element", { value: Element, configurable: true, writable: true });
@@ -2448,6 +2536,15 @@ impl Dom {
 
   fn create_text_node(&mut self, data: &str) -> NodeId {
     self.create_text(data, None)
+  }
+
+  fn create_comment_node(&mut self, data: &str) -> NodeId {
+    self.push_node(
+      NodeKind::Comment {
+        content: data.to_string(),
+      },
+      None,
+    )
   }
 
   fn create_document_fragment(&mut self) -> NodeId {
@@ -3451,6 +3548,14 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
     }
   })?;
 
+  let create_comment_node = Function::new(ctx.clone(), {
+    let dom = Rc::clone(&dom);
+    move |data: String| -> JsResult<i32> {
+      let id = dom.borrow_mut().create_comment_node(&data);
+      Ok(id.0 as i32)
+    }
+  })?;
+
   let get_inner_html = Function::new(ctx.clone(), {
     let dom = Rc::clone(&dom);
     move |node_id: i32| -> JsResult<String> {
@@ -3808,6 +3913,7 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
     create_document_fragment,
   )?;
   globals.set("__fastrender_dom_create_text_node", create_text_node)?;
+  globals.set("__fastrender_dom_create_comment", create_comment_node)?;
   globals.set("__fastrender_dom_get_inner_html", get_inner_html)?;
   globals.set("__fastrender_dom_set_inner_html", set_inner_html)?;
   globals.set("__fastrender_dom_get_text_data", get_text_data)?;

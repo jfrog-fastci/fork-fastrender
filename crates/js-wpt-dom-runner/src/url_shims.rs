@@ -138,6 +138,13 @@ const URL_SHIM: &str = r#"
 
     if (init === undefined || init === null) return;
 
+    // WebIDL union conversion: `init` includes a USVString branch. Boxed strings (`new String()`)
+    // must be treated as strings, not as iterables.
+    if (typeof init === "object" && init !== null && init instanceof String) {
+      this._pairs = parsePairs(init);
+      return;
+    }
+
     // WebIDL: `init` is (sequence<sequence<USVString>> or record<USVString, USVString> or
     // USVString). Objects are treated as either a sequence (if iterable) or a record.
     if (typeof init === "object" || typeof init === "function") {
@@ -159,6 +166,15 @@ const URL_SHIM: &str = r#"
           this._pairs.push([String(pair[0]), String(pair[1])]);
         }
         return;
+      }
+
+      // WebIDL record conversion: enumerable symbol keys are not allowed.
+      var symbols = Object.getOwnPropertySymbols(init);
+      for (var i = 0; i < symbols.length; i++) {
+        var sym = symbols[i];
+        if (Object.prototype.propertyIsEnumerable.call(init, sym)) {
+          throw new TypeError("URLSearchParams record init must not contain enumerable Symbol keys");
+        }
       }
 
       var keys = Object.keys(init);
