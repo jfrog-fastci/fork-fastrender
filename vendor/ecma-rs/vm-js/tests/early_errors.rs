@@ -878,6 +878,35 @@ fn using_declaration_in_switch_default_clause_is_syntax_error() {
 }
 
 #[test]
+fn switch_case_block_duplicate_lexical_decl_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("switch (0) { case 0: let x; break; default: let x; }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn switch_case_block_var_and_lexical_decl_conflict_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("switch (0) { case 0: var x; break; default: let x; }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn switch_case_block_duplicate_async_function_decl_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(
+      "switch (0) { case 0: async function f(){} break; default: async function f(){} }",
+    )
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn using_declaration_does_not_allow_destructuring_pattern_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script("{ using [] = null; }").unwrap_err();
