@@ -82,8 +82,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 | Metric | Count |
 | --- | ---: |
 | Total cases | 17318 |
-| Matched upstream expected | 16035 (92.59%) |
-| Mismatched upstream expected | 1283 (7.41%) |
+| Matched upstream expected | 16049 (92.67%) |
+| Mismatched upstream expected | 1269 (7.33%) |
 | Timeouts | 0 |
 | Skipped | 40 |
 | Unexpected mismatches | 657 |
@@ -92,8 +92,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 | Outcome | Count |
 | --- | ---: |
-| passed | 15995 |
-| failed | 1283 |
+| passed | 16009 |
+| failed | 1269 |
 | timed_out | 0 |
 | skipped | 40 |
 
@@ -112,8 +112,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 | --- | ---: |
 | PASS | 8189 |
 | FAIL (unexpected) | 657 |
-| XFAIL | 626 |
-| XPASS | 7806 |
+| XFAIL | 612 |
+| XPASS | 7820 |
 | SKIP | 40 |
 
 ## Breakdown by major area
@@ -121,16 +121,16 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 | Area | Total | Matched | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | built-ins | 7185 | 6875 | 310 | 4.31% | 6389 | 0 | 310 | 446 | 40 |
-| language | 10128 | 9155 | 973 | 9.61% | 1795 | 657 | 316 | 7360 | 0 |
+| language | 10128 | 9169 | 959 | 9.47% | 1795 | 657 | 302 | 7374 | 0 |
 | staging | 5 | 5 | 0 | 0.00% | 5 | 0 | 0 | 0 | 0 |
 
 ## Top failing buckets (by mismatched cases)
 
 | Bucket | Total | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `language/statements` | 7161 | 946 | 13.21% | 763 | 657 | 289 | 5452 | 0 |
+| `language/statements` | 7161 | 940 | 13.13% | 763 | 657 | 283 | 5458 | 0 |
 | `built-ins/Set` | 764 | 302 | 39.53% | 390 | 0 | 302 | 72 | 0 |
-| `language/expressions` | 2337 | 27 | 1.16% | 1032 | 0 | 27 | 1278 | 0 |
+| `language/expressions` | 2337 | 19 | 0.81% | 1032 | 0 | 19 | 1286 | 0 |
 | `built-ins/Array` | 1503 | 6 | 0.40% | 1457 | 0 | 6 | 0 | 40 |
 | `built-ins/Object` | 1692 | 2 | 0.12% | 1332 | 0 | 2 | 358 | 0 |
 | `built-ins/Boolean` | 101 | 0 | 0.00% | 101 | 0 | 0 | 0 | 0 |
@@ -144,8 +144,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 ## Top mismatch reasons (first line of `error`)
 
 Mismatched cases by high-level bucket:
-- exception/other: 844 (65.78%)
-- VmError::Unimplemented: 439 (34.22%)
+- exception/other: 830 (65.41%)
+- VmError::Unimplemented: 439 (34.59%)
 - termination: 0 (0.00%)
 
 ### Top 20
@@ -165,13 +165,13 @@ Mismatched cases by high-level bucket:
 | 11 | exception/other | 14 | `Built-in objects must be extensible. Expected SameValue(«false», «true») to be true` |
 | 12 | exception/other | 14 | `GetSetRecord coerces size Expected SameValue(«0», «1») to be true` |
 | 13 | exception/other | 14 | `isConstructor invoked with a non-function value` |
-| 14 | exception/other | 12 | `Expected true but got false` |
-| 15 | exception/other | 10 | `#18: value === undefined. Actual:  value ===value` |
-| 16 | exception/other | 10 | `Expected SameValue(«0», «1») to be true` |
+| 14 | exception/other | 10 | `#18: value === undefined. Actual:  value ===value` |
+| 15 | exception/other | 10 | `Expected SameValue(«0», «1») to be true` |
+| 16 | exception/other | 10 | `Expected true but got false` |
 | 17 | exception/other | 9 | `Expected SameValue(«1», «undefined») to be true` |
 | 18 | VmError::Unimplemented | 8 | `unimplemented: yield in assignment target` |
 | 19 | exception/other | 8 | `#0: result === "value". Actual:  result ===myObj_value` |
-| 20 | exception/other | 8 | `Expected a ReferenceError but got a Test262Error` |
+| 20 | exception/other | 8 | `error[PS0002]: expected expression operator` |
 
 ## Timed-out tests
 
@@ -184,7 +184,7 @@ At least 50 mismatched cases, grouped by the largest mismatch buckets.
 (If the suite only has a few buckets with mismatches, the largest buckets will show more
 than `--appendix-per-bucket` entries so the appendix still reaches the minimum count.)
 
-### `language/statements` (22 shown / 946 mismatches)
+### `language/statements` (22 shown / 940 mismatches)
 
 - `language/statements/async-function/dflt-params-abrupt.js#non_strict`: `at language/statements/async-function/dflt-params-abrupt.js:207:36`
 - `language/statements/async-function/dflt-params-abrupt.js#strict`: `at language/statements/async-function/dflt-params-abrupt.js:209:36`
@@ -222,7 +222,7 @@ than `--appendix-per-bucket` entries so the appendix still reaches the minimum c
 - `built-ins/Set/prototype/difference/combines-Map.js#non_strict`: `value is not callable`
 - `built-ins/Set/prototype/difference/combines-Map.js#strict`: `value is not callable`
 
-### `language/expressions` (10 shown / 27 mismatches)
+### `language/expressions` (10 shown / 19 mismatches)
 
 - `language/expressions/comma/tco-final.js#strict`: `Maximum call stack size exceeded`
 - `language/expressions/logical-and/tco-right.js#strict`: `Maximum call stack size exceeded`
@@ -246,5 +246,5 @@ than `--appendix-per-bucket` entries so the appendix still reaches the minimum c
 
 ### `built-ins/Object` (2 shown / 2 mismatches)
 
-- `built-ins/Object/prototype/toString/symbol-tag-override-instances.js#non_strict`: `Expected SameValue(«"[object Error]"», «"[object test262]"») to be true`
-- `built-ins/Object/prototype/toString/symbol-tag-override-instances.js#strict`: `Cannot assign to read-only property`
+- `built-ins/Object/prototype/toString/symbol-tag-generators-builtin.js#non_strict`: `Expected SameValue(«"[object Generator]"», «"[object Object]"») to be true`
+- `built-ins/Object/prototype/toString/symbol-tag-generators-builtin.js#strict`: `Expected SameValue(«"[object Generator]"», «"[object Object]"») to be true`
