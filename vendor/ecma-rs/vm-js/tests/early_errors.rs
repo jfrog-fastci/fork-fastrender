@@ -35,6 +35,65 @@ fn continue_to_non_iteration_label_is_syntax_error() {
 }
 
 #[test]
+fn return_in_class_static_block_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("class C { static { return; } }").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn break_in_class_static_block_does_not_target_enclosing_loop_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("for(;;) { class C { static { break; } } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn continue_in_class_static_block_does_not_target_enclosing_loop_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("for(;;) { class C { static { continue; } } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn break_label_in_class_static_block_does_not_target_enclosing_label_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("outer: for(;;) { class C { static { break outer; } } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn arguments_identifier_reference_in_class_static_block_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("class C { static { arguments; } }").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn await_as_binding_identifier_in_class_static_block_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("class C { static { let await = 0; } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn yield_expression_in_class_static_block_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("function* g(){ class C { static { yield 0; } } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn rest_parameter_must_be_last() {
   let mut rt = new_runtime();
   let err = rt.exec_script("function f(...a, b) {}").unwrap_err();
