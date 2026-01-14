@@ -33219,6 +33219,7 @@ fn node_compare_document_position_native(
   };
   Ok(Value::Number(mask as f64))
 }
+
 fn node_is_equal_node_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
