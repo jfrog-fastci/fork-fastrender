@@ -219,6 +219,13 @@ impl AudioRingBuffer {
       return;
     }
 
+    // `channels` must match the producer's interleaving. If we ever observe a partial frame,
+    // drop buffered audio to avoid getting stuck with an un-drainable remainder.
+    if available % channels != 0 {
+      self.read.store(write, Ordering::Release);
+      return;
+    }
+
     let mut to_read = dst.len().min(available);
     // Keep frame alignment so ramping applies equally across channels.
     to_read -= to_read % channels;
@@ -560,6 +567,28 @@ mod tests {
     let mut out = vec![0.0; 8];
     let did_underrun = rb.pop_add_into_ramped_declick_underrun(&mut out, 2, &mut ramp, 4);
     assert!(did_underrun);
+    assert!(rb.is_empty(), "misaligned buffer should have been dropped");
+    assert!(
+      out.iter().all(|v| *v == 0.0),
+      "output should remain silence"
+    );
+  }
+
+  #[test]
+  fn ring_buffer_ramped_drops_misaligned_partial_frames() {
+    let rb = AudioRingBuffer::new(16);
+    // Push 3 samples, which is not a multiple of stereo frames.
+    assert_eq!(rb.push(&[1.0, 2.0, 3.0]), 3);
+
+    let mut ramp = GainRamp {
+      current_gain: 1.0,
+      target_gain: 1.0,
+      step: 0.0,
+      frames_remaining: 0,
+    };
+
+    let mut out = vec![0.0; 8];
+    rb.pop_add_into_ramped(&mut out, 2, &mut ramp);
     assert!(rb.is_empty(), "misaligned buffer should have been dropped");
     assert!(
       out.iter().all(|v| *v == 0.0),
