@@ -24,10 +24,10 @@ Legend: ✅ implemented, ⚠️ partial, 🚧 planned, ❌ missing.
 | Common types (`MediaTrackInfo`, `MediaPacket`, `MediaData`, `Decoded*`) | ✅ | [`src/media/mod.rs`](../src/media/mod.rs), [`src/media/packet.rs`](../src/media/packet.rs) |
 | Decode pipeline (`MediaDecodePipeline`) | ✅ | [`src/media/pipeline.rs`](../src/media/pipeline.rs) (demux→decode wiring; yields `DecodedItem`) |
 | WebM demux (`WebmDemuxer`) | ✅ | [`src/media/demux/webm.rs`](../src/media/demux/webm.rs) (feature: `media_webm`/`media`; VP9+Opus; track selection/filtering; codec delay; seek; optional inter-track ordering; rejects encrypted/compressed `ContentEncodings`) |
-| MP4 demux + packetizer (`Mp4PacketDemuxer`) | ⚠️ | [`src/media/demuxer.rs`](../src/media/demuxer.rs) (feature: `media_mp4`/`media`; H.264+AAC; best-effort VP9 detection via `mp4parse`; rejects encrypted/protected tracks; best-effort mp4parse-derived DTS/PTS/duration + keyframe seek; falls back to mp4-crate timestamps when sample tables are unavailable) |
-| MP4 demux (pure-Rust box parser): `demux::mp4::Mp4Demuxer` | ✅ | [`src/media/demux/mp4.rs`](../src/media/demux/mp4.rs) (in-memory; produces `MediaData::Shared`; parses `avcC`→H.264 extradata + `esds`→AAC ASC; not currently wired into `MediaDecodePipeline` via `MediaDemuxer`) |
-| MP4 demux (mp4parse sample-table): `demux::mp4parse::Mp4ParseDemuxer` | ⚠️ | [`src/media/demux/mp4parse.rs`](../src/media/demux/mp4parse.rs) (reader-based sample-table demux; timestamping works; codec `codec_private` extraction is currently incomplete) |
-| MP4 sample-table utilities (`Mp4Demuxer`, `Mp4SeekIndex`) | ✅ | [`src/media/mp4.rs`](../src/media/mp4.rs) (feature: `media_mp4`/`media`; `ctts`-aware PTS/DTS computation; currently separate from `Mp4PacketDemuxer`) |
+| MP4 demux (`Mp4ParseDemuxer`) | ✅ | [`src/media/demux/mp4parse.rs`](../src/media/demux/mp4parse.rs) (feature: `media_mp4`/`media`; used by [`NativeBackend`](../src/media/backends/native.rs) via [`MediaDemuxer`](../src/media/demuxer.rs); H.264/VP9 video + AAC audio; rejects encrypted/protected tracks; mp4parse sample-table DTS/PTS/duration; PTS-based seek (no keyframe backtracking yet)) |
+| MP4 demux + packetizer (`Mp4PacketDemuxer`, mp4-crate) | ⚠️ (in-tree; not used by `NativeBackend`) | [`src/media/demuxer.rs`](../src/media/demuxer.rs) (feature: `media_mp4`/`media`; `mp4` crate + mp4parse metadata; best-effort DTS/PTS/duration + keyframe seek; sample-table caps; falls back to mp4-crate timestamps when mp4parse tables are unavailable) |
+| MP4 demux (pure-Rust box parser): `demux::mp4::Mp4Demuxer` | ✅ (not wired) | [`src/media/demux/mp4.rs`](../src/media/demux/mp4.rs) (in-memory; produces `MediaData::Shared`; parses `avcC`→H.264 extradata + `esds`→AAC ASC; not currently used by `NativeBackend`/`MediaDecodePipeline`) |
+| MP4 sample-table utilities (`Mp4Demuxer`, `Mp4SeekIndex`) | ✅ | [`src/media/mp4.rs`](../src/media/mp4.rs) (feature: `media_mp4`/`media`; `ctts`-aware PTS/DTS computation; currently separate from `Mp4ParseDemuxer`/`Mp4PacketDemuxer`) |
 | AAC decoder | ✅ | [`src/media/codecs/aac.rs`](../src/media/codecs/aac.rs) (feature: `codec_aac`/`media`; Symphonia → `DecodedAudioChunk`) |
 | Opus decoder | ✅ | [`src/media/codecs/opus.rs`](../src/media/codecs/opus.rs) (feature: `codec_opus`/`media`; `opus` crate / libopus; mapping family 0 mono/stereo only today) |
 | H.264 decoder | ✅ | [`src/media/decoder.rs`](../src/media/decoder.rs) (feature: `codec_h264_openh264`/`media`; OpenH264; MP4 length-prefixed NALs → Annex B) |
@@ -70,7 +70,7 @@ MediaSession (today: MediaDecodePipeline)
   ↓
 container demux
   - WebM: WebmDemuxer        ✅
-  - MP4:  Mp4PacketDemuxer   ⚠️ (best-effort sample tables; see below)
+  - MP4:  Mp4ParseDemuxer    ✅ (mp4parse sample tables; see below)
   ↓
 MediaPacket {
   track_id,
@@ -132,27 +132,32 @@ Current behavior:
   - In damaged/unindexed files, seeking may return
     `MediaError::Unsupported("Matroska seek unsupported (no cluster index)")`.
 
-### MP4 / ISO-BMFF: `Mp4PacketDemuxer` (implemented; best-effort sample tables)
+### MP4 / ISO-BMFF: `Mp4ParseDemuxer` (implemented; current native path)
 
-Implementation: [`src/media/demuxer.rs`](../src/media/demuxer.rs) (`Mp4PacketDemuxer`), built on the
-[`mp4`](https://crates.io/crates/mp4) crate plus `mp4parse` metadata.
+Implementation: [`src/media/demux/mp4parse.rs`](../src/media/demux/mp4parse.rs) (`Mp4ParseDemuxer`),
+built on [`mp4parse`](https://crates.io/crates/mp4parse). This is the MP4 demuxer currently used by
+the native backend (see [`src/media/backends/native.rs`](../src/media/backends/native.rs)).
 
 Current behavior:
 
-- Opens MP4 either from a file (`Mp4PacketDemuxer::open(path)`) or in-memory bytes
-  (`Mp4PacketDemuxer::from_bytes(Arc<[u8]>)`).
-- Rejects encrypted/protected tracks up-front using mp4parse metadata (no DRM/EME support today).
-- Track detection:
-  - H.264 (`mp4::MediaType::H264`) → emits packets
-  - AAC (`mp4::MediaType::AAC`) → emits packets
-  - VP9: best-effort detection by parsing `stsd` via `mp4parse` (because `mp4` does not currently
-    expose VP9 via `Mp4Track::media_type()`), then emits packets.
-- Timestamping:
-  - When mp4parse sample tables are available, the demuxer attaches `dts_ns`, `pts_ns`, and
-    `duration_ns` (including `ctts` reordering), and uses `dts_ns` to pick the next packet across
-    tracks.
-  - When sample tables are not available (e.g. skipped due to caps), it falls back to
-    `mp4::Sample.start_time` for `pts_ns` (with `dts_ns == pts_ns` and `duration_ns == 0`).
+- Opens any `R: Read + Seek` (`Mp4ParseDemuxer::open(reader)`).
+- Rejects encrypted/protected tracks up-front (`reject_encrypted_tracks`; no DRM/EME support today).
+- Surfaces only tracks that FastRender can decode in-process today:
+  - Video: H.264 (`avc1`/`avc3`) and VP9 (`vp09`)
+  - Audio: AAC (`mp4a`)
+- Track selection/filtering:
+  - Uses the shared track-selection helpers ([`src/media/track_selection.rs`](../src/media/track_selection.rs)).
+  - `Mp4ParseDemuxerOptions.track_filter` controls whether packets are emitted for only the primary
+    tracks or for all supported tracks.
+- Timestamping + demux order:
+  - Uses `mp4parse::unstable::create_sample_table` to build per-track sample lists with `dts_ns`,
+    `pts_ns`, and `duration_ns` (including `ctts` reordering).
+  - If `ctts` produces negative composition times, the whole track is shifted so the minimum PTS
+    becomes 0 (since `MediaPacket` stores timestamps as `u64`).
+  - `next_packet()` interleaves tracks by smallest `dts_ns` (tie-break by track id).
+- Sample bytes:
+  - Reads each sample by `seek`ing to its byte offset and copying `size` bytes into an owned buffer
+    (`MediaData::Owned`).
 
 Codec-private (`MediaTrackInfo.codec_private`) formats produced today:
 
@@ -166,42 +171,36 @@ Codec-private (`MediaTrackInfo.codec_private`) formats produced today:
   [pps_count] { u16be len, [len] bytes }
   ```
 
-- **AAC**:
-  - Prefer `esds`/decoder-specific bytes extracted via mp4parse (an `AudioSpecificConfig` blob).
-  - Fall back to synthesizing a minimal **AAC-LC** `AudioSpecificConfig` when mp4parse data is
-    unavailable.
+- **AAC**: `esds`/decoder-specific bytes extracted via mp4parse (an `AudioSpecificConfig` blob).
 - **VP9**: a compact subset of `vpcC` (bit depth / primaries / subsampling + `codec_init` bytes).
 
 Seeking:
 
-- With mp4parse sample tables:
-  - `seek(time_ns)` finds the first sample with `pts_ns >= time_ns`.
-  - For video tracks, it backs up to a sync sample at-or-before that point (best-effort keyframe seek).
-- Without sample tables: falls back to a linear scan.
+- `seek(time_ns)` is PTS-based per track: it moves each track to the first sample with
+  `pts_ns >= time_ns`.
+- For non-monotonic PTS tracks (B-frames), it uses a sorted PTS index to pick a decode-order sample
+  that can reach the target PTS (best-effort).
 
-Known limitations / gaps:
+Known limitations / gaps (current):
 
-- MP4 sample-table construction is intentionally capped (see `MAX_SAMPLES_PER_TRACK` /
-  `MAX_TOTAL_SAMPLES` in `src/media/demuxer.rs`) so corrupted files can’t force unbounded allocations.
-  When caps are hit, the demuxer falls back to the mp4-crate timestamp path (reduced timestamp/seek
-  fidelity).
-- **Large sample allocations**: the `mp4` crate returns sample bytes as owned buffers; it may
-  allocate attacker-controlled sample sizes before we can enforce a hard cap. Fixing this likely
-  requires a zero-copy demux path and/or pre-size checks (tracked as part of broader MP4 correctness
-  work).
-- Fragmented MP4 (`moof`/`mdat`) is not supported by this demuxer.
+- Seek is not currently keyframe-aware: it does not backtrack to sync samples for video.
+- MP4 currently has no encoded packet/sample size cap (unlike WebM's `MAX_WEBM_PACKET_BYTES`), and
+  `Mp4ParseDemuxer` builds full sample lists without explicit caps; corrupted/adversarial MP4s can
+  force large allocations.
 
-Other MP4 demuxers in-tree (not currently used by `NativeBackend`/`MediaDecodePipeline`):
+Other MP4 demuxers in-tree (not currently used by `NativeBackend`):
 
+- [`src/media/demuxer.rs`](../src/media/demuxer.rs): `Mp4PacketDemuxer` (mp4-crate based) which:
+  - opens from file or in-memory bytes,
+  - rejects encrypted/protected tracks using mp4parse metadata,
+  - can attach mp4parse-derived DTS/PTS/duration and do best-effort keyframe seeking, but
+  - falls back to mp4-crate timestamps when sample tables are unavailable.
 - [`src/media/demux/mp4.rs`](../src/media/demux/mp4.rs): a pure-Rust MP4 box parser/demuxer that:
   - reads the full file into an `Arc<[u8]>`,
   - emits `MediaPacket` with `MediaData::Shared` ranges,
   - computes both `dts_ns` and `pts_ns` (including `ctts`) and a non-monotonic-PTS seek index, and
   - parses `avcC` into the custom H.264 extradata format expected by `decoder::H264Decoder`, plus
     `esds`→AAC `AudioSpecificConfig`.
-- [`src/media/demux/mp4parse.rs`](../src/media/demux/mp4parse.rs): a demuxer built on mp4parse sample
-  tables that can read sample bytes from a `Read+Seek` source, but is still missing full codec
-  config (`codec_private`) extraction for the decode pipeline.
 
 ## Codec decode backends
 
@@ -280,11 +279,11 @@ Current implementations:
   - `pts_ns = frame.timestamp * Info.TimecodeScale`
   - subtracts `TrackEntry.codec_delay`
   - currently `dts_ns == pts_ns`
-- **MP4** (`Mp4PacketDemuxer`):
-  - Best-effort: uses mp4parse sample tables (`create_sample_table`) when available, including `ctts`
+- **MP4** (`Mp4ParseDemuxer`):
+  - Uses mp4parse sample tables (`mp4parse::unstable::create_sample_table`) including `ctts`
     reordering and per-sample duration.
-  - Fallback: uses `mp4::Sample.start_time` as both PTS+DTS (`dts_ns == pts_ns`) and sets
-    `duration_ns == 0`.
+  - Normalizes negative composition times (MP4 `ctts` v1) by shifting the entire track so the
+    minimum PTS becomes 0.
 
 Clocking/scheduling code uses `Duration` (`src/media/clock.rs`, `src/media/av_sync.rs`) but the unit
 is still nanoseconds.
@@ -293,10 +292,8 @@ is still nanoseconds.
 
 - **WebM**: `WebmDemuxer::seek(time_ns)` seeks to the first frame at/after the target (after
   compensating for codec delay).
-- **MP4**:
-  - With mp4parse sample tables, `Mp4PacketDemuxer::seek(time_ns)` seeks each track to the first
-    sample with `pts_ns >= time_ns` and (for video) backs up to a sync sample at-or-before.
-  - Without sample tables, seeking falls back to a linear scan.
+- **MP4**: `Mp4ParseDemuxer::seek(time_ns)` seeks each track to the first sample with
+  `pts_ns >= time_ns` (not currently keyframe-aware).
 
 ## How to manually test (fixtures)
 
@@ -368,10 +365,14 @@ primarily a smoke test for `<video>/<audio>` layout and for future playback wiri
   - Paint *can* display frames if an app supplies a `MediaFrameProvider`, but nothing in-tree wires
     `MediaDecodePipeline`/`MediaPlayer` to the DOM yet.
   - `MediaFrameProvider::audio_frame` is still a stub (`src/media/mod.rs`).
-- MP4 (`Mp4PacketDemuxer`):
-  - Sample-table timing/seek is best-effort and can fall back when caps are hit (reduced
-    timestamp/seek fidelity).
-  - Fragmented MP4 is unsupported.
+- MP4 (`Mp4ParseDemuxer`):
+  - Seek is not currently keyframe-aware (it does not backtrack to sync samples), so seeking into
+    the middle of a GOP may fail to decode until the next keyframe.
+  - MP4 currently has no per-sample size cap, and `Mp4ParseDemuxer` builds full sample lists without
+    explicit caps; corrupted/adversarial MP4s can force large allocations.
+- MP4 (mp4-crate path, `Mp4PacketDemuxer`):
+  - Still in-tree (not used by `NativeBackend`), with sample-table caps + best-effort keyframe seek.
+  - Fragmented MP4 is unsupported on this path.
 - WebM (`WebmDemuxer`):
   - Seek is best-effort and currently does not account for Matroska `SeekPreRoll` (some codecs may
     require decode before the target PTS after seeking).
