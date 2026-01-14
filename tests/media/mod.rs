@@ -4,6 +4,7 @@ use fastrender::media::demuxer::Mp4PacketDemuxer;
 use fastrender::media::{DecodedItem, MediaDecodePipeline, MediaError, MediaResult};
 use std::fs::File;
 use std::io::BufReader;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy)]
 struct RgbaStats {
@@ -242,6 +243,62 @@ fn mp4_vp9_decodes_first_video() -> MediaResult<()> {
 
   Err(MediaError::Decode(
     "did not decode a VP9 video frame within limit".into(),
+  ))
+}
+
+#[test]
+fn native_backend_decodes_webm_vp9_first_frame_is_red() -> MediaResult<()> {
+  use fastrender::media::backends::native::NativeBackend;
+  use fastrender::media::{MediaBackend as _, MediaSession as _};
+
+  let bytes = std::fs::read("tests/fixtures/media/test_vp9_opus.webm")?;
+  let bytes: Arc<[u8]> = Arc::from(bytes);
+  let backend = NativeBackend::new();
+  let mut session = backend.open(bytes)?;
+
+  for _ in 0..256 {
+    let Some(item) = session.next_decoded()? else {
+      break;
+    };
+    let DecodedItem::Video(frame) = item else {
+      continue;
+    };
+    assert_eq!((frame.width, frame.height), (64, 64));
+    let stats = rgba_stats(&frame.rgba, frame.width as usize, frame.height as usize);
+    assert_mostly_red("native/webm+vp9 first frame (test_vp9_opus.webm)", stats);
+    return Ok(());
+  }
+
+  Err(MediaError::Decode(
+    "did not decode a VP9 video frame via NativeBackend within limit".into(),
+  ))
+}
+
+#[test]
+fn native_backend_decodes_mp4_vp9_first_frame_is_red() -> MediaResult<()> {
+  use fastrender::media::backends::native::NativeBackend;
+  use fastrender::media::{MediaBackend as _, MediaSession as _};
+
+  let bytes = std::fs::read("tests/fixtures/media/vp9_in_mp4.mp4")?;
+  let bytes: Arc<[u8]> = Arc::from(bytes);
+  let backend = NativeBackend::new();
+  let mut session = backend.open(bytes)?;
+
+  for _ in 0..256 {
+    let Some(item) = session.next_decoded()? else {
+      break;
+    };
+    let DecodedItem::Video(frame) = item else {
+      continue;
+    };
+    assert_eq!((frame.width, frame.height), (16, 16));
+    let stats = rgba_stats(&frame.rgba, frame.width as usize, frame.height as usize);
+    assert_mostly_red("native/mp4+vp9 first frame (vp9_in_mp4.mp4)", stats);
+    return Ok(());
+  }
+
+  Err(MediaError::Decode(
+    "did not decode a VP9 video frame via NativeBackend within limit".into(),
   ))
 }
 
