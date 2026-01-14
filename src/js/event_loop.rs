@@ -75,6 +75,11 @@ fn task_source_name(source: TaskSource) -> &'static str {
   }
 }
 
+// NOTE: Explicit HRTB (`for<'a>`) is required here.
+//
+// Rust 1.92 tightened lifetime inference for closure trait objects; without `for<'a>`, boxed
+// runnables/callbacks can become tied to a single concrete borrow lifetime, which then prevents
+// wrapping/adapting them (e.g. `FnOnce` -> `FnMut` adapters used by timers).
 type Runnable<Host> =
   Box<dyn for<'a> FnOnce(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()> + 'static>;
 type ExternalRunnable<Host> =
