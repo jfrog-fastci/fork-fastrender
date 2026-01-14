@@ -37402,6 +37402,19 @@ fn gen_eval_throw_stmt(
   }
 }
 
+fn gen_eval_chain_base(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &Node<Expr>,
+) -> Result<GenEval<Completion>, VmError> {
+  // Parenthesized expressions break optional-chain propagation:
+  // `(a?.b).c` should not short-circuit `.c` when `a` is nullish.
+  if expr.assoc.get::<ParenthesizedExpr>().is_some() {
+    return gen_eval_expr(evaluator, scope, expr);
+  }
+  gen_eval_expr_chain(evaluator, scope, expr)
+}
+
 fn gen_eval_expr(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -37425,19 +37438,6 @@ fn gen_eval_expr(
       Ok(GenEval::Suspend(suspend))
     }
   }
-}
-
-fn gen_eval_chain_base(
-  evaluator: &mut Evaluator<'_>,
-  scope: &mut Scope<'_>,
-  expr: &Node<Expr>,
-) -> Result<GenEval<Completion>, VmError> {
-  // Parenthesized expressions break optional-chain propagation:
-  // `(a?.b).c` should not short-circuit `.c` when `a` is nullish.
-  if expr.assoc.get::<ParenthesizedExpr>().is_some() {
-    return gen_eval_expr(evaluator, scope, expr);
-  }
-  gen_eval_expr_chain(evaluator, scope, expr)
 }
 
 fn gen_eval_expr_chain(
@@ -39161,6 +39161,8 @@ fn gen_computed_member_after_base(
   expr: &ComputedMemberExpr,
   base: Value,
 ) -> Result<GenEval<Completion>, VmError> {
+  // Optional-chain propagation compatibility: if the base is the internal optional-chain sentinel,
+  // propagate it without evaluating the member/key expression.
   if is_optional_chain_sentinel(evaluator.vm, base) {
     return Ok(GenEval::Complete(Completion::normal(base)));
   }
@@ -40181,11 +40183,16 @@ fn gen_eval_call(
   let callee_is_parenthesized = expr.callee.assoc.get::<ParenthesizedExpr>().is_some();
 
   match &*expr.callee.stx {
-    Expr::Member(member) if !callee_is_parenthesized && matches!(&*member.stx.left.stx, Expr::Super(_)) => {
+    Expr::Member(member)
+      if !callee_is_parenthesized && matches!(&*member.stx.left.stx, Expr::Super(_)) =>
+    {
       gen_call_super_member(evaluator, scope, expr, &member.stx)
     }
-    Expr::Member(member) if !callee_is_parenthesized => {
-      match gen_eval_chain_base(evaluator, scope, &member.stx.left)? {
+    Expr::Member(member) if !callee_is_parenthesized => match gen_eval_chain_base(
+      evaluator,
+      scope,
+      &member.stx.left,
+    )? {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => gen_call_member_after_base(
           evaluator,
@@ -40206,15 +40213,17 @@ fn gen_eval_call(
         )?;
         Ok(GenEval::Suspend(suspend))
       }
-      }
-    }
+    },
     Expr::ComputedMember(member)
       if !callee_is_parenthesized && matches!(&*member.stx.object.stx, Expr::Super(_)) =>
     {
       gen_call_super_computed_member(evaluator, scope, expr, &member.stx)
     }
-    Expr::ComputedMember(member) if !callee_is_parenthesized => {
-      match gen_eval_chain_base(evaluator, scope, &member.stx.object)? {
+    Expr::ComputedMember(member) if !callee_is_parenthesized => match gen_eval_chain_base(
+      evaluator,
+      scope,
+      &member.stx.object,
+    )? {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => gen_call_computed_member_after_base(
           evaluator,
@@ -40235,8 +40244,7 @@ fn gen_eval_call(
         )?;
         Ok(GenEval::Suspend(suspend))
       }
-    }
-    }
+    },
     _ => match gen_eval_expr(evaluator, scope, &expr.callee)? {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => gen_call_begin(
@@ -40268,9 +40276,15 @@ fn gen_call_member_after_base(
   member: &MemberExpr,
   base: Value,
 ) -> Result<GenEval<Completion>, VmError> {
+  let callee_is_parenthesized = call.callee.assoc.get::<ParenthesizedExpr>().is_some();
   // Optional-chain propagation compatibility: if the base is the internal optional-chain sentinel,
   // propagate it without attempting any further member lookup (including private-name access).
   if is_optional_chain_sentinel(evaluator.vm, base) {
+    if callee_is_parenthesized {
+      // `(a?.b.c)()` is not part of the optional chain: the callee evaluates to `undefined`, and
+      // the call should throw (after evaluating arguments) like any other `undefined()`.
+      return gen_call_begin(evaluator, scope, call, Value::Undefined, Value::Undefined);
+    }
     return Ok(GenEval::Complete(Completion::normal(base)));
   }
   if member.optional_chaining && is_nullish(base) {
@@ -40328,6 +40342,8 @@ fn gen_call_computed_member_after_base(
   member: &ComputedMemberExpr,
   base: Value,
 ) -> Result<GenEval<Completion>, VmError> {
+  // Optional-chain propagation compatibility: if the base is the internal optional-chain sentinel,
+  // propagate it without evaluating the member/key expression.
   if is_optional_chain_sentinel(evaluator.vm, base) {
     return Ok(GenEval::Complete(Completion::normal(base)));
   }
@@ -40379,6 +40395,9 @@ fn gen_call_computed_member_after_member(
   base: Value,
   member_value: Value,
 ) -> Result<GenEval<Completion>, VmError> {
+  if is_optional_chain_sentinel(evaluator.vm, base) {
+    return Ok(GenEval::Complete(Completion::normal(base)));
+  }
   let mut key_scope = scope.reborrow();
   key_scope.push_root(base)?;
   key_scope.push_root(member_value)?;
@@ -41379,15 +41398,15 @@ fn gen_resume_from_frames(
         Completion::Break(..) => return Err(VmError::Unimplemented("break outside of loop")),
         Completion::Continue(..) => return Err(VmError::Unimplemented("continue outside of loop")),
       },
-
-      GenFrame::ConvertOptionalChainShortCircuit => {
-        if let Completion::Normal(Some(v)) = state {
-          state = Completion::Normal(Some(convert_optional_chain_sentinel_to_undefined(
+      GenFrame::ConvertOptionalChainShortCircuit => match state {
+        Completion::Normal(v) => {
+          state = Completion::Normal(v.map(|v| convert_optional_chain_sentinel_to_undefined(
             evaluator.vm,
             v,
           )));
         }
-      }
+        abrupt => state = abrupt,
+      },
 
       GenFrame::YieldAfterOperand => match state {
         Completion::Normal(v) => {
