@@ -295,6 +295,98 @@ Note: this iframe is also offscreen in the default page-loop viewport.
      * `tests/pages/fixtures/developer.mozilla.org_en-US_docs_Web_CSS_text-combine-upright/assets/489b0c9653c1ac283ee32072caaf5ec2.html` (vertical-rl + text-combine-upright)
    * Option B: extend `xtask page-loop` + the Chrome baseline harness to scroll to a fragment anchor (e.g. `index.html#examples`) or to render a full-page screenshot (fit canvas to content).
 2. Once the sample content is in-view, re-run these fixtures and expect diffs to start exercising:
-    * vertical writing-mode layout axes (`src/layout/axis.rs`),
-    * vertical glyph orientation (`src/text/pipeline.rs`),
-    * text combine grouping (`src/layout/contexts/inline/mod.rs`).
+     * vertical writing-mode layout axes (`src/layout/axis.rs`),
+     * vertical glyph orientation (`src/text/pipeline.rs`),
+     * text combine grouping (`src/layout/contexts/inline/mod.rs`).
+
+## Appendix: direct diffs of the *actual* MDN vertical-writing demos (iframe `assets/*.html`)
+
+Because the live-sample iframes are offscreen in the default `xtask page-loop` viewport, I rendered the iframe HTML assets directly as standalone “mini fixtures” (locally, not committed) and diffed them against a JS-off Chrome baseline.
+
+These runs produce artifacts under:
+
+* `target/page_loop_mdn_vertical_samples/<stem>/...`
+
+### Demo: writing-mode — “Using multiple writing modes”
+
+* Source HTML:
+  * `tests/pages/fixtures/developer.mozilla.org_en-US_docs_Web_CSS_writing-mode/assets/6cb36740d41f266bc9b10239b3566fce.html`
+* Artifacts:
+  * `target/page_loop_mdn_vertical_samples/mdn_writing_mode_multiple/report.html`
+  * `target/page_loop_mdn_vertical_samples/mdn_writing_mode_multiple/report_files/diffs/mdn_writing_mode_multiple.png`
+  * `target/page_loop_mdn_vertical_samples/mdn_writing_mode_multiple/inspect/*.json`
+* Diff metrics (from `report.json`):
+  * `diff_percentage`: **6.83%** (`pixel_diff=88,038` / `1,289,600`)
+  * Overall mismatch bbox (exact pixel bbox of any mismatch): `(x=7,y=12)-(x=808,y=907)`
+* Where the diff is:
+  * Single large connected diff cluster covering the whole table region (coarse 20×20px tiling).
+  * Per-row mismatch counts (using FastRender’s `tr` bounds from `inspect/fragment_tree.json`):
+    * `horizontal-tb` row (`tr.text1`): `6,019` mismatching pixels
+    * `vertical-lr` row (`tr.text2`): `11,181`
+    * `vertical-rl` row (`tr.text3`): `12,272`
+    * `sideways-lr` row (`tr.text4`): `12,647`
+    * `sideways-rl` row (`tr.text5`): `27,158` (largest)
+* Likely subsystem / entrypoints:
+  * **Vertical writing-mode axis mapping** (especially `sideways-rl`): `src/layout/axis.rs`, `src/style/types.rs` (`WritingMode`)
+  * **Vertical glyph orientation in mixed-script text** (default `text-orientation: mixed`): `src/text/pipeline.rs` (`apply_sideways_text_orientation`, `apply_vertical_text_orientation`)
+  * **Table layout interactions**: `src/layout/table.rs`
+
+### Demo: writing-mode — “Using writing-mode with transforms”
+
+* Source HTML:
+  * `tests/pages/fixtures/developer.mozilla.org_en-US_docs_Web_CSS_writing-mode/assets/25d003c583ed8f42996d3c0fd953a75a.html`
+* Artifacts:
+  * `target/page_loop_mdn_vertical_samples/mdn_writing_mode_transforms/report.html`
+  * `target/page_loop_mdn_vertical_samples/mdn_writing_mode_transforms/report_files/diffs/mdn_writing_mode_transforms.png`
+  * `target/page_loop_mdn_vertical_samples/mdn_writing_mode_transforms/inspect/*.json`
+* Diff metrics:
+  * `diff_percentage`: **2.55%** (`pixel_diff=32,895` / `1,289,600`)
+  * Overall mismatch bbox: `(x=7,y=0)-(x=915,y=233)` (table region)
+* Per-cell mismatch (FastRender `td` bounds):
+  * Cell 1 (`span.vertical-lr`, no transform): `16.15%` diff within cell bbox
+  * Cell 2 (`span.vertical-lr.rotated`, `transform: rotate(180deg)`): `14.94%`
+  * Cell 3 (`span.sideways-lr`): `9.35%`
+  * Cell 4 (`span.only-rotate`, `inline-size: fit-content; transform: rotate(-90deg)`): `10.82%`
+* Notable: within the union bbox of the `span.sideways-lr` glyphs, the mismatch rate is much lower (~**1.23%**) than the `vertical-lr`/transform cases.
+* Likely subsystem / entrypoints:
+  * **writing-mode + transform composition** (vertical-lr + rotate): layout axis mapping + transform application during paint
+    * layout: `src/layout/axis.rs`, `src/layout/contexts/inline/mod.rs`
+    * paint/transforms: `src/paint/display_list_builder.rs`, `src/paint/painter.rs`
+
+### Demo: text-orientation — upright
+
+* Source HTML:
+  * `tests/pages/fixtures/developer.mozilla.org_en-US_docs_Web_CSS_text-orientation/assets/bbdc8f8a42d1b5971ca198c5d62428f0.html`
+* Artifacts:
+  * `target/page_loop_mdn_vertical_samples/mdn_text_orientation_upright/report.html`
+  * `target/page_loop_mdn_vertical_samples/mdn_text_orientation_upright/report_files/diffs/mdn_text_orientation_upright.png`
+* Diff metrics:
+  * `diff_percentage`: **0.13%** (`pixel_diff=1,719` / `1,289,600`)
+* Diff shape:
+  * Multiple small diff clusters, mostly over the vertical text glyphs (plus a tiny strip near the right edge).
+* Likely subsystem / entrypoints:
+  * Probably **font rasterization/text metrics** differences rather than a major vertical-layout bug.
+  * Vertical orientation logic lives in `src/text/pipeline.rs`.
+
+### Demo: text-combine-upright — all (vertical-rl)
+
+* Source HTML:
+  * `tests/pages/fixtures/developer.mozilla.org_en-US_docs_Web_CSS_text-combine-upright/assets/489b0c9653c1ac283ee32072caaf5ec2.html`
+* Artifacts:
+  * `target/page_loop_mdn_vertical_samples/mdn_text_combine_upright/report.html`
+  * `target/page_loop_mdn_vertical_samples/mdn_text_combine_upright/report_files/diffs/mdn_text_combine_upright.png`
+  * `target/page_loop_mdn_vertical_samples/mdn_text_combine_upright/inspect/{box_tree,fragment_tree}.json`
+* Diff metrics:
+  * `diff_percentage`: **0.21%** (`pixel_diff=2,718` / `1,289,600`)
+* Key observation: diff clusters appear as *two vertical strips*, one near the left edge and one near the right edge.
+  * This pattern is consistent with the vertical text column being positioned on the **wrong side** (Chrome has ink where FastRender has background, and vice-versa).
+* Inspect evidence (FastRender):
+  * The `<html>` block box ends up with a **physical width of only ~53.8px** (`inspect/fragment_tree.json`), instead of filling the `1040px` viewport.
+  * The `<p>` box is a narrow column at approximately `x≈8..46` (left side).
+  * This strongly suggests a **root/initial containing block sizing + vertical-rl anchoring bug** when `writing-mode` is applied to the root element.
+* Likely subsystem / entrypoints:
+  * Root/viewport containing block sizing under vertical writing modes:
+    * `src/layout/engine.rs` (initial constraints / fragmentainer axes)
+    * `src/layout/axis.rs`, `src/style/types.rs` (`WritingMode`)
+  * Once the root writing-mode placement is correct, re-check whether `text-combine-upright` itself mismatches:
+    * `src/layout/contexts/inline/mod.rs` (`TextCombineUpright`)
