@@ -4144,7 +4144,10 @@ fn subgrid_inherits_tracks_on_both_axes_across_writing_modes() {
 
   let row1_x = parent_width - row1;
   let row2_x = row1_x - row_gap - row2;
-  let col2_y = col1 + col_gap;
+  // When the subgrid establishes an orthogonal writing mode, inherited column gutters stay on the
+  // parent's physical X axis and do not transpose into the subgrid's physical Y axis. (Matches WPT
+  // `css/subgrid/subgrid-writing-mode-001`.)
+  let col2_y = col1;
 
   let first = &subgrid_fragment.children[0];
   let second = &subgrid_fragment.children[1];
@@ -4172,7 +4175,7 @@ fn subgrid_inherits_tracks_on_both_axes_across_writing_modes() {
   assert_approx(
     second.bounds.y(),
     col2_y,
-    "second column offset includes inherited gap",
+    "second column offset ignores the parent's column gap after writing-mode transpose",
   );
   assert_approx(
     second.bounds.height(),
@@ -4252,8 +4255,8 @@ fn subgrid_named_lines_survive_writing_mode_transpose() {
   assert_approx(second.bounds.height(), 35.0, "mid/end span second column");
   assert_approx(
     second.bounds.y(),
-    30.0,
-    "second column offset respects parent gap and track",
+    25.0,
+    "column gap does not transpose onto the physical Y axis when writing-modes differ",
   );
 }
 

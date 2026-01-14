@@ -279,7 +279,14 @@ impl GridAxisStyle {
     // - Subgrids inherit the axis mapping of their containing grid for Taffy track inheritance.
     let is_subgrid = (style.grid_row_subgrid || style.grid_column_subgrid) && !style.containment.layout;
     if is_subgrid {
-      parent_axis.unwrap_or_else(|| Self::from_style(style))
+      parent_axis
+        .map(|parent| Self {
+          writing_mode: parent.writing_mode,
+          // `direction` is still honored locally for subgrid line numbering and placement rules.
+          // Track inheritance only requires that we share the same writing-mode axis mapping.
+          direction: style.direction,
+        })
+        .unwrap_or_else(|| Self::from_style(style))
     } else {
       Self::from_style(style)
     }
@@ -10815,7 +10822,9 @@ impl GridFormattingContext {
       return Ok(());
     }
 
-    let row_offsets = compute_track_offsets(
+    // Track offsets in the subgrid's *current* Taffy coordinate space (parent writing-mode). Used
+    // to detect whether children filled their original grid areas.
+    let row_offsets_old = compute_track_offsets(
       &info.rows,
       layout.size.height,
       layout.padding.top,
@@ -10826,14 +10835,8 @@ impl GridFormattingContext {
         .align_content
         .unwrap_or(TaffyAlignContent::Stretch),
     );
-
-    let mut columns_no_gutters = info.columns.clone();
-    columns_no_gutters.gutters.clear();
-    columns_no_gutters
-      .gutters
-      .resize(columns_no_gutters.sizes.len() + 1, 0.0);
-    let col_offsets_no_gutters = compute_track_offsets(
-      &columns_no_gutters,
+    let col_offsets_old = compute_track_offsets(
+      &info.columns,
       layout.size.width,
       layout.padding.left,
       layout.padding.right,
@@ -10843,6 +10846,131 @@ impl GridFormattingContext {
         .justify_content
         .unwrap_or(TaffyAlignContent::Stretch),
     );
+
+    // Build the column track list without gutters so that a containing grid's physical-X gaps do
+    // not incorrectly transpose onto the physical-Y axis. This matches WPT
+    // `css/subgrid/subgrid-writing-mode-001`.
+    let mut columns_no_gutters = info.columns.clone();
+    columns_no_gutters.gutters.clear();
+    columns_no_gutters
+      .gutters
+      .resize(columns_no_gutters.sizes.len() + 1, 0.0);
+
+    // When axes are orthogonal, we transpose the track offsets used for placement, but apply
+    // mirroring and alignment based on the subgrid's *own* writing-mode/direction.
+    let local_axis_style = GridAxisStyle::from_style(&box_node.style);
+    let inline_positive = local_axis_style.inline_positive();
+    let block_positive = local_axis_style.block_positive();
+    let inline_is_horizontal = local_axis_style.inline_is_horizontal();
+
+    // Alignment values in Taffy's coordinate system (start = min coordinate).
+    let (align_x, align_y) = if inline_is_horizontal {
+      // Inline axis = physical X; block axis = physical Y.
+      (
+        self.convert_justify_content(&box_node.style.justify_content, inline_positive),
+        self.convert_align_content(&box_node.style.align_content, block_positive),
+      )
+    } else {
+      // Inline axis = physical Y; block axis = physical X.
+      (
+        self.convert_align_content(&box_node.style.align_content, block_positive),
+        self.convert_justify_content(&box_node.style.justify_content, inline_positive),
+      )
+    };
+
+    // Track offsets for the transposed coordinate space.
+    let row_offsets_transposed = compute_track_offsets(
+      &info.rows,
+      layout.size.width,
+      layout.padding.left,
+      layout.padding.right,
+      layout.border.left,
+      layout.border.right,
+      align_x,
+    );
+    let col_offsets_transposed = compute_track_offsets(
+      &columns_no_gutters,
+      layout.size.height,
+      layout.padding.top,
+      layout.padding.bottom,
+      layout.border.top,
+      layout.border.bottom,
+      align_y,
+    );
+
+    let mut mirror_x = false;
+    let mut mirror_y = false;
+    if !inline_positive {
+      if inline_is_horizontal {
+        mirror_x = true;
+      } else {
+        mirror_y = true;
+      }
+    }
+    if !block_positive {
+      if inline_is_horizontal {
+        mirror_y = true;
+      } else {
+        mirror_x = true;
+      }
+    }
+
+    let span_for_axis = |offsets: &[f32],
+                         track_count: usize,
+                         axis_size: f32,
+                         padding_end: f32,
+                         border_end: f32,
+                         alignment: TaffyAlignContent|
+     -> Option<(f32, f32)> {
+      if track_count == 0 || offsets.len() < 2 {
+        return None;
+      }
+      let start = offsets.get(1).copied()?;
+      let mut end = offsets
+        .get(track_count.saturating_mul(2))
+        .copied()
+        .or_else(|| offsets.last().copied())
+        .unwrap_or(start);
+      if alignment == TaffyAlignContent::Stretch {
+        let content_end = axis_size - padding_end - border_end;
+        end = content_end.max(end);
+      }
+      Some((start, end))
+    };
+
+    let x_span = mirror_x.then(|| {
+      span_for_axis(
+        &row_offsets_transposed,
+        info.rows.sizes.len(),
+        layout.size.width,
+        layout.padding.right,
+        layout.border.right,
+        align_x,
+      )
+    })
+    .flatten();
+    let y_span = mirror_y.then(|| {
+      span_for_axis(
+        &col_offsets_transposed,
+        columns_no_gutters.sizes.len(),
+        layout.size.height,
+        layout.padding.bottom,
+        layout.border.bottom,
+        align_y,
+      )
+    })
+    .flatten();
+
+    let container_axes =
+      FragmentAxes::from_writing_mode_and_direction(box_node.style.writing_mode, box_node.style.direction);
+    let container_inline_axis = container_axes.inline_axis();
+    let container_axis_positive = |axis: PhysicalAxis| {
+      if axis == container_inline_axis {
+        container_axes.inline_positive()
+      } else {
+        container_axes.block_positive()
+      }
+    };
 
     let children = fragment.children_mut();
     let child_len = children.len().min(child_count);
@@ -10861,35 +10989,168 @@ impl GridFormattingContext {
       }
 
       let placement = &info.items[idx];
-      let Some((x_start, x_end)) =
-        grid_area_for_item(&row_offsets, placement.row_start, placement.row_end)
+      let Some((mut x_start, mut x_end)) =
+        grid_area_for_item(&row_offsets_transposed, placement.row_start, placement.row_end)
       else {
         continue;
       };
-      let Some((y_start, y_end)) = grid_area_for_item(
-        &col_offsets_no_gutters,
-        placement.column_start,
-        placement.column_end,
-      ) else {
+      let Some((mut y_start, mut y_end)) =
+        grid_area_for_item(&col_offsets_transposed, placement.column_start, placement.column_end)
+      else {
         continue;
       };
 
-      let new_bounds = Rect::from_xywh(
-        x_start,
-        y_start,
-        (x_end - x_start).max(0.0),
-        (y_end - y_start).max(0.0),
-      );
+      // Mirror the grid area itself when the corresponding axis is reversed in the subgrid's
+      // writing-mode/direction.
+      if let Some((span_start, span_end)) = x_span {
+        if span_end > span_start {
+          let new_start = span_start + (span_end - x_end);
+          let new_end = span_start + (span_end - x_start);
+          x_start = new_start;
+          x_end = new_end;
+        }
+      }
+      if let Some((span_start, span_end)) = y_span {
+        if span_end > span_start {
+          let new_start = span_start + (span_end - y_end);
+          let new_end = span_start + (span_end - y_start);
+          y_start = new_start;
+          y_end = new_end;
+        }
+      }
+
+      let (x_start, x_end) = if x_start <= x_end {
+        (x_start, x_end)
+      } else {
+        (x_end, x_start)
+      };
+      let (y_start, y_end) = if y_start <= y_end {
+        (y_start, y_end)
+      } else {
+        (y_end, y_start)
+      };
+      let area_width = (x_end - x_start).max(0.0);
+      let area_height = (y_end - y_start).max(0.0);
+
+      // Determine whether the child filled its original grid area in Taffy's coordinate system so
+      // we can transpose stretch sizing without re-running layout.
+      let Some((old_x_start, old_x_end)) =
+        grid_area_for_item(&col_offsets_old, placement.column_start, placement.column_end)
+      else {
+        continue;
+      };
+      let Some((old_y_start, old_y_end)) =
+        grid_area_for_item(&row_offsets_old, placement.row_start, placement.row_end)
+      else {
+        continue;
+      };
+      let old_area_width = (old_x_end - old_x_start).max(0.0);
+      let old_area_height = (old_y_end - old_y_start).max(0.0);
 
       let child_fragment = &mut children[idx];
       let old_bounds = child_fragment.bounds;
-      let delta = Point::new(new_bounds.x() - old_bounds.x(), new_bounds.y() - old_bounds.y());
+      let old_width = old_bounds.width().max(0.0);
+      let old_height = old_bounds.height().max(0.0);
+
+      let fills_old_width = (old_width - old_area_width).abs() < 0.1;
+      let fills_old_height = (old_height - old_area_height).abs() < 0.1;
+
+      let mut new_width = old_width;
+      let mut new_height = old_height;
+      // Old Y (row axis) becomes new X; old X (column axis) becomes new Y.
+      if fills_old_height {
+        new_width = area_width;
+      }
+      if fills_old_width {
+        new_height = area_height;
+      }
+
+      // Resolve the effective alignment keyword for the given axis in the subgrid's coordinate
+      // system.
+      let child_axes = FragmentAxes::from_writing_mode_and_direction(
+        child_node.style.writing_mode,
+        child_node.style.direction,
+      );
+      let child_inline_axis = child_axes.inline_axis();
+      let child_axis_positive = |axis: PhysicalAxis| {
+        if axis == child_inline_axis {
+          child_axes.inline_positive()
+        } else {
+          child_axes.block_positive()
+        }
+      };
+      let convert_item_alignment = |align: AlignItems, axis: PhysicalAxis| {
+        let container_positive = container_axis_positive(axis);
+        let self_positive = child_axis_positive(axis);
+        let axis_positive = match align {
+          AlignItems::SelfStart | AlignItems::SelfEnd => self_positive,
+          _ => container_positive,
+        };
+        self.convert_align_items(&align, axis_positive)
+      };
+
+      let mut align_x = if container_inline_axis == PhysicalAxis::X {
+        child_node
+          .style
+          .justify_self
+          .unwrap_or(box_node.style.justify_items)
+      } else {
+        child_node
+          .style
+          .align_self
+          .unwrap_or(box_node.style.align_items)
+      };
+      if align_x == AlignItems::Stretch
+        && (child_node.style.width.is_some() || child_node.style.width_keyword.is_some())
+      {
+        align_x = AlignItems::Start;
+      }
+      let mut align_y = if container_inline_axis == PhysicalAxis::Y {
+        child_node
+          .style
+          .justify_self
+          .unwrap_or(box_node.style.justify_items)
+      } else {
+        child_node
+          .style
+          .align_self
+          .unwrap_or(box_node.style.align_items)
+      };
+      if align_y == AlignItems::Stretch
+        && (child_node.style.height.is_some()
+          || child_node.style.height_keyword.is_some()
+          || child_node.style.aspect_ratio != AspectRatio::Auto)
+      {
+        align_y = AlignItems::Start;
+      }
+
+      let place_within_area =
+        |start: f32, end: f32, size: f32, alignment: taffy::style::AlignItems| -> f32 {
+          let (start, end) = if start <= end { (start, end) } else { (end, start) };
+          let size = if size.is_finite() { size.max(0.0) } else { 0.0 };
+          let span = (end - start).max(0.0);
+          let upper = (end - size).max(start);
+          match alignment {
+            taffy::style::AlignItems::End | taffy::style::AlignItems::FlexEnd => upper,
+            taffy::style::AlignItems::Center => {
+              (start + (span - size) / 2.0).clamp(start, upper)
+            }
+            _ => start,
+          }
+        };
+
+      let mapped_align_x = convert_item_alignment(align_x, PhysicalAxis::X);
+      let mapped_align_y = convert_item_alignment(align_y, PhysicalAxis::Y);
+      let new_x = place_within_area(x_start, x_end, new_width, mapped_align_x);
+      let new_y = place_within_area(y_start, y_end, new_height, mapped_align_y);
+
+      let delta = Point::new(new_x - old_bounds.x(), new_y - old_bounds.y());
       if delta.x != 0.0 || delta.y != 0.0 {
         child_fragment.translate_root_in_place(delta);
       }
-      child_fragment.bounds.size = new_bounds.size;
+      child_fragment.bounds.size = Size::new(new_width, new_height);
       if let Some(logical) = child_fragment.logical_override.as_mut() {
-        logical.size = new_bounds.size;
+        logical.size = Size::new(new_width, new_height);
       }
     }
 
