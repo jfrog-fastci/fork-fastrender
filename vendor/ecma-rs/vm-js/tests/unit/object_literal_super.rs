@@ -146,6 +146,56 @@ fn object_literal_method_super_prop_uses_home_object_prototype() -> Result<(), V
 }
 
 #[test]
+fn object_literal_getter_super_prop_observes_dynamic_home_object_prototype() -> Result<(), VmError> {
+  // Mirrors test262: language/expressions/super/prop-dot-obj-val.js (getter variant)
+  assert_script_returns_true_in_interpreter_and_compiled(
+    r#"
+      var proto1 = { get x() { return "p1"; } };
+      var proto2 = { get x() { return "p2"; } };
+
+      var object = {
+        get x() {
+          return super.x;
+        }
+      };
+
+      Object.setPrototypeOf(object, proto1);
+      var r1 = object.x;
+      Object.setPrototypeOf(object, proto2);
+      var r2 = object.x;
+
+      r1 === "p1" && r2 === "p2";
+    "#,
+  )
+}
+
+#[test]
+fn object_literal_setter_super_prop_observes_dynamic_home_object_prototype() -> Result<(), VmError> {
+  // Mirrors test262: language/expressions/super/prop-dot-obj-val.js (setter variant)
+  assert_script_returns_true_in_interpreter_and_compiled(
+    r#"
+      var log = [];
+
+      var proto1 = { set x(v) { log.push("p1:" + v); } };
+      var proto2 = { set x(v) { log.push("p2:" + v); } };
+
+      var object = {
+        set x(v) {
+          super.x = v;
+        }
+      };
+
+      Object.setPrototypeOf(object, proto1);
+      object.x = 1;
+      Object.setPrototypeOf(object, proto2);
+      object.x = 2;
+
+      log.join(",") === "p1:1,p2:2";
+    "#,
+  )
+}
+
+#[test]
 fn object_literal_getter_super_prop_uses_home_object_prototype() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
