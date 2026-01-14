@@ -6683,6 +6683,93 @@ fn tabindex_zero_element_click_focuses_without_focus_visible() {
 }
 
 #[test]
+fn tabindex_element_click_on_descendant_focuses_tabindex_owner() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "div",
+        vec![("id", "t"), ("tabindex", "0")],
+        vec![el("span", vec![("id", "inner")], vec![])],
+      )],
+    )],
+  )]);
+
+  let div_dom_id = node_id(&dom, "t");
+  let span_dom_id = node_id(&dom, "inner");
+
+  let mut span_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  span_box.styled_node_id = Some(span_dom_id);
+
+  let mut div_box =
+    BoxNode::new_block(default_style(), FormattingContextType::Block, vec![span_box]);
+  div_box.styled_node_id = Some(div_dom_id);
+
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![div_box],
+  ));
+
+  let div_box_id = find_box_id_for_styled_node(&box_tree, div_dom_id);
+  let span_box_id = find_box_id_for_styled_node(&box_tree, span_dom_id);
+
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 30.0),
+      div_box_id,
+      vec![FragmentNode::new_block_with_id(
+        Rect::from_xywh(0.0, 0.0, 50.0, 30.0),
+        span_box_id,
+        vec![],
+      )],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(10.0, 10.0),
+  );
+  let (changed, _action) = engine.pointer_up_with_scroll(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(10.0, 10.0),
+    PointerButton::Primary,
+    PointerModifiers::default(),
+    true,
+    "https://x/",
+    "https://x/",
+  );
+  assert!(changed);
+  assert_eq!(
+    engine.interaction_state().focused,
+    Some(div_dom_id),
+    "clicking a tabindex element's descendant should focus the tabindex owner"
+  );
+  assert_eq!(
+    engine.take_last_click_target(),
+    Some(div_dom_id),
+    "click target should resolve to the tabindex owner"
+  );
+  assert!(
+    !engine.interaction_state().focus_visible,
+    "pointer focus should not set focus-visible"
+  );
+  assert!(!has_attr(&dom, "t", "data-fastr-focus"));
+  assert!(!has_attr(&dom, "t", "data-fastr-focus-visible"));
+}
+
+#[test]
 fn tab_traverses_focusable_elements_in_tree_order_and_skips_inert_disabled_and_tabindex_negative() {
   let mut dom = doc(vec![el(
     "html",

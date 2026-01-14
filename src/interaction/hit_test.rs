@@ -491,6 +491,48 @@ enum SemanticResolveResult {
   Invalid,
 }
 
+fn parse_tabindex(node: &DomNode) -> Option<i32> {
+  let raw = node.get_attribute_ref("tabindex")?;
+  let raw = trim_ascii_whitespace(raw);
+  if raw.is_empty() {
+    return None;
+  }
+  raw.parse::<i32>().ok()
+}
+
+/// Returns true when this element should behave as a focusable "interaction target" even though it
+/// is not a traditional semantic target like a link or form control.
+///
+/// This is used by hit-testing so pointer gestures can focus elements with `tabindex` (and native
+/// focusable elements like `<summary>`), even when the pointer is over a non-focusable descendant.
+fn node_is_focusable_semantic_candidate(node: &DomNode) -> bool {
+  // Native interactive `<summary>` elements should be treated like focusable targets even when the
+  // click lands on nested descendants.
+  if node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("summary"))
+  {
+    return true;
+  }
+
+  // Any parsed `tabindex` value makes an element focusable via pointer (even when tabindex < 0).
+  // Match `interaction::engine::is_focusable_interactive_element` and exclude `input type=hidden`.
+  if parse_tabindex(node).is_some() {
+    if node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+    {
+      let ty = trim_ascii_whitespace(node.get_attribute_ref("type").unwrap_or(""));
+      if ty.eq_ignore_ascii_case("hidden") {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  false
+}
+
 fn resolve_semantic_target(
   dom_index: &(impl DomIdLookup + ?Sized),
   start_node_id: usize,
@@ -501,6 +543,7 @@ fn resolve_semantic_target(
 
   let mut current = start_node_id;
   let mut first_element: Option<usize> = None;
+  let mut focusable_candidate: Option<usize> = None;
 
   while current != 0 {
     let Some(node) = dom_index.node(current) else {
@@ -537,12 +580,18 @@ fn resolve_semantic_target(
           href: None,
         };
       }
+
+      // If no stronger semantic target exists (link/form/label), fall back to a focusable ancestor
+      // so pointer gestures can correctly focus `tabindex` elements (and `<summary>`).
+      if focusable_candidate.is_none() && node_is_focusable_semantic_candidate(node) {
+        focusable_candidate = Some(current);
+      }
     }
 
     current = dom_index.parent_id(current);
   }
 
-  match first_element {
+  match focusable_candidate.or(first_element) {
     Some(node_id) => SemanticResolveResult::Hit {
       node_id,
       kind: HitTestKind::Other,
