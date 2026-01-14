@@ -48856,6 +48856,84 @@ fn range_detach_native(
   Ok(Value::Undefined)
 }
 
+fn url_search_params_to_string_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Delegate to the WebIDL host dispatch implementation (keeps URLSearchParams state in sync with
+  // the host-side `UrlSearchParams` list).
+  let mut scope = scope.reborrow();
+  scope.push_root(this)?;
+  let bindings_host = webidl_vm_js::host_from_hooks(hooks)?;
+  bindings_host.call_operation(vm, &mut scope, Some(this), "URLSearchParams", "toString", 0, &[])
+}
+
+fn url_search_params_sort_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_root(this)?;
+  let bindings_host = webidl_vm_js::host_from_hooks(hooks)?;
+  bindings_host.call_operation(vm, &mut scope, Some(this), "URLSearchParams", "sort", 0, &[])
+}
+
+fn ensure_webidl_url_search_params_stringifier(
+  vm: &mut Vm,
+  heap: &mut Heap,
+  realm: &Realm,
+) -> Result<(), VmError> {
+  let mut scope = heap.scope();
+  let global = realm.global_object();
+  scope.push_root(Value::Object(global))?;
+
+  let ctor_key = alloc_key(&mut scope, "URLSearchParams")?;
+  let ctor = vm.get(&mut scope, global, ctor_key)?;
+  let Value::Object(ctor) = ctor else {
+    return Ok(());
+  };
+  scope.push_root(Value::Object(ctor))?;
+
+  let prototype_key = alloc_key(&mut scope, "prototype")?;
+  let proto = vm.get(&mut scope, ctor, prototype_key)?;
+  let Value::Object(proto) = proto else {
+    return Ok(());
+  };
+  scope.push_root(Value::Object(proto))?;
+
+  for (name, handler) in [
+    ("toString", url_search_params_to_string_native as vm_js::NativeCall),
+    ("sort", url_search_params_sort_native as vm_js::NativeCall),
+  ] {
+    let key = alloc_key(&mut scope, name)?;
+    if scope.heap().object_get_own_property(proto, &key)?.is_some() {
+      continue;
+    }
+
+    let call_id = vm.register_native_call(handler)?;
+    let name_s = scope.alloc_string(name)?;
+    scope.push_root(Value::String(name_s))?;
+    let func = scope.alloc_native_function(call_id, None, name_s, 0)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))?;
+    scope.push_root(Value::Object(func))?;
+    scope.define_property(proto, key, data_desc(Value::Object(func)))?;
+  }
+
+  Ok(())
+}
+
 fn ensure_range_detach_noop(vm: &mut Vm, heap: &mut Heap, realm: &Realm) -> Result<(), VmError> {
   let mut scope = heap.scope();
   let global = realm.global_object();
@@ -61421,7 +61499,17 @@ fn init_window_globals(
   let text_encoding_bindings =
     crate::js::window_text_encoding::install_window_text_encoding_bindings(vm, realm, heap)?;
   crate::js::window_dom_rect::install_window_dom_rect_bindings(vm, realm, heap)?;
-  crate::js::window_url::install_window_url_bindings(vm, realm, heap)?;
+  if config.dom_bindings_backend == DomBindingsBackend::WebIdl {
+    // When using WebIDL-generated DOM bindings, install the WebIDL-generated `URL` and
+    // `URLSearchParams` constructors so record/union conversions flow through `webidl-vm-js`.
+    //
+    // The handcrafted URL bindings are clobbering (they overwrite globals), so skip them here.
+    crate::js::bindings::install_url_bindings_vm_js(vm, heap, realm)?;
+    crate::js::bindings::install_url_search_params_bindings_vm_js(vm, heap, realm)?;
+    ensure_webidl_url_search_params_stringifier(vm, heap, realm)?;
+  } else {
+    crate::js::window_url::install_window_url_bindings(vm, realm, heap)?;
+  }
   crate::js::window_blob::install_window_blob_bindings(vm, realm, heap)?;
   crate::js::window_file::install_window_file_bindings(vm, realm, heap)?;
   crate::js::window_data_transfer::install_window_data_transfer_bindings(vm, realm, heap)?;

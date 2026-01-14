@@ -11,6 +11,12 @@ test(() => {
 }, "URLSearchParams constructor accepts record<USVString, USVString> init");
 
 test(() => {
+  const init = { a: "1" };
+  Object.defineProperty(init, Symbol("x"), { value: "2", enumerable: true });
+  assert_throws_js(TypeError, () => new URLSearchParams(init));
+}, "URLSearchParams constructor throws TypeError on enumerable Symbol keys in record init");
+
+test(() => {
   const first = new URLSearchParams("a=1&b=2");
   const second = new URLSearchParams(first);
   assert_equals(second.toString(), "a=1&b=2");

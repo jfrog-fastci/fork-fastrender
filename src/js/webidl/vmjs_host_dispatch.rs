@@ -6812,6 +6812,22 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           .map_err(url_search_params_error_to_vm_error)?;
         Ok(Value::Undefined)
       }
+      ("URLSearchParams", "sort", 0) => {
+        let params = self.require_params(receiver)?;
+        params
+          .sort()
+          .map_err(url_search_params_error_to_vm_error)?;
+        Ok(Value::Undefined)
+      }
+      ("URLSearchParams", "toString", 0) => {
+        let params = self.require_params(receiver)?;
+        let serialized = params
+          .serialize()
+          .map_err(url_search_params_error_to_vm_error)?;
+        let s = scope.alloc_string(&serialized)?;
+        scope.push_root(Value::String(s))?;
+        Ok(Value::String(s))
+      }
 
       // Global attribute getter (receiver is `None` for global interfaces in vm-js bindings).
       ("Window", "document", 0) => {
