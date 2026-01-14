@@ -706,6 +706,11 @@ impl ModuleGraph {
   /// [`Heap`] is dropped, but is a leak hazard for embeddings that reuse a heap across multiple
   /// graphs.
   ///
+  /// Teardown also clears the spec `[[LoadedModules]]` memoization caches for Script and Realm
+  /// referrers (populated by `FinishLoadingImportedModule`). Embeddings can also evict individual
+  /// entries proactively via [`ModuleGraph::clear_loaded_modules_for_script`] and
+  /// [`ModuleGraph::clear_loaded_modules_for_realm`].
+  ///
   /// This method is **idempotent**.
   pub fn teardown(&mut self, vm: &mut Vm, heap: &mut Heap) {
     // `FinishLoadingImportedModule` memoizes successful `(referrer, request)` resolutions for
