@@ -343,15 +343,17 @@ The browser chrome uses an accent color for links, focus rings, and selection.
 For profiling the *responsiveness* of the windowed UI (frame pacing, jank, and UI↔worker latency),
 there is dedicated tooling beyond the renderer’s `FASTR_RENDER_TIMINGS` / tracing knobs:
 
-- `FASTR_PERF_LOG=1` enables **windowed JSONL performance logging**.
+- `browser --perf-log` (preferred; env: `FASTR_PERF_LOG=1`) enables **windowed JSONL performance logging**.
   - Intended to make UI regressions measurable (e.g. per-frame time, input/resize→present latency,
     navigation TTFP, and idle CPU usage / busy-loop behavior).
   - Use this when investigating “the UI feels laggy” problems (dropped frames, slow resize, slow
     typing/click feedback), and prefer `--release` builds for realistic numbers.
-  - CLI equivalents:
-    - `browser --perf-log` emits events to stdout (overrides `FASTR_PERF_LOG` and forces stdout even if `FASTR_PERF_LOG_OUT` is set).
-    - `browser --perf-log-out <path>` writes events to a file instead of stdout (creates parent directories; overrides env vars).
-  - `FASTR_PERF_LOG_OUT=/path/to/log.jsonl` can be used to write events to a file instead of stdout.
+  - Output:
+    - `browser --perf-log` emits events to stdout (forces stdout even if `FASTR_PERF_LOG_OUT` is set).
+    - `browser --perf-log-out <path>` writes events to a file instead of stdout (creates parent directories).
+  - Legacy env vars:
+    - `FASTR_PERF_LOG=1` enables perf logging.
+    - `FASTR_PERF_LOG_OUT=/path/to/log.jsonl` can be used to write events to a file instead of stdout.
 - `browser --trace-out <path>` (or `FASTR_BROWSER_TRACE_OUT=...`; legacy alias: `FASTR_PERF_TRACE_OUT`) writes a
   Perfetto/Chrome trace of the windowed browser UI event loop. The trace is written when the browser
   process exits. Use `FASTR_TRACE_MAX_EVENTS=<N>` to cap retained trace events.
@@ -1115,8 +1117,9 @@ per-thread stage listener and forwards these as `WorkerToUi::Stage { tab_id, sta
 Tips:
 
 - The windowed UI already surfaces a condensed stage string in its chrome (e.g. `Loading… layout`).
-- If you have `FASTR_PERF_LOG=1` enabled, the windowed UI also records these stage heartbeats as JSONL
-  perf-log events (`event=stage`) alongside frame-time and input/resize latency samples.
+- If you have perf logging enabled (`browser --perf-log` / `FASTR_PERF_LOG=1`), the windowed UI also
+  records these stage heartbeats as JSONL perf-log events (`event=stage`) alongside frame-time and
+  input/resize latency samples.
 - When debugging hangs/blank frames, it’s often useful to **log every stage message** received on
   the UI thread (including `tab_id`) to see where time is spent.
 - If you implement a custom worker loop, make sure you install a stage listener around both

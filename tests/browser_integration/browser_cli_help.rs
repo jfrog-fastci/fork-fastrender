@@ -96,11 +96,16 @@ fn browser_help_exits_successfully_without_startup_logs() {
     "expected help to mention how to override session restore behaviour, got:\n{help}"
   );
   for flag in [
+    "--hud",
+    "--no-hud",
     "--restore",
     "--no-restore",
     "--session-path",
     "--download-dir",
     "--mem-limit-mb",
+    "--perf-log",
+    "--perf-log-out",
+    "--trace-out",
     "--power-preference",
     "--force-fallback-adapter",
     "--wgpu-backends",
