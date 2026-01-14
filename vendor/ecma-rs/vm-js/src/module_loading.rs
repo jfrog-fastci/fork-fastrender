@@ -39,6 +39,7 @@ use crate::{
 use std::any::Any;
 use std::alloc::{alloc, Layout};
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::fmt;
 use std::mem;
 use std::num::NonZeroU32;
@@ -161,6 +162,7 @@ struct GraphLoadingStateInner {
   is_loading: bool,
   pending_modules_count: usize,
   visited: Vec<ModuleId>,
+  visited_set: HashSet<ModuleId>,
   host_defined: HostDefined,
 }
 
@@ -226,6 +228,7 @@ impl GraphLoadingState {
       is_loading: true,
       pending_modules_count: 1,
       visited: Vec::new(),
+      visited_set: HashSet::new(),
       host_defined,
     })) {
       Ok(rc) => GraphLoadingState(rc),
@@ -263,13 +266,18 @@ impl GraphLoadingState {
   }
 
   fn visited_contains(&self, module: ModuleId) -> bool {
-    self.0.borrow().visited.contains(&module)
+    self.0.borrow().visited_set.contains(&module)
   }
 
   fn push_visited(&self, module: ModuleId) -> Result<(), VmError> {
     let mut state = self.0.borrow_mut();
     state.visited.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+    state
+      .visited_set
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
     state.visited.push(module);
+    state.visited_set.insert(module);
     Ok(())
   }
 
@@ -2310,6 +2318,7 @@ mod tests {
         is_loading: false,
         pending_modules_count: 0,
         visited: Vec::new(),
+        visited_set: HashSet::new(),
         host_defined: HostDefined::default(),
       },
     ))));
