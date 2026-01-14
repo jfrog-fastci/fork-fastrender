@@ -163,5 +163,32 @@ if [[ -n "${matches}" ]]; then
   echo >&2
   echo "hint: resolve the merge conflicts and remove the marker lines (<<<<<<< / ||||||| / ======= / >>>>>>>)." >&2
   echo "note: conflict-marker fixtures under vendor/ecma-rs/parse-js/tests/TypeScript/** are allowed." >&2
+
+  # GitHub Actions integration: annotate each match so the UI can hyperlink directly to the
+  # offending file/line. Keep the plain `path:line:` output above for local runs and non-GHA CI.
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    max_annotations=200
+    n=0
+    while IFS= read -r match; do
+      [[ -z "${match}" ]] && continue
+      n=$((n + 1))
+      if [[ "${n}" -gt "${max_annotations}" ]]; then
+        echo "::error::too many conflict-marker hits (${n}+); showing first ${max_annotations}" >&2
+        break
+      fi
+
+      file="${match%%:*}"
+      rest="${match#*:}"
+      line="${rest%%:*}"
+      text="${rest#*:}"
+
+      # Escape message per GitHub Actions command format.
+      esc="${text//'%'/'%25'}"
+      esc="${esc//$'\r'/'%0D'}"
+      esc="${esc//$'\n'/'%0A'}"
+
+      echo "::error file=${file},line=${line}::unresolved merge conflict marker: ${esc}" >&2
+    done <<< "${matches}"
+  fi
   exit 1
 fi
