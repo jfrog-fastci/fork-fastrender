@@ -4166,7 +4166,8 @@ impl BrowserRuntime {
               &scroll_snapshot,
             );
             let engine = &mut tab.interaction;
-            if let Ok(Some(step_result)) = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+            if let Ok(Some(step_result)) =
+              doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
                 let fragment_tree = hit_tree.as_deref().unwrap_or(fragment_tree);
                 let step_result = engine.wheel_step_number_input(
                   dom,
@@ -6501,8 +6502,8 @@ impl BrowserRuntime {
       &scroll_snapshot,
       if pointer_in_page { pos_css } else { (-1.0, -1.0) },
     );
-    let base_url = base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref())
-      .to_string();
+    let base_url =
+      base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref());
 
     // ---------------------------------------------------------------------------
     // Viewport autoscroll while extending a document selection.
@@ -6675,7 +6676,7 @@ impl BrowserRuntime {
                 let hovered_url = match kind {
                   HitTestKind::Link => href
                     .as_deref()
-                    .and_then(|href| resolve_link_url(base_url.as_str(), href)),
+                    .and_then(|href| resolve_link_url(base_url, href)),
                   _ => None,
                 };
 
@@ -7456,13 +7457,12 @@ impl BrowserRuntime {
 
     let pointer_buttons = tab.pointer_buttons;
 
-    let base_url = base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref())
-      .to_string();
+    let base_url =
+      base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref());
     let document_url = tab
       .last_committed_url
       .as_deref()
-      .unwrap_or(about_pages::ABOUT_BASE_URL)
-      .to_string();
+      .unwrap_or(about_pages::ABOUT_BASE_URL);
     let scroll_snapshot = tab.scroll_state.clone();
     let pointer_in_page = pointer_pos_css_in_viewport(pos_css, tab.viewport_css);
     let viewport_point = viewport_point_for_pos_css(
@@ -7512,8 +7512,8 @@ impl BrowserRuntime {
           button,
           modifiers,
           true,
-          document_url.as_str(),
-          base_url.as_str(),
+          document_url,
+          base_url,
         );
 
         let mouseup_target = up_hit.as_ref().map(|hit| hit.dom_node_id);
@@ -8502,8 +8502,8 @@ impl BrowserRuntime {
     let js_cancel_snapshot = tab.cancel.snapshot_paint();
     let js_cancel_callback = js_cancel_snapshot.cancel_callback_for_paint(&tab.cancel);
 
-    let base_url = base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref())
-      .to_string();
+    let base_url =
+      base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref());
     let dpr = tab.dpr;
     let viewport = Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32);
     let scroll = &tab.scroll_state;
@@ -8609,9 +8609,9 @@ impl BrowserRuntime {
               media_context: None,
               font_size: None,
               root_font_size: None,
-              base_url: Some(base_url.as_str()),
+              base_url: Some(base_url),
             });
-            resolve_link_url(base_url.as_str(), selected.url)
+            resolve_link_url(base_url, selected.url)
           } else {
             let node = dom_index.node(styled_id)?;
             // Match browser-style image context menu behaviour for `<img>` and `input type=image`.
@@ -8621,7 +8621,7 @@ impl BrowserRuntime {
             {
               node
                 .get_attribute_ref("src")
-                .and_then(|src| resolve_link_url(base_url.as_str(), src))
+                .and_then(|src| resolve_link_url(base_url, src))
             } else if node
               .tag_name()
               .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
@@ -8629,7 +8629,7 @@ impl BrowserRuntime {
             {
               node
                 .get_attribute_ref("src")
-                .and_then(|src| resolve_link_url(base_url.as_str(), src))
+                .and_then(|src| resolve_link_url(base_url, src))
             } else {
               None
             }
@@ -8712,7 +8712,7 @@ impl BrowserRuntime {
     let link_url = hit_info
       .href
       .as_deref()
-      .and_then(|href| resolve_link_url(base_url.as_str(), href));
+      .and_then(|href| resolve_link_url(base_url, href));
     let image_url = hit_info.image_url.clone();
 
     if changed {
@@ -9794,14 +9794,14 @@ impl BrowserRuntime {
         return (false, (false, None));
       }
 
-      let (dom_changed, _) = tab.interaction.focus_node_id(dom, Some(node_id), true);
+      let (changed, _) = tab.interaction.focus_node_id(dom, Some(node_id), true);
       let focus_scroll = crate::interaction::focus_scroll::scroll_state_for_focus(
         box_tree,
         fragment_tree,
         &scroll_snapshot,
         node_id,
       );
-      (dom_changed, (dom_changed, focus_scroll))
+      (false, (changed, focus_scroll))
     }) {
       Ok((changed, scroll)) => (changed, scroll),
       Err(_) => {
@@ -9928,7 +9928,9 @@ impl BrowserRuntime {
       }
     };
 
-    let changed = doc.mutate_dom(|dom| {
+    let changed = {
+      let interaction = &mut tab.interaction;
+      doc.mutate_dom(|dom| {
       let (is_text_control, is_checkbox, is_radio, currently_checked) = match crate::dom::find_node_mut_by_preorder_id(dom, node_id) {
         Some(node) if node.is_element() => {
           let is_text_control = dom_is_text_input(node) || dom_is_textarea(node);
@@ -9941,10 +9943,10 @@ impl BrowserRuntime {
       };
 
       if is_text_control {
-        let mut changed = tab.interaction.focus_node_id(dom, Some(node_id), true).0;
+        let mut changed = interaction.focus_node_id(dom, Some(node_id), true).0;
         // Replace the entire value rather than inserting at the caret.
-        changed |= tab.interaction.clipboard_select_all(dom);
-        changed |= tab.interaction.text_input(dom, value);
+        changed |= interaction.clipboard_select_all(dom);
+        changed |= interaction.text_input(dom, value);
         return changed;
       }
 
@@ -9960,8 +9962,8 @@ impl BrowserRuntime {
           return false;
         }
 
-        let mut changed = tab.interaction.focus_node_id(dom, Some(node_id), true).0;
-        let (dom_changed, _) = tab.interaction.key_activate(
+        let mut changed = interaction.focus_node_id(dom, Some(node_id), true).0;
+        let (dom_changed, _) = interaction.key_activate(
           dom,
           crate::interaction::KeyAction::Enter,
           document_url,
@@ -9972,7 +9974,8 @@ impl BrowserRuntime {
       }
 
       false
-    });
+      })
+    };
 
     if changed {
       tab.cancel.bump_paint();
@@ -10010,13 +10013,11 @@ impl BrowserRuntime {
         return;
       };
       let base_url =
-        base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref())
-          .to_string();
+        base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref());
       let document_url = tab
         .last_committed_url
         .as_deref()
-        .unwrap_or(about_pages::ABOUT_BASE_URL)
-        .to_string();
+        .unwrap_or(about_pages::ABOUT_BASE_URL);
 
       let Some(mut doc) = tab.document.as_mut() else {
         return;
@@ -10030,8 +10031,8 @@ impl BrowserRuntime {
           Some(box_tree),
           fragment_tree,
           key,
-          document_url.as_str(),
-          base_url.as_str(),
+          document_url,
+          base_url,
         );
         let (submitter, submitter_element_id) =
           engine.take_last_form_submitter_with_element_id();
