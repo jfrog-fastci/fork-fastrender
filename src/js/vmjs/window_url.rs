@@ -1591,7 +1591,46 @@ fn urlsp_construct_native(
       // Per WebIDL union conversion semantics, boxed String objects must be treated as strings (not
       // as generic iterables/records). Without this, `new URLSearchParams(new String("a=1"))` would
       // take the iterable path and attempt to interpret individual characters as pairs.
-      if scope.heap().object_is_string_object(obj)? {
+      let intrinsics = vm
+        .intrinsics()
+        .ok_or(VmError::InvariantViolation("vm intrinsics not initialized"))?;
+
+      // `vm-js` exposes an internal-slot check for boxed String objects via
+      // `Heap::object_is_string_object`, but this has proven to be fragile across different
+      // bootstrap paths. Fall back to a conservative, non-observable structural check so WPT's
+      // `new URLSearchParams(new String("a=1"))` behaviour matches browsers.
+      //
+      // Note: this intentionally avoids invoking user code (no `Get`, no `ToPrimitive`); it only
+      // inspects the object's `[[Prototype]]` and own `length` data property descriptor.
+      let is_string_object = scope.heap().object_is_string_object(obj)? || {
+        // Proxies are never treated as having `[[StringData]]` per ECMAScript semantics.
+        if scope.heap().is_proxy_object(obj) {
+          false
+        } else {
+          let mut scope = scope.reborrow();
+          // Root `obj` while allocating keys, which may GC under small heap limits.
+          scope.push_root(Value::Object(obj))?;
+          if scope.heap().object_prototype(obj)? != Some(intrinsics.string_prototype()) {
+            false
+          } else {
+            let length_key = alloc_key(&mut scope, "length")?;
+            match scope.heap().object_get_own_property(obj, &length_key)? {
+              Some(PropertyDescriptor {
+                enumerable: false,
+                configurable: false,
+                kind:
+                  PropertyKind::Data {
+                    value: Value::Number(_),
+                    writable: false,
+                  },
+              }) => true,
+              _ => false,
+            }
+          }
+        }
+      };
+
+      if is_string_object {
         let init = value_to_limited_string(
           vm,
           scope,
@@ -1605,9 +1644,6 @@ fn urlsp_construct_native(
       } else {
         // For now we interpret objects with an @@iterator method (or array exotic objects) as the
         // sequence form. Otherwise, we treat them as record-like.
-        let intrinsics = vm
-          .intrinsics()
-          .ok_or(VmError::InvariantViolation("vm intrinsics not initialized"))?;
         let iterator_key = PropertyKey::from_symbol(intrinsics.well_known_symbols().iterator);
 
         match vm.get_method_with_host_and_hooks(host, scope, hooks, Value::Object(obj), iterator_key)

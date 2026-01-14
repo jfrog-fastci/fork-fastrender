@@ -421,9 +421,9 @@ reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up wo
 
 [[expectations]]
 id = "dom/ranges/Range-extractContents.html"
-backend = "vmjs-rendered"
+backend = ["vmjs", "vmjs-rendered"]
 status = "xfail"
-reason = "Times out in the script-runner backend: Range.extractContents uses iframe onload + async_test plumbing which is not yet supported by vmjs-rendered."
+reason = "Times out in the offline runner: Range.extractContents depends on iframe load/onload + a large Range harness, and currently exceeds the runner's HTML parsing/execution limits."
 
 [[expectations]]
 id = "dom/ranges/Range-insertNode.html"
@@ -616,12 +616,6 @@ id = "html_integration/script_src_empty_suppresses_inline_and_fires_error.html"
 backend = "vmjs-rendered"
 status = "xfail"
 reason = "vmjs-rendered executes HTML tests via the script runner; classic script error events for src='' are not fully integrated yet and the test times out."
-
-[[expectations]]
-id = "url/urlsearchparams-init-types.window.js"
-backend = ["vmjs", "vmjs-rendered"]
-status = "xfail"
-reason = "URLSearchParams constructor does not yet treat boxed String objects (`new String('a=1')`) as strings during union conversion (it incorrectly takes the iterable path)."
 
 [[expectations]]
 glob = "observers_layout/**"

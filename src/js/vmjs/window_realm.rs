@@ -46833,11 +46833,7 @@ fn named_node_map_remove_named_item_native(
     }
   }
 
-<<<<<<< HEAD
   let Some(attr) = found else {
-=======
-  let Some((name, value)) = found else {
->>>>>>> eb1269cad (fix: restore fastrender lib/unit-test build)
     return Err(VmError::Throw(make_dom_exception(vm, scope, "NotFoundError", "")?));
   };
 
@@ -49288,6 +49284,133 @@ fn ensure_range_detach_noop(vm: &mut Vm, heap: &mut Heap, realm: &Realm) -> Resu
   scope.push_root(Value::Object(func))?;
 
   scope.define_property(range_proto, detach_key, data_desc(Value::Object(func)))?;
+  Ok(())
+}
+
+fn ensure_range_content_ops_methods(
+  vm: &mut Vm,
+  heap: &mut Heap,
+  realm: &Realm,
+) -> Result<(), VmError> {
+  let mut scope = heap.scope();
+  let global = realm.global_object();
+  scope.push_root(Value::Object(global))?;
+
+  let range_key = alloc_key(&mut scope, "Range")?;
+  let range_ctor = vm.get(&mut scope, global, range_key)?;
+  let Value::Object(range_ctor) = range_ctor else {
+    return Ok(());
+  };
+  scope.push_root(Value::Object(range_ctor))?;
+
+  let prototype_key = alloc_key(&mut scope, "prototype")?;
+  let range_proto = vm.get(&mut scope, range_ctor, prototype_key)?;
+  let Value::Object(range_proto) = range_proto else {
+    return Ok(());
+  };
+  scope.push_root(Value::Object(range_proto))?;
+
+  fn ensure_method(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    realm: &Realm,
+    range_proto: GcObject,
+    name: &'static str,
+    call: vm_js::NativeCall,
+    length: u32,
+    force: bool,
+  ) -> Result<bool, VmError> {
+    let key = alloc_key(scope, name)?;
+    let existing = match scope
+      .heap()
+      .object_get_own_data_property_value(range_proto, &key)
+    {
+      Ok(v) => v,
+      Err(VmError::PropertyNotData) => None,
+      Err(err) => return Err(err),
+    };
+    if !force {
+      if let Some(existing) = existing {
+        if scope.heap().is_callable(existing).unwrap_or(false) {
+          return Ok(false);
+        }
+      }
+    }
+
+    let call_id = vm.register_native_call(call)?;
+    let func_name = scope.alloc_string(name)?;
+    scope.push_root(Value::String(func_name))?;
+    let func = scope.alloc_native_function(call_id, None, func_name, length)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))?;
+    scope.push_root(Value::Object(func))?;
+    scope.define_property(range_proto, key, data_desc(Value::Object(func)))?;
+    Ok(true)
+  }
+
+  // Some historical binding paths created `Range` without the full content mutation API surface.
+  // Patch missing or non-callable methods to ensure the core `dom2` Range algorithms are exercised
+  // consistently (and WPT `Range` tests do not explode with `TypeError: value is not callable`).
+  //
+  // If we detect that the prototype is missing core methods, also override `insertNode` so its
+  // behavior matches the live Range implementation.
+  let mut patched_any = false;
+  patched_any |= ensure_method(
+    vm,
+    &mut scope,
+    realm,
+    range_proto,
+    "deleteContents",
+    range_delete_contents_native,
+    0,
+    false,
+  )?;
+  patched_any |= ensure_method(
+    vm,
+    &mut scope,
+    realm,
+    range_proto,
+    "cloneContents",
+    range_clone_contents_native,
+    0,
+    false,
+  )?;
+
+  // These pass today in the handwritten implementation, but keep them patched for completeness
+  // (and to avoid partial surfaces in mixed binding configurations).
+  patched_any |= ensure_method(
+    vm,
+    &mut scope,
+    realm,
+    range_proto,
+    "extractContents",
+    range_extract_contents_native,
+    0,
+    false,
+  )?;
+  patched_any |= ensure_method(
+    vm,
+    &mut scope,
+    realm,
+    range_proto,
+    "surroundContents",
+    range_surround_contents_native,
+    1,
+    false,
+  )?;
+
+  let _ = ensure_method(
+    vm,
+    &mut scope,
+    realm,
+    range_proto,
+    "insertNode",
+    range_insert_node_native,
+    1,
+    patched_any,
+  )?;
+
   Ok(())
 }
 
@@ -61963,6 +62086,7 @@ fn init_window_globals(
   // Legacy DOM API: Range.prototype.detach() is specified as a no-op.
   // Some WPT Range tests use it for "detached" range setup.
   ensure_range_detach_noop(vm, heap, realm)?;
+  ensure_range_content_ops_methods(vm, heap, realm)?;
 
   Ok((
     console_sink_guard.map(ConsoleSinkGuard::disarm),
