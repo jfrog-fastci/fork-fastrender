@@ -2896,19 +2896,38 @@ impl BrowserDocumentDom2 {
           }
 
           for attr in attributes {
-            if attr.local_name.eq_ignore_ascii_case("popover")
-              || attr.local_name.eq_ignore_ascii_case("data-fastr-open")
-              || attr.local_name.eq_ignore_ascii_case("data-fastr-modal")
+            if attr.namespace == crate::dom2::NULL_NAMESPACE
+              && (if is_html {
+                attr.local_name.eq_ignore_ascii_case("popover")
+                  || attr.local_name.eq_ignore_ascii_case("data-fastr-open")
+                  || attr.local_name.eq_ignore_ascii_case("data-fastr-modal")
+              } else {
+                attr.local_name == "popover"
+                  || attr.local_name == "data-fastr-open"
+                  || attr.local_name == "data-fastr-modal"
+              })
             {
               return true;
             }
           }
         }
-        crate::dom2::NodeKind::Slot { attributes, .. } => {
+        crate::dom2::NodeKind::Slot {
+          namespace,
+          attributes,
+          ..
+        } => {
+          let is_html = dom.is_html_case_insensitive_namespace(namespace);
           for attr in attributes {
-            if attr.local_name.eq_ignore_ascii_case("popover")
-              || attr.local_name.eq_ignore_ascii_case("data-fastr-open")
-              || attr.local_name.eq_ignore_ascii_case("data-fastr-modal")
+            if attr.namespace == crate::dom2::NULL_NAMESPACE
+              && (if is_html {
+                attr.local_name.eq_ignore_ascii_case("popover")
+                  || attr.local_name.eq_ignore_ascii_case("data-fastr-open")
+                  || attr.local_name.eq_ignore_ascii_case("data-fastr-modal")
+              } else {
+                attr.local_name == "popover"
+                  || attr.local_name == "data-fastr-open"
+                  || attr.local_name == "data-fastr-modal"
+              })
             {
               return true;
             }

@@ -63,6 +63,7 @@ impl AudioRingBuffer {
   /// Returns the number of samples currently buffered.
   ///
   /// This is safe to call from the real-time consumer thread (no locks, no allocation).
+  #[must_use]
   pub fn buffered_samples(&self) -> usize {
     let read = self.read.load(Ordering::Relaxed);
     let write = self.write.load(Ordering::Acquire);
