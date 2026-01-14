@@ -1714,7 +1714,6 @@ impl TextItem {
           last_offset = Some(offset);
         }
       }
-
       false
     };
 

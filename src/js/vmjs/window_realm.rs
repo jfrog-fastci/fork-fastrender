@@ -59997,7 +59997,7 @@ mod tests {
           .dom_platform
           .as_mut()
           .expect("expected dom platform to be installed");
-        let master: Arc<dyn crate::media::clock::MediaClock> = Arc::clone(&data.media_master_clock);
+        let master: Arc<dyn crate::media::clock::MediaClock> = data.media_master_clock.clone();
         let registry = &mut data.media_element_state_registry;
 
         let mut scope = heap.scope();
