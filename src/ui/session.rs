@@ -282,7 +282,15 @@ impl BrowserWindowState {
     self.width = sanitize_window_dim(self.width);
     self.height = sanitize_window_dim(self.height);
 
-    if self.maximized && (self.width.is_none() || self.height.is_none()) {
+    // If we have some (or all) window position data but are missing a valid size, fill in a
+    // fallback size so the restore path has enough information to adjust the window rect back onto
+    // an available monitor.
+    //
+    // See `src/bin/browser.rs`: off-screen adjustment only runs when both position *and* size are
+    // present.
+    if (self.maximized || self.x.is_some() || self.y.is_some())
+      && (self.width.is_none() || self.height.is_none())
+    {
       self.width.get_or_insert(FALLBACK_WINDOW_WIDTH_PX);
       self.height.get_or_insert(FALLBACK_WINDOW_HEIGHT_PX);
     }
@@ -1880,6 +1888,45 @@ mod tests {
     assert_eq!(state.width, Some(FALLBACK_WINDOW_WIDTH_PX));
     assert_eq!(state.height, Some(FALLBACK_WINDOW_HEIGHT_PX));
     assert!(state.maximized);
+  }
+
+  #[test]
+  fn session_sanitizes_window_geometry_with_pos_but_no_size() {
+    let session = BrowserSession {
+      version: SESSION_VERSION,
+      home_url: about_pages::ABOUT_NEWTAB.to_string(),
+      windows: vec![BrowserSessionWindow {
+        tabs: vec![BrowserSessionTab {
+          url: "about:newtab".to_string(),
+          zoom: None,
+          scroll_css: None,
+          pinned: false,
+          group: None,
+        }],
+        tab_groups: Vec::new(),
+        active_tab_index: 0,
+        show_menu_bar: default_show_menu_bar(),
+        window_state: Some(BrowserWindowState {
+          x: Some(4000),
+          y: Some(200),
+          width: None,
+          height: None,
+          maximized: false,
+        }),
+      }],
+      active_window_index: 0,
+      appearance: AppearanceSettings::default(),
+      did_exit_cleanly: true,
+      ui_scale: None,
+    }
+    .sanitized();
+
+    let state = session.windows[0].window_state.as_ref().unwrap();
+    assert_eq!(state.x, Some(4000));
+    assert_eq!(state.y, Some(200));
+    assert_eq!(state.width, Some(FALLBACK_WINDOW_WIDTH_PX));
+    assert_eq!(state.height, Some(FALLBACK_WINDOW_HEIGHT_PX));
+    assert!(!state.maximized);
   }
 
   #[test]
