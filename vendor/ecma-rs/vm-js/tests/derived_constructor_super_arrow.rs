@@ -337,6 +337,103 @@ fn derived_constructor_super_computed_get_in_arrow_param_default_throws_before_e
 }
 
 #[test]
+fn derived_constructor_this_in_arrow_param_default_uses_lexical_this_and_is_lazy() -> Result<(), VmError> {
+  assert_true_in_ast_and_compiled(
+    r#"
+      class B {}
+      class C extends B {
+        constructor() {
+          let f = (x = this) => x;
+
+          // If the argument value is provided, the default initializer is not evaluated, so calling
+          // the arrow before `super()` is allowed (even though the default refers to `this`).
+          let beforeArgOk = (f.call({}, 123) === 123);
+
+          // If the argument is missing, the default initializer evaluates `this` and must throw
+          // because the derived constructor `this` binding is uninitialized.
+          let before;
+          try { f.call({}); before = "no"; } catch (e) { before = e.name; }
+
+          super();
+
+          // After `super()`, the same default initializer must evaluate to the initialized `this`
+          // value, regardless of `.call()` receiver.
+          let afterDefault = f.call({}, undefined);
+          let afterArg = f.call({}, 456);
+
+          this.ok =
+            beforeArgOk === true &&
+            before === "ReferenceError" &&
+            afterDefault === this &&
+            afterArg === 456;
+        }
+      }
+      new C().ok === true
+    "#,
+  )?;
+  Ok(())
+}
+
+#[test]
+fn derived_constructor_super_get_in_arrow_param_default_uses_initialized_this_receiver() -> Result<(), VmError>
+{
+  assert_true_in_ast_and_compiled(
+    r#"
+      var recv;
+      class B {
+        get x() { recv = this; return this._x; }
+      }
+
+      class C extends B {
+        constructor() {
+          let f = (v = super.x) => v;
+
+          let before;
+          try { f.call({ _x: 99 }); before = "no"; } catch (e) { before = e.name; }
+          let recvBefore = recv;
+
+          super();
+          this._x = 1;
+
+          let other = { _x: 2 };
+          let after = f.call(other);
+          let recvAfter = recv;
+
+          this.ok =
+            before === "ReferenceError" &&
+            recvBefore === undefined &&
+            after === 1 &&
+            recvAfter === this;
+        }
+      }
+
+      new C().ok === true
+    "#,
+  )?;
+  Ok(())
+}
+
+#[test]
+fn derived_constructor_new_target_in_arrow_param_default_is_allowed_pre_super() -> Result<(), VmError> {
+  assert_true_in_ast_and_compiled(
+    r#"
+      class B {}
+      class C extends B {
+        constructor() {
+          let f = (x = new.target) => x;
+          let before = f();
+          super();
+          let after = f();
+          this.ok = (before === C) && (after === C);
+        }
+      }
+      new C().ok === true
+    "#,
+  )?;
+  Ok(())
+}
+
+#[test]
 fn derived_constructor_async_arrow_super_property_ops_use_initialized_this() -> Result<(), VmError> {
   assert_async_out_in_ast_and_compiled(
     r#"
