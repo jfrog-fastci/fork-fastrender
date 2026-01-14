@@ -9,12 +9,78 @@
 use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use super::string_match::contains_ascii_case_insensitive;
 use super::{
   a11y_labels, motion::UiMotion, panel_empty_state, panel_header_with_actions, panel_search_field,
   theme::BrowserTheme, BrowserIcon, DownloadEntry, DownloadId, DownloadStatus, TabId,
 };
+
+#[derive(Debug, Clone, Default)]
+struct DownloadRowUiCache {
+  file_name: Arc<str>,
+  cancel_label: Arc<str>,
+  open_label: Arc<str>,
+  show_in_folder_label: Arc<str>,
+  retry_label: Arc<str>,
+  copy_link_label: Arc<str>,
+  copy_path_label: Arc<str>,
+  in_progress_status_key: Option<(u64, Option<u64>)>,
+  in_progress_status: String,
+  progress_a11y_key: Option<(u64, Option<u64>)>,
+  progress_a11y_label: Arc<str>,
+}
+
+impl DownloadRowUiCache {
+  fn update_file_name(&mut self, file_name: &str) {
+    if self.file_name.as_ref() == file_name {
+      return;
+    }
+
+    self.file_name = Arc::from(file_name);
+    self.cancel_label = Arc::from(a11y_labels::download_cancel_label(file_name));
+    self.open_label = Arc::from(a11y_labels::download_open_label(file_name));
+    self.show_in_folder_label = Arc::from(a11y_labels::download_show_in_folder_label(file_name));
+    self.retry_label = Arc::from(a11y_labels::download_retry_label(file_name));
+    self.copy_link_label = Arc::from(a11y_labels::download_copy_link_label(file_name));
+    self.copy_path_label = Arc::from(a11y_labels::download_copy_path_label(file_name));
+    // Progress label incorporates the file name; invalidate so it rebuilds with the new name.
+    self.progress_a11y_key = None;
+  }
+
+  fn in_progress_status(&mut self, received_bytes: u64, total_bytes: Option<u64>) -> &str {
+    let key = (received_bytes, total_bytes);
+    if self.in_progress_status_key == Some(key) {
+      return self.in_progress_status.as_str();
+    }
+
+    self.in_progress_status_key = Some(key);
+    self.in_progress_status.clear();
+    self.in_progress_status.push_str("Downloading… ");
+    append_formatted_bytes(&mut self.in_progress_status, received_bytes);
+    if let Some(total) = total_bytes {
+      self.in_progress_status.push_str(" / ");
+      append_formatted_bytes(&mut self.in_progress_status, total);
+    }
+    self.in_progress_status.as_str()
+  }
+
+  fn progress_a11y_label(&mut self, received_bytes: u64, total_bytes: Option<u64>) -> Arc<str> {
+    let key = (received_bytes, total_bytes);
+    if self.progress_a11y_key == Some(key) && !self.progress_a11y_label.is_empty() {
+      return Arc::clone(&self.progress_a11y_label);
+    }
+
+    self.progress_a11y_key = Some(key);
+    self.progress_a11y_label = Arc::from(download_progress_a11y_label(
+      self.file_name.as_ref(),
+      received_bytes,
+      total_bytes,
+    ));
+    Arc::clone(&self.progress_a11y_label)
+  }
+}
 
 fn append_formatted_bytes(out: &mut String, bytes: u64) {
   const KB: f64 = 1024.0;
@@ -339,6 +405,12 @@ pub fn downloads_panel_ui(
           let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
 
           let mut render_row = |ui: &mut egui::Ui, entry: &DownloadEntry| {
+            let cache_id = egui::Id::new(("fastr_download_row_cache", entry.download_id.0));
+            let mut cache: DownloadRowUiCache = ui.ctx().data_mut(|d| {
+              std::mem::take(d.get_temp_mut_or_default::<DownloadRowUiCache>(cache_id))
+            });
+            cache.update_file_name(entry.file_name.as_str());
+
             let width = ui.available_width().max(0.0);
             let (_alloc_id, row_rect) = ui.allocate_space(egui::vec2(width, row_total_h));
             let rect = egui::Rect::from_min_max(
@@ -411,13 +483,9 @@ pub fn downloads_panel_ui(
                       received_bytes,
                       total_bytes,
                     } => {
-                      let mut status = String::with_capacity(64);
-                      status.push_str("Downloading… ");
-                      append_formatted_bytes(&mut status, *received_bytes);
-                      if let Some(total) = total_bytes.filter(|t| *t > 0) {
-                        status.push_str(" / ");
-                        append_formatted_bytes(&mut status, total);
-                      }
+                      let received_bytes = *received_bytes;
+                      let total_bytes = total_bytes.filter(|t| *t > 0);
+                      let status = cache.in_progress_status(received_bytes, total_bytes);
                       ui.add(
                         egui::Label::new(
                           egui::RichText::new(status)
@@ -468,11 +536,11 @@ pub fn downloads_panel_ui(
                     |ui| match &entry.status {
                       DownloadStatus::InProgress { .. } => {
                         let cancel_resp = ui.small_button("Cancel");
-                        cancel_resp.widget_info(|| {
-                          egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
-                            a11y_labels::download_cancel_label(&entry.file_name),
-                          )
+                        cancel_resp.widget_info({
+                          let label = Arc::clone(&cache.cancel_label);
+                          move || {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Button, label.as_ref())
+                          }
                         });
                         if cancel_resp.clicked() {
                           out.cancel_requests.push((entry.tab_id, entry.download_id));
@@ -480,32 +548,32 @@ pub fn downloads_panel_ui(
                       }
                       DownloadStatus::Completed => {
                         let reveal_resp = ui.small_button("Show in Folder");
-                        reveal_resp.widget_info(|| {
-                          egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
-                            a11y_labels::download_show_in_folder_label(&entry.file_name),
-                          )
+                        reveal_resp.widget_info({
+                          let label = Arc::clone(&cache.show_in_folder_label);
+                          move || {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Button, label.as_ref())
+                          }
                         });
                         if reveal_resp.clicked() {
                           out.reveal_requests.push(entry.path.clone());
                         }
                         let open_resp = ui.small_button("Open");
-                        open_resp.widget_info(|| {
-                          egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
-                            a11y_labels::download_open_label(&entry.file_name),
-                          )
+                        open_resp.widget_info({
+                          let label = Arc::clone(&cache.open_label);
+                          move || {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Button, label.as_ref())
+                          }
                         });
                         if open_resp.clicked() {
                           out.open_requests.push(entry.path.clone());
                         }
 
                         let copy_path_resp = ui.small_button("Copy path");
-                        copy_path_resp.widget_info(|| {
-                          egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
-                            a11y_labels::download_copy_path_label(&entry.file_name),
-                          )
+                        copy_path_resp.widget_info({
+                          let label = Arc::clone(&cache.copy_path_label);
+                          move || {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Button, label.as_ref())
+                          }
                         });
                         if copy_path_resp.clicked() {
                           out.copy_requests.push(entry.path_display.clone());
@@ -518,11 +586,11 @@ pub fn downloads_panel_ui(
                         );
 
                         let copy_link_resp = ui.small_button("Copy link");
-                        copy_link_resp.widget_info(|| {
-                          egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
-                            a11y_labels::download_copy_link_label(&entry.file_name),
-                          )
+                        copy_link_resp.widget_info({
+                          let label = Arc::clone(&cache.copy_link_label);
+                          move || {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Button, label.as_ref())
+                          }
                         });
                         if copy_link_resp.clicked() {
                           out.copy_requests.push(entry.url.clone());
@@ -536,22 +604,22 @@ pub fn downloads_panel_ui(
                       }
                       DownloadStatus::Cancelled => {
                         let retry_resp = ui.small_button("Retry");
-                        retry_resp.widget_info(|| {
-                          egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
-                            a11y_labels::download_retry_label(&entry.file_name),
-                          )
+                        retry_resp.widget_info({
+                          let label = Arc::clone(&cache.retry_label);
+                          move || {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Button, label.as_ref())
+                          }
                         });
                         if retry_resp.clicked() {
                           out.retry_requests.push(entry.retry_request());
                         }
 
                         let copy_path_resp = ui.small_button("Copy path");
-                        copy_path_resp.widget_info(|| {
-                          egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
-                            a11y_labels::download_copy_path_label(&entry.file_name),
-                          )
+                        copy_path_resp.widget_info({
+                          let label = Arc::clone(&cache.copy_path_label);
+                          move || {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Button, label.as_ref())
+                          }
                         });
                         if copy_path_resp.clicked() {
                           out.copy_requests.push(entry.path_display.clone());
@@ -564,11 +632,11 @@ pub fn downloads_panel_ui(
                         );
 
                         let copy_link_resp = ui.small_button("Copy link");
-                        copy_link_resp.widget_info(|| {
-                          egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
-                            a11y_labels::download_copy_link_label(&entry.file_name),
-                          )
+                        copy_link_resp.widget_info({
+                          let label = Arc::clone(&cache.copy_link_label);
+                          move || {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Button, label.as_ref())
+                          }
                         });
                         if copy_link_resp.clicked() {
                           out.copy_requests.push(entry.url.clone());
@@ -582,22 +650,22 @@ pub fn downloads_panel_ui(
                       }
                       DownloadStatus::Failed { .. } => {
                         let retry_resp = ui.small_button("Retry");
-                        retry_resp.widget_info(|| {
-                          egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
-                            a11y_labels::download_retry_label(&entry.file_name),
-                          )
+                        retry_resp.widget_info({
+                          let label = Arc::clone(&cache.retry_label);
+                          move || {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Button, label.as_ref())
+                          }
                         });
                         if retry_resp.clicked() {
                           out.retry_requests.push(entry.retry_request());
                         }
 
                         let copy_path_resp = ui.small_button("Copy path");
-                        copy_path_resp.widget_info(|| {
-                          egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
-                            a11y_labels::download_copy_path_label(&entry.file_name),
-                          )
+                        copy_path_resp.widget_info({
+                          let label = Arc::clone(&cache.copy_path_label);
+                          move || {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Button, label.as_ref())
+                          }
                         });
                         if copy_path_resp.clicked() {
                           out.copy_requests.push(entry.path_display.clone());
@@ -610,11 +678,11 @@ pub fn downloads_panel_ui(
                         );
 
                         let copy_link_resp = ui.small_button("Copy link");
-                        copy_link_resp.widget_info(|| {
-                          egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
-                            a11y_labels::download_copy_link_label(&entry.file_name),
-                          )
+                        copy_link_resp.widget_info({
+                          let label = Arc::clone(&cache.copy_link_label);
+                          move || {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Button, label.as_ref())
+                          }
                         });
                         if copy_link_resp.clicked() {
                           out.copy_requests.push(entry.url.clone());
@@ -659,7 +727,6 @@ pub fn downloads_panel_ui(
                 {
                   let received_bytes = *received_bytes;
                   let total_bytes = total_bytes.filter(|t| *t > 0);
-                  let file_name = entry.file_name.as_str();
 
                   match total_bytes {
                     Some(total_bytes) => {
@@ -669,17 +736,9 @@ pub fn downloads_panel_ui(
                           .desired_width(f32::INFINITY)
                           .text(""),
                       );
+                      let a11y_label = cache.progress_a11y_label(received_bytes, Some(total_bytes));
                       resp.widget_info(move || {
-                        egui::WidgetInfo::labeled(
-                          // `egui` 0.23 does not expose a dedicated progress widget type. Provide
-                          // an explicit label so screen readers announce meaningful context.
-                          egui::WidgetType::Label,
-                          download_progress_a11y_label(
-                            file_name,
-                            received_bytes,
-                            Some(total_bytes),
-                          ),
-                        )
+                        egui::WidgetInfo::labeled(egui::WidgetType::Label, a11y_label.as_ref())
                       });
                     }
                     None => {
@@ -689,19 +748,17 @@ pub fn downloads_panel_ui(
                           .animate(motion.enabled)
                           .text(""),
                       );
+                      let a11y_label = cache.progress_a11y_label(received_bytes, None);
                       resp.widget_info(move || {
-                        egui::WidgetInfo::labeled(
-                          // `egui` 0.23 does not expose a dedicated progress widget type. Provide
-                          // an explicit label so screen readers announce meaningful context.
-                          egui::WidgetType::Label,
-                          download_progress_a11y_label(file_name, received_bytes, None),
-                        )
+                        egui::WidgetInfo::labeled(egui::WidgetType::Label, a11y_label.as_ref())
                       });
                     }
                   }
                 }
               });
             });
+
+            ui.ctx().data_mut(|d| d.insert_temp(cache_id, cache));
           };
 
           if !has_query {
