@@ -572,3 +572,48 @@ fn async_generator_optional_chain_after_super_property_skips_yield_star_in_compu
   assert_eq!(rt.exec_script("out")?, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn async_generator_delete_super_computed_member_evaluates_key_and_to_property_key_before_reference_error(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = false;
+      var side = 0;
+
+      class C {
+        async *del() {
+          try {
+            delete super[(yield (side = 1, "yielded"))];
+            return "no";
+          } catch (e) {
+            return String(side) + ":" + e.name;
+          }
+        }
+      }
+
+      async function f() {
+        const it = (new C()).del();
+        const r1 = await it.next();
+        const side1 = side;
+        const key = { toString() { side = side + 1; return "m"; } };
+        const r2 = await it.next(key);
+        return (
+          r1.value === "yielded" && r1.done === false &&
+          side1 === 1 &&
+          side === 2 &&
+          r2.value === "2:ReferenceError" && r2.done === true
+        );
+      }
+
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  assert_eq!(rt.exec_script("out")?, Value::Bool(false));
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  assert_eq!(rt.exec_script("out")?, Value::Bool(true));
+  Ok(())
+}
