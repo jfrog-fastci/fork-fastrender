@@ -194,3 +194,120 @@ fn generator_for_of_yield_in_assignment_target_computed_member() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_for_of_yield_in_object_pattern_default_value() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          var v;
+          for ({a: v = yield 1} of [{a: undefined}]) { return v; }
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(42);
+        r1.done === false && r1.value === 1 &&
+        r2.done === true && r2.value === 42
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_multiple_yields_in_object_pattern_computed_key_and_default() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          var v;
+          for ({[yield "k"]: v = yield 1} of [{}]) { return v; }
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next("k");
+        var r3 = it.next(42);
+        r1.done === false && r1.value === "k" &&
+        r2.done === false && r2.value === 1 &&
+        r3.done === true && r3.value === 42
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_iterator_is_closed_on_throw_while_suspended_in_lhs() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var closed = false;
+        var iterable = {
+          [Symbol.iterator]() {
+            return {
+              next() { return { value: [undefined], done: false }; },
+              return() { closed = true; return { done: true }; },
+            };
+          },
+        };
+
+        function* g() {
+          for (let [a = yield 1] of iterable) { /* unreachable */ }
+        }
+        var it = g();
+        var r1 = it.next();
+        var threw = false;
+        try { it.throw("boom"); } catch (e) { threw = (e === "boom"); }
+        r1.done === false && r1.value === 1 &&
+        threw === true && closed === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_yield_in_array_pattern_elem_assignment_target_computed_member() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          var obj = {};
+          for ([obj[yield "k"]] of [[3]]) { return obj.k; }
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next("k");
+        r1.done === false && r1.value === "k" &&
+        r2.done === true && r2.value === 3
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_yield_in_array_pattern_rest_assignment_target_computed_member() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          var obj = {};
+          for ([...obj[yield "k"]] of [[1, 2, 3]]) { return obj.k[1]; }
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next("k");
+        r1.done === false && r1.value === "k" &&
+        r2.done === true && r2.value === 2
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
