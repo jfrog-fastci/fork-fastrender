@@ -1520,6 +1520,13 @@ impl DisplayListBuilder {
       return Self::spacer_advance_in_runs(runs, edge, inline_vertical);
     }
 
+    if style.letter_spacing == 0.0 && style.word_spacing == 0.0 {
+      let Ok(runs) = self.shaper.shape_arc(text, style, &self.font_ctx) else {
+        return 0.0;
+      };
+      return Self::spacer_advance_in_runs(runs.as_ref(), edge, inline_vertical);
+    }
+
     let Ok(mut runs) = self.shaper.shape(text, style, &self.font_ctx) else {
       return 0.0;
     };
@@ -6963,24 +6970,36 @@ impl DisplayListBuilder {
         };
 
         let mut shaped_storage: Option<Vec<ShapedRun>> = None;
+        let mut shaped_storage_arc: Option<Arc<Vec<ShapedRun>>> = None;
         let runs_ref: Option<&[ShapedRun]> = if let Some(runs) = shaped {
           Some(runs.as_ref())
         } else if let Some(style) = style_opt {
           let shape_timer = self.build_breakdown.as_ref().map(|_| Instant::now());
-          let shaped_result = self.shaper.shape(text, style, &self.font_ctx);
-          if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), shape_timer) {
-            breakdown.record_text_shape(start.elapsed());
+          if style.letter_spacing == 0.0 && style.word_spacing == 0.0 {
+            let shaped_result = self.shaper.shape_arc(text, style, &self.font_ctx);
+            if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), shape_timer) {
+              breakdown.record_text_shape(start.elapsed());
+            }
+            if let Ok(runs) = shaped_result {
+              shaped_storage_arc = Some(runs);
+            }
+            shaped_storage_arc.as_deref().map(|runs| runs.as_ref())
+          } else {
+            let shaped_result = self.shaper.shape(text, style, &self.font_ctx);
+            if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), shape_timer) {
+              breakdown.record_text_shape(start.elapsed());
+            }
+            if let Ok(mut runs) = shaped_result {
+              InlineTextItem::apply_spacing_to_runs(
+                &mut runs,
+                text,
+                style.letter_spacing,
+                style.word_spacing,
+              );
+              shaped_storage = Some(runs);
+            }
+            shaped_storage.as_deref()
           }
-          if let Ok(mut runs) = shaped_result {
-            InlineTextItem::apply_spacing_to_runs(
-              &mut runs,
-              text,
-              style.letter_spacing,
-              style.word_spacing,
-            );
-            shaped_storage = Some(runs);
-          }
-          shaped_storage.as_deref()
         } else {
           None
         };
@@ -8888,25 +8907,40 @@ impl DisplayListBuilder {
               };
 
               let mut shaped_storage: Option<Vec<ShapedRun>> = None;
+              let mut shaped_storage_arc: Option<Arc<Vec<ShapedRun>>> = None;
               let runs_ref: Option<&[ShapedRun]> = if let Some(runs) = shaped {
                 Some(runs.as_ref())
               } else {
                 let shape_timer = self.build_breakdown.as_ref().map(|_| Instant::now());
-                let shaped_result = self.shaper.shape(text, style, &self.font_ctx);
-                if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), shape_timer)
-                {
-                  breakdown.record_text_shape(start.elapsed());
+                if style.letter_spacing == 0.0 && style.word_spacing == 0.0 {
+                  let shaped_result = self.shaper.shape_arc(text, style, &self.font_ctx);
+                  if let (Some(breakdown), Some(start)) =
+                    (self.build_breakdown.as_ref(), shape_timer)
+                  {
+                    breakdown.record_text_shape(start.elapsed());
+                  }
+                  if let Ok(runs) = shaped_result {
+                    shaped_storage_arc = Some(runs);
+                  }
+                  shaped_storage_arc.as_deref().map(|runs| runs.as_ref())
+                } else {
+                  let shaped_result = self.shaper.shape(text, style, &self.font_ctx);
+                  if let (Some(breakdown), Some(start)) =
+                    (self.build_breakdown.as_ref(), shape_timer)
+                  {
+                    breakdown.record_text_shape(start.elapsed());
+                  }
+                  if let Ok(mut runs) = shaped_result {
+                    InlineTextItem::apply_spacing_to_runs(
+                      &mut runs,
+                      text,
+                      style.letter_spacing,
+                      style.word_spacing,
+                    );
+                    shaped_storage = Some(runs);
+                  }
+                  shaped_storage.as_deref()
                 }
-                if let Ok(mut runs) = shaped_result {
-                  InlineTextItem::apply_spacing_to_runs(
-                    &mut runs,
-                    text,
-                    style.letter_spacing,
-                    style.word_spacing,
-                  );
-                  shaped_storage = Some(runs);
-                }
-                shaped_storage.as_deref()
               };
 
               if let Some(runs) = runs_ref {
@@ -12701,14 +12735,13 @@ impl DisplayListBuilder {
   }
 
   fn measure_text_advance_width(&mut self, text: &str, style: &ComputedStyle) -> Option<f32> {
-    let shaped = self.shaper.shape(text, style, &self.font_ctx).ok()?;
-    let mut runs = shaped;
-    InlineTextItem::apply_spacing_to_runs(
-      &mut runs,
-      text,
-      style.letter_spacing,
-      style.word_spacing,
-    );
+    if style.letter_spacing == 0.0 && style.word_spacing == 0.0 {
+      let runs = self.shaper.shape_arc(text, style, &self.font_ctx).ok()?;
+      return Some(runs.iter().map(|run| run.advance).sum());
+    }
+
+    let mut runs = self.shaper.shape(text, style, &self.font_ctx).ok()?;
+    InlineTextItem::apply_spacing_to_runs(&mut runs, text, style.letter_spacing, style.word_spacing);
     Some(runs.iter().map(|run| run.advance).sum())
   }
 
