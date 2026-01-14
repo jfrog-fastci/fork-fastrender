@@ -553,16 +553,15 @@ impl egui::Widget for IconButton {
         .rect_stroke(focus_rect, focus_rounding, focus_stroke);
     }
 
-    // The hover tooltip needs an owned copy, but cloning it for every icon button each frame adds
-    // up quickly. Only clone when we also need to display the tooltip while keyboard-focused.
-    let show_focus_tooltip = response.has_focus() && !response.hovered();
-    if show_focus_tooltip {
-      response = response.on_hover_text(tooltip.clone());
+    // Avoid attaching an `on_hover_text` payload every frame: it forces the tooltip text to be
+    // owned and can allocate even when the button is idle. Only show the tooltip when the button
+    // is actually hovered or focused.
+    if response.hovered() {
+      egui::show_tooltip_text(ui.ctx(), response.id.with("hover_tooltip"), tooltip);
+    } else if response.has_focus() {
       // Egui tooltips only show on pointer hover. Mirror the hover tooltip while keyboard-focused
       // so icon-only controls remain discoverable for keyboard-only users.
       egui::show_tooltip_text(ui.ctx(), response.id.with("focus_tooltip"), tooltip);
-    } else {
-      response = response.on_hover_text(tooltip);
     }
     let label = icon.a11y_label();
     response.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label));
