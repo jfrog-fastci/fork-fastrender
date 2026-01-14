@@ -499,6 +499,13 @@ impl SessionAutosave {
     save_result
   }
 
+  /// Most recent session write error observed by the autosave worker thread.
+  ///
+  /// This is updated whenever an on-disk write fails and cleared on the next successful write.
+  pub fn last_error(&self) -> Option<String> {
+    self.status.snapshot().last_error
+  }
+
   #[cfg(test)]
   fn successful_write_count(&self) -> usize {
     self.write_count.load(Ordering::Relaxed)
@@ -1148,6 +1155,24 @@ mod tests {
     assert!(
       !update.show_warning,
       "expected warning cooldown to suppress spam"
+    );
+  }
+
+  #[test]
+  fn last_error_is_populated_when_writes_fail() {
+    let dir = tempfile::tempdir().unwrap();
+    // Portable "unwritable file" trick: give the autosave worker a directory path instead of a
+    // file path, so `persist()` fails.
+    let path = dir.path().join("session_dir");
+    std::fs::create_dir(&path).unwrap();
+
+    let autosave = SessionAutosave::new_with_debounce(path.clone(), Duration::from_millis(10));
+    autosave.request_save(BrowserSession::single("about:blank".to_string()));
+    let _ = autosave.flush(Duration::from_secs(2));
+    assert!(
+      autosave.last_error().is_some(),
+      "expected autosave to record a write error for directory path {}",
+      path.display()
     );
   }
 }
