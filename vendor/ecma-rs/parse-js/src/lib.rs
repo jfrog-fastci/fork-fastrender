@@ -401,4 +401,14 @@ mod tests {
     let err = parse_with_options("function f() { class C { x = arguments; } }", opts).unwrap_err();
     assert_eq!(err.typ, expected);
   }
+
+  #[test]
+  fn arguments_allowed_in_nested_function_in_static_block() {
+    let opts = ecma_script_opts();
+    parse_with_options(
+      "class C { static { function f(){ return arguments[0]; } } }",
+      opts,
+    )
+    .unwrap();
+  }
 }
