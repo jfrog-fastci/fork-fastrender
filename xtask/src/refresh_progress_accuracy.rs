@@ -280,11 +280,6 @@ fn build_fixture_chrome_diff_argv(args: &RefreshProgressAccuracyArgs) -> Result<
   argv.push("--out-dir".into());
   argv.push(args.out_dir.as_os_str().to_os_string());
 
-  // `refresh-progress-accuracy` is intended to be a lightweight "sync committed metrics" tool.
-  // Use the debug profile for fixture rendering/diffing to avoid compiling huge release binaries
-  // when refreshing a small subset of pages.
-  argv.push("--debug".into());
-
   argv.push("--viewport".into());
   argv.push(DEFAULT_VIEWPORT.into());
   if args.keep_going {

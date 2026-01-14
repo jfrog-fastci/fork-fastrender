@@ -136,6 +136,12 @@ pub enum ChromeActionUrl {
   ToggleDownloadsPanel,
 }
 
+/// Canonical `chrome-action:` URL scheme string.
+///
+/// Prefer [`ChromeActionUrl::SCHEME`] for new code; this constant is kept for convenience and for
+/// legacy call sites.
+pub const CHROME_ACTION_SCHEME: &str = ChromeActionUrl::SCHEME;
+
 impl ChromeActionUrl {
 <<<<<<< HEAD
   pub const SCHEME: &'static str = CHROME_ACTION_SCHEME;
