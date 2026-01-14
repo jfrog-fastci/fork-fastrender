@@ -10569,8 +10569,10 @@ fn run_headless_download_smoke_mode(
   const DPR: f32 = 1.0;
   const CLICK_POS_CSS: (f32, f32) = (10.0, 10.0);
 
-  let (ui_to_worker_tx, worker_to_ui_rx, join) =
-    fastrender::ui::spawn_browser_ui_worker("fastr-browser-headless-download-smoke-worker")?;
+  let (ui_to_worker_tx, worker_to_ui_rx, join) = fastrender::ui::spawn_browser_ui_worker(
+    "fastr-browser-headless-download-smoke-worker",
+    None,
+  )?;
   let worker_to_ui_rx = WorkerToUiInbox::new(worker_to_ui_rx);
 
   ui_to_worker_tx.send(UiToWorker::SetDownloadDirectory {
