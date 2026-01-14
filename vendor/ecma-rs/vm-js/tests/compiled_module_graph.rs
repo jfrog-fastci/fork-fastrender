@@ -1749,7 +1749,7 @@ fn compiled_module_supports_anonymous_default_export_async_function_decls() -> R
       &mut heap,
       "a.js",
       r#"
-        export default async function() { return 1; }
+        export default async function() { return this === undefined ? 1 : -100; }
       "#,
     )?;
     assert!(
@@ -1779,17 +1779,13 @@ fn compiled_module_supports_anonymous_default_export_async_function_decls() -> R
     )?;
     graph.link_all_by_specifier();
 
-    match graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), b) {
-      Ok(()) => {}
-      Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
-      Err(e) => return Err(e),
-    };
+    graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), b)?;
     assert!(
       graph.module(a).ast.is_none(),
       "linking should not parse/retain an AST when compiled HIR is available"
     );
 
-    let promise = match graph.evaluate(
+    let promise = graph.evaluate(
       &mut vm,
       &mut heap,
       realm.global_object(),
@@ -1797,27 +1793,13 @@ fn compiled_module_supports_anonymous_default_export_async_function_decls() -> R
       b,
       &mut host,
       &mut hooks,
-    ) {
-      Ok(p) => p,
-      Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
-      Err(e) => return Err(e),
-    };
+    )?;
 
     let mut scope = heap.scope();
     scope.push_root(promise)?;
     let Value::Object(promise_obj) = promise else {
       panic!("ModuleGraph::evaluate should return a Promise object");
     };
-    if promise_rejection_message_contains(
-      &mut vm,
-      &mut host,
-      &mut hooks,
-      &mut scope,
-      promise_obj,
-      "module AST missing",
-    )? {
-      return Ok(());
-    }
     assert_eq!(
       scope.heap().promise_state(promise_obj)?,
       PromiseState::Fulfilled,
