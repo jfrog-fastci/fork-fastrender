@@ -17,28 +17,29 @@
   "notes": "YouTube fixture is skeleton/placeholder markup (watch-page-skeleton); minimal content without JS.\nRemaining diff is tiny (perceptual≈0) and dominated by minor raster/background shade differences.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 1551,
-    "diff_percent": 0.1616,
-    "perceptual": 0.0,
+    "diff_pixels": 3693,
+    "diff_percent": 0.3847,
+    "perceptual": 0.0059,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 1061,
+      "x": 1059,
       "y": 12,
       "baseline_rgba": [
-        232,
-        232,
-        232,
+        247,
+        247,
+        247,
         255
       ],
       "rendered_rgba": [
-        234,
-        234,
-        234,
+        255,
+        255,
+        255,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "4cf8b949629b5c2044d5abef3f7f46b9017ee11b"
+    "computed_at_commit": "2b2f4b8bd304d1f8c631ce942b260978da0b4265"
   },
   "hotspot": "css",
   "failure_stage": null,

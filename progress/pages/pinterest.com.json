@@ -17,12 +17,29 @@
   "notes": "JS-required shell; <noscript> says Pinterest doesn't work unless you turn on JavaScript.\nDiff≈0 expected (simple message/empty shell); real site content requires JS.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 0,
-    "diff_percent": 0.0,
-    "perceptual": 0.0,
+    "diff_pixels": 2393,
+    "diff_percent": 0.2493,
+    "perceptual": 0.0006,
+    "perceptual_metric": "ssim_windowed_v2",
+    "first_mismatch": {
+      "x": 393,
+      "y": 393,
+      "baseline_rgba": [
+        255,
+        255,
+        255,
+        255
+      ],
+      "rendered_rgba": [
+        192,
+        192,
+        192,
+        255
+      ]
+    },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "cbe69ff1e1bb8b51872f4692117518afddba2e99"
+    "computed_at_commit": "2b2f4b8bd304d1f8c631ce942b260978da0b4265"
   },
   "hotspot": "css",
   "failure_stage": null,

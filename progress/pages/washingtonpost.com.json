@@ -22,9 +22,10 @@
     "diff_pixels": 0,
     "diff_percent": 0.0,
     "perceptual": 0.0,
+    "perceptual_metric": "ssim_windowed_v2",
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "b7efc5bf2098edaa669885291d76019f3749209b"
+    "computed_at_commit": "2b2f4b8bd304d1f8c631ce942b260978da0b4265"
   },
   "hotspot": "cascade",
   "failure_stage": null,

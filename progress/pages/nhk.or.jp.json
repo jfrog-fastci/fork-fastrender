@@ -17,12 +17,29 @@
   "notes": "Curated static DOM for NHK (live homepage is JS-rendered); fixture provides representative layout/images + Japanese text shaping/line-breaking sample.\nChrome baseline matches closely; any remaining diff is negligible raster noise.\nIntended for typography/layout coverage rather than live homepage fidelity.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 0,
-    "diff_percent": 0.0,
-    "perceptual": 0.0,
+    "diff_pixels": 38780,
+    "diff_percent": 4.0396,
+    "perceptual": 0.0197,
+    "perceptual_metric": "ssim_windowed_v2",
+    "first_mismatch": {
+      "x": 50,
+      "y": 20,
+      "baseline_rgba": [
+        240,
+        240,
+        240,
+        255
+      ],
+      "rendered_rgba": [
+        247,
+        247,
+        247,
+        255
+      ]
+    },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "cbe69ff1e1bb8b51872f4692117518afddba2e99"
+    "computed_at_commit": "2b2f4b8bd304d1f8c631ce942b260978da0b4265"
   },
   "hotspot": "paint",
   "failure_stage": null,

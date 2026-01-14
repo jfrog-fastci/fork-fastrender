@@ -17,12 +17,29 @@
   "notes": "AWS WAF bot-check interstitial; fixture renders the <noscript> JavaScript-disabled verify-you're-not-a-robot message (not the real Amazon homepage).\nNear-identical to Chrome baseline; any remaining diff is minor raster/text AA noise.\nRequires JS/cookies to proceed past WAF.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 0,
-    "diff_percent": 0.0,
-    "perceptual": 0.0,
+    "diff_pixels": 7291,
+    "diff_percent": 0.7595,
+    "perceptual": 0.0012,
+    "perceptual_metric": "ssim_windowed_v2",
+    "first_mismatch": {
+      "x": 18,
+      "y": 28,
+      "baseline_rgba": [
+        184,
+        184,
+        184,
+        255
+      ],
+      "rendered_rgba": [
+        239,
+        239,
+        239,
+        255
+      ]
+    },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "59f1f9050cfd986dc05b3a15a94d544dcf56994e"
+    "computed_at_commit": "2b2f4b8bd304d1f8c631ce942b260978da0b4265"
   },
   "hotspot": "cascade",
   "failure_stage": null,
