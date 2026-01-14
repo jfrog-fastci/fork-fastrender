@@ -7178,6 +7178,96 @@ fn document_selection_drag_creates_range_and_suppresses_click() {
 }
 
 #[test]
+fn document_selection_drag_ignores_sentinel_pointer_positions() {
+  let full_text = "hello world";
+
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el("div", vec![("id", "container")], vec![text(full_text)])],
+    )],
+  )]);
+
+  let text_dom_id = text_node_id(&dom, full_text);
+  let mut text_box = BoxNode::new_text(default_style(), full_text.to_string());
+  text_box.styled_node_id = Some(text_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![text_box],
+  ));
+  let text_box_id = find_box_id_for_styled_node(&box_tree, text_dom_id);
+
+  let source_range =
+    TextSourceRange::new(0..full_text.len()).expect("expected valid packed source range");
+  let mut text_fragment =
+    FragmentNode::new_text(Rect::from_xywh(0.0, 0.0, 500.0, 100.0), full_text, 16.0);
+  if let crate::tree::fragment_tree::FragmentContent::Text {
+    box_id,
+    source_range: fragment_range,
+    ..
+  } = &mut text_fragment.content
+  {
+    *box_id = Some(text_box_id);
+    *fragment_range = Some(source_range);
+  } else {
+    panic!("expected FragmentContent::Text");
+  }
+
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 500.0, 500.0),
+    vec![text_fragment],
+  ));
+
+  let scroll = ScrollState::with_viewport(Point::new(50.0, 25.0));
+  let mut engine = InteractionEngine::new();
+
+  // Begin a document selection drag within the visible (scrolled) viewport.
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(100.0, 10.0),
+  );
+  engine.pointer_move(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(200.0, 10.0),
+  );
+
+  let before = engine.interaction_state().document_selection.clone();
+  assert!(
+    before.as_ref().is_some_and(|sel| sel.has_highlight()),
+    "expected selection drag to create a highlighted document selection"
+  );
+
+  // The browser UI uses a sentinel `(-1, -1)` pointer position when the cursor leaves the page
+  // image. With a non-zero scroll offset, `viewport_point_for_pos_css` must translate this sentinel
+  // such that applying `scroll.viewport` yields a negative page-point. Otherwise, the selection drag
+  // would jump to the top-left edge of the viewport.
+  let sentinel_viewport_point = viewport_point_for_pos_css(&scroll, (-1.0, -1.0));
+  engine.pointer_move(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    sentinel_viewport_point,
+  );
+
+  let after = engine.interaction_state().document_selection.clone();
+  assert_eq!(
+    after, before,
+    "sentinel pointer_move must not update document selection state during a drag"
+  );
+}
+
+#[test]
 fn text_drag_drop_defers_default_insertion_until_apply_text_drop() {
   let mut dom = doc(vec![el(
     "html",

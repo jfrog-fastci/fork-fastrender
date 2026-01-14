@@ -7348,6 +7348,8 @@ mod tests {
     let mut host =
       make_host_with_options(dom, "https://example.invalid/", js_options)?;
 
+    // Execute via the raw `WindowRealm` API so we can inspect the underlying `VmError`
+    // (the `WindowHost` convenience wrapper formats VM errors into `fastrender::Error`).
     let window = host.host_mut().window_mut();
     let err = window
       .exec_script("function f() { return f(); }\nf();")

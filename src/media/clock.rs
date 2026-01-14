@@ -13,7 +13,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::clock::Clock;
-
 /// Abstraction over the master clock used for A/V sync and HTMLMediaElement timekeeping.
 ///
 /// The clock origin is intentionally unspecified; callers should only compute deltas.
