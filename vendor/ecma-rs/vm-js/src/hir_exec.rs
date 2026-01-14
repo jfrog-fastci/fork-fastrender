@@ -1661,6 +1661,17 @@ impl<'vm> HirEvaluator<'vm> {
                   )? {
                     return Ok(false);
                   }
+
+                  // When binding an object pattern with `await` in computed keys/defaults, the
+                  // initializer must be evaluated synchronously before the pattern-binding state
+                  // machine begins. This means the initializer cannot contain any `await` (including
+                  // a direct `= await <expr>` initializer).
+                  if let Some(init_id) = declarator.init {
+                    if self.hir_expr_contains_await_for_async_analysis(script, body, init_id, &mut steps)? {
+                      return Ok(false);
+                    }
+                  }
+                  continue;
                 }
                 let Some(init_id) = declarator.init else {
                   continue;
@@ -23470,6 +23481,84 @@ mod async_function_ast_fallback_tests {
     assert_eq!(
       rt.heap.promise_result(promise_obj)?,
       Some(Value::Number(2.0))
+    );
+    rt.heap.remove_root(promise_root);
+    Ok(())
+  }
+
+  #[test]
+  fn compiled_script_async_function_with_await_in_object_pattern_and_direct_await_initializer_uses_call_time_ast_fallback(
+  ) -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    // Async functions allocate Promise/job machinery; use a slightly larger heap to avoid spurious
+    // OOMs as builtin surface area grows.
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let script = CompiledScript::compile_script(
+      &mut rt.heap,
+      "<inline>",
+      r#"
+        // This form is not yet supported by the compiled async evaluator:
+        // - the declarator initializer is a direct await, and
+        // - the destructuring pattern contains an await in a computed key.
+        //
+        // The compiled async evaluator can handle these features independently, but not together
+        // (it would require a combined state machine that suspends on the initializer and then
+        // continues with async-aware pattern binding).
+        async function f() {
+          const { [await Promise.resolve('k')]: v } = await Promise.resolve({ k: 1 });
+          return v;
+        }
+        f;
+      "#,
+    )?;
+    assert!(script.contains_async_functions);
+    assert!(!script.contains_generators);
+    assert!(!script.contains_async_generators);
+    assert!(
+      !script.requires_ast_fallback,
+      "compiled scripts should only require full AST fallback for private names or unsupported top-level await patterns"
+    );
+
+    let result = rt.exec_compiled_script(script)?;
+    let Value::Object(func_obj) = result else {
+      panic!("expected async function object, got {result:?}");
+    };
+
+    let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+    let CallHandler::User(func_ref) = call_handler else {
+      panic!("expected async function to be allocated as a compiled user function, got {call_handler:?}");
+    };
+    assert!(
+      func_ref.ast_fallback.is_none(),
+      "expected async function AST fallback to be expressed via FunctionData::AsyncEcmaFallback (not via CompiledFunctionRef::ast_fallback), got ast_fallback={:?}",
+      func_ref.ast_fallback
+    );
+
+    let func_data = rt.heap.get_function_data(func_obj)?;
+    assert!(
+      matches!(func_data, FunctionData::AsyncEcmaFallback { .. }),
+      "expected async function to carry FunctionData::AsyncEcmaFallback metadata, got {func_data:?}"
+    );
+
+    // Calling the async function should still work by interpreting via the AST fallback.
+    let promise = {
+      let mut scope = rt.heap.scope();
+      rt.vm
+        .call_without_host(&mut scope, Value::Object(func_obj), Value::Undefined, &[])?
+    };
+    let promise_root = rt.heap.add_root(promise)?;
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+      panic!("expected async function call to return a Promise object");
+    };
+    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+    assert_eq!(
+      rt.heap.promise_result(promise_obj)?,
+      Some(Value::Number(1.0))
     );
     rt.heap.remove_root(promise_root);
     Ok(())
