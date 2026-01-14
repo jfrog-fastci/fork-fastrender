@@ -444,7 +444,8 @@ timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --features brow
   - If you derive AccessKit ids from DOM2 ids, ensure they are stable across DOM insertions (see
     `tests/accesskit_dom2_node_ids.rs`).
   - Avoid collisions between “wrapper” nodes (window/chrome/page region) and per-element nodes by
-    using a clear namespacing scheme.
+    using a clear namespacing scheme (see `ui::page_a11y::encode_page_node_id`; `ui::page_accesskit_ids`
+    is an alternative tag-bit encoding).
 
 ## Manual testing with screen readers (current + future)
 
