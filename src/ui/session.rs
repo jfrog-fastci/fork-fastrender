@@ -1125,6 +1125,48 @@ mod tests {
   }
 
   #[test]
+  fn session_window_clamps_closed_tabs_to_capacity_preserving_order() {
+    let total = CLOSED_TAB_STACK_CAPACITY + 5;
+    let closed_tabs = (0..total)
+      .map(|i| BrowserSessionClosedTab {
+        url: format!("https://example.com/{i}"),
+        title: None,
+        pinned: false,
+      })
+      .collect::<Vec<_>>();
+
+    let window = BrowserSessionWindow {
+      tabs: vec![BrowserSessionTab {
+        url: "about:newtab".to_string(),
+        zoom: None,
+        scroll_css: None,
+        pinned: false,
+        group: None,
+      }],
+      downloads: Vec::new(),
+      tab_groups: Vec::new(),
+      closed_tabs,
+      active_tab_index: 0,
+      bookmarks_bar_visible: false,
+      show_menu_bar: default_show_menu_bar(),
+      window_state: None,
+    }
+    .sanitized();
+
+    let expected_first = format!("https://example.com/{}", total - CLOSED_TAB_STACK_CAPACITY);
+    let expected_last = format!("https://example.com/{}", total - 1);
+    assert_eq!(window.closed_tabs.len(), CLOSED_TAB_STACK_CAPACITY);
+    assert_eq!(
+      window.closed_tabs.first().map(|t| t.url.as_str()),
+      Some(expected_first.as_str())
+    );
+    assert_eq!(
+      window.closed_tabs.last().map(|t| t.url.as_str()),
+      Some(expected_last.as_str())
+    );
+  }
+
+  #[test]
   fn session_omits_default_scroll_from_json() {
     let session = BrowserSession::single("about:newtab".to_string());
     let json = serde_json::to_string(&session).expect("serialize session");
