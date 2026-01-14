@@ -3558,6 +3558,7 @@ const NODE_ITERATOR_ROOT_KEY: &str = "__fastrender_node_iterator_root";
 const NODE_ITERATOR_REFERENCE_KEY: &str = "__fastrender_node_iterator_reference";
 const NODE_ITERATOR_WHAT_TO_SHOW_KEY: &str = "__fastrender_node_iterator_what_to_show";
 const NODE_ITERATOR_FILTER_KEY: &str = "__fastrender_node_iterator_filter";
+const NODE_ITERATOR_PROTOTYPE_KEY: &str = "__fastrender_node_iterator_prototype";
 const NODE_ITERATOR_ACTIVE_KEY: &str = "__fastrender_node_iterator_active";
 const NODE_ITERATOR_PROTOTYPE_KEY: &str = "__fastrender_node_iterator_prototype";
 

@@ -2888,26 +2888,26 @@ impl BrowserDocumentDom2 {
           attributes,
           ..
         } => {
-          if dom.is_html_case_insensitive_namespace(namespace) && tag_name.eq_ignore_ascii_case("dialog") {
+          let is_html = dom.is_html_case_insensitive_namespace(namespace);
+          if is_html && tag_name.eq_ignore_ascii_case("dialog") {
             return true;
           }
 
           for attr in attributes {
-            let name = attr.qualified_name();
-            if name.eq_ignore_ascii_case("popover")
-              || name.eq_ignore_ascii_case("data-fastr-open")
-              || name.eq_ignore_ascii_case("data-fastr-modal")
+            if attr.qualified_name_matches("popover", is_html)
+              || attr.qualified_name_matches("data-fastr-open", is_html)
+              || attr.qualified_name_matches("data-fastr-modal", is_html)
             {
               return true;
             }
           }
         }
-        crate::dom2::NodeKind::Slot { attributes, .. } => {
+        crate::dom2::NodeKind::Slot { namespace, attributes, .. } => {
+          let is_html = dom.is_html_case_insensitive_namespace(namespace);
           for attr in attributes {
-            let name = attr.qualified_name();
-            if name.eq_ignore_ascii_case("popover")
-              || name.eq_ignore_ascii_case("data-fastr-open")
-              || name.eq_ignore_ascii_case("data-fastr-modal")
+            if attr.qualified_name_matches("popover", is_html)
+              || attr.qualified_name_matches("data-fastr-open", is_html)
+              || attr.qualified_name_matches("data-fastr-modal", is_html)
             {
               return true;
             }
