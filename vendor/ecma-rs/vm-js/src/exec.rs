@@ -10488,11 +10488,11 @@ impl<'a> Evaluator<'a> {
         ));
       }
       // Private-name super property access is an early error (`super.#x`).
-       if expr.right.starts_with('#') {
-         return Err(VmError::InvariantViolation(
-           "super private-name member access should be rejected by early errors",
-         ));
-       }
+      if expr.right.starts_with('#') {
+        return Err(VmError::InvariantViolation(
+          "super private-name member access should be rejected by early errors",
+        ));
+      }
 
       // `GetThisBinding` must run before any further evaluation (including allocating the property
       // key string) so derived constructors throw before `super()` as required by ECMA-262.
@@ -10609,7 +10609,7 @@ impl<'a> Evaluator<'a> {
       "super property access missing [[HomeObject]]",
     ))?;
 
-    // Root `this`, `home_object`, and `key` across:
+    // Root receiver, `home_object`, and `key` across:
     // - `GetPrototypeOf(home_object)` (Proxy-aware), and
     // - the final `[[Get]]` (which can invoke accessors).
     let mut super_scope = scope.reborrow();
@@ -10656,7 +10656,7 @@ impl<'a> Evaluator<'a> {
       "super property access missing [[HomeObject]]",
     ))?;
 
-    // Root `this`, `home_object`, `key`, and `value` across:
+    // Root receiver, `home_object`, `key`, and `value` across:
     // - `GetPrototypeOf(home_object)` (Proxy-aware), and
     // - the final `[[Set]]` (which can invoke accessors/Proxy traps).
     let mut super_scope = scope.reborrow();
@@ -10777,10 +10777,12 @@ impl<'a> Evaluator<'a> {
         }
         // `super[expr]` in reference position.
         if matches!(&*member.stx.object.stx, Expr::Super(_)) {
-          // Evaluating a `super[expr]` reference requires an initialized `this` binding. In derived
-          // constructors before `super()`, this check happens before evaluating the computed key
-          // expression.
+          // Spec ordering: evaluate `GetThisBinding()` (and throw in derived constructors before
+          // `super()`) before evaluating the computed key expression.
           let receiver = self.get_this_binding(scope)?;
+          let home_object = self.home_object.ok_or(VmError::InvariantViolation(
+            "super property access missing [[HomeObject]]",
+          ))?;
 
           let mut key_scope = scope.reborrow();
           key_scope.push_roots(&[self.this, receiver])?;
@@ -13400,6 +13402,7 @@ impl<'a> Evaluator<'a> {
           ));
         }
         // `GetThisBinding` must be observed before evaluating the computed key expression.
+        // `GetThisBinding` must be observed before evaluating the computed key expression.
         let receiver = self.get_this_binding(scope)?;
         let home_object = self.home_object.ok_or(VmError::InvariantViolation(
           "super property access missing [[HomeObject]]",
@@ -13551,6 +13554,8 @@ impl<'a> Evaluator<'a> {
       // Ordinary computed-member call (e.g. `obj[expr]()`), but with optional-chain propagation.
       Expr::ComputedMember(member) if !member.stx.optional_chaining => {
         if matches!(&*member.stx.object.stx, Expr::Super(_)) {
+          // Spec ordering: evaluate `GetThisBinding()` (and throw in derived constructors before
+          // `super()`) before evaluating the computed key expression.
           let receiver = self.get_this_binding(scope)?;
 
           let mut key_scope = scope.reborrow();

@@ -123,6 +123,27 @@ fn super_method_call_uses_this_binding_as_receiver() {
 }
 
 #[test]
+fn super_method_call_in_derived_constructor_after_super_uses_this_binding() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class B { m(){ return this.v; } }
+        class D extends B {
+          constructor(){
+            super();
+            this.v = 1;
+            this.out = super.m();
+          }
+        }
+        new D().out === 1
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn super_property_getter_setter_use_this_binding() {
   let mut rt = new_runtime();
   let value = rt
