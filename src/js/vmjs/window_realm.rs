@@ -37815,7 +37815,7 @@ fn range_insert_node_native(
     node_handle_from_wrapper_obj(vm, &mut scope, node_obj, "Range.insertNode requires a node argument")?;
 
   // Cache insertion bookkeeping for the source node so we can keep wrapper-cached live collections
-  // (`childNodes`, `children`, `<select>.options`) consistent when `insert_before` moves nodes.
+  // (`childNodes`, `children`, `<select>.options`) consistent when insertion moves nodes.
   let node_document_obj = node_handle.document_obj;
   let mut node_dom_ptr = dom_ptr_for_document_id_mut(vm, host, node_handle.document_id)
     .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
@@ -37835,116 +37835,6 @@ fn range_insert_node_native(
     .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
     .ok_or(VmError::TypeError("Illegal invocation"))?;
 
-  // SAFETY: `dom_ptr` is valid for the duration of this native call.
-  let dom = unsafe { dom_ptr.as_ref() };
-  let start = dom
-    .range_start(handle.range_id)
-    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
-  let collapsed = dom
-    .range_collapsed(handle.range_id)
-    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
-
-  // Per DOM: throw HierarchyRequestError if the start node is a Comment/PI, a detached Text node,
-  // or the node being inserted.
-  if node_handle.document_id == handle.document_id && node_handle.node_id == start.node {
-    return Err(VmError::Throw(make_dom_exception(vm, &mut scope, "HierarchyRequestError", "")?));
-  }
-  match &dom.node(start.node).kind {
-    NodeKind::Comment { .. } | NodeKind::ProcessingInstruction { .. } => {
-      return Err(VmError::Throw(make_dom_exception(vm, &mut scope, "HierarchyRequestError", "")?));
-    }
-    NodeKind::Text { .. } => {
-      if dom.parent(start.node).map_err(|_| VmError::TypeError("Illegal invocation"))?.is_none() {
-        return Err(VmError::Throw(make_dom_exception(vm, &mut scope, "HierarchyRequestError", "")?));
-      }
-    }
-    _ => {}
-  }
-
-  // Resolve the insertion parent + reference node from the range start boundary point.
-  let (parent, reference_node) = match &dom.node(start.node).kind {
-    NodeKind::Text { .. } => {
-      // Treat the insertion point as immediately before the Text node. This matches the correct
-      // behavior for offset 0 and provides a conservative fallback for other offsets.
-      let parent = match dom
-        .parent(start.node)
-        .map_err(|_| VmError::TypeError("Illegal invocation"))?
-      {
-        Some(parent) => parent,
-        None => return Err(VmError::Throw(make_dom_exception(vm, &mut scope, "HierarchyRequestError", "")?)),
-      };
-      (parent, Some(start.node))
-    }
-    _ => {
-      // Tree-child lookup for range offsets must ignore attached ShadowRoot nodes.
-      let start_children = &dom.node(start.node).children;
-      let parent_is_element_like = matches!(&dom.node(start.node).kind, NodeKind::Element { .. } | NodeKind::Slot { .. });
-      let mut idx = 0usize;
-      let mut reference = None;
-      for &child in start_children {
-        if child.index() >= dom.nodes_len() {
-          continue;
-        }
-        if dom.node(child).parent != Some(start.node) {
-          continue;
-        }
-        if parent_is_element_like && matches!(&dom.node(child).kind, NodeKind::ShadowRoot { .. }) {
-          continue;
-        }
-        if idx == start.offset {
-          reference = Some(child);
-          break;
-        }
-        idx += 1;
-      }
-      (start.node, reference)
-    }
-  };
-
-  // Compute the offset used to update the range end when collapsed.
-  let new_offset_before_increment = if let Some(reference_node) = reference_node {
-    // Find the reference node's tree index within its parent (ignoring ShadowRoot nodes).
-    let parent_children = &dom.node(parent).children;
-    let parent_is_element_like = matches!(&dom.node(parent).kind, NodeKind::Element { .. } | NodeKind::Slot { .. });
-    let mut idx = 0usize;
-    let mut found = None;
-    for &child in parent_children {
-      if child.index() >= dom.nodes_len() {
-        continue;
-      }
-      if dom.node(child).parent != Some(parent) {
-        continue;
-      }
-      if parent_is_element_like && matches!(&dom.node(child).kind, NodeKind::ShadowRoot { .. }) {
-        continue;
-      }
-      if child == reference_node {
-        found = Some(idx);
-        break;
-      }
-      idx += 1;
-    }
-    found.unwrap_or(0)
-  } else {
-    // parent.length (tree child count)
-    let parent_children = &dom.node(parent).children;
-    let parent_is_element_like = matches!(&dom.node(parent).kind, NodeKind::Element { .. } | NodeKind::Slot { .. });
-    let mut count = 0usize;
-    for &child in parent_children {
-      if child.index() >= dom.nodes_len() {
-        continue;
-      }
-      if dom.node(child).parent != Some(parent) {
-        continue;
-      }
-      if parent_is_element_like && matches!(&dom.node(child).kind, NodeKind::ShadowRoot { .. }) {
-        continue;
-      }
-      count += 1;
-    }
-    count
-  };
-
   // Adopt the inserted node into the range's document if needed.
   let adopted = maybe_adopt_node_into_document(
     vm,
@@ -37962,7 +37852,7 @@ fn range_insert_node_native(
 
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let dom_after_adoption = unsafe { dom_ptr.as_ref() };
-  let (inserted_roots, inserted_count) = match &dom_after_adoption.node(adopted.node_id).kind {
+  let inserted_roots: Vec<NodeId> = match &dom_after_adoption.node(adopted.node_id).kind {
     NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => {
       // Record fragment children before insertion: insertion moves the children and empties the
       // fragment.
@@ -37977,34 +37867,35 @@ fn range_insert_node_native(
         }
         roots.push(child);
       }
-      let count = roots.len();
-      (roots, count)
+      roots
     }
-    _ => (vec![adopted.node_id], 1),
+    _ => vec![adopted.node_id],
   };
-  let new_offset = new_offset_before_increment.saturating_add(inserted_count);
 
-  // Perform the insertion.
-  let insert_result = unsafe { dom_ptr.as_mut() }.insert_before(parent, adopted.node_id, reference_node);
-  if let Err(err) = insert_result {
-    return Err(VmError::Throw(make_dom_exception(vm, &mut scope, err.code(), "")?));
+  match unsafe { dom_ptr.as_mut() }.range_insert_node(handle.range_id, adopted.node_id) {
+    Ok(()) => {}
+    Err(err) => return Err(VmError::Throw(make_dom_exception(vm, &mut scope, err.code(), "")?)),
   }
 
-  // Update cached node lists for the parent (and potentially the moved node's previous parent).
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let dom = unsafe { dom_ptr.as_ref() };
-  sync_cached_child_nodes_for_node_id(vm, &mut scope, handle.document_obj, dom, parent)?;
-  sync_cached_children_for_node_id(vm, &mut scope, handle.document_obj, dom, parent)?;
-  sync_cached_select_options_for_select_ancestor(vm, &mut scope, handle.document_obj, dom, parent)?;
+  let insertion_parent = inserted_roots.first().copied().and_then(|node_id| dom.parent_node(node_id));
+
+  // Update cached node lists for the insertion parent (and potentially the moved node's previous parent).
+  if let Some(parent) = insertion_parent {
+    sync_cached_child_nodes_for_node_id(vm, &mut scope, handle.document_obj, dom, parent)?;
+    sync_cached_children_for_node_id(vm, &mut scope, handle.document_obj, dom, parent)?;
+    sync_cached_select_options_for_select_ancestor(vm, &mut scope, handle.document_obj, dom, parent)?;
+  }
   if node_is_fragment {
     // Inserting a DocumentFragment moves its children and empties the fragment; keep any cached
     // collections on the fragment wrapper in sync.
     sync_cached_child_nodes_for_wrapper(vm, &mut scope, handle.document_obj, dom, node_obj, adopted.node_id)?;
     sync_cached_children_for_wrapper(vm, &mut scope, handle.document_obj, dom, node_obj, adopted.node_id)?;
   } else if let Some(old_parent) = node_old_parent {
-    // `insert_before` moves the node from its previous parent when connected. Keep any cached
+    // Insertion moves the node from its previous parent when connected. Keep any cached
     // collections on that parent in sync (which may live on a different `Document` wrapper).
-    if !(node_handle.document_id == handle.document_id && old_parent == parent) {
+    if !(node_handle.document_id == handle.document_id && Some(old_parent) == insertion_parent) {
       let old_parent_dom = if node_dom_ptr == dom_ptr {
         dom
       } else {
@@ -38015,10 +37906,6 @@ fn range_insert_node_native(
       sync_cached_children_for_node_id(vm, &mut scope, node_document_obj, old_parent_dom, old_parent)?;
       sync_cached_select_options_for_select_ancestor(vm, &mut scope, node_document_obj, old_parent_dom, old_parent)?;
     }
-  }
-
-  if collapsed {
-    let _ = unsafe { dom_ptr.as_mut() }.range_set_end(handle.range_id, parent, new_offset);
   }
 
   // Script insertion + mutation observer microtasks are only wired up for the host document today.
@@ -38032,7 +37919,9 @@ fn range_insert_node_native(
       dom_ptr,
       &inserted_roots,
     )?;
-    run_dynamic_script_children_changed_steps(vm, &mut scope, host, hooks, handle.document_obj, dom_ptr, parent)?;
+    if let Some(parent) = insertion_parent {
+      run_dynamic_script_children_changed_steps(vm, &mut scope, host, hooks, handle.document_obj, dom_ptr, parent)?;
+    }
   }
 
   let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
@@ -38070,29 +37959,25 @@ fn range_surround_contents_native(
     "Range.surroundContents requires a node argument",
   )?;
 
+  // Cache insertion bookkeeping for the source node so we can keep wrapper-cached live collections
+  // (`childNodes`, `children`, `<select>.options`) consistent when insertion moves nodes.
+  let src_document_obj = new_parent_handle.document_obj;
+  let mut new_parent_dom_ptr = dom_ptr_for_document_id_mut(vm, host, new_parent_handle.document_id)
+    .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
+    .ok_or(VmError::TypeError(
+      "Range.surroundContents requires a node argument",
+    ))?;
+  let new_parent_old_parent = {
+    // SAFETY: `new_parent_dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { new_parent_dom_ptr.as_ref() };
+    dom.parent_node(new_parent_handle.node_id)
+  };
+
   let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, handle.document_id)
     .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
     .ok_or(VmError::TypeError("Illegal invocation"))?;
 
-  // Reject invalid newParent node types (Document/DocumentType/DocumentFragment).
-  {
-    let new_parent_dom_ptr = dom_ptr_for_document_id_read(vm, host, new_parent_handle.document_id)
-      .ok_or(VmError::TypeError("Range.surroundContents requires a node argument"))?;
-    // SAFETY: `new_parent_dom_ptr` is valid for the duration of this native call.
-    let new_parent_dom = unsafe { new_parent_dom_ptr.as_ref() };
-    match &new_parent_dom.node(new_parent_handle.node_id).kind {
-      NodeKind::Document { .. } | NodeKind::Doctype { .. } | NodeKind::DocumentFragment => {
-        return Err(VmError::Throw(make_dom_exception(vm, &mut scope, "InvalidNodeTypeError", "")?));
-      }
-      _ => {}
-    }
-  }
-
-  // 1. Extract the contents.
-  let fragment_value = range_extract_contents_native(vm, &mut scope, host, hooks, _callee, this, &[])?;
-  let fragment_value = scope.push_root(fragment_value)?;
-
-  // 2. Adopt `newParent` into the range document before inserting.
+  // Adopt `newParent` into the range document before running the spec algorithm.
   let adopted_parent = maybe_adopt_node_into_document(
     vm,
     &mut scope,
@@ -38107,97 +37992,71 @@ fn range_surround_contents_native(
     err => err,
   })?;
 
-  // 3. Clear `newParent` children (replace all with null) before insertion.
-  {
-    // SAFETY: `dom_ptr` is valid for the duration of this native call.
-    let dom = unsafe { dom_ptr.as_ref() };
-    let children: Vec<NodeId> = dom
-      .node(adopted_parent.node_id)
-      .children
-      .iter()
-      .copied()
-      .filter(|&child| child.index() < dom.nodes_len() && dom.node(child).parent == Some(adopted_parent.node_id))
-      .collect();
-    for child in children {
-      let _ = unsafe { dom_ptr.as_mut() }.remove_child(adopted_parent.node_id, child);
-    }
-  }
-  {
-    // Keep wrapper-cached collections on `newParent` in sync after clearing its children.
-    // SAFETY: `dom_ptr` is valid for the duration of this native call.
-    let dom = unsafe { dom_ptr.as_ref() };
-    sync_cached_child_nodes_for_wrapper(vm, &mut scope, handle.document_obj, dom, new_parent_obj, adopted_parent.node_id)?;
-    sync_cached_children_for_wrapper(vm, &mut scope, handle.document_obj, dom, new_parent_obj, adopted_parent.node_id)?;
-    sync_cached_select_options_for_select_ancestor(vm, &mut scope, handle.document_obj, dom, adopted_parent.node_id)?;
-  }
-
-  // 4. Insert `newParent` into the range.
-  range_insert_node_native(
-    vm,
-    &mut scope,
-    host,
-    hooks,
-    _callee,
-    this,
-    &[Value::Object(new_parent_obj)],
-  )?;
-
-  // 5. Append extracted fragment to `newParent`.
-  let _ = node_append_child_native(
-    vm,
-    &mut scope,
-    host,
-    hooks,
-    _callee,
-    Value::Object(new_parent_obj),
-    &[fragment_value],
-  )?;
-
-  // 6. Select `newParent` within the range.
-  let (parent, index) = {
-    // SAFETY: `dom_ptr` is valid for the duration of this native call.
-    let dom = unsafe { dom_ptr.as_ref() };
-    let parent = match dom
-      .parent(adopted_parent.node_id)
-      .map_err(|_| VmError::TypeError("Illegal invocation"))?
-    {
-      Some(parent) => parent,
-      None => return Err(VmError::Throw(make_dom_exception(vm, &mut scope, "InvalidNodeTypeError", "")?)),
-    };
-    let children = &dom.node(parent).children;
-    let parent_is_element_like = matches!(&dom.node(parent).kind, NodeKind::Element { .. } | NodeKind::Slot { .. });
-    let mut idx = 0usize;
-    let mut found = 0usize;
-    for &child in children {
-      if child.index() >= dom.nodes_len() {
-        continue;
-      }
-      if dom.node(child).parent != Some(parent) {
-        continue;
-      }
-      if parent_is_element_like && matches!(&dom.node(child).kind, NodeKind::ShadowRoot { .. }) {
-        continue;
-      }
-      if child == adopted_parent.node_id {
-        found = idx;
-        break;
-      }
-      idx += 1;
-    }
-    (parent, found)
-  };
-
-  let _ = unsafe { dom_ptr.as_mut() }.range_set_start(handle.range_id, parent, index);
-  let _ = unsafe { dom_ptr.as_mut() }.range_set_end(handle.range_id, parent, index.saturating_add(1));
-
-  // Sync cached lists for the affected parent.
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let dom = unsafe { dom_ptr.as_ref() };
-  sync_cached_child_nodes_for_node_id(vm, &mut scope, handle.document_obj, dom, parent)?;
-  sync_cached_children_for_node_id(vm, &mut scope, handle.document_obj, dom, parent)?;
+  let old_parent = dom.parent_node(adopted_parent.node_id);
+
+  match unsafe { dom_ptr.as_mut() }.range_surround_contents(handle.range_id, adopted_parent.node_id) {
+    Ok(()) => {}
+    Err(err) => return Err(VmError::Throw(make_dom_exception(vm, &mut scope, err.code(), "")?)),
+  }
+
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let insertion_parent = dom.parent_node(adopted_parent.node_id);
+
+  // Sync cached lists for the affected parent + wrapper.
+  if let Some(parent) = insertion_parent {
+    sync_cached_child_nodes_for_node_id(vm, &mut scope, handle.document_obj, dom, parent)?;
+    sync_cached_children_for_node_id(vm, &mut scope, handle.document_obj, dom, parent)?;
+    sync_cached_select_options_for_select_ancestor(vm, &mut scope, handle.document_obj, dom, parent)?;
+  }
+  if let Some(old_parent) = old_parent {
+    if Some(old_parent) != insertion_parent {
+      sync_cached_child_nodes_for_node_id(vm, &mut scope, handle.document_obj, dom, old_parent)?;
+      sync_cached_children_for_node_id(vm, &mut scope, handle.document_obj, dom, old_parent)?;
+      sync_cached_select_options_for_select_ancestor(vm, &mut scope, handle.document_obj, dom, old_parent)?;
+    }
+  }
+  sync_cached_child_nodes_for_node_id(vm, &mut scope, handle.document_obj, dom, adopted_parent.node_id)?;
+  sync_cached_children_for_node_id(vm, &mut scope, handle.document_obj, dom, adopted_parent.node_id)?;
+  sync_cached_select_options_for_select_ancestor(vm, &mut scope, handle.document_obj, dom, adopted_parent.node_id)?;
+
+  if let Some(old_parent) = new_parent_old_parent {
+    if !(new_parent_handle.document_id == handle.document_id && Some(old_parent) == insertion_parent) {
+      let old_parent_dom = if new_parent_dom_ptr == dom_ptr {
+        dom
+      } else {
+        // SAFETY: `new_parent_dom_ptr` is valid for the duration of this native call.
+        unsafe { new_parent_dom_ptr.as_ref() }
+      };
+      sync_cached_child_nodes_for_node_id(vm, &mut scope, src_document_obj, old_parent_dom, old_parent)?;
+      sync_cached_children_for_node_id(vm, &mut scope, src_document_obj, old_parent_dom, old_parent)?;
+      sync_cached_select_options_for_select_ancestor(vm, &mut scope, src_document_obj, old_parent_dom, old_parent)?;
+    }
+  }
+
+  if is_host_document_id(vm, handle.document_id) {
+    run_dynamic_script_insertion_steps(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      handle.document_obj,
+      dom_ptr,
+      &[adopted_parent.node_id],
+    )?;
+    if let Some(parent) = insertion_parent {
+      run_dynamic_script_children_changed_steps(vm, &mut scope, host, hooks, handle.document_obj, dom_ptr, parent)?;
+    }
+  }
 
   let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
   maybe_queue_mutation_observer_microtask(vm, &mut scope, host, hooks, handle.document_obj, needs_microtask)?;
+  if new_parent_dom_ptr != dom_ptr {
+    let source_needs_microtask = unsafe { new_parent_dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
+    maybe_queue_mutation_observer_microtask(vm, &mut scope, host, hooks, src_document_obj, source_needs_microtask)?;
+  }
 
   Ok(Value::Undefined)
 }
@@ -59220,6 +59079,106 @@ mod tests {
         for (let i = 0; i < before.length; i++) {
           if (before[i] !== after[i]) return false;
         }
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn range_insert_node_splits_text_at_offset_and_updates_end_when_collapsed() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const host = document.createElement('div');
+        const text = document.createTextNode('hello');
+        host.append(text);
+        document.body.append(host);
+
+        const range = document.createRange();
+        range.setStart(text, 2);
+        range.collapse(true);
+
+        const span = document.createElement('span');
+        span.textContent = 'X';
+        range.insertNode(span);
+
+        const nodes = host.childNodes;
+        if (nodes.length !== 3) return false;
+        if (nodes[0].nodeType !== 3 || nodes[0].data !== 'he') return false;
+        if (nodes[1] !== span) return false;
+        if (nodes[2].nodeType !== 3 || nodes[2].data !== 'llo') return false;
+
+        if (range.endContainer !== host) return false;
+        if (range.endOffset !== 2) return false;
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn range_surround_contents_throws_invalid_state_for_partially_contained_non_text_node() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const outer = document.createElement('div');
+        outer.innerHTML = '<span id=a>hello</span><span id=b>world</span>';
+        document.body.append(outer);
+
+        const aText = outer.querySelector('#a').firstChild;
+        const range = document.createRange();
+        range.setStart(aText, 1);
+        range.setEnd(outer, 1); // after <span id=a>
+
+        try {
+          range.surroundContents(document.createElement('em'));
+          return false;
+        } catch (e) {
+          return e && e.name === 'InvalidStateError';
+        }
+      })()"#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn range_surround_contents_wraps_and_selects_new_parent() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const host = document.createElement('div');
+        host.innerHTML = '<span>a</span><span>b</span>';
+        document.body.append(host);
+
+        const range = document.createRange();
+        range.setStart(host, 0);
+        range.setEnd(host, 2);
+
+        const em = document.createElement('em');
+        range.surroundContents(em);
+
+        if (host.firstChild !== em) return false;
+        if (em.childNodes.length !== 2) return false;
+        if (em.firstChild.tagName !== 'SPAN') return false;
+        if (em.lastChild.tagName !== 'SPAN') return false;
+
+        if (range.startContainer !== host) return false;
+        if (range.startOffset !== 0) return false;
+        if (range.endContainer !== host) return false;
+        if (range.endOffset !== 1) return false;
         return true;
       })()"#,
     )?;
