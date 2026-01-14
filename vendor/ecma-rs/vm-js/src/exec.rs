@@ -10805,12 +10805,15 @@ impl<'a> Evaluator<'a> {
           // Spec ordering: evaluate `GetThisBinding()` (and throw in derived constructors before
           // `super()`) before evaluating the computed key expression.
           let receiver = self.get_this_binding(scope)?;
-          let _home_object = self.home_object.ok_or(VmError::InvariantViolation(
+          let home_object = self.home_object.ok_or(VmError::InvariantViolation(
             "super property access missing [[HomeObject]]",
           ))?;
 
           let mut key_scope = scope.reborrow();
-          key_scope.push_roots(&[self.this, receiver])?;
+          // Root `this`, `GetThisBinding()` result, and the `[[HomeObject]]` across evaluation of the
+          // computed property key expression and `GetSuperBase()`. These steps can allocate (string
+          // conversions) and can invoke user code (Proxy traps).
+          key_scope.push_roots(&[self.this, receiver, Value::Object(home_object)])?;
           let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
           key_scope.push_root(member_value)?;
           let key = self.to_property_key_operator(&mut key_scope, member_value)?;
@@ -16226,14 +16229,6 @@ pub(crate) enum GenFrame {
     receiver: Option<Value>,
     left: Value,
   },
-  /// Continue an `**=` assignment after evaluating the RHS.
-  AssignExpAfterRhs {
-    expr: *const BinaryExpr,
-    base: Option<Value>,
-    key: Option<Value>,
-    receiver: Option<Value>,
-    left: Value,
-  },
 
   /// Continue a call expression while evaluating arguments.
   CallAfterCallee { expr: *const CallExpr },
@@ -16305,13 +16300,6 @@ impl Trace for GenFrame {
         }
       }
       GenFrame::AssignAddAfterRhs {
-        base,
-        key,
-        receiver,
-        left,
-        ..
-      }
-      | GenFrame::AssignExpAfterRhs {
         base,
         key,
         receiver,
@@ -37115,7 +37103,7 @@ fn gen_eval_assignment_apply_reference(
         }
       }
     }
-    OperatorName::AssignmentAddition => {
+    OperatorName::AssignmentAddition | OperatorName::AssignmentExponentiation => {
       let mut op_scope = scope.reborrow();
       evaluator.root_reference(&mut op_scope, &reference)?;
 
@@ -37130,9 +37118,23 @@ fn gen_eval_assignment_apply_reference(
             let right = v.unwrap_or(Value::Undefined);
             let mut compound_scope = op_scope.reborrow();
             compound_scope.push_root(right)?;
-            let value = evaluator
-              .addition_operator(&mut compound_scope, left, right)
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err))?;
+            let value = match expr.operator {
+              OperatorName::AssignmentAddition => evaluator
+                .addition_operator(&mut compound_scope, left, right)
+                .map_err(|err| {
+                  coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
+                })?,
+              OperatorName::AssignmentExponentiation => evaluator
+                .exponentiation_operator(&mut compound_scope, left, right)
+                .map_err(|err| {
+                  coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
+                })?,
+              _ => {
+                return Err(VmError::InvariantViolation(
+                  "generator compound assignment evaluator called for unsupported operator",
+                ))
+              }
+            };
             compound_scope.push_root(value)?;
             evaluator
               .put_value_to_reference(&mut compound_scope, &reference, value)
@@ -39639,9 +39641,12 @@ fn gen_resume_from_frames(
               OperatorName::AssignmentAddition => evaluator
                 .addition_operator(&mut op_scope, left, right)
                 .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?,
+              OperatorName::AssignmentExponentiation => evaluator
+                .exponentiation_operator(&mut op_scope, left, right)
+                .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?,
               _ => {
                 return Err(VmError::InvariantViolation(
-                  "AssignAddAfterRhs used for non-addition operator",
+                  "AssignAddAfterRhs used for non-compound operator",
                 ))
               }
             };
@@ -39649,110 +39654,6 @@ fn gen_resume_from_frames(
             evaluator
               .put_value_to_reference(&mut op_scope, &reference, value)
               .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
-            Ok(value)
-          })();
-
-          match assign_res {
-            Ok(value) => state = Completion::normal(value),
-            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
-          }
-        }
-        abrupt => state = abrupt,
-      },
-
-      GenFrame::AssignExpAfterRhs {
-        expr,
-        base,
-        key,
-        receiver,
-        left,
-      } => match state {
-        Completion::Normal(v) => {
-          let expr = unsafe { &*expr };
-          let right = v.unwrap_or(Value::Undefined);
-
-          let assign_res = (|| -> Result<Value, VmError> {
-            let reference = match (base, key, receiver) {
-              (None, None, None) => match &*expr.left.stx {
-                Expr::Id(id) => Reference::Binding(&id.stx.name),
-                Expr::IdPat(id) => Reference::Binding(&id.stx.name),
-                _ => {
-                  return Err(VmError::InvariantViolation(
-                    "AssignExpAfterRhs used for non-binding LHS without stored reference",
-                  ))
-                }
-              },
-              (Some(base), Some(key_value), None) => {
-                match &*expr.left.stx {
-                  Expr::Member(member) if member.stx.right.starts_with('#') => {
-                    let Value::Symbol(sym) = key_value else {
-                      return Err(VmError::InvariantViolation(
-                        "private assignment key should be a symbol",
-                      ));
-                    };
-                    Reference::Private {
-                      base,
-                      sym,
-                      name: member.stx.right.as_str(),
-                    }
-                  }
-                  _ => {
-                    let key = match key_value {
-                      Value::String(s) => PropertyKey::from_string(s),
-                      Value::Symbol(s) => PropertyKey::from_symbol(s),
-                      _ => {
-                        return Err(VmError::InvariantViolation(
-                          "assignment key should be a string or symbol",
-                        ))
-                      }
-                    };
-                    Reference::Property { base, key }
-                  }
-                }
-              }
-              (Some(base), Some(key_value), Some(receiver)) => {
-                let key = match key_value {
-                  Value::String(s) => PropertyKey::from_string(s),
-                  Value::Symbol(s) => PropertyKey::from_symbol(s),
-                  _ => {
-                    return Err(VmError::InvariantViolation(
-                      "assignment key should be a string or symbol",
-                    ))
-                  }
-                };
-                Reference::SuperProperty {
-                  base,
-                  key,
-                  receiver,
-                }
-              }
-              _ => {
-                return Err(VmError::InvariantViolation(
-                  "AssignExpAfterRhs has mismatched stored reference components",
-                ))
-              }
-            };
-
-            let mut exp_scope = scope.reborrow();
-            match (base, key, receiver) {
-              (Some(base), Some(key_value), Some(receiver)) => {
-                exp_scope.push_roots(&[base, key_value, receiver, left, right])?
-              }
-              (Some(base), Some(key_value), None) => exp_scope.push_roots(&[base, key_value, left, right])?,
-              (None, None, None) => exp_scope.push_roots(&[left, right])?,
-              _ => {
-                return Err(VmError::InvariantViolation(
-                  "AssignExpAfterRhs has mismatched stored reference components",
-                ))
-              }
-            };
-            let value = evaluator
-              .exponentiation_operator(&mut exp_scope, left, right)
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut exp_scope, err))?;
-            exp_scope.push_root(value)?;
-            evaluator
-              .put_value_to_reference(&mut exp_scope, &reference, value)
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut exp_scope, err))?;
             Ok(value)
           })();
 
@@ -40260,12 +40161,6 @@ fn gen_root_values_for_continuation(
         key,
         receiver,
         ..
-      }
-      | GenFrame::AssignExpAfterRhs {
-        base,
-        key,
-        receiver,
-        ..
       } => {
         needed = needed
           .saturating_add(1) // `left`.
@@ -40341,13 +40236,6 @@ fn gen_root_values_for_continuation(
         }
       }
       GenFrame::AssignAddAfterRhs {
-        base,
-        key,
-        receiver,
-        left,
-        ..
-      }
-      | GenFrame::AssignExpAfterRhs {
         base,
         key,
         receiver,
