@@ -12809,6 +12809,83 @@ mod compiled_hir_async_await_semantics_tests {
       ExpectedValue::Number(3.0),
     )
   }
+
+  #[test]
+  fn compiled_async_for_of_with_await_in_rhs() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f(){
+          let out='';
+          for (const x of await Promise.resolve([1,2])) {
+            out += x;
+          }
+          return out;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::String("12"),
+    )
+  }
+
+  #[test]
+  fn compiled_async_for_in_with_await_in_rhs() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f(){
+          let out='';
+          for (const k in await Promise.resolve({a:1,b:2})) {
+            out += k;
+          }
+          // order is not guaranteed; sort
+          return out.split('').sort().join('');
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::String("ab"),
+    )
+  }
+
+  #[test]
+  fn compiled_async_for_await_of_with_await_in_rhs() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f(){
+          let out='';
+          for await (const x of await Promise.resolve([Promise.resolve(1), Promise.resolve(2)])) {
+            out += x;
+          }
+          return out;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::String("12"),
+    )
+  }
+
+  #[test]
+  fn compiled_async_for_await_of_with_await_in_rhs_and_body() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f(){
+          let out='';
+          for await (const x of await Promise.resolve([Promise.resolve(1), Promise.resolve(2)])) {
+            out += await Promise.resolve(x);
+          }
+          return out;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::String("12"),
+    )
+  }
   
   #[test]
   fn compiled_async_await_in_member_base_simple_assignment() -> Result<(), VmError> {
@@ -12923,7 +13000,6 @@ mod compiled_hir_async_await_semantics_tests {
       ExpectedValue::Bool(true),
     )
   }
-  
   #[test]
   fn compiled_top_level_await_script_resolves_completion_value() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
@@ -14744,124 +14820,4 @@ mod derived_constructor_eval_super_call_compiled_tests {
 mod hir_async_await_try_catch_finally_compiled_tests {
   // This module was superseded by `compiled_hir_async_await_semantics_tests` which asserts the async
   // function executes via the compiled (HIR) async evaluator (not the call-time AST fallback).
-}
-
-#[cfg(test)]
-mod hir_async_loop_rhs_await_compiled_tests {
-  use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOptions};
-
-  fn exec_async_script_returning_string(rt: &mut JsRuntime, source: &str) -> Result<String, VmError> {
-    let script = CompiledScript::compile_script(&mut rt.heap, "<inline>", source)?;
-    let result = rt.exec_compiled_script(script)?;
-    let Value::Object(promise_obj) = result else {
-      panic!("expected Promise object, got {result:?}");
-    };
-
-    let promise_root = rt.heap.add_root(Value::Object(promise_obj))?;
-    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
-
-    let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
-      panic!("expected Promise root");
-    };
-    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
-    let Some(Value::String(s)) = rt.heap.promise_result(promise_obj)? else {
-      panic!("expected Promise result to be a string, got {:?}", rt.heap.promise_result(promise_obj)?);
-    };
-
-    let out = rt.heap.get_string(s)?.to_utf8_lossy();
-    rt.heap.remove_root(promise_root);
-    Ok(out)
-  }
-
-  #[test]
-  fn for_of_with_await_in_rhs_compiled() -> Result<(), VmError> {
-    let vm = Vm::new(VmOptions::default());
-    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
-    let mut rt = JsRuntime::new(vm, heap)?;
-
-    let out = exec_async_script_returning_string(
-      &mut rt,
-      r#"
-        async function f(){
-          let out='';
-          for (const x of await Promise.resolve([1,2])) {
-            out += x;
-          }
-          return out;
-        }
-        f()
-      "#,
-    )?;
-    assert_eq!(out, "12");
-    Ok(())
-  }
-
-  #[test]
-  fn for_in_with_await_in_rhs_compiled() -> Result<(), VmError> {
-    let vm = Vm::new(VmOptions::default());
-    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
-    let mut rt = JsRuntime::new(vm, heap)?;
-
-    let out = exec_async_script_returning_string(
-      &mut rt,
-      r#"
-        async function f(){
-          let out='';
-          for (const k in await Promise.resolve({a:1,b:2})) {
-            out += k;
-          }
-          return out.split('').sort().join('');
-        }
-        f()
-      "#,
-    )?;
-    assert_eq!(out, "ab");
-    Ok(())
-  }
-
-  #[test]
-  fn for_await_of_with_await_in_rhs_compiled() -> Result<(), VmError> {
-    let vm = Vm::new(VmOptions::default());
-    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
-    let mut rt = JsRuntime::new(vm, heap)?;
-
-    let out = exec_async_script_returning_string(
-      &mut rt,
-      r#"
-        async function f(){
-          let out='';
-          for await (const x of await Promise.resolve([Promise.resolve(1), Promise.resolve(2)])) {
-            out += x;
-          }
-          return out;
-        }
-        f()
-      "#,
-    )?;
-    assert_eq!(out, "12");
-    Ok(())
-  }
-
-  #[test]
-  fn for_await_of_with_await_in_rhs_and_body_compiled() -> Result<(), VmError> {
-    let vm = Vm::new(VmOptions::default());
-    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
-    let mut rt = JsRuntime::new(vm, heap)?;
-
-    let out = exec_async_script_returning_string(
-      &mut rt,
-      r#"
-        async function f(){
-          let out='';
-          for await (const x of await Promise.resolve([Promise.resolve(1), Promise.resolve(2)])) {
-            out += await Promise.resolve(x);
-          }
-          return out;
-        }
-        f()
-      "#,
-    )?;
-    assert_eq!(out, "12");
-    Ok(())
-  }
 }
