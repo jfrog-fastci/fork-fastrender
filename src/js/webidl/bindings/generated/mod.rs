@@ -5757,6 +5757,35 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn range_clone_contents(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Range",
+        "cloneContents",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
   fn range_compare_point(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -5803,6 +5832,35 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn range_delete_contents(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Range",
+        "deleteContents",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
   fn range_detach(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -5825,6 +5883,72 @@ pub mod window {
         receiver,
         "Range",
         "detach",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn range_extract_contents(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Range",
+        "extractContents",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn range_insert_node(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = v0;
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Range",
+        "insertNode",
         0,
         &converted_args,
       )
@@ -6000,6 +6124,43 @@ pub mod window {
         receiver,
         "Range",
         "setStart",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn range_surround_contents(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = v0;
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Range",
+        "surroundContents",
         0,
         &converted_args,
       )
@@ -12929,6 +13090,23 @@ pub mod window {
     }
 
     {
+      let key = rt.property_key("cloneContents")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_range, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(range_clone_contents, None, "cloneContents", 0)?;
+        rt.define_data_property_str(
+          proto_range,
+          "cloneContents",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
       let key = rt.property_key("comparePoint")?;
       if rt
         .scope
@@ -12946,6 +13124,23 @@ pub mod window {
       }
     }
     {
+      let key = rt.property_key("deleteContents")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_range, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(range_delete_contents, None, "deleteContents", 0)?;
+        rt.define_data_property_str(
+          proto_range,
+          "deleteContents",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
       let key = rt.property_key("detach")?;
       if rt
         .scope
@@ -12957,6 +13152,40 @@ pub mod window {
         rt.define_data_property_str(
           proto_range,
           "detach",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("extractContents")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_range, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(range_extract_contents, None, "extractContents", 0)?;
+        rt.define_data_property_str(
+          proto_range,
+          "extractContents",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("insertNode")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_range, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(range_insert_node, None, "insertNode", 1)?;
+        rt.define_data_property_str(
+          proto_range,
+          "insertNode",
           Value::Object(func),
           DataPropertyAttributes::METHOD,
         )?;
@@ -13025,6 +13254,24 @@ pub mod window {
         rt.define_data_property_str(
           proto_range,
           "setStart",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("surroundContents")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_range, &key)?
+        .is_none()
+      {
+        let func =
+          rt.alloc_native_function(range_surround_contents, None, "surroundContents", 1)?;
+        rt.define_data_property_str(
+          proto_range,
+          "surroundContents",
           Value::Object(func),
           DataPropertyAttributes::METHOD,
         )?;

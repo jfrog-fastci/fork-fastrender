@@ -31,7 +31,7 @@ use crate::js::{DomHost, DocumentHostState, TimerId, Url, UrlLimits, UrlSearchPa
 use crate::web::events as web_events;
 use std::any::TypeId;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -52,7 +52,6 @@ const URLSP_ITER_LEN_SLOT: &str = "__fastrender_urlsp_iter_len";
 const URL_SEARCH_PARAMS_SLOT: &str = "__fastrender_url_searchParams";
 const ELEMENT_CLASS_LIST_PLACEHOLDER_SLOT: &str = "__fastrender_element_class_list_placeholder";
 const DOM_TOKEN_LIST_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMDTL");
-const RANGE_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMRNG");
 const NODE_ITERATOR_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMNIT");
 const TREE_WALKER_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMTWK");
 const DOM_HOST_NOT_AVAILABLE_ERROR: &str = "DOM host not available";
@@ -449,42 +448,6 @@ fn require_dom_token_list_receiver(
   let node_index = usize::try_from(slots.unwrap().a) // fastrender-allow-unwrap
     .map_err(|_| VmError::TypeError("Illegal invocation"))?;
   Ok((NodeId::from_index(node_index), obj))
-}
-
-fn require_range_receiver(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  receiver: Option<Value>,
-) -> Result<(RangeId, DocumentId), VmError> {
-  let Some(Value::Object(obj)) = receiver else {
-    return Err(VmError::TypeError("Illegal invocation"));
-  };
-  let slots = match scope.heap().object_host_slots(obj) {
-    Ok(slots) => slots,
-    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
-    Err(err) => return Err(err),
-  };
-  if !matches!(slots, Some(slots) if slots.b == RANGE_HOST_TAG) {
-    return Err(VmError::TypeError("Illegal invocation"));
-  }
-  let range_id = RangeId::from_u64(slots.unwrap().a); // fastrender-allow-unwrap
-
-  // Range wrappers store a back-reference to their owning Document wrapper so we can resolve the
-  // correct `dom2::Document` arena and wrap returned Nodes.
-  let wrapper_document_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
-  let document_obj = match scope
-    .heap()
-    .object_get_own_data_property_value(obj, &wrapper_document_key)?
-  {
-    Some(Value::Object(obj)) => obj,
-    _ => return Err(VmError::TypeError("Illegal invocation")),
-  };
-
-  let document_id = require_dom_platform_mut(vm)?
-    .require_document_handle(scope.heap(), Value::Object(document_obj))?
-    .document_id;
-
-  Ok((range_id, document_id))
 }
 
 fn require_node_iterator_receiver(
@@ -9891,21 +9854,35 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       }
 
       ("Range", "commonAncestorContainer", 0) => {
-        let (range_id, document_id) = require_range_receiver(vm, scope, receiver)?;
+        let state = self.require_range_state(receiver)?;
 
-        let result: Result<(NodeId, DomInterface), DomError> = self.with_dom_host(vm, |host| {
-          Ok(host.with_dom(|dom| {
-            let node_id = dom.range_common_ancestor_container(range_id)?;
-            let primary = DomInterface::primary_for_node_kind(&dom.node(node_id).kind);
-            Ok((node_id, primary))
-          }))
-        })?;
+        let owned_result: Option<Result<(NodeId, DomInterface), DomError>> = vm
+          .user_data_mut::<WindowRealmUserData>()
+          .and_then(|data| {
+            data.with_owned_dom2_document(state.document_id, |dom| {
+              let node_id = dom.range_common_ancestor_container(state.range_id)?;
+              let primary = DomInterface::primary_for_node_kind(&dom.node(node_id).kind);
+              Ok((node_id, primary))
+            })
+          });
+
+        let result = if let Some(result) = owned_result {
+          result
+        } else {
+          self.with_dom_host(vm, |host| {
+            Ok(host.with_dom(|dom| {
+              let node_id = dom.range_common_ancestor_container(state.range_id)?;
+              let primary = DomInterface::primary_for_node_kind(&dom.node(node_id).kind);
+              Ok((node_id, primary))
+            }))
+          })?
+        };
 
         match result {
           Ok((node_id, primary_interface)) => {
             let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
               scope,
-              document_id,
+              state.document_id,
               node_id,
               primary_interface,
             )?;
@@ -10162,6 +10139,729 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         match result {
           Ok(v) => Ok(Value::Bool(v)),
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      }
+
+      ("Range", "deleteContents", 0) => {
+        let state = self.require_range_state(receiver)?;
+
+        // Gather a conservative set of ancestor nodes whose `childNodes` live NodeLists may need to
+        // be synced after the mutation.
+        let owned_ancestors: Option<Result<Vec<NodeId>, DomError>> = vm
+          .user_data_mut::<WindowRealmUserData>()
+          .and_then(|data| {
+            data.with_owned_dom2_document(state.document_id, |dom| {
+              let start = dom.range_start_container(state.range_id)?;
+              let end = dom.range_end_container(state.range_id)?;
+              let common = dom.range_common_ancestor_container(state.range_id)?;
+
+              let mut out: HashSet<NodeId> = HashSet::new();
+              let mut n = start;
+              let mut remaining = dom.nodes_len() + 1;
+              loop {
+                out.insert(n);
+                if n == common || remaining == 0 {
+                  break;
+                }
+                remaining -= 1;
+                let Some(parent) = dom.tree_parent_node(n) else {
+                  break;
+                };
+                n = parent;
+              }
+              let mut n = end;
+              let mut remaining = dom.nodes_len() + 1;
+              loop {
+                out.insert(n);
+                if n == common || remaining == 0 {
+                  break;
+                }
+                remaining -= 1;
+                let Some(parent) = dom.tree_parent_node(n) else {
+                  break;
+                };
+                n = parent;
+              }
+              Ok(out.into_iter().collect())
+            })
+          });
+
+        let ancestors: Result<Vec<NodeId>, DomError> = if let Some(result) = owned_ancestors {
+          result
+        } else {
+          self.with_dom_host(vm, |host| {
+            Ok(host.with_dom(|dom| {
+              let start = dom.range_start_container(state.range_id)?;
+              let end = dom.range_end_container(state.range_id)?;
+              let common = dom.range_common_ancestor_container(state.range_id)?;
+
+              let mut out: HashSet<NodeId> = HashSet::new();
+              let mut n = start;
+              let mut remaining = dom.nodes_len() + 1;
+              loop {
+                out.insert(n);
+                if n == common || remaining == 0 {
+                  break;
+                }
+                remaining -= 1;
+                let Some(parent) = dom.tree_parent_node(n) else {
+                  break;
+                };
+                n = parent;
+              }
+              let mut n = end;
+              let mut remaining = dom.nodes_len() + 1;
+              loop {
+                out.insert(n);
+                if n == common || remaining == 0 {
+                  break;
+                }
+                remaining -= 1;
+                let Some(parent) = dom.tree_parent_node(n) else {
+                  break;
+                };
+                n = parent;
+              }
+              Ok(out.into_iter().collect())
+            }))
+          })?
+        };
+
+        let ancestors = match ancestors {
+          Ok(v) => v,
+          Err(err) => return Err(self.dom_error_to_vm_error(vm, scope, err)),
+        };
+
+        let owned_result: Option<Result<(), DomError>> = vm
+          .user_data_mut::<WindowRealmUserData>()
+          .and_then(|data| {
+            data.with_owned_dom2_document_mut(state.document_id, |dom| {
+              dom.range_delete_contents(state.range_id)
+            })
+          });
+
+        let result = if let Some(result) = owned_result {
+          result
+        } else {
+          self.with_dom_host(vm, |host| {
+            Ok(host.mutate_dom(|dom| match dom.range_delete_contents(state.range_id) {
+              Ok(()) => (Ok(()), true),
+              Err(err) => (Err(err), false),
+            }))
+          })?
+        };
+
+        match result {
+          Ok(()) => {
+            for node_id in ancestors {
+              let wrapper = {
+                let platform = require_dom_platform_mut(vm)?;
+                platform.get_existing_wrapper_for_document_id(scope.heap(), state.document_id, node_id)
+              };
+              if let Some(wrapper) = wrapper {
+                self.sync_cached_child_nodes_for_wrapper(vm, scope, wrapper, node_id, state.document_id)?;
+              }
+            }
+            self.sync_live_html_collections(vm, scope)?;
+            Ok(Value::Undefined)
+          }
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      }
+
+      ("Range", "extractContents", 0) => {
+        let state = self.require_range_state(receiver)?;
+
+        let owned_ancestors: Option<Result<Vec<NodeId>, DomError>> = vm
+          .user_data_mut::<WindowRealmUserData>()
+          .and_then(|data| {
+            data.with_owned_dom2_document(state.document_id, |dom| {
+              let start = dom.range_start_container(state.range_id)?;
+              let end = dom.range_end_container(state.range_id)?;
+              let common = dom.range_common_ancestor_container(state.range_id)?;
+
+              let mut out: HashSet<NodeId> = HashSet::new();
+              let mut n = start;
+              let mut remaining = dom.nodes_len() + 1;
+              loop {
+                out.insert(n);
+                if n == common || remaining == 0 {
+                  break;
+                }
+                remaining -= 1;
+                let Some(parent) = dom.tree_parent_node(n) else {
+                  break;
+                };
+                n = parent;
+              }
+              let mut n = end;
+              let mut remaining = dom.nodes_len() + 1;
+              loop {
+                out.insert(n);
+                if n == common || remaining == 0 {
+                  break;
+                }
+                remaining -= 1;
+                let Some(parent) = dom.tree_parent_node(n) else {
+                  break;
+                };
+                n = parent;
+              }
+              Ok(out.into_iter().collect())
+            })
+          });
+
+        let ancestors: Result<Vec<NodeId>, DomError> = if let Some(result) = owned_ancestors {
+          result
+        } else {
+          self.with_dom_host(vm, |host| {
+            Ok(host.with_dom(|dom| {
+              let start = dom.range_start_container(state.range_id)?;
+              let end = dom.range_end_container(state.range_id)?;
+              let common = dom.range_common_ancestor_container(state.range_id)?;
+
+              let mut out: HashSet<NodeId> = HashSet::new();
+              let mut n = start;
+              let mut remaining = dom.nodes_len() + 1;
+              loop {
+                out.insert(n);
+                if n == common || remaining == 0 {
+                  break;
+                }
+                remaining -= 1;
+                let Some(parent) = dom.tree_parent_node(n) else {
+                  break;
+                };
+                n = parent;
+              }
+              let mut n = end;
+              let mut remaining = dom.nodes_len() + 1;
+              loop {
+                out.insert(n);
+                if n == common || remaining == 0 {
+                  break;
+                }
+                remaining -= 1;
+                let Some(parent) = dom.tree_parent_node(n) else {
+                  break;
+                };
+                n = parent;
+              }
+              Ok(out.into_iter().collect())
+            }))
+          })?
+        };
+
+        let ancestors = match ancestors {
+          Ok(v) => v,
+          Err(err) => return Err(self.dom_error_to_vm_error(vm, scope, err)),
+        };
+
+        let owned_result: Option<Result<NodeId, DomError>> = vm
+          .user_data_mut::<WindowRealmUserData>()
+          .and_then(|data| {
+            data.with_owned_dom2_document_mut(state.document_id, |dom| {
+              dom.range_extract_contents(state.range_id)
+            })
+          });
+
+        let result = if let Some(result) = owned_result {
+          result
+        } else {
+          self.with_dom_host(vm, |host| {
+            Ok(host.mutate_dom(|dom| match dom.range_extract_contents(state.range_id) {
+              Ok(fragment) => (Ok(fragment), true),
+              Err(err) => (Err(err), false),
+            }))
+          })?
+        };
+
+        match result {
+          Ok(fragment_id) => {
+            for node_id in ancestors {
+              let wrapper = {
+                let platform = require_dom_platform_mut(vm)?;
+                platform.get_existing_wrapper_for_document_id(scope.heap(), state.document_id, node_id)
+              };
+              if let Some(wrapper) = wrapper {
+                self.sync_cached_child_nodes_for_wrapper(vm, scope, wrapper, node_id, state.document_id)?;
+              }
+            }
+            self.sync_live_html_collections(vm, scope)?;
+
+            let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+              scope,
+              state.document_id,
+              fragment_id,
+              DomInterface::DocumentFragment,
+            )?;
+            scope.push_root(Value::Object(wrapper))?;
+            Ok(Value::Object(wrapper))
+          }
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      }
+
+      ("Range", "cloneContents", 0) => {
+        let state = self.require_range_state(receiver)?;
+
+        let owned_result: Option<Result<NodeId, DomError>> = vm
+          .user_data_mut::<WindowRealmUserData>()
+          .and_then(|data| {
+            data.with_owned_dom2_document_mut(state.document_id, |dom| dom.range_clone_contents(state.range_id))
+          });
+
+        let result = if let Some(result) = owned_result {
+          result
+        } else {
+          self.with_dom_host(vm, |host| {
+            Ok(host.mutate_dom(|dom| match dom.range_clone_contents(state.range_id) {
+              Ok(fragment) => (Ok(fragment), /* changed */ false),
+              Err(err) => (Err(err), false),
+            }))
+          })?
+        };
+
+        match result {
+          Ok(fragment_id) => {
+            let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+              scope,
+              state.document_id,
+              fragment_id,
+              DomInterface::DocumentFragment,
+            )?;
+            scope.push_root(Value::Object(wrapper))?;
+            Ok(Value::Object(wrapper))
+          }
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      }
+
+      ("Range", "insertNode", 0) => {
+        let state = self.require_range_state(receiver)?;
+
+        let node_val = args.get(0).copied().unwrap_or(Value::Undefined);
+        let node_handle = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform.require_node_handle(scope.heap(), node_val)?
+        };
+        if node_handle.document_id != state.document_id {
+          return Err(self.dom_error_to_vm_error(vm, scope, DomError::WrongDocumentError));
+        }
+
+        // Range endpoint ancestors likely to have their cached NodeLists invalidated.
+        let owned_ancestors: Option<Result<Vec<NodeId>, DomError>> = vm
+          .user_data_mut::<WindowRealmUserData>()
+          .and_then(|data| {
+            data.with_owned_dom2_document(state.document_id, |dom| {
+              let start = dom.range_start_container(state.range_id)?;
+              let end = dom.range_end_container(state.range_id)?;
+              let common = dom.range_common_ancestor_container(state.range_id)?;
+
+              let mut out: HashSet<NodeId> = HashSet::new();
+              let mut n = start;
+              let mut remaining = dom.nodes_len() + 1;
+              loop {
+                out.insert(n);
+                if n == common || remaining == 0 {
+                  break;
+                }
+                remaining -= 1;
+                let Some(parent) = dom.tree_parent_node(n) else {
+                  break;
+                };
+                n = parent;
+              }
+              let mut n = end;
+              let mut remaining = dom.nodes_len() + 1;
+              loop {
+                out.insert(n);
+                if n == common || remaining == 0 {
+                  break;
+                }
+                remaining -= 1;
+                let Some(parent) = dom.tree_parent_node(n) else {
+                  break;
+                };
+                n = parent;
+              }
+              Ok(out.into_iter().collect())
+            })
+          });
+
+        let ancestors: Result<Vec<NodeId>, DomError> = if let Some(result) = owned_ancestors {
+          result
+        } else {
+          self.with_dom_host(vm, |host| {
+            Ok(host.with_dom(|dom| {
+              let start = dom.range_start_container(state.range_id)?;
+              let end = dom.range_end_container(state.range_id)?;
+              let common = dom.range_common_ancestor_container(state.range_id)?;
+
+              let mut out: HashSet<NodeId> = HashSet::new();
+              let mut n = start;
+              let mut remaining = dom.nodes_len() + 1;
+              loop {
+                out.insert(n);
+                if n == common || remaining == 0 {
+                  break;
+                }
+                remaining -= 1;
+                let Some(parent) = dom.tree_parent_node(n) else {
+                  break;
+                };
+                n = parent;
+              }
+              let mut n = end;
+              let mut remaining = dom.nodes_len() + 1;
+              loop {
+                out.insert(n);
+                if n == common || remaining == 0 {
+                  break;
+                }
+                remaining -= 1;
+                let Some(parent) = dom.tree_parent_node(n) else {
+                  break;
+                };
+                n = parent;
+              }
+              Ok(out.into_iter().collect())
+            }))
+          })?
+        };
+
+        let ancestors = match ancestors {
+          Ok(v) => v,
+          Err(err) => return Err(self.dom_error_to_vm_error(vm, scope, err)),
+        };
+
+        // Track old parent + fragment-like insertion semantics so we can keep cached NodeLists live.
+        let owned_parent_info: Option<Result<(Option<NodeId>, bool), DomError>> = vm
+          .user_data_mut::<WindowRealmUserData>()
+          .and_then(|data| {
+            data.with_owned_dom2_document(state.document_id, |dom| {
+              let old_parent = dom.parent(node_handle.node_id)?;
+              let node_is_fragment_like = node_handle.node_id.index() < dom.nodes_len()
+                && matches!(
+                  dom.node(node_handle.node_id).kind,
+                  NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. }
+                );
+              Ok((old_parent, node_is_fragment_like))
+            })
+          });
+
+        let parent_info: Result<(Option<NodeId>, bool), DomError> = if let Some(result) = owned_parent_info {
+          result
+        } else {
+          self.with_dom_host(vm, |host| {
+            Ok(host.with_dom(|dom| {
+              let old_parent = dom.parent(node_handle.node_id)?;
+              let node_is_fragment_like = node_handle.node_id.index() < dom.nodes_len()
+                && matches!(
+                  dom.node(node_handle.node_id).kind,
+                  NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. }
+                );
+              Ok((old_parent, node_is_fragment_like))
+            }))
+          })?
+        };
+
+        let (old_parent, node_is_fragment_like) = match parent_info {
+          Ok(v) => v,
+          Err(err) => return Err(self.dom_error_to_vm_error(vm, scope, err)),
+        };
+
+        let owned_result: Option<Result<(), DomError>> = vm
+          .user_data_mut::<WindowRealmUserData>()
+          .and_then(|data| {
+            data.with_owned_dom2_document_mut(state.document_id, |dom| {
+              dom.range_insert_node(state.range_id, node_handle.node_id)
+            })
+          });
+
+        let result = if let Some(result) = owned_result {
+          result
+        } else {
+          self.with_dom_host(vm, |host| {
+            Ok(host.mutate_dom(|dom| match dom.range_insert_node(state.range_id, node_handle.node_id) {
+              Ok(()) => (Ok(()), true),
+              Err(err) => (Err(err), false),
+            }))
+          })?
+        };
+
+        match result {
+          Ok(()) => {
+            let owned_new_parent: Option<Result<Option<NodeId>, DomError>> = vm
+              .user_data_mut::<WindowRealmUserData>()
+              .and_then(|data| {
+                data.with_owned_dom2_document(state.document_id, |dom| dom.parent(node_handle.node_id))
+              });
+            let new_parent: Result<Option<NodeId>, DomError> = if let Some(result) = owned_new_parent {
+              result
+            } else {
+              self.with_dom_host(vm, |host| {
+                Ok(host.with_dom(|dom| dom.parent(node_handle.node_id)))
+              })?
+            };
+            let new_parent = match new_parent {
+              Ok(v) => v,
+              Err(err) => return Err(self.dom_error_to_vm_error(vm, scope, err)),
+            };
+
+            if let Some(parent_id) = new_parent {
+              let parent_wrapper = {
+                let platform = require_dom_platform_mut(vm)?;
+                platform.get_existing_wrapper_for_document_id(scope.heap(), state.document_id, parent_id)
+              };
+              if let Some(parent_wrapper) = parent_wrapper {
+                self.sync_cached_child_nodes_for_wrapper(vm, scope, parent_wrapper, parent_id, state.document_id)?;
+              }
+            }
+            if let Some(old_parent_id) = old_parent {
+              if Some(old_parent_id) != new_parent {
+                let wrapper = {
+                  let platform = require_dom_platform_mut(vm)?;
+                  platform.get_existing_wrapper_for_document_id(scope.heap(), state.document_id, old_parent_id)
+                };
+                if let Some(wrapper) = wrapper {
+                  self.sync_cached_child_nodes_for_wrapper(vm, scope, wrapper, old_parent_id, state.document_id)?;
+                }
+              }
+            }
+            if node_is_fragment_like {
+              let wrapper = {
+                let platform = require_dom_platform_mut(vm)?;
+                platform.get_existing_wrapper_for_document_id(scope.heap(), state.document_id, node_handle.node_id)
+              };
+              if let Some(wrapper) = wrapper {
+                self.sync_cached_child_nodes_for_wrapper(
+                  vm,
+                  scope,
+                  wrapper,
+                  node_handle.node_id,
+                  state.document_id,
+                )?;
+              }
+            }
+            for node_id in ancestors {
+              let wrapper = {
+                let platform = require_dom_platform_mut(vm)?;
+                platform.get_existing_wrapper_for_document_id(scope.heap(), state.document_id, node_id)
+              };
+              if let Some(wrapper) = wrapper {
+                self.sync_cached_child_nodes_for_wrapper(vm, scope, wrapper, node_id, state.document_id)?;
+              }
+            }
+            self.sync_live_html_collections(vm, scope)?;
+            Ok(Value::Undefined)
+          }
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      }
+
+      ("Range", "surroundContents", 0) => {
+        let state = self.require_range_state(receiver)?;
+
+        let new_parent_val = args.get(0).copied().unwrap_or(Value::Undefined);
+        let new_parent_handle = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform.require_node_handle(scope.heap(), new_parent_val)?
+        };
+        if new_parent_handle.document_id != state.document_id {
+          return Err(self.dom_error_to_vm_error(vm, scope, DomError::WrongDocumentError));
+        }
+
+        let owned_ancestors: Option<Result<Vec<NodeId>, DomError>> = vm
+          .user_data_mut::<WindowRealmUserData>()
+          .and_then(|data| {
+            data.with_owned_dom2_document(state.document_id, |dom| {
+              let start = dom.range_start_container(state.range_id)?;
+              let end = dom.range_end_container(state.range_id)?;
+              let common = dom.range_common_ancestor_container(state.range_id)?;
+
+              let mut out: HashSet<NodeId> = HashSet::new();
+              let mut n = start;
+              let mut remaining = dom.nodes_len() + 1;
+              loop {
+                out.insert(n);
+                if n == common || remaining == 0 {
+                  break;
+                }
+                remaining -= 1;
+                let Some(parent) = dom.tree_parent_node(n) else {
+                  break;
+                };
+                n = parent;
+              }
+              let mut n = end;
+              let mut remaining = dom.nodes_len() + 1;
+              loop {
+                out.insert(n);
+                if n == common || remaining == 0 {
+                  break;
+                }
+                remaining -= 1;
+                let Some(parent) = dom.tree_parent_node(n) else {
+                  break;
+                };
+                n = parent;
+              }
+              Ok(out.into_iter().collect())
+            })
+          });
+
+        let ancestors: Result<Vec<NodeId>, DomError> = if let Some(result) = owned_ancestors {
+          result
+        } else {
+          self.with_dom_host(vm, |host| {
+            Ok(host.with_dom(|dom| {
+              let start = dom.range_start_container(state.range_id)?;
+              let end = dom.range_end_container(state.range_id)?;
+              let common = dom.range_common_ancestor_container(state.range_id)?;
+
+              let mut out: HashSet<NodeId> = HashSet::new();
+              let mut n = start;
+              let mut remaining = dom.nodes_len() + 1;
+              loop {
+                out.insert(n);
+                if n == common || remaining == 0 {
+                  break;
+                }
+                remaining -= 1;
+                let Some(parent) = dom.tree_parent_node(n) else {
+                  break;
+                };
+                n = parent;
+              }
+              let mut n = end;
+              let mut remaining = dom.nodes_len() + 1;
+              loop {
+                out.insert(n);
+                if n == common || remaining == 0 {
+                  break;
+                }
+                remaining -= 1;
+                let Some(parent) = dom.tree_parent_node(n) else {
+                  break;
+                };
+                n = parent;
+              }
+              Ok(out.into_iter().collect())
+            }))
+          })?
+        };
+
+        let ancestors = match ancestors {
+          Ok(v) => v,
+          Err(err) => return Err(self.dom_error_to_vm_error(vm, scope, err)),
+        };
+
+        let owned_old_parent: Option<Result<Option<NodeId>, DomError>> = vm
+          .user_data_mut::<WindowRealmUserData>()
+          .and_then(|data| {
+            data.with_owned_dom2_document(state.document_id, |dom| dom.parent(new_parent_handle.node_id))
+          });
+        let old_parent: Result<Option<NodeId>, DomError> = if let Some(result) = owned_old_parent {
+          result
+        } else {
+          self.with_dom_host(vm, |host| {
+            Ok(host.with_dom(|dom| dom.parent(new_parent_handle.node_id)))
+          })?
+        };
+        let old_parent = match old_parent {
+          Ok(v) => v,
+          Err(err) => return Err(self.dom_error_to_vm_error(vm, scope, err)),
+        };
+
+        let owned_result: Option<Result<(), DomError>> = vm
+          .user_data_mut::<WindowRealmUserData>()
+          .and_then(|data| {
+            data.with_owned_dom2_document_mut(state.document_id, |dom| {
+              dom.range_surround_contents(state.range_id, new_parent_handle.node_id)
+            })
+          });
+
+        let result = if let Some(result) = owned_result {
+          result
+        } else {
+          self.with_dom_host(vm, |host| {
+            Ok(host.mutate_dom(|dom| match dom.range_surround_contents(state.range_id, new_parent_handle.node_id) {
+              Ok(()) => (Ok(()), true),
+              Err(err) => (Err(err), false),
+            }))
+          })?
+        };
+
+        match result {
+          Ok(()) => {
+            // Sync the wrapper's own cached childNodes (its children were replaced by the extracted fragment).
+            let wrapper_obj = match new_parent_val {
+              Value::Object(obj) => Some(obj),
+              _ => None,
+            };
+            if let Some(wrapper_obj) = wrapper_obj {
+              self.sync_cached_child_nodes_for_wrapper(
+                vm,
+                scope,
+                wrapper_obj,
+                new_parent_handle.node_id,
+                state.document_id,
+              )?;
+            }
+
+            let owned_new_parent_parent: Option<Result<Option<NodeId>, DomError>> = vm
+              .user_data_mut::<WindowRealmUserData>()
+              .and_then(|data| {
+                data.with_owned_dom2_document(state.document_id, |dom| dom.parent(new_parent_handle.node_id))
+              });
+            let new_parent_parent: Result<Option<NodeId>, DomError> = if let Some(result) = owned_new_parent_parent {
+              result
+            } else {
+              self.with_dom_host(vm, |host| {
+                Ok(host.with_dom(|dom| dom.parent(new_parent_handle.node_id)))
+              })?
+            };
+            let new_parent_parent = match new_parent_parent {
+              Ok(v) => v,
+              Err(err) => return Err(self.dom_error_to_vm_error(vm, scope, err)),
+            };
+
+            if let Some(parent_id) = new_parent_parent {
+              let parent_wrapper = {
+                let platform = require_dom_platform_mut(vm)?;
+                platform.get_existing_wrapper_for_document_id(scope.heap(), state.document_id, parent_id)
+              };
+              if let Some(parent_wrapper) = parent_wrapper {
+                self.sync_cached_child_nodes_for_wrapper(vm, scope, parent_wrapper, parent_id, state.document_id)?;
+              }
+            }
+
+            if let Some(old_parent_id) = old_parent {
+              if Some(old_parent_id) != new_parent_parent {
+                let wrapper = {
+                  let platform = require_dom_platform_mut(vm)?;
+                  platform.get_existing_wrapper_for_document_id(scope.heap(), state.document_id, old_parent_id)
+                };
+                if let Some(wrapper) = wrapper {
+                  self.sync_cached_child_nodes_for_wrapper(vm, scope, wrapper, old_parent_id, state.document_id)?;
+                }
+              }
+            }
+
+            for node_id in ancestors {
+              let wrapper = {
+                let platform = require_dom_platform_mut(vm)?;
+                platform.get_existing_wrapper_for_document_id(scope.heap(), state.document_id, node_id)
+              };
+              if let Some(wrapper) = wrapper {
+                self.sync_cached_child_nodes_for_wrapper(vm, scope, wrapper, node_id, state.document_id)?;
+              }
+            }
+            self.sync_live_html_collections(vm, scope)?;
+            Ok(Value::Undefined)
+          }
           Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
         }
       }

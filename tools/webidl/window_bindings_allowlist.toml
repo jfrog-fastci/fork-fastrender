@@ -114,7 +114,19 @@ operations = []
 name = "Range"
 constructors = true
 attributes = []
-operations = ["setStart", "setEnd", "isPointInRange", "comparePoint", "intersectsNode", "detach"]
+operations = [
+  "setStart",
+  "setEnd",
+  "isPointInRange",
+  "comparePoint",
+  "intersectsNode",
+  "deleteContents",
+  "extractContents",
+  "cloneContents",
+  "insertNode",
+  "surroundContents",
+  "detach",
+]
 
 [[interface]]
 name = "DocumentFragment"
