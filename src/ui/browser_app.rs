@@ -48,7 +48,7 @@ pub(crate) const CLOSED_TAB_STACK_CAPACITY: usize = 20;
 /// This bounds memory growth and keeps the downloads panel responsive in long sessions. In a
 /// multi-process architecture the renderer is untrusted; without a hard cap a compromised renderer
 /// could spam download messages and grow memory unboundedly.
-const MAX_DOWNLOAD_ENTRIES: usize = 512;
+const MAX_DOWNLOAD_ENTRIES: usize = 500;
 const CRASH_REASON_MAX_CHARS: usize = 200;
 
 static NEXT_TAB_GROUP_ID: AtomicU64 = AtomicU64::new(1);
@@ -456,7 +456,7 @@ impl DownloadsState {
 
     // Prefer pruning completed/failed/cancelled entries first so in-progress downloads are less
     // likely to disappear from the downloads panel. If we still overflow after removing all
-    // completed entries, prune the oldest remaining entries (which will all be in-progress).
+    // non-in-progress entries, prune the oldest remaining entries (which will all be in-progress).
     self.downloads.retain(|entry| {
       if overflow == 0 {
         return true;

@@ -3931,7 +3931,7 @@ mod tests {
       }
     }
 
-    let event_loop: EventLoop<WindowHost> = EventLoop::new();
+    let event_loop: EventLoop<WindowHostState> = EventLoop::new();
     let task_queue = event_loop.external_task_queue_handle();
 
     let env_id = NEXT_ENV_ID.fetch_add(1, Ordering::Relaxed);
@@ -3940,7 +3940,10 @@ mod tests {
     {
       let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
       let fetcher: Arc<dyn ResourceFetcher> = Arc::new(IpcNoopFetcher);
-      lock.insert(env_id, EnvState::new(WindowWebSocketEnv::for_document(fetcher, None)));
+      lock.insert(
+        env_id,
+        EnvState::new(WindowWebSocketEnv::for_document(fetcher, None), RealmId::from_raw(env_id)),
+      );
     }
 
     let ws_id = with_env_state_mut(env_id, |state| {
@@ -3953,10 +3956,13 @@ mod tests {
         WebSocketState {
           weak_obj: WeakGcObject::new(dummy_obj),
           url: "ws://example.invalid/".to_string(),
+          requested_protocols: Vec::new(),
           protocol: String::new(),
           ready_state: WS_CLOSED,
+          binary_type: WebSocketBinaryType::default(),
           buffered_amount: 0,
           pending_events: 0,
+          pending_event_bytes: 0,
           close_task_queued: false,
           forced_close: None,
           cmd_tx: None,
@@ -3967,11 +3973,12 @@ mod tests {
     })
     .expect("register websocket state");
 
-    let outcome_normal = queue_ws_task::<WindowHost>(
+    let outcome_normal = queue_ws_task::<WindowHostState>(
       &task_queue,
       env_id,
       ws_id,
       WsTaskKind::Normal,
+      0,
       |_vm_host, _heap, _vm, _hooks, _ws_obj| Ok(()),
     );
     assert_eq!(outcome_normal, QueueWsTaskOutcome::Skipped);
@@ -3983,11 +3990,12 @@ mod tests {
     })
     .expect("inspect websocket state (normal task)");
 
-    let outcome_close = queue_ws_task::<WindowHost>(
+    let outcome_close = queue_ws_task::<WindowHostState>(
       &task_queue,
       env_id,
       ws_id,
       WsTaskKind::Close,
+      0,
       |_vm_host, _heap, _vm, _hooks, _ws_obj| Ok(()),
     );
     assert_eq!(outcome_close, QueueWsTaskOutcome::Queued);
@@ -6345,14 +6353,16 @@ mod tests {
         let id = state.alloc_id();
         state.sockets.insert(
           id,
-         WebSocketState {
+          WebSocketState {
             weak_obj: WeakGcObject::from(global_obj),
             url: "ws://example.invalid/".to_string(),
             requested_protocols: Vec::new(),
             protocol: String::new(),
             ready_state: WS_CONNECTING,
+            binary_type: WebSocketBinaryType::default(),
             buffered_amount: 0,
             pending_events: 0,
+            pending_event_bytes: 0,
             close_task_queued: false,
             forced_close: None,
             cmd_tx: Some(cmd_tx.clone()),
@@ -6399,7 +6409,14 @@ mod tests {
 
     {
       let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-      lock.insert(env_id, EnvState::new_ipc(WindowWebSocketEnv::for_document(fetcher, None), ipc_state));
+      lock.insert(
+        env_id,
+        EnvState::new_ipc(
+          WindowWebSocketEnv::for_document(fetcher, None),
+          RealmId::from_raw(env_id),
+          ipc_state,
+        ),
+      );
     }
 
     // Register a few fake sockets.
@@ -6419,8 +6436,10 @@ mod tests {
             requested_protocols: Vec::new(),
             protocol: String::new(),
             ready_state: WS_OPEN,
+            binary_type: WebSocketBinaryType::default(),
             buffered_amount: 0,
             pending_events: 0,
+            pending_event_bytes: 0,
             close_task_queued: false,
             forced_close: None,
             cmd_tx: None,
