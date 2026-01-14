@@ -855,6 +855,7 @@ impl BookmarkStore {
       ));
     }
     validate_user_navigation_url_scheme(&new_url).map_err(BookmarkError::InvalidStore)?;
+    let new_url_for_index = new_url.clone();
 
     let new_title = normalize_optional_string(new_title);
 

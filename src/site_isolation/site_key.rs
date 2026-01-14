@@ -65,14 +65,14 @@ pub enum SiteKey {
   Opaque(u64),
 }
 
-impl SiteKey {
-  /// Compute a deterministic site key from a URL string.
-  ///
-  /// This is intended for pure classification (e.g. site grouping). It returns `None` only when the
-  /// URL fails to parse.
-  pub fn from_url(url: &str) -> Option<Self> {
-    let origin = origin_from_url(url.trim())?;
-    Some(Self::from_origin(&origin))
+  impl SiteKey {
+    /// Compute a deterministic site key from a URL string.
+    ///
+    /// This is intended for pure classification (e.g. site grouping). It returns `None` only when the
+    /// URL fails to parse.
+    pub fn from_url(url: &str) -> Option<Self> {
+      let origin = origin_from_url(url.trim())?;
+      Some(Self::from_origin(&origin))
   }
 
   /// Compute a deterministic site key from a [`DocumentOrigin`].

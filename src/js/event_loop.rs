@@ -287,7 +287,7 @@ impl<Host: 'static> Task<Host> {
 
   fn new_with_seq<F>(source: TaskSource, seq: u64, runnable: F) -> Self
   where
-    F: for<'a> FnOnce(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()> + 'static,
+    F: for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + 'static,
   {
     Self {
       source,
@@ -1002,6 +1002,10 @@ impl<Host: 'static> EventLoop<Host> {
   where
     F: for<'a> FnOnce(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()> + 'static,
   {
+    // Wrap the `FnOnce` callback in a `FnMut` closure by stashing it and taking it on first call.
+    //
+    // This keeps the callback non-virtual (no `dyn FnOnce`) and avoids lifetime-generalisation
+    // issues when coercing the wrapper closure into a `dyn FnMut` trait object.
     let mut maybe = Some(callback);
     let callback: TimerCallback<Host> = box_try_new(
       move |host: &mut Host, event_loop: &mut EventLoop<Host>| {

@@ -3267,7 +3267,7 @@ impl BrowserRuntime {
         // frame was in-flight), we still want the UI model to learn about any scroll changes that
         // occurred while that frame was cancelled. `FrameReady` carries `scroll_state`, but in this
         // case no `FrameReady` is emitted, so send a standalone scroll update when needed.
-          if matches!(output.snapshot_kind, SnapshotKind::Paint) {
+        if matches!(output.snapshot_kind, SnapshotKind::Paint) {
           if let Some(tab) = self.tabs.get_mut(&output.tab_id) {
             if tab.scroll_state != tab.last_reported_scroll_state {
               Self::emit_scroll_state_updated(
@@ -6664,8 +6664,7 @@ impl BrowserRuntime {
         hovered_dom_node_id,
         hovered_dom_element_id,
         textarea_scroll,
-      ) =
-        match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+      ) = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
           let fragment_tree_before = hit_tree_before.as_deref().unwrap_or(fragment_tree);
           let (mut changed, mut hit, mut hover_is_drop_target) = engine
             .pointer_move_and_hit_and_drop_target(
@@ -7287,8 +7286,8 @@ impl BrowserRuntime {
     );
     let engine = &mut tab.interaction;
 
-    let (changed, target_id, target_element_id) =
-      match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+    let (changed, target_id, target_element_id) = match doc.mutate_dom_with_layout_artifacts(
+      |dom, box_tree, fragment_tree| {
         let fragment_tree = hit_tree.as_deref().unwrap_or(fragment_tree);
 
         let (changed, hit) = if matches!(button, PointerButton::Primary | PointerButton::Middle) {
@@ -10600,14 +10599,11 @@ impl BrowserRuntime {
               control: control.clone(),
             }));
 
-          let anchor_css = tab
-            .document
-            .as_ref()
-            .and_then(|doc| {
-              doc.prepared().and_then(|prepared| {
-                let tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
-                styled_node_anchor_css(prepared.box_tree(), &tree, &tab.scroll_state, select_node_id)
-              })
+          let anchor_css = doc
+            .prepared()
+            .and_then(|prepared| {
+              let tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
+              styled_node_anchor_css(prepared.box_tree(), &tree, &tab.scroll_state, select_node_id)
             })
             .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
             .unwrap_or(Rect::from_xywh(0.0, 0.0, 1.0, 1.0));
@@ -10625,43 +10621,38 @@ impl BrowserRuntime {
           }
         }
         InteractionAction::OpenDateTimePicker { input_node_id, kind } => {
-          let anchor_css = tab
-            .document
-            .as_ref()
-            .and_then(|doc| {
-              doc.prepared().and_then(|prepared| {
-                let tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
-                styled_node_anchor_css(prepared.box_tree(), &tree, &tab.scroll_state, input_node_id)
-              })
+          let anchor_css = doc
+            .prepared()
+            .and_then(|prepared| {
+              let tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
+              styled_node_anchor_css(prepared.box_tree(), &tree, &tab.scroll_state, input_node_id)
             })
             .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
             .unwrap_or(Rect::from_xywh(0.0, 0.0, 1.0, 1.0));
 
           let mut value: String = String::new();
-          if let Some(doc) = tab.document.as_mut() {
-            let _ = doc.mutate_dom(|dom| {
-              value = crate::dom::find_node_mut_by_preorder_id(dom, input_node_id)
-                .map(|node| match kind {
-                  crate::interaction::DateTimeInputKind::Date => {
-                    crate::dom::input_date_value_string(node).unwrap_or_default()
-                  }
-                  crate::interaction::DateTimeInputKind::Time => {
-                    crate::dom::input_time_value_string(node).unwrap_or_default()
-                  }
-                  crate::interaction::DateTimeInputKind::DateTimeLocal => {
-                    crate::dom::input_datetime_local_value_string(node).unwrap_or_default()
-                  }
-                  crate::interaction::DateTimeInputKind::Month => {
-                    crate::dom::input_month_value_string(node).unwrap_or_default()
-                  }
-                  crate::interaction::DateTimeInputKind::Week => {
-                    crate::dom::input_week_value_string(node).unwrap_or_default()
-                  }
-                })
-                .unwrap_or_default();
-              false
-            });
-          }
+          let _ = doc.mutate_dom(|dom| {
+            value = crate::dom::find_node_mut_by_preorder_id(dom, input_node_id)
+              .map(|node| match kind {
+                crate::interaction::DateTimeInputKind::Date => {
+                  crate::dom::input_date_value_string(node).unwrap_or_default()
+                }
+                crate::interaction::DateTimeInputKind::Time => {
+                  crate::dom::input_time_value_string(node).unwrap_or_default()
+                }
+                crate::interaction::DateTimeInputKind::DateTimeLocal => {
+                  crate::dom::input_datetime_local_value_string(node).unwrap_or_default()
+                }
+                crate::interaction::DateTimeInputKind::Month => {
+                  crate::dom::input_month_value_string(node).unwrap_or_default()
+                }
+                crate::interaction::DateTimeInputKind::Week => {
+                  crate::dom::input_week_value_string(node).unwrap_or_default()
+                }
+              })
+              .unwrap_or_default();
+            false
+          });
 
           let _ = self
             .ui_tx
@@ -10679,27 +10670,22 @@ impl BrowserRuntime {
           }
         }
         InteractionAction::OpenColorPicker { input_node_id } => {
-          let anchor_css = tab
-            .document
-            .as_ref()
-            .and_then(|doc| {
-              doc.prepared().and_then(|prepared| {
-                let tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
-                styled_node_anchor_css(prepared.box_tree(), &tree, &tab.scroll_state, input_node_id)
-              })
+          let anchor_css = doc
+            .prepared()
+            .and_then(|prepared| {
+              let tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
+              styled_node_anchor_css(prepared.box_tree(), &tree, &tab.scroll_state, input_node_id)
             })
             .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
             .unwrap_or(Rect::from_xywh(0.0, 0.0, 1.0, 1.0));
 
           let mut value: String = String::new();
-          if let Some(doc) = tab.document.as_mut() {
-            let _ = doc.mutate_dom(|dom| {
-              value = crate::dom::find_node_mut_by_preorder_id(dom, input_node_id)
-                .and_then(|node| crate::dom::input_color_value_string(node))
-                .unwrap_or_default();
-              false
-            });
-          }
+          let _ = doc.mutate_dom(|dom| {
+            value = crate::dom::find_node_mut_by_preorder_id(dom, input_node_id)
+              .and_then(|node| crate::dom::input_color_value_string(node))
+              .unwrap_or_default();
+            false
+          });
 
           let _ = self
             .ui_tx
@@ -10720,14 +10706,11 @@ impl BrowserRuntime {
           multiple,
           accept,
         } => {
-          let anchor_css = tab
-            .document
-            .as_ref()
-            .and_then(|doc| {
-              doc.prepared().and_then(|prepared| {
-                let tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
-                styled_node_anchor_css(prepared.box_tree(), &tree, &tab.scroll_state, input_node_id)
-              })
+          let anchor_css = doc
+            .prepared()
+            .and_then(|prepared| {
+              let tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
+              styled_node_anchor_css(prepared.box_tree(), &tree, &tab.scroll_state, input_node_id)
             })
             .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
             .unwrap_or(Rect::from_xywh(0.0, 0.0, 1.0, 1.0));
@@ -10777,11 +10760,11 @@ impl BrowserRuntime {
                 let _ = self
                   .ui_tx
                   .send(WorkerToUiMsg::Single(WorkerToUi::MediaControlsOpened {
-                    tab_id,
-                    node_id: media_node_id,
-                    kind,
-                    anchor_css,
-                  }));
+                  tab_id,
+                  node_id: media_node_id,
+                  kind,
+                  anchor_css,
+                }));
               }
             }
           }
@@ -13392,7 +13375,7 @@ impl BrowserRuntime {
     let wants_ticks = tab
       .document
       .as_mut()
-      .is_some_and(|doc| document_wants_ticks(doc, timeline_time_ms));
+      .map_or(false, |doc| document_wants_ticks(doc, timeline_time_ms));
     let should_disable_scroll_blit_for_animation_time =
       is_scroll && !force && wants_ticks && tab.tick_time != tab.last_painted_tick_time;
     if should_disable_scroll_blit_for_animation_time {
