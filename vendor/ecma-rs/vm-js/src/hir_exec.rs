@@ -2355,7 +2355,8 @@ impl<'vm> HirEvaluator<'vm> {
               finally_block,
             } => {
               // Async-aware `try` support is currently limited to suspensions caused by `for await..of`
-              // loops directly in the try-block statement list (see `TryStmtState` / `TryState`).
+              // loops directly in the try-block statement list (see `TryStmtState` /
+              // `TryForAwaitOfCatchState`).
               //
               // Conservatively require all other statements within try/catch/finally to be await-free.
               let try_block_stmt = self.get_stmt(body, *block)?;
@@ -20689,134 +20690,6 @@ impl TryStmtState {
 }
 
 #[derive(Debug)]
-enum TryPoll {
-  Complete(Flow),
-  Await {
-    kind: crate::exec::AsyncSuspendKind,
-    await_value: Value,
-    /// Best-effort source offset for the `await` site that produced this suspension.
-    ///
-    /// If no explicit await site exists (e.g. implicit await of `iterator.next()`), this may be 0
-    /// and the caller should fall back to the surrounding statement offset.
-    await_offset: u32,
-  },
-}
-
-/// Minimal async-aware `try/catch` support for the compiled async evaluator.
-///
-/// Today this is intentionally narrow: it supports a `try` block that contains a single `for
-/// await..of` loop (which itself can suspend) and a synchronous `catch` clause.
-///
-/// This is sufficient for `try { for await (...) { ... } } catch { ... }` patterns where the
-/// `for await..of` loop must await `AsyncIteratorClose` before the `catch` body runs.
-#[derive(Debug)]
-struct TryState {
-  for_state: ForAwaitOfState,
-  catch_param: Option<hir_js::PatId>,
-  catch_body: hir_js::StmtId,
-  outer_lex: GcEnv,
-}
-
-impl TryState {
-  fn new_for_await_of(
-    for_state: ForAwaitOfState,
-    catch: &hir_js::hir::CatchClause,
-    outer_lex: GcEnv,
-  ) -> Self {
-    Self {
-      for_state,
-      catch_param: catch.param,
-      catch_body: catch.body,
-      outer_lex,
-    }
-  }
-
-  fn teardown(&mut self, heap: &mut crate::Heap) {
-    self.for_state.teardown(heap);
-  }
-
-  fn poll(
-    &mut self,
-    evaluator: &mut HirEvaluator<'_>,
-    scope: &mut Scope<'_>,
-    body: &hir_js::Body,
-    resume_value: Option<Result<Value, VmError>>,
-  ) -> Result<TryPoll, VmError> {
-    match self.for_state.poll(evaluator, scope, body, resume_value) {
-      Ok(ForAwaitOfPoll::Await {
-        kind,
-        await_value,
-        await_offset,
-      }) => Ok(TryPoll::Await {
-        kind,
-        await_value,
-        await_offset,
-      }),
-      Ok(ForAwaitOfPoll::Complete(flow)) => Ok(TryPoll::Complete(flow)),
-      Err(err) => {
-        // Ensure iterator roots are always cleaned up before potentially running catch code.
-        self.for_state.teardown(scope.heap_mut());
-
-        // Only catch throw-completions; termination/OOM/etc bypass try/catch semantics.
-        if !err.is_throw_completion() {
-          return Err(err);
-        }
-
-        let Some(thrown_value) = err.thrown_value() else {
-          return Err(err);
-        };
-
-        // Run catch clause.
-        let mut catch_scope = scope.reborrow();
-        catch_scope.push_root(thrown_value)?;
-
-        let outer_env = self.outer_lex;
-        let catch_env = catch_scope.env_create(Some(outer_env))?;
-        evaluator.env.set_lexical_env(catch_scope.heap_mut(), catch_env);
-
-        let catch_result = (|| -> Result<Flow, VmError> {
-          if let Some(param_pat_id) = self.catch_param {
-            // Catch parameter bindings have TDZ semantics like other lexical bindings:
-            // - bindings are instantiated uninitialized,
-            // - then binding initialization runs (which can evaluate destructuring defaults).
-            //
-            // Pre-create all identifier bindings before evaluating any default initializers so
-            // self-references (e.g. `catch ({ x = x }) {}`) throw a ReferenceError.
-            let mut names: Vec<hir_js::NameId> = Vec::new();
-            evaluator.collect_pat_idents(body, param_pat_id, &mut names)?;
-            for name_id in names {
-              let name = evaluator.resolve_name(name_id)?;
-              if !catch_scope.heap().env_has_binding(catch_env, name.as_str())? {
-                catch_scope.env_create_mutable_binding(catch_env, name.as_str())?;
-              }
-            }
-
-            evaluator.bind_pattern(
-              &mut catch_scope,
-              body,
-              param_pat_id,
-              thrown_value,
-              PatBindingKind::Let,
-            )?;
-          }
-
-          evaluator.eval_stmt(&mut catch_scope, body, self.catch_body)
-        })();
-
-        // Always restore the outer lexical environment so later statements run in the correct
-        // scope, even if the catch body throws/returns/etc.
-        evaluator.env.set_lexical_env(catch_scope.heap_mut(), outer_env);
-
-        match catch_result {
-          Ok(flow) => Ok(TryPoll::Complete(flow)),
-          Err(err) => Err(err),
-        }
-      }
-    }
-  }
-}
-
-#[derive(Debug)]
 enum AsyncClassStaticBlockStage {
   Init,
   Running { next_stmt_index: usize },
@@ -21071,7 +20944,6 @@ enum HirAsyncActive {
   ForOf(ForOfState),
   ForIn(ForInState),
   ForTriple(ForTripleAwaitState),
-  Try(TryState),
   TryStmt(TryStmtState),
   /// Evaluating a class declaration statement that may suspend during class evaluation (extends,
   /// computed keys, or static blocks).
@@ -21122,7 +20994,6 @@ impl HirAsyncActive {
       HirAsyncActive::ForOf(state) => state.teardown(heap),
       HirAsyncActive::ForIn(state) => state.teardown(heap),
       HirAsyncActive::ForTriple(state) => state.teardown(heap),
-      HirAsyncActive::Try(state) => state.teardown(heap),
       HirAsyncActive::TryStmt(state) => state.teardown(heap),
       HirAsyncActive::ClassDecl(state) => state.teardown(heap),
       HirAsyncActive::DestructuringAssign(state) => state.teardown(heap),
@@ -21628,77 +21499,6 @@ impl HirAsyncState {
                 VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
                   return Ok(HirAsyncResult::CompleteThrow(value))
                 }
-                  other => return Err(other),
-                }
-              }
-            }
-          }
-          HirAsyncActive::Try(state) => {
-            let poll = state.poll(evaluator, scope, body, resume_value.take());
-            match poll {
-              Ok(TryPoll::Await {
-                kind,
-                await_value,
-                await_offset,
-              }) => {
-                let stmt_offset = match &self.body_kind {
-                  HirAsyncBodyKind::Block { stmts } => stmts
-                    .get(self.next_stmt_index)
-                    .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
-                    .map(|stmt| stmt.span.start)
-                    .unwrap_or(0),
-                  HirAsyncBodyKind::Expr { .. } => 0,
-                };
-                self.await_stmt_offset = if await_offset != 0 { await_offset } else { stmt_offset };
-                return Ok(HirAsyncResult::Await { kind, await_value });
-              }
-              Ok(TryPoll::Complete(flow)) => {
-                state.teardown(scope.heap_mut());
-                self.active = None;
-                // Per spec, empty completion from try/catch becomes `undefined`.
-                let flow = flow.update_empty(Some(Value::Undefined));
-                match flow {
-                  Flow::Normal(_) => {
-                    self.next_stmt_index = self.next_stmt_index.saturating_add(1);
-                    continue;
-                  }
-                  Flow::Return(v) => {
-                    if !self.in_root_stmt_list {
-                      return Ok(HirAsyncResult::CompleteOk(v));
-                    }
-                    return Err(VmError::InvariantViolation(
-                      "async compiled module/script body produced Return completion (early errors should prevent this)",
-                    ));
-                  }
-                  Flow::Break(..) | Flow::Continue(..) => {
-                    return Err(VmError::InvariantViolation(
-                      "async compiled function body produced break/continue completion",
-                    ))
-                  }
-                }
-              }
-              Err(err) => {
-                state.teardown(scope.heap_mut());
-                self.active = None;
-                let stmt_offset = match &self.body_kind {
-                  HirAsyncBodyKind::Block { stmts } => stmts
-                    .get(self.next_stmt_index)
-                    .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
-                    .map(|stmt| stmt.span.start)
-                    .unwrap_or(0),
-                  HirAsyncBodyKind::Expr { .. } => 0,
-                };
-                let err = finalize_throw_with_stack_at_source_offset(
-                  &*evaluator.vm,
-                  scope,
-                  evaluator.script.source.as_ref(),
-                  stmt_offset,
-                  err,
-                );
-                match err {
-                  VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
-                    return Ok(HirAsyncResult::CompleteThrow(value))
-                  }
                   other => return Err(other),
                 }
               }
@@ -23291,46 +23091,6 @@ impl HirAsyncState {
             stmt_offset = inner_stmt.span.start;
           }
           _ => {}
-        }
-      }
-
-      // Support a minimal async-aware `try/catch` form where the try block contains a single
-      // `for await..of` loop. This is needed so `AsyncIteratorClose` (which can suspend) happens
-      // before the `catch` body runs.
-      if let hir_js::StmtKind::Try {
-        block,
-        catch: Some(catch_clause),
-        finally_block: None,
-      } = &stmt.kind
-      {
-        let try_block_stmt = evaluator.get_stmt(body, *block)?;
-        if let hir_js::StmtKind::Block(inner_stmts) = &try_block_stmt.kind {
-          if inner_stmts.len() == 1 {
-            let inner_stmt_id = inner_stmts[0];
-            let inner_stmt = evaluator.get_stmt(body, inner_stmt_id)?;
-            if let hir_js::StmtKind::ForIn {
-              left,
-              right,
-              body: inner,
-              is_for_of: true,
-              await_: true,
-            } = &inner_stmt.kind
-            {
-              // Budget once for the try statement entry and once for the inner loop statement entry,
-              // matching synchronous statement-entry ticks in spirit.
-              evaluator.vm.tick()?;
-              evaluator.vm.tick()?;
-
-              let for_state = ForAwaitOfState::new(left.clone(), *right, *inner, &[])?;
-              let outer_lex = evaluator.env.lexical_env();
-              self.active = Some(HirAsyncActive::Try(TryState::new_for_await_of(
-                for_state,
-                catch_clause,
-                outer_lex,
-              )));
-              continue;
-            }
-          }
         }
       }
 
