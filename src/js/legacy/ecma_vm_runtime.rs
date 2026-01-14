@@ -624,20 +624,23 @@ impl ExecCtxGuard {
 
   fn with_current<State: WebIdlBindingsHost + 'static, R>(
     f: impl FnOnce(*mut EcmaVmRuntime<State>, *mut EventLoop<EcmaVmRuntime<State>>) -> R,
-  ) -> R {
+  ) -> Option<R> {
     EXEC_CTX.with(|cell| {
       let ctx = cell.get();
-      debug_assert!(
-        !ctx.host.is_null() && !ctx.event_loop.is_null(),
-        "vm-js host hook called outside of an active JS execution context"
-      );
+      if ctx.host.is_null() || ctx.event_loop.is_null() {
+        debug_assert!(
+          !ctx.host.is_null() && !ctx.event_loop.is_null(),
+          "vm-js host hook called outside of an active JS execution context"
+        );
+        return None;
+      }
       // SAFETY: `ExecCtxGuard` installs pointers that are valid for the duration of script/job
       // execution. This intentionally bypasses Rust's aliasing rules to allow `vm-js` native
       // functions (which do not carry host references) to access the FastRender event loop.
-      f(
+      Some(f(
         ctx.host as *mut EcmaVmRuntime<State>,
         ctx.event_loop as *mut EventLoop<EcmaVmRuntime<State>>,
-      )
+      ))
     })
   }
 }
@@ -724,28 +727,18 @@ impl<State: WebIdlBindingsHost + 'static> VmHostHooks for EcmaVmRuntime<State> {
     let job_cell: Rc<RefCell<Option<Job>>> = Rc::new(RefCell::new(Some(job)));
     let job_cell_for_task = Rc::clone(&job_cell);
 
-    let enqueue_result: std::result::Result<(), Error> =
-      ExecCtxGuard::with_current::<State, _>(|_host_ptr, event_loop_ptr| unsafe {
+    let enqueue_result: std::result::Result<(), Error> = ExecCtxGuard::with_current::<State, _>(
+      |_host_ptr, event_loop_ptr| unsafe {
         (&mut *event_loop_ptr).queue_microtask(move |host, event_loop| {
-          let Some(job) = job_cell_for_task.borrow_mut().take() else {
-            debug_assert!(false, "vm-js Job should be present when microtask runs");
-            return Ok(());
-          };
-
-          let _guard = ExecCtxGuard::install(host, event_loop);
-          host.reset_budget_for_run();
-
-          let mut ctx = FastRenderJobContext::new(host);
-          let mut hooks = RuntimeHostHooks::new(host);
-          job
-            .run(&mut ctx, &mut hooks)
-            .map_err(|err| map_vm_error(&mut host.heap, err))?;
-          if let Some(err) = host.pending_host_error.take() {
-            return Err(err);
-          }
-          Ok(())
+          run_vm_js_job_microtask(job_cell_for_task, host, event_loop)
         })
-      });
+      },
+    )
+    .unwrap_or_else(|| {
+      Err(Error::Other(
+        "vm-js Promise job enqueued outside of an active JS execution context".to_string(),
+      ))
+    });
 
     if let Err(err) = enqueue_result {
       if let Some(job) = job_cell.borrow_mut().take() {
@@ -777,6 +770,33 @@ impl<State: WebIdlBindingsHost + 'static> VmHostHooks for EcmaVmRuntime<State> {
     slot.set(state);
     Some(slot)
   }
+}
+
+fn run_vm_js_job_microtask<State: WebIdlBindingsHost + 'static>(
+  job_cell: Rc<RefCell<Option<Job>>>,
+  host: &mut EcmaVmRuntime<State>,
+  event_loop: &mut EventLoop<EcmaVmRuntime<State>>,
+) -> Result<()> {
+  // Jobs are stored in an `Option` so we can `discard` them on enqueue failure (without leaking VM
+  // roots). If the job is missing when the microtask runs, treat it as a no-op rather than
+  // panicking: this can happen if a microtask runnable was retained while its job was already
+  // discarded/consumed.
+  let Some(job) = job_cell.borrow_mut().take() else {
+    return Ok(());
+  };
+
+  let _guard = ExecCtxGuard::install(host, event_loop);
+  host.reset_budget_for_run();
+
+  let mut ctx = FastRenderJobContext::new(host);
+  let mut hooks = RuntimeHostHooks::new(host);
+  job
+    .run(&mut ctx, &mut hooks)
+    .map_err(|err| map_vm_error(&mut host.heap, err))?;
+  if let Some(err) = host.pending_host_error.take() {
+    return Err(err);
+  }
+  Ok(())
 }
 
 struct FastRenderJobContext<State: WebIdlBindingsHost + 'static> {
@@ -1009,7 +1029,7 @@ fn native_queue_microtask<State: WebIdlBindingsHost + 'static>(
 
   let callback_root = scope.heap_mut().add_root(callback)?;
 
-  let queued = ExecCtxGuard::with_current::<State, _>(|host_ptr, event_loop_ptr| unsafe {
+  let Some(queued) = ExecCtxGuard::with_current::<State, _>(|host_ptr, event_loop_ptr| unsafe {
     match (&mut *event_loop_ptr).queue_microtask(move |host, event_loop| {
       let _guard = ExecCtxGuard::install(host, event_loop);
       host.reset_budget_for_run();
@@ -1038,7 +1058,16 @@ fn native_queue_microtask<State: WebIdlBindingsHost + 'static>(
         false
       }
     }
-  });
+  }) else {
+    // If we somehow reached this native function without an execution context installed, avoid
+    // dereferencing null raw pointers and instead behave like a synchronous exception.
+    scope.heap_mut().remove_root(callback_root);
+    return Err(throw_type_error(
+      vm,
+      scope,
+      "queueMicrotask called outside of an active JS execution context",
+    ));
+  };
 
   if !queued {
     // The microtask was not enqueued, so the root will never be removed by the task.
@@ -1098,7 +1127,7 @@ fn native_set_timeout<State: WebIdlBindingsHost + 'static>(
   let id_cell: Rc<Cell<TimerId>> = Rc::new(Cell::new(0));
   let id_cell_for_cb = Rc::clone(&id_cell);
 
-  ExecCtxGuard::with_current::<State, _>(|host_ptr, event_loop_ptr| unsafe {
+  let _ = ExecCtxGuard::with_current::<State, _>(|host_ptr, event_loop_ptr| unsafe {
     let set_result = (&mut *event_loop_ptr).set_timeout(delay, move |host, event_loop| {
       let _guard = ExecCtxGuard::install(host, event_loop);
       host.reset_budget_for_run();
@@ -1178,7 +1207,7 @@ fn native_clear_timeout<State: WebIdlBindingsHost + 'static>(
 ) -> std::result::Result<Value, VmError> {
   let id_value = args.get(0).copied().unwrap_or(Value::Number(0.0));
   let id = normalize_timer_id(vm, scope, id_value)?;
-  ExecCtxGuard::with_current::<State, _>(|host_ptr, event_loop_ptr| unsafe {
+  let _ = ExecCtxGuard::with_current::<State, _>(|host_ptr, event_loop_ptr| unsafe {
     (&mut *event_loop_ptr).clear_timeout(id);
     if let Some(entry) = (*host_ptr).timers.remove(&id) {
       scope.heap_mut().remove_root(entry.callback);
@@ -1240,7 +1269,7 @@ fn native_set_interval<State: WebIdlBindingsHost + 'static>(
   let id_cell: Rc<Cell<TimerId>> = Rc::new(Cell::new(0));
   let id_cell_for_cb = Rc::clone(&id_cell);
 
-  ExecCtxGuard::with_current::<State, _>(|host_ptr, event_loop_ptr| unsafe {
+  let _ = ExecCtxGuard::with_current::<State, _>(|host_ptr, event_loop_ptr| unsafe {
     let set_result = (&mut *event_loop_ptr).set_interval(interval, move |host, event_loop| {
       let _guard = ExecCtxGuard::install(host, event_loop);
       host.reset_budget_for_run();
@@ -1314,7 +1343,7 @@ fn native_clear_interval<State: WebIdlBindingsHost + 'static>(
 ) -> std::result::Result<Value, VmError> {
   let id_value = args.get(0).copied().unwrap_or(Value::Number(0.0));
   let id = normalize_timer_id(vm, scope, id_value)?;
-  ExecCtxGuard::with_current::<State, _>(|host_ptr, event_loop_ptr| unsafe {
+  let _ = ExecCtxGuard::with_current::<State, _>(|host_ptr, event_loop_ptr| unsafe {
     (&mut *event_loop_ptr).clear_interval(id);
     if let Some(entry) = (*host_ptr).timers.remove(&id) {
       scope.heap_mut().remove_root(entry.callback);
@@ -1504,7 +1533,7 @@ mod tests {
     _this: Value,
     _args: &[Value],
   ) -> std::result::Result<Value, VmError> {
-    ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
+    let _ = ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
       (*host_ptr).state.log.push("sync");
     });
     Ok(Value::Undefined)
@@ -1519,7 +1548,7 @@ mod tests {
     _this: Value,
     _args: &[Value],
   ) -> std::result::Result<Value, VmError> {
-    ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
+    let _ = ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
       (*host_ptr).state.log.push("micro");
     });
     Ok(Value::Undefined)
@@ -1534,7 +1563,7 @@ mod tests {
     _this: Value,
     _args: &[Value],
   ) -> std::result::Result<Value, VmError> {
-    ExecCtxGuard::with_current::<TestState, _>(|host_ptr, event_loop_ptr| unsafe {
+    let _ = ExecCtxGuard::with_current::<TestState, _>(|host_ptr, event_loop_ptr| unsafe {
       (*host_ptr).state.log.push("then");
       let event_loop = &mut *event_loop_ptr;
       event_loop
@@ -1557,7 +1586,7 @@ mod tests {
     _this: Value,
     _args: &[Value],
   ) -> std::result::Result<Value, VmError> {
-    ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
+    let _ = ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
       (*host_ptr).state.log.push("timeout");
     });
     Ok(Value::Undefined)
@@ -1579,7 +1608,7 @@ mod tests {
       Value::Undefined => "undefined",
       _ => "other",
     };
-    ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
+    let _ = ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
       (*host_ptr).state.log.push(tag);
     });
     Ok(Value::Undefined)
@@ -1594,7 +1623,7 @@ mod tests {
     _this: Value,
     args: &[Value],
   ) -> std::result::Result<Value, VmError> {
-    ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
+    let _ = ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
       (*host_ptr).state.log.push("thenable_then");
     });
 
@@ -1744,7 +1773,7 @@ mod tests {
 
       host.host_enqueue_promise_job(
         Job::new(vm_js::JobKind::Promise, |_ctx, _hooks| {
-          ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
+          let _ = ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
             (*host_ptr).state.log.push("job1");
           });
           Ok(())
@@ -1755,7 +1784,7 @@ mod tests {
 
       host.host_enqueue_promise_job(
         Job::new(vm_js::JobKind::Promise, |_ctx, _hooks| {
-          ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
+          let _ = ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
             (*host_ptr).state.log.push("job2");
           });
           Ok(())
@@ -1767,6 +1796,25 @@ mod tests {
 
     event_loop.perform_microtask_checkpoint(&mut host)?;
     assert_eq!(host.state.log, vec!["job1", "job2"]);
+    Ok(())
+  }
+
+  #[test]
+  fn missing_vm_js_job_in_microtask_is_noop_and_does_not_panic() -> Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EcmaVmRuntime<TestState>>::with_clock(clock);
+    let mut host = EcmaVmRuntime::new(TestState::default(), EcmaVmRuntimeConfig::default())?;
+
+    // Simulate a microtask that was queued with a missing/discarded `vm-js` `Job`.
+    let job_cell: Rc<RefCell<Option<Job>>> = Rc::new(RefCell::new(None));
+    event_loop.queue_microtask(move |host, event_loop| {
+      run_vm_js_job_microtask(job_cell, host, event_loop)
+    })?;
+    assert_eq!(event_loop.pending_microtask_count(), 1);
+
+    event_loop.perform_microtask_checkpoint(&mut host)?;
+    assert_eq!(event_loop.pending_microtask_count(), 0);
+    assert_eq!(host.state.log, Vec::<&'static str>::new());
     Ok(())
   }
 
@@ -1784,10 +1832,11 @@ mod tests {
       let realm_id = ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
         (*host_ptr).state.log.push("getter");
         (*host_ptr).realm_id
-      });
+      })
+      .unwrap_or(RealmId::from_raw(0));
 
       let job = Job::new(vm_js::JobKind::Promise, |_ctx, _hooks| {
-        ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
+        let _ = ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
           (*host_ptr).state.log.push("micro");
         });
         Ok(())
@@ -1904,7 +1953,7 @@ mod tests {
     ) -> std::result::Result<Value, VmError> {
       let id_value = args.get(0).copied().unwrap_or(Value::Number(0.0));
       let id = normalize_timer_id(vm, scope, id_value)?;
-      ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
+      let _ = ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
         (*host_ptr).state.interval_id = Some(id);
       });
       Ok(Value::Undefined)
@@ -1919,13 +1968,15 @@ mod tests {
       _this: Value,
       _args: &[Value],
     ) -> std::result::Result<Value, VmError> {
-      let (count, id) = ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
+      let Some((count, id)) = ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
         (*host_ptr).state.interval_count += 1;
         (
           (*host_ptr).state.interval_count,
           (*host_ptr).state.interval_id,
         )
-      });
+      }) else {
+        return Ok(Value::Undefined);
+      };
 
       if count == 3 {
         let Some(id) = id else {
@@ -1933,9 +1984,11 @@ mod tests {
         };
 
         // Call the JS global `clearInterval(id)`.
-        let global = ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
+        let Some(global) = ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
           (*host_ptr).realm.global_object()
-        });
+        }) else {
+          return Ok(Value::Undefined);
+        };
         let global_value = Value::Object(global);
         scope.push_root(global_value)?;
         let key_s = scope.alloc_string("clearInterval")?;
