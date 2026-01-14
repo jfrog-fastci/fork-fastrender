@@ -16,7 +16,14 @@ use std::collections::HashSet;
 impl<'a> Parser<'a> {
   // `scope` should be a newly created closure scope for this function.
   pub fn func_params(&mut self, ctx: ParseCtx) -> SyntaxResult<Vec<Node<ParamDecl>>> {
-    self.func_params_impl(ctx, true)
+    // Regular (non-arrow) functions introduce their own `arguments` binding, so we allow
+    // `arguments` references within them even if the surrounding parse context is a class field
+    // initializer or static block.
+    let prev_disallow_arguments_in_class_init = self.disallow_arguments_in_class_init;
+    self.disallow_arguments_in_class_init = 0;
+    let res = self.func_params_impl(ctx, true);
+    self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
+    res
   }
 
   /// Parse arrow function parameter lists.
