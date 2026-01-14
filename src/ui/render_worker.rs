@@ -1149,7 +1149,7 @@ fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUiMsg>) -> Sta
   push_stage_listener(Some(listener))
 }
 
-fn viewport_point_for_pos_css(scroll: &ScrollState, pos_css: (f32, f32)) -> Point {
+pub(crate) fn viewport_point_for_pos_css(scroll: &ScrollState, pos_css: (f32, f32)) -> Point {
   // The UI uses a sentinel `(-1, -1)` position to indicate that the pointer left the page image.
   //
   // `InteractionEngine` converts viewport points into page points by translating with
@@ -1290,6 +1290,40 @@ fn apply_keyboard_scroll_delta_for_focus(
   // Canonicalize to keep "missing" and "zero" element offsets equivalent.
   next.elements.retain(|_, offset| *offset != Point::ZERO);
   Some(next)
+}
+
+#[cfg(test)]
+mod viewport_point_for_pos_css_tests {
+  use super::viewport_point_for_pos_css;
+  use crate::geometry::Point;
+  use crate::scroll::ScrollState;
+
+  #[test]
+  fn viewport_point_for_pos_css_translates_sentinel_to_negative_page_point_with_scroll() {
+    let scroll = ScrollState::with_viewport(Point::new(123.0, 45.0));
+    let viewport_point = viewport_point_for_pos_css(&scroll, (-1.0, -1.0));
+    let page_point = viewport_point.translate(scroll.viewport);
+    assert_eq!(
+      page_point,
+      Point::new(-1.0, -1.0),
+      "sentinel viewport-point must remain a sentinel page-point after translation"
+    );
+  }
+
+  #[test]
+  fn viewport_point_for_pos_css_maps_non_finite_positions_to_safe_negative_page_points() {
+    let scroll = ScrollState::with_viewport(Point::new(10.0, 20.0));
+
+    // NaN values can occur if the UI forwards an invalid coordinate; ensure we still translate
+    // to a negative page-point that interaction code can treat as "outside the page image".
+    let viewport_point = viewport_point_for_pos_css(&scroll, (f32::NAN, f32::INFINITY));
+    let page_point = viewport_point.translate(scroll.viewport);
+    assert_eq!(
+      page_point,
+      Point::new(-1.0, -1.0),
+      "non-finite positions must translate to a negative page-point sentinel"
+    );
+  }
 }
 
 fn trim_ascii_whitespace(value: &str) -> &str {

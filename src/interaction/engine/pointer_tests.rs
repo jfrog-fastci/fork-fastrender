@@ -11,6 +11,7 @@ use crate::tree::box_tree::{
 };
 use crate::tree::fragment_tree::{FragmentNode, FragmentTree, TextSourceRange};
 use crate::ui::messages::{PointerButton, PointerModifiers};
+use crate::ui::render_worker::viewport_point_for_pos_css;
 use crate::Length;
 use selectors::context::QuirksMode;
 use std::sync::Arc;
@@ -1322,10 +1323,16 @@ fn range_drag_ignores_sentinel_pointer_positions() {
   ));
 
   let range_box_id = find_box_id_for_styled_node(&box_tree, range_dom_id);
+  // Simulate a scrolled viewport so that the browser UI's pointer-leave sentinel needs to be
+  // translated by `viewport_point_for_pos_css` to remain negative after applying scroll.
+  let scroll = ScrollState::with_viewport(Point::new(50.0, 25.0));
+
   let fragment_tree = FragmentTree::new(FragmentNode::new_block(
-    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    Rect::from_xywh(0.0, 0.0, 400.0, 400.0),
     vec![FragmentNode::new_block_with_id(
-      Rect::from_xywh(10.0, 10.0, 100.0, 20.0),
+      // The range control lives in page coordinates; place it beyond the scroll offset so viewport
+      // coordinates remain non-negative for the initial pointer-down.
+      Rect::from_xywh(60.0, 40.0, 100.0, 20.0),
       range_box_id,
       vec![],
     )],
@@ -1337,8 +1344,9 @@ fn range_drag_ignores_sentinel_pointer_positions() {
       &mut dom,
       &box_tree,
       &fragment_tree,
-      &ScrollState::default(),
-      Point::new(85.0, 15.0),
+      &scroll,
+      // Viewport point that maps to a click around 75% along the slider in page space.
+      Point::new(85.0, 30.0),
     ),
     "expected pointer_down to set active state and update range value"
   );
@@ -1352,12 +1360,13 @@ fn range_drag_ignores_sentinel_pointer_positions() {
 
   // The browser UI uses a sentinel `(-1, -1)` pointer position when the cursor leaves the page.
   // Range drags should ignore this rather than snapping to the minimum value.
+  let sentinel_viewport_point = viewport_point_for_pos_css(&scroll, (-1.0, -1.0));
   engine.pointer_move(
     &mut dom,
     &box_tree,
     &fragment_tree,
-    &ScrollState::default(),
-    Point::new(-1.0, -1.0),
+    &scroll,
+    sentinel_viewport_point,
   );
   let value_after_move = attr_value(&dom, "range", "value")
     .and_then(|v| v.parse::<f64>().ok())
@@ -1371,8 +1380,8 @@ fn range_drag_ignores_sentinel_pointer_positions() {
     &mut dom,
     &box_tree,
     &fragment_tree,
-    &ScrollState::default(),
-    Point::new(-1.0, -1.0),
+    &scroll,
+    sentinel_viewport_point,
     PointerButton::Primary,
     PointerModifiers::default(),
     true,
@@ -1386,6 +1395,92 @@ fn range_drag_ignores_sentinel_pointer_positions() {
   assert!(
     (value_after_up - value_after_down).abs() < 1e-6,
     "expected sentinel pointer_up to keep range value at {value_after_down}, got {value_after_up}"
+  );
+}
+
+#[test]
+fn text_selection_drag_ignores_sentinel_pointer_positions() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el("input", vec![("id", "txt"), ("value", "hello")], vec![])],
+    )],
+  )]);
+
+  let input_dom_id = node_id(&dom, "txt");
+  let mut input_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  input_box.styled_node_id = Some(input_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![input_box],
+  ));
+
+  let input_box_id = find_box_id_for_styled_node(&box_tree, input_dom_id);
+
+  let scroll = ScrollState::with_viewport(Point::new(50.0, 25.0));
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 400.0, 400.0),
+    vec![FragmentNode::new_block_with_id(
+      // Place the input beyond the scroll offset so our initial drag points stay in viewport space.
+      Rect::from_xywh(80.0, 60.0, 200.0, 30.0),
+      input_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+
+  // Start a selection drag near the left edge (caret at/near start).
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(35.0, 50.0),
+  );
+
+  // Drag to the right edge to create a selection.
+  engine.pointer_move(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(225.0, 50.0),
+  );
+
+  let before = engine
+    .interaction_state()
+    .text_edit_for(input_dom_id)
+    .copied()
+    .expect("expected text edit state after drag");
+  assert!(
+    before.selection.is_some(),
+    "expected drag to create a selection highlight"
+  );
+
+  // The browser UI uses a sentinel `(-1, -1)` pointer position when the cursor leaves the page.
+  // Text selection drags should ignore this rather than collapsing the selection to the start.
+  let sentinel_viewport_point = viewport_point_for_pos_css(&scroll, (-1.0, -1.0));
+  engine.pointer_move(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    sentinel_viewport_point,
+  );
+
+  let after = engine
+    .interaction_state()
+    .text_edit_for(input_dom_id)
+    .copied()
+    .expect("expected text edit state after sentinel drag move");
+  assert_eq!(
+    after, before,
+    "sentinel pointer_move must not update caret/selection state during a drag"
   );
 }
 
