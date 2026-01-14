@@ -51,16 +51,16 @@ fn boolean_prototype_to_string_and_value_of_work() -> Result<(), VmError> {
 }
 
 #[test]
-fn boolean_prototype_symbol_to_primitive_is_installed_and_validates_hint() -> Result<(), VmError> {
+fn boolean_prototype_symbol_to_primitive_is_undefined_and_uses_ordinary_to_primitive() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   assert_eq!(
     rt.exec_script(
       r#"
-        typeof Boolean.prototype[Symbol.toPrimitive] === "function" &&
-        Object.getOwnPropertyDescriptor(Boolean.prototype, Symbol.toPrimitive).writable === false &&
-        Object.getOwnPropertyDescriptor(Boolean.prototype, Symbol.toPrimitive).enumerable === false &&
-        Object.getOwnPropertyDescriptor(Boolean.prototype, Symbol.toPrimitive).configurable === true
+        // Per ES spec / Node.js: Boolean.prototype does *not* define @@toPrimitive; boolean wrapper
+        // objects use OrdinaryToPrimitive (toString/valueOf).
+        Boolean.prototype[Symbol.toPrimitive] === undefined &&
+        Object.getOwnPropertyDescriptor(Boolean.prototype, Symbol.toPrimitive) === undefined
       "#,
     )?,
     Value::Bool(true)
@@ -69,25 +69,34 @@ fn boolean_prototype_symbol_to_primitive_is_installed_and_validates_hint() -> Re
   assert_eq!(
     rt.exec_script(
       r#"
-        const f = Boolean.prototype[Symbol.toPrimitive];
-        f.call(new Boolean(true), "string") === true &&
-        f.call(new Boolean(false), "number") === false &&
-        f.call(new Boolean(true), "default") === true
+        // OrdinaryToPrimitive with string hint tries toString first.
+        (function () {
+          let calls = "";
+          const b = new Boolean(true);
+          b.toString = function () { calls += "s"; return "ok"; };
+          b.valueOf = function () { calls += "v"; return true; };
+          return String(b) === "ok" && calls === "s";
+        })()
       "#,
     )?,
     Value::Bool(true)
   );
 
-  let s = rt.exec_script(r#"try { Boolean.prototype[Symbol.toPrimitive].call(true, "bad"); } catch (e) { e.name }"#)?;
-  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
-  let s = rt.exec_script(r#"try { Boolean.prototype[Symbol.toPrimitive].call(true, 1); } catch (e) { e.name }"#)?;
-  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
-  let s = rt.exec_script(r#"try { Boolean.prototype[Symbol.toPrimitive].call("x", "default"); } catch (e) { e.name }"#)?;
-  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
-  let s = rt.exec_script(
-    r#"try { Boolean.prototype[Symbol.toPrimitive].call(new Proxy(new Boolean(true), {}), "default"); } catch (e) { e.name }"#,
-  )?;
-  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
+  assert_eq!(
+    rt.exec_script(
+      r#"
+        // OrdinaryToPrimitive with number hint tries valueOf first.
+        (function () {
+          let calls = "";
+          const b = new Boolean(false);
+          b.valueOf = function () { calls += "v"; return true; };
+          b.toString = function () { calls += "s"; return "0"; };
+          return Number(b) === 1 && calls === "v";
+        })()
+      "#,
+    )?,
+    Value::Bool(true)
+  );
 
   Ok(())
 }

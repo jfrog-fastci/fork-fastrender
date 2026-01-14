@@ -162,16 +162,16 @@ fn number_prototype_formatting_methods_work() -> Result<(), VmError> {
 }
 
 #[test]
-fn number_prototype_symbol_to_primitive_is_installed_and_validates_hint() -> Result<(), VmError> {
+fn number_prototype_symbol_to_primitive_is_undefined_and_uses_ordinary_to_primitive() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   assert_eq!(
     rt.exec_script(
       r#"
-        typeof Number.prototype[Symbol.toPrimitive] === "function" &&
-        Object.getOwnPropertyDescriptor(Number.prototype, Symbol.toPrimitive).writable === false &&
-        Object.getOwnPropertyDescriptor(Number.prototype, Symbol.toPrimitive).enumerable === false &&
-        Object.getOwnPropertyDescriptor(Number.prototype, Symbol.toPrimitive).configurable === true
+        // Per ES spec / Node.js: Number.prototype does *not* define @@toPrimitive; number wrapper
+        // objects use OrdinaryToPrimitive (valueOf/toString).
+        Number.prototype[Symbol.toPrimitive] === undefined &&
+        Object.getOwnPropertyDescriptor(Number.prototype, Symbol.toPrimitive) === undefined
       "#,
     )?,
     Value::Bool(true)
@@ -180,25 +180,18 @@ fn number_prototype_symbol_to_primitive_is_installed_and_validates_hint() -> Res
   assert_eq!(
     rt.exec_script(
       r#"
-        const f = Number.prototype[Symbol.toPrimitive];
-        f.call(new Number(1), "string") === "1" &&
-        f.call(new Number(1.5), "number") === 1.5 &&
-        f.call(new Number(2), "default") === 2
+        // OrdinaryToPrimitive with number hint tries valueOf first.
+        (function () {
+          let calls = "";
+          const n = new Number(1);
+          n.valueOf = function () { calls += "v"; return 2; };
+          n.toString = function () { calls += "s"; return "3"; };
+          return Number(n) === 2 && calls === "v";
+        })()
       "#,
     )?,
     Value::Bool(true)
   );
-
-  let s = rt.exec_script(r#"try { Number.prototype[Symbol.toPrimitive].call(1, "bad"); } catch (e) { e.name }"#)?;
-  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
-  let s = rt.exec_script(r#"try { Number.prototype[Symbol.toPrimitive].call(1, 1); } catch (e) { e.name }"#)?;
-  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
-  let s = rt.exec_script(r#"try { Number.prototype[Symbol.toPrimitive].call("x", "default"); } catch (e) { e.name }"#)?;
-  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
-  let s = rt.exec_script(
-    r#"try { Number.prototype[Symbol.toPrimitive].call(new Proxy(new Number(1), {}), "default"); } catch (e) { e.name }"#,
-  )?;
-  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
 
   Ok(())
 }

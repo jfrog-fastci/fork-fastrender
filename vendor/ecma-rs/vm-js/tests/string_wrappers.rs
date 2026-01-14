@@ -14,7 +14,7 @@ fn as_utf8_lossy(rt: &JsRuntime, value: Value) -> String {
 }
 
 #[test]
-fn string_prototype_value_of_and_symbol_to_primitive_work() -> Result<(), VmError> {
+fn string_prototype_value_of_works_and_symbol_to_primitive_is_undefined() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   assert_eq!(
@@ -34,31 +34,14 @@ fn string_prototype_value_of_and_symbol_to_primitive_work() -> Result<(), VmErro
   assert_eq!(
     rt.exec_script(
       r#"
-        typeof String.prototype[Symbol.toPrimitive] === "function" &&
-        Object.getOwnPropertyDescriptor(String.prototype, Symbol.toPrimitive).writable === false &&
-        Object.getOwnPropertyDescriptor(String.prototype, Symbol.toPrimitive).enumerable === false &&
-        Object.getOwnPropertyDescriptor(String.prototype, Symbol.toPrimitive).configurable === true
+        // Per ES spec / Node.js: String.prototype does *not* define @@toPrimitive; string wrapper
+        // objects use OrdinaryToPrimitive (toString/valueOf).
+        String.prototype[Symbol.toPrimitive] === undefined &&
+        Object.getOwnPropertyDescriptor(String.prototype, Symbol.toPrimitive) === undefined
       "#,
     )?,
     Value::Bool(true)
   );
-
-  assert_eq!(
-    rt.exec_script(
-      r#"
-        const f = String.prototype[Symbol.toPrimitive];
-        f.call(Object("x"), "string") === "x" &&
-        f.call(Object("x"), "number") === "x" &&
-        f.call(Object("x"), "default") === "x"
-      "#,
-    )?,
-    Value::Bool(true)
-  );
-
-  let s = rt.exec_script(r#"try { String.prototype[Symbol.toPrimitive].call("x", "bad"); } catch (e) { e.name }"#)?;
-  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
-  let s = rt.exec_script(r#"try { String.prototype[Symbol.toPrimitive].call("x", 1); } catch (e) { e.name }"#)?;
-  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
 
   // Ensure `String.prototype.toString` throws a TypeError on incompatible receivers (instead of
   // surfacing as an internal `Unimplemented` error).
@@ -70,10 +53,6 @@ fn string_prototype_value_of_and_symbol_to_primitive_work() -> Result<(), VmErro
   let s = rt.exec_script(r#"try { String.prototype.valueOf.call(new Proxy(Object("x"), {})); } catch (e) { e.name }"#)?;
   assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
   let s = rt.exec_script(r#"try { String.prototype.toString.call(new Proxy(Object("x"), {})); } catch (e) { e.name }"#)?;
-  assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
-  let s = rt.exec_script(
-    r#"try { String.prototype[Symbol.toPrimitive].call(new Proxy(Object("x"), {}), "string"); } catch (e) { e.name }"#,
-  )?;
   assert_eq!(as_utf8_lossy(&rt, s), "TypeError");
 
   Ok(())
