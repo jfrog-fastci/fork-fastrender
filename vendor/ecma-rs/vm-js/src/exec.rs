@@ -34202,6 +34202,46 @@ fn gen_try_after_catch(
   };
 
   let pending = result;
+  // Root the pending completion value across evaluation of the finally block in case the finally
+  // block allocates and triggers GC before reaching a `yield` boundary.
+  //
+  // The pending completion is only held in Rust locals while evaluating `finally`, so it would be
+  // invisible to the GC without this root.
+  struct RootStackTruncateGuard {
+    heap: *mut Heap,
+    len: usize,
+    active: bool,
+  }
+  impl RootStackTruncateGuard {
+    fn disarm(&mut self) {
+      self.active = false;
+    }
+  }
+  impl Drop for RootStackTruncateGuard {
+    fn drop(&mut self) {
+      if !self.active {
+        return;
+      }
+      // Safety: `heap` remains valid for the duration of `gen_try_after_catch` and the guard does
+      // not outlive the caller's `scope`.
+      unsafe {
+        (*self.heap).root_stack.truncate(self.len);
+      }
+    }
+  }
+
+  let pending_root_len = scope.heap().root_stack.len();
+  let heap_ptr = scope.heap_mut() as *mut Heap;
+  let mut pending_root_guard = RootStackTruncateGuard {
+    heap: heap_ptr,
+    len: pending_root_len,
+    active: false,
+  };
+  if let Some(v) = pending.value() {
+    scope.push_root(v)?;
+    pending_root_guard.active = true;
+  }
+
   match gen_eval_block_stmt(evaluator, scope, &finally.stx)? {
     GenEval::Complete(finally_result) => {
       let result = if finally_result.is_abrupt() {
@@ -34214,6 +34254,11 @@ fn gen_try_after_catch(
       ))
     }
     GenEval::Suspend(mut suspend) => {
+      // Do not truncate pending roots on suspension: the pending completion value is stored in a
+      // continuation frame, and must remain alive until the generator unwinds to the yield
+      // boundary and stores the continuation in the heap.
+      pending_root_guard.disarm();
+
       gen_frames_push(&mut suspend.frames, GenFrame::TryAfterFinally { pending })?;
       Ok(GenEval::Suspend(suspend))
     }
