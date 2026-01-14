@@ -8813,7 +8813,6 @@ impl<'a> Evaluator<'a> {
       let mut instance_field_idx: usize = 0;
       let instance_field_slot_start = crate::class_fields::CLASS_CTOR_SLOT_INSTANCE_FIELDS_START
         .saturating_add(private_instance_method_count.saturating_mul(2));
-      let class_ctor = func_obj;
       for member in members {
         self.tick()?;
 
