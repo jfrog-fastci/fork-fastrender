@@ -135,11 +135,7 @@ fn analyze_svg_fragment(fragment: &str) -> SvgFragmentAnalysis {
 }
 
 fn contains_xlink_prefix(value: &str) -> bool {
-  const NEEDLE: &[u8] = b"xlink:";
-  value
-    .as_bytes()
-    .windows(NEEDLE.len())
-    .any(|window| window.eq_ignore_ascii_case(NEEDLE))
+  contains_ascii_case_insensitive(value, "xlink:")
 }
 
 fn find_svg_root_start_tag_bounds(svg: &str) -> Option<(usize, usize)> {
@@ -176,11 +172,7 @@ fn find_svg_root_start_tag_bounds(svg: &str) -> Option<(usize, usize)> {
 }
 
 fn start_tag_has_xmlns_xlink(start_tag: &str) -> bool {
-  const NEEDLE: &[u8] = b"xmlns:xlink";
-  start_tag
-    .as_bytes()
-    .windows(NEEDLE.len())
-    .any(|window| window.eq_ignore_ascii_case(NEEDLE))
+  contains_ascii_case_insensitive(start_tag, "xmlns:xlink")
 }
 
 fn svg_ids_to_inline(

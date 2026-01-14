@@ -3674,24 +3674,7 @@ fn serialize_svg_subtree(
 
   fn svg_uses_xlink_prefix(node: &StyledNode) -> bool {
     fn attr_name_uses_xlink_prefix(name: &str) -> bool {
-      const NEEDLE: &[u8] = b"xlink:";
-      let bytes = name.as_bytes();
-      if bytes.len() < NEEDLE.len() {
-        return false;
-      }
-      for idx in 0..=bytes.len() - NEEDLE.len() {
-        if bytes[idx].to_ascii_lowercase() != b'x' {
-          continue;
-        }
-        if bytes[idx..idx + NEEDLE.len()]
-          .iter()
-          .zip(NEEDLE)
-          .all(|(a, b)| a.to_ascii_lowercase() == *b)
-        {
-          return true;
-        }
-      }
-      false
+      crate::string_match::contains_ascii_case_insensitive(name, "xlink:")
     }
 
     if let crate::dom::DomNodeType::Element { attributes, .. } = &node.node.node_type {
