@@ -705,6 +705,33 @@ fn live_range_replace_child_runs_insert_steps_for_fragment_replacement() {
 }
 
 #[test]
+fn live_range_insert_before_uses_adjusted_index_when_moving_within_same_parent() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+  let parent = doc.create_element("div", "");
+  doc.append_child(root, parent).unwrap();
+
+  let a = doc.create_element("a", "");
+  let b = doc.create_element("b", "");
+  let c = doc.create_element("c", "");
+  doc.append_child(parent, a).unwrap();
+  doc.append_child(parent, b).unwrap();
+  doc.append_child(parent, c).unwrap();
+
+  // Boundary point after all children.
+  let range = doc.create_range();
+  doc.range_set_start(range, parent, 3).unwrap();
+  doc.range_set_end(range, parent, 3).unwrap();
+
+  // Move `a` from index 0 to before `c`. The insertion algorithm must adjust the insertion index
+  // (because the node is removed from an earlier position first), and the live range insertion
+  // steps must use that adjusted index.
+  assert!(doc.insert_before(parent, a, Some(c)).unwrap());
+  assert_eq!(doc.children(parent).unwrap(), &[b, a, c]);
+  assert_range_collapsed(&doc, range, parent, 3);
+}
+
+#[test]
 fn range_offsets_ignore_shadow_root_pseudo_child() {
   let html = concat!(
     "<!doctype html>",
