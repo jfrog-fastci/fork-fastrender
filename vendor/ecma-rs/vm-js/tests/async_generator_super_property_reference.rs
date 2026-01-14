@@ -299,3 +299,88 @@ fn async_generator_super_computed_member_access_yield_star_in_key() -> Result<()
   assert_eq!(rt.exec_script("out")?, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn async_generator_super_computed_member_call_yield_star_in_key() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = false;
+
+      async function* keyIter() {
+        yield "key";
+        return "m";
+      }
+
+      class B { m(x) { return this.v + x; } }
+      class D extends B {
+        constructor() { super(); this.v = 1; }
+        async *gen() {
+          return super[yield* keyIter()](41);
+        }
+      }
+
+      async function f() {
+        const it = new D().gen();
+        const r0 = await it.next();
+        const r1 = await it.next();
+        return (
+          r0.value === "key" && r0.done === false &&
+          r1.value === 42 && r1.done === true
+        );
+      }
+
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  assert_eq!(rt.exec_script("out")?, Value::Bool(false));
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  assert_eq!(rt.exec_script("out")?, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn async_generator_super_computed_member_assignment_yield_star_in_key_and_yield_in_rhs(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = false;
+
+      async function* keyIter() {
+        yield "key";
+        return "x";
+      }
+
+      class B { set x(v) { this._x = v; } }
+      class D extends B {
+        async *gen() {
+          super[yield* keyIter()] = yield 1;
+          return this._x;
+        }
+      }
+
+      async function f() {
+        const it = new D().gen();
+        const r0 = await it.next();
+        const r1 = await it.next();
+        const r2 = await it.next(42);
+        return (
+          r0.value === "key" && r0.done === false &&
+          r1.value === 1 && r1.done === false &&
+          r2.value === 42 && r2.done === true
+        );
+      }
+
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  assert_eq!(rt.exec_script("out")?, Value::Bool(false));
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  assert_eq!(rt.exec_script("out")?, Value::Bool(true));
+  Ok(())
+}
