@@ -16,17 +16,17 @@ fn object_prototype_to_string_generator_falls_back_when_to_string_tag_deleted() 
         const it = g();
         if (Object.prototype.toString.call(it) !== "[object Generator]") return false;
 
-        const proto1 = Object.getPrototypeOf(it);
-        const proto2 = Object.getPrototypeOf(proto1);
-
-        // Engines differ on whether the generator instance inherits directly from
-        // %GeneratorPrototype% or from a per-function prototype object that in turn inherits from
-        // %GeneratorPrototype%. Delete from both to ensure @@toStringTag is actually absent.
-        delete proto1[Symbol.toStringTag];
-        if (proto2 !== null) {
-          delete proto2[Symbol.toStringTag];
+        // Generators can have several prototype levels between the generator instance and
+        // %IteratorPrototype% (e.g. a per-function prototype object, plus an internal prototype
+        // that stores the intrinsic "Generator" @@toStringTag).
+        //
+        // Delete @@toStringTag from the entire prototype chain so it's actually absent.
+        let proto = Object.getPrototypeOf(it);
+        while (proto !== null) {
+          delete proto[Symbol.toStringTag];
+          proto = Object.getPrototypeOf(proto);
         }
-        if (proto1[Symbol.toStringTag] !== undefined) return false;
+        if (it[Symbol.toStringTag] !== undefined) return false;
         // When @@toStringTag is absent, Object.prototype.toString must fall back to the
         // built-in tag for generator objects ("Generator"), not "[object Object]".
         return Object.prototype.toString.call(it) === "[object Generator]";
