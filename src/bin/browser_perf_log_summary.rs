@@ -477,13 +477,16 @@ fn run(cli: Cli) -> Result<(), String> {
           }
         }
         if cli.from_ms.is_some() || cli.to_ms.is_some() {
-          if let Some(ts_ms) = event_timestamp_ms(&event) {
-            if cli.from_ms.is_some_and(|from| ts_ms < from) {
-              continue;
-            }
-            if cli.to_ms.is_some_and(|to| ts_ms > to) {
-              continue;
-            }
+          let Some(ts_ms) = event_timestamp_ms(&event) else {
+            // When a time window is specified we can only make a decision for events that carry a
+            // timestamp; skip any unknown/legacy events without one.
+            continue;
+          };
+          if cli.from_ms.is_some_and(|from| ts_ms < from) {
+            continue;
+          }
+          if cli.to_ms.is_some_and(|to| ts_ms > to) {
+            continue;
           }
         }
 
