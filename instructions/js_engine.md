@@ -39,6 +39,7 @@ This script is safe to run directly: it wraps each `cargo test` invocation in `t
  - `generators_optional_chaining_yield`
  - `generators_optional_chaining_yield_star`
  - `generators_optional_chaining_super_property_yield`
+ - `generators_optional_chaining_super_property_yield_star`
 
 ### Build speed matters
 
