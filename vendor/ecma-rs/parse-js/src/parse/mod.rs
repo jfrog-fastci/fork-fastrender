@@ -449,46 +449,6 @@ impl<'a> Parser<'a> {
     }
   }
 
-  pub(crate) fn validate_arguments_not_disallowed_in_class_init(
-    &self,
-    loc: Loc,
-    name: &str,
-  ) -> SyntaxResult<()> {
-    if !self.is_strict_ecmascript() || self.disallow_arguments_in_class_init == 0 {
-      return Ok(());
-    }
-
-    let Some(string_value) = self.identifier_name_string_value(name) else {
-      // Identifier names should have already been validated by the lexer; treat this as a syntax
-      // error to avoid silently accepting malformed escape sequences.
-      return Err(loc.error(SyntaxErrorType::ExpectedSyntax("identifier"), None));
-    };
-
-    if string_value.as_ref() == "arguments" {
-      return Err(loc.error(
-        SyntaxErrorType::ExpectedSyntax(
-          "`arguments` is not allowed in class field initializers or static initialization blocks",
-        ),
-        None,
-      ));
-    }
-    Ok(())
-  }
-
-  pub(crate) fn with_disallow_arguments_in_class_init<R>(
-    &mut self,
-    f: impl FnOnce(&mut Self) -> SyntaxResult<R>,
-  ) -> SyntaxResult<R> {
-    if !self.is_strict_ecmascript() {
-      return f(self);
-    }
-    self.disallow_arguments_in_class_init += 1;
-    let res = f(self);
-    debug_assert!(self.disallow_arguments_in_class_init > 0);
-    self.disallow_arguments_in_class_init -= 1;
-    res
-  }
-
   pub(crate) fn with_arguments_bound_in_class_init<R>(
     &mut self,
     f: impl FnOnce(&mut Self) -> SyntaxResult<R>,
