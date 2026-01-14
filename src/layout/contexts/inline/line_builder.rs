@@ -1484,6 +1484,52 @@ impl TextItem {
       is_space: bool,
     }
 
+    #[inline]
+    fn apply_extra_to_run_cluster(run: &mut ShapedRun, glyph_end: usize, extra: f32) {
+      if extra == 0.0 {
+        return;
+      }
+      if run.glyphs.is_empty() {
+        return;
+      }
+      if glyph_end == 0 {
+        return;
+      }
+
+      let axis = run_inline_axis(run);
+
+      // `glyph_end` is derived from shaping output; clamp defensively so out-of-range indices
+      // (e.g. after glyph compaction) still apply spacing to the last glyph.
+      let glyph_idx = glyph_end
+        .saturating_sub(1)
+        .min(run.glyphs.len().saturating_sub(1));
+      let Some(glyph) = run.glyphs.get_mut(glyph_idx) else {
+        run.advance += extra;
+        return;
+      };
+
+      match axis {
+        InlineAxis::Horizontal => {
+          glyph.x_advance += extra;
+          run.advance += extra;
+        }
+        InlineAxis::Vertical => {
+          let before = glyph_inline_advance(glyph, axis);
+          add_inline_advance(glyph, axis, extra);
+          let after = glyph_inline_advance(glyph, axis);
+          run.advance += after - before;
+        }
+      }
+    }
+
+    #[inline]
+    fn apply_extra_to_cluster(runs: &mut [ShapedRun], run_idx: usize, glyph_end: usize, extra: f32) {
+      let Some(run) = runs.get_mut(run_idx) else {
+        return;
+      };
+      apply_extra_to_run_cluster(run, glyph_end, extra);
+    }
+
     let wants_word_spacing = word_spacing != 0.0;
     let text_bytes = text.as_bytes();
 
@@ -1526,7 +1572,7 @@ impl TextItem {
       #[cfg(test)]
       let mut cluster_count = 0usize;
 
-      let mut pending: Option<(usize, usize, bool, InlineAxis)> = None;
+      let mut pending: Option<(usize, usize, bool)> = None;
       for run_idx in 0..runs.len() {
         if runs[run_idx].glyphs.is_empty() {
           continue;
@@ -1534,36 +1580,11 @@ impl TextItem {
 
         // If there is a cluster before this run, it is not the final cluster overall, so apply
         // spacing to it now.
-        if let Some((pending_run_idx, glyph_end, is_space, axis)) = pending.take() {
+        if let Some((pending_run_idx, glyph_end, is_space)) = pending.take() {
           let extra = letter_spacing + if is_space { word_spacing } else { 0.0 };
-          if extra != 0.0 {
-            if let Some(run) = runs.get_mut(pending_run_idx) {
-              if !run.glyphs.is_empty() {
-                let glyph_idx = glyph_end
-                  .saturating_sub(1)
-                  .min(run.glyphs.len().saturating_sub(1));
-                if let Some(glyph) = run.glyphs.get_mut(glyph_idx) {
-                  match axis {
-                    InlineAxis::Horizontal => {
-                      glyph.x_advance += extra;
-                      run.advance += extra;
-                    }
-                    InlineAxis::Vertical => {
-                      let before = glyph_inline_advance(glyph, axis);
-                      add_inline_advance(glyph, axis, extra);
-                      let after = glyph_inline_advance(glyph, axis);
-                      run.advance += after - before;
-                    }
-                  }
-                } else {
-                  run.advance += extra;
-                }
-              }
-            }
-          }
+          apply_extra_to_cluster(runs, pending_run_idx, glyph_end, extra);
         }
 
-        let axis = run_inline_axis(&runs[run_idx]);
         let run_start = runs[run_idx].start;
         let run_len = runs[run_idx].glyphs.len();
 
@@ -1587,34 +1608,14 @@ impl TextItem {
 
           if let Some((prev_end, prev_is_space)) = prev_cluster.take() {
             let extra = letter_spacing + if prev_is_space { word_spacing } else { 0.0 };
-            if extra != 0.0 {
-              let glyph_idx = prev_end
-                .saturating_sub(1)
-                .min(run.glyphs.len().saturating_sub(1));
-              if let Some(glyph) = run.glyphs.get_mut(glyph_idx) {
-                match axis {
-                  InlineAxis::Horizontal => {
-                    glyph.x_advance += extra;
-                    run.advance += extra;
-                  }
-                  InlineAxis::Vertical => {
-                    let before = glyph_inline_advance(glyph, axis);
-                    add_inline_advance(glyph, axis, extra);
-                    let after = glyph_inline_advance(glyph, axis);
-                    run.advance += after - before;
-                  }
-                }
-              } else {
-                run.advance += extra;
-              }
-            }
+            apply_extra_to_run_cluster(run, prev_end, extra);
           }
 
           prev_cluster = Some((glyph_end, is_space));
         }
 
         if let Some((glyph_end, is_space)) = prev_cluster {
-          pending = Some((run_idx, glyph_end, is_space, axis));
+          pending = Some((run_idx, glyph_end, is_space));
         }
       }
 
@@ -1631,16 +1632,12 @@ impl TextItem {
       return;
     }
 
-    // Fallback: collect all clusters and sort if we observe any non-monotonic offsets. This handles
-    // RTL runs, mixed-direction segments, and any unexpected shaping output ordering.
+    // Attempt a no-allocation two-pass scan for the common case where we can already discover
+    // clusters in monotonic logical order (e.g. RTL HarfBuzz buffers scanned backwards, or runs
+    // reordered by start byte).
     //
-    // Most runs are cluster-trivial (1 cluster per glyph). Reserve to avoid repeated reallocation on
-    // long paragraphs.
-    let mut clusters: Vec<ClusterRef> =
-      Vec::with_capacity(runs.iter().map(|r| r.glyphs.len()).sum());
-    let mut last_offset: Option<usize> = None;
-    let mut needs_sort = false;
-    let mut monotonic_decreasing = true;
+    // If we observe any out-of-order cluster offsets, fall back to collecting all clusters and
+    // sorting.
 
     // Cluster offsets are defined in logical (source-text) order. When runs/glyphs are already
     // monotonic, we can avoid a full O(n log n) cluster sort by iterating runs in start order and
@@ -1668,6 +1665,210 @@ impl TextItem {
       sorted_run_indices = (0..runs.len()).collect();
       sorted_run_indices.sort_by_key(|idx| runs[*idx].start);
     }
+
+    let mut cluster_count = 0usize;
+    let mut last_offset: Option<usize> = None;
+    let mut needs_sort = false;
+
+    let mut check_run = |run_idx: usize| {
+      let run_len = runs[run_idx].glyphs.len();
+      if run_len == 0 {
+        return;
+      }
+      let run_start = runs[run_idx].start;
+      let scan_forward = runs[run_idx].glyphs[0].cluster
+        <= runs[run_idx].glyphs[run_len.saturating_sub(1)].cluster;
+
+      if scan_forward {
+        let mut idx = 0usize;
+        while idx < run_len {
+          let cluster_value = runs[run_idx].glyphs[idx].cluster;
+          while idx < run_len && runs[run_idx].glyphs[idx].cluster == cluster_value {
+            idx += 1;
+          }
+          let offset = run_start.saturating_add(cluster_value as usize);
+          cluster_count = cluster_count.saturating_add(1);
+          if let Some(prev) = last_offset {
+            if offset < prev {
+              needs_sort = true;
+              break;
+            }
+          }
+          last_offset = Some(offset);
+        }
+      } else {
+        let mut idx = run_len;
+        while idx > 0 {
+          let end = idx;
+          let cluster_value = runs[run_idx].glyphs[end - 1].cluster;
+          idx = idx.saturating_sub(1);
+          while idx > 0 && runs[run_idx].glyphs[idx - 1].cluster == cluster_value {
+            idx -= 1;
+          }
+          let offset = run_start.saturating_add(cluster_value as usize);
+          cluster_count = cluster_count.saturating_add(1);
+          if let Some(prev) = last_offset {
+            if offset < prev {
+              needs_sort = true;
+              break;
+            }
+          }
+          last_offset = Some(offset);
+        }
+      }
+    };
+
+    if run_starts_increasing {
+      for run_idx in 0..runs.len() {
+        check_run(run_idx);
+        if needs_sort {
+          break;
+        }
+      }
+    } else if run_starts_decreasing {
+      for run_idx in (0..runs.len()).rev() {
+        check_run(run_idx);
+        if needs_sort {
+          break;
+        }
+      }
+    } else {
+      for &run_idx in &sorted_run_indices {
+        check_run(run_idx);
+        if needs_sort {
+          break;
+        }
+      }
+    }
+
+    // `check_run` holds borrows into `runs`; drop it before we potentially mutate glyph advances.
+    drop(check_run);
+
+    if !needs_sort {
+      #[cfg(test)]
+      APPLY_SPACING_CLUSTER_COUNT.with(|count| {
+        count.set(count.get().saturating_add(cluster_count));
+      });
+
+      if cluster_count <= 1 {
+        return;
+      }
+
+      #[derive(Clone, Copy)]
+      struct ClusterLite {
+        run_idx: usize,
+        glyph_end: usize,
+        is_space: bool,
+      }
+
+      let mut prev_cluster: Option<ClusterLite> = None;
+
+      let mut apply_run = |run_idx: usize| {
+        let run_len = runs[run_idx].glyphs.len();
+        if run_len == 0 {
+          return;
+        }
+        let run_start = runs[run_idx].start;
+        let scan_forward = runs[run_idx].glyphs[0].cluster
+          <= runs[run_idx].glyphs[run_len.saturating_sub(1)].cluster;
+
+        if scan_forward {
+          let mut idx = 0usize;
+          while idx < run_len {
+            let cluster_value = runs[run_idx].glyphs[idx].cluster;
+            while idx < run_len && runs[run_idx].glyphs[idx].cluster == cluster_value {
+              idx += 1;
+            }
+            let glyph_end = idx;
+            let offset = run_start.saturating_add(cluster_value as usize);
+            let is_space = wants_word_spacing && is_space_like_at_offset(offset);
+
+            let current = ClusterLite {
+              run_idx,
+              glyph_end,
+              is_space,
+            };
+
+            if let Some(prev) = prev_cluster {
+              let extra = letter_spacing + if prev.is_space { word_spacing } else { 0.0 };
+              if extra != 0.0 {
+                let prev_key = (prev.run_idx, prev.glyph_end);
+                let next_key = (current.run_idx, current.glyph_end);
+                let (target_run_idx, target_glyph_end) = if prev_key <= next_key {
+                  (prev.run_idx, prev.glyph_end)
+                } else {
+                  (current.run_idx, current.glyph_end)
+                };
+                apply_extra_to_cluster(runs, target_run_idx, target_glyph_end, extra);
+              }
+            }
+
+            prev_cluster = Some(current);
+          }
+        } else {
+          let mut idx = run_len;
+          while idx > 0 {
+            let end = idx;
+            let cluster_value = runs[run_idx].glyphs[end - 1].cluster;
+            idx = idx.saturating_sub(1);
+            while idx > 0 && runs[run_idx].glyphs[idx - 1].cluster == cluster_value {
+              idx -= 1;
+            }
+            let glyph_end = end;
+            let offset = run_start.saturating_add(cluster_value as usize);
+            let is_space = wants_word_spacing && is_space_like_at_offset(offset);
+
+            let current = ClusterLite {
+              run_idx,
+              glyph_end,
+              is_space,
+            };
+
+            if let Some(prev) = prev_cluster {
+              let extra = letter_spacing + if prev.is_space { word_spacing } else { 0.0 };
+              if extra != 0.0 {
+                let prev_key = (prev.run_idx, prev.glyph_end);
+                let next_key = (current.run_idx, current.glyph_end);
+                let (target_run_idx, target_glyph_end) = if prev_key <= next_key {
+                  (prev.run_idx, prev.glyph_end)
+                } else {
+                  (current.run_idx, current.glyph_end)
+                };
+                apply_extra_to_cluster(runs, target_run_idx, target_glyph_end, extra);
+              }
+            }
+
+            prev_cluster = Some(current);
+          }
+        }
+      };
+
+      if run_starts_increasing {
+        for run_idx in 0..runs.len() {
+          apply_run(run_idx);
+        }
+      } else if run_starts_decreasing {
+        for run_idx in (0..runs.len()).rev() {
+          apply_run(run_idx);
+        }
+      } else {
+        for &run_idx in &sorted_run_indices {
+          apply_run(run_idx);
+        }
+      }
+
+      return;
+    }
+
+    // Fallback: collect all clusters and sort if we observe any non-monotonic offsets. This handles
+    // RTL runs, mixed-direction segments, and any unexpected shaping output ordering.
+    //
+    // Most runs are cluster-trivial (1 cluster per glyph). Reserve to avoid repeated reallocation on
+    // long paragraphs.
+    let mut clusters: Vec<ClusterRef> =
+      Vec::with_capacity(runs.iter().map(|r| r.glyphs.len()).sum());
+    let mut last_offset: Option<usize> = None;
+    let mut monotonic_decreasing = true;
 
     let mut collect_for_run = |run_idx: usize| {
       let run = &runs[run_idx];
@@ -1811,36 +2012,7 @@ impl TextItem {
         }
       };
 
-      let Some(run) = runs.get_mut(target_run_idx) else {
-        continue;
-      };
-      if run.glyphs.is_empty() {
-        continue;
-      }
-      let axis = run_inline_axis(run);
-
-      // `glyph_end` is derived from shaping output; clamp defensively so out-of-range indices
-      // (e.g. after glyph compaction) still apply spacing to the last glyph.
-      debug_assert!(target_glyph_end > 0);
-      let glyph_idx = target_glyph_end
-        .saturating_sub(1)
-        .min(run.glyphs.len().saturating_sub(1));
-      let Some(glyph) = run.glyphs.get_mut(glyph_idx) else {
-        continue;
-      };
-
-      match axis {
-        InlineAxis::Horizontal => {
-          glyph.x_advance += extra;
-          run.advance += extra;
-        }
-        InlineAxis::Vertical => {
-          let before = glyph_inline_advance(glyph, axis);
-          add_inline_advance(glyph, axis, extra);
-          let after = glyph_inline_advance(glyph, axis);
-          run.advance += after - before;
-        }
-      }
+      apply_extra_to_cluster(runs, target_run_idx, target_glyph_end, extra);
     }
   }
 
