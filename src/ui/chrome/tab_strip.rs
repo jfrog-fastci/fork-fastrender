@@ -1213,121 +1213,125 @@ fn group_chip_ui(
   focus_ring: FocusRingStyle,
   precomputed_width: Option<f32>,
 ) {
-  let Some(group) = app.tab_groups.get(&group_id) else {
-    return;
-  };
-
-  let color = group.color;
-  let collapsed = group.collapsed;
-  let title = group_chip_title(group);
-
   let id = ui.make_persistent_id(("tab_group_chip", group_id.0));
-  let width = precomputed_width
-    .filter(|w| w.is_finite())
-    .map(|w| w.max(0.0).clamp(GROUP_CHIP_MIN_WIDTH, GROUP_CHIP_MAX_WIDTH))
-    .unwrap_or_else(|| group_chip_width(ui, title));
-  let (_, chip_rect) = ui.allocate_space(Vec2::new(width, TAB_HEIGHT));
-  let mut response = ui.interact(chip_rect, id, Sense::click());
-  if response.hovered() {
-    response = response.on_hover_text(title);
-  }
-  response.widget_info({
-    let label = group_chip_a11y_label(title, collapsed);
-    move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-  });
-  // Accessibility: if focus lands on a chip that is outside the horizontal scroll viewport, bring
-  // it into view so keyboard and screen-reader users can see the focused control.
-  //
-  // Guard against repaint loops by only scrolling when the rect is actually not visible.
-  if response.has_focus() && !ui.is_rect_visible(chip_rect) {
-    response.scroll_to_me(Some(egui::Align::Center));
-  }
+  let (collapsed, mut response, chip_rect) = {
+    let Some(group) = app.tab_groups.get_mut(&group_id) else {
+      return;
+    };
+    let color = group.color;
+    let collapsed = group.collapsed;
+    let a11y_label = group.tab_group_chip_accessible_label();
+    let title = group_chip_title(group);
 
-  #[cfg(test)]
-  {
-    ui.ctx().data_mut(|d| {
-      d.insert_temp(egui::Id::new("test_tab_group_chip_id"), response.id);
-      d.insert_temp(egui::Id::new("test_tab_group_chip_rect"), chip_rect);
+    let width = precomputed_width
+      .filter(|w| w.is_finite())
+      .map(|w| w.max(0.0).clamp(GROUP_CHIP_MIN_WIDTH, GROUP_CHIP_MAX_WIDTH))
+      .unwrap_or_else(|| group_chip_width(ui, title));
+    let (_, chip_rect) = ui.allocate_space(Vec2::new(width, TAB_HEIGHT));
+    let mut response = ui.interact(chip_rect, id, Sense::click());
+    if response.hovered() {
+      response = response.on_hover_text(title);
+    }
+    response.widget_info({
+      let label = a11y_label.clone();
+      move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
     });
-  }
+    // Accessibility: if focus lands on a chip that is outside the horizontal scroll viewport, bring
+    // it into view so keyboard and screen-reader users can see the focused control.
+    //
+    // Guard against repaint loops by only scrolling when the rect is actually not visible.
+    if response.has_focus() && !ui.is_rect_visible(chip_rect) {
+      response.scroll_to_me(Some(egui::Align::Center));
+    }
 
-  let visuals = ui.style().visuals.clone();
+    #[cfg(test)]
+    {
+      ui.ctx().data_mut(|d| {
+        d.insert_temp(egui::Id::new("test_tab_group_chip_id"), response.id);
+        d.insert_temp(egui::Id::new("test_tab_group_chip_rect"), chip_rect);
+      });
+    }
 
-  // Micro-interaction: fade hover highlight in/out (keeping group color identity).
-  let hover_t = motion.animate_bool(
-    ui.ctx(),
-    id.with("hover"),
-    response.hovered(),
-    motion.durations.hover_fade,
-  );
-  let pressed = ui.is_enabled() && response.is_pointer_button_down_on();
+    let visuals = ui.style().visuals.clone();
 
-  let (r, g, b) = color.rgb();
-  let fill_base = Color32::from_rgba_unmultiplied(r, g, b, 48);
-  let fill_hover = Color32::from_rgba_unmultiplied(r, g, b, 72);
-  let fill_active = Color32::from_rgba_unmultiplied(r, g, b, 92);
-  let mut fill = lerp_color(fill_base, fill_hover, hover_t);
-  if pressed {
-    fill = fill_active;
-  }
-
-  let stroke_base = with_alpha(group_color_egui(color), 0.85);
-  let stroke_hover = group_color_egui(color);
-  let stroke_color = if pressed {
-    stroke_hover
-  } else {
-    lerp_color(stroke_base, stroke_hover, hover_t)
-  };
-  let stroke = Stroke::new(1.0, stroke_color);
-
-  let rounding = visuals.widgets.inactive.rounding;
-  ui.painter().rect_filled(chip_rect, rounding, fill);
-  ui.painter()
-    .rect_stroke(chip_rect.shrink(0.5), rounding, stroke);
-
-  // Collapse/expand indicator: paint a small rotating triangle instead of swapping text glyphs.
-  let expanded_t = motion.animate_bool(
-    ui.ctx(),
-    id.with("expanded"),
-    !collapsed,
-    motion.durations.tab_group_collapse,
-  );
-  let angle = expanded_t * std::f32::consts::FRAC_PI_2;
-
-  let icon_min = Pos2::new(
-    chip_rect.min.x + GROUP_CHIP_PADDING_X,
-    chip_rect.center().y - GROUP_CHIP_ICON_SIZE * 0.5,
-  );
-  let icon_rect = Rect::from_min_size(icon_min, Vec2::splat(GROUP_CHIP_ICON_SIZE));
-  let icon_center = icon_rect.center();
-  let (sin, cos) = angle.sin_cos();
-  let rot = |v: Vec2| Vec2::new(v.x * cos - v.y * sin, v.x * sin + v.y * cos);
-  let half = GROUP_CHIP_ICON_SIZE * 0.5;
-  let tri = [
-    Vec2::new(-half * 0.35, -half * 0.55),
-    Vec2::new(-half * 0.35, half * 0.55),
-    Vec2::new(half * 0.55, 0.0),
-  ];
-  let points: Vec<Pos2> = tri.iter().map(|v| icon_center + rot(*v)).collect();
-  ui.painter().add(egui::Shape::convex_polygon(
-    points,
-    visuals.text_color(),
-    Stroke::NONE,
-  ));
-
-  // Title.
-  let title_start_x = icon_rect.max.x + GROUP_CHIP_ICON_GAP;
-  let title_end_x = chip_rect.max.x - GROUP_CHIP_PADDING_X;
-  if title_end_x > title_start_x + 4.0 {
-    let title_rect = Rect::from_min_max(
-      Pos2::new(title_start_x, chip_rect.min.y),
-      Pos2::new(title_end_x, chip_rect.max.y),
+    // Micro-interaction: fade hover highlight in/out (keeping group color identity).
+    let hover_t = motion.animate_bool(
+      ui.ctx(),
+      id.with("hover"),
+      response.hovered(),
+      motion.durations.hover_fade,
     );
-    let label = egui::Label::new(egui::RichText::new(title).text_style(egui::TextStyle::Button))
-      .truncate(true)
-      .wrap(false);
-    let _ = ui.put(title_rect, label);
-  }
+    let pressed = ui.is_enabled() && response.is_pointer_button_down_on();
+
+    let (r, g, b) = color.rgb();
+    let fill_base = Color32::from_rgba_unmultiplied(r, g, b, 48);
+    let fill_hover = Color32::from_rgba_unmultiplied(r, g, b, 72);
+    let fill_active = Color32::from_rgba_unmultiplied(r, g, b, 92);
+    let mut fill = lerp_color(fill_base, fill_hover, hover_t);
+    if pressed {
+      fill = fill_active;
+    }
+
+    let stroke_base = with_alpha(group_color_egui(color), 0.85);
+    let stroke_hover = group_color_egui(color);
+    let stroke_color = if pressed {
+      stroke_hover
+    } else {
+      lerp_color(stroke_base, stroke_hover, hover_t)
+    };
+    let stroke = Stroke::new(1.0, stroke_color);
+
+    let rounding = visuals.widgets.inactive.rounding;
+    ui.painter().rect_filled(chip_rect, rounding, fill);
+    ui.painter()
+      .rect_stroke(chip_rect.shrink(0.5), rounding, stroke);
+
+    // Collapse/expand indicator: paint a small rotating triangle instead of swapping text glyphs.
+    let expanded_t = motion.animate_bool(
+      ui.ctx(),
+      id.with("expanded"),
+      !collapsed,
+      motion.durations.tab_group_collapse,
+    );
+    let angle = expanded_t * std::f32::consts::FRAC_PI_2;
+
+    let icon_min = Pos2::new(
+      chip_rect.min.x + GROUP_CHIP_PADDING_X,
+      chip_rect.center().y - GROUP_CHIP_ICON_SIZE * 0.5,
+    );
+    let icon_rect = Rect::from_min_size(icon_min, Vec2::splat(GROUP_CHIP_ICON_SIZE));
+    let icon_center = icon_rect.center();
+    let (sin, cos) = angle.sin_cos();
+    let rot = |v: Vec2| Vec2::new(v.x * cos - v.y * sin, v.x * sin + v.y * cos);
+    let half = GROUP_CHIP_ICON_SIZE * 0.5;
+    let tri = [
+      Vec2::new(-half * 0.35, -half * 0.55),
+      Vec2::new(-half * 0.35, half * 0.55),
+      Vec2::new(half * 0.55, 0.0),
+    ];
+    let points: Vec<Pos2> = tri.iter().map(|v| icon_center + rot(*v)).collect();
+    ui.painter().add(egui::Shape::convex_polygon(
+      points,
+      visuals.text_color(),
+      Stroke::NONE,
+    ));
+
+    // Title.
+    let title_start_x = icon_rect.max.x + GROUP_CHIP_ICON_GAP;
+    let title_end_x = chip_rect.max.x - GROUP_CHIP_PADDING_X;
+    if title_end_x > title_start_x + 4.0 {
+      let title_rect = Rect::from_min_max(
+        Pos2::new(title_start_x, chip_rect.min.y),
+        Pos2::new(title_end_x, chip_rect.max.y),
+      );
+      let label = egui::Label::new(egui::RichText::new(title).text_style(egui::TextStyle::Button))
+        .truncate(true)
+        .wrap(false);
+      let _ = ui.put(title_rect, label);
+    }
+
+    (collapsed, response, chip_rect)
+  };
 
   let menu_state_id = id.with("context_menu_state");
   let mut menu_state = ui
@@ -5793,6 +5797,8 @@ mod tests {
           title: title.clone(),
           color: TabGroupColor::Blue,
           collapsed: true,
+          tab_group_chip_a11y_label_cache:
+            crate::ui::tab_accessible_label::TitlePrefixedLabelCache::default(),
         };
         let mut group_expanded = group_collapsed.clone();
         group_expanded.collapsed = false;

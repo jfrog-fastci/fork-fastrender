@@ -200,6 +200,25 @@ pub struct TabGroupState {
   pub title: String,
   pub color: TabGroupColor,
   pub collapsed: bool,
+  #[cfg(any(test, feature = "browser_ui"))]
+  tab_group_chip_a11y_label_cache: crate::ui::tab_accessible_label::TitlePrefixedLabelCache,
+}
+
+impl TabGroupState {
+  #[cfg(any(test, feature = "browser_ui"))]
+  pub(crate) fn tab_group_chip_accessible_label(&mut self) -> std::sync::Arc<str> {
+    let title = if self.title.trim().is_empty() {
+      "Group"
+    } else {
+      self.title.as_str()
+    };
+    let prefix = if self.collapsed {
+      "Expand tab group"
+    } else {
+      "Collapse tab group"
+    };
+    self.tab_group_chip_a11y_label_cache.get_or_update(prefix, title)
+  }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2162,6 +2181,9 @@ impl BrowserAppState {
         title: "Group".to_string(),
         color: TabGroupColor::default(),
         collapsed: false,
+        #[cfg(any(test, feature = "browser_ui"))]
+        tab_group_chip_a11y_label_cache:
+          crate::ui::tab_accessible_label::TitlePrefixedLabelCache::default(),
       },
     );
 
