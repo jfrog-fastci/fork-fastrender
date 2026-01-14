@@ -527,7 +527,33 @@ fn generators_yield_in_template_literals() {
           g2.value === 2 && g2.done === false &&
           g3.value === "a30b" && g3.done === true;
 
-        ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8
+        // `.throw` while suspended in a substitution should propagate through the template frame.
+        function* tpl_throw() {
+          try {
+            return `a${yield 1}b`;
+          } catch (e) {
+            return e.message;
+          }
+        }
+        const it9 = tpl_throw();
+        const h1 = it9.next();
+        churn();
+        const h2 = it9.throw(new Error("boom"));
+        const ok9 =
+          h1.value === 1 && h1.done === false &&
+          h2.value === "boom" && h2.done === true;
+
+        // `.return` should bypass template concatenation and complete with the return value.
+        function* tpl_return() { return `a${yield 1}b`; }
+        const it10 = tpl_return();
+        const i1 = it10.next();
+        churn();
+        const i2 = it10.return(99);
+        const ok10 =
+          i1.value === 1 && i1.done === false &&
+          i2.value === 99 && i2.done === true;
+
+        ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 && ok10
       "#,
     )
     .unwrap();
