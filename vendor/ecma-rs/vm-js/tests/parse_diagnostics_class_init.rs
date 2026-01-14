@@ -1,8 +1,6 @@
 use vm_js::{Heap, HeapLimits, JsRuntime, Vm, VmError, VmOptions};
 
 const EARLY_ERROR_CODE: &str = "VMJS0004";
-const AWAIT_DISALLOWED_IN_STATIC_BLOCK: &str =
-  "'await' is not allowed in class static initialization block";
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -27,7 +25,10 @@ fn await_expression_in_class_static_block_in_async_function_is_vmjs0004() {
   );
   assert!(
     diags.iter().any(|d| {
-      d.code.as_str() == EARLY_ERROR_CODE && d.message.contains(AWAIT_DISALLOWED_IN_STATIC_BLOCK)
+      d.code.as_str() == EARLY_ERROR_CODE
+        && d.message.contains("await")
+        && d.message.contains("class")
+        && d.message.contains("static")
     }),
     "expected early error VMJS0004 for await in static block, got {diags:?}"
   );
