@@ -2881,9 +2881,6 @@ impl JsRuntime {
             AsyncSuspendKind::Yield | AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
               "unexpected async generator yield suspension in async script evaluation",
             )),
-            AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
-              "unexpected async generator yield* suspension in async script evaluation",
-            )),
           };
 
           let awaited_promise = match awaited_promise_res {
@@ -3438,9 +3435,6 @@ impl JsRuntime {
             AsyncSuspendKind::AwaitResolved => Ok(await_value),
             AsyncSuspendKind::Yield | AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
               "unexpected async generator yield suspension in async script evaluation",
-            )),
-            AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
-              "unexpected async generator yield* suspension in async script evaluation",
             )),
           };
 
@@ -17831,9 +17825,6 @@ fn async_handle_body_result(
         AsyncSuspendKind::AwaitResolved => Ok(await_value),
         AsyncSuspendKind::Yield | AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
           "unexpected async generator yield suspension in async continuation",
-        )),
-        AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
-          "unexpected async generator yield* suspension in async continuation",
         )),
       };
 
@@ -48035,9 +48026,6 @@ pub(crate) fn run_ecma_function(
           AsyncSuspendKind::Yield | AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
             "unexpected async generator yield suspension in async function start",
           )),
-          AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
-            "unexpected async generator yield* suspension in async function start",
-          )),
         };
 
         let awaited_promise = match awaited_promise_res {
@@ -48677,9 +48665,6 @@ pub(crate) fn start_module_tla_evaluation(
           AsyncSuspendKind::Yield | AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
             "unexpected async generator yield suspension in module TLA",
           )),
-          AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
-            "unexpected async generator yield* suspension in module TLA",
-          )),
         }
       };
 
@@ -48958,9 +48943,6 @@ pub(crate) fn resume_module_tla_evaluation(
             AsyncSuspendKind::AwaitResolved => Ok(await_value),
             AsyncSuspendKind::Yield | AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
               "unexpected async generator yield suspension in module evaluation",
-            )),
-            AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
-              "unexpected async generator yield* suspension in module evaluation",
             )),
           };
           match awaited_promise_res {
@@ -49251,11 +49233,6 @@ pub(crate) fn run_module_async_start(
                 "unexpected async generator yield suspension in module start",
               ))
             }
-            AsyncSuspendKind::YieldIteratorResult => {
-              return Err(VmError::InvariantViolation(
-                "unexpected async generator yield* suspension in module start",
-              ))
-            }
           };
           await_scope.push_root(awaited_promise)?;
           let awaited_root = await_scope.heap_mut().add_root(awaited_promise)?;
@@ -49419,11 +49396,6 @@ pub(crate) fn run_module_async_resume(
           AsyncSuspendKind::Yield | AsyncSuspendKind::YieldIteratorResult => {
             return Err(VmError::InvariantViolation(
               "unexpected async generator yield suspension in module resume",
-            ))
-          }
-          AsyncSuspendKind::YieldIteratorResult => {
-            return Err(VmError::InvariantViolation(
-              "unexpected async generator yield* suspension in module resume",
             ))
           }
         };
