@@ -77,20 +77,23 @@ fn download_matches_tokens(entry: &DownloadEntry, tokens_lower: &[&str]) -> bool
 
   let file_name = entry.file_name.trim();
   let url = entry.url.trim();
-  let path = entry.path.to_string_lossy();
   let status = download_status_search_haystack(&entry.status);
   let error = match &entry.status {
     DownloadStatus::Failed { error } => Some(error.trim()).filter(|e| !e.is_empty()),
     _ => None,
   };
+  let mut path: Option<Cow<'_, str>> = None;
 
   for token_lower in tokens_lower {
     if contains_ascii_case_insensitive(file_name, token_lower)
       || contains_ascii_case_insensitive(url, token_lower)
-      || contains_ascii_case_insensitive(path.as_ref(), token_lower)
       || contains_ascii_case_insensitive(status, token_lower)
       || error.is_some_and(|err| contains_ascii_case_insensitive(err, token_lower))
     {
+      continue;
+    }
+    let path = path.get_or_insert_with(|| entry.path.to_string_lossy());
+    if contains_ascii_case_insensitive(path.as_ref(), token_lower) {
       continue;
     }
     return false;
