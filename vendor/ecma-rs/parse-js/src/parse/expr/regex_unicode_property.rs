@@ -36,21 +36,33 @@ fn parse_backtick_words(table: &'static str) -> Vec<&'static str> {
   let mut out = Vec::new();
   let mut i = 0usize;
   while i < bytes.len() {
-    let Some(start_rel) = memchr(b'`', &bytes[i..]) else {
-      break;
-    };
-    let start = i + start_rel;
-    let after_start = start + 1;
-    let Some(end_rel) = memchr(b'`', &bytes[after_start..]) else {
-      break;
-    };
-    let end = after_start + end_rel;
-    if let Some(word) = table.get(after_start..end) {
-      if !word.is_empty() {
-        out.push(word);
+    // These snapshot files include a small HTML comment header that may mention other
+    // identifiers in backticks (e.g. `Script`, `General_Category`) for documentation.
+    // Skip HTML comments so we only extract the actual table identifiers.
+    if bytes[i..].starts_with(b"<!--") {
+      if let Some(end_rel) = table[i + 4..].find("-->") {
+        i += 4 + end_rel + 3;
+        continue;
       }
+      break;
     }
-    i = end + 1;
+
+    if bytes[i] == b'`' {
+      let after_start = i + 1;
+      let Some(end_rel) = memchr(b'`', &bytes[after_start..]) else {
+        break;
+      };
+      let end = after_start + end_rel;
+      if let Some(word) = table.get(after_start..end) {
+        if !word.is_empty() {
+          out.push(word);
+        }
+      }
+      i = end + 1;
+      continue;
+    }
+
+    i += 1;
   }
   out
 }
