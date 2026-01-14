@@ -989,8 +989,7 @@ impl RuntimeEnv {
     let values = [Value::Object(global_object)];
     let envs = [lexical_env, var_env];
     scope.push_roots_with_extra_roots(&values, &[], &envs)?;
-    scope.push_env_root(lexical_env)?;
-    scope.push_env_root(var_env)?;
+    scope.push_env_roots(&envs)?;
 
     let source = arc_try_new_vm(SourceText::new("<init>", ""))?;
     let lexical_root = Some(scope.heap_mut().add_env_root(lexical_env)?);

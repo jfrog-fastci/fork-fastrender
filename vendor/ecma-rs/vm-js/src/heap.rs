@@ -8901,6 +8901,53 @@ impl<'a> Scope<'a> {
     Ok(env)
   }
 
+  /// Pushes multiple environment stack roots in one operation.
+  pub fn push_env_roots(&mut self, envs: &[GcEnv]) -> Result<(), VmError> {
+    self.push_env_roots_with_extra_roots(envs, &[], &[])
+  }
+
+  pub(crate) fn push_env_roots_with_extra_roots(
+    &mut self,
+    envs: &[GcEnv],
+    extra_roots: &[Value],
+    extra_env_roots: &[GcEnv],
+  ) -> Result<(), VmError> {
+    if envs.is_empty() {
+      return Ok(());
+    }
+
+    for env in envs {
+      debug_assert!(self.heap.is_valid_env(*env));
+    }
+
+    let new_len = self
+      .heap
+      .env_root_stack
+      .len()
+      .checked_add(envs.len())
+      .ok_or(VmError::OutOfMemory)?;
+    let growth_bytes =
+      vec_capacity_growth_bytes::<GcEnv>(self.heap.env_root_stack.capacity(), new_len);
+
+    if growth_bytes != 0 {
+      // Ensure `envs` (and `extra_*`) are treated as roots if this triggers a GC while we grow
+      // `env_root_stack`.
+      self.heap.ensure_can_allocate_with_extra_roots(
+        |_| growth_bytes,
+        extra_roots,
+        &[],
+        envs,
+        extra_env_roots,
+      )?;
+      reserve_vec_to_len::<GcEnv>(&mut self.heap.env_root_stack, new_len)?;
+    }
+
+    for env in envs {
+      self.heap.env_root_stack.push(*env);
+    }
+    Ok(())
+  }
+
   /// Creates a nested child scope that borrows the same heap.
   pub fn reborrow(&mut self) -> Scope<'_> {
     let root_stack_len_at_entry = self.heap.root_stack.len();
