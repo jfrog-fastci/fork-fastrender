@@ -2928,6 +2928,10 @@ fn subgrid_children_shape_parent_tracks_and_gaps() {
   subgrid_style.grid_column_end = 3;
   subgrid_style.grid_row_start = 1;
   subgrid_style.grid_row_end = 3;
+  // Keep alignment deterministic when inherited track sums differ from the subgrid's box size due
+  // to writing-mode mismatch (axes swapped).
+  subgrid_style.justify_content = JustifyContent::Start;
+  subgrid_style.align_content = AlignContent::Start;
   // Keep track alignment deterministic when inherited track sums differ from the subgrid's own box
   // size (a writing-mode mismatch remaps parent tracks onto different physical axes).
   subgrid_style.justify_content = JustifyContent::Start;
@@ -3281,6 +3285,8 @@ fn subgrid_writing_mode_mismatch_rtl_uses_subgrid_inline_axis_vertical() {
   subgrid_style.grid_column_end = 3;
   subgrid_style.grid_row_start = 1;
   subgrid_style.grid_row_end = 3;
+  subgrid_style.justify_content = JustifyContent::Start;
+  subgrid_style.align_content = AlignContent::Start;
 
   let mut first_style = ComputedStyle::default();
   first_style.display = Display::Block;
