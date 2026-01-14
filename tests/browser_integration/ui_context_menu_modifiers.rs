@@ -98,6 +98,37 @@ fn context_menu_request_propagates_modifier_keys_to_js_event() {
     other => panic!("unexpected WorkerToUi message: {other:?}"),
   }
 
+  // Without Shift held, the handler should not cancel the event.
+  ui_tx
+    .send(UiToWorker::ContextMenuRequest {
+      tab_id,
+      pos_css,
+      modifiers: PointerModifiers::NONE,
+    })
+    .expect("send ContextMenuRequest");
+
+  let msg = support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::ContextMenu { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for ContextMenu for tab {tab_id:?}"));
+
+  match msg {
+    WorkerToUi::ContextMenu {
+      tab_id: got_tab,
+      pos_css: got_pos,
+      default_prevented,
+      ..
+    } => {
+      assert_eq!(got_tab, tab_id);
+      assert_eq!(got_pos, pos_css);
+      assert!(
+        !default_prevented,
+        "expected shiftKey=false to avoid preventDefault()"
+      );
+    }
+    other => panic!("unexpected WorkerToUi message: {other:?}"),
+  }
+
   drop(ui_tx);
   join.join().expect("worker join");
 }
