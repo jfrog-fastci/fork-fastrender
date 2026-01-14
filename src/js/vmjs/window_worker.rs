@@ -1166,11 +1166,12 @@ fn install_worker_global_scope(runtime: &mut VmJsRuntime) -> std::result::Result
   }
 
   if install_indexeddb {
-    let source = Arc::new(SourceText::new_charged(
+    // Avoid `Arc::new`, which can abort the process on allocator OOM.
+    let source = SourceText::new_charged_arc(
       &mut runtime.heap,
       "fastrender_indexeddb_shim.js",
       INDEXED_DB_SHIM_JS,
-    )?);
+    )?;
     runtime.exec_script_source(source)?;
   }
 

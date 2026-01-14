@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use vm_js::{
   CompiledScript, Heap, HeapLimits, JsRuntime, MicrotaskQueue, SourceText, SourceTextModuleRecord,
   Value, Vm, VmError, VmOptions,
@@ -44,7 +43,8 @@ fn compiled_module_catch_has_error_stack() -> Result<(), VmError> {
 
   // Store the captured stack on the global object so we can assert on it after module evaluation.
   // This avoids needing to plumb module namespace exports into the test.
-  let source = Arc::new(SourceText::new_charged(
+  // Avoid `Arc::new`, which can abort the process on allocator OOM.
+  let source = SourceText::new_charged_arc(
     rt.heap_mut(),
     "m.js",
     r#"
@@ -58,7 +58,7 @@ fn compiled_module_catch_has_error_stack() -> Result<(), VmError> {
 
       export {};
     "#,
-  )?);
+  )?;
 
   let record = SourceTextModuleRecord::compile_source(rt.heap_mut(), source)?;
   let module_id = rt.modules_mut().add_module(record)?;

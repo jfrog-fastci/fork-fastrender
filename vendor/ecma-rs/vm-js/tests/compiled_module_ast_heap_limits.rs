@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use vm_js::{
   Heap, HeapLimits, ModuleGraph, ModuleStatus, RealmId, RootId, SourceText, SourceTextModuleRecord,
   Value, Vm, VmError, VmOptions,
@@ -26,7 +25,8 @@ fn compiled_module_ast_retention_is_charged_and_does_not_leak() -> Result<(), Vm
   // A large-but-manageable module source. We use `;` so it's syntactically valid without
   // allocating any import/export metadata.
   let src = ";".repeat(400_000);
-  let source = Arc::new(SourceText::new_charged(&mut heap, "<inline>", src)?);
+  // Avoid `Arc::new`, which can abort the process on allocator OOM.
+  let source = SourceText::new_charged_arc(&mut heap, "<inline>", src)?;
 
   // Simulate a "compiled module" that does not retain an AST by default: populate only the source.
   let mut record = SourceTextModuleRecord::default();
@@ -83,4 +83,3 @@ fn compiled_module_ast_retention_is_charged_and_does_not_leak() -> Result<(), Vm
   heap.remove_root(global_root);
   Ok(())
 }
-
