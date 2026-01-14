@@ -156,3 +156,34 @@ fn private_getters_do_not_invoke_proxy_get_traps_when_receiver_is_a_proxy_instan
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn private_elements_throw_on_non_extensible_proxy_instances() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      class Base {
+        constructor() {
+          Object.preventExtensions(this);
+          return new Proxy(this, {});
+        }
+      }
+
+      class C extends Base {
+        #x = 1;
+      }
+
+      let ok = false;
+      try {
+        new C();
+      } catch (e) {
+        ok = e instanceof TypeError;
+      }
+      ok
+    "#,
+  )?;
+
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}

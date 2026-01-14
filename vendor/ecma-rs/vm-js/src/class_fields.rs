@@ -25,6 +25,46 @@ fn define_internal_symbol_property_or_throw(
     return scope.define_property_or_throw(obj, key, desc);
   }
 
+  // `DefinePropertyOrThrow` rejects new properties on non-extensible objects. Private elements are
+  // specified in terms of `PrivateFieldAdd`/`PrivateMethodOrAccessorAdd`, which must still throw on
+  // non-extensible receivers.
+  //
+  // For Proxy receivers, we bypass traps by using the engine-private internal property table.
+  // However, we still need to enforce the non-extensible invariant. Proxy exotic objects do not
+  // store an `[[Extensible]]` slot; their extensibility is determined by the proxy target. To avoid
+  // invoking user-defined traps, we walk the `[[ProxyTarget]]` chain directly and consult the first
+  // non-proxy target's `[[Extensible]]` state.
+  let already_defined = scope
+    .heap()
+    .proxy_internal_get_own_property(obj, &key)?
+    .is_some();
+  if !already_defined {
+    let mut current = obj;
+    let mut steps = 0usize;
+    loop {
+      if steps >= crate::MAX_PROTOTYPE_CHAIN {
+        return Err(VmError::PrototypeChainTooDeep);
+      }
+      steps += 1;
+
+      if !scope.heap().is_proxy_object(current) {
+        if !scope.heap().object_is_extensible(current)? {
+          return Err(VmError::TypeError(
+            "Cannot define private member on non-extensible object",
+          ));
+        }
+        break;
+      }
+      let Some(target) = scope.heap().proxy_target(current)? else {
+        // Revoked proxy: treat as non-extensible for private-element definition.
+        return Err(VmError::TypeError(
+          "Cannot define private member on non-extensible object",
+        ));
+      };
+      current = target;
+    }
+  }
+
   // Root `obj`, `key`, and any descriptor values for the duration of the operation.
   let mut scope = scope.reborrow();
   let mut roots = [Value::Undefined; 5];
