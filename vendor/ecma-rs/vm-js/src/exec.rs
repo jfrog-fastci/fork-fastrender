@@ -54056,6 +54056,58 @@ mod tests {
   }
 
   #[test]
+  fn async_generator_await_resolved_does_not_observe_promise_constructor_twice() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    // Async generator `for await..of` with `AsyncIteratorClose` uses async suspension machinery; use
+    // a larger heap to avoid spurious OOMs.
+    let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      var count = 0;
+      var out;
+
+      async function* g() {
+        // Use an async iterable whose `return()` method returns a Promise object with an observable
+        // `.constructor` getter.
+        const it = {
+          i: 0,
+          [Symbol.asyncIterator]() { return this; },
+          next() { return Promise.resolve({ value: this.i++, done: false }); },
+          return() {
+            const p = Promise.resolve({ value: undefined, done: true });
+            Object.defineProperty(p, "constructor", { get() { count++; return Promise; } });
+            return p;
+          },
+        };
+
+        for await (const x of it) {
+          break;
+        }
+      }
+
+      async function run() {
+        await g().next();
+        return count;
+      }
+
+      run().then(function (v) { out = v; });
+      out
+    "#,
+    )?;
+    assert_eq!(value, Value::Undefined);
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let value = rt.exec_script("out")?;
+    assert!(
+      matches!(value, Value::Number(n) if n == 1.0),
+      "expected PromiseResolve to observe promise.constructor exactly once, got {value:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
   fn logical_assignment_with_await_short_circuiting() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     // The async evaluator can allocate more than a simple sync script; use a larger heap to avoid
