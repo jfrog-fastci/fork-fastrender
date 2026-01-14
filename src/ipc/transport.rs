@@ -106,7 +106,6 @@ fn write_frame_unchecked<W: Write>(writer: &mut W, payload: &[u8]) -> Result<(),
 mod unix_deadlines {
   use super::{decode_bincode_payload, encode_bincode_payload, validate_len_prefix, IpcError};
   use super::IPC_LENGTH_PREFIX_BYTES;
-  use super::super::limits::MAX_IPC_MESSAGE_BYTES;
   use serde::de::DeserializeOwned;
   use serde::Serialize;
   use std::io::{Read, Write};
