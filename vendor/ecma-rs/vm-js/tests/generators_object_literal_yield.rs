@@ -65,3 +65,47 @@ fn generator_object_literal_yield_in_spread() {
   assert_eq!(value, Value::Bool(true));
 }
 
+#[test]
+fn generator_object_literal_yield_value_then_method_member() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() { return { a: (yield 1), m() { return this.a; } }; }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(10);
+      r1.value === 1 && r1.done === false &&
+      r2.done === true &&
+      r2.value.a === 10 &&
+      typeof r2.value.m === "function" &&
+      r2.value.m() === 10 &&
+      r2.value.m.name === "m"
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_object_literal_yield_value_then_getter_and_setter_members() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() { return { a: (yield 1), get x() { return 123; }, set x(v) { this._v = v; } }; }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(10);
+      var obj = r2.value;
+      obj.x = 20;
+      r1.value === 1 && r1.done === false &&
+      r2.done === true &&
+      obj.a === 10 &&
+      obj.x === 123 &&
+      obj._v === 20
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

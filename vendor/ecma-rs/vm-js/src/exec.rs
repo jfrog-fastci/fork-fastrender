@@ -38149,6 +38149,32 @@ fn gen_eval_lit_obj_apply_valued_member(
   val: &ClassOrObjVal,
 ) -> Result<GenEval<Completion>, VmError> {
   let next_member_index = member_index.saturating_add(1);
+  let (member_loc_start, key_loc_start) = {
+    let member_node = expr
+      .members
+      .get(member_index)
+      .ok_or(VmError::InvariantViolation(
+        "generator object literal continuation out of bounds",
+      ))?;
+    let member_loc_start = member_node.loc.start_u32();
+    let ObjMemberType::Valued {
+      key: member_key, ..
+    } = &member_node.stx.typ
+    else {
+      return Err(VmError::InvariantViolation(
+        "generator object literal continuation for non-valued member",
+      ));
+    };
+    let key_loc_start = match member_key {
+      ClassOrObjKey::Direct(direct) => direct.loc.start_u32(),
+      // `ClassOrObjKey::Computed` stores the loc of the *expression inside* the brackets, not the
+      // `[` token itself. When we later slice source text for lazy method parsing we need to
+      // include the full member prefix (e.g. `[` / `get [` / `set [`), otherwise the reparsed
+      // wrapper `({ <snippet> })` becomes invalid (`Symbol.toPrimitive]...`).
+      ClassOrObjKey::Computed(_) => member_loc_start,
+    };
+    (member_loc_start, key_loc_start)
+  };
 
   match val {
     ClassOrObjVal::Prop(Some(value_expr)) => {
@@ -38261,9 +38287,407 @@ fn gen_eval_lit_obj_apply_valued_member(
     ClassOrObjVal::Prop(None) => Err(VmError::Unimplemented(
       "object literal property without initializer",
     )),
-    _ => Err(VmError::Unimplemented(
-      "yield in object literal member type",
-    )),
+    ClassOrObjVal::Method(method) => {
+      let res: Result<(), VmError> = (|| {
+        let mut member_scope = scope.reborrow();
+        member_scope.push_root(Value::Object(obj))?;
+        match &key {
+          PropertyKey::String(s) => member_scope.push_root(Value::String(*s))?,
+          PropertyKey::Symbol(s) => member_scope.push_root(Value::Symbol(*s))?,
+        };
+
+        let func_node = &method.stx.func;
+        let is_async_generator = func_node.stx.generator && func_node.stx.async_;
+        let length = evaluator.function_length(&func_node.stx)?;
+
+        let span_start = evaluator.object_member_span_start(member_loc_start, key_loc_start, &func_node.stx);
+        let rel_end = func_node
+          .loc
+          .end_u32()
+          .saturating_sub(evaluator.env.prefix_len());
+        let span_end = evaluator.env.base_offset().saturating_add(rel_end);
+        let code = evaluator.vm.register_ecma_function(
+          evaluator.env.source(),
+          span_start,
+          span_end,
+          EcmaFunctionKind::ObjectMember,
+        )?;
+
+        let is_strict = evaluator.strict
+          || match &func_node.stx.body {
+            Some(FuncBody::Block(stmts)) => detect_use_strict_directive(
+              evaluator.env.source().text.as_ref(),
+              evaluator.env.base_offset() as usize,
+              evaluator.env.prefix_len() as usize,
+              stmts,
+              || evaluator.tick(),
+            )?,
+            Some(FuncBody::Expression(_)) => false,
+            None => return Err(VmError::Unimplemented("method without body")),
+          };
+
+        let this_mode = if func_node.stx.arrow {
+          ThisMode::Lexical
+        } else if is_strict {
+          ThisMode::Strict
+        } else {
+          ThisMode::Global
+        };
+
+        let closure_env = Some(evaluator.env.lexical_env);
+
+        let name_string = match key {
+          PropertyKey::String(s) => s,
+          PropertyKey::Symbol(_) => member_scope.alloc_string("")?,
+        };
+
+        let func_obj = member_scope.alloc_ecma_function(
+          code,
+          /* is_constructable */ false,
+          name_string,
+          length,
+          this_mode,
+          is_strict,
+          closure_env,
+        )?;
+        member_scope
+          .heap_mut()
+          .set_function_meta_property_context(func_obj, MetaPropertyContext::METHOD)?;
+        let intr = evaluator
+          .vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+        member_scope.heap_mut().object_set_prototype(
+          func_obj,
+          Some(if func_node.stx.generator {
+            if is_async_generator {
+              intr.async_generator_function_prototype()
+            } else {
+              intr.generator_function_prototype()
+            }
+          } else if func_node.stx.async_ {
+            intr.async_function_prototype()
+          } else {
+            intr.function_prototype()
+          }),
+        )?;
+        member_scope
+          .heap_mut()
+          .set_function_realm(func_obj, evaluator.env.global_object())?;
+        if let Some(realm) = evaluator.vm.current_realm() {
+          member_scope
+            .heap_mut()
+            .set_function_job_realm(func_obj, realm)?;
+        }
+        if let Some(script_or_module) = evaluator.vm.get_active_script_or_module() {
+          let token = evaluator.vm.intern_script_or_module(script_or_module)?;
+          member_scope
+            .heap_mut()
+            .set_function_script_or_module_token(func_obj, Some(token))?;
+        }
+        // Object literal methods/getters/setters use the object itself as `[[HomeObject]]` (needed
+        // for `super.prop` and for arrow functions created inside the method body).
+        member_scope
+          .heap_mut()
+          .set_function_home_object(func_obj, Some(obj))?;
+        if func_node.stx.generator {
+          if is_async_generator {
+            crate::function_properties::make_async_generator_function_instance_prototype(
+              &mut member_scope,
+              func_obj,
+              intr.async_generator_prototype(),
+            )?;
+          } else {
+            crate::function_properties::make_generator_function_instance_prototype(
+              &mut member_scope,
+              func_obj,
+              intr.generator_prototype(),
+            )?;
+          }
+        }
+        if func_node.stx.arrow {
+          member_scope
+            .heap_mut()
+            .set_function_bound_this(func_obj, evaluator.this)?;
+          member_scope
+            .heap_mut()
+            .set_function_bound_new_target(func_obj, evaluator.new_target)?;
+          member_scope
+            .heap_mut()
+            .set_function_home_object(func_obj, evaluator.home_object)?;
+        } else {
+          // Object literal methods use the object itself as their `[[HomeObject]]`.
+          member_scope
+            .heap_mut()
+            .set_function_home_object(func_obj, Some(obj))?;
+        }
+        member_scope.push_root(Value::Object(func_obj))?;
+
+        // Methods use the property key as the function `name` if possible.
+        if !matches!(key, PropertyKey::String(_)) {
+          crate::function_properties::set_function_name(&mut member_scope, func_obj, key, None)?;
+        }
+
+        member_scope.create_data_property_or_throw(obj, key, Value::Object(func_obj))?;
+        Ok(())
+      })();
+      match res {
+        Ok(()) => Ok(GenEval::Complete(Completion::empty())),
+        Err(err) => Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?)),
+      }
+    }
+    ClassOrObjVal::Getter(getter) => {
+      let res: Result<(), VmError> = (|| {
+        let mut member_scope = scope.reborrow();
+        member_scope.push_root(Value::Object(obj))?;
+        match &key {
+          PropertyKey::String(s) => member_scope.push_root(Value::String(*s))?,
+          PropertyKey::Symbol(s) => member_scope.push_root(Value::Symbol(*s))?,
+        };
+
+        let func_node = &getter.stx.func;
+        let length = evaluator.function_length(&func_node.stx)?;
+
+        let rel_start = member_loc_start.saturating_sub(evaluator.env.prefix_len());
+        let rel_end = func_node
+          .loc
+          .end_u32()
+          .saturating_sub(evaluator.env.prefix_len());
+        let span_start = evaluator.env.base_offset().saturating_add(rel_start);
+        let span_end = evaluator.env.base_offset().saturating_add(rel_end);
+        let code = evaluator.vm.register_ecma_function(
+          evaluator.env.source(),
+          span_start,
+          span_end,
+          EcmaFunctionKind::ObjectMember,
+        )?;
+
+        let is_strict = evaluator.strict
+          || match &func_node.stx.body {
+            Some(FuncBody::Block(stmts)) => detect_use_strict_directive(
+              evaluator.env.source().text.as_ref(),
+              evaluator.env.base_offset() as usize,
+              evaluator.env.prefix_len() as usize,
+              stmts,
+              || evaluator.tick(),
+            )?,
+            Some(FuncBody::Expression(_)) => false,
+            None => return Err(VmError::Unimplemented("getter without body")),
+          };
+
+        let this_mode = if func_node.stx.arrow {
+          ThisMode::Lexical
+        } else if is_strict {
+          ThisMode::Strict
+        } else {
+          ThisMode::Global
+        };
+
+        let closure_env = Some(evaluator.env.lexical_env);
+
+        let name_string = member_scope.alloc_string("")?;
+        let func_obj = member_scope.alloc_ecma_function(
+          code,
+          /* is_constructable */ false,
+          name_string,
+          length,
+          this_mode,
+          is_strict,
+          closure_env,
+        )?;
+        member_scope
+          .heap_mut()
+          .set_function_meta_property_context(func_obj, MetaPropertyContext::METHOD)?;
+        let intr = evaluator
+          .vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+        member_scope
+          .heap_mut()
+          .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+        member_scope
+          .heap_mut()
+          .set_function_realm(func_obj, evaluator.env.global_object())?;
+        if let Some(realm) = evaluator.vm.current_realm() {
+          member_scope
+            .heap_mut()
+            .set_function_job_realm(func_obj, realm)?;
+        }
+        if let Some(script_or_module) = evaluator.vm.get_active_script_or_module() {
+          let token = evaluator.vm.intern_script_or_module(script_or_module)?;
+          member_scope
+            .heap_mut()
+            .set_function_script_or_module_token(func_obj, Some(token))?;
+        }
+        member_scope
+          .heap_mut()
+          .set_function_home_object(func_obj, Some(obj))?;
+        if func_node.stx.arrow {
+          member_scope
+            .heap_mut()
+            .set_function_bound_this(func_obj, evaluator.this)?;
+          member_scope
+            .heap_mut()
+            .set_function_bound_new_target(func_obj, evaluator.new_target)?;
+          member_scope
+            .heap_mut()
+            .set_function_home_object(func_obj, evaluator.home_object)?;
+        } else {
+          // Object literal accessors use the object itself as their `[[HomeObject]]`.
+          member_scope
+            .heap_mut()
+            .set_function_home_object(func_obj, Some(obj))?;
+        }
+        member_scope.push_root(Value::Object(func_obj))?;
+        crate::function_properties::set_function_name(&mut member_scope, func_obj, key, Some("get"))?;
+
+        let ok = member_scope.define_own_property(
+          obj,
+          key,
+          PropertyDescriptorPatch {
+            get: Some(Value::Object(func_obj)),
+            enumerable: Some(true),
+            configurable: Some(true),
+            ..Default::default()
+          },
+        )?;
+        if !ok {
+          return Err(VmError::Unimplemented("DefineOwnProperty returned false"));
+        }
+        Ok(())
+      })();
+      match res {
+        Ok(()) => Ok(GenEval::Complete(Completion::empty())),
+        Err(err) => Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?)),
+      }
+    }
+    ClassOrObjVal::Setter(setter) => {
+      let res: Result<(), VmError> = (|| {
+        let mut member_scope = scope.reborrow();
+        member_scope.push_root(Value::Object(obj))?;
+        match &key {
+          PropertyKey::String(s) => member_scope.push_root(Value::String(*s))?,
+          PropertyKey::Symbol(s) => member_scope.push_root(Value::Symbol(*s))?,
+        };
+
+        let func_node = &setter.stx.func;
+        let length = evaluator.function_length(&func_node.stx)?;
+
+        let rel_start = member_loc_start.saturating_sub(evaluator.env.prefix_len());
+        let rel_end = func_node
+          .loc
+          .end_u32()
+          .saturating_sub(evaluator.env.prefix_len());
+        let span_start = evaluator.env.base_offset().saturating_add(rel_start);
+        let span_end = evaluator.env.base_offset().saturating_add(rel_end);
+        let code = evaluator.vm.register_ecma_function(
+          evaluator.env.source(),
+          span_start,
+          span_end,
+          EcmaFunctionKind::ObjectMember,
+        )?;
+
+        let is_strict = evaluator.strict
+          || match &func_node.stx.body {
+            Some(FuncBody::Block(stmts)) => detect_use_strict_directive(
+              evaluator.env.source().text.as_ref(),
+              evaluator.env.base_offset() as usize,
+              evaluator.env.prefix_len() as usize,
+              stmts,
+              || evaluator.tick(),
+            )?,
+            Some(FuncBody::Expression(_)) => false,
+            None => return Err(VmError::Unimplemented("setter without body")),
+          };
+
+        let this_mode = if func_node.stx.arrow {
+          ThisMode::Lexical
+        } else if is_strict {
+          ThisMode::Strict
+        } else {
+          ThisMode::Global
+        };
+
+        let closure_env = Some(evaluator.env.lexical_env);
+
+        let name_string = member_scope.alloc_string("")?;
+        let func_obj = member_scope.alloc_ecma_function(
+          code,
+          /* is_constructable */ false,
+          name_string,
+          length,
+          this_mode,
+          is_strict,
+          closure_env,
+        )?;
+        member_scope
+          .heap_mut()
+          .set_function_meta_property_context(func_obj, MetaPropertyContext::METHOD)?;
+        let intr = evaluator
+          .vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+        member_scope
+          .heap_mut()
+          .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+        member_scope
+          .heap_mut()
+          .set_function_realm(func_obj, evaluator.env.global_object())?;
+        if let Some(realm) = evaluator.vm.current_realm() {
+          member_scope
+            .heap_mut()
+            .set_function_job_realm(func_obj, realm)?;
+        }
+        if let Some(script_or_module) = evaluator.vm.get_active_script_or_module() {
+          let token = evaluator.vm.intern_script_or_module(script_or_module)?;
+          member_scope
+            .heap_mut()
+            .set_function_script_or_module_token(func_obj, Some(token))?;
+        }
+        member_scope
+          .heap_mut()
+          .set_function_home_object(func_obj, Some(obj))?;
+        if func_node.stx.arrow {
+          member_scope
+            .heap_mut()
+            .set_function_bound_this(func_obj, evaluator.this)?;
+          member_scope
+            .heap_mut()
+            .set_function_bound_new_target(func_obj, evaluator.new_target)?;
+          member_scope
+            .heap_mut()
+            .set_function_home_object(func_obj, evaluator.home_object)?;
+        } else {
+          // Object literal accessors use the object itself as their `[[HomeObject]]`.
+          member_scope
+            .heap_mut()
+            .set_function_home_object(func_obj, Some(obj))?;
+        }
+        member_scope.push_root(Value::Object(func_obj))?;
+        crate::function_properties::set_function_name(&mut member_scope, func_obj, key, Some("set"))?;
+
+        let ok = member_scope.define_own_property(
+          obj,
+          key,
+          PropertyDescriptorPatch {
+            set: Some(Value::Object(func_obj)),
+            enumerable: Some(true),
+            configurable: Some(true),
+            ..Default::default()
+          },
+        )?;
+        if !ok {
+          return Err(VmError::Unimplemented("DefineOwnProperty returned false"));
+        }
+        Ok(())
+      })();
+      match res {
+        Ok(()) => Ok(GenEval::Complete(Completion::empty())),
+        Err(err) => Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?)),
+      }
+    }
+    ClassOrObjVal::IndexSignature(_) => Err(VmError::Unimplemented("object literal index signature")),
+    ClassOrObjVal::StaticBlock(_) => Err(VmError::Unimplemented("object literal static block")),
   }
 }
 
