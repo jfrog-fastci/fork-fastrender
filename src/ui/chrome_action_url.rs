@@ -133,8 +133,11 @@ pub enum ChromeActionUrl {
   ToggleDownloadsPanel,
 }
 
+/// Legacy constant used by older call sites; prefer [`ChromeActionUrl::SCHEME`].
+pub const CHROME_ACTION_SCHEME: &str = "chrome-action";
+
 impl ChromeActionUrl {
-  pub const SCHEME: &'static str = "chrome-action";
+  pub const SCHEME: &'static str = CHROME_ACTION_SCHEME;
 
   /// Parse a `chrome-action:` URL string.
   ///
@@ -616,28 +619,7 @@ impl std::fmt::Display for ChromeActionUrl {
 /// `chrome-action:<action>?<query>` grammar (not `chrome-action://...`). See
 /// `docs/renderer_chrome_schemes.md`.
 pub fn parse_chrome_action_url(href: &str) -> Option<ChromeActionUrl> {
-  let url = Url::parse(href).ok()?;
-  if !url.scheme().eq_ignore_ascii_case(CHROME_ACTION_SCHEME) {
-    return None;
-  }
-
-  // Canonical form is opaque `chrome-action:<action>?<query>`; reject the hierarchical/authority
-  // form (`chrome-action://...`).
-  if url.host_str().is_some()
-    || !url.username().is_empty()
-    || url.password().is_some()
-    || url.port().is_some()
-    || url.fragment().is_some()
-  {
-    return None;
-  }
-
-  let action = url.path();
-  if action.is_empty() || action.starts_with('/') {
-    return None;
-  }
-
-  ChromeActionUrl::parse_url(&url).ok()
+  ChromeActionUrl::parse(href).ok()
 }
 
 /// Build a canonical `chrome-action:` href for the given action.
