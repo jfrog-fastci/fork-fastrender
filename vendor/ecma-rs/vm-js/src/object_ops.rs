@@ -1149,9 +1149,6 @@ impl<'a> Scope<'a> {
     } else {
       scope.ordinary_get_own_property_with_tick(obj, key, || vm.tick())?
     };
-    if !materialize_string_index_value {
-      return Ok(desc);
-    }
     let Some(mut desc) = desc else {
       return Ok(None);
     };
@@ -1160,8 +1157,17 @@ impl<'a> Scope<'a> {
       writable,
     } = desc.kind
     {
-      if let Some(value) = scope.string_object_get_index_value_with_tick(obj, &key, || vm.tick())? {
+      // BigInt typed array element values are materialized lazily at the heap layer (since they
+      // require allocating fresh BigInt handles). Materialize them here so `[[GetOwnProperty]]`
+      // returns spec-correct descriptors.
+      if let Some(value) = scope.typed_array_get_index_value_with_tick(obj, &key, || vm.tick())? {
         desc.kind = PropertyKind::Data { value, writable };
+      }
+
+      if materialize_string_index_value {
+        if let Some(value) = scope.string_object_get_index_value_with_tick(obj, &key, || vm.tick())? {
+          desc.kind = PropertyKind::Data { value, writable };
+        }
       }
     }
     Ok(Some(desc))
@@ -2634,7 +2640,17 @@ impl<'a> Scope<'a> {
       .object_get_own_property_with_tick(obj, &key, || vm.tick())?
     {
       return match desc.kind {
-        PropertyKind::Data { value, .. } => Ok(value),
+        PropertyKind::Data { value, .. } => {
+          if matches!(value, Value::Undefined) {
+            // BigInt typed array element values are materialized lazily.
+            if let Some(value) =
+              scope.typed_array_get_index_value_with_tick(obj, &key, || vm.tick())?
+            {
+              return Ok(value);
+            }
+          }
+          Ok(value)
+        }
         PropertyKind::Accessor { get, .. } => {
           if matches!(get, Value::Undefined) {
             Ok(Value::Undefined)
@@ -2890,7 +2906,15 @@ impl<'a> Scope<'a> {
       .object_get_own_property_with_tick(obj, &key, || vm.tick())?
     {
       return match desc.kind {
-        PropertyKind::Data { value, .. } => Ok(value),
+        PropertyKind::Data { value, .. } => {
+          if matches!(value, Value::Undefined) {
+            // BigInt typed array element values are materialized lazily.
+            if let Some(value) = scope.typed_array_get_index_value_with_tick(obj, &key, || vm.tick())? {
+              return Ok(value);
+            }
+          }
+          Ok(value)
+        }
         PropertyKind::Accessor { get, .. } => {
           if matches!(get, Value::Undefined) {
             Ok(Value::Undefined)
@@ -4619,6 +4643,71 @@ impl<'a> Scope<'a> {
     alloc_scope.push_roots(&[Value::Object(obj), Value::String(string_data)])?;
     let s = alloc_scope.alloc_string_from_u16_vec(vec![unit])?;
     Ok(Some(Value::String(s)))
+  }
+
+  fn typed_array_get_index_value_with_tick(
+    &mut self,
+    obj: GcObject,
+    key: &PropertyKey,
+    mut tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<Option<Value>, VmError> {
+    if !self.heap().is_typed_array_object(obj) {
+      return Ok(None);
+    }
+    let PropertyKey::String(s) = key else {
+      return Ok(None);
+    };
+    let Some(numeric_index) = self.heap().canonical_numeric_index_string(*s)? else {
+      return Ok(None);
+    };
+
+    // `IsValidIntegerIndex`.
+    if !numeric_index.is_finite() || numeric_index.fract() != 0.0 {
+      return Ok(None);
+    }
+    if numeric_index == 0.0 && numeric_index.is_sign_negative() {
+      // -0 is a canonical numeric index string but never a valid integer index.
+      return Ok(None);
+    }
+    if numeric_index < 0.0 || numeric_index > usize::MAX as f64 {
+      return Ok(None);
+    }
+
+    if self.heap().typed_array_is_out_of_bounds(obj)? {
+      return Ok(None);
+    }
+    let index = numeric_index as usize;
+    let len = self.heap().typed_array_length(obj)?;
+    if index >= len {
+      return Ok(None);
+    }
+
+    let kind = self.heap().typed_array_kind(obj)?;
+    if kind.is_bigint() {
+      let Some(bits) = self.heap().typed_array_get_element_u64_bits(obj, index)? else {
+        return Ok(None);
+      };
+      let mut alloc_scope = self.reborrow();
+      alloc_scope.push_roots(&[Value::Object(obj), Value::String(*s)])?;
+      let bi = match kind {
+        crate::heap::TypedArrayKind::BigInt64 => {
+          alloc_scope.alloc_bigint_from_i128((bits as i64) as i128)?
+        }
+        crate::heap::TypedArrayKind::BigUint64 => alloc_scope.alloc_bigint_from_u128(bits as u128)?,
+        _ => return Err(VmError::InvariantViolation("expected BigInt typed array kind")),
+      };
+      return Ok(Some(Value::BigInt(bi)));
+    }
+
+    // Numeric typed arrays.
+    let value = self
+      .heap()
+      .typed_array_get_element_value(obj, index)?
+      .ok_or(VmError::InvariantViolation(
+        "typed_array_get_index_value_with_tick: missing in-bounds element value",
+      ))?;
+    tick()?;
+    Ok(Some(value))
   }
 
   fn string_define_own_property_index(

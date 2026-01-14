@@ -3628,6 +3628,8 @@ fn typed_array_prototype_for_kind(intr: &crate::Intrinsics, kind: TypedArrayKind
     TypedArrayKind::Uint32 => intr.uint32_array_prototype(),
     TypedArrayKind::Float32 => intr.float32_array_prototype(),
     TypedArrayKind::Float64 => intr.float64_array_prototype(),
+    TypedArrayKind::BigInt64 => intr.bigint64_array_prototype(),
+    TypedArrayKind::BigUint64 => intr.biguint64_array_prototype(),
   }
 }
 
@@ -3713,7 +3715,7 @@ fn typed_array_constructor_construct_impl(
   }
 
   // 1) `new TypedArray(length)`
-  if matches!(arg0, Value::Undefined | Value::Number(_)) {
+  if !matches!(arg0, Value::Object(_)) {
     let length = to_index_like(
       vm,
       &mut scope,
@@ -3806,7 +3808,10 @@ fn typed_array_constructor_construct_impl(
 
       let (dst_buf, view) = alloc_typed_array_with_length(&mut scope, intr, kind, prototype, src_len)?;
 
-      if src_kind == kind {
+      // Same element kind: copy bytes. For BigInt typed arrays, the 64-bit two's complement
+      // representation is shared between `BigInt64Array` and `BigUint64Array`, so we can also copy
+      // bytes directly between them (equivalent to the spec's `ToBigInt64/ToBigUint64` wrapping).
+      if src_kind == kind || (src_kind.is_bigint() && kind.is_bigint()) {
         let tick_every_bytes = 1024usize.saturating_mul(bytes_per_element);
         scope.heap_mut().array_buffer_copy_with_tick(
           src_buf,
@@ -3820,7 +3825,19 @@ fn typed_array_constructor_construct_impl(
         return Ok(Value::Object(view));
       }
 
-      // Different element types: copy via numeric conversion.
+      // BigInt <-> Number conversions always throw on the first element.
+      if src_kind.is_bigint() != kind.is_bigint() {
+        if src_len != 0 {
+          return Err(if kind.is_bigint() {
+            VmError::TypeError("Cannot convert a Number value to a BigInt")
+          } else {
+            VmError::TypeError("Cannot convert a BigInt value to a number")
+          });
+        }
+        return Ok(Value::Object(view));
+      }
+
+      // Different numeric element types: copy via numeric conversion.
       scope.push_root(Value::Object(view))?;
       for i in 0..src_len {
         if i % 1024 == 0 {
@@ -3864,6 +3881,134 @@ fn typed_array_constructor_construct_impl(
     // Iterable path.
     let mut iterator_record = crate::iterator::get_iterator(vm, host, hooks, &mut scope, arg0)?;
     scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+    if kind.is_bigint() {
+      fn bigint_to_u64_bits(
+        scope: &Scope<'_>,
+        kind: TypedArrayKind,
+        value: crate::GcBigInt,
+      ) -> Result<u64, VmError> {
+        debug_assert!(kind.is_bigint());
+        let bi = scope.heap().get_bigint(value)?;
+        let wrapped = match kind {
+          TypedArrayKind::BigInt64 => bi.as_int_n(64)?,
+          TypedArrayKind::BigUint64 => bi.as_uint_n(64)?,
+          _ => return Err(VmError::InvariantViolation("expected BigInt typed array kind")),
+        };
+        let i128 = wrapped.try_to_i128().ok_or(VmError::InvariantViolation(
+          "BigInt typed array conversion produced out-of-range value",
+        ))?;
+        Ok(match kind {
+          TypedArrayKind::BigInt64 => (i128 as i64) as u64,
+          TypedArrayKind::BigUint64 => i128 as u64,
+          _ => unreachable!(),
+        })
+      }
+
+      let mut values: Vec<u64> = Vec::new();
+      let mut charges: Vec<ExternalMemoryToken> = Vec::new();
+
+      fn push_u64_with_charge(
+        scope: &mut Scope<'_>,
+        values: &mut Vec<u64>,
+        charges: &mut Vec<ExternalMemoryToken>,
+        value: u64,
+      ) -> Result<(), VmError> {
+        if values.len() == values.capacity() {
+          let old_cap = values.capacity();
+          let new_cap = old_cap
+            .max(1)
+            .checked_mul(2)
+            .unwrap_or(usize::MAX);
+          let additional = new_cap.saturating_sub(old_cap).max(1);
+
+          let additional_bytes = additional
+            .checked_mul(std::mem::size_of::<u64>())
+            .ok_or(VmError::OutOfMemory)?;
+          let token = scope.heap_mut().charge_external(additional_bytes)?;
+
+          values
+            .try_reserve_exact(additional)
+            .map_err(|_| VmError::OutOfMemory)?;
+          charges
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          charges.push(token);
+        }
+
+        values.push(value);
+        Ok(())
+      }
+
+      let mut i = 0usize;
+      loop {
+        if i % 1024 == 0 {
+          vm.tick()?;
+        }
+
+        let next_value =
+          match crate::iterator::iterator_step_value(vm, host, hooks, &mut scope, &mut iterator_record) {
+            Ok(Some(v)) => v,
+            Ok(None) => break,
+            Err(err) => return Err(err),
+          };
+
+        let entry_result: Result<(), VmError> = (|| {
+          let bi = to_bigint(vm, &mut scope, host, hooks, next_value)?;
+          let bits = bigint_to_u64_bits(&scope, kind, bi)?;
+          push_u64_with_charge(&mut scope, &mut values, &mut charges, bits)?;
+          Ok(())
+        })();
+
+        if let Err(entry_err) = entry_result {
+          if !iterator_record.done {
+            // Mirror `IteratorClose` error precedence rules used by other iterator-consuming builtins
+            // (e.g. `Object.fromEntries`): fatal VM errors must never be suppressed.
+            let original_is_throw = entry_err.is_throw_completion();
+            let pending_root = entry_err
+              .thrown_value()
+              .map(|v| scope.heap_mut().add_root(v))
+              .transpose()?;
+            let close_res = crate::iterator::iterator_close(
+              vm,
+              host,
+              hooks,
+              &mut scope,
+              &iterator_record,
+              crate::iterator::CloseCompletionKind::Throw,
+            );
+            if let Some(root) = pending_root {
+              scope.heap_mut().remove_root(root);
+            }
+            if let Err(close_err) = close_res {
+              if original_is_throw {
+                return Err(close_err);
+              }
+            }
+          }
+          return Err(entry_err);
+        }
+
+        i = i.saturating_add(1);
+      }
+
+      let (_, view) = alloc_typed_array_with_length(&mut scope, intr, kind, prototype, values.len())?;
+      scope.push_root(Value::Object(view))?;
+
+      for (j, &bits) in values.iter().enumerate() {
+        if j % 1024 == 0 {
+          vm.tick()?;
+        }
+        let ok = scope.heap_mut().typed_array_set_element_u64_bits(view, j, bits)?;
+        if !ok {
+          return Err(VmError::InvariantViolation(
+            "typed array write failed for in-bounds destination view",
+          ));
+        }
+      }
+
+      return Ok(Value::Object(view));
+    }
 
     let mut values: Vec<f64> = Vec::new();
     let mut charges: Vec<ExternalMemoryToken> = Vec::new();
@@ -3984,12 +4129,22 @@ fn typed_array_constructor_construct_impl(
     let idx_s = alloc_string_from_usize(&mut scope, i)?;
     let key = PropertyKey::from_string(idx_s);
     let value = scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
-    let n = scope.to_number(vm, host, hooks, value)?;
-    let ok = scope.heap_mut().typed_array_set_element_number(view, i, n)?;
-    if !ok {
-      return Err(VmError::InvariantViolation(
-        "typed array write failed for in-bounds destination view",
-      ));
+    if kind.is_bigint() {
+      let bi = to_bigint(vm, &mut scope, host, hooks, value)?;
+      let ok = scope.heap_mut().typed_array_set_element_bigint(view, i, bi)?;
+      if !ok {
+        return Err(VmError::InvariantViolation(
+          "typed array write failed for in-bounds destination view",
+        ));
+      }
+    } else {
+      let n = scope.to_number(vm, host, hooks, value)?;
+      let ok = scope.heap_mut().typed_array_set_element_number(view, i, n)?;
+      if !ok {
+        return Err(VmError::InvariantViolation(
+          "typed array write failed for in-bounds destination view",
+        ));
+      }
     }
   }
 
@@ -4087,6 +4242,22 @@ typed_array_ctor!(
   TypedArrayKind::Float64,
   "Float64Array",
   float64_array_prototype,
+  3
+);
+typed_array_ctor!(
+  bigint64_array_constructor_call,
+  bigint64_array_constructor_construct,
+  TypedArrayKind::BigInt64,
+  "BigInt64Array",
+  bigint64_array_prototype,
+  3
+);
+typed_array_ctor!(
+  biguint64_array_constructor_call,
+  biguint64_array_constructor_construct,
+  TypedArrayKind::BigUint64,
+  "BigUint64Array",
+  biguint64_array_prototype,
   3
 );
 
@@ -4374,7 +4545,7 @@ pub fn typed_array_prototype_set(
   };
 
   // RequireInternalSlot(target, [[TypedArrayName]]).
-  let _ = scope
+  let target_kind = scope
     .heap()
     .typed_array_kind(target)
     .map_err(|_| VmError::TypeError("TypedArray.prototype.set called on incompatible receiver"))?;
@@ -4403,6 +4574,11 @@ pub fn typed_array_prototype_set(
   // TypedArray source fast path.
   if let Value::Object(source) = source_val {
     if scope.heap().is_typed_array_object(source) {
+      let source_kind = scope
+        .heap()
+        .typed_array_kind(source)
+        .map_err(|_| VmError::TypeError("TypedArray.prototype.set source is not a typed array"))?;
+
       // After offset coercion, typed array sources must also throw when detached/out-of-bounds.
       if scope.heap().typed_array_is_out_of_bounds(source)? {
         return Err(VmError::TypeError("ArrayBuffer is detached"));
@@ -4421,6 +4597,48 @@ pub fn typed_array_prototype_set(
 
       // Root source/target while copying.
       scope.push_roots(&[Value::Object(target), Value::Object(source)])?;
+
+      // BigInt typed arrays require BigInt element values (and vice versa, Number typed arrays
+      // require Number element values). Conversions between BigInt and Number are always a TypeError.
+      if source_len != 0 && target_kind.is_bigint() != source_kind.is_bigint() {
+        return Err(if target_kind.is_bigint() {
+          VmError::TypeError("Cannot convert a Number value to a BigInt")
+        } else {
+          VmError::TypeError("Cannot convert a BigInt value to a number")
+        });
+      }
+
+      if target_kind.is_bigint() {
+        // Copy element bits into a temporary buffer so overlapping ranges behave correctly.
+        let mut tmp: Vec<u64> = Vec::new();
+        tmp
+          .try_reserve_exact(source_len)
+          .map_err(|_| VmError::OutOfMemory)?;
+        const TICK_EVERY: usize = 1024;
+        for i in 0..source_len {
+          if i % TICK_EVERY == 0 {
+            vm.tick()?;
+          }
+          let bits = scope
+            .heap()
+            .typed_array_get_element_u64_bits(source, i)?
+            .ok_or(VmError::TypeError("ArrayBuffer is detached"))?;
+          tmp.push(bits);
+        }
+        for (i, bits) in tmp.into_iter().enumerate() {
+          if i % TICK_EVERY == 0 {
+            vm.tick()?;
+          }
+          let ok = scope
+            .heap_mut()
+            .typed_array_set_element_u64_bits(target, offset + i, bits)?;
+          if !ok {
+            return Err(VmError::TypeError("ArrayBuffer is detached"));
+          }
+        }
+
+        return Ok(Value::Undefined);
+      }
 
       // Copy values into a temporary Vec so overlapping ranges behave correctly.
       let mut tmp: Vec<Value> = Vec::new();
@@ -4490,12 +4708,22 @@ pub fn typed_array_prototype_set(
     let key = PropertyKey::from_string(key_s);
     let value = vm.get_with_host_and_hooks(host, &mut idx_scope, hooks, source_obj, key)?;
 
-    let n = idx_scope.to_number(vm, host, hooks, value)?;
-    let ok = idx_scope
-      .heap_mut()
-      .typed_array_set_element_value(target, offset + i, Value::Number(n))?;
-    if !ok {
-      return Err(VmError::TypeError("ArrayBuffer is detached"));
+    if target_kind.is_bigint() {
+      let bi = to_bigint(vm, &mut idx_scope, host, hooks, value)?;
+      let ok = idx_scope
+        .heap_mut()
+        .typed_array_set_element_bigint(target, offset + i, bi)?;
+      if !ok {
+        return Err(VmError::TypeError("ArrayBuffer is detached"));
+      }
+    } else {
+      let n = idx_scope.to_number(vm, host, hooks, value)?;
+      let ok = idx_scope
+        .heap_mut()
+        .typed_array_set_element_value(target, offset + i, Value::Number(n))?;
+      if !ok {
+        return Err(VmError::TypeError("ArrayBuffer is detached"));
+      }
     }
   }
 
@@ -13686,6 +13914,13 @@ pub fn array_prototype_concat(
       // prototypes or invoke user code, so we can avoid allocating per-index key strings and avoid
       // repeated `HasProperty`/`Get` dispatch.
       if scope.heap().is_typed_array_object(source_obj) {
+        let typed_kind = scope.heap().typed_array_kind(source_obj)?;
+        // BigInt typed array element reads require allocating BigInt handles. Fall back to the
+        // generic `HasProperty`/`Get` loop below so we reuse the normal property access path, which
+        // materializes BigInt element values lazily.
+        if typed_kind.is_bigint() {
+          // Fall through to generic path.
+        } else {
         let typed_len = scope.heap().typed_array_length(source_obj)?;
         // `LengthOfArrayLike` uses the *observable* `"length"` property (which can be overridden on
         // TypedArray instances). Integer-indexed element access, however, is capped by the internal
@@ -13823,6 +14058,7 @@ pub fn array_prototype_concat(
 
         *n = new_n;
         return Ok(());
+        }
       }
 
       for k in 0..source_len {

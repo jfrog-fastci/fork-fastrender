@@ -75,6 +75,8 @@ pub struct Intrinsics {
   uint32_array_prototype: GcObject,
   float32_array_prototype: GcObject,
   float64_array_prototype: GcObject,
+  bigint64_array_prototype: GcObject,
+  biguint64_array_prototype: GcObject,
   data_view_prototype: GcObject,
   map_prototype: GcObject,
   set_prototype: GcObject,
@@ -104,6 +106,8 @@ pub struct Intrinsics {
   uint32_array: GcObject,
   float32_array: GcObject,
   float64_array: GcObject,
+  bigint64_array: GcObject,
+  biguint64_array: GcObject,
   data_view: GcObject,
   map: GcObject,
   set: GcObject,
@@ -813,6 +817,16 @@ impl Intrinsics {
       .heap_mut()
       .object_set_prototype(float64_array_prototype, Some(object_prototype))?;
 
+    let bigint64_array_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(bigint64_array_prototype, Some(object_prototype))?;
+
+    let biguint64_array_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(biguint64_array_prototype, Some(object_prototype))?;
+
     let data_view_prototype = alloc_rooted_object(scope, roots)?;
     scope
       .heap_mut()
@@ -903,6 +917,18 @@ impl Intrinsics {
       float64_array_prototype,
       well_known_symbols.to_string_tag,
       "Float64Array",
+    )?;
+    install_to_string_tag(
+      scope,
+      bigint64_array_prototype,
+      well_known_symbols.to_string_tag,
+      "BigInt64Array",
+    )?;
+    install_to_string_tag(
+      scope,
+      biguint64_array_prototype,
+      well_known_symbols.to_string_tag,
+      "BigUint64Array",
     )?;
     install_to_string_tag(scope, data_view_prototype, well_known_symbols.to_string_tag, "DataView")?;
     install_to_string_tag(scope, map_prototype, well_known_symbols.to_string_tag, "Map")?;
@@ -5612,6 +5638,19 @@ impl Intrinsics {
       )?;
     }
 
+    // `BYTES_PER_ELEMENT` is a non-writable, non-enumerable, non-configurable data property present
+    // on each TypedArray constructor and its prototype.
+    let bytes_per_element_key_s = scope.alloc_string("BYTES_PER_ELEMENT")?;
+    scope.push_root(Value::String(bytes_per_element_key_s))?;
+    let bytes_per_element_key = PropertyKey::from_string(bytes_per_element_key_s);
+    let install_bytes_per_element =
+      |scope: &mut Scope<'_>, ctor: GcObject, proto: GcObject, bytes: u32| -> Result<(), VmError> {
+        let v = Value::Number(bytes as f64);
+        scope.define_property(ctor, bytes_per_element_key, data_desc(v, false, false, false))?;
+        scope.define_property(proto, bytes_per_element_key, data_desc(v, false, false, false))?;
+        Ok(())
+      };
+
     // `%Uint8Array%`
     let uint8_array_call = vm.register_native_call(builtins::uint8_array_constructor_call)?;
     let uint8_array_construct =
@@ -5648,6 +5687,7 @@ impl Intrinsics {
       common.constructor,
       data_desc(Value::Object(uint8_array), true, false, true),
     )?;
+    install_bytes_per_element(scope, uint8_array, uint8_array_prototype, 1)?;
 
     // --- TypedArray constructors ---
     //
@@ -5693,6 +5733,7 @@ impl Intrinsics {
       common.constructor,
       data_desc(Value::Object(int8_array), true, false, true),
     )?;
+    install_bytes_per_element(scope, int8_array, int8_array_prototype, 1)?;
 
     // `%Uint8ClampedArray%`
     let uint8_clamped_array_call =
@@ -5736,6 +5777,7 @@ impl Intrinsics {
       common.constructor,
       data_desc(Value::Object(uint8_clamped_array), true, false, true),
     )?;
+    install_bytes_per_element(scope, uint8_clamped_array, uint8_clamped_array_prototype, 1)?;
 
     // `%Int16Array%`
     let int16_array_call = vm.register_native_call(builtins::int16_array_constructor_call)?;
@@ -5773,6 +5815,7 @@ impl Intrinsics {
       common.constructor,
       data_desc(Value::Object(int16_array), true, false, true),
     )?;
+    install_bytes_per_element(scope, int16_array, int16_array_prototype, 2)?;
 
     // `%Uint16Array%`
     let uint16_array_call = vm.register_native_call(builtins::uint16_array_constructor_call)?;
@@ -5810,6 +5853,7 @@ impl Intrinsics {
       common.constructor,
       data_desc(Value::Object(uint16_array), true, false, true),
     )?;
+    install_bytes_per_element(scope, uint16_array, uint16_array_prototype, 2)?;
 
     // `%Int32Array%`
     let int32_array_call = vm.register_native_call(builtins::int32_array_constructor_call)?;
@@ -5847,6 +5891,7 @@ impl Intrinsics {
       common.constructor,
       data_desc(Value::Object(int32_array), true, false, true),
     )?;
+    install_bytes_per_element(scope, int32_array, int32_array_prototype, 4)?;
 
     // `%Uint32Array%`
     let uint32_array_call = vm.register_native_call(builtins::uint32_array_constructor_call)?;
@@ -5884,6 +5929,7 @@ impl Intrinsics {
       common.constructor,
       data_desc(Value::Object(uint32_array), true, false, true),
     )?;
+    install_bytes_per_element(scope, uint32_array, uint32_array_prototype, 4)?;
 
     // `%Float32Array%`
     let float32_array_call = vm.register_native_call(builtins::float32_array_constructor_call)?;
@@ -5921,6 +5967,7 @@ impl Intrinsics {
       common.constructor,
       data_desc(Value::Object(float32_array), true, false, true),
     )?;
+    install_bytes_per_element(scope, float32_array, float32_array_prototype, 4)?;
 
     // `%Float64Array%`
     let float64_array_call = vm.register_native_call(builtins::float64_array_constructor_call)?;
@@ -5958,6 +6005,83 @@ impl Intrinsics {
       common.constructor,
       data_desc(Value::Object(float64_array), true, false, true),
     )?;
+    install_bytes_per_element(scope, float64_array, float64_array_prototype, 8)?;
+
+    // `%BigInt64Array%`
+    let bigint64_array_call = vm.register_native_call(builtins::bigint64_array_constructor_call)?;
+    let bigint64_array_construct =
+      vm.register_native_construct(builtins::bigint64_array_constructor_construct)?;
+    let bigint64_array_name = scope.alloc_string("BigInt64Array")?;
+    let bigint64_array = alloc_rooted_native_function(
+      scope,
+      roots,
+      bigint64_array_call,
+      Some(bigint64_array_construct),
+      bigint64_array_name,
+      3,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(bigint64_array, Some(function_prototype))?;
+    scope.define_property(
+      bigint64_array,
+      common.prototype,
+      data_desc(Value::Object(bigint64_array_prototype), false, false, false),
+    )?;
+    scope.define_property(
+      bigint64_array,
+      common.name,
+      data_desc(Value::String(bigint64_array_name), false, false, true),
+    )?;
+    scope.define_property(
+      bigint64_array,
+      common.length,
+      data_desc(Value::Number(3.0), false, false, true),
+    )?;
+    scope.define_property(
+      bigint64_array_prototype,
+      common.constructor,
+      data_desc(Value::Object(bigint64_array), true, false, true),
+    )?;
+    install_bytes_per_element(scope, bigint64_array, bigint64_array_prototype, 8)?;
+
+    // `%BigUint64Array%`
+    let biguint64_array_call = vm.register_native_call(builtins::biguint64_array_constructor_call)?;
+    let biguint64_array_construct =
+      vm.register_native_construct(builtins::biguint64_array_constructor_construct)?;
+    let biguint64_array_name = scope.alloc_string("BigUint64Array")?;
+    let biguint64_array = alloc_rooted_native_function(
+      scope,
+      roots,
+      biguint64_array_call,
+      Some(biguint64_array_construct),
+      biguint64_array_name,
+      3,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(biguint64_array, Some(function_prototype))?;
+    scope.define_property(
+      biguint64_array,
+      common.prototype,
+      data_desc(Value::Object(biguint64_array_prototype), false, false, false),
+    )?;
+    scope.define_property(
+      biguint64_array,
+      common.name,
+      data_desc(Value::String(biguint64_array_name), false, false, true),
+    )?;
+    scope.define_property(
+      biguint64_array,
+      common.length,
+      data_desc(Value::Number(3.0), false, false, true),
+    )?;
+    scope.define_property(
+      biguint64_array_prototype,
+      common.constructor,
+      data_desc(Value::Object(biguint64_array), true, false, true),
+    )?;
+    install_bytes_per_element(scope, biguint64_array, biguint64_array_prototype, 8)?;
 
     // `%DataView%`
     let data_view_call = vm.register_native_call(builtins::data_view_constructor_call)?;
@@ -6984,6 +7108,8 @@ impl Intrinsics {
       uint32_array_prototype,
       float32_array_prototype,
       float64_array_prototype,
+      bigint64_array_prototype,
+      biguint64_array_prototype,
     ];
 
     for proto in typed_array_prototypes {
@@ -7901,6 +8027,8 @@ impl Intrinsics {
       uint32_array_prototype,
       float32_array_prototype,
       float64_array_prototype,
+      bigint64_array_prototype,
+      biguint64_array_prototype,
       data_view_prototype,
       map_prototype,
       set_prototype,
@@ -7930,6 +8058,8 @@ impl Intrinsics {
       uint32_array,
       float32_array,
       float64_array,
+      bigint64_array,
+      biguint64_array,
       data_view,
       map,
       set,
@@ -8137,6 +8267,14 @@ impl Intrinsics {
     self.float64_array_prototype
   }
 
+  pub fn bigint64_array_prototype(&self) -> GcObject {
+    self.bigint64_array_prototype
+  }
+
+  pub fn biguint64_array_prototype(&self) -> GcObject {
+    self.biguint64_array_prototype
+  }
+
   pub fn data_view_prototype(&self) -> GcObject {
     self.data_view_prototype
   }
@@ -8251,6 +8389,14 @@ impl Intrinsics {
 
   pub fn float64_array(&self) -> GcObject {
     self.float64_array
+  }
+
+  pub fn bigint64_array(&self) -> GcObject {
+    self.bigint64_array
+  }
+
+  pub fn biguint64_array(&self) -> GcObject {
+    self.biguint64_array
   }
 
   pub fn data_view(&self) -> GcObject {

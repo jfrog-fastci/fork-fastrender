@@ -2249,6 +2249,8 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
         TypedArrayKind::Uint32 => "Uint32Array",
         TypedArrayKind::Float32 => "Float32Array",
         TypedArrayKind::Float64 => "Float64Array",
+        TypedArrayKind::BigInt64 => "BigInt64Array",
+        TypedArrayKind::BigUint64 => "BigUint64Array",
       }),
       Ok(_) | Err(_) => None,
     }
@@ -2840,6 +2842,51 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
       return Ok(None);
     }
     Ok(Some(self.typed_array_get_value(view, index)?))
+  }
+
+  pub(crate) fn typed_array_get_element_u64_bits(
+    &self,
+    obj: GcObject,
+    index: usize,
+  ) -> Result<Option<u64>, VmError> {
+    let view = self.get_typed_array(obj)?;
+    if !view.kind.is_bigint() {
+      return Err(VmError::TypeError(
+        "typed_array_get_element_u64_bits called on non-BigInt typed array",
+      ));
+    }
+
+    // Integer-indexed element access must treat detached *and* out-of-bounds views as empty.
+    if self.typed_array_view_is_out_of_bounds(view)? {
+      return Ok(None);
+    }
+    if index >= view.length {
+      return Ok(None);
+    }
+
+    let bytes_per_element = view.kind.bytes_per_element();
+    debug_assert_eq!(bytes_per_element, 8);
+    let rel = index
+      .checked_mul(bytes_per_element)
+      .ok_or(VmError::InvariantViolation("TypedArray index overflow"))?;
+    let abs = view
+      .byte_offset
+      .checked_add(rel)
+      .ok_or(VmError::InvariantViolation("TypedArray byte offset overflow"))?;
+
+    let buf = self.get_array_buffer(view.viewed_array_buffer)?;
+    let data = buf.data.as_deref().ok_or(VmError::InvariantViolation(
+      "TypedArray view references missing ArrayBuffer backing store",
+    ))?;
+
+    let bytes: [u8; 8] = data
+      .get(abs..abs + 8)
+      .ok_or(VmError::InvariantViolation(
+        "TypedArray view references out-of-bounds ArrayBuffer data",
+      ))?
+      .try_into()
+      .map_err(|_| VmError::InvariantViolation("TypedArray slice length mismatch"))?;
+    Ok(Some(u64::from_le_bytes(bytes)))
   }
 
   fn require_data_view(&self, obj: GcObject) -> Result<&JsDataView, VmError> {
@@ -4761,6 +4808,14 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
 
           let idx = numeric_index as usize;
           if idx < view.length {
+            // BigInt typed array element values require allocating fresh BigInt handles. Heap-level
+            // `[[GetOwnProperty]]` is allocation-free, so defer materialization to the higher-level
+            // `Scope` wrappers (similar to string exotic index properties).
+            let value = if view.kind.is_bigint() {
+              Value::Undefined
+            } else {
+              self.typed_array_get_value(view, idx)?
+            };
             return Ok(Some(PropertyDescriptor {
               enumerable: true,
               // TypedArray integer-indexed properties are reported as configurable per ECMA-262
@@ -4770,7 +4825,7 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
               // "non-deletable" even though they are reported as configurable.
               configurable: true,
               kind: PropertyKind::Data {
-                value: self.typed_array_get_value(view, idx)?,
+                value,
                 writable: true,
               },
             }));
@@ -6136,6 +6191,11 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
           .map_err(|_| VmError::InvariantViolation("TypedArray slice length mismatch"))?;
         f64::from_bits(u64::from_le_bytes(bytes))
       }
+      TypedArrayKind::BigInt64 | TypedArrayKind::BigUint64 => {
+        return Err(VmError::Unimplemented(
+          "BigInt typed array element read requires allocation",
+        ))
+      }
     };
 
     Ok(Value::Number(value))
@@ -6147,11 +6207,173 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     index: usize,
     value: Value,
   ) -> Result<bool, VmError> {
+    let kind = self.get_typed_array(view_obj)?.kind;
+    if kind.is_bigint() {
+      // Spec: `TypedArraySetElement` performs `ToBigInt` before checking `IsValidIntegerIndex`.
+      let bits = self.typed_array_to_bigint_bits(kind, value)?;
+      return self.typed_array_set_element_u64_bits(view_obj, index, bits);
+    }
+
     // Convert via ToNumber; supports string/boolean/null/undefined, throws on Symbol.
     //
     // Spec: `TypedArraySetElement` performs value conversion before checking `IsValidIntegerIndex`.
     let n = self.to_number(value)?;
     self.typed_array_set_element_number(view_obj, index, n)
+  }
+
+  pub(crate) fn typed_array_set_element_bigint(
+    &mut self,
+    view_obj: GcObject,
+    index: usize,
+    value: GcBigInt,
+  ) -> Result<bool, VmError> {
+    let kind = self.get_typed_array(view_obj)?.kind;
+    if !kind.is_bigint() {
+      return Err(VmError::TypeError(
+        "typed_array_set_element_bigint called on non-BigInt typed array",
+      ));
+    }
+    let bits = self.bigint_to_u64_bits(kind, value)?;
+    self.typed_array_set_element_u64_bits(view_obj, index, bits)
+  }
+
+  pub(crate) fn typed_array_set_element_u64_bits(
+    &mut self,
+    view_obj: GcObject,
+    index: usize,
+    bits: u64,
+  ) -> Result<bool, VmError> {
+    // Extract view fields without holding a mutable borrow across ArrayBuffer access.
+    let (buffer, byte_offset, length, kind) = {
+      let view = self.get_typed_array(view_obj)?;
+      (view.viewed_array_buffer, view.byte_offset, view.length, view.kind)
+    };
+    if !kind.is_bigint() {
+      return Err(VmError::TypeError(
+        "typed_array_set_element_u64_bits called on non-BigInt typed array",
+      ));
+    }
+
+    // If the backing buffer is detached or the view is out-of-bounds, writes are a silent no-op.
+    {
+      let buf = self.get_array_buffer(buffer)?;
+      if buf.is_immutable() {
+        return Err(VmError::TypeError("ArrayBuffer is immutable"));
+      }
+      let Some(data) = buf.data.as_deref() else {
+        return Ok(false);
+      };
+      let buf_len = data.len();
+
+      let byte_len = match length.checked_mul(kind.bytes_per_element()) {
+        Some(n) => n,
+        None => return Ok(false),
+      };
+      let end = match byte_offset.checked_add(byte_len) {
+        Some(end) => end,
+        None => return Ok(false),
+      };
+      if end > buf_len {
+        return Ok(false);
+      }
+    }
+
+    if index >= length {
+      return Ok(false);
+    }
+
+    let bytes_per_element = kind.bytes_per_element();
+    debug_assert_eq!(bytes_per_element, 8);
+    let rel = index
+      .checked_mul(bytes_per_element)
+      .ok_or(VmError::InvariantViolation("TypedArray index overflow"))?;
+    let abs_start = byte_offset
+      .checked_add(rel)
+      .ok_or(VmError::InvariantViolation("TypedArray byte offset overflow"))?;
+    let abs_end = abs_start
+      .checked_add(bytes_per_element)
+      .ok_or(VmError::InvariantViolation("TypedArray byte offset overflow"))?;
+
+    let buf = self.get_array_buffer_mut(buffer)?;
+    let Some(data) = buf.data.as_deref_mut() else {
+      return Ok(false);
+    };
+    if abs_end > data.len() {
+      return Ok(false);
+    }
+
+    data[abs_start..abs_end].copy_from_slice(&bits.to_le_bytes());
+    Ok(true)
+  }
+
+  fn bigint_to_u64_bits(&self, kind: TypedArrayKind, value: GcBigInt) -> Result<u64, VmError> {
+    debug_assert!(kind.is_bigint());
+    let bi = self.get_bigint(value)?;
+    let wrapped = match kind {
+      TypedArrayKind::BigInt64 => bi.as_int_n(64)?,
+      TypedArrayKind::BigUint64 => bi.as_uint_n(64)?,
+      _ => return Err(VmError::InvariantViolation("expected BigInt typed array kind")),
+    };
+    let i128 = wrapped.try_to_i128().ok_or(VmError::InvariantViolation(
+      "BigInt typed array conversion produced out-of-range value",
+    ))?;
+    Ok(match kind {
+      TypedArrayKind::BigInt64 => (i128 as i64) as u64,
+      TypedArrayKind::BigUint64 => i128 as u64,
+      _ => unreachable!(),
+    })
+  }
+
+  pub(crate) fn typed_array_to_bigint_bits(
+    &self,
+    kind: TypedArrayKind,
+    value: Value,
+  ) -> Result<u64, VmError> {
+    debug_assert!(kind.is_bigint());
+
+    let wrapped = match value {
+      Value::BigInt(b) => match kind {
+        TypedArrayKind::BigInt64 => self.get_bigint(b)?.as_int_n(64)?,
+        TypedArrayKind::BigUint64 => self.get_bigint(b)?.as_uint_n(64)?,
+        _ => return Err(VmError::InvariantViolation("expected BigInt typed array kind")),
+      },
+      Value::Bool(b) => {
+        let bi = JsBigInt::from_u128(if b { 1 } else { 0 })?;
+        match kind {
+          TypedArrayKind::BigInt64 => bi.as_int_n(64)?,
+          TypedArrayKind::BigUint64 => bi.as_uint_n(64)?,
+          _ => return Err(VmError::InvariantViolation("expected BigInt typed array kind")),
+        }
+      }
+      Value::String(s) => {
+        let units = self.get_string(s)?.as_code_units();
+        let parsed = JsBigInt::parse_utf16_string_with_tick(units, &mut || Ok(()))?;
+        let Some(bi) = parsed else {
+          return Err(VmError::TypeError("Cannot convert string to a BigInt"));
+        };
+        match kind {
+          TypedArrayKind::BigInt64 => bi.as_int_n(64)?,
+          TypedArrayKind::BigUint64 => bi.as_uint_n(64)?,
+          _ => return Err(VmError::InvariantViolation("expected BigInt typed array kind")),
+        }
+      }
+      Value::Number(_) => Err(VmError::TypeError("Cannot convert a Number value to a BigInt"))?,
+      Value::Undefined => Err(VmError::TypeError("Cannot convert undefined to a BigInt"))?,
+      Value::Null => Err(VmError::TypeError("Cannot convert null to a BigInt"))?,
+      Value::Symbol(_) => Err(VmError::TypeError("Cannot convert a Symbol value to a BigInt"))?,
+      Value::Object(_) => Err(VmError::Unimplemented(
+        "ToBigInt on objects requires ToPrimitive/built-ins",
+      ))?,
+    };
+
+    let i128 = wrapped.try_to_i128().ok_or(VmError::InvariantViolation(
+      "BigInt typed array conversion produced out-of-range value",
+    ))?;
+    Ok(match kind {
+      TypedArrayKind::BigInt64 => (i128 as i64) as u64,
+      TypedArrayKind::BigUint64 => i128 as u64,
+      _ => unreachable!(),
+    })
   }
 
   /// Writes a numeric value into a typed array element.
@@ -6301,6 +6523,11 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
       }
       TypedArrayKind::Float64 => {
         data[abs_start..abs_end].copy_from_slice(&n.to_bits().to_le_bytes());
+      }
+      TypedArrayKind::BigInt64 | TypedArrayKind::BigUint64 => {
+        return Err(VmError::InvariantViolation(
+          "typed_array_set_element_number called on BigInt typed array",
+        ));
       }
     }
 
@@ -11618,6 +11845,8 @@ pub enum TypedArrayKind {
   Uint32,
   Float32,
   Float64,
+  BigInt64,
+  BigUint64,
 }
 
 impl TypedArrayKind {
@@ -11626,8 +11855,13 @@ impl TypedArrayKind {
       TypedArrayKind::Int8 | TypedArrayKind::Uint8 | TypedArrayKind::Uint8Clamped => 1,
       TypedArrayKind::Int16 | TypedArrayKind::Uint16 => 2,
       TypedArrayKind::Int32 | TypedArrayKind::Uint32 | TypedArrayKind::Float32 => 4,
-      TypedArrayKind::Float64 => 8,
+      TypedArrayKind::Float64 | TypedArrayKind::BigInt64 | TypedArrayKind::BigUint64 => 8,
     }
+  }
+
+  #[inline]
+  pub fn is_bigint(self) -> bool {
+    matches!(self, TypedArrayKind::BigInt64 | TypedArrayKind::BigUint64)
   }
 }
 

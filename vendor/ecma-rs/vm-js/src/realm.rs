@@ -452,6 +452,22 @@ impl Realm {
         &mut scope,
         global_object,
         &mut installed_globals,
+        "BigInt64Array",
+        Value::Object(intrinsics.bigint64_array()),
+      )?;
+
+      define_global_data_property_once(
+        &mut scope,
+        global_object,
+        &mut installed_globals,
+        "BigUint64Array",
+        Value::Object(intrinsics.biguint64_array()),
+      )?;
+
+      define_global_data_property_once(
+        &mut scope,
+        global_object,
+        &mut installed_globals,
         "DataView",
         Value::Object(intrinsics.data_view()),
       )?;
