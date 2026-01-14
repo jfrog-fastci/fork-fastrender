@@ -2737,7 +2737,7 @@ impl<'vm> HirEvaluator<'vm> {
         CompiledFunctionRef {
           script,
           body: body_id,
-          ast_fallback,
+          ast_fallback: None,
         },
         is_constructable,
         name_s,
@@ -20409,9 +20409,13 @@ mod async_function_ast_fallback_tests {
     };
 
     let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+    let CallHandler::User(func_ref) = call_handler else {
+      panic!("expected async function to be allocated as a compiled user function, got {call_handler:?}");
+    };
     assert!(
-      matches!(call_handler, CallHandler::User(_)),
-      "expected async function to be allocated as a compiled user function, got {call_handler:?}"
+      func_ref.ast_fallback.is_none(),
+      "expected async function with trivial body to have no call-time AST fallback, got ast_fallback={:?}",
+      func_ref.ast_fallback
     );
 
     let func_data = rt.heap.get_function_data(func_obj)?;
@@ -20477,8 +20481,9 @@ mod async_function_ast_fallback_tests {
       panic!("expected async function to be allocated as a compiled user function, got {call_handler:?}");
     };
     assert!(
-      func_ref.ast_fallback.is_some(),
-      "expected compiled async function call handler to carry AST fallback metadata"
+      func_ref.ast_fallback.is_none(),
+      "expected async function AST fallback to be expressed via FunctionData::AsyncEcmaFallback (not via CompiledFunctionRef::ast_fallback), got ast_fallback={:?}",
+      func_ref.ast_fallback
     );
 
     let func_data = rt.heap.get_function_data(func_obj)?;

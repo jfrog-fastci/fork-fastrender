@@ -13,7 +13,7 @@ fn compile_and_get_function(rt: &mut JsRuntime, source: &str) -> Result<GcObject
   let script = CompiledScript::compile_script(&mut rt.heap, "<inline>", source)?;
   assert!(
     !script.requires_ast_fallback,
-    "expected script to run via compiled HIR path (requires_ast_fallback=true)"
+    "expected script to run via compiled HIR path (requires_ast_fallback=false)"
   );
   let value = rt.exec_compiled_script(script)?;
   let Value::Object(func_obj) = value else {
@@ -24,26 +24,18 @@ fn compile_and_get_function(rt: &mut JsRuntime, source: &str) -> Result<GcObject
 
 fn assert_compiled_hir_async_function(rt: &mut JsRuntime, func_obj: GcObject) -> Result<(), VmError> {
   let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+  let CallHandler::User(func_ref) = call_handler else {
+    panic!("expected async function to be allocated as a compiled user function, got {call_handler:?}");
+  };
   assert!(
-    matches!(call_handler, CallHandler::User(_)),
-    "expected async function to be allocated as a compiled user function, got {call_handler:?}"
+    func_ref.ast_fallback.is_none(),
+    "expected async function to have no call-time AST fallback, got ast_fallback={:?}",
+    func_ref.ast_fallback
   );
-
-  // Async functions may still be tagged for call-time AST fallback; clear that marker so this test
-  // exercises the compiled async/await evaluator.
-  //
-  // When compiled async function execution is enabled by default, this becomes a no-op.
-  if matches!(
-    rt.heap.get_function_data(func_obj)?,
-    FunctionData::EcmaFallback { .. }
-  ) {
-    rt.heap.set_function_data(func_obj, FunctionData::None)?;
-  }
-
   let func_data = rt.heap.get_function_data(func_obj)?;
   assert!(
-    !matches!(func_data, FunctionData::EcmaFallback { .. }),
-    "expected async function to execute via the compiled/HIR async path after clearing fallback marker, but it was still tagged for AST fallback: {func_data:?}"
+    matches!(func_data, FunctionData::None),
+    "expected async function to execute via the compiled/HIR async path (no AST fallback metadata), got {func_data:?}"
   );
   Ok(())
 }

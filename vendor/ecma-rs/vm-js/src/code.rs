@@ -472,9 +472,10 @@ pub struct CompiledFunctionRef {
   pub body: hir_js::BodyId,
   /// Optional call-time fallback to the AST interpreter for this compiled function body.
   ///
-  /// This is used when a function object can be allocated as a compiled user function (so the
-  /// surrounding script can still execute in the compiled (HIR) path), but the function body cannot
-  /// yet be executed by the compiled executor (for example, unsupported async `await` forms).
+  /// This is an escape hatch for embeddings/tests: the surrounding script/module can execute in the
+  /// compiled (HIR) path, but this specific function body can still be executed by the AST
+  /// interpreter when invoked (e.g. when the compiled executor does not yet support some construct
+  /// in the function body).
   pub ast_fallback: Option<EcmaFunctionId>,
 }
 

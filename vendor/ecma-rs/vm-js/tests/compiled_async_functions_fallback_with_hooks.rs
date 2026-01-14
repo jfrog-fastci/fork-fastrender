@@ -16,9 +16,13 @@ fn assert_compiled_async_fn(rt: &JsRuntime, value: Value, name: &str) -> Result<
     panic!("expected {name} to evaluate to a function object, got {value:?}");
   };
   let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+  let CallHandler::User(func_ref) = call_handler else {
+    panic!("expected {name} to use the compiled (HIR) call handler; got {call_handler:?}");
+  };
   assert!(
-    matches!(call_handler, CallHandler::User(_)),
-    "expected {name} to use the compiled (HIR) call handler; got {call_handler:?}"
+    func_ref.ast_fallback.is_none(),
+    "expected {name} to have no call-time AST fallback, got ast_fallback={:?}",
+    func_ref.ast_fallback
   );
   let data = rt.heap.get_function_data(func_obj)?;
   assert!(
@@ -27,6 +31,27 @@ fn assert_compiled_async_fn(rt: &JsRuntime, value: Value, name: &str) -> Result<
       FunctionData::EcmaFallback { .. } | FunctionData::AsyncEcmaFallback { .. }
     ),
     "expected {name} to execute via the compiled async evaluator (no AST fallback tag); got {data:?}"
+  );
+  Ok(())
+}
+
+fn assert_compiled_async_fn_uses_ast_fallback(rt: &JsRuntime, value: Value, name: &str) -> Result<(), VmError> {
+  let Value::Object(func_obj) = value else {
+    panic!("expected {name} to evaluate to a function object, got {value:?}");
+  };
+  let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+  let CallHandler::User(func_ref) = call_handler else {
+    panic!("expected {name} to use the compiled (HIR) call handler; got {call_handler:?}");
+  };
+  assert!(
+    func_ref.ast_fallback.is_none(),
+    "expected {name} to have no call-time AST fallback in the call handler (fallback should be via FunctionData), got ast_fallback={:?}",
+    func_ref.ast_fallback
+  );
+  let data = rt.heap.get_function_data(func_obj)?;
+  assert!(
+    matches!(data, FunctionData::AsyncEcmaFallback { .. }),
+    "expected {name} to be tagged for call-time AST fallback; got {data:?}"
   );
   Ok(())
 }
@@ -125,18 +150,20 @@ fn compiled_script_with_host_and_hooks_async_function_fallback_preserves_closure
     "compiled_async_functions_fallback_with_hooks_closure.js",
     r#"
       var result = 0;
+      var saved_f;
+      var saved_g;
       (function () {
         let x = 21;
-        const f = async function () {
-          await Promise.resolve(0);
-          return x;
+        saved_f = async function () {
+          // This `await` form is intentionally rejected by `async_function_body_is_hir_supported`:
+          // the awaited value is nested inside a larger expression.
+          return (await Promise.resolve(0)) + x;
         };
-        const g = async () => {
-          await Promise.resolve(0);
-          return x + 1;
+        saved_g = async () => {
+          return (await Promise.resolve(0)) + x + 1;
         };
-        f().then(v => { result += v; });
-        g().then(v => { result += v; });
+        saved_f().then(v => { result += v; });
+        saved_g().then(v => { result += v; });
       })();
     "#,
   )?;
@@ -153,6 +180,14 @@ fn compiled_script_with_host_and_hooks_async_function_fallback_preserves_closure
   let mut host = ();
   let mut hooks = MicrotaskQueue::new();
   rt.exec_compiled_script_with_host_and_hooks(&mut host, &mut hooks, script)?;
+
+  // Prove these async functions took the per-function AST fallback path (unsupported await form),
+  // while still capturing the correct outer lexical environment.
+  let saved_f = rt.exec_script("saved_f")?;
+  assert_compiled_async_fn_uses_ast_fallback(&rt, saved_f, "saved_f")?;
+  let saved_g = rt.exec_script("saved_g")?;
+  assert_compiled_async_fn_uses_ast_fallback(&rt, saved_g, "saved_g")?;
+
   let errors = hooks.perform_microtask_checkpoint(&mut rt);
   if let Some(err) = errors.into_iter().next() {
     return Err(err);
