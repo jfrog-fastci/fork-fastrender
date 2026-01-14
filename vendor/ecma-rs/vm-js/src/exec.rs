@@ -48684,6 +48684,39 @@ fn gen_eval_assignment_apply_reference(
         Reference::Binding(name) if is_identifier_ref(&expr.left) => {
           gen_eval_expr_named(evaluator, &mut rhs_scope, &expr.right, name)?
         }
+        Reference::Property { key, .. } => {
+          // `NamedEvaluation` / `SetFunctionName` inference for property assignments.
+          //
+          // This is particularly important for anonymous *class* expressions: the inferred name must
+          // be applied during class construction so `static { ... this.name ... }` observes it even
+          // when the class evaluation suspends on `yield` (e.g. inside `extends (yield ...)`).
+          let is_anonymous_function_def = match &*expr.right.stx {
+            Expr::Func(func) => func.stx.name.is_none(),
+            Expr::ArrowFunc(_) => true,
+            Expr::Class(class) => class.stx.name.is_none(),
+            _ => false,
+          };
+
+          if !is_anonymous_function_def {
+            gen_eval_expr(evaluator, &mut rhs_scope, &expr.right)?
+          } else if expr_contains_yield(&expr.right) {
+            match &*expr.right.stx {
+              Expr::Class(class_expr) if class_expr.stx.name.is_none() => {
+                // `gen_eval_expr` would have charged one tick at expression entry; preserve that
+                // budget behaviour when we bypass it for class `NamedEvaluation`.
+                evaluator.tick()?;
+                gen_eval_class_expr_named(evaluator, &mut rhs_scope, class_expr, key)?
+              }
+              _ => gen_eval_expr(evaluator, &mut rhs_scope, &expr.right)?,
+            }
+          } else {
+            // No `yield` in the RHS expression: use the synchronous `NamedEvaluation` helper.
+            match evaluator.eval_expr_named(&mut rhs_scope, &expr.right, key) {
+              Ok(v) => GenEval::Complete(Completion::normal(v)),
+              Err(err) => GenEval::Complete(gen_error_to_completion(evaluator, &mut rhs_scope, err)?),
+            }
+          }
+        }
         _ => gen_eval_expr(evaluator, &mut rhs_scope, &expr.right)?,
       };
   
