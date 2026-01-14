@@ -15765,6 +15765,17 @@ pub(crate) enum AsyncFrame {
     delta: i8,
     prefix: bool,
   },
+  /// Continue an update expression on a `super[expr]` computed member target after evaluating the
+  /// member key expression.
+  ///
+  /// Unlike ordinary computed members, `super[expr]` does not evaluate a base expression; instead
+  /// it resolves a Super Reference using `[[HomeObject]].[[Prototype]]` and the current `this`
+  /// binding as the receiver.
+  UpdateSuperComputedMemberAfterMember {
+    member: *const ComputedMemberExpr,
+    delta: i8,
+    prefix: bool,
+  },
 }
 
 #[derive(Debug)]
@@ -25835,20 +25846,73 @@ fn async_eval_update_expression(
         ));
       }
 
-      match async_eval_expr(evaluator, scope, &member.object)? {
-        AsyncEval::Complete(base) => {
-          async_update_computed_member_after_base(evaluator, scope, member, base, delta, prefix)
+      // `super[expr]++` / `++super[expr]` update targets.
+      if matches!(&*member.object.stx, Expr::Super(_)) {
+        // Evaluating a super property reference requires an initialized `this` binding. In derived
+        // constructors before `super()`, this check must happen **before** evaluating the computed
+        // key expression.
+        if evaluator.derived_constructor && !evaluator.this_initialized {
+          return Err(throw_reference_error(
+            evaluator.vm,
+            scope,
+            "Must call super constructor in derived class before accessing 'this'",
+          )?);
         }
-        AsyncEval::Suspend(mut suspend) => {
-          async_frames_push(
-            &mut suspend.frames,
-            AsyncFrame::UpdateComputedMemberAfterBase {
-              member: member as *const ComputedMemberExpr,
-              delta,
-              prefix,
-            },
-          )?;
-          Ok(AsyncEval::Suspend(suspend))
+        let receiver = evaluator.this;
+
+        // Spec ordering: evaluate `GetThisBinding` (above) before evaluating the key expression.
+        let mut member_scope = scope.reborrow();
+        member_scope.push_root(receiver)?;
+        match async_eval_expr(evaluator, &mut member_scope, &member.member)? {
+          AsyncEval::Complete(member_value) => {
+            let mut key_scope = member_scope.reborrow();
+            key_scope.push_root(member_value)?;
+
+            let key = evaluator
+              .to_property_key_operator(&mut key_scope, member_value)
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+            // Root the computed key across `GetSuperBase()` which can invoke proxy traps.
+            match key {
+              PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
+              PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
+            };
+
+            let base = evaluator
+              .get_super_base(&mut key_scope)
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+            let reference = Reference::SuperProperty { base, key, receiver };
+            let value = async_apply_update_to_reference(evaluator, &mut key_scope, &reference, delta, prefix)?;
+            Ok(AsyncEval::Complete(value))
+          }
+          AsyncEval::Suspend(mut suspend) => {
+            async_frames_push(
+              &mut suspend.frames,
+              AsyncFrame::UpdateSuperComputedMemberAfterMember {
+                member: member as *const ComputedMemberExpr,
+                delta,
+                prefix,
+              },
+            )?;
+            Ok(AsyncEval::Suspend(suspend))
+          }
+        }
+      } else {
+
+        match async_eval_expr(evaluator, scope, &member.object)? {
+          AsyncEval::Complete(base) => {
+            async_update_computed_member_after_base(evaluator, scope, member, base, delta, prefix)
+          }
+          AsyncEval::Suspend(mut suspend) => {
+            async_frames_push(
+              &mut suspend.frames,
+              AsyncFrame::UpdateComputedMemberAfterBase {
+                member: member as *const ComputedMemberExpr,
+                delta,
+                prefix,
+              },
+            )?;
+            Ok(AsyncEval::Suspend(suspend))
+          }
         }
       }
     }
@@ -31250,6 +31314,71 @@ fn async_resume_from_frames(
         AsyncState::Completion(_) => {
           return Err(VmError::InvariantViolation(
             "update computed member after member frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::UpdateSuperComputedMemberAfterMember {
+        member,
+        delta,
+        prefix,
+      } => match state {
+        AsyncState::Expr(member_res) => {
+          let member = unsafe { &*member };
+
+          match member_res {
+            Ok(member_value) => {
+              let update_res = (|| -> Result<Value, VmError> {
+                // Reconstruct the Super Reference: `super[expr]` uses the current `this` binding as
+                // the receiver and `[[HomeObject]].[[Prototype]]` as the base.
+                if evaluator.derived_constructor && !evaluator.this_initialized {
+                  return Err(throw_reference_error(
+                    evaluator.vm,
+                    scope,
+                    "Must call super constructor in derived class before accessing 'this'",
+                  )?);
+                }
+                if member.optional_chaining {
+                  return Err(VmError::InvariantViolation(
+                    "optional chaining used in update target",
+                  ));
+                }
+
+                let receiver = evaluator.this;
+                let mut key_scope = scope.reborrow();
+                key_scope.push_roots(&[receiver, member_value])?;
+
+                let key = evaluator
+                  .to_property_key_operator(&mut key_scope, member_value)
+                  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+
+                // Root the computed key across `GetSuperBase()` (Proxy traps can allocate / GC).
+                match key {
+                  PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
+                  PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
+                };
+
+                let base = evaluator
+                  .get_super_base(&mut key_scope)
+                  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+                let reference = Reference::SuperProperty { base, key, receiver };
+                async_apply_update_to_reference(evaluator, &mut key_scope, &reference, delta, prefix)
+              })();
+
+              match update_res {
+                Ok(v) => state = AsyncState::Expr(Ok(v)),
+                Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                  state = AsyncState::Expr(Err(err))
+                }
+                Err(err) => return Err(err),
+              }
+            }
+            Err(err) => state = AsyncState::Expr(Err(err)),
+          }
+        }
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "update super computed member after member frame received completion state",
           ))
         }
       },

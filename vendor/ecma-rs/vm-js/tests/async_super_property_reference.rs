@@ -103,3 +103,41 @@ fn async_super_property_assignments_across_await() -> Result<(), VmError> {
 
   Ok(())
 }
+
+#[test]
+fn async_super_computed_member_update_expressions_across_await() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = '';
+      class B {
+        get x() { return this._x; }
+        set x(v) { this._x = v; }
+      }
+      class D extends B {
+        constructor() { super(); this._x = 1; }
+        async m() {
+          let a = super[await Promise.resolve("x")]++;
+          let b = ++super[await Promise.resolve("x")];
+          return a + "," + b + "," + this._x;
+        }
+      }
+      async function f() {
+        return await new D().m();
+      }
+      f().then(v => out = String(v));
+    "#,
+  )?;
+
+  // No microtasks run yet.
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "1,3,3");
+
+  Ok(())
+}
