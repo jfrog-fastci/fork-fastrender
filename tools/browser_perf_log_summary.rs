@@ -224,7 +224,7 @@ fn should_include_timestamp(t_ms: f64, filter: WindowFilter) -> bool {
 
 fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summary, String> {
   let mut frame_ms = Series::default();
-  let mut fps = Series::default();
+  let mut fps_series = Series::default();
   let mut input_overall = Series::default();
   let mut input_by_kind: BTreeMap<String, Series> = BTreeMap::new();
   let mut resize_ms = Series::default();
@@ -297,11 +297,11 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
       } => {
         frame_ms.push(ui_frame_ms);
         if let Some(fps_value) = frame_fps {
-          fps.push(fps_value);
+          fps_series.push(fps_value);
         } else if ui_frame_ms.is_finite() && ui_frame_ms > 0.0 {
           // Legacy fallback: older logs did not include an explicit FPS measurement, so estimate it
           // from CPU frame time.
-          fps.push(1000.0 / ui_frame_ms);
+          fps_series.push(1000.0 / ui_frame_ms);
         }
       }
       perf_log::PerfEvent::Input {
@@ -355,7 +355,7 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
     .or_else(|| perf_log::SUPPORTED_SCHEMA_VERSIONS.last().copied())
     .unwrap_or(0);
 
-  let fps_stats = fps.stats();
+  let fps_stats = fps_series.stats();
   let frames = frame_ms.stats().map(|ui_frame_ms| FrameSummary {
     ui_frame_ms,
     fps: fps_stats,
