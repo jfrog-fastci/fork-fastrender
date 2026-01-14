@@ -69,8 +69,9 @@ pub struct CompiledScript {
   /// - expression statements of the form `await <expr>;`
   /// - expression statements of the form `x = await <expr>;` (for supported assignment targets)
   /// - `var`/`let`/`const` declarator initializers of the form `= await <expr>`
-  /// - simple top-level `for await (<lhs> of <expr>) { ... }` loops, as long as the loop head,
-  ///   RHS, and body contain no other `await`
+  /// - simple top-level `for await (<lhs> of <expr>) { ... }` loops, as long as the loop head and
+  ///   body contain no other `await`, and the RHS contains no `await` other than an optional
+  ///   outer `await <expr>` (with no nested `await` inside `<expr>`)
   ///
   /// Any other top-level await usage (e.g. `await` inside nested blocks like `class static {}`, or
   /// nested `await` inside the awaited subexpression, or additional `await` inside a `for
@@ -170,7 +171,8 @@ impl CompiledScript {
     let contains_private_names = feature_flags.contains_private_names;
     // The compiled (HIR) executor does not yet support generator bodies, and it only supports a
     // subset of async classic scripts (top-level await as a direct statement/initializer/assignment,
-    // plus top-level `for await..of` loops without nested await).
+    // plus top-level `for await..of` loops without nested await, with an optional direct `await` in
+    // the RHS).
     //
     // Fall back to the AST interpreter when the script uses unsupported top-level await forms (for
     // example `await` nested inside class static blocks, or `for await..of` bodies that themselves
@@ -726,9 +728,9 @@ fn stmt_contains_unsupported_await_for_hir_async_scripts(stmt: &Node<Stmt>) -> b
     // - `x += await <expr>;` (and other arithmetic/bitwise compound assignment operators)
     // - `const x = await <expr>;` (and `var`/`let`)
     // - `for await (<head> of <rhs>) { ... }` where:
-    //   - `<rhs>` is either a normal expression with no `await`, or a direct `await <expr>` with no
-    //     nested `await` inside `<expr>`, and
-    //   - the loop head + body contain no other `await`
+      //   - `<rhs>` is either a normal expression with no `await`, or a direct `await <expr>` with no
+      //     nested `await` inside `<expr>`, and
+      //   - the loop head + body contain no other `await`
     //
     // Any other `await` / `for await..of` form must fall back to the AST interpreter.
     Stmt::Expr(expr_stmt) => {
@@ -1035,14 +1037,19 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
       // `for await (<lhs> of <rhs>) { ... }` at top-level.
       //
       // The compiled evaluator can suspend/resume the implicit `await` boundaries in `for await..of`
-      // itself, but does not yet support additional nested `await` within the head or body.
+      // itself, but does not yet support additional nested `await` within the head or body. The
+      // RHS may be a direct `await <expr>`, as long as `<expr>` contains no nested `await`.
       Stmt::ForOf(for_of) if for_of.stx.await_ => {
         if for_in_of_lhs_contains_await(&for_of.stx.lhs) {
           false
-        } else if expr_contains_await(&for_of.stx.rhs) {
-          false
         } else {
-          !for_of.stx.body.stx.body.iter().any(stmt_contains_await)
+          let rhs = &for_of.stx.rhs;
+          let rhs_supported = if let Some(arg) = expr_direct_await_arg(rhs) {
+            !expr_contains_await(arg)
+          } else {
+            !expr_contains_await(rhs)
+          };
+          rhs_supported && !for_of.stx.body.stx.body.iter().any(stmt_contains_await)
         }
       }
 

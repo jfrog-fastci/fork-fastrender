@@ -60,6 +60,54 @@ fn compiled_script_top_level_for_await_of_executes_via_hir_and_resumes_in_microt
 }
 
 #[test]
+fn compiled_script_top_level_for_await_of_allows_direct_await_in_rhs() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var actual = [];
+      var iterable = [Promise.resolve("a"), "b"];
+      for await (const x of await Promise.resolve(iterable)) {
+        actual.push(x);
+      }
+      actual.push("done");
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level for-await-of should support a direct `await <expr>` RHS in the HIR async script executor"
+  );
+  assert!(
+    !script.requires_ast_fallback,
+    "top-level for-await-of with a direct await RHS should execute via the compiled (HIR) async script path"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(
+    rt.heap().is_promise_object(promise_obj),
+    "expected Promise return value from async classic script"
+  );
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
+
+  let before = rt.exec_script("JSON.stringify(actual)")?;
+  assert_eq!(value_to_utf8(&rt, before), r#"[]"#);
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let after = rt.exec_script("JSON.stringify(actual)")?;
+  assert_eq!(value_to_utf8(&rt, after), r#"["a","b","done"]"#);
+
+  Ok(())
+}
+
+#[test]
 fn compiled_script_top_level_for_await_of_throw_suppresses_iterator_return_rejection(
 ) -> Result<(), VmError> {
   let mut rt = new_runtime();
