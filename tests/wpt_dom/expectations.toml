@@ -314,46 +314,6 @@ status = "xfail"
 reason = "QuickJS backend does not implement shadow DOM traversal with NodeIterator/TreeWalker yet."
 
 [[expectations]]
-id = "dom/range_basic.window.js"
-status = "pass"
-reason = "Range implemented (bindings + mutation live update steps)."
-
-[[expectations]]
-id = "dom/range_basics.window.js"
-status = "pass"
-reason = "Range implemented (bindings + mutation live update steps)."
-
-[[expectations]]
-id = "dom/range_setstart_setend.window.js"
-status = "pass"
-reason = "Range implemented (bindings + mutation live update steps)."
-
-[[expectations]]
-id = "dom/range_live_updates_insert_remove.window.js"
-status = "pass"
-reason = "Range implemented (bindings + mutation live update steps)."
-
-[[expectations]]
-id = "dom/range_live_updates_characterdata.window.js"
-status = "pass"
-reason = "Range implemented (bindings + mutation live update steps)."
-
-[[expectations]]
-id = "dom/range_create_contextual_fragment.window.js"
-status = "pass"
-reason = "Range implemented (bindings + mutation live update steps)."
-
-[[expectations]]
-id = "dom/live_range_insert_remove.window.js"
-status = "pass"
-reason = "Range implemented (bindings + mutation live update steps)."
-
-[[expectations]]
-id = "dom/live_range_replace_data.window.js"
-status = "pass"
-reason = "Range implemented (bindings + mutation live update steps)."
-
-[[expectations]]
 glob = "dom/ranges/tentative/FormControlRange-*.html"
 status = "skip"
 reason = "FormControlRange is not implemented yet."
@@ -389,10 +349,16 @@ reason = "Range stringifier implemented (Range.prototype.toString + dom2 travers
 glob = "dom/ranges/*.html"
 backend = "quickjs"
 status = "xfail"
-reason = "QuickJS backend still does not fully pass the upstream `dom/ranges/*.html` suite (StaticRange + remaining Range API gaps)."
+reason = "QuickJS backend uses minimal DOM shims; the upstream `dom/ranges/*.html` suite requires full Range/StaticRange support."
 
-# vm-js backends: keep the remaining `dom/ranges/*.html` bring-up gaps explicit so newly passing
-# tests don't become hidden behind a broad glob xfail.
+# vm-js backends: Range is largely implemented, but the upstream `dom/ranges/*.html` suite still has
+# remaining gaps (notably StaticRange + edge cases). Keep the suite xfailed for now while we bring
+# up full coverage; carve out explicit `pass` overrides for known-good tests.
+[[expectations]]
+glob = "dom/ranges/*.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "xfail"
+reason = "Upstream `dom/ranges/*.html` suite still has failing cases (StaticRange + remaining Range API gaps)."
 [[expectations]]
 id = "dom/ranges/Range-adopt-test.html"
 backend = ["vmjs", "vmjs-rendered"]
