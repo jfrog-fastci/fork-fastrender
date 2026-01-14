@@ -332,10 +332,7 @@ impl<'a> Parser<'a> {
     loc: Loc,
     raw_name: &str,
   ) -> SyntaxResult<()> {
-    if !self.is_strict_ecmascript() {
-      return Ok(());
-    }
-    if self.disallow_arguments_in_class_init == 0 {
+    if !self.is_strict_ecmascript() || self.disallow_arguments_in_class_init == 0 {
       return Ok(());
     }
     if self.arguments_allowed > 0 {
