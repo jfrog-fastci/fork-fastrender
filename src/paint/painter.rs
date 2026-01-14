@@ -10632,7 +10632,8 @@ impl Painter {
           style
         };
         // HTML `<input>` controls paint their value as a single line without wrapping; overflow is
-        // handled via clipping/scrolling rather than soft line breaks.
+        // handled via clipping/scrolling rather than soft line breaks. This keeps caret/selection
+        // geometry (and scroll_x behavior) consistent with browsers and the display-list backend.
         text_style.white_space = WhiteSpace::Nowrap;
         text_style.text_wrap = TextWrap::NoWrap;
         let mut rect = inset_rect(content_rect, 2.0);
