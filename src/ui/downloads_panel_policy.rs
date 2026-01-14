@@ -53,19 +53,17 @@ impl DownloadsPanelPolicyOutput {
   }
 }
 
-/// Pure policy for whether we should auto-open the downloads panel for a newly started download.
+/// Pure policy for whether the downloads panel should request focus when it is auto-opened.
 ///
-/// This is intentionally conservative: if the user is typing in a chrome text input, or if a modal
-/// is visible, we skip auto-opening (best-effort) to avoid disrupting their flow.
+/// The downloads panel may be opened automatically when a download begins, but it should not steal
+/// focus from active text inputs (address bar, find-in-page, tab search, etc.).
 pub fn should_auto_open_downloads_panel(
-  downloads_panel_open: bool,
   chrome_wants_keyboard_input: bool,
   address_bar_has_focus: bool,
   clear_browsing_data_dialog_open: bool,
   other_popup_open: bool,
 ) -> bool {
-  !downloads_panel_open
-    && !chrome_wants_keyboard_input
+  !chrome_wants_keyboard_input
     && !address_bar_has_focus
     && !clear_browsing_data_dialog_open
     && !other_popup_open
@@ -77,19 +75,22 @@ pub fn on_download_started(input: DownloadsPanelPolicyInput) -> DownloadsPanelPo
     return DownloadsPanelPolicyOutput::same_as_input(input);
   }
 
-  if !should_auto_open_downloads_panel(
-    input.downloads_panel_open,
-    input.chrome_has_text_focus,
-    input.address_bar_has_focus,
-    input.clear_browsing_data_dialog_open,
-    input.other_popup_open,
-  ) {
+  // Only auto-open the panel when it is currently closed, and when no modal/popup UI is visible.
+  if input.downloads_panel_open
+    || input.clear_browsing_data_dialog_open
+    || input.other_popup_open
+  {
     return DownloadsPanelPolicyOutput::same_as_input(input);
   }
 
   let mut out = DownloadsPanelPolicyOutput::same_as_input(input);
   out.downloads_panel_open = true;
-  out.downloads_panel_request_focus = true;
+  out.downloads_panel_request_focus = should_auto_open_downloads_panel(
+    input.chrome_has_text_focus,
+    input.address_bar_has_focus,
+    input.clear_browsing_data_dialog_open,
+    input.other_popup_open,
+  );
   out.history_panel_open = false;
   out.bookmarks_panel_open = false;
   out
@@ -144,12 +145,13 @@ mod tests {
   }
 
   #[test]
-  fn does_not_open_when_typing_in_chrome_text_input() {
+  fn typing_opens_panel_but_does_not_request_focus() {
     let mut input = base_input();
     input.chrome_has_text_focus = true;
 
     let out = on_download_started(input);
-    assert_eq!(out, DownloadsPanelPolicyOutput::same_as_input(input));
+    assert!(out.downloads_panel_open);
+    assert!(!out.downloads_panel_request_focus);
   }
 
   #[test]
@@ -173,21 +175,21 @@ mod tests {
 
   #[test]
   fn should_auto_open_downloads_panel_policy_matches_expected_conditions() {
-    // Busy typing in a chrome input: do not auto-open.
+    // Busy typing in a chrome input: do not request focus.
     assert!(!should_auto_open_downloads_panel(
-      false, true, false, false, false
+      true, false, false, false
     ));
-    // Address bar focus transition: do not auto-open.
+    // Address bar focus transition: do not request focus.
     assert!(!should_auto_open_downloads_panel(
-      false, false, true, false, false
+      false, true, false, false
     ));
-    // Modal open: do not auto-open.
+    // Modal open: do not request focus (and the caller should not auto-open at all).
     assert!(!should_auto_open_downloads_panel(
-      false, false, false, true, false
+      false, false, true, false
     ));
-    // Idle: ok to auto-open.
+    // Idle: ok to request focus.
     assert!(should_auto_open_downloads_panel(
-      false, false, false, false, false
+      false, false, false, false
     ));
   }
 }
