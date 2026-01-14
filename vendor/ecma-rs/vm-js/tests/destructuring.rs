@@ -61,6 +61,40 @@ fn object_destructuring_supports_defaults() {
 }
 
 #[test]
+fn destructuring_assignment_infers_anonymous_function_name_for_member_target() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var o = {};
+          ({ a: o.m } = { a: (0, function () {}) });
+          return o.m.name === "m";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn destructuring_assignment_infers_anonymous_function_name_for_computed_member_target() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var o = {};
+          ({ a: o["k"] } = { a: (0, function () {}) });
+          return o.k.name === "k";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn object_destructuring_supports_rest() {
   let mut rt = new_runtime();
   let value = rt

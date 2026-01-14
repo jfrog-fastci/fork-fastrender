@@ -427,6 +427,58 @@ fn maybe_set_anonymous_function_name(
   Ok(())
 }
 
+fn maybe_set_anonymous_function_name_for_assignment_key(
+  scope: &mut Scope<'_>,
+  value: Value,
+  key: PropertyKey,
+) -> Result<(), VmError> {
+  let Value::Object(func_obj) = value else {
+    return Ok(());
+  };
+
+  // `SetFunctionName` only applies to actual Function objects. Callable Proxies are callable, but
+  // they are not function objects and should not have their `name` mutated.
+  let (current_name, is_native_non_constructable) = match scope.heap().get_function(func_obj) {
+    Ok(f) => (
+      f.name,
+      matches!(f.call, CallHandler::Native(_)) && f.construct.is_none(),
+    ),
+    Err(VmError::NotCallable) => return Ok(()),
+    Err(err) => return Err(err),
+  };
+  // Name inference only applies to "anonymous function definitions" (ECMA-262) which excludes
+  // anonymous built-in/native functions like Promise combinator element callbacks.
+  //
+  // `vm-js` represents user-defined class constructors as native functions (so they can throw when
+  // called without `new`), so keep name inference enabled for constructable native functions.
+  if is_native_non_constructable {
+    return Ok(());
+  }
+  if !scope
+    .heap()
+    .get_string(current_name)?
+    .as_code_units()
+    .is_empty()
+  {
+    return Ok(());
+  }
+
+  // Root the function object + key across any allocations while defining `name`.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(func_obj))?;
+  match key {
+    PropertyKey::String(s) => {
+      scope.push_root(Value::String(s))?;
+      crate::function_properties::set_function_name(&mut scope, func_obj, PropertyKey::String(s), None)?;
+    }
+    PropertyKey::Symbol(sym) => {
+      scope.push_root(Value::Symbol(sym))?;
+      crate::function_properties::set_function_name(&mut scope, func_obj, PropertyKey::Symbol(sym), None)?;
+    }
+  }
+  Ok(())
+}
+
 fn bind_object_pattern(
   vm: &mut Vm,
   host: &mut dyn VmHost,
@@ -1925,6 +1977,7 @@ fn assign_to_property_key(
   };
   let roots = [base, key_root, value];
   set_scope.push_roots(&roots)?;
+  maybe_set_anonymous_function_name_for_assignment_key(&mut set_scope, value, key)?;
 
   // `PutValue` for property references uses `ToObject(base)` for the target object, but uses the
   // original base value (which may be a primitive) as the receiver.
@@ -1982,6 +2035,7 @@ fn assign_to_super_member(
   let key_s = set_scope.alloc_string(key)?;
   set_scope.push_root(Value::String(key_s))?;
   let key = PropertyKey::from_string(key_s);
+  maybe_set_anonymous_function_name_for_assignment_key(&mut set_scope, value, key)?;
 
   let Some(base_obj) = super_base else {
     // Mirror `PutValue` null/undefined base behaviour by using `ToObject(null)` for the error.
@@ -2041,6 +2095,7 @@ fn assign_to_super_computed_member(
     Err(err) => return Err(err),
   };
   root_property_key(&mut set_scope, key)?;
+  maybe_set_anonymous_function_name_for_assignment_key(&mut set_scope, value, key)?;
 
   let Some(base_obj) = super_base else {
     // Ensure `ToPropertyKey` happens before throwing for a `null` super base.
