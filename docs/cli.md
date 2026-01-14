@@ -218,7 +218,10 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
   - `--fail-on-regression` also enables the missing-stage gates and `--fail-on-slow-ok-ms=5000` by default (use `--no-fail-on-missing-stages` / `--no-fail-on-missing-stage-timings` / `--no-fail-on-slow-ok` to opt out, or pass `--fail-on-slow-ok-ms <ms>` to override the default threshold).
   - Stage-bucket sanity guardrail: when changing stage timing accounting, run `pageset_progress report --fail-on-stage-sum-exceeds-total` (tune `--stage-sum-tolerance-percent`, default 10%) to catch double-counting/CPU-sum mixups early.
 - Render one page: `bash scripts/cargo_agent.sh xtask render-page --url https://example.com --output out.png [--viewport 1200x800 --dpr 1.0 --full-page]`
-- Browser UI (windowed): `timeout -k 10 600 bash scripts/cargo_agent.sh xtask browser --release --hud --perf-log about:test-layout-stress`
+- Browser UI (windowed):
+  - HUD + perf log to stdout (JSONL): `timeout -k 10 600 bash scripts/cargo_agent.sh xtask browser --release --hud --perf-log about:test-layout-stress`
+  - Capture perf log to a file (JSONL): `timeout -k 10 600 bash scripts/cargo_agent.sh xtask browser --release --perf-log-out target/browser_perf.jsonl about:test-layout-stress`
+  - Summarize a captured log: `timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- --input target/browser_perf.jsonl`
 - Offline fixture “page loop” (FastRender render + optional overlay + optional inspect dumps + optional Chrome diff): `bash scripts/cargo_agent.sh xtask page-loop --fixture <stem> [--debug] [--overlay --inspect-dump-json --write-snapshot --chrome]`
   - Tip: pass `--debug` to skip `--release` for the FastRender/diff steps when you want faster rebuilds (slower runtime).
   - When you want “the next highest-signal page”, you can select a single fixture from committed progress JSON:
