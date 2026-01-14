@@ -17670,9 +17670,23 @@ impl ForOfState {
           let (v_root, iterator_root, next_method_root) = {
             let mut root_scope = iter_scope.reborrow();
             root_scope.push_roots(&[iterator_value, next_method_value])?;
-            let v_root = root_scope.heap_mut().add_root(Value::Undefined)?;
-            let iterator_root = root_scope.heap_mut().add_root(iterator_value)?;
-            let next_method_root = root_scope.heap_mut().add_root(next_method_value)?;
+            let heap = root_scope.heap_mut();
+            let v_root = heap.add_root(Value::Undefined)?;
+            let iterator_root = match heap.add_root(iterator_value) {
+              Ok(id) => id,
+              Err(err) => {
+                heap.remove_root(v_root);
+                return Err(err);
+              }
+            };
+            let next_method_root = match heap.add_root(next_method_value) {
+              Ok(id) => id,
+              Err(err) => {
+                heap.remove_root(iterator_root);
+                heap.remove_root(v_root);
+                return Err(err);
+              }
+            };
             (v_root, iterator_root, next_method_root)
           };
 
