@@ -332,6 +332,10 @@ pub fn get_prototype_from_constructor_with_host_and_hooks(
     intr_c.promise_prototype()
   } else if intrinsic_default_proto == intr_this.suppressed_error_prototype() {
     intr_c.suppressed_error_prototype()
+  } else if intrinsic_default_proto == intr_this.disposable_stack_prototype() {
+    intr_c.disposable_stack_prototype()
+  } else if intrinsic_default_proto == intr_this.async_disposable_stack_prototype() {
+    intr_c.async_disposable_stack_prototype()
   } else if intrinsic_default_proto == intr_this.string_prototype() {
     intr_c.string_prototype()
   } else if intrinsic_default_proto == intr_this.regexp_prototype() {

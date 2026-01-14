@@ -640,6 +640,22 @@ impl Realm {
         Value::Object(intrinsics.suppressed_error()),
       )?;
 
+      define_global_data_property_once(
+        &mut scope,
+        global_object,
+        &mut installed_globals,
+        "DisposableStack",
+        Value::Object(intrinsics.disposable_stack()),
+      )?;
+
+      define_global_data_property_once(
+        &mut scope,
+        global_object,
+        &mut installed_globals,
+        "AsyncDisposableStack",
+        Value::Object(intrinsics.async_disposable_stack()),
+      )?;
+
       // Promise
       define_global_data_property_once(
         &mut scope,

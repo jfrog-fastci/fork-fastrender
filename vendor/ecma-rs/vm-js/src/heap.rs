@@ -89,6 +89,12 @@ struct InternalSymbols {
 
   // Proposal-era `JSON.rawJSON` internal slot marker (`[[IsRawJSON]]`).
   is_raw_json: Option<GcSymbol>,
+
+  // Explicit Resource Management (ERM) built-ins internal slots.
+  disposable_stack_state: Option<GcSymbol>,
+  disposable_stack_stack: Option<GcSymbol>,
+  async_disposable_stack_state: Option<GcSymbol>,
+  async_disposable_stack_stack: Option<GcSymbol>,
 }
 
 /// Minimum non-zero capacity for heap-internal vectors that can grow due to hostile input.
@@ -1455,6 +1461,10 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
         internal.regexp_string_iterator_unicode,
         internal.regexp_string_iterator_done,
         internal.is_raw_json,
+        internal.disposable_stack_state,
+        internal.disposable_stack_stack,
+        internal.async_disposable_stack_state,
+        internal.async_disposable_stack_stack,
       ];
       for sym in internal_syms.into_iter().flatten() {
         tracer.trace_value(Value::Symbol(sym));
@@ -7505,6 +7515,54 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
       "vm-js.internal.IsRawJSON",
       |s| s.is_raw_json,
       |s, sym| s.is_raw_json = Some(sym),
+    )
+  }
+
+  pub(crate) fn internal_disposable_stack_state_symbol(&self) -> Option<GcSymbol> {
+    self.internal_symbols.disposable_stack_state
+  }
+
+  pub(crate) fn ensure_internal_disposable_stack_state_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.DisposableStackState",
+      |s| s.disposable_stack_state,
+      |s, sym| s.disposable_stack_state = Some(sym),
+    )
+  }
+
+  pub(crate) fn internal_disposable_stack_stack_symbol(&self) -> Option<GcSymbol> {
+    self.internal_symbols.disposable_stack_stack
+  }
+
+  pub(crate) fn ensure_internal_disposable_stack_stack_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.DisposableStackStack",
+      |s| s.disposable_stack_stack,
+      |s, sym| s.disposable_stack_stack = Some(sym),
+    )
+  }
+
+  pub(crate) fn internal_async_disposable_stack_state_symbol(&self) -> Option<GcSymbol> {
+    self.internal_symbols.async_disposable_stack_state
+  }
+
+  pub(crate) fn ensure_internal_async_disposable_stack_state_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.AsyncDisposableStackState",
+      |s| s.async_disposable_stack_state,
+      |s, sym| s.async_disposable_stack_state = Some(sym),
+    )
+  }
+
+  pub(crate) fn internal_async_disposable_stack_stack_symbol(&self) -> Option<GcSymbol> {
+    self.internal_symbols.async_disposable_stack_stack
+  }
+
+  pub(crate) fn ensure_internal_async_disposable_stack_stack_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.AsyncDisposableStackStack",
+      |s| s.async_disposable_stack_stack,
+      |s, sym| s.async_disposable_stack_stack = Some(sym),
     )
   }
 

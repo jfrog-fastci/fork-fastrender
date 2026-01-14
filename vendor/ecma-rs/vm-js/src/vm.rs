@@ -519,6 +519,7 @@ pub struct Vm {
   async_from_sync_iterator_close_call: Option<NativeFunctionId>,
   async_iterator_close_on_fulfilled_call: Option<NativeFunctionId>,
   async_iterator_close_on_rejected_call: Option<NativeFunctionId>,
+  disposable_stack_adopt_closure_call: Option<NativeFunctionId>,
   next_async_continuation_id: u32,
   async_continuations: HashMap<u32, VmAsyncContinuation>,
   /// Optional pointer to an embedding-owned [`ModuleGraph`].
@@ -804,6 +805,7 @@ impl Vm {
       async_from_sync_iterator_close_call: None,
       async_iterator_close_on_fulfilled_call: None,
       async_iterator_close_on_rejected_call: None,
+      disposable_stack_adopt_closure_call: None,
       next_async_continuation_id: 0,
       async_continuations: HashMap::new(),
       module_graph: None,
@@ -1323,6 +1325,15 @@ impl Vm {
     }
     let id = self.register_native_call(crate::iterator::async_iterator_close_on_rejected_call)?;
     self.async_iterator_close_on_rejected_call = Some(id);
+    Ok(id)
+  }
+
+  pub(crate) fn disposable_stack_adopt_closure_call_id(&mut self) -> Result<NativeFunctionId, VmError> {
+    if let Some(id) = self.disposable_stack_adopt_closure_call {
+      return Ok(id);
+    }
+    let id = self.register_native_call(crate::builtins::disposable_stack_adopt_closure_call)?;
+    self.disposable_stack_adopt_closure_call = Some(id);
     Ok(id)
   }
 

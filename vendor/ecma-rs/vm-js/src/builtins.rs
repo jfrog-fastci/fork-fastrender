@@ -6897,6 +6897,975 @@ pub fn suppressed_error_constructor_construct(
   Ok(Value::Object(obj))
 }
 
+// --- Explicit Resource Management (ERM) built-ins ---
+
+fn require_disposable_stack(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  this: Value,
+) -> Result<(GcObject, bool, GcObject), VmError> {
+  let this_obj = match this {
+    Value::Object(o) => o,
+    _ => return Err(VmError::TypeError("DisposableStack method called on non-object")),
+  };
+
+  // Root `this_obj` across internal symbol creation and internal slot reads.
+  scope.push_root(Value::Object(this_obj))?;
+
+  let state_sym = scope
+    .heap_mut()
+    .ensure_internal_disposable_stack_state_symbol()?;
+  let stack_sym = scope
+    .heap_mut()
+    .ensure_internal_disposable_stack_stack_symbol()?;
+
+  let state_key = PropertyKey::from_symbol(state_sym);
+  let stack_key = PropertyKey::from_symbol(stack_sym);
+
+  let state = match get_data_property_value(vm, scope, this_obj, &state_key)? {
+    Some(Value::Bool(b)) => b,
+    Some(_) => {
+      return Err(VmError::TypeError(
+        "DisposableStack internal state slot is not a boolean",
+      ))
+    }
+    None => {
+      return Err(VmError::TypeError(
+        "DisposableStack method called on an object missing internal slots",
+      ))
+    }
+  };
+
+  let stack = match get_data_property_value(vm, scope, this_obj, &stack_key)? {
+    Some(Value::Object(o)) => o,
+    Some(_) => {
+      return Err(VmError::TypeError(
+        "DisposableStack internal stack slot is not an object",
+      ))
+    }
+    None => {
+      return Err(VmError::TypeError(
+        "DisposableStack method called on an object missing internal slots",
+      ))
+    }
+  };
+  scope.push_root(Value::Object(stack))?;
+
+  Ok((this_obj, state, stack))
+}
+
+fn require_async_disposable_stack(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  this: Value,
+) -> Result<(GcObject, bool, GcObject), VmError> {
+  let this_obj = match this {
+    Value::Object(o) => o,
+    _ => return Err(VmError::TypeError("AsyncDisposableStack method called on non-object")),
+  };
+
+  scope.push_root(Value::Object(this_obj))?;
+
+  let state_sym = scope
+    .heap_mut()
+    .ensure_internal_async_disposable_stack_state_symbol()?;
+  let stack_sym = scope
+    .heap_mut()
+    .ensure_internal_async_disposable_stack_stack_symbol()?;
+
+  let state_key = PropertyKey::from_symbol(state_sym);
+  let stack_key = PropertyKey::from_symbol(stack_sym);
+
+  let state = match get_data_property_value(vm, scope, this_obj, &state_key)? {
+    Some(Value::Bool(b)) => b,
+    Some(_) => {
+      return Err(VmError::TypeError(
+        "AsyncDisposableStack internal state slot is not a boolean",
+      ))
+    }
+    None => {
+      return Err(VmError::TypeError(
+        "AsyncDisposableStack method called on an object missing internal slots",
+      ))
+    }
+  };
+
+  let stack = match get_data_property_value(vm, scope, this_obj, &stack_key)? {
+    Some(Value::Object(o)) => o,
+    Some(_) => {
+      return Err(VmError::TypeError(
+        "AsyncDisposableStack internal stack slot is not an object",
+      ))
+    }
+    None => {
+      return Err(VmError::TypeError(
+        "AsyncDisposableStack method called on an object missing internal slots",
+      ))
+    }
+  };
+  scope.push_root(Value::Object(stack))?;
+
+  Ok((this_obj, state, stack))
+}
+
+fn create_suppressed_error(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  suppressed_error_prototype: GcObject,
+  error: Value,
+  suppressed: Value,
+) -> Result<Value, VmError> {
+  // Spec: `Let error be a newly created SuppressedError object.`
+  //
+  // This must not invoke user-modifiable constructors.
+  let obj = scope.alloc_error()?;
+
+  // Root inputs during prototype set + property creation.
+  scope.push_roots(&[Value::Object(obj), error, suppressed])?;
+
+  scope
+    .heap_mut()
+    .object_set_prototype(obj, Some(suppressed_error_prototype))?;
+
+  let error_key = string_key(scope, "error")?;
+  scope.define_property(obj, error_key, data_desc(error, true, false, true))?;
+
+  let suppressed_key = string_key(scope, "suppressed")?;
+  scope.define_property(
+    obj,
+    suppressed_key,
+    data_desc(suppressed, true, false, true),
+  )?;
+
+  Ok(Value::Object(obj))
+}
+
+fn disposable_stack_push_record(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  stack: GcObject,
+  resource_value: Value,
+  dispose_method: Value,
+) -> Result<(), VmError> {
+  // Record shape: [resourceValue, disposeMethod]
+  let record = create_array_object(vm, scope, 0)?;
+  scope.push_root(Value::Object(record))?;
+  scope.push_roots(&[resource_value, dispose_method])?;
+
+  let (k0, k0_root) = alloc_array_index_key_from_usize(scope, 0)?;
+  scope.push_root(k0_root)?;
+  scope.create_data_property_or_throw(record, k0, resource_value)?;
+
+  let (k1, k1_root) = alloc_array_index_key_from_usize(scope, 1)?;
+  scope.push_root(k1_root)?;
+  scope.create_data_property_or_throw(record, k1, dispose_method)?;
+
+  let len = scope.heap().array_length(stack)? as usize;
+  let (k, k_root) = alloc_array_index_key_from_usize(scope, len)?;
+  scope.push_root(k_root)?;
+  scope.create_data_property_or_throw(stack, k, Value::Object(record))?;
+  Ok(())
+}
+
+pub fn disposable_stack_constructor_call(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-disposablestack
+  Err(VmError::TypeError("DisposableStack constructor requires 'new'"))
+}
+
+pub fn disposable_stack_constructor_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-disposablestack
+  if matches!(new_target, Value::Undefined) {
+    return Err(VmError::TypeError("DisposableStack NewTarget is undefined"));
+  }
+
+  let intr = require_intrinsics(vm)?;
+
+  // `OrdinaryCreateFromConstructor(NewTarget, "%DisposableStack.prototype%")`
+  let obj = crate::spec_ops::ordinary_create_from_constructor_with_host_and_hooks(
+    vm,
+    scope,
+    host,
+    hooks,
+    new_target,
+    intr.disposable_stack_prototype(),
+    &[],
+    |scope| scope.alloc_object(),
+  )?;
+
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+
+  let state_sym = scope
+    .heap_mut()
+    .ensure_internal_disposable_stack_state_symbol()?;
+  let stack_sym = scope
+    .heap_mut()
+    .ensure_internal_disposable_stack_stack_symbol()?;
+
+  let stack = create_array_object(vm, &mut scope, 0)?;
+  scope.push_root(Value::Object(stack))?;
+
+  scope.define_property(
+    obj,
+    PropertyKey::from_symbol(state_sym),
+    data_desc(Value::Bool(false), true, false, false),
+  )?;
+  scope.define_property(
+    obj,
+    PropertyKey::from_symbol(stack_sym),
+    data_desc(Value::Object(stack), true, false, false),
+  )?;
+
+  Ok(Value::Object(obj))
+}
+
+pub fn disposable_stack_adopt_closure_call(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Native slots: [value, onDispose]
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let (value, on_dispose) = match slots {
+    [value, on_dispose] => (*value, *on_dispose),
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "DisposableStack adopt closure missing native slots",
+      ))
+    }
+  };
+
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[value, on_dispose])?;
+
+  if !scope.heap().is_callable(on_dispose)? {
+    return Err(VmError::NotCallable);
+  }
+
+  let _ = vm.call_with_host_and_hooks(
+    host,
+    &mut scope,
+    hooks,
+    on_dispose,
+    Value::Undefined,
+    &[value],
+  )?;
+  Ok(Value::Undefined)
+}
+
+pub fn disposable_stack_prototype_use(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-disposablestack.prototype.use
+  let intr = require_intrinsics(vm)?;
+
+  let mut scope = scope.reborrow();
+  scope.push_root(this)?;
+
+  let (_this_obj, is_disposed, stack) = require_disposable_stack(vm, &mut scope, this)?;
+  if is_disposed {
+    let err = crate::new_reference_error(&mut scope, intr, "DisposableStack is disposed")?;
+    return Err(VmError::Throw(err));
+  }
+
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  if matches!(value, Value::Null | Value::Undefined) {
+    return Ok(value);
+  }
+  scope.push_root(value)?;
+
+  let Value::Object(_) = value else {
+    return Err(VmError::TypeError("DisposableStack.use value must be an object"));
+  };
+
+  let dispose_sym = intr.well_known_symbols().dispose;
+  let dispose_key = PropertyKey::from_symbol(dispose_sym);
+  let method = crate::spec_ops::get_method_with_host_and_hooks(vm, &mut scope, host, hooks, value, dispose_key)?;
+  let Some(method) = method else {
+    return Err(VmError::TypeError("DisposableStack.use value is not disposable"));
+  };
+  scope.push_root(method)?;
+
+  disposable_stack_push_record(vm, &mut scope, stack, value, method)?;
+  Ok(value)
+}
+
+pub fn disposable_stack_prototype_defer(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-disposablestack.prototype.defer
+  let intr = require_intrinsics(vm)?;
+
+  let mut scope = scope.reborrow();
+  scope.push_root(this)?;
+
+  let (_this_obj, is_disposed, stack) = require_disposable_stack(vm, &mut scope, this)?;
+  if is_disposed {
+    let err = crate::new_reference_error(&mut scope, intr, "DisposableStack is disposed")?;
+    return Err(VmError::Throw(err));
+  }
+
+  let on_dispose = args.get(0).copied().unwrap_or(Value::Undefined);
+  scope.push_root(on_dispose)?;
+  if !scope.heap().is_callable(on_dispose)? {
+    return Err(VmError::NotCallable);
+  }
+
+  disposable_stack_push_record(vm, &mut scope, stack, Value::Undefined, on_dispose)?;
+  Ok(Value::Undefined)
+}
+
+pub fn disposable_stack_prototype_adopt(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-disposablestack.prototype.adopt
+  let intr = require_intrinsics(vm)?;
+
+  let mut scope = scope.reborrow();
+  scope.push_root(this)?;
+
+  let (_this_obj, is_disposed, stack) = require_disposable_stack(vm, &mut scope, this)?;
+  if is_disposed {
+    let err = crate::new_reference_error(&mut scope, intr, "DisposableStack is disposed")?;
+    return Err(VmError::Throw(err));
+  }
+
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let on_dispose = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope.push_roots(&[value, on_dispose])?;
+
+  if !scope.heap().is_callable(on_dispose)? {
+    return Err(VmError::NotCallable);
+  }
+
+  let call_id = vm.disposable_stack_adopt_closure_call_id()?;
+  let name = scope.alloc_string("")?;
+  let closure = scope.alloc_native_function_with_slots(call_id, None, name, 0, &[value, on_dispose])?;
+  scope.push_root(Value::Object(closure))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(closure, Some(intr.function_prototype()))?;
+  set_function_job_realm_to_current(vm, &mut scope, closure)?;
+
+  disposable_stack_push_record(vm, &mut scope, stack, Value::Undefined, Value::Object(closure))?;
+  Ok(value)
+}
+
+pub fn disposable_stack_prototype_dispose(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-disposablestack.prototype.dispose
+  let intr = require_intrinsics(vm)?;
+
+  let mut scope = scope.reborrow();
+  scope.push_root(this)?;
+
+  let (this_obj, is_disposed, stack) = require_disposable_stack(vm, &mut scope, this)?;
+  if is_disposed {
+    return Ok(Value::Undefined);
+  }
+
+  // Set state to disposed *before* running disposal.
+  let state_sym = scope
+    .heap_mut()
+    .ensure_internal_disposable_stack_state_symbol()?;
+  scope.define_property(
+    this_obj,
+    PropertyKey::from_symbol(state_sym),
+    data_desc(Value::Bool(true), true, false, false),
+  )?;
+
+  let suppressed_error_prototype = intr.suppressed_error_prototype();
+  let stack_sym = scope
+    .heap_mut()
+    .ensure_internal_disposable_stack_stack_symbol()?;
+  let stack_key = PropertyKey::from_symbol(stack_sym);
+
+  let len = scope.heap().array_length(stack)? as u32;
+  let mut completion: Option<Value> = None;
+
+  const TICK_EVERY: u32 = 32;
+  for i in (0..len).rev() {
+    if i % TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+
+    // Fast path for internal arrays; fall back to property lookup for sparse/slow arrays.
+    let record = match scope.heap().array_fast_own_data_element_value(stack, i) {
+      Ok(Some(v)) => v,
+      Ok(None) => {
+        let key = scope.alloc_array_index_key(i)?;
+        if let PropertyKey::String(s) = key {
+          scope.push_root(Value::String(s))?;
+        }
+        match get_data_property_value(vm, &mut scope, stack, &key)? {
+          Some(v) => v,
+          None => continue,
+        }
+      }
+      Err(err) => return Err(err),
+    };
+
+    let Value::Object(record_obj) = record else {
+      continue;
+    };
+
+    let resource = scope
+      .heap()
+      .array_fast_own_data_element_value(record_obj, 0)?
+      .unwrap_or(Value::Undefined);
+    let method = scope
+      .heap()
+      .array_fast_own_data_element_value(record_obj, 1)?
+      .unwrap_or(Value::Undefined);
+
+    if matches!(method, Value::Undefined) {
+      continue;
+    }
+
+    // Root the call inputs across the host call.
+    let call_result = {
+      let mut call_scope = scope.reborrow();
+      call_scope.push_roots(&[resource, method])?;
+      vm.call_with_host_and_hooks(host, &mut call_scope, hooks, method, resource, &[])
+    };
+
+    match call_result {
+      Ok(_) => {}
+      Err(err) => {
+        if err.is_throw_completion() {
+          let err = crate::vm::coerce_error_to_throw(&*vm, &mut scope, err);
+          let Some(thrown) = err.thrown_value() else {
+            return Err(err);
+          };
+
+          completion = Some(match completion {
+            None => thrown,
+            Some(prev) => create_suppressed_error(
+              vm,
+              &mut scope,
+              suppressed_error_prototype,
+              thrown,
+              prev,
+            )?,
+          });
+
+          // Root the latest completion so it remains alive across further allocations.
+          if let Some(c) = completion {
+            scope.push_root(c)?;
+          }
+        } else {
+          return Err(err);
+        }
+      }
+    }
+  }
+
+  // Clear the internal stack to avoid retaining disposed resources.
+  let empty = create_array_object(vm, &mut scope, 0)?;
+  scope.push_root(Value::Object(empty))?;
+  scope.define_property(
+    this_obj,
+    stack_key,
+    data_desc(Value::Object(empty), true, false, false),
+  )?;
+
+  if let Some(thrown) = completion {
+    return Err(VmError::Throw(thrown));
+  }
+  Ok(Value::Undefined)
+}
+
+pub fn disposable_stack_prototype_move(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-disposablestack.prototype.move
+  let intr = require_intrinsics(vm)?;
+
+  let mut scope = scope.reborrow();
+  scope.push_root(this)?;
+
+  let (this_obj, is_disposed, stack) = require_disposable_stack(vm, &mut scope, this)?;
+  if is_disposed {
+    let err = crate::new_reference_error(&mut scope, intr, "DisposableStack is disposed")?;
+    return Err(VmError::Throw(err));
+  }
+
+  // Create a new %DisposableStack% (not a subclass instance).
+  let new_stack_value = disposable_stack_constructor_construct(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    intr.disposable_stack(),
+    &[],
+    Value::Object(intr.disposable_stack()),
+  )?;
+  let Value::Object(new_stack) = new_stack_value else {
+    return Err(VmError::InvariantViolation(
+      "DisposableStack constructor returned non-object",
+    ));
+  };
+  scope.push_root(Value::Object(new_stack))?;
+
+  let state_sym = scope
+    .heap_mut()
+    .ensure_internal_disposable_stack_state_symbol()?;
+  let stack_sym = scope
+    .heap_mut()
+    .ensure_internal_disposable_stack_stack_symbol()?;
+
+  // Transfer the stack capability.
+  scope.define_property(
+    new_stack,
+    PropertyKey::from_symbol(stack_sym),
+    data_desc(Value::Object(stack), true, false, false),
+  )?;
+
+  // Reset the original to an empty capability and mark it disposed.
+  let empty = create_array_object(vm, &mut scope, 0)?;
+  scope.push_root(Value::Object(empty))?;
+  scope.define_property(
+    this_obj,
+    PropertyKey::from_symbol(stack_sym),
+    data_desc(Value::Object(empty), true, false, false),
+  )?;
+  scope.define_property(
+    this_obj,
+    PropertyKey::from_symbol(state_sym),
+    data_desc(Value::Bool(true), true, false, false),
+  )?;
+
+  Ok(Value::Object(new_stack))
+}
+
+pub fn disposable_stack_prototype_disposed_get(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-get-disposablestack.prototype.disposed
+  let mut scope = scope.reborrow();
+  scope.push_root(this)?;
+
+  let (_this_obj, is_disposed, _stack) = require_disposable_stack(vm, &mut scope, this)?;
+  Ok(Value::Bool(is_disposed))
+}
+
+pub fn async_disposable_stack_constructor_call(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-asyncdisposablestack
+  Err(VmError::TypeError(
+    "AsyncDisposableStack constructor requires 'new'",
+  ))
+}
+
+pub fn async_disposable_stack_constructor_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-asyncdisposablestack
+  if matches!(new_target, Value::Undefined) {
+    return Err(VmError::TypeError("AsyncDisposableStack NewTarget is undefined"));
+  }
+
+  let intr = require_intrinsics(vm)?;
+
+  let obj = crate::spec_ops::ordinary_create_from_constructor_with_host_and_hooks(
+    vm,
+    scope,
+    host,
+    hooks,
+    new_target,
+    intr.async_disposable_stack_prototype(),
+    &[],
+    |scope| scope.alloc_object(),
+  )?;
+
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+
+  let state_sym = scope
+    .heap_mut()
+    .ensure_internal_async_disposable_stack_state_symbol()?;
+  let stack_sym = scope
+    .heap_mut()
+    .ensure_internal_async_disposable_stack_stack_symbol()?;
+
+  let stack = create_array_object(vm, &mut scope, 0)?;
+  scope.push_root(Value::Object(stack))?;
+
+  scope.define_property(
+    obj,
+    PropertyKey::from_symbol(state_sym),
+    data_desc(Value::Bool(false), true, false, false),
+  )?;
+  scope.define_property(
+    obj,
+    PropertyKey::from_symbol(stack_sym),
+    data_desc(Value::Object(stack), true, false, false),
+  )?;
+
+  Ok(Value::Object(obj))
+}
+
+pub fn async_disposable_stack_prototype_use(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+
+  let mut scope = scope.reborrow();
+  scope.push_root(this)?;
+
+  let (_this_obj, is_disposed, stack) = require_async_disposable_stack(vm, &mut scope, this)?;
+  if is_disposed {
+    let err = crate::new_reference_error(&mut scope, intr, "AsyncDisposableStack is disposed")?;
+    return Err(VmError::Throw(err));
+  }
+
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  scope.push_root(value)?;
+
+  // `async-dispose` does not special-case null/undefined; it records an unused resource.
+  if matches!(value, Value::Null | Value::Undefined) {
+    disposable_stack_push_record(vm, &mut scope, stack, Value::Undefined, Value::Undefined)?;
+    return Ok(value);
+  }
+
+  let Value::Object(_) = value else {
+    return Err(VmError::TypeError(
+      "AsyncDisposableStack.use value must be an object",
+    ));
+  };
+
+  let async_dispose_sym = intr.well_known_symbols().async_dispose;
+  let dispose_sym = intr.well_known_symbols().dispose;
+
+  let method = crate::spec_ops::get_method_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    value,
+    PropertyKey::from_symbol(async_dispose_sym),
+  )?;
+  let method = match method {
+    Some(m) => m,
+    None => {
+      let method = crate::spec_ops::get_method_with_host_and_hooks(
+        vm,
+        &mut scope,
+        host,
+        hooks,
+        value,
+        PropertyKey::from_symbol(dispose_sym),
+      )?;
+      method.ok_or(VmError::TypeError(
+        "AsyncDisposableStack.use value is not disposable",
+      ))?
+    }
+  };
+  scope.push_root(method)?;
+
+  disposable_stack_push_record(vm, &mut scope, stack, value, method)?;
+  Ok(value)
+}
+
+pub fn async_disposable_stack_prototype_defer(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+
+  let mut scope = scope.reborrow();
+  scope.push_root(this)?;
+
+  let (_this_obj, is_disposed, stack) = require_async_disposable_stack(vm, &mut scope, this)?;
+  if is_disposed {
+    let err = crate::new_reference_error(&mut scope, intr, "AsyncDisposableStack is disposed")?;
+    return Err(VmError::Throw(err));
+  }
+
+  let on_dispose = args.get(0).copied().unwrap_or(Value::Undefined);
+  scope.push_root(on_dispose)?;
+  if !scope.heap().is_callable(on_dispose)? {
+    return Err(VmError::NotCallable);
+  }
+
+  disposable_stack_push_record(vm, &mut scope, stack, Value::Undefined, on_dispose)?;
+  Ok(Value::Undefined)
+}
+
+pub fn async_disposable_stack_prototype_adopt(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+
+  let mut scope = scope.reborrow();
+  scope.push_root(this)?;
+
+  let (_this_obj, is_disposed, stack) = require_async_disposable_stack(vm, &mut scope, this)?;
+  if is_disposed {
+    let err = crate::new_reference_error(&mut scope, intr, "AsyncDisposableStack is disposed")?;
+    return Err(VmError::Throw(err));
+  }
+
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let on_dispose = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope.push_roots(&[value, on_dispose])?;
+
+  if !scope.heap().is_callable(on_dispose)? {
+    return Err(VmError::NotCallable);
+  }
+
+  let call_id = vm.disposable_stack_adopt_closure_call_id()?;
+  let name = scope.alloc_string("")?;
+  let closure = scope.alloc_native_function_with_slots(call_id, None, name, 0, &[value, on_dispose])?;
+  scope.push_root(Value::Object(closure))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(closure, Some(intr.function_prototype()))?;
+  set_function_job_realm_to_current(vm, &mut scope, closure)?;
+
+  disposable_stack_push_record(vm, &mut scope, stack, Value::Undefined, Value::Object(closure))?;
+  Ok(value)
+}
+
+pub fn async_disposable_stack_prototype_move(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+
+  let mut scope = scope.reborrow();
+  scope.push_root(this)?;
+
+  let (this_obj, is_disposed, stack) = require_async_disposable_stack(vm, &mut scope, this)?;
+  if is_disposed {
+    let err = crate::new_reference_error(&mut scope, intr, "AsyncDisposableStack is disposed")?;
+    return Err(VmError::Throw(err));
+  }
+
+  let new_stack_value = async_disposable_stack_constructor_construct(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    intr.async_disposable_stack(),
+    &[],
+    Value::Object(intr.async_disposable_stack()),
+  )?;
+  let Value::Object(new_stack) = new_stack_value else {
+    return Err(VmError::InvariantViolation(
+      "AsyncDisposableStack constructor returned non-object",
+    ));
+  };
+  scope.push_root(Value::Object(new_stack))?;
+
+  let state_sym = scope
+    .heap_mut()
+    .ensure_internal_async_disposable_stack_state_symbol()?;
+  let stack_sym = scope
+    .heap_mut()
+    .ensure_internal_async_disposable_stack_stack_symbol()?;
+
+  scope.define_property(
+    new_stack,
+    PropertyKey::from_symbol(stack_sym),
+    data_desc(Value::Object(stack), true, false, false),
+  )?;
+
+  let empty = create_array_object(vm, &mut scope, 0)?;
+  scope.push_root(Value::Object(empty))?;
+  scope.define_property(
+    this_obj,
+    PropertyKey::from_symbol(stack_sym),
+    data_desc(Value::Object(empty), true, false, false),
+  )?;
+  scope.define_property(
+    this_obj,
+    PropertyKey::from_symbol(state_sym),
+    data_desc(Value::Bool(true), true, false, false),
+  )?;
+
+  Ok(Value::Object(new_stack))
+}
+
+pub fn async_disposable_stack_prototype_disposed_get(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_root(this)?;
+
+  let (_this_obj, is_disposed, _stack) = require_async_disposable_stack(vm, &mut scope, this)?;
+  Ok(Value::Bool(is_disposed))
+}
+
+pub fn async_disposable_stack_prototype_dispose_async(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-asyncdisposablestack.prototype.disposeAsync
+  let mut scope = scope.reborrow();
+  scope.push_root(this)?;
+
+  // NewPromiseCapability(%Promise%).
+  let capability =
+    crate::promise_ops::new_promise_capability_with_host_and_hooks(vm, &mut scope, host, hooks)?;
+  scope.push_roots(&[capability.promise, capability.resolve, capability.reject])?;
+
+  let completion: Result<(), VmError> = (|| {
+    let (this_obj, is_disposed, _stack) = require_async_disposable_stack(vm, &mut scope, this)?;
+    if is_disposed {
+      return Ok(());
+    }
+
+    // Mark as disposed.
+    let state_sym = scope
+      .heap_mut()
+      .ensure_internal_async_disposable_stack_state_symbol()?;
+    scope.define_property(
+      this_obj,
+      PropertyKey::from_symbol(state_sym),
+      data_desc(Value::Bool(true), true, false, false),
+    )?;
+
+    // (Minimal) clear the internal stack.
+    let stack_sym = scope
+      .heap_mut()
+      .ensure_internal_async_disposable_stack_stack_symbol()?;
+    let empty = create_array_object(vm, &mut scope, 0)?;
+    scope.push_root(Value::Object(empty))?;
+    scope.define_property(
+      this_obj,
+      PropertyKey::from_symbol(stack_sym),
+      data_desc(Value::Object(empty), true, false, false),
+    )?;
+
+    Ok(())
+  })();
+
+  match completion {
+    Ok(()) => {
+      let _ = vm.call_with_host_and_hooks(
+        host,
+        &mut scope,
+        hooks,
+        capability.resolve,
+        Value::Undefined,
+        &[Value::Undefined],
+      )?;
+      Ok(capability.promise)
+    }
+    Err(err) => {
+      if err.is_throw_completion() {
+        if_abrupt_reject_promise(vm, &mut scope, host, hooks, capability, err)
+      } else {
+        Err(err)
+      }
+    }
+  }
+}
+
 fn aggregate_error_iterable_to_list_array(
   vm: &mut Vm,
   scope: &mut Scope<'_>,

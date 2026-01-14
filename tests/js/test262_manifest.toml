@@ -2300,19 +2300,16 @@ reason = "vm-js: built-in coverage is still incomplete; tracked via curated test
 
 # --- Explicit Resource Management (ERM) built-ins / staging tests ---
 #
-# `vm-js` parses `using` / `await using` (with early errors enforced), but the runtime semantics and
-# related built-ins (DisposableStack/AsyncDisposableStack/SuppressedError/etc) are not implemented
-# yet. Mark these suites as `xfail` so they don't show up as unexpected failures when running the
-# curated harness with ERM-related filters.
+# `vm-js` parses `using` / `await using` (with early errors enforced). The core ERM built-ins
+# (DisposableStack/AsyncDisposableStack/SuppressedError) are implemented, but the runtime semantics
+# for `using` are still pending, so staging tests remain `xfail`.
 [[expectations]]
 glob = "built-ins/DisposableStack/**"
-status = "xfail"
-reason = "vm-js: Explicit Resource Management built-ins are not implemented yet (DisposableStack)."
+status = "pass"
 
 [[expectations]]
 glob = "built-ins/AsyncDisposableStack/**"
-status = "xfail"
-reason = "vm-js: Explicit Resource Management built-ins are not implemented yet (AsyncDisposableStack)."
+status = "pass"
 
 [[expectations]]
 glob = "built-ins/SuppressedError/**"

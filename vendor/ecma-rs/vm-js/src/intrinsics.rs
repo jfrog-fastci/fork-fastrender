@@ -147,6 +147,11 @@ pub struct Intrinsics {
   suppressed_error: GcObject,
   suppressed_error_prototype: GcObject,
 
+  disposable_stack: GcObject,
+  disposable_stack_prototype: GcObject,
+  async_disposable_stack: GcObject,
+  async_disposable_stack_prototype: GcObject,
+
   promise: GcObject,
   promise_prototype: GcObject,
   promise_prototype_then: GcObject,
@@ -7789,6 +7794,283 @@ impl Intrinsics {
       )?;
     }
 
+    // --- Explicit Resource Management (DisposableStack / AsyncDisposableStack) ---
+    let disposable_stack_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(disposable_stack_prototype, Some(object_prototype))?;
+    install_to_string_tag(
+      scope,
+      disposable_stack_prototype,
+      well_known_symbols.to_string_tag,
+      "DisposableStack",
+    )?;
+
+    let disposable_stack_call = vm.register_native_call(builtins::disposable_stack_constructor_call)?;
+    let disposable_stack_construct =
+      vm.register_native_construct(builtins::disposable_stack_constructor_construct)?;
+    let disposable_stack_name = scope.alloc_string("DisposableStack")?;
+    let disposable_stack = alloc_rooted_native_function(
+      scope,
+      roots,
+      disposable_stack_call,
+      Some(disposable_stack_construct),
+      disposable_stack_name,
+      0,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(disposable_stack, Some(function_prototype))?;
+    scope.define_property(
+      disposable_stack,
+      common.prototype,
+      data_desc(Value::Object(disposable_stack_prototype), false, false, false),
+    )?;
+    scope.define_property(
+      disposable_stack,
+      common.name,
+      data_desc(Value::String(disposable_stack_name), false, false, true),
+    )?;
+    scope.define_property(
+      disposable_stack,
+      common.length,
+      data_desc(Value::Number(0.0), false, false, true),
+    )?;
+    scope.define_property(
+      disposable_stack_prototype,
+      common.constructor,
+      data_desc(Value::Object(disposable_stack), true, false, true),
+    )?;
+
+    // DisposableStack.prototype.use / adopt / defer / dispose / move / disposed
+    {
+      let use_call = vm.register_native_call(builtins::disposable_stack_prototype_use)?;
+      install_prototype_data_method(
+        scope,
+        function_prototype,
+        disposable_stack_prototype,
+        "use",
+        use_call,
+        1,
+      )?;
+
+      let adopt_call = vm.register_native_call(builtins::disposable_stack_prototype_adopt)?;
+      install_prototype_data_method(
+        scope,
+        function_prototype,
+        disposable_stack_prototype,
+        "adopt",
+        adopt_call,
+        2,
+      )?;
+
+      let defer_call = vm.register_native_call(builtins::disposable_stack_prototype_defer)?;
+      install_prototype_data_method(
+        scope,
+        function_prototype,
+        disposable_stack_prototype,
+        "defer",
+        defer_call,
+        1,
+      )?;
+
+      let move_call = vm.register_native_call(builtins::disposable_stack_prototype_move)?;
+      install_prototype_data_method(
+        scope,
+        function_prototype,
+        disposable_stack_prototype,
+        "move",
+        move_call,
+        0,
+      )?;
+
+      // `dispose` and `@@dispose` share the same function object.
+      let dispose_call = vm.register_native_call(builtins::disposable_stack_prototype_dispose)?;
+      let dispose_name = scope.alloc_string("dispose")?;
+      scope.push_root(Value::String(dispose_name))?;
+      let dispose_key = PropertyKey::from_string(dispose_name);
+      let dispose_fn = scope.alloc_native_function(dispose_call, None, dispose_name, 0)?;
+      scope.push_root(Value::Object(dispose_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(dispose_fn, Some(function_prototype))?;
+      scope.define_property(
+        disposable_stack_prototype,
+        dispose_key,
+        data_desc(Value::Object(dispose_fn), true, false, true),
+      )?;
+      scope.define_property(
+        disposable_stack_prototype,
+        PropertyKey::Symbol(well_known_symbols.dispose),
+        data_desc(Value::Object(dispose_fn), true, false, true),
+      )?;
+
+      // `disposed` accessor property.
+      let disposed_get_call = vm.register_native_call(builtins::disposable_stack_prototype_disposed_get)?;
+      let disposed_get_name = scope.alloc_string("get disposed")?;
+      scope.push_root(Value::String(disposed_get_name))?;
+      let disposed_get = scope.alloc_native_function(disposed_get_call, None, disposed_get_name, 0)?;
+      scope.push_root(Value::Object(disposed_get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(disposed_get, Some(function_prototype))?;
+      let disposed_key_s = scope.alloc_string("disposed")?;
+      scope.push_root(Value::String(disposed_key_s))?;
+      let disposed_key = PropertyKey::from_string(disposed_key_s);
+      scope.define_property(
+        disposable_stack_prototype,
+        disposed_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(disposed_get),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
+    let async_disposable_stack_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(async_disposable_stack_prototype, Some(object_prototype))?;
+    install_to_string_tag(
+      scope,
+      async_disposable_stack_prototype,
+      well_known_symbols.to_string_tag,
+      "AsyncDisposableStack",
+    )?;
+
+    let async_disposable_stack_call =
+      vm.register_native_call(builtins::async_disposable_stack_constructor_call)?;
+    let async_disposable_stack_construct =
+      vm.register_native_construct(builtins::async_disposable_stack_constructor_construct)?;
+    let async_disposable_stack_name = scope.alloc_string("AsyncDisposableStack")?;
+    let async_disposable_stack = alloc_rooted_native_function(
+      scope,
+      roots,
+      async_disposable_stack_call,
+      Some(async_disposable_stack_construct),
+      async_disposable_stack_name,
+      0,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(async_disposable_stack, Some(function_prototype))?;
+    scope.define_property(
+      async_disposable_stack,
+      common.prototype,
+      data_desc(Value::Object(async_disposable_stack_prototype), false, false, false),
+    )?;
+    scope.define_property(
+      async_disposable_stack,
+      common.name,
+      data_desc(Value::String(async_disposable_stack_name), false, false, true),
+    )?;
+    scope.define_property(
+      async_disposable_stack,
+      common.length,
+      data_desc(Value::Number(0.0), false, false, true),
+    )?;
+    scope.define_property(
+      async_disposable_stack_prototype,
+      common.constructor,
+      data_desc(Value::Object(async_disposable_stack), true, false, true),
+    )?;
+
+    // AsyncDisposableStack.prototype.use / adopt / defer / disposeAsync / move / disposed
+    {
+      let use_call = vm.register_native_call(builtins::async_disposable_stack_prototype_use)?;
+      install_prototype_data_method(
+        scope,
+        function_prototype,
+        async_disposable_stack_prototype,
+        "use",
+        use_call,
+        1,
+      )?;
+
+      let adopt_call = vm.register_native_call(builtins::async_disposable_stack_prototype_adopt)?;
+      install_prototype_data_method(
+        scope,
+        function_prototype,
+        async_disposable_stack_prototype,
+        "adopt",
+        adopt_call,
+        2,
+      )?;
+
+      let defer_call = vm.register_native_call(builtins::async_disposable_stack_prototype_defer)?;
+      install_prototype_data_method(
+        scope,
+        function_prototype,
+        async_disposable_stack_prototype,
+        "defer",
+        defer_call,
+        1,
+      )?;
+
+      let move_call = vm.register_native_call(builtins::async_disposable_stack_prototype_move)?;
+      install_prototype_data_method(
+        scope,
+        function_prototype,
+        async_disposable_stack_prototype,
+        "move",
+        move_call,
+        0,
+      )?;
+
+      // `disposeAsync` and `@@asyncDispose` share the same function object.
+      let dispose_async_call =
+        vm.register_native_call(builtins::async_disposable_stack_prototype_dispose_async)?;
+      let dispose_async_name = scope.alloc_string("disposeAsync")?;
+      scope.push_root(Value::String(dispose_async_name))?;
+      let dispose_async_key = PropertyKey::from_string(dispose_async_name);
+      let dispose_async_fn =
+        scope.alloc_native_function(dispose_async_call, None, dispose_async_name, 0)?;
+      scope.push_root(Value::Object(dispose_async_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(dispose_async_fn, Some(function_prototype))?;
+      scope.define_property(
+        async_disposable_stack_prototype,
+        dispose_async_key,
+        data_desc(Value::Object(dispose_async_fn), true, false, true),
+      )?;
+      scope.define_property(
+        async_disposable_stack_prototype,
+        PropertyKey::Symbol(well_known_symbols.async_dispose),
+        data_desc(Value::Object(dispose_async_fn), true, false, true),
+      )?;
+
+      // `disposed` accessor property.
+      let disposed_get_call =
+        vm.register_native_call(builtins::async_disposable_stack_prototype_disposed_get)?;
+      let disposed_get_name = scope.alloc_string("get disposed")?;
+      scope.push_root(Value::String(disposed_get_name))?;
+      let disposed_get = scope.alloc_native_function(disposed_get_call, None, disposed_get_name, 0)?;
+      scope.push_root(Value::Object(disposed_get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(disposed_get, Some(function_prototype))?;
+      let disposed_key_s = scope.alloc_string("disposed")?;
+      scope.push_root(Value::String(disposed_key_s))?;
+      let disposed_key = PropertyKey::from_string(disposed_key_s);
+      scope.define_property(
+        async_disposable_stack_prototype,
+        disposed_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(disposed_get),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
     // --- Promise ---
     let promise_prototype = alloc_rooted_object(scope, roots)?;
     scope
@@ -8159,7 +8441,11 @@ impl Intrinsics {
       aggregate_error_prototype,
       suppressed_error,
       suppressed_error_prototype,
-
+      disposable_stack,
+      disposable_stack_prototype,
+      async_disposable_stack,
+      async_disposable_stack_prototype,
+ 
       promise,
       promise_prototype,
       promise_prototype_then,
@@ -8611,6 +8897,22 @@ impl Intrinsics {
 
   pub fn suppressed_error_prototype(&self) -> GcObject {
     self.suppressed_error_prototype
+  }
+
+  pub fn disposable_stack(&self) -> GcObject {
+    self.disposable_stack
+  }
+
+  pub fn disposable_stack_prototype(&self) -> GcObject {
+    self.disposable_stack_prototype
+  }
+
+  pub fn async_disposable_stack(&self) -> GcObject {
+    self.async_disposable_stack
+  }
+
+  pub fn async_disposable_stack_prototype(&self) -> GcObject {
+    self.async_disposable_stack_prototype
   }
 
   pub fn promise(&self) -> GcObject {
