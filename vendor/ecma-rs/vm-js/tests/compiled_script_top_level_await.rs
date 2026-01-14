@@ -626,6 +626,62 @@ fn compiled_script_top_level_await_throw_await_rejects_after_resumption() -> Res
 }
 
 #[test]
+fn compiled_script_top_level_await_sync_throw_before_first_await_rejects_promise() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var log = [];
+      Promise.resolve().then(() => { log.push("mt"); });
+      (0)();
+      await Promise.resolve((log.push("rhs"), 1));
+      log.push("after");
+      log.join(",")
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await scripts should be able to reject synchronously before the first await boundary"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let result_root = rt.heap_mut().add_root(result)?;
+
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(
+    rt.heap().is_promise_object(promise_obj),
+    "expected Promise return value from async classic script"
+  );
+
+  // The TypeError happens before reaching the first `await`, so the script promise should reject
+  // synchronously (without suspending).
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Rejected);
+  let reason = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("rejected promise should have a reason");
+  assert_eq!(error_name(&mut rt, reason)?, "TypeError");
+
+  // The await operand should not have evaluated yet, and the scheduled microtask should not have
+  // run until we perform a microtask checkpoint.
+  let log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, log), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, log), "mt");
+
+  rt.heap_mut().remove_root(result_root);
+  Ok(())
+}
+
+#[test]
 fn compiled_script_top_level_await_assignment_roots_lhs_reference_across_gc() -> Result<(), VmError> {
   let mut rt = new_runtime();
 

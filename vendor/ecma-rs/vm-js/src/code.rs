@@ -862,9 +862,9 @@ fn stmt_contains_unsupported_await_for_hir_async_scripts(stmt: &Node<Stmt>) -> b
     //   assignments with direct `await <expr>` RHS) in the init/test/update positions, and the loop
     //   body contains no other `await`
     // - `for await (<head> of <rhs>) { ... }` where:
-      //   - `<rhs>` is either a normal expression with no `await`, or a direct `await <expr>` with no
-      //     nested `await` inside `<expr>`, and
-      //   - the loop head + body contain no other `await`
+    //   - `<rhs>` is either a normal expression with no `await`, or a direct `await <expr>` with no
+    //     nested `await` inside `<expr>`, and
+    //   - the loop head + body contain no other `await`
     //
     // Any other `await` / `for await..of` form must fall back to the AST interpreter.
     Stmt::Expr(expr_stmt) => {

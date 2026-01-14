@@ -26460,7 +26460,7 @@ fn hir_eval_stmt_list_until_await(
       }
       continue;
     }
-
+ 
     // Top-level `for (init; test; update) { ... }` evaluation with await in the loop head.
     //
     // This is driven by `ForTripleAwaitState` so we can suspend/resume while evaluating `init`,
@@ -26546,8 +26546,20 @@ fn hir_eval_stmt_list_until_await(
         continue;
       }
     }
-
-    match evaluator.eval_stmt(scope, body, *stmt_id)? {
+ 
+    let flow = match evaluator.eval_stmt(scope, body, *stmt_id) {
+      Ok(flow) => flow,
+      Err(err) => {
+        return Err(finalize_throw_with_stack_at_source_offset(
+          &*evaluator.vm,
+          scope,
+          source.as_ref(),
+          stmt_offset,
+          err,
+        ))
+      }
+    };
+    match flow {
       Flow::Normal(v) => {
         if let Some(v) = v {
           *last_value_is_set = true;
