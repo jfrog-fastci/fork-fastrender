@@ -36092,7 +36092,7 @@ fn character_data_append_data_native(
   let handle = node_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
 
   let data_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let data_value = scope.heap_mut().to_string(data_value)?;
+  let data_value = scope.to_string(vm, host, hooks, data_value)?;
   let data = scope
     .heap()
     .get_string(data_value)
@@ -36169,7 +36169,7 @@ fn character_data_insert_data_native(
   let offset = webidl_to_uint32(vm, scope, host, hooks, offset_value)? as usize;
 
   let data_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let data_value = scope.heap_mut().to_string(data_value)?;
+  let data_value = scope.to_string(vm, host, hooks, data_value)?;
   let data = scope
     .heap()
     .get_string(data_value)
@@ -36360,7 +36360,7 @@ fn character_data_replace_data_native(
   let count = webidl_to_uint32(vm, scope, host, hooks, count_value)? as usize;
 
   let data_value = args.get(2).copied().unwrap_or(Value::Undefined);
-  let data_value = scope.heap_mut().to_string(data_value)?;
+  let data_value = scope.to_string(vm, host, hooks, data_value)?;
   let data = scope
     .heap()
     .get_string(data_value)

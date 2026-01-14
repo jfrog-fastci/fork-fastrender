@@ -51,14 +51,6 @@ fn sanitize_point(p: Point) -> Point {
   )
 }
 
-fn point_add(a: Point, b: Point) -> Point {
-  a.translate(b)
-}
-
-fn point_sub(a: Point, b: Point) -> Point {
-  Point::new(a.x - b.x, a.y - b.y)
-}
-
 fn writing_mode_and_direction_from_style(
   style: Option<&crate::ComputedStyle>,
 ) -> (WritingMode, Direction) {
