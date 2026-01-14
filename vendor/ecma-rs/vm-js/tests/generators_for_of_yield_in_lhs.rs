@@ -95,3 +95,81 @@ fn generator_for_of_multiple_yields_in_single_lhs_pattern() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_for_of_yield_in_lhs_does_not_re_evaluate_rhs() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          var a;
+          var calls = 0;
+          function rhs() { calls++; return [[undefined]]; }
+          for ([a = yield calls] of rhs()) { return calls + ":" + a; }
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(42);
+        r1.done === false && r1.value === 1 &&
+        r2.done === true && r2.value === "1:42"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_yield_in_let_lhs_preserves_per_iteration_env() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          let fs = [];
+          for (let [a = yield 1] of [[undefined], [2]]) {
+            fs.push(() => a);
+          }
+          return fs[0]() + "," + fs[1]();
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(42);
+        r1.done === false && r1.value === 1 &&
+        r2.done === true && r2.value === "42,2"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_iterator_is_closed_on_return_while_suspended_in_lhs() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var closed = false;
+        var iterable = {
+          [Symbol.iterator]() {
+            return {
+              next() { return { value: [undefined], done: false }; },
+              return() { closed = true; return { done: true }; },
+            };
+          },
+        };
+
+        function* g() {
+          for (let [a = yield 1] of iterable) { /* unreachable */ }
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.return("done");
+        r1.done === false && r1.value === 1 &&
+        r2.done === true && r2.value === "done" &&
+        closed === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
