@@ -684,6 +684,45 @@ fn super_property_uninitialized_this_throws_reference_error_before_key_eval_comp
   Ok(())
 }
 
+const THIS_UNINITIALIZED_GETVALUE_SUPER_CALL: &str = r#"
+  function errName(e) { return typeof e === "string" ? e : e.name; }
+
+  var baseCalls = 0;
+  class Base {
+    constructor() {
+      baseCalls++;
+      throw "base";
+    }
+  }
+
+  class Derived extends Base {
+    constructor() {
+      return super[super()];
+    }
+  }
+
+  var err = "no";
+  try { new Derived(); } catch (e) { err = errName(e); }
+  err + "," + baseCalls
+"#;
+
+#[test]
+fn super_property_uninitialized_this_getvalue_does_not_evaluate_super_call() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(THIS_UNINITIALIZED_GETVALUE_SUPER_CALL)?;
+  assert_value_is_utf8(&rt, value, "ReferenceError,0");
+  Ok(())
+}
+
+#[test]
+fn super_property_uninitialized_this_getvalue_does_not_evaluate_super_call_compiled(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(&mut rt, THIS_UNINITIALIZED_GETVALUE_SUPER_CALL)?;
+  assert_value_is_utf8(&rt, value, "ReferenceError,0");
+  Ok(())
+}
+
 #[test]
 fn super_property_uninitialized_this_putvalue_does_not_evaluate_expr() -> Result<(), VmError> {
   let mut rt = new_runtime();
