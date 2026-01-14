@@ -5441,6 +5441,73 @@ mod tests {
   }
 
   #[test]
+  fn microtask_checkpoint_termination_tears_down_hir_async_continuations() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let script = crate::CompiledScript::compile_script(&mut rt.heap, "<inline>", "await 1;")?;
+    assert!(
+      script.contains_top_level_await,
+      "expected compiled script to contain top-level await"
+    );
+    assert!(
+      !script.top_level_await_requires_ast_fallback,
+      "expected top-level await to use the compiled async executor"
+    );
+
+    let baseline_roots = rt.heap.persistent_root_count();
+    let baseline_env_roots = rt.heap.persistent_env_root_count();
+
+    let _promise = rt.exec_compiled_script(script)?;
+
+    assert!(
+      !rt.vm.microtask_queue().is_empty(),
+      "expected top-level await to enqueue a microtask"
+    );
+    assert!(
+      rt.vm.async_continuation_count() > 0,
+      "expected top-level await to store an async continuation"
+    );
+    assert!(
+      rt.vm
+        .async_continuations
+        .values()
+        .any(|c| matches!(c, VmAsyncContinuation::Hir(_))),
+      "expected top-level await to store a HIR async continuation"
+    );
+
+    // Force termination before the queued job can resume the continuation. This ensures the
+    // continuation remains stored inside the VM and must be explicitly torn down by the checkpoint's
+    // termination cleanup logic.
+    let mut pending_jobs = Vec::new();
+    while let Some(entry) = rt.vm.microtask_queue_mut().pop_front() {
+      pending_jobs.push(entry);
+    }
+    rt.vm.microtask_queue_mut().enqueue_promise_job(
+      Job::new(JobKind::Promise, |_ctx, _host| {
+        Err(VmError::Termination(Termination::new(
+          TerminationReason::OutOfFuel,
+          Vec::new(),
+        )))
+      })?,
+      None,
+    );
+    for (realm, job) in pending_jobs {
+      rt.vm.microtask_queue_mut().enqueue_promise_job(job, realm);
+    }
+
+    let err = rt
+      .vm
+      .perform_microtask_checkpoint(&mut rt.heap)
+      .expect_err("expected microtask checkpoint to terminate");
+    assert!(matches!(err, VmError::Termination(_)));
+
+    assert!(rt.vm.microtask_queue().is_empty());
+    assert_eq!(rt.vm.async_continuation_count(), 0);
+    assert_eq!(rt.heap.persistent_root_count(), baseline_roots);
+    assert_eq!(rt.heap.persistent_env_root_count(), baseline_env_roots);
+    Ok(())
+  }
+
+  #[test]
   fn teardown_realm_clears_template_registry_and_intrinsics() -> Result<(), VmError> {
     use crate::exec::eval_script_with_host_and_hooks;
     use crate::microtasks::MicrotaskQueue;
