@@ -281,16 +281,19 @@ fn derived_constructor_can_return_object_without_super() {
   let value = rt
     .exec_script(
       r#"
-        class B { constructor() { this.x = 1; } }
+        var side = 0;
+        class B { constructor() { side = 1; this.x = 1; } }
         class D extends B {
           constructor() {
             return { y: 2 };
           }
         }
         const o = new D();
+        side === 0 &&
         o.y === 2 &&
           o.x === undefined &&
           (o instanceof D) === false &&
+          (o instanceof B) === false &&
           Object.getPrototypeOf(o) === Object.prototype
       "#,
     )
@@ -304,16 +307,19 @@ fn derived_constructor_can_return_object_without_super_compiled() -> Result<(), 
   let value = exec_compiled(
     &mut rt,
     r#"
-      class B { constructor() { this.x = 1; } }
+      var side = 0;
+      class B { constructor() { side = 1; this.x = 1; } }
       class D extends B {
         constructor() {
           return { y: 2 };
         }
       }
       const o = new D();
+      side === 0 &&
       o.y === 2 &&
         o.x === undefined &&
         (o instanceof D) === false &&
+        (o instanceof B) === false &&
         Object.getPrototypeOf(o) === Object.prototype
     "#,
   )?;
