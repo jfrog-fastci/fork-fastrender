@@ -49,6 +49,20 @@ fn continue_to_non_iteration_label_is_syntax_error() {
 }
 
 #[test]
+fn throw_with_line_terminator_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("throw\n0;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn yield_star_with_line_terminator_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("function* g(){ yield\n*0; }").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn duplicate_label_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script("lbl: lbl: ;").unwrap_err();
