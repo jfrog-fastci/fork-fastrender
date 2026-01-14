@@ -1554,43 +1554,82 @@ fn max_toast_kind(
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
-fn truncate_utf8_str_tail_to_bytes(value: &str, max_bytes: usize) -> String {
+fn sanitize_path_for_toast(path: &std::path::Path, max_bytes: usize) -> String {
   if max_bytes == 0 {
     return String::new();
   }
-  if value.len() <= max_bytes {
-    return value.to_string();
-  }
-  if max_bytes <= 3 {
-    return "…".to_string();
-  }
 
-  let keep_bytes = max_bytes - 3;
-  let start = value.len().saturating_sub(keep_bytes);
-  let mut start = start.min(value.len());
-  while start < value.len() && !value.is_char_boundary(start) {
-    start += 1;
+  // When truncating, we keep the *tail* of the string so filenames remain visible.
+  // Reserve space for a single leading ellipsis.
+  const ELLIPSIS: char = '…';
+  let ellipsis_bytes = ELLIPSIS.len_utf8();
+  if max_bytes <= ellipsis_bytes {
+    return ELLIPSIS.to_string();
   }
-  format!("…{}", value.get(start..).unwrap_or(""))
-}
+  let keep_bytes = max_bytes - ellipsis_bytes;
 
-#[cfg(any(test, feature = "browser_ui"))]
-fn sanitize_path_for_toast(path: &std::path::Path, max_bytes: usize) -> String {
   let raw = path.to_string_lossy();
-  let mut sanitized = String::with_capacity(raw.len());
-  for ch in raw.chars() {
-    if ch == '\n' || ch == '\r' || ch == '\t' || ch.is_control() {
-      sanitized.push(' ');
-    } else {
-      sanitized.push(ch);
+
+  // We only need the full string when it fits within the byte limit. Otherwise, keep just the
+  // tail (bounded) to avoid allocating based on attacker-controlled path lengths.
+  let mut full = String::with_capacity(max_bytes.min(128));
+  let mut overflowed = false;
+
+  use std::collections::VecDeque;
+  let mut tail: VecDeque<char> = VecDeque::new();
+  let mut tail_bytes: usize = 0;
+
+  let mut pending_space = false;
+  let mut emitted_any = false;
+
+  let mut push_out = |ch: char| {
+    let ch_len = ch.len_utf8();
+
+    // Track whether the output exceeded our display limit (before we add the ellipsis).
+    if !overflowed {
+      if full.len() + ch_len > max_bytes {
+        overflowed = true;
+      } else {
+        full.push(ch);
+      }
     }
+
+    tail.push_back(ch);
+    tail_bytes += ch_len;
+    while tail_bytes > keep_bytes {
+      if let Some(front) = tail.pop_front() {
+        tail_bytes = tail_bytes.saturating_sub(front.len_utf8());
+      } else {
+        tail_bytes = 0;
+        break;
+      }
+    }
+  };
+
+  for ch in raw.chars() {
+    if ch.is_whitespace() || ch.is_control() {
+      pending_space = true;
+      continue;
+    }
+
+    if pending_space && emitted_any {
+      push_out(' ');
+    }
+    pending_space = false;
+    emitted_any = true;
+    push_out(ch);
   }
-  let collapsed = sanitized
-    .split_whitespace()
-    .filter(|chunk| !chunk.is_empty())
-    .collect::<Vec<_>>()
-    .join(" ");
-  truncate_utf8_str_tail_to_bytes(&collapsed, max_bytes)
+
+  if !overflowed {
+    return full;
+  }
+
+  let mut out = String::with_capacity(max_bytes.min(128));
+  out.push(ELLIPSIS);
+  for ch in tail {
+    out.push(ch);
+  }
+  out
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
