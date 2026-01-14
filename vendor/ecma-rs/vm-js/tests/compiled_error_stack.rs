@@ -455,6 +455,101 @@ fn compiled_async_block_body_throw_await_attaches_error_stack() -> Result<(), Vm
 }
 
 #[test]
+fn compiled_async_block_body_await_revoked_proxy_promise_resolve_throw_has_error_stack() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  // Promise/async-await allocates job machinery; use a larger heap to avoid spurious OOMs.
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // Awaiting a revoked Proxy throws during the `Await` abstract op's internal `PromiseResolve` step.
+  // This happens in the async suspension machinery (not in the statement evaluator), so it's a
+  // regression test that `Error.stack` is still attached and attributed to the await site.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    "const _ = async () => {\n  const { proxy, revoke } = Proxy.revocable({}, {});\n  revoke();\n  await proxy;\n};",
+  )?;
+
+  // Find the async arrow function body so we can invoke it via `CallHandler::User` (compiled path).
+  let func_body = {
+    let hir = script.hir.as_ref();
+    let mut found: Option<hir_js::BodyId> = None;
+    for (body_id, idx) in hir.body_index.iter() {
+      let body = hir
+        .bodies
+        .get(*idx)
+        .ok_or(VmError::InvariantViolation("hir body index out of bounds"))?;
+      if body.kind != hir_js::BodyKind::Function {
+        continue;
+      }
+      let Some(meta) = body.function.as_ref() else {
+        continue;
+      };
+      if !meta.async_ || !meta.is_arrow {
+        continue;
+      }
+      if matches!(meta.body, hir_js::FunctionBody::Block(_)) {
+        found = Some(*body_id);
+        break;
+      }
+    }
+    found.ok_or(VmError::InvariantViolation(
+      "async arrow function block body not found in compiled script",
+    ))?
+  };
+
+  // Define the compiled function on the global object so we can call it from JS.
+  {
+    let global = rt.realm().global_object();
+    let mut scope = rt.heap_mut().scope();
+    scope.push_root(Value::Object(global))?;
+
+    let name_s = scope.alloc_string("f")?;
+    scope.push_root(Value::String(name_s))?;
+
+    let f_obj = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script,
+        body: func_body,
+      },
+      name_s,
+      0,
+    )?;
+    scope.push_root(Value::Object(f_obj))?;
+
+    let key_s = scope.alloc_string("f")?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    scope.define_property(
+      global,
+      key,
+      vm_js::PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: vm_js::PropertyKind::Data {
+          value: Value::Object(f_obj),
+          writable: true,
+        },
+      },
+    )?;
+  }
+
+  rt.exec_script(
+    r#"
+      var captured = "";
+      f().catch(e => { captured = e.stack; });
+    "#,
+  )?;
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let v = rt.exec_script(
+    r#"typeof captured === "string" && captured.includes("TypeError") && captured.includes("revoked Proxy") && captured.includes("at ") && captured.includes("test.js:4:3")"#,
+  )?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_top_level_await_implicit_throw_has_error_stack() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   // Top-level await allocates Promise/job machinery; use a larger heap to avoid spurious OOMs.
@@ -513,6 +608,70 @@ fn compiled_top_level_await_implicit_throw_has_error_stack() -> Result<(), VmErr
 
   rt.heap_mut().remove_root(completion_root);
 
+  Ok(())
+}
+
+#[test]
+fn compiled_top_level_await_revoked_proxy_promise_resolve_throw_has_error_stack() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  // Promise/job machinery needs a bit of heap headroom.
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    "const { proxy, revoke } = Proxy.revocable({}, {});\nrevoke();\nawait proxy;",
+  )?;
+
+  let completion = rt.exec_compiled_script(script)?;
+  let completion_root = rt.heap_mut().add_root(completion)?;
+
+  let Value::Object(promise_obj) = completion else {
+    panic!("expected Promise object, got {completion:?}");
+  };
+  assert!(rt.heap().is_promise_object(promise_obj));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Rejected);
+  let reason = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("rejected promise should have a result");
+  let Value::Object(reason_obj) = reason else {
+    panic!("expected rejected promise reason to be an object, got {reason:?}");
+  };
+
+  let stack = {
+    let mut scope = rt.heap_mut().scope();
+    scope.push_root(Value::Object(reason_obj))?;
+
+    let stack_key_s = scope.alloc_string("stack")?;
+    scope.push_root(Value::String(stack_key_s))?;
+    let stack_key = PropertyKey::from_string(stack_key_s);
+
+    let stack_v = scope
+      .heap()
+      .object_get_own_data_property_value(reason_obj, &stack_key)?
+      .unwrap_or(Value::Undefined);
+    let Value::String(stack_s) = stack_v else {
+      panic!("expected stack string, got {stack_v:?}");
+    };
+    scope.heap().get_string(stack_s)?.to_utf8_lossy()
+  };
+
+  assert!(!stack.is_empty(), "expected non-empty stack string");
+  assert!(
+    stack.contains("TypeError") && stack.contains("revoked Proxy"),
+    "expected stack string to contain error name/message, got {stack:?}"
+  );
+  assert!(
+    stack.contains("at ") && stack.contains("test.js:3:1"),
+    "expected stack string to contain stack frames, got {stack:?}"
+  );
+
+  rt.heap_mut().remove_root(completion_root);
   Ok(())
 }
 

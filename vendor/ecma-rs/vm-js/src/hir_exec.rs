@@ -12085,6 +12085,7 @@ pub(crate) struct HirAsyncState {
   script: Arc<CompiledScript>,
   body_id: hir_js::BodyId,
   allow_new_target_in_eval: bool,
+  await_stmt_offset: u32,
   body_kind: HirAsyncBodyKind,
   in_root_stmt_list: bool,
   next_stmt_index: usize,
@@ -12092,6 +12093,14 @@ pub(crate) struct HirAsyncState {
 }
 
 impl HirAsyncState {
+  pub(crate) fn script_source(&self) -> Arc<crate::SourceText> {
+    self.script.source.clone()
+  }
+
+  pub(crate) fn await_stmt_offset(&self) -> u32 {
+    self.await_stmt_offset
+  }
+
   pub(crate) fn new(script: Arc<CompiledScript>, body_id: hir_js::BodyId) -> Result<Self, VmError> {
     let body = script
       .hir
@@ -12147,6 +12156,7 @@ impl HirAsyncState {
       script,
       body_id,
       allow_new_target_in_eval,
+      await_stmt_offset: 0,
       body_kind,
       in_root_stmt_list,
       next_stmt_index: 0,
@@ -12242,6 +12252,15 @@ impl HirAsyncState {
             let poll = state.poll(evaluator, scope, body, resume_value.take());
             match poll {
               Ok(ForAwaitOfPoll::Await { kind, await_value }) => {
+                let stmt_offset = match &self.body_kind {
+                  HirAsyncBodyKind::Block { stmts } => stmts
+                    .get(self.next_stmt_index)
+                    .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
+                    .map(|stmt| stmt.span.start)
+                    .unwrap_or(0),
+                  HirAsyncBodyKind::Expr { .. } => 0,
+                };
+                self.await_stmt_offset = stmt_offset;
                 return Ok(HirAsyncResult::Await { kind, await_value });
               }
               Ok(ForAwaitOfPoll::Complete(flow)) => {
@@ -12580,6 +12599,7 @@ impl HirAsyncState {
                     declarator_index: j,
                   });
                   self.next_stmt_index = stmt_index;
+                  self.await_stmt_offset = stmt_offset;
                   return Ok(HirAsyncResult::Await {
                     kind: crate::exec::AsyncSuspendKind::Await,
                     await_value,
@@ -12672,6 +12692,7 @@ impl HirAsyncState {
             }
           };
           self.active = Some(HirAsyncActive::AwaitReturn);
+          self.await_stmt_offset = expr_span_start;
           return Ok(HirAsyncResult::Await {
             kind: crate::exec::AsyncSuspendKind::Await,
             await_value,
@@ -12840,6 +12861,7 @@ impl HirAsyncState {
           self.active = Some(HirAsyncActive::AwaitExprStmt {
             next_stmt_index: self.next_stmt_index.saturating_add(1),
           });
+          self.await_stmt_offset = stmt_offset;
           return Ok(HirAsyncResult::Await {
             kind: crate::exec::AsyncSuspendKind::Await,
             await_value,
@@ -12872,6 +12894,7 @@ impl HirAsyncState {
             }
           };
           self.active = Some(HirAsyncActive::AwaitReturn);
+          self.await_stmt_offset = stmt_offset;
           return Ok(HirAsyncResult::Await {
             kind: crate::exec::AsyncSuspendKind::Await,
             await_value,
@@ -12904,6 +12927,7 @@ impl HirAsyncState {
             }
           };
           self.active = Some(HirAsyncActive::AwaitThrow);
+          self.await_stmt_offset = stmt_offset;
           return Ok(HirAsyncResult::Await {
             kind: crate::exec::AsyncSuspendKind::Await,
             await_value,
@@ -12949,6 +12973,7 @@ impl HirAsyncState {
                 stmt_index: self.next_stmt_index,
                 declarator_index: j,
               });
+              self.await_stmt_offset = stmt_offset;
               return Ok(HirAsyncResult::Await {
                 kind: crate::exec::AsyncSuspendKind::Await,
                 await_value,
@@ -13132,6 +13157,13 @@ fn run_compiled_async_function(
       let awaited_promise = match awaited_promise_res {
         Ok(p) => p,
         Err(err) if err.is_throw_completion() => {
+          let err = finalize_throw_with_stack_at_source_offset(
+            &*vm,
+            &mut root_scope,
+            state.script.source.as_ref(),
+            state.await_stmt_offset,
+            err,
+          );
           let reason = match err {
             VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. } => reason,
             other => {
@@ -16410,6 +16442,26 @@ fn run_compiled_script_async(
         env.teardown(root_scope.heap_mut());
         return Err(err);
       }
+      let await_stmt_offset = {
+        let stmt_index = match resume {
+          HirAsyncResumePoint::ExprStmt { next_stmt_index }
+          | HirAsyncResumePoint::Assignment { next_stmt_index }
+          | HirAsyncResumePoint::ForAwaitOf { next_stmt_index } => next_stmt_index.saturating_sub(1),
+          HirAsyncResumePoint::VarDecl { stmt_index, .. } => stmt_index,
+        };
+        let stmt_id = *body
+          .root_stmts
+          .get(stmt_index)
+          .ok_or(VmError::InvariantViolation(
+            "hir async script await stmt index out of bounds",
+          ))?;
+        body
+          .stmts
+          .get(stmt_id.0 as usize)
+          .ok_or(VmError::InvariantViolation("hir stmt id out of bounds"))?
+          .span
+          .start
+      };
 
       let awaited_promise_res: Result<Value, VmError> = match kind {
         crate::exec::AsyncSuspendKind::Await => crate::promise_ops::promise_resolve_for_await_with_host_and_hooks(
@@ -16438,9 +16490,15 @@ fn run_compiled_script_async(
       let awaited_promise = match awaited_promise_res {
         Ok(p) => p,
         Err(err) if err.is_throw_completion() => {
+          let err = finalize_throw_with_stack_at_source_offset(
+            &*vm,
+            &mut root_scope,
+            script.source.as_ref(),
+            await_stmt_offset,
+            err,
+          );
           let reason = match err {
-            VmError::Throw(reason) => reason,
-            VmError::ThrowWithStack { value: reason, .. } => reason,
+            VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. } => reason,
             other => {
               if let Some(mut state) = for_await_of_state.take() {
                 state.teardown(root_scope.heap_mut());
@@ -16832,7 +16890,60 @@ pub(crate) fn hir_async_resume_continuation(
       // Convert promise rejection into a throw completion so loop machinery (notably
       // `AsyncIteratorClose` in `for await..of`) can observe error-precedence semantics.
       let resume_value: Result<Value, VmError> = if is_reject {
-        Err(VmError::Throw(arg0))
+        // Best-effort attach an own `Error.stack` to implicit engine errors that surface via awaited
+        // promise rejection (e.g. `await <revoked Proxy>` where `PromiseResolve` rejects with a
+        // freshly-allocated TypeError that does not yet have a stack trace).
+        //
+        // Under memory pressure we must still throw/reject with the original reason.
+        let await_stmt_offset = match (|| -> Result<u32, VmError> {
+          let hir = cont.script.hir.as_ref();
+          let body = hir
+            .body(hir.root_body())
+            .ok_or(VmError::InvariantViolation("compiled script root body not found"))?;
+          let stmt_index = match cont.resume {
+            HirAsyncResumePoint::ExprStmt { next_stmt_index }
+            | HirAsyncResumePoint::Assignment { next_stmt_index }
+            | HirAsyncResumePoint::ForAwaitOf { next_stmt_index } => next_stmt_index.saturating_sub(1),
+            HirAsyncResumePoint::VarDecl { stmt_index, .. } => stmt_index,
+          };
+          let stmt_id = *body
+            .root_stmts
+            .get(stmt_index)
+            .ok_or(VmError::InvariantViolation(
+              "hir async script await stmt index out of bounds",
+            ))?;
+          Ok(
+            body
+              .stmts
+              .get(stmt_id.0 as usize)
+              .ok_or(VmError::InvariantViolation("hir stmt id out of bounds"))?
+              .span
+              .start,
+          )
+        })() {
+          Ok(offset) => offset,
+          Err(err) => {
+            hir_async_teardown_continuation(scope, cont);
+            return Err(err);
+          }
+        };
+
+        // Root the rejection reason across stack attachment and any subsequent allocation/GC.
+        let reason = match scope.push_root(arg0) {
+          Ok(v) => v,
+          Err(err) => {
+            hir_async_teardown_continuation(scope, cont);
+            return Err(err);
+          }
+        };
+
+        Err(finalize_throw_with_stack_at_source_offset(
+          &*vm,
+          scope,
+          cont.script.source.as_ref(),
+          await_stmt_offset,
+          VmError::Throw(reason),
+        ))
       } else {
         Ok(arg0)
       };
@@ -17403,6 +17514,35 @@ pub(crate) fn hir_async_resume_continuation(
           cont.assign_left_root = Some(left_root);
         }
 
+        let await_stmt_offset = match (|| -> Result<u32, VmError> {
+          let stmt_index = match cont.resume {
+            HirAsyncResumePoint::ExprStmt { next_stmt_index }
+            | HirAsyncResumePoint::Assignment { next_stmt_index }
+            | HirAsyncResumePoint::ForAwaitOf { next_stmt_index } => next_stmt_index.saturating_sub(1),
+            HirAsyncResumePoint::VarDecl { stmt_index, .. } => stmt_index,
+          };
+          let stmt_id = *body
+            .root_stmts
+            .get(stmt_index)
+            .ok_or(VmError::InvariantViolation(
+              "hir async script await stmt index out of bounds",
+            ))?;
+          Ok(
+            body
+              .stmts
+              .get(stmt_id.0 as usize)
+              .ok_or(VmError::InvariantViolation("hir stmt id out of bounds"))?
+              .span
+              .start,
+          )
+        })() {
+          Ok(offset) => offset,
+          Err(err) => {
+            hir_async_teardown_continuation(&mut await_scope, cont);
+            return Err(err);
+          }
+        };
+
         let awaited_promise_res: Result<Value, VmError> = match kind {
           crate::exec::AsyncSuspendKind::Await => crate::promise_ops::promise_resolve_for_await_with_host_and_hooks(
             vm,
@@ -17428,9 +17568,15 @@ pub(crate) fn hir_async_resume_continuation(
         let awaited_promise = match awaited_promise_res {
           Ok(p) => p,
           Err(err) if err.is_throw_completion() => {
+            let err = finalize_throw_with_stack_at_source_offset(
+              &*vm,
+              &mut await_scope,
+              source.as_ref(),
+              await_stmt_offset,
+              err,
+            );
             let reason = match err {
-              VmError::Throw(reason) => reason,
-              VmError::ThrowWithStack { value: reason, .. } => reason,
+              VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. } => reason,
               other => {
                 hir_async_teardown_continuation(&mut await_scope, cont);
                 return Err(other);

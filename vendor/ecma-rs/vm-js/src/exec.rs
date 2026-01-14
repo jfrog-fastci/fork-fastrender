@@ -17553,9 +17553,11 @@ fn async_handle_body_result(
           // Note: many VM operations use internal helper errors (e.g. `VmError::TypeError`) that are
           // coerced into JS throw completions at evaluator boundaries. `await` is such a boundary:
           // an abrupt completion must become a promise rejection, not a host error.
+          let (source, offset) = source_offset_for_async_frames_best_effort(&cont.env, &cont.frames);
+          let err =
+            finalize_throw_with_stack_at_source_offset_best_effort(vm, &mut await_scope, source.as_ref(), offset, err);
           let reason = match err {
-            VmError::Throw(reason) => reason,
-            VmError::ThrowWithStack { value: reason, .. } => reason,
+            VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. } => reason,
             other => {
               async_teardown_continuation(&mut await_scope, cont);
               return Err(other);
@@ -18613,6 +18615,83 @@ fn finalize_thrown_for_stmt(
 
   crate::error_object::attach_stack_property_for_throw(scope, thrown.value, &thrown.stack);
   thrown
+}
+
+fn source_offset_for_async_frames_best_effort(
+  env: &RuntimeEnv,
+  frames: &VecDeque<AsyncFrame>,
+) -> (Arc<SourceText>, u32) {
+  // HIR async execution can suspend without AST node pointers in its frame stack. In that case, use
+  // the compiled source and the statement offset tracked by the HIR async state machine.
+  for frame in frames {
+    if let AsyncFrame::HirAsync { state } = frame {
+      return (state.script_source(), state.await_stmt_offset());
+    }
+  }
+
+  let source = env.source();
+  let base_offset = env.base_offset();
+  let prefix_len = env.prefix_len();
+
+  // Prefer the first statement-level finalizer frame, which corresponds to the innermost statement
+  // that suspended at this `await`.
+  for frame in frames {
+    match frame {
+      AsyncFrame::FinalizeThrowAtStmt { stmt } => {
+        // Safety: the async continuation keeps the AST alive across suspensions.
+        let stmt = unsafe { &**stmt };
+        let rel_start = stmt.loc.start_u32().saturating_sub(prefix_len);
+        return (source, base_offset.saturating_add(rel_start));
+      }
+      AsyncFrame::Throw { stmt } => {
+        // Safety: the async continuation keeps the AST alive across suspensions.
+        let stmt = unsafe { &**stmt };
+        let rel_start = stmt.loc.start_u32().saturating_sub(prefix_len);
+        return (source, base_offset.saturating_add(rel_start));
+      }
+      AsyncFrame::RootExprBody { expr } => {
+        // Safety: the async continuation keeps the AST alive across suspensions.
+        let expr = unsafe { &**expr };
+        let rel_start = expr.loc.start_u32().saturating_sub(prefix_len);
+        return (source, base_offset.saturating_add(rel_start));
+      }
+      _ => {}
+    }
+  }
+
+  // Fallback: attribute the throw to the start of the current environment's source slice.
+  (source, base_offset)
+}
+
+fn finalize_throw_with_stack_at_source_offset_best_effort(
+  vm: &Vm,
+  scope: &mut Scope<'_>,
+  source: &SourceText,
+  offset: u32,
+  err: VmError,
+) -> VmError {
+  if !err.is_throw_completion() {
+    return err;
+  }
+
+  let (line, col) = source.line_col(offset);
+  let err = coerce_error_to_throw_for_async(vm, scope, err);
+  match err {
+    VmError::Throw(value) => {
+      let mut stack = vm.capture_stack();
+      patch_stack_top_frame_best_effort(&mut stack, source.name.clone(), line, col);
+      crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+      VmError::ThrowWithStack { value, stack }
+    }
+    VmError::ThrowWithStack { value, mut stack } => {
+      if stack.first().is_none() || stack.first().is_some_and(|top| top.line == 0) {
+        patch_stack_top_frame_best_effort(&mut stack, source.name.clone(), line, col);
+      }
+      crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+      VmError::ThrowWithStack { value, stack }
+    }
+    other => other,
+  }
 }
 
 fn finalize_throw_completion_for_stmt(
@@ -45919,6 +45998,7 @@ pub(crate) fn run_ecma_function(
         await_value,
         frames,
       }) => {
+        let mut frames = frames;
         // `this` / `new.target` can be temporarily overridden by nested constructs that can suspend
         // (e.g. class static blocks). Capture their current values at the suspension point so the
         // continuation resumes with the correct execution context.
@@ -45969,10 +46049,21 @@ pub(crate) fn run_ecma_function(
             // etc), and vm-js represents many of those cases as internal helper errors (e.g.
             // `VmError::TypeError`). Coerce to a JS throw completion so the rejection reason is a
             // proper Error object.
+            let (source, offset) =
+              source_offset_for_async_frames_best_effort(evaluator.env, &frames);
+            let err = finalize_throw_with_stack_at_source_offset_best_effort(
+              evaluator.vm,
+              &mut root_scope,
+              source.as_ref(),
+              offset,
+              err,
+            );
             let reason = match err {
-              VmError::Throw(reason) => reason,
-              VmError::ThrowWithStack { value: reason, .. } => reason,
+              VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. } => reason,
               other => {
+                for mut frame in frames.drain(..) {
+                  async_teardown_frame(root_scope.heap_mut(), &mut frame);
+                }
                 evaluator.env.teardown(root_scope.heap_mut());
                 return Err(other);
               }
@@ -45980,6 +46071,9 @@ pub(crate) fn run_ecma_function(
             let reason = match root_scope.push_root(reason) {
               Ok(v) => v,
               Err(err) => {
+                for mut frame in frames.drain(..) {
+                  async_teardown_frame(root_scope.heap_mut(), &mut frame);
+                }
                 evaluator.env.teardown(root_scope.heap_mut());
                 return Err(err);
               }
@@ -45992,10 +46086,16 @@ pub(crate) fn run_ecma_function(
               Value::Undefined,
               &[reason],
             );
+            for mut frame in frames.drain(..) {
+              async_teardown_frame(root_scope.heap_mut(), &mut frame);
+            }
             evaluator.env.teardown(root_scope.heap_mut());
             return reject_result.map(|_| (promise, evaluator.this));
           }
           Err(e) => {
+            for mut frame in frames.drain(..) {
+              async_teardown_frame(root_scope.heap_mut(), &mut frame);
+            }
             evaluator.env.teardown(root_scope.heap_mut());
             return Err(e);
           }
