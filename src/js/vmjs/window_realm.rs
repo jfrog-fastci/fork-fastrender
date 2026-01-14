@@ -54469,29 +54469,6 @@ fn init_window_globals(
         idl_attribute_desc(Value::Object(collapsed_func), Value::Undefined),
       )?;
 
-      // Range.prototype.commonAncestorContainer
-      let common_ancestor_call_id =
-        vm.register_native_call(range_common_ancestor_container_get_native)?;
-      let common_ancestor_name = scope.alloc_string("get commonAncestorContainer")?;
-      scope.push_root(Value::String(common_ancestor_name))?;
-      let common_ancestor_func = scope.alloc_native_function(
-        common_ancestor_call_id,
-        None,
-        common_ancestor_name,
-        0,
-      )?;
-      scope.heap_mut().object_set_prototype(
-        common_ancestor_func,
-        Some(realm.intrinsics().function_prototype()),
-      )?;
-      scope.push_root(Value::Object(common_ancestor_func))?;
-      let common_ancestor_key = alloc_key(&mut scope, "commonAncestorContainer")?;
-      scope.define_property(
-        range_proto,
-        common_ancestor_key,
-        idl_attribute_desc(Value::Object(common_ancestor_func), Value::Undefined),
-      )?;
-
       // Range.prototype.setStart
       let set_start_call_id = vm.register_native_call(range_set_start_native)?;
       let set_start_name = scope.alloc_string("setStart")?;
