@@ -4086,9 +4086,11 @@ impl BrowserRuntime {
           // the first navigation completes (no document/layout cache yet).
           tab.cancel.bump_paint();
 
-          if let Some(doc) = tab.document.as_mut() {
+          if tab.document.is_some() {
             tab.request_non_scroll_repaint();
             tab.force_repaint = true;
+          }
+          if let Some(doc) = tab.document.as_mut() {
             doc.set_viewport(tab.viewport_css.0, tab.viewport_css.1);
             doc.set_device_pixel_ratio(tab.dpr);
           }
