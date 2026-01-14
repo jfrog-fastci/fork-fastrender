@@ -45494,10 +45494,19 @@ mod tests {
       VmError::Syntax(diags) => {
         let has_engine_early_error = diags.iter().any(|d| d.code.as_str() == "VMJS0004");
         let has_parser_error = diags.iter().any(|d| {
-          d.code.as_str() == "PS0002"
-            && d.message.contains(
-              "'arguments' is not allowed in class field initializer or static initialization block",
-            )
+          if d.code.as_str() != "PS0002" {
+            return false;
+          }
+          // Be tolerant to where `parse-js` surfaces the message (`message` vs `notes`) while still
+          // being strict about the actual failure mode.
+          let mut haystacks = std::iter::once(d.message.as_str())
+            .chain(d.notes.iter().map(|s| s.as_str()));
+          haystacks.any(|s| {
+            s.contains("'arguments'")
+              && s.contains("not allowed")
+              && s.contains("class field")
+              && s.contains("static initialization block")
+          })
         });
         assert!(
           has_engine_early_error || has_parser_error,
