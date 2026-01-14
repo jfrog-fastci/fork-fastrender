@@ -72,7 +72,7 @@ browser shortcut mapping intentionally ignores Ctrl+Alt+… combinations to avoi
 
 | Test | Win/Linux shortcut | macOS shortcut | Expected / parity notes |
 |---|---|---|---|
-| Toggle downloads panel | Ctrl+J (or toolbar icon) | Cmd+Shift+J (or toolbar icon) | Panel opens/closes; focus does not get “stuck”. |
+| Show downloads panel | Ctrl+J (or toolbar icon) | Cmd+Shift+J (or toolbar icon) | Panel opens/closes; focus does not get “stuck”. |
 | Start download + progress | (Use direct file URL / “Download link/image”) | Same | Entry appears; progress updates. |
 | Cancel + retry | Click Cancel / Retry | Same | Cancel stops; Retry restarts. |
 | Open completed | Click Open | Same | Opens with OS default application (or fails gracefully without crashing if no handler is available). |
