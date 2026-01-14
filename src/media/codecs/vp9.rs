@@ -79,11 +79,7 @@ impl Vp9Decoder {
 
 fn map_libvpx_error(err: libvpx_sys_bundled::MediaError) -> MediaError {
   match err {
-    // `MediaError::Unsupported` uses a `&'static str`, so preserve details in the Decode string for
-    // now.
-    libvpx_sys_bundled::MediaError::Unsupported(msg) => {
-      MediaError::Decode(format!("unsupported VP9 stream: {msg}"))
-    }
+    libvpx_sys_bundled::MediaError::Unsupported(msg) => MediaError::Unsupported(msg.into()),
     libvpx_sys_bundled::MediaError::Decode(msg) => MediaError::Decode(msg),
   }
 }
