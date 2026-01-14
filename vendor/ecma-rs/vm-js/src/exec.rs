@@ -12722,13 +12722,23 @@ impl<'a> Evaluator<'a> {
       return Ok(OptionalChainEval::ShortCircuit);
     }
 
-    // `ComputedMemberExpression` performs `ToPropertyKey` on the member expression (which may
-    // allocate and invoke user code) before the base is coerced via `ToObject` when the reference
-    // is dereferenced.
+    // `ComputedMemberExpression` evaluation performs `RequireObjectCoercible(baseValue)` before
+    // `ToPropertyKey(propertyNameValue)`.
+    //
+    // Internally we eagerly convert the computed key to a `PropertyKey`, but we must still throw
+    // on `null` / `undefined` bases *before* invoking `ToPropertyKey` so expressions like
+    // `null[{ toString() { throw ... } }]` throw a TypeError without evaluating the property key.
     let mut key_scope = scope.reborrow();
     key_scope.push_root(base)?;
     let member_value = self.eval_expr(&mut key_scope, &expr.member)?;
     key_scope.push_root(member_value)?;
+    if is_nullish(base) {
+      return Err(throw_type_error(
+        self.vm,
+        &mut key_scope,
+        "Cannot convert undefined or null to object",
+      )?);
+    }
     let key = self.to_property_key_operator(&mut key_scope, member_value)?;
     let reference = Reference::Property {
       base,
@@ -12959,7 +12969,6 @@ impl<'a> Evaluator<'a> {
         key_scope.push_root(base)?;
         let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
         key_scope.push_root(member_value)?;
-        let key = self.to_property_key_operator(&mut key_scope, member_value)?;
         if is_nullish(base) {
           return Err(throw_type_error(
             self.vm,
@@ -12967,6 +12976,7 @@ impl<'a> Evaluator<'a> {
             "Cannot convert undefined or null to object",
           )?);
         }
+        let key = self.to_property_key_operator(&mut key_scope, member_value)?;
         Ok(Reference::Property {
           base,
           receiver: base,
@@ -14862,6 +14872,13 @@ impl<'a> Evaluator<'a> {
           del_scope.push_root(base)?;
           let member_value = self.eval_expr(&mut del_scope, &member.stx.member)?;
           del_scope.push_root(member_value)?;
+          if is_nullish(base) {
+            return Err(throw_type_error(
+              self.vm,
+              &mut del_scope,
+              "Cannot convert undefined or null to object",
+            )?);
+          }
           let key = self.to_property_key_operator(&mut del_scope, member_value)?;
           let key_root = match key {
             PropertyKey::String(s) => Value::String(s),
@@ -15734,12 +15751,12 @@ impl<'a> Evaluator<'a> {
         match self.eval_chain_base(scope, &member.stx.object)? {
           OptionalChainEval::Value(base) => {
             // In non-optional computed member access, the key expression is evaluated even if the
-            // base is nullish (the TypeError is thrown only when the reference is dereferenced).
+            // base is nullish, but we must throw before `ToPropertyKey` so key conversion side
+            // effects are not observed on `null` / `undefined` bases.
             let mut key_scope = scope.reborrow();
             key_scope.push_root(base)?;
             let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
             key_scope.push_root(member_value)?;
-            let key = self.to_property_key_operator(&mut key_scope, member_value)?;
             if is_nullish(base) {
               return Err(throw_type_error(
                 self.vm,
@@ -15747,6 +15764,7 @@ impl<'a> Evaluator<'a> {
                 "Cannot convert undefined or null to object",
               )?);
             }
+            let key = self.to_property_key_operator(&mut key_scope, member_value)?;
             let reference = Reference::Property {
               base,
               receiver: base,
@@ -30790,10 +30808,6 @@ fn async_eval_assignment_to_computed_member_after_member(
 ) -> Result<AsyncEval<Value>, VmError> {
   let mut key_scope = scope.reborrow();
   key_scope.push_roots(&[base, member_value])?;
-  let key = evaluator
-    .to_property_key_operator(&mut key_scope, member_value)
-    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-
   if is_nullish(base) {
     return Err(throw_type_error(
       evaluator.vm,
@@ -30801,6 +30815,10 @@ fn async_eval_assignment_to_computed_member_after_member(
       "Cannot convert undefined or null to object",
     )?);
   }
+
+  let key = evaluator
+    .to_property_key_operator(&mut key_scope, member_value)
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
 
   let reference = Reference::Property {
     base,
@@ -31708,10 +31726,6 @@ fn async_reference_from_computed_member(
  
   let mut key_scope = scope.reborrow();
   key_scope.push_roots(&[base, member_value])?;
-  let key = evaluator
-    .to_property_key_operator(&mut key_scope, member_value)
-    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-
   if is_nullish(base) {
     return Err(throw_type_error(
       evaluator.vm,
@@ -31719,6 +31733,10 @@ fn async_reference_from_computed_member(
       "Cannot convert undefined or null to object",
     )?);
   }
+
+  let key = evaluator
+    .to_property_key_operator(&mut key_scope, member_value)
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
 
   Ok(Reference::Property {
     base,
@@ -32026,10 +32044,6 @@ fn async_eval_tagged_template_computed_member_after_member(
   }
 
   key_scope.push_roots(&[base, member_value])?;
-  let key = evaluator
-    .to_property_key_operator(&mut key_scope, member_value)
-    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-
   if !member.optional_chaining && is_nullish(base) {
     return Err(throw_type_error(
       evaluator.vm,
@@ -32038,6 +32052,9 @@ fn async_eval_tagged_template_computed_member_after_member(
     )?);
   }
 
+  let key = evaluator
+    .to_property_key_operator(&mut key_scope, member_value)
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
   let reference = Reference::Property {
     base,
     receiver: base,
@@ -32618,6 +32635,16 @@ fn async_delete_computed_member_after_member(
 ) -> Result<Value, VmError> {
   let mut del_scope = scope.reborrow();
   del_scope.push_roots(&[base, member_value])?;
+  // For computed property deletion, the member expression is evaluated before throwing on a
+  // nullish base, but `ToPropertyKey` is not invoked.
+  if is_nullish(base) {
+    return Err(throw_type_error(
+      evaluator.vm,
+      &mut del_scope,
+      "Cannot convert undefined or null to object",
+    )?);
+  }
+
   let key = evaluator
     .to_property_key_operator(&mut del_scope, member_value)
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut del_scope, err))?;
@@ -32628,16 +32655,6 @@ fn async_delete_computed_member_after_member(
     PropertyKey::Symbol(s) => Value::Symbol(s),
   };
   del_scope.push_root(key_root)?;
-
-  // For computed property deletion, the member expression is evaluated (and `ToPropertyKey` is
-  // performed) before throwing on a nullish base.
-  if is_nullish(base) {
-    return Err(throw_type_error(
-      evaluator.vm,
-      &mut del_scope,
-      "Cannot convert undefined or null to object",
-    )?);
-  }
 
   let object = evaluator
     .to_object_operator(&mut del_scope, base)
@@ -32804,6 +32821,13 @@ fn async_computed_member_after_member(
 ) -> Result<Value, VmError> {
   let mut key_scope = scope.reborrow();
   key_scope.push_roots(&[base, member_value])?;
+  if is_nullish(base) {
+    return Err(throw_type_error(
+      evaluator.vm,
+      &mut key_scope,
+      "Cannot convert undefined or null to object",
+    )?);
+  }
   let key = evaluator
     .to_property_key_operator(&mut key_scope, member_value)
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
@@ -33665,9 +33689,6 @@ fn async_call_computed_member_after_member(
       .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
     (callee_value, receiver)
   } else {
-    let key = evaluator
-      .to_property_key_operator(&mut key_scope, member_value)
-      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
     if is_nullish(base) {
       return Err(throw_type_error(
         evaluator.vm,
@@ -33675,6 +33696,9 @@ fn async_call_computed_member_after_member(
         "Cannot convert undefined or null to object",
       )?);
     }
+    let key = evaluator
+      .to_property_key_operator(&mut key_scope, member_value)
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
 
     let reference = Reference::Property {
       base,
@@ -47013,10 +47037,6 @@ fn gen_reference_from_computed_member(
 
   let mut key_scope = scope.reborrow();
   key_scope.push_roots(&[base, member_value])?;
-  let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
-
-  // For computed property references, the key expression (including `ToPropertyKey`) is evaluated
-  // before throwing on a nullish base.
   if is_nullish(base) {
     return Err(throw_type_error(
       evaluator.vm,
@@ -47024,6 +47044,8 @@ fn gen_reference_from_computed_member(
       "Cannot convert undefined or null to object",
     )?);
   }
+
+  let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
 
   Ok(Reference::Property {
     base,
@@ -47192,6 +47214,16 @@ fn gen_delete_computed_member_after_member(
 ) -> Result<Value, VmError> {
   let mut del_scope = scope.reborrow();
   del_scope.push_roots(&[base, member_value])?;
+  // For computed property deletion, the member expression is evaluated before throwing on a
+  // nullish base, but `ToPropertyKey` is not invoked.
+  if is_nullish(base) {
+    return Err(throw_type_error(
+      evaluator.vm,
+      &mut del_scope,
+      "Cannot convert undefined or null to object",
+    )?);
+  }
+
   let key = evaluator
     .to_property_key_operator(&mut del_scope, member_value)
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut del_scope, err))?;
@@ -47202,16 +47234,6 @@ fn gen_delete_computed_member_after_member(
     PropertyKey::Symbol(s) => Value::Symbol(s),
   };
   del_scope.push_root(key_root)?;
-
-  // For computed property deletion, the member expression is evaluated (and `ToPropertyKey` is
-  // performed) before throwing on a nullish base.
-  if is_nullish(base) {
-    return Err(throw_type_error(
-      evaluator.vm,
-      &mut del_scope,
-      "Cannot convert undefined or null to object",
-    )?);
-  }
 
   let object = evaluator
     .to_object_operator(&mut del_scope, base)
@@ -47341,6 +47363,13 @@ fn gen_computed_member_after_member(
   let mut key_scope = scope.reborrow();
   key_scope.push_root(base)?;
   key_scope.push_root(member_value)?;
+  if is_nullish(base) {
+    return Err(throw_type_error(
+      evaluator.vm,
+      &mut key_scope,
+      "Cannot convert undefined or null to object",
+    )?);
+  }
   let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
   let reference = Reference::Property {
     base,
@@ -47985,8 +48014,6 @@ fn gen_eval_assignment_to_computed_member_after_member(
 ) -> Result<GenEval<Completion>, VmError> {
   let mut key_scope = scope.reborrow();
   key_scope.push_roots(&[base, member_value])?;
-  let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
-
   if is_nullish(base) {
     return Err(throw_type_error(
       evaluator.vm,
@@ -47994,6 +48021,8 @@ fn gen_eval_assignment_to_computed_member_after_member(
       "Cannot convert undefined or null to object",
     )?);
   }
+
+  let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
 
   let reference = Reference::Property {
     base,
@@ -48890,14 +48919,6 @@ fn gen_call_computed_member_after_member(
   let mut key_scope = scope.reborrow();
   key_scope.push_root(base)?;
   key_scope.push_root(member_value)?;
-  let key = match evaluator.to_property_key_operator(&mut key_scope, member_value) {
-    Ok(k) => k,
-    Err(err) => {
-      let err = coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err);
-      return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
-    }
-  };
-
   if is_nullish(base) {
     let err = throw_type_error(
       evaluator.vm,
@@ -48906,6 +48927,13 @@ fn gen_call_computed_member_after_member(
     )?;
     return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
   }
+  let key = match evaluator.to_property_key_operator(&mut key_scope, member_value) {
+    Ok(k) => k,
+    Err(err) => {
+      let err = coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err);
+      return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
+    }
+  };
 
   let reference = Reference::Property {
     base,
@@ -49588,14 +49616,6 @@ fn gen_eval_tagged_template_computed_member_after_member(
   let mut key_scope = scope.reborrow();
   key_scope.push_root(base)?;
   key_scope.push_root(member_value)?;
-  let key = match evaluator.to_property_key_operator(&mut key_scope, member_value) {
-    Ok(k) => k,
-    Err(err) => {
-      let err = coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err);
-      return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
-    }
-  };
-
   if !member.optional_chaining && is_nullish(base) {
     let err = throw_type_error(
       evaluator.vm,
@@ -49604,6 +49624,14 @@ fn gen_eval_tagged_template_computed_member_after_member(
     )?;
     return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
   }
+
+  let key = match evaluator.to_property_key_operator(&mut key_scope, member_value) {
+    Ok(k) => k,
+    Err(err) => {
+      let err = coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err);
+      return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
+    }
+  };
 
   let reference = Reference::Property {
     base,
