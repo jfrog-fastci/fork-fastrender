@@ -139,7 +139,8 @@ timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_l
   --input target/browser_perf.jsonl --only-event memory_summary --from-ms 0 --to-ms 60000
 ```
 
-The summary output includes both `rss_bytes` and a convenience `rss_mb` row.
+The summary output includes `rss_bytes`, a convenience `rss_mb` row, and `rss_first_mb`/`rss_last_mb`/`rss_delta_mb`
+to quickly spot RSS growth over the selected window.
 
 For idle diagnostics, you can also summarize `idle_sample` events; the summary output reports
 `idle_fps` (lower is better; ideally the browser is not drawing frames at all while idle).

@@ -175,6 +175,8 @@ struct Samples {
   cpu_percent: Vec<f64>,
   idle_fps: Vec<f64>,
   rss_bytes: Vec<u64>,
+  rss_first_bytes: Option<u64>,
+  rss_last_bytes: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -193,6 +195,9 @@ struct Summary {
   idle_fps: ScalarStats,
   rss_bytes: RssStats,
   rss_mb: ScalarStats,
+  rss_first_mb: Option<f64>,
+  rss_last_mb: Option<f64>,
+  rss_delta_mb: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -383,6 +388,21 @@ fn print_table(summary: &Summary) {
     fmt_opt_f64(summary.rss_mb.mean, 2),
     fmt_opt_f64(summary.rss_mb.max, 2),
   );
+  for (name, value) in [
+    ("rss_first_mb", summary.rss_first_mb),
+    ("rss_last_mb", summary.rss_last_mb),
+    ("rss_delta_mb", summary.rss_delta_mb),
+  ] {
+    let count = u64::from(value.is_some());
+    println!(
+      "{:<22} {:>7} {:>12} {:>12} {:>12}",
+      name,
+      count,
+      fmt_opt_f64(value, 2),
+      fmt_opt_f64(value, 2),
+      fmt_opt_f64(value, 2),
+    );
+  }
 
   println!();
   println!(
@@ -537,6 +557,10 @@ fn run(cli: Cli) -> Result<(), String> {
             BrowserPerfLogEventV2::MemorySummary { rss_bytes, .. } => {
               if let Some(rss) = rss_bytes {
                 samples.rss_bytes.push(rss);
+                if samples.rss_first_bytes.is_none() {
+                  samples.rss_first_bytes = Some(rss);
+                }
+                samples.rss_last_bytes = Some(rss);
               }
             }
             BrowserPerfLogEventV2::Unknown => {
@@ -584,6 +608,10 @@ fn run(cli: Cli) -> Result<(), String> {
               }
               if let Some(rss) = rss_bytes {
                 samples.rss_bytes.push(rss);
+                if samples.rss_first_bytes.is_none() {
+                  samples.rss_first_bytes = Some(rss);
+                }
+                samples.rss_last_bytes = Some(rss);
               }
             }
             fastrender::browser_perf_log::BrowserPerfLogEventV1::Unknown => {
@@ -610,6 +638,16 @@ fn run(cli: Cli) -> Result<(), String> {
     max: rss_bytes.max.map(|bytes| bytes as f64 / BYTES_PER_MIB as f64),
     mean: rss_bytes.mean.map(|bytes| bytes / BYTES_PER_MIB as f64),
   };
+  let rss_first_mb = samples
+    .rss_first_bytes
+    .map(|bytes| bytes as f64 / BYTES_PER_MIB as f64);
+  let rss_last_mb = samples
+    .rss_last_bytes
+    .map(|bytes| bytes as f64 / BYTES_PER_MIB as f64);
+  let rss_delta_mb = match (samples.rss_first_bytes, samples.rss_last_bytes) {
+    (Some(first), Some(last)) => Some((last as f64 - first as f64) / BYTES_PER_MIB as f64),
+    _ => None,
+  };
 
   let summary = Summary {
     meta: MetaSummary {
@@ -631,6 +669,9 @@ fn run(cli: Cli) -> Result<(), String> {
     idle_fps: scalar_stats(&mut samples.idle_fps),
     rss_bytes,
     rss_mb,
+    rss_first_mb,
+    rss_last_mb,
+    rss_delta_mb,
   };
 
   if cli.json {
