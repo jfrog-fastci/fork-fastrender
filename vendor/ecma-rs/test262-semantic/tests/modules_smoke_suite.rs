@@ -12,9 +12,11 @@ fn modules_smoke_suite_selects_module_tests() {
   let module_dir = temp.path().join("test/language/module-code");
   let import_dir = temp.path().join("test/language/import");
   let export_dir = temp.path().join("test/language/export");
+  let import_meta_dir = temp.path().join("test/language/expressions/import.meta");
   fs::create_dir_all(&module_dir).unwrap();
   fs::create_dir_all(&import_dir).unwrap();
   fs::create_dir_all(&export_dir).unwrap();
+  fs::create_dir_all(&import_meta_dir).unwrap();
 
   // Test IDs are paths relative to `test/` in the tc39/test262 checkout.
   fs::write(
@@ -30,6 +32,11 @@ fn modules_smoke_suite_selects_module_tests() {
   fs::write(
     export_dir.join("escaped-default.js"),
     "/*---\nflags: [module]\n---*/\nexport default 1;\n",
+  )
+  .unwrap();
+  fs::write(
+    import_meta_dir.join("same-object-returned.js"),
+    "/*---\nflags: [module]\n---*/\nimport.meta;\n",
   )
   .unwrap();
 
@@ -51,5 +58,11 @@ fn modules_smoke_suite_selects_module_tests() {
   assert!(
     selected.iter().any(|id| id == "language/export/escaped-default.js"),
     "expected suite to include language/export/escaped-default.js, got: {selected:#?}"
+  );
+  assert!(
+    selected
+      .iter()
+      .any(|id| id == "language/expressions/import.meta/same-object-returned.js"),
+    "expected suite to include language/expressions/import.meta/same-object-returned.js, got: {selected:#?}"
   );
 }
