@@ -20527,13 +20527,14 @@ fn async_gen_root_values_for_continuation(
   let mut values: Vec<Value> = Vec::new();
   values
     .try_reserve_exact(
-      2usize
+      3usize
         .saturating_add(cont.args.len())
         .saturating_add(if cont.home_object.is_some() { 1 } else { 0 }),
     )
     .map_err(|_| VmError::OutOfMemory)?;
   values.push(cont.this);
   values.push(cont.new_target);
+  values.push(Value::Object(cont.env.disposable_scopes));
   if let Some(home_object) = cont.home_object {
     values.push(Value::Object(home_object));
   }
@@ -20652,6 +20653,8 @@ fn async_generator_resume_frames(
   // Root `this`, `new.target`, home object, and args while the continuation is moved out of the heap.
   async_gen_root_values_for_continuation(scope, &cont)?;
   cont.env.lexical_root = Some(scope.heap_mut().add_env_root(cont.env.lexical_env())?);
+  cont.env.disposable_root =
+    Some(scope.heap_mut().add_root(Value::Object(cont.env.disposable_scopes))?);
 
   let this = cont.this;
   let new_target = cont.new_target;
@@ -20696,6 +20699,8 @@ fn async_generator_start(
 ) -> Result<(AsyncBodyResult, Box<AsyncGeneratorContinuation>), VmError> {
   async_gen_root_values_for_continuation(scope, &cont)?;
   cont.env.lexical_root = Some(scope.heap_mut().add_env_root(cont.env.lexical_env())?);
+  cont.env.disposable_root =
+    Some(scope.heap_mut().add_root(Value::Object(cont.env.disposable_scopes))?);
 
   let this = cont.this;
   let new_target = cont.new_target;
@@ -34678,6 +34683,7 @@ fn async_resume_from_frames(
         AsyncFrame::RootBlockBody
           | AsyncFrame::RootModuleBody
           | AsyncFrame::RootScriptBody
+          | AsyncFrame::DisposeScope
           | AsyncFrame::StmtList { .. }
           | AsyncFrame::RestoreLexEnv { .. }
           | AsyncFrame::RestoreStrict { .. }
