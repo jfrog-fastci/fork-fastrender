@@ -419,6 +419,15 @@ mod tests {
   use tempfile::tempdir;
 
   #[test]
+  fn from_parsed_url_matches_site_key_for_navigation_default_force_opaque_origin() {
+    let url = Url::parse("https://example.com/path").expect("parse url");
+    assert_eq!(
+      SiteKey::from_parsed_url(&url),
+      site_key_for_navigation(url.as_str(), None, false)
+    );
+  }
+
+  #[test]
   fn schemeful_site_groups_registrable_domains() {
     let a = SiteKey::from_url("https://a.example.com").unwrap();
     let b = SiteKey::from_url("https://b.example.com").unwrap();
