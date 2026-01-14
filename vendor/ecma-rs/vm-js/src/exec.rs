@@ -11687,22 +11687,22 @@ impl<'a> Evaluator<'a> {
       let member_value = self.eval_expr(&mut key_scope, &expr.member)?;
       key_scope.push_root(member_value)?;
 
-      // ECMA-262 `SuperProperty : super [ Expression ]`:
-      // - `GetThisBinding` must be observed before any key side effects (handled above),
-      // - the key expression is evaluated to a value before `GetSuperBase`, and
-      // - `GetSuperBase` is observed before `ToPropertyKey` (test262:
-      //   `prop-expr-getsuperbase-before-topropertykey-*`) so prototype mutation during key
-      //   coercion does not affect the resolved super base.
-      let super_base = self.super_base(&mut key_scope)?;
-      // Root the base across key coercion / `GetValue` in case it triggers a GC.
-      key_scope.push_root(super_base)?;
-
+      // Computed `super[expr]`:
+      // - `GetThisBinding` must be observed before any key side effects (handled above), so derived
+      //   constructors throw before `super()` returns.
+      // - `ToPropertyKey` must happen before `GetSuperBase`, so prototype mutation during key
+      //   conversion is observable.
       let key = self.to_property_key_operator(&mut key_scope, member_value)?;
       // Root the key across `GetValue`/`PutValue` in case those operations allocate/GC.
       match key {
         PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
         PropertyKey::Symbol(sym) => key_scope.push_root(Value::Symbol(sym))?,
       };
+
+      let super_base = self.super_base(&mut key_scope)?;
+      // Root the base across `GetValue` in case it triggers a GC.
+      key_scope.push_root(super_base)?;
+
       let reference = Reference::SuperProperty {
         base: super_base,
         key,
@@ -11935,15 +11935,11 @@ impl<'a> Evaluator<'a> {
           let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
           key_scope.push_root(member_value)?;
 
-          // ECMA-262 `SuperProperty : super [ Expression ]`:
-          // - `GetThisBinding` must be observed before any key side effects (handled above),
-          // - the key expression is evaluated to a value before `GetSuperBase`, and
-          // - `GetSuperBase` is observed before `ToPropertyKey` so prototype mutation during key
-          //   coercion does not affect the resolved super base.
-          let base = self.get_super_base(&mut key_scope)?;
-          // Root the base across key coercion / `GetValue` in case it triggers a GC.
-          key_scope.push_root(base)?;
-
+          // Computed `super[expr]`:
+          // - `GetThisBinding` must be observed before any key side effects (handled above), so
+          //   derived constructors throw before `super()` returns.
+          // - `ToPropertyKey` must happen before `GetSuperBase`, so prototype mutation during key
+          //   conversion is observable.
           let key = self.to_property_key_operator(&mut key_scope, member_value)?;
 
           // Root the key across `GetValue`/`PutValue` in case those operations allocate/GC.
@@ -11951,6 +11947,10 @@ impl<'a> Evaluator<'a> {
             PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
             PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
           };
+
+          let base = self.get_super_base(&mut key_scope)?;
+          // Root the base across `GetValue`/`PutValue` in case it triggers a GC.
+          key_scope.push_root(base)?;
           return Ok(Reference::SuperProperty { base, key, receiver });
         }
 

