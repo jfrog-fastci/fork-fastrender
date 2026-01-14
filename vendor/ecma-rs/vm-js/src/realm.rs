@@ -193,6 +193,15 @@ impl Realm {
       // the realm layer.
       let env = scope.env_create(None)?;
       global_lexical_env = Some(env);
+      // The global lexical environment provides the top-level `this` binding (scripts) which arrow
+      // functions capture lexically. It also acts as the "this environment" root for resolving
+      // lexical `this` / `new.target`.
+      scope
+        .heap_mut()
+        .env_set_this_value(env, Some(Value::Object(global_object)))?;
+      scope
+        .heap_mut()
+        .env_set_new_target(env, Some(Value::Undefined))?;
       scope
         .heap_mut()
         .set_function_closure_env(intrinsics.function_constructor(), Some(env))?;

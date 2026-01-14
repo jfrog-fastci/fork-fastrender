@@ -4660,7 +4660,11 @@ struct Evaluator<'a> {
   /// Whether the current class constructor body is a *derived* constructor (i.e. has an `extends`
   /// clause). In derived constructors, `this` is uninitialized until `super()` returns.
   derived_constructor: bool,
-  /// Whether `this` has been initialized (only meaningful when `derived_constructor` is `true`).
+  /// Whether the current lexical `this` binding has been initialized.
+  ///
+  /// This is `false` in derived class constructors before `super()`, and it must also propagate to
+  /// arrow functions created before `super()` and called before `super()` (they capture `this`
+  /// lexically).
   this_initialized: bool,
   /// Root-stack slot index used to keep derived-constructor `this` state alive across nested
   /// scopes.
@@ -4787,7 +4791,10 @@ impl<'a> Evaluator<'a> {
       }
     }
 
-    if self.derived_constructor && !self.this_initialized {
+    // Derived class constructors have an uninitialized `this` binding until `super()` returns. Arrow
+    // functions nested within derived constructors capture that *binding* lexically, so they must
+    // also throw a ReferenceError when invoked before `super()` if they evaluate `this`/`super`.
+    if !self.this_initialized {
       return Err(throw_reference_error(
         self.vm,
         scope,
@@ -12549,12 +12556,6 @@ impl<'a> Evaluator<'a> {
     if func.arrow {
       scope
         .heap_mut()
-        .set_function_bound_this(func_obj, self.this)?;
-      scope
-        .heap_mut()
-        .set_function_bound_new_target(func_obj, self.new_target)?;
-      scope
-        .heap_mut()
         .set_function_home_object(func_obj, self.home_object)?;
     }
     Ok(Value::Object(func_obj))
@@ -12658,16 +12659,10 @@ impl<'a> Evaluator<'a> {
     }
     if let Some(script_or_module) = self.vm.get_active_script_or_module() {
       let token = self.vm.intern_script_or_module(script_or_module)?;
-      alloc_scope
-        .heap_mut()
-        .set_function_script_or_module_token(func_obj, Some(token))?;
+    alloc_scope
+      .heap_mut()
+      .set_function_script_or_module_token(func_obj, Some(token))?;
     }
-    alloc_scope
-      .heap_mut()
-      .set_function_bound_this(func_obj, self.this)?;
-    alloc_scope
-      .heap_mut()
-      .set_function_bound_new_target(func_obj, self.new_target)?;
     alloc_scope
       .heap_mut()
       .set_function_home_object(func_obj, self.home_object)?;
@@ -13326,12 +13321,6 @@ impl<'a> Evaluator<'a> {
               if func_node.stx.arrow {
                 member_scope
                   .heap_mut()
-                  .set_function_bound_this(func_obj, self.this)?;
-                member_scope
-                  .heap_mut()
-                  .set_function_bound_new_target(func_obj, self.new_target)?;
-                member_scope
-                  .heap_mut()
                   .set_function_home_object(func_obj, self.home_object)?;
               } else {
                 // Object literal methods use the object itself as their `[[HomeObject]]`.
@@ -13432,12 +13421,6 @@ impl<'a> Evaluator<'a> {
                 .heap_mut()
                 .set_function_home_object(func_obj, Some(obj))?;
               if func_node.stx.arrow {
-                member_scope
-                  .heap_mut()
-                  .set_function_bound_this(func_obj, self.this)?;
-                member_scope
-                  .heap_mut()
-                  .set_function_bound_new_target(func_obj, self.new_target)?;
                 member_scope
                   .heap_mut()
                   .set_function_home_object(func_obj, self.home_object)?;
@@ -13548,12 +13531,6 @@ impl<'a> Evaluator<'a> {
                 .heap_mut()
                 .set_function_home_object(func_obj, Some(obj))?;
               if func_node.stx.arrow {
-                member_scope
-                  .heap_mut()
-                  .set_function_bound_this(func_obj, self.this)?;
-                member_scope
-                  .heap_mut()
-                  .set_function_bound_new_target(func_obj, self.new_target)?;
                 member_scope
                   .heap_mut()
                   .set_function_home_object(func_obj, self.home_object)?;
@@ -14414,6 +14391,18 @@ impl<'a> Evaluator<'a> {
             .heap_mut()
             .get_derived_constructor_state_mut(state_obj)?
             .this_value = Some(this_obj);
+          // Also update the `this` binding stored in the current "this environment" so arrow
+          // functions created before `super()` can observe the initialized `this` value after
+          // `super()` returns.
+          let this_env = call_scope
+            .heap()
+            .resolve_this_env(self.env.lexical_env())?
+            .ok_or(VmError::InvariantViolation(
+              "derived constructor super() could not resolve this environment",
+            ))?;
+          call_scope
+            .heap_mut()
+            .env_set_this_value(this_env, Some(this_value))?;
 
           // Initialize derived instance fields immediately after `super()` returns.
           crate::class_fields::initialize_instance_fields_with_host_and_hooks(
@@ -14569,6 +14558,17 @@ impl<'a> Evaluator<'a> {
       self.this = this_value;
       self.this_initialized = true;
       call_scope.heap_mut().root_stack[this_root_idx] = this_value;
+      // Update the `this` binding stored in the current "this environment" so arrow functions
+      // created before `super()` can observe the initialized `this` value after `super()` returns.
+      let this_env = call_scope
+        .heap()
+        .resolve_this_env(self.env.lexical_env())?
+        .ok_or(VmError::InvariantViolation(
+          "derived constructor super() could not resolve this environment",
+        ))?;
+      call_scope
+        .heap_mut()
+        .env_set_this_value(this_env, Some(this_value))?;
 
       // Initialize derived instance fields immediately after `super()` returns.
       crate::class_fields::initialize_instance_fields_with_host_and_hooks(
@@ -27935,7 +27935,7 @@ fn async_get_super_receiver(
       )?);
     }
   }
-  if evaluator.derived_constructor && !evaluator.this_initialized {
+  if !evaluator.this_initialized {
     return Err(throw_reference_error(
       evaluator.vm,
       scope,
@@ -28802,12 +28802,6 @@ fn async_eval_lit_obj_apply_valued_member(
       if func_node.stx.arrow {
         member_scope
           .heap_mut()
-          .set_function_bound_this(func_obj, evaluator.this)?;
-        member_scope
-          .heap_mut()
-          .set_function_bound_new_target(func_obj, evaluator.new_target)?;
-        member_scope
-          .heap_mut()
           .set_function_home_object(func_obj, evaluator.home_object)?;
       } else {
         // Object literal methods use the object itself as their `[[HomeObject]]`.
@@ -28917,12 +28911,6 @@ fn async_eval_lit_obj_apply_valued_member(
         .heap_mut()
         .set_function_home_object(func_obj, Some(obj))?;
       if func_node.stx.arrow {
-        member_scope
-          .heap_mut()
-          .set_function_bound_this(func_obj, evaluator.this)?;
-        member_scope
-          .heap_mut()
-          .set_function_bound_new_target(func_obj, evaluator.new_target)?;
         member_scope
           .heap_mut()
           .set_function_home_object(func_obj, evaluator.home_object)?;
@@ -29046,12 +29034,6 @@ fn async_eval_lit_obj_apply_valued_member(
         .heap_mut()
         .set_function_home_object(func_obj, Some(obj))?;
       if func_node.stx.arrow {
-        member_scope
-          .heap_mut()
-          .set_function_bound_this(func_obj, evaluator.this)?;
-        member_scope
-          .heap_mut()
-          .set_function_bound_new_target(func_obj, evaluator.new_target)?;
         member_scope
           .heap_mut()
           .set_function_home_object(func_obj, evaluator.home_object)?;
@@ -56651,6 +56633,62 @@ pub(crate) fn run_ecma_function(
 ) -> Result<(Value, Value), VmError> {
   env.set_source_info(source, base_offset, prefix_len);
   let home_object = scope.heap().get_function_home_object(callee)?;
+  // Arrow functions override `this` / `new.target` at runtime by resolving their lexical bindings
+  // through the captured environment, so we keep these as mutable locals.
+  let mut this = this;
+  let mut new_target = new_target;
+  let func_env = env.lexical_env();
+
+  // Detect class constructor bodies so we can:
+  // - initialize base-class instance fields before executing the user constructor body, and
+  // - support derived constructor `super()` calls + `this` binding semantics.
+  let mut class_constructor: Option<GcObject> = None;
+  let mut derived_constructor = false;
+  let mut this_initialized = true;
+  let mut this_root_idx: Option<usize> = None;
+
+  if func.stx.arrow {
+    // Arrow functions resolve lexical `this` / `new.target` by walking the environment chain to the
+    // nearest "this environment" (ECMA-262 `GetThisEnvironment`).
+    let this_env = scope
+      .heap()
+      .resolve_this_env(func_env)?
+      .ok_or(VmError::InvariantViolation(
+        "arrow function could not resolve lexical this environment",
+      ))?;
+    let this_value = scope.heap().env_get_this_value(this_env)?;
+    let new_target_value = scope.heap().env_get_new_target(this_env)?;
+
+    this_initialized = this_value.is_some();
+    this = this_value.unwrap_or(Value::Undefined);
+    new_target = new_target_value.unwrap_or(Value::Undefined);
+  } else {
+    if let FunctionData::ClassConstructorBody {
+      class_constructor: ctor,
+    } = scope.heap().get_function_data(callee)?
+    {
+      class_constructor = Some(ctor);
+      let super_value = crate::class_fields::class_constructor_super_value(scope, ctor)?;
+      derived_constructor = !matches!(super_value, Value::Undefined);
+      this_initialized = !derived_constructor;
+      if derived_constructor {
+        // Keep an always-present root slot for `this` so derived constructors can initialize it after
+        // `super()` returns and keep it alive across nested scopes.
+        let idx = scope.heap().root_stack.len();
+        scope.push_root(this)?;
+        this_root_idx = Some(idx);
+      }
+    }
+
+    // Non-arrow functions create a "this environment" at call time.
+    scope
+      .heap_mut()
+      .env_set_new_target(func_env, Some(new_target))?;
+    scope.heap_mut().env_set_this_value(
+      func_env,
+      if derived_constructor { None } else { Some(this) },
+    )?;
+  }
 
   if func.stx.generator {
     let intr = vm
@@ -56766,42 +56804,13 @@ pub(crate) fn run_ecma_function(
     return Err(VmError::Unimplemented("function without body"));
   };
 
-  // Detect class constructor bodies so we can:
-  // - initialize base-class instance fields before executing the user constructor body, and
-  // - support derived constructor `super()` calls + `this` binding semantics.
-  let mut class_constructor: Option<GcObject> = None;
-  let mut derived_constructor = false;
-  let mut this_initialized = true;
-  let mut this_root_idx: Option<usize> = None;
-  let mut this_value = this;
-  if let FunctionData::ClassConstructorBody {
-    class_constructor: ctor,
-  } = scope.heap().get_function_data(callee)?
-  {
-    class_constructor = Some(ctor);
-    let super_value = crate::class_fields::class_constructor_super_value(scope, ctor)?;
-    derived_constructor = !matches!(super_value, Value::Undefined);
-    this_initialized = !derived_constructor;
-    if derived_constructor {
-      // Derived constructors have an uninitialized `this` binding until `super()` returns.
-      //
-      // Represent `this` as a heap-owned shared state object so nested arrow functions and direct
-      // eval code can observe initialization when `super()` is called.
-      let state = scope.alloc_derived_constructor_state(ctor)?;
-      let idx = scope.heap().root_stack.len();
-      scope.push_root(Value::Object(state))?;
-      this_root_idx = Some(idx);
-      this_value = Value::Object(state);
-    }
-  }
-
   let mut evaluator = Evaluator {
     vm,
     host,
     hooks,
     env,
     strict,
-    this: this_value,
+    this,
     new_target,
     home_object,
     class_constructor,
@@ -57284,6 +57293,16 @@ pub(crate) fn instantiate_module_decls(
   source: Arc<SourceText>,
   stmts: &[Node<Stmt>],
 ) -> Result<(), VmError> {
+  // Module environments provide the top-level lexical `this` binding (`undefined`) which arrow
+  // functions capture lexically. Mark the module environment as the current "this environment" so
+  // arrow functions created within it resolve the correct lexical `this` value.
+  scope
+    .heap_mut()
+    .env_set_this_value(module_env, Some(Value::Undefined))?;
+  scope
+    .heap_mut()
+    .env_set_new_target(module_env, Some(Value::Undefined))?;
+
   // Module instantiation creates bindings and (for function declarations) pre-creates function
   // objects. Those function objects must capture the instantiating module as `[[ScriptOrModule]]`
   // so nested operations like dynamic `import()` can correctly determine their referrer.
@@ -57398,6 +57417,15 @@ pub(crate) fn run_module(
   source: Arc<SourceText>,
   stmts: &[Node<Stmt>],
 ) -> Result<(), VmError> {
+  // Ensure the module environment is marked as a "this environment" so arrow functions created at
+  // module top-level resolve lexical `this` as `undefined` (per ECMA-262).
+  scope
+    .heap_mut()
+    .env_set_this_value(module_env, Some(Value::Undefined))?;
+  scope
+    .heap_mut()
+    .env_set_new_target(module_env, Some(Value::Undefined))?;
+
   // Ensure module execution reports an active ScriptOrModule so `import.meta` can consult it.
   let exec_ctx = ExecutionContext {
     realm: realm_id,
@@ -57533,6 +57561,15 @@ pub(crate) fn start_module_tla_evaluation(
   source: Arc<SourceText>,
   stmts: &Vec<Node<Stmt>>,
 ) -> Result<ModuleTlaStepResult, VmError> {
+  // Ensure the module environment is marked as a "this environment" so arrow functions created at
+  // module top-level resolve lexical `this` as `undefined` (per ECMA-262).
+  scope
+    .heap_mut()
+    .env_set_this_value(module_env, Some(Value::Undefined))?;
+  scope
+    .heap_mut()
+    .env_set_new_target(module_env, Some(Value::Undefined))?;
+
   // Ensure module execution reports an active ScriptOrModule so `import.meta` can consult it.
   let exec_ctx = ExecutionContext {
     realm: realm_id,

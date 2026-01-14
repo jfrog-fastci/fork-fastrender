@@ -2253,7 +2253,10 @@ impl<'vm> HirEvaluator<'vm> {
       }
     }
 
-    if self.derived_constructor && !self.this_initialized {
+    // Derived class constructors have an uninitialized `this` binding until `super()` returns. Arrow
+    // functions nested within derived constructors capture that *binding* lexically, so they must
+    // also throw a ReferenceError when invoked before `super()` if they evaluate `this`/`super`.
+    if !self.this_initialized {
       return Err(throw_reference_error(
         self.vm,
         scope,
@@ -3223,10 +3226,6 @@ impl<'vm> HirEvaluator<'vm> {
     }
     // Arrow functions capture lexical `this`/`new.target`.
     if is_arrow {
-      scope.heap_mut().set_function_bound_this(func_obj, self.this)?;
-      scope
-        .heap_mut()
-        .set_function_bound_new_target(func_obj, self.new_target)?;
       scope
         .heap_mut()
         .set_function_home_object(func_obj, self.home_object)?;
@@ -11839,6 +11838,18 @@ impl<'vm> HirEvaluator<'vm> {
             .heap_mut()
             .get_derived_constructor_state_mut(state_obj)?
             .this_value = Some(this_obj);
+          // Also update the `this` binding stored in the current "this environment" so arrow
+          // functions created before `super()` can observe the initialized `this` value after
+          // `super()` returns.
+          let this_env = call_scope
+            .heap()
+            .resolve_this_env(self.env.lexical_env())?
+            .ok_or(VmError::InvariantViolation(
+              "derived constructor super() could not resolve this environment",
+            ))?;
+          call_scope
+            .heap_mut()
+            .env_set_this_value(this_env, Some(this_value))?;
 
           // Initialize derived instance fields immediately after `super()` returns.
           crate::class_fields::initialize_instance_fields_with_host_and_hooks(
@@ -11922,6 +11933,17 @@ impl<'vm> HirEvaluator<'vm> {
       self.this = this_value;
       self.this_initialized = true;
       call_scope.heap_mut().root_stack[this_root_idx] = this_value;
+      // Update the `this` binding stored in the current "this environment" so arrow functions
+      // created before `super()` can observe the initialized `this` value after `super()` returns.
+      let this_env = call_scope
+        .heap()
+        .resolve_this_env(self.env.lexical_env())?
+        .ok_or(VmError::InvariantViolation(
+          "derived constructor super() could not resolve this environment",
+        ))?;
+      call_scope
+        .heap_mut()
+        .env_set_this_value(this_env, Some(this_value))?;
 
       // Initialize derived instance fields immediately after `super()` returns.
       crate::class_fields::initialize_instance_fields_with_host_and_hooks(
@@ -12038,7 +12060,6 @@ impl<'vm> HirEvaluator<'vm> {
                (key, obj)
              }
           };
-
           let func = scope.get_with_host_and_hooks(
             self.vm,
             &mut *self.host,
@@ -22036,6 +22057,37 @@ pub(crate) fn run_compiled_function(
       func.script.clone(),
       func.body,
     );
+  }
+
+  // Arrow functions resolve lexical `this` / `new.target` by walking the environment chain to the
+  // nearest "this environment" (ECMA-262 `GetThisEnvironment`), so keep these as mutable locals.
+  let mut this = this;
+  let mut this_initialized = this_initialized;
+  let mut new_target = new_target;
+
+  let func_env = env.lexical_env();
+  if func_meta.is_arrow {
+    let this_env = scope
+      .heap()
+      .resolve_this_env(func_env)?
+      .ok_or(VmError::InvariantViolation(
+        "arrow function could not resolve lexical this environment",
+      ))?;
+    let this_value = scope.heap().env_get_this_value(this_env)?;
+    let new_target_value = scope.heap().env_get_new_target(this_env)?;
+
+    this_initialized = this_value.is_some();
+    this = this_value.unwrap_or(Value::Undefined);
+    new_target = new_target_value.unwrap_or(Value::Undefined);
+  } else {
+    // Non-arrow functions create a "this environment" at call time.
+    scope
+      .heap_mut()
+      .env_set_new_target(func_env, Some(new_target))?;
+    scope.heap_mut().env_set_this_value(
+      func_env,
+      if derived_constructor { None } else { Some(this) },
+    )?;
   }
 
   let mut evaluator = HirEvaluator {

@@ -454,7 +454,6 @@ impl<'a> Parser<'a> {
       _ => Ok(()),
     }
   }
-
   /// Execute `f` while treating `arguments` as disallowed in class initialization code.
   ///
   /// This models the early-error behavior for class field initializers and `static {}` blocks:

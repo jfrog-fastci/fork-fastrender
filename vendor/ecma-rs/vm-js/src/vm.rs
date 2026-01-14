@@ -4433,23 +4433,23 @@ impl Vm {
     this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
-    let (this_mode, is_strict, realm, outer, bound_this, bound_new_target, meta_property_context) = {
+    let (this_mode, is_strict, realm, outer, meta_property_context) = {
       let f = scope.heap().get_function(callee)?;
       (
         f.this_mode,
         f.is_strict,
         f.realm,
         f.closure_env,
-        f.bound_this,
-        f.bound_new_target,
         f.meta_property_context,
       )
     };
 
     let this = match this_mode {
-      ThisMode::Lexical => bound_this.ok_or(VmError::Unimplemented(
-        "arrow function missing captured lexical this",
-      ))?,
+      // Arrow functions resolve their lexical `this` at call time by walking the environment chain,
+      // so the call-site `this` argument is ignored here.
+      //
+      // `run_ecma_function` will override this placeholder as needed.
+      ThisMode::Lexical => Value::Undefined,
       ThisMode::Strict => this,
       ThisMode::Global => match this {
         Value::Undefined | Value::Null => match realm {
@@ -4472,9 +4472,8 @@ impl Vm {
     };
 
     let new_target = match this_mode {
-      ThisMode::Lexical => bound_new_target.ok_or(VmError::Unimplemented(
-        "arrow function missing captured lexical new.target",
-      ))?,
+      // Arrow functions resolve lexical `new.target` at call time; see `this` above.
+      ThisMode::Lexical => Value::Undefined,
       ThisMode::Strict | ThisMode::Global => Value::Undefined,
     };
 
@@ -4530,24 +4529,13 @@ impl Vm {
     this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
-    let (
-      this_mode,
-      is_strict,
-      realm,
-      outer,
-      bound_this,
-      bound_new_target,
-      func_data,
-      meta_property_context,
-    ) = {
+    let (this_mode, is_strict, realm, outer, func_data, meta_property_context) = {
       let f = scope.heap().get_function(callee)?;
       (
         f.this_mode,
         f.is_strict,
         f.realm,
         f.closure_env,
-        f.bound_this,
-        f.bound_new_target,
         f.data,
         f.meta_property_context,
       )
@@ -4703,9 +4691,11 @@ impl Vm {
       return self.call_ecma_function(scope, host, hooks, code_id, callee, this, args);
     }
     let this = match this_mode {
-      ThisMode::Lexical => bound_this.ok_or(VmError::Unimplemented(
-        "arrow function missing captured lexical this",
-        ))?,
+      // Arrow functions resolve their lexical `this` at call time by walking the environment chain,
+      // so the call-site `this` argument is ignored here.
+      //
+      // `run_compiled_function` will override this placeholder as needed.
+      ThisMode::Lexical => Value::Undefined,
       ThisMode::Strict => this,
       ThisMode::Global => match this {
         Value::Undefined | Value::Null => Value::Object(global_object),
@@ -4721,9 +4711,8 @@ impl Vm {
     };
 
     let new_target = match this_mode {
-      ThisMode::Lexical => bound_new_target.ok_or(VmError::Unimplemented(
-        "arrow function missing captured lexical new.target",
-      ))?,
+      // Arrow functions resolve lexical `new.target` at call time; see `this` above.
+      ThisMode::Lexical => Value::Undefined,
       ThisMode::Strict | ThisMode::Global => Value::Undefined,
     };
 

@@ -4681,6 +4681,41 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
       Err(other) => Err(other),
     }
   }
+
+  /// Resolves the environment record that provides the current lexical `this`/`new.target`
+  /// bindings.
+  ///
+  /// This is used to implement arrow functions' lexical `this`/`new.target` semantics without
+  /// eagerly capturing the *value* at creation time.
+  ///
+  /// Per ECMA-262, this corresponds roughly to walking `GetThisEnvironment()` starting from the
+  /// current lexical environment until an environment with a `this` binding is found.
+  ///
+  /// `vm-js` models this by storing `new_target: Some(..)` on environments that provide a `this`
+  /// binding, and leaving it as `None` on environments that do not (block scopes, `with`, and arrow
+  /// function environments).
+  pub(crate) fn resolve_this_env(&self, env: GcEnv) -> Result<Option<GcEnv>, VmError> {
+    // Environment chains can be deeper than prototype chains (nested blocks), so use a larger cap.
+    const MAX_ENV_CHAIN: usize = 16 * 1024;
+    let mut current: Option<GcEnv> = Some(env);
+    for _ in 0..MAX_ENV_CHAIN {
+      let Some(env) = current else {
+        return Ok(None);
+      };
+      match self.get_env_record(env)? {
+        EnvRecord::Declarative(rec) => {
+          if rec.new_target.is_some() {
+            return Ok(Some(env));
+          }
+          current = rec.outer;
+        }
+        EnvRecord::Object(rec) => {
+          current = rec.outer;
+        }
+      }
+    }
+    Err(VmError::InvariantViolation("environment chain too deep while resolving `this` binding"))
+  }
   /// Gets an object's `[[Prototype]]`.
   pub fn object_prototype(&self, obj: GcObject) -> Result<Option<GcObject>, VmError> {
     if self.is_proxy_object(obj) {
@@ -8047,6 +8082,30 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
         "cannot assign through an indirect env binding",
       ));
     }
+    Ok(())
+  }
+
+  pub(crate) fn env_get_this_value(&self, env: GcEnv) -> Result<Option<Value>, VmError> {
+    Ok(self.get_declarative_env(env)?.this_value)
+  }
+
+  pub(crate) fn env_set_this_value(&mut self, env: GcEnv, value: Option<Value>) -> Result<(), VmError> {
+    if let Some(v) = value {
+      debug_assert!(self.debug_value_is_valid_or_primitive(v));
+    }
+    self.get_declarative_env_mut(env)?.this_value = value;
+    Ok(())
+  }
+
+  pub(crate) fn env_get_new_target(&self, env: GcEnv) -> Result<Option<Value>, VmError> {
+    Ok(self.get_declarative_env(env)?.new_target)
+  }
+
+  pub(crate) fn env_set_new_target(&mut self, env: GcEnv, value: Option<Value>) -> Result<(), VmError> {
+    if let Some(v) = value {
+      debug_assert!(self.debug_value_is_valid_or_primitive(v));
+    }
+    self.get_declarative_env_mut(env)?.new_target = value;
     Ok(())
   }
 
