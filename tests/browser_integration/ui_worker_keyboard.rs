@@ -551,6 +551,50 @@ fn focus_does_not_inject_data_fastr_focus_attribute() {
 }
 
 #[test]
+fn clear_page_focus_blurs_focused_element_and_repaints() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let (_dir, url) = make_focus_attr_regression_page();
+
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-clear-page-focus").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+  let tab_id = TabId(1);
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
+  ui_tx
+    .send(viewport_changed_msg(tab_id, (100, 120), 1.0))
+    .expect("ViewportChanged");
+  ui_tx
+    .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .expect("Navigate");
+
+  // Unfocused marker should start blue.
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (0, 0, 255));
+
+  // Click the input to focus it.
+  ui_tx
+    .send(pointer_down(tab_id, (10.0, 90.0), PointerButton::Primary))
+    .expect("PointerDown");
+  ui_tx
+    .send(pointer_up(tab_id, (10.0, 90.0), PointerButton::Primary))
+    .expect("PointerUp");
+  // Consume PointerDown + PointerUp repaints.
+  let _ = wait_for_frame_ready(&ui_rx, tab_id);
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (0, 255, 0));
+
+  ui_tx
+    .send(UiToWorker::ClearPageFocus { tab_id })
+    .expect("ClearPageFocus");
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (0, 0, 255));
+
+  drop(ui_tx);
+  join.join().expect("join ui worker");
+}
+
+#[test]
 fn key_action_sets_focus_visible() {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();

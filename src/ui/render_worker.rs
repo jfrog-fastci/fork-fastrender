@@ -4423,6 +4423,20 @@ impl BrowserRuntime {
       UiToWorker::KeyAction { tab_id, key } => {
         self.handle_key_action(tab_id, key);
       }
+      UiToWorker::ClearPageFocus { tab_id } => {
+        let Some(tab) = self.tabs.get_mut(&tab_id) else {
+          return;
+        };
+        let Some(doc) = tab.document.as_mut() else {
+          return;
+        };
+
+        let changed = doc.mutate_dom(|dom| tab.interaction.focus_node_id(dom, None, false).0);
+        if changed {
+          tab.cancel.bump_paint();
+          tab.needs_repaint = true;
+        }
+      }
       UiToWorker::MediaCommand {
         tab_id,
         node_id,

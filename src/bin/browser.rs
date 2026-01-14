@@ -15539,6 +15539,7 @@ impl App {
       | UiToWorker::A11ySetFocus { tab_id, .. }
       | UiToWorker::A11yActivate { tab_id, .. }
       | UiToWorker::A11yScrollIntoView { tab_id, .. }
+      | UiToWorker::ClearPageFocus { tab_id }
       | UiToWorker::MediaCommand { tab_id, .. }
       | UiToWorker::FindQuery { tab_id, .. }
       | UiToWorker::FindNext { tab_id }
@@ -15676,6 +15677,7 @@ impl App {
           | UiToWorker::A11ySetFocus { .. }
           | UiToWorker::A11yActivate { .. }
           | UiToWorker::A11yScrollIntoView { .. }
+          | UiToWorker::ClearPageFocus { .. }
           | UiToWorker::MediaCommand { .. }
           | UiToWorker::FindQuery { .. }
           | UiToWorker::FindNext { .. }
@@ -22095,6 +22097,9 @@ impl App {
   fn focus_address_bar_select_all(&mut self) {
     self.page_has_focus = false;
     self.cancel_media_controls();
+    if let Some(tab_id) = self.page_input_tab.or(self.browser_state.active_tab_id()) {
+      let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ClearPageFocus { tab_id });
+    }
     self.browser_state.chrome.request_focus_address_bar = true;
     self.browser_state.chrome.request_select_all_address_bar = true;
   }
@@ -23011,6 +23016,9 @@ impl App {
               fastrender::Point::new(pos_points.x, pos_points.y),
             ) {
               self.page_has_focus = false;
+              if let Some(tab_id) = self.page_input_tab.or(self.browser_state.active_tab_id()) {
+                let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ClearPageFocus { tab_id });
+              }
             }
 
             // If a popup is open, touches inside it are handled by egui. Any touch outside should
@@ -23813,6 +23821,9 @@ impl App {
               &mut self.page_has_focus,
               &mut self.cursor_in_page,
             ) {
+              if let Some(tab_id) = self.page_input_tab.or(self.browser_state.active_tab_id()) {
+                let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ClearPageFocus { tab_id });
+              }
               return;
             }
             let pos = fastrender::Point::new(pos_points.x, pos_points.y);

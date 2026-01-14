@@ -779,6 +779,15 @@ pub enum UiToWorker {
     tab_id: TabId,
     key: KeyAction,
   },
+  /// Clear focus within the rendered page for the given tab (blur the currently focused element).
+  ///
+  /// Windowed UIs treat the rendered page as a focusable widget for routing keyboard input. When
+  /// focus moves to browser chrome (address bar, menus, toolbar), the worker must be notified so it
+  /// can clear the page's focused element and associated paint state (caret, focus ring /
+  /// `:focus-visible`).
+  ClearPageFocus {
+    tab_id: TabId,
+  },
   /// Accessibility action: set accessibility focus to a DOM node.
   ///
   /// `node_id` is a DOM pre-order traversal id (matching `InteractionState`), not the element's
