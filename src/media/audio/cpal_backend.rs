@@ -1340,8 +1340,18 @@ where
     move |_err| {
       // Avoid printing from the (likely RT) error callback. Record the event and let non-RT code
       // print at most once.
-      diagnostics.set_stream_error(1);
-      errors.record();
+      //
+      // This callback is invoked from CPAL/host code; ensure no panics can unwind across the
+      // callback boundary.
+      if catch_unwind(AssertUnwindSafe(|| {
+        diagnostics.set_stream_error(1);
+        errors.record();
+      }))
+      .is_err()
+      {
+        diagnostics.set_panic_in_callback();
+        errors.record();
+      }
     }
   };
 
