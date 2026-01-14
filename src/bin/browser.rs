@@ -5552,10 +5552,97 @@ mod page_context_menu_keyboard_shortcut_tests {
   use fastrender::ui::{InputMapping, PointerModifiers, TabId, UiToWorker};
   use winit::event::{ModifiersState, VirtualKeyCode};
 
-  fn shift_mods() -> ModifiersState {
+  fn mods(shift: bool, ctrl: bool, alt: bool, logo: bool) -> ModifiersState {
     let mut modifiers = ModifiersState::empty();
-    modifiers.insert(ModifiersState::SHIFT);
+    if shift {
+      modifiers.insert(ModifiersState::SHIFT);
+    }
+    if ctrl {
+      modifiers.insert(ModifiersState::CTRL);
+    }
+    if alt {
+      modifiers.insert(ModifiersState::ALT);
+    }
+    if logo {
+      modifiers.insert(ModifiersState::LOGO);
+    }
     modifiers
+  }
+
+  fn shift_mods() -> ModifiersState {
+    mods(true, false, false, false)
+  }
+
+  #[test]
+  fn page_context_menu_keyboard_gesture_matches_shift_f10() {
+    assert!(is_page_context_menu_keyboard_gesture(
+      VirtualKeyCode::F10,
+      shift_mods()
+    ));
+  }
+
+  #[test]
+  fn page_context_menu_keyboard_gesture_rejects_plain_f10() {
+    assert!(!is_page_context_menu_keyboard_gesture(
+      VirtualKeyCode::F10,
+      ModifiersState::empty()
+    ));
+  }
+
+  #[test]
+  fn page_context_menu_keyboard_gesture_matches_apps_key_without_command_modifiers() {
+    assert!(is_page_context_menu_keyboard_gesture(
+      VirtualKeyCode::Apps,
+      ModifiersState::empty()
+    ));
+    // Shift is not a browser/chrome command modifier, so Apps+Shift should still open the menu.
+    assert!(is_page_context_menu_keyboard_gesture(
+      VirtualKeyCode::Apps,
+      shift_mods()
+    ));
+  }
+
+  #[test]
+  fn page_context_menu_keyboard_gesture_rejects_apps_key_with_command_modifiers() {
+    for modifiers in [
+      mods(false, true, false, false),
+      mods(false, false, true, false),
+      mods(false, false, false, true),
+      mods(true, true, false, false),
+      mods(true, false, true, false),
+      mods(true, false, false, true),
+    ] {
+      assert!(
+        !is_page_context_menu_keyboard_gesture(VirtualKeyCode::Apps, modifiers),
+        "expected Apps key to be rejected with modifiers {modifiers:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn anchor_prefers_cursor_when_inside_page_rect() {
+    let page_rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(800.0, 600.0));
+    let content_rect = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(1024.0, 768.0));
+    let cursor = Pos2::new(110.0, 70.0);
+    let anchor = page_context_menu_anchor_points_for_keyboard_open(
+      Some(page_rect),
+      Some(content_rect),
+      Some(cursor),
+    );
+    assert_eq!(anchor, cursor);
+  }
+
+  #[test]
+  fn anchor_falls_back_to_page_center_when_cursor_outside_page_rect() {
+    let page_rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(800.0, 600.0));
+    let content_rect = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(1024.0, 768.0));
+    let cursor_outside = Pos2::new(0.0, 0.0);
+    let anchor = page_context_menu_anchor_points_for_keyboard_open(
+      Some(page_rect),
+      Some(content_rect),
+      Some(cursor_outside),
+    );
+    assert_eq!(anchor, page_rect.center());
   }
 
   #[test]
@@ -5723,6 +5810,65 @@ mod page_context_menu_keyboard_shortcut_tests {
     let anchor =
       page_context_menu_anchor_points_for_keyboard_open(None, Some(content_rect), Some(cursor));
     assert_eq!(anchor, content_rect.center());
+  }
+
+  #[test]
+  fn keyboard_page_context_menu_request_is_blocked_by_focus_and_input_state() {
+    let tab_id = TabId(1);
+    let page_rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(800.0, 600.0));
+    let mapping = InputMapping::new(page_rect, (800, 600));
+    let cursor = Pos2::new(110.0, 70.0);
+
+    assert!(
+      keyboard_page_context_menu_request(
+        VirtualKeyCode::F10,
+        shift_mods(),
+        false,
+        false,
+        false,
+        tab_id,
+        Some(page_rect),
+        None,
+        Some(mapping),
+        Some(cursor),
+      )
+      .is_none(),
+      "expected request to be blocked when page does not have focus"
+    );
+
+    assert!(
+      keyboard_page_context_menu_request(
+        VirtualKeyCode::F10,
+        shift_mods(),
+        true,
+        true,
+        false,
+        tab_id,
+        Some(page_rect),
+        None,
+        Some(mapping),
+        Some(cursor),
+      )
+      .is_none(),
+      "expected request to be blocked when chrome has text focus"
+    );
+
+    assert!(
+      keyboard_page_context_menu_request(
+        VirtualKeyCode::F10,
+        shift_mods(),
+        true,
+        false,
+        true,
+        tab_id,
+        Some(page_rect),
+        None,
+        Some(mapping),
+        Some(cursor),
+      )
+      .is_none(),
+      "expected request to be blocked when the loading overlay captures input"
+    );
   }
 }
 
