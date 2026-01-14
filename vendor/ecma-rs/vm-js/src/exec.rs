@@ -16478,6 +16478,13 @@ pub(crate) enum GenFrame {
   /// Continue a `try` statement after evaluating the finally block.
   TryAfterFinally { pending: Completion },
 
+  /// Continue a `catch` clause after binding its parameter pattern (which may suspend due to
+  /// `yield` inside destructuring defaults/computed keys).
+  CatchAfterParamBind {
+    catch: *const CatchBlock,
+    outer: GcEnv,
+  },
+
   /// Continue evaluating a unary `yield` after its operand expression completes (nested yield).
   YieldAfterOperand,
   /// Continue evaluating a unary `yield*` after its operand expression completes (nested yield).
@@ -16750,9 +16757,9 @@ impl Trace for GenFrame {
           tracer.trace_value(*v);
         }
       }
-      GenFrame::RestoreLexEnv { outer } | GenFrame::WithAfterObject { outer, .. } => {
-        tracer.trace_env(*outer)
-      }
+      GenFrame::RestoreLexEnv { outer }
+      | GenFrame::WithAfterObject { outer, .. }
+      | GenFrame::CatchAfterParamBind { outer, .. } => tracer.trace_env(*outer),
       GenFrame::WhileAfterTest { v, .. }
       | GenFrame::WhileAfterBody { v, .. }
       | GenFrame::DoWhileAfterBody { v, .. }
@@ -34587,62 +34594,121 @@ fn gen_eval_catch(
 ) -> Result<GenEval<Completion>, VmError> {
   let outer = evaluator.env.lexical_env;
 
-  // Set up catch environments and instantiate bindings. Any throw completion during setup must
-  // restore the outer lexical environment before propagating.
-  let setup_res: Result<(), VmError> = (|| {
-    // Root thrown across catch binding instantiation which may allocate.
+  // Catch parameter binding may suspend if the destructuring pattern contains `yield`. Mirror the
+  // async evaluator's `CatchAfterParamBind` approach: create the parameter environment + TDZ
+  // bindings eagerly, then perform the bind step using `gen_bind_pattern`.
+  if let Some(param) = &catch.parameter {
+    // Root thrown across catch setup + parameter binding, which can allocate and run user code.
     let mut catch_scope = scope.reborrow();
     catch_scope.push_root(thrown)?;
 
-    if let Some(param) = &catch.parameter {
-      // --- Catch parameter binding (paramEnv) ---
-      let param_env = catch_scope.env_create(Some(outer))?;
-      evaluator
-        .env
-        .set_lexical_env(catch_scope.heap_mut(), param_env);
+    // --- Catch parameter binding (paramEnv) ---
+    let param_env = catch_scope.env_create(Some(outer))?;
+    evaluator
+      .env
+      .set_lexical_env(catch_scope.heap_mut(), param_env);
 
-      evaluator.instantiate_lexical_names_from_pat(
-        &mut catch_scope,
-        param_env,
-        &param.stx.pat.stx,
-        param.stx.pat.loc,
-        /* mutable */ true,
-      )?;
+    if let Err(err) = evaluator.instantiate_lexical_names_from_pat(
+      &mut catch_scope,
+      param_env,
+      &param.stx.pat.stx,
+      param.stx.pat.loc,
+      /* mutable */ true,
+    ) {
+      evaluator.env.set_lexical_env(catch_scope.heap_mut(), outer);
+      return Err(err);
+    }
 
-      evaluator.bind_catch_param(&mut catch_scope, &param.stx, thrown, param_env)?;
+    let bind_eval = match gen_bind_pattern(
+      evaluator,
+      &mut catch_scope,
+      &param.stx.pat.stx,
+      thrown,
+      BindingKind::Let,
+    ) {
+      Ok(v) => v,
+      Err(err) => {
+        evaluator.env.set_lexical_env(catch_scope.heap_mut(), outer);
+        return Err(err);
+      }
+    };
 
-      // --- Catch block evaluation (blockEnv) ---
-      let block_env = catch_scope.env_create(Some(param_env))?;
-      evaluator
-        .env
-        .set_lexical_env(catch_scope.heap_mut(), block_env);
-      evaluator.instantiate_block_decls_in_stmt_list(&mut catch_scope, block_env, &catch.body)?;
-    } else {
-      // Optional catch binding (`catch { ... }`): evaluate the catch body as a normal block.
-      let needs_lexical_env = catch.body.iter().any(|stmt| match &*stmt.stx {
-        Stmt::VarDecl(var)
-          if matches!(
-            var.stx.mode,
-            VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
-          ) =>
-        {
-          true
-        }
-        Stmt::ClassDecl(_) => true,
-        Stmt::FunctionDecl(_) => true,
-        _ => false,
-      });
-      if needs_lexical_env {
-        let block_env = catch_scope.env_create(Some(outer))?;
-        evaluator
-          .env
-          .set_lexical_env(catch_scope.heap_mut(), block_env);
-        evaluator.instantiate_block_decls_in_stmt_list(&mut catch_scope, block_env, &catch.body)?;
+    match bind_eval {
+      GenEval::Complete(bind_completion) => {
+        // Drop `catch_scope` before entering the catch body to avoid retaining the thrown value on
+        // the stack root list longer than necessary.
+        drop(catch_scope);
+        return gen_catch_after_param_bind(evaluator, scope, catch, outer, bind_completion);
+      }
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::CatchAfterParamBind {
+            catch: catch as *const CatchBlock,
+            outer,
+          },
+        )?;
+        return Ok(GenEval::Suspend(suspend));
       }
     }
-    Ok(())
-  })();
-  if let Err(err) = setup_res {
+  }
+
+  // Optional catch binding (`catch { ... }`): evaluate the catch body as a normal block.
+  let needs_lexical_env = catch.body.iter().any(|stmt| match &*stmt.stx {
+    Stmt::VarDecl(var)
+      if matches!(
+        var.stx.mode,
+        VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+      ) =>
+    {
+      true
+    }
+    Stmt::ClassDecl(_) => true,
+    Stmt::FunctionDecl(_) => true,
+    _ => false,
+  });
+  if needs_lexical_env {
+    let block_env = scope.env_create(Some(outer))?;
+    evaluator.env.set_lexical_env(scope.heap_mut(), block_env);
+    if let Err(err) = evaluator.instantiate_block_decls_in_stmt_list(scope, block_env, &catch.body)
+    {
+      evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      return Err(err);
+    }
+  }
+
+  match gen_eval_stmt_list(evaluator, scope, &catch.body)? {
+    GenEval::Complete(c) => {
+      evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      Ok(GenEval::Complete(c))
+    }
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(&mut suspend.frames, GenFrame::RestoreLexEnv { outer })?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_catch_after_param_bind(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  catch: &CatchBlock,
+  outer: GcEnv,
+  bind_completion: Completion,
+) -> Result<GenEval<Completion>, VmError> {
+  // If binding the catch parameter threw/returned/etc, restore the outer env and propagate.
+  if bind_completion.is_abrupt() {
+    evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+    return Ok(GenEval::Complete(bind_completion));
+  }
+
+  // Catch parameter binding has finished in paramEnv; evaluate the catch body in a fresh blockEnv
+  // nested in paramEnv (ECMA-262 CatchClauseEvaluation).
+  let param_env = evaluator.env.lexical_env;
+  let block_env = scope.env_create(Some(param_env))?;
+  evaluator.env.set_lexical_env(scope.heap_mut(), block_env);
+
+  if let Err(err) = evaluator.instantiate_block_decls_in_stmt_list(scope, block_env, &catch.body) {
     evaluator.env.set_lexical_env(scope.heap_mut(), outer);
     return Err(err);
   }
@@ -42269,6 +42335,17 @@ fn gen_resume_from_frames(
           v,
           state,
         )? {
+          GenEval::Complete(c) => state = c,
+          GenEval::Suspend(mut suspend) => {
+            vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+            return Ok(GenEval::Suspend(suspend));
+          }
+        }
+      }
+
+      GenFrame::CatchAfterParamBind { catch, outer } => {
+        let catch = unsafe { &*catch };
+        match gen_catch_after_param_bind(evaluator, scope, catch, outer, state)? {
           GenEval::Complete(c) => state = c,
           GenEval::Suspend(mut suspend) => {
             vecdeque_try_append(&mut suspend.frames, &mut frames)?;
