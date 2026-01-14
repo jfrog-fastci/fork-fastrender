@@ -9367,11 +9367,16 @@ impl InlineFormattingContext {
     let anchor_baseline_position = block_offset + line_baseline;
     let line_origin = Point::new(line_left_offset, block_offset);
 
-    for (i, positioned) in items.iter().enumerate() {
+    for (i, positioned) in items.into_iter().enumerate() {
       let item_width = positioned.item.width();
+      let item_metrics = positioned.item.baseline_metrics();
+      let item_debug = if log_line {
+        Some(format!("{:?}", &positioned.item))
+      } else {
+        None
+      };
       let mut inline_pos = if rtl { cursor - item_width } else { cursor };
-      let mut block_pos = line_baseline + positioned.baseline_offset
-        - positioned.item.baseline_metrics().baseline_offset;
+      let mut block_pos = line_baseline + positioned.baseline_offset - item_metrics.baseline_offset;
       if let InlineItem::InlineBox(box_item) = &positioned.item {
         // Inline boxes can have vertical padding/borders that extend above the line-height strut.
         // The line builder sizes lines using `InlineBoxItem::metrics` (which may include that
@@ -9400,8 +9405,10 @@ impl InlineFormattingContext {
         inline_pos += marker_gap;
       }
 
-      if let InlineItem::StaticPositionAnchor(anchor) = &positioned.item {
-        if anchor.running.is_none() && anchor.footnote.is_none() {
+      let fragment = match positioned.item {
+        InlineItem::StaticPositionAnchor(anchor)
+          if anchor.running.is_none() && anchor.footnote.is_none() =>
+        {
           if let Some(map) = anchor_positions.as_deref_mut() {
             let inline_origin = line_left_offset + inline_pos;
             let anchor_point = StaticPositionAnchorPoint {
@@ -9410,38 +9417,10 @@ impl InlineFormattingContext {
             };
             map.insert(anchor.box_id, anchor_point);
           }
-        } else {
-          let fragment = self.create_item_fragment_oriented(
-            &positioned.item,
-            block_pos,
-            inline_pos,
-            inline_vertical,
-            line_origin,
-            Point::ZERO,
-            relative_cb,
-            anchor_positions.as_deref_mut(),
-            positioned_containing_blocks.as_deref_mut(),
-            root_font_metrics,
-          );
-          if log_line {
-            let metrics = positioned.item.baseline_metrics();
-            eprintln!(
-              "  item#{i} width={:.2} block_pos={:.2} baseline_offset={:.2} metrics(base={:.2} h={:.2} asc={:.2} desc={:.2}) kind={:?}",
-              item_width,
-              block_pos,
-              positioned.baseline_offset,
-              metrics.baseline_offset,
-              metrics.height,
-              metrics.ascent,
-              metrics.descent,
-              positioned.item
-            );
-          }
-          children.push(fragment);
+          None
         }
-      } else {
-        let fragment = self.create_item_fragment_oriented(
-          &positioned.item,
+        item => Some(self.create_item_fragment_oriented(
+          item,
           block_pos,
           inline_pos,
           inline_vertical,
@@ -9451,20 +9430,21 @@ impl InlineFormattingContext {
           anchor_positions.as_deref_mut(),
           positioned_containing_blocks.as_deref_mut(),
           root_font_metrics,
-        );
+        )),
+      };
+      if let Some(fragment) = fragment {
         if log_line {
-          let metrics = positioned.item.baseline_metrics();
           eprintln!(
-                    "  item#{i} width={:.2} block_pos={:.2} baseline_offset={:.2} metrics(base={:.2} h={:.2} asc={:.2} desc={:.2}) kind={:?}",
-                    item_width,
-                    block_pos,
-                    positioned.baseline_offset,
-                    metrics.baseline_offset,
-                    metrics.height,
-                    metrics.ascent,
-                    metrics.descent,
-                    positioned.item
-                );
+            "  item#{i} width={:.2} block_pos={:.2} baseline_offset={:.2} metrics(base={:.2} h={:.2} asc={:.2} desc={:.2}) kind={}",
+            item_width,
+            block_pos,
+            positioned.baseline_offset,
+            item_metrics.baseline_offset,
+            item_metrics.height,
+            item_metrics.ascent,
+            item_metrics.descent,
+            item_debug.as_deref().unwrap_or("<unknown>")
+          );
         }
         children.push(fragment);
       }
@@ -9676,7 +9656,7 @@ impl InlineFormattingContext {
   #[allow(clippy::only_used_in_recursion)]
   fn create_item_fragment_oriented(
     &self,
-    item: &InlineItem,
+    item: InlineItem,
     mut block_pos: f32,
     mut inline_pos: f32,
     inline_vertical: bool,
@@ -9687,7 +9667,7 @@ impl InlineFormattingContext {
     mut positioned_containing_blocks: Option<&mut HashMap<usize, ContainingBlock>>,
     root_font_metrics: Option<RootFontMetrics>,
   ) -> FragmentNode {
-    let style = match item {
+    let style = match &item {
       InlineItem::InlineBox(box_item) => Some(box_item.style.as_ref()),
       InlineItem::InlineBlock(block_item) => block_item.fragment.style.as_deref(),
       InlineItem::Ruby(ruby_item) => Some(ruby_item.style.as_ref()),
@@ -9731,20 +9711,21 @@ impl InlineFormattingContext {
           text_item.advance + paint_offset.abs(),
           text_item.metrics.height,
         );
+        let source_range = TextSourceRange::new(text_item.source_range());
         FragmentNode::new_with_style(
           bounds,
           FragmentContent::Text {
-            text: Arc::from(text_item.text.clone()),
+            text: Arc::from(text_item.text),
             box_id,
-            source_range: TextSourceRange::new(text_item.source_range()),
+            source_range,
             baseline_offset: text_item.metrics.baseline_offset,
-            shaped: Some(Arc::from(text_item.runs.clone())),
+            shaped: Some(Arc::new(text_item.runs)),
             is_marker: text_item.is_marker,
             emphasis_offset: text_item.emphasis_offset,
             document_selection: None,
           },
           vec![],
-          text_item.style.clone(),
+          text_item.style,
         )
       }
       InlineItem::SoftBreak => {
@@ -9768,16 +9749,22 @@ impl InlineFormattingContext {
         let bounds = Rect::from_xywh(inline_pos, block_pos, 0.0, 0.0);
         FragmentNode::new_line(bounds, 0.0, Vec::new())
       }
-      InlineItem::InlineBox(box_item) => {
+      InlineItem::InlineBox(mut box_item) => {
+        let containing_block_box_id = box_item.box_id;
+        let establishes_containing_block = box_item.style.establishes_abs_containing_block()
+          || box_item.style.establishes_fixed_containing_block();
+        let containing_block_style = box_item.style.clone();
+        let containing_block_border_left = box_item.border_left;
+        let containing_block_border_right = box_item.border_right;
+        let containing_block_border_top = box_item.border_top;
+        let containing_block_border_bottom = box_item.border_bottom;
+
         let record_containing_block = |bounds: Rect,
                                        parent_offset_in_line: Point,
                                        positioned_containing_blocks: &mut Option<
           &mut HashMap<usize, ContainingBlock>,
         >| {
-          if box_item.box_id == 0
-            || !(box_item.style.establishes_abs_containing_block()
-              || box_item.style.establishes_fixed_containing_block())
-          {
+          if containing_block_box_id == 0 || !establishes_containing_block {
             return;
           }
           let Some(map) = positioned_containing_blocks.as_deref_mut() else {
@@ -9787,7 +9774,7 @@ impl InlineFormattingContext {
           // inline box). Translate it into line coordinates before applying the line's own origin so
           // containing-block rects stay correct for nested inline boxes.
           let border_rect = bounds.translate(line_origin.translate(parent_offset_in_line));
-          let style = box_item.style.as_ref();
+          let style = containing_block_style.as_ref();
           let inline_positive =
             crate::style::inline_axis_positive(style.writing_mode, style.direction);
           let block_positive = crate::style::block_axis_positive(style.writing_mode);
@@ -9841,10 +9828,10 @@ impl InlineFormattingContext {
             };
           let border_for = |side: crate::style::PhysicalSide| -> f32 {
             match side {
-              crate::style::PhysicalSide::Left => box_item.border_left,
-              crate::style::PhysicalSide::Right => box_item.border_right,
-              crate::style::PhysicalSide::Top => box_item.border_top,
-              crate::style::PhysicalSide::Bottom => box_item.border_bottom,
+              crate::style::PhysicalSide::Left => containing_block_border_left,
+              crate::style::PhysicalSide::Right => containing_block_border_right,
+              crate::style::PhysicalSide::Top => containing_block_border_top,
+              crate::style::PhysicalSide::Bottom => containing_block_border_bottom,
             }
           };
           let border_inline_start = border_for(inline_start_side);
@@ -9881,7 +9868,7 @@ impl InlineFormattingContext {
           .with_writing_mode_and_direction(style.writing_mode, style.direction);
 
           map
-            .entry(box_item.box_id)
+            .entry(containing_block_box_id)
             .and_modify(|existing| {
               let union = Rect::from_points(
                 Point::new(
@@ -9920,7 +9907,6 @@ impl InlineFormattingContext {
           compute_inline_items_single_line_layout(&box_item.children, box_item.strut_metrics);
         let border_inline_pos = inline_pos + box_item.margin_left;
         let mut child_inline = box_item.start_edge + box_item.line_padding_start;
-        let mut children = Vec::with_capacity(box_item.children.len());
 
         // CSS 2.1 §10.6.1: for inline non-replaced elements, vertical padding/borders are applied
         // around the *content area* (font metrics), not the line-height strut. When `line-height`
@@ -9950,11 +9936,17 @@ impl InlineFormattingContext {
           _ => false,
         });
 
-        for (idx, child) in box_item.children.iter().enumerate() {
+        let bounds_width = box_item.width();
+        let parent_offset_in_line_for_children =
+          parent_offset_in_line.translate(Point::new(border_inline_pos, paint_origin_block));
+        let child_items = std::mem::take(&mut box_item.children);
+        let mut children = Vec::with_capacity(child_items.len());
+
+        for (idx, child) in child_items.into_iter().enumerate() {
           let mut child_block = line_box_origin_block + baseline + child_offsets[idx]
             - child.baseline_metrics().baseline_offset;
           if only_bookkeeping_anchors {
-            if let InlineItem::StaticPositionAnchor(anchor) = child {
+            if let InlineItem::StaticPositionAnchor(anchor) = &child {
               if anchor.running.is_none() && anchor.footnote.is_none() {
                 // When an inline box contains only out-of-flow positioned descendants, it does not
                 // generate any in-flow line boxes. For static-position fallback, align positioned
@@ -9964,19 +9956,20 @@ impl InlineFormattingContext {
               }
             }
           }
+          let child_width = child.width();
           let fragment = self.create_item_fragment_oriented(
             child,
             child_block,
             child_inline,
             inline_vertical,
             line_origin,
-            parent_offset_in_line.translate(Point::new(border_inline_pos, paint_origin_block)),
+            parent_offset_in_line_for_children,
             relative_cb,
             anchor_positions.as_deref_mut(),
             positioned_containing_blocks.as_deref_mut(),
             root_font_metrics,
           );
-          child_inline += child.width();
+          child_inline += child_width;
           if let Some(extra) = box_item.justify_gaps.get(idx) {
             child_inline += *extra;
           }
@@ -9988,7 +9981,7 @@ impl InlineFormattingContext {
         let bounds = Rect::from_xywh(
           border_inline_pos,
           paint_origin_block,
-          box_item.width(),
+          bounds_width,
           content_height + box_item.content_offset_y + box_item.bottom_inset,
         );
         record_containing_block(
@@ -10007,9 +10000,11 @@ impl InlineFormattingContext {
           box_item.paint_style(),
         )
       }
-      InlineItem::Ruby(_) => self.create_item_fragment(item, inline_pos, block_pos),
+      InlineItem::Ruby(ruby_item) => {
+        self.create_item_fragment(InlineItem::Ruby(ruby_item), inline_pos, block_pos)
+      }
       InlineItem::InlineBlock(block_item) => {
-        let mut fragment = block_item.fragment.clone();
+        let mut fragment = block_item.fragment;
         fragment.bounds = Rect::from_xywh(
           inline_pos + block_item.margin_left,
           block_pos + block_item.margin_top,
@@ -10189,11 +10184,11 @@ impl InlineFormattingContext {
         FragmentNode::new_with_style(
           bounds,
           FragmentContent::Replaced {
-            replaced_type: replaced_item.replaced_type.clone(),
+            replaced_type: replaced_item.replaced_type,
             box_id,
           },
           vec![],
-          replaced_item.style.clone(),
+          replaced_item.style,
         )
       }
       InlineItem::Floating(_) => {
@@ -10201,6 +10196,12 @@ impl InlineFormattingContext {
         FragmentNode::new_inline(Rect::from_xywh(inline_pos, block_pos, 0.0, 0.0), 0, vec![])
       }
       InlineItem::StaticPositionAnchor(anchor) => {
+        let StaticPositionAnchor {
+          box_id,
+          running,
+          footnote,
+          ..
+        } = anchor;
         if let Some(map) = anchor_positions.as_deref_mut() {
           // Nested anchors must include any inline box offsets (e.g. padding) that affect where the
           // positioned element would have appeared in flow.
@@ -10210,23 +10211,17 @@ impl InlineFormattingContext {
           let line_top = line_origin
             .translate(parent_offset_in_line)
             .translate(Point::new(inline_pos, 0.0));
-          map.insert(
-            anchor.box_id,
-            StaticPositionAnchorPoint { baseline, line_top },
-          );
+          map.insert(box_id, StaticPositionAnchorPoint { baseline, line_top });
         }
-        if let Some(running) = anchor.running.as_ref() {
+        if let Some(running) = running {
           let bounds = Rect::from_xywh(inline_pos, block_pos, 0.0, 0.01);
-          let mut fragment = FragmentNode::new_running_anchor(
-            bounds,
-            running.name.clone(),
-            running.snapshot.clone(),
-          );
-          fragment.style = Some(running.style.clone());
+          let mut fragment =
+            FragmentNode::new_running_anchor(bounds, running.name, running.snapshot);
+          fragment.style = Some(running.style);
           fragment
-        } else if let Some(footnote) = anchor.footnote.as_ref() {
+        } else if let Some(footnote) = footnote {
           let bounds = Rect::from_xywh(inline_pos, block_pos, 0.0, 0.01);
-          FragmentNode::new_footnote_anchor(bounds, footnote.snapshot.clone(), footnote.policy)
+          FragmentNode::new_footnote_anchor(bounds, footnote.snapshot, footnote.policy)
         } else {
           FragmentNode::new_inline(Rect::from_xywh(inline_pos, block_pos, 0.0, 0.0), 0, vec![])
         }
@@ -10236,27 +10231,28 @@ impl InlineFormattingContext {
 
   /// Creates a fragment for an inline item
   #[allow(clippy::only_used_in_recursion)]
-  fn create_item_fragment(&self, item: &InlineItem, x: f32, y: f32) -> FragmentNode {
+  fn create_item_fragment(&self, item: InlineItem, x: f32, y: f32) -> FragmentNode {
     match item {
       InlineItem::Text(text_item) => {
         let paint_offset = text_item.paint_offset;
         let width = text_item.advance + paint_offset.abs();
         let bounds = Rect::from_xywh(x + paint_offset, y, width, text_item.metrics.height);
         let box_id = (text_item.box_id != 0).then_some(text_item.box_id);
+        let source_range = TextSourceRange::new(text_item.source_range());
         FragmentNode::new_with_style(
           bounds,
           FragmentContent::Text {
-            text: Arc::from(text_item.text.clone()),
+            text: Arc::from(text_item.text),
             box_id,
-            source_range: TextSourceRange::new(text_item.source_range()),
+            source_range,
             baseline_offset: text_item.metrics.baseline_offset,
-            shaped: Some(Arc::from(text_item.runs.clone())),
+            shaped: Some(Arc::new(text_item.runs)),
             is_marker: text_item.is_marker,
             emphasis_offset: text_item.emphasis_offset,
             document_selection: None,
           },
           vec![],
-          text_item.style.clone(),
+          text_item.style,
         )
       }
       InlineItem::SoftBreak => {
@@ -10280,65 +10276,92 @@ impl InlineFormattingContext {
         FragmentNode::new_line(Rect::from_xywh(x, y, 0.0, 0.0), 0.0, Vec::new())
       }
       InlineItem::InlineBox(box_item) => {
-        // Recursively create children with horizontal and vertical offsets
+        let paint_style = box_item.paint_style();
+        let InlineBoxItem {
+          box_id,
+          children,
+          justify_gaps,
+          start_edge,
+          end_edge,
+          line_padding_start,
+          line_padding_end,
+          margin_left,
+          content_offset_y,
+          bottom_inset,
+          strut_metrics,
+          box_index,
+          ..
+        } = box_item;
+
+        // Recursively create children with horizontal and vertical offsets.
         let (baseline, _height, child_offsets) =
-          compute_inline_items_single_line_layout(&box_item.children, box_item.strut_metrics);
-        let mut child_x = box_item.start_edge + box_item.line_padding_start;
-        let origin_x = x + box_item.margin_left;
+          compute_inline_items_single_line_layout(&children, strut_metrics);
+        let mut child_x = start_edge + line_padding_start;
+        let origin_x = x + margin_left;
         // CSS 2.1 §10.6.1: vertical padding/borders start at the content area's edges (font
         // metrics), not the line-height strut edges.
-        let half_leading = box_item.strut_metrics.half_leading();
-        let line_box_origin_y = box_item.content_offset_y - half_leading;
-        let paint_origin_y = y + half_leading - box_item.content_offset_y;
-        let children: Vec<_> = box_item
-          .children
-          .iter()
-          .enumerate()
-          .map(|(idx, child)| {
-            let child_y = line_box_origin_y + baseline + child_offsets[idx]
-              - child.baseline_metrics().baseline_offset;
-            let fragment = self.create_item_fragment(child, child_x, child_y);
-            child_x += child.width();
-            // Justification gaps are part of the inline box's used width but aren't attributed to
-            // any particular child fragment. Insert them explicitly so painted positions match
-            // line measurement.
-            if let Some(gap) = box_item.justify_gaps.get(idx).copied() {
-              child_x += gap;
-            }
-            fragment
-          })
-          .collect();
+        let half_leading = strut_metrics.half_leading();
+        let line_box_origin_y = content_offset_y - half_leading;
+        let paint_origin_y = y + half_leading - content_offset_y;
+        let mut child_fragments = Vec::with_capacity(children.len());
 
-        let content_height =
-          (box_item.strut_metrics.ascent + box_item.strut_metrics.descent).max(0.0);
+        for (idx, child) in children.into_iter().enumerate() {
+          let child_y = line_box_origin_y + baseline + child_offsets[idx]
+            - child.baseline_metrics().baseline_offset;
+          let child_width = child.width();
+          let fragment = self.create_item_fragment(child, child_x, child_y);
+          child_x += child_width;
+          // Justification gaps are part of the inline box's used width but aren't attributed to
+          // any particular child fragment. Insert them explicitly so painted positions match
+          // line measurement.
+          if let Some(gap) = justify_gaps.get(idx).copied() {
+            child_x += gap;
+          }
+          child_fragments.push(fragment);
+        }
+
+        let content_height = (strut_metrics.ascent + strut_metrics.descent).max(0.0);
+        let bounds_width = child_x + line_padding_end + end_edge;
         let bounds = Rect::from_xywh(
           origin_x,
           paint_origin_y,
-          box_item.width(),
-          content_height + box_item.content_offset_y + box_item.bottom_inset,
+          bounds_width,
+          content_height + content_offset_y + bottom_inset,
         );
-        let box_id = (box_item.box_id != 0).then_some(box_item.box_id);
+        let box_id = (box_id != 0).then_some(box_id);
         FragmentNode::new_with_style(
           bounds,
           FragmentContent::Inline {
             box_id,
-            fragment_index: box_item.box_index,
+            fragment_index: box_index,
           },
-          children,
-          box_item.paint_style(),
+          child_fragments,
+          paint_style,
         )
       }
       InlineItem::Ruby(ruby_item) => {
-        let origin_x = x + ruby_item.margin_left;
+        let intrinsic_width = ruby_item.intrinsic_width();
+        let RubyItem {
+          segments,
+          start_edge,
+          content_offset_y,
+          metrics,
+          margin_left,
+          box_id,
+          fragment_index,
+          style,
+          ..
+        } = ruby_item;
+        let origin_x = x + margin_left;
         let origin_y = y;
         let mut children = Vec::new();
 
-        for segment in &ruby_item.segments {
+        for segment in segments {
           // Child fragments are positioned relative to the ruby container's border box.
-          let segment_x = ruby_item.start_edge + segment.offset_x;
-          let segment_y = ruby_item.content_offset_y + segment.offset_y;
+          let segment_x = start_edge + segment.offset_x;
+          let segment_y = content_offset_y + segment.offset_y;
 
-          if let Some(items) = &segment.annotation_top {
+          if let Some(items) = segment.annotation_top {
             let spacing = segment.top_spacing.unwrap_or(
               crate::layout::contexts::inline::line_builder::RubyLineSpacing {
                 leading: 0.0,
@@ -10347,10 +10370,12 @@ impl InlineFormattingContext {
             );
             let mut cx = spacing.leading;
             let mut line_children = Vec::new();
-            for (idx, child) in items.iter().enumerate() {
+            let len = items.len();
+            for (idx, child) in items.into_iter().enumerate() {
+              let child_width = child.width();
               let fragment = self.create_item_fragment(child, cx, 0.0);
-              cx += child.width();
-              if spacing.gap > 0.0 && idx + 1 < items.len() {
+              cx += child_width;
+              if spacing.gap > 0.0 && idx + 1 < len {
                 cx += spacing.gap;
               }
               line_children.push(fragment);
@@ -10377,9 +10402,10 @@ impl InlineFormattingContext {
           let base_y = segment_y + segment.top_height;
           let mut base_children = Vec::new();
           let mut cx = 0.0;
-          for child in &segment.base_items {
+          for child in segment.base_items {
+            let child_width = child.width();
             let fragment = self.create_item_fragment(child, cx, 0.0);
-            cx += child.width();
+            cx += child_width;
             base_children.push(fragment);
           }
           let mut base_line = FragmentNode::new(
@@ -10397,7 +10423,7 @@ impl InlineFormattingContext {
           base_line.baseline = Some(segment.base_metrics.baseline_offset);
           children.push(base_line);
 
-          if let Some(items) = &segment.annotation_bottom {
+          if let Some(items) = segment.annotation_bottom {
             let bottom_y = base_y + segment.base_height;
             let mut bottom_children = Vec::new();
             let spacing = segment.bottom_spacing.unwrap_or(
@@ -10407,10 +10433,12 @@ impl InlineFormattingContext {
               },
             );
             let mut cx = spacing.leading;
-            for (idx, child) in items.iter().enumerate() {
+            let len = items.len();
+            for (idx, child) in items.into_iter().enumerate() {
+              let child_width = child.width();
               let fragment = self.create_item_fragment(child, cx, 0.0);
-              cx += child.width();
-              if spacing.gap > 0.0 && idx + 1 < items.len() {
+              cx += child_width;
+              if spacing.gap > 0.0 && idx + 1 < len {
                 cx += spacing.gap;
               }
               bottom_children.push(fragment);
@@ -10435,27 +10463,22 @@ impl InlineFormattingContext {
           }
         }
 
-        let bounds = Rect::from_xywh(
-          origin_x,
-          origin_y,
-          ruby_item.intrinsic_width(),
-          ruby_item.metrics.height,
-        );
+        let bounds = Rect::from_xywh(origin_x, origin_y, intrinsic_width, metrics.height);
         let mut fragment = FragmentNode::new_with_style(
           bounds,
           FragmentContent::Inline {
-            box_id: ruby_item.box_id,
-            fragment_index: ruby_item.fragment_index,
+            box_id,
+            fragment_index,
           },
           children,
-          ruby_item.style.clone(),
+          style,
         );
-        fragment.fragment_index = ruby_item.fragment_index;
-        fragment.baseline = Some(ruby_item.metrics.baseline_offset);
+        fragment.fragment_index = fragment_index;
+        fragment.baseline = Some(metrics.baseline_offset);
         fragment
       }
       InlineItem::InlineBlock(block_item) => {
-        let mut fragment = block_item.fragment.clone();
+        let mut fragment = block_item.fragment;
         fragment.bounds = Rect::from_xywh(
           x + block_item.margin_left,
           y + block_item.margin_top,
@@ -10476,11 +10499,11 @@ impl InlineFormattingContext {
         FragmentNode::new_with_style(
           bounds,
           FragmentContent::Replaced {
-            replaced_type: replaced_item.replaced_type.clone(),
+            replaced_type: replaced_item.replaced_type,
             box_id,
           },
           vec![],
-          replaced_item.style.clone(),
+          replaced_item.style,
         )
       }
       InlineItem::Floating(_) => {
