@@ -1,9 +1,19 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmOptions};
+use vm_js::{CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
+}
+
+fn exec_compiled(rt: &mut JsRuntime, source: &str) -> Result<Value, VmError> {
+  let script =
+    CompiledScript::compile_script(rt.heap_mut(), "<generators_optional_chaining_yield>", source)?;
+  assert!(
+    !script.requires_ast_fallback,
+    "script unexpectedly requires AST fallback"
+  );
+  rt.exec_compiled_script(script)
 }
 
 #[test]
@@ -1002,4 +1012,54 @@ fn generators_super_property_optional_call_preserves_this_binding_across_yield_i
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generators_optional_chaining_yield_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      let ok = true;
+
+      function* g0() {
+        const r = null?.(yield "should-not-yield");
+        return r === undefined;
+      }
+      const r0 = g0().next();
+      ok = ok && r0.value === true && r0.done === true;
+
+      function* g1(o) { return o?.m?.(yield 0); }
+      const obj1 = {
+        m: function (x) {
+          'use strict';
+          return this === obj1 && x === 1;
+        }
+      };
+      const it1 = g1(obj1);
+      const r1_1 = it1.next();
+      const r1_2 = it1.next(1);
+      ok = ok && r1_1.value === 0 && r1_1.done === false &&
+        r1_2.value === true && r1_2.done === true;
+
+      function* g2(o) { return o?.[(yield "key")](yield 0); }
+      const obj2 = {
+        m: function (x) {
+          'use strict';
+          return this === obj2 && x === 2;
+        }
+      };
+      const it2 = g2(obj2);
+      const r2_1 = it2.next();
+      const r2_2 = it2.next("m");
+      const r2_3 = it2.next(2);
+      ok = ok && r2_1.value === "key" && r2_1.done === false &&
+        r2_2.value === 0 && r2_2.done === false &&
+        r2_3.value === true && r2_3.done === true;
+
+      ok
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
 }
