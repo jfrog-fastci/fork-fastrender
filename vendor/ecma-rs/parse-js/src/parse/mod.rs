@@ -302,7 +302,6 @@ impl<'a> Parser<'a> {
   pub fn set_allow_top_level_yield(&mut self, allow: bool) {
     self.allow_top_level_yield = allow;
   }
-
   pub fn options(&self) -> ParseOptions {
     self.options
   }
