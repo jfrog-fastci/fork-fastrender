@@ -137,7 +137,7 @@ where
   let Some(path) = path else {
     return Ok(PathBuf::new());
   };
-  let truncated = truncate_utf8_to_max_bytes(path.as_ref(), MAX_SESSION_DOWNLOAD_PATH_BYTES).trim();
+  let truncated = truncate_utf8_to_max_bytes(path.as_ref(), MAX_SESSION_DOWNLOAD_PATH_BYTES);
   Ok(PathBuf::from(truncated))
 }
 
@@ -491,6 +491,13 @@ impl BrowserSessionDownload {
       file_name = clamp_untrusted_utf8(&file_name, MAX_DOWNLOAD_FILE_NAME_BYTES);
     }
     self.file_name = file_name;
+
+    let path_lossy = self.path.to_string_lossy();
+    if path_lossy.as_bytes().len() > MAX_SESSION_DOWNLOAD_PATH_BYTES {
+      let truncated =
+        truncate_utf8_to_max_bytes(path_lossy.as_ref(), MAX_SESSION_DOWNLOAD_PATH_BYTES);
+      self.path = PathBuf::from(truncated);
+    }
 
     self.status = self.status.sanitized();
     if self.status != BrowserSessionDownloadStatus::Failed {
