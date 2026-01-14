@@ -89,6 +89,148 @@ fn direct_eval_allows_super_set_in_instance_field_initializer_compiled() {
 }
 
 #[test]
+fn direct_eval_allows_computed_super_in_instance_field_initializer() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class B { get x() { return this.marker; } }
+        class A extends B {
+          marker = 111;
+          y = eval("super['x']");
+        }
+        (new A()).y
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Number(111.0));
+}
+
+#[test]
+fn direct_eval_allows_computed_super_in_instance_field_initializer_compiled() {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class B { get x() { return this.marker; } }
+      class A extends B {
+        marker = 111;
+        y = eval("super['x']");
+      }
+      (new A()).y
+    "#,
+  );
+  assert_eq!(value, Value::Number(111.0));
+}
+
+#[test]
+fn direct_eval_allows_computed_super_set_in_instance_field_initializer() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class B { set x(v) { this.marker = v; } }
+        class A extends B {
+          marker = 0;
+          y = eval("super['x'] = 222");
+        }
+        (new A()).marker
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Number(222.0));
+}
+
+#[test]
+fn direct_eval_allows_computed_super_set_in_instance_field_initializer_compiled() {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class B { set x(v) { this.marker = v; } }
+      class A extends B {
+        marker = 0;
+        y = eval("super['x'] = 222");
+      }
+      (new A()).marker
+    "#,
+  );
+  assert_eq!(value, Value::Number(222.0));
+}
+
+#[test]
+fn direct_eval_allows_super_computed_member_key_side_effects_in_instance_field_initializer() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var side = 0;
+        function key() { side++; return "x"; }
+        class B { get x() { return this.marker; } }
+        class A extends B {
+          marker = 333;
+          y = eval("super[key()]");
+        }
+        var a = new A();
+        a.y === 333 && side === 1
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn indirect_eval_rejects_super_computed_member_without_running_key_side_effects() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var side = 0;
+        function key() { side++; return "x"; }
+        var e = eval;
+        class B { get x() { return this.marker; } }
+        class A extends B {
+          marker = 1;
+          y = e("super[key()]");
+        }
+        try {
+          new A();
+          false
+        } catch (err) {
+          err.name === "SyntaxError" && side === 0
+        }
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn indirect_eval_rejects_super_computed_member_without_running_key_side_effects_compiled() {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var side = 0;
+      function key() { side++; return "x"; }
+      var e = eval;
+      class B { get x() { return this.marker; } }
+      class A extends B {
+        marker = 1;
+        y = e("super[key()]");
+      }
+      try {
+        new A();
+        false
+      } catch (err) {
+        err.name === "SyntaxError" && side === 0
+      }
+    "#,
+  );
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn direct_eval_allows_super_in_private_instance_field_initializer() {
   let mut rt = new_runtime();
   let value = rt
