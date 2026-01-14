@@ -516,10 +516,25 @@ pub fn menu_bar_ui(
             ui.close_menu();
           }
 
-          let bookmarks_manager_resp =
-            ui.add(egui::Button::new("Bookmark manager…").shortcut_text(SHORTCUT_BOOKMARK_MANAGER));
-          bookmarks_manager_resp.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Open bookmark manager")
+          let bookmarks_manager_toggle_label = if app.chrome.bookmarks_manager_open {
+            "Hide Bookmarks Manager…"
+          } else {
+            "Show Bookmarks Manager…"
+          };
+          let bookmarks_manager_toggle_a11y_label = if app.chrome.bookmarks_manager_open {
+            "Hide bookmarks manager"
+          } else {
+            "Show bookmarks manager"
+          };
+          let bookmarks_manager_resp = ui.add(
+            egui::Button::new(bookmarks_manager_toggle_label)
+              .shortcut_text(SHORTCUT_BOOKMARK_MANAGER),
+          );
+          bookmarks_manager_resp.widget_info(move || {
+            egui::WidgetInfo::labeled(
+              egui::WidgetType::Button,
+              bookmarks_manager_toggle_a11y_label,
+            )
           });
           if bookmarks_manager_resp.clicked() {
             commands.push(MenuCommand::ToggleBookmarksManager);
@@ -547,8 +562,13 @@ pub fn menu_bar_ui(
           } else {
             "Show downloads"
           };
+          let downloads_toggle_label = if app.chrome.downloads_panel_open {
+            "Hide Downloads…"
+          } else {
+            "Show Downloads…"
+          };
           let downloads_resp =
-            ui.add(egui::Button::new("Show Downloads…").shortcut_text(SHORTCUT_DOWNLOADS));
+            ui.add(egui::Button::new(downloads_toggle_label).shortcut_text(SHORTCUT_DOWNLOADS));
           downloads_resp.widget_info(move || {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, downloads_toggle_a11y_label)
           });
@@ -936,16 +956,46 @@ mod tests {
   }
 
   #[test]
+  fn window_hide_downloads_menu_item_emits_command_when_open() {
+    let ctx = egui::Context::default();
+    let mut app = BrowserAppState::new();
+    app.chrome.downloads_panel_open = true;
+    let cmds = click_menu_item(&ctx, &app, "Window", "Hide Downloads…");
+
+    assert!(
+      cmds
+        .iter()
+        .any(|c| matches!(c, MenuCommand::ToggleDownloadsPanel)),
+      "expected Window → Hide Downloads… to emit MenuCommand::ToggleDownloadsPanel, got {cmds:?}"
+    );
+  }
+
+  #[test]
   fn bookmarks_manager_menu_item_emits_command() {
     let ctx = egui::Context::default();
     let app = BrowserAppState::new();
-    let cmds = click_menu_item(&ctx, &app, "Bookmarks", "Bookmark manager…");
+    let cmds = click_menu_item(&ctx, &app, "Bookmarks", "Show Bookmarks Manager…");
 
     assert!(
       cmds
         .iter()
         .any(|c| matches!(c, MenuCommand::ToggleBookmarksManager)),
-      "expected Bookmarks → Bookmark manager… to emit MenuCommand::ToggleBookmarksManager, got {cmds:?}"
+      "expected Bookmarks → Show Bookmarks Manager… to emit MenuCommand::ToggleBookmarksManager, got {cmds:?}"
+    );
+  }
+
+  #[test]
+  fn bookmarks_hide_bookmarks_manager_menu_item_emits_command_when_open() {
+    let ctx = egui::Context::default();
+    let mut app = BrowserAppState::new();
+    app.chrome.bookmarks_manager_open = true;
+    let cmds = click_menu_item(&ctx, &app, "Bookmarks", "Hide Bookmarks Manager…");
+
+    assert!(
+      cmds
+        .iter()
+        .any(|c| matches!(c, MenuCommand::ToggleBookmarksManager)),
+      "expected Bookmarks → Hide Bookmarks Manager… to emit MenuCommand::ToggleBookmarksManager, got {cmds:?}"
     );
   }
 
@@ -1149,6 +1199,35 @@ mod tests {
     assert!(
       names.iter().any(|n| n == "Hide downloads"),
       "expected Window menu downloads item to expose \"Hide downloads\" when open.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
+    );
+  }
+
+  #[test]
+  fn bookmarks_menu_accesskit_bookmarks_manager_label_reflects_panel_open_state() {
+    // Closed.
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    let mut app = BrowserAppState::new();
+    app.chrome.bookmarks_manager_open = false;
+    let output = open_menu_for_accesskit(&ctx, &app, "Bookmarks");
+    let names = a11y_test_util::accesskit_names_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_pretty_json_from_full_output(&output);
+    assert!(
+      names.iter().any(|n| n == "Show bookmarks manager"),
+      "expected Bookmarks menu bookmarks manager item to expose \"Show bookmarks manager\" when closed.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
+    );
+
+    // Open.
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    let mut app = BrowserAppState::new();
+    app.chrome.bookmarks_manager_open = true;
+    let output = open_menu_for_accesskit(&ctx, &app, "Bookmarks");
+    let names = a11y_test_util::accesskit_names_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_pretty_json_from_full_output(&output);
+    assert!(
+      names.iter().any(|n| n == "Hide bookmarks manager"),
+      "expected Bookmarks menu bookmarks manager item to expose \"Hide bookmarks manager\" when open.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
     );
   }
 
