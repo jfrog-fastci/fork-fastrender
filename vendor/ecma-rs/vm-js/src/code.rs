@@ -29,6 +29,7 @@ use parse_js::ast::stmt::{ForInOfLhs, ForOfStmt, ForTripleStmt, ForTripleStmtIni
 use parse_js::operator::OperatorName;
 use parse_js::token::TT;
 use parse_js::{parse_with_options, parse_with_options_cancellable_by_with_init, Dialect, ParseOptions, SourceType};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// A compiled JavaScript source file (source text + lowered HIR).
@@ -44,6 +45,14 @@ pub struct CompiledScript {
   pub contains_generators: bool,
   /// True if the source contains any async function (`async function` / `async () =>` / `async function*`).
   pub contains_async_functions: bool,
+  /// Async function bodies that must fall back to the AST interpreter at call-time.
+  ///
+  /// The compiled (HIR) async executor intentionally supports only a conservative subset of `await`
+  /// forms (see [`crate::hir_exec::run_compiled_async_function`]). Async functions that use any
+  /// unsupported `await` pattern are tagged as [`crate::function::FunctionData::AsyncEcmaFallback`]
+  /// when allocated during compiled execution so call-time evaluation can delegate to the AST
+  /// interpreter without partially executing compiled HIR.
+  pub async_function_body_requires_ast_fallback: BTreeSet<hir_js::BodyId>,
   /// True if the compiled (HIR) execution path must fall back to the AST interpreter.
   ///
   /// This is used by high-level entry points like [`crate::JsRuntime::exec_compiled_script`] to
@@ -55,8 +64,9 @@ pub struct CompiledScript {
   ///   generator functions are allocated as interpreter-backed ECMAScript functions so their bodies
   ///   execute via the AST evaluator at call-time.
   /// - Private-name syntax (`#x`, `#m`, ...) is not supported in the compiled executor.
-  /// - Async (non-generator) function bodies can execute via the compiled async executor, and can
-  ///   fall back on a per-function basis when they use unsupported `await` forms (see
+  /// - Async (non-generator) function bodies execute via the compiled async executor when
+  ///   supported, falling back to the AST interpreter at call-time for unsupported `await`
+  ///   patterns (see [`CompiledScript::async_function_body_requires_ast_fallback`] and
   ///   [`crate::Vm::call_user_function`]).
   ///
   /// Top-level await (classic scripts and modules) is handled by the compiled async executor for a
@@ -180,6 +190,7 @@ impl CompiledScript {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed)
     }))
     .map_err(|_| VmError::InvariantViolation("hir-js panicked while lowering a script"))?;
+    let async_function_body_requires_ast_fallback = async_function_body_requires_ast_fallback(&hir);
     // HIR can be significantly larger than the source text; use a conservative estimate to ensure
     // heap limits apply to compiled code.
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
@@ -191,6 +202,7 @@ impl CompiledScript {
       contains_async_generators,
       contains_generators,
       contains_async_functions,
+      async_function_body_requires_ast_fallback,
       requires_ast_fallback,
       contains_top_level_await,
       top_level_await_requires_ast_fallback,
@@ -247,6 +259,7 @@ impl CompiledScript {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed)
     }))
     .map_err(|_| VmError::InvariantViolation("hir-js panicked while lowering a module"))?;
+    let async_function_body_requires_ast_fallback = async_function_body_requires_ast_fallback(&hir);
 
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
     let external_memory = heap.charge_external(estimated_hir_bytes)?;
@@ -257,6 +270,7 @@ impl CompiledScript {
       contains_async_generators,
       contains_generators,
       contains_async_functions,
+      async_function_body_requires_ast_fallback,
       requires_ast_fallback,
       contains_top_level_await,
       top_level_await_requires_ast_fallback,
@@ -316,6 +330,7 @@ impl CompiledScript {
     let requires_ast_fallback = contains_private_names || top_level_await_requires_ast_fallback;
 
     let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
+    let async_function_body_requires_ast_fallback = async_function_body_requires_ast_fallback(&hir);
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
     let external_memory = heap.charge_external(estimated_hir_bytes)?;
     let hir = arc_try_new_vm(hir)?;
@@ -325,6 +340,7 @@ impl CompiledScript {
       contains_async_generators,
       contains_generators,
       contains_async_functions,
+      async_function_body_requires_ast_fallback,
       requires_ast_fallback,
       contains_top_level_await: has_top_level_await,
       top_level_await_requires_ast_fallback,
@@ -369,6 +385,7 @@ impl CompiledScript {
     // modules that contain generators do not require full-module AST fallback.
     let requires_ast_fallback = contains_private_names || top_level_await_requires_ast_fallback;
     let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
+    let async_function_body_requires_ast_fallback = async_function_body_requires_ast_fallback(&hir);
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
     let external_memory = heap.charge_external(estimated_hir_bytes)?;
     let hir = arc_try_new_vm(hir)?;
@@ -378,6 +395,7 @@ impl CompiledScript {
       contains_async_generators,
       contains_generators,
       contains_async_functions,
+      async_function_body_requires_ast_fallback,
       requires_ast_fallback,
       contains_top_level_await,
       top_level_await_requires_ast_fallback,
@@ -411,6 +429,7 @@ impl CompiledScript {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, parsed)
     }))
     .map_err(|_| VmError::InvariantViolation("hir-js panicked while lowering a module"))?;
+    let async_function_body_requires_ast_fallback = async_function_body_requires_ast_fallback(&hir);
 
     // HIR can be significantly larger than the source text; use a conservative estimate to ensure
     // heap limits apply to compiled code.
@@ -422,6 +441,7 @@ impl CompiledScript {
       contains_async_generators,
       contains_generators,
       contains_async_functions,
+      async_function_body_requires_ast_fallback,
       requires_ast_fallback,
       contains_top_level_await,
       top_level_await_requires_ast_fallback,
@@ -1765,4 +1785,1437 @@ fn stmt_is_module_only(stmt: &Node<Stmt>) -> bool {
     Stmt::VarDecl(decl) => decl.stx.export,
     _ => false,
   }
+}
+
+fn async_function_body_requires_ast_fallback(hir: &hir_js::LowerResult) -> BTreeSet<hir_js::BodyId> {
+  let mut out: BTreeSet<hir_js::BodyId> = BTreeSet::new();
+
+  for (&body_id, _) in hir.body_index.iter() {
+    let Some(body) = hir.body(body_id) else {
+      continue;
+    };
+    if body.kind != hir_js::BodyKind::Function {
+      continue;
+    }
+    let Some(func_meta) = body.function.as_ref() else {
+      continue;
+    };
+    // Only async non-generator functions are eligible for execution in the compiled async executor.
+    if !func_meta.async_ || func_meta.generator {
+      continue;
+    }
+
+    if !hir_async_function_body_is_supported(hir, body_id) {
+      out.insert(body_id);
+    }
+  }
+
+  out
+}
+
+fn hir_async_function_body_is_supported(hir: &hir_js::LowerResult, body_id: hir_js::BodyId) -> bool {
+  let Some(body) = hir.body(body_id) else {
+    // If HIR is missing, conservatively require AST fallback.
+    return false;
+  };
+  let Some(func_meta) = body.function.as_ref() else {
+    return false;
+  };
+  if !func_meta.async_ || func_meta.generator {
+    return false;
+  }
+
+  let mut visited_bodies: BTreeSet<hir_js::BodyId> = BTreeSet::new();
+
+  // Async functions instantiate parameters synchronously before executing the async body. Any `await`
+  // that appears in parameter patterns or default initializers is therefore unsupported in the
+  // compiled async executor.
+  for param in &func_meta.params {
+    if hir_pat_contains_await(hir, body, param.pat, &mut visited_bodies) {
+      return false;
+    }
+    if let Some(default) = param.default {
+      if hir_expr_contains_await(hir, body, default, &mut visited_bodies) {
+        return false;
+      }
+    }
+  }
+
+  match &func_meta.body {
+    hir_js::FunctionBody::Expr(expr_id) => {
+      let Some(expr) = hir_get_expr(body, *expr_id) else {
+        return false;
+      };
+      match &expr.kind {
+        // Expression-bodied async arrow functions are supported only when the body is:
+        // - an AwaitExpression with no nested await, or
+        // - an expression with no await at all.
+        hir_js::ExprKind::Await { expr: awaited_expr } => {
+          !hir_expr_contains_await(hir, body, *awaited_expr, &mut visited_bodies)
+        }
+        _ => !hir_expr_contains_await(hir, body, *expr_id, &mut visited_bodies),
+      }
+    }
+    hir_js::FunctionBody::Block(stmts) => stmts.iter().all(|stmt_id| {
+      hir_async_root_stmt_is_supported(hir, body, *stmt_id, &mut visited_bodies)
+    }),
+  }
+}
+
+fn hir_compound_assign_op_supported(op: hir_js::AssignOp) -> bool {
+  matches!(
+    op,
+    hir_js::AssignOp::AddAssign
+      | hir_js::AssignOp::SubAssign
+      | hir_js::AssignOp::MulAssign
+      | hir_js::AssignOp::DivAssign
+      | hir_js::AssignOp::RemAssign
+      | hir_js::AssignOp::ExponentAssign
+      | hir_js::AssignOp::ShiftLeftAssign
+      | hir_js::AssignOp::ShiftRightAssign
+      | hir_js::AssignOp::ShiftRightUnsignedAssign
+      | hir_js::AssignOp::BitOrAssign
+      | hir_js::AssignOp::BitAndAssign
+      | hir_js::AssignOp::BitXorAssign
+  )
+}
+
+fn hir_logical_assign_op_supported(op: hir_js::AssignOp) -> bool {
+  matches!(
+    op,
+    hir_js::AssignOp::LogicalAndAssign
+      | hir_js::AssignOp::LogicalOrAssign
+      | hir_js::AssignOp::NullishAssign
+  )
+}
+
+fn hir_assignment_target_is_supported(body: &hir_js::Body, target: hir_js::PatId) -> bool {
+  let Some(pat) = hir_get_pat(body, target) else {
+    return false;
+  };
+  match &pat.kind {
+    hir_js::PatKind::Ident(_) => true,
+    hir_js::PatKind::AssignTarget(expr_id) => {
+      let Some(expr) = hir_get_expr(body, *expr_id) else {
+        return false;
+      };
+      matches!(expr.kind, hir_js::ExprKind::Ident(_) | hir_js::ExprKind::Member(_))
+    }
+    _ => false,
+  }
+}
+
+fn hir_object_pat_allows_direct_await_in_keys_and_defaults(
+  hir: &hir_js::LowerResult,
+  body: &hir_js::Body,
+  pat_id: hir_js::PatId,
+  visited_bodies: &mut BTreeSet<hir_js::BodyId>,
+  value_is_assignment_target: bool,
+) -> bool {
+  let Some(pat) = hir_get_pat(body, pat_id) else {
+    return false;
+  };
+  let hir_js::PatKind::Object(obj_pat) = &pat.kind else {
+    return false;
+  };
+
+  // The compiled async object-pattern evaluators do not yet support rest.
+  if obj_pat.rest.is_some() {
+    return false;
+  }
+
+  for prop in obj_pat.props.iter() {
+    // Property key: allow a direct `await <expr>` in computed keys.
+    if let hir_js::ObjectKey::Computed(expr_id) = &prop.key {
+      let Some(key_expr) = hir_get_expr(body, *expr_id) else {
+        return false;
+      };
+      if let hir_js::ExprKind::Await { expr: awaited_expr } = key_expr.kind {
+        if hir_expr_contains_await(hir, body, awaited_expr, visited_bodies) {
+          return false;
+        }
+      } else if hir_expr_contains_await(hir, body, *expr_id, visited_bodies) {
+        return false;
+      }
+    }
+
+    // Property default: allow a direct `await <expr>` default value.
+    if let Some(default_expr_id) = prop.default_value {
+      let Some(default_expr) = hir_get_expr(body, default_expr_id) else {
+        return false;
+      };
+      if let hir_js::ExprKind::Await { expr: awaited_expr } = default_expr.kind {
+        if hir_expr_contains_await(hir, body, awaited_expr, visited_bodies) {
+          return false;
+        }
+      } else if hir_expr_contains_await(hir, body, default_expr_id, visited_bodies) {
+        return false;
+      }
+    }
+
+    // Property value pattern: must not contain any `await`.
+    if value_is_assignment_target {
+      if !hir_assignment_target_is_supported(body, prop.value) {
+        return false;
+      }
+      if hir_pat_contains_await(hir, body, prop.value, visited_bodies) {
+        return false;
+      }
+    } else if hir_pat_contains_await(hir, body, prop.value, visited_bodies) {
+      return false;
+    }
+  }
+
+  true
+}
+
+fn hir_for_head_allows_direct_object_pat_awaits(
+  hir: &hir_js::LowerResult,
+  body: &hir_js::Body,
+  head: &hir_js::ForHead,
+  visited_bodies: &mut BTreeSet<hir_js::BodyId>,
+) -> bool {
+  match head {
+    hir_js::ForHead::Pat(pat_id) => {
+      // The compiled async evaluator does not support `await` in non-var loop heads.
+      !hir_pat_contains_await(hir, body, *pat_id, visited_bodies)
+    }
+    hir_js::ForHead::Var(var_decl) => {
+      // If there is no await in any head pattern, the synchronous binder can handle the head.
+      // If there *is* an await, only support the subset handled by `AsyncObjectPatternBindingState`
+      // (single declarator, no init, object pattern, direct await in keys/defaults).
+      let mut head_pat_contains_await = false;
+      for decl in var_decl.declarators.iter() {
+        if hir_pat_contains_await(hir, body, decl.pat, visited_bodies) {
+          head_pat_contains_await = true;
+          break;
+        }
+        if let Some(init) = decl.init {
+          if hir_expr_contains_await(hir, body, init, visited_bodies) {
+            return false;
+          }
+        }
+      }
+
+      if !head_pat_contains_await {
+        return true;
+      }
+
+      if var_decl.declarators.len() != 1 {
+        return false;
+      }
+      let decl = &var_decl.declarators[0];
+      if decl.init.is_some() {
+        return false;
+      }
+      hir_object_pat_allows_direct_await_in_keys_and_defaults(
+        hir,
+        body,
+        decl.pat,
+        visited_bodies,
+        /* value_is_assignment_target */ false,
+      )
+    }
+  }
+}
+
+fn hir_for_await_of_loop_is_supported(
+  hir: &hir_js::LowerResult,
+  body: &hir_js::Body,
+  left: &hir_js::ForHead,
+  right: hir_js::ExprId,
+  inner: hir_js::StmtId,
+  visited_bodies: &mut BTreeSet<hir_js::BodyId>,
+) -> bool {
+  if !hir_for_head_allows_direct_object_pat_awaits(hir, body, left, visited_bodies) {
+    return false;
+  }
+
+  let Some(rhs_expr) = hir_get_expr(body, right) else {
+    return false;
+  };
+  if let hir_js::ExprKind::Await { expr: awaited_expr } = rhs_expr.kind {
+    if hir_expr_contains_await(hir, body, awaited_expr, visited_bodies) {
+      return false;
+    }
+  } else if hir_expr_contains_await(hir, body, right, visited_bodies) {
+    return false;
+  }
+
+  // The compiled async evaluator currently evaluates the loop body synchronously.
+  // Ensure the body contains no nested awaits.
+  !hir_stmt_contains_await(hir, body, inner, visited_bodies)
+}
+
+fn hir_for_of_loop_is_supported(
+  hir: &hir_js::LowerResult,
+  body: &hir_js::Body,
+  left: &hir_js::ForHead,
+  right: hir_js::ExprId,
+  inner: hir_js::StmtId,
+  visited_bodies: &mut BTreeSet<hir_js::BodyId>,
+) -> bool {
+  if !hir_for_head_allows_direct_object_pat_awaits(hir, body, left, visited_bodies) {
+    return false;
+  }
+  // RHS + body are evaluated synchronously.
+  if hir_expr_contains_await(hir, body, right, visited_bodies) {
+    return false;
+  }
+  if hir_stmt_contains_await(hir, body, inner, visited_bodies) {
+    return false;
+  }
+  true
+}
+
+fn hir_for_triple_expr_is_supported(
+  hir: &hir_js::LowerResult,
+  body: &hir_js::Body,
+  expr_id: hir_js::ExprId,
+  allow_assignment_await: bool,
+  visited_bodies: &mut BTreeSet<hir_js::BodyId>,
+) -> bool {
+  let Some(expr) = hir_get_expr(body, expr_id) else {
+    return false;
+  };
+  if let hir_js::ExprKind::Await { expr: awaited_expr } = expr.kind {
+    return !hir_expr_contains_await(hir, body, awaited_expr, visited_bodies);
+  }
+
+  if allow_assignment_await {
+    if let hir_js::ExprKind::Assignment { op, target, value } = &expr.kind {
+      let Some(rhs) = hir_get_expr(body, *value) else {
+        return false;
+      };
+      if let hir_js::ExprKind::Await { expr: awaited_expr } = rhs.kind {
+        // Support destructuring assignment with a direct await RHS in `for` init/update expressions:
+        // - `({x} = await <expr>)`
+        // - `[x] = await <expr>`
+        //
+        // The awaited operand is evaluated before pattern assignment, and the pattern binding after
+        // the await boundary is synchronous, so the pattern itself must be await-free.
+        if *op == hir_js::AssignOp::Assign {
+          let Some(target_pat) = hir_get_pat(body, *target) else {
+            return false;
+          };
+          if !matches!(
+            target_pat.kind,
+            hir_js::PatKind::Ident(_) | hir_js::PatKind::AssignTarget(_)
+          ) {
+            if hir_pat_contains_await(hir, body, *target, visited_bodies) {
+              return false;
+            }
+            return !hir_expr_contains_await(hir, body, awaited_expr, visited_bodies);
+          }
+        }
+
+        if *op != hir_js::AssignOp::Assign
+          && !hir_compound_assign_op_supported(*op)
+          && !hir_logical_assign_op_supported(*op)
+        {
+          return false;
+        }
+        if !hir_assignment_target_is_supported(body, *target) {
+          return false;
+        }
+        if hir_pat_contains_await(hir, body, *target, visited_bodies) {
+          return false;
+        }
+        return !hir_expr_contains_await(hir, body, awaited_expr, visited_bodies);
+      }
+    }
+  }
+
+  !hir_expr_contains_await(hir, body, expr_id, visited_bodies)
+}
+
+fn hir_async_root_stmt_is_supported(
+  hir: &hir_js::LowerResult,
+  body: &hir_js::Body,
+  stmt_id: hir_js::StmtId,
+  visited_bodies: &mut BTreeSet<hir_js::BodyId>,
+) -> bool {
+  let Some(stmt) = hir_get_stmt(body, stmt_id) else {
+    return false;
+  };
+  match &stmt.kind {
+    hir_js::StmtKind::Expr(expr_id) => {
+      let Some(expr) = hir_get_expr(body, *expr_id) else {
+        return false;
+      };
+      match &expr.kind {
+        hir_js::ExprKind::Await { expr: awaited_expr } => {
+          return !hir_expr_contains_await(hir, body, *awaited_expr, visited_bodies);
+        }
+        hir_js::ExprKind::Assignment { op, target, value } => {
+          let Some(rhs) = hir_get_expr(body, *value) else {
+            return false;
+          };
+          if let hir_js::ExprKind::Await { expr: awaited_expr } = rhs.kind {
+            // Support assignment expression statements with a direct `await` RHS:
+            // - `x = await expr;`
+            // - `x <op>= await expr;` (supported compound ops only)
+            // - `x &&= await expr;` / `x ||= await expr;` / `x ??= await expr;`
+            // - `({x} = await expr);` / `[x] = await expr;` (destructuring assignment; pattern must be await-free)
+            //
+            // Ensure:
+            // - assignment target contains no await, and
+            // - the awaited operand contains no await.
+            if *op == hir_js::AssignOp::Assign
+              || hir_compound_assign_op_supported(*op)
+              || hir_logical_assign_op_supported(*op)
+            {
+              if hir_assignment_target_is_supported(body, *target) {
+                if hir_pat_contains_await(hir, body, *target, visited_bodies) {
+                  return false;
+                }
+                if hir_expr_contains_await(hir, body, awaited_expr, visited_bodies) {
+                  return false;
+                }
+                return true;
+              }
+
+              // Destructuring assignment statements with a direct await RHS are supported so long as
+              // the pattern itself is await-free (pattern evaluation happens after the await
+              // boundary via the synchronous evaluator).
+              if *op == hir_js::AssignOp::Assign {
+                let Some(target_pat) = hir_get_pat(body, *target) else {
+                  return false;
+                };
+                if !matches!(
+                  target_pat.kind,
+                  hir_js::PatKind::Ident(_) | hir_js::PatKind::AssignTarget(_)
+                ) {
+                  if hir_pat_contains_await(hir, body, *target, visited_bodies) {
+                    return false;
+                  }
+                  if hir_expr_contains_await(hir, body, awaited_expr, visited_bodies) {
+                    return false;
+                  }
+                  return true;
+                }
+              }
+            }
+            return false;
+          }
+
+          // Support object destructuring assignment statements where the pattern contains `await` in
+          // a computed key or default value. The RHS is evaluated synchronously before the pattern
+          // state machine begins, so it must not contain any await.
+          if *op == hir_js::AssignOp::Assign {
+            let Some(target_pat) = hir_get_pat(body, *target) else {
+              return false;
+            };
+            if matches!(&target_pat.kind, hir_js::PatKind::Object(_))
+              && hir_pat_contains_await(hir, body, *target, visited_bodies)
+            {
+              if hir_expr_contains_await(hir, body, *value, visited_bodies) {
+                return false;
+              }
+              return hir_object_pat_allows_direct_await_in_keys_and_defaults(
+                hir,
+                body,
+                *target,
+                visited_bodies,
+                /* value_is_assignment_target */ true,
+              );
+            }
+          }
+        }
+        _ => {}
+      }
+
+      !hir_expr_contains_await(hir, body, *expr_id, visited_bodies)
+    }
+
+    hir_js::StmtKind::Return(opt_expr) => match opt_expr {
+      None => true,
+      Some(expr_id) => {
+        let Some(expr) = hir_get_expr(body, *expr_id) else {
+          return false;
+        };
+        match &expr.kind {
+          hir_js::ExprKind::Await { expr: awaited_expr } => {
+            !hir_expr_contains_await(hir, body, *awaited_expr, visited_bodies)
+          }
+          _ => !hir_expr_contains_await(hir, body, *expr_id, visited_bodies),
+        }
+      }
+    },
+
+    hir_js::StmtKind::Throw(expr_id) => {
+      let Some(expr) = hir_get_expr(body, *expr_id) else {
+        return false;
+      };
+      match &expr.kind {
+        hir_js::ExprKind::Await { expr: awaited_expr } => {
+          !hir_expr_contains_await(hir, body, *awaited_expr, visited_bodies)
+        }
+        _ => !hir_expr_contains_await(hir, body, *expr_id, visited_bodies),
+      }
+    }
+
+    // Support `var`/`let`/`const` declarations with direct `await` initializers.
+    hir_js::StmtKind::Var(var_decl) => {
+      for declarator in &var_decl.declarators {
+        let pat_contains_await = hir_pat_contains_await(hir, body, declarator.pat, visited_bodies);
+        if pat_contains_await {
+          // Support `var`/`let`/`const` object destructuring patterns where computed keys or default
+          // values contain a *direct* `await <expr>`.
+          //
+          // The initializer must be evaluated synchronously before the pattern-binding state machine
+          // begins. This means the initializer cannot contain any `await` (including a direct `=
+          // await <expr>` initializer).
+          if !matches!(
+            var_decl.kind,
+            hir_js::VarDeclKind::Var | hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const
+          ) {
+            return false;
+          }
+          if !hir_object_pat_allows_direct_await_in_keys_and_defaults(
+            hir,
+            body,
+            declarator.pat,
+            visited_bodies,
+            /* value_is_assignment_target */ false,
+          ) {
+            return false;
+          }
+          if let Some(init_id) = declarator.init {
+            if hir_expr_contains_await(hir, body, init_id, visited_bodies) {
+              return false;
+            }
+          }
+          continue;
+        }
+        let Some(init) = declarator.init else {
+          continue;
+        };
+        let Some(init_expr) = hir_get_expr(body, init) else {
+          return false;
+        };
+        match &init_expr.kind {
+          hir_js::ExprKind::Await { expr: awaited_expr } => {
+            if hir_expr_contains_await(hir, body, *awaited_expr, visited_bodies) {
+              return false;
+            }
+          }
+          _ => {
+            if hir_expr_contains_await(hir, body, init, visited_bodies) {
+              return false;
+            }
+          }
+        }
+      }
+      true
+    }
+
+    // Support `for await..of` loops, as long as the loop head, RHS, and body contain no other `await`.
+    hir_js::StmtKind::ForIn {
+      left,
+      right,
+      body: inner,
+      is_for_of: true,
+      await_: true,
+    } => hir_for_await_of_loop_is_supported(hir, body, left, *right, *inner, visited_bodies),
+
+    hir_js::StmtKind::ForIn {
+      left,
+      right,
+      body: inner,
+      is_for_of: true,
+      await_: false,
+      ..
+    } => hir_for_of_loop_is_supported(hir, body, left, *right, *inner, visited_bodies),
+
+    hir_js::StmtKind::Labeled { body: inner, .. } => {
+      // Support top-level label chains around async-aware loop forms handled by the compiled async
+      // evaluator:
+      // - `for await..of`
+      // - `for..of` with await-in-pattern
+      // - `for (...)` with await in init/test/update
+      //
+      // Also support label chains around direct-await statement forms (`expr`/`var`/`throw`/
+      // `return`). These statements cannot produce `break`/`continue` completions, so label
+      // semantics are irrelevant and the compiled async evaluator can safely "see through" the
+      // labels.
+      //
+      // Any other labeled statement containing `await` remains unsupported because the compiled
+      // async evaluator does not preserve label semantics for arbitrary awaiting statements that may
+      // produce break/continue completions.
+      let mut current_stmt_id: hir_js::StmtId = *inner;
+      loop {
+        let Some(inner_stmt) = hir_get_stmt(body, current_stmt_id) else {
+          return false;
+        };
+        match &inner_stmt.kind {
+          hir_js::StmtKind::Labeled { body: next, .. } => {
+            current_stmt_id = *next;
+            continue;
+          }
+          hir_js::StmtKind::ForIn {
+            left,
+            right,
+            body: inner,
+            is_for_of: true,
+            await_: true,
+          } => {
+            return hir_for_await_of_loop_is_supported(hir, body, left, *right, *inner, visited_bodies);
+          }
+          hir_js::StmtKind::ForIn {
+            left,
+            right,
+            body: inner,
+            is_for_of: true,
+            await_: false,
+            ..
+          } => {
+            return hir_for_of_loop_is_supported(hir, body, left, *right, *inner, visited_bodies);
+          }
+          hir_js::StmtKind::For {
+            init,
+            test,
+            update,
+            body: inner,
+          } => {
+            // Mirror the `StmtKind::For` logic below for labeled loops.
+            if hir_stmt_contains_await(hir, body, *inner, visited_bodies) {
+              return false;
+            }
+
+            if let Some(init) = init {
+              match init {
+                hir_js::ForInit::Expr(expr_id) => {
+                  if !hir_for_triple_expr_is_supported(
+                    hir,
+                    body,
+                    *expr_id,
+                    /* allow_assignment_await */ true,
+                    visited_bodies,
+                  ) {
+                    return false;
+                  }
+                }
+                hir_js::ForInit::Var(var_decl) => {
+                  for declarator in var_decl.declarators.iter() {
+                    if hir_pat_contains_await(hir, body, declarator.pat, visited_bodies) {
+                      return false;
+                    }
+                    if let Some(init_id) = declarator.init {
+                      let Some(init_expr) = hir_get_expr(body, init_id) else {
+                        return false;
+                      };
+                      if let hir_js::ExprKind::Await { expr: awaited_expr } = init_expr.kind {
+                        if !matches!(
+                          var_decl.kind,
+                          hir_js::VarDeclKind::Var | hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const
+                        ) {
+                          return false;
+                        }
+                        if hir_expr_contains_await(hir, body, awaited_expr, visited_bodies) {
+                          return false;
+                        }
+                      } else if hir_expr_contains_await(hir, body, init_id, visited_bodies) {
+                        return false;
+                      }
+                    }
+                  }
+                }
+              }
+            }
+
+            if let Some(test_id) = test {
+              if !hir_for_triple_expr_is_supported(
+                hir,
+                body,
+                *test_id,
+                /* allow_assignment_await */ false,
+                visited_bodies,
+              ) {
+                return false;
+              }
+            }
+
+            if let Some(update_id) = update {
+              if !hir_for_triple_expr_is_supported(
+                hir,
+                body,
+                *update_id,
+                /* allow_assignment_await */ true,
+                visited_bodies,
+              ) {
+                return false;
+              }
+            }
+
+            return true;
+          }
+          hir_js::StmtKind::Expr(_)
+          | hir_js::StmtKind::Var(_)
+          | hir_js::StmtKind::Return(_)
+          | hir_js::StmtKind::Throw(_) => {
+            return hir_async_root_stmt_is_supported(hir, body, current_stmt_id, visited_bodies);
+          }
+          _ => {
+            return !hir_stmt_contains_await(hir, body, stmt_id, visited_bodies);
+          }
+        }
+      }
+    }
+
+    // Support `for ( ... ) { ... }` loops that may suspend in init/test/update, as long as the loop
+    // body contains no await.
+    hir_js::StmtKind::For {
+      init,
+      test,
+      update,
+      body: inner,
+    } => {
+      if hir_stmt_contains_await(hir, body, *inner, visited_bodies) {
+        return false;
+      }
+
+      if let Some(init) = init {
+        match init {
+          hir_js::ForInit::Expr(expr_id) => {
+            if !hir_for_triple_expr_is_supported(
+              hir,
+              body,
+              *expr_id,
+              /* allow_assignment_await */ true,
+              visited_bodies,
+            ) {
+              return false;
+            }
+          }
+          hir_js::ForInit::Var(decl) => {
+            for declarator in decl.declarators.iter() {
+              if hir_pat_contains_await(hir, body, declarator.pat, visited_bodies) {
+                return false;
+              }
+              if let Some(init_id) = declarator.init {
+                let Some(init_expr) = hir_get_expr(body, init_id) else {
+                  return false;
+                };
+                if let hir_js::ExprKind::Await { expr: awaited_expr } = init_expr.kind {
+                  // Support direct `await <expr>` initializers for `var`/`let`/`const` declarations
+                  // in the init position.
+                  if !matches!(
+                    decl.kind,
+                    hir_js::VarDeclKind::Var | hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const
+                  ) {
+                    return false;
+                  }
+                  if hir_expr_contains_await(hir, body, awaited_expr, visited_bodies) {
+                    return false;
+                  }
+                } else if hir_expr_contains_await(hir, body, init_id, visited_bodies) {
+                  return false;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if let Some(test_id) = test {
+        if !hir_for_triple_expr_is_supported(
+          hir,
+          body,
+          *test_id,
+          /* allow_assignment_await */ false,
+          visited_bodies,
+        ) {
+          return false;
+        }
+      }
+
+      if let Some(update_id) = update {
+        if !hir_for_triple_expr_is_supported(
+          hir,
+          body,
+          *update_id,
+          /* allow_assignment_await */ true,
+          visited_bodies,
+        ) {
+          return false;
+        }
+      }
+
+      true
+    }
+
+    hir_js::StmtKind::Try {
+      block,
+      catch,
+      finally_block,
+    } => {
+      // Async-aware `try` support is currently limited to suspensions caused by `for await..of`
+      // loops directly in the try-block statement list.
+      //
+      // Conservatively require all other statements within try/catch/finally to be await-free.
+      let Some(try_block_stmt) = hir_get_stmt(body, *block) else {
+        return false;
+      };
+      let hir_js::StmtKind::Block(try_stmts) = &try_block_stmt.kind else {
+        return false;
+      };
+
+      for inner_stmt_id in try_stmts.iter() {
+        let Some(inner_stmt) = hir_get_stmt(body, *inner_stmt_id) else {
+          return false;
+        };
+        match &inner_stmt.kind {
+          hir_js::StmtKind::ForIn {
+            left,
+            right,
+            body: inner,
+            is_for_of: true,
+            await_: true,
+          } => {
+            if !hir_for_await_of_loop_is_supported(hir, body, left, *right, *inner, visited_bodies) {
+              return false;
+            }
+          }
+          hir_js::StmtKind::Labeled { body: first_body, .. } => {
+            // Support label chains ending in `for await..of` inside the try block.
+            let mut current_stmt_id: hir_js::StmtId = *first_body;
+            loop {
+              let Some(s) = hir_get_stmt(body, current_stmt_id) else {
+                return false;
+              };
+              match &s.kind {
+                hir_js::StmtKind::Labeled { body: next, .. } => current_stmt_id = *next,
+                _ => {
+                  if let hir_js::StmtKind::ForIn {
+                    left,
+                    right,
+                    body: inner,
+                    is_for_of: true,
+                    await_: true,
+                  } = &s.kind
+                  {
+                    if !hir_for_await_of_loop_is_supported(
+                      hir,
+                      body,
+                      left,
+                      *right,
+                      *inner,
+                      visited_bodies,
+                    ) {
+                      return false;
+                    }
+                  } else if hir_stmt_contains_await(hir, body, *inner_stmt_id, visited_bodies) {
+                    return false;
+                  }
+                  break;
+                }
+              }
+            }
+          }
+          _ => {
+            if hir_stmt_contains_await(hir, body, *inner_stmt_id, visited_bodies) {
+              return false;
+            }
+          }
+        }
+      }
+
+      if let Some(catch_clause) = catch {
+        if let Some(param_pat_id) = catch_clause.param {
+          if hir_pat_contains_await(hir, body, param_pat_id, visited_bodies) {
+            return false;
+          }
+        }
+        if hir_stmt_contains_await(hir, body, catch_clause.body, visited_bodies) {
+          return false;
+        }
+      }
+
+      if let Some(finally_stmt) = finally_block {
+        if hir_stmt_contains_await(hir, body, *finally_stmt, visited_bodies) {
+          return false;
+        }
+      }
+
+      true
+    }
+
+    hir_js::StmtKind::Decl(def_id) => {
+      // Async class declarations may suspend while evaluating:
+      // - `extends` expressions, and/or
+      // - computed member keys.
+      //
+      // Support a narrow subset where the suspension point is a *direct* await:
+      // - `class C extends (await <expr>) {}`
+      // - `class C { [await <expr>]() {} }`
+      //
+      // Note: `await` is not allowed in class static blocks in this engine (VMJS0004).
+      let Some(def) = hir.def(*def_id) else {
+        return false;
+      };
+      let Some(decl_body_id) = def.body else {
+        return true;
+      };
+      let Some(decl_body) = hir.body(decl_body_id) else {
+        return false;
+      };
+      if decl_body.kind != hir_js::BodyKind::Class {
+        // Nested functions do not execute their body when creating the function value.
+        return true;
+      }
+      let Some(class_meta) = decl_body.class.as_ref() else {
+        return false;
+      };
+
+      // Class-level root statements represent evaluation that occurs when defining the class (e.g.
+      // decorators). These are not yet supported by the compiled async executor if they contain
+      // `await`.
+      for stmt_id in decl_body.root_stmts.as_slice() {
+        if hir_stmt_contains_await(hir, decl_body, *stmt_id, visited_bodies) {
+          return false;
+        }
+      }
+
+      let mut has_await_in_class_eval: bool = false;
+      let mut has_fields: bool = false;
+
+      // `extends`
+      if let Some(extends_expr_id) = class_meta.extends {
+        let Some(expr) = hir_get_expr(decl_body, extends_expr_id) else {
+          return false;
+        };
+        if let hir_js::ExprKind::Await { expr: awaited_expr } = expr.kind {
+          has_await_in_class_eval = true;
+          if hir_expr_contains_await(hir, decl_body, awaited_expr, visited_bodies) {
+            return false;
+          }
+        } else if hir_expr_contains_await(hir, decl_body, extends_expr_id, visited_bodies) {
+          return false;
+        }
+      }
+
+      // Members.
+      for member in class_meta.members.iter() {
+        match &member.kind {
+          hir_js::ClassMemberKind::Constructor { .. } => {}
+          hir_js::ClassMemberKind::Method { key, .. } => {
+            if let hir_js::ClassMemberKey::Computed(expr_id) = key {
+              let Some(expr) = hir_get_expr(decl_body, *expr_id) else {
+                return false;
+              };
+              if let hir_js::ExprKind::Await { expr: awaited_expr } = expr.kind {
+                has_await_in_class_eval = true;
+                if hir_expr_contains_await(hir, decl_body, awaited_expr, visited_bodies) {
+                  return false;
+                }
+              } else if hir_expr_contains_await(hir, decl_body, *expr_id, visited_bodies) {
+                return false;
+              }
+            }
+          }
+          hir_js::ClassMemberKind::Field {
+            key,
+            initializer,
+            ..
+          } => {
+            has_fields = true;
+            if let hir_js::ClassMemberKey::Computed(expr_id) = key {
+              if hir_expr_contains_await(hir, decl_body, *expr_id, visited_bodies) {
+                return false;
+              }
+            }
+            if let Some(init_body) = initializer {
+              if hir_body_contains_await(hir, *init_body, visited_bodies) {
+                return false;
+              }
+            }
+          }
+          hir_js::ClassMemberKind::StaticBlock { body: static_body, .. } => {
+            if hir_body_contains_await(hir, *static_body, visited_bodies) {
+              return false;
+            }
+          }
+        }
+      }
+
+      // Fields are not yet supported by the compiled async class evaluator.
+      if has_await_in_class_eval && has_fields {
+        return false;
+      }
+
+      true
+    }
+
+    // For all other statement kinds, async/await support is limited to the direct root statement
+    // forms above. If any await occurs in these statements (including nested blocks), conservatively
+    // fall back to the AST interpreter.
+    _ => !hir_stmt_contains_await(hir, body, stmt_id, visited_bodies),
+  }
+}
+
+fn hir_for_head_contains_await(
+  hir: &hir_js::LowerResult,
+  body: &hir_js::Body,
+  head: &hir_js::ForHead,
+  visited_bodies: &mut BTreeSet<hir_js::BodyId>,
+) -> bool {
+  match head {
+    hir_js::ForHead::Pat(pat_id) => hir_pat_contains_await(hir, body, *pat_id, visited_bodies),
+    hir_js::ForHead::Var(decl) => hir_var_decl_contains_await(hir, body, decl, visited_bodies),
+  }
+}
+
+fn hir_var_decl_contains_await(
+  hir: &hir_js::LowerResult,
+  body: &hir_js::Body,
+  decl: &hir_js::VarDecl,
+  visited_bodies: &mut BTreeSet<hir_js::BodyId>,
+) -> bool {
+  for declarator in &decl.declarators {
+    if hir_pat_contains_await(hir, body, declarator.pat, visited_bodies) {
+      return true;
+    }
+    if let Some(init) = declarator.init {
+      if hir_expr_contains_await(hir, body, init, visited_bodies) {
+        return true;
+      }
+    }
+  }
+  false
+}
+
+fn hir_stmt_contains_await(
+  hir: &hir_js::LowerResult,
+  body: &hir_js::Body,
+  stmt_id: hir_js::StmtId,
+  visited_bodies: &mut BTreeSet<hir_js::BodyId>,
+) -> bool {
+  let Some(stmt) = hir_get_stmt(body, stmt_id) else {
+    // Missing HIR node: conservatively assume it may contain await.
+    return true;
+  };
+
+  match &stmt.kind {
+    hir_js::StmtKind::Expr(expr_id) => hir_expr_contains_await(hir, body, *expr_id, visited_bodies),
+    hir_js::StmtKind::ExportDefaultExpr(expr_id) => {
+      hir_expr_contains_await(hir, body, *expr_id, visited_bodies)
+    }
+    hir_js::StmtKind::Return(opt_expr) => opt_expr
+      .as_ref()
+      .is_some_and(|expr_id| hir_expr_contains_await(hir, body, *expr_id, visited_bodies)),
+    hir_js::StmtKind::Throw(expr_id) => hir_expr_contains_await(hir, body, *expr_id, visited_bodies),
+
+    hir_js::StmtKind::Var(decl) => hir_var_decl_contains_await(hir, body, decl, visited_bodies),
+
+    hir_js::StmtKind::Block(stmts) => stmts
+      .iter()
+      .any(|inner| hir_stmt_contains_await(hir, body, *inner, visited_bodies)),
+
+    hir_js::StmtKind::If {
+      test,
+      consequent,
+      alternate,
+    } => {
+      hir_expr_contains_await(hir, body, *test, visited_bodies)
+        || hir_stmt_contains_await(hir, body, *consequent, visited_bodies)
+        || alternate
+          .as_ref()
+          .is_some_and(|alt| hir_stmt_contains_await(hir, body, *alt, visited_bodies))
+    }
+
+    hir_js::StmtKind::While { test, body: inner }
+    | hir_js::StmtKind::DoWhile { test, body: inner } => {
+      hir_expr_contains_await(hir, body, *test, visited_bodies)
+        || hir_stmt_contains_await(hir, body, *inner, visited_bodies)
+    }
+
+    hir_js::StmtKind::With { object, body: inner } => {
+      hir_expr_contains_await(hir, body, *object, visited_bodies)
+        || hir_stmt_contains_await(hir, body, *inner, visited_bodies)
+    }
+
+    hir_js::StmtKind::Labeled { body: inner, .. } => {
+      hir_stmt_contains_await(hir, body, *inner, visited_bodies)
+    }
+
+    hir_js::StmtKind::For {
+      init,
+      test,
+      update,
+      body: inner,
+    } => {
+      let init_has_await = init.as_ref().is_some_and(|init| match init {
+        hir_js::ForInit::Expr(expr_id) => hir_expr_contains_await(hir, body, *expr_id, visited_bodies),
+        hir_js::ForInit::Var(decl) => hir_var_decl_contains_await(hir, body, decl, visited_bodies),
+      });
+      init_has_await
+        || test
+          .as_ref()
+          .is_some_and(|expr_id| hir_expr_contains_await(hir, body, *expr_id, visited_bodies))
+        || update
+          .as_ref()
+          .is_some_and(|expr_id| hir_expr_contains_await(hir, body, *expr_id, visited_bodies))
+        || hir_stmt_contains_await(hir, body, *inner, visited_bodies)
+    }
+
+    hir_js::StmtKind::ForIn {
+      left,
+      right,
+      body: inner,
+      await_,
+      ..
+    } => {
+      // `for await..of` is itself an await boundary, even if the head/body contain no explicit
+      // `await` expression.
+      if *await_ {
+        return true;
+      }
+
+      hir_for_head_contains_await(hir, body, left, visited_bodies)
+        || hir_expr_contains_await(hir, body, *right, visited_bodies)
+        || hir_stmt_contains_await(hir, body, *inner, visited_bodies)
+    }
+
+    hir_js::StmtKind::Switch { discriminant, cases } => {
+      hir_expr_contains_await(hir, body, *discriminant, visited_bodies)
+        || cases.iter().any(|case| {
+          case
+            .test
+            .as_ref()
+            .is_some_and(|expr_id| hir_expr_contains_await(hir, body, *expr_id, visited_bodies))
+            || case
+              .consequent
+              .iter()
+              .any(|stmt_id| hir_stmt_contains_await(hir, body, *stmt_id, visited_bodies))
+        })
+    }
+
+    hir_js::StmtKind::Try {
+      block,
+      catch,
+      finally_block,
+    } => {
+      hir_stmt_contains_await(hir, body, *block, visited_bodies)
+        || catch.as_ref().is_some_and(|c| {
+          c.param
+            .as_ref()
+            .is_some_and(|pat_id| hir_pat_contains_await(hir, body, *pat_id, visited_bodies))
+            || hir_stmt_contains_await(hir, body, c.body, visited_bodies)
+        })
+        || finally_block
+          .as_ref()
+          .is_some_and(|finally_id| hir_stmt_contains_await(hir, body, *finally_id, visited_bodies))
+    }
+
+    hir_js::StmtKind::Decl(def_id) => {
+      let def = hir.def(*def_id);
+      let Some(def) = def else {
+        return true;
+      };
+      let Some(body_id) = def.body else {
+        return false;
+      };
+
+      // Class declarations evaluate their body eagerly (static blocks, computed keys, etc). Function
+      // declarations do not execute their body.
+      match hir.body(body_id).map(|b| b.kind) {
+        Some(hir_js::BodyKind::Function) => false,
+        // Be conservative for other declaration kinds: treat any await within their executed body as
+        // a reason to fall back.
+        Some(_) | None => hir_body_contains_await(hir, body_id, visited_bodies),
+      }
+    }
+
+    hir_js::StmtKind::Break(_)
+    | hir_js::StmtKind::Continue(_)
+    | hir_js::StmtKind::Debugger
+    | hir_js::StmtKind::Empty => false,
+  }
+}
+
+fn hir_body_contains_await(
+  hir: &hir_js::LowerResult,
+  body_id: hir_js::BodyId,
+  visited_bodies: &mut BTreeSet<hir_js::BodyId>,
+) -> bool {
+  // Break accidental cycles conservatively.
+  if !visited_bodies.insert(body_id) {
+    return false;
+  }
+
+  let Some(body) = hir.body(body_id) else {
+    return true;
+  };
+
+  if body
+    .root_stmts
+    .iter()
+    .any(|stmt_id| hir_stmt_contains_await(hir, body, *stmt_id, visited_bodies))
+  {
+    return true;
+  }
+
+  if body.kind == hir_js::BodyKind::Class {
+    if hir_class_metadata_contains_await(hir, body, visited_bodies) {
+      return true;
+    }
+  }
+
+  false
+}
+
+fn hir_class_metadata_contains_await(
+  hir: &hir_js::LowerResult,
+  class_body: &hir_js::Body,
+  visited_bodies: &mut BTreeSet<hir_js::BodyId>,
+) -> bool {
+  let Some(class_meta) = class_body.class.as_ref() else {
+    return false;
+  };
+
+  if let Some(extends_expr) = class_meta.extends {
+    if hir_expr_contains_await(hir, class_body, extends_expr, visited_bodies) {
+      return true;
+    }
+  }
+
+  for member in &class_meta.members {
+    match &member.kind {
+      hir_js::ClassMemberKind::Constructor { .. } => {}
+
+      hir_js::ClassMemberKind::Method { key, .. } | hir_js::ClassMemberKind::Field { key, .. } => {
+        if let hir_js::ClassMemberKey::Computed(expr_id) = key {
+          if hir_expr_contains_await(hir, class_body, *expr_id, visited_bodies) {
+            return true;
+          }
+        }
+      }
+
+      hir_js::ClassMemberKind::StaticBlock { body, .. } => {
+        if hir_body_contains_await(hir, *body, visited_bodies) {
+          return true;
+        }
+      }
+    }
+  }
+
+  false
+}
+
+fn hir_pat_contains_await(
+  hir: &hir_js::LowerResult,
+  body: &hir_js::Body,
+  pat_id: hir_js::PatId,
+  visited_bodies: &mut BTreeSet<hir_js::BodyId>,
+) -> bool {
+  let Some(pat) = hir_get_pat(body, pat_id) else {
+    return true;
+  };
+  match &pat.kind {
+    hir_js::PatKind::Ident(_) => false,
+    hir_js::PatKind::Array(arr) => {
+      arr.elements.iter().any(|elem| match elem {
+        Some(elem) => {
+          hir_pat_contains_await(hir, body, elem.pat, visited_bodies)
+            || elem
+              .default_value
+              .as_ref()
+              .is_some_and(|expr_id| hir_expr_contains_await(hir, body, *expr_id, visited_bodies))
+        }
+        None => false,
+      }) || arr
+        .rest
+        .as_ref()
+        .is_some_and(|rest| hir_pat_contains_await(hir, body, *rest, visited_bodies))
+    }
+    hir_js::PatKind::Object(obj) => {
+      obj.props.iter().any(|prop| {
+        if let hir_js::ObjectKey::Computed(expr_id) = &prop.key {
+          if hir_expr_contains_await(hir, body, *expr_id, visited_bodies) {
+            return true;
+          }
+        }
+        hir_pat_contains_await(hir, body, prop.value, visited_bodies)
+          || prop.default_value.as_ref().is_some_and(|expr_id| {
+            hir_expr_contains_await(hir, body, *expr_id, visited_bodies)
+          })
+      }) || obj
+        .rest
+        .as_ref()
+        .is_some_and(|rest| hir_pat_contains_await(hir, body, *rest, visited_bodies))
+    }
+    hir_js::PatKind::Rest(inner) => hir_pat_contains_await(hir, body, **inner, visited_bodies),
+    hir_js::PatKind::Assign {
+      target,
+      default_value,
+    } => {
+      hir_pat_contains_await(hir, body, *target, visited_bodies)
+        || hir_expr_contains_await(hir, body, *default_value, visited_bodies)
+    }
+    hir_js::PatKind::AssignTarget(expr_id) => hir_expr_contains_await(hir, body, *expr_id, visited_bodies),
+  }
+}
+
+fn hir_expr_contains_await(
+  hir: &hir_js::LowerResult,
+  body: &hir_js::Body,
+  expr_id: hir_js::ExprId,
+  visited_bodies: &mut BTreeSet<hir_js::BodyId>,
+) -> bool {
+  let Some(expr) = hir_get_expr(body, expr_id) else {
+    return true;
+  };
+
+  match &expr.kind {
+    hir_js::ExprKind::Await { .. } => true,
+
+    hir_js::ExprKind::FunctionExpr { .. } => false,
+
+    hir_js::ExprKind::ClassExpr { body: class_body, .. } => {
+      hir_body_contains_await(hir, *class_body, visited_bodies)
+    }
+
+    hir_js::ExprKind::Missing
+    | hir_js::ExprKind::Ident(_)
+    | hir_js::ExprKind::This
+    | hir_js::ExprKind::Super
+    | hir_js::ExprKind::Literal(_)
+    | hir_js::ExprKind::ImportMeta
+    | hir_js::ExprKind::NewTarget => false,
+
+    hir_js::ExprKind::Unary { expr, .. } | hir_js::ExprKind::Update { expr, .. } => {
+      hir_expr_contains_await(hir, body, *expr, visited_bodies)
+    }
+
+    hir_js::ExprKind::Binary { left, right, .. } => {
+      hir_expr_contains_await(hir, body, *left, visited_bodies)
+        || hir_expr_contains_await(hir, body, *right, visited_bodies)
+    }
+
+    hir_js::ExprKind::Assignment { target, value, .. } => {
+      hir_pat_contains_await(hir, body, *target, visited_bodies)
+        || hir_expr_contains_await(hir, body, *value, visited_bodies)
+    }
+
+    hir_js::ExprKind::Call(call) => {
+      hir_expr_contains_await(hir, body, call.callee, visited_bodies)
+        || call
+          .args
+          .iter()
+          .any(|arg| hir_expr_contains_await(hir, body, arg.expr, visited_bodies))
+    }
+
+    hir_js::ExprKind::Member(mem) => {
+      hir_expr_contains_await(hir, body, mem.object, visited_bodies)
+        || match &mem.property {
+          hir_js::ObjectKey::Computed(expr_id) => hir_expr_contains_await(hir, body, *expr_id, visited_bodies),
+          _ => false,
+        }
+    }
+
+    hir_js::ExprKind::Conditional {
+      test,
+      consequent,
+      alternate,
+    } => {
+      hir_expr_contains_await(hir, body, *test, visited_bodies)
+        || hir_expr_contains_await(hir, body, *consequent, visited_bodies)
+        || hir_expr_contains_await(hir, body, *alternate, visited_bodies)
+    }
+
+    hir_js::ExprKind::Array(arr) => arr.elements.iter().any(|elem| match elem {
+      hir_js::ArrayElement::Expr(expr_id) | hir_js::ArrayElement::Spread(expr_id) => {
+        hir_expr_contains_await(hir, body, *expr_id, visited_bodies)
+      }
+      hir_js::ArrayElement::Empty => false,
+    }),
+
+    hir_js::ExprKind::Object(obj) => obj.properties.iter().any(|prop| match prop {
+      hir_js::ObjectProperty::KeyValue { key, value, .. } => {
+        if let hir_js::ObjectKey::Computed(expr_id) = key {
+          if hir_expr_contains_await(hir, body, *expr_id, visited_bodies) {
+            return true;
+          }
+        }
+        hir_expr_contains_await(hir, body, *value, visited_bodies)
+      }
+      hir_js::ObjectProperty::Getter { key, .. } | hir_js::ObjectProperty::Setter { key, .. } => {
+        matches!(key, hir_js::ObjectKey::Computed(_))
+          && match key {
+            hir_js::ObjectKey::Computed(expr_id) => hir_expr_contains_await(hir, body, *expr_id, visited_bodies),
+            _ => false,
+          }
+      }
+      hir_js::ObjectProperty::Spread(expr_id) => hir_expr_contains_await(hir, body, *expr_id, visited_bodies),
+    }),
+
+    hir_js::ExprKind::Template(tpl) => tpl
+      .spans
+      .iter()
+      .any(|span| hir_expr_contains_await(hir, body, span.expr, visited_bodies)),
+
+    hir_js::ExprKind::TaggedTemplate { tag, template } => {
+      hir_expr_contains_await(hir, body, *tag, visited_bodies)
+        || template
+          .spans
+          .iter()
+          .any(|span| hir_expr_contains_await(hir, body, span.expr, visited_bodies))
+    }
+
+    hir_js::ExprKind::Yield { expr, .. } => expr
+      .as_ref()
+      .is_some_and(|expr_id| hir_expr_contains_await(hir, body, *expr_id, visited_bodies)),
+
+    hir_js::ExprKind::Instantiation { expr, .. }
+    | hir_js::ExprKind::TypeAssertion { expr, .. }
+    | hir_js::ExprKind::NonNull { expr }
+    | hir_js::ExprKind::Satisfies { expr, .. } => {
+      hir_expr_contains_await(hir, body, *expr, visited_bodies)
+    }
+
+    hir_js::ExprKind::ImportCall { argument, attributes } => {
+      hir_expr_contains_await(hir, body, *argument, visited_bodies)
+        || attributes
+          .as_ref()
+          .is_some_and(|expr_id| hir_expr_contains_await(hir, body, *expr_id, visited_bodies))
+    }
+
+    hir_js::ExprKind::Jsx(jsx) => {
+      let attrs_have_await = jsx.attributes.iter().any(|attr| match attr {
+        hir_js::JsxAttr::Named { value, .. } => value.as_ref().is_some_and(|val| match val {
+          hir_js::JsxAttrValue::Expression(expr_container) => expr_container
+            .expr
+            .as_ref()
+            .is_some_and(|expr_id| hir_expr_contains_await(hir, body, *expr_id, visited_bodies)),
+          hir_js::JsxAttrValue::Element(expr_id) => hir_expr_contains_await(hir, body, *expr_id, visited_bodies),
+          hir_js::JsxAttrValue::Text(_) => false,
+        }),
+        hir_js::JsxAttr::Spread { expr } => hir_expr_contains_await(hir, body, *expr, visited_bodies),
+      });
+      if attrs_have_await {
+        return true;
+      }
+      jsx.children.iter().any(|child| match child {
+        hir_js::JsxChild::Element(expr_id) => hir_expr_contains_await(hir, body, *expr_id, visited_bodies),
+        hir_js::JsxChild::Expr(container) => container
+          .expr
+          .as_ref()
+          .is_some_and(|expr_id| hir_expr_contains_await(hir, body, *expr_id, visited_bodies)),
+        hir_js::JsxChild::Text(_) => false,
+      })
+    }
+  }
+}
+
+fn hir_get_expr(body: &hir_js::Body, id: hir_js::ExprId) -> Option<&hir_js::Expr> {
+  body.exprs.get(id.0 as usize)
+}
+
+fn hir_get_stmt(body: &hir_js::Body, id: hir_js::StmtId) -> Option<&hir_js::Stmt> {
+  body.stmts.get(id.0 as usize)
+}
+
+fn hir_get_pat(body: &hir_js::Body, id: hir_js::PatId) -> Option<&hir_js::Pat> {
+  body.pats.get(id.0 as usize)
 }

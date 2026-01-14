@@ -20071,7 +20071,14 @@ fn async_handle_body_result(
       // invariants if a throw completion escapes as an error.
       if err.is_throw_completion() {
         let mut call_scope = scope.reborrow();
-        let err = coerce_error_to_throw_for_async(vm, &mut call_scope, err);
+        let (source, offset) = source_offset_for_async_frames_best_effort(&cont.env, &cont.frames);
+        let err = finalize_throw_with_stack_at_source_offset_best_effort(
+          vm,
+          &mut call_scope,
+          source.as_ref(),
+          offset,
+          err,
+        );
         let reason = match err {
           VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. } => reason,
           other => {
@@ -20377,6 +20384,7 @@ pub(crate) fn coerce_error_to_throw_for_async(
 ) -> VmError {
   match err {
     VmError::Throw(_) | VmError::ThrowWithStack { .. } => err,
+    err @ VmError::Unimplemented(_) => crate::vm::coerce_error_to_throw(vm, scope, err),
     VmError::TypeError(message) => throw_type_error(vm, scope, message).unwrap_or_else(|e| e),
     VmError::RangeError(message) => throw_range_error(vm, scope, message).unwrap_or_else(|e| e),
     VmError::NotCallable => {
@@ -26416,9 +26424,9 @@ fn async_eval_for_triple(
   let needs_explicit_iter_tick =
     stmt.cond.is_none() && stmt.post.is_none() && stmt.body.stx.body.is_empty();
 
-  // Lexically-declared `for` loops require a loop-scoped TDZ environment for the initializer, and
-  // per-iteration environments so closures capture the correct binding value (ECMA-262
-  // `CreatePerIterationEnvironment`).
+  // Lexically-declared `for` loops (`for (let/const/using/await using ...)`) require a loop-scoped
+  // TDZ environment for the initializer, and per-iteration environments so closures capture the
+  // correct binding value (ECMA-262 `CreatePerIterationEnvironment`).
   //
   // Mirror the synchronous evaluator's `ForLoopEvaluation` behaviour for async `for` loops that
   // contain `await` and therefore cannot run through `Evaluator::eval_stmt_labelled`.
@@ -26517,7 +26525,10 @@ fn async_eval_for_triple(
           },
         )?;
         // Restore the outer lexical environment after the loop completes.
-        async_frames_push(&mut suspend.frames, AsyncFrame::RestoreLexEnv { outer: outer_lex })?;
+        async_frames_push(
+          &mut suspend.frames,
+          AsyncFrame::RestoreLexEnv { outer: outer_lex },
+        )?;
         Ok(AsyncEval::Suspend(suspend))
       }
       Err(err) => {

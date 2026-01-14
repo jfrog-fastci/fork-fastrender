@@ -3488,11 +3488,11 @@ impl<'vm> HirEvaluator<'vm> {
     // Decide whether this async function must fall back to the AST interpreter.
     //
     // Avoid "partial execution then fallback" by making this decision at allocation time.
-    let async_needs_ast_fallback = if is_async && !is_generator {
-      !self.async_function_body_is_hir_supported(&script, body_id)?
-    } else {
-      false
-    };
+    let async_needs_ast_fallback = is_async
+      && !is_generator
+      && script
+        .async_function_body_requires_ast_fallback
+        .contains(&body_id);
 
     // Optional call-time AST fallback metadata for async functions whose `await` forms are not yet
     // supported by the compiled async evaluator.
@@ -3570,7 +3570,7 @@ impl<'vm> HirEvaluator<'vm> {
     } else {
       let func_obj = scope.alloc_user_function_with_env(
         CompiledFunctionRef {
-          script,
+          script: script.clone(),
           body: body_id,
           ast_fallback: None,
         },
@@ -3610,11 +3610,10 @@ impl<'vm> HirEvaluator<'vm> {
         .env_initialize_binding(env, name, Value::Object(func_obj))?;
     }
 
-    // Some async function bodies are not yet supported by the compiled async executor (HIR).
-    //
-    // Allocate those functions as compiled user functions (so surrounding code can remain on the
-    // compiled path), but tag them so `Vm::call_user_function` delegates body execution to the AST
-    // interpreter.
+    // Async functions can execute via the compiled async executor for a conservative subset of
+    // `await` patterns. When the body contains unsupported await forms, tag the function so call
+    // sites fall back to the AST interpreter at call-time while still allowing surrounding code to
+    // execute in the compiled path.
     if async_needs_ast_fallback {
       let code_id = async_ast_fallback.ok_or(VmError::InvariantViolation(
         "async function missing call-time AST fallback metadata",
@@ -26719,15 +26718,14 @@ mod async_function_hir_exec_tests {
 }
 
 #[cfg(test)]
-mod async_function_ast_fallback_tests {
+mod async_function_compiled_async_gating_tests {
   use crate::function::{CallHandler, FunctionData};
   use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOptions};
 
   #[test]
-  fn compiled_script_async_function_with_trivial_body_executes_via_compiled_async_evaluator() -> Result<(), VmError> {
+  fn compiled_script_async_function_uses_compiled_async_executor_when_supported() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
-    // Async functions allocate Promise/job machinery; use a slightly larger heap to avoid spurious
-    // OOMs as builtin surface area grows.
+    // Promise/async-await allocates builtin job machinery; use a larger heap to avoid spurious OOMs.
     let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;
 
@@ -26735,7 +26733,7 @@ mod async_function_ast_fallback_tests {
       &mut rt.heap,
       "<inline>",
       r#"
-        async function f() { return 1; }
+        async function f() { await Promise.resolve(1); return 1; }
         f;
       "#,
     )?;
@@ -26760,16 +26758,27 @@ mod async_function_ast_fallback_tests {
       "expected async function with trivial body to have no call-time AST fallback, got ast_fallback={:?}",
       func_ref.ast_fallback
     );
+    assert!(
+      !func_ref
+        .script
+        .async_function_body_requires_ast_fallback
+        .contains(&func_ref.body),
+      "expected supported async function body to be eligible for the compiled async executor"
+    );
 
     let func_data = rt.heap.get_function_data(func_obj)?;
     assert!(
       matches!(func_data, FunctionData::None),
-      "expected async function with trivial body to execute via compiled async evaluator, got {func_data:?}"
+      "expected supported async function to execute via the compiled async executor, got {func_data:?}"
     );
 
-    // Calling the async function should produce a resolved Promise.
+    let baseline_env_roots = rt.heap.persistent_env_root_count();
+
+    // Calling the async function should execute via the compiled async executor and produce a
+    // resolved Promise.
     let promise = {
       let mut scope = rt.heap.scope();
+      scope.push_root(Value::Object(func_obj))?;
       rt.vm
         .call_without_host(&mut scope, Value::Object(func_obj), Value::Undefined, &[])?
     };
@@ -26791,15 +26800,18 @@ mod async_function_ast_fallback_tests {
       rt.heap.promise_result(promise_obj)?,
       Some(Value::Number(1.0))
     );
+    assert_eq!(
+      rt.heap.persistent_env_root_count(),
+      baseline_env_roots,
+      "supported compiled async function call should not leak persistent env roots"
+    );
     rt.heap.remove_root(promise_root);
     Ok(())
   }
 
   #[test]
-  fn compiled_script_async_function_with_unsupported_await_uses_call_time_ast_fallback() -> Result<(), VmError> {
+  fn compiled_script_async_function_falls_back_to_ast_when_unsupported() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
-    // Async functions allocate Promise/job machinery; use a slightly larger heap to avoid spurious
-    // OOMs as builtin surface area grows.
     let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;
 
@@ -26807,8 +26819,6 @@ mod async_function_ast_fallback_tests {
       &mut rt.heap,
       "<inline>",
       r#"
-        // This `await` form is intentionally rejected by `async_function_body_is_hir_supported`:
-        // the awaited value is nested inside a larger expression.
         async function f() { return (await Promise.resolve(1)) + 1; }
         f;
       "#,
@@ -26834,16 +26844,27 @@ mod async_function_ast_fallback_tests {
       "expected async function AST fallback to be expressed via FunctionData::AsyncEcmaFallback (not via CompiledFunctionRef::ast_fallback), got ast_fallback={:?}",
       func_ref.ast_fallback
     );
+    assert!(
+      func_ref
+        .script
+        .async_function_body_requires_ast_fallback
+        .contains(&func_ref.body),
+      "expected unsupported async function body to require call-time AST fallback"
+    );
 
     let func_data = rt.heap.get_function_data(func_obj)?;
     assert!(
       matches!(func_data, FunctionData::AsyncEcmaFallback { .. }),
-      "expected async function to carry FunctionData::AsyncEcmaFallback metadata, got {func_data:?}"
+      "expected unsupported async function to use FunctionData::AsyncEcmaFallback, got {func_data:?}"
     );
 
-    // Calling the async function should produce a resolved Promise.
+    let baseline_env_roots = rt.heap.persistent_env_root_count();
+
+    // Calling the async function should execute via the AST interpreter and produce a resolved
+    // Promise.
     let promise = {
       let mut scope = rt.heap.scope();
+      scope.push_root(Value::Object(func_obj))?;
       rt.vm
         .call_without_host(&mut scope, Value::Object(func_obj), Value::Undefined, &[])?
     };
@@ -26859,6 +26880,12 @@ mod async_function_ast_fallback_tests {
       rt.heap.promise_result(promise_obj)?,
       Some(Value::Number(2.0))
     );
+    assert_eq!(
+      rt.heap.persistent_env_root_count(),
+      baseline_env_roots,
+      "AST-fallback async function call should not leak persistent env roots"
+    );
+
     rt.heap.remove_root(promise_root);
     Ok(())
   }
@@ -27292,9 +27319,8 @@ mod compiled_hir_async_await_semantics_tests {
     );
     // Ensure the async function was allocated as a compiled user function by the HIR script path.
     //
-    // Note: async functions may still execute via the call-time AST fallback
-    // (`FunctionData::AsyncEcmaFallback`) until the compiled async evaluator supports all `await`
-    // forms.
+    // Async function bodies execute via the compiled async executor when their `await` usage is
+    // supported, falling back to the AST interpreter at call-time for unsupported forms.
     let func_value = get_global_data_property(&mut rt, "__f")?;
     let Value::Object(func_obj) = func_value else {
       panic!("expected __f to be a function object, got {func_value:?}");
@@ -27924,9 +27950,8 @@ mod hir_async_await_in_pattern_binding_regression_tests {
       "expected async function to be a compiled user function, got {call_handler:?}"
     );
 
-    // Async function bodies may still execute via the AST interpreter at call-time
-    // (`FunctionData::AsyncEcmaFallback`). Once compiled async/await execution is enabled, this test will
-    // automatically exercise the compiled async evaluator instead.
+    // Async function bodies execute via the compiled async executor when their `await` usage is
+    // supported, falling back to the AST interpreter at call-time for unsupported forms.
     let _func_data = rt.heap.get_function_data(func_obj)?;
 
     // Calling the async function should produce a Promise.
@@ -28352,14 +28377,11 @@ mod async_for_await_of_async_iterator_close_tests {
       "expected async function to be a compiled user function, got {call_handler:?}"
     );
 
-    // Force the async function to execute via the compiled (HIR) async evaluator by clearing the
-    // call-time AST fallback marker.
-    if matches!(
-      rt.heap.get_function_data(func_obj)?,
-      FunctionData::AsyncEcmaFallback { .. }
-    ) {
-      rt.heap.set_function_data(func_obj, FunctionData::None)?;
-    }
+    let func_data = rt.heap.get_function_data(func_obj)?;
+    assert!(
+      matches!(func_data, FunctionData::None),
+      "expected for-await-of async function body to be eligible for compiled async execution, got {func_data:?}"
+    );
 
     // Call the async function and drive it to the AsyncIteratorClose await boundary.
     let promise = {
@@ -28461,14 +28483,11 @@ mod async_for_await_of_async_iterator_close_tests {
       "expected async function to be a compiled user function, got {call_handler:?}"
     );
 
-    // Force compiled async/await execution (see above).
-    if matches!(
-      rt.heap.get_function_data(func_obj)?,
-      FunctionData::AsyncEcmaFallback { .. }
-    ) {
-      rt.heap.set_function_data(func_obj, FunctionData::None)?;
-    }
-
+    let func_data = rt.heap.get_function_data(func_obj)?;
+    assert!(
+      matches!(func_data, FunctionData::None),
+      "expected for-await-of async function body to be eligible for compiled async execution, got {func_data:?}"
+    );
     let promise = {
       let mut scope = rt.heap.scope();
       scope.push_root(Value::Object(func_obj))?;
@@ -28830,12 +28849,11 @@ mod async_for_await_of_async_iterator_close_tests {
       "expected async function to be a compiled user function, got {call_handler:?}"
     );
 
-    if matches!(
-      rt.heap.get_function_data(func_obj)?,
-      FunctionData::AsyncEcmaFallback { .. }
-    ) {
-      rt.heap.set_function_data(func_obj, FunctionData::None)?;
-    }
+    let func_data = rt.heap.get_function_data(func_obj)?;
+    assert!(
+      matches!(func_data, FunctionData::None),
+      "expected async function to execute via compiled async evaluator, got {func_data:?}"
+    );
 
     let promise = {
       let mut scope = rt.heap.scope();
