@@ -1,11 +1,13 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
+use std::time::Duration;
 
 use parking_lot::Mutex;
 
 use super::{
-  audio_engine_config, AudioBackend, AudioEngineConfig, AudioOutputInfo, AudioSink, AudioStreamConfig,
+  audio_engine_config, duration_to_frames_ceil, AudioBackend, AudioEngineConfig, AudioOutputInfo,
+  AudioSink, AudioStreamConfig,
 };
 use crate::debug::trace::TraceHandle;
 use crate::media::clock::MediaClock;
@@ -79,6 +81,8 @@ struct GroupingState {
   next_group_id: AtomicU64,
   groups: Mutex<HashMap<AudioGroupId, Arc<AudioGroupState>>>,
   sinks: Mutex<Vec<Weak<AudioEngineSinkInner>>>,
+  /// Count of sinks that consume real backend resources (used for enforcing global limits).
+  counted_sinks: AtomicUsize,
 }
 
 impl GroupingState {
@@ -91,6 +95,7 @@ impl GroupingState {
       next_group_id: AtomicU64::new(1),
       groups: Mutex::new(groups),
       sinks: Mutex::new(Vec::new()),
+      counted_sinks: AtomicUsize::new(0),
     }
   }
 
@@ -312,14 +317,40 @@ impl AudioEngine {
         .expect("AudioGroupId must be created by AudioEngine::create_group (or be the engine default)") // fastrender-allow-unwrap
     };
 
-    let backend_sink = self.backend.create_sink();
+    let output_cfg = self.backend.output_config();
+    let limit = sink_limit_for_config(&self.config, output_cfg);
+    let counts_toward_limits = if limit == 0 {
+      false
+    } else {
+      self
+        .grouping
+        .counted_sinks
+        .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |current| {
+          (current < limit).then_some(current.saturating_add(1))
+        })
+        .is_ok()
+    };
+
+    let mut reservation = CountedSinkReservation {
+      grouping: Arc::downgrade(&self.grouping),
+      active: counts_toward_limits,
+    };
+
+    let backend_sink: Box<dyn AudioSink> = if counts_toward_limits {
+      self.backend.create_sink()
+    } else {
+      Box::new(NoopAudioSink { config: output_cfg })
+    };
     let inner = Arc::new(AudioEngineSinkInner {
       backend_sink,
       grouping: Arc::downgrade(&self.grouping),
       group,
       group_state,
       sink_volume_bits: AtomicU32::new(1.0f32.to_bits()),
+      counts_toward_limits,
     });
+    // The sink is now owned by `inner`; dropping the reservation guard should not decrement.
+    reservation.active = false;
 
     // Apply initial volume before publishing so the sink starts at the correct gain.
     inner.apply_effective_volume();
@@ -389,6 +420,7 @@ struct AudioEngineSinkInner {
   group: AudioGroupId,
   group_state: Arc<AudioGroupState>,
   sink_volume_bits: AtomicU32,
+  counts_toward_limits: bool,
 }
 
 impl AudioEngineSinkInner {
@@ -416,6 +448,21 @@ impl AudioEngineSinkInner {
   }
 }
 
+impl Drop for AudioEngineSinkInner {
+  fn drop(&mut self) {
+    if !self.counts_toward_limits {
+      return;
+    }
+    let Some(grouping) = self.grouping.upgrade() else {
+      return;
+    };
+    // Best-effort: never underflow/panic in Drop.
+    let _ = grouping
+      .counted_sinks
+      .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_sub(1));
+  }
+}
+
 impl AudioSink for AudioEngineSink {
   fn config(&self) -> AudioStreamConfig {
     self.inner.backend_sink.config()
@@ -433,6 +480,63 @@ impl AudioSink for AudioEngineSink {
   fn notify_discontinuity(&self) {
     self.inner.backend_sink.notify_discontinuity();
   }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NoopAudioSink {
+  config: AudioStreamConfig,
+}
+
+impl AudioSink for NoopAudioSink {
+  fn config(&self) -> AudioStreamConfig {
+    self.config
+  }
+
+  fn push_interleaved_f32(&self, _samples: &[f32]) -> usize {
+    0
+  }
+
+  fn set_volume(&self, _volume: f32) {}
+}
+
+struct CountedSinkReservation {
+  grouping: Weak<GroupingState>,
+  active: bool,
+}
+
+impl Drop for CountedSinkReservation {
+  fn drop(&mut self) {
+    if !self.active {
+      return;
+    }
+    let Some(grouping) = self.grouping.upgrade() else {
+      return;
+    };
+    let _ = grouping
+      .counted_sinks
+      .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_sub(1));
+  }
+}
+
+fn sink_limit_for_config(cfg: &AudioEngineConfig, output_cfg: AudioStreamConfig) -> usize {
+  let per_sink_bytes = estimated_sink_buffer_bytes(output_cfg, cfg.per_stream_max_buffered_duration);
+  if per_sink_bytes == 0 {
+    return cfg.global_max_streams;
+  }
+
+  let budget = u64::try_from(cfg.global_buffer_budget_bytes).unwrap_or(u64::MAX);
+  let budget_limit_u64 = budget / per_sink_bytes;
+  let budget_limit = usize::try_from(budget_limit_u64).unwrap_or(usize::MAX);
+  cfg.global_max_streams.min(budget_limit)
+}
+
+fn estimated_sink_buffer_bytes(output_cfg: AudioStreamConfig, max_buffered_duration: Duration) -> u64 {
+  let sample_rate_hz = output_cfg.sample_rate_hz.max(1);
+  let channels = u64::from(output_cfg.channels.max(1));
+  let frames = duration_to_frames_ceil(sample_rate_hz, max_buffered_duration);
+  frames
+    .saturating_mul(channels)
+    .saturating_mul(std::mem::size_of::<f32>() as u64)
 }
 
 fn sanitize_volume(volume: f32) -> f32 {
@@ -584,6 +688,48 @@ mod tests {
 
     let after = AudioEngine::global();
     assert!(Arc::ptr_eq(&base, &after));
+  }
+
+  #[test]
+  fn audio_engine_respects_global_max_streams_limit() {
+    let backend = Arc::new(NullAudioBackend::new_deterministic_with_defaults(10, 1));
+
+    let mut cfg = AudioEngineConfig::default();
+    cfg.per_stream_max_buffered_duration = Duration::from_secs(1);
+    cfg.global_max_streams = 1;
+    cfg.global_buffer_budget_bytes = usize::MAX;
+
+    let engine = AudioEngine::new_with_backend(Arc::new(cfg), backend.clone());
+    let sink0 = engine.create_sink();
+    let sink1 = engine.create_sink();
+
+    assert_eq!(sink0.config(), backend.output_config());
+    assert_eq!(sink0.push_interleaved_f32(&[1.0]), 1);
+    assert_eq!(sink1.config(), backend.output_config());
+    assert_eq!(sink1.push_interleaved_f32(&[1.0]), 0);
+
+    // Dropping the counted sink should free the slot.
+    drop(sink0);
+    let sink2 = engine.create_sink();
+    assert_eq!(sink2.push_interleaved_f32(&[1.0]), 1);
+  }
+
+  #[test]
+  fn audio_engine_respects_global_buffer_budget_limit() {
+    let backend = Arc::new(NullAudioBackend::new_deterministic_with_defaults(10, 1));
+
+    let mut cfg = AudioEngineConfig::default();
+    cfg.per_stream_max_buffered_duration = Duration::from_secs(1);
+    cfg.global_max_streams = 1000;
+    // 10 frames/s * 1s * 1 channel * 4 bytes/sample == 40 bytes per sink.
+    cfg.global_buffer_budget_bytes = 40;
+
+    let engine = AudioEngine::new_with_backend(Arc::new(cfg), backend.clone());
+    let sink0 = engine.create_sink();
+    let sink1 = engine.create_sink();
+
+    assert_eq!(sink0.push_interleaved_f32(&[1.0]), 1);
+    assert_eq!(sink1.push_interleaved_f32(&[1.0]), 0);
   }
 
   #[derive(Debug)]

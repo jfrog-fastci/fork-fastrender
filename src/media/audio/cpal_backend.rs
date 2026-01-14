@@ -15,7 +15,7 @@ use super::convert::sanitize_sample;
 use crate::debug::trace::TraceHandle;
 use crate::media::audio_engine::{
   AudioBackend as IdleBackend, AudioEngine as IdleEngine, AudioEngineTelemetry,
-  AudioStreamHandle as IdleStreamHandle, DEFAULT_IDLE_TIMEOUT,
+  AudioStreamHandle as IdleStreamHandle,
 };
 use super::limits::{MAX_BUFFERED_DURATION, MAX_CHANNELS, MAX_FRAMES_PER_PUSH, MAX_SAMPLE_RATE_HZ};
 use super::panic_guard::{guard_output_callback, AudioSample};
@@ -603,7 +603,7 @@ impl CpalAudioBackend {
       command_tx: command_tx.clone(),
       trace: trace_for_control,
     };
-    let idle_engine = IdleEngine::with_idle_timeout(idle_backend, DEFAULT_IDLE_TIMEOUT);
+    let idle_engine = IdleEngine::with_idle_timeout(idle_backend, engine_cfg.idle_timeout);
     // Ensure the stream is suspended after the debounce window even when the embedder doesn't have a
     // central tick loop.
     idle_engine.spawn_idle_watcher();
