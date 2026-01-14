@@ -57,7 +57,9 @@ pub fn panel_header_with_actions(
     ui.heading(title);
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
       let resp = icon_button(ui, BrowserIcon::Close, "Close", true);
-      let label = format!("Close {title}");
+      let mut label = String::with_capacity("Close ".len() + title.len());
+      label.push_str("Close ");
+      label.push_str(title);
       resp.widget_info(move || {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
       });
