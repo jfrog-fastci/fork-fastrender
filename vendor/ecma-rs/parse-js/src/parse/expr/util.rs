@@ -14,8 +14,8 @@ use crate::ast::expr::pat::ObjPatProp;
 use crate::ast::expr::pat::Pat;
 use crate::ast::expr::BinaryExpr;
 use crate::ast::expr::Expr;
-use crate::ast::node::Node;
 use crate::ast::node::CoverInitializedName;
+use crate::ast::node::Node;
 use crate::ast::node::ParenthesizedExpr;
 use crate::ast::node::TrailingCommaAfterRestElement;
 use crate::error::SyntaxErrorType;
@@ -91,7 +91,11 @@ pub(crate) fn lit_to_pat_with_recover(node: Node<Expr>, recover: bool) -> Syntax
                 // Destructuring assignment/binding patterns do not permit parentheses around
                 // an assignment pattern element (e.g. `[(a = 0)] = 1`).
                 if !recover && elem.assoc.get::<ParenthesizedExpr>().is_some() {
-                  return Err(elem.loc.error(SyntaxErrorType::InvalidAssigmentTarget, None));
+                  return Err(
+                    elem
+                      .loc
+                      .error(SyntaxErrorType::InvalidAssigmentTarget, None),
+                  );
                 }
                 let BinaryExpr {
                   operator,

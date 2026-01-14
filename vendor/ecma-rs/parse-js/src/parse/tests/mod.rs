@@ -1,15 +1,15 @@
+mod class_await;
+mod class_field_initializer;
+mod class_static_block;
 mod expr;
 mod for_of;
-mod stmt;
-mod type_member;
-mod class_await;
-mod class_static_block;
-mod class_field_initializer;
-mod yield_in_object_literal_computed_key;
-mod regex_unicode_sets;
-mod regexp_unicode_class;
 mod identifier_escapes;
 mod keyword_accessor;
+mod regex_unicode_sets;
+mod regexp_unicode_class;
+mod stmt;
+mod type_member;
+mod yield_in_object_literal_computed_key;
 
 use super::Parser;
 use crate::lex::LexMode;

@@ -262,7 +262,8 @@ fn arguments_identifier_reference_is_allowed_in_nested_class_method_param_defaul
 }
 
 #[test]
-fn arguments_identifier_reference_is_allowed_in_arrow_in_object_method_in_class_field_initializer() {
+fn arguments_identifier_reference_is_allowed_in_arrow_in_object_method_in_class_field_initializer()
+{
   let src = r#"
     class C {
       x = ({ m() { return () => arguments; } });
@@ -278,7 +279,8 @@ fn arguments_identifier_reference_is_allowed_in_arrow_in_object_method_in_class_
 }
 
 #[test]
-fn arguments_identifier_reference_is_allowed_in_arrow_in_nested_class_method_in_class_field_initializer() {
+fn arguments_identifier_reference_is_allowed_in_arrow_in_nested_class_method_in_class_field_initializer(
+) {
   let src = r#"
     class C {
       x = class D { m() { return () => arguments; } };

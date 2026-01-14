@@ -20,15 +20,15 @@ use crate::ast::expr::lit::LitTemplateExpr;
 use crate::ast::expr::lit::LitTemplatePart;
 use crate::ast::expr::BinaryExpr;
 use crate::ast::expr::IdExpr;
-use crate::ast::node::InvalidTemplateEscapeSequence;
 use crate::ast::node::CoverInitializedName;
-use crate::ast::node::TrailingCommaAfterRestElement;
+use crate::ast::node::InvalidTemplateEscapeSequence;
 use crate::ast::node::LeadingZeroDecimalLiteral;
 use crate::ast::node::LegacyOctalEscapeSequence;
 use crate::ast::node::LegacyOctalNumberLiteral;
 use crate::ast::node::LiteralStringCodeUnits;
 use crate::ast::node::Node;
 use crate::ast::node::TemplateStringParts;
+use crate::ast::node::TrailingCommaAfterRestElement;
 use crate::char::is_line_terminator;
 use crate::error::SyntaxError;
 use crate::error::SyntaxErrorType;
@@ -718,7 +718,9 @@ fn validate_regex_flags(raw: &str, start: usize) -> Result<(), RegexError> {
       }
     };
     // `u` and `v` are mutually exclusive.
-    if (bit == U_FLAG && (seen_flags & V_FLAG) != 0) || (bit == V_FLAG && (seen_flags & U_FLAG) != 0) {
+    if (bit == U_FLAG && (seen_flags & V_FLAG) != 0)
+      || (bit == V_FLAG && (seen_flags & U_FLAG) != 0)
+    {
       return Err(RegexError {
         kind: RegexErrorKind::InvalidFlag,
         offset: start + offset,
@@ -1049,7 +1051,14 @@ fn regex_group_prefix_info(
   pattern: &str,
   start: usize,
   unicode_mode: bool,
-) -> Result<(bool /*quantifiable*/, usize /*consumed*/, Option<String>), RegexError> {
+) -> Result<
+  (
+    bool,  /*quantifiable*/
+    usize, /*consumed*/
+    Option<String>,
+  ),
+  RegexError,
+> {
   debug_assert_eq!(pattern.as_bytes()[start], b'(');
   let bytes = pattern.as_bytes();
   if start + 1 >= bytes.len() || bytes[start + 1] != b'?' {
@@ -1644,12 +1653,8 @@ fn validate_regex_pattern(
           return Ok((end, None, may_contain_strings));
         }
         if unicode_sets_mode && esc == 'q' {
-          let (end, may_contain_strings) = validate_class_string_disjunction_escape(
-            pattern,
-            base_offset,
-            escape_start,
-            i,
-          )?;
+          let (end, may_contain_strings) =
+            validate_class_string_disjunction_escape(pattern, base_offset, escape_start, i)?;
           return Ok((end, None, may_contain_strings));
         }
         if esc == 'u' {
@@ -1865,7 +1870,7 @@ fn validate_regex_pattern(
           if esc == '-' {
             return Ok((i + esc_len, Some('-' as u32), false));
           }
- 
+
           // ClassSetReservedPunctuator escapes are only valid in UnicodeSets mode (`/v`) inside a
           // class set. They allow representing punctuators that would otherwise form a reserved
           // double punctuator/operator (e.g. `[\&\&]`, `[\!\!]`).
@@ -1900,13 +1905,8 @@ fn validate_regex_pattern(
         }
         Ok((i + esc_len, Some(esc as u32), false))
       } else if ch == '[' {
-        let (end, may_contain_strings) = validate_unicode_sets_class(
-          pattern,
-          base_offset,
-          i,
-          unicode_mode,
-          unicode_sets_mode,
-        )?;
+        let (end, may_contain_strings) =
+          validate_unicode_sets_class(pattern, base_offset, i, unicode_mode, unicode_sets_mode)?;
         Ok((end, None, may_contain_strings))
       } else {
         // Disallowed syntax characters in UnicodeSets mode when unescaped.
@@ -2321,8 +2321,10 @@ fn validate_regex_pattern(
     if esc == 'x' {
       let after_x = after_esc;
       if after_x + 2 <= bytes.len() {
-        if let (Some(h1), Some(h2)) = (regex_hex_value(bytes[after_x]), regex_hex_value(bytes[after_x + 1]))
-        {
+        if let (Some(h1), Some(h2)) = (
+          regex_hex_value(bytes[after_x]),
+          regex_hex_value(bytes[after_x + 1]),
+        ) {
           return Ok((after_x + 2, RegexClassAtom::Single((h1 << 4) | h2)));
         }
       }
@@ -2533,7 +2535,8 @@ fn validate_regex_pattern(
     }
 
     if unicode_sets_mode && !in_charset && ch == '[' {
-      let (end, _) = validate_unicode_sets_class(pattern, base_offset, i, unicode_mode, unicode_sets_mode)?;
+      let (end, _) =
+        validate_unicode_sets_class(pattern, base_offset, i, unicode_mode, unicode_sets_mode)?;
       prev_can_be_quantified = true;
       quantifier_allows_lazy = false;
       i = end;
@@ -2677,7 +2680,9 @@ fn validate_regex_pattern(
           // digits follow. Otherwise `\u` is an identity escape and the subsequent characters
           // (including `{...}`) are parsed normally.
           let is_u4 = after_u + 4 <= bytes.len()
-            && bytes[after_u..after_u + 4].iter().all(|b| (*b as char).is_ascii_hexdigit());
+            && bytes[after_u..after_u + 4]
+              .iter()
+              .all(|b| (*b as char).is_ascii_hexdigit());
           if is_u4 {
             i = after_u + 4;
           } else {
@@ -2736,11 +2741,10 @@ fn validate_regex_pattern(
             });
           }
           let after_angle = after_k + '<'.len_utf8();
-          let (end, name) =
-            regex_parse_group_name(pattern, after_angle).map_err(|mut err| {
-              err.offset += base_offset;
-              err
-            })?;
+          let (end, name) = regex_parse_group_name(pattern, after_angle).map_err(|mut err| {
+            err.offset += base_offset;
+            err
+          })?;
           named_backreferences.push((name, base_offset + escape_start, end - escape_start));
 
           // Skip until the end of the `\k<name>` sequence.
@@ -2779,7 +2783,9 @@ fn validate_regex_pattern(
           if !c.is_ascii_digit() {
             break;
           }
-          value = value.saturating_mul(10).saturating_add((c as u8 - b'0') as usize);
+          value = value
+            .saturating_mul(10)
+            .saturating_add((c as u8 - b'0') as usize);
           j += c.len_utf8();
         }
 
@@ -3126,7 +3132,9 @@ fn validate_regex_pattern(
             if !c.is_ascii_digit() {
               break;
             }
-            max_val = max_val.saturating_mul(10).saturating_add((c - b'0') as usize);
+            max_val = max_val
+              .saturating_mul(10)
+              .saturating_add((c - b'0') as usize);
             max_digits += 1;
             j += 1;
           }
@@ -3416,14 +3424,7 @@ mod regex_validation_tests {
   fn unicode_sets_mode_rejects_reserved_punctuator_literals() {
     // These patterns are accepted in non-`v` modes but are early errors in Unicode Sets mode.
     for pat in [
-      r"/[(]/v",
-      r"/[)]/v",
-      r"/[[]/v",
-      r"/[{]/v",
-      r"/[}]/v",
-      r"/[/]/v",
-      r"/[-]/v",
-      r"/[|]/v",
+      r"/[(]/v", r"/[)]/v", r"/[[]/v", r"/[{]/v", r"/[}]/v", r"/[/]/v", r"/[-]/v", r"/[|]/v",
     ] {
       assert_invalid(pat);
     }
@@ -3848,105 +3849,105 @@ impl<'a> Parser<'a> {
                       return Err(direct_key.error(SyntaxErrorType::ExpectedNotFound));
                     };
                     // TypeScript-style recovery: definite assignment assertion (e.g., `{ a! }`).
-                     let _definite_assignment = p.consume_if(TT::Exclamation).is_match();
-                     // TypeScript-style recovery: default value (e.g., `{ c = 1 }`).
-                     if p.consume_if(TT::Equals).is_match() {
-                       let key_name = direct_key.stx.key.clone();
-                       let key_loc = direct_key.loc;
-                       p.validate_arguments_not_disallowed_in_class_init(key_loc, &key_name)?;
-                       let default_val = p.expr(ctx, [TT::Comma, TT::Semicolon, TT::BraceClose])?;
-                        let id_expr = Node::new(
+                    let _definite_assignment = p.consume_if(TT::Exclamation).is_match();
+                    // TypeScript-style recovery: default value (e.g., `{ c = 1 }`).
+                    if p.consume_if(TT::Equals).is_match() {
+                      let key_name = direct_key.stx.key.clone();
+                      let key_loc = direct_key.loc;
+                      p.validate_arguments_not_disallowed_in_class_init(key_loc, &key_name)?;
+                      let default_val = p.expr(ctx, [TT::Comma, TT::Semicolon, TT::BraceClose])?;
+                      let id_expr = Node::new(
+                        key_loc,
+                        IdExpr {
+                          name: key_name.clone(),
+                        },
+                      )
+                      .into_wrapped();
+                      let mut bin_expr = Node::new(
+                        key_loc + default_val.loc,
+                        BinaryExpr {
+                          operator: OperatorName::Assignment,
+                          left: id_expr,
+                          right: default_val,
+                        },
+                      )
+                      .into_wrapped();
+                      bin_expr.assoc.set(CoverInitializedName);
+                      ObjMemberType::Valued {
+                        key: ClassOrObjKey::Direct(Node::new(
                           key_loc,
-                          IdExpr {
-                            name: key_name.clone(),
-                         },
-                       )
-                       .into_wrapped();
-                       let mut bin_expr = Node::new(
-                         key_loc + default_val.loc,
-                         BinaryExpr {
-                           operator: OperatorName::Assignment,
-                           left: id_expr,
-                           right: default_val,
-                         },
-                       )
-                       .into_wrapped();
-                       bin_expr.assoc.set(CoverInitializedName);
-                       ObjMemberType::Valued {
-                         key: ClassOrObjKey::Direct(Node::new(
-                           key_loc,
-                           ClassOrObjMemberDirectKey {
+                          ClassOrObjMemberDirectKey {
                             key: key_name,
                             tt: TT::Identifier,
                           },
                         )),
-                         val: ClassOrObjVal::Prop(Some(bin_expr)),
-                        }
-                      } else {
-                       let key_loc = direct_key.loc;
-                       let key_name = direct_key.stx.key.clone();
-                       p.validate_arguments_not_disallowed_in_class_init(key_loc, &key_name)?;
-                        ObjMemberType::Shorthand {
-                          id: direct_key.map_stx(|n| IdExpr { name: n.key }),
-                        }
+                        val: ClassOrObjVal::Prop(Some(bin_expr)),
                       }
                     } else {
-                      if !is_valid_pattern_identifier(direct_key.stx.tt, ctx.rules) {
-                        return Err(direct_key.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+                      let key_loc = direct_key.loc;
+                      let key_name = direct_key.stx.key.clone();
+                      p.validate_arguments_not_disallowed_in_class_init(key_loc, &key_name)?;
+                      ObjMemberType::Shorthand {
+                        id: direct_key.map_stx(|n| IdExpr { name: n.key }),
                       }
-                      if direct_key.stx.tt == TT::Identifier {
-                        if let Some(keyword_tt) = keyword_from_str(&direct_key.stx.key) {
-                          if !is_valid_pattern_identifier(keyword_tt, ctx.rules) {
-                            return Err(direct_key.error(SyntaxErrorType::ExpectedSyntax(
-                              "identifier",
-                            )));
-                          }
+                    }
+                  } else {
+                    if !is_valid_pattern_identifier(direct_key.stx.tt, ctx.rules) {
+                      return Err(direct_key.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+                    }
+                    if direct_key.stx.tt == TT::Identifier {
+                      if let Some(keyword_tt) = keyword_from_str(&direct_key.stx.key) {
+                        if !is_valid_pattern_identifier(keyword_tt, ctx.rules) {
+                          return Err(
+                            direct_key.error(SyntaxErrorType::ExpectedSyntax("identifier")),
+                          );
                         }
                       }
-                      if p.is_strict_ecmascript()
-                        && p.is_strict_mode()
-                        && Parser::is_strict_mode_reserved_word(&direct_key.stx.key)
-                      {
-                        return Err(direct_key.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+                    }
+                    if p.is_strict_ecmascript()
+                      && p.is_strict_mode()
+                      && Parser::is_strict_mode_reserved_word(&direct_key.stx.key)
+                    {
+                      return Err(direct_key.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+                    }
+                    if p.consume_if(TT::Equals).is_match() {
+                      let key_name = direct_key.stx.key.clone();
+                      let key_loc = direct_key.loc;
+                      p.validate_arguments_not_disallowed_in_class_init(key_loc, &key_name)?;
+                      let default_val = p.expr(ctx, [TT::Comma, TT::Semicolon, TT::BraceClose])?;
+                      let id_expr = Node::new(
+                        key_loc,
+                        IdExpr {
+                          name: key_name.clone(),
+                        },
+                      )
+                      .into_wrapped();
+                      let mut bin_expr = Node::new(
+                        key_loc + default_val.loc,
+                        BinaryExpr {
+                          operator: OperatorName::Assignment,
+                          left: id_expr,
+                          right: default_val,
+                        },
+                      )
+                      .into_wrapped();
+                      bin_expr.assoc.set(CoverInitializedName);
+                      ObjMemberType::Valued {
+                        key: ClassOrObjKey::Direct(direct_key),
+                        val: ClassOrObjVal::Prop(Some(bin_expr)),
                       }
-                      if p.consume_if(TT::Equals).is_match() {
-                        let key_name = direct_key.stx.key.clone();
-                        let key_loc = direct_key.loc;
-                        p.validate_arguments_not_disallowed_in_class_init(key_loc, &key_name)?;
-                        let default_val = p.expr(ctx, [TT::Comma, TT::Semicolon, TT::BraceClose])?;
-                        let id_expr = Node::new(
-                         key_loc,
-                          IdExpr {
-                            name: key_name.clone(),
-                         },
-                       )
-                       .into_wrapped();
-                       let mut bin_expr = Node::new(
-                         key_loc + default_val.loc,
-                         BinaryExpr {
-                           operator: OperatorName::Assignment,
-                           left: id_expr,
-                           right: default_val,
-                         },
-                       )
-                       .into_wrapped();
-                       bin_expr.assoc.set(CoverInitializedName);
-                       ObjMemberType::Valued {
-                          key: ClassOrObjKey::Direct(direct_key),
-                          val: ClassOrObjVal::Prop(Some(bin_expr)),
-                        }
-                      } else {
-                       let key_loc = direct_key.loc;
-                       let key_name = direct_key.stx.key.clone();
-                       p.validate_arguments_not_disallowed_in_class_init(key_loc, &key_name)?;
-                        ObjMemberType::Shorthand {
-                          id: direct_key.map_stx(|n| IdExpr { name: n.key }),
-                        }
+                    } else {
+                      let key_loc = direct_key.loc;
+                      let key_name = direct_key.stx.key.clone();
+                      p.validate_arguments_not_disallowed_in_class_init(key_loc, &key_name)?;
+                      ObjMemberType::Shorthand {
+                        id: direct_key.map_stx(|n| IdExpr { name: n.key }),
                       }
                     }
                   }
                 }
               }
+            }
             _ => ObjMemberType::Valued { key, val: value },
           };
 
@@ -4040,9 +4041,7 @@ impl<'a> Parser<'a> {
   ) -> SyntaxResult<(Loc, String, Option<Loc>, Vec<u16>)> {
     let peek = self.peek_with_mode(mode);
     let t = if matches!(peek.typ, TT::LiteralString | TT::Invalid)
-      && self
-        .str(peek.loc)
-        .starts_with(['"', '\''])
+      && self.str(peek.loc).starts_with(['"', '\''])
     {
       self.consume_with_mode(mode)
     } else {
@@ -4227,7 +4226,10 @@ impl<'a> Parser<'a> {
         let legacy_escape = find_legacy_escape_sequence(content);
         if !tagged {
           if let Some((rel, len)) = legacy_escape {
-            let loc = Loc(string.loc.0 + offset + rel, string.loc.0 + offset + rel + len);
+            let loc = Loc(
+              string.loc.0 + offset + rel,
+              string.loc.0 + offset + rel + len,
+            );
             if self.is_strict_ecmascript() {
               return Err(loc.error(SyntaxErrorType::InvalidCharacterEscape, Some(string.typ)));
             }

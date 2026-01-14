@@ -3,6 +3,7 @@ use crate::ast::node::Node;
 use crate::ast::type_expr::TypeEntityName;
 use crate::ast::type_expr::TypeExpr;
 use crate::lex::Lexer;
+use crate::operator::OperatorName;
 use crate::parse::expr::pat::ParsePatternRules;
 use crate::parse::Parser;
 use crate::parse::{AsiContext, ParseCtx};
@@ -147,4 +148,56 @@ fn parses_angle_bracket_type_assertion_with_intrinsic_keyword_type_in_ts() {
     }
     ref other => panic!("expected type assertion expression, got {:?}", other),
   }
+}
+
+#[test]
+fn new_expression_with_arguments_allows_postfix_member_access() {
+  let expr = parse_expr_with_options(
+    "new Foo().bar;",
+    ParseOptions {
+      dialect: Dialect::Ecma,
+      source_type: SourceType::Script,
+    },
+  );
+
+  // `new Foo().bar` must parse as `(new Foo()).bar`, not `new (Foo().bar)`.
+  match *expr.stx {
+    Expr::Member(ref member) => match member.stx.left.stx.as_ref() {
+      Expr::Unary(unary) => {
+        assert_eq!(unary.stx.operator, OperatorName::New);
+        assert!(
+          matches!(unary.stx.argument.stx.as_ref(), Expr::Call(_)),
+          "expected new operand to be a call expression, got {:?}",
+          unary.stx.argument.stx
+        );
+      }
+      other => panic!("expected member left to be `new` expression, got {:?}", other),
+    },
+    other => panic!("expected member expression, got {:?}", other),
+  }
+}
+
+#[test]
+fn new_import_call_is_syntax_error() {
+  // `new import("...")` is not valid, but `new (import("..."))` is. Ensure the parser rejects the
+  // unparenthesized form so `new` cannot accidentally bind to the dynamic import.
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new("new import('x');"), opts);
+  let ctx = ParseCtx {
+    rules: ParsePatternRules {
+      await_allowed: true,
+      yield_allowed: true,
+      await_expr_allowed: false,
+      yield_expr_allowed: false,
+    },
+    top_level: true,
+    in_namespace: false,
+    asi: AsiContext::Statements,
+  };
+
+  let res = parser.expr(ctx, [TT::Semicolon]);
+  assert!(res.is_err(), "parse unexpectedly succeeded: {res:?}");
 }

@@ -12,8 +12,8 @@ use crate::ast::import_export::ExportNames;
 use crate::ast::import_export::ImportName;
 use crate::ast::import_export::ImportNames;
 use crate::ast::import_export::ModuleExportImportName;
-use crate::ast::node::LiteralStringCodeUnits;
 use crate::ast::node::LegacyOctalEscapeSequence;
+use crate::ast::node::LiteralStringCodeUnits;
 use crate::ast::node::ModuleExportImportNameCodeUnits;
 use crate::ast::node::ModuleSpecifierCodeUnits;
 use crate::ast::node::Node;
@@ -31,8 +31,8 @@ use crate::lex::LexMode;
 use crate::lex::KEYWORDS_MAPPING;
 use crate::parse::stmt::decl::VarDeclParseMode;
 use crate::token::TT;
-use crate::{operator::OperatorName, operator::OPERATORS};
 use crate::utf16::is_string_well_formed_unicode;
+use crate::{operator::OperatorName, operator::OPERATORS};
 
 impl<'a> Parser<'a> {
   fn starts_with_type_only_import(&mut self, ctx: ParseCtx) -> bool {
@@ -105,7 +105,10 @@ impl<'a> Parser<'a> {
         let (loc, name, escape_loc, code_units) =
           self.lit_str_val_with_mode_and_legacy_escape(LexMode::Standard)?;
         if !is_string_well_formed_unicode(&code_units) {
-          return Err(loc.error(SyntaxErrorType::InvalidCharacterEscape, Some(TT::LiteralString)));
+          return Err(loc.error(
+            SyntaxErrorType::InvalidCharacterEscape,
+            Some(TT::LiteralString),
+          ));
         }
         let mut alias = Node::new(loc, IdPat { name });
         alias
@@ -162,12 +165,7 @@ impl<'a> Parser<'a> {
           ModuleExportImportName::Str(_) => target.as_str().to_string(),
         }
       };
-      Node::new(
-        t0.loc,
-        IdPat {
-          name: alias_name,
-        },
-      )
+      Node::new(t0.loc, IdPat { name: alias_name })
     };
     if !is_export && self.is_strict_ecmascript() {
       // Import local names are `BindingIdentifier`s, so they must respect:
@@ -200,9 +198,9 @@ impl<'a> Parser<'a> {
       }
     }
     if let Some(code_units) = target_code_units {
-      alias
-        .assoc
-        .set(ModuleExportImportNameCodeUnits(code_units.into_boxed_slice()));
+      alias.assoc.set(ModuleExportImportNameCodeUnits(
+        code_units.into_boxed_slice(),
+      ));
     }
     Ok((target, alias))
   }
@@ -410,9 +408,9 @@ impl<'a> Parser<'a> {
         attributes,
       },
     );
-    import_stmt
-      .assoc
-      .set(ModuleSpecifierCodeUnits(module_code_units.into_boxed_slice()));
+    import_stmt.assoc.set(ModuleSpecifierCodeUnits(
+      module_code_units.into_boxed_slice(),
+    ));
     if let Some(module_escape) = module_escape {
       import_stmt
         .assoc
@@ -920,9 +918,7 @@ mod tests {
     let opts = ecma_module_opts();
 
     // test262: language/module-code/early-export-ill-formed-string.js
-    assert!(
-      parse_with_options(r#"export {Moon as "\uD83C",} from "./m.js";"#, opts).is_err()
-    );
+    assert!(parse_with_options(r#"export {Moon as "\uD83C",} from "./m.js";"#, opts).is_err());
     assert!(parse_with_options(r#"export {"\uD83C"} from "./m.js";"#, opts).is_err());
     assert!(parse_with_options(r#"import {'\uD83C' as Usagi} from "./m.js";"#, opts).is_err());
 
@@ -935,16 +931,10 @@ mod tests {
     let opts = ecma_module_opts();
 
     // 🌙 is "\uD83C\uDF19"
-    assert!(
-      parse_with_options(r#"export {Moon as "\uD83C\uDF19"} from "./m.js";"#, opts).is_ok()
-    );
+    assert!(parse_with_options(r#"export {Moon as "\uD83C\uDF19"} from "./m.js";"#, opts).is_ok());
     assert!(parse_with_options(r#"export {"\uD83C\uDF19"} from "./m.js";"#, opts).is_ok());
-    assert!(
-      parse_with_options(r#"import {'\uD83C\uDF19' as Usagi} from "./m.js";"#, opts).is_ok()
-    );
-    assert!(
-      parse_with_options(r#"export * as "\uD83C\uDF19" from "./m.js";"#, opts).is_ok()
-    );
+    assert!(parse_with_options(r#"import {'\uD83C\uDF19' as Usagi} from "./m.js";"#, opts).is_ok());
+    assert!(parse_with_options(r#"export * as "\uD83C\uDF19" from "./m.js";"#, opts).is_ok());
   }
 
   #[test]

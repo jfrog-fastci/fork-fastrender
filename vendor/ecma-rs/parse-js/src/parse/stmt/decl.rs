@@ -3,8 +3,8 @@ use super::Parser;
 use crate::ast::expr::pat::Pat;
 use crate::ast::expr::Expr;
 use crate::ast::func::Func;
-use crate::ast::node::ParenthesizedExpr;
 use crate::ast::node::Node;
+use crate::ast::node::ParenthesizedExpr;
 use crate::ast::stmt::decl::ClassDecl;
 use crate::ast::stmt::decl::FuncDecl;
 use crate::ast::stmt::decl::PatDecl;
@@ -18,8 +18,8 @@ use crate::parse::expr::pat::is_valid_class_or_func_name;
 use crate::parse::expr::pat::ParsePatternRules;
 use crate::parse::expr::Asi;
 use crate::parse::AsiContext;
-use crate::token::TT;
 use crate::token::keyword_from_str;
+use crate::token::TT;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum VarDeclParseMode {
@@ -145,7 +145,11 @@ impl<'a> Parser<'a> {
           if initializer.is_none() && !in_for_in_of_header {
             match mode {
               VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing => {
-                return Err(pattern.loc.error(SyntaxErrorType::ExpectedSyntax("initializer"), None));
+                return Err(
+                  pattern
+                    .loc
+                    .error(SyntaxErrorType::ExpectedSyntax("initializer"), None),
+                );
               }
               VarDeclMode::Let | VarDeclMode::Var => {
                 if !matches!(pattern.stx.pat.stx.as_ref(), Pat::Id(_)) {

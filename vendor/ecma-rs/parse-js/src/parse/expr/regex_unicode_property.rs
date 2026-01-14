@@ -1,5 +1,5 @@
-use once_cell::sync::Lazy;
 use memchr::memchr;
+use once_cell::sync::Lazy;
 
 /// Returns whether `needle` exists in the sorted list `haystack`.
 #[inline]

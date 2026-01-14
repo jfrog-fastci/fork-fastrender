@@ -16,4 +16,3 @@ fn for_of_rhs_requires_assignment_expression() {
   // Parenthesized comma expressions are valid.
   assert!(parse_with_options("for (x of ([], [])) {}", opts).is_ok());
 }
-

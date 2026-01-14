@@ -16,4 +16,3 @@ fn accessor_is_not_reserved_in_ecma_script() {
     "`accessor` should be usable as a binding identifier in strict mode"
   );
 }
-

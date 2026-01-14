@@ -711,7 +711,8 @@ impl<'a> Parser<'a> {
           // `using` is contextual - only a declaration if followed by a BindingIdentifier on the
           // same line. This avoids mis-parsing `using[x]` as a declaration in `for (...)` headers.
           TT::KeywordUsing
-            if !t1.preceded_by_line_terminator && is_valid_pattern_identifier(t1.typ, ctx.rules) =>
+            if !t1.preceded_by_line_terminator
+              && is_valid_pattern_identifier(t1.typ, ctx.rules) =>
           {
             ForTripleStmtInit::Decl(p.var_decl(header_ctx, VarDeclParseMode::Leftmost)?)
           }

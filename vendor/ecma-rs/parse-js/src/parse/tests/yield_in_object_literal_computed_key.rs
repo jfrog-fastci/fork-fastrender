@@ -49,4 +49,3 @@ fn yield_expression_is_allowed_in_computed_setter_name_in_generator() {
   let res = parser.parse_top_level();
   assert!(res.is_ok(), "parse failed: {res:?}");
 }
-

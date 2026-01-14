@@ -57,4 +57,3 @@ fn rejects_escaped_yield_and_await_when_disallowed() {
   let err = parser.parse_top_level().unwrap_err();
   assert_eq!(err.typ, SyntaxErrorType::ExpectedSyntax("identifier"));
 }
-

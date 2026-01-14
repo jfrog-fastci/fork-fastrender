@@ -55,9 +55,15 @@ fn is_test262_parse_negative(src: &str) -> bool {
 fn rejects_regex_literal_with_both_u_and_v_flags() {
   let opts = ecma_script_opts();
   let err = parse_with_options("/./uv;", opts).unwrap_err();
-  assert_eq!(err.typ, SyntaxErrorType::ExpectedSyntax("valid regex flags"));
+  assert_eq!(
+    err.typ,
+    SyntaxErrorType::ExpectedSyntax("valid regex flags")
+  );
   let err = parse_with_options("/./vu;", opts).unwrap_err();
-  assert_eq!(err.typ, SyntaxErrorType::ExpectedSyntax("valid regex flags"));
+  assert_eq!(
+    err.typ,
+    SyntaxErrorType::ExpectedSyntax("valid regex flags")
+  );
 }
 
 #[test]
@@ -84,37 +90,15 @@ fn rejects_unicode_property_of_strings_in_p_negated_in_v() {
 fn rejects_unicode_sets_breaking_change_patterns() {
   let opts = ecma_script_opts();
   for pat in [
-    "[(]",
-    "[)]",
-    "[[]",
-    "[{]",
-    "[}]",
-    "[/]",
-    "[-]",
-    "[|]",
-    "[&&]",
-    "[!!]",
-    "[##]",
-    "[$$]",
-    "[%%]",
-    "[**]",
-    "[++]",
-    "[,,]",
-    "[..]",
-    "[::]",
-    "[;;]",
-    "[<<]",
-    "[==]",
-    "[>>]",
-    "[??]",
-    "[@@]",
-    "[``]",
-    "[~~]",
-    "[^^^]",
-    "[_^^]",
+    "[(]", "[)]", "[[]", "[{]", "[}]", "[/]", "[-]", "[|]", "[&&]", "[!!]", "[##]", "[$$]", "[%%]",
+    "[**]", "[++]", "[,,]", "[..]", "[::]", "[;;]", "[<<]", "[==]", "[>>]", "[??]", "[@@]", "[``]",
+    "[~~]", "[^^^]", "[_^^]",
   ] {
     let src = format!("let r = /{pat}/v;");
-    assert!(parse_with_options(&src, opts).is_err(), "expected {src} to fail");
+    assert!(
+      parse_with_options(&src, opts).is_err(),
+      "expected {src} to fail"
+    );
   }
 }
 
@@ -124,34 +108,9 @@ fn accepts_breaking_change_patterns_in_u_mode() {
   // only becoming early errors with `/v`.
   let opts = ecma_script_opts();
   for pat in [
-    "[(]",
-    "[)]",
-    "[[]",
-    "[{]",
-    "[}]",
-    "[/]",
-    "[-]",
-    "[|]",
-    "[&&]",
-    "[!!]",
-    "[##]",
-    "[$$]",
-    "[%%]",
-    "[**]",
-    "[++]",
-    "[,,]",
-    "[..]",
-    "[::]",
-    "[;;]",
-    "[<<]",
-    "[==]",
-    "[>>]",
-    "[??]",
-    "[@@]",
-    "[``]",
-    "[~~]",
-    "[^^^]",
-    "[_^^]",
+    "[(]", "[)]", "[[]", "[{]", "[}]", "[/]", "[-]", "[|]", "[&&]", "[!!]", "[##]", "[$$]", "[%%]",
+    "[**]", "[++]", "[,,]", "[..]", "[::]", "[;;]", "[<<]", "[==]", "[>>]", "[??]", "[@@]", "[``]",
+    "[~~]", "[^^^]", "[_^^]",
   ] {
     let src = format!("let r = /{pat}/u;");
     assert!(
@@ -165,9 +124,8 @@ fn accepts_breaking_change_patterns_in_u_mode() {
 fn test262_breaking_change_files_are_parse_errors() {
   // Validate against the vendored test262 fixtures directly so we catch any additions without
   // having to manually update the pattern list above.
-  let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
-    "../test262-semantic/data/test/built-ins/RegExp/prototype/unicodeSets",
-  );
+  let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    .join("../test262-semantic/data/test/built-ins/RegExp/prototype/unicodeSets");
   if !root.is_dir() {
     return;
   }
@@ -196,9 +154,8 @@ fn test262_breaking_change_files_are_parse_errors() {
 fn parses_test262_regexp_prototype_unicode_sets_tests() {
   // Ensure the rest of the `RegExp.prototype.unicodeSets` test corpus parses (so it can reach
   // runtime), while keeping the known negative fixtures as early errors.
-  let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
-    "../test262-semantic/data/test/built-ins/RegExp/prototype/unicodeSets",
-  );
+  let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    .join("../test262-semantic/data/test/built-ins/RegExp/prototype/unicodeSets");
   if !root.is_dir() {
     return;
   }
@@ -399,17 +356,13 @@ fn accepts_unicode_sets_escaped_reserved_punctuators() {
   // used unescaped inside `[...]`. Escaping them should still be accepted.
   let opts = ecma_script_opts();
   for pat in [
-    r"[\(]",
-    r"[\)]",
-    r"[\[]",
-    r"[\{]",
-    r"[\}]",
-    r"[\/]",
-    r"[\-]",
-    r"[\|]",
+    r"[\(]", r"[\)]", r"[\[]", r"[\{]", r"[\}]", r"[\/]", r"[\-]", r"[\|]",
   ] {
     let src = format!("let r = /{pat}/v;");
-    assert!(parse_with_options(&src, opts).is_ok(), "expected {src} to parse");
+    assert!(
+      parse_with_options(&src, opts).is_ok(),
+      "expected {src} to parse"
+    );
   }
 }
 

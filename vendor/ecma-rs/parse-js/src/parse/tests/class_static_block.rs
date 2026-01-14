@@ -516,7 +516,8 @@ fn arguments_identifier_reference_is_allowed_in_nested_class_method_in_static_bl
 }
 
 #[test]
-fn arguments_identifier_reference_is_allowed_in_nested_class_method_param_default_in_static_block() {
+fn arguments_identifier_reference_is_allowed_in_nested_class_method_param_default_in_static_block()
+{
   let src = r#"
     class C {
       static {
@@ -624,7 +625,8 @@ fn arguments_identifier_reference_is_syntax_error_in_computed_method_name_in_sta
 }
 
 #[test]
-fn escaped_arguments_identifier_reference_is_syntax_error_in_computed_method_name_in_static_block() {
+fn escaped_arguments_identifier_reference_is_syntax_error_in_computed_method_name_in_static_block()
+{
   let src = r#"
     class C {
       static {

@@ -152,8 +152,7 @@ impl<'a> Parser<'a> {
           }
 
           // TypeScript: type annotation.
-          let type_annotation = if !p.is_strict_ecmascript() && p.consume_if(TT::Colon).is_match()
-          {
+          let type_annotation = if !p.is_strict_ecmascript() && p.consume_if(TT::Colon).is_match() {
             Some(p.type_expr(ctx)?)
           } else {
             None
@@ -189,11 +188,7 @@ impl<'a> Parser<'a> {
         if is_rest {
           // Rest parameters must be last and cannot have a trailing comma.
           if p.peek().typ != TT::ParenthesisClose {
-            return Err(
-              p
-                .peek()
-                .error(SyntaxErrorType::ExpectedSyntax("`)`")),
-            );
+            return Err(p.peek().error(SyntaxErrorType::ExpectedSyntax("`)`")));
           }
           p.require(TT::ParenthesisClose)?;
           break;

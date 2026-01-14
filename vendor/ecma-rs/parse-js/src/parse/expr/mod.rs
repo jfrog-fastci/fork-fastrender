@@ -1,11 +1,12 @@
 pub mod jsx;
 pub mod lit;
 pub mod pat;
-pub mod util;
 mod regex_unicode_property;
+pub mod util;
 
 use super::{AsiContext, ParseCtx};
 use super::Parser;
+use crate::ast::expr::lit::LitNumExpr;
 use crate::ast::expr::pat::IdPat;
 use crate::ast::expr::ArrowFuncExpr;
 use crate::ast::expr::BinaryExpr;
@@ -25,7 +26,6 @@ use crate::ast::expr::TaggedTemplateExpr;
 use crate::ast::expr::ThisExpr;
 use crate::ast::expr::UnaryExpr;
 use crate::ast::expr::UnaryPostfixExpr;
-use crate::ast::expr::lit::LitNumExpr;
 use crate::ast::func::Func;
 use crate::ast::node::Node;
 use crate::ast::node::ParenthesizedExpr;
@@ -36,12 +36,12 @@ use crate::error::SyntaxErrorType;
 use crate::error::SyntaxResult;
 use crate::lex::LexMode;
 use crate::lex::KEYWORDS_MAPPING;
+use crate::num::JsNumber;
 use crate::operator::Associativity;
 use crate::operator::OperatorName;
 use crate::operator::OPERATORS;
 use crate::parse::operator::MULTARY_OPERATOR_MAPPING;
 use crate::parse::operator::UNARY_OPERATOR_MAPPING;
-use crate::num::JsNumber;
 use crate::token::keyword_from_str;
 use crate::token::TT;
 use pat::is_valid_class_or_func_name;
@@ -171,7 +171,13 @@ impl<'a> Parser<'a> {
   /// - It must also not consult the lexical environment (e.g. `with ({ get undefined() { ... }})`)
   ///   which would be observable if we lowered to an `undefined` identifier reference.
   fn create_synthetic_undefined_value(&self, loc: crate::loc::Loc) -> Node<Expr> {
-    let zero = Node::new(loc, LitNumExpr { value: JsNumber(0.0) }).into_wrapped();
+    let zero = Node::new(
+      loc,
+      LitNumExpr {
+        value: JsNumber(0.0),
+      },
+    )
+    .into_wrapped();
     Node::new(
       loc,
       UnaryExpr {
@@ -411,13 +417,7 @@ impl<'a> Parser<'a> {
         let pattern = Node::new(
           param_loc,
           PatDecl {
-            pat: Node::new(
-              param_loc,
-              IdPat {
-                name: param_name,
-              },
-            )
-            .into_wrapped(),
+            pat: Node::new(param_loc, IdPat { name: param_name }).into_wrapped(),
           },
         );
         let param = Node::new(
@@ -1262,37 +1262,37 @@ impl<'a> Parser<'a> {
               }
             };
 
-              let operand = if has_operand {
-                if operator.name == OperatorName::New {
+            let operand = if has_operand {
+              if operator.name == OperatorName::New {
                 // `new` has tricky precedence rules in ECMAScript: `new Foo().bar` should parse as
                 // `(new Foo()).bar`, not `new (Foo().bar)`.
                 //
-                  // `parse-js` represents `new Foo()` as a `UnaryExpr(New)` whose `argument` is a
-                  // `CallExpr` node (holding the constructor target and arguments). To preserve
-                  // correct chaining semantics, we must parse **only** the constructor target
-                  // (including member access within the callee, e.g. `Foo.bar`) and the optional
-                  // argument list, but we must *not* eagerly consume further member/call operators
-                  // after that argument list.
+                // `parse-js` represents `new Foo()` as a `UnaryExpr(New)` whose `argument` is a
+                // `CallExpr` node (holding the constructor target and arguments). To preserve
+                // correct chaining semantics, we must parse **only** the constructor target
+                // (including member access within the callee, e.g. `Foo.bar`) and the optional
+                // argument list, but we must *not* eagerly consume further member/call operators
+                // after that argument list.
                 //
-                  // Without this special-case, `new Foo().bar` would incorrectly build
-                  // `Unary(New, Member(Call(Foo()), "bar"))`, which evaluates `Foo()` as a *call*
-                  // before applying `new`, breaking real-world patterns like
-                  // `new URL("...").href` / `new URL("...").searchParams.get("q")`.
+                // Without this special-case, `new Foo().bar` would incorrectly build
+                // `Unary(New, Member(Call(Foo()), "bar"))`, which evaluates `Foo()` as a *call*
+                // before applying `new`, breaking real-world patterns like
+                // `new URL("...").href` / `new URL("...").searchParams.get("q")`.
 
-                  // `new import(...)` is not valid ECMAScript syntax, but `new (import(...))` is.
-                  // Reject the direct form by detecting `new` followed immediately by the literal
-                  // `import` keyword and its call parentheses.
-                  if p.peek().typ == TT::KeywordImport {
-                    let [import_tok, next] = p.peek_n::<2>();
-                    if next.typ == TT::ParenthesisOpen {
-                      return Err(import_tok.error(SyntaxErrorType::ExpectedSyntax(
-                        "parenthesized import()",
-                      )));
-                    }
+                // `new import(...)` is not valid ECMAScript syntax, but `new (import(...))` is.
+                // Reject the direct form by detecting `new` followed immediately by the literal
+                // `import` keyword and its call parentheses.
+                if p.peek().typ == TT::KeywordImport {
+                  let [import_tok, next] = p.peek_n::<2>();
+                  if next.typ == TT::ParenthesisOpen {
+                    return Err(
+                      import_tok.error(SyntaxErrorType::ExpectedSyntax("parenthesized import()")),
+                    );
                   }
+                }
 
-                  // Parse the constructor target expression without consuming call syntax.
-                  let mut callee = p.expr_operand(ctx, terminators, asi)?;
+                // Parse the constructor target expression without consuming call syntax.
+                let mut callee = p.expr_operand(ctx, terminators, asi)?;
 
                 // Consume member access chains (`new Foo.bar()`).
                 loop {
@@ -1314,7 +1314,9 @@ impl<'a> Parser<'a> {
                         }
                         _ => {
                           if !p.should_recover() {
-                            return Err(right_tok.error(SyntaxErrorType::ExpectedSyntax("property name")));
+                            return Err(
+                              right_tok.error(SyntaxErrorType::ExpectedSyntax("property name")),
+                            );
                           }
                           if matches!(
                             right_tok.typ,
@@ -1387,9 +1389,9 @@ impl<'a> Parser<'a> {
                     p.require(TT::ChevronLeft)?;
                     let (type_arguments, close_loc) =
                       match p.ts_type_arguments_after_chevron_left(ctx) {
-                      Ok(res) => res,
-                      Err(_) => return Ok(None),
-                    };
+                        Ok(res) => res,
+                        Err(_) => return Ok(None),
+                      };
 
                     let next = p.peek();
                     let tagged_template = !next.preceded_by_line_terminator
@@ -1428,9 +1430,9 @@ impl<'a> Parser<'a> {
                     TT::ParenthesisOpen | TT::QuestionDotParenthesisOpen
                   )
                 {
-                  return Err(callee.error(SyntaxErrorType::ExpectedSyntax(
-                    "super property access",
-                  )));
+                  return Err(
+                    callee.error(SyntaxErrorType::ExpectedSyntax("super property access")),
+                  );
                 }
 
                 // Tagged template application takes precedence over `new` invocation:
@@ -1451,14 +1453,10 @@ impl<'a> Parser<'a> {
                   // ES2018: Tagged templates allow invalid escape sequences (cooked value is
                   // undefined, raw is still available).
                   let function = callee;
-                  let (parts, template_parts) = p.lit_template_parts_with_template_data(ctx, true)?;
-                  let mut node = Node::new(
-                    function.loc + loc,
-                    TaggedTemplateExpr {
-                      function,
-                      parts,
-                    },
-                  );
+                  let (parts, template_parts) =
+                    p.lit_template_parts_with_template_data(ctx, true)?;
+                  let mut node =
+                    Node::new(function.loc + loc, TaggedTemplateExpr { function, parts });
                   node.assoc.set(template_parts);
                   callee = node.into_wrapped();
                 }
@@ -1914,13 +1912,7 @@ impl<'a> Parser<'a> {
           // ES2018: Tagged templates allow invalid escape sequences
           let function = left;
           let (parts, template_parts) = self.lit_template_parts_with_template_data(ctx, true)?;
-          let mut node = Node::new(
-            function.loc + loc,
-            TaggedTemplateExpr {
-              function,
-              parts,
-            },
-          );
+          let mut node = Node::new(function.loc + loc, TaggedTemplateExpr { function, parts });
           node.assoc.set(template_parts);
           left = node.into_wrapped();
           continue;
