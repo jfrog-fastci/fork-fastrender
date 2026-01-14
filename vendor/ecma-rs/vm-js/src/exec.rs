@@ -49935,6 +49935,44 @@ mod tests {
   }
 
   #[test]
+  fn arrow_this_in_derived_constructor_computed_super_property_set_key_not_evaluated_before_super(
+  ) -> Result<(), VmError> {
+    let source = r#"
+      let log = [];
+      function key() { log.push('key'); return 'x'; }
+
+      class B {
+        set x(v) { log.push('set:' + v + ':' + (this instanceof D)); this._x = v; }
+        get x() { log.push('get'); return this._x; }
+      }
+      class D extends B {
+        constructor() {
+          let f = (v) => { super[key()] = v; return super[key()]; };
+
+          let errName;
+          let errMsg;
+          try { f(1); } catch (e) { errName = e.name; errMsg = e.message; }
+
+          super();
+          this.v = f(2);
+          this.errName = errName;
+          this.errMsg = errMsg;
+        }
+      }
+
+      let d = new D();
+      d.v === 2 &&
+        d.errName === 'ReferenceError' &&
+        d.errMsg === "Must call super constructor in derived class before accessing 'this'" &&
+        log.join(',') === 'key,set:2:true,key,get'
+    "#;
+
+    assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
+    assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn arrow_this_in_derived_constructor_computed_super_property_call_key_not_evaluated_before_super(
   ) -> Result<(), VmError> {
     let source = r#"
