@@ -183,8 +183,7 @@ impl<R: Read + Seek + Send> Mp4PacketDemuxer<R> {
           });
         }
         Some(mp4::MediaType::AAC) => {
-          let (sample_rate, channels) = mp4_track_audio_params(track)
-            .map_err(|e| MediaError::Demux(format!("mp4: failed to read audio params: {e}")))?;
+          let (sample_rate, channels) = mp4_track_audio_params(track)?;
           let asc = build_aac_lc_audio_specific_config(sample_rate, channels)?;
 
           tracks.push(MediaTrackInfo {
@@ -552,7 +551,7 @@ fn mp4_fill_peeked<R: Read + Seek>(
 }
 
 #[cfg(feature = "media_mp4")]
-fn mp4_track_audio_params(track: &mp4::Mp4Track) -> std::result::Result<(u32, u16), String> {
+fn mp4_track_audio_params(track: &mp4::Mp4Track) -> MediaResult<(u32, u16)> {
   let mp4a = track
     .trak
     .mdia
@@ -561,7 +560,7 @@ fn mp4_track_audio_params(track: &mp4::Mp4Track) -> std::result::Result<(u32, u1
     .stsd
     .mp4a
     .as_ref()
-    .ok_or_else(|| "mp4: AAC track missing mp4a sample entry".to_string())?;
+    .ok_or_else(|| MediaError::Demux("mp4: AAC track missing mp4a sample entry".into()))?;
 
   // For MP4 audio tracks, `mdhd.timescale` is typically the sample rate.
   let sample_rate = track.trak.mdia.mdhd.timescale;
