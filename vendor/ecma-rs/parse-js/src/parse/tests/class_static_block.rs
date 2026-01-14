@@ -303,6 +303,47 @@ fn arguments_identifier_reference_is_allowed_in_function_in_static_block() {
 }
 
 #[test]
+fn arguments_identifier_reference_is_allowed_in_arrow_in_nested_function_in_static_block() {
+  let src = r#"
+    class C {
+      static {
+        (function() {
+          (() => arguments);
+        });
+      }
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let res = parser.parse_top_level();
+  assert!(res.is_ok(), "parse failed: {res:?}");
+}
+
+#[test]
+fn arguments_identifier_reference_is_allowed_in_arrow_in_nested_function_param_default_in_static_block(
+) {
+  let src = r#"
+    class C {
+      static {
+        (function(x = (() => arguments)) {
+          return x;
+        });
+      }
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let res = parser.parse_top_level();
+  assert!(res.is_ok(), "parse failed: {res:?}");
+}
+
+#[test]
 fn arguments_identifier_reference_in_object_shorthand_is_syntax_error_in_static_block() {
   let src = r#"
     class C {
