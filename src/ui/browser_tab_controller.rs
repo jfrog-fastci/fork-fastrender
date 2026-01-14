@@ -4,8 +4,8 @@ use crate::html::title::find_document_title;
 use crate::interaction::focus_scroll;
 use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point_prepared, ScrollWheelInput};
 use crate::interaction::{
-  fragment_tree_with_scroll, DateTimeInputKind, FormSubmission, FormSubmissionMethod,
-  InteractionAction, InteractionEngine, InteractionState,
+  DateTimeInputKind, FormSubmission, FormSubmissionMethod, InteractionAction, InteractionEngine,
+  InteractionState,
 };
 use crate::paint::rasterize::fill_rect;
 use crate::scroll::ScrollState;
