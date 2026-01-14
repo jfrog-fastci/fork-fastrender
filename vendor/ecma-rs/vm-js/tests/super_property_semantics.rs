@@ -784,6 +784,70 @@ fn super_property_in_accessors_compiled() -> Result<(), VmError> {
   Ok(())
 }
 
+const OBJECT_LITERAL_COMPUTED_PROPERTY_NAMES: &str = r#"
+  function ID(x) { return x; }
+
+  var protoGet = { m() { return " proto m"; } };
+  var objMethods = {
+    ["a"]() { return "a" + super.m(); },
+    [ID("b")]() { return "b" + super.m(); },
+    [0]() { return "0" + super.m(); },
+    [ID(1)]() { return "1" + super.m(); },
+  };
+  Object.setPrototypeOf(objMethods, protoGet);
+  var methodsRes = [objMethods.a(), objMethods.b(), objMethods[0](), objMethods[1]()].join(",");
+
+  var objGetters = {
+    get ["a"]() { return "a" + super.m(); },
+    get [ID("b")]() { return "b" + super.m(); },
+    get [0]() { return "0" + super.m(); },
+    get [ID(1)]() { return "1" + super.m(); },
+  };
+  Object.setPrototypeOf(objGetters, protoGet);
+  var gettersRes = [objGetters.a, objGetters.b, objGetters[0], objGetters[1]].join(",");
+
+  var value = "";
+  var protoSet = { m(name, v) { value = name + " " + v; } };
+  var objSetters = {
+    set ["a"](v) { super.m("a", v); },
+    set [ID("b")](v) { super.m("b", v); },
+    set [0](v) { super.m("0", v); },
+    set [ID(1)](v) { super.m("1", v); },
+  };
+  Object.setPrototypeOf(objSetters, protoSet);
+  objSetters.a = 2; var a = value;
+  objSetters.b = 3; var b = value;
+  objSetters[0] = 4; var c = value;
+  objSetters[1] = 5; var d = value;
+  var settersRes = [a, b, c, d].join(",");
+
+  methodsRes + ";" + gettersRes + ";" + settersRes
+"#;
+
+#[test]
+fn super_property_object_literal_computed_property_names() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(OBJECT_LITERAL_COMPUTED_PROPERTY_NAMES)?;
+  assert_value_is_utf8(
+    &rt,
+    value,
+    "a proto m,b proto m,0 proto m,1 proto m;a proto m,b proto m,0 proto m,1 proto m;a 2,b 3,0 4,1 5",
+  );
+  Ok(())
+}
+
+#[test]
+fn super_property_object_literal_computed_property_names_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(&mut rt, OBJECT_LITERAL_COMPUTED_PROPERTY_NAMES)?;
+  assert_value_is_utf8(
+    &rt,
+    value,
+    "a proto m,b proto m,0 proto m,1 proto m;a proto m,b proto m,0 proto m,1 proto m;a 2,b 3,0 4,1 5",
+  );
+  Ok(())
+}
+
 #[test]
 fn super_property_uninitialized_this_putvalue_does_not_evaluate_expr() -> Result<(), VmError> {
   let mut rt = new_runtime();
