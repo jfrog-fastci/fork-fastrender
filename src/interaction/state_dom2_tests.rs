@@ -374,7 +374,7 @@ fn interaction_state_dom2_projection_survives_preorder_shifts_and_drops_detached
   let projected3 = state_dom2.project_to_preorder(&snapshot3.mapping);
   assert_eq!(projected3.focused, None);
   assert!(projected3.hover_chain().is_empty());
-  assert!(projected3.visited_links.is_empty());
+  assert!(projected3.visited_links().is_empty());
 }
 
 #[test]

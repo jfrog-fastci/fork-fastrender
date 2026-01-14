@@ -33953,6 +33953,7 @@ mod tests {
       ),
       diagnostics: None,
       iframe_depth_remaining: None,
+      iframe_embedder: None,
     };
 
     let err = ctx

@@ -702,7 +702,7 @@ mod tests {
     };
 
     // Mix into an existing buffer.
-    let (mut prod, mut cons) = pcm_f32_queue(1, 48_000, 16);
+    let (mut prod, mut cons) = pcm_f32_queue(1, 48_000, 16).unwrap();
     prod.push(&[1.0, 2.0, 3.0, 4.0], Duration::ZERO);
 
     let mut resampler = DriftResampler::new(1, 48_000, 48_000, cfg);
@@ -712,7 +712,7 @@ mod tests {
     assert_eq!(cons.buffered_frames(), 0, "expected queue to be drained");
 
     // Muting must still drain the queue so buffering/time does not accumulate while silent.
-    let (mut prod, mut cons) = pcm_f32_queue(1, 48_000, 16);
+    let (mut prod, mut cons) = pcm_f32_queue(1, 48_000, 16).unwrap();
     prod.push(&[1.0, 2.0, 3.0, 4.0], Duration::ZERO);
 
     let mut resampler = DriftResampler::new(1, 48_000, 48_000, cfg);

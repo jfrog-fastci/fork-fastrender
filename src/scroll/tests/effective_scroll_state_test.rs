@@ -45,6 +45,7 @@ fn effective_scroll_state_resolves_viewport_scroll_snap() {
       viewport: None,
       background: None,
       animation_time: None,
+      media_provider: None,
     })
     .expect("paint");
   assert_eq!(
@@ -102,6 +103,7 @@ fn effective_scroll_state_clamps_viewport_scroll_to_root_bounds() {
       viewport: None,
       background: None,
       animation_time: None,
+      media_provider: None,
     })
     .expect("paint");
   assert_eq!(

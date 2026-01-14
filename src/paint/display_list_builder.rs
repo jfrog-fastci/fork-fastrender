@@ -22522,6 +22522,8 @@ mod tests {
         replaced_type: ReplacedType::Video {
           src: "v.mp4".to_string(),
           poster: None,
+          crossorigin: CrossOriginAttribute::None,
+          referrer_policy: None,
           controls: false,
         },
         box_id: Some(1),
@@ -22580,6 +22582,8 @@ mod tests {
         replaced_type: ReplacedType::Video {
           src: "v.mp4".to_string(),
           poster: None,
+          crossorigin: CrossOriginAttribute::None,
+          referrer_policy: None,
           controls: false,
         },
         box_id: Some(1),
