@@ -50,7 +50,7 @@ fuzz_target!(|case: Case| {
       } => {
         let pid = RendererProcessId::new(u64::from(*process) + 1);
         let url = url_for_site(*use_example_org);
-        let site = site_key_for_navigation(url, None);
+        let site = site_key_for_navigation(url, None, false);
         state.set_site_lock(pid, site.clone());
         expected.insert(pid, site);
       }
@@ -69,7 +69,7 @@ fuzz_target!(|case: Case| {
           continue;
         };
 
-        let committed_site = site_key_for_navigation(url, Some(&locked_site));
+        let committed_site = site_key_for_navigation(url, Some(&locked_site), false);
         let res = state.validate_or_update_site_lock(pid, url);
 
         match model {
@@ -97,4 +97,3 @@ fuzz_target!(|case: Case| {
     assert_eq!(state.site_lock(*pid), Some(expected_site));
   }
 });
-

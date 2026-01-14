@@ -23,8 +23,7 @@ fuzz_target!(|data: &[u8]| {
   // Site isolation key derivation (including parent inheritance for special URLs like
   // `about:blank`).
   let factory = SiteKeyFactory::new_with_seed(1);
-  let current = factory.site_key_for_navigation("https://example.com", None);
-  let next = factory.site_key_for_navigation(input, Some(&current));
+  let current = factory.site_key_for_navigation("https://example.com", None, false);
+  let next = factory.site_key_for_navigation(input, Some(&current), false);
   let _ = next != current;
 });
-
