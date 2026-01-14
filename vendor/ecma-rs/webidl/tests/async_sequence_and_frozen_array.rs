@@ -289,3 +289,43 @@ fn overload_resolution_sequence_and_frozen_array_string_object_special_case() {
     assert_eq!(res.overload_id, "str");
     assert_eq!(rt.get_method_calls, 0);
 }
+
+#[test]
+fn overload_resolution_string_object_special_case_at_nonzero_distinguishing_index() {
+    // Overloads:
+    //   f(DOMString, sequence<DOMString>)
+    //   f(DOMString, DOMString)
+    //
+    // The distinguishing argument index is 1. String objects must be treated as strings even when
+    // they appear after arguments that were already converted.
+    let overloads = vec![
+        Overload {
+            id: "seq",
+            types: vec![
+                IdlType::DomString,
+                IdlType::Sequence(Box::new(IdlType::DomString)),
+            ],
+            optionality: vec![Optionality::Required, Optionality::Required],
+        },
+        Overload {
+            id: "str",
+            types: vec![IdlType::DomString, IdlType::DomString],
+            optionality: vec![Optionality::Required, Optionality::Required],
+        },
+    ];
+
+    let mut rt = ToyRuntime::default();
+
+    let first_arg = rt.string("prefix");
+
+    let string_obj = rt.string_object("hello");
+    // Model that String objects are iterable so we can detect any incorrect probing of @@iterator.
+    let x = rt.string("x");
+    rt.add_iterable_methods(string_obj, vec![x], false);
+
+    let res = resolve_overload(&mut rt, &overloads, &[first_arg, string_obj]).unwrap();
+    assert_eq!(res.overload_id, "str");
+    // Special-case (d): do not call GetMethod(@@iterator) for sequence selection when V is a
+    // string object and a string type is present at the distinguishing argument index.
+    assert_eq!(rt.get_method_calls, 0);
+}
