@@ -48857,7 +48857,14 @@ mod oom_async_frame_merge_tests {
     let mut outer_frames_len: Option<usize> = None;
     for id in 0..16u32 {
       if let Some(cont) = rt.vm.take_async_continuation(id) {
-        outer_frames_len = Some(cont.frames.len().saturating_sub(1));
+        match &cont {
+          crate::vm::VmAsyncContinuation::Ast(ast_cont) => {
+            outer_frames_len = Some(ast_cont.frames.len().saturating_sub(1));
+          }
+          crate::vm::VmAsyncContinuation::Hir(_) => {
+            panic!("expected AST async continuation for exec_script OOM test, got HIR continuation")
+          }
+        }
         rt.vm.replace_async_continuation(id, cont)?;
         break;
       }
