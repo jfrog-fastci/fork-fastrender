@@ -47,3 +47,11 @@ fn attribute_qualified_name_rejects_lt_even_without_namespace() {
   );
 }
 
+#[test]
+fn attribute_qualified_name_rejects_lt_in_prefix_even_without_namespace() {
+  // InvalidCharacterError should take precedence over NamespaceError.
+  assert_eq!(
+    validate_and_extract_attribute(None, "a<:b"),
+    Err(DomError::InvalidCharacterError)
+  );
+}
