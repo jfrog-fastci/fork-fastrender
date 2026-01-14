@@ -781,7 +781,10 @@ impl ChromeFrameDocument {
           for (idx, suggestion) in app.chrome.omnibox.suggestions.iter().enumerate() {
             let href = match &suggestion.action {
               OmniboxAction::NavigateToUrl => {
-                let url = suggestion.url.clone().unwrap_or_default();
+                let url = suggestion
+                  .url
+                  .clone()
+                  .unwrap_or_else(|| app.chrome.address_bar_text.clone());
                 ChromeActionUrl::Navigate { url }.to_url_string()
               }
               OmniboxAction::Search(query) => {
@@ -791,7 +794,7 @@ impl ChromeFrameDocument {
                 ChromeActionUrl::ActivateTab { tab_id: *tab_id }.to_url_string()
               }
             };
-
+ 
             let type_class = match &suggestion.action {
               OmniboxAction::NavigateToUrl => "omnibox-type-url",
               OmniboxAction::Search(_) => "omnibox-type-search",
