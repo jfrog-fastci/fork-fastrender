@@ -667,6 +667,36 @@ mod tests {
   }
 
   #[test]
+  fn summarize_includes_run_metadata_when_present() {
+    let log = r#"
+{"event":"run_start","schema_version":2,"t_ms":0,"pid":123}
+{"event":"frame","schema_version":2,"t_ms":1,"window_id":"WindowId(1)","ui_frame_ms":10}
+{"event":"run_end","schema_version":2,"t_ms":2,"frames_presented":1,"elapsed_ms":2}
+"#;
+
+    let summary = summarize_reader(
+      BufReader::new(log.as_bytes()),
+      WindowFilter {
+        from_ms: None,
+        to_ms: None,
+        only_event: None,
+      },
+    )
+    .expect("summary should succeed");
+
+    assert_eq!(summary.source_schema_version, 2);
+
+    let run_start = summary.run_start.expect("expected run_start to be captured");
+    assert_eq!(run_start["event"], "run_start");
+    assert_eq!(run_start["pid"], 123);
+
+    let run_end = summary.run_end.expect("expected run_end to be captured");
+    assert_eq!(run_end["event"], "run_end");
+    assert_eq!(run_end["frames_presented"], 1);
+    assert_eq!(run_end["elapsed_ms"], 2);
+  }
+
+  #[test]
   fn summarize_with_time_window_filter() {
     let log = r#"
 {"schema_version":1,"event":"frame","t_ms":0,"ui_frame_ms":10}
