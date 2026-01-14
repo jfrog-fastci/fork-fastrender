@@ -230,6 +230,46 @@ fn derived_constructor_direct_eval_in_arrow_observes_initialized_this_and_super(
 }
 
 #[test]
+fn derived_constructor_arrow_captures_lexical_new_target_before_and_after_super() -> Result<(), VmError> {
+  assert_true_in_ast_and_compiled(
+    r#"
+      class B {}
+      class C extends B {
+        constructor() {
+          let getNT = () => new.target;
+          let before = getNT();
+          super();
+          let after = getNT();
+          this.ok = (before === C) && (after === C);
+        }
+      }
+      new C().ok === true
+    "#,
+  )?;
+  Ok(())
+}
+
+#[test]
+fn derived_constructor_direct_eval_new_target_in_arrow_is_allowed_pre_super() -> Result<(), VmError> {
+  assert_true_in_ast_and_compiled(
+    r#"
+      class B {}
+      class C extends B {
+        constructor() {
+          let getNT = () => eval("new.target");
+          let before = getNT();
+          super();
+          let after = getNT();
+          this.ok = (before === C) && (after === C);
+        }
+      }
+      new C().ok === true
+    "#,
+  )?;
+  Ok(())
+}
+
+#[test]
 fn derived_constructor_async_arrow_super_property_ops_use_initialized_this() -> Result<(), VmError> {
   assert_async_out_in_ast_and_compiled(
     r#"
@@ -473,6 +513,56 @@ fn derived_constructor_async_arrow_super_calls_before_super_throw_before_await()
       run().then(v => out = String(v));
     "#,
     "ReferenceError,ReferenceError:",
+  )?;
+  Ok(())
+}
+
+#[test]
+fn derived_constructor_async_arrow_super_assignment_before_super_throw_before_await() -> Result<(), VmError> {
+  assert_async_out_in_ast_and_compiled(
+    r#"
+      var out = '';
+      async function run() {
+        let log = '';
+        class B {
+          get x() { return this._x; }
+          set x(v) { this._x = v; }
+        }
+
+        class C extends B {
+          constructor() {
+            let keyThenable = { get then() { log += 'K'; return (resolve) => resolve('x'); } };
+            let valThenable = { get then() { log += 'V'; return (resolve) => resolve(1); } };
+
+            // Before `super()`: assignment/update must throw a ReferenceError before evaluating the
+            // awaited key/value expressions (so the thenables must not run).
+            let p1 = (async () => {
+              try { super.x = await valThenable; return "no"; } catch (e) { return e.name; }
+            })();
+            let p2 = (async () => {
+              try { super[await keyThenable] = await valThenable; return "no"; } catch (e) { return e.name; }
+            })();
+            let p3 = (async () => {
+              try { super[await keyThenable]++; return "no"; } catch (e) { return e.name; }
+            })();
+
+            super();
+            this._x = 0;
+            this.p1 = p1;
+            this.p2 = p2;
+            this.p3 = p3;
+          }
+        }
+
+        let o = new C();
+        let r1 = await o.p1;
+        let r2 = await o.p2;
+        let r3 = await o.p3;
+        return r1 + ',' + r2 + ',' + r3 + ':' + log;
+      }
+      run().then(v => out = String(v));
+    "#,
+    "ReferenceError,ReferenceError,ReferenceError:",
   )?;
   Ok(())
 }
