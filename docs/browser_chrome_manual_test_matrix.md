@@ -249,7 +249,7 @@ Use `about:test-scroll` → `about:test-form` to build deterministic back/forwar
     - [ ] It includes **Keep** (dismiss) and **Start new session** (discard restored tabs) actions.
     - [ ] Clicking **Keep** dismisses the infobar and preserves the restored tabs.
     - [ ] Clicking **Start new session** closes/discards the restored tabs **in all windows** and
-      leaves a fresh `about:newtab` session in each open window.
+      closes any additional restored windows, leaving a fresh single-window `about:newtab` session.
   - [ ] A warning is also printed to stderr indicating the previous session ended unexpectedly.
 
 ### Crash-loop breaker (safe-start) (optional)
