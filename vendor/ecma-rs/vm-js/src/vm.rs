@@ -2643,6 +2643,11 @@ impl Vm {
       },
     };
 
+    let mut func = func;
+    let needs_mapped_arguments = crate::exec::compute_needs_mapped_arguments_object(&func);
+    func
+      .assoc
+      .set(crate::exec::NeedsMappedArgumentsObject(needs_mapped_arguments));
     let func = arc_try_new_vm(func)?;
 
     let slot = self

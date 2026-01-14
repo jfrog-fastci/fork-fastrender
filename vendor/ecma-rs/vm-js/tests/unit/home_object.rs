@@ -454,10 +454,10 @@ fn await_in_class_static_block_preserves_home_object_module() -> Result<(), VmEr
   let before = assert_is_function(rt.exec_script("before")?);
   let after = assert_is_function(rt.exec_script("after")?);
 
-   assert_eq!(rt.heap().get_function_home_object(before)?, Some(ctor));
-   assert_eq!(rt.heap().get_function_home_object(after)?, Some(ctor));
+  assert_eq!(rt.heap().get_function_home_object(before)?, Some(ctor));
+  assert_eq!(rt.heap().get_function_home_object(after)?, Some(ctor));
 
-   rt.heap.remove_root(eval_promise_root);
+  rt.heap.remove_root(eval_promise_root);
   Ok(())
 }
 

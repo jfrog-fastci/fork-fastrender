@@ -53,6 +53,7 @@ use crate::function::FunctionData;
 use crate::function::ThisMode;
 use crate::meta_properties::MetaPropertyContext;
 use crate::vm::{EcmaFunctionKind, VmAsyncContinuation};
+use derive_visitor::{Drive, Event, Visitor};
 
 #[inline]
 fn is_hard_stop_error(err: &VmError) -> bool {
@@ -116,6 +117,117 @@ fn maybe_set_name_for_destructuring_default(
     maybe_set_anonymous_function_name(scope, value, inferred_name)?;
   }
   Ok(())
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NeedsMappedArgumentsObject(pub bool);
+
+/// Best-effort analysis to determine whether a sloppy-mode function with a simple parameter list
+/// needs a *mapped* `arguments` object for observable correctness.
+///
+/// The AST interpreter's mapped-arguments implementation is intentionally conservative but
+/// relatively expensive (it allocates per-index getter/setter closures). Most functions do not
+/// observe mapped-arguments aliasing, so we cache this hint on lazily-parsed function ASTs and only
+/// build mapped `arguments` objects when required.
+pub(crate) fn compute_needs_mapped_arguments_object(func: &Node<Func>) -> bool {
+  struct ArgumentsUsageVisitor {
+    /// Tracks whether we've seen the root function node. Nested non-arrow functions have their
+    /// own `arguments` binding and should not affect mapping decisions for the outer function.
+    seen_root_func: bool,
+    nested_non_arrow_depth: usize,
+    /// A small context marker to allow `arguments` when it is used as the receiver for the
+    /// non-aliasing `arguments.length` property access.
+    arguments_length_depth: usize,
+    needs_mapping: bool,
+  }
+
+  impl Visitor for ArgumentsUsageVisitor {
+    fn visit(&mut self, item: &dyn std::any::Any, event: Event) {
+      // If mapping is already required, we can skip further checks (the traversal continues).
+      if self.needs_mapping {
+        return;
+      }
+
+      if let Some(func) = item.downcast_ref::<Func>() {
+        match event {
+          Event::Enter => {
+            if !self.seen_root_func {
+              self.seen_root_func = true;
+            } else if !func.arrow {
+              self.nested_non_arrow_depth = self.nested_non_arrow_depth.saturating_add(1);
+            }
+          }
+          Event::Exit => {
+            if self.seen_root_func && !func.arrow && self.nested_non_arrow_depth > 0 {
+              self.nested_non_arrow_depth -= 1;
+            }
+          }
+        }
+        return;
+      }
+
+      // Only consider `arguments` usage that resolves to the current (root) function's arguments
+      // binding. Non-arrow nested functions create their own `arguments` objects.
+      if self.nested_non_arrow_depth > 0 {
+        return;
+      }
+
+      if let Some(member) = item.downcast_ref::<MemberExpr>() {
+        // Only treat `arguments.length` as a non-observable `arguments` usage.
+        let is_arguments_length = member.right == "length"
+          && matches!(
+            &*member.left.stx,
+            Expr::Id(id) if id.stx.name == "arguments"
+          );
+        match event {
+          Event::Enter => {
+            if is_arguments_length {
+              self.arguments_length_depth = self.arguments_length_depth.saturating_add(1);
+            }
+          }
+          Event::Exit => {
+            if is_arguments_length && self.arguments_length_depth > 0 {
+              self.arguments_length_depth -= 1;
+            }
+          }
+        }
+        return;
+      }
+
+      // Any indexed access on `arguments` can observe parameter aliasing.
+      if let Some(member) = item.downcast_ref::<ComputedMemberExpr>() {
+        if matches!(&*member.object.stx, Expr::Id(id) if id.stx.name == "arguments") {
+          self.needs_mapping = true;
+        }
+        return;
+      }
+
+      // Direct eval can observe `arguments` dynamically even when it doesn't appear lexically.
+      if let Some(call) = item.downcast_ref::<CallExpr>() {
+        if !call.optional_chaining
+          && matches!(&*call.callee.stx, Expr::Id(id) if id.stx.name == "eval")
+        {
+          self.needs_mapping = true;
+        }
+        return;
+      }
+
+      if let Some(id) = item.downcast_ref::<IdExpr>() {
+        if matches!(event, Event::Enter) && id.name == "arguments" && self.arguments_length_depth == 0 {
+          self.needs_mapping = true;
+        }
+      }
+    }
+  }
+
+  let mut visitor = ArgumentsUsageVisitor {
+    seen_root_func: false,
+    nested_non_arrow_depth: 0,
+    arguments_length_depth: 0,
+    needs_mapping: false,
+  };
+  func.drive(&mut visitor);
+  visitor.needs_mapping
 }
 
 /// A `throw` completion value paired with a captured stack trace.
@@ -5501,7 +5613,12 @@ impl<'a> Evaluator<'a> {
         },
       )?;
 
-      let use_mapped_arguments = !self.strict && simple_parameter_list;
+      let needs_mapping = func
+        .assoc
+        .get::<NeedsMappedArgumentsObject>()
+        .map(|hint| hint.0)
+        .unwrap_or(true);
+      let use_mapped_arguments = !self.strict && simple_parameter_list && needs_mapping;
       let mut map_param_index: Vec<bool> = Vec::new();
       if use_mapped_arguments {
         // Per spec, when the parameter list contains duplicates, only the last occurrence is
@@ -59299,37 +59416,26 @@ mod tests {
   }
 
   #[test]
-  fn async_class_static_block_super_computed_member_with_await_is_allowed() -> Result<(), VmError> {
+  fn async_class_static_block_super_computed_member_with_await_is_syntax_error() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;
 
-    let result = rt.exec_script(
-      r#"
-        async function f() {
-          class Parent {}
-          class C extends Parent {
-            static {
-              super[await "x"];
-            }
-          }
-        }
-      "#,
-    );
-    match result {
-      Ok(value) => assert_eq!(value, Value::Undefined),
-      // Until async evaluation lands for scripts/class static blocks, `await` is rejected as a
-      // syntax error (treat that as "not supported yet" for this future-facing test).
-      Err(VmError::Syntax(diags))
-        if diags.iter().any(|d| {
-          d.code.as_str() == "VMJS0004"
-            && (d.message.contains("await") || d.notes.iter().any(|n| n.contains("await")))
-        }) =>
-      {
-        return Ok(());
-      }
-      Err(err) => return Err(err),
-    }
+    let err = rt
+      .exec_script(
+        r#"
+          async function f() {
+            class Parent {}
+            class C extends Parent {
+              static {
+                super[await "x"];
+              }
+           }
+         }
+        "#,
+      )
+      .unwrap_err();
+    assert!(matches!(err, VmError::Syntax(_)), "got {err:?}");
     Ok(())
   }
 
@@ -59458,6 +59564,48 @@ mod tests {
       }
       other => panic!("expected VmError::Syntax, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn mapped_arguments_object_hint_detects_observable_uses() {
+    fn check(source: &str, expected: bool) {
+      let opts = ParseOptions {
+        dialect: Dialect::Ecma,
+        source_type: SourceType::Script,
+      };
+      let parsed = parse_js::parse_with_options(source, opts)
+        .unwrap_or_else(|e| panic!("failed to parse {source:?}: {e:?}"));
+      let stmt = parsed
+        .stx
+        .body
+        .first()
+        .unwrap_or_else(|| panic!("expected at least one statement in {source:?}"));
+      let func = match &*stmt.stx {
+        Stmt::FunctionDecl(decl) => &decl.stx.function,
+        other => panic!("expected a function declaration, got {other:?}"),
+      };
+      assert_eq!(
+        compute_needs_mapped_arguments_object(func),
+        expected,
+        "unexpected mapped-arguments hint for {source:?}"
+      );
+    }
+
+    // `arguments.length` does not observe parameter aliasing.
+    check("function f(a, b) { return arguments.length; }", false);
+    // Any other `arguments` usage could observe mapping or allow it to escape.
+    check("function f(a) { return arguments; }", true);
+    // Indexed access can observe mapping.
+    check("function f(a) { a = 2; return arguments[0]; }", true);
+    // Direct eval can observe arguments dynamically.
+    check("function f(a) { eval('arguments[0]'); }", true);
+    // Nested non-arrow functions have their own `arguments` binding.
+    check(
+      "function f(a) { function g() { return arguments[0]; } return arguments.length; }",
+      false,
+    );
+    // Arrow functions capture the outer `arguments`.
+    check("function f(a) { return () => arguments[0]; }", true);
   }
 
   #[test]
@@ -61430,8 +61578,8 @@ mod tests {
               return "x";
             }
           }];
-        }
-      }
+         }
+       }
       const d = new D();
       d.getX() === 1 && d.getX() === 2
     "#;
