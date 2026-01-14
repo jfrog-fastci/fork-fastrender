@@ -5208,30 +5208,16 @@ mod tests {
     let title = "Example title";
     let cases = [
       (false, false, false, false, false, "Example title"),
-      (
-        true,
-        false,
-        false,
-        false,
-        false,
-        "Example title (current tab)",
-      ),
+      (true, false, false, false, false, "Example title"),
       (false, true, false, false, false, "Example title (pinned)"),
-      (
-        true,
-        true,
-        false,
-        false,
-        false,
-        "Example title (current tab, pinned)",
-      ),
+      (true, true, false, false, false, "Example title (pinned)"),
       (
         true,
         true,
         true,
         false,
         false,
-        "Example title (current tab, pinned, loading)",
+        "Example title (pinned, loading)",
       ),
       (
         false,
@@ -5247,7 +5233,7 @@ mod tests {
         false,
         true,
         true,
-        "Example title (current tab, error, warning)",
+        "Example title (error, warning)",
       ),
       (
         false,
@@ -5263,7 +5249,7 @@ mod tests {
         true,
         true,
         true,
-        "Example title (current tab, pinned, loading, error, warning)",
+        "Example title (pinned, loading, error, warning)",
       ),
     ];
     for (is_active, pinned, loading, err, warn, expected) in cases {

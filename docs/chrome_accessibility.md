@@ -388,6 +388,7 @@ Tabs should expose which tab is currently selected:
 
 - Ensure each tab node has a stable id derived from the tab id (not its index in the strip).
 - Expose `selected=true` for the active tab, `selected=false` for all others.
+- Keep the tab **name** (label) state-free with respect to selection; do not append “current tab” to the accessible name.
 
 This keeps screen-reader navigation predictable when the active tab changes, and allows assistive tech to announce which tab is selected.
 

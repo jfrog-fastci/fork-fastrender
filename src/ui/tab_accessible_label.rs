@@ -8,17 +8,16 @@ pub(crate) fn format_tab_accessible_label(
   has_error: bool,
   has_warning: bool,
 ) -> String {
-  let any_flags = is_active || is_pinned || loading || has_error || has_warning;
+  // Selection state is conveyed via AccessKit `selected=true/false` on the tab node.
+  // Do not encode "current tab" (or similar) into the accessible *name*.
+  let _ = is_active;
+  let any_flags = is_pinned || loading || has_error || has_warning;
   if !any_flags {
     return title.to_string();
   }
 
   let mut part_count = 0usize;
   let mut cap = title.len() + 3; // " (" + ")"
-  if is_active {
-    part_count += 1;
-    cap += "current tab".len();
-  }
   if is_pinned {
     part_count += 1;
     cap += "pinned".len();
@@ -52,9 +51,6 @@ pub(crate) fn format_tab_accessible_label(
     }
     label.push_str(part);
   };
-  if is_active {
-    push_part("current tab");
-  }
   if is_pinned {
     push_part("pinned");
   }
@@ -94,9 +90,9 @@ impl TabAccessibleLabelCache {
     has_warning: bool,
   ) -> Arc<str> {
     let mut flags: u8 = 0;
-    if is_active {
-      flags |= 1 << 0;
-    }
+    // Selection state is conveyed separately via AccessKit `selected=true/false` on the tab node.
+    // Do not key the name cache on selection.
+    let _ = is_active;
     if is_pinned {
       flags |= 1 << 1;
     }
@@ -244,30 +240,16 @@ mod tests {
     let title = "Example title";
     let cases = [
       (false, false, false, false, false, "Example title"),
-      (
-        true,
-        false,
-        false,
-        false,
-        false,
-        "Example title (current tab)",
-      ),
+      (true, false, false, false, false, "Example title"),
       (false, true, false, false, false, "Example title (pinned)"),
-      (
-        true,
-        true,
-        false,
-        false,
-        false,
-        "Example title (current tab, pinned)",
-      ),
+      (true, true, false, false, false, "Example title (pinned)"),
       (
         true,
         true,
         true,
         false,
         false,
-        "Example title (current tab, pinned, loading)",
+        "Example title (pinned, loading)",
       ),
       (
         false,
@@ -283,7 +265,7 @@ mod tests {
         false,
         true,
         true,
-        "Example title (current tab, error, warning)",
+        "Example title (error, warning)",
       ),
       (
         false,
@@ -299,7 +281,7 @@ mod tests {
         true,
         true,
         true,
-        "Example title (current tab, pinned, loading, error, warning)",
+        "Example title (pinned, loading, error, warning)",
       ),
     ];
     for (is_active, is_pinned, loading, err, warn, expected) in cases {
@@ -324,10 +306,10 @@ mod tests {
 
     let active = cache.get_or_update("Example", true, false, false, false, false);
     assert!(
-      !Arc::ptr_eq(&b, &active),
-      "expected cache miss when active flag changes"
+      Arc::ptr_eq(&b, &active),
+      "expected cache hit when active flag changes (selection does not affect the name)"
     );
-    assert_eq!(active.as_ref(), "Example (current tab)");
+    assert_eq!(active.as_ref(), "Example");
 
     let active2 = cache.get_or_update("Example", true, false, false, false, false);
     assert!(Arc::ptr_eq(&active, &active2), "expected cache hit after recompute");
@@ -337,7 +319,7 @@ mod tests {
       !Arc::ptr_eq(&active2, &pinned),
       "expected cache miss when pinned flag changes"
     );
-    assert_eq!(pinned.as_ref(), "Example (current tab, pinned)");
+    assert_eq!(pinned.as_ref(), "Example (pinned)");
 
     let pinned2 = cache.get_or_update("Example", true, true, false, false, false);
     assert!(
@@ -350,7 +332,7 @@ mod tests {
       !Arc::ptr_eq(&pinned2, &loading),
       "expected cache miss when loading flag changes"
     );
-    assert_eq!(loading.as_ref(), "Example (current tab, pinned, loading)");
+    assert_eq!(loading.as_ref(), "Example (pinned, loading)");
 
     let loading2 = cache.get_or_update("Example", true, true, true, false, false);
     assert!(
@@ -363,7 +345,7 @@ mod tests {
       !Arc::ptr_eq(&loading2, &error),
       "expected cache miss when error flag changes"
     );
-    assert_eq!(error.as_ref(), "Example (current tab, pinned, loading, error)");
+    assert_eq!(error.as_ref(), "Example (pinned, loading, error)");
 
     let error2 = cache.get_or_update("Example", true, true, true, true, false);
     assert!(Arc::ptr_eq(&error, &error2), "expected cache hit after recompute");
@@ -375,7 +357,7 @@ mod tests {
     );
     assert_eq!(
       warning.as_ref(),
-      "Example (current tab, pinned, loading, error, warning)"
+      "Example (pinned, loading, error, warning)"
     );
 
     let warning2 = cache.get_or_update("Example", true, true, true, true, true);
@@ -391,7 +373,7 @@ mod tests {
     );
     assert_eq!(
       e.as_ref(),
-      "Example 2 (current tab, pinned, loading, error, warning)"
+      "Example 2 (pinned, loading, error, warning)"
     );
 
     let f = cache.get_or_update("Example 2", true, true, true, true, true);
