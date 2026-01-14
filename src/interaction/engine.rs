@@ -10679,11 +10679,52 @@ impl InteractionEngine {
     viewport_point: Point,
     paths: &[PathBuf],
   ) -> bool {
+    self.drop_files_with_scroll_and_hit(
+      dom,
+      box_tree,
+      fragment_tree,
+      scroll,
+      viewport_point,
+      paths,
+      None,
+    )
+  }
+
+  /// Like [`InteractionEngine::drop_files_with_scroll`], but allows the caller to provide the hit
+  /// test result (avoiding an extra hit test when one was already performed for JS event dispatch).
+  pub fn drop_files_with_scroll_and_hit(
+    &mut self,
+    dom: &mut DomNode,
+    box_tree: &BoxTree,
+    fragment_tree: &FragmentTree,
+    scroll: &ScrollState,
+    viewport_point: Point,
+    paths: &[PathBuf],
+    hit: Option<&HitTestResult>,
+  ) -> bool {
     self.modality = InputModality::Pointer;
+
+    // Fast path: a drop can only affect file inputs, which present as either a form control hit or a
+    // label hit (for label-associated controls). If the caller already hit-tested and the semantic
+    // kind is unrelated, avoid rebuilding the DOM/box indices.
+    if let Some(hit) = hit {
+      if !matches!(hit.kind, HitTestKind::FormControl | HitTestKind::Label) {
+        return false;
+      }
+    }
+
     let page_point = viewport_point.translate(scroll.viewport);
     let mut index = DomIndexMut::new(dom);
-    let box_index = HitTestBoxIndex::new(box_tree);
-    let hit = hit_test_dom_with_indices(dom, &index, &box_index, fragment_tree, page_point);
+
+    let mut computed_hit: Option<HitTestResult> = None;
+    let hit = match hit {
+      Some(hit) => Some(hit),
+      None => {
+        let box_index = HitTestBoxIndex::new(box_tree);
+        computed_hit = hit_test_dom_with_indices(dom, &index, &box_index, fragment_tree, page_point);
+        computed_hit.as_ref()
+      }
+    };
 
     let mut target_id = hit.as_ref().map(|hit| hit.dom_node_id);
     if let Some(hit) = hit.as_ref() {

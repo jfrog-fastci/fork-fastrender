@@ -8568,22 +8568,20 @@ impl BrowserRuntime {
     // When JavaScript is enabled for this tab, dispatch a trusted, cancelable `drop` event before
     // applying the default file-input drop behavior. If page JS cancels the event via
     // `preventDefault()`, suppress the default file-input selection.
-    let (drop_target_id, drop_target_element_id) =
-      match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+    let page_point = viewport_point.translate(scroll.viewport);
+    // If JS is enabled, we need a hit-test result for both event dispatch and default behavior.
+    // Cache it so the interaction engine can avoid re-hit-testing.
+    let mut drop_hit: Option<crate::interaction::HitTestResult> = None;
+    if tab.js_tab.is_some() {
+      drop_hit = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
         let fragment_tree = hit_tree.as_deref().unwrap_or(fragment_tree);
-
-        let page_point = viewport_point.translate(scroll.viewport);
         let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
-        let (target_id, target_element_id) = match hit {
-          Some(hit) => (Some(hit.dom_node_id), hit.element_id),
-          None => (None, None),
-        };
-
-        (false, (target_id, target_element_id))
+        (false, hit)
       }) {
-        Ok(result) => result,
-        Err(_) => (None, None),
+        Ok(hit) => hit,
+        Err(_) => None,
       };
+    }
 
     let js_mutation_generation_before_dispatch =
       tab.js_tab.as_ref().map(|js_tab| js_tab.dom().mutation_generation());
@@ -8598,13 +8596,13 @@ impl BrowserRuntime {
         // Soft-stop: if JS dispatch would be cancelled, skip the default drop behavior.
         return;
       }
-      if let Some(target_id) = drop_target_id {
+      if let Some(hit) = drop_hit.as_ref() {
         let target = js_dom_node_for_preorder_id_with_log(
           &self.ui_tx,
           tab_id,
           js_tab,
-          target_id,
-          drop_target_element_id.as_deref(),
+          hit.dom_node_id,
+          hit.element_id.as_deref(),
           &mut tab.js_dom_mapping_generation,
           &mut tab.js_dom_mapping,
           &mut tab.js_dom_mapping_miss_log_last,
@@ -8648,8 +8646,15 @@ impl BrowserRuntime {
     let changed = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
       let fragment_tree = hit_tree.as_deref().unwrap_or(fragment_tree);
 
-      let changed =
-        engine.drop_files_with_scroll(dom, box_tree, fragment_tree, scroll, viewport_point, &paths);
+      let changed = engine.drop_files_with_scroll_and_hit(
+        dom,
+        box_tree,
+        fragment_tree,
+        scroll,
+        viewport_point,
+        &paths,
+        drop_hit.as_ref(),
+      );
       (changed, changed)
     }) {
       Ok(changed) => changed,

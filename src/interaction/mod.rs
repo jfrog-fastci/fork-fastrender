@@ -4,27 +4,27 @@ pub mod autofocus;
 pub mod autofocus_dom2;
 pub mod cursor;
 pub mod document_selection;
+pub mod dom_geometry;
 pub mod dom_index;
 pub mod dom_mutation;
 pub mod dom_mutation_dom2;
-pub mod dom_geometry;
 pub(crate) mod effective_disabled;
 pub(crate) mod effective_disabled_dom2;
+pub mod element_geometry;
 pub mod engine;
 pub mod engine_dom2;
 pub mod focus_scroll;
 pub(crate) mod form_controls;
 pub mod form_submit;
-pub mod element_geometry;
 pub mod fragment_geometry;
 pub mod hit_test;
 pub mod hit_testing;
 pub(crate) mod label_assoc_dom2;
 mod image_maps;
 pub(crate) mod paint_overlays;
-pub mod selection_serialize;
 pub mod scroll_wheel;
 pub(crate) mod textarea_scroll;
+pub mod selection_serialize;
 pub mod state;
 pub(crate) mod textarea_caret_scroll;
 pub mod url;
@@ -52,7 +52,9 @@ pub use fragment_geometry::content_rect_for_border_rect;
 pub use fragment_geometry::padding_rect_for_border_rect;
 pub use fragment_geometry::scrollbar_reservation_for_box_id;
 pub use fragment_geometry::scrollport_rect_for_padding_rect;
-pub use hit_test::{hit_test_dom, resolve_label_associated_control, HitTestKind, HitTestResult};
+pub use hit_test::{
+  hit_test_dom, resolve_label_associated_control, HitTestContext, HitTestKind, HitTestResult,
+};
 pub use hit_testing::{
   fragment_tree_with_scroll, fragment_tree_with_scroll_and_sticky, hit_test_dom_viewport_point,
   hit_test_dom_with_scroll, hit_test_with_scroll,
