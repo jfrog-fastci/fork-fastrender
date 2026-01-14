@@ -15413,18 +15413,6 @@ impl<'a> Evaluator<'a> {
             .heap_mut()
             .get_derived_constructor_state_mut(state_obj)?
             .this_value = Some(this_obj);
-          // Also update the `this` binding stored in the current "this environment" so arrow
-          // functions created before `super()` can observe the initialized `this` value after
-          // `super()` returns.
-          let this_env = call_scope
-            .heap()
-            .resolve_this_env(self.env.lexical_env())?
-            .ok_or(VmError::InvariantViolation(
-              "derived constructor super() could not resolve this environment",
-            ))?;
-          call_scope
-            .heap_mut()
-            .env_set_this_value(this_env, Some(this_value))?;
 
           // Initialize derived instance fields immediately after `super()` returns.
           crate::class_fields::initialize_instance_fields_with_host_and_hooks(
@@ -58190,7 +58178,7 @@ pub(crate) fn run_ecma_function(
   let mut class_constructor: Option<GcObject> = None;
   let mut derived_constructor = false;
   let mut this_initialized = true;
-  let mut this_root_idx: Option<usize> = None;
+  let this_root_idx: Option<usize> = None;
 
   if func.stx.arrow {
     // Arrow functions resolve lexical `this` / `new.target` by walking the environment chain to the
@@ -58217,11 +58205,15 @@ pub(crate) fn run_ecma_function(
       derived_constructor = !matches!(super_value, Value::Undefined);
       this_initialized = !derived_constructor;
       if derived_constructor {
-        // Keep an always-present root slot for `this` so derived constructors can initialize it after
-        // `super()` returns and keep it alive across nested scopes.
-        let idx = scope.heap().root_stack.len();
-        scope.push_root(this)?;
-        this_root_idx = Some(idx);
+        // Derived class constructors have an uninitialized `this` binding until `super()` returns.
+        //
+        // Nested arrow functions and direct eval code must observe that initialization and must be
+        // able to perform `super()` calls that initialize the enclosing constructor's `this`.
+        //
+        // `vm-js` represents that shared state as a heap-owned `DerivedConstructorState` object and
+        // stores it in the function's "this environment" at call time.
+        let state_obj = scope.alloc_derived_constructor_state(ctor)?;
+        this = Value::Object(state_obj);
       }
     }
 
@@ -58229,10 +58221,9 @@ pub(crate) fn run_ecma_function(
     scope
       .heap_mut()
       .env_set_new_target(func_env, Some(new_target))?;
-    scope.heap_mut().env_set_this_value(
-      func_env,
-      if derived_constructor { None } else { Some(this) },
-    )?;
+    scope
+      .heap_mut()
+      .env_set_this_value(func_env, Some(this))?;
   }
 
   if func.stx.generator {

@@ -12242,18 +12242,6 @@ impl<'vm> HirEvaluator<'vm> {
             .heap_mut()
             .get_derived_constructor_state_mut(state_obj)?
             .this_value = Some(this_obj);
-          // Also update the `this` binding stored in the current "this environment" so arrow
-          // functions created before `super()` can observe the initialized `this` value after
-          // `super()` returns.
-          let this_env = call_scope
-            .heap()
-            .resolve_this_env(self.env.lexical_env())?
-            .ok_or(VmError::InvariantViolation(
-              "derived constructor super() could not resolve this environment",
-            ))?;
-          call_scope
-            .heap_mut()
-            .env_set_this_value(this_env, Some(this_value))?;
 
           // Initialize derived instance fields immediately after `super()` returns.
           crate::class_fields::initialize_instance_fields_with_host_and_hooks(
@@ -24464,6 +24452,58 @@ pub(crate) fn run_compiled_function(
     }));
   }
   if func_meta.async_ {
+    // Arrow functions resolve lexical `this` / `new.target` by walking the environment chain to the
+    // nearest "this environment" (ECMA-262 `GetThisEnvironment`). Non-arrow functions create their
+    // own "this environment" at call time.
+    //
+    // The compiled async evaluator relies on `this` / `new_target` being correct so:
+    // - `this` and `super` inside async arrow functions use the lexical binding (not the call-site),
+    // - nested arrow functions can resolve lexical `this`/`new.target`, and
+    // - direct eval within async functions can observe the correct `this` binding.
+    let mut this = this;
+    let mut this_initialized = this_initialized;
+    let mut new_target = new_target;
+
+    let func_env = env.lexical_env();
+    if func_meta.is_arrow {
+      let this_env = scope
+        .heap()
+        .resolve_this_env(func_env)?
+        .ok_or(VmError::InvariantViolation(
+          "arrow function could not resolve lexical this environment",
+        ))?;
+      let this_value = scope.heap().env_get_this_value(this_env)?;
+      let new_target_value = scope.heap().env_get_new_target(this_env)?;
+
+      this_initialized = this_value.is_some();
+      this = this_value.unwrap_or(Value::Undefined);
+      new_target = new_target_value.unwrap_or(Value::Undefined);
+    } else {
+      // Non-arrow functions create a "this environment" at call time.
+      scope
+        .heap_mut()
+        .env_set_new_target(func_env, Some(new_target))?;
+      if derived_constructor {
+        // Derived class constructors have an uninitialized `this` binding until `super()` returns.
+        // That shared state must be visible to nested arrow functions and direct eval code.
+        let state_obj = match this {
+          Value::Object(obj) if scope.heap().is_derived_constructor_state(obj) => obj,
+          _ => {
+            let class_ctor = class_constructor.ok_or(VmError::InvariantViolation(
+              "derived constructor missing containing class constructor reference",
+            ))?;
+            scope.alloc_derived_constructor_state(class_ctor)?
+          }
+        };
+        this = Value::Object(state_obj);
+        scope
+          .heap_mut()
+          .env_set_this_value(func_env, Some(Value::Object(state_obj)))?;
+      } else {
+        scope.heap_mut().env_set_this_value(func_env, Some(this))?;
+      }
+    }
+
     // Instantiate the function's environment and parameter bindings synchronously before
     // executing the async body.
     let inst_res: Result<(), VmError> = {
@@ -24531,10 +24571,28 @@ pub(crate) fn run_compiled_function(
     scope
       .heap_mut()
       .env_set_new_target(func_env, Some(new_target))?;
-    scope.heap_mut().env_set_this_value(
-      func_env,
-      if derived_constructor { None } else { Some(this) },
-    )?;
+    if derived_constructor {
+      // Derived class constructors have an uninitialized `this` binding until `super()` returns. That
+      // state must be observable by nested arrow functions and direct eval code.
+      //
+      // `vm-js` represents that shared state as a heap-owned `DerivedConstructorState` object stored
+      // in the constructor's "this environment".
+      let state_obj = match this {
+        Value::Object(obj) if scope.heap().is_derived_constructor_state(obj) => obj,
+        _ => {
+          let class_ctor = class_constructor.ok_or(VmError::InvariantViolation(
+            "derived constructor missing containing class constructor reference",
+          ))?;
+          scope.alloc_derived_constructor_state(class_ctor)?
+        }
+      };
+      this = Value::Object(state_obj);
+      scope
+        .heap_mut()
+        .env_set_this_value(func_env, Some(Value::Object(state_obj)))?;
+    } else {
+      scope.heap_mut().env_set_this_value(func_env, Some(this))?;
+    }
   }
 
   let mut evaluator = HirEvaluator {
