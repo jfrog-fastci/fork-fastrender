@@ -303,50 +303,6 @@ impl<'a> Parser<'a> {
     self.allow_top_level_yield = allow;
   }
 
-  /// Execute `f` while treating `arguments` as disallowed in class initialization code.
-  ///
-  /// This models the early-error behavior for class field initializers and `static {}` blocks:
-  /// `arguments` is a syntax error unless it is *shadowed* by an inner non-arrow function (which
-  /// provides its own `arguments` binding).
-  pub fn with_disallow_arguments_in_class_init<R, F: FnOnce(&mut Self) -> R>(&mut self, f: F) -> R {
-    let prev_disallow = self.disallow_arguments_in_class_init;
-    let prev_arguments_allowed = self.arguments_allowed;
-    self.disallow_arguments_in_class_init = prev_disallow.saturating_add(1);
-    // Class initialization code does not have access to an outer `arguments` binding (even when the
-    // class is nested inside a function). Nested non-arrow functions within the initializer/block
-    // will increment `arguments_allowed` as usual.
-    self.arguments_allowed = 0;
-    let out = f(self);
-    self.arguments_allowed = prev_arguments_allowed;
-    self.disallow_arguments_in_class_init = prev_disallow;
-    out
-  }
-
-  pub fn validate_arguments_not_disallowed_in_class_init(
-    &self,
-    loc: Loc,
-    raw_name: &str,
-  ) -> SyntaxResult<()> {
-    if self.disallow_arguments_in_class_init == 0 {
-      return Ok(());
-    }
-    if self.arguments_allowed > 0 {
-      return Ok(());
-    }
-    let Some(name) = self.identifier_name_string_value(raw_name) else {
-      return Err(loc.error(SyntaxErrorType::ExpectedSyntax("identifier"), None));
-    };
-    if name.as_ref() != "arguments" {
-      return Ok(());
-    }
-    Err(loc.error(
-      SyntaxErrorType::ExpectedSyntax(
-        "`arguments` is not allowed in class field initializers or static blocks",
-      ),
-      None,
-    ))
-  }
-
   pub fn options(&self) -> ParseOptions {
     self.options
   }
