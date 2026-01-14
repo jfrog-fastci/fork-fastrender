@@ -311,6 +311,107 @@ fn indirect_eval_rejects_super_computed_member_without_running_key_side_effects_
 }
 
 #[test]
+fn indirect_eval_rejects_super_computed_member_via_parenthesized_eval_without_running_key_side_effects(
+) {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var side = 0;
+        function key() { side++; return "x"; }
+        class B { get x() { return this.marker; } }
+        class A extends B {
+          marker = 1;
+          y = (eval)("super[key()]");
+        }
+        try {
+          new A();
+          false
+        } catch (err) {
+          err.name === "SyntaxError" && side === 0
+        }
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn indirect_eval_rejects_super_computed_member_via_parenthesized_eval_without_running_key_side_effects_compiled(
+) {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var side = 0;
+      function key() { side++; return "x"; }
+      class B { get x() { return this.marker; } }
+      class A extends B {
+        marker = 1;
+        y = (eval)("super[key()]");
+      }
+      try {
+        new A();
+        false
+      } catch (err) {
+        err.name === "SyntaxError" && side === 0
+      }
+    "#,
+  );
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn indirect_eval_rejects_super_computed_member_via_optional_eval_without_running_key_side_effects() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var side = 0;
+        function key() { side++; return "x"; }
+        class B { get x() { return this.marker; } }
+        class A extends B {
+          marker = 1;
+          y = eval?.("super[key()]");
+        }
+        try {
+          new A();
+          false
+        } catch (err) {
+          err.name === "SyntaxError" && side === 0
+        }
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn indirect_eval_rejects_super_computed_member_via_optional_eval_without_running_key_side_effects_compiled(
+) {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var side = 0;
+      function key() { side++; return "x"; }
+      class B { get x() { return this.marker; } }
+      class A extends B {
+        marker = 1;
+        y = eval?.("super[key()]");
+      }
+      try {
+        new A();
+        false
+      } catch (err) {
+        err.name === "SyntaxError" && side === 0
+      }
+    "#,
+  );
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn direct_eval_allows_super_in_private_instance_field_initializer() {
   let mut rt = new_runtime();
   let value = rt
