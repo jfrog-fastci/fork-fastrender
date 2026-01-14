@@ -24556,6 +24556,9 @@ fn run_compiled_async_function(
         crate::exec::AsyncSuspendKind::Yield | crate::exec::AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
           "unexpected async generator yield suspension in compiled async function",
         )),
+        crate::exec::AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
+          "unexpected async generator yield* suspension in compiled async function",
+        )),
       };
 
       let awaited_promise = match awaited_promise_res {
@@ -25496,6 +25499,9 @@ pub(crate) fn start_compiled_module_tla_evaluation(
               crate::exec::AsyncSuspendKind::AwaitResolved => Ok(await_value),
               crate::exec::AsyncSuspendKind::Yield | crate::exec::AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
                 "unexpected async generator yield suspension in compiled module TLA",
+              )),
+              crate::exec::AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
+                "unexpected async generator yield* suspension in compiled module TLA",
               )),
             }
           };
@@ -30832,6 +30838,9 @@ fn run_compiled_script_async(
         crate::exec::AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
           "unexpected async generator yield suspension in compiled async script",
         )),
+        crate::exec::AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
+          "unexpected async generator yield* suspension in compiled async script",
+        )),
       };
 
       let awaited_promise = match awaited_promise_res {
@@ -32145,6 +32154,9 @@ pub(crate) fn hir_async_resume_continuation(
           }
           crate::exec::AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
             "unexpected async generator yield suspension in compiled async script",
+          )),
+          crate::exec::AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
+            "unexpected async generator yield* suspension in compiled async script",
           )),
         };
 

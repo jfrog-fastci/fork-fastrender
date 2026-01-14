@@ -2107,12 +2107,14 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       //
       // In `vm-js`, this includes:
       // - async functions,
-      // - modules (top-level await), and
-      // - "async classic scripts" (top-level await in scripts).
+      // - modules (top-level await).
       //
       // Note: in Script goal, `using` / `await using` remain restricted to specific syntactic
       // containers; this is enforced separately via `ctx.using_allowed`.
-      let await_using_allowed = ctx.await_allowed;
+      //
+      // Note: `vm-js` intentionally rejects `await using` in classic scripts even when
+      // `allow_top_level_await` is enabled ("async classic scripts").
+      let await_using_allowed = ctx.await_allowed && (ctx.is_module || ctx.return_allowed);
       if !await_using_allowed {
         if let Some(first) = decl.declarators.first() {
           self.push_error(
@@ -2125,8 +2127,6 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     if using_mode && !ctx.using_allowed {
       // Explicit Resource Management early error (tc39/proposal-explicit-resource-management):
       // - In Script goal, `using` declarations are only permitted within specific syntactic containers.
-      // - Additionally, `using` / `await using` declarations are disallowed directly within
-      //   CaseClause/DefaultClause statement lists.
       //
       // We model this via `ctx.using_allowed`, which is toggled by the walker when entering/exiting
       // those containers.

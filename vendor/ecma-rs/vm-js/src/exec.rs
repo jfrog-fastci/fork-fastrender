@@ -60653,14 +60653,14 @@ mod tests {
     let err = rt
       .exec_script(
         r#"
-        function *g() {
-          class C {
-            static {
-              yield;
+          function *g() {
+            class C {
+              static {
+                yield;
+              }
             }
           }
-        }
-      "#,
+        "#,
       )
       .unwrap_err();
     match err {
@@ -61068,7 +61068,8 @@ mod tests {
   }
 
   #[test]
-  fn async_class_static_block_super_computed_member_with_await_is_syntax_error() -> Result<(), VmError> {
+  fn async_class_static_block_super_computed_member_with_await_is_syntax_error(
+  ) -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;

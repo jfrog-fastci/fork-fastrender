@@ -1,5 +1,5 @@
 use vm_js::{
-  Heap, HeapLimits, JsRuntime, PromiseState, SourceTextModuleRecord, Value, Vm, VmError, VmOptions,
+  Heap, HeapLimits, JsRuntime, SourceTextModuleRecord, Value, Vm, VmError, VmOptions,
 };
 
 fn new_runtime() -> JsRuntime {
@@ -1981,48 +1981,19 @@ fn await_using_declaration_at_script_top_level_is_syntax_error() {
 }
 
 #[test]
-fn await_using_declaration_in_script_block_is_allowed_in_async_script() {
+fn await_using_declaration_in_script_block_is_syntax_error() {
   let mut rt = new_runtime();
-  let value = rt.exec_script("{ await using x = null; }").unwrap();
-  let Value::Object(promise) = value else {
-    panic!("expected Promise object from async classic script, got {value:?}");
-  };
-  assert!(rt.heap().is_promise_object(promise));
-  assert_eq!(rt.heap().promise_state(promise).unwrap(), PromiseState::Fulfilled);
+  let err = rt.exec_script("{ await using x = null; }").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
 }
 
 #[test]
-fn await_using_declaration_in_async_script_block_is_allowed() {
+fn await_using_declaration_in_async_script_block_is_syntax_error() {
   let mut rt = new_runtime();
-  let value = rt.exec_script("await 0; { await using x = null; }").unwrap();
-  let Value::Object(promise) = value else {
-    panic!("expected Promise object from async classic script, got {value:?}");
-  };
-  assert!(rt.heap().is_promise_object(promise));
-}
-
-#[test]
-fn await_using_declaration_in_async_script_is_allowed_and_completes() {
-  let mut rt = new_runtime();
-  let value = rt
-    .exec_script(
-      r#"
-        {
-          await using x = null;
-        }
-        1
-      "#,
-    )
-    .unwrap();
-  let Value::Object(promise) = value else {
-    panic!("expected Promise object from async classic script, got {value:?}");
-  };
-  assert!(rt.heap().is_promise_object(promise));
-  assert_eq!(rt.heap().promise_state(promise).unwrap(), PromiseState::Fulfilled);
-  assert_eq!(
-    rt.heap().promise_result(promise).unwrap().unwrap(),
-    Value::Number(1.0)
-  );
+  let err = rt
+    .exec_script("await 0; { await using x = null; }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
 }
 
 #[test]
