@@ -221,6 +221,69 @@ impl TabGroupState {
   }
 }
 
+#[cfg(test)]
+mod tab_group_a11y_label_tests {
+  use super::*;
+  use std::sync::Arc;
+
+  #[test]
+  fn tab_group_chip_accessible_label_is_cached_and_updates_when_inputs_change() {
+    let group_id = TabGroupId(1);
+    let mut group = TabGroupState {
+      id: group_id,
+      title: "Reading list".to_string(),
+      color: TabGroupColor::Blue,
+      collapsed: true,
+      tab_group_chip_a11y_label_cache:
+        crate::ui::tab_accessible_label::TitlePrefixedLabelCache::default(),
+    };
+
+    let a = group.tab_group_chip_accessible_label();
+    let b = group.tab_group_chip_accessible_label();
+    assert!(
+      Arc::ptr_eq(&a, &b),
+      "expected cache hit to reuse allocation"
+    );
+    assert_eq!(a.as_ref(), "Expand tab group: Reading list");
+
+    group.collapsed = false;
+    let c = group.tab_group_chip_accessible_label();
+    assert!(
+      !Arc::ptr_eq(&b, &c),
+      "expected cache miss when collapsed state changes"
+    );
+    assert_eq!(c.as_ref(), "Collapse tab group: Reading list");
+    let d = group.tab_group_chip_accessible_label();
+    assert!(Arc::ptr_eq(&c, &d), "expected cache hit after recompute");
+
+    group.title = "Work".to_string();
+    let e = group.tab_group_chip_accessible_label();
+    assert!(
+      !Arc::ptr_eq(&d, &e),
+      "expected cache miss when title changes"
+    );
+    assert_eq!(e.as_ref(), "Collapse tab group: Work");
+  }
+
+  #[test]
+  fn tab_group_chip_accessible_label_defaults_to_group_when_title_blank() {
+    let group_id = TabGroupId(1);
+    let mut group = TabGroupState {
+      id: group_id,
+      title: "   ".to_string(),
+      color: TabGroupColor::Blue,
+      collapsed: true,
+      tab_group_chip_a11y_label_cache:
+        crate::ui::tab_accessible_label::TitlePrefixedLabelCache::default(),
+    };
+
+    assert_eq!(
+      group.tab_group_chip_accessible_label().as_ref(),
+      "Expand tab group: Group"
+    );
+  }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LatestFrameMeta {
   pub pixmap_px: (u32, u32),
