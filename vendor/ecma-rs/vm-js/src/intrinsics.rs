@@ -6689,6 +6689,124 @@ impl Intrinsics {
         data_desc(Value::Object(entries_fn), true, false, true),
       )?;
 
+      // Set.prototype.difference / intersection / union / symmetricDifference
+      // Set.prototype.isSubsetOf / isSupersetOf / isDisjointFrom
+      {
+        let difference_call = vm.register_native_call(builtins::set_prototype_difference)?;
+        let difference_s = scope.alloc_string("difference")?;
+        scope.push_root(Value::String(difference_s))?;
+        let difference_key = PropertyKey::from_string(difference_s);
+        let difference_fn = scope.alloc_native_function(difference_call, None, difference_s, 1)?;
+        scope.push_root(Value::Object(difference_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(difference_fn, Some(function_prototype))?;
+        scope.define_property(
+          set_prototype,
+          difference_key,
+          data_desc(Value::Object(difference_fn), true, false, true),
+        )?;
+
+        let intersection_call = vm.register_native_call(builtins::set_prototype_intersection)?;
+        let intersection_s = scope.alloc_string("intersection")?;
+        scope.push_root(Value::String(intersection_s))?;
+        let intersection_key = PropertyKey::from_string(intersection_s);
+        let intersection_fn = scope.alloc_native_function(intersection_call, None, intersection_s, 1)?;
+        scope.push_root(Value::Object(intersection_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(intersection_fn, Some(function_prototype))?;
+        scope.define_property(
+          set_prototype,
+          intersection_key,
+          data_desc(Value::Object(intersection_fn), true, false, true),
+        )?;
+
+        let union_call = vm.register_native_call(builtins::set_prototype_union)?;
+        let union_s = scope.alloc_string("union")?;
+        scope.push_root(Value::String(union_s))?;
+        let union_key = PropertyKey::from_string(union_s);
+        let union_fn = scope.alloc_native_function(union_call, None, union_s, 1)?;
+        scope.push_root(Value::Object(union_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(union_fn, Some(function_prototype))?;
+        scope.define_property(
+          set_prototype,
+          union_key,
+          data_desc(Value::Object(union_fn), true, false, true),
+        )?;
+
+        let symmetric_difference_call =
+          vm.register_native_call(builtins::set_prototype_symmetric_difference)?;
+        let symmetric_difference_s = scope.alloc_string("symmetricDifference")?;
+        scope.push_root(Value::String(symmetric_difference_s))?;
+        let symmetric_difference_key = PropertyKey::from_string(symmetric_difference_s);
+        let symmetric_difference_fn = scope.alloc_native_function(
+          symmetric_difference_call,
+          None,
+          symmetric_difference_s,
+          1,
+        )?;
+        scope.push_root(Value::Object(symmetric_difference_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(symmetric_difference_fn, Some(function_prototype))?;
+        scope.define_property(
+          set_prototype,
+          symmetric_difference_key,
+          data_desc(Value::Object(symmetric_difference_fn), true, false, true),
+        )?;
+
+        let is_subset_of_call = vm.register_native_call(builtins::set_prototype_is_subset_of)?;
+        let is_subset_of_s = scope.alloc_string("isSubsetOf")?;
+        scope.push_root(Value::String(is_subset_of_s))?;
+        let is_subset_of_key = PropertyKey::from_string(is_subset_of_s);
+        let is_subset_of_fn = scope.alloc_native_function(is_subset_of_call, None, is_subset_of_s, 1)?;
+        scope.push_root(Value::Object(is_subset_of_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(is_subset_of_fn, Some(function_prototype))?;
+        scope.define_property(
+          set_prototype,
+          is_subset_of_key,
+          data_desc(Value::Object(is_subset_of_fn), true, false, true),
+        )?;
+
+        let is_superset_of_call = vm.register_native_call(builtins::set_prototype_is_superset_of)?;
+        let is_superset_of_s = scope.alloc_string("isSupersetOf")?;
+        scope.push_root(Value::String(is_superset_of_s))?;
+        let is_superset_of_key = PropertyKey::from_string(is_superset_of_s);
+        let is_superset_of_fn =
+          scope.alloc_native_function(is_superset_of_call, None, is_superset_of_s, 1)?;
+        scope.push_root(Value::Object(is_superset_of_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(is_superset_of_fn, Some(function_prototype))?;
+        scope.define_property(
+          set_prototype,
+          is_superset_of_key,
+          data_desc(Value::Object(is_superset_of_fn), true, false, true),
+        )?;
+
+        let is_disjoint_from_call =
+          vm.register_native_call(builtins::set_prototype_is_disjoint_from)?;
+        let is_disjoint_from_s = scope.alloc_string("isDisjointFrom")?;
+        scope.push_root(Value::String(is_disjoint_from_s))?;
+        let is_disjoint_from_key = PropertyKey::from_string(is_disjoint_from_s);
+        let is_disjoint_from_fn =
+          scope.alloc_native_function(is_disjoint_from_call, None, is_disjoint_from_s, 1)?;
+        scope.push_root(Value::Object(is_disjoint_from_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(is_disjoint_from_fn, Some(function_prototype))?;
+        scope.define_property(
+          set_prototype,
+          is_disjoint_from_key,
+          data_desc(Value::Object(is_disjoint_from_fn), true, false, true),
+        )?;
+      }
+
       scope.define_property(
         set_prototype,
         PropertyKey::Symbol(well_known_symbols.iterator),

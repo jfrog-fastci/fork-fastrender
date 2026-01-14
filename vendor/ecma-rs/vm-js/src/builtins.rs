@@ -30476,6 +30476,70 @@ pub fn set_constructor_construct(
 }
 
 #[derive(Clone, Copy)]
+struct SetRecord {
+  set: Value,
+  size: f64,
+  has: Value,
+  keys: Value,
+}
+
+/// `GetSetRecord` (ECMA-262 Set methods).
+///
+/// Spec: <https://tc39.es/ecma262/#sec-getsetrecord>
+fn get_set_record(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<SetRecord, VmError> {
+  // 1. If Type(obj) is not Object, throw a TypeError exception.
+  let Value::Object(obj) = value else {
+    return Err(VmError::TypeError("Set method argument is not an object"));
+  };
+
+  // Root the set-like object for the duration of record construction.
+  scope.push_root(value)?;
+
+  // 2. Let rawSize be ? Get(obj, "size").
+  let size_key = string_key(scope, "size")?;
+  let raw_size = scope.get_with_host_and_hooks(vm, host, hooks, obj, size_key, value)?;
+  scope.push_root(raw_size)?;
+
+  // 3. Let numSize be ? ToNumber(rawSize).
+  // 5. If numSize is NaN, throw a TypeError exception.
+  let num_size = scope.to_number(vm, host, hooks, raw_size)?;
+  if num_size.is_nan() {
+    return Err(VmError::TypeError("GetSetRecord size is NaN"));
+  }
+
+  // 7. Let has be ? Get(obj, "has").
+  // 8. If IsCallable(has) is false, throw a TypeError exception.
+  let has_key = string_key(scope, "has")?;
+  let has = scope.get_with_host_and_hooks(vm, host, hooks, obj, has_key, value)?;
+  if !scope.heap().is_callable(has)? {
+    return Err(VmError::NotCallable);
+  }
+  scope.push_root(has)?;
+
+  // 9. Let keys be ? Get(obj, "keys").
+  // 10. If IsCallable(keys) is false, throw a TypeError exception.
+  let keys_key = string_key(scope, "keys")?;
+  let keys = scope.get_with_host_and_hooks(vm, host, hooks, obj, keys_key, value)?;
+  if !scope.heap().is_callable(keys)? {
+    return Err(VmError::NotCallable);
+  }
+  scope.push_root(keys)?;
+
+  Ok(SetRecord {
+    set: value,
+    size: num_size,
+    has,
+    keys,
+  })
+}
+
+#[derive(Clone, Copy)]
 enum MapIteratorKind {
   Keys = 0,
   Values = 1,
@@ -31101,6 +31165,669 @@ pub fn set_prototype_size_get(
   }
   let size = scope.heap().set_size(set)?;
   Ok(Value::Number(size as f64))
+}
+
+pub fn set_prototype_difference(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-set.prototype.difference
+  let intr = require_intrinsics(vm)?;
+  let mut scope = scope.reborrow();
+
+  let Value::Object(set) = this else {
+    return Err(VmError::TypeError("Set.prototype.difference called on non-object"));
+  };
+  if !scope.heap().is_set_object(set) {
+    return Err(VmError::TypeError(
+      "Set.prototype.difference called on incompatible receiver",
+    ));
+  }
+  scope.push_root(Value::Object(set))?;
+
+  let other = args.get(0).copied().unwrap_or(Value::Undefined);
+  let other_rec = get_set_record(vm, &mut scope, host, hooks, other)?;
+
+  let this_size = scope.heap().set_size(set)? as f64;
+
+  let result = scope.alloc_set_with_prototype(Some(intr.set_prototype()))?;
+  scope.push_root(Value::Object(result))?;
+
+  if this_size <= other_rec.size {
+    // Iterate `this` and consult `other.has`.
+    let mut idx = 0usize;
+    loop {
+      if idx % tick::DEFAULT_TICK_EVERY == 0 {
+        vm.tick()?;
+      }
+
+      let len = scope.heap().set_entries_len(set)?;
+      if idx >= len {
+        break;
+      }
+
+      let entry = scope.heap().set_entry_at(set, idx)?;
+      idx = idx.saturating_add(1);
+      let Some(value) = entry else {
+        continue;
+      };
+
+      let args = [value];
+      let has_value = {
+        // Use a nested scope so per-iteration roots pushed by the call do not accumulate.
+        let mut call_scope = scope.reborrow();
+        vm.call_with_host_and_hooks(host, &mut call_scope, hooks, other_rec.has, other_rec.set, &args)?
+      };
+      if !scope.heap().to_boolean(has_value)? {
+        scope.heap_mut().set_add_with_tick(result, value, || vm.tick())?;
+      }
+    }
+
+    return Ok(Value::Object(result));
+  }
+
+  // this_size > other_size: clone `this`, then remove entries from the result using `other.keys`.
+  let mut idx = 0usize;
+  loop {
+    if idx % tick::DEFAULT_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+
+    let len = scope.heap().set_entries_len(set)?;
+    if idx >= len {
+      break;
+    }
+
+    let entry = scope.heap().set_entry_at(set, idx)?;
+    idx = idx.saturating_add(1);
+    let Some(value) = entry else {
+      continue;
+    };
+    scope.heap_mut().set_add_with_tick(result, value, || vm.tick())?;
+  }
+
+  let mut iterator_record =
+    crate::iterator::get_iterator_from_method(vm, host, hooks, &mut scope, other_rec.set, other_rec.keys)?;
+  // Root iterator record values for the duration of iteration.
+  scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+  let mut iter_steps = 0usize;
+  loop {
+    if iter_steps % tick::DEFAULT_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    iter_steps = iter_steps.saturating_add(1);
+
+    let next_value =
+      match crate::iterator::iterator_step_value(vm, host, hooks, &mut scope, &mut iterator_record) {
+        Ok(Some(v)) => v,
+        Ok(None) => break,
+        Err(err) => return Err(err),
+      };
+
+    let step_result: Result<(), VmError> = (|| {
+      let mut step_scope = scope.reborrow();
+      step_scope.push_root(next_value)?;
+      let _ = step_scope
+        .heap_mut()
+        .set_delete_with_tick(result, next_value, || vm.tick())?;
+      Ok(())
+    })();
+
+    if let Err(err) = step_result {
+      if !iterator_record.done {
+        return Err(iterator_close_on_error(
+          vm,
+          &mut scope,
+          host,
+          hooks,
+          &iterator_record,
+          err,
+        ));
+      }
+      return Err(err);
+    }
+  }
+
+  Ok(Value::Object(result))
+}
+
+pub fn set_prototype_intersection(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-set.prototype.intersection
+  let intr = require_intrinsics(vm)?;
+  let mut scope = scope.reborrow();
+
+  let Value::Object(set) = this else {
+    return Err(VmError::TypeError("Set.prototype.intersection called on non-object"));
+  };
+  if !scope.heap().is_set_object(set) {
+    return Err(VmError::TypeError(
+      "Set.prototype.intersection called on incompatible receiver",
+    ));
+  }
+  scope.push_root(Value::Object(set))?;
+
+  let other = args.get(0).copied().unwrap_or(Value::Undefined);
+  let other_rec = get_set_record(vm, &mut scope, host, hooks, other)?;
+
+  let this_size = scope.heap().set_size(set)? as f64;
+
+  let result = scope.alloc_set_with_prototype(Some(intr.set_prototype()))?;
+  scope.push_root(Value::Object(result))?;
+
+  if this_size <= other_rec.size {
+    // Iterate `this` and consult `other.has`.
+    let mut idx = 0usize;
+    loop {
+      if idx % tick::DEFAULT_TICK_EVERY == 0 {
+        vm.tick()?;
+      }
+
+      let len = scope.heap().set_entries_len(set)?;
+      if idx >= len {
+        break;
+      }
+
+      let entry = scope.heap().set_entry_at(set, idx)?;
+      idx = idx.saturating_add(1);
+      let Some(value) = entry else {
+        continue;
+      };
+
+      let args = [value];
+      let has_value = {
+        let mut call_scope = scope.reborrow();
+        vm.call_with_host_and_hooks(host, &mut call_scope, hooks, other_rec.has, other_rec.set, &args)?
+      };
+      if scope.heap().to_boolean(has_value)? {
+        scope.heap_mut().set_add_with_tick(result, value, || vm.tick())?;
+      }
+    }
+    return Ok(Value::Object(result));
+  }
+
+  // this_size > other_size: iterate `other.keys` and consult `this.has`.
+  let mut iterator_record =
+    crate::iterator::get_iterator_from_method(vm, host, hooks, &mut scope, other_rec.set, other_rec.keys)?;
+  scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+  let mut iter_steps = 0usize;
+  loop {
+    if iter_steps % tick::DEFAULT_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    iter_steps = iter_steps.saturating_add(1);
+
+    let next_value =
+      match crate::iterator::iterator_step_value(vm, host, hooks, &mut scope, &mut iterator_record) {
+        Ok(Some(v)) => v,
+        Ok(None) => break,
+        Err(err) => return Err(err),
+      };
+
+    let step_result: Result<(), VmError> = (|| {
+      let mut step_scope = scope.reborrow();
+      step_scope.push_root(next_value)?;
+      if step_scope
+        .heap()
+        .set_has_with_tick(set, next_value, || vm.tick())?
+      {
+        step_scope
+          .heap_mut()
+          .set_add_with_tick(result, next_value, || vm.tick())?;
+      }
+      Ok(())
+    })();
+
+    if let Err(err) = step_result {
+      if !iterator_record.done {
+        return Err(iterator_close_on_error(
+          vm,
+          &mut scope,
+          host,
+          hooks,
+          &iterator_record,
+          err,
+        ));
+      }
+      return Err(err);
+    }
+  }
+
+  Ok(Value::Object(result))
+}
+
+pub fn set_prototype_union(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-set.prototype.union
+  let intr = require_intrinsics(vm)?;
+  let mut scope = scope.reborrow();
+
+  let Value::Object(set) = this else {
+    return Err(VmError::TypeError("Set.prototype.union called on non-object"));
+  };
+  if !scope.heap().is_set_object(set) {
+    return Err(VmError::TypeError("Set.prototype.union called on incompatible receiver"));
+  }
+  scope.push_root(Value::Object(set))?;
+
+  let other = args.get(0).copied().unwrap_or(Value::Undefined);
+  let other_rec = get_set_record(vm, &mut scope, host, hooks, other)?;
+
+  let result = scope.alloc_set_with_prototype(Some(intr.set_prototype()))?;
+  scope.push_root(Value::Object(result))?;
+
+  // Copy `this` into the result.
+  let mut idx = 0usize;
+  loop {
+    if idx % tick::DEFAULT_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+
+    let len = scope.heap().set_entries_len(set)?;
+    if idx >= len {
+      break;
+    }
+
+    let entry = scope.heap().set_entry_at(set, idx)?;
+    idx = idx.saturating_add(1);
+    let Some(value) = entry else {
+      continue;
+    };
+    scope.heap_mut().set_add_with_tick(result, value, || vm.tick())?;
+  }
+
+  let mut iterator_record =
+    crate::iterator::get_iterator_from_method(vm, host, hooks, &mut scope, other_rec.set, other_rec.keys)?;
+  scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+  let mut iter_steps = 0usize;
+  loop {
+    if iter_steps % tick::DEFAULT_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    iter_steps = iter_steps.saturating_add(1);
+
+    let next_value =
+      match crate::iterator::iterator_step_value(vm, host, hooks, &mut scope, &mut iterator_record) {
+        Ok(Some(v)) => v,
+        Ok(None) => break,
+        Err(err) => return Err(err),
+      };
+
+    let step_result: Result<(), VmError> = (|| {
+      let mut step_scope = scope.reborrow();
+      step_scope.push_root(next_value)?;
+      step_scope
+        .heap_mut()
+        .set_add_with_tick(result, next_value, || vm.tick())?;
+      Ok(())
+    })();
+
+    if let Err(err) = step_result {
+      if !iterator_record.done {
+        return Err(iterator_close_on_error(
+          vm,
+          &mut scope,
+          host,
+          hooks,
+          &iterator_record,
+          err,
+        ));
+      }
+      return Err(err);
+    }
+  }
+
+  Ok(Value::Object(result))
+}
+
+pub fn set_prototype_symmetric_difference(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-set.prototype.symmetricdifference
+  let intr = require_intrinsics(vm)?;
+  let mut scope = scope.reborrow();
+
+  let Value::Object(set) = this else {
+    return Err(VmError::TypeError(
+      "Set.prototype.symmetricDifference called on non-object",
+    ));
+  };
+  if !scope.heap().is_set_object(set) {
+    return Err(VmError::TypeError(
+      "Set.prototype.symmetricDifference called on incompatible receiver",
+    ));
+  }
+  scope.push_root(Value::Object(set))?;
+
+  let other = args.get(0).copied().unwrap_or(Value::Undefined);
+  let other_rec = get_set_record(vm, &mut scope, host, hooks, other)?;
+
+  let result = scope.alloc_set_with_prototype(Some(intr.set_prototype()))?;
+  scope.push_root(Value::Object(result))?;
+
+  // Copy `this` into the result.
+  let mut idx = 0usize;
+  loop {
+    if idx % tick::DEFAULT_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+
+    let len = scope.heap().set_entries_len(set)?;
+    if idx >= len {
+      break;
+    }
+
+    let entry = scope.heap().set_entry_at(set, idx)?;
+    idx = idx.saturating_add(1);
+    let Some(value) = entry else {
+      continue;
+    };
+    scope.heap_mut().set_add_with_tick(result, value, || vm.tick())?;
+  }
+
+  let mut iterator_record =
+    crate::iterator::get_iterator_from_method(vm, host, hooks, &mut scope, other_rec.set, other_rec.keys)?;
+  scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+  let mut iter_steps = 0usize;
+  loop {
+    if iter_steps % tick::DEFAULT_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    iter_steps = iter_steps.saturating_add(1);
+
+    let next_value =
+      match crate::iterator::iterator_step_value(vm, host, hooks, &mut scope, &mut iterator_record) {
+        Ok(Some(v)) => v,
+        Ok(None) => break,
+        Err(err) => return Err(err),
+      };
+
+    let step_result: Result<(), VmError> = (|| {
+      let mut step_scope = scope.reborrow();
+      step_scope.push_root(next_value)?;
+      if step_scope
+        .heap()
+        .set_has_with_tick(set, next_value, || vm.tick())?
+      {
+        let _ = step_scope
+          .heap_mut()
+          .set_delete_with_tick(result, next_value, || vm.tick())?;
+      } else {
+        step_scope
+          .heap_mut()
+          .set_add_with_tick(result, next_value, || vm.tick())?;
+      }
+      Ok(())
+    })();
+
+    if let Err(err) = step_result {
+      if !iterator_record.done {
+        return Err(iterator_close_on_error(
+          vm,
+          &mut scope,
+          host,
+          hooks,
+          &iterator_record,
+          err,
+        ));
+      }
+      return Err(err);
+    }
+  }
+
+  Ok(Value::Object(result))
+}
+
+pub fn set_prototype_is_subset_of(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-set.prototype.issubsetof
+  let mut scope = scope.reborrow();
+
+  let Value::Object(set) = this else {
+    return Err(VmError::TypeError("Set.prototype.isSubsetOf called on non-object"));
+  };
+  if !scope.heap().is_set_object(set) {
+    return Err(VmError::TypeError(
+      "Set.prototype.isSubsetOf called on incompatible receiver",
+    ));
+  }
+  scope.push_root(Value::Object(set))?;
+
+  let other = args.get(0).copied().unwrap_or(Value::Undefined);
+  let other_rec = get_set_record(vm, &mut scope, host, hooks, other)?;
+
+  let this_size = scope.heap().set_size(set)? as f64;
+  if this_size > other_rec.size {
+    return Ok(Value::Bool(false));
+  }
+
+  let mut idx = 0usize;
+  loop {
+    if idx % tick::DEFAULT_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+
+    let len = scope.heap().set_entries_len(set)?;
+    if idx >= len {
+      break;
+    }
+
+    let entry = scope.heap().set_entry_at(set, idx)?;
+    idx = idx.saturating_add(1);
+    let Some(value) = entry else {
+      continue;
+    };
+
+    let args = [value];
+    let has_value = {
+      let mut call_scope = scope.reborrow();
+      vm.call_with_host_and_hooks(host, &mut call_scope, hooks, other_rec.has, other_rec.set, &args)?
+    };
+    if !scope.heap().to_boolean(has_value)? {
+      return Ok(Value::Bool(false));
+    }
+  }
+
+  Ok(Value::Bool(true))
+}
+
+pub fn set_prototype_is_superset_of(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-set.prototype.issupersetof
+  let mut scope = scope.reborrow();
+
+  let Value::Object(set) = this else {
+    return Err(VmError::TypeError("Set.prototype.isSupersetOf called on non-object"));
+  };
+  if !scope.heap().is_set_object(set) {
+    return Err(VmError::TypeError(
+      "Set.prototype.isSupersetOf called on incompatible receiver",
+    ));
+  }
+  scope.push_root(Value::Object(set))?;
+
+  let other = args.get(0).copied().unwrap_or(Value::Undefined);
+  let other_rec = get_set_record(vm, &mut scope, host, hooks, other)?;
+
+  let this_size = scope.heap().set_size(set)? as f64;
+  if this_size < other_rec.size {
+    return Ok(Value::Bool(false));
+  }
+
+  let mut iterator_record =
+    crate::iterator::get_iterator_from_method(vm, host, hooks, &mut scope, other_rec.set, other_rec.keys)?;
+  scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+  let mut iter_steps = 0usize;
+  loop {
+    if iter_steps % tick::DEFAULT_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    iter_steps = iter_steps.saturating_add(1);
+
+    let next_value =
+      match crate::iterator::iterator_step_value(vm, host, hooks, &mut scope, &mut iterator_record) {
+        Ok(Some(v)) => v,
+        Ok(None) => return Ok(Value::Bool(true)),
+        Err(err) => return Err(err),
+      };
+
+    let in_this = scope
+      .heap()
+      .set_has_with_tick(set, next_value, || vm.tick())?;
+    if !in_this {
+      if !iterator_record.done {
+        crate::iterator::iterator_close(
+          vm,
+          host,
+          hooks,
+          &mut scope,
+          &iterator_record,
+          crate::iterator::CloseCompletionKind::NonThrow,
+        )?;
+      }
+      return Ok(Value::Bool(false));
+    }
+  }
+}
+
+pub fn set_prototype_is_disjoint_from(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-set.prototype.isdisjointfrom
+  let mut scope = scope.reborrow();
+
+  let Value::Object(set) = this else {
+    return Err(VmError::TypeError("Set.prototype.isDisjointFrom called on non-object"));
+  };
+  if !scope.heap().is_set_object(set) {
+    return Err(VmError::TypeError(
+      "Set.prototype.isDisjointFrom called on incompatible receiver",
+    ));
+  }
+  scope.push_root(Value::Object(set))?;
+
+  let other = args.get(0).copied().unwrap_or(Value::Undefined);
+  let other_rec = get_set_record(vm, &mut scope, host, hooks, other)?;
+
+  let this_size = scope.heap().set_size(set)? as f64;
+
+  if this_size <= other_rec.size {
+    // Iterate `this` and consult `other.has`.
+    let mut idx = 0usize;
+    loop {
+      if idx % tick::DEFAULT_TICK_EVERY == 0 {
+        vm.tick()?;
+      }
+
+      let len = scope.heap().set_entries_len(set)?;
+      if idx >= len {
+        break;
+      }
+
+      let entry = scope.heap().set_entry_at(set, idx)?;
+      idx = idx.saturating_add(1);
+      let Some(value) = entry else {
+        continue;
+      };
+
+      let args = [value];
+      let has_value = {
+        let mut call_scope = scope.reborrow();
+        vm.call_with_host_and_hooks(host, &mut call_scope, hooks, other_rec.has, other_rec.set, &args)?
+      };
+      if scope.heap().to_boolean(has_value)? {
+        return Ok(Value::Bool(false));
+      }
+    }
+    return Ok(Value::Bool(true));
+  }
+
+  // this_size > other_size: iterate `other.keys` and consult `this.has`.
+  let mut iterator_record =
+    crate::iterator::get_iterator_from_method(vm, host, hooks, &mut scope, other_rec.set, other_rec.keys)?;
+  scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+  let mut iter_steps = 0usize;
+  loop {
+    if iter_steps % tick::DEFAULT_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    iter_steps = iter_steps.saturating_add(1);
+
+    let next_value =
+      match crate::iterator::iterator_step_value(vm, host, hooks, &mut scope, &mut iterator_record) {
+        Ok(Some(v)) => v,
+        Ok(None) => return Ok(Value::Bool(true)),
+        Err(err) => return Err(err),
+      };
+
+    if scope
+      .heap()
+      .set_has_with_tick(set, next_value, || vm.tick())?
+    {
+      if !iterator_record.done {
+        crate::iterator::iterator_close(
+          vm,
+          host,
+          hooks,
+          &mut scope,
+          &iterator_record,
+          crate::iterator::CloseCompletionKind::NonThrow,
+        )?;
+      }
+      return Ok(Value::Bool(false));
+    }
+  }
 }
 
 pub fn map_iterator_next(
