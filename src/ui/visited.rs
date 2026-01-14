@@ -18,6 +18,8 @@ use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::time::SystemTime;
 
+use smallvec::SmallVec;
+
 use super::about_pages;
 use super::string_match::contains_ascii_case_insensitive;
 use super::GlobalHistoryStore;
@@ -346,34 +348,52 @@ impl VisitedUrlStore {
     } else {
       Cow::Borrowed(query)
     };
-    let tokens: Vec<&str> = query_lower
-      .split_whitespace()
-      .filter(|t| !t.is_empty())
-      .collect();
-    if tokens.is_empty() {
-      return self.iter_recent().take(limit).collect();
-    }
+    let tokens: SmallVec<[&str; 4]> = query_lower.split_whitespace().collect();
 
-    let mut out = Vec::with_capacity(limit.min(self.len()));
-    'records: for record in self.iter_recent() {
-      for token in &tokens {
-        let in_url = contains_ascii_case_insensitive(&record.url, token);
-        let in_title = record
-          .title
-          .as_deref()
-          .is_some_and(|t| contains_ascii_case_insensitive(t, token));
-        if !in_url && !in_title {
-          continue 'records;
+    match tokens.as_slice() {
+      [] => self.iter_recent().take(limit).collect(),
+      [token] => {
+        let mut out = Vec::with_capacity(limit.min(self.len()));
+        for record in self.iter_recent() {
+          let in_url = contains_ascii_case_insensitive(&record.url, token);
+          let in_title = record
+            .title
+            .as_deref()
+            .is_some_and(|t| contains_ascii_case_insensitive(t, token));
+          if !in_url && !in_title {
+            continue;
+          }
+
+          out.push(record);
+          if out.len() >= limit {
+            break;
+          }
         }
+        out
       }
+      tokens => {
+        let mut out = Vec::with_capacity(limit.min(self.len()));
+        'records: for record in self.iter_recent() {
+          for token in tokens {
+            let in_url = contains_ascii_case_insensitive(&record.url, token);
+            let in_title = record
+              .title
+              .as_deref()
+              .is_some_and(|t| contains_ascii_case_insensitive(t, token));
+            if !in_url && !in_title {
+              continue 'records;
+            }
+          }
 
-      out.push(record);
-      if out.len() >= limit {
-        break;
+          out.push(record);
+          if out.len() >= limit {
+            break;
+          }
+        }
+
+        out
       }
     }
-
-    out
   }
 
   pub fn get(&self, url: &str) -> Option<&VisitedUrlRecord> {
