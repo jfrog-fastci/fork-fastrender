@@ -1266,13 +1266,10 @@ impl SinkState {
       frames_remaining: remaining,
     };
 
-    // Determine how much audio we can actually read this callback.
+    // If we have less than one frame of audio, drop the partial and arm a fade-in for when full
+    // frames resume.
     let mut to_read_samples = available_samples.min(requested_samples);
-    // Keep frame alignment so ramping applies equally across channels.
     to_read_samples -= to_read_samples % channels;
-
-    // If we have less than one frame, drop the partial and arm a fade-in for when full frames
-    // resume.
     if to_read_samples == 0 {
       self.buffer.pop_discard(usize::MAX);
       self
@@ -1283,48 +1280,12 @@ impl SinkState {
       return;
     }
 
-    let requested_frames = requested_samples / channels;
-    let available_frames = to_read_samples / channels;
-    let did_underrun = available_frames < requested_frames;
-
-    if !did_underrun {
-      // Fast path: enough buffered audio to cover the callback.
-      self
-        .buffer
-        .pop_add_into_ramped(&mut dst[..requested_samples], channels, &mut ramp);
-    } else {
-      // We will run out of samples before the callback ends. Avoid a hard step discontinuity by
-      // fading out over the last ~N frames of the available audio so we converge to silence before
-      // the output buffer's implicit zeros.
-      let fade_frames = (self.ramp_frames as usize).min(available_frames);
-      let head_frames = available_frames.saturating_sub(fade_frames);
-      let head_samples = head_frames.saturating_mul(channels);
-      let fade_samples = fade_frames.saturating_mul(channels);
-
-      if head_samples != 0 {
-        self
-          .buffer
-          .pop_add_into_ramped(&mut dst[..head_samples], channels, &mut ramp);
-      }
-
-      if fade_samples != 0 {
-        let fade_frames_u32 = u32::try_from(fade_frames).unwrap_or(u32::MAX).max(1);
-        ramp.target_gain = 0.0;
-        if (ramp.current_gain - ramp.target_gain).abs() <= f32::EPSILON {
-          ramp.current_gain = ramp.target_gain;
-          ramp.step = 0.0;
-          ramp.frames_remaining = 0;
-        } else {
-          ramp.frames_remaining = fade_frames_u32;
-          ramp.step = (ramp.target_gain - ramp.current_gain) / ramp.frames_remaining as f32;
-        }
-        self.buffer.pop_add_into_ramped(
-          &mut dst[head_samples..head_samples + fade_samples],
-          channels,
-          &mut ramp,
-        );
-      }
-    }
+    let did_underrun = self.buffer.pop_add_into_ramped_declick_underrun(
+      &mut dst[..requested_samples],
+      channels,
+      &mut ramp,
+      self.ramp_frames,
+    );
 
     self.ramp_target_bits.store(
       if did_underrun {

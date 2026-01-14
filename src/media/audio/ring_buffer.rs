@@ -127,7 +127,11 @@ impl AudioRingBuffer {
     //
     // Note: we still drain the ring buffer even when the effective gain is 0, so muting does not
     // behave like pausing.
-    let gain = if gain.is_finite() && gain.is_normal() { gain } else { 0.0 };
+    let gain = if gain.is_finite() && gain.is_normal() {
+      gain
+    } else {
+      0.0
+    };
 
     let read = self.read.load(Ordering::Relaxed);
     let write = self.write.load(Ordering::Acquire);
@@ -273,6 +277,74 @@ impl AudioRingBuffer {
       .store(read.wrapping_add(to_read), Ordering::Release);
   }
 
+  /// Like [`Self::pop_add_into_ramped`], but when the buffer underruns (runs out of samples before
+  /// filling `dst`) it applies a short fade-out over the tail of the available audio so the output
+  /// converges to silence before the implicit zeros.
+  ///
+  /// Returns `true` if an underrun occurred (i.e. fewer than `dst.len()` samples were available).
+  pub(crate) fn pop_add_into_ramped_declick_underrun(
+    &self,
+    dst: &mut [f32],
+    channels: usize,
+    ramp: &mut GainRamp,
+    fade_frames: u32,
+  ) -> bool {
+    if dst.is_empty() || channels == 0 {
+      return false;
+    }
+
+    let requested = dst.len() - (dst.len() % channels);
+    if requested == 0 {
+      return false;
+    }
+
+    let available = self.buffered_samples();
+    let mut to_read = requested.min(available);
+    to_read -= to_read % channels;
+    if to_read == 0 {
+      return true;
+    }
+
+    let did_underrun = to_read < requested;
+    if !did_underrun {
+      self.pop_add_into_ramped(&mut dst[..requested], channels, ramp);
+      return false;
+    }
+
+    let frames_available = to_read / channels;
+    let fade_frames = usize::try_from(fade_frames).unwrap_or(usize::MAX);
+    // Always fade at least one frame so we avoid a hard step when we have any audio at all.
+    let fade_frames = fade_frames.min(frames_available).max(1);
+    let head_frames = frames_available.saturating_sub(fade_frames);
+
+    let head_samples = head_frames.saturating_mul(channels);
+    let fade_samples = fade_frames.saturating_mul(channels);
+
+    if head_samples != 0 {
+      self.pop_add_into_ramped(&mut dst[..head_samples], channels, ramp);
+    }
+
+    if fade_samples != 0 {
+      ramp.target_gain = 0.0;
+      let fade_frames_u32 = u32::try_from(fade_frames).unwrap_or(u32::MAX).max(1);
+      if (ramp.current_gain - ramp.target_gain).abs() <= f32::EPSILON {
+        ramp.current_gain = ramp.target_gain;
+        ramp.step = 0.0;
+        ramp.frames_remaining = 0;
+      } else {
+        ramp.frames_remaining = fade_frames_u32;
+        ramp.step = (ramp.target_gain - ramp.current_gain) / ramp.frames_remaining as f32;
+      }
+      self.pop_add_into_ramped(
+        &mut dst[head_samples..head_samples + fade_samples],
+        channels,
+        ramp,
+      );
+    }
+
+    true
+  }
+
   /// Returns `true` if the buffer currently contains any samples.
   ///
   /// This is intended for fast-path "maybe audible" checks. It intentionally does not attempt to
@@ -308,7 +380,9 @@ impl AudioRingBuffer {
     }
 
     let to_read = max.min(available);
-    self.read.store(read.wrapping_add(to_read), Ordering::Release);
+    self
+      .read
+      .store(read.wrapping_add(to_read), Ordering::Release);
   }
 
   #[must_use]
@@ -412,6 +486,43 @@ mod tests {
     assert_eq!(&out[..samples_half], &vec![1.0; samples_half][..]);
     assert_eq!(&out[samples_half..], &vec![0.0; samples_half][..]);
   }
+
+  #[test]
+  fn ring_buffer_ramped_declick_fades_tail_on_underrun() {
+    let rb = AudioRingBuffer::new(64);
+    // 10 mono frames at amplitude 1.0.
+    assert_eq!(rb.push(&vec![1.0; 10]), 10);
+
+    let mut ramp = GainRamp {
+      current_gain: 1.0,
+      target_gain: 1.0,
+      step: 0.0,
+      frames_remaining: 0,
+    };
+
+    // Request more than available -> underrun. Fade the last 4 frames.
+    let mut out = vec![0.0; 20];
+    let did_underrun = rb.pop_add_into_ramped_declick_underrun(&mut out, 1, &mut ramp, 4);
+    assert!(did_underrun);
+
+    // First 6 frames untouched.
+    assert!(out[..6].iter().all(|v| (*v - 1.0).abs() < 1e-6));
+    // Last 4 available frames are faded: 1.0, 0.75, 0.5, 0.25.
+    let faded = &out[6..10];
+    let expected = [1.0f32, 0.75, 0.5, 0.25];
+    for (got, exp) in faded.iter().zip(expected) {
+      assert!((*got - exp).abs() < 1e-6, "expected {exp}, got {got}");
+    }
+    // Remaining requested frames are silence.
+    assert!(out[10..].iter().all(|v| *v == 0.0));
+
+    // Buffer should be drained and ramp should end at 0 gain.
+    assert!(rb.is_empty());
+    assert!((ramp.current_gain - 0.0).abs() < 1e-6);
+    assert!((ramp.target_gain - 0.0).abs() < 1e-6);
+    assert_eq!(ramp.frames_remaining, 0);
+  }
+
   #[test]
   fn ring_buffer_drains_when_gain_is_zero() {
     // 200ms worth of mono 48kHz samples.
