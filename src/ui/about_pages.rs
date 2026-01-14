@@ -226,7 +226,8 @@ pub fn sync_about_page_snapshot_history_from_global_history_store(store: &Global
 pub fn apply_history_visit_delta(delta: &HistoryVisitDelta, global_history: &GlobalHistoryStore) {
   let rebuild = |global_history: &GlobalHistoryStore| {
     let history = history_snapshots_from_global_history_store(global_history);
-    about_page_snapshot_lock().write().history = history;
+    let mut lock = about_page_snapshot_lock().write();
+    Arc::make_mut(&mut *lock).history = history;
   };
 
   let requested_key = delta.url.trim();
@@ -248,9 +249,10 @@ pub fn apply_history_visit_delta(delta: &HistoryVisitDelta, global_history: &Glo
 
   let snapshot_url = entry.url.trim();
   let mut lock = about_page_snapshot_lock().write();
-  lock.history.retain(|e| e.url != snapshot_url);
-  lock.history.insert(0, snapshot);
-  lock.history.truncate(MAX_HISTORY_SNAPSHOT);
+  let snapshot_lock = Arc::make_mut(&mut *lock);
+  snapshot_lock.history.retain(|e| e.url != snapshot_url);
+  snapshot_lock.history.insert(0, snapshot);
+  snapshot_lock.history.truncate(MAX_HISTORY_SNAPSHOT);
 }
 
 #[cfg(feature = "browser_ui")]
@@ -2669,7 +2671,7 @@ mod tests {
       .unwrap_or_else(|poisoned| poisoned.into_inner());
     let before = about_page_snapshot();
 
-    *about_page_snapshot_lock().write() = AboutPageSnapshot::default();
+    *about_page_snapshot_lock().write() = Arc::new(AboutPageSnapshot::default());
     let mut store = GlobalHistoryStore::default();
 
     let delta_a = HistoryVisitDelta {
@@ -2737,7 +2739,7 @@ mod tests {
       .unwrap_or_else(|poisoned| poisoned.into_inner());
     let before = about_page_snapshot();
 
-    *about_page_snapshot_lock().write() = AboutPageSnapshot::default();
+    *about_page_snapshot_lock().write() = Arc::new(AboutPageSnapshot::default());
     let mut store = GlobalHistoryStore::default();
 
     let total = MAX_HISTORY_SNAPSHOT + 10;
