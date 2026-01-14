@@ -14,7 +14,7 @@
     "layout": 7.110253663894772,
     "paint": 71.08488559783369
   },
-  "notes": "",
+  "notes": "Fixture is a WSJ Next.js /not-found 404 (\"Page Not Found\") response, not the real homepage.\nDiff metrics here are not representative of WSJ rendering quality because we’re comparing a minimal error template.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 161527,

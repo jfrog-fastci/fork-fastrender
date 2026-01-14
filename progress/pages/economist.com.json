@@ -14,7 +14,7 @@
     "layout": 8.318700226130654,
     "paint": 22.183200603015077
   },
-  "notes": "",
+  "notes": "Cached HTML is an HTTP 403 (forbidden) block page, not the real Economist homepage.\nLow diff is expected because the blocked response is mostly static content; remaining mismatches are minor raster/text AA differences.",
   "auto_notes": "cached_html_status=403",
   "accuracy": {
     "baseline": "chrome",
