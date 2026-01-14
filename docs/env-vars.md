@@ -262,7 +262,8 @@ CLI equivalents (override env vars): `browser --perf-log` (stdout),
 Perfetto/Chrome trace on exit).
 
 For an interactive capture helper (runs under `run_limited`, passes `browser --perf-log`, and tees
-the stdout JSONL stream to a file), see
+the stdout JSONL stream to a file; also supports `--trace-out <path>` to capture a browser UI trace),
+see
 [`scripts/capture_browser_perf_log.sh`](../scripts/capture_browser_perf_log.sh).
 
 - `FASTR_PERF_LOG=0|1` – enable JSONL (“JSON Lines”) perf logging in the windowed `browser` UI.
