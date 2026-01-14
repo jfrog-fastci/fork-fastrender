@@ -1206,6 +1206,13 @@ fn emit_stmt(em: &mut Emitter, ctx: &HirContext<'_>, body: &Body, stmt_id: StmtI
       let def_data = ctx
         .def(*def)
         .ok_or_else(|| EmitError::unsupported("declaration definition not found"))?;
+      // `hir-js` lowers `export default <expr>` and TypeScript `export = <expr>` as synthetic
+      // declarations to preserve evaluation order for the VM. When reproducing source output we
+      // emit the actual export statements from the `HirFile.exports` list (see `emit_export`), so
+      // skip the synthetic `ExportAlias` declaration here to avoid duplication.
+      if def_data.path.kind == hir_js::DefKind::ExportAlias {
+        return Ok(());
+      }
       emit_def(em, ctx, def_data)?;
     }
     StmtKind::Return(value) => {
