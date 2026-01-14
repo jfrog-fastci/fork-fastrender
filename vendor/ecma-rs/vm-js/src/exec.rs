@@ -45129,13 +45129,18 @@ fn gen_eval_assignment_to_super_computed_member_after_member(
 ) -> Result<GenEval<Completion>, VmError> {
   let mut key_scope = scope.reborrow();
   key_scope.push_roots(&[receiver, member_value])?;
-  // Spec: `GetSuperBase` must be observed before `ToPropertyKey` for computed super properties.
-  let base = evaluator.get_super_base(&mut key_scope)?;
-  // Keep the captured super base alive across `ToPropertyKey`, which can invoke user code and
-  // trigger GC.
-  key_scope.push_root(base)?;
-
+  // Spec: computed `super[expr]` performs `ToPropertyKey` before `GetSuperBase`, so prototype
+  // mutation during key conversion is observable.
   let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
+  // Root the allocated key across `GetSuperBase`, which may allocate/invoke Proxy traps.
+  match key {
+    PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
+    PropertyKey::Symbol(sym) => key_scope.push_root(Value::Symbol(sym))?,
+  };
+
+  let base = evaluator.get_super_base(&mut key_scope)?;
+  // Keep the captured super base alive across RHS evaluation / generator suspension handling.
+  key_scope.push_root(base)?;
   let reference = Reference::SuperProperty { base, key, receiver };
   gen_eval_assignment_apply_reference(evaluator, &mut key_scope, expr, reference)
 }
@@ -56418,6 +56423,56 @@ mod tests {
                 return "x";
               }
             })];
+          }
+        }
+
+        const it = new B().g();
+        const r1 = it.next();
+        const yielded = r1.value;
+        const r2 = it.next(yielded);
+        return (
+          r1.done === false &&
+          r2.done === true &&
+          r2.value === 2
+        );
+      })()
+    "#,
+    )?;
+
+    assert_eq!(value, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn generators_super_computed_member_assignment_key_mutation_affects_super_base_lookup_after_yield(
+  ) -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let value = rt.exec_script(
+      r#"
+      (() => {
+        let setValue = 0;
+        class A {}
+        Object.defineProperty(A.prototype, "x", {
+          set(v) { setValue = 1; },
+          configurable: true
+        });
+        const newProto = {};
+        Object.defineProperty(newProto, "x", {
+          set(v) { setValue = 2; },
+          configurable: true
+        });
+        class B extends A {
+          *g() {
+            super[(yield {
+              toString() {
+                Object.setPrototypeOf(B.prototype, newProto);
+                return "x";
+              }
+            })] = 123;
+            return setValue;
           }
         }
 
