@@ -52,6 +52,10 @@ jobs:
             exit 1
           fi
 
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        shell: bash
+        run: bash scripts/check_no_conflict_markers.sh
+
       - name: Validate lockfile with Cargo
         run: cargo metadata --locked --format-version 1 > /dev/null
 
@@ -154,6 +158,10 @@ jobs:
             echo "Run: git submodule update --init vendor/ecma-rs" >&2
             exit 1
           fi
+
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        shell: bash
+        run: bash scripts/check_no_conflict_markers.sh
 
       - name: Cache cargo registry (ecma-rs WebIDL)
         uses: actions/cache@v4
@@ -302,6 +310,10 @@ jobs:
             echo "Run: git submodule update --init vendor/ecma-rs" >&2
             exit 1
           fi
+
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        shell: bash
+        run: bash scripts/check_no_conflict_markers.sh
 
       - name: Validate generated emoji tables
         run: cargo xtask generate-emoji-tables --check
@@ -558,6 +570,9 @@ jobs:
       - name: Init ecma-rs submodule (if configured)
         run: bash scripts/ci_init_ecma_rs_submodule.sh
 
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        run: bash scripts/check_no_conflict_markers.sh
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -650,6 +665,10 @@ jobs:
             exit 1
           fi
 
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        shell: bash
+        run: bash scripts/check_no_conflict_markers.sh
+
       - name: Run macOS Seatbelt sandbox tests (scoped)
         shell: bash
         run: |
@@ -694,6 +713,9 @@ jobs:
       - name: Init ecma-rs submodule (if configured)
         shell: bash
         run: bash scripts/ci_init_ecma_rs_submodule.sh
+
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        run: bash scripts/check_no_conflict_markers.sh
 
       - name: Install Linux GUI dependencies (winit/wgpu)
         if: runner.os == 'Linux'
@@ -840,6 +862,10 @@ jobs:
             exit 1
           fi
 
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        shell: bash
+        run: bash scripts/check_no_conflict_markers.sh
+
       - name: Build with MSRV
         run: cargo build --features ci
 
@@ -890,6 +916,10 @@ jobs:
             echo "Run: git submodule update --init vendor/ecma-rs" >&2
             exit 1
           fi
+
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        shell: bash
+        run: bash scripts/check_no_conflict_markers.sh
 
       - name: Build browser UI with MSRV (compile-only)
         run: cargo build --features ci --bin browser
@@ -945,6 +975,10 @@ jobs:
             exit 1
           fi
 
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        shell: bash
+        run: bash scripts/check_no_conflict_markers.sh
+
       - name: Run clippy
         run: cargo clippy --all-targets --features ci --no-deps -- -D clippy::correctness
 
@@ -976,6 +1010,10 @@ jobs:
             echo "Run: git submodule update --init vendor/ecma-rs" >&2
             exit 1
           fi
+
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        shell: bash
+        run: bash scripts/check_no_conflict_markers.sh
 
       - name: Check formatting
         # `cargo fmt --all` also formats local path dependencies, including the nested
@@ -1032,6 +1070,10 @@ jobs:
             exit 1
           fi
 
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        shell: bash
+        run: bash scripts/check_no_conflict_markers.sh
+
       - name: Build documentation
         run: cargo doc --no-deps --features ci
         env:
@@ -1063,6 +1105,10 @@ jobs:
             echo "Run: git submodule update --init vendor/ecma-rs" >&2
             exit 1
           fi
+
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        shell: bash
+        run: bash scripts/check_no_conflict_markers.sh
 
       - name: Install cargo-audit
         run: cargo install cargo-audit
@@ -1126,6 +1172,10 @@ jobs:
             echo "Run: git submodule update --init vendor/ecma-rs" >&2
             exit 1
           fi
+
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        shell: bash
+        run: bash scripts/check_no_conflict_markers.sh
 
       - name: Install cargo-fuzz
         uses: taiki-e/install-action@cargo-fuzz
@@ -1227,6 +1277,10 @@ jobs:
             exit 1
           fi
 
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        shell: bash
+        run: bash scripts/check_no_conflict_markers.sh
+
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
@@ -1280,6 +1334,10 @@ jobs:
             echo "Run: git submodule update --init vendor/ecma-rs" >&2
             exit 1
           fi
+
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        shell: bash
+        run: bash scripts/check_no_conflict_markers.sh
 
       - name: Run benchmarks
         run: cargo bench --no-run
