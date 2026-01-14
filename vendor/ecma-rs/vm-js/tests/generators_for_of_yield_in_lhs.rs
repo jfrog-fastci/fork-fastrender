@@ -74,6 +74,46 @@ fn generator_for_of_yield_in_object_pattern_computed_key() {
 }
 
 #[test]
+fn generator_for_of_yield_in_lexical_object_pattern_computed_key() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          for (let {[yield "k"]: v} of [{k: 3}]) { return v; }
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next("k");
+        r1.done === false && r1.value === "k" &&
+        r2.done === true && r2.value === 3
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_yield_in_lexical_object_pattern_default_value() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          for (let {a: v = yield 1} of [{a: undefined}]) { return v; }
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(42);
+        r1.done === false && r1.value === 1 &&
+        r2.done === true && r2.value === 42
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_for_of_multiple_yields_in_single_lhs_pattern() {
   let mut rt = new_runtime();
   let value = rt
