@@ -693,6 +693,98 @@ fn generator_binary_instanceof_rhs_non_object_error_is_catchable_after_yields_in
 }
 
 #[test]
+fn generator_binary_in_operator_to_property_key_happens_after_rhs_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log = [];
+      function* g(){
+        var key = { toString() { log.push("toString"); return "a"; } };
+        var obj = { a: 1 };
+        return (yield key) in (yield obj);
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(r1.value);
+      var ok_mid =
+        r1.done === false && r1.value &&
+        r2.done === false && r2.value && r2.value.a === 1 &&
+        log.length === 0;
+      var r3 = it.next(r2.value);
+      ok_mid &&
+      r3.done === true && r3.value === true &&
+      log.length === 1 && log[0] === "toString"
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_binary_in_operator_rhs_type_error_prevents_to_property_key() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log = [];
+      function* g(){
+        var key = { toString() { log.push("toString"); return "a"; } };
+        try { return (yield key) in (yield 0); }
+        catch (e) { return e && e.name === "TypeError" && log.length === 0; }
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(r1.value);
+      var r3 = it.next(null);
+      r1.done === false && r1.value &&
+      r2.done === false && r2.value === 0 && log.length === 0 &&
+      r3.done === true && r3.value === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_binary_instanceof_observes_has_instance_after_rhs_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log = [];
+      function* g(){
+        var left = {};
+        var right = {};
+        Object.defineProperty(right, Symbol.hasInstance, {
+          get() {
+            log.push("get hasInstance");
+            return function(v) {
+              log.push("call hasInstance");
+              return v === left;
+            };
+          }
+        });
+        return (yield left) instanceof (yield right);
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(r1.value);
+      var ok_mid =
+        r1.done === false && r1.value &&
+        r2.done === false && r2.value &&
+        log.length === 0;
+      var r3 = it.next(r2.value);
+      ok_mid &&
+      r3.done === true && r3.value === true &&
+      log.length === 2 && log[0] === "get hasInstance" && log[1] === "call hasInstance"
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_binary_left_associativity_with_multiple_yields() {
   let mut rt = new_runtime();
   let value = rt
