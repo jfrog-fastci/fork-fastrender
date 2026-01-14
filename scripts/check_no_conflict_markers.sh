@@ -267,3 +267,70 @@ if [[ -f "${vmjs_window_realm_rs}" ]]; then
     exit 1
   fi
 fi
+
+# Guardrail: prevent merge drift from duplicating top-level constants/helpers in the WebIDL host
+# dispatch, which breaks compilation with errors like:
+# - `E0428: the name ... is defined multiple times`
+# - `unexpected closing delimiter` (often caused by accidentally duplicated blocks).
+vmjs_host_dispatch_rs="src/js/webidl/vmjs_host_dispatch.rs"
+if [[ -f "${vmjs_host_dispatch_rs}" ]]; then
+  duplicate_toplevel_consts="$(
+    awk '
+      # Only match top-level const/static defs (column 0) to avoid capturing locals or nested items.
+      /^(pub|const|static)/ && $0 ~ /(^|[[:space:]])(const|static)[[:space:]]/ {
+        for (i = 1; i <= NF; i++) {
+          if (($i == "const" || $i == "static") && (i + 1) <= NF) {
+            name = $(i + 1)
+            if (name == "mut" && (i + 2) <= NF) {
+              name = $(i + 2)
+            }
+            sub(/[^A-Za-z0-9_].*/, "", name)
+            if (name ~ /^[A-Za-z_][A-Za-z0-9_]*$/) {
+              print name
+            }
+            break
+          }
+        }
+      }
+    ' "${vmjs_host_dispatch_rs}" | sort | uniq -d
+  )"
+
+  if [[ -n "${duplicate_toplevel_consts}" ]]; then
+    echo "error: duplicate top-level const/static definitions in ${vmjs_host_dispatch_rs}:" >&2
+    while IFS= read -r name; do
+      [[ -z "${name}" ]] && continue
+      echo "duplicate const/static: ${name}" >&2
+      grep -nE "^(pub|const|static).*\\b(const|static)[[:space:]]+(mut[[:space:]]+)?${name}\\b" "${vmjs_host_dispatch_rs}" >&2 || true
+      echo >&2
+    done <<< "${duplicate_toplevel_consts}"
+    exit 1
+  fi
+
+  duplicate_toplevel_fns="$(
+    awk '
+      /^(pub|fn)/ && $0 ~ /(^|[[:space:]])fn[[:space:]]/ {
+        for (i = 1; i <= NF; i++) {
+          if ($i == "fn" && (i + 1) <= NF) {
+            name = $(i + 1)
+            sub(/[^A-Za-z0-9_].*/, "", name)
+            if (name ~ /^[A-Za-z_][A-Za-z0-9_]*$/) {
+              print name
+            }
+            break
+          }
+        }
+      }
+    ' "${vmjs_host_dispatch_rs}" | sort | uniq -d
+  )"
+
+  if [[ -n "${duplicate_toplevel_fns}" ]]; then
+    echo "error: duplicate top-level function definitions in ${vmjs_host_dispatch_rs}:" >&2
+    while IFS= read -r fn_name; do
+      [[ -z "${fn_name}" ]] && continue
+      echo "duplicate function: ${fn_name}" >&2
+      grep -nE "^(pub|fn).*\\bfn[[:space:]]+${fn_name}\\b" "${vmjs_host_dispatch_rs}" >&2 || true
+      echo >&2
+    done <<< "${duplicate_toplevel_fns}"
+    exit 1
+  fi
+fi
