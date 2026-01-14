@@ -71,7 +71,7 @@ Need a new crate? Create it in `vendor/ecma-rs/`.
 
 FastRender-specific DOM/Web API bindings integration → `src/js/webidl/`  
 Browser event loop integration → `src/js/event_loop.rs`  
-HTML script scheduling/processing scaffolding → `src/js/script_scheduler.rs`
+HTML script scheduling/processing scaffolding → `src/js/html_script_scheduler.rs` + `src/js/html_script_pipeline.rs`
 
 The boundary is:
 - **ecma-rs**: JavaScript language, WebIDL spec, engine infrastructure
@@ -105,7 +105,7 @@ This is a one-time fix. Don't create parallel crates to avoid it.
 | DOM/Web API bindings integration (FastRender) | `src/js/webidl/` | FastRender-specific glue |
 | Browser APIs (timers, fetch, URL, ...) | `src/js/` + `src/web/` | FastRender-specific |
 | Event loop | `src/js/event_loop.rs` | FastRender-specific |
-| Script scheduling/processing | `src/js/script_scheduler.rs` | FastRender-specific |
+| Script scheduling/processing | `src/js/html_script_scheduler.rs` + `src/js/html_script_pipeline.rs` | FastRender-specific |
 
 ---
 

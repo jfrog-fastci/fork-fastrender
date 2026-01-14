@@ -358,9 +358,8 @@ pub enum ScriptSchedulerAction {
 
 ```
 src/js/
-  html_script_processing.rs  — HTML script processing model
-  script_scheduler.rs        — Script scheduling and ordering
-  html_classic_scripts.rs    — Classic script handling
+  html_script_pipeline.rs    — Streaming HTML parser + scheduler + event loop integration harness
+  html_script_scheduler.rs   — HTML `<script>` ordering (classic + module + import map)
   streaming.rs               — Parse-time script handling
   event_loop.rs              — tasks/microtasks/timers + rAF + requestIdleCallback queues
   import_maps/               — Import map parsing and resolution
