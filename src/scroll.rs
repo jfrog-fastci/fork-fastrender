@@ -2940,6 +2940,63 @@ mod tests {
   }
 
   #[test]
+  fn apply_scroll_snap_from_metadata_matches_apply_scroll_snap_nested_containers() {
+    let outer_style = container_style(ScrollSnapAxis::Y, ScrollSnapStrictness::Mandatory);
+    let inner_style = container_style(ScrollSnapAxis::X, ScrollSnapStrictness::Mandatory);
+
+    let mut inner_child = FragmentNode::new_block_styled(
+      Rect::from_xywh(50.0, 0.0, 120.0, 80.0),
+      vec![FragmentNode::new_block_styled(
+        Rect::from_xywh(0.0, 0.0, 60.0, 80.0),
+        vec![],
+        target_style(ScrollSnapAlign::Start, ScrollSnapAlign::Start),
+      )],
+      inner_style,
+    );
+    if let FragmentContent::Block { box_id } = &mut inner_child.content {
+      *box_id = Some(2);
+    }
+
+    let mut outer = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 200.0),
+      vec![
+        FragmentNode::new_block_styled(
+          Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+          vec![],
+          target_style(ScrollSnapAlign::Start, ScrollSnapAlign::Start),
+        ),
+        FragmentNode::new_block_styled(
+          Rect::from_xywh(0.0, 120.0, 100.0, 100.0),
+          vec![inner_child],
+          target_style(ScrollSnapAlign::Start, ScrollSnapAlign::Start),
+        ),
+      ],
+      outer_style,
+    );
+    if let FragmentContent::Block { box_id } = &mut outer.content {
+      *box_id = Some(1);
+    }
+
+    let mut tree = FragmentTree::with_viewport(outer, Size::new(100.0, 100.0));
+    tree.ensure_scroll_metadata();
+    let metadata = tree
+      .scroll_metadata
+      .as_ref()
+      .expect("ensure_scroll_metadata should populate scroll_metadata");
+
+    let mut state = ScrollState::with_viewport(Point::new(0.0, 130.0));
+    state.elements.insert(2, Point::new(70.0, 0.0));
+
+    let expected = {
+      let mut tree_clone = tree.clone();
+      apply_scroll_snap(&mut tree_clone, &state).state
+    };
+    let actual = apply_scroll_snap_from_metadata(metadata, &state).state;
+
+    assert_eq!(actual, expected);
+  }
+
+  #[test]
   fn rtl_inline_start_uses_physical_right() {
     let mut container_style = ComputedStyle::default();
     container_style.scroll_snap_type.axis = ScrollSnapAxis::X;

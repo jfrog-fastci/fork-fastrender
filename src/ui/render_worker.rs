@@ -2756,11 +2756,17 @@ impl BrowserRuntime {
     // stay in sync with the eventual painted frame.
     //
     // This path runs on high-frequency scroll input, so avoid cloning the full fragment tree.
-    let mut state = scroll_state.clone();
-
-    if let Some(metadata) = prepared.fragment_tree().scroll_metadata.as_ref() {
-      state = crate::scroll::apply_scroll_snap_from_metadata(metadata, &state).state;
-    }
+    let tree = prepared.fragment_tree();
+    let result = match tree.scroll_metadata.as_ref() {
+      Some(metadata) => crate::scroll::apply_scroll_snap_from_metadata(metadata, scroll_state),
+      None => {
+        // Prepared documents should have scroll metadata populated by layout. If it is missing,
+        // fall back to the legacy behaviour (clone + ensure metadata) so semantics remain correct.
+        let mut fragment_tree = tree.clone();
+        crate::scroll::apply_scroll_snap(&mut fragment_tree, scroll_state)
+      }
+    };
+    let mut state = result.state;
 
     state.viewport = Point::new(
       if state.viewport.x.is_finite() {
@@ -2775,13 +2781,10 @@ impl BrowserRuntime {
       },
     );
 
-    if let Some(bounds) = crate::scroll::build_scroll_chain(
-      &prepared.fragment_tree().root,
-      prepared.layout_viewport(),
-      &[],
-    )
-    .last()
-    .map(|state| state.bounds)
+    // Clamp to the root scroll bounds using the same viewport used for scroll calculations.
+    if let Some(bounds) = crate::scroll::build_scroll_chain(&tree.root, prepared.layout_viewport(), &[])
+      .last()
+      .map(|state| state.bounds)
     {
       state.viewport = bounds.clamp(state.viewport);
     }
