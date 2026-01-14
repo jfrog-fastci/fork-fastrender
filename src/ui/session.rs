@@ -872,6 +872,12 @@ pub struct BrowserSession {
     skip_serializing_if = "is_default_home_url"
   )]
   pub home_url: String,
+  /// Persisted download directory for the windowed browser.
+  ///
+  /// This is optional so older session files can still be loaded, and so headless/embedded
+  /// frontends that do not support downloads can omit it.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub download_dir: Option<PathBuf>,
   #[serde(default, deserialize_with = "deserialize_session_windows")]
   pub windows: Vec<BrowserSessionWindow>,
   #[serde(default)]
@@ -912,6 +918,7 @@ impl BrowserSession {
     Self {
       version: SESSION_VERSION,
       home_url: default_home_url(),
+      download_dir: None,
       windows: vec![BrowserSessionWindow {
         tabs: vec![BrowserSessionTab {
           url,
@@ -949,6 +956,7 @@ impl BrowserSession {
     Self {
       version: SESSION_VERSION,
       home_url: default_home_url(),
+      download_dir: None,
       windows: windows.into_iter().collect(),
       active_window_index,
       appearance,
@@ -981,6 +989,11 @@ impl BrowserSession {
     }
 
     sanitize_url_in_place(&mut self.home_url, about_pages::ABOUT_NEWTAB);
+
+    self.download_dir = self
+      .download_dir
+      .take()
+      .filter(|dir| !dir.as_os_str().is_empty());
 
     if self.windows.is_empty() {
       self.windows.push(BrowserSessionWindow {
@@ -1159,6 +1172,7 @@ mod tests {
     let session = BrowserSession {
       version: 123,
       home_url: about_pages::ABOUT_NEWTAB.to_string(),
+      download_dir: None,
       windows: vec![BrowserSessionWindow {
         tabs: vec![
           BrowserSessionTab {
@@ -1440,10 +1454,25 @@ mod tests {
   }
 
   #[test]
+  fn session_roundtrips_download_dir() {
+    let mut session = BrowserSession::single("about:newtab".to_string());
+    session.download_dir = Some(PathBuf::from("/tmp/fastrender-downloads-custom"));
+
+    let json = serde_json::to_string(&session).expect("serialize session with download_dir");
+    assert!(
+      json.contains("download_dir"),
+      "expected download_dir to be present in session JSON, got: {json}"
+    );
+    let parsed = parse_session_json(&json).expect("parse session JSON");
+    assert_eq!(parsed.download_dir, session.download_dir);
+  }
+
+  #[test]
   fn session_sanitizes_invalid_scroll_values() {
     let session = BrowserSession {
       version: 123,
       home_url: about_pages::ABOUT_NEWTAB.to_string(),
+      download_dir: None,
       windows: vec![BrowserSessionWindow {
         tabs: vec![
           BrowserSessionTab {
@@ -1726,6 +1755,7 @@ mod tests {
     let session = BrowserSession {
       version: SESSION_VERSION,
       home_url: about_pages::ABOUT_NEWTAB.to_string(),
+      download_dir: None,
       windows: vec![BrowserSessionWindow {
         tabs: vec![
           BrowserSessionTab {
@@ -2211,6 +2241,7 @@ mod tests {
     let session = BrowserSession {
       version: 999,
       home_url: about_pages::ABOUT_NEWTAB.to_string(),
+      download_dir: None,
       windows: vec![
         BrowserSessionWindow {
           tabs: vec![],
@@ -2584,6 +2615,7 @@ mod tests {
     let session = BrowserSession {
       version: SESSION_VERSION,
       home_url: about_pages::ABOUT_NEWTAB.to_string(),
+      download_dir: None,
       windows: vec![BrowserSessionWindow {
         tabs: vec![BrowserSessionTab {
           url: "about:newtab".to_string(),
@@ -2841,6 +2873,7 @@ mod tests {
     let session = BrowserSession {
       version: SESSION_VERSION,
       home_url: default_home_url(),
+      download_dir: None,
       windows: vec![BrowserSessionWindow {
         tabs: vec![BrowserSessionTab {
           url: "about:newtab".to_string(),
@@ -2875,6 +2908,7 @@ mod tests {
     let session = BrowserSession {
       version: SESSION_VERSION,
       home_url: default_home_url(),
+      download_dir: None,
       windows: vec![BrowserSessionWindow {
         tabs: vec![BrowserSessionTab {
           url: "about:newtab".to_string(),
@@ -2909,6 +2943,7 @@ mod tests {
     let session = BrowserSession {
       version: SESSION_VERSION,
       home_url: default_home_url(),
+      download_dir: None,
       windows: vec![BrowserSessionWindow {
         tabs: vec![BrowserSessionTab {
           url: "about:newtab".to_string(),
@@ -3414,6 +3449,7 @@ fn v1_into_v2(v1: BrowserSessionV1) -> BrowserSession {
   BrowserSession {
     version: SESSION_VERSION,
     home_url: default_home_url(),
+    download_dir: None,
     windows: vec![BrowserSessionWindow {
       tabs: v1.tabs,
       downloads: Vec::new(),

@@ -1363,6 +1363,7 @@ impl WorkerToUi {
       | WorkerToUi::RequestOpenInNewTabRequest { tab_id, .. }
       | WorkerToUi::ScrollStateUpdated { tab_id, .. }
       | WorkerToUi::LoadingState { tab_id, .. }
+      | WorkerToUi::RequestWakeAfter { tab_id, .. }
       | WorkerToUi::Warning { tab_id, .. }
       | WorkerToUi::DebugLog { tab_id, .. }
       | WorkerToUi::SelectDropdownOpened { tab_id, .. }

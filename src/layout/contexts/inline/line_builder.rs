@@ -1675,6 +1675,7 @@ impl TextItem {
       if run_len == 0 {
         return false;
       }
+
       let run_start = runs[run_idx].start;
       let scan_forward = runs[run_idx].glyphs[0].cluster
         <= runs[run_idx].glyphs[run_len.saturating_sub(1)].cluster;

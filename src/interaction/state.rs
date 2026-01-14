@@ -1521,7 +1521,7 @@ pub struct InteractionStateDom2 {
   pub focused: Option<NodeId>,
   /// Whether the focused element should match `:focus-visible`.
   pub focus_visible: bool,
-  /// Current fullscreen element `NodeId` (drives `:fullscreen` pseudo-class matching).
+  /// Currently fullscreen element `NodeId` (drives `:fullscreen` pseudo-class matching).
   pub fullscreen_element: Option<NodeId>,
   /// The focused element and its element ancestors (used for `:focus-within` matching).
   pub focus_chain: Vec<NodeId>,

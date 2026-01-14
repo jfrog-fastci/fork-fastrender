@@ -136,7 +136,9 @@ pub fn download_matches_query(entry: &DownloadEntry, query: &str) -> bool {
 pub struct DownloadsPanelOutput {
   pub close_requested: bool,
   pub clear_completed_requested: bool,
-  pub change_download_dir_requested: bool,
+  /// When true, the caller should open a native folder picker and update the configured download
+  /// directory.
+  pub request_pick_download_dir: bool,
   pub cancel_requests: Vec<(TabId, DownloadId)>,
   pub retry_requests: Vec<(TabId, String, Option<String>)>,
   pub open_requests: Vec<PathBuf>,
@@ -222,7 +224,7 @@ pub fn downloads_panel_ui(
             egui::WidgetInfo::labeled(egui::WidgetType::Button, "Change download folder")
           });
           if change_folder.clicked() {
-            out.change_download_dir_requested = true;
+            out.request_pick_download_dir = true;
           }
 
           let clear_button = egui::Button::new(egui::RichText::new("Clear completed").small());
@@ -1059,7 +1061,7 @@ mod tests {
       "expected Change download folder button to have focus"
     );
 
-    // Frame 2: press Enter; should set the change_download_dir_requested flag.
+    // Frame 2: press Enter; should set the request_pick_download_dir flag.
     begin_frame(&ctx, vec![key_press(egui::Key::Enter)]);
     let output = downloads_panel_ui(
       &ctx,
@@ -1072,8 +1074,47 @@ mod tests {
     let _ = ctx.end_frame();
 
     assert!(
-      output.change_download_dir_requested,
+      output.request_pick_download_dir,
       "expected Change download folder to set output flag"
+    );
+  }
+
+  #[test]
+  fn change_download_folder_click_emits_request() {
+    let ctx = egui::Context::default();
+    let theme = BrowserTheme::light(None);
+    let download_dir = PathBuf::from("test-download-dir");
+    let mut search_query = String::new();
+
+    // Frame 0: capture the button location.
+    begin_frame(&ctx, Vec::new());
+    let _ = downloads_panel_ui(
+      &ctx,
+      &[],
+      &mut search_query,
+      &theme,
+      false,
+      download_dir.as_path(),
+    );
+    let output = ctx.end_frame();
+    let pos = find_text_center(&output.shapes, "Change download folder")
+      .expect("failed to find Change download folder button label in egui shapes");
+
+    // Frame 1: click the button.
+    begin_frame(&ctx, left_click_at(pos));
+    let output = downloads_panel_ui(
+      &ctx,
+      &[],
+      &mut search_query,
+      &theme,
+      false,
+      download_dir.as_path(),
+    );
+    let _ = ctx.end_frame();
+
+    assert!(
+      output.request_pick_download_dir,
+      "expected click on Change download folder to set output flag"
     );
   }
 

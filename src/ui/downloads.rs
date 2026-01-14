@@ -326,9 +326,32 @@ pub fn missing_path_toast_message(path: &Path) -> Option<String> {
   Some(format!("File not found: {filename}"))
 }
 
+/// Update the current download directory based on a user folder selection, returning the message
+/// that should be sent to the worker if the directory actually changed.
+///
+/// Frontends should treat an empty selection as "cancelled" and leave the current directory
+/// unchanged.
+pub fn apply_download_directory_selection(
+  current: &mut PathBuf,
+  selected: PathBuf,
+) -> Option<crate::ui::messages::UiToWorker> {
+  use crate::ui::messages::UiToWorker;
+
+  if selected.as_os_str().is_empty() {
+    return None;
+  }
+  if *current == selected {
+    return None;
+  }
+
+  *current = selected.clone();
+  Some(UiToWorker::SetDownloadDirectory { path: selected })
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::ui::messages::UiToWorker;
 
   #[test]
   fn sanitize_strips_separators_and_controls() {
@@ -372,6 +395,36 @@ mod tests {
       missing_path_toast_message(&missing),
       Some("File not found: missing.txt".to_string())
     );
+  }
+
+  #[test]
+  fn apply_download_directory_selection_updates_state_and_returns_message() {
+    let mut current = PathBuf::from("old-downloads");
+    let selected = PathBuf::from("new-downloads");
+
+    let msg = apply_download_directory_selection(&mut current, selected.clone())
+      .expect("expected download dir selection to return a worker message");
+    assert_eq!(current, selected);
+    assert!(
+      matches!(&msg, UiToWorker::SetDownloadDirectory { path } if path == &current),
+      "unexpected message: {msg:?}"
+    );
+  }
+
+  #[test]
+  fn apply_download_directory_selection_rejects_empty_path() {
+    let mut current = PathBuf::from("downloads");
+    let msg = apply_download_directory_selection(&mut current, PathBuf::new());
+    assert!(msg.is_none());
+    assert_eq!(current, PathBuf::from("downloads"));
+  }
+
+  #[test]
+  fn apply_download_directory_selection_is_noop_when_unchanged() {
+    let mut current = PathBuf::from("downloads");
+    let msg = apply_download_directory_selection(&mut current, PathBuf::from("downloads"));
+    assert!(msg.is_none());
+    assert_eq!(current, PathBuf::from("downloads"));
   }
 
   #[test]

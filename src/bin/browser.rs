@@ -4206,6 +4206,9 @@ enum UserEvent {
   WorkerWake,
   /// Clear completed downloads from the profile-global downloads store.
   ClearCompletedDownloads,
+  /// Request that the windowed frontend open a native folder picker to choose the download
+  /// directory.
+  RequestPickDownloadDirectory(winit::window::WindowId),
   SearchSuggestWake(winit::window::WindowId),
   RequestNewWindow(winit::window::WindowId),
   RequestNewWindowWithSession {
@@ -6117,6 +6120,7 @@ fn single_tab_session_preserving_config(
   if let Some(loaded) = loaded_session {
     session.home_url = loaded.home_url.clone();
     session.appearance = loaded.appearance.clone();
+    session.download_dir = loaded.download_dir.clone();
 
     // Preserve the most-relevant window chrome settings (geometry + menu bar visibility) from the
     // user's previous session even when we don't restore tabs (CLI URL / safe-start).
@@ -6834,7 +6838,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     None
   };
 
-  let download_dir = resolve_download_directory(cli.download_dir.as_ref());
+  let mut download_dir = resolve_download_directory(cli.download_dir.as_ref());
+  let download_dir_overridden_by_cli_or_env = cli
+    .download_dir
+    .as_ref()
+    .is_some_and(|p| !p.as_os_str().is_empty())
+    || std::env::var_os(fastrender::ui::browser_cli::ENV_DOWNLOAD_DIR)
+      .is_some_and(|value| !value.is_empty());
 
   // When the user provides `<url>`, normalize + apply an allowlist (same as the address bar).
   // This is *not* applied to session restore entries: those are expected to already be normalized.
@@ -6957,7 +6967,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     const OVERRIDE_ENV: &str = "FASTR_TEST_BROWSER_HEADLESS_SMOKE_SESSION_JSON";
-    let (startup_session, source, _diagnostics) = match std::env::var(OVERRIDE_ENV) {
+    let (mut startup_session, source, _startup_session_diagnostics) = match std::env::var(OVERRIDE_ENV)
+    {
       Ok(raw) if !raw.trim().is_empty() => {
         let session = fastrender::ui::session::parse_session_json(&raw)
           .map_err(|err| format!("{OVERRIDE_ENV}: invalid JSON: {err}"))?;
@@ -6969,6 +6980,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       }
       _ => determine_startup_session(cli_url, restore, &session_path),
     };
+
+    if !download_dir_overridden_by_cli_or_env {
+      if let Some(dir) = startup_session
+        .download_dir
+        .clone()
+        .filter(|dir| !dir.as_os_str().is_empty())
+      {
+        download_dir = dir;
+      }
+    }
+    startup_session.download_dir = Some(download_dir.clone());
 
     let res = run_headless_smoke_mode(
       startup_session,
@@ -6994,8 +7016,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let (startup_session, source, startup_session_diagnostics) =
     determine_startup_session(cli_url, restore, &session_path);
   let session_recovered_from_backup = startup_session_diagnostics.recovered_from_backup;
-  let startup_session = startup_session.sanitized();
   let can_write_startup_snapshot = startup_session_diagnostics.can_write_startup_snapshot;
+  let mut startup_session = startup_session.sanitized();
+  if !download_dir_overridden_by_cli_or_env {
+    if let Some(dir) = startup_session
+      .download_dir
+      .clone()
+      .filter(|dir| !dir.as_os_str().is_empty())
+    {
+      download_dir = dir;
+    }
+  }
+  startup_session.download_dir = Some(download_dir.clone());
   let show_crash_recovery_infobar =
     should_show_crash_recovery_infobar(source, startup_session.did_exit_cleanly);
   let show_safe_mode_toast = matches!(source, StartupSessionSource::SafeMode);
@@ -8065,6 +8097,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         appearance,
       );
       session.home_url = home_url;
+      session.download_dir = Some(download_dir.clone());
       session.did_exit_cleanly = true;
 
       // Best-effort final profile sync on shutdown.
@@ -8188,7 +8221,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut autosave_requested_this_event = false;
     let mut request_autosave = |windows: &HashMap<WindowId, BrowserWindow>,
                                 window_order: &[WindowId],
-                                active_window_id: Option<WindowId>| {
+                                active_window_id: Option<WindowId>,
+                                download_dir: &std::path::PathBuf| {
       autosave_requested_this_event = true;
       let active_window_index = active_window_id
         .and_then(|id| window_order.iter().position(|other| *other == id))
@@ -8219,6 +8253,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         appearance,
       );
       session.home_url = home_url;
+      session.download_dir = Some(download_dir.clone());
       session.did_exit_cleanly = false;
       session_autosave.request_save(session);
       // When the autosave worker is unavailable we fall back to synchronous writes inside
@@ -8903,7 +8938,53 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           |win| win.shutdown(&mut shutdown_join_tracker),
         );
 
-        request_autosave(&windows, &window_order, active_window_id);
+        request_autosave(&windows, &window_order, active_window_id, &download_dir);
+      }
+      Event::UserEvent(UserEvent::RequestPickDownloadDirectory(from_id)) => {
+        // Best-effort: show a native folder picker using `rfd` so the user can update their
+        // download directory at runtime. If the dialog backend is unavailable (or the user
+        // cancels), ignore the request.
+        let initial_dir = windows
+          .get(&from_id)
+          .map(|win| win.app.download_dir.clone())
+          .unwrap_or_else(|| download_dir.clone());
+
+        let picked = std::panic::catch_unwind(|| {
+          let mut dialog = rfd::FileDialog::new();
+          if !initial_dir.as_os_str().is_empty() {
+            dialog = dialog.set_directory(&initial_dir);
+          }
+          dialog.pick_folder()
+        })
+        .ok()
+        .flatten();
+
+        let Some(path) = picked else {
+          return;
+        };
+        if path.as_os_str().is_empty() || path == download_dir {
+          return;
+        }
+
+        download_dir = path.clone();
+        fastrender::ui::about_pages::sync_about_page_snapshot_download_dir(Some(
+          download_dir.display().to_string(),
+        ));
+        for win in windows.values_mut() {
+          let changed = apply_download_dir_change_state(
+            &mut win.app.download_dir,
+            &mut win.app.download_dir_allowlist,
+            path.clone(),
+          );
+          if changed {
+            win.app.send_worker_msg(fastrender::ui::UiToWorker::SetDownloadDirectory {
+              path: path.clone(),
+            });
+          }
+          win.app.window.request_redraw();
+        }
+
+        request_autosave(&windows, &window_order, active_window_id, &download_dir);
       }
       Event::UserEvent(UserEvent::RequestNewWindow(from_id)) => {
         let inherit_size = windows.get(&from_id).map(|win| win.app.window.inner_size());
@@ -22313,60 +22394,12 @@ impl App {
       }
     }
 
-    if output.change_download_dir_requested {
-      // Note: download-directory changes apply only to this window/worker. Newly created windows
-      // inherit the download directory of the window that spawned them (see `RequestNewWindow`
-      // handlers in the winit event loop).
-      let force_in_app = fastrender::ui::native_dialogs::force_in_app_dialogs_from_env(
-        std::env::var(fastrender::ui::native_dialogs::ENV_BROWSER_FORCE_IN_APP_DIALOGS)
-          .ok()
-          .as_deref(),
-      );
-      if force_in_app {
-        self.open_download_dir_picker_in_app();
-        self.window.request_redraw();
-      } else {
-        let selection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-          rfd::FileDialog::new()
-            .set_directory(&self.download_dir)
-            .pick_folder()
-        }));
-        match selection {
-          Ok(Some(path)) => {
-            if apply_download_dir_change_state(
-              &mut self.download_dir,
-              &mut self.download_dir_allowlist,
-              path,
-            ) {
-              fastrender::ui::about_pages::sync_about_page_snapshot_download_dir(Some(
-                self.download_dir.display().to_string(),
-              ));
-              let _ = self.send_worker_msg(UiToWorker::SetDownloadDirectory {
-                path: self.download_dir.clone(),
-              });
-              self.window.request_redraw();
-            }
-          }
-          Ok(None) => {}
-          Err(panic_payload) => {
-            let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-              (*s).to_string()
-            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-              s.clone()
-            } else {
-              "unknown panic".to_string()
-            };
-            eprintln!("rfd download folder picker panicked: {msg}");
-            self.show_chrome_toast_kind(
-              fastrender::ui::ToastKind::Error,
-              "Failed to open native file dialog",
-            );
-            // Best-effort fallback: allow the user to type a path.
-            self.open_download_dir_picker_in_app();
-            self.window.request_redraw();
-          }
-        };
-      }
+    if output.request_pick_download_dir {
+      // Defer opening the native folder picker to the outer winit event loop to avoid mixing modal
+      // platform dialogs into egui layout code.
+      let _ = self
+        .event_loop_proxy
+        .send_event(UserEvent::RequestPickDownloadDirectory(self.window.id()));
     }
   }
 

@@ -107,6 +107,7 @@ fn browser_session_restores_scroll_position_via_scroll_to() {
   let session = fastrender::ui::BrowserSession {
     version: 2,
     home_url: fastrender::ui::about_pages::ABOUT_NEWTAB.to_string(),
+    download_dir: None,
     windows: vec![fastrender::ui::BrowserSessionWindow {
       tabs: vec![fastrender::ui::BrowserSessionTab {
         url: "about:test-scroll".to_string(),

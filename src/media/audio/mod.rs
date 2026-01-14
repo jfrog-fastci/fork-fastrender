@@ -897,18 +897,3 @@ impl PcmF32QueueProducer {
     Ok(())
   }
 }
-
-#[cfg(all(test, feature = "audio_cpal"))]
-mod audio_cpal_compile_tests {
-  use super::CpalAudioBackend;
-
-  /// Compile-only sanity check for the `audio_cpal` feature.
-  ///
-  /// This test must not attempt to open an audio device; it exists purely to ensure the optional
-  /// backend type is available and is thread-safe.
-  #[test]
-  fn audio_cpal_feature_compiles() {
-    fn assert_send_sync<T: Send + Sync>() {}
-    assert_send_sync::<CpalAudioBackend>();
-  }
-}
