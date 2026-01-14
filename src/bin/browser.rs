@@ -6381,6 +6381,7 @@ fn determine_startup_session(
   fastrender::ui::BrowserSession,
   StartupSessionSource,
   Option<(fastrender::ui::ToastKind, String)>,
+  bool,
 ) {
   let wants_restore = match restore {
     RestoreMode::Disable => false,
@@ -6390,8 +6391,7 @@ fn determine_startup_session(
 
   let mut session_load_toast: Option<(fastrender::ui::ToastKind, String)> = None;
 
-  let mut loaded_session_outcome = match fastrender::ui::session::load_session_outcome(session_path)
-  {
+  let loaded_session_outcome = match fastrender::ui::session::load_session_outcome(session_path) {
     Ok(outcome) => outcome,
     Err(err) => {
       eprintln!(
@@ -6409,25 +6409,18 @@ fn determine_startup_session(
         format!("Failed to load session on startup.\nPath: {path}\nError: {err_short}"),
       ));
 
-      None
+      fastrender::ui::session::SessionLoadOutcome {
+        source: fastrender::ui::session::SessionLoadSource::None,
+        session: None,
+        primary_error: None,
+      }
     }
   };
 
-  if let Some(outcome) = loaded_session_outcome.as_ref() {
-    if outcome.source == fastrender::ui::session::SessionLoadSource::Backup {
-      if let Some(primary_err) = outcome.primary_error.as_deref() {
-        const MAX_TOAST_ERROR_BYTES: usize = 200;
-        let err_short = sanitize_toast_detail_single_line(primary_err, MAX_TOAST_ERROR_BYTES)
-          .unwrap_or_else(|| "unknown error".to_string());
-        session_load_toast = Some((
-          fastrender::ui::ToastKind::Warning,
-          format!("Session file was unreadable; restored from backup.\nError: {err_short}"),
-        ));
-      }
-    }
-  }
+  let session_recovered_from_backup =
+    loaded_session_outcome.source == fastrender::ui::session::SessionLoadSource::Backup;
 
-  let mut loaded_session = loaded_session_outcome.map(|outcome| outcome.session);
+  let mut loaded_session = loaded_session_outcome.session;
 
   if wants_restore {
     if let Some(session) = loaded_session.take() {
@@ -6444,7 +6437,12 @@ fn determine_startup_session(
           fastrender::ui::about_pages::ABOUT_NEWTAB.to_string(),
           Some(&session),
         );
-        return (safe, StartupSessionSource::SafeMode, session_load_toast);
+        return (
+          safe,
+          StartupSessionSource::SafeMode,
+          session_load_toast,
+          session_recovered_from_backup,
+        );
       }
 
       if !session.did_exit_cleanly {
@@ -6457,20 +6455,31 @@ fn determine_startup_session(
         session.sanitized(),
         StartupSessionSource::Restored,
         session_load_toast,
+        session_recovered_from_backup,
       );
     }
   }
 
   if let Some(url) = cli_url {
     let session = single_tab_session_preserving_config(url, loaded_session.as_ref());
-    return (session, StartupSessionSource::CliUrl, session_load_toast);
+    return (
+      session,
+      StartupSessionSource::CliUrl,
+      session_load_toast,
+      session_recovered_from_backup,
+    );
   }
 
   let session = single_tab_session_preserving_config(
     fastrender::ui::about_pages::ABOUT_NEWTAB.to_string(),
     loaded_session.as_ref(),
   );
-  (session, StartupSessionSource::DefaultNewTab, session_load_toast)
+  (
+    session,
+    StartupSessionSource::DefaultNewTab,
+    session_load_toast,
+    session_recovered_from_backup,
+  )
 }
 
 #[cfg(feature = "browser_ui")]
@@ -7173,11 +7182,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     const OVERRIDE_ENV: &str = "FASTR_TEST_BROWSER_HEADLESS_SMOKE_SESSION_JSON";
-    let (startup_session, source, _startup_session_toast) = match std::env::var(OVERRIDE_ENV) {
+    let (startup_session, source, _startup_session_toast, _session_recovered_from_backup) =
+      match std::env::var(OVERRIDE_ENV) {
       Ok(raw) if !raw.trim().is_empty() => {
         let session = fastrender::ui::session::parse_session_json(&raw)
           .map_err(|err| format!("{OVERRIDE_ENV}: invalid JSON: {err}"))?;
-        (session, StartupSessionSource::HeadlessOverride, None)
+        (session, StartupSessionSource::HeadlessOverride, None, false)
       }
       _ => determine_startup_session(cli_url, restore, &session_path),
     };
@@ -7203,7 +7213,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
   }
 
-  let (startup_session, source, startup_session_toast) =
+  let (startup_session, source, startup_session_toast, session_recovered_from_backup) =
     determine_startup_session(cli_url, restore, &session_path);
   let startup_session = startup_session.sanitized();
   let show_crash_recovery_infobar =
@@ -7833,6 +7843,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       hud_enabled,
       bookmarks_path.clone(),
       history_path.clone(),
+      session_path.clone(),
       download_dir.clone(),
       global_bookmarks.clone(),
       global_history.clone(),
@@ -7857,6 +7868,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       idx,
       active_idx,
     );
+    // If we had to recover the session from `.bak`, surface it once on startup so users can
+    // investigate/repair the primary session file.
+    app.session_backup_infobar_open = session_recovered_from_backup && idx == active_idx;
 
     // Surface startup failures / safe mode via a toast. Prefer the active window when multiple
     // windows are restored so we don't spam the user with the same warning.
@@ -9156,6 +9170,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           hud_enabled,
           bookmarks_path.clone(),
           history_path.clone(),
+          session_path.clone(),
           inherited_download_dir.clone(),
           global_bookmarks.clone(),
           global_history.clone(),
@@ -9363,6 +9378,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           hud_enabled,
           bookmarks_path.clone(),
           history_path.clone(),
+          session_path.clone(),
           inherited_download_dir.clone(),
           global_bookmarks.clone(),
           global_history.clone(),
@@ -13885,6 +13901,7 @@ struct App {
 
   bookmarks_path: std::path::PathBuf,
   history_path: std::path::PathBuf,
+  session_path: std::path::PathBuf,
   /// Configured download directory (from CLI/env fallback).
   download_dir: std::path::PathBuf,
   /// Download directories configured for this window during its lifetime.
@@ -14139,6 +14156,8 @@ struct App {
   error_infobar_rect: Option<egui::Rect>,
   crash_recovery_infobar_open: bool,
   crash_recovery_infobar_rect: Option<egui::Rect>,
+  session_backup_infobar_open: bool,
+  session_backup_infobar_rect: Option<egui::Rect>,
   chrome_toast: fastrender::ui::ToastState,
   chrome_toast_rect: Option<egui::Rect>,
   download_toast_coalescer: fastrender::ui::downloads_notifications::DownloadToastCoalescer,
@@ -14587,6 +14606,9 @@ impl App {
         .crash_recovery_infobar_rect
         .is_some_and(|rect| rect.contains(pos_points))
       || self
+        .session_backup_infobar_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
         .page_unresponsive_overlay_rect
         .is_some_and(|rect| rect.contains(pos_points))
       || self
@@ -14643,6 +14665,9 @@ impl App {
         .is_some_and(|rect| rect.contains(pos_points))
       || self
         .crash_recovery_infobar_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .session_backup_infobar_rect
         .is_some_and(|rect| rect.contains(pos_points))
       || self
         .page_unresponsive_overlay_rect
@@ -14747,6 +14772,7 @@ impl App {
     hud_enabled: bool,
     bookmarks_path: std::path::PathBuf,
     history_path: std::path::PathBuf,
+    session_path: std::path::PathBuf,
     download_dir: std::path::PathBuf,
     bookmarks: fastrender::ui::BookmarkStore,
     history: fastrender::ui::GlobalHistoryStore,
@@ -15004,6 +15030,7 @@ impl App {
       ),
       bookmarks_path,
       history_path,
+      session_path,
       download_dir,
       download_dir_allowlist,
       bookmarks,
@@ -15135,6 +15162,8 @@ impl App {
       error_infobar_rect: None,
       crash_recovery_infobar_open: false,
       crash_recovery_infobar_rect: None,
+      session_backup_infobar_open: false,
+      session_backup_infobar_rect: None,
       chrome_toast: fastrender::ui::ToastState::default(),
       chrome_toast_rect: None,
       download_toast_coalescer:
@@ -15403,6 +15432,8 @@ impl App {
     self.error_infobar_rect = None;
     self.crash_recovery_infobar_open = false;
     self.crash_recovery_infobar_rect = None;
+    self.session_backup_infobar_open = false;
+    self.session_backup_infobar_rect = None;
 
     // Create a fresh worker tab for the new session's `about:newtab`.
     let cancel = self
@@ -20595,6 +20626,154 @@ impl App {
 
     if popup.inner.1 {
       self.crash_recovery_infobar_open = false;
+      self.window.request_redraw();
+    }
+  }
+
+  fn render_session_backup_infobar(&mut self, ctx: &egui::Context) {
+    let motion = fastrender::ui::motion::UiMotion::from_ctx(ctx);
+    let infobar_id = egui::Id::new("fastr_session_backup_infobar");
+    let open_t = motion.animate_bool(
+      ctx,
+      infobar_id.with("open"),
+      self.session_backup_infobar_open,
+      motion.durations.popup_open,
+    );
+    let open_opacity = open_t.clamp(0.0, 1.0);
+    if open_opacity <= 0.0 {
+      self.session_backup_infobar_rect = None;
+      return;
+    }
+
+    let theme_colors = self.theme.colors.clone();
+    let theme_sizing = self.theme.sizing.clone();
+
+    let screen_rect = ctx.screen_rect();
+    let content_rect = self.content_rect_points.unwrap_or(screen_rect);
+    let margin = theme_sizing.padding.max(8.0) + 4.0;
+    let mut pos = egui::pos2(content_rect.min.x + margin, content_rect.min.y + margin);
+    if let Some(error_rect) = self.error_infobar_rect {
+      pos.y = error_rect.max.y + margin;
+    }
+    if let Some(crash_rect) = self.crash_recovery_infobar_rect {
+      pos.y = crash_rect.max.y + margin;
+    }
+    let available_width = (content_rect.width() - margin * 2.0).max(240.0);
+
+    let popup = egui::Area::new(infobar_id)
+      .order(egui::Order::Foreground)
+      .fixed_pos(pos)
+      .interactable(self.session_backup_infobar_open)
+      .show(ctx, |ui| {
+        ui.set_enabled(self.session_backup_infobar_open);
+        ui.visuals_mut().override_text_color =
+          Some(Self::with_alpha(ui.visuals().text_color(), open_opacity));
+
+        let mut open_folder = false;
+        let mut dismiss = false;
+
+        let fill = egui::Color32::from_rgba_unmultiplied(
+          theme_colors.raised.r(),
+          theme_colors.raised.g(),
+          theme_colors.raised.b(),
+          245,
+        );
+        let fill = Self::with_alpha(fill, open_opacity);
+        let stroke = egui::Stroke::new(
+          theme_sizing.stroke_width,
+          Self::with_alpha(theme_colors.warn, open_opacity),
+        );
+        let frame = egui::Frame::none()
+          .fill(fill)
+          .stroke(stroke)
+          .rounding(egui::Rounding::same(theme_sizing.corner_radius))
+          .inner_margin(egui::Margin::symmetric(
+            theme_sizing.padding * 1.25,
+            theme_sizing.padding,
+          ));
+
+        frame.show(ui, |ui| {
+          ui.set_min_width(available_width);
+          ui.vertical(|ui| {
+            ui.horizontal_wrapped(|ui| {
+              let icon_side = ui.spacing().icon_width;
+              let icon_resp = fastrender::ui::icon_tinted(
+                ui,
+                fastrender::ui::BrowserIcon::WarningInsecure,
+                icon_side,
+                Self::with_alpha(theme_colors.warn, open_opacity),
+              );
+              icon_resp.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                  egui::WidgetType::Label,
+                  "Session restored from backup",
+                )
+              });
+
+              ui.label(
+                egui::RichText::new("Session recovered")
+                  .strong()
+                  .color(Self::with_alpha(theme_colors.text_primary, open_opacity)),
+              );
+
+              ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let dismiss_resp = ui.button("Dismiss");
+                dismiss_resp.widget_info(|| {
+                  egui::WidgetInfo::labeled(egui::WidgetType::Button, "Dismiss notification")
+                });
+                if dismiss_resp.clicked() {
+                  dismiss = true;
+                }
+
+                let open_resp = ui.button("Open session folder");
+                open_resp.widget_info(|| {
+                  egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    "Open the session file folder in the OS file manager",
+                  )
+                });
+                if open_resp.clicked() {
+                  open_folder = true;
+                }
+              });
+            });
+
+            ui.add_space(2.0);
+            let msg = ui.add(
+              egui::Label::new(
+                egui::RichText::new(
+                  "FastRender couldn't read your session file, so it restored a backup copy instead.",
+                )
+                .color(Self::with_alpha(theme_colors.text_primary, open_opacity)),
+              )
+              .wrap(true),
+            );
+            msg.widget_info(|| {
+              egui::WidgetInfo::labeled(
+                egui::WidgetType::Label,
+                "FastRender couldn't read your session file, so it restored a backup copy instead.",
+              )
+            });
+          });
+        });
+
+        (open_folder, dismiss)
+      });
+
+    self.session_backup_infobar_rect = Some(popup.response.rect);
+
+    if popup.inner.0 {
+      if let Err(err) = reveal_file_in_os_file_manager(&self.session_path) {
+        self.show_chrome_toast_kind(
+          fastrender::ui::ToastKind::Error,
+          format!("Failed to open session folder: {err}"),
+        );
+      }
+      self.window.request_redraw();
+    }
+
+    if popup.inner.1 {
+      self.session_backup_infobar_open = false;
       self.window.request_redraw();
     }
   }
@@ -29792,6 +29971,7 @@ impl App {
     }
     self.render_error_infobar(&ctx);
     self.render_crash_recovery_infobar(&ctx);
+    self.render_session_backup_infobar(&ctx);
     self.render_warning_toast(&ctx);
     self.render_chrome_toast(&ctx);
     self.render_session_autosave_warning(&ctx);
