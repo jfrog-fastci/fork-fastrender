@@ -318,3 +318,53 @@ fn derived_constructor_async_arrow_super_proxy_receiver_is_instance_across_await
   )?;
   Ok(())
 }
+
+#[test]
+fn derived_constructor_async_arrow_super_computed_proxy_receiver_is_instance_across_await() -> Result<(), VmError> {
+  assert_async_out_in_ast_and_compiled(
+    r#"
+      var out = '';
+
+      var recv_get;
+      var recv_set;
+      var target = {
+        get x() { return this._x; },
+        set x(v) { this._x = v; },
+      };
+      var proxy = new Proxy(target, {
+        get(t, p, r) {
+          if (p === "x") recv_get = r;
+          return Reflect.get(t, p, r);
+        },
+        set(t, p, v, r) {
+          if (p === "x") recv_set = r;
+          return Reflect.set(t, p, v, r);
+        },
+      });
+
+      class B {}
+      class C extends B {
+        constructor() {
+          let f = async () => {
+            super[await Promise.resolve("x")]++;
+            return recv_get === this && recv_set === this;
+          };
+          super();
+          this._x = 1;
+          // Make `GetSuperBase()` return the Proxy object.
+          Object.setPrototypeOf(C.prototype, proxy);
+          this.f = f;
+        }
+      }
+
+      async function run() {
+        let o = new C();
+        let ok = await o.f();
+        return ok && recv_get === o && recv_set === o && o._x === 2;
+      }
+      run().then(v => out = String(v));
+    "#,
+    "true",
+  )?;
+  Ok(())
+}
