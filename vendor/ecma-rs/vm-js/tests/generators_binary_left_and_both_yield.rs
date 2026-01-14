@@ -85,6 +85,46 @@ fn generator_binary_division_yield_on_both_sides() {
 }
 
 #[test]
+fn generator_binary_bigint_addition_yield_on_both_sides() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(){ return (yield 1n) + (yield 2n); }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(10n);
+      var r3 = it.next(20n);
+      r1.value === 1n && r1.done === false &&
+      r2.value === 2n && r2.done === false &&
+      r3.done === true && r3.value === 30n
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_binary_bigint_division_yield_on_both_sides() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(){ return (yield 1n) / (yield 2n); }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(20n);
+      var r3 = it.next(6n);
+      r1.value === 1n && r1.done === false &&
+      r2.value === 2n && r2.done === false &&
+      r3.done === true && r3.value === 3n
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_binary_remainder_yield_on_both_sides() {
   let mut rt = new_runtime();
   let value = rt
@@ -346,6 +386,29 @@ fn generator_binary_exponentiation_is_right_associative_under_yield() {
       r2.value === 2 && r2.done === false &&
       r3.value === 3 && r3.done === false &&
       r4.done === true && r4.value === 512
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_binary_bigint_exponentiation_is_right_associative_under_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      // `**` is right-associative for BigInt too: a ** (b ** c)
+      function* g(){ return (yield 1n) ** (yield 2n) ** (yield 3n); }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(2n);
+      var r3 = it.next(3n);
+      var r4 = it.next(2n);
+      r1.value === 1n && r1.done === false &&
+      r2.value === 2n && r2.done === false &&
+      r3.value === 3n && r3.done === false &&
+      r4.done === true && r4.value === 512n
     "#,
     )
     .unwrap();
