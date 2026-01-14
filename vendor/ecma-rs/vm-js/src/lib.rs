@@ -236,6 +236,10 @@ mod compiled_top_level_for_await_of_hir_exec_tests;
 mod typed_array_dataview_rooting_gc_tests;
 
 #[cfg(test)]
+#[path = "../tests/unit/arguments_mapped_rooting_gc.rs"]
+mod arguments_mapped_rooting_gc_tests;
+
+#[cfg(test)]
 #[path = "../tests/unit/private_in.rs"]
 mod private_in_tests;
 
