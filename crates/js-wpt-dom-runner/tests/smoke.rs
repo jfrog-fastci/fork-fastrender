@@ -199,6 +199,22 @@ fn runs_setinterval_and_clearinterval() {
 }
 
 #[test]
+#[cfg(feature = "vmjs")]
+fn range_constructor_is_exposed_in_vmjs_backend() {
+  let result = run_test_id_backend(
+    "smoke/range_constructor.window.js",
+    BackendSelection::VmJs,
+    smoke_config(),
+  );
+  assert_eq!(result.outcome, RunOutcome::Pass);
+  let report = result
+    .wpt_report
+    .expect("expected WPT report payload for range_constructor.window.js");
+  assert_eq!(report.file_status, "pass");
+  assert_eq!(report.harness_status, "ok");
+}
+
+#[test]
 fn runs_node_contains_smoke_test() {
   assert_wpt_pass("smoke/node_contains.window.js");
 }
