@@ -170,8 +170,11 @@ impl AccessorPropertyAttributes {
     }
   }
 
-  /// Typical attributes for WebIDL interface attributes: enumerable, configurable.
-  pub const ATTRIBUTE: Self = Self::new(true, true);
+  /// Typical attributes for WebIDL interface attributes: **non-enumerable**, configurable.
+  ///
+  /// Note: This matches the behavior asserted by WPT and typical browser descriptor flags for
+  /// interface prototype attributes (e.g. `TreeWalker.prototype.root`).
+  pub const ATTRIBUTE: Self = Self::new(false, true);
 }
 
 /// Host-defined behaviour implementation for WebIDL bindings (vm-js flavour).

@@ -2345,7 +2345,7 @@ fn idl_attribute_desc(get: Value, set: Value) -> PropertyDescriptor {
   PropertyDescriptor {
     // Keep handcrafted DOM attributes aligned with the WebIDL vm-js runtime defaults
     // (`AccessorPropertyAttributes::ATTRIBUTE`).
-    enumerable: true,
+    enumerable: false,
     configurable: true,
     kind: PropertyKind::Accessor { get, set },
   }

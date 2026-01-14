@@ -239,12 +239,6 @@ status = "xfail"
 reason = "Node.isEqualNode brand-check/implementation is incomplete (currently throws 'Illegal invocation')."
 
 [[expectations]]
-id = "dom/nodeiterator_treewalker_prototypes.window.js"
-backend = ["vmjs", "vmjs-rendered"]
-status = "xfail"
-reason = "TreeWalker prototype shape/descriptor flags are incomplete (e.g. TreeWalker.prototype.root should be non-enumerable)."
-
-[[expectations]]
 id = "dom/treewalker_navigation.window.js"
 backend = ["vmjs", "vmjs-rendered"]
 status = "xfail"
