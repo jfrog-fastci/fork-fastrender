@@ -369,6 +369,17 @@ fn range_offsets_exclude_shadow_root_children_for_host_elements() {
   let host = doc.get_element_by_id("host").expect("host not found");
   let light = doc.get_element_by_id("light").expect("light child not found");
 
+  assert_eq!(
+    doc.node_length(host).unwrap(),
+    1,
+    "ShadowRoot pseudo-child must not contribute to Element nodeLength for Range boundary offsets"
+  );
+  assert_eq!(
+    doc.tree_child_index_for_range(host, light),
+    Some(0),
+    "ShadowRoot pseudo-child must not shift tree child indices for Range boundary offsets"
+  );
+
   // In JS: host.childNodes.length == 1, so offset 1 refers to the position *after* `light`.
   let range = doc.create_range();
   doc.range_set_start(range, host, 1).unwrap();

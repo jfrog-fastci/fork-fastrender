@@ -53,6 +53,7 @@ fn partial_repaint_matches_full_paint_when_optimize_budget_times_out() {
         scale,
         PaintParallelism::disabled(),
         &trace,
+        /* optimize_display_list */ true,
       )
       .expect("full paint should succeed");
 
@@ -112,4 +113,3 @@ fn partial_repaint_matches_full_paint_when_optimize_budget_times_out() {
     });
   });
 }
-

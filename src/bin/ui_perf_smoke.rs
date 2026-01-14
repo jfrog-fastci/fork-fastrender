@@ -2013,12 +2013,11 @@ mod tests {
     let summary = UiPerfSmokeSummary {
       schema_version: UI_PERF_SMOKE_SCHEMA_VERSION,
       run_config: RunConfig {
-        rayon_threads: 1,
         warmup: args.warmup,
-        isolate: false,
         allow_network: args.allow_network,
         resource_policy: ResourcePolicySummary::from(&policy),
         iterations: args.iterations,
+        ..RunConfig::default()
       },
       rss_start_bytes: None,
       rss_after_warmup_bytes: None,
