@@ -218,6 +218,16 @@ Artifacts:
 The suite contains tests with an **expected outcome**. The runner records the **actual outcome**
 and marks the test as a **mismatch** when they disagree.
 
+### Deep recursion / stack overflow tests
+
+Some test262 tests intentionally recurse extremely deeply (notably proper tail calls / TCO
+feature tests). Until FastRender implements PTC, these tests are expected to fail with a
+stack-overflow `RangeError` (e.g. “Maximum call stack size exceeded”).
+
+What we specifically want to avoid is a **host abort** (Rust `fatal runtime error: stack overflow`)
+or misclassifying stack overflow as a **timeout**. CI includes a dedicated deep-recursion smoke step
+to ensure the runner always produces a JSON report and `timed_out` stays at 0 for these cases.
+
 The expectations manifest (passed via `--manifest`, or defaulting to
 `tests/js/test262_manifest.toml`) is how we track known gaps without hiding
 regressions:
