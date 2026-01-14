@@ -3176,6 +3176,71 @@ fn promise_rejection_event_task_roots_are_cleaned_up_when_queue_limits_reject_en
 }
 
 #[test]
+fn rejectionhandled_event_task_roots_are_cleaned_up_when_queue_limits_reject_enqueue() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
+
+  let mut event_loop = EventLoop::<WindowHostState>::new();
+  event_loop.set_queue_limits(QueueLimits {
+    max_pending_tasks: 1,
+    ..QueueLimits::default()
+  });
+
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    r#"
+window.addEventListener('unhandledrejection', (e) => e.preventDefault());
+// Keep the rejected promise alive so it remains eligible for rejectionhandled tracking.
+globalThis.__ur2 = Promise.reject('boom');
+"#,
+  )?;
+
+  // First checkpoint enqueues the unhandledrejection task (queue has capacity for it).
+  event_loop.perform_microtask_checkpoint(&mut host)?;
+  assert_eq!(
+    event_loop.run_until_idle(
+      &mut host,
+      RunLimits {
+        max_tasks: 10,
+        max_microtasks: 100,
+        max_wall_time: None,
+      },
+    )?,
+    RunUntilIdleOutcome::Idle,
+    "expected event loop to go idle after dispatching unhandledrejection"
+  );
+
+  // Make the promise handled so the next checkpoint attempts to enqueue `rejectionhandled`.
+  host.exec_script_in_event_loop(
+    &mut event_loop,
+    "globalThis.__ur2.catch(() => {});",
+  )?;
+
+  // Fill the task queue to the cap so the rejectionhandled task enqueue fails deterministically.
+  event_loop.queue_task(TaskSource::Script, |_host, _event_loop| Ok(()))?;
+
+  let roots_before = host.window().heap().persistent_root_count();
+  let err = event_loop
+    .perform_microtask_checkpoint(&mut host)
+    .expect_err("expected microtask checkpoint to fail when queue limits reject task enqueue");
+  match &err {
+    Error::Other(msg) => assert!(
+      msg.contains("max pending tasks"),
+      "expected enqueue failure to be due to max pending tasks, got: {msg}"
+    ),
+    other => panic!("expected Error::Other, got {other:?}"),
+  }
+  let roots_after = host.window().heap().persistent_root_count();
+  assert_eq!(
+    roots_before, roots_after,
+    "promise rejectionhandled event-task enqueue failure leaked persistent roots"
+  );
+
+  Ok(())
+}
+
+#[test]
 fn readable_stream_pipe_through_internal_promises_do_not_trigger_unhandledrejection() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
