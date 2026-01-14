@@ -10444,6 +10444,19 @@ fn run_headless_smoke_mode(
     };
     if let Ok(mut writer) = writer.try_borrow_mut() {
       writer.emit(&event);
+
+      // Also emit a best-effort RSS snapshot so headless smoke runs surface memory metrics alongside
+      // responsiveness metrics.
+      let rss_bytes = fastrender::memory::current_rss_bytes();
+      let rss_mb = rss_bytes.map(fastrender::memory::bytes_to_mb);
+      let event = perf_log::PerfEvent::MemorySummary {
+        schema_version: perf_log::SCHEMA_VERSION,
+        ts_ms: t_ms,
+        window_id: "process".into(),
+        rss_bytes,
+        rss_mb,
+      };
+      writer.emit(&event);
       writer.flush();
     }
   }

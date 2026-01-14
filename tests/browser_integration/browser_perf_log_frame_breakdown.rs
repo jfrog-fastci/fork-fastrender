@@ -33,11 +33,31 @@ fn perf_log_frame_event_includes_breakdown_fields() {
   );
 
   let mut found_frame = false;
+  let mut found_memory = false;
   for line in stdout.lines() {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
       continue;
     };
     if value.get("event").and_then(|v| v.as_str()) != Some("frame") {
+      if value.get("event").and_then(|v| v.as_str()) == Some("memory_summary") {
+        assert!(
+          value.get("rss_bytes").is_some(),
+          "expected memory_summary to include rss_bytes field, got: {value}"
+        );
+        assert!(
+          value.get("rss_mb").is_some(),
+          "expected memory_summary to include rss_mb field, got: {value}"
+        );
+        assert!(
+          value["rss_bytes"].is_null() || value["rss_bytes"].as_u64().is_some(),
+          "expected rss_bytes to be null or integer, got: {value}"
+        );
+        assert!(
+          value["rss_mb"].is_null() || value["rss_mb"].as_f64().is_some(),
+          "expected rss_mb to be null or number, got: {value}"
+        );
+        found_memory = true;
+      }
       continue;
     }
 
@@ -63,5 +83,9 @@ fn perf_log_frame_event_includes_breakdown_fields() {
   assert!(
     found_frame,
     "expected at least one PERF frame event in stdout, got:\n{stdout}"
+  );
+  assert!(
+    found_memory,
+    "expected at least one PERF memory_summary event in stdout, got:\n{stdout}"
   );
 }
