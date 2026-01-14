@@ -10,7 +10,6 @@ use super::{
 use crate::debug::trace::TraceHandle;
 use crate::media::clock::MediaClock;
 
-#[derive(Debug)]
 struct BackendMediaClock {
   backend: Arc<dyn AudioBackend>,
 }

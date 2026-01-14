@@ -51,13 +51,19 @@ impl MediaBackend for NativeBackend {
     if let Ok(p) = mp4_res {
       return Ok(Box::new(p));
     }
-    let mp4_err = mp4_res.expect_err("mp4_res handled Ok above"); // fastrender-allow-unwrap
+    let mp4_err = match mp4_res {
+      Ok(_) => unreachable!("mp4_res handled Ok above"), // fastrender-allow-unwrap
+      Err(err) => err,
+    };
 
     let webm_res = try_open_webm(bytes);
     if let Ok(p) = webm_res {
       return Ok(Box::new(p));
     }
-    let webm_err = webm_res.expect_err("webm_res handled Ok above"); // fastrender-allow-unwrap
+    let webm_err = match webm_res {
+      Ok(_) => unreachable!("webm_res handled Ok above"), // fastrender-allow-unwrap
+      Err(err) => err,
+    };
 
     match (&mp4_err, &webm_err) {
       (MediaError::Unsupported(_), MediaError::Unsupported(_)) => Err(MediaError::Unsupported(
