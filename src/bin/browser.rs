@@ -7449,6 +7449,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   // mutations (clear/delete) still fall back to full-store sync.
   let mut history_autosave_send_scheduler =
     fastrender::ui::AutosaveSendScheduler::new(std::time::Duration::from_secs(1));
+  // Visit recording (`NavigationCommitted`) is synchronized to the autosave worker via incremental
+  // deltas to avoid cloning the full `GlobalHistoryStore` on the UI thread.
+  let mut pending_history_autosave_deltas: Vec<fastrender::ui::HistoryVisitDelta> = Vec::new();
+  // Destructive history mutations (clear/delete) fall back to full-store sync for correctness. When
+  // set, the next scheduled autosave send will be `AutosaveMsg::UpdateHistory(global_history.clone())`.
+  let mut history_autosave_full_sync_pending = false;
   // Throttle expensive about-page bookmark snapshot rebuilds. The snapshot is only used for
   // `about:` pages, but rebuilding it requires traversing the entire bookmark tree.
   let mut bookmarks_about_snapshot_scheduler =
@@ -8196,6 +8202,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             win.app.profile_history_dirty = false;
             win.app.profile_history_flush_requested = false;
             global_history = win.app.browser_state.history.clone();
+            history_autosave_full_sync_pending = true;
+            pending_history_autosave_deltas.clear();
             history_autosave_send_scheduler.mark_dirty();
           }
         }
@@ -8212,9 +8220,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             ));
           }
           if history_autosave_send_scheduler.take_force(now) {
-            let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateHistory(
-              global_history.clone(),
-            ));
+            if history_autosave_full_sync_pending {
+              history_autosave_full_sync_pending = false;
+              pending_history_autosave_deltas.clear();
+              let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateHistory(
+                global_history.clone(),
+              ));
+            } else if !pending_history_autosave_deltas.is_empty() {
+              let deltas = std::mem::take(&mut pending_history_autosave_deltas);
+              let _ = tx.send(fastrender::ui::AutosaveMsg::ApplyHistoryVisitDeltas(deltas));
+            }
           }
           let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateDownloads(
             global_downloads.clone(),
@@ -8855,6 +8870,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               global_downloads.clone(),
             ));
           }
+        }
+
+        if profile_autosave_tx.is_some() && !history_autosave_full_sync_pending {
+          pending_history_autosave_deltas.extend(history_deltas);
         }
 
         // Re-arm the global wake coalescer now that we've drained the worker message queues.
@@ -9841,11 +9860,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       }
     }
 
-    // History UI mutations (clear/delete) are currently synchronized via full-store snapshot.
-    // Visit recording (`NavigationCommitted`) uses incremental deltas in the WorkerWake path above
-    // to avoid cloning/reseeding the full history store on every navigation.
+    // History UI mutations (clear/delete) are synchronized via full-store snapshot.
+    // Visit recording (`NavigationCommitted`) uses incremental deltas in the WorkerWake path above,
+    // and those deltas are forwarded to the profile autosave worker so routine navigation does not
+    // clone the full history store on the UI thread.
     if let Some((_history_source_id, new_history, flush)) = history_update {
       global_history = new_history;
+      history_autosave_full_sync_pending = true;
+      pending_history_autosave_deltas.clear();
       history_autosave_send_scheduler.mark_dirty();
       fastrender::ui::about_pages::sync_about_page_snapshot_history_from_global_history_store(
         &global_history,
@@ -9855,6 +9877,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if flush {
           let now = std::time::Instant::now();
           if history_autosave_send_scheduler.take_force(now) {
+            history_autosave_full_sync_pending = false;
             let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateHistory(
               global_history.clone(),
             ));
@@ -9969,9 +9992,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(tx) = profile_autosave_tx.as_ref() {
       let now = std::time::Instant::now();
       if history_autosave_send_scheduler.take_if_due(now) {
-        let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateHistory(
-          global_history.clone(),
-        ));
+        if history_autosave_full_sync_pending {
+          history_autosave_full_sync_pending = false;
+          pending_history_autosave_deltas.clear();
+          let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateHistory(
+            global_history.clone(),
+          ));
+        } else if !pending_history_autosave_deltas.is_empty() {
+          let deltas = std::mem::take(&mut pending_history_autosave_deltas);
+          let _ = tx.send(fastrender::ui::AutosaveMsg::ApplyHistoryVisitDeltas(deltas));
+        }
       }
     }
 
@@ -10013,6 +10043,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     if flush_requested {
       let now = std::time::Instant::now();
+      // Ensure any pending history updates are forwarded to the autosave worker *before* we request
+      // a flush acknowledgement. Otherwise `AutosaveMsg::Flush` could complete before the autosave
+      // worker sees the latest history deltas.
+      if let Some(tx) = profile_autosave_tx.as_ref() {
+        if history_autosave_full_sync_pending || !pending_history_autosave_deltas.is_empty() {
+          history_autosave_send_scheduler.mark_dirty();
+          let _ = history_autosave_send_scheduler.take_force(now);
+          if history_autosave_full_sync_pending {
+            history_autosave_full_sync_pending = false;
+            pending_history_autosave_deltas.clear();
+            let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateHistory(
+              global_history.clone(),
+            ));
+          } else if !pending_history_autosave_deltas.is_empty() {
+            let deltas = std::mem::take(&mut pending_history_autosave_deltas);
+            let _ = tx.send(fastrender::ui::AutosaveMsg::ApplyHistoryVisitDeltas(deltas));
+          }
+        }
+      }
       if let Some(failure) =
         profile_autosave_flush_tracker.request_flush(profile_autosave_tx.as_ref(), now)
       {

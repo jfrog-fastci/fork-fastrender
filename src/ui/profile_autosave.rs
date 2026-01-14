@@ -715,6 +715,83 @@ mod tests {
   }
 
   #[test]
+  fn apply_history_visit_deltas_merge_with_disk_baseline() {
+    let dir = tempfile::tempdir().unwrap();
+    let bookmarks_path = dir.path().join("bookmarks.json");
+    let history_path = dir.path().join("history.json");
+    let downloads_path = dir.path().join("downloads.json");
+
+    // Seed an on-disk baseline so we can verify deltas merge with what was loaded at startup.
+    save_history_atomic(
+      &history_path,
+      &{
+        let mut history = GlobalHistoryStore::default();
+        history.entries = vec![GlobalHistoryEntry {
+          url: "https://existing.example/".to_string(),
+          title: Some("Existing".to_string()),
+          visited_at_ms: 10,
+          visit_count: 1,
+        }];
+        history
+      },
+    )
+    .unwrap();
+
+    let autosave = ProfileAutosaveHandle::spawn_with_debounce(
+      bookmarks_path,
+      history_path.clone(),
+      downloads_path,
+      Duration::from_secs(3600),
+      Duration::from_secs(3600),
+      Duration::from_secs(3600),
+    )
+    .unwrap();
+
+    autosave
+      .send(AutosaveMsg::ApplyHistoryVisitDeltas(vec![
+        HistoryVisitDelta {
+          url: "https://existing.example/".to_string(),
+          title: None,
+          visited_at_ms: 11,
+        },
+        HistoryVisitDelta {
+          url: "https://new.example/".to_string(),
+          title: Some("New".to_string()),
+          visited_at_ms: 12,
+        },
+        HistoryVisitDelta {
+          url: "https://existing.example/".to_string(),
+          title: None,
+          visited_at_ms: 13,
+        },
+      ]))
+      .unwrap();
+
+    autosave.flush(Duration::from_millis(500)).unwrap();
+
+    let saved_history: PersistedGlobalHistoryStore =
+      serde_json::from_str(&std::fs::read_to_string(&history_path).unwrap()).unwrap();
+    let mut expected = GlobalHistoryStore::default();
+    expected.entries = vec![
+      GlobalHistoryEntry {
+        url: "https://new.example/".to_string(),
+        title: Some("New".to_string()),
+        visited_at_ms: 12,
+        visit_count: 1,
+      },
+      GlobalHistoryEntry {
+        url: "https://existing.example/".to_string(),
+        title: Some("Existing".to_string()),
+        visited_at_ms: 13,
+        visit_count: 3,
+      },
+    ];
+    assert_eq!(saved_history, PersistedGlobalHistoryStore::from_store(&expected));
+
+    autosave.shutdown_with_timeout(Duration::from_millis(500));
+  }
+
+  #[test]
   fn disabled_handle_does_not_panic() {
     let (tx, rx) = mpsc::channel::<AutosaveMsg>();
     drop(rx);
