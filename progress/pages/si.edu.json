@@ -14,7 +14,7 @@
     "layout": 191.0954042630273,
     "paint": 26.012986967741934
   },
-  "notes": "Page-loop vs Chrome looks close overall. Remaining diffs are mainly font AA/hinting and small color shifts from image resampling/shadow blur; no major layout breakage noticed.",
+  "notes": "Page-loop vs Chrome looks close overall. Remaining diffs are mainly font AA/hinting, a small header color shift, and minor image resampling/shadow blur; no major layout breakage noticed.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 13977,

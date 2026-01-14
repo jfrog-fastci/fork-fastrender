@@ -14,7 +14,7 @@
     "layout": 119.09243747880302,
     "paint": 94.07301784039902
   },
-  "notes": "",
+  "notes": "Layout is broadly correct, but brand colors differ: IKEA blue header/hero is too light vs Chrome (suggesting opacity/blending or background-color computation issues), plus minor spacing/text diffs.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 96518,

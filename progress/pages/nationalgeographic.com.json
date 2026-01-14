@@ -14,7 +14,7 @@
     "layout": 280.3017412519084,
     "paint": 45.048494129770994
   },
-  "notes": "",
+  "notes": "Mostly correct; remaining diffs are concentrated in the dark hero/header region (baseline dark-gray becomes solid black) plus minor text AA differences.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 30082,

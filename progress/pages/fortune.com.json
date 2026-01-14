@@ -15,7 +15,7 @@
     "layout": 138.15522169921877,
     "paint": 81.09110838867188
   },
-  "notes": "Visually close to Chrome; remaining diffs are mostly pixel-level text rasterization/hinting differences (high diff_percent but low perceptual).",
+  "notes": "Visually close; high diff_percent is dominated by pixel-level text rasterization/hinting differences (perceptual distance is low).",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 177507,

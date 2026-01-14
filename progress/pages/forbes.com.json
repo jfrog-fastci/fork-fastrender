@@ -14,7 +14,7 @@
     "layout": 633.0204054491081,
     "paint": 23.000741430220355
   },
-  "notes": "Visually close to Chrome; remaining diffs are mostly text rasterization/AA and minor SVG icon differences (header/logo, dense headline lists).",
+  "notes": "Visually close to Chrome, but dark header/nav colors are off (too dark); remaining diffs are mostly text rasterization/AA and minor SVG icon differences (header/logo, dense headline lists).",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 52890,

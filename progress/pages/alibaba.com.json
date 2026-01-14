@@ -16,7 +16,7 @@
     "layout": 14.008619654362416,
     "paint": 479.29491531711415
   },
-  "notes": "",
+  "notes": "Layout mostly matches, but paint differs: several surfaces/cards lose their subtle gray backgrounds/borders (render as white) and shadows/overlays look different. Likely paint/blending/shadow gaps rather than major layout.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 147323,

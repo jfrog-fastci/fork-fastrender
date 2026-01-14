@@ -14,7 +14,7 @@
     "layout": 103.02049573619632,
     "paint": 55.01094432515338
   },
-  "notes": "Page-loop vs Chrome is visually close. Differences are dominated by text AA/hinting and minor background/shading deltas in dense UI/text regions (no obvious structural/layout issues).",
+  "notes": "Page-loop vs Chrome is visually close. Differences are dominated by text AA/hinting and minor background/shading deltas (including dark header/hero), with no obvious structural/layout issues.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 44442,

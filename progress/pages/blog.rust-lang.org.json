@@ -15,7 +15,7 @@
     "layout": 208.95735416119825,
     "paint": 32.99326644650499
   },
-  "notes": "",
+  "notes": "Mostly correct, but noticeable layout/text differences: page background shade shifts (#fff vs ~#efefef) and some text metrics/wrapping differ (nav + post list), suggesting font-metric/line-height rounding issues.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 61877,

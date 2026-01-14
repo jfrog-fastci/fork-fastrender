@@ -14,7 +14,7 @@
     "layout": 153.20563449795918,
     "paint": 49.0658568
   },
-  "notes": "Page-loop vs Chrome is visually close. Remaining diffs are dominated by text AA and small grayscale/background shading differences; layout looks correct.",
+  "notes": "Page-loop vs Chrome is visually close. Remaining diffs are dominated by text AA and small background shading differences; layout looks correct.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 40446,

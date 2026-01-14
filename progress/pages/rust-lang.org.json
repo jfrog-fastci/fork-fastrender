@@ -14,7 +14,7 @@
     "layout": 61.99302141052632,
     "paint": 17.997973957894736
   },
-  "notes": "",
+  "notes": "Very close: main layout/images look correct; remaining diff is mostly subtle background shade shifts (#fff vs ~#efefef) and minor font AA/metric differences.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 57616,

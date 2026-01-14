@@ -15,7 +15,7 @@
     "layout": 15.024360995850625,
     "paint": 49.07957925311204
   },
-  "notes": "",
+  "notes": "Layout mostly matches, but some UI surfaces lose light-blue/gray backgrounds (render as white) and there are minor text AA diffs. Likely cascade/background-color or paint issues in card/search UI.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 76621,
