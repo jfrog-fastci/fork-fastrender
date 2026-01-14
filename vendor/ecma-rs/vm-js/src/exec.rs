@@ -2881,6 +2881,9 @@ impl JsRuntime {
             AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
               "unexpected async generator yield suspension in async script evaluation",
             )),
+            AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
+              "unexpected async generator yield* suspension in async script evaluation",
+            )),
           };
 
           let awaited_promise = match awaited_promise_res {
@@ -3435,6 +3438,9 @@ impl JsRuntime {
             AsyncSuspendKind::AwaitResolved => Ok(await_value),
             AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
               "unexpected async generator yield suspension in async script evaluation",
+            )),
+            AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
+              "unexpected async generator yield* suspension in async script evaluation",
             )),
           };
 
@@ -17826,6 +17832,9 @@ fn async_handle_body_result(
         AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
           "unexpected async generator yield suspension in async continuation",
         )),
+        AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
+          "unexpected async generator yield* suspension in async continuation",
+        )),
       };
 
       let awaited_promise = match awaited_promise_res {
@@ -18707,6 +18716,34 @@ fn async_generator_handle_execution_result(
         };
 
         // Suspend: store frames in the VM and wire a Promise job to resume.
+        cont.env.teardown(scope.heap_mut());
+        scope
+          .heap_mut()
+          .async_generator_set_continuation(gen_obj, Some(cont))?;
+
+        async_generator_schedule_await(
+          vm,
+          scope,
+          host,
+          hooks,
+          gen_obj,
+          awaited_promise,
+          AsyncGeneratorResumeKind::Await,
+          state,
+        )?;
+        return Ok(false);
+      }
+
+      AsyncBodyResult::Await {
+        kind: AsyncSuspendKind::AwaitResolved,
+        await_value: awaited_promise,
+        frames,
+      } => {
+        state.frames = frames;
+
+        // `AwaitResolved` indicates the `PromiseResolve` step has already been performed, so we can
+        // suspend directly on the already-resolved Promise without observing any species side
+        // effects a second time.
         cont.env.teardown(scope.heap_mut());
         scope
           .heap_mut()
@@ -47994,6 +48031,9 @@ pub(crate) fn run_ecma_function(
           AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
             "unexpected async generator yield suspension in async function start",
           )),
+          AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
+            "unexpected async generator yield* suspension in async function start",
+          )),
         };
 
         let awaited_promise = match awaited_promise_res {
@@ -48633,6 +48673,9 @@ pub(crate) fn start_module_tla_evaluation(
           AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
             "unexpected async generator yield suspension in module TLA",
           )),
+          AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
+            "unexpected async generator yield* suspension in module TLA",
+          )),
         }
       };
 
@@ -48911,6 +48954,9 @@ pub(crate) fn resume_module_tla_evaluation(
             AsyncSuspendKind::AwaitResolved => Ok(await_value),
             AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
               "unexpected async generator yield suspension in module evaluation",
+            )),
+            AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
+              "unexpected async generator yield* suspension in module evaluation",
             )),
           };
           match awaited_promise_res {
@@ -49201,6 +49247,11 @@ pub(crate) fn run_module_async_start(
                 "unexpected async generator yield suspension in module start",
               ))
             }
+            AsyncSuspendKind::YieldIteratorResult => {
+              return Err(VmError::InvariantViolation(
+                "unexpected async generator yield* suspension in module start",
+              ))
+            }
           };
           await_scope.push_root(awaited_promise)?;
           let awaited_root = await_scope.heap_mut().add_root(awaited_promise)?;
@@ -49364,6 +49415,11 @@ pub(crate) fn run_module_async_resume(
           AsyncSuspendKind::Yield => {
             return Err(VmError::InvariantViolation(
               "unexpected async generator yield suspension in module resume",
+            ))
+          }
+          AsyncSuspendKind::YieldIteratorResult => {
+            return Err(VmError::InvariantViolation(
+              "unexpected async generator yield* suspension in module resume",
             ))
           }
         };

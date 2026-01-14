@@ -268,3 +268,61 @@ fn generator_dynamic_import_allows_trailing_comma_after_specifier() -> Result<()
   assert_eq!(hooks.last_specifier.as_deref(), Some("./m.js"));
   Ok(())
 }
+
+#[test]
+fn generator_dynamic_import_does_not_run_when_yield_resumed_with_return() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let mut hooks = RejectingImportHooks::new();
+  let value = rt.exec_script_with_hooks(
+    &mut hooks,
+    r#"
+      function* g() {
+        return import(yield 0);
+      }
+
+      var it = g();
+      var first = it.next();
+      var second = it.return(5);
+
+      first.value === 0 &&
+        first.done === false &&
+        second.value === 5 &&
+        second.done === true
+    "#,
+  )?;
+  hooks.teardown_jobs(&mut rt);
+  assert_eq!(value, Value::Bool(true));
+  assert_eq!(hooks.last_specifier.as_deref(), None);
+  Ok(())
+}
+
+#[test]
+fn generator_dynamic_import_does_not_run_when_yield_resumed_with_throw() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let mut hooks = RejectingImportHooks::new();
+  let value = rt.exec_script_with_hooks(
+    &mut hooks,
+    r#"
+      function* g() {
+        try {
+          return import(yield 0);
+        } catch (e) {
+          return e;
+        }
+      }
+
+      var it = g();
+      var first = it.next();
+      var second = it.throw(7);
+
+      first.value === 0 &&
+        first.done === false &&
+        second.value === 7 &&
+        second.done === true
+    "#,
+  )?;
+  hooks.teardown_jobs(&mut rt);
+  assert_eq!(value, Value::Bool(true));
+  assert_eq!(hooks.last_specifier.as_deref(), None);
+  Ok(())
+}
