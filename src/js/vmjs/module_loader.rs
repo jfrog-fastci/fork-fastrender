@@ -826,11 +826,7 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
     self.loaded_modules = next_modules;
     self.loaded_bytes = next_bytes;
 
-    let source = Arc::new(vm_js::SourceText::new_charged(
-      scope.heap_mut(),
-      url,
-      source_text,
-    )?);
+    let source = vm_js::SourceText::new_charged_arc(scope.heap_mut(), url, source_text)?;
     let record = match vm_js::SourceTextModuleRecord::parse_source_with_vm(vm, source) {
       Ok(record) => record,
       Err(VmError::Syntax(diags)) => {
@@ -989,11 +985,11 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
     })?;
 
     let effective_url_owned = effective_url.to_string();
-    let source = Arc::new(vm_js::SourceText::new_charged(
+    let source = vm_js::SourceText::new_charged_arc(
       scope.heap_mut(),
       effective_url_owned.clone(),
       source_text,
-    )?);
+    )?;
     let record = match vm_js::SourceTextModuleRecord::parse_source_with_vm(vm, source) {
       Ok(record) => record,
       Err(VmError::Syntax(diags)) => {

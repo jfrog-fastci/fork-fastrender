@@ -5,7 +5,6 @@ use crate::{
 };
 use crate::exec::{eval_script_with_host_and_hooks, JsRuntime};
 use std::collections::VecDeque;
-use std::sync::Arc;
 
 #[test]
 fn exec_script_coerces_instantiation_throw_to_throw_with_stack() -> Result<(), VmError> {
@@ -262,7 +261,7 @@ fn evaluate_sync_coerces_unimplemented_to_throw_with_stack() -> Result<(), VmErr
   let (err, mut hooks) = {
     let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
 
-    let source = Arc::new(SourceText::new_charged(heap, "m.js", "await 1;")?);
+    let source = SourceText::new_charged_arc(heap, "m.js", "await 1;")?;
     let record = SourceTextModuleRecord::parse_source_with_vm(vm, source.clone())?;
     let module = modules.add_module_with_specifier("m.js", record)?;
 
