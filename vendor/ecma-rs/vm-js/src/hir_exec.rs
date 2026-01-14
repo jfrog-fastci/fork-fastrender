@@ -15054,3 +15054,144 @@ mod hir_async_await_eval_order_compiled_tests {
     )
   }
 }
+
+#[cfg(test)]
+mod hir_async_object_literal_and_optional_call_regressions {
+  use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOptions};
+
+  fn new_runtime() -> Result<JsRuntime, VmError> {
+    let vm = Vm::new(VmOptions::default());
+    // Keep this relatively small to exercise GC paths while leaving headroom for Promise/async
+    // machinery.
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    JsRuntime::new(vm, heap)
+  }
+
+  fn exec_compiled(rt: &mut JsRuntime, source: &str) -> Result<Value, VmError> {
+    let script = CompiledScript::compile_script(&mut rt.heap, "<inline>", source)?;
+    assert!(
+      !script.requires_ast_fallback,
+      "expected test script to execute via compiled (HIR) path",
+    );
+    rt.exec_compiled_script(script)
+  }
+
+  fn assert_promise_fulfills(rt: &mut JsRuntime, promise: Value, expected: Value) -> Result<(), VmError> {
+    let Value::Object(promise_obj) = promise else {
+      panic!("expected async call to return a Promise object, got {promise:?}");
+    };
+
+    let promise_root = rt.heap.add_root(Value::Object(promise_obj))?;
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+      panic!("expected Promise root");
+    };
+    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+    let result = rt
+      .heap
+      .promise_result(promise_obj)?
+      .expect("expected fulfilled Promise to have [[PromiseResult]]");
+    assert_eq!(result, expected);
+
+    rt.heap.remove_root(promise_root);
+    Ok(())
+  }
+
+  #[test]
+  fn async_object_literal_computed_key_and_value_await_order() -> Result<(), VmError> {
+    let mut rt = new_runtime()?;
+
+    let promise = exec_compiled(
+      &mut rt,
+      r#"
+        async function f(){
+          let order='';
+          let o = {
+            [await (order += 'k', Promise.resolve('a'))]: await (order += 'v', Promise.resolve(1)),
+          };
+          return order === 'kv' && o.a === 1;
+        }
+        f()
+      "#,
+    )?;
+    assert_promise_fulfills(&mut rt, promise, Value::Bool(true))?;
+    Ok(())
+  }
+
+  #[test]
+  fn async_object_literal_computed_key_method_name() -> Result<(), VmError> {
+    let mut rt = new_runtime()?;
+
+    let promise = exec_compiled(
+      &mut rt,
+      r#"
+        async function f(){
+          let o = { [await Promise.resolve('m')](){ return 2; } };
+          return o.m();
+        }
+        f()
+      "#,
+    )?;
+    assert_promise_fulfills(&mut rt, promise, Value::Number(2.0))?;
+    Ok(())
+  }
+
+  #[test]
+  fn async_object_literal_computed_key_getter() -> Result<(), VmError> {
+    let mut rt = new_runtime()?;
+
+    let promise = exec_compiled(
+      &mut rt,
+      r#"
+        async function f(){
+          let o = { get [await Promise.resolve('x')](){ return 3; } };
+          return o.x;
+        }
+        f()
+      "#,
+    )?;
+    assert_promise_fulfills(&mut rt, promise, Value::Number(3.0))?;
+    Ok(())
+  }
+
+  #[test]
+  fn async_optional_direct_call_short_circuits_without_evaluating_args() -> Result<(), VmError> {
+    let mut rt = new_runtime()?;
+
+    let promise = exec_compiled(
+      &mut rt,
+      r#"
+        async function f(){
+          let side=false;
+          let fn = null;
+          let v = fn?.(await (side=true, Promise.resolve(1)));
+          return v === undefined && side === false;
+        }
+        f()
+      "#,
+    )?;
+    assert_promise_fulfills(&mut rt, promise, Value::Bool(true))?;
+    Ok(())
+  }
+
+  #[test]
+  fn async_optional_member_call_short_circuits_without_evaluating_args() -> Result<(), VmError> {
+    let mut rt = new_runtime()?;
+
+    let promise = exec_compiled(
+      &mut rt,
+      r#"
+        async function f(){
+          let side=false;
+          let obj = null;
+          let v = obj?.m(await (side=true, Promise.resolve(1)));
+          return v === undefined && side === false;
+        }
+        f()
+      "#,
+    )?;
+    assert_promise_fulfills(&mut rt, promise, Value::Bool(true))?;
+    Ok(())
+  }
+}
