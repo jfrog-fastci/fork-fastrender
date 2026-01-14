@@ -410,14 +410,23 @@ mod tests {
     let value: serde_json::Value = serde_json::from_str(&json).expect("parse trace json");
 
     let trace_events = value["traceEvents"].as_array().expect("traceEvents array");
-    let names: Vec<&str> = trace_events
+    let resample = trace_events
       .iter()
-      .filter_map(|event| event["name"].as_str())
-      .collect();
-    assert!(
-      names.iter().any(|name| *name == "audio.resample"),
-      "expected audio.resample span in trace"
-    );
+      .find(|event| event["name"].as_str() == Some("audio.resample"))
+      .expect("expected audio.resample span in trace");
+
+    let args = &resample["args"];
+    assert_eq!(args["input_frames"].as_u64(), Some(44_100));
+    assert_eq!(args["channels"].as_u64(), Some(1));
+    assert_eq!(args["input_rate_hz"].as_u64(), Some(44_100));
+    assert_eq!(args["output_rate_hz"].as_u64(), Some(48_000));
+    assert_eq!(args["playback_rate_milli"].as_u64(), Some(1000));
+
+    let produced = args["produced_samples"].as_u64().expect("produced_samples");
+    let accepted = args["accepted_samples"].as_u64().expect("accepted_samples");
+    assert!(produced > 0);
+    assert_eq!(accepted, produced);
+    assert_eq!(args["dropped_samples"].as_u64(), Some(0));
   }
 
   #[test]
