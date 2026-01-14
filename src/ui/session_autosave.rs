@@ -18,6 +18,11 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(500);
+/// Maximum time the writer thread will wait before persisting a pending snapshot, even if new save
+/// requests keep arriving within the debounce window.
+///
+/// Without this cap, "trailing edge" debounce can starve forever under continuous save traffic.
+const MAX_WRITE_INTERVAL: Duration = Duration::from_secs(5);
 
 type SaveSessionFn =
   Arc<dyn Fn(&Path, &BrowserSession) -> Result<(), String> + Send + Sync + 'static>;
@@ -345,6 +350,20 @@ impl SessionAutosave {
     debounce: Duration,
     initial_session: Option<BrowserSession>,
   ) -> Self {
+    Self::new_with_debounce_and_initial_and_max_interval(
+      path,
+      debounce,
+      MAX_WRITE_INTERVAL,
+      initial_session,
+    )
+  }
+
+  fn new_with_debounce_and_initial_and_max_interval(
+    path: PathBuf,
+    debounce: Duration,
+    max_write_interval: Duration,
+    initial_session: Option<BrowserSession>,
+  ) -> Self {
     let (tx, rx) = mpsc::channel::<Command>();
     let write_count = Arc::new(AtomicUsize::new(0));
     let status = Arc::new(SessionAutosaveStatusShared::default());
@@ -359,7 +378,18 @@ impl SessionAutosave {
         let write_count = Arc::clone(&write_count);
         let status = Arc::clone(&status);
         let save_fn = Arc::clone(&save_fn);
-        move || session_writer_thread(path, debounce, initial_session, rx, write_count, status, save_fn)
+        move || {
+          session_writer_thread(
+            path,
+            debounce,
+            max_write_interval,
+            initial_session,
+            rx,
+            write_count,
+            status,
+            save_fn,
+          )
+        }
       })
       .ok();
 
@@ -481,6 +511,7 @@ impl Drop for SessionAutosave {
 fn session_writer_thread(
   path: PathBuf,
   debounce: Duration,
+  max_write_interval: Duration,
   initial_session: Option<BrowserSession>,
   rx: mpsc::Receiver<Command>,
   write_count: Arc<AtomicUsize>,
@@ -567,12 +598,16 @@ fn session_writer_thread(
     },
   };
 
-  let mut pending: Option<(BrowserSession, Instant)> = None;
+  // (session, updated_at, first_pending_at)
+  let mut pending: Option<(BrowserSession, Instant, Instant)> = None;
 
   loop {
-    // If there's a pending snapshot and the debounce window elapsed, persist it now.
-    if let Some((session, updated_at)) = pending.take() {
-      if Instant::now().duration_since(updated_at) >= debounce {
+    // If there's a pending snapshot and either the debounce window elapsed or we've exceeded the
+    // maximum write interval, persist it now.
+    if let Some((session, updated_at, first_pending_at)) = pending.take() {
+      let now = Instant::now();
+      if now.duration_since(updated_at) >= debounce || now.duration_since(first_pending_at) >= max_write_interval
+      {
         let mut to_write = session;
         to_write.did_exit_cleanly = false;
         // Preserve the crash-loop streak managed by this thread. Session snapshots produced by the
@@ -584,16 +619,19 @@ fn session_writer_thread(
           write_count.fetch_add(1, Ordering::Relaxed);
           current_session = to_write;
         } else {
-          pending = Some((to_write, Instant::now()));
+          let retry_at = Instant::now();
+          pending = Some((to_write, retry_at, retry_at));
         }
         continue;
       } else {
-        pending = Some((session, updated_at));
+        pending = Some((session, updated_at, first_pending_at));
       }
     }
 
-    let recv_result = if let Some((_, updated_at)) = pending.as_ref() {
-      let deadline = *updated_at + debounce;
+    let recv_result = if let Some((_, updated_at, first_pending_at)) = pending.as_ref() {
+      let debounce_deadline = *updated_at + debounce;
+      let forced_deadline = *first_pending_at + max_write_interval;
+      let deadline = std::cmp::min(debounce_deadline, forced_deadline);
       let timeout = deadline.saturating_duration_since(Instant::now());
       rx.recv_timeout(timeout)
     } else {
@@ -602,10 +640,19 @@ fn session_writer_thread(
 
     match recv_result {
       Ok(Command::Save(session)) => {
-        pending = Some((session, Instant::now()));
+        let now = Instant::now();
+        match pending.as_mut() {
+          Some((pending_session, updated_at, _first_pending_at)) => {
+            *pending_session = session;
+            *updated_at = now;
+          }
+          None => {
+            pending = Some((session, now, now));
+          }
+        }
       }
       Ok(Command::Flush(done_tx)) => {
-        let result = if let Some((session, _)) = pending.take() {
+        let result = if let Some((session, _, _)) = pending.take() {
           let mut to_write = session;
           to_write.did_exit_cleanly = false;
           to_write.unclean_exit_streak = current_session.unclean_exit_streak;
@@ -615,7 +662,8 @@ fn session_writer_thread(
             write_count.fetch_add(1, Ordering::Relaxed);
             current_session = to_write;
           } else {
-            pending = Some((to_write, Instant::now()));
+            let retry_at = Instant::now();
+            pending = Some((to_write, retry_at, retry_at));
           }
           last_write_result.clone()
         } else {
@@ -634,7 +682,10 @@ fn session_writer_thread(
         let _ = done_tx.send(result);
       }
       Ok(Command::Shutdown(done_tx)) => {
-        let mut to_write = pending.take().map(|(session, _)| session).unwrap_or(current_session);
+        let mut to_write = pending
+          .take()
+          .map(|(session, _, _)| session)
+          .unwrap_or(current_session);
         to_write.did_exit_cleanly = true;
         to_write.unclean_exit_streak = 0;
         last_write_result = save_fn(path.as_path(), &to_write);
@@ -646,11 +697,11 @@ fn session_writer_thread(
         return;
       }
       Err(mpsc::RecvTimeoutError::Timeout) => {
-        // Debounce elapsed; loop will persist the pending session.
+        // Debounce/max-write interval elapsed; loop will persist the pending session.
       }
       Err(mpsc::RecvTimeoutError::Disconnected) => {
         // No more senders: best-effort flush any pending snapshot (as unclean) and exit.
-        if let Some((session, _)) = pending.take() {
+        if let Some((session, _, _)) = pending.take() {
           let mut to_write = session;
           to_write.did_exit_cleanly = false;
           to_write.unclean_exit_streak = current_session.unclean_exit_streak;
@@ -791,6 +842,63 @@ mod tests {
     assert!(!session.did_exit_cleanly);
     assert_eq!(session.unclean_exit_streak, 1);
     assert_eq!(autosave.successful_write_count(), baseline + 1);
+  }
+
+  #[test]
+  fn max_write_interval_prevents_trailing_edge_debounce_starvation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+
+    // Make the debounce effectively infinite so the only way we see a write is via the max interval.
+    let debounce = Duration::from_secs(60);
+    let max_write_interval = Duration::from_millis(120);
+    let tick = Duration::from_millis(20);
+
+    let autosave = SessionAutosave::new_with_debounce_and_initial_and_max_interval(
+      path.clone(),
+      debounce,
+      max_write_interval,
+      None,
+    );
+    autosave.flush(Duration::from_secs(2)).unwrap();
+
+    let baseline = autosave.successful_write_count();
+
+    // Phase 1: spam non-final snapshots for longer than max_write_interval.
+    let start = Instant::now();
+    while start.elapsed() < max_write_interval.saturating_mul(2) {
+      autosave.request_save(BrowserSession::single("about:phase1".to_string()));
+      std::thread::sleep(tick);
+    }
+
+    // Phase 2: spam the final snapshot for long enough to guarantee at least one forced write of it,
+    // even if a forced write happened during phase 1.
+    let final_url = "about:final";
+    let start = Instant::now();
+    while start.elapsed() < max_write_interval.saturating_mul(3) {
+      autosave.request_save(BrowserSession::single(final_url.to_string()));
+      std::thread::sleep(tick);
+    }
+
+    // Give the writer thread a chance to persist after the max interval elapses, but do not wait
+    // long enough for the (huge) debounce window to expire.
+    std::thread::sleep(max_write_interval.saturating_mul(2));
+
+    assert!(
+      autosave.successful_write_count() >= baseline + 1,
+      "expected at least one write even while Save requests keep arriving within the debounce window"
+    );
+
+    let session = load_session(&path).unwrap().unwrap();
+    assert_eq!(session.windows.len(), 1);
+    assert_eq!(
+      session.windows[0].tabs[0].url, final_url,
+      "expected the max-write-interval flush to persist the latest snapshot"
+    );
+    assert!(
+      !session.did_exit_cleanly,
+      "expected running sessions to be marked unclean"
+    );
   }
 
   #[test]
