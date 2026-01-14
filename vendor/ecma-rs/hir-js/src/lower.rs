@@ -996,9 +996,9 @@ fn lower_root_body(
     span_map,
   );
   for stmt in ast.stx.body.iter() {
-    // Import/export declarations are tracked separately as module items and
-    // emitted via `HirFile::{imports,exports}`; do not lower them into the
-    // executable root body.
+    // Most import/export declarations are tracked separately as module items and emitted via
+    // `HirFile::{imports,exports}`; they do not execute at runtime and should not be lowered into
+    // the executable root body.
     match &*stmt.stx {
       AstStmt::Import(_)
       | AstStmt::ExportList(_)

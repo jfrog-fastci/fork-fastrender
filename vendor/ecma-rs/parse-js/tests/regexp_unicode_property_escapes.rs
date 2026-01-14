@@ -17,6 +17,13 @@ fn parses_valid_unicode_property_escape() {
 }
 
 #[test]
+fn parses_valid_unicode_property_name_value_escape() {
+  // Non-binary property with explicit value.
+  assert!(parses_ecma(r"/\p{Script=Greek}/u;"));
+  assert!(parses_ecma(r"/\p{General_Category=Uppercase_Letter}/u;"));
+}
+
+#[test]
 fn rejects_binary_property_with_value() {
   assert!(!parses_ecma(r"/\p{ASCII=N}/u;"));
 }
