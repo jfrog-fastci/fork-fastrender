@@ -1929,13 +1929,19 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         // Example:
         // - `async function f(){ class C { x = await 0; } }` is a Syntax Error.
         // - `function* g(){ class C { x = yield 0; } }` is a Syntax Error.
+        //
+        // `arguments` identifier references are also early errors in class field initializers (ECMA-262
+        // `ContainsArguments`).
         let saved_await_allowed = ctx.await_allowed;
         let saved_yield_allowed = ctx.yield_allowed;
+        let saved_arguments_allowed = ctx.arguments_allowed;
         ctx.await_allowed = false;
         ctx.yield_allowed = false;
+        ctx.arguments_allowed = false;
         let res = self.visit_expr(ctx, expr);
         ctx.await_allowed = saved_await_allowed;
         ctx.yield_allowed = saved_yield_allowed;
+        ctx.arguments_allowed = saved_arguments_allowed;
         res
       }
       ClassOrObjVal::Prop(None) => Ok(()),
@@ -2607,7 +2613,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         if id.stx.name == "arguments" && !ctx.arguments_allowed {
           self.push_error(
             expr.loc,
-            "arguments is not allowed in class static initialization blocks",
+            "'arguments' is not allowed in class field initializer or static initialization block",
           )?;
         }
         // `yield` is a strict mode reserved word, and is also reserved in generator function

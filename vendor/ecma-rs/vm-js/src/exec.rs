@@ -39933,7 +39933,7 @@ fn gen_eval_assignment_apply_reference(
         .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
       op_scope.push_root(left)?;
 
-      match gen_eval_expr(evaluator, &mut op_scope, &expr.right)? {
+          match gen_eval_expr(evaluator, &mut op_scope, &expr.right)? {
         GenEval::Complete(c) => match c {
           Completion::Normal(v) => {
             let right = v.unwrap_or(Value::Undefined);
@@ -40018,7 +40018,6 @@ fn gen_eval_assignment_apply_reference(
       let left = evaluator
         .get_value_from_reference(&mut op_scope, &reference)
         .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
-
       let should_assign = match expr.operator {
         OperatorName::AssignmentLogicalAnd => to_boolean(op_scope.heap(), left)?,
         OperatorName::AssignmentLogicalOr => !to_boolean(op_scope.heap(), left)?,
@@ -40082,7 +40081,7 @@ fn gen_eval_assignment_apply_reference(
           if let Some(r) = receiver {
             scope.push_root(r)?;
           }
-
+ 
           gen_frames_push(
             &mut suspend.frames,
             GenFrame::AssignAfterRhs {

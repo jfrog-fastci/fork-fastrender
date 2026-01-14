@@ -4634,7 +4634,7 @@ impl Vm {
     let return_value = result?;
     match return_value {
       // ECMA-262: if the constructor explicitly returns an object, that becomes the result of
-      // construction (regardless of whether `this` was initialized).
+      // construction (regardless of constructor kind).
       Value::Object(o) => Ok(Value::Object(o)),
 
       // `return;` / no explicit return / `return undefined;` -> return `this`.
@@ -4824,6 +4824,7 @@ impl Vm {
         // ECMA-262: if the constructor explicitly returns an object, that becomes the result of
         // construction.
         Value::Object(o) => Ok(Value::Object(o)),
+
         // Base/ordinary constructors ignore non-object return values and instead yield `this`.
         _ => match final_this {
           Value::Object(o) => Ok(Value::Object(o)),
