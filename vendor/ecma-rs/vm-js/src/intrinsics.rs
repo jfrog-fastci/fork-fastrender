@@ -696,6 +696,13 @@ impl Intrinsics {
     scope
       .heap_mut()
       .object_set_prototype(iterator_prototype, Some(object_prototype))?;
+    // `%IteratorPrototype%[@@toStringTag] === "Iterator"` (Iterator helpers / Object.prototype.toString fallback).
+    install_to_string_tag(
+      scope,
+      iterator_prototype,
+      well_known_symbols.to_string_tag,
+      "Iterator",
+    )?;
 
     // `%ArrayIteratorPrototype%`
     let array_iterator_prototype = alloc_rooted_object(scope, roots)?;
