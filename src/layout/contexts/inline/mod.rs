@@ -7835,12 +7835,14 @@ impl InlineFormattingContext {
     // alignment/justification measurement and let the other half hang outside the line box.
     //
     // This implementation is intentionally conservative:
-    // - At most one punctuation glyph is trimmed per edge.
+    // - Does not split text runs: only recognizes punctuation that appears at the start/end of an
+    //   inline item (including nested inline boxes).
     // - Only a small subset of the spec's character classes is recognized.
     // - `space-first` trims line-start punctuation except on the first line and after forced breaks.
     // - `normal`/`trim-start`/`space-first` trim line-end punctuation only if it would otherwise
     //   overflow prior to justification.
-    // - `trim-all` is treated like `trim-both` (only affects line edges).
+    // - Adjacent-pairs collapsing is approximated only across inline item boundaries.
+    // - `trim-all` is approximated by trimming punctuation at inline-item edges throughout the line.
     fn is_fullwidth_opening_punctuation(ch: char) -> bool {
       matches!(
         ch,
@@ -7853,6 +7855,8 @@ impl InlineFormattingContext {
           | '\u{3016}' // LEFT WHITE LENTICULAR BRACKET
           | '\u{3018}' // LEFT WHITE TORTOISE SHELL BRACKET
           | '\u{301A}' // LEFT WHITE SQUARE BRACKET
+          | '\u{2018}' // LEFT SINGLE QUOTATION MARK
+          | '\u{201C}' // LEFT DOUBLE QUOTATION MARK
           | '\u{FF08}' // FULLWIDTH LEFT PARENTHESIS
           | '\u{FF3B}' // FULLWIDTH LEFT SQUARE BRACKET
           | '\u{FF5B}' // FULLWIDTH LEFT CURLY BRACKET
@@ -7874,6 +7878,8 @@ impl InlineFormattingContext {
           | '\u{3017}' // RIGHT WHITE LENTICULAR BRACKET
           | '\u{3019}' // RIGHT WHITE TORTOISE SHELL BRACKET
           | '\u{301B}' // RIGHT WHITE SQUARE BRACKET
+          | '\u{2019}' // RIGHT SINGLE QUOTATION MARK
+          | '\u{201D}' // RIGHT DOUBLE QUOTATION MARK
           | '\u{FF01}' // FULLWIDTH EXCLAMATION MARK
           | '\u{FF09}' // FULLWIDTH RIGHT PARENTHESIS
           | '\u{FF0C}' // FULLWIDTH COMMA
@@ -7884,6 +7890,15 @@ impl InlineFormattingContext {
           | '\u{FF3D}' // FULLWIDTH RIGHT SQUARE BRACKET
           | '\u{FF5D}' // FULLWIDTH RIGHT CURLY BRACKET
           | '\u{FF60}' // FULLWIDTH RIGHT WHITE PARENTHESIS
+      )
+    }
+
+    fn is_fullwidth_middle_dot_punctuation(ch: char) -> bool {
+      matches!(
+        ch,
+        '\u{00B7}' // MIDDLE DOT
+          | '\u{2027}' // HYPHENATION POINT
+          | '\u{30FB}' // KATAKANA MIDDLE DOT
       )
     }
 
@@ -8019,6 +8034,172 @@ impl InlineFormattingContext {
         }
       }
 
+      fn first_char_and_trim(item: &InlineItem) -> Option<(char, TextSpacingTrim)> {
+        match item {
+          InlineItem::Text(t) => {
+            if t.is_marker {
+              return None;
+            }
+            let ch = t.text.chars().next()?;
+            Some((ch, t.style.text_spacing_trim))
+          }
+          InlineItem::InlineBox(b) => {
+            for child in &b.children {
+              match child {
+                InlineItem::StaticPositionAnchor(_) => continue,
+                InlineItem::Floating(_) => continue,
+                other => return first_char_and_trim(other),
+              }
+            }
+            None
+          }
+          InlineItem::Ruby(_) => None,
+          _ => None,
+        }
+      }
+
+      fn last_char_and_trim(item: &InlineItem) -> Option<(char, TextSpacingTrim)> {
+        match item {
+          InlineItem::Text(t) => {
+            if t.is_marker {
+              return None;
+            }
+            let ch = t.text.chars().next_back()?;
+            Some((ch, t.style.text_spacing_trim))
+          }
+          InlineItem::InlineBox(b) => {
+            for child in b.children.iter().rev() {
+              match child {
+                InlineItem::StaticPositionAnchor(_) => continue,
+                InlineItem::Floating(_) => continue,
+                other => return last_char_and_trim(other),
+              }
+            }
+            None
+          }
+          InlineItem::Ruby(_) => None,
+          _ => None,
+        }
+      }
+
+      fn opening_punct_hang_and_trim(item: &InlineItem) -> Option<(f32, TextSpacingTrim)> {
+        match item {
+          InlineItem::Text(t) => {
+            if t.is_marker {
+              return None;
+            }
+            let ch = t.text.chars().next()?;
+            if !is_fullwidth_opening_punctuation(ch) {
+              return None;
+            }
+            let adv = first_cluster_advance(t)?;
+            if adv <= 0.0 {
+              return None;
+            }
+            Some((adv * 0.5, t.style.text_spacing_trim))
+          }
+          InlineItem::InlineBox(b) => {
+            for child in &b.children {
+              match child {
+                InlineItem::StaticPositionAnchor(_) => continue,
+                InlineItem::Floating(_) => continue,
+                other => return opening_punct_hang_and_trim(other),
+              }
+            }
+            None
+          }
+          InlineItem::Ruby(_) => None,
+          _ => None,
+        }
+      }
+
+      fn closing_punct_hang_and_trim(item: &InlineItem) -> Option<(f32, TextSpacingTrim)> {
+        match item {
+          InlineItem::Text(t) => {
+            if t.is_marker {
+              return None;
+            }
+            let ch = t.text.chars().next_back()?;
+            if !is_fullwidth_closing_punctuation(ch) {
+              return None;
+            }
+            let adv = last_cluster_advance(t)?;
+            if adv <= 0.0 {
+              return None;
+            }
+            Some((adv * 0.5, t.style.text_spacing_trim))
+          }
+          InlineItem::InlineBox(b) => {
+            for child in b.children.iter().rev() {
+              match child {
+                InlineItem::StaticPositionAnchor(_) => continue,
+                InlineItem::Floating(_) => continue,
+                other => return closing_punct_hang_and_trim(other),
+              }
+            }
+            None
+          }
+          InlineItem::Ruby(_) => None,
+          _ => None,
+        }
+      }
+
+      fn apply_opening_punct_hang(item: &mut InlineItem, hang: f32) -> bool {
+        match item {
+          InlineItem::Text(t) => {
+            if t.is_marker || !t.text.chars().next().is_some_and(is_fullwidth_opening_punctuation) {
+              return false;
+            }
+            t.advance_for_layout = (t.advance_for_layout - hang).max(0.0);
+            true
+          }
+          InlineItem::InlineBox(b) => {
+            for child in &mut b.children {
+              match child {
+                InlineItem::StaticPositionAnchor(_) => continue,
+                InlineItem::Floating(_) => continue,
+                other => return apply_opening_punct_hang(other, hang),
+              }
+            }
+            false
+          }
+          InlineItem::Ruby(_) => false,
+          _ => false,
+        }
+      }
+
+      fn apply_closing_punct_hang(item: &mut InlineItem, hang: f32) -> bool {
+        match item {
+          InlineItem::Text(t) => {
+            if t.is_marker
+              || !t
+                .text
+                .chars()
+                .next_back()
+                .is_some_and(is_fullwidth_closing_punctuation)
+            {
+              return false;
+            }
+            t.advance_for_layout = (t.advance_for_layout - hang).max(0.0);
+            true
+          }
+          InlineItem::InlineBox(b) => {
+            for child in b.children.iter_mut().rev() {
+              match child {
+                InlineItem::StaticPositionAnchor(_) => continue,
+                InlineItem::Floating(_) => continue,
+                other => return apply_closing_punct_hang(other, hang),
+              }
+            }
+            false
+          }
+          InlineItem::Ruby(_) => false,
+          _ => false,
+        }
+      }
+
+      let mut start_trimmed_idx: Option<usize> = None;
+
       // Apply line-start trimming first so the end-of-line overflow check accounts for it.
       let start_info: Option<(usize, f32)> = items
         .iter()
@@ -8034,6 +8215,7 @@ impl InlineFormattingContext {
         });
 
       if let Some((idx, hang)) = start_info {
+        start_trimmed_idx = Some(idx);
         if let Some(positioned) = items.get_mut(idx) {
           apply_start_hang(
             &mut positioned.item,
@@ -8047,6 +8229,109 @@ impl InlineFormattingContext {
         if !rtl {
           if let Some(shift) = inline_shifts.get_mut(idx) {
             *shift -= hang;
+          }
+        }
+      }
+
+      if !rtl {
+        fn allows_adjacent_pairs(trim: TextSpacingTrim) -> bool {
+          !matches!(trim, TextSpacingTrim::SpaceAll | TextSpacingTrim::TrimAll)
+        }
+
+        fn prev_allows_opening_trim(ch: char) -> bool {
+          ch == '\u{3000}'
+            || is_fullwidth_opening_punctuation(ch)
+            || is_fullwidth_closing_punctuation(ch)
+            || is_fullwidth_middle_dot_punctuation(ch)
+            || matches!(get_general_category(ch), GeneralCategory::OpenPunctuation)
+        }
+
+        fn next_allows_closing_trim(ch: char) -> bool {
+          ch == '\u{3000}'
+            || is_fullwidth_closing_punctuation(ch)
+            || is_fullwidth_middle_dot_punctuation(ch)
+            || matches!(get_general_category(ch), GeneralCategory::ClosePunctuation)
+        }
+
+        // Adjacent-pairs trimming (minimal): only collapses punctuation spacing across inline item
+        // boundaries (does not split text runs to detect interior characters).
+        let mut prev_idx_opt: Option<usize> = None;
+        for idx in 0..items.len() {
+          if matches!(items[idx].item, InlineItem::StaticPositionAnchor(_)) {
+            continue;
+          }
+          let Some(prev_idx) = prev_idx_opt else {
+            prev_idx_opt = Some(idx);
+            continue;
+          };
+
+          let prev_info = last_char_and_trim(&items[prev_idx].item);
+          let curr_info = first_char_and_trim(&items[idx].item);
+          if let (Some((prev_ch, prev_trim)), Some((curr_ch, curr_trim))) = (prev_info, curr_info) {
+            if is_fullwidth_opening_punctuation(curr_ch)
+              && allows_adjacent_pairs(curr_trim)
+              && prev_allows_opening_trim(prev_ch)
+            {
+              if let Some((hang, _)) = opening_punct_hang_and_trim(&items[idx].item) {
+                if let Some(positioned) = items.get_mut(idx) {
+                  if apply_opening_punct_hang(&mut positioned.item, hang) {
+                    if let Some(shift) = inline_shifts.get_mut(idx) {
+                      *shift -= hang;
+                    }
+                  }
+                }
+              }
+            }
+
+            if is_fullwidth_closing_punctuation(prev_ch)
+              && allows_adjacent_pairs(prev_trim)
+              && next_allows_closing_trim(curr_ch)
+            {
+              if let Some((hang, _)) = closing_punct_hang_and_trim(&items[prev_idx].item) {
+                if let Some(positioned) = items.get_mut(prev_idx) {
+                  apply_closing_punct_hang(&mut positioned.item, hang);
+                }
+              }
+            }
+          }
+
+          prev_idx_opt = Some(idx);
+        }
+
+        // `trim-all` collapses punctuation spacing regardless of context. Model this by trimming
+        // opening/closing punctuation at inline-item edges throughout the line.
+        let last_non_anchor_idx = items
+          .iter()
+          .rposition(|p| !matches!(p.item, InlineItem::StaticPositionAnchor(_)));
+        for idx in 0..items.len() {
+          if matches!(items[idx].item, InlineItem::StaticPositionAnchor(_)) {
+            continue;
+          }
+
+          if start_trimmed_idx != Some(idx) {
+            if let Some((hang, trim)) = opening_punct_hang_and_trim(&items[idx].item) {
+              if matches!(trim, TextSpacingTrim::TrimAll) {
+                if let Some(positioned) = items.get_mut(idx) {
+                  if apply_opening_punct_hang(&mut positioned.item, hang) {
+                    if let Some(shift) = inline_shifts.get_mut(idx) {
+                      *shift -= hang;
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // Skip the last non-anchor item: line-end trimming handles it (and is unconditional for
+          // `trim-all`).
+          if Some(idx) != last_non_anchor_idx {
+            if let Some((hang, trim)) = closing_punct_hang_and_trim(&items[idx].item) {
+              if matches!(trim, TextSpacingTrim::TrimAll) {
+                if let Some(positioned) = items.get_mut(idx) {
+                  apply_closing_punct_hang(&mut positioned.item, hang);
+                }
+              }
+            }
           }
         }
       }

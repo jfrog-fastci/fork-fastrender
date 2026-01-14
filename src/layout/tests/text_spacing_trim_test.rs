@@ -50,6 +50,30 @@ fn first_text_x_in_line(line: &FragmentNode) -> Option<f32> {
   None
 }
 
+fn text_x_in_line(line: &FragmentNode, needle: &str) -> Option<f32> {
+  fn walk(node: &FragmentNode, needle: &str, offset_x: f32) -> Option<f32> {
+    let offset_x = offset_x + node.bounds.x();
+    if let FragmentContent::Text { text, .. } = &node.content {
+      if text.as_ref() == needle {
+        return Some(offset_x);
+      }
+    }
+    for child in node.children.iter() {
+      if let Some(found) = walk(child, needle, offset_x) {
+        return Some(found);
+      }
+    }
+    None
+  }
+
+  for child in line.children.iter() {
+    if let Some(found) = walk(child, needle, 0.0) {
+      return Some(found);
+    }
+  }
+  None
+}
+
 fn content_max_x_in_line(line: &FragmentNode) -> f32 {
   fn walk(node: &FragmentNode, offset_x: f32, max_x: &mut f32) {
     let offset_x = offset_x + node.bounds.x();
@@ -220,7 +244,7 @@ fn text_spacing_trim_space_first_does_not_trim_after_forced_break() {
 fn text_spacing_trim_normal_trims_line_end_punctuation_only_on_overflow() {
   // Measure the intrinsic width of the text with no trimming in a wide box.
   let wide = layout_lines_with_box_style(
-    "width: 500px; white-space: nowrap; text-align: left; text-spacing-trim: space-all;",
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: space-all;",
     "HELLOWORLD」",
   );
   assert!(!wide.is_empty(), "expected at least one line");
@@ -252,5 +276,72 @@ fn text_spacing_trim_normal_trims_line_end_punctuation_only_on_overflow() {
   assert!(
     normal_over > 1.0,
     "expected normal to trim the closing punctuation and hang it past the line end (overflow={normal_over:.3}px)"
+  );
+}
+
+#[test]
+fn text_spacing_trim_normal_collapses_adjacent_punctuation_opening_after_closing() {
+  // Adjacent-pairs collapsing: in `normal`, an opening punctuation that follows a closing
+  // punctuation should be trimmed to half-width.
+  let space_all = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: space-all;",
+    "<span>」</span><span>「</span><span>H</span>",
+  );
+  let normal = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: normal;",
+    "<span>」</span><span>「</span><span>H</span>",
+  );
+
+  let space_open_x = text_x_in_line(&space_all[0], "「").expect("x for opening punct (space-all)");
+  let normal_open_x = text_x_in_line(&normal[0], "「").expect("x for opening punct (normal)");
+
+  assert!(
+    normal_open_x < space_open_x - 0.1,
+    "expected normal to collapse space between adjacent punctuation (space-all x={space_open_x:.3} normal x={normal_open_x:.3})"
+  );
+}
+
+#[test]
+fn text_spacing_trim_normal_collapses_adjacent_punctuation_closing_before_closing() {
+  // Adjacent-pairs collapsing: in `normal`, a closing punctuation that precedes another closing
+  // punctuation should be trimmed to half-width.
+  let space_all = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: space-all;",
+    "<span>』</span><span>」</span><span>H</span>",
+  );
+  let normal = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: normal;",
+    "<span>』</span><span>」</span><span>H</span>",
+  );
+
+  let space_second_x =
+    text_x_in_line(&space_all[0], "」").expect("x for second closing (space-all)");
+  let normal_second_x = text_x_in_line(&normal[0], "」").expect("x for second closing (normal)");
+
+  assert!(
+    normal_second_x < space_second_x - 0.1,
+    "expected normal to collapse space for closing+closing pairs (space-all x={space_second_x:.3} normal x={normal_second_x:.3})"
+  );
+}
+
+#[test]
+fn text_spacing_trim_trim_all_trims_punctuation_inside_line() {
+  // `trim-all` should trim fullwidth punctuation even when it isn't at a line edge.
+  let space_all = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: space-all;",
+    "<span>H</span><span>「</span><span>H</span>",
+  );
+  let trim_all = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: trim-all;",
+    "<span>H</span><span>「</span><span>H</span>",
+  );
+
+  let space_open_x = text_x_in_line(&space_all[0], "「").expect("x for opening punct (space-all)");
+  let trim_all_open_x =
+    text_x_in_line(&trim_all[0], "「").expect("x for opening punct (trim-all)");
+
+  assert!(
+    trim_all_open_x < space_open_x - 0.1,
+    "expected trim-all to trim opening punctuation inside the line (space-all x={space_open_x:.3} trim-all x={trim_all_open_x:.3})"
   );
 }
