@@ -1071,6 +1071,13 @@ impl BrowserTabState {
     prev_viewport != self.scroll_state.viewport
   }
 
+  pub fn apply_optimistic_viewport_scroll_to(&mut self, pos_css: (f32, f32)) -> bool {
+    let prev = self.scroll_state.viewport;
+    let target_x = if pos_css.0.is_finite() { pos_css.0 } else { prev.x };
+    let target_y = if pos_css.1.is_finite() { pos_css.1 } else { prev.y };
+    self.apply_optimistic_viewport_scroll_delta((target_x - prev.x, target_y - prev.y))
+  }
+
   fn reset_load_progress(&mut self) {
     self.load_stage = None;
     self.load_progress = Some(0.0);

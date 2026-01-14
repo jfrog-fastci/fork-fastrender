@@ -16430,6 +16430,15 @@ impl App {
           .and_then(|tab| tab.current_url.as_deref().or(tab.committed_url.as_deref()))
           .is_some_and(fastrender::ui::about_pages::is_about_url);
         if !is_trusted_about {
+          // Apply an optimistic UI-side scroll update so async-scroll texture translation can happen
+          // immediately for `ScrollTo` actions (keyboard/accessibility/programmatic scrolls), even
+          // before the worker acknowledges the new scroll state.
+          if let Some(tab) = self.browser_state.tab_mut(*tab_id) {
+            let changed = tab.apply_optimistic_viewport_scroll_to(*pos_css);
+            if changed && self.browser_state.active_tab_id() == Some(*tab_id) {
+              self.window.request_redraw();
+            }
+          }
           // Fall through: handled by the worker.
         } else {
           let Some(tab) = self.browser_state.tab_mut(*tab_id) else {
