@@ -564,7 +564,31 @@ fn generators_yield_in_template_literals() {
           j1.value === 1 && j1.done === false &&
           j2.value === "aundefinedb" && j2.done === true;
 
-        ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 && ok10 && ok11
+        // Nested template literal inside a substitution should preserve both inner + outer
+        // accumulator state across suspension.
+        function* tpl_nested_template() { return `a${`b${yield 1}c`}d`; }
+        const it12 = tpl_nested_template();
+        const k1 = it12.next();
+        churn();
+        const k2 = it12.next("X");
+        const ok12 =
+          k1.value === 1 && k1.done === false &&
+          k2.value === "abXcd" && k2.done === true;
+
+        // Nested template yield followed by another yield substitution in the outer template.
+        function* tpl_nested_then_outer() { return `a${`b${yield 1}c`}d${yield 2}e`; }
+        const it13 = tpl_nested_then_outer();
+        const l1 = it13.next();
+        churn();
+        const l2 = it13.next("X");
+        churn();
+        const l3 = it13.next("Y");
+        const ok13 =
+          l1.value === 1 && l1.done === false &&
+          l2.value === 2 && l2.done === false &&
+          l3.value === "abXcdYe" && l3.done === true;
+
+        ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 && ok10 && ok11 && ok12 && ok13
       "#,
     )
     .unwrap();
