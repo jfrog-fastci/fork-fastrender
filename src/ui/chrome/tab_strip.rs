@@ -2260,30 +2260,26 @@ pub(super) fn tab_strip_ui(
 
   // Track close animations stored in chrome UI state so tab closes can be animated consistently
   // regardless of trigger (tab strip, keyboard shortcut, menu bar, etc).
-  let mut close_progress: HashMap<TabId, f32> = HashMap::new();
+  let mut close_progress: HashMap<TabId, f32> =
+    HashMap::with_capacity(app.chrome.closing_tabs.len());
   let mut any_closing_tab_animating = false;
   {
     let (tabs, chrome) = (&app.tabs, &mut app.chrome);
-    let closing_ids: Vec<TabId> = chrome.closing_tabs.keys().copied().collect();
-    for tab_id in closing_ids {
+    chrome.closing_tabs.retain(|tab_id, state| {
+      let tab_id = *tab_id;
       let exists = tabs.iter().any(|t| t.id == tab_id);
       if !exists {
-        chrome.closing_tabs.remove(&tab_id);
-        continue;
+        return false;
       }
 
       if !motion_enabled {
         // Animations disabled: treat any in-progress close animation as finished.
-        chrome.closing_tabs.remove(&tab_id);
         close_progress.insert(tab_id, 1.0);
         actions.push(ChromeAction::CloseTab(tab_id));
-        continue;
+        return false;
       }
 
-      let t = chrome
-        .tab_close_progress(tab_id, now)
-        .unwrap_or(0.0)
-        .clamp(0.0, 1.0);
+      let t = state.progress(now).clamp(0.0, 1.0);
       close_progress.insert(tab_id, t);
 
       if t < 1.0 - 1e-4 {
@@ -2292,7 +2288,11 @@ pub(super) fn tab_strip_ui(
         // Animation finished: request the actual close via the shared action path.
         actions.push(ChromeAction::CloseTab(tab_id));
       }
-    }
+
+      // Keep the state until the tab is actually removed; otherwise the tab could briefly
+      // re-appear if the close action is delayed.
+      true
+    });
   }
 
   let strip_width = ui.available_width().max(0.0);
