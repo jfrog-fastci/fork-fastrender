@@ -1779,8 +1779,16 @@ fn tab_ui(
         },
       )
       .on_hover_text("Close tab (Ctrl/Cmd+W)");
+    // Accessibility: focus may land directly on the close button during Tab/Shift+Tab traversal.
+    // Ensure the focused control is visible within the scroll viewport.
+    if close_resp.has_focus() && !ui.is_rect_visible(close_rect) {
+      close_resp.scroll_to_me(Some(egui::Align::Center));
+    }
     #[cfg(test)]
-    store_test_close_id(ui.ctx(), tab.id, close_resp.id);
+    {
+      store_test_close_id(ui.ctx(), tab.id, close_resp.id);
+      store_test_close_rect(ui.ctx(), tab.id, close_rect);
+    }
     let close_a11y_label = tab.tab_close_accessible_label(title);
     close_resp.widget_info({
       let label = close_a11y_label.clone();
@@ -4380,6 +4388,16 @@ fn store_test_close_id(ctx: &egui::Context, tab_id: TabId, close_id: egui::Id) {
 }
 
 #[cfg(test)]
+fn store_test_close_rect(ctx: &egui::Context, tab_id: TabId, close_rect: Rect) {
+  let key = egui::Id::new("test_tab_strip_close_rects");
+  ctx.data_mut(|d| {
+    let mut rects = d.get_temp::<Vec<(TabId, Rect)>>(key).unwrap_or_default();
+    rects.push((tab_id, close_rect));
+    d.insert_temp(key, rects);
+  });
+}
+
+#[cfg(test)]
 pub(super) fn load_test_layout(ctx: &egui::Context) -> Option<(Rect, Vec<Rect>)> {
   ctx.data(|d| {
     let strip = d.get_temp::<Rect>(egui::Id::new("test_tab_strip_rect"))?;
@@ -4453,6 +4471,17 @@ mod tests {
     let mut map = HashMap::new();
     for (tab_id, close_id) in close_ids {
       map.insert(tab_id, close_id);
+    }
+    map
+  }
+
+  fn tab_strip_close_rects(ctx: &egui::Context) -> HashMap<TabId, Rect> {
+    let close_rects = ctx
+      .data(|d| d.get_temp::<Vec<(TabId, Rect)>>(egui::Id::new("test_tab_strip_close_rects")))
+      .expect("expected test_tab_strip_close_rects");
+    let mut map = HashMap::new();
+    for (tab_id, rect) in close_rects {
+      map.insert(tab_id, rect);
     }
     map
   }
@@ -5051,6 +5080,97 @@ mod tests {
     assert!(
       viewport1.contains(last_rect1.center()),
       "expected last tab to be scrolled into view. last={last_rect1:?} viewport={viewport1:?}"
+    );
+  }
+
+  #[test]
+  fn tab_strip_scrolls_focused_offscreen_tab_close_button_into_view() {
+    let ctx = egui::Context::default();
+    let mut app = BrowserAppState::new();
+
+    // Create enough unpinned tabs to overflow an 800px-wide tab strip.
+    const TAB_COUNT: usize = 20;
+    let mut last_tab_id = TabId(0);
+    for i in 0..TAB_COUNT {
+      let tab_id = TabId((i + 1) as u64);
+      last_tab_id = tab_id;
+      app.push_tab(
+        BrowserTabState::new(tab_id, format!("https://{i}.example/")),
+        i == 0, // keep the first tab active so active-tab auto-scroll doesn't trigger
+      );
+    }
+
+    // Frame 1: baseline render (captures close ids/rects).
+    begin_frame(&ctx, Vec::new());
+    let _ = render_tab_strip(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    let close_ids = tab_strip_close_ids(&ctx);
+    let close_id = *close_ids
+      .get(&last_tab_id)
+      .expect("expected close id for last tab");
+
+    let viewport0 = ctx
+      .data(|d| {
+        d.get_temp::<Option<Rect>>(egui::Id::new("test_tab_strip_unpinned_scroll_viewport_rect"))
+      })
+      .unwrap_or(None)
+      .expect("expected unpinned scroll viewport rect to be stored");
+    let close_rect0 = *tab_strip_close_rects(&ctx)
+      .get(&last_tab_id)
+      .expect("expected close rect for last tab");
+    assert!(
+      !viewport0.contains(close_rect0.center()),
+      "expected last tab close button to start offscreen, but it was already visible. close={close_rect0:?} viewport={viewport0:?}"
+    );
+
+    // Frame 2: focus the close button on the last tab. The strip should auto-scroll to reveal it.
+    ctx.memory_mut(|mem| mem.request_focus(close_id));
+    begin_frame(&ctx, Vec::new());
+    let _ = render_tab_strip(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    assert!(
+      ctx.memory(|mem| mem.has_focus(close_id)),
+      "expected focus to remain on the requested close button"
+    );
+
+    let mut scroll1 = ctx
+      .data(|d| d.get_temp::<f32>(egui::Id::new("test_tab_strip_unpinned_scroll_offset_x")))
+      .unwrap_or(0.0);
+
+    // Some egui versions apply `scroll_to_me` in the following frame. If we didn't scroll yet,
+    // render one more frame to allow the scroll request to take effect.
+    if scroll1 <= 0.1 {
+      begin_frame(&ctx, Vec::new());
+      let _ = render_tab_strip(&ctx, &mut app);
+      let _ = ctx.end_frame();
+      assert!(
+        ctx.memory(|mem| mem.has_focus(close_id)),
+        "expected focus to remain on the requested close button after scrolling"
+      );
+      scroll1 = ctx
+        .data(|d| d.get_temp::<f32>(egui::Id::new("test_tab_strip_unpinned_scroll_offset_x")))
+        .unwrap_or(0.0);
+    }
+
+    assert!(
+      scroll1 > 0.1,
+      "expected scroll offset to increase after focusing offscreen close button, got {scroll1}"
+    );
+
+    let viewport1 = ctx
+      .data(|d| {
+        d.get_temp::<Option<Rect>>(egui::Id::new("test_tab_strip_unpinned_scroll_viewport_rect"))
+      })
+      .unwrap_or(None)
+      .expect("expected unpinned scroll viewport rect to be stored");
+    let close_rect1 = *tab_strip_close_rects(&ctx)
+      .get(&last_tab_id)
+      .expect("expected close rect for last tab after scrolling");
+    assert!(
+      viewport1.contains(close_rect1.center()),
+      "expected last tab close button to be scrolled into view. close={close_rect1:?} viewport={viewport1:?}"
     );
   }
 
