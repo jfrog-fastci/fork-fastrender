@@ -68,10 +68,10 @@ fn object_prototype_to_string_honors_symbol_to_string_tag_for_async_generators(
     "Object.defineProperty(g.prototype, Symbol.toStringTag, { configurable: true, get() { return {}; } });\n\
      Object.prototype.toString.call(it)",
   )?;
-  assert_eq!(value_to_utf8(&rt, value), "[object AsyncGenerator]");
+  assert_eq!(value_to_utf8(&rt, value), "[object Object]");
 
   let value = rt.exec_script("String(it)")?;
-  assert_eq!(value_to_utf8(&rt, value), "[object AsyncGenerator]");
+  assert_eq!(value_to_utf8(&rt, value), "[object Object]");
 
   // Deleting the overridden @@toStringTag should fall back to %AsyncGeneratorPrototype%[@@toStringTag].
   let value = rt.exec_script(
@@ -108,11 +108,11 @@ fn object_prototype_to_string_async_generator_falls_back_when_to_string_tag_dele
           delete proto2[Symbol.toStringTag];
         }
         if (proto1[Symbol.toStringTag] !== undefined) return false;
-
+ 
         // When @@toStringTag is absent, Object.prototype.toString must fall back to the built-in
-        // tag for async generator objects ("AsyncGenerator"), not "[object Object]".
-        return Object.prototype.toString.call(it) === "[object AsyncGenerator]" &&
-               String(it) === "[object AsyncGenerator]";
+        // tag ("Object").
+        return Object.prototype.toString.call(it) === "[object Object]" &&
+               String(it) === "[object Object]";
       })()
     "#,
   ) {
@@ -147,10 +147,10 @@ fn object_prototype_to_string_async_generator_falls_back_when_to_string_tag_non_
           configurable: true
         });
         if (it[Symbol.toStringTag] !== 1) return false;
-
+ 
         // When @@toStringTag is present but not a string, Object.prototype.toString must fall back
-        // to the built-in tag for async generator objects ("AsyncGenerator").
-        return Object.prototype.toString.call(it) === "[object AsyncGenerator]";
+        // to the built-in tag ("Object").
+        return Object.prototype.toString.call(it) === "[object Object]";
       })()
     "#,
   ) {

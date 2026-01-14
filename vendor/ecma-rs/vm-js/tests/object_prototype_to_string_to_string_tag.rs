@@ -14,32 +14,38 @@ fn value_to_utf8(rt: &JsRuntime, value: Value) -> String {
 }
 
 #[test]
-fn object_prototype_to_string_honors_symbol_to_string_tag_for_generators() -> Result<(), VmError> {
+fn object_prototype_to_string_symbol_tag_generators_builtin() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
-  let value = rt.exec_script("function* g(){ yield 1; }\nObject.prototype.toString.call(g)")?;
+  let value = rt.exec_script("var genFn = function* () {};\nObject.prototype.toString.call(genFn)")?;
   assert_eq!(value_to_utf8(&rt, value), "[object GeneratorFunction]");
 
-  let value = rt.exec_script("const it = g();\nObject.prototype.toString.call(it)")?;
+  let value = rt.exec_script("var gen = genFn();\nObject.prototype.toString.call(gen)")?;
   assert_eq!(value_to_utf8(&rt, value), "[object Generator]");
 
-  let value = rt.exec_script("String(it)")?;
+  let value = rt.exec_script("String(gen)")?;
   assert_eq!(value_to_utf8(&rt, value), "[object Generator]");
+
+  let value = rt.exec_script("Object.getPrototypeOf(gen) === genFn.prototype")?;
+  assert_eq!(value, Value::Bool(true));
 
   // Non-string @@toStringTag values must be ignored (fall back to the builtin tag).
+  //
+  // For generator objects, the builtin tag is `"Object"`; the `"Generator"` tag is supplied via
+  // `%GeneratorPrototype%[@@toStringTag]`.
   let value = rt.exec_script(
-    "Object.defineProperty(g.prototype, Symbol.toStringTag, { configurable: true, get() { return {}; } });\n\
-     Object.prototype.toString.call(it)",
+    "Object.defineProperty(genFn.prototype, Symbol.toStringTag, { configurable: true, get() { return {}; } });\n\
+     Object.prototype.toString.call(gen)",
   )?;
-  assert_eq!(value_to_utf8(&rt, value), "[object Generator]");
+  assert_eq!(value_to_utf8(&rt, value), "[object Object]");
 
-  let value = rt.exec_script("String(it)")?;
-  assert_eq!(value_to_utf8(&rt, value), "[object Generator]");
+  let value = rt.exec_script("String(gen)")?;
+  assert_eq!(value_to_utf8(&rt, value), "[object Object]");
 
   // Deleting the overridden @@toStringTag should fall back to %GeneratorPrototype%[@@toStringTag].
   let value = rt.exec_script(
-    "delete g.prototype[Symbol.toStringTag];\n\
-     Object.prototype.toString.call(it)",
+    "delete genFn.prototype[Symbol.toStringTag];\n\
+     Object.prototype.toString.call(gen)",
   )?;
   assert_eq!(value_to_utf8(&rt, value), "[object Generator]");
 

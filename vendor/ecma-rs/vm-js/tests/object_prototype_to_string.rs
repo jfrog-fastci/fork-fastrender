@@ -160,15 +160,14 @@ fn object_prototype_to_string_tags_generator_heap_object() {
   let value = rt
     .exec_script(
       r#"var toString = Object.prototype.toString;
-            var g = (function*() {})();
-            var genProto = Object.getPrototypeOf(g);
-            toString.call(g) === "[object Generator]" &&
-            (Object.defineProperty(genProto, Symbol.toStringTag, { configurable: true, get() { return {}; } }), true) &&
-            // Non-string @@toStringTag is ignored, so we fall back to the built-in tag for generator
-            // objects ("Generator").
-            toString.call(g) === "[object Generator]" &&
-            (Object.defineProperty(genProto, Symbol.toStringTag, { configurable: true, writable: false, enumerable: false, value: "Generator" }), true) &&
-            toString.call(g) === "[object Generator]""#,
+             var g = (function*() {})();
+             var genProto = Object.getPrototypeOf(g);
+             toString.call(g) === "[object Generator]" &&
+             (Object.defineProperty(genProto, Symbol.toStringTag, { configurable: true, get() { return {}; } }), true) &&
+             // Non-string @@toStringTag is ignored, so we fall back to the built-in tag.
+             toString.call(g) === "[object Object]" &&
+             (Object.defineProperty(genProto, Symbol.toStringTag, { configurable: true, writable: false, enumerable: false, value: "Generator" }), true) &&
+             toString.call(g) === "[object Generator]""#,
       )
       .unwrap();
   assert_eq!(value, Value::Bool(true));
