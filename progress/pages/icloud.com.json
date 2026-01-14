@@ -16,7 +16,7 @@
     "layout": 1.0002737251908398,
     "paint": 16.004379603053437
   },
-  "notes": "",
+  "notes": "JS-driven iCloud web app bootstrap shell (header with Apple logo + mostly-empty root/spinner); fixture runs with scripts disabled so it is not the real iCloud UI.\nRemaining diff is very small (~0.06%) and appears confined to minor raster/AA differences in the header/spinner vs Chrome.\nReal iCloud functionality requires JS/cookies and navigation into app iframes.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 560,
