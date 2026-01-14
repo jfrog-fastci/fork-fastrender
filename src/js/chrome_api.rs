@@ -13,3 +13,28 @@ pub use super::vmjs_chrome_api::{
 pub use super::chrome_navigation_url::{
   validate_chrome_navigation_url, ChromeApiError, MAX_CHROME_NAVIGATION_URL_CODE_UNITS,
 };
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn chrome_api_public_reexports_compile() {
+    // Regression guard: `crate::js::chrome_api` used to be both a module and a re-export alias for
+    // `chrome_navigation_url`, which caused an E0255 name collision. Ensure the stable public API is
+    // still reachable.
+    let _ = MAX_CHROME_API_URL_CODE_UNITS;
+    let _ = MAX_CHROME_NAVIGATION_URL_CODE_UNITS;
+    let _ = validate_chrome_navigation_url;
+
+    fn _assert_install_is_reexported<Host>()
+    where
+      Host: ChromeApiHost + crate::js::window_realm::WindowRealmHost + 'static,
+    {
+      let _ = install_chrome_api_bindings_vm_js::<Host>;
+    }
+
+    let _ = ChromeApiError::EmptyUrl;
+    let _ = ChromeCommand::Back;
+  }
+}
