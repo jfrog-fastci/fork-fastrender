@@ -10801,8 +10801,14 @@ impl<'a> Evaluator<'a> {
             ));
           }
           let receiver = self.get_this_binding(scope)?;
+          let home_object = self.home_object.ok_or(VmError::InvariantViolation(
+            "super property access missing [[HomeObject]]",
+          ))?;
           let mut key_scope = scope.reborrow();
-          key_scope.push_roots(&[self.this, receiver])?;
+          // Root `this` binding state (may be a DerivedConstructorState cell), the resolved receiver,
+          // and `[[HomeObject]]` across property-key allocation and `GetSuperBase()` (proxy traps can
+          // allocate and trigger GC).
+          key_scope.push_roots(&[self.this, receiver, Value::Object(home_object)])?;
           let key_s = key_scope.alloc_string(&member.stx.right)?;
           key_scope.push_root(Value::String(key_s))?;
           let key = PropertyKey::from_string(key_s);
@@ -10855,9 +10861,9 @@ impl<'a> Evaluator<'a> {
           ))?;
 
           let mut key_scope = scope.reborrow();
-          // Root `this`, `GetThisBinding()` result, and the `[[HomeObject]]` across evaluation of the
-          // computed property key expression and `GetSuperBase()`. These steps can allocate (string
-          // conversions) and can invoke user code (Proxy traps).
+          // Root `this` binding state (may be a DerivedConstructorState cell), the resolved receiver
+          // (`GetThisBinding()` result), and `[[HomeObject]]` across computed-key evaluation and
+          // `GetSuperBase()`. These steps can allocate and may invoke user code (Proxy traps).
           key_scope.push_roots(&[self.this, receiver, Value::Object(home_object)])?;
           let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
           key_scope.push_root(member_value)?;
