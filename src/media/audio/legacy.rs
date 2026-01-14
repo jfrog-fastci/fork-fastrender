@@ -1851,6 +1851,7 @@ mod tests {
         .expect("dropped events metadata"),
       (generated_events - max_events) as u64
     );
+  }
 
   #[test]
   fn declick_fades_in_and_out_step_signal() {
