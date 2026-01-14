@@ -988,6 +988,76 @@ impl Document {
     Ok(true)
   }
 
+  /// Split a text node into two adjacent text nodes at the given UTF-16 code unit offset.
+  ///
+  /// This implements the DOM `Text.splitText(offset)` algorithm, including live `Range` maintenance.
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#concept-text-split
+  pub fn split_text(&mut self, node: NodeId, offset: usize) -> Result<NodeId, DomError> {
+    let node_id = node;
+    let old_parent = self.node_checked(node_id)?.parent;
+
+    let old_value = match &self.node_checked(node_id)?.kind {
+      NodeKind::Text { content } => content.clone(),
+      _ => return Err(DomError::InvalidNodeTypeError),
+    };
+
+    // DOM `Text.splitText` offsets are defined in UTF-16 code units.
+    let units: Vec<u16> = old_value.encode_utf16().collect();
+    if offset > units.len() {
+      return Err(DomError::IndexSizeError);
+    }
+
+    let tail = String::from_utf16_lossy(&units[offset..]);
+
+    // Preserve template inertness and other node flags by copying inertness from the source node.
+    let inert_subtree = self.nodes[node_id.index()].inert_subtree;
+    let new_node = self.push_node(
+      NodeKind::Text { content: tail },
+      None,
+      /* inert_subtree */ inert_subtree,
+    );
+
+    if !self.ranges.is_empty() {
+      // Move range boundary points inside the split tail to the new node before truncating the old
+      // node's data. This prevents `replace_data` maintenance from clamping the original offsets.
+      for range in self.ranges.values_mut() {
+        if range.start.node == node_id && range.start.offset > offset {
+          range.start.node = new_node;
+          range.start.offset = range.start.offset.saturating_sub(offset);
+        }
+        if range.end.node == node_id && range.end.offset > offset {
+          range.end.node = new_node;
+          range.end.offset = range.end.offset.saturating_sub(offset);
+        }
+      }
+    }
+
+    // Insert the new node immediately after the split node when it has a parent.
+    if let Some(parent) = old_parent {
+      // Compute the split node's index in the parent's raw children list (includes shadow roots).
+      let raw_index = self
+        .index_of_child_internal(parent, node_id)?
+        .ok_or(DomError::NotFoundError)?;
+      let reference = self.nodes[parent.index()].children.get(raw_index + 1).copied();
+
+      // Compute the split node's index in the parent's *tree child* list (shadow-root-aware),
+      // matching Range boundary-point offset semantics.
+      let tree_index = self.tree_child_index_from_raw_index_for_range(parent, raw_index);
+
+      let _ = self.insert_before(parent, new_node, reference)?;
+
+      if !self.ranges.is_empty() {
+        self.live_range_split_text_steps(node_id, offset, new_node, parent, tree_index);
+      }
+    }
+
+    // Truncate the original node's data after moving boundary points.
+    let _ = self.replace_data(node_id, offset, usize::MAX, "")?;
+
+    Ok(new_node)
+  }
+
   pub fn delete_data(
     &mut self,
     node: NodeId,
@@ -1053,60 +1123,6 @@ impl Document {
     self.bump_mutation_generation_classified();
     let _ = self.queue_mutation_record_character_data(node_id, Some(old_value));
     Ok(true)
-  }
-
-  /// Split a Text node at a UTF-16 code unit offset, returning the newly-created trailing Text node.
-  ///
-  /// Mirrors the WHATWG DOM `Text.splitText(offset)` algorithm for `dom2`'s supported node kinds.
-  ///
-  /// `offset_utf16` is measured in UTF-16 code units (not bytes and not Unicode scalar values),
-  /// matching JavaScript string indexing.
-  pub fn split_text(&mut self, node: NodeId, offset_utf16: usize) -> Result<NodeId, DomError> {
-    let node_id = node;
-    self.node_checked(node_id)?;
-
-    let old_value = match &self.node_checked(node_id)?.kind {
-      NodeKind::Text { content } => content.clone(),
-      _ => return Err(DomError::InvalidNodeTypeError),
-    };
-
-    // Offsets are defined in UTF-16 code units.
-    let units: Vec<u16> = old_value.encode_utf16().collect();
-    if offset_utf16 > units.len() {
-      return Err(DomError::IndexSizeError);
-    }
-
-    let new_data = String::from_utf16_lossy(&units[offset_utf16..]);
-    let new_node = self.create_text(&new_data);
-
-    let parent = self.nodes[node_id.index()].parent;
-    if let Some(parent) = parent {
-      // Find the Text node's index among its parent's child list so we can insert immediately after
-      // it and perform the spec's splitText-specific live Range updates.
-      let raw_index = self
-        .index_of_child_internal(parent, node_id)?
-        .ok_or(DomError::NotFoundError)?;
-      let tree_index = self
-        .tree_child_index_for_range(parent, node_id)
-        .unwrap_or_else(|| self.tree_child_index_from_raw_index_for_range(parent, raw_index));
-
-      // Insert the new Text node immediately after the original node.
-      let reference = self
-        .nodes[parent.index()]
-        .children
-        .get(raw_index + 1)
-        .copied();
-      let _ = self.insert_before(parent, new_node, reference)?;
-
-      // Live range updates for splitText (the extra steps beyond generic insert/replace-data).
-      self.live_range_split_text_steps(node_id, offset_utf16, new_node, parent, tree_index);
-    }
-
-    // Truncate the original node's data to the prefix [0, offset).
-    let count = units.len().saturating_sub(offset_utf16);
-    let _ = self.replace_data(node_id, offset_utf16, count, "")?;
-
-    Ok(new_node)
   }
 
   pub fn set_comment_data(&mut self, node: NodeId, data: &str) -> Result<bool, DomError> {

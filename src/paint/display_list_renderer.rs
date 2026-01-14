@@ -11346,13 +11346,13 @@ impl DisplayListRenderer {
       let y0 = dy.max(0);
       let x1 = (dx + dst_w).min(src_w);
       let y1 = (dy + dst_h).min(src_h);
+      let src_stride = dest_width * 4;
       if x0 < x1 && y0 < y1 {
         let dst_off_x = (x0 - dx) as usize;
         let dst_off_y = (y0 - dy) as usize;
         let copy_w = (x1 - x0) as usize;
         let copy_h = (y1 - y0) as usize;
         let dst_stride = scratch.width() as usize * 4;
-        let src_stride = dest_width * 4;
         let row_bytes = copy_w * 4;
         {
           // `tiny-skia::PixmapMut` no longer exposes an immutable `data()` accessor; read from the
