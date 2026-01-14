@@ -23,8 +23,7 @@ Legend: ✅ implemented, ⚠️ partial, 🚧 planned, ❌ missing.
 | AAC decoder | ✅ | `src/media/codecs/aac.rs` (symphonia AAC → `DecodedAudioChunk`) |
 | Opus decoder | ✅ | `src/media/codecs/opus.rs` (`audiopus_sys`/libopus; mapping family 0 mono/stereo only) |
 | H.264 decoder | ✅ | `src/media/decoder.rs` (OpenH264; MP4 length-prefixed NALs → Annex B) |
-| VP9 decoder | ✅ | `src/media/codecs/vp9.rs` (`crates/libvpx-sys-bundled`) |
-| VP9 in `MediaDecodePipeline` | ⚠️ | `src/media/decoder.rs::create_video_decoder` still uses a stub VP9 decoder (black frames); real VP9 decode is used by `src/media/player.rs` |
+| VP9 decode (libvpx) | ✅ | `src/media/decoder.rs::create_video_decoder` (VP9 path) → `src/media/codecs/vp9.rs` → `crates/libvpx-sys-bundled` (feature: `codec_vp9_libvpx` or `media`) |
 | Media backends (`MediaBackend`) | ✅ | `src/media/backends/native.rs`; optional `src/media/backends/ffmpeg_cli.rs` behind `media_ffmpeg_cli` |
 | A/V sync helper | ✅ | `src/media/av_sync.rs` (+ env overrides) |
 | Audio output plumbing | ✅ | `src/media/audio/*` (real output via `audio_cpal`; null backend is default) |
@@ -68,7 +67,7 @@ codec decode
   - AAC ✅   → DecodedAudioChunk
   - Opus ✅  → DecodedAudioChunk
   - H.264 ✅ → DecodedVideoFrame (RGBA8)
-  - VP9 ✅   → DecodedVp9Frame (RGBA8) / DecodedVideoFrame (pipeline integration is partial)
+  - VP9 ✅   → DecodedVideoFrame (RGBA8; libvpx via `codec_vp9_libvpx`)
   ↓
 sync + scheduling (Duration / nanosecond timeline)
   ↓
@@ -214,19 +213,19 @@ Output:
 
 - `DecodedVideoFrame` with RGBA8 pixels (OpenH264 decodes to YUV and the code converts to RGBA).
 
-### VP9 (implemented; integration still in progress): bundled libvpx
+### VP9 (implemented): bundled libvpx
 
 Implementation lives in:
 
 - Workspace crate: `crates/libvpx-sys-bundled` (vendored libvpx build + wrapper)
 - Media wrapper: `src/media/codecs/vp9.rs` (`codecs::vp9::Vp9Decoder` → RGBA8 frames)
 
-Current status in the in-tree pipeline:
+Current status:
 
 - `WebmDemuxer` can emit VP9 packets.
-- `src/media/player.rs` uses `codecs::vp9` to decode WebM VP9 video into paint-ready `ImageData`.
-- `MediaDecodePipeline` / `create_video_decoder` still uses a stub VP9 implementation
-  (`src/media/decoder.rs`) that outputs black frames; wiring it to `codecs::vp9` is still TODO.
+- `MediaDecodePipeline` uses `src/media/decoder.rs::create_video_decoder` to construct a libvpx-backed
+  `codecs::vp9::Vp9Decoder` (requires `codec_vp9_libvpx` or `media`).
+- `src/media/player.rs` also uses `codecs::vp9` directly for a minimal WebM/VP9 playback loop.
 
 Build notes:
 
@@ -322,9 +321,9 @@ primarily a smoke test for `<video>` layout and for future playback wiring.
   - `MediaPacket.duration_ns` is currently `0`.
   - Seeking is not keyframe-aware (does not seek to previous sync sample).
   - Fragmented MP4 is unsupported.
-- VP9:
-  - Real VP9 decode exists (`src/media/codecs/vp9.rs`), but `MediaDecodePipeline` still uses a stub
-    decoder; wiring/unifying these is TODO.
+- WebM (`WebmDemuxer`):
+  - Seek is best-effort and currently does not account for Matroska `SeekPreRoll` (some codecs may
+    require decode before the target PTS after seeking).
 - Opus:
   - Only mapping family 0 mono/stereo is supported today (no multichannel mapping tables).
 
