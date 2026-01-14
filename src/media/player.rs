@@ -20,6 +20,11 @@ use std::time::{Duration, Instant};
 const MAX_DEMUX_PACKETS_PER_TICK: usize = 128;
 const MAX_VIDEO_FRAMES_PER_TICK: usize = 128;
 
+// `dyn Read + Seek` is not a valid trait object (only one non-auto trait is allowed). Define a
+// helper supertrait so we can store a boxed reader that supports both.
+trait ReadSeek: Read + Seek {}
+impl<T: Read + Seek> ReadSeek for T {}
+
 /// Construction options for [`MediaPlayer`].
 #[derive(Debug, Clone)]
 pub struct MediaPlayerOptions {
@@ -51,7 +56,7 @@ struct QueuedVideoFrame {
 }
 
 struct PlayerState {
-  demuxer: WebmDemuxer<Box<dyn Read + Seek + Send>>,
+  demuxer: WebmDemuxer<Box<dyn ReadSeek + Send>>,
   video_track_id: u64,
   vp9: Vp9Decoder,
   decode_threads: u32,
@@ -100,7 +105,7 @@ impl MediaPlayer {
     reader: impl Read + Seek + Send + 'static,
     options: MediaPlayerOptions,
   ) -> MediaResult<Self> {
-    let demuxer = WebmDemuxer::open(Box::new(reader))?;
+    let demuxer = WebmDemuxer::open(Box::new(reader) as Box<dyn ReadSeek + Send>)?;
 
     let video_track_id = demuxer
       .tracks()
@@ -361,4 +366,3 @@ mod tests {
     panic!("expected frame to change within 2s of playback");
   }
 }
-

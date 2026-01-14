@@ -76,7 +76,7 @@ impl Default for WebmDemuxerOptions {
   }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct WebmTrackSelectionInfo {
   id: u64,
   track_type: TrackType,

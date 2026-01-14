@@ -311,17 +311,6 @@ impl AudioRingBuffer {
     self.read.store(read.wrapping_add(to_read), Ordering::Release);
   }
 
-  /// Returns the current number of buffered samples (not frames).
-  ///
-  /// This is a best-effort snapshot intended for non-real-time bookkeeping (e.g. idle detection).
-  #[must_use]
-  pub fn buffered_samples(&self) -> usize {
-    let read = self.read.load(Ordering::Acquire);
-    let write = self.write.load(Ordering::Acquire);
-    let available = write.wrapping_sub(read);
-    if available > self.capacity { 0 } else { available }
-  }
-
   #[must_use]
   pub fn is_empty(&self) -> bool {
     self.buffered_samples() == 0

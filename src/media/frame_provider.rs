@@ -248,11 +248,14 @@ fn video_entry_mut<'a>(
   //
   // We want to avoid allocating a new `Arc<str>` when the entry already exists, so we scan the
   // (typically tiny) map first. Only allocate/insert on a miss.
-  if let Some((_, entry)) = map
-    .iter_mut()
-    .find(|(k, _)| k.box_id == box_id && k.src.as_ref() == src)
+  if let Some(existing_key) = map
+    .keys()
+    .find(|k| k.box_id == box_id && k.src.as_ref() == src)
+    .cloned()
   {
-    return entry;
+    return map
+      .get_mut(&existing_key)
+      .expect("video_entry_mut found existing key but could not fetch entry");
   }
 
   let src_arc: Arc<str> = Arc::from(src);
@@ -260,10 +263,8 @@ fn video_entry_mut<'a>(
     box_id,
     src: Arc::clone(&src_arc),
   };
-  map.insert(key.clone(), VideoEntry::new(src_arc));
-  map
-    .get_mut(&key)
-    .expect("video_entry_mut inserted key but could not retrieve it")
+  map.entry(key)
+    .or_insert_with(|| VideoEntry::new(src_arc))
 }
 
 fn clamp_target_dimension(value: f32) -> Option<u32> {

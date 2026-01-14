@@ -3533,7 +3533,6 @@ const MUTATION_OBSERVER_REGISTRY_KEY: &str = "__fastrender_mutation_observer_reg
 const MUTATION_OBSERVER_NOTIFY_KEY: &str = "__fastrender_mutation_observer_notify";
 const MUTATION_OBSERVER_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMMOB"); // MutationObserver
 const MUTATION_RECORD_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMMRC"); // MutationRecord
-const NODE_LIST_PROTOTYPE_KEY: &str = "__fastrender_node_list_prototype";
 const MUTATION_RECORD_PROTOTYPE_KEY: &str = "__fastrender_mutation_record_prototype";
 const RANGE_PROTOTYPE_KEY: &str = "__fastrender_range_prototype";
 const ATTR_PROTOTYPE_KEY: &str = "__fastrender_attr_prototype";
@@ -9291,10 +9290,7 @@ fn initialize_node_wrapper_shims(
         None
       };
       if let Some(ctor_name) = ctor_name {
-        if let Some(global) = vm
-          .user_data::<WindowRealmUserData>()
-          .and_then(|data| data.window_obj())
-        {
+        if let Some(global) = window_obj {
           scope.push_root(Value::Object(global))?;
 
           // Prefer the concrete interface (HTMLVideoElement/HTMLAudioElement). Fall back to

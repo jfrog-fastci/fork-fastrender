@@ -61,23 +61,19 @@ impl AvSyncConfig {
   /// Invalid values are ignored (defaults remain in effect) and will emit a warning.
   pub fn from_env() -> Self {
     let toggles = runtime::runtime_toggles();
-    Self::from_env_vars(|key| toggles.get(key))
-  }
-
-  fn from_env_vars(mut get: impl FnMut(&str) -> Option<&str>) -> Self {
     let mut out = Self::default();
     out.tolerance = parse_env_duration_ms_or_default(
-      get(ENV_AV_SYNC_TOLERANCE_MS),
+      toggles.get(ENV_AV_SYNC_TOLERANCE_MS),
       DEFAULT_AV_SYNC_TOLERANCE_MS,
       ENV_AV_SYNC_TOLERANCE_MS,
     );
     out.max_late = parse_env_duration_ms_or_default(
-      get(ENV_AV_SYNC_MAX_LATE_MS),
+      toggles.get(ENV_AV_SYNC_MAX_LATE_MS),
       DEFAULT_AV_SYNC_MAX_LATE_MS,
       ENV_AV_SYNC_MAX_LATE_MS,
     );
     out.max_early = parse_env_duration_ms_or_default(
-      get(ENV_AV_SYNC_MAX_EARLY_MS),
+      toggles.get(ENV_AV_SYNC_MAX_EARLY_MS),
       DEFAULT_AV_SYNC_MAX_EARLY_MS,
       ENV_AV_SYNC_MAX_EARLY_MS,
     );
