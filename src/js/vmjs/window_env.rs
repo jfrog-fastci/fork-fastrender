@@ -1493,8 +1493,8 @@ fn navigator_ua_data_get_high_entropy_values_native(
         continue;
       }
       let hint = hint_js.to_utf8_lossy();
-
-      match hint.as_str() {
+ 
+      match hint.as_ref() {
         "brands" => want_brands = true,
         "mobile" => want_mobile = true,
         "platform" => want_platform = true,
@@ -2370,8 +2370,8 @@ pub fn install_window_shims(
           continue;
         }
         let hint = hint_js.to_utf8_lossy();
-
-        match hint.as_str() {
+ 
+        match hint.as_ref() {
           "brands" => want_brands = true,
           "mobile" => want_mobile = true,
           "platform" => want_platform = true,

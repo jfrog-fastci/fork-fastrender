@@ -7696,10 +7696,10 @@ fn location_host_set_native(
     if !left.contains(':') && (right.is_empty() || right.chars().all(|c| c.is_ascii_digit())) {
       (left, Some(right))
     } else {
-      (host_input.as_str(), None)
+      (host_input.as_ref(), None)
     }
   } else {
-    (host_input.as_str(), None)
+    (host_input.as_ref(), None)
   };
 
   if host_part.is_empty() {
@@ -7760,7 +7760,7 @@ fn location_hostname_set_native(
   };
 
   // Best-effort: accept bracketed IPv6 (`[::1]`). rust-url expects the brackets for `set_host`.
-  let hostname = hostname_input.as_str();
+  let hostname = hostname_input.as_ref();
 
   if hostname.is_empty() {
     return Ok(Value::Undefined);
@@ -8121,7 +8121,7 @@ fn history_scroll_restoration_set_native(
   scope.push_root(Value::String(value_s))?;
   let value = scope.heap().get_string(value_s)?.to_utf8_lossy();
 
-  let mode = match value.as_str() {
+  let mode = match value.as_ref() {
     "auto" => HISTORY_SCROLL_RESTORATION_AUTO,
     "manual" => HISTORY_SCROLL_RESTORATION_MANUAL,
     _ => {
@@ -33391,7 +33391,7 @@ fn sync_html_collection_query_if_needed(
     .get_string(kind_s)
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
-  let kind = kind.as_str();
+  let kind = kind.as_ref();
   if kind != "tag_name_ns" && kind != "tag_name" && kind != "class_name" {
     return Ok(());
   }
@@ -33825,7 +33825,7 @@ fn html_collection_named_item_native(
     // SAFETY: `dom_ptr` is valid for the duration of this native call.
     let dom = unsafe { dom_ptr.as_ref() };
 
-    if dom.element_id(handle.node_id) == key.as_str() {
+    if dom.element_id(handle.node_id) == key.as_ref() {
       return Ok(Value::Object(element_obj));
     }
 
@@ -33837,7 +33837,7 @@ fn html_collection_named_item_native(
       _ => continue,
     };
     if dom.is_html_case_insensitive_namespace(namespace)
-      && name_attr_value.is_some_and(|value| value == key.as_str())
+      && name_attr_value.is_some_and(|value| value == key.as_ref())
     {
       return Ok(Value::Object(element_obj));
     }

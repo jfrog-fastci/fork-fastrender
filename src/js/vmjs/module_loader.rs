@@ -1284,12 +1284,12 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsModuleHooks<'_, Host> 
         .unwrap_or_else(|| self.document_url.to_string()),
       ModuleReferrer::Script(_) | ModuleReferrer::Realm(_) => self.document_url.to_string(),
     };
-
+ 
     let specifier = module_request.specifier.to_utf8_lossy();
     let resolved_url = match self.resolve_module_specifier(
       vm,
       scope,
-      specifier.as_str(),
+      specifier.as_ref(),
       base_url.as_str(),
     ) {
       Ok(url) => url,
