@@ -10616,7 +10616,7 @@ impl Painter {
         } else {
           None
         };
-        let text_style = if let Some(pseudo_style) = placeholder_pseudo_style {
+        let mut text_style = if let Some(pseudo_style) = placeholder_pseudo_style {
           let mut style = pseudo_style.clone();
           let opacity = style.opacity.clamp(0.0, 1.0);
           style.opacity = 1.0;
@@ -10629,6 +10629,10 @@ impl Painter {
           style.color = fallback_color;
           style
         };
+        // HTML `<input>` controls paint their value as a single line without wrapping; overflow is
+        // handled via clipping/scrolling rather than soft line breaks.
+        text_style.white_space = crate::style::types::WhiteSpace::Nowrap;
+        text_style.text_wrap = crate::style::types::TextWrap::NoWrap;
         let mut rect = inset_rect(content_rect, 2.0);
         let mut affordance_space = 0.0;
         if !matches!(control.appearance, Appearance::None) {

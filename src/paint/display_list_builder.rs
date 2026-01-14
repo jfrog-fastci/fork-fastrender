@@ -13343,10 +13343,15 @@ impl DisplayListBuilder {
           } else {
             *caret_affinity
           };
-          let caret_x = start_x
+          let mut caret_x = start_x
             + caret_x_for_position(&caret_stops, caret_idx, caret_affinity_for_paint).unwrap_or(0.0);
-          let max_caret_x = (text_rect.max_x() - 1.0).max(text_rect.x());
-          let caret_x = caret_x.clamp(text_rect.x(), max_caret_x);
+          if !caret_x.is_finite() {
+            caret_x = content_rect.x();
+          }
+          // Clamp to the visible content rect, not the translated text rect, so internal horizontal
+          // scrolling doesn't pin the caret to an offscreen range.
+          let max_caret_x = (content_rect.max_x() - 1.0).max(content_rect.x());
+          let caret_x = caret_x.clamp(content_rect.x(), max_caret_x);
           let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
           let caret_rect_raw = self.snap_form_control_caret_rect(caret_rect_raw);
           if let Some(clipped) = caret_rect_raw.intersection(content_rect) {
@@ -13600,10 +13605,13 @@ impl DisplayListBuilder {
             && !caret_color.is_transparent()
           {
             let caret_col = caret_idx.saturating_sub(line_start).min(line_len);
-            let caret_x = start_x
+            let mut caret_x = start_x
               + caret_x_for_position(&caret_stops, caret_col, caret_affinity_for_paint).unwrap_or(0.0);
-            let max_caret_x = (line_rect.max_x() - 1.0).max(line_rect.x());
-            let caret_x = caret_x.clamp(line_rect.x(), max_caret_x);
+            if !caret_x.is_finite() {
+              caret_x = content_rect.x();
+            }
+            let max_caret_x = (content_rect.max_x() - 1.0).max(content_rect.x());
+            let caret_x = caret_x.clamp(content_rect.x(), max_caret_x);
             let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
             let caret_rect_raw = self.snap_form_control_caret_rect(caret_rect_raw);
             caret_rect = caret_rect_raw
@@ -13621,15 +13629,18 @@ impl DisplayListBuilder {
           {
             let line_runs = shape_text_runs(self, line, &text_style)
               .unwrap_or_else(|| Arc::clone(&empty_runs));
-            let caret_x = start_x
+            let mut caret_x = start_x
               + caret_x_for_position(
                 &caret_stops_for_runs(line, line_runs.as_ref(), total_advance),
                 line_len,
                 CaretAffinity::Downstream,
               )
               .unwrap_or(0.0);
-            let max_caret_x = (line_rect.max_x() - 1.0).max(line_rect.x());
-            let caret_x = caret_x.clamp(line_rect.x(), max_caret_x);
+            if !caret_x.is_finite() {
+              caret_x = content_rect.x();
+            }
+            let max_caret_x = (content_rect.max_x() - 1.0).max(content_rect.x());
+            let caret_x = caret_x.clamp(content_rect.x(), max_caret_x);
             let caret_rect_raw = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
             let caret_rect_raw = self.snap_form_control_caret_rect(caret_rect_raw);
             caret_rect = caret_rect_raw
