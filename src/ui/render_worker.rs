@@ -14849,6 +14849,7 @@ mod scroll_state_updated_tests {
       }
       WorkerToUiMsg::Single(other) => panic!("unexpected worker msg: {other:?}"),
       WorkerToUiMsg::Batch(msgs) => panic!("unexpected worker msg batch: {msgs:?}"),
+      other => panic!("unexpected worker msg: {other:?}"),
     }
   }
 }

@@ -52,7 +52,20 @@ impl WindowTitleCache {
 
     // Fast path: nothing changed.
     if display_title_source == self.source.as_deref() {
-      return None;
+      // `WindowTitleCache::default()` starts with an empty `full_title`. Ensure we still produce the
+      // correct initial title the first time `sync` is called.
+      let full_title_matches = match display_title_source {
+        Some(src) => {
+          self.full_title.len() == src.len() + APP_SUFFIX.len()
+            && self.full_title.starts_with(src)
+            && self.full_title.ends_with(APP_SUFFIX)
+        }
+        None => self.full_title == APP_NAME,
+      };
+      if full_title_matches {
+        return None;
+      }
+      // `source` matched but `full_title` did not; fall through to rebuild.
     }
 
     // The title source changed; update the owned cache (reusing capacity when possible).

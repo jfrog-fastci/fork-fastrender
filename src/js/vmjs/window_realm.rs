@@ -63665,6 +63665,32 @@ mod tests {
   }
 
   #[test]
+  fn character_data_delete_data_removes_substring() -> Result<(), VmError> {
+    let script = r#"(() => {
+      const t = document.createTextNode("abcd");
+      t.deleteData(1, 2);
+      return t.data === "ad";
+    })()"#;
+    for backend in [DomBindingsBackend::Handwritten, DomBindingsBackend::WebIdl] {
+      if backend == DomBindingsBackend::Handwritten {
+        let mut host = new_host_document_state();
+        let mut realm =
+          new_realm(WindowRealmConfig::new("https://example.com/").with_dom_bindings_backend(backend))?;
+        let value = exec_script_with_dom_host(&mut realm, &mut host, script)?;
+        assert_eq!(value, Value::Bool(true));
+      } else {
+        let document = new_host_document_state();
+        let window =
+          new_realm(WindowRealmConfig::new("https://example.com/").with_dom_bindings_backend(backend))?;
+        let mut host = WebIdlTestHost::new(document, window);
+        let value = host.exec_script(script)?;
+        assert_eq!(value, Value::Bool(true));
+      }
+    }
+    Ok(())
+  }
+
+  #[test]
   fn named_node_map_remove_missing_throws_domexception_not_found_error() -> Result<(), VmError> {
     let mut host = new_host_document_state();
     let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
