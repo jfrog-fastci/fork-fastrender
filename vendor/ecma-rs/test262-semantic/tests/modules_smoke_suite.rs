@@ -10,12 +10,16 @@ fn modules_smoke_suite_selects_module_tests() {
 
   // Minimal fake test262 checkout: only the `test/` directory is required for discovery.
   let module_dir = temp.path().join("test/language/module-code");
+  let ambiguous_export_dir = temp
+    .path()
+    .join("test/language/module-code/ambiguous-export-bindings");
   let tla_dir = temp.path().join("test/language/module-code/top-level-await");
   let import_dir = temp.path().join("test/language/import");
   let import_attr_dir = temp.path().join("test/language/import/import-attributes");
   let export_dir = temp.path().join("test/language/export");
   let import_meta_dir = temp.path().join("test/language/expressions/import.meta");
   fs::create_dir_all(&module_dir).unwrap();
+  fs::create_dir_all(&ambiguous_export_dir).unwrap();
   fs::create_dir_all(&tla_dir).unwrap();
   fs::create_dir_all(&import_dir).unwrap();
   fs::create_dir_all(&import_attr_dir).unwrap();
@@ -26,6 +30,31 @@ fn modules_smoke_suite_selects_module_tests() {
   fs::write(
     module_dir.join("early-export-unresolvable.js"),
     "/*---\nflags: [module]\n---*/\nexport { x } from './does-not-exist.js';\n",
+  )
+  .unwrap();
+  fs::write(
+    module_dir.join("export-default-basic.js"),
+    "/*---\nflags: [module]\n---*/\nexport default 1;\n",
+  )
+  .unwrap();
+  fs::write(
+    module_dir.join("export-expname-basic.js"),
+    "/*---\nflags: [module]\n---*/\nexport { x as y };\n",
+  )
+  .unwrap();
+  fs::write(
+    ambiguous_export_dir.join("star-export.js"),
+    "/*---\nflags: [module]\n---*/\nexport * from './x.js';\n",
+  )
+  .unwrap();
+  fs::write(
+    module_dir.join("instn-local-bndng-basic.js"),
+    "/*---\nflags: [module]\n---*/\nexport {};\n",
+  )
+  .unwrap();
+  fs::write(
+    module_dir.join("comment-basic.js"),
+    "/*---\nflags: [module]\n---*/\n/* comment */\nexport {};\n",
   )
   .unwrap();
   fs::write(
@@ -69,6 +98,36 @@ fn modules_smoke_suite_selects_module_tests() {
       .iter()
       .any(|id| id == "language/module-code/early-export-unresolvable.js"),
     "expected suite to include early-export-unresolvable.js, got: {selected:#?}"
+  );
+  assert!(
+    selected
+      .iter()
+      .any(|id| id == "language/module-code/export-default-basic.js"),
+    "expected suite to include language/module-code/export-default-basic.js, got: {selected:#?}"
+  );
+  assert!(
+    selected
+      .iter()
+      .any(|id| id == "language/module-code/export-expname-basic.js"),
+    "expected suite to include language/module-code/export-expname-basic.js, got: {selected:#?}"
+  );
+  assert!(
+    selected
+      .iter()
+      .any(|id| id == "language/module-code/ambiguous-export-bindings/star-export.js"),
+    "expected suite to include language/module-code/ambiguous-export-bindings/star-export.js, got: {selected:#?}"
+  );
+  assert!(
+    selected
+      .iter()
+      .any(|id| id == "language/module-code/instn-local-bndng-basic.js"),
+    "expected suite to include language/module-code/instn-local-bndng-basic.js, got: {selected:#?}"
+  );
+  assert!(
+    selected
+      .iter()
+      .any(|id| id == "language/module-code/comment-basic.js"),
+    "expected suite to include language/module-code/comment-basic.js, got: {selected:#?}"
   );
   assert!(
     selected
