@@ -25,7 +25,7 @@ Legend: ✅ implemented, ⚠️ partial, 🚧 planned, ❌ missing.
 | Decode pipeline (`MediaDecodePipeline`) | ✅ | [`src/media/pipeline.rs`](../src/media/pipeline.rs) (demux→decode wiring; yields `DecodedItem`) |
 | WebM demux (`WebmDemuxer`) | ✅ | [`src/media/demux/webm.rs`](../src/media/demux/webm.rs) (feature: `media_webm`/`media`; VP9+Opus; track selection/filtering; codec delay; seek; optional inter-track ordering; rejects encrypted/compressed `ContentEncodings`) |
 | MP4 demux (`Mp4ParseDemuxer`) | ✅ | [`src/media/demux/mp4parse.rs`](../src/media/demux/mp4parse.rs) (feature: `media_mp4`/`media`; used by [`NativeBackend`](../src/media/backends/native.rs) via [`MediaDemuxer`](../src/media/demuxer.rs); H.264/VP9 video + AAC audio; rejects encrypted/protected tracks; mp4parse sample-table DTS/PTS/duration; seek-by-PTS threshold (no keyframe backtracking yet)) |
-| MP4 demux + packetizer (`Mp4PacketDemuxer`, mp4 crate) | ⚠️ (in-tree; not used by `NativeBackend`) | [`src/media/demuxer.rs`](../src/media/demuxer.rs) (feature: `media_mp4`/`media`; `mp4` crate + mp4parse metadata; best-effort DTS/PTS/duration + keyframe seek; sample-table caps; falls back to mp4 crate timestamps when mp4parse tables are unavailable) |
+| MP4 demux + packetizer (`Mp4PacketDemuxer`, mp4 crate) | ⚠️ (in-tree; not used by `NativeBackend`) | [`src/media/demuxer.rs`](../src/media/demuxer.rs) (feature: `media_mp4`/`media`; `mp4` crate + mp4parse metadata; yields packets ordered by DTS (decode order) with best-effort DTS/PTS/duration + keyframe seek; sample-table caps; falls back to mp4 crate timestamps when mp4parse tables are unavailable) |
 | MP4 demux (pure-Rust box parser): `demux::mp4::Mp4Demuxer` | ✅ (not wired) | [`src/media/demux/mp4.rs`](../src/media/demux/mp4.rs) (in-memory; produces `MediaData::Shared`; parses `avcC`→H.264 extradata + `esds`→AAC ASC; not currently used by `NativeBackend`/`MediaDecodePipeline`) |
 | MP4 sample-table utilities (`Mp4Demuxer`, `Mp4SeekIndex`) | ✅ | [`src/media/mp4.rs`](../src/media/mp4.rs) (feature: `media_mp4`/`media`; `ctts`-aware PTS/DTS computation; currently separate from `Mp4ParseDemuxer`/`Mp4PacketDemuxer`) |
 | AAC decoder | ✅ | [`src/media/codecs/aac.rs`](../src/media/codecs/aac.rs) (feature: `codec_aac`/`media`; Symphonia → `DecodedAudioChunk`) |
@@ -208,7 +208,10 @@ Other MP4 demuxers in-tree:
   [`mp4`](https://crates.io/crates/mp4) crate plus mp4parse metadata) which:
   - opens from file or in-memory bytes,
   - rejects encrypted/protected tracks using mp4parse metadata,
-  - can attach mp4parse-derived DTS/PTS/duration and do best-effort keyframe seeking, but
+  - uses mp4parse-derived DTS/PTS/duration/sync-sample metadata when available,
+  - yields packets ordered by DTS across tracks (tie-break by track id) to preserve decode order,
+  - seeks video to a sync sample at-or-before the target (so it may emit preroll packets with
+    `pts_ns < target`), and
   - falls back to mp4 crate timestamps when sample tables are unavailable.
   - (best-effort) rejects oversized packet payloads (see `MAX_MP4_PACKET_BYTES` in `src/media/demuxer.rs`);
     note the `mp4` crate may still allocate large sample buffers before we can enforce this cap.
