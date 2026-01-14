@@ -81,9 +81,9 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 | Metric | Count |
 | --- | ---: |
-| Total cases | 17318 |
-| Matched upstream expected | 17040 (98.39%) |
-| Mismatched upstream expected | 278 (1.61%) |
+| Total cases | 17328 |
+| Matched upstream expected | 17050 (98.40%) |
+| Mismatched upstream expected | 278 (1.60%) |
 | Timeouts | 0 |
 | Skipped | 40 |
 | Unexpected mismatches | 49 |
@@ -92,7 +92,7 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 | Outcome | Count |
 | --- | ---: |
-| passed | 17000 |
+| passed | 17010 |
 | failed | 278 |
 | timed_out | 0 |
 | skipped | 40 |
@@ -101,7 +101,7 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 | Kind | Count |
 | --- | ---: |
-| pass | 8846 |
+| pass | 8856 |
 | xfail | 8432 |
 | skip | 40 |
 | flaky | 0 |
@@ -110,7 +110,7 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 | Status | Count |
 | --- | ---: |
-| PASS | 8797 |
+| PASS | 8807 |
 | FAIL (unexpected) | 49 |
 | XFAIL | 229 |
 | XPASS | 8203 |
@@ -121,14 +121,14 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 | Area | Total | Matched | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | built-ins | 7185 | 7171 | 14 | 0.19% | 6383 | 6 | 8 | 748 | 40 |
-| language | 10128 | 9864 | 264 | 2.61% | 2409 | 43 | 221 | 7455 | 0 |
+| language | 10138 | 9874 | 264 | 2.60% | 2419 | 43 | 221 | 7455 | 0 |
 | staging | 5 | 5 | 0 | 0.00% | 5 | 0 | 0 | 0 | 0 |
 
 ## Top failing buckets (by mismatched cases)
 
 | Bucket | Total | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `language/statements` | 7161 | 245 | 3.42% | 1377 | 43 | 202 | 5539 | 0 |
+| `language/statements` | 7171 | 245 | 3.42% | 1387 | 43 | 202 | 5539 | 0 |
 | `language/expressions` | 2337 | 19 | 0.81% | 1032 | 0 | 19 | 1286 | 0 |
 | `built-ins/Array` | 1503 | 6 | 0.40% | 1457 | 0 | 6 | 0 | 40 |
 | `built-ins/JSON` | 330 | 6 | 1.82% | 324 | 6 | 0 | 0 | 0 |
