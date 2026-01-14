@@ -853,6 +853,13 @@ pub fn apply_scroll_anchoring(
     }
   }
 
+  // Canonical scroll state representation omits explicit `Point::ZERO` element offsets. If a
+  // container becomes unscrolled as a result of anchoring (or sanitization), drop its anchor so
+  // future relayouts don't attempt to adjust it.
+  next_snapshot
+    .elements
+    .retain(|id, _| next_scroll.elements.contains_key(id));
+
   next_scroll.update_deltas_from(scroll);
 
   (next_scroll, next_snapshot)

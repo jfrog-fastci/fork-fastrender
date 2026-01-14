@@ -977,6 +977,7 @@ mod tests {
   use crate::ui::chrome_assets::ChromeAssetsFetcher;
   use crate::ui::chrome_dynamic_asset_fetcher::ChromeDynamicAssetFetcher;
   use crate::ui::BrowserTabState;
+  use crate::ui::CursorKind;
   use crate::ui::{OmniboxSuggestion, OmniboxSuggestionSource, OmniboxUrlSource};
   use crate::FontConfig;
   use std::collections::hash_map::DefaultHasher;
