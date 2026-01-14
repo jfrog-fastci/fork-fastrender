@@ -1924,16 +1924,16 @@ pub fn chrome_ui_with_bookmarks(
 
             // Loading status (optional; shown to the right of downloads).
             if loading && !is_compact {
-              let _ = ui
-                .add(
-                  egui::Label::new(egui::RichText::new(loading_text.clone()).small())
-                    .wrap(false)
-                    .truncate(true),
-                )
-                .on_hover_text(loading_text.clone());
+              let resp = ui.add(
+                egui::Label::new(egui::RichText::new(loading_text.clone()).small())
+                  .wrap(false)
+                  .truncate(true),
+              );
+              show_tooltip_on_hover_or_focus(ui, &resp, loading_text);
             }
             if loading {
-              let resp = spinner(ui, icon_side).on_hover_text(loading_text.clone());
+              let resp = spinner(ui, icon_side);
+              show_tooltip_on_hover_or_focus(ui, &resp, loading_text);
               // In compact mode the spinner may be the only visible loading affordance, so expose the
               // full loading text to screen readers (hover text is not sufficient).
               resp.widget_info({
