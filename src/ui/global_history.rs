@@ -33,6 +33,8 @@
 
 use crate::ui::about_pages;
 use serde::{de, Deserialize, Deserializer, Serialize};
+use smallvec::SmallVec;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -417,35 +419,59 @@ impl GlobalHistoryStore {
     }
 
     // Lowercase once so we can use the fast ASCII-only matcher (non-ASCII bytes compare exactly).
-    let query_lower = query.to_ascii_lowercase();
-    let tokens: Vec<&str> = query_lower
-      .split_whitespace()
-      .filter(|t| !t.is_empty())
-      .collect();
-    if tokens.is_empty() {
-      return self.iter_recent().take(limit).collect();
-    }
+    // Most user queries are already lowercase; avoid allocating unless needed.
+    let query_lower: Cow<'_, str> = if query.as_bytes().iter().any(|b| b.is_ascii_uppercase()) {
+      Cow::Owned(query.to_ascii_lowercase())
+    } else {
+      Cow::Borrowed(query)
+    };
+    let tokens: SmallVec<[&str; 4]> = query_lower.split_whitespace().collect();
 
-    let mut out = Vec::with_capacity(limit.min(self.entries.len()));
-    'entries: for (idx, entry) in self.iter_recent() {
-      for token in &tokens {
-        let in_url = contains_ascii_case_insensitive(&entry.url, token);
-        let in_title = entry
-          .title
-          .as_deref()
-          .is_some_and(|t| contains_ascii_case_insensitive(t, token));
-        if !in_url && !in_title {
-          continue 'entries;
+    match tokens.as_slice() {
+      [] => self.iter_recent().take(limit).collect(),
+      [token] => {
+        let mut out = Vec::with_capacity(limit.min(self.entries.len()));
+        for (idx, entry) in self.iter_recent() {
+          let in_url = contains_ascii_case_insensitive(&entry.url, token);
+          let in_title = entry
+            .title
+            .as_deref()
+            .is_some_and(|t| contains_ascii_case_insensitive(t, token));
+          if !in_url && !in_title {
+            continue;
+          }
+
+          out.push((idx, entry));
+          if out.len() >= limit {
+            break;
+          }
         }
-      }
 
-      out.push((idx, entry));
-      if out.len() >= limit {
-        break;
+        out
+      }
+      tokens => {
+        let mut out = Vec::with_capacity(limit.min(self.entries.len()));
+        'entries: for (idx, entry) in self.iter_recent() {
+          for token in tokens {
+            let in_url = contains_ascii_case_insensitive(&entry.url, token);
+            let in_title = entry
+              .title
+              .as_deref()
+              .is_some_and(|t| contains_ascii_case_insensitive(t, token));
+            if !in_url && !in_title {
+              continue 'entries;
+            }
+          }
+
+          out.push((idx, entry));
+          if out.len() >= limit {
+            break;
+          }
+        }
+
+        out
       }
     }
-
-    out
   }
 
   /// Delete a single history entry by URL.
@@ -832,12 +858,13 @@ impl GlobalHistorySearcher {
       // stable we can reuse the cached tokens.
       if query_changed {
         self.last_query = query.to_string();
-        let query_lower = query.to_ascii_lowercase();
-        self.last_tokens_lower = query_lower
-          .split_whitespace()
-          .filter(|t| !t.is_empty())
-          .map(|t| t.to_string())
-          .collect();
+        // Most queries are already lowercase; avoid allocating a full lowercased copy unless needed.
+        let query_lower: Cow<'_, str> = if query.as_bytes().iter().any(|b| b.is_ascii_uppercase()) {
+          Cow::Owned(query.to_ascii_lowercase())
+        } else {
+          Cow::Borrowed(query)
+        };
+        self.last_tokens_lower = query_lower.split_whitespace().map(|t| t.to_string()).collect();
       }
       self.last_revision = store_revision;
 
@@ -870,6 +897,28 @@ fn compute_search_match_indices(
       .collect();
     let complete = store.entries.len() <= limit;
     return (indices, complete);
+  }
+
+  if tokens.len() == 1 {
+    let token = tokens[0].as_str();
+    let mut out = Vec::with_capacity(limit.min(store.entries.len()));
+    for (idx, entry) in store.iter_recent() {
+      let in_url = contains_ascii_case_insensitive(&entry.url, token);
+      let in_title = entry
+        .title
+        .as_deref()
+        .is_some_and(|t| contains_ascii_case_insensitive(t, token));
+      if !in_url && !in_title {
+        continue;
+      }
+
+      out.push(idx);
+      if out.len() >= limit {
+        return (out, false);
+      }
+    }
+
+    return (out, true);
   }
 
   let mut out = Vec::with_capacity(limit.min(store.entries.len()));
