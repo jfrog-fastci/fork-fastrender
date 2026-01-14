@@ -482,7 +482,10 @@ impl TrackSampleTable {
       .sync_sample_indices
       .partition_point(|&idx| idx as usize <= capped);
     if pos == 0 {
-      0
+      // When the seek target lands before the first sync sample, we cannot decode from the
+      // requested position (or from sample 0 if it is not sync). Fall back to the first sync sample
+      // so decode can start from a keyframe.
+      self.sync_sample_indices[0] as usize
     } else {
       self.sync_sample_indices[pos - 1] as usize
     }
@@ -1004,6 +1007,49 @@ mod mp4_timestamp_tests {
       }
       last_dts = Some(pkt.dts_ns);
     }
+  }
+}
+
+#[cfg(all(test, feature = "media_mp4"))]
+mod mp4_sync_sample_tests {
+  use super::{build_pts_index, PtsIndex, SampleTiming, TrackSampleTable};
+
+  #[test]
+  fn mp4_sync_sample_at_or_before_falls_back_to_first_sync_sample() {
+    let sample_count = 12;
+    let mut samples = Vec::with_capacity(sample_count);
+    let mut pts_ns_by_sample = Vec::with_capacity(sample_count);
+    for i in 0..sample_count {
+      let pts = i as u64 * 1_000_000;
+      pts_ns_by_sample.push(pts);
+      samples.push(SampleTiming {
+        dts_ns: pts,
+        pts_ns: pts,
+        duration_ns: 1_000_000,
+        is_sync: false,
+      });
+    }
+    let pts_index = build_pts_index(&pts_ns_by_sample);
+    assert!(matches!(pts_index, PtsIndex::Monotonic));
+
+    let table = TrackSampleTable {
+      samples,
+      pts_ns_by_sample,
+      pts_index,
+      sync_sample_indices: vec![5, 10],
+    };
+
+    // When there is no sync sample at-or-before the target index, prefer the first sync sample.
+    assert_eq!(table.sync_sample_at_or_before(0), 5);
+    assert_eq!(table.sync_sample_at_or_before(4), 5);
+    assert_eq!(table.sync_sample_at_or_before(5), 5);
+
+    // Otherwise, pick the last sync sample at-or-before the target index.
+    assert_eq!(table.sync_sample_at_or_before(6), 5);
+    assert_eq!(table.sync_sample_at_or_before(11), 10);
+
+    // Out-of-range targets are capped to the last sample.
+    assert_eq!(table.sync_sample_at_or_before(999), 10);
   }
 }
 
