@@ -3529,6 +3529,32 @@ mod regex_validation_tests {
     assert_invalid(r"/[a--bc]/v");
     assert_invalid(r"/[a-b&&c]/v");
   }
+
+  #[test]
+  fn unicode_property_escape_ascii_is_valid_in_u_mode() {
+    assert_valid(r"/\p{ASCII}/u");
+    assert_valid(r"/\P{ASCII}/u");
+  }
+
+  #[test]
+  fn unicode_property_escape_general_category_is_valid_in_u_mode() {
+    assert_valid(r"/\p{Lu}/u");
+  }
+
+  #[test]
+  fn unicode_property_escape_script_is_valid_in_u_mode() {
+    assert_valid(r"/\p{Script=Greek}/u");
+  }
+
+  #[test]
+  fn unicode_property_value_expression_script_is_valid() {
+    assert!(
+      super::super::regex_unicode_property::validate_unicode_property_value_expression(
+        "Script=Greek",
+        false,
+      )
+    );
+  }
 }
 
 pub fn normalise_literal_string_or_template_inner(raw: &str) -> Option<String> {
