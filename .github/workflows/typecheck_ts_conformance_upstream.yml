@@ -286,6 +286,9 @@ jobs:
       - name: Init ecma-rs checkout (vendored/submodule compatibility)
         run: bash scripts/ci_init_ecma_rs_submodule.sh
 
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        run: bash scripts/check_no_conflict_markers.sh
+
       - name: TypeScript version sync (vendor/ecma-rs)
         working-directory: vendor/ecma-rs
         run: bash scripts/check_typescript_version_sync.sh
@@ -578,6 +581,7 @@ jobs:
 
           # Ensure the vendored `vendor/ecma-rs` tree is available for the nested cargo wrapper.
           bash scripts/ci_init_ecma_rs_submodule.sh
+          bash scripts/check_no_conflict_markers.sh
 
           timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh run -p typecheck-ts-harness --release -- \
             triage \

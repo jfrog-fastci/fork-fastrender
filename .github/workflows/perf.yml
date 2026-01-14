@@ -66,6 +66,10 @@ jobs:
             exit 1
           fi
 
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        shell: bash
+        run: bash scripts/check_no_conflict_markers.sh
+
       - name: Run perf regression benches
         run: cargo bench --bench perf_regressions --locked -- --noplot
 
@@ -187,6 +191,10 @@ jobs:
             echo "Run: git submodule update --init vendor/ecma-rs" >&2
             exit 1
           fi
+
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        shell: bash
+        run: bash scripts/check_no_conflict_markers.sh
 
       - name: Build ui_perf_smoke (release)
         shell: bash

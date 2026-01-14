@@ -77,6 +77,10 @@ jobs:
             exit 1
           fi
 
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        shell: bash
+        run: bash scripts/check_no_conflict_markers.sh
+
       - name: Run test262 parser harness
         shell: bash
         run: |
