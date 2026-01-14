@@ -1242,8 +1242,11 @@ impl BrowserDocument {
           &scroll_state,
           self.scroll_anchoring_priority_candidate,
         );
-        let (anchored, _next_snapshot) =
-          crate::scroll::apply_scroll_anchoring(&snapshot, prepared.fragment_tree(), &scroll_state);
+        let (anchored, _next_snapshot) = crate::scroll::anchoring::apply_scroll_anchoring(
+          &snapshot,
+          prepared.fragment_tree(),
+          &scroll_state,
+        );
 
         let viewport_delta = Point::new(
           anchored.viewport.x - scroll_state.viewport.x,
