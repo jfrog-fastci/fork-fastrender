@@ -1333,8 +1333,8 @@ impl<'vm> HirEvaluator<'vm> {
     // executed.
     self.instantiate_var_decls(scope, body, body.root_stmts.as_slice())?;
     self.instantiate_function_decls(scope, body, body.root_stmts.as_slice(), /* annex_b */ false)?;
-    // Create `let` / `const` bindings for the entire function body statement list up-front so TDZ
-    // + shadowing semantics are correct.
+    // Create lexical bindings (`let`/`const`/`using`/`await using`) for the entire function body
+    // statement list up-front so TDZ + shadowing semantics are correct.
     self.instantiate_lexical_decls(scope, body, body.root_stmts.as_slice(), self.env.lexical_env())?;
 
     Ok(())
@@ -1370,8 +1370,8 @@ impl<'vm> HirEvaluator<'vm> {
           }
         }
       }
-      // `const x;` is a syntax error (missing initializer).
-      hir_js::VarDeclKind::Const => {
+      // `const x;`, `using x;`, and `await using x;` are syntax errors (missing initializer).
+      hir_js::VarDeclKind::Const | hir_js::VarDeclKind::Using | hir_js::VarDeclKind::AwaitUsing => {
         for declarator in &decl.declarators {
           self.vm.tick()?;
           if declarator.init.is_some() {
@@ -1379,9 +1379,15 @@ impl<'vm> HirEvaluator<'vm> {
           }
 
           let pat = self.get_pat(body, declarator.pat)?;
+          let message = match decl.kind {
+            hir_js::VarDeclKind::Const => "Missing initializer in const declaration",
+            hir_js::VarDeclKind::Using => "Missing initializer in using declaration",
+            hir_js::VarDeclKind::AwaitUsing => "Missing initializer in await using declaration",
+            _ => unreachable!(),
+          };
           let diag = diagnostics::Diagnostic::error(
             "VMJS0002",
-            "Missing initializer in const declaration",
+            message,
             diagnostics::Span {
               file: diagnostics::FileId(0),
               range: pat.span,
@@ -1390,7 +1396,6 @@ impl<'vm> HirEvaluator<'vm> {
           return Err(VmError::Syntax(vec![diag]));
         }
       }
-      _ => {}
     }
     Ok(())
   }
@@ -1891,7 +1896,10 @@ impl<'vm> HirEvaluator<'vm> {
     env: GcEnv,
   ) -> Result<(), VmError> {
     match decl.kind {
-      hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const => {}
+      hir_js::VarDeclKind::Let
+      | hir_js::VarDeclKind::Const
+      | hir_js::VarDeclKind::Using
+      | hir_js::VarDeclKind::AwaitUsing => {}
       _ => return Ok(()),
     }
 
@@ -1909,7 +1917,9 @@ impl<'vm> HirEvaluator<'vm> {
 
         match decl.kind {
           hir_js::VarDeclKind::Let => scope.env_create_mutable_binding(env, name.as_str())?,
-          hir_js::VarDeclKind::Const => scope.env_create_immutable_binding(env, name.as_str())?,
+          hir_js::VarDeclKind::Const
+          | hir_js::VarDeclKind::Using
+          | hir_js::VarDeclKind::AwaitUsing => scope.env_create_immutable_binding(env, name.as_str())?,
           _ => {
             return Err(VmError::InvariantViolation(
               "unexpected VarDeclKind in lexical declaration instantiation",
@@ -2305,7 +2315,13 @@ impl<'vm> HirEvaluator<'vm> {
         // correct binding value (ECMA-262 `CreatePerIterationEnvironment`).
         let lexical_init = match init {
           Some(hir_js::ForInit::Var(decl))
-            if matches!(decl.kind, hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const) =>
+            if matches!(
+              decl.kind,
+              hir_js::VarDeclKind::Let
+                | hir_js::VarDeclKind::Const
+                | hir_js::VarDeclKind::Using
+                | hir_js::VarDeclKind::AwaitUsing
+            ) =>
           {
             Some(decl)
           }
@@ -2341,7 +2357,9 @@ impl<'vm> HirEvaluator<'vm> {
                   hir_js::VarDeclKind::Let => {
                     scope.env_create_mutable_binding(loop_env, name.as_str())?;
                   }
-                  hir_js::VarDeclKind::Const => {
+                  hir_js::VarDeclKind::Const
+                  | hir_js::VarDeclKind::Using
+                  | hir_js::VarDeclKind::AwaitUsing => {
                     scope.env_create_immutable_binding(loop_env, name.as_str())?;
                   }
                   _ => {
@@ -2530,7 +2548,8 @@ impl<'vm> HirEvaluator<'vm> {
           iter_scope.push_root(Value::Undefined)?;
           let mut v = Value::Undefined;
 
-          // Per-iteration lexical environments for `let`/`const` in the head.
+          // Per-iteration lexical environments for lexical head declarations
+          // (`let`/`const`/`using`/`await using`).
           let outer_lex: GcEnv = self.env.lexical_env();
 
           loop {
@@ -2559,7 +2578,13 @@ impl<'vm> HirEvaluator<'vm> {
 
             let mut iter_env: Option<GcEnv> = None;
             if let hir_js::ForHead::Var(var_decl) = left {
-              if matches!(var_decl.kind, hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const) {
+              if matches!(
+                var_decl.kind,
+                hir_js::VarDeclKind::Let
+                  | hir_js::VarDeclKind::Const
+                  | hir_js::VarDeclKind::Using
+                  | hir_js::VarDeclKind::AwaitUsing
+              ) {
                 let env = iter_scope.env_create(Some(outer_lex))?;
                 self.env.set_lexical_env(iter_scope.heap_mut(), env);
                 iter_env = Some(env);
@@ -2746,7 +2771,8 @@ impl<'vm> HirEvaluator<'vm> {
           iter_scope.push_root(Value::Undefined)?;
           let mut v = Value::Undefined;
 
-          // Per-iteration lexical environments for `let`/`const` in the head.
+          // Per-iteration lexical environments for lexical head declarations
+          // (`let`/`const`/`using`/`await using`).
           let outer_lex: GcEnv = self.env.lexical_env();
 
           loop {
@@ -2768,7 +2794,13 @@ impl<'vm> HirEvaluator<'vm> {
 
             let mut iter_env: Option<GcEnv> = None;
             if let hir_js::ForHead::Var(var_decl) = left {
-              if matches!(var_decl.kind, hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const) {
+              if matches!(
+                var_decl.kind,
+                hir_js::VarDeclKind::Let
+                  | hir_js::VarDeclKind::Const
+                  | hir_js::VarDeclKind::Using
+                  | hir_js::VarDeclKind::AwaitUsing
+              ) {
                 let env = iter_scope.env_create(Some(outer_lex))?;
                 self.env.set_lexical_env(iter_scope.heap_mut(), env);
                 iter_env = Some(env);
@@ -3368,7 +3400,11 @@ impl<'vm> HirEvaluator<'vm> {
       hir_js::ForHead::Var(var_decl) => {
         if !matches!(
           var_decl.kind,
-          hir_js::VarDeclKind::Var | hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const
+          hir_js::VarDeclKind::Var
+            | hir_js::VarDeclKind::Let
+            | hir_js::VarDeclKind::Const
+            | hir_js::VarDeclKind::Using
+            | hir_js::VarDeclKind::AwaitUsing
         ) {
           return Err(VmError::Unimplemented(
             "for-in/of loop variable declaration kind (hir-js compiled path)",
@@ -3386,10 +3422,17 @@ impl<'vm> HirEvaluator<'vm> {
           ));
         }
 
-        // For `let`/`const` bindings (including destructuring patterns), create all bound names in
-        // TDZ before binding initialization. This ensures defaults like `for (let {x = x} of xs) {}`
+        // For lexical head bindings (`let`/`const`/`using`/`await using`, including destructuring
+        // patterns), create all bound names in TDZ before binding initialization. This ensures
+        // defaults like `for (let {x = x} of xs) {}`
         // correctly throw a ReferenceError instead of resolving `x` from an outer scope.
-        if matches!(var_decl.kind, hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const) {
+        if matches!(
+          var_decl.kind,
+          hir_js::VarDeclKind::Let
+            | hir_js::VarDeclKind::Const
+            | hir_js::VarDeclKind::Using
+            | hir_js::VarDeclKind::AwaitUsing
+        ) {
           let env_rec = self.env.lexical_env();
           let mut names: Vec<hir_js::NameId> = Vec::new();
           self.collect_pat_idents(body, declarator.pat, &mut names)?;
@@ -3400,9 +3443,9 @@ impl<'vm> HirEvaluator<'vm> {
             }
             match var_decl.kind {
               hir_js::VarDeclKind::Let => scope.env_create_mutable_binding(env_rec, name.as_str())?,
-              hir_js::VarDeclKind::Const => {
-                scope.env_create_immutable_binding(env_rec, name.as_str())?
-              }
+              hir_js::VarDeclKind::Const
+              | hir_js::VarDeclKind::Using
+              | hir_js::VarDeclKind::AwaitUsing => scope.env_create_immutable_binding(env_rec, name.as_str())?,
               _ => {
                 return Err(VmError::InvariantViolation(
                   "unexpected VarDeclKind in for-in/of TDZ binding creation",
@@ -3438,6 +3481,21 @@ impl<'vm> HirEvaluator<'vm> {
         None => Value::Undefined,
       };
       self.bind_var_decl_pat(scope, body, declarator.pat, decl.kind, init_missing, value)?;
+
+      // Explicit Resource Management (tc39/proposal-explicit-resource-management):
+      // `using` and `await using` declarations must throw a TypeError if the initializer value is
+      // not an object, `null`, or `undefined`.
+      //
+      // Note: this mirrors the AST interpreter's `check_disposable_resource_value`.
+      if matches!(
+        decl.kind,
+        hir_js::VarDeclKind::Using | hir_js::VarDeclKind::AwaitUsing
+      ) {
+        match value {
+          Value::Null | Value::Undefined | Value::Object(_) => {}
+          _ => return Err(VmError::TypeError("Using declaration initializer must be an object")),
+        }
+      }
     }
     Ok(())
   }
@@ -3509,9 +3567,25 @@ impl<'vm> HirEvaluator<'vm> {
         }
         self.bind_pattern(scope, body, pat_id, value, PatBindingKind::Const)
       }
-      hir_js::VarDeclKind::Using | hir_js::VarDeclKind::AwaitUsing => Err(VmError::Unimplemented(
-        "using declarations (hir-js compiled path)",
-      )),
+      // Explicit Resource Management:
+      //
+      // `using` and `await using` declarations introduce immutable lexical bindings (like `const`).
+      //
+      // Note: The AST interpreter currently treats `using` bindings in `for..in/of` heads as
+      // ordinary immutable bindings (no disposable-resource bookkeeping). Keep this helper focused
+      // on binding initialization; disposable-resource type checks are handled in `eval_var_decl`.
+      hir_js::VarDeclKind::Using | hir_js::VarDeclKind::AwaitUsing => {
+        if init_missing {
+          // Should have been caught as a syntax error, but keep the engine robust.
+          let message = match kind {
+            hir_js::VarDeclKind::Using => "Missing initializer in using declaration",
+            hir_js::VarDeclKind::AwaitUsing => "Missing initializer in await using declaration",
+            _ => unreachable!(),
+          };
+          return Err(VmError::TypeError(message));
+        }
+        self.bind_pattern(scope, body, pat_id, value, PatBindingKind::Const)
+      }
     }
   }
 
@@ -10447,10 +10521,16 @@ impl ForAwaitOfState {
         let mut iter_scope = step_scope.reborrow();
         iter_scope.push_root(iter_value)?;
 
-        // Per-iteration lexical env for `let`/`const` heads.
+        // Per-iteration lexical env for lexical head declarations (`let`/`const`/`using`/`await using`).
         let mut iter_env_created: bool = false;
         if let hir_js::ForHead::Var(var_decl) = &self.left {
-          if matches!(var_decl.kind, hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const) {
+          if matches!(
+            var_decl.kind,
+            hir_js::VarDeclKind::Let
+              | hir_js::VarDeclKind::Const
+              | hir_js::VarDeclKind::Using
+              | hir_js::VarDeclKind::AwaitUsing
+          ) {
             let env = iter_scope.env_create(Some(outer_lex))?;
             evaluator.env.set_lexical_env(iter_scope.heap_mut(), env);
             iter_env_created = true;
@@ -11871,8 +11951,8 @@ pub(crate) fn run_compiled_script(
   // Hoist function declarations so they can be called before their declaration statement.
   evaluator.instantiate_function_decls(scope, body, body.root_stmts.as_slice(), /* annex_b */ false)?;
 
-  // Create `let` / `const` bindings up-front in the global lexical environment so TDZ + shadowing
-  // semantics are correct.
+  // Create lexical bindings (`let`/`const`/`using`/`await using`) up-front in the global lexical
+  // environment so TDZ + shadowing semantics are correct.
   evaluator.instantiate_lexical_decls(
     scope,
     body,
@@ -12092,8 +12172,8 @@ fn instantiate_compiled_module_decls_inner(
     // Hoist function declarations so they can be called before their declaration statement.
     evaluator.instantiate_function_decls(scope, body, body.root_stmts.as_slice(), /* annex_b */ false)?;
 
-    // Create `let` / `const` / `class` bindings up-front in the module environment so TDZ +
-    // shadowing semantics are correct.
+    // Create lexical bindings (`let`/`const`/`using`/`await using`/`class`) up-front in the module
+    // environment so TDZ + shadowing semantics are correct.
     evaluator.instantiate_lexical_decls(scope, body, body.root_stmts.as_slice(), module_env)?;
     Ok(())
   };
@@ -12779,8 +12859,8 @@ fn run_compiled_script_async(
     evaluator.instantiate_var_decls(scope, body, body.root_stmts.as_slice())?;
     // Hoist function declarations so they can be called before their declaration statement.
     evaluator.instantiate_function_decls(scope, body, body.root_stmts.as_slice(), /* annex_b */ false)?;
-    // Create `let` / `const` bindings up-front in the global lexical environment so TDZ + shadowing
-    // semantics are correct.
+    // Create lexical bindings (`let`/`const`/`using`/`await using`) up-front in the global lexical
+    // environment so TDZ + shadowing semantics are correct.
     evaluator.instantiate_lexical_decls(
       scope,
       body,
