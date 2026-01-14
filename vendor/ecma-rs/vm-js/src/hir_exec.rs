@@ -18857,6 +18857,34 @@ mod hir_async_await_try_catch_finally_compiled_tests {
     Ok(())
   }
 
+  fn assert_promise_rejects(rt: &mut JsRuntime, promise: Value, expected: ExpectedValue) -> Result<(), VmError> {
+    let promise_root = rt.heap.add_root(promise)?;
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+      panic!("expected async call to return a Promise object");
+    };
+    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Rejected);
+    let result = rt
+      .heap
+      .promise_result(promise_obj)?
+      .expect("expected rejected Promise to have [[PromiseResult]]");
+
+    match expected {
+      ExpectedValue::Number(n) => assert_eq!(result, Value::Number(n)),
+      ExpectedValue::String(s) => {
+        let Value::String(actual) = result else {
+          panic!("expected promise to reject with a string, got {result:?}");
+        };
+        let actual = rt.heap.get_string(actual)?.to_utf8_lossy();
+        assert_eq!(actual, s);
+      }
+    }
+
+    rt.heap.remove_root(promise_root);
+    Ok(())
+  }
+
   enum ExpectedValue {
     Number(f64),
     String(&'static str),
@@ -18942,6 +18970,80 @@ mod hir_async_await_try_catch_finally_compiled_tests {
       "#,
     )?;
     assert_promise_fulfills(&mut rt, promise, ExpectedValue::Number(2.0))?;
+    Ok(())
+  }
+
+  #[test]
+  fn await_in_finally_after_break_compiled() -> Result<(), VmError> {
+    let mut rt = new_runtime()?;
+
+    let promise = exec_compiled(
+      &mut rt,
+      r#"
+        async function f(){
+          let log = '';
+          for (let i = 0; i < 1; i++) {
+            try {
+              break;
+            } finally {
+              await Promise.resolve(0);
+              log = 'finally';
+            }
+          }
+          return log;
+        }
+        f()
+      "#,
+    )?;
+    assert_promise_fulfills(&mut rt, promise, ExpectedValue::String("finally"))?;
+    Ok(())
+  }
+
+  #[test]
+  fn await_in_finally_after_continue_compiled() -> Result<(), VmError> {
+    let mut rt = new_runtime()?;
+
+    let promise = exec_compiled(
+      &mut rt,
+      r#"
+        async function f(){
+          let c = 0;
+          for (let i = 0; i < 2; i++) {
+            try {
+              continue;
+            } finally {
+              await Promise.resolve(0);
+              c++;
+            }
+          }
+          return c;
+        }
+        f()
+      "#,
+    )?;
+    assert_promise_fulfills(&mut rt, promise, ExpectedValue::Number(2.0))?;
+    Ok(())
+  }
+
+  #[test]
+  fn await_in_finally_throw_overrides_return_compiled() -> Result<(), VmError> {
+    let mut rt = new_runtime()?;
+
+    let promise = exec_compiled(
+      &mut rt,
+      r#"
+        async function f(){
+          try {
+            return 1;
+          } finally {
+            await Promise.resolve(0);
+            throw 'x';
+          }
+        }
+        f()
+      "#,
+    )?;
+    assert_promise_rejects(&mut rt, promise, ExpectedValue::String("x"))?;
     Ok(())
   }
 }
