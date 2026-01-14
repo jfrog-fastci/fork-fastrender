@@ -119,8 +119,8 @@ impl Mp4Track {
         sample_indices_by_pts,
         min_sample_index_from_pos,
       } => {
-        let pos = sample_indices_by_pts
-          .partition_point(|&i| self.pts_ns_by_sample[i as usize] < time_ns);
+        let pos =
+          sample_indices_by_pts.partition_point(|&i| self.pts_ns_by_sample[i as usize] < time_ns);
         let idx = min_sample_index_from_pos
           .get(pos)
           .map(|&idx| idx as usize)
@@ -307,8 +307,8 @@ impl Mp4SeekTrack {
         sample_indices_by_pts,
         min_sample_index_from_pos,
       } => {
-        let pos = sample_indices_by_pts
-          .partition_point(|&i| self.pts_ns_by_sample[i as usize] < time_ns);
+        let pos =
+          sample_indices_by_pts.partition_point(|&i| self.pts_ns_by_sample[i as usize] < time_ns);
         min_sample_index_from_pos
           .get(pos)
           .map(|&idx| idx as usize)
@@ -494,35 +494,64 @@ fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
     ));
   }
 
-  // Fill timing and build PTS index vectors.
+  // Fill decode timestamps/durations and compute the minimum PTS tick value.
+  //
+  // MP4 `ctts` offsets can be negative (version 1), producing negative PTS values (e.g. decode
+  // offsets). `MediaPacket` stores timestamps as `u64` nanoseconds, so we normalize PTS by shifting
+  // the entire track so the minimum PTS becomes 0.
   let mut stts_iter = TableRunIter::new_stts(&stts);
   let mut ctts_iter = TableRunIter::new_ctts(&ctts);
-  let has_ctts = !ctts.is_empty();
 
   let mut dts_ticks: i64 = 0;
-  let mut pts_ns_by_sample = Vec::with_capacity(sample_count);
-  let mut pts_is_monotonic = true;
-  let mut prev_pts_ns = 0_u64;
-  let mut saw_prev_pts = false;
+  let mut min_pts_ticks: i64 = i64::MAX;
 
   for sample in &mut samples {
     let dur = stts_iter
       .next_u32()
       .ok_or(Mp4Error::Invalid("stts shorter than sample_count"))?;
-
-    let ctts_off = if has_ctts {
-      ctts_iter
-        .next_i64()
-        .ok_or(Mp4Error::Invalid("ctts shorter than sample_count"))?
-    } else {
-      0
-    };
+    let ctts_off = ctts_iter
+      .next_i64()
+      .ok_or(Mp4Error::Invalid("ctts shorter than sample_count"))?;
 
     sample.dts_ticks = dts_ticks.max(0) as u64;
     sample.duration_ticks = dur;
 
     let pts_ticks = dts_ticks.saturating_add(ctts_off);
-    let pts_ns = ticks_to_ns(pts_ticks, timescale);
+    min_pts_ticks = min_pts_ticks.min(pts_ticks);
+
+    dts_ticks = dts_ticks.saturating_add(i64::from(dur));
+  }
+
+  let pts_offset_ticks: i128 = if min_pts_ticks < 0 {
+    -(min_pts_ticks as i128)
+  } else {
+    0
+  };
+
+  // Build a nanosecond PTS table for seeking, applying the normalization offset.
+  let mut pts_ns_by_sample = Vec::with_capacity(sample_count);
+  let mut pts_is_monotonic = true;
+  let mut prev_pts_ns = 0_u64;
+  let mut saw_prev_pts = false;
+
+  let mut dts_ticks: i64 = 0;
+  let mut ctts_iter = TableRunIter::new_ctts(&ctts);
+  for sample in &samples {
+    let ctts_off = ctts_iter
+      .next_i64()
+      .ok_or(Mp4Error::Invalid("ctts shorter than sample_count"))?;
+
+    let pts_ticks = dts_ticks.saturating_add(ctts_off);
+    let shifted = (pts_ticks as i128).saturating_add(pts_offset_ticks);
+    let shifted = if shifted > i64::MAX as i128 {
+      i64::MAX
+    } else if shifted <= 0 {
+      0
+    } else {
+      shifted as i64
+    };
+
+    let pts_ns = ticks_to_ns(shifted, timescale);
     if saw_prev_pts && pts_ns < prev_pts_ns {
       pts_is_monotonic = false;
     }
@@ -530,7 +559,7 @@ fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
     saw_prev_pts = true;
     pts_ns_by_sample.push(pts_ns);
 
-    dts_ticks = dts_ticks.saturating_add(i64::from(dur));
+    dts_ticks = dts_ticks.saturating_add(i64::from(sample.duration_ticks));
   }
 
   let pts_index = if pts_is_monotonic {
@@ -578,11 +607,39 @@ fn build_seek_track(t: SeekTrackBoxes) -> Result<Mp4SeekTrack> {
     }
   }
 
-  let sample_count = usize::try_from(stts_total).map_err(|_| Mp4Error::Invalid("sample_count overflow"))?;
+  let sample_count =
+    usize::try_from(stts_total).map_err(|_| Mp4Error::Invalid("sample_count overflow"))?;
 
   let mut stts_iter = TableRunIter::new_stts(&stts);
   let mut ctts_iter = TableRunIter::new_ctts(&ctts);
 
+  // First pass: compute the minimum (possibly negative) PTS tick value so we can normalize.
+  let mut dts_ticks: i64 = 0;
+  let mut min_pts_ticks: i64 = i64::MAX;
+
+  for _ in 0..sample_count {
+    let dur = stts_iter
+      .next_u32()
+      .ok_or(Mp4Error::Invalid("stts shorter than sample_count"))?;
+    let ctts_off = ctts_iter
+      .next_i64()
+      .ok_or(Mp4Error::Invalid("ctts shorter than sample_count"))?;
+
+    let pts_ticks = dts_ticks.saturating_add(ctts_off);
+    min_pts_ticks = min_pts_ticks.min(pts_ticks);
+
+    dts_ticks = dts_ticks.saturating_add(i64::from(dur));
+  }
+
+  let pts_offset_ticks: i128 = if min_pts_ticks < 0 {
+    -(min_pts_ticks as i128)
+  } else {
+    0
+  };
+
+  // Second pass: build a normalized nanosecond PTS table (and monotonicity metadata).
+  let mut stts_iter = TableRunIter::new_stts(&stts);
+  let mut ctts_iter = TableRunIter::new_ctts(&ctts);
   let mut dts_ticks: i64 = 0;
   let mut pts_ns_by_sample = Vec::with_capacity(sample_count);
   let mut pts_is_monotonic = true;
@@ -593,17 +650,21 @@ fn build_seek_track(t: SeekTrackBoxes) -> Result<Mp4SeekTrack> {
     let dur = stts_iter
       .next_u32()
       .ok_or(Mp4Error::Invalid("stts shorter than sample_count"))?;
-
-    let ctts_off = if has_ctts {
-      ctts_iter
-        .next_i64()
-        .ok_or(Mp4Error::Invalid("ctts shorter than sample_count"))?
-    } else {
-      0
-    };
+    let ctts_off = ctts_iter
+      .next_i64()
+      .ok_or(Mp4Error::Invalid("ctts shorter than sample_count"))?;
 
     let pts_ticks = dts_ticks.saturating_add(ctts_off);
-    let pts_ns = ticks_to_ns(pts_ticks, timescale);
+    let shifted = (pts_ticks as i128).saturating_add(pts_offset_ticks);
+    let shifted = if shifted > i64::MAX as i128 {
+      i64::MAX
+    } else if shifted <= 0 {
+      0
+    } else {
+      shifted as i64
+    };
+
+    let pts_ns = ticks_to_ns(shifted, timescale);
     if saw_prev_pts && pts_ns < prev_pts_ns {
       pts_is_monotonic = false;
     }
@@ -630,10 +691,7 @@ fn build_seek_track(t: SeekTrackBoxes) -> Result<Mp4SeekTrack> {
 
 fn build_pts_index(pts_ns_by_sample: &[u64]) -> PtsIndex {
   // Helper used in tests; production code does the monotonic check while building the table.
-  if pts_ns_by_sample
-    .windows(2)
-    .all(|pair| pair[0] <= pair[1])
-  {
+  if pts_ns_by_sample.windows(2).all(|pair| pair[0] <= pair[1]) {
     return PtsIndex::Monotonic;
   }
   build_sorted_pts_index(pts_ns_by_sample)
@@ -709,6 +767,7 @@ pub struct Mp4TrackDemuxer<R> {
   track_type: MediaTrackType,
   next_sample_idx: usize,
   last_dts_ns: Option<u64>,
+  pts_offset_ticks: i128,
 }
 
 impl<R: Read + Seek> Mp4TrackDemuxer<R> {
@@ -719,6 +778,18 @@ impl<R: Read + Seek> Mp4TrackDemuxer<R> {
     track_id: u64,
     track_type: MediaTrackType,
   ) -> Self {
+    let mut min_pts_ticks: i64 = i64::MAX;
+    for indice in &sample_table {
+      min_pts_ticks = min_pts_ticks.min(indice.start_composition.0);
+    }
+    if min_pts_ticks == i64::MAX {
+      min_pts_ticks = 0;
+    }
+    let pts_offset_ticks: i128 = if min_pts_ticks < 0 {
+      -(min_pts_ticks as i128)
+    } else {
+      0
+    };
     Self {
       reader,
       sample_table,
@@ -727,6 +798,7 @@ impl<R: Read + Seek> Mp4TrackDemuxer<R> {
       track_type,
       next_sample_idx: 0,
       last_dts_ns: None,
+      pts_offset_ticks,
     }
   }
 
@@ -749,7 +821,15 @@ impl<R: Read + Seek> Mp4TrackDemuxer<R> {
 
     // mp4parse `Indice` times are in track ticks; convert using the track timescale.
     let dts_ns = ticks_to_ns(indice.start_decode.0, self.timescale);
-    let pts_ns = ticks_to_ns(indice.start_composition.0, self.timescale);
+    let pts_ticks = (indice.start_composition.0 as i128).saturating_add(self.pts_offset_ticks);
+    let pts_ticks = if pts_ticks > i64::MAX as i128 {
+      i64::MAX
+    } else if pts_ticks <= 0 {
+      0
+    } else {
+      pts_ticks as i64
+    };
+    let pts_ns = ticks_to_ns(pts_ticks, self.timescale);
     let duration_ticks = indice
       .end_composition
       .0
@@ -1488,12 +1568,59 @@ mod tests {
     // decode-order sample whose PTS is >= target (index 1). This avoids jumping directly to a
     // B-frame that depends on earlier reference frames.
     track.seek(500);
-    assert_eq!(track.last_seek_method(), Some(SeekMethod::SortedBinarySearch));
+    assert_eq!(
+      track.last_seek_method(),
+      Some(SeekMethod::SortedBinarySearch)
+    );
     assert_eq!(
       track.next_sample(),
       1,
       "seek should choose the first decode-order sample with PTS >= target"
     );
+  }
+
+  #[test]
+  fn seek_track_normalizes_negative_pts_ticks() {
+    // PTS ticks derived from `dts + ctts`:
+    // dts: 0, 1, 2, 3
+    // ctts: -3, -1, 0, 1
+    // pts: -3, 0, 2, 4  => normalize by +3 => 0, 3, 5, 7
+    let track = build_seek_track(SeekTrackBoxes {
+      id: Some(1),
+      timescale: Some(1),
+      stts: Some(vec![SttsEntry {
+        sample_count: 4,
+        sample_delta: 1,
+      }]),
+      ctts: Some(vec![
+        CttsEntry {
+          sample_count: 1,
+          sample_offset: -3,
+        },
+        CttsEntry {
+          sample_count: 1,
+          sample_offset: -1,
+        },
+        CttsEntry {
+          sample_count: 1,
+          sample_offset: 0,
+        },
+        CttsEntry {
+          sample_count: 1,
+          sample_offset: 1,
+        },
+      ]),
+    })
+    .expect("build_seek_track");
+
+    assert_eq!(
+      track.pts_ns_by_sample,
+      vec![0, 3_000_000_000, 5_000_000_000, 7_000_000_000]
+    );
+    assert!(matches!(track.pts_index, PtsIndex::Monotonic));
+    assert_eq!(track.sample_index_at_or_after(0), 0);
+    assert_eq!(track.sample_index_at_or_after(1), 1);
+    assert_eq!(track.sample_index_at_or_after(3_000_000_000), 1);
   }
 
   #[test]
@@ -1564,6 +1691,40 @@ mod tests {
   }
 
   #[test]
+  fn mp4_track_demuxer_normalizes_negative_composition_time() {
+    use mp4parse::unstable::CheckedInteger;
+
+    let sample_table = vec![
+      Indice {
+        start_offset: CheckedInteger(0u64),
+        end_offset: CheckedInteger(1u64),
+        start_decode: CheckedInteger(0i64),
+        start_composition: CheckedInteger(-1i64),
+        end_composition: CheckedInteger(0i64),
+        sync: true,
+        ..Default::default()
+      },
+      Indice {
+        start_offset: CheckedInteger(1u64),
+        end_offset: CheckedInteger(2u64),
+        start_decode: CheckedInteger(1i64),
+        start_composition: CheckedInteger(0i64),
+        end_composition: CheckedInteger(1i64),
+        sync: true,
+        ..Default::default()
+      },
+    ];
+
+    let reader = std::io::Cursor::new(vec![b'A', b'B']);
+    let mut demuxer = Mp4TrackDemuxer::new(reader, sample_table, 1, 1, MediaTrackType::Video);
+
+    let p0 = demuxer.next_packet().unwrap().unwrap();
+    let p1 = demuxer.next_packet().unwrap().unwrap();
+    assert_eq!(p0.pts_ns, 0);
+    assert_eq!(p1.pts_ns, 1_000_000_000);
+  }
+
+  #[test]
   fn mp4_packets_use_shared_data_and_ranges_match_sample_table() {
     let bytes: &[u8] = include_bytes!("../../tests/fixtures/media/test_h264_aac.mp4");
     let arc: Arc<[u8]> = Arc::from(bytes);
@@ -1579,8 +1740,7 @@ mod tests {
         "track {track_index} packet count should match sample table"
       );
 
-      for (sample_index, (packet, sample)) in packets.iter().zip(track.samples.iter()).enumerate()
-      {
+      for (sample_index, (packet, sample)) in packets.iter().zip(track.samples.iter()).enumerate() {
         let start = usize::try_from(sample.offset).unwrap();
         let end = start + sample.size as usize;
         let expected = start..end;
