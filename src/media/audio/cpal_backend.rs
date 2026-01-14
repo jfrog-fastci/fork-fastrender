@@ -1639,7 +1639,8 @@ fn f32_to_i16(value: f32) -> i16 {
 fn f32_to_u16(value: f32) -> u16 {
   let value = sanitize_sample(value);
   let shifted = value * 0.5 + 0.5;
-  (shifted * u16::MAX as f32) as u16
+  // Round so that `0.0` maps to the unsigned PCM equilibrium value (`0x8000`).
+  (shifted * u16::MAX as f32 + 0.5) as u16
 }
 
 trait OutputSample: cpal::Sample + cpal::SizedSample {
@@ -1687,7 +1688,7 @@ mod tests {
 
   #[test]
   fn converts_f32_to_u16() {
-    assert_eq!(f32_to_u16(0.0), u16::MAX / 2);
+    assert_eq!(f32_to_u16(0.0), 1 << 15);
     assert_eq!(f32_to_u16(1.0), u16::MAX);
     assert_eq!(f32_to_u16(-1.0), 0);
   }
