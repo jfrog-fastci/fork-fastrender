@@ -300,6 +300,56 @@ fn generator_for_in_yield_in_assignment_target_computed_member() {
 }
 
 #[test]
+fn generator_for_in_yield_in_assignment_target_super_computed_member() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class Base { set k(v) { this._k = v; } }
+        class Derived extends Base {
+          *g() {
+            for (super[yield "k"] in {abc: 0}) { return this._k; }
+          }
+        }
+        var it = (new Derived()).g();
+        var r1 = it.next();
+        var r2 = it.next("k");
+        r1.done === false && r1.value === "k" &&
+        r2.done === true && r2.value === "abc"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_in_yield_in_assignment_target_super_computed_member_multiple_iterations() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class Base { set k(v) { this._k = v; } }
+        class Derived extends Base {
+          *g() {
+            var out = [];
+            for (super[yield 1] in {a: 0, bb: 0}) { out.push(this._k); }
+            return out.join(",");
+          }
+        }
+        var it = (new Derived()).g();
+        var r1 = it.next();
+        var r2 = it.next("k");
+        var r3 = it.next("k");
+        r1.done === false && r1.value === 1 &&
+        r2.done === false && r2.value === 1 &&
+        r3.done === true && r3.value === "a,bb"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_for_in_yield_in_array_pattern_elem_assignment_target_computed_member() {
   let mut rt = new_runtime();
   let value = rt

@@ -416,6 +416,127 @@ fn generator_for_of_yield_in_assignment_target_computed_member() {
 }
 
 #[test]
+fn generator_for_of_yield_in_assignment_target_super_computed_member() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class Base { set k(v) { this._k = v; } }
+        class Derived extends Base {
+          *g() {
+            for (super[yield "k"] of [3]) { return this._k; }
+          }
+        }
+        var it = (new Derived()).g();
+        var r1 = it.next();
+        var r2 = it.next("k");
+        r1.done === false && r1.value === "k" &&
+        r2.done === true && r2.value === 3
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_yield_in_assignment_target_super_computed_member_multiple_iterations() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class Base { set k(v) { this._k = v; } }
+        class Derived extends Base {
+          *g() {
+            var out = [];
+            for (super[yield 1] of [1, 2]) { out.push(this._k); }
+            return out.join(",");
+          }
+        }
+        var it = (new Derived()).g();
+        var r1 = it.next();
+        var r2 = it.next("k");
+        var r3 = it.next("k");
+        r1.done === false && r1.value === 1 &&
+        r2.done === false && r2.value === 1 &&
+        r3.done === true && r3.value === "1,2"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_iterator_is_closed_on_return_while_suspended_in_super_computed_member_assignment_target() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var closed = false;
+        var iterable = {
+          [Symbol.iterator]() {
+            return {
+              next() { return { value: 3, done: false }; },
+              return() { closed = true; return { done: true }; },
+            };
+          },
+        };
+
+        class Base { set k(v) { this._k = v; } }
+        class Derived extends Base {
+          *g() {
+            for (super[yield "k"] of iterable) { /* unreachable */ }
+          }
+        }
+
+        var inst = new Derived();
+        var it = inst.g();
+        var r1 = it.next();
+        var r2 = it.return("done");
+        r1.done === false && r1.value === "k" &&
+        r2.done === true && r2.value === "done" &&
+        closed === true && inst._k === undefined
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_iterator_is_closed_on_throw_while_suspended_in_super_computed_member_assignment_target() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var closed = false;
+        var iterable = {
+          [Symbol.iterator]() {
+            return {
+              next() { return { value: 3, done: false }; },
+              return() { closed = true; return { done: true }; },
+            };
+          },
+        };
+
+        class Base { set k(v) { this._k = v; } }
+        class Derived extends Base {
+          *g() {
+            for (super[yield "k"] of iterable) { /* unreachable */ }
+          }
+        }
+
+        var it = (new Derived()).g();
+        var r1 = it.next();
+        var threw = false;
+        try { it.throw("boom"); } catch (e) { threw = (e === "boom"); }
+        r1.done === false && r1.value === "k" &&
+        threw === true && closed === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_for_of_yield_in_object_pattern_default_value() {
   let mut rt = new_runtime();
   let value = rt
