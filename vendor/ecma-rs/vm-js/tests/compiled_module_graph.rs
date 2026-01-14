@@ -1530,6 +1530,115 @@ fn compiled_module_export_default_async_arrow_expr_applies_set_function_name_def
 }
 
 #[test]
+fn compiled_module_export_default_async_function_expr_applies_set_function_name_default(
+) -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+
+  let mut graph = ModuleGraph::new();
+  let result = (|| -> Result<(), VmError> {
+    if !supports_compiled_modules(&mut vm, &mut heap, &realm) {
+      return Ok(());
+    }
+
+    let script_a = CompiledScript::compile_module(
+      &mut heap,
+      "a.js",
+      r#"
+        export default (async function () {
+          return this === undefined ? 123 : -100;
+        });
+      "#,
+    )?;
+    assert!(
+      script_a.contains_async_functions,
+      "test module should contain at least one async function"
+    );
+    assert!(
+      !script_a.requires_ast_fallback && !script_a.contains_async_generators,
+      "modules that only *define* async functions should be executable via the compiled evaluator"
+    );
+
+    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    record_a.compiled = Some(script_a);
+    record_a.ast = None;
+    let a = graph.add_module_with_specifier("a", record_a)?;
+
+    let b = graph.add_module_with_specifier(
+      "b",
+      SourceTextModuleRecord::parse(
+        &mut heap,
+        r#"
+          import f from "a";
+          export let r = 0;
+          export const n = f.name;
+          f().then(v => { r += v; });
+          f.call({}).then(v => { r += v; });
+        "#,
+      )?,
+    )?;
+    graph.link_all_by_specifier();
+
+    graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), b)?;
+    assert!(
+      graph.module(a).ast.is_none(),
+      "linking should not parse/retain an AST when compiled HIR is available"
+    );
+
+    let promise = graph.evaluate(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      b,
+      &mut host,
+      &mut hooks,
+    )?;
+
+    let mut scope = heap.scope();
+    scope.push_root(promise)?;
+    let Value::Object(promise_obj) = promise else {
+      panic!("ModuleGraph::evaluate should return a Promise object");
+    };
+    assert_eq!(
+      scope.heap().promise_state(promise_obj)?,
+      PromiseState::Fulfilled,
+      "module evaluation should complete synchronously"
+    );
+    drop(scope);
+
+    run_microtasks(&mut vm, &mut heap, &mut host, &mut hooks)?;
+
+    let mut scope = heap.scope();
+    let ns_b = graph.get_module_namespace(b, &mut vm, &mut scope)?;
+    assert_eq!(
+      ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "r")?,
+      Value::Number(23.0)
+    );
+    let Value::String(n) = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "n")? else {
+      panic!("expected b.n to be a string");
+    };
+    assert_eq!(scope.heap().get_string(n)?.to_utf8_lossy(), "default");
+
+    drop(scope);
+    Ok(())
+  })();
+
+  // Always tear down persistent roots on all return paths (including skips / errors).
+  graph.teardown(&mut vm, &mut heap);
+  let mut ctx = MicrotaskCtx {
+    vm: &mut vm,
+    heap: &mut heap,
+    host: &mut host,
+  };
+  hooks.teardown(&mut ctx);
+  realm.teardown(&mut heap);
+
+  result
+}
+
+#[test]
 fn compiled_module_export_default_class_expr_constructs_and_applies_set_function_name_default(
 ) -> Result<(), VmError> {
   let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
