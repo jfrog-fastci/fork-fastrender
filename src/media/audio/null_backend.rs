@@ -5,8 +5,11 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 
-use super::{AudioBackend, AudioClock, AudioOutputInfo, AudioSink, AudioStreamConfig};
-use super::limits::{MAX_CHANNELS, MAX_FRAMES_PER_PUSH, MAX_SAMPLE_RATE_HZ};
+use super::{
+  duration_to_frames_ceil, AudioBackend, AudioClock, AudioEngineConfig, AudioOutputInfo, AudioSink,
+  AudioStreamConfig,
+};
+use super::limits::{MAX_BUFFERED_DURATION, MAX_CHANNELS, MAX_FRAMES_PER_PUSH, MAX_SAMPLE_RATE_HZ};
 use crate::debug::trace::TraceHandle;
 use crate::js::clock::{Clock, RealClock};
 use crate::media::audio_clock::InterpolatedAudioClock;
@@ -18,6 +21,7 @@ use crate::media::audio_clock::InterpolatedAudioClock;
 /// in A/V sync tests.
 pub struct NullAudioBackend {
   config: AudioStreamConfig,
+  max_buffered_duration: Duration,
   estimated_output_latency: Duration,
   clock: Arc<dyn Clock>,
   output_clock: Arc<InterpolatedAudioClock>,
@@ -70,18 +74,76 @@ impl NullAudioBackend {
   /// Creates a null backend driven by real time with the provided stream configuration.
   #[must_use]
   pub fn new_with_defaults(sample_rate_hz: u32, channels: u16) -> Self {
-    Self::new_with_defaults_and_trace(sample_rate_hz, channels, TraceHandle::default())
+    Self::new_with_defaults_and_trace_and_max_buffered_duration(
+      sample_rate_hz,
+      channels,
+      TraceHandle::default(),
+      Duration::from_secs(2),
+    )
   }
 
   /// Like [`Self::new_with_defaults`], but installs a [`TraceHandle`] used for profiling spans.
   #[must_use]
   pub fn new_with_defaults_and_trace(sample_rate_hz: u32, channels: u16, trace: TraceHandle) -> Self {
+    Self::new_with_defaults_and_trace_and_max_buffered_duration(
+      sample_rate_hz,
+      channels,
+      trace,
+      Duration::from_secs(2),
+    )
+  }
+
+  /// Creates a null backend driven by real time with the provided stream configuration and queue
+  /// buffer limit.
+  #[must_use]
+  pub fn new_with_defaults_and_max_buffered_duration(
+    sample_rate_hz: u32,
+    channels: u16,
+    max_buffered_duration: Duration,
+  ) -> Self {
+    Self::new_with_defaults_and_trace_and_max_buffered_duration(
+      sample_rate_hz,
+      channels,
+      TraceHandle::default(),
+      max_buffered_duration,
+    )
+  }
+
+  /// Like [`Self::new_with_defaults_and_trace`], but also configures the per-sink buffer duration.
+  #[must_use]
+  pub fn new_with_defaults_and_trace_and_max_buffered_duration(
+    sample_rate_hz: u32,
+    channels: u16,
+    trace: TraceHandle,
+    max_buffered_duration: Duration,
+  ) -> Self {
     let sample_rate_hz = sample_rate_hz.clamp(1, MAX_SAMPLE_RATE_HZ);
     let channels = channels.clamp(1, MAX_CHANNELS);
-    Self::new_with_clock_and_trace(
+    Self::new_with_clock_and_trace_and_max_buffered_duration(
       Arc::new(RealClock::default()),
       AudioStreamConfig::new(sample_rate_hz, channels),
       trace,
+      max_buffered_duration,
+    )
+  }
+
+  /// Create a `NullAudioBackend` using an [`AudioEngineConfig`] (sample rate/channels + buffer
+  /// duration).
+  #[must_use]
+  pub fn new_with_config(engine_cfg: &AudioEngineConfig) -> Self {
+    Self::new_with_config_and_trace(engine_cfg, TraceHandle::default())
+  }
+
+  /// Like [`Self::new_with_config`], but installs a trace handle for profiling spans.
+  #[must_use]
+  pub fn new_with_config_and_trace(engine_cfg: &AudioEngineConfig, trace: TraceHandle) -> Self {
+    Self::new_with_defaults_and_trace_and_max_buffered_duration(
+      engine_cfg.default_sample_rate_hz,
+      engine_cfg.default_channels,
+      trace,
+      engine_cfg.per_stream_max_buffered_duration,
+    )
+  }
     )
   }
 
@@ -101,13 +163,42 @@ impl NullAudioBackend {
     config: AudioStreamConfig,
     trace: TraceHandle,
   ) -> Self {
+    Self::new_with_clock_and_trace_and_max_buffered_duration(
+      clock,
+      config,
+      trace,
+      Duration::from_secs(2),
+    )
+  }
+
+  fn new_with_clock_and_max_buffered_duration(
+    clock: Arc<dyn Clock>,
+    config: AudioStreamConfig,
+    max_buffered_duration: Duration,
+  ) -> Self {
+    Self::new_with_clock_and_trace_and_max_buffered_duration(
+      clock,
+      config,
+      TraceHandle::default(),
+      max_buffered_duration,
+    )
+  }
+
+  fn new_with_clock_and_trace_and_max_buffered_duration(
+    clock: Arc<dyn Clock>,
+    config: AudioStreamConfig,
+    trace: TraceHandle,
+    max_buffered_duration: Duration,
+  ) -> Self {
     let config = AudioStreamConfig::new(
       config.sample_rate_hz.clamp(1, MAX_SAMPLE_RATE_HZ),
       config.channels.clamp(1, MAX_CHANNELS),
     );
+    let max_buffered_duration = max_buffered_duration.min(MAX_BUFFERED_DURATION);
     let now = clock.now();
     Self {
       config,
+      max_buffered_duration,
       estimated_output_latency: Duration::ZERO,
       clock,
       output_clock: Arc::new(InterpolatedAudioClock::new(config.sample_rate_hz)),
@@ -128,13 +219,25 @@ impl NullAudioBackend {
   /// calls [`Self::pump`]).
   #[must_use]
   pub fn new_deterministic_with_defaults(sample_rate_hz: u32, channels: u16) -> Self {
-    use crate::js::clock::VirtualClock;
+    Self::new_deterministic_with_defaults_and_max_buffered_duration(
+      sample_rate_hz,
+      channels,
+      Duration::from_secs(2),
+    )
+  }
 
+  #[must_use]
+  pub fn new_deterministic_with_defaults_and_max_buffered_duration(
+    sample_rate_hz: u32,
+    channels: u16,
+    max_buffered_duration: Duration,
+  ) -> Self {
     let sample_rate_hz = sample_rate_hz.clamp(1, MAX_SAMPLE_RATE_HZ);
     let channels = channels.clamp(1, MAX_CHANNELS);
-    Self::new_with_clock(
-      Arc::new(VirtualClock::new()),
+    Self::new_with_clock_and_max_buffered_duration(
+      Arc::new(crate::js::VirtualClock::new()),
       AudioStreamConfig::new(sample_rate_hz, channels),
+      max_buffered_duration,
     )
   }
 
@@ -309,6 +412,7 @@ impl AudioBackend for NullAudioBackend {
   fn create_sink(&self) -> Box<dyn AudioSink> {
     let sink = Arc::new(SinkState::new(
       self.config,
+      self.max_buffered_duration,
       self.dropped_samples.clone(),
       self.underrun_samples.clone(),
     ));
@@ -357,15 +461,15 @@ impl std::fmt::Debug for SinkState {
 impl SinkState {
   fn new(
     config: AudioStreamConfig,
+    max_buffered_duration: Duration,
     total_dropped_samples: Arc<AtomicU64>,
     total_underrun_samples: Arc<AtomicU64>,
   ) -> Self {
     let channels = usize::from(config.channels.max(1));
-    // ~2 seconds of audio at the output sample rate.
-    let capacity_samples = (config.sample_rate_hz as usize)
-      .saturating_mul(channels)
-      .saturating_mul(2)
-      .max(1);
+    let max_buffered_duration = max_buffered_duration.min(MAX_BUFFERED_DURATION);
+    let max_frames = duration_to_frames_ceil(config.sample_rate_hz, max_buffered_duration);
+    let max_frames = usize::try_from(max_frames).unwrap_or(usize::MAX);
+    let capacity_samples = max_frames.saturating_mul(channels).max(1);
     Self {
       config,
       capacity_samples,
@@ -608,5 +712,21 @@ mod tests {
         .expect("dropped events metadata"),
       (generated_events - max_events) as u64
     );
+  }
+
+  #[test]
+  fn null_audio_backend_respects_max_buffered_duration() {
+    let clock = Arc::new(VirtualClock::new());
+    let backend = NullAudioBackend::new_with_clock_and_max_buffered_duration(
+      clock,
+      AudioStreamConfig::new(10, 1),
+      Duration::from_millis(300),
+    );
+    let sink = backend.create_sink();
+
+    let samples = vec![1.0f32; 10];
+    let accepted = sink.push_interleaved_f32(&samples);
+    assert_eq!(accepted, 3);
+    assert_eq!(backend.dropped_samples(), 7);
   }
 }

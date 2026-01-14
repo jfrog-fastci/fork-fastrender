@@ -9,8 +9,10 @@ use parking_lot::{Mutex, RwLock};
 
 use super::ring_buffer::AudioRingBuffer;
 use super::{
-  frames_to_duration, AudioBackend, AudioClock, AudioOutputInfo, AudioSink, AudioStreamConfig,
+  audio_engine_config, duration_to_frames_ceil, frames_to_duration, AudioBackend, AudioClock,
+  AudioEngineConfig, AudioOutputInfo, AudioSink, AudioStreamConfig,
 };
+use super::limits::MAX_BUFFERED_DURATION;
 use crate::media::audio_clock::InterpolatedAudioClock;
 
 /// Offline audio backend that mixes to a fixed output format and writes into a `.wav` file.
@@ -20,15 +22,44 @@ use crate::media::audio_clock::InterpolatedAudioClock;
 /// - Mixing + file IO only happens when the caller explicitly invokes [`Self::render`].
 pub struct WavAudioBackend {
   config: AudioStreamConfig,
+  max_buffered_duration: Duration,
   mixer: Arc<MixerState>,
   clock: Arc<InterpolatedAudioClock>,
   writer: Mutex<WavWriter>,
 }
 
 impl WavAudioBackend {
-  /// Create a new WAV backend writing 48kHz stereo 16-bit PCM to `path`.
+  /// Create a new WAV backend writing 16-bit PCM to `path`.
+  ///
+  /// The output format and buffering are derived from the current [`AudioEngineConfig`].
   pub fn new<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-    let config = AudioStreamConfig::new(48_000, 2);
+    let cfg = audio_engine_config();
+    Self::new_with_engine_config(path, &cfg)
+  }
+
+  /// Create a WAV backend using an explicit [`AudioEngineConfig`].
+  pub fn new_with_engine_config<P: AsRef<Path>>(
+    path: P,
+    engine_cfg: &AudioEngineConfig,
+  ) -> io::Result<Self> {
+    let config = AudioStreamConfig::new(
+      engine_cfg.default_sample_rate_hz,
+      engine_cfg.default_channels,
+    );
+    Self::new_with_output_config(
+      path,
+      config,
+      engine_cfg.per_stream_max_buffered_duration,
+    )
+  }
+
+  /// Create a WAV backend with an explicit stream format and per-sink buffer limit.
+  pub fn new_with_output_config<P: AsRef<Path>>(
+    path: P,
+    config: AudioStreamConfig,
+    max_buffered_duration: Duration,
+  ) -> io::Result<Self> {
+    let max_buffered_duration = max_buffered_duration.min(MAX_BUFFERED_DURATION);
     let mixer = Arc::new(MixerState::new(config));
     let clock = Arc::new(InterpolatedAudioClock::new(config.sample_rate_hz.max(1)));
 
@@ -38,6 +69,7 @@ impl WavAudioBackend {
 
     Ok(Self {
       config,
+      max_buffered_duration,
       mixer,
       clock,
       writer: Mutex::new(WavWriter { file, data_bytes: 0 }),
@@ -122,7 +154,7 @@ impl AudioBackend for WavAudioBackend {
   }
 
   fn create_sink(&self) -> Box<dyn AudioSink> {
-    let sink = Arc::new(SinkState::new(self.config));
+    let sink = Arc::new(SinkState::new(self.config, self.max_buffered_duration));
     self.mixer.register_sink(&sink);
     Box::new(WavAudioSink { state: sink })
   }
@@ -178,10 +210,12 @@ struct SinkState {
 }
 
 impl SinkState {
-  fn new(config: AudioStreamConfig) -> Self {
-    let capacity = (config.sample_rate_hz as usize)
-      .saturating_mul(usize::from(config.channels.max(1)))
-      .saturating_mul(2); // ~2 seconds of audio.
+  fn new(config: AudioStreamConfig, max_buffered_duration: Duration) -> Self {
+    let max_buffered_duration = max_buffered_duration.min(MAX_BUFFERED_DURATION);
+    let channels = usize::from(config.channels.max(1));
+    let max_frames = duration_to_frames_ceil(config.sample_rate_hz, max_buffered_duration);
+    let max_frames = usize::try_from(max_frames).unwrap_or(usize::MAX);
+    let capacity = max_frames.saturating_mul(channels).max(1);
     Self {
       config,
       buffer: AudioRingBuffer::new(capacity),
@@ -282,8 +316,7 @@ mod tests {
   use std::convert::TryInto;
   use std::time::Duration;
 
-  use super::AudioBackend;
-  use super::WavAudioBackend;
+  use super::*;
   use crate::media::audio::test_signal;
 
   #[test]
@@ -343,5 +376,22 @@ mod tests {
     assert_eq!(pcm.next(), Some(i16::MAX));
     assert_eq!(pcm.next(), Some(i16::MAX));
     assert!(pcm.all(|v| v == 0));
+  }
+
+  #[test]
+  fn wav_backend_respects_max_buffered_duration() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("out.wav");
+
+    let backend = WavAudioBackend::new_with_output_config(
+      &path,
+      AudioStreamConfig::new(10, 1),
+      Duration::from_millis(300),
+    )
+    .expect("backend");
+    let sink = backend.create_sink();
+
+    let accepted = sink.push_interleaved_f32(&vec![1.0f32; 10]);
+    assert_eq!(accepted, 3);
   }
 }
