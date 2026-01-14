@@ -1108,12 +1108,12 @@ where
 /// work is O(1) (returning a slice of cached match indices).
 #[derive(Debug, Default, Clone)]
 pub struct GlobalHistorySearcher {
-  last_query: String,
-  /// Cached lowercase tokens for `last_query`.
+  last_query_lower: String,
+  /// Cached lowercase token byte ranges for `last_query_lower`.
   ///
-  /// Tokens are ASCII-lowercased so they can be passed directly to
-  /// [`contains_ascii_case_insensitive`].
-  last_tokens_lower: Vec<String>,
+  /// Tokens are stored as byte ranges (rather than `&str` slices) so the searcher remains
+  /// self-contained and allocation-light without requiring self-referential borrows.
+  last_token_ranges: SmallVec<[Range<usize>; 4]>,
   last_revision: u64,
   cached_limit: usize,
   cached_complete: bool,
@@ -1141,30 +1141,38 @@ impl GlobalHistorySearcher {
       self.cached_match_indices.clear();
       self.cached_limit = 0;
       self.cached_complete = true;
-      // Keep `last_query`/`last_revision` as-is; `limit == 0` is not a meaningful cache state.
+      // Keep `last_query_lower`/`last_revision` as-is; `limit == 0` is not a meaningful cache state.
       return &self.cached_match_indices;
     }
 
     let store_revision = store.revision();
-    let query_changed = query != self.last_query;
+    // Query matching is ASCII case-insensitive; treat ASCII-only case changes as cache hits.
+    let query_changed = !query.eq_ignore_ascii_case(self.last_query_lower.as_str());
     let store_changed = store_revision != self.last_revision;
     let needs_more = limit > self.cached_limit && !self.cached_complete;
     if query_changed || store_changed || needs_more {
       // Only re-tokenize when the query itself changes; if history mutates while the query stays
       // stable we can reuse the cached tokens.
       if query_changed {
-        self.last_query = query.to_string();
-        // Most queries are already lowercase; avoid allocating a full lowercased copy unless needed.
-        let query_lower: Cow<'_, str> = if query.as_bytes().iter().any(|b| b.is_ascii_uppercase()) {
-          Cow::Owned(query.to_ascii_lowercase())
-        } else {
-          Cow::Borrowed(query)
-        };
-        self.last_tokens_lower = query_lower.split_whitespace().map(|t| t.to_string()).collect();
+        self.last_query_lower.clear();
+        self.last_query_lower.push_str(query);
+        self.last_query_lower.make_ascii_lowercase();
+
+        self.last_token_ranges.clear();
+        let base = self.last_query_lower.as_ptr() as usize;
+        for token in self.last_query_lower.split_whitespace() {
+          let start = token.as_ptr() as usize - base;
+          self.last_token_ranges.push(start..start + token.len());
+        }
       }
       self.last_revision = store_revision;
 
-      let (indices, complete) = compute_search_match_indices(store, &self.last_tokens_lower, limit);
+      let (indices, complete) = compute_search_match_indices(
+        store,
+        self.last_query_lower.as_str(),
+        &self.last_token_ranges,
+        limit,
+      );
       self.cached_match_indices = indices;
       self.cached_complete = complete;
       self.cached_limit = limit;
@@ -1177,14 +1185,15 @@ impl GlobalHistorySearcher {
 
 fn compute_search_match_indices(
   store: &GlobalHistoryStore,
-  tokens: &[String],
+  query_lower: &str,
+  token_ranges: &[Range<usize>],
   limit: usize,
 ) -> (Vec<usize>, bool) {
   if limit == 0 {
     return (Vec::new(), true);
   }
 
-  if tokens.is_empty() {
+  if token_ranges.is_empty() {
     let indices: Vec<usize> = store
       .iter_recent()
       .take(limit)
@@ -1194,8 +1203,8 @@ fn compute_search_match_indices(
     return (indices, complete);
   }
 
-  if tokens.len() == 1 {
-    let token = tokens[0].as_str();
+  if token_ranges.len() == 1 {
+    let token = &query_lower[token_ranges[0].clone()];
     let mut out = Vec::with_capacity(limit.min(store.entries.len()));
     for (idx, entry) in store.iter_recent() {
       let in_url = contains_ascii_case_insensitive(&entry.url, token);
@@ -1218,7 +1227,8 @@ fn compute_search_match_indices(
 
   let mut out = Vec::with_capacity(limit.min(store.entries.len()));
   'entries: for (idx, entry) in store.iter_recent() {
-    for token in tokens {
+    for range in token_ranges {
+      let token = &query_lower[range.clone()];
       let in_url = contains_ascii_case_insensitive(&entry.url, token);
       let in_title = entry
         .title
