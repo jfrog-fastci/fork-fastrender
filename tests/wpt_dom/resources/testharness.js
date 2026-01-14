@@ -304,6 +304,46 @@ function assert_equals(actual, expected, message) {
   }
 }
 //
+function assert_approx_equals(actual, expected, epsilon, message) {
+  // Minimal `assert_approx_equals` helper used by layout/geometry tests.
+  //
+  // Keep this conservative: accept only finite numbers.
+  if (typeof actual !== "number" || typeof expected !== "number" || typeof epsilon !== "number") {
+    throw Error(message || "assert_approx_equals");
+  }
+  if (
+    actual !== actual ||
+    expected !== expected ||
+    epsilon !== epsilon ||
+    actual === Infinity ||
+    actual === -Infinity ||
+    expected === Infinity ||
+    expected === -Infinity ||
+    epsilon === Infinity ||
+    epsilon === -Infinity ||
+    epsilon < 0
+  ) {
+    throw Error(message || "assert_approx_equals");
+  }
+  var diff = actual - expected;
+  if (diff < 0) diff = -diff;
+  if (!(diff <= epsilon)) {
+    throw Error(
+      __format_assertion_message(
+        message,
+        [
+          "assert_approx_equals: expected ",
+          __safe_string(actual),
+          " to be within ",
+          __safe_string(epsilon),
+          " of ",
+          __safe_string(expected),
+        ].join("")
+      )
+    );
+  }
+}
+//
 function assert_greater_than_equal(actual, expected, message) {
   if (!(actual >= expected)) {
     throw Error(
@@ -738,6 +778,8 @@ function async_test(fn, name) {
   t.step = __async_test_step;
   t.step_func = __async_test_step_func;
   t.step_func_done = __async_test_step_func_done;
+  t.step_timeout = __async_test_step_timeout;
+  t.unreached_func = __async_test_unreached_func;
   //
   if (typeof fn === "function") {
     try {
@@ -805,6 +847,59 @@ function __async_test_step(cb) {
     __fail_test_record(t, e);
     t.done();
   }
+}
+//
+function __async_test_step_timeout(cb, timeout_ms) {
+  var t = this;
+  if (!t || t._done === true) return 0;
+  if (typeof cb !== "function") {
+    __fail_test_record(t, Error("step_timeout: callback is not callable"));
+    t.done();
+    return 0;
+  }
+  if (typeof setTimeout !== "function") {
+    // No timers; run synchronously.
+    t.step(cb);
+    return 0;
+  }
+  __step_timeout_test = t;
+  __step_timeout_callback = cb;
+  var delay = timeout_ms;
+  if (typeof delay !== "number" || delay !== delay || delay < 0) {
+    delay = 0;
+  }
+  return setTimeout(__async_test_step_timeout_wrapper, delay);
+}
+//
+var __step_timeout_test = null;
+var __step_timeout_callback = null;
+//
+function __async_test_step_timeout_wrapper(a0, a1, a2, a3) {
+  var t = __step_timeout_test;
+  if (!t || t._done === true) return;
+  //
+  if (typeof __step_timeout_callback !== "function") {
+    __fail_test_record(t, Error("step_timeout: callback is not callable"));
+    t.done();
+    return;
+  }
+  t.step(__step_timeout_callback);
+}
+//
+function __async_test_unreached_func(message) {
+  __unreached_func_test = this;
+  __unreached_func_message = message;
+  return __async_test_unreached_func_wrapper;
+}
+//
+var __unreached_func_test = null;
+var __unreached_func_message = null;
+//
+function __async_test_unreached_func_wrapper(a0, a1, a2, a3) {
+  var t = __unreached_func_test;
+  if (!t || t._done === true) return;
+  __fail_test_record(t, Error(__unreached_func_message || "unreached_func"));
+  t.done();
 }
 //
 // Note: This harness deliberately avoids closures to stay compatible with the in-tree vm-js

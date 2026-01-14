@@ -565,16 +565,10 @@ status = "xfail"
 reason = "vmjs-rendered executes HTML tests via the script runner; dynamic script loading/ordering (`async=false`) is not implemented yet and the test times out."
 
 [[expectations]]
-id = "observers_layout/element_rect_basic.window.js"
-backend = "vmjs-rendered"
-status = "xfail"
-reason = "Rendered-backend observer tests require additional testharness helpers (`assert_approx_equals`) and stable geometry plumbing; not fully implemented yet."
-
-[[expectations]]
 id = "observers_layout/intersection_observer_basic.window.js"
 backend = "vmjs-rendered"
 status = "xfail"
-reason = "Rendered-backend IntersectionObserver layout assertions require additional testharness helpers (`assert_approx_equals`) and layout integration; not fully implemented yet."
+reason = "IntersectionObserver geometry integration is incomplete (boundingClientRect/intersectionRect sizes are incorrect)."
 
 [[expectations]]
 id = "observers_layout/resize_observer_basic.window.js"
@@ -584,33 +578,27 @@ reason = "Rendered-backend ResizeObserver geometry integration is incomplete (co
 
 [[expectations]]
 id = "html_integration/dynamic_classic_script_error_event_fires.html"
-backend = ["vmjs", "vmjs-rendered"]
+backend = "vmjs-rendered"
 status = "xfail"
-reason = "Offline testharness.js is intentionally minimal; async_test lacks `unreached_func`/`step_timeout` helpers required by these HTML integration tests."
+reason = "vmjs-rendered executes HTML tests via the script runner; dynamic classic script error event integration is incomplete and the test times out."
 
 [[expectations]]
 id = "html_integration/dynamic_module_script_load_and_error_events.html"
 backend = ["vmjs", "vmjs-rendered"]
 status = "xfail"
-reason = "Offline testharness.js is intentionally minimal; async_test lacks `unreached_func`/`step_timeout` helpers required by these HTML integration tests."
+reason = "Dynamic module script load/error event plumbing is incomplete; the test does not complete (no WPT report payload / timeout depending on backend)."
 
 [[expectations]]
 id = "html_integration/importmap_with_src_is_rejected_and_fires_error.html"
 backend = ["vmjs", "vmjs-rendered"]
 status = "xfail"
-reason = "Offline testharness.js is intentionally minimal; async_test lacks `unreached_func`/`step_timeout` helpers required by these HTML integration tests."
+reason = "Import map scripts with a src attribute are not fully handled yet (should be rejected and fire error); the test does not complete."
 
 [[expectations]]
 id = "html_integration/script_src_empty_suppresses_inline_and_fires_error.html"
-backend = ["vmjs", "vmjs-rendered"]
+backend = "vmjs-rendered"
 status = "xfail"
-reason = "Offline testharness.js is intentionally minimal; async_test lacks `unreached_func`/`step_timeout` helpers required by these HTML integration tests."
-
-[[expectations]]
-id = "lifecycle/visibilitychange_event_handler.window.js"
-backend = ["vmjs", "vmjs-rendered"]
-status = "xfail"
-reason = "Offline testharness.js is intentionally minimal; async_test lacks `step_timeout` helper required by this lifecycle test."
+reason = "vmjs-rendered executes HTML tests via the script runner; classic script error events for src='' are not fully integrated yet and the test times out."
 
 [[expectations]]
 glob = "observers_layout/**"
