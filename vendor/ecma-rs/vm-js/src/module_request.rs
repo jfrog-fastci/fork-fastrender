@@ -95,6 +95,11 @@ impl ModuleRequest {
   /// - the stored representation is deterministic (stable across hosts),
   /// - derived `Eq`/`Hash` become compatible with `ModuleRequestsEqual` when all instances are
   ///   constructed via this constructor (or [`ModuleRequest::canonicalize`]).
+  ///
+  /// Note: this constructor is **infallible** and does not perform any VM budget/interrupt checks.
+  /// Callers that canonicalize attacker-controlled attribute lists should prefer
+  /// [`ModuleRequest::try_new`] so sorting can be made cooperatively interruptible via a `tick`
+  /// closure.
   #[inline]
   pub fn new(specifier: JsString, mut attributes: Vec<ImportAttribute>) -> Self {
     // Use an in-place unstable sort to avoid heap allocations. Import attributes are treated as a
@@ -135,9 +140,20 @@ impl ModuleRequest {
   }
 
   /// Canonicalize this request's attribute list in-place.
+  ///
+  /// Note: this is infallible and does not perform any VM budget/interrupt checks. For large,
+  /// attacker-controlled attribute lists, prefer [`ModuleRequest::try_canonicalize`].
   #[inline]
   pub fn canonicalize(&mut self) {
     self.attributes.sort_unstable_by(cmp_import_attribute);
+  }
+
+  /// Fallible, budget-aware variant of [`ModuleRequest::canonicalize`].
+  pub fn try_canonicalize(
+    &mut self,
+    tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<(), VmError> {
+    crate::tick::sort_unstable_by_with_ticks(&mut self.attributes, cmp_import_attribute, tick)
   }
 
   /// Builder helper: append an import attribute and re-canonicalize.
