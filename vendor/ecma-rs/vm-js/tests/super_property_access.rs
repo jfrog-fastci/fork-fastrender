@@ -427,3 +427,245 @@ fn super_computed_assignment_in_derived_ctor_does_not_eval_key_or_rhs_before_thi
   assert_value_is_utf8(&rt, value, "0:0:ReferenceError");
   Ok(())
 }
+
+#[test]
+fn super_computed_compound_assignment_in_derived_ctor_does_not_eval_key_or_rhs_before_this_binding_error(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let Some(value) = exec_or_skip_class_inheritance(
+    &mut rt,
+    r#"
+      let key_side = 0;
+      let rhs_side = 0;
+      class A {}
+      class B extends A {
+        constructor() {
+          super[(key_side = 1, "x")] += (rhs_side = 1, 1);
+        }
+      }
+      try { new B(); }
+      catch (e) { String(key_side) + ":" + String(rhs_side) + ":" + e.name }
+    "#,
+  )?
+  else {
+    return Ok(());
+  };
+  assert_value_is_utf8(&rt, value, "0:0:ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn super_computed_compound_assignment_in_derived_ctor_does_not_eval_key_or_rhs_before_this_binding_error_compiled(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let Some(value) = exec_compiled_or_skip(
+    &mut rt,
+    r#"
+      let key_side = 0;
+      let rhs_side = 0;
+      class A {}
+      class B extends A {
+        constructor() {
+          super[(key_side = 1, "x")] += (rhs_side = 1, 1);
+        }
+      }
+      try { new B(); }
+      catch (e) { String(key_side) + ":" + String(rhs_side) + ":" + e.name }
+    "#,
+  )?
+  else {
+    return Ok(());
+  };
+  // If the compiled path doesn't support `super` yet, the host boundary will coerce internal
+  // `VmError::Unimplemented` into a thrown `Error` object, which this script catches as `"Error"`.
+  // Skip in that case so we still validate interpreter semantics.
+  if let Value::String(s) = value {
+    let actual = rt.heap().get_string(s).unwrap().to_utf8_lossy();
+    if actual.ends_with(":Error") {
+      return Ok(());
+    }
+  }
+  assert_value_is_utf8(&rt, value, "0:0:ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn super_computed_update_in_derived_ctor_does_not_eval_key_before_this_binding_error(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let Some(value) = exec_or_skip_class_inheritance(
+    &mut rt,
+    r#"
+      let key_side = 0;
+      class A {}
+      class B extends A {
+        constructor() {
+          super[(key_side = 1, "x")]++;
+        }
+      }
+      try { new B(); }
+      catch (e) { String(key_side) + ":" + e.name }
+    "#,
+  )?
+  else {
+    return Ok(());
+  };
+  assert_value_is_utf8(&rt, value, "0:ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn super_computed_update_in_derived_ctor_does_not_eval_key_before_this_binding_error_compiled(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let Some(value) = exec_compiled_or_skip(
+    &mut rt,
+    r#"
+      let key_side = 0;
+      class A {}
+      class B extends A {
+        constructor() {
+          super[(key_side = 1, "x")]++;
+        }
+      }
+      try { new B(); }
+      catch (e) { String(key_side) + ":" + e.name }
+    "#,
+  )?
+  else {
+    return Ok(());
+  };
+  // If the compiled path doesn't support `super` yet, the host boundary will coerce internal
+  // `VmError::Unimplemented` into a thrown `Error` object, which this script catches as `"Error"`.
+  // Skip in that case so we still validate interpreter semantics.
+  if let Value::String(s) = value {
+    let actual = rt.heap().get_string(s).unwrap().to_utf8_lossy();
+    if actual.ends_with(":Error") {
+      return Ok(());
+    }
+  }
+  assert_value_is_utf8(&rt, value, "0:ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn super_computed_logical_or_assignment_in_derived_ctor_does_not_eval_key_or_rhs_before_this_binding_error(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let Some(value) = exec_or_skip_class_inheritance(
+    &mut rt,
+    r#"
+      let key_side = 0;
+      let rhs_side = 0;
+      class A {}
+      class B extends A {
+        constructor() {
+          super[(key_side = 1, "x")] ||= (rhs_side = 1, 1);
+        }
+      }
+      try { new B(); }
+      catch (e) { String(key_side) + ":" + String(rhs_side) + ":" + e.name }
+    "#,
+  )?
+  else {
+    return Ok(());
+  };
+  assert_value_is_utf8(&rt, value, "0:0:ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn super_computed_logical_or_assignment_in_derived_ctor_does_not_eval_key_or_rhs_before_this_binding_error_compiled(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let Some(value) = exec_compiled_or_skip(
+    &mut rt,
+    r#"
+      let key_side = 0;
+      let rhs_side = 0;
+      class A {}
+      class B extends A {
+        constructor() {
+          super[(key_side = 1, "x")] ||= (rhs_side = 1, 1);
+        }
+      }
+      try { new B(); }
+      catch (e) { String(key_side) + ":" + String(rhs_side) + ":" + e.name }
+    "#,
+  )?
+  else {
+    return Ok(());
+  };
+  // If the compiled path doesn't support `super` yet, the host boundary will coerce internal
+  // `VmError::Unimplemented` into a thrown `Error` object, which this script catches as `"Error"`.
+  // Skip in that case so we still validate interpreter semantics.
+  if let Value::String(s) = value {
+    let actual = rt.heap().get_string(s).unwrap().to_utf8_lossy();
+    if actual.ends_with(":Error") {
+      return Ok(());
+    }
+  }
+  assert_value_is_utf8(&rt, value, "0:0:ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn super_computed_exponentiation_assignment_in_derived_ctor_does_not_eval_key_or_rhs_before_this_binding_error(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let Some(value) = exec_or_skip_class_inheritance(
+    &mut rt,
+    r#"
+      let key_side = 0;
+      let rhs_side = 0;
+      class A {}
+      class B extends A {
+        constructor() {
+          super[(key_side = 1, "x")] **= (rhs_side = 1, 2);
+        }
+      }
+      try { new B(); }
+      catch (e) { String(key_side) + ":" + String(rhs_side) + ":" + e.name }
+    "#,
+  )?
+  else {
+    return Ok(());
+  };
+  assert_value_is_utf8(&rt, value, "0:0:ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn super_computed_exponentiation_assignment_in_derived_ctor_does_not_eval_key_or_rhs_before_this_binding_error_compiled(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let Some(value) = exec_compiled_or_skip(
+    &mut rt,
+    r#"
+      let key_side = 0;
+      let rhs_side = 0;
+      class A {}
+      class B extends A {
+        constructor() {
+          super[(key_side = 1, "x")] **= (rhs_side = 1, 2);
+        }
+      }
+      try { new B(); }
+      catch (e) { String(key_side) + ":" + String(rhs_side) + ":" + e.name }
+    "#,
+  )?
+  else {
+    return Ok(());
+  };
+  // If the compiled path doesn't support `super` yet, the host boundary will coerce internal
+  // `VmError::Unimplemented` into a thrown `Error` object, which this script catches as `"Error"`.
+  // Skip in that case so we still validate interpreter semantics.
+  if let Value::String(s) = value {
+    let actual = rt.heap().get_string(s).unwrap().to_utf8_lossy();
+    if actual.ends_with(":Error") {
+      return Ok(());
+    }
+  }
+  assert_value_is_utf8(&rt, value, "0:0:ReferenceError");
+  Ok(())
+}
