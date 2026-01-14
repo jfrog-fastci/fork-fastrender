@@ -24723,6 +24723,14 @@ pub(crate) fn run_compiled_function(
 
   // Arrow functions resolve lexical `this` / `new.target` by walking the environment chain to the
   // nearest "this environment" (ECMA-262 `GetThisEnvironment`), so keep these as mutable locals.
+  //
+  // Non-arrow functions instead create a fresh "this environment" at call time by populating the
+  // current function environment record's `this` and `new.target` bindings.
+  //
+  // This setup must happen before any parameter default evaluation or function-body instantiation,
+  // including for async functions, so that:
+  // - `this`/`new.target` in parameter initializers work correctly, and
+  // - arrow callbacks created within async functions can resolve lexical `this`.
   let mut this = this;
   let mut this_initialized = this_initialized;
   let mut new_target = new_target;
