@@ -37655,7 +37655,7 @@ fn gen_eval_assignment_apply_reference(
 
           gen_frames_push(
             &mut suspend.frames,
-            GenFrame::AssignExpAfterRhs {
+            GenFrame::AssignAddAfterRhs {
               expr: expr as *const BinaryExpr,
               base,
               key,
