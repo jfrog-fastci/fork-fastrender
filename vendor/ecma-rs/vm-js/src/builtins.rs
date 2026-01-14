@@ -32281,7 +32281,8 @@ mod object_builtins_regression_tests {
           delete arrIterProto[Symbol.toStringTag];
           const okArrIterFallback = toString.call(arrIter) === "[object Iterator]";
 
-          // Generators: non-string @@toStringTag is ignored, so we fall back to builtinTag.
+          // Generators: when @@toStringTag is present but non-string, Object.prototype.toString
+          // must fall back to the built-in tag for generator objects ("Generator").
           const genFn = function* () {};
           const gen = genFn();
           const genProto = Object.getPrototypeOf(gen);
@@ -32290,23 +32291,22 @@ mod object_builtins_regression_tests {
           delete genProto[Symbol.toStringTag];
           const okGenRestored = toString.call(gen) === "[object Generator]";
 
-           // Instance override should work (even when an inherited @@toStringTag blocks assignment).
-           let a = [];
+          // Instance override should work for builtinTag-derived objects (Array / Function / Date).
+          // For Error/RegExp instances, `@@toStringTag` is a non-writable property on the intrinsic
+          // prototype; define an own property explicitly to override it.
+          let a = [];
           a[Symbol.toStringTag] = "test262";
           const okArrayOverride = toString.call(a) === "[object test262]";
           let f = function () {};
           f[Symbol.toStringTag] = "test262";
           const okFuncOverride = toString.call(f) === "[object test262]";
           let e = new Error("x");
-          // `%Error.prototype%[@@toStringTag]` is a non-writable data property, so assignment cannot
-          // create an own property shadowing it; define directly instead.
           Object.defineProperty(e, Symbol.toStringTag, { configurable: true, value: "test262" });
           const okErrorOverride = toString.call(e) === "[object test262]";
           let d = new Date(0);
           d[Symbol.toStringTag] = "test262";
           const okDateOverride = toString.call(d) === "[object test262]";
           let r = /./;
-          // `%RegExp.prototype%[@@toStringTag]` is non-writable; define directly instead.
           Object.defineProperty(r, Symbol.toStringTag, { configurable: true, value: "test262" });
           const okRegExpOverride = toString.call(r) === "[object test262]";
 
