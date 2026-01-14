@@ -151,7 +151,7 @@ const LEGACY_DOM_EXCEPTION_CODES: &[LegacyDomExceptionCode] = &[
   },
 ];
 
-fn legacy_dom_exception_code_from_name(name: &str) -> u16 {
+pub fn legacy_code_for_dom_exception_name(name: &str) -> u16 {
   LEGACY_DOM_EXCEPTION_CODES
     .iter()
     .find_map(|entry| {
@@ -348,7 +348,7 @@ impl DomExceptionClassVmJs {
     scope.define_property(obj, key_message, data_desc(Value::String(message_s)))?;
 
     // Legacy `DOMException.code`.
-    let code = legacy_dom_exception_code_from_name(name);
+    let code = legacy_code_for_dom_exception_name(name);
     let key_code_s = scope.alloc_string("code")?;
     scope.push_root(Value::String(key_code_s))?;
     let key_code = PropertyKey::from_string(key_code_s);
@@ -471,7 +471,7 @@ fn dom_exception_create_instance(
 
   // Legacy `DOMException.code`.
   let name_utf8 = scope.heap().get_string(name_s)?.to_utf8_lossy();
-  let code = legacy_dom_exception_code_from_name(name_utf8.as_ref());
+  let code = legacy_code_for_dom_exception_name(name_utf8.as_ref());
   let key_code_s = scope.alloc_string("code")?;
   scope.push_root(Value::String(key_code_s))?;
   let key_code = PropertyKey::from_string(key_code_s);
