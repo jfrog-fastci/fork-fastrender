@@ -896,6 +896,9 @@ impl Intrinsics {
     //
     // Others (e.g. RegExp / Error) define `@@toStringTag` on their prototypes so that objects that
     // inherit from those prototypes (and Proxy-wrapped instances) are tagged consistently.
+    //
+    // Iterator helpers (stage 3) adds `%IteratorPrototype%[@@toStringTag] === "Iterator"`, which is
+    // used as a fallback tag for builtin iterators once their own `@@toStringTag` is removed.
     install_to_string_tag(scope, iterator_prototype, well_known_symbols.to_string_tag, "Iterator")?;
     install_to_string_tag(scope, bigint_prototype, well_known_symbols.to_string_tag, "BigInt")?;
     install_to_string_tag_writable(scope, regexp_prototype, well_known_symbols.to_string_tag, "RegExp")?;

@@ -11533,6 +11533,33 @@ pub fn object_prototype_to_string(
   const TAG_ARRAY: [u16; 5] = [b'A' as u16, b'r' as u16, b'r' as u16, b'a' as u16, b'y' as u16];
   const TAG_DATE: [u16; 4] = [b'D' as u16, b'a' as u16, b't' as u16, b'e' as u16];
   const TAG_REGEXP: [u16; 6] = [b'R' as u16, b'e' as u16, b'g' as u16, b'E' as u16, b'x' as u16, b'p' as u16];
+  const TAG_GENERATOR: [u16; 9] = [
+    b'G' as u16,
+    b'e' as u16,
+    b'n' as u16,
+    b'e' as u16,
+    b'r' as u16,
+    b'a' as u16,
+    b't' as u16,
+    b'o' as u16,
+    b'r' as u16,
+  ];
+  const TAG_ASYNC_GENERATOR: [u16; 14] = [
+    b'A' as u16,
+    b's' as u16,
+    b'y' as u16,
+    b'n' as u16,
+    b'c' as u16,
+    b'G' as u16,
+    b'e' as u16,
+    b'n' as u16,
+    b'e' as u16,
+    b'r' as u16,
+    b'a' as u16,
+    b't' as u16,
+    b'o' as u16,
+    b'r' as u16,
+  ];
   const TAG_FUNCTION: [u16; 8] = [
     b'F' as u16,
     b'u' as u16,
@@ -11616,6 +11643,10 @@ pub fn object_prototype_to_string(
     &TAG_DATE
   } else if scope.heap().is_regexp_object(o) {
     &TAG_REGEXP
+  } else if scope.heap().is_generator_object(o) {
+    &TAG_GENERATOR
+  } else if scope.heap().is_async_generator_object(o) {
+    &TAG_ASYNC_GENERATOR
   } else {
     &TAG_OBJECT
   };
@@ -31218,34 +31249,34 @@ mod object_builtins_regression_tests {
           delete arrIterProto[Symbol.toStringTag];
           const okArrIterFallback = toString.call(arrIter) === "[object Iterator]";
 
-          // Generators: builtinTag must be "Object" (generator tag comes from @@toStringTag).
+          // Generators: non-string @@toStringTag is ignored, so we fall back to builtinTag.
           const genFn = function* () {};
           const gen = genFn();
           const genProto = Object.getPrototypeOf(gen);
           Object.defineProperty(genProto, Symbol.toStringTag, { configurable: true, get() { return {}; } });
-          const okGenNonString = toString.call(gen) === "[object Object]";
+          const okGenNonString = toString.call(gen) === "[object Generator]";
           delete genProto[Symbol.toStringTag];
           const okGenRestored = toString.call(gen) === "[object Generator]";
 
-          // Instance override should work for builtinTag-derived objects (Array / Function / Error / Date / RegExp).
-          let a = [];
-           a[Symbol.toStringTag] = "test262";
-           const okArrayOverride = toString.call(a) === "[object test262]";
-           let f = function () {};
-           f[Symbol.toStringTag] = "test262";
-           const okFuncOverride = toString.call(f) === "[object test262]";
-           let e = new Error("x");
-           // `%Error.prototype%[@@toStringTag]` is a non-writable data property, so assignment cannot
-           // create an own property shadowing it; define directly instead.
-           Object.defineProperty(e, Symbol.toStringTag, { configurable: true, value: "test262" });
-           const okErrorOverride = toString.call(e) === "[object test262]";
-           let d = new Date(0);
-           d[Symbol.toStringTag] = "test262";
-           const okDateOverride = toString.call(d) === "[object test262]";
-           let r = /./;
-           // `%RegExp.prototype%[@@toStringTag]` is non-writable; define directly instead.
-           Object.defineProperty(r, Symbol.toStringTag, { configurable: true, value: "test262" });
-           const okRegExpOverride = toString.call(r) === "[object test262]";
+           // Instance override should work (even when an inherited @@toStringTag blocks assignment).
+           let a = [];
+          a[Symbol.toStringTag] = "test262";
+          const okArrayOverride = toString.call(a) === "[object test262]";
+          let f = function () {};
+          f[Symbol.toStringTag] = "test262";
+          const okFuncOverride = toString.call(f) === "[object test262]";
+          let e = new Error("x");
+          // `%Error.prototype%[@@toStringTag]` is a non-writable data property, so assignment cannot
+          // create an own property shadowing it; define directly instead.
+          Object.defineProperty(e, Symbol.toStringTag, { configurable: true, value: "test262" });
+          const okErrorOverride = toString.call(e) === "[object test262]";
+          let d = new Date(0);
+          d[Symbol.toStringTag] = "test262";
+          const okDateOverride = toString.call(d) === "[object test262]";
+          let r = /./;
+          // `%RegExp.prototype%[@@toStringTag]` is non-writable; define directly instead.
+          Object.defineProperty(r, Symbol.toStringTag, { configurable: true, value: "test262" });
+          const okRegExpOverride = toString.call(r) === "[object test262]";
 
            // Async function tag should come from %AsyncFunction.prototype%[@@toStringTag].
            const af = async function () {};
