@@ -5463,15 +5463,22 @@ enum Reference<'a> {
   /// A `super` property reference (`super.x` / `super[expr]`).
   ///
   /// Per ECMA-262, a Super Reference carries both:
-  /// - the *base* object used for property lookup (`GetSuperBase()`), and
+  /// - the *base* value used for property lookup (`GetSuperBase()`), and
   /// - the *receiver* (`GetThisBinding()`), used as `this` for accessors and for `super.m()` calls.
   ///
-  /// Note: `base` is stored as a `Value` (not `GcObject`) because `[[HomeObject]].[[Prototype]]`
-  /// can be `null` (e.g. `class C extends null {}`), in which case dereferencing the reference
-  /// must throw a TypeError (via `ToObject(null)`).
+  /// In addition, `super[expr]` stores the *property name value* produced by evaluating `expr`.
+  /// The spec defers the `ToPropertyKey` conversion of that value until `GetValue` / `PutValue`,
+  /// **after** the base has been captured. This matters when `ToPropertyKey` has side effects
+  /// (e.g. mutating the home object's prototype).
+  ///
+  /// Note:
+  /// - `base` is stored as a `Value` (not `GcObject`) because `[[HomeObject]].[[Prototype]]` can be
+  ///   `null` (e.g. `class C extends null {}`), in which case dereferencing must throw a TypeError
+  ///   (via `ToObject(null)`).
+  /// - `key` is stored as a `Value` so `GetValue` / `PutValue` can perform `ToPropertyKey` lazily.
   SuperProperty {
     base: Value,
-    key: PropertyKey,
+    key: Value,
     receiver: Value,
   },
   /// A private-name reference (`obj.#x`).
@@ -12618,15 +12625,15 @@ impl<'a> Evaluator<'a> {
       super_scope.push_roots(roots)?;
       let key_s = super_scope.alloc_string(&expr.right)?;
       super_scope.push_root(Value::String(key_s))?;
-      let key = PropertyKey::from_string(key_s);
+      let key = Value::String(key_s);
 
       let super_base = self.super_base(&mut super_scope)?;
-      let reference = Reference::SuperProperty {
+      let mut reference = Reference::SuperProperty {
         base: super_base,
         key,
         receiver: actual_this,
       };
-      let value = self.get_value_from_reference(&mut super_scope, &reference)?;
+      let value = self.get_value_from_reference(&mut super_scope, &mut reference)?;
       return Ok(OptionalChainEval::Value(value));
     }
     let base = match self.eval_chain_base(scope, &expr.left)? {
@@ -12642,7 +12649,7 @@ impl<'a> Evaluator<'a> {
     // the original base value can be preserved as the call/receiver `this`.
     let mut key_scope = scope.reborrow();
     key_scope.push_root(base)?;
-    let reference = if expr.right.starts_with('#') {
+    let mut reference = if expr.right.starts_with('#') {
       let sym = key_scope
         .heap()
         .resolve_private_name_symbol(self.env.lexical_env, &expr.right)?
@@ -12660,7 +12667,7 @@ impl<'a> Evaluator<'a> {
         key: PropertyKey::from_string(key_s),
       }
     };
-    let value = self.get_value_from_reference(&mut key_scope, &reference)?;
+    let value = self.get_value_from_reference(&mut key_scope, &mut reference)?;
     Ok(OptionalChainEval::Value(value))
   }
 
@@ -12699,24 +12706,22 @@ impl<'a> Evaluator<'a> {
       // - `GetSuperBase` is observed before `ToPropertyKey` so prototype mutation during key
       //   coercion does not affect the resolved super base (test262:
       //   `prop-expr-getsuperbase-before-topropertykey-*`).
+      //
+      // `ToPropertyKey` conversion is deferred to `GetValue` / `PutValue` when `[[ReferencedName]]`
+      // is not yet a property key.
       let super_base = self.super_base(&mut key_scope)?;
-      // Root the captured super base across `ToPropertyKey` / `GetValue`:
-      // - key conversion can invoke user code and mutate the home object's prototype,
-      // - key conversion and `GetValue` can allocate/trigger GC.
+      // Root the captured super base across `GetValue` / `PutValue`:
+      // - key conversion (performed lazily during `GetValue` / `PutValue`) can invoke user code
+      //   and mutate the home object's prototype,
+      // - key conversion and the subsequent operation can allocate/trigger GC.
       key_scope.push_root(super_base)?;
-      let key = self.to_property_key_operator(&mut key_scope, member_value)?;
-      // Root the key across `GetValue` in case it allocates/GCs.
-      match key {
-        PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
-        PropertyKey::Symbol(sym) => key_scope.push_root(Value::Symbol(sym))?,
-      };
 
-      let reference = Reference::SuperProperty {
+      let mut reference = Reference::SuperProperty {
         base: super_base,
-        key,
+        key: member_value,
         receiver,
       };
-      let value = self.get_value_from_reference(&mut key_scope, &reference)?;
+      let value = self.get_value_from_reference(&mut key_scope, &mut reference)?;
       return Ok(OptionalChainEval::Value(value));
     }
 
@@ -12746,12 +12751,12 @@ impl<'a> Evaluator<'a> {
       )?);
     }
     let key = self.to_property_key_operator(&mut key_scope, member_value)?;
-    let reference = Reference::Property {
+    let mut reference = Reference::Property {
       base,
       receiver: base,
       key,
     };
-    let value = self.get_value_from_reference(&mut key_scope, &reference)?;
+    let value = self.get_value_from_reference(&mut key_scope, &mut reference)?;
     Ok(OptionalChainEval::Value(value))
   }
 
@@ -12894,7 +12899,7 @@ impl<'a> Evaluator<'a> {
           super_scope.push_roots(&[self.this, receiver, Value::Object(home_object)])?;
           let key_s = super_scope.alloc_string(&member.stx.right)?;
           super_scope.push_root(Value::String(key_s))?;
-          let key = PropertyKey::from_string(key_s);
+          let key = Value::String(key_s);
 
           let super_base = self.super_base(&mut super_scope)?;
           return Ok(Reference::SuperProperty {
@@ -12955,23 +12960,15 @@ impl<'a> Evaluator<'a> {
           // ECMA-262 `SuperProperty : super [ Expression ]`:
           // - `GetThisBinding` must be observed before any key side effects (handled above),
           // - the key expression is evaluated to a value before `GetSuperBase`, and
-           // - `GetSuperBase` is observed before `ToPropertyKey` so prototype mutation during key
-           //   coercion does not affect the resolved super base (test262:
-           //   `prop-expr-getsuperbase-before-topropertykey-*`).
-           let base = self.get_super_base(&mut key_scope)?;
-           // Root the captured super base across `ToPropertyKey` and subsequent dereference:
-           // - key conversion can invoke user code / trigger GC, and may mutate the home object's
-           //   prototype (potentially making the original base unreachable),
-           // - `GetValue`/`PutValue` can invoke accessors/Proxy traps and trigger GC.
-           key_scope.push_root(base)?;
-
-           let key = self.to_property_key_operator(&mut key_scope, member_value)?;
-           // Root the key across `GetValue`/`PutValue` in case those operations allocate/GC.
-           match key {
-            PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
-            PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
-          };
-          return Ok(Reference::SuperProperty { base, key, receiver });
+          // - `GetSuperBase` is observed before `ToPropertyKey` (performed lazily by `GetValue` /
+          //   `PutValue`), so prototype mutation during key coercion does not affect the resolved
+          //   super base (test262: `prop-expr-getsuperbase-before-topropertykey-*`).
+          let base = self.get_super_base(&mut key_scope)?;
+          return Ok(Reference::SuperProperty {
+            base,
+            key: member_value,
+            receiver,
+          });
         }
 
         let base = self.eval_expr(scope, &member.stx.object)?;
@@ -13030,15 +13027,7 @@ impl<'a> Evaluator<'a> {
         key,
         receiver,
       } => {
-        let roots = [
-          base,
-          receiver,
-          match key {
-            PropertyKey::String(s) => Value::String(s),
-            PropertyKey::Symbol(s) => Value::Symbol(s),
-          },
-        ];
-        scope.push_roots(&roots)?;
+        scope.push_roots(&[base, receiver, key])?;
       }
       Reference::Private { base, sym, .. } => {
         scope.push_roots(&[base, Value::Symbol(sym)])?;
@@ -13050,9 +13039,10 @@ impl<'a> Evaluator<'a> {
   fn get_value_from_reference(
     &mut self,
     scope: &mut Scope<'_>,
-    reference: &Reference<'_>,
+    reference: &mut Reference<'_>,
   ) -> Result<Value, VmError> {
-    match *reference {
+    let reference_copy = *reference;
+    match reference_copy {
       Reference::Binding(name) => {
         match self.env.get(self.vm, self.host, self.hooks, scope, name)? {
           Some(v) => Ok(v),
@@ -13065,7 +13055,7 @@ impl<'a> Evaluator<'a> {
       }
       Reference::Property { base, receiver, key } => {
         let mut get_scope = scope.reborrow();
-        self.root_reference(&mut get_scope, reference)?;
+        self.root_reference(&mut get_scope, &reference_copy)?;
         let object = self.to_object_operator(&mut get_scope, base)?;
         // Root the boxed object so host hooks/accessors can allocate freely.
         get_scope.push_root(Value::Object(object))?;
@@ -13073,15 +13063,43 @@ impl<'a> Evaluator<'a> {
       }
       Reference::SuperProperty {
         base,
-        key,
+        key: key_value,
         receiver,
       } => {
-        let mut get_scope = scope.reborrow();
-        self.root_reference(&mut get_scope, reference)?;
-        let object = self.to_object_operator(&mut get_scope, base)?;
-        // Root the boxed object so host hooks/accessors can allocate freely.
-        get_scope.push_root(Value::Object(object))?;
-        get_scope.get_with_host_and_hooks(self.vm, self.host, self.hooks, object, key, receiver)
+        // For `super[expr]`, ECMA-262 captures `GetSuperBase()` **before** converting the property
+        // name value via `ToPropertyKey` (conversion happens inside `GetValue` / `PutValue`).
+        //
+        // Keep the conversion here (after `ToObject(base)`), and cache the converted key on the
+        // reference so compound assignments and update expressions don't re-run `ToPropertyKey`.
+        self.root_reference(scope, &reference_copy)?;
+        let object = self.to_object_operator(scope, base)?;
+        scope.push_root(Value::Object(object))?;
+
+        let prop_key = match key_value {
+          Value::String(s) => PropertyKey::String(s),
+          Value::Symbol(sym) => PropertyKey::Symbol(sym),
+          other => {
+            let pk = self.to_property_key_operator(scope, other)?;
+            // Cache the converted key as a `Value` so future `GetValue`/`PutValue` calls on the
+            // same reference do not re-run `ToPropertyKey`.
+            let cached_value = match pk {
+              PropertyKey::String(s) => {
+                scope.push_root(Value::String(s))?;
+                Value::String(s)
+              }
+              PropertyKey::Symbol(sym) => {
+                scope.push_root(Value::Symbol(sym))?;
+                Value::Symbol(sym)
+              }
+            };
+            if let Reference::SuperProperty { key, .. } = reference {
+              *key = cached_value;
+            }
+            pk
+          }
+        };
+
+        scope.get_with_host_and_hooks(self.vm, self.host, self.hooks, object, prop_key, receiver)
       }
       Reference::Private { base, sym, name } => self.private_get(scope, base, sym, name),
     }
@@ -13090,10 +13108,11 @@ impl<'a> Evaluator<'a> {
   fn put_value_to_reference(
     &mut self,
     scope: &mut Scope<'_>,
-    reference: &Reference<'_>,
+    reference: &mut Reference<'_>,
     value: Value,
   ) -> Result<(), VmError> {
-    match *reference {
+    let reference_copy = *reference;
+    match reference_copy {
       Reference::Binding(name) => self.env.set(
         self.vm,
         self.host,
@@ -13105,7 +13124,7 @@ impl<'a> Evaluator<'a> {
       ),
       Reference::Property { base, receiver, key } => {
         let mut set_scope = scope.reborrow();
-        self.root_reference(&mut set_scope, reference)?;
+        self.root_reference(&mut set_scope, &reference_copy)?;
         // Root `value` across `ToObject(base)` in case boxing triggers a GC.
         set_scope.push_root(value)?;
         let object = self.to_object_operator(&mut set_scope, base)?;
@@ -13135,22 +13154,48 @@ impl<'a> Evaluator<'a> {
       }
       Reference::SuperProperty {
         base,
-        key,
+        key: key_value,
         receiver,
       } => {
         let mut set_scope = scope.reborrow();
-        self.root_reference(&mut set_scope, reference)?;
+        self.root_reference(&mut set_scope, &reference_copy)?;
         // Root `value` across `ToObject(base)` in case boxing triggers a GC.
         set_scope.push_root(value)?;
         let object = self.to_object_operator(&mut set_scope, base)?;
         set_scope.push_root(Value::Object(object))?;
+
+        // `ToPropertyKey` conversion is deferred until `PutValue` (spec: `PutValue` step 3.c),
+        // and should happen *after* `ToObject(base)` so `super` with a `null` base throws before
+        // running user code during key conversion.
+        let prop_key = match key_value {
+          Value::String(s) => PropertyKey::String(s),
+          Value::Symbol(sym) => PropertyKey::Symbol(sym),
+          other => {
+            let pk = self.to_property_key_operator(&mut set_scope, other)?;
+            let cached_value = match pk {
+              PropertyKey::String(s) => {
+                set_scope.push_root(Value::String(s))?;
+                Value::String(s)
+              }
+              PropertyKey::Symbol(sym) => {
+                set_scope.push_root(Value::Symbol(sym))?;
+                Value::Symbol(sym)
+              }
+            };
+            if let Reference::SuperProperty { key, .. } = reference {
+              *key = cached_value;
+            }
+            pk
+          }
+        };
+
         let ok = crate::spec_ops::internal_set_with_host_and_hooks(
           self.vm,
           &mut set_scope,
           self.host,
           self.hooks,
           object,
-          key,
+          prop_key,
           value,
           receiver,
         )?;
@@ -13283,6 +13328,7 @@ impl<'a> Evaluator<'a> {
     }
   }
 
+ 
   fn eval_func_expr(
     &mut self,
     scope: &mut Scope<'_>,
@@ -13811,7 +13857,7 @@ impl<'a> Evaluator<'a> {
           // value for the call `this`.
           let mut key_scope = scope.reborrow();
           key_scope.push_root(base)?;
-          let reference = if member.stx.right.starts_with('#') {
+          let mut reference = if member.stx.right.starts_with('#') {
             let sym = key_scope
               .heap()
               .resolve_private_name_symbol(self.env.lexical_env, &member.stx.right)?
@@ -13829,7 +13875,7 @@ impl<'a> Evaluator<'a> {
               key: PropertyKey::from_string(key_s),
             }
           };
-          let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
+          let callee_value = self.get_value_from_reference(&mut key_scope, &mut reference)?;
           (callee_value, base)
         }
         Expr::ComputedMember(member) if member.stx.optional_chaining => {
@@ -13846,16 +13892,16 @@ impl<'a> Evaluator<'a> {
           let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
           key_scope.push_root(member_value)?;
           let key = self.to_property_key_operator(&mut key_scope, member_value)?;
-          let reference = Reference::Property {
+          let mut reference = Reference::Property {
             base,
             receiver: base,
             key,
           };
-          let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
+          let callee_value = self.get_value_from_reference(&mut key_scope, &mut reference)?;
           (callee_value, base)
         }
         Expr::Member(_) | Expr::ComputedMember(_) | Expr::Id(_) | Expr::IdPat(_) => {
-          let reference = self.eval_reference(scope, &expr.stx.function)?;
+          let mut reference = self.eval_reference(scope, &expr.stx.function)?;
           let this_value = match reference {
             Reference::Property { receiver, .. } => receiver,
             Reference::SuperProperty { receiver, .. } => receiver,
@@ -13865,7 +13911,7 @@ impl<'a> Evaluator<'a> {
 
           let mut callee_scope = scope.reborrow();
           self.root_reference(&mut callee_scope, &reference)?;
-          let callee_value = self.get_value_from_reference(&mut callee_scope, &reference)?;
+          let callee_value = self.get_value_from_reference(&mut callee_scope, &mut reference)?;
           (callee_value, this_value)
         }
          _ => {
@@ -15108,11 +15154,11 @@ impl<'a> Evaluator<'a> {
     delta: i8,
     prefix: bool,
   ) -> Result<Value, VmError> {
-    let reference = self.eval_reference(scope, argument)?;
+    let mut reference = self.eval_reference(scope, argument)?;
     let mut update_scope = scope.reborrow();
     self.root_reference(&mut update_scope, &reference)?;
 
-    let old_value = self.get_value_from_reference(&mut update_scope, &reference)?;
+    let old_value = self.get_value_from_reference(&mut update_scope, &mut reference)?;
     update_scope.push_root(old_value)?;
 
     let old_numeric = self.to_numeric(&mut update_scope, old_value)?;
@@ -15133,7 +15179,7 @@ impl<'a> Evaluator<'a> {
     };
 
     update_scope.push_root(new_value)?;
-    self.put_value_to_reference(&mut update_scope, &reference, new_value)?;
+    self.put_value_to_reference(&mut update_scope, &mut reference, new_value)?;
     if prefix {
       Ok(new_value)
     } else {
@@ -15521,15 +15567,15 @@ impl<'a> Evaluator<'a> {
         super_scope.push_roots(roots)?;
         let key_s = super_scope.alloc_string(&member.stx.right)?;
         super_scope.push_root(Value::String(key_s))?;
-        let key = PropertyKey::from_string(key_s);
+        let key = Value::String(key_s);
 
         let super_base = self.super_base(&mut super_scope)?;
-        let reference = Reference::SuperProperty {
+        let mut reference = Reference::SuperProperty {
           base: super_base,
           key,
           receiver: actual_this,
         };
-        let callee_value = self.get_value_from_reference(&mut super_scope, &reference)?;
+        let callee_value = self.get_value_from_reference(&mut super_scope, &mut reference)?;
         (callee_value, actual_this)
       }
       // Optional member call (e.g. `obj?.method()`): only applies when the optional-chain member
@@ -15547,7 +15593,7 @@ impl<'a> Evaluator<'a> {
         // Optional chaining member call: preserve the base value for the call `this` binding.
         let mut key_scope = scope.reborrow();
         key_scope.push_root(base)?;
-        let reference = if member.stx.right.starts_with('#') {
+        let mut reference = if member.stx.right.starts_with('#') {
           let sym = key_scope
             .heap()
             .resolve_private_name_symbol(self.env.lexical_env, &member.stx.right)?
@@ -15565,7 +15611,7 @@ impl<'a> Evaluator<'a> {
             key: PropertyKey::from_string(key_s),
           }
         };
-        let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
+        let callee_value = self.get_value_from_reference(&mut key_scope, &mut reference)?;
         (callee_value, base)
       }
       // Optional computed-member call (e.g. `obj?.[expr]()`): only applies when the optional-chain
@@ -15595,12 +15641,12 @@ impl<'a> Evaluator<'a> {
         let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
         key_scope.push_root(member_value)?;
         let key = self.to_property_key_operator(&mut key_scope, member_value)?;
-        let reference = Reference::Property {
+        let mut reference = Reference::Property {
           base,
           receiver: base,
           key,
         };
-        let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
+        let callee_value = self.get_value_from_reference(&mut key_scope, &mut reference)?;
         (callee_value, base)
       }
       // Ordinary member call (e.g. `obj.method()`), but with optional-chain propagation when the
@@ -15619,15 +15665,15 @@ impl<'a> Evaluator<'a> {
           key_scope.push_roots(&[self.this, receiver])?;
           let key_s = key_scope.alloc_string(&member.stx.right)?;
           key_scope.push_root(Value::String(key_s))?;
-          let key = PropertyKey::from_string(key_s);
+          let key = Value::String(key_s);
 
           let base = self.get_super_base(&mut key_scope)?;
-          let reference = Reference::SuperProperty {
+          let mut reference = Reference::SuperProperty {
             base,
             key,
             receiver,
           };
-          let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
+          let callee_value = self.get_value_from_reference(&mut key_scope, &mut reference)?;
           (callee_value, receiver)
         } else {
           match self.eval_chain_base(scope, &member.stx.left)? {
@@ -15642,7 +15688,7 @@ impl<'a> Evaluator<'a> {
 
               let mut key_scope = scope.reborrow();
               key_scope.push_root(base)?;
-              let reference = if member.stx.right.starts_with('#') {
+              let mut reference = if member.stx.right.starts_with('#') {
                 let sym = key_scope
                   .heap()
                   .resolve_private_name_symbol(self.env.lexical_env, &member.stx.right)?
@@ -15660,7 +15706,7 @@ impl<'a> Evaluator<'a> {
                   key: PropertyKey::from_string(key_s),
                 }
               };
-              let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
+              let callee_value = self.get_value_from_reference(&mut key_scope, &mut reference)?;
               (callee_value, base)
             }
             OptionalChainEval::ShortCircuit => {
@@ -15704,21 +15750,12 @@ impl<'a> Evaluator<'a> {
           // and trigger GC.
           key_scope.push_root(base)?;
 
-          let key = self.to_property_key_operator(&mut key_scope, member_value)?;
-          match key {
-            PropertyKey::String(s) => {
-              key_scope.push_root(Value::String(s))?;
-            }
-            PropertyKey::Symbol(s) => {
-              key_scope.push_root(Value::Symbol(s))?;
-            }
-          }
-          let reference = Reference::SuperProperty {
+          let mut reference = Reference::SuperProperty {
             base,
-            key,
+            key: member_value,
             receiver,
           };
-          let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
+          let callee_value = self.get_value_from_reference(&mut key_scope, &mut reference)?;
           (callee_value, receiver)
         } else {
         match self.eval_chain_base(scope, &member.stx.object)? {
@@ -15738,12 +15775,12 @@ impl<'a> Evaluator<'a> {
               )?);
             }
             let key = self.to_property_key_operator(&mut key_scope, member_value)?;
-            let reference = Reference::Property {
+            let mut reference = Reference::Property {
               base,
               receiver: base,
               key,
             };
-            let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
+            let callee_value = self.get_value_from_reference(&mut key_scope, &mut reference)?;
             (callee_value, base)
           }
           OptionalChainEval::ShortCircuit => {
@@ -15757,10 +15794,10 @@ impl<'a> Evaluator<'a> {
         }
       }
       Expr::Id(_) | Expr::IdPat(_) => {
-        let reference = self.eval_reference(scope, &expr.callee)?;
+        let mut reference = self.eval_reference(scope, &expr.callee)?;
         let mut callee_scope = scope.reborrow();
         self.root_reference(&mut callee_scope, &reference)?;
-        let callee_value = self.get_value_from_reference(&mut callee_scope, &reference)?;
+        let callee_value = self.get_value_from_reference(&mut callee_scope, &mut reference)?;
         (callee_value, Value::Undefined)
       }
       // Any other callee expression, including optional member access that is not in direct call
@@ -15927,56 +15964,7 @@ impl<'a> Evaluator<'a> {
             Ok(value)
           }
           _ => {
-            // `super[expr] = rhs` is special: unlike ordinary computed member assignment, the
-            // `ToPropertyKey` coercion is deferred until `PutValue` (ECMA-262 6.2.5.6).
-            //
-            // This means:
-            // - `GetThisBinding` happens before evaluating the key expression,
-            // - the key expression is evaluated to a *value* before `GetSuperBase`,
-            // - `GetSuperBase` is observed before `ToPropertyKey`, and
-            // - RHS evaluation happens before `ToPropertyKey`.
-            if let Expr::ComputedMember(member) = &*expr.left.stx {
-              if matches!(&*member.stx.object.stx, Expr::Super(_)) {
-                let home_object = self.home_object.ok_or(VmError::InvariantViolation(
-                  "super property access missing [[HomeObject]]",
-                ))?;
-                let mut assign_scope = scope.reborrow();
-                // Root `this` binding state (may be a DerivedConstructorState cell) and `[[HomeObject]]`
-                // across key/RHS evaluation (any step can allocate / trigger GC).
-                assign_scope.push_roots(&[self.this, Value::Object(home_object)])?;
-
-                // `GetThisBinding` before evaluating the computed key expression.
-                let receiver = self.get_this_binding(&mut assign_scope)?;
-                assign_scope.push_root(receiver)?;
-
-                // Evaluate key expression to a value first.
-                let member_value = self.eval_expr(&mut assign_scope, &member.stx.member)?;
-                assign_scope.push_root(member_value)?;
-
-                // Spec: `GetSuperBase` observed before `ToPropertyKey` (test262:
-                // `prop-expr-getsuperbase-before-topropertykey-putvalue.js`).
-                let base = self.get_super_base(&mut assign_scope)?;
-                // Keep base alive across RHS evaluation + key coercion.
-                assign_scope.push_root(base)?;
-
-                // Evaluate RHS before `ToPropertyKey` coercion of the super-reference key.
-                let value = self.eval_expr(&mut assign_scope, &expr.right)?;
-                assign_scope.push_root(value)?;
-
-                // `ToPropertyKey` occurs during `PutValue` (after RHS), per spec.
-                let key = self.to_property_key_operator(&mut assign_scope, member_value)?;
-                match key {
-                  PropertyKey::String(s) => assign_scope.push_root(Value::String(s))?,
-                  PropertyKey::Symbol(s) => assign_scope.push_root(Value::Symbol(s))?,
-                };
-
-                let reference = Reference::SuperProperty { base, key, receiver };
-                self.put_value_to_reference(&mut assign_scope, &reference, value)?;
-                return Ok(value);
-              }
-            }
-
-            let reference = self.eval_reference(scope, &expr.left)?;
+            let mut reference = self.eval_reference(scope, &expr.left)?;
             let mut rhs_scope = scope.reborrow();
             self.root_reference(&mut rhs_scope, &reference)?;
             let value = match reference {
@@ -15988,7 +15976,7 @@ impl<'a> Evaluator<'a> {
               _ => self.eval_expr(&mut rhs_scope, &expr.right)?,
             };
             rhs_scope.push_root(value)?;
-            self.put_value_to_reference(&mut rhs_scope, &reference, value)?;
+            self.put_value_to_reference(&mut rhs_scope, &mut reference, value)?;
             Ok(value)
           }
         }
@@ -15998,18 +15986,18 @@ impl<'a> Evaluator<'a> {
           "assignment addition to destructuring patterns",
         )),
         _ => {
-          let reference = self.eval_reference(scope, &expr.left)?;
+          let mut reference = self.eval_reference(scope, &expr.left)?;
           let mut op_scope = scope.reborrow();
           self.root_reference(&mut op_scope, &reference)?;
 
-          let left = self.get_value_from_reference(&mut op_scope, &reference)?;
+          let left = self.get_value_from_reference(&mut op_scope, &mut reference)?;
           // Root `left` across evaluation of the RHS in case it allocates and triggers GC.
           op_scope.push_root(left)?;
           let right = self.eval_expr(&mut op_scope, &expr.right)?;
 
           let value = self.addition_operator(&mut op_scope, left, right)?;
           op_scope.push_root(value)?;
-          self.put_value_to_reference(&mut op_scope, &reference, value)?;
+          self.put_value_to_reference(&mut op_scope, &mut reference, value)?;
           Ok(value)
         }
       },
@@ -16018,18 +16006,18 @@ impl<'a> Evaluator<'a> {
           "assignment exponentiation to destructuring patterns",
         )),
         _ => {
-          let reference = self.eval_reference(scope, &expr.left)?;
+          let mut reference = self.eval_reference(scope, &expr.left)?;
           let mut op_scope = scope.reborrow();
           self.root_reference(&mut op_scope, &reference)?;
 
-          let left = self.get_value_from_reference(&mut op_scope, &reference)?;
+          let left = self.get_value_from_reference(&mut op_scope, &mut reference)?;
           // Root `left` across evaluation of the RHS in case it allocates and triggers GC.
           op_scope.push_root(left)?;
           let right = self.eval_expr(&mut op_scope, &expr.right)?;
 
           let value = self.exponentiation_operator(&mut op_scope, left, right)?;
           op_scope.push_root(value)?;
-          self.put_value_to_reference(&mut op_scope, &reference, value)?;
+          self.put_value_to_reference(&mut op_scope, &mut reference, value)?;
           Ok(value)
         }
       },
@@ -16047,11 +16035,11 @@ impl<'a> Evaluator<'a> {
           // 3. Evaluate RHS.
           // 4. Apply operator to lval and rval.
           // 5. PutValue(lref, result).
-          let reference = self.eval_reference(scope, &expr.left)?;
+          let mut reference = self.eval_reference(scope, &expr.left)?;
           let mut op_scope = scope.reborrow();
           self.root_reference(&mut op_scope, &reference)?;
 
-          let left = self.get_value_from_reference(&mut op_scope, &reference)?;
+          let left = self.get_value_from_reference(&mut op_scope, &mut reference)?;
           // Root `left` across evaluation of the RHS in case it allocates and triggers GC.
           op_scope.push_root(left)?;
           let right = self.eval_expr(&mut op_scope, &expr.right)?;
@@ -16124,7 +16112,7 @@ impl<'a> Evaluator<'a> {
           }?;
 
           op_scope.push_root(value)?;
-          self.put_value_to_reference(&mut op_scope, &reference, value)?;
+          self.put_value_to_reference(&mut op_scope, &mut reference, value)?;
           Ok(value)
         }
       },
@@ -16135,11 +16123,11 @@ impl<'a> Evaluator<'a> {
           "assignment bitwise op to destructuring patterns",
         )),
         _ => {
-          let reference = self.eval_reference(scope, &expr.left)?;
+          let mut reference = self.eval_reference(scope, &expr.left)?;
           let mut op_scope = scope.reborrow();
           self.root_reference(&mut op_scope, &reference)?;
 
-          let left = self.get_value_from_reference(&mut op_scope, &reference)?;
+          let left = self.get_value_from_reference(&mut op_scope, &mut reference)?;
           // Root `left` across evaluation of the RHS in case it allocates and triggers GC.
           op_scope.push_root(left)?;
           let right = self.eval_expr(&mut op_scope, &expr.right)?;
@@ -16190,7 +16178,7 @@ impl<'a> Evaluator<'a> {
           }?;
 
           op_scope.push_root(value)?;
-          self.put_value_to_reference(&mut op_scope, &reference, value)?;
+          self.put_value_to_reference(&mut op_scope, &mut reference, value)?;
           Ok(value)
         }
       },
@@ -16201,11 +16189,11 @@ impl<'a> Evaluator<'a> {
           "assignment bitwise shift to destructuring patterns",
         )),
         _ => {
-          let reference = self.eval_reference(scope, &expr.left)?;
+          let mut reference = self.eval_reference(scope, &expr.left)?;
           let mut op_scope = scope.reborrow();
           self.root_reference(&mut op_scope, &reference)?;
 
-          let left = self.get_value_from_reference(&mut op_scope, &reference)?;
+          let left = self.get_value_from_reference(&mut op_scope, &mut reference)?;
           // Root `left` across evaluation of the RHS in case it allocates and triggers GC.
           op_scope.push_root(left)?;
           let right = self.eval_expr(&mut op_scope, &expr.right)?;
@@ -16307,7 +16295,7 @@ impl<'a> Evaluator<'a> {
           }?;
 
           op_scope.push_root(value)?;
-          self.put_value_to_reference(&mut op_scope, &reference, value)?;
+          self.put_value_to_reference(&mut op_scope, &mut reference, value)?;
           Ok(value)
         }
       },
@@ -16318,11 +16306,11 @@ impl<'a> Evaluator<'a> {
           "logical assignment to destructuring patterns",
         )),
         _ => {
-          let reference = self.eval_reference(scope, &expr.left)?;
+          let mut reference = self.eval_reference(scope, &expr.left)?;
           let mut op_scope = scope.reborrow();
           self.root_reference(&mut op_scope, &reference)?;
 
-          let left = self.get_value_from_reference(&mut op_scope, &reference)?;
+          let left = self.get_value_from_reference(&mut op_scope, &mut reference)?;
 
           let should_assign = match expr.operator {
             OperatorName::AssignmentLogicalAnd => to_boolean(op_scope.heap(), left)?,
@@ -16351,7 +16339,7 @@ impl<'a> Evaluator<'a> {
 
           // Root `right` across `PutValue`.
           op_scope.push_root(right)?;
-          self.put_value_to_reference(&mut op_scope, &reference, right)?;
+          self.put_value_to_reference(&mut op_scope, &mut reference, right)?;
           Ok(right)
         }
       },
@@ -29195,13 +29183,13 @@ fn async_eval_expr_chain(
       let key = PropertyKey::from_string(key_s);
 
       let super_base = evaluator.super_base(&mut super_scope)?;
-      let reference = Reference::Property {
+      let mut reference = Reference::Property {
         base: super_base,
         receiver: actual_this,
         key,
       };
       let value = evaluator
-        .get_value_from_reference(&mut super_scope, &reference)
+        .get_value_from_reference(&mut super_scope, &mut reference)
         .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut super_scope, err))?;
       Ok(AsyncEval::Complete(value))
     }
@@ -30661,7 +30649,7 @@ fn async_eval_assignment_to_binding(
   expr: &BinaryExpr,
   name: &str,
 ) -> Result<AsyncEval<Value>, VmError> {
-  let reference = Reference::Binding(name);
+  let mut reference = Reference::Binding(name);
   let mut rhs_scope = scope.reborrow();
 
   let rhs_eval = if is_identifier_ref(&expr.left) {
@@ -30674,7 +30662,7 @@ fn async_eval_assignment_to_binding(
     AsyncEval::Complete(value) => {
       rhs_scope.push_root(value)?;
       evaluator
-        .put_value_to_reference(&mut rhs_scope, &reference, value)
+        .put_value_to_reference(&mut rhs_scope, &mut reference, value)
         .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut rhs_scope, err))?;
       Ok(AsyncEval::Complete(value))
     }
@@ -30723,7 +30711,7 @@ fn async_eval_assignment_to_member(
     key_scope.push_root(receiver)?;
     let key_s = key_scope.alloc_string(&member.right)?;
     key_scope.push_root(Value::String(key_s))?;
-    let key = PropertyKey::from_string(key_s);
+    let key = Value::String(key_s);
 
     let base = evaluator
       .get_super_base(&mut key_scope)
@@ -30830,22 +30818,19 @@ fn async_eval_assignment_to_computed_member(
 
         // Spec: for `super[expr]`, `GetSuperBase` is observed before `ToPropertyKey`.
         //
-        // Root the captured base across `ToPropertyKey` since key conversion may mutate the home
-        // object's prototype, potentially making the original base unreachable.
+        // `ToPropertyKey` conversion of the computed key value is deferred to `PutValue` so `super`
+        // with a `null` base throws before running user code during key conversion.
         let base = evaluator
           .get_super_base(&mut key_scope)
           .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+        // Root the captured super base across RHS evaluation and async suspension.
         key_scope.push_root(base)?;
 
-        let key = evaluator
-          .to_property_key_operator(&mut key_scope, member_value)
-          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-        // Root the allocated key across RHS evaluation / async suspension handling.
-        match key {
-          PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
-          PropertyKey::Symbol(sym) => key_scope.push_root(Value::Symbol(sym))?,
+        let reference = Reference::SuperProperty {
+          base,
+          key: member_value,
+          receiver,
         };
-        let reference = Reference::SuperProperty { base, key, receiver };
         async_eval_assignment_apply_reference(evaluator, &mut key_scope, expr, reference)
       }
       AsyncEval::Suspend(mut suspend) => {
@@ -30948,7 +30933,7 @@ fn async_eval_assignment_apply_reference(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
   expr: &BinaryExpr,
-  reference: Reference<'_>,
+  mut reference: Reference<'_>,
 ) -> Result<AsyncEval<Value>, VmError> {
   match expr.operator {
     OperatorName::Assignment => {
@@ -30966,7 +30951,7 @@ fn async_eval_assignment_apply_reference(
         AsyncEval::Complete(value) => {
           rhs_scope.push_root(value)?;
           evaluator
-            .put_value_to_reference(&mut rhs_scope, &reference, value)
+            .put_value_to_reference(&mut rhs_scope, &mut reference, value)
             .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut rhs_scope, err))?;
           Ok(AsyncEval::Complete(value))
         }
@@ -30999,12 +30984,8 @@ fn async_eval_assignment_apply_reference(
               root_scope.push_root(receiver)?;
               let receiver_root = root_scope.heap_mut().add_root(receiver)?;
 
-              let key_value = match key {
-                PropertyKey::String(s) => Value::String(s),
-                PropertyKey::Symbol(s) => Value::Symbol(s),
-              };
-              root_scope.push_root(key_value)?;
-              let key_root = root_scope.heap_mut().add_root(key_value)?;
+              root_scope.push_root(key)?;
+              let key_root = root_scope.heap_mut().add_root(key)?;
 
               (Some(base_root), Some(key_root), Some(receiver_root))
             }
@@ -31043,7 +31024,7 @@ fn async_eval_assignment_apply_reference(
       evaluator.root_reference(&mut op_scope, &reference)?;
 
       let left = evaluator
-        .get_value_from_reference(&mut op_scope, &reference)
+        .get_value_from_reference(&mut op_scope, &mut reference)
         .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
       op_scope.push_root(left)?;
 
@@ -31152,7 +31133,7 @@ fn async_eval_assignment_apply_reference(
 
           compound_scope.push_root(value)?;
           evaluator
-            .put_value_to_reference(&mut compound_scope, &reference, value)
+            .put_value_to_reference(&mut compound_scope, &mut reference, value)
             .map_err(|err| {
               coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
             })?;
@@ -31187,12 +31168,8 @@ fn async_eval_assignment_apply_reference(
               root_scope.push_root(receiver)?;
               let receiver_root = root_scope.heap_mut().add_root(receiver)?;
 
-              let key_value = match key {
-                PropertyKey::String(s) => Value::String(s),
-                PropertyKey::Symbol(s) => Value::Symbol(s),
-              };
-              root_scope.push_root(key_value)?;
-              let key_root = root_scope.heap_mut().add_root(key_value)?;
+              root_scope.push_root(key)?;
+              let key_root = root_scope.heap_mut().add_root(key)?;
 
               (Some(base_root), Some(key_root), Some(receiver_root))
             }
@@ -31234,7 +31211,7 @@ fn async_eval_assignment_apply_reference(
       evaluator.root_reference(&mut op_scope, &reference)?;
 
       let left = evaluator
-        .get_value_from_reference(&mut op_scope, &reference)
+        .get_value_from_reference(&mut op_scope, &mut reference)
         .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
       op_scope.push_root(left)?;
 
@@ -31253,7 +31230,7 @@ fn async_eval_assignment_apply_reference(
           let value = async_apply_binary_operator(evaluator, &mut bit_scope, bit_op, left, right)?;
           bit_scope.push_root(value)?;
           evaluator
-            .put_value_to_reference(&mut bit_scope, &reference, value)
+            .put_value_to_reference(&mut bit_scope, &mut reference, value)
             .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut bit_scope, err))?;
           Ok(AsyncEval::Complete(value))
         }
@@ -31286,12 +31263,8 @@ fn async_eval_assignment_apply_reference(
               root_scope.push_root(receiver)?;
               let receiver_root = root_scope.heap_mut().add_root(receiver)?;
 
-              let key_value = match key {
-                PropertyKey::String(s) => Value::String(s),
-                PropertyKey::Symbol(s) => Value::Symbol(s),
-              };
-              root_scope.push_root(key_value)?;
-              let key_root = root_scope.heap_mut().add_root(key_value)?;
+              root_scope.push_root(key)?;
+              let key_root = root_scope.heap_mut().add_root(key)?;
 
               (Some(base_root), Some(key_root), Some(receiver_root))
             }
@@ -31333,7 +31306,7 @@ fn async_eval_assignment_apply_reference(
       evaluator.root_reference(&mut op_scope, &reference)?;
 
       let left = evaluator
-        .get_value_from_reference(&mut op_scope, &reference)
+        .get_value_from_reference(&mut op_scope, &mut reference)
         .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
 
       let should_assign = match expr.operator {
@@ -31360,7 +31333,7 @@ fn async_eval_assignment_apply_reference(
           // Root `value` across `PutValue`.
           op_scope.push_root(value)?;
           evaluator
-            .put_value_to_reference(&mut op_scope, &reference, value)
+            .put_value_to_reference(&mut op_scope, &mut reference, value)
             .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
           Ok(AsyncEval::Complete(value))
         }
@@ -31393,12 +31366,8 @@ fn async_eval_assignment_apply_reference(
               root_scope.push_root(receiver)?;
               let receiver_root = root_scope.heap_mut().add_root(receiver)?;
 
-              let key_value = match key {
-                PropertyKey::String(s) => Value::String(s),
-                PropertyKey::Symbol(s) => Value::Symbol(s),
-              };
-              root_scope.push_root(key_value)?;
-              let key_root = root_scope.heap_mut().add_root(key_value)?;
+              root_scope.push_root(key)?;
+              let key_root = root_scope.heap_mut().add_root(key)?;
 
               (Some(base_root), Some(key_root), Some(receiver_root))
             }
@@ -31434,7 +31403,7 @@ fn async_eval_assignment_apply_reference(
       evaluator.root_reference(&mut op_scope, &reference)?;
 
       let left = evaluator
-        .get_value_from_reference(&mut op_scope, &reference)
+        .get_value_from_reference(&mut op_scope, &mut reference)
         .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
       op_scope.push_root(left)?;
 
@@ -31460,7 +31429,7 @@ fn async_eval_assignment_apply_reference(
             async_apply_binary_operator(evaluator, &mut shift_scope, shift_op, left, right)?;
           shift_scope.push_root(value)?;
           evaluator
-            .put_value_to_reference(&mut shift_scope, &reference, value)
+            .put_value_to_reference(&mut shift_scope, &mut reference, value)
             .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut shift_scope, err))?;
           Ok(AsyncEval::Complete(value))
         }
@@ -31493,12 +31462,8 @@ fn async_eval_assignment_apply_reference(
               root_scope.push_root(receiver)?;
               let receiver_root = root_scope.heap_mut().add_root(receiver)?;
 
-              let key_value = match key {
-                PropertyKey::String(s) => Value::String(s),
-                PropertyKey::Symbol(s) => Value::Symbol(s),
-              };
-              root_scope.push_root(key_value)?;
-              let key_root = root_scope.heap_mut().add_root(key_value)?;
+              root_scope.push_root(key)?;
+              let key_root = root_scope.heap_mut().add_root(key)?;
 
               (Some(base_root), Some(key_root), Some(receiver_root))
             }
@@ -31655,22 +31620,19 @@ fn async_eval_update_expression(
 
             // Spec: for `super[expr]`, `GetSuperBase` is observed before `ToPropertyKey`.
             //
-            // Root the captured base across `ToPropertyKey` since key conversion may mutate the home
-            // object's prototype, potentially making the original base unreachable.
+            // `ToPropertyKey` conversion of the computed key value is deferred to `GetValue` /
+            // `PutValue` so `super` with a `null` base throws before running user code during key
+            // conversion.
             let base = evaluator
               .get_super_base(&mut key_scope)
               .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
             key_scope.push_root(base)?;
 
-            let key = evaluator
-              .to_property_key_operator(&mut key_scope, member_value)
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-            // Root the allocated key across the subsequent `[[Get]]`/`[[Set]]`.
-            match key {
-              PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
-              PropertyKey::Symbol(sym) => key_scope.push_root(Value::Symbol(sym))?,
+            let reference = Reference::SuperProperty {
+              base,
+              key: member_value,
+              receiver,
             };
-            let reference = Reference::SuperProperty { base, key, receiver };
             let value =
               async_apply_update_to_reference(evaluator, &mut key_scope, &reference, delta, prefix)?;
             Ok(AsyncEval::Complete(value))
@@ -31813,8 +31775,7 @@ fn async_reference_from_computed_member(
     let home_object = evaluator.home_object.ok_or(VmError::InvariantViolation(
       "super property reference is missing [[HomeObject]]",
     ))?;
-    // Root raw `this` + `[[HomeObject]]` + key value across receiver resolution, base capture, and
-    // key conversion (which can invoke user code and trigger GC).
+    // Root raw `this` + `[[HomeObject]]` + key value across receiver resolution and base capture.
     key_scope.push_roots(&[Value::Object(home_object), evaluator.this, member_value])?;
 
     let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
@@ -31822,17 +31783,18 @@ fn async_reference_from_computed_member(
 
     // Spec: for `super[expr]`, `GetSuperBase` is observed before `ToPropertyKey`.
     //
-    // Root the captured base across `ToPropertyKey` since key conversion may mutate the home
-    // object's prototype, potentially making the original base unreachable.
+    // `ToPropertyKey` conversion of the computed key value is deferred to `GetValue` / `PutValue`
+    // so `super` with a `null` base throws before running user code during key conversion.
     let base = evaluator
       .get_super_base(&mut key_scope)
       .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
     key_scope.push_root(base)?;
 
-    let key = evaluator
-      .to_property_key_operator(&mut key_scope, member_value)
-      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-    return Ok(Reference::SuperProperty { base, key, receiver });
+    return Ok(Reference::SuperProperty {
+      base,
+      key: member_value,
+      receiver,
+    });
   }
  
   let mut key_scope = scope.reborrow();
@@ -31863,11 +31825,12 @@ fn async_apply_update_to_reference(
   delta: i8,
   prefix: bool,
 ) -> Result<Value, VmError> {
+  let mut reference = *reference;
   let mut update_scope = scope.reborrow();
-  evaluator.root_reference(&mut update_scope, reference)?;
+  evaluator.root_reference(&mut update_scope, &reference)?;
 
   let old_value = evaluator
-    .get_value_from_reference(&mut update_scope, reference)
+    .get_value_from_reference(&mut update_scope, &mut reference)
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut update_scope, err))?;
   update_scope.push_root(old_value)?;
 
@@ -31890,7 +31853,7 @@ fn async_apply_update_to_reference(
 
   update_scope.push_root(new_value)?;
   evaluator
-    .put_value_to_reference(&mut update_scope, reference, new_value)
+    .put_value_to_reference(&mut update_scope, &mut reference, new_value)
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut update_scope, err))?;
 
   if prefix {
@@ -31928,14 +31891,14 @@ fn async_eval_tagged_template(
         key_scope.push_root(receiver)?;
         let key_s = key_scope.alloc_string(&member.stx.right)?;
         key_scope.push_root(Value::String(key_s))?;
-        let key = PropertyKey::from_string(key_s);
+        let key = Value::String(key_s);
 
         let base = evaluator
           .get_super_base(&mut key_scope)
           .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-        let reference = Reference::SuperProperty { base, key, receiver };
+        let mut reference = Reference::SuperProperty { base, key, receiver };
         evaluator
-          .get_value_from_reference(&mut key_scope, &reference)
+          .get_value_from_reference(&mut key_scope, &mut reference)
           .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?
       };
 
@@ -32039,7 +32002,7 @@ fn async_eval_tagged_template_member_after_base(
   let callee_value = {
     let mut key_scope = scope.reborrow();
     key_scope.push_root(base)?;
-    let reference = if member.right.starts_with('#') {
+    let mut reference = if member.right.starts_with('#') {
       let sym = key_scope
         .heap()
         .resolve_private_name_symbol(evaluator.env.lexical_env, &member.right)?
@@ -32058,7 +32021,7 @@ fn async_eval_tagged_template_member_after_base(
       }
     };
     evaluator
-      .get_value_from_reference(&mut key_scope, &reference)
+      .get_value_from_reference(&mut key_scope, &mut reference)
       .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?
   };
 
@@ -32113,37 +32076,34 @@ fn async_eval_tagged_template_computed_member_after_member(
   member_value: Value,
 ) -> Result<AsyncEval<Value>, VmError> {
   let is_super = matches!(&*member.object.stx, Expr::Super(_));
-
-  let mut key_scope = scope.reborrow();
   if is_super {
-    // Root `this` + key value across super-base capture and key coercion.
-    key_scope.push_roots(&[evaluator.this, member_value])?;
+    let home_object = evaluator.home_object.ok_or(VmError::InvariantViolation(
+      "super property access missing [[HomeObject]]",
+    ))?;
+    let mut key_scope = scope.reborrow();
+    // Root the raw `this` binding (which may be a derived-constructor state cell), `[[HomeObject]]`,
+    // and the computed key value across receiver resolution, super base capture, and dereference.
+    key_scope.push_roots(&[evaluator.this, Value::Object(home_object), member_value])?;
 
     let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
     key_scope.push_root(receiver)?;
 
-    // `super[expr]` evaluation order: capture the super base (`GetSuperBase`) before coercing the
-    // computed key via `ToPropertyKey`.
+    // Spec: for `super[expr]`, `GetSuperBase` is observed before `ToPropertyKey`.
+    //
+    // `ToPropertyKey` conversion of the computed key value is deferred to `GetValue` so `super`
+    // with a `null` base throws before running user code during key conversion.
     let super_base = evaluator
       .get_super_base(&mut key_scope)
       .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
     key_scope.push_root(super_base)?;
 
-    let key = evaluator
-      .to_property_key_operator(&mut key_scope, member_value)
-      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-    match key {
-      PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
-      PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
-    };
-
-    let reference = Reference::SuperProperty {
+    let mut reference = Reference::SuperProperty {
       base: super_base,
-      key,
+      key: member_value,
       receiver,
     };
     let callee_value = evaluator
-      .get_value_from_reference(&mut key_scope, &reference)
+      .get_value_from_reference(&mut key_scope, &mut reference)
       .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
     return async_eval_tagged_template_with_callee(
       evaluator,
@@ -32154,6 +32114,7 @@ fn async_eval_tagged_template_computed_member_after_member(
     );
   }
 
+  let mut key_scope = scope.reborrow();
   key_scope.push_roots(&[base, member_value])?;
   if !member.optional_chaining && is_nullish(base) {
     return Err(throw_type_error(
@@ -32166,13 +32127,13 @@ fn async_eval_tagged_template_computed_member_after_member(
   let key = evaluator
     .to_property_key_operator(&mut key_scope, member_value)
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-  let reference = Reference::Property {
+  let mut reference = Reference::Property {
     base,
     receiver: base,
     key,
   };
   let callee_value = evaluator
-    .get_value_from_reference(&mut key_scope, &reference)
+    .get_value_from_reference(&mut key_scope, &mut reference)
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
   async_eval_tagged_template_with_callee(evaluator, &mut key_scope, expr, callee_value, base)
 }
@@ -32912,7 +32873,7 @@ fn async_member_after_base(
 
   let mut key_scope = scope.reborrow();
   key_scope.push_root(base)?;
-  let reference = if expr.right.starts_with('#') {
+  let mut reference = if expr.right.starts_with('#') {
     let sym = key_scope
       .heap()
       .resolve_private_name_symbol(evaluator.env.lexical_env, &expr.right)?
@@ -32931,7 +32892,7 @@ fn async_member_after_base(
     }
   };
   evaluator
-    .get_value_from_reference(&mut key_scope, &reference)
+    .get_value_from_reference(&mut key_scope, &mut reference)
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))
 }
 
@@ -32997,13 +32958,13 @@ fn async_computed_member_after_member(
   let key = evaluator
     .to_property_key_operator(&mut key_scope, member_value)
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-  let reference = Reference::Property {
+  let mut reference = Reference::Property {
     base,
     receiver: base,
     key,
   };
   evaluator
-    .get_value_from_reference(&mut key_scope, &reference)
+    .get_value_from_reference(&mut key_scope, &mut reference)
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))
 }
 
@@ -33562,18 +33523,18 @@ fn async_eval_call(
         key_scope.push_root(receiver)?;
         let key_s = key_scope.alloc_string(&member.stx.right)?;
         key_scope.push_root(Value::String(key_s))?;
-        let key = PropertyKey::from_string(key_s);
+        let key = Value::String(key_s);
 
         let base = evaluator
           .get_super_base(&mut key_scope)
           .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-        let reference = Reference::SuperProperty {
+        let mut reference = Reference::SuperProperty {
           base,
           key,
           receiver,
         };
         evaluator
-          .get_value_from_reference(&mut key_scope, &reference)
+          .get_value_from_reference(&mut key_scope, &mut reference)
           .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?
       };
       async_call_begin(evaluator, scope, expr, callee_value, receiver)
@@ -33716,7 +33677,7 @@ fn async_call_member_after_base(
   let callee_value = {
     let mut key_scope = scope.reborrow();
     key_scope.push_root(base)?;
-    let reference = if member.right.starts_with('#') {
+    let mut reference = if member.right.starts_with('#') {
       let sym = key_scope
         .heap()
         .resolve_private_name_symbol(evaluator.env.lexical_env, &member.right)?
@@ -33728,14 +33689,14 @@ fn async_call_member_after_base(
       }
     } else {
        let key_s = key_scope.alloc_string(&member.right)?;
-       Reference::Property {
-         base,
-         receiver: base,
-         key: PropertyKey::from_string(key_s),
-       }
-     };
+        Reference::Property {
+          base,
+          receiver: base,
+          key: PropertyKey::from_string(key_s),
+        }
+      };
     evaluator
-      .get_value_from_reference(&mut key_scope, &reference)
+      .get_value_from_reference(&mut key_scope, &mut reference)
       .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?
   };
 
@@ -33828,30 +33789,23 @@ fn async_call_computed_member_after_member(
     let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
     key_scope.push_root(receiver)?;
 
+    // Spec: for `super[expr]`, `GetSuperBase` is observed before `ToPropertyKey`.
+    //
+    // `ToPropertyKey` conversion of the computed key value is deferred to `GetValue` so `super`
+    // with a `null` base throws before running user code during key conversion.
     let super_base = evaluator
       .get_super_base(&mut key_scope)
       .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
     // Root the captured super base across `ToPropertyKey` and the subsequent `[[Get]]`.
     key_scope.push_root(super_base)?;
 
-    // Spec: computed `super[expr]` must observe `GetSuperBase` before `ToPropertyKey`
-    // (`prop-expr-getsuperbase-before-topropertykey-*`).
-    let key = evaluator
-      .to_property_key_operator(&mut key_scope, member_value)
-      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-    // Root the allocated key across the subsequent `[[Get]]`.
-    match key {
-      PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
-      PropertyKey::Symbol(sym) => key_scope.push_root(Value::Symbol(sym))?,
-    };
-
-    let reference = Reference::SuperProperty {
+    let mut reference = Reference::SuperProperty {
       base: super_base,
-      key,
+      key: member_value,
       receiver,
     };
     let callee_value = evaluator
-      .get_value_from_reference(&mut key_scope, &reference)
+      .get_value_from_reference(&mut key_scope, &mut reference)
       .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
     (callee_value, receiver)
   } else {
@@ -33866,13 +33820,13 @@ fn async_call_computed_member_after_member(
       .to_property_key_operator(&mut key_scope, member_value)
       .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
 
-    let reference = Reference::Property {
+    let mut reference = Reference::Property {
       base,
       receiver: base,
       key,
     };
     let callee_value = evaluator
-      .get_value_from_reference(&mut key_scope, &reference)
+      .get_value_from_reference(&mut key_scope, &mut reference)
       .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
     (callee_value, base)
   };
@@ -37320,30 +37274,28 @@ fn async_resume_from_frames(
                 ))?;
 
                 let mut key_scope = scope.reborrow();
-                // Root raw `this` + `[[HomeObject]]` + key value across receiver resolution, base
-                // capture, and key conversion (which can invoke user code and trigger GC).
+                // Root raw `this` + `[[HomeObject]]` + key value across receiver resolution and
+                // base capture.
                 key_scope.push_roots(&[Value::Object(home_object), evaluator.this, member_value])?;
 
                 let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
                 key_scope.push_root(receiver)?;
 
+                // Spec: for `super[expr]`, `GetSuperBase` is observed before `ToPropertyKey`.
+                //
+                // `ToPropertyKey` conversion of the computed key value is deferred to `PutValue` so
+                // `super` with a `null` base throws before running user code during key conversion.
                 let base = evaluator
                   .get_super_base(&mut key_scope)
                   .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-                // Root the captured super base across key coercion + RHS evaluation / async suspension handling.
+                // Root the captured super base across RHS evaluation and async suspension.
                 key_scope.push_root(base)?;
 
-                // `super[expr]` must observe `GetSuperBase` before `ToPropertyKey` (test262:
-                // `prop-expr-getsuperbase-before-topropertykey-*`).
-                let key = evaluator
-                  .to_property_key_operator(&mut key_scope, member_value)
-                  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-                // Root the allocated key across RHS evaluation / async suspension handling.
-                match key {
-                  PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
-                  PropertyKey::Symbol(sym) => key_scope.push_root(Value::Symbol(sym))?,
+                let reference = Reference::SuperProperty {
+                  base,
+                  key: member_value,
+                  receiver,
                 };
-                let reference = Reference::SuperProperty { base, key, receiver };
                 async_eval_assignment_apply_reference(evaluator, &mut key_scope, expr, reference)
               })();
 
@@ -37385,7 +37337,7 @@ fn async_resume_from_frames(
           match rhs_res {
             Ok(value) => {
               let assign_res = (|| -> Result<(), VmError> {
-                let reference = match receiver_root {
+                let mut reference = match receiver_root {
                   Some(receiver_root) => {
                     let Some(base_root) = base_root else {
                       return Err(VmError::InvariantViolation(
@@ -37408,19 +37360,10 @@ fn async_resume_from_frames(
                         .ok_or(VmError::InvariantViolation(
                           "missing assignment receiver root",
                         ))?;
-                    let key_value = scope
+                    let key = scope
                       .heap()
                       .get_root(key_root)
                       .ok_or(VmError::InvariantViolation("missing assignment key root"))?;
-                    let key = match key_value {
-                      Value::String(s) => PropertyKey::from_string(s),
-                      Value::Symbol(s) => PropertyKey::Symbol(s),
-                      _ => {
-                        return Err(VmError::InvariantViolation(
-                          "assignment key root should be a string or symbol",
-                        ))
-                      }
-                    };
                     Reference::SuperProperty {
                       base,
                       key,
@@ -37483,7 +37426,7 @@ fn async_resume_from_frames(
                 let mut put_scope = scope.reborrow();
                 put_scope.push_root(value)?;
                 evaluator
-                  .put_value_to_reference(&mut put_scope, &reference, value)
+                  .put_value_to_reference(&mut put_scope, &mut reference, value)
                   .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut put_scope, err))
               })();
 
@@ -37546,7 +37489,7 @@ fn async_resume_from_frames(
                 ))?;
 
               let assign_res = (|| -> Result<Value, VmError> {
-                let reference = match receiver_root {
+                let mut reference = match receiver_root {
                   Some(receiver_root) => {
                     let Some(base_root) = base_root else {
                       return Err(VmError::InvariantViolation(
@@ -37569,19 +37512,10 @@ fn async_resume_from_frames(
                         .ok_or(VmError::InvariantViolation(
                           "missing assignment receiver root",
                         ))?;
-                    let key_value = scope
+                    let key = scope
                       .heap()
                       .get_root(key_root)
                       .ok_or(VmError::InvariantViolation("missing assignment key root"))?;
-                    let key = match key_value {
-                      Value::String(s) => PropertyKey::from_string(s),
-                      Value::Symbol(s) => PropertyKey::Symbol(s),
-                      _ => {
-                        return Err(VmError::InvariantViolation(
-                          "assignment key root should be a string or symbol",
-                        ))
-                      }
-                    };
                     Reference::SuperProperty {
                       base,
                       key,
@@ -37786,7 +37720,7 @@ fn async_resume_from_frames(
 
                 compound_scope.push_root(value)?;
                 evaluator
-                  .put_value_to_reference(&mut compound_scope, &reference, value)
+                  .put_value_to_reference(&mut compound_scope, &mut reference, value)
                   .map_err(|err| {
                     coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
                   })?;
@@ -37976,8 +37910,8 @@ fn async_resume_from_frames(
                 ))?;
 
                 let mut key_scope = scope.reborrow();
-                // Root raw `this` + `[[HomeObject]]` + key value across receiver resolution, base
-                // capture, and key conversion (which can invoke user code and trigger GC).
+                // Root raw `this` + `[[HomeObject]]` + key value across receiver resolution and
+                // base capture.
                 key_scope.push_roots(&[Value::Object(home_object), evaluator.this, member_value])?;
 
                 let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
@@ -37985,23 +37919,19 @@ fn async_resume_from_frames(
 
                 // Spec: for `super[expr]`, `GetSuperBase` is observed before `ToPropertyKey`.
                 //
-                // Root the captured base across `ToPropertyKey` since key conversion may mutate the
-                // home object's prototype, potentially making the original base unreachable.
+                // `ToPropertyKey` conversion of the computed key value is deferred to `GetValue` /
+                // `PutValue` so `super` with a `null` base throws before running user code during
+                // key conversion.
                 let base = evaluator
                   .get_super_base(&mut key_scope)
                   .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
                 key_scope.push_root(base)?;
 
-                let key = evaluator
-                  .to_property_key_operator(&mut key_scope, member_value)
-                  .map_err(|err| {
-                    coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err)
-                  })?;
-                match key {
-                  PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
-                  PropertyKey::Symbol(sym) => key_scope.push_root(Value::Symbol(sym))?,
+                let reference = Reference::SuperProperty {
+                  base,
+                  key: member_value,
+                  receiver,
                 };
-                let reference = Reference::SuperProperty { base, key, receiver };
                 async_apply_update_to_reference(evaluator, &mut key_scope, &reference, delta, prefix)
               })();
 
@@ -47331,11 +47261,12 @@ fn gen_apply_update_to_reference(
   delta: i8,
   prefix: bool,
 ) -> Result<Value, VmError> {
+  let mut reference = *reference;
   let mut update_scope = scope.reborrow();
-  evaluator.root_reference(&mut update_scope, reference)?;
+  evaluator.root_reference(&mut update_scope, &reference)?;
 
   let old_value = evaluator
-    .get_value_from_reference(&mut update_scope, reference)
+    .get_value_from_reference(&mut update_scope, &mut reference)
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut update_scope, err))?;
   update_scope.push_root(old_value)?;
 
@@ -47358,7 +47289,7 @@ fn gen_apply_update_to_reference(
 
   update_scope.push_root(new_value)?;
   evaluator
-    .put_value_to_reference(&mut update_scope, reference, new_value)
+    .put_value_to_reference(&mut update_scope, &mut reference, new_value)
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut update_scope, err))?;
 
   if prefix {
@@ -47564,7 +47495,8 @@ fn gen_member_after_base(
       key: PropertyKey::from_string(key_s),
     }
   };
-  evaluator.get_value_from_reference(&mut key_scope, &reference)
+  let mut reference = reference;
+  evaluator.get_value_from_reference(&mut key_scope, &mut reference)
 }
 
 fn gen_computed_member_after_base(
@@ -47641,12 +47573,12 @@ fn gen_computed_member_after_member(
     )?);
   }
   let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
-  let reference = Reference::Property {
+  let mut reference = Reference::Property {
     base,
     receiver: base,
     key,
   };
-  evaluator.get_value_from_reference(&mut key_scope, &reference)
+  evaluator.get_value_from_reference(&mut key_scope, &mut reference)
 }
 
 fn gen_reference_from_super_computed_member_after_member(
@@ -47666,15 +47598,14 @@ fn gen_reference_from_super_computed_member_after_member(
   let receiver = evaluator.get_this_binding(&mut key_scope)?;
   key_scope.push_root(receiver)?;
 
-  // Spec: for `super[expr]`, `GetSuperBase` is observed before `ToPropertyKey`.
-  //
-  // Root the captured base across `ToPropertyKey` since key conversion may mutate the home object's
-  // prototype, potentially making the original base unreachable.
+  // Spec: for `super[expr]`, `GetSuperBase` is observed before `ToPropertyKey`, and `ToPropertyKey`
+  // is deferred to `GetValue` / `PutValue` when `[[ReferencedName]]` is not yet a property key.
   let base = evaluator.get_super_base(&mut key_scope)?;
-  key_scope.push_root(base)?;
-
-  let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
-  Ok(Reference::SuperProperty { base, key, receiver })
+  Ok(Reference::SuperProperty {
+    base,
+    key: member_value,
+    receiver,
+  })
 }
 
 fn gen_super_computed_member_after_member(
@@ -47688,7 +47619,8 @@ fn gen_super_computed_member_after_member(
     &mut super_scope,
     member_value,
   )?;
-  evaluator.get_value_from_reference(&mut super_scope, &reference)
+  let mut reference = reference;
+  evaluator.get_value_from_reference(&mut super_scope, &mut reference)
 }
 
 fn gen_eval_super_computed_member(
@@ -47939,11 +47871,11 @@ fn gen_eval_assignment_to_binding(
     GenEval::Complete(c) => Ok(GenEval::Complete(match c {
       Completion::Normal(v) => {
         let value = v.unwrap_or(Value::Undefined);
-        let reference = Reference::Binding(name.as_str());
+        let mut reference = Reference::Binding(name.as_str());
 
         let mut rhs_scope = scope.reborrow();
         rhs_scope.push_root(value)?;
-        evaluator.put_value_to_reference(&mut rhs_scope, &reference, value)?;
+        evaluator.put_value_to_reference(&mut rhs_scope, &mut reference, value)?;
         Completion::normal(value)
       }
       abrupt => abrupt,
@@ -48092,17 +48024,13 @@ fn gen_eval_assignment_to_member(
     super_scope.push_root(receiver)?;
     let key_s = super_scope.alloc_string(&member.right)?;
     super_scope.push_root(Value::String(key_s))?;
-    let key = PropertyKey::from_string(key_s);
+    let key = Value::String(key_s);
 
     let base = evaluator.get_super_base(&mut super_scope)?;
     // Root the computed super base across RHS evaluation / generator suspension handling.
     super_scope.push_root(base)?;
 
-    let reference = Reference::SuperProperty {
-      base,
-      key,
-      receiver,
-    };
+    let reference = Reference::SuperProperty { base, key, receiver };
     return gen_eval_assignment_apply_reference(evaluator, &mut super_scope, expr, reference);
   }
 
@@ -48301,20 +48229,15 @@ fn gen_eval_assignment_to_super_computed_member_after_member(
   ))?;
   key_scope.push_roots(&[evaluator.this, Value::Object(home_object), receiver, member_value])?;
 
-  // Spec: for `super[expr]`, `GetSuperBase` is observed before `ToPropertyKey`.
-  //
-  // Root the captured base across `ToPropertyKey` since key conversion may mutate the home object's
-  // prototype, potentially making the original base unreachable.
+  // Spec: for `super[expr]`, `GetSuperBase` is observed before `ToPropertyKey`, and `ToPropertyKey`
+  // is deferred to `GetValue` / `PutValue` when `[[ReferencedName]]` is not yet a property key.
   let base = evaluator.get_super_base(&mut key_scope)?;
   key_scope.push_root(base)?;
-
-  let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
-  // Root the allocated key across `PutValue` and any GC triggered by root stack growth.
-  match key {
-    PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
-    PropertyKey::Symbol(sym) => key_scope.push_root(Value::Symbol(sym))?,
+  let reference = Reference::SuperProperty {
+    base,
+    key: member_value,
+    receiver,
   };
-  let reference = Reference::SuperProperty { base, key, receiver };
   gen_eval_assignment_apply_reference(evaluator, &mut key_scope, expr, reference)
 }
 
@@ -48341,7 +48264,7 @@ fn gen_eval_assignment_apply_reference(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
   expr: &BinaryExpr,
-  reference: Reference<'_>,
+  mut reference: Reference<'_>,
 ) -> Result<GenEval<Completion>, VmError> {
   match expr.operator {
     OperatorName::Assignment => {
@@ -48361,7 +48284,7 @@ fn gen_eval_assignment_apply_reference(
             let value = v.unwrap_or(Value::Undefined);
             rhs_scope.push_root(value)?;
             evaluator
-              .put_value_to_reference(&mut rhs_scope, &reference, value)
+              .put_value_to_reference(&mut rhs_scope, &mut reference, value)
               .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut rhs_scope, err))?;
             Ok(GenEval::Complete(Completion::normal(value)))
           }
@@ -48381,13 +48304,7 @@ fn gen_eval_assignment_apply_reference(
               };
               (Some(base), Some(key_value), None)
             }
-            Reference::SuperProperty { base, key, receiver } => {
-              let key_value = match key {
-                PropertyKey::String(s) => Value::String(s),
-                PropertyKey::Symbol(sym) => Value::Symbol(sym),
-              };
-              (Some(base), Some(key_value), Some(receiver))
-            }
+            Reference::SuperProperty { base, key, receiver } => (Some(base), Some(key), Some(receiver)),
             Reference::Private { base, sym, .. } => (Some(base), Some(Value::Symbol(sym)), None),
           };
 
@@ -48446,7 +48363,7 @@ fn gen_eval_assignment_apply_reference(
       evaluator.root_reference(&mut op_scope, &reference)?;
 
       let left = evaluator
-        .get_value_from_reference(&mut op_scope, &reference)
+        .get_value_from_reference(&mut op_scope, &mut reference)
         .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
       op_scope.push_root(left)?;
 
@@ -48462,7 +48379,7 @@ fn gen_eval_assignment_apply_reference(
             let value = async_apply_binary_operator(evaluator, &mut compound_scope, op, left, right)?;
             compound_scope.push_root(value)?;
             evaluator
-              .put_value_to_reference(&mut compound_scope, &reference, value)
+              .put_value_to_reference(&mut compound_scope, &mut reference, value)
               .map_err(|err| {
                 coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
               })?;
@@ -48484,13 +48401,7 @@ fn gen_eval_assignment_apply_reference(
               };
               (Some(base), Some(key_value), None)
             }
-            Reference::SuperProperty { base, key, receiver } => {
-              let key_value = match key {
-                PropertyKey::String(s) => Value::String(s),
-                PropertyKey::Symbol(sym) => Value::Symbol(sym),
-              };
-              (Some(base), Some(key_value), Some(receiver))
-            }
+            Reference::SuperProperty { base, key, receiver } => (Some(base), Some(key), Some(receiver)),
             Reference::Private { base, sym, .. } => (Some(base), Some(Value::Symbol(sym)), None),
           };
 
@@ -48547,7 +48458,7 @@ fn gen_eval_assignment_apply_reference(
         evaluator.root_reference(&mut test_scope, &reference)?;
 
         let left = evaluator
-          .get_value_from_reference(&mut test_scope, &reference)
+          .get_value_from_reference(&mut test_scope, &mut reference)
           .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut test_scope, err))?;
         let should_assign = match expr.operator {
           OperatorName::AssignmentLogicalAnd => to_boolean(test_scope.heap(), left)?,
@@ -48565,7 +48476,6 @@ fn gen_eval_assignment_apply_reference(
       // `left` is not needed beyond the short-circuit test in the assignment-branch. Avoid holding
       // an unrooted GC handle across any subsequent allocations.
       let _ = left;
-
       let mut op_scope = scope.reborrow();
       evaluator.root_reference(&mut op_scope, &reference)?;
 
@@ -48582,7 +48492,7 @@ fn gen_eval_assignment_apply_reference(
             let value = v.unwrap_or(Value::Undefined);
             op_scope.push_root(value)?;
             evaluator
-              .put_value_to_reference(&mut op_scope, &reference, value)
+              .put_value_to_reference(&mut op_scope, &mut reference, value)
               .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
             Ok(GenEval::Complete(Completion::normal(value)))
           }
@@ -48596,18 +48506,15 @@ fn gen_eval_assignment_apply_reference(
                 PropertyKey::String(s) => Value::String(s),
                 PropertyKey::Symbol(sym) => Value::Symbol(sym),
               };
-              (Some(base), Some(key_value), Some(receiver))
+              let _ = receiver;
+              (Some(base), Some(key_value), None)
             }
             Reference::SuperProperty {
               base,
               key,
               receiver,
             } => {
-              let key_value = match key {
-                PropertyKey::String(s) => Value::String(s),
-                PropertyKey::Symbol(sym) => Value::Symbol(sym),
-              };
-              (Some(base), Some(key_value), Some(receiver))
+              (Some(base), Some(key), Some(receiver))
             }
             Reference::Private { base, sym, .. } => (Some(base), Some(Value::Symbol(sym)), None),
           };
@@ -48982,7 +48889,7 @@ fn gen_call_member_after_base(
   let callee_value = {
     let mut key_scope = scope.reborrow();
     key_scope.push_root(base)?;
-    let reference = if member.right.starts_with('#') {
+    let mut reference = if member.right.starts_with('#') {
       let sym = key_scope
         .heap()
         .resolve_private_name_symbol(evaluator.env.lexical_env, &member.right)?
@@ -49000,7 +48907,7 @@ fn gen_call_member_after_base(
         key: PropertyKey::from_string(key_s),
       }
     };
-    evaluator.get_value_from_reference(&mut key_scope, &reference)
+    evaluator.get_value_from_reference(&mut key_scope, &mut reference)
   };
   let callee_value = match callee_value {
     Ok(v) => v,
@@ -49101,12 +49008,12 @@ fn gen_call_computed_member_after_member(
     }
   };
 
-  let reference = Reference::Property {
+  let mut reference = Reference::Property {
     base,
     receiver: base,
     key,
   };
-  let callee_value = match evaluator.get_value_from_reference(&mut key_scope, &reference) {
+  let callee_value = match evaluator.get_value_from_reference(&mut key_scope, &mut reference) {
     Ok(v) => v,
     Err(err) => {
       let err = coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err);
@@ -49143,7 +49050,7 @@ fn gen_call_super_member(
   super_scope.push_root(receiver)?;
   let key_s = super_scope.alloc_string(&member.right)?;
   super_scope.push_root(Value::String(key_s))?;
-  let key = PropertyKey::from_string(key_s);
+  let key = Value::String(key_s);
 
   let base = match evaluator.get_super_base(&mut super_scope) {
     Ok(v) => v,
@@ -49153,12 +49060,8 @@ fn gen_call_super_member(
     }
   };
 
-  let reference = Reference::SuperProperty {
-    base,
-    key,
-    receiver,
-  };
-  let callee_value = match evaluator.get_value_from_reference(&mut super_scope, &reference) {
+  let mut reference = Reference::SuperProperty { base, key, receiver };
+  let callee_value = match evaluator.get_value_from_reference(&mut super_scope, &mut reference) {
     Ok(v) => v,
     Err(err) => {
       let err = coerce_error_to_throw_for_async(evaluator.vm, &mut super_scope, err);
@@ -49217,7 +49120,7 @@ fn gen_call_super_computed_member_after_member(
   member_value: Value,
 ) -> Result<GenEval<Completion>, VmError> {
   let mut super_scope = scope.reborrow();
-  let reference = match gen_reference_from_super_computed_member_after_member(
+  let mut reference = match gen_reference_from_super_computed_member_after_member(
     evaluator,
     &mut super_scope,
     member_value,
@@ -49238,7 +49141,7 @@ fn gen_call_super_computed_member_after_member(
     }
   };
 
-  let callee_value = match evaluator.get_value_from_reference(&mut super_scope, &reference) {
+  let callee_value = match evaluator.get_value_from_reference(&mut super_scope, &mut reference) {
     Ok(v) => v,
     Err(err) => {
       let err = coerce_error_to_throw_for_async(evaluator.vm, &mut super_scope, err);
@@ -49580,7 +49483,7 @@ fn gen_eval_tagged_template_super_member(
   super_scope.push_root(receiver)?;
   let key_s = super_scope.alloc_string(&member.right)?;
   super_scope.push_root(Value::String(key_s))?;
-  let key = PropertyKey::from_string(key_s);
+  let key = Value::String(key_s);
 
   let base = match evaluator.get_super_base(&mut super_scope) {
     Ok(v) => v,
@@ -49590,8 +49493,8 @@ fn gen_eval_tagged_template_super_member(
     }
   };
 
-  let reference = Reference::SuperProperty { base, key, receiver };
-  let callee_value = match evaluator.get_value_from_reference(&mut super_scope, &reference) {
+  let mut reference = Reference::SuperProperty { base, key, receiver };
+  let callee_value = match evaluator.get_value_from_reference(&mut super_scope, &mut reference) {
     Ok(v) => v,
     Err(err) => {
       let err = coerce_error_to_throw_for_async(evaluator.vm, &mut super_scope, err);
@@ -49649,9 +49552,11 @@ fn gen_eval_tagged_template_super_computed_member_after_member(
   member_value: Value,
 ) -> Result<GenEval<Completion>, VmError> {
   let mut super_scope = scope.reborrow();
-  let reference =
-    match gen_reference_from_super_computed_member_after_member(evaluator, &mut super_scope, member_value)
-    {
+  let mut reference = match gen_reference_from_super_computed_member_after_member(
+    evaluator,
+    &mut super_scope,
+    member_value,
+  ) {
       Ok(r) => r,
       Err(err) => {
         let err = coerce_error_to_throw_for_async(evaluator.vm, &mut super_scope, err);
@@ -49668,7 +49573,7 @@ fn gen_eval_tagged_template_super_computed_member_after_member(
     }
   };
 
-  let callee_value = match evaluator.get_value_from_reference(&mut super_scope, &reference) {
+  let callee_value = match evaluator.get_value_from_reference(&mut super_scope, &mut reference) {
     Ok(v) => v,
     Err(err) => {
       let err = coerce_error_to_throw_for_async(evaluator.vm, &mut super_scope, err);
@@ -49702,7 +49607,7 @@ fn gen_eval_tagged_template_member_after_base(
   let callee_value = {
     let mut key_scope = scope.reborrow();
     key_scope.push_root(base)?;
-    let reference = if member.right.starts_with('#') {
+    let mut reference = if member.right.starts_with('#') {
       let sym = key_scope
         .heap()
         .resolve_private_name_symbol(evaluator.env.lexical_env, &member.right)?
@@ -49720,7 +49625,7 @@ fn gen_eval_tagged_template_member_after_base(
         key: PropertyKey::from_string(key_s),
       }
     };
-    evaluator.get_value_from_reference(&mut key_scope, &reference)
+    evaluator.get_value_from_reference(&mut key_scope, &mut reference)
   };
   let callee_value = match callee_value {
     Ok(v) => v,
@@ -49799,12 +49704,12 @@ fn gen_eval_tagged_template_computed_member_after_member(
     }
   };
 
-  let reference = Reference::Property {
+  let mut reference = Reference::Property {
     base,
     receiver: base,
     key,
   };
-  let callee_value = match evaluator.get_value_from_reference(&mut key_scope, &reference) {
+  let callee_value = match evaluator.get_value_from_reference(&mut key_scope, &mut reference) {
     Ok(v) => v,
     Err(err) => {
       let err = coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err);
@@ -50108,8 +50013,8 @@ fn gen_bind_assignment_target(
     Expr::ObjPat(obj) => gen_bind_object_pattern(evaluator, &mut scope, &obj.stx, value, kind),
     Expr::ArrPat(arr) => gen_bind_array_pattern(evaluator, &mut scope, &arr.stx, value, kind),
     Expr::Id(id) => {
-      let reference = Reference::Binding(id.stx.name.as_str());
-      match evaluator.put_value_to_reference(&mut scope, &reference, value) {
+      let mut reference = Reference::Binding(id.stx.name.as_str());
+      match evaluator.put_value_to_reference(&mut scope, &mut reference, value) {
         Ok(()) => Ok(GenEval::Complete(Completion::empty())),
         Err(err) => Ok(GenEval::Complete(gen_error_to_completion(
           evaluator,
@@ -50119,8 +50024,8 @@ fn gen_bind_assignment_target(
       }
     }
     Expr::IdPat(id) => {
-      let reference = Reference::Binding(id.stx.name.as_str());
-      match evaluator.put_value_to_reference(&mut scope, &reference, value) {
+      let mut reference = Reference::Binding(id.stx.name.as_str());
+      match evaluator.put_value_to_reference(&mut scope, &mut reference, value) {
         Ok(()) => Ok(GenEval::Complete(Completion::empty())),
         Err(err) => Ok(GenEval::Complete(gen_error_to_completion(
           evaluator,
@@ -50196,7 +50101,7 @@ fn gen_bind_assignment_target_to_member(
 
     let key_s = super_scope.alloc_string(&member.right)?;
     super_scope.push_root(Value::String(key_s))?;
-    let key = PropertyKey::from_string(key_s);
+    let key = Value::String(key_s);
 
     let base = match evaluator.get_super_base(&mut super_scope) {
       Ok(b) => b,
@@ -50208,11 +50113,11 @@ fn gen_bind_assignment_target_to_member(
         )?));
       }
     };
-    let reference = Reference::SuperProperty { base, key, receiver };
+    let mut reference = Reference::SuperProperty { base, key, receiver };
 
     let assign_result = (|| -> Result<(), VmError> {
       evaluator.root_reference(&mut super_scope, &reference)?;
-      evaluator.put_value_to_reference(&mut super_scope, &reference, value)
+      evaluator.put_value_to_reference(&mut super_scope, &mut reference, value)
     })();
     return match assign_result {
       Ok(()) => Ok(GenEval::Complete(Completion::empty())),
@@ -50267,7 +50172,7 @@ fn gen_bind_assignment_target_to_member_after_base(
   let mut assign_scope = scope.reborrow();
   assign_scope.push_root(value)?;
 
-  let reference = match gen_reference_from_member(evaluator, &mut assign_scope, member, base) {
+  let mut reference = match gen_reference_from_member(evaluator, &mut assign_scope, member, base) {
     Ok(reference) => reference,
     Err(err) => {
       return Ok(GenEval::Complete(gen_error_to_completion(
@@ -50280,7 +50185,7 @@ fn gen_bind_assignment_target_to_member_after_base(
 
   let assign_result = (|| -> Result<(), VmError> {
     evaluator.root_reference(&mut assign_scope, &reference)?;
-    evaluator.put_value_to_reference(&mut assign_scope, &reference, value)
+    evaluator.put_value_to_reference(&mut assign_scope, &mut reference, value)
   })();
 
   match assign_result {
@@ -50432,7 +50337,13 @@ fn gen_bind_assignment_target_to_computed_member_after_member(
   let mut assign_scope = scope.reborrow();
   assign_scope.push_roots(&[base, member_value, value])?;
 
-  let reference = match gen_reference_from_computed_member(evaluator, &mut assign_scope, member, base, member_value)
+  let mut reference = match gen_reference_from_computed_member(
+    evaluator,
+    &mut assign_scope,
+    member,
+    base,
+    member_value,
+  )
   {
     Ok(reference) => reference,
     Err(err) => {
@@ -50442,7 +50353,7 @@ fn gen_bind_assignment_target_to_computed_member_after_member(
 
   let assign_result = (|| -> Result<(), VmError> {
     evaluator.root_reference(&mut assign_scope, &reference)?;
-    evaluator.put_value_to_reference(&mut assign_scope, &reference, value)
+    evaluator.put_value_to_reference(&mut assign_scope, &mut reference, value)
   })();
 
   match assign_result {
@@ -50460,7 +50371,7 @@ fn gen_bind_assignment_target_to_super_computed_member_after_member(
   let mut assign_scope = scope.reborrow();
   assign_scope.push_roots(&[member_value, value])?;
 
-  let reference = match gen_reference_from_super_computed_member_after_member(
+  let mut reference = match gen_reference_from_super_computed_member_after_member(
     evaluator,
     &mut assign_scope,
     member_value,
@@ -50473,7 +50384,7 @@ fn gen_bind_assignment_target_to_super_computed_member_after_member(
 
   let assign_result = (|| -> Result<(), VmError> {
     evaluator.root_reference(&mut assign_scope, &reference)?;
-    evaluator.put_value_to_reference(&mut assign_scope, &reference, value)
+    evaluator.put_value_to_reference(&mut assign_scope, &mut reference, value)
   })();
 
   match assign_result {
@@ -51726,7 +51637,7 @@ fn gen_assign_target_put_value(
       // assignment.
       let mut assign_scope = scope.reborrow();
       assign_scope.push_roots(&[base, value])?;
-      let reference = if key.starts_with('#') {
+      let mut reference = if key.starts_with('#') {
         let sym = assign_scope
           .heap()
           .resolve_private_name_symbol(evaluator.env.lexical_env, key)?
@@ -51742,7 +51653,7 @@ fn gen_assign_target_put_value(
       };
       evaluator.root_reference(&mut assign_scope, &reference)?;
       assign_scope.push_root(value)?;
-      evaluator.put_value_to_reference(&mut assign_scope, &reference, value)
+      evaluator.put_value_to_reference(&mut assign_scope, &mut reference, value)
     }
     GenAssignTarget::ComputedMember { base, key_value } => {
       // Root inputs across `ToPropertyKey` + `PutValue`, both of which can allocate and invoke user
@@ -51750,14 +51661,14 @@ fn gen_assign_target_put_value(
       let mut assign_scope = scope.reborrow();
       assign_scope.push_roots(&[base, key_value, value])?;
       let key = evaluator.to_property_key_operator(&mut assign_scope, key_value)?;
-      let reference = Reference::Property {
+      let mut reference = Reference::Property {
         base,
         receiver: base,
         key,
       };
       evaluator.root_reference(&mut assign_scope, &reference)?;
       assign_scope.push_root(value)?;
-      evaluator.put_value_to_reference(&mut assign_scope, &reference, value)
+      evaluator.put_value_to_reference(&mut assign_scope, &mut reference, value)
     }
     GenAssignTarget::SuperMember {
       base,
@@ -51776,29 +51687,32 @@ fn gen_assign_target_put_value(
       assign_scope.push_roots(&[base, receiver, value])?;
 
       let key_s = assign_scope.alloc_string(key)?;
-      let reference = Reference::SuperProperty {
+      let mut reference = Reference::SuperProperty {
         base,
-        key: PropertyKey::from_string(key_s),
+        key: Value::String(key_s),
         receiver,
       };
       evaluator.root_reference(&mut assign_scope, &reference)?;
       assign_scope.push_root(value)?;
-      evaluator.put_value_to_reference(&mut assign_scope, &reference, value)
+      evaluator.put_value_to_reference(&mut assign_scope, &mut reference, value)
     }
     GenAssignTarget::SuperComputedMember {
       base,
       receiver,
       key_value,
     } => {
-      // Root inputs across `ToPropertyKey` + `PutValue`, both of which can allocate and invoke user
-      // code.
+      // Root inputs across `PutValue`, which can allocate and invoke user code (including deferred
+      // `ToPropertyKey` conversion).
       let mut assign_scope = scope.reborrow();
       assign_scope.push_roots(&[base, receiver, key_value, value])?;
-      let key = evaluator.to_property_key_operator(&mut assign_scope, key_value)?;
-      let reference = Reference::SuperProperty { base, key, receiver };
+      let mut reference = Reference::SuperProperty {
+        base,
+        key: key_value,
+        receiver,
+      };
       evaluator.root_reference(&mut assign_scope, &reference)?;
       assign_scope.push_root(value)?;
-      evaluator.put_value_to_reference(&mut assign_scope, &reference, value)
+      evaluator.put_value_to_reference(&mut assign_scope, &mut reference, value)
     }
   }
 }
@@ -53890,12 +53804,12 @@ fn gen_resume_from_frames(
           let expr = unsafe { &*expr };
           let name = unsafe { &*name };
           let value = v.unwrap_or(Value::Undefined);
-          let reference = Reference::Binding(name.as_str());
+          let mut reference = Reference::Binding(name.as_str());
 
           let assign_result = {
             let mut rhs_scope = scope.reborrow();
             rhs_scope.push_root(value)?;
-            evaluator.put_value_to_reference(&mut rhs_scope, &reference, value)
+            evaluator.put_value_to_reference(&mut rhs_scope, &mut reference, value)
           };
 
           match assign_result {
@@ -55598,7 +55512,7 @@ fn gen_resume_from_frames(
           let assign_res = (|| -> Result<(), VmError> {
             let mut assign_scope = scope.reborrow();
             assign_scope.push_root(value)?;
-            let reference = match (base, key, receiver) {
+            let mut reference = match (base, key, receiver) {
               (None, None, None) => match &*expr.left.stx {
                 Expr::Id(id) => Reference::Binding(&id.stx.name),
                 Expr::IdPat(id) => Reference::Binding(&id.stx.name),
@@ -55645,18 +55559,9 @@ fn gen_resume_from_frames(
               }
               (Some(base), Some(key_value), Some(receiver)) => {
                 assign_scope.push_roots(&[base, key_value, receiver])?;
-                let key = match key_value {
-                  Value::String(s) => PropertyKey::from_string(s),
-                  Value::Symbol(s) => PropertyKey::from_symbol(s),
-                  _ => {
-                    return Err(VmError::InvariantViolation(
-                      "assignment key should be a string or symbol",
-                    ))
-                  }
-                };
                 Reference::SuperProperty {
                   base,
-                  key,
+                  key: key_value,
                   receiver,
                 }
               }
@@ -55668,7 +55573,7 @@ fn gen_resume_from_frames(
             };
 
             evaluator
-              .put_value_to_reference(&mut assign_scope, &reference, value)
+              .put_value_to_reference(&mut assign_scope, &mut reference, value)
               .map_err(|err| {
                 coerce_error_to_throw_for_async(evaluator.vm, &mut assign_scope, err)
               })?;
@@ -55695,7 +55600,7 @@ fn gen_resume_from_frames(
           let right = v.unwrap_or(Value::Undefined);
 
           let assign_res = (|| -> Result<Value, VmError> {
-            let reference = match (base, key, receiver) {
+            let mut reference = match (base, key, receiver) {
               (None, None, None) => match &*expr.left.stx {
                 Expr::Id(id) => Reference::Binding(&id.stx.name),
                 Expr::IdPat(id) => Reference::Binding(&id.stx.name),
@@ -55738,18 +55643,9 @@ fn gen_resume_from_frames(
                 }
               },
               (Some(base), Some(key_value), Some(receiver)) => {
-                let key = match key_value {
-                  Value::String(s) => PropertyKey::from_string(s),
-                  Value::Symbol(s) => PropertyKey::from_symbol(s),
-                  _ => {
-                    return Err(VmError::InvariantViolation(
-                      "assignment key should be a string or symbol",
-                    ))
-                  }
-                };
                 Reference::SuperProperty {
                   base,
-                  key,
+                  key: key_value,
                   receiver,
                 }
               }
@@ -55781,7 +55677,7 @@ fn gen_resume_from_frames(
             let value = async_apply_binary_operator(evaluator, &mut op_scope, op, left, right)?;
             op_scope.push_root(value)?;
             evaluator
-              .put_value_to_reference(&mut op_scope, &reference, value)
+              .put_value_to_reference(&mut op_scope, &mut reference, value)
               .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
             Ok(value)
           })();
