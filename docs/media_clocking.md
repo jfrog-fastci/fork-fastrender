@@ -501,7 +501,8 @@ FastRender includes building blocks for this in `src/media/audio/drift.rs`:
 * `DriftController` — bounded, slew-limited PI controller that outputs a `playback_rate` multiplier
   based on observed buffered duration.
 * `DriftResampler` — a simple drift-aware linear resampler that consumes from `PcmF32QueueConsumer`
-  using `base_ratio * playback_rate`.
+  using `base_ratio * playback_rate * user_playback_rate` (where `user_playback_rate` corresponds to
+  `HTMLMediaElement.playbackRate`).
 
 ### Constant output latency model
 
