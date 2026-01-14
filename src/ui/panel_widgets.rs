@@ -75,7 +75,7 @@ pub fn panel_header_with_actions(
 }
 
 #[cfg(test)]
-mod tests {
+mod close_response_tests {
   use super::*;
 
   #[test]
