@@ -123,6 +123,23 @@ fn strict_direct_eval_does_not_leak_var_declarations() {
 }
 
 #[test]
+fn strict_indirect_eval_var_declarations_are_scoped_to_eval_and_allow_redeclaration() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (function(){
+          const e = eval;
+          const out = e('"use strict"; var x = 1; var x = 2; x');
+          return out === 2 && typeof x === "undefined";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn eval_assignment_targets_local_for_direct_and_global_for_indirect() {
   let mut rt = new_runtime();
 

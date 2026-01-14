@@ -1620,20 +1620,55 @@ impl RuntimeEnv {
         }
 
         if let Some(var_scope_lex) = var_scope_lex {
-          if matches!(
-            scope.heap().get_env_record(var_scope_lex)?,
-            crate::env::EnvRecord::Declarative(_)
-          ) && scope.heap().env_has_binding(var_scope_lex, name)?
-          {
-            let intr = vm
-              .intrinsics()
-              .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-            let err_obj = crate::error_object::new_syntax_error_object(
-              scope,
-              &intr,
-              "Identifier has already been declared",
-            )?;
-            return Err(VmError::Throw(err_obj));
+          // `var_scope_lex` is usually the function-body lexical environment record, which is
+          // distinct from the variable environment (and contains only lexical declarations).
+          //
+          // However, in some contexts (notably modules, and during early function setup) the engine
+          // can temporarily represent the variable environment and the current lexical environment
+          // as the same declarative env record.
+          //
+          // In that case, a plain `env_has_binding` check would treat an existing **var** binding as
+          // a lexical collision and incorrectly throw `SyntaxError("Identifier has already been declared")`.
+          let rec = scope.heap().get_env_record(var_scope_lex)?;
+          if let crate::env::EnvRecord::Declarative(rec) = rec {
+            if let Some(idx) = rec.find_binding_index(scope.heap(), name)? {
+              let binding = rec
+                .bindings
+                .get(idx)
+                .copied()
+                .ok_or(VmError::Unimplemented(
+                  "environment record binding index out of bounds",
+                ))?;
+ 
+              let collides = if var_scope_lex != var_env {
+                // Ordinary function scopes: any binding in the var-scope lexical env is a lexical
+                // declaration and must reject `var`.
+                true
+              } else {
+                // Shared env record: only reject bindings that are clearly lexical:
+                // - uninitialized (TDZ) bindings (`let`/`class`),
+                // - immutable bindings (`const`, `import`, `*default*`, ...), or
+                // - indirect module import bindings.
+                //
+                // If the binding is mutable+initialized+direct, treat it as a var-scoped binding and
+                // allow redeclaration (this covers `var` redeclarations and hoisted function decls).
+                !binding.initialized
+                  || !binding.mutable
+                  || matches!(binding.value, crate::env::EnvBindingValue::Indirect { .. })
+              };
+ 
+              if collides {
+                let intr = vm
+                  .intrinsics()
+                  .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+                let err_obj = crate::error_object::new_syntax_error_object(
+                  scope,
+                  &intr,
+                  "Identifier has already been declared",
+                )?;
+                return Err(VmError::Throw(err_obj));
+              }
+            }
           }
         }
       }

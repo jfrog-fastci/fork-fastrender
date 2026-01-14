@@ -296,6 +296,66 @@ fn compiled_module_graph_local_exports_import_compiled_consumer() -> Result<(), 
 }
 
 #[test]
+fn compiled_module_graph_var_decls_execute_in_module_env() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+  let mut graph = ModuleGraph::new();
+
+  let result = (|| -> Result<(), VmError> {
+    if !supports_compiled_modules(&mut vm, &mut heap, &realm) {
+      return Ok(());
+    }
+
+    let m = graph.add_module_with_specifier(
+      "m",
+      compile_module_record_without_ast(
+        &mut heap,
+        "m.js",
+        r#"
+          // Module `var` declarations are module-scoped and are hoisted/initialized during module
+          // instantiation. Initializer assignment must not throw, even though the binding already
+          // exists.
+          var x = 1;
+          var x = 2;
+          export const y = x;
+        "#,
+      )?,
+    )?;
+    graph.link_all_by_specifier();
+
+    let mut scope = heap.scope();
+    graph.evaluate_sync_with_scope(
+      &mut vm,
+      &mut scope,
+      realm.global_object(),
+      realm.id(),
+      m,
+      &mut host,
+      &mut hooks,
+    )?;
+
+    let ns_m = graph.get_module_namespace(m, &mut vm, &mut scope)?;
+    assert_eq!(
+      ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_m, "y")?,
+      Value::Number(2.0)
+    );
+
+    Ok(())
+  })();
+
+  graph.teardown(&mut vm, &mut heap);
+  let mut ctx = MicrotaskCtx {
+    vm: &mut vm,
+    heap: &mut heap,
+    host: &mut host,
+  };
+  hooks.teardown(&mut ctx);
+  realm.teardown(&mut heap);
+  result
+}
+
+#[test]
 fn compiled_module_graph_default_export_expression_is_evaluated_once() -> Result<(), VmError> {
   let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
   let mut hooks = MicrotaskQueue::new();
