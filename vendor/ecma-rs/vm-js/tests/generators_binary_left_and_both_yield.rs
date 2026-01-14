@@ -112,6 +112,33 @@ fn generator_binary_addition_to_primitive_happens_after_rhs_evaluation() {
 }
 
 #[test]
+fn generator_binary_addition_to_primitive_happens_after_rhs_yield_and_is_left_to_right() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log = [];
+      function* g(){
+        var lhs = { valueOf() { log.push("lhs"); return 10; } };
+        var rhs = { valueOf() { log.push("rhs"); return 20; } };
+        return (yield lhs) + (yield rhs);
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(r1.value);
+      // `+` must not call `ToPrimitive` on the left operand until after the RHS yield.
+      var ok_mid = r1.done === false && r2.done === false && log.length === 0;
+      var r3 = it.next(r2.value);
+      ok_mid &&
+      r3.done === true && r3.value === 30 &&
+      log.length === 2 && log[0] === "lhs" && log[1] === "rhs"
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_binary_multiplication_yield_on_lhs_only() {
   let mut rt = new_runtime();
   let value = rt
@@ -123,6 +150,33 @@ fn generator_binary_multiplication_yield_on_lhs_only() {
       var r2 = it.next(3);
       r1.value === 1 && r1.done === false &&
       r2.done === true && r2.value === 6
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_binary_multiplication_to_numeric_happens_after_rhs_yield_and_is_left_to_right() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log = [];
+      function* g(){
+        var lhs = { valueOf() { log.push("lhs"); return 6; } };
+        var rhs = { valueOf() { log.push("rhs"); return 7; } };
+        return (yield lhs) * (yield rhs);
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(r1.value);
+      // `*` must not call `ToNumeric` on the left operand until after the RHS yield.
+      var ok_mid = r1.done === false && r2.done === false && log.length === 0;
+      var r3 = it.next(r2.value);
+      ok_mid &&
+      r3.done === true && r3.value === 42 &&
+      log.length === 2 && log[0] === "lhs" && log[1] === "rhs"
     "#,
     )
     .unwrap();
