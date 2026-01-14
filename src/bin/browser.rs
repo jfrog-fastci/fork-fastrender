@@ -4620,14 +4620,16 @@ fn max_pending_frame_bytes_from_env() -> u64 {
 
 #[cfg(feature = "browser_ui")]
 fn resolve_download_directory(cli_path: Option<&std::path::PathBuf>) -> std::path::PathBuf {
-  let env_override = std::env::var_os(fastrender::ui::browser_cli::ENV_DOWNLOAD_DIR);
+  let env_browser = std::env::var_os(fastrender::ui::downloads::ENV_BROWSER_DOWNLOAD_DIR);
+  let env_legacy = std::env::var_os(fastrender::ui::downloads::ENV_LEGACY_DOWNLOAD_DIR);
   let os_downloads_dir: Option<std::path::PathBuf> = directories::UserDirs::new()
     .and_then(|user_dirs| user_dirs.download_dir().map(std::path::Path::to_path_buf));
   let cwd_fallback = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
   fastrender::ui::downloads::resolve_download_directory(
     cli_path.map(std::path::PathBuf::as_path),
-    env_override.as_deref(),
+    env_browser.as_deref(),
+    env_legacy.as_deref(),
     os_downloads_dir.as_deref(),
     &cwd_fallback,
   )

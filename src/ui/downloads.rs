@@ -1,19 +1,48 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
+/// Environment variable to override the browser download directory.
+pub const ENV_BROWSER_DOWNLOAD_DIR: &str = "FASTR_BROWSER_DOWNLOAD_DIR";
+/// Legacy alias for [`ENV_BROWSER_DOWNLOAD_DIR`] (kept for older test setups).
+pub const ENV_LEGACY_DOWNLOAD_DIR: &str = "FASTR_DOWNLOAD_DIR";
+
+fn download_dir_from_env_value(raw: &OsStr) -> Option<PathBuf> {
+  if raw.is_empty() {
+    return None;
+  }
+
+  // Treat whitespace-only values as unset.
+  //
+  // Only trim when the env value is valid UTF-8. For non-UTF-8 values (possible on Unix), treat the
+  // raw bytes as a path and skip the whitespace-only check.
+  match raw.to_str() {
+    Some(raw) => {
+      let trimmed = raw.trim();
+      if trimmed.is_empty() {
+        None
+      } else {
+        Some(PathBuf::from(trimmed))
+      }
+    }
+    None => Some(PathBuf::from(raw)),
+  }
+}
+
 /// Resolve the base download directory given a set of optional overrides.
 ///
 /// Precedence (highest → lowest):
-/// 1. CLI override
-/// 2. Environment/runtime override (e.g. `FASTR_BROWSER_DOWNLOAD_DIR`)
-/// 3. OS downloads directory (e.g. via `directories::UserDirs`)
-/// 4. Fallback (typically the current working directory)
+/// 1. CLI override (`browser --download-dir <path>`)
+/// 2. `FASTR_BROWSER_DOWNLOAD_DIR`
+/// 3. legacy alias `FASTR_DOWNLOAD_DIR`
+/// 4. OS downloads directory (e.g. via `directories::UserDirs`)
+/// 5. Fallback (typically the current working directory)
 ///
 /// This is a pure helper: callers supply the OS downloads directory and fallback path, so it can be
 /// unit-tested without touching global state.
 pub fn resolve_download_directory(
   cli_override: Option<&Path>,
-  env_override: Option<&OsStr>,
+  env_browser_download_dir: Option<&OsStr>,
+  env_legacy_download_dir: Option<&OsStr>,
   os_downloads_dir: Option<&Path>,
   cwd_fallback: &Path,
 ) -> PathBuf {
@@ -21,11 +50,15 @@ pub fn resolve_download_directory(
     return path.to_path_buf();
   }
 
-  if let Some(raw) = env_override.filter(|raw| !raw.is_empty()) {
-    return PathBuf::from(raw);
+  if let Some(path) = env_browser_download_dir.and_then(download_dir_from_env_value) {
+    return path;
   }
 
-  if let Some(path) = os_downloads_dir {
+  if let Some(path) = env_legacy_download_dir.and_then(download_dir_from_env_value) {
+    return path;
+  }
+
+  if let Some(path) = os_downloads_dir.filter(|p| !p.as_os_str().is_empty()) {
     return path.to_path_buf();
   }
 
@@ -177,22 +210,6 @@ pub fn filename_from_url(url: &str) -> String {
   derived.unwrap_or_else(|| "download".to_string())
 }
 
-fn default_download_dir_from_sources(
-  browser_env: Option<&str>,
-  legacy_env: Option<&str>,
-  user_downloads: Option<&Path>,
-  cwd: &Path,
-) -> PathBuf {
-  // Prefer the browser CLI/env knob, but keep the old `FASTR_DOWNLOAD_DIR` key as an alias for
-  // existing test setups.
-  let env_override = browser_env
-    .filter(|raw| !raw.is_empty())
-    .or_else(|| legacy_env.filter(|raw| !raw.is_empty()))
-    .map(OsStr::new);
-
-  resolve_download_directory(None, env_override, user_downloads, cwd)
-}
-
 /// Resolve the base download directory for the browser UI worker.
 ///
 /// Front-ends can override this per-worker via [`crate::ui::messages::UiToWorker::SetDownloadDirectory`].
@@ -201,8 +218,8 @@ fn default_download_dir_from_sources(
 /// `FASTR_BROWSER_DOWNLOAD_DIR` runtime toggle (or the legacy `FASTR_DOWNLOAD_DIR` alias).
 pub fn default_download_dir() -> PathBuf {
   let toggles = crate::debug::runtime::runtime_toggles();
-  let browser_env = toggles.get("FASTR_BROWSER_DOWNLOAD_DIR");
-  let legacy_env = toggles.get("FASTR_DOWNLOAD_DIR");
+  let browser_env = toggles.get(ENV_BROWSER_DOWNLOAD_DIR).map(OsStr::new);
+  let legacy_env = toggles.get(ENV_LEGACY_DOWNLOAD_DIR).map(OsStr::new);
 
   let user_downloads: Option<PathBuf> = {
     #[cfg(feature = "browser_ui")]
@@ -217,7 +234,7 @@ pub fn default_download_dir() -> PathBuf {
   };
 
   let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-  default_download_dir_from_sources(browser_env, legacy_env, user_downloads.as_deref(), &cwd)
+  resolve_download_directory(None, browser_env, legacy_env, user_downloads.as_deref(), &cwd)
 }
 
 /// Returns an error toast message when `path` does not exist.
@@ -270,60 +287,6 @@ mod tests {
   }
 
   #[test]
-  fn default_download_dir_prefers_browser_env_over_legacy_env() {
-    let cwd = Path::new("cwd");
-    let user = Path::new("user_downloads");
-
-    assert_eq!(
-      default_download_dir_from_sources(Some("browser_env"), Some("legacy_env"), Some(user), cwd),
-      PathBuf::from("browser_env")
-    );
-  }
-
-  #[test]
-  fn default_download_dir_uses_legacy_env_when_browser_env_unset() {
-    let cwd = Path::new("cwd");
-    let user = Path::new("user_downloads");
-
-    assert_eq!(
-      default_download_dir_from_sources(None, Some("legacy_env"), Some(user), cwd),
-      PathBuf::from("legacy_env")
-    );
-  }
-
-  #[test]
-  fn default_download_dir_prefers_user_downloads_over_cwd() {
-    let cwd = Path::new("cwd");
-    let user = Path::new("user_downloads");
-
-    assert_eq!(
-      default_download_dir_from_sources(None, None, Some(user), cwd),
-      user.to_path_buf()
-    );
-  }
-
-  #[test]
-  fn default_download_dir_falls_back_to_cwd() {
-    let cwd = Path::new("cwd");
-
-    assert_eq!(
-      default_download_dir_from_sources(None, None, None, cwd),
-      cwd.to_path_buf()
-    );
-  }
-
-  #[test]
-  fn default_download_dir_ignores_empty_env_values() {
-    let cwd = Path::new("cwd");
-    let user = Path::new("user_downloads");
-
-    assert_eq!(
-      default_download_dir_from_sources(Some(""), Some(""), Some(user), cwd),
-      user.to_path_buf()
-    );
-  }
-
-  #[test]
   fn missing_path_toast_message_formats_filename_for_missing_path() {
     let dir = tempfile::tempdir().expect("tempdir should create");
     let missing = dir.path().join("missing.txt");
@@ -344,7 +307,13 @@ mod tests {
     let os = PathBuf::from("os");
     let cwd = PathBuf::from("cwd");
     assert_eq!(
-      resolve_download_directory(Some(&cli), Some(OsStr::new("env")), Some(&os), &cwd),
+      resolve_download_directory(
+        Some(&cli),
+        Some(OsStr::new("env")),
+        Some(OsStr::new("legacy")),
+        Some(&os),
+        &cwd,
+      ),
       cli
     );
   }
@@ -354,8 +323,24 @@ mod tests {
     let os = PathBuf::from("os");
     let cwd = PathBuf::from("cwd");
     assert_eq!(
-      resolve_download_directory(None, Some(OsStr::new("env")), Some(&os), &cwd),
+      resolve_download_directory(
+        None,
+        Some(OsStr::new("env")),
+        Some(OsStr::new("legacy")),
+        Some(&os),
+        &cwd,
+      ),
       PathBuf::from("env")
+    );
+  }
+
+  #[test]
+  fn resolve_download_directory_legacy_env_wins_when_browser_env_missing() {
+    let os = PathBuf::from("os");
+    let cwd = PathBuf::from("cwd");
+    assert_eq!(
+      resolve_download_directory(None, None, Some(OsStr::new("legacy")), Some(&os), &cwd),
+      PathBuf::from("legacy")
     );
   }
 
@@ -363,13 +348,13 @@ mod tests {
   fn resolve_download_directory_os_downloads_wins_when_no_overrides() {
     let os = PathBuf::from("os");
     let cwd = PathBuf::from("cwd");
-    assert_eq!(resolve_download_directory(None, None, Some(&os), &cwd), os);
+    assert_eq!(resolve_download_directory(None, None, None, Some(&os), &cwd), os);
   }
 
   #[test]
-  fn resolve_download_directory_falls_back_to_cwd() {
-    let cwd = PathBuf::from("cwd");
-    assert_eq!(resolve_download_directory(None, None, None, &cwd), cwd);
+  fn resolve_download_directory_falls_back_to_current_dir() {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    assert_eq!(resolve_download_directory(None, None, None, None, &cwd), cwd);
   }
 
   #[test]
@@ -378,7 +363,29 @@ mod tests {
     let os = PathBuf::from("os");
     let cwd = PathBuf::from("cwd");
     assert_eq!(
-      resolve_download_directory(Some(&empty_cli), Some(OsStr::new("")), Some(&os), &cwd),
+      resolve_download_directory(
+        Some(&empty_cli),
+        Some(OsStr::new("")),
+        Some(OsStr::new("")),
+        Some(&os),
+        &cwd,
+      ),
+      os
+    );
+  }
+
+  #[test]
+  fn resolve_download_directory_ignores_whitespace_env_values() {
+    let os = PathBuf::from("os");
+    let cwd = PathBuf::from("cwd");
+    assert_eq!(
+      resolve_download_directory(
+        None,
+        Some(OsStr::new("   ")),
+        Some(OsStr::new("\t\n")),
+        Some(&os),
+        &cwd,
+      ),
       os
     );
   }

@@ -2,7 +2,7 @@ use std::fmt;
 
 pub const ENV_WGPU_FALLBACK: &str = "FASTR_BROWSER_WGPU_FALLBACK";
 pub const ENV_WGPU_BACKENDS: &str = "FASTR_BROWSER_WGPU_BACKENDS";
-pub const ENV_DOWNLOAD_DIR: &str = "FASTR_BROWSER_DOWNLOAD_DIR";
+pub const ENV_DOWNLOAD_DIR: &str = crate::ui::downloads::ENV_BROWSER_DOWNLOAD_DIR;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BrowserWgpuOptions {
