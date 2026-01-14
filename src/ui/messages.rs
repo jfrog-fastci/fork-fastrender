@@ -4,7 +4,9 @@ use crate::render_control::StageHeartbeat;
 use crate::scroll::ScrollBounds;
 use crate::scroll::ScrollState;
 use crate::style::media::{ColorScheme, ContrastPreference};
-use crate::style::types::CursorKeyword;
+pub use crate::cursor::CursorKind;
+pub use crate::html::media::MediaElementKind;
+pub use crate::pointer::{PointerButton, PointerModifiers};
 use crate::tree::box_tree::SelectControl;
 use crate::ui::cancel::CancelGens;
 #[cfg(feature = "browser_ui")]
@@ -127,13 +129,6 @@ pub enum RepaintReason {
   Navigation,
 }
 
-/// Media element kind for native media controls / commands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MediaElementKind {
-  Audio,
-  Video,
-}
-
 /// UI-triggered media command for a specific media element (`<audio>`/`<video>`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MediaCommand {
@@ -151,73 +146,6 @@ pub enum WakeReason {
   Media,
   /// Generic wakeup reason (future expansion point).
   Other,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PointerButton {
-  None,
-  Primary,
-  Secondary,
-  Middle,
-  Back,
-  Forward,
-  Other(u16),
-}
-
-/// Snapshot of modifier keys/buttons active during a pointer event.
-///
-/// This is part of the UI↔worker protocol, so it must remain small, `Copy`, and independent of any
-/// specific windowing backend types (e.g. winit).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct PointerModifiers(u8);
-
-impl PointerModifiers {
-  pub const NONE: Self = Self(0);
-  pub const CTRL: Self = Self(1 << 0);
-  pub const SHIFT: Self = Self(1 << 1);
-  pub const ALT: Self = Self(1 << 2);
-  pub const META: Self = Self(1 << 3);
-
-  /// Cross-platform "command" modifier (Cmd on macOS, Ctrl elsewhere).
-  ///
-  /// This is useful for browser-style gestures like Cmd/Ctrl-click to open links in a new tab.
-  pub fn command(self) -> bool {
-    if cfg!(target_os = "macos") {
-      self.meta()
-    } else {
-      self.ctrl()
-    }
-  }
-
-  pub fn ctrl(self) -> bool {
-    (self.0 & Self::CTRL.0) != 0
-  }
-
-  pub fn shift(self) -> bool {
-    (self.0 & Self::SHIFT.0) != 0
-  }
-
-  pub fn alt(self) -> bool {
-    (self.0 & Self::ALT.0) != 0
-  }
-
-  pub fn meta(self) -> bool {
-    (self.0 & Self::META.0) != 0
-  }
-}
-
-impl std::ops::BitOr for PointerModifiers {
-  type Output = Self;
-
-  fn bitor(self, rhs: Self) -> Self::Output {
-    Self(self.0 | rhs.0)
-  }
-}
-
-impl std::ops::BitOrAssign for PointerModifiers {
-  fn bitor_assign(&mut self, rhs: Self) {
-    self.0 |= rhs.0;
-  }
 }
 
 /// Scroll sizing information for the root scroll container (viewport).
@@ -252,31 +180,8 @@ pub struct DatalistOption {
   pub disabled: bool,
 }
 
-/// High-level pointer cursor semantics reported by the render worker.
-///
-/// This intentionally mirrors a small subset of common browser cursor types so UIs can map them to
-/// platform cursor icons.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CursorKind {
-  Default,
-  /// Hide the OS cursor (CSS `cursor: none`).
-  Hidden,
-  Pointer,
-  Text,
-  Crosshair,
-  NotAllowed,
-  Grab,
-  Grabbing,
-  Help,
-  Wait,
-  Progress,
-  Move,
-  Copy,
-  ZoomIn,
-  ZoomOut,
-  EwResize,
-  NsResize,
-}
+// CursorKind is defined in `crate::cursor` so it can be reused by non-UI code (hit testing, IPC
+// protocols, etc.) without pulling in the full UI module.
 
 /// High-level kinds of page-originated drag payloads.
 ///
@@ -286,45 +191,6 @@ pub enum CursorKind {
 pub enum PageDragKind {
   /// Dragging a link (`<a href>` / `<area href>`) from page content.
   Link,
-}
-
-impl Default for CursorKind {
-  fn default() -> Self {
-    CursorKind::Default
-  }
-}
-
-impl CursorKind {
-  /// Map a CSS [`CursorKeyword`] to a high-level [`CursorKind`].
-  ///
-  /// Returns `None` for [`CursorKeyword::Auto`], which indicates the UA should choose a cursor based
-  /// on the hovered element's semantics (e.g. links → pointer, selectable text → text caret).
-  pub fn from_css_cursor_keyword(keyword: CursorKeyword) -> Option<Self> {
-    match keyword {
-      CursorKeyword::Auto => None,
-      CursorKeyword::Default => Some(CursorKind::Default),
-      CursorKeyword::None => Some(CursorKind::Hidden),
-      CursorKeyword::Help => Some(CursorKind::Help),
-      CursorKeyword::Pointer => Some(CursorKind::Pointer),
-      CursorKeyword::Text | CursorKeyword::VerticalText => Some(CursorKind::Text),
-      CursorKeyword::Crosshair => Some(CursorKind::Crosshair),
-      CursorKeyword::NotAllowed | CursorKeyword::NoDrop => Some(CursorKind::NotAllowed),
-      CursorKeyword::Grab => Some(CursorKind::Grab),
-      CursorKeyword::Grabbing => Some(CursorKind::Grabbing),
-      CursorKeyword::Wait => Some(CursorKind::Wait),
-      CursorKeyword::Progress => Some(CursorKind::Progress),
-      CursorKeyword::Move | CursorKeyword::AllScroll => Some(CursorKind::Move),
-      CursorKeyword::Copy | CursorKeyword::Alias => Some(CursorKind::Copy),
-      CursorKeyword::ZoomIn => Some(CursorKind::ZoomIn),
-      CursorKeyword::ZoomOut => Some(CursorKind::ZoomOut),
-      CursorKeyword::NResize | CursorKeyword::SResize => Some(CursorKind::NsResize),
-      CursorKeyword::EResize | CursorKeyword::WResize => Some(CursorKind::EwResize),
-      CursorKeyword::EwResize | CursorKeyword::ColResize => Some(CursorKind::EwResize),
-      CursorKeyword::NsResize | CursorKeyword::RowResize => Some(CursorKind::NsResize),
-      // Degrade gracefully for cursor keywords that do not have a dedicated `CursorKind` variant.
-      _ => Some(CursorKind::Default),
-    }
-  }
 }
 
 /// An owned rendered frame produced by the render worker.

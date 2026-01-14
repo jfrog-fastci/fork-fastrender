@@ -274,6 +274,10 @@ fn build_fixture_chrome_diff_argv(args: &RefreshProgressAccuracyArgs) -> Result<
   // defaults. This avoids duplicating its (large) set of defaults and keeps the wrapper aligned
   // with future changes.
   let mut argv: Vec<OsString> = vec!["xtask".into(), "fixture-chrome-diff".into()];
+  // Favor compile latency over runtime speed for progress sync workflows: clean release builds of
+  // the mega-crate renderer can exceed the global agent timeout. `fixture-chrome-diff --debug`
+  // applies additional profile overrides (see `fixture_chrome_diff.rs`) to keep builds fast.
+  argv.push("--debug".into());
   if args.no_build {
     argv.push("--no-build".into());
   }

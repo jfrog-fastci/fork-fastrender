@@ -4781,7 +4781,7 @@ fn interface_ids_for_fast_path(
 ) -> Vec<(String, u32)> {
   fn interface_id_from_name_u32(name: &str) -> u32 {
     // Must match runtime interface ID generation (`webidl::interface_id_from_name`).
-    fastrender::js::webidl::interface_id_from_name(name).0
+    webidl::interface_id_from_name(name).0
   }
 
   let mut out: Vec<(String, u32)> = Vec::new();

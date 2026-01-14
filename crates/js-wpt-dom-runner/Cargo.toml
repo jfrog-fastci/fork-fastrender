@@ -29,7 +29,7 @@ conformance-harness = { path = "../../vendor/ecma-rs/conformance-harness" }
 #
 # `default-features = false` avoids pulling in heavyweight renderer features (e.g. AVIF decoding via
 # libaom-sys) when running the offline conformance runner.
-fastrender = { path = "../..", default-features = false, optional = true }
+fastrender = { path = "../..", default-features = false, optional = true, features = ["vmjs"] }
 globset = "0.4"
 regex = "1"
 serde = { version = "1", features = ["derive"] }

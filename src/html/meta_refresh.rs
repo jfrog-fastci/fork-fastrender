@@ -324,7 +324,7 @@ fn extract_js_location_redirect_from_source(source: &str) -> Option<String> {
       .map(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
       .unwrap_or(false)
   }
-  use crate::ui::string_match::find_ascii_case_insensitive_bytes_from;
+  use crate::string_match::find_ascii_case_insensitive_bytes_from;
 
   #[derive(Clone, Copy)]
   enum PatternKind {

@@ -1,7 +1,5 @@
 use crate::dom::DomNode;
-use crate::dom2;
 use crate::interaction::InteractionState;
-use crate::interaction::InteractionStateDom2;
 use std::ptr;
 
 fn trim_ascii_whitespace(value: &str) -> &str {
@@ -212,19 +210,25 @@ pub fn autofocus_target_node_id(dom: &DomNode) -> Option<usize> {
 // -----------------------------------------------------------------------------
 // dom2 variants (stable NodeId)
 // -----------------------------------------------------------------------------
-/// Returns the [`dom2::NodeId`] of the first eligible `[autofocus]` element in a live `dom2`
+
+/// Returns the [`crate::dom2::NodeId`] of the first eligible `[autofocus]` element in a live `dom2`
 /// document.
 ///
 /// This matches the best-effort eligibility rules of [`autofocus_target_node_id`] but returns a
 /// stable `dom2` id that remains meaningful across incremental DOM updates.
-pub fn autofocus_target_node_id_dom2(dom: &dom2::Document) -> Option<dom2::NodeId> {
+#[cfg(feature = "vmjs")]
+pub fn autofocus_target_node_id_dom2(dom: &crate::dom2::Document) -> Option<crate::dom2::NodeId> {
   super::autofocus_dom2::autofocus_target_node_id(dom)
 }
 
-/// Build an [`InteractionStateDom2`] reflecting initial autofocus selection, if any.
+/// Build an [`crate::interaction::InteractionStateDom2`] reflecting initial autofocus selection,
+/// if any.
 ///
 /// This is the `dom2` equivalent of [`interaction_state_for_autofocus`].
-pub fn interaction_state_for_autofocus_dom2(dom: &dom2::Document) -> Option<InteractionStateDom2> {
+#[cfg(feature = "vmjs")]
+pub fn interaction_state_for_autofocus_dom2(
+  dom: &crate::dom2::Document,
+) -> Option<crate::interaction::InteractionStateDom2> {
   super::autofocus_dom2::interaction_state_for_autofocus(dom)
 }
 

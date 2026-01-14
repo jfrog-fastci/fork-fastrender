@@ -32,9 +32,9 @@ pub mod types;
 pub mod websocket;
 pub mod shmem;
 
-#[cfg(unix)]
+#[cfg(all(unix, not(feature = "renderer_tools")))]
 pub mod bootstrap;
-#[cfg(unix)]
+#[cfg(all(unix, not(feature = "renderer_tools")))]
 pub mod fd_passing;
 
 #[cfg(target_os = "linux")]

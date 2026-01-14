@@ -182,7 +182,7 @@ use crate::resource::{
 #[cfg(feature = "direct_network")]
 use crate::resource::{CachingFetcher, HttpFetcher};
 use crate::scroll::ScrollState;
-use crate::ui::browser_limits::BrowserLimits;
+use crate::browser_limits::BrowserLimits;
 use crate::style::cascade::apply_style_set_with_media_target_and_imports_cached;
 use crate::style::cascade::attach_starting_styles;
 use crate::style::cascade::ContainerQueryContext;
@@ -277,26 +277,41 @@ pub use tiny_skia::Pixmap;
 mod browser_document;
 pub use browser_document::{BrowserDocument, BrowserNavigationReport};
 
+#[cfg(feature = "vmjs")]
 mod browser_document_dom2;
+#[cfg(feature = "vmjs")]
 pub use browser_document_dom2::BrowserDocumentDom2;
+#[cfg(feature = "vmjs")]
 pub use browser_document_dom2::Dom2HitTestResult;
+#[cfg(feature = "vmjs")]
 mod browser_document_js;
+#[cfg(feature = "vmjs")]
 pub use browser_document_js::{BrowserDocumentJs, RunUntilStableOutcome, RunUntilStableStopReason};
+#[cfg(feature = "vmjs")]
 mod browser_document2;
+#[cfg(feature = "vmjs")]
 pub use browser_document2::BrowserDocument2;
 
+#[cfg(feature = "vmjs")]
 mod chrome_frame_document;
+#[cfg(feature = "vmjs")]
 pub use chrome_frame_document::ChromeFrameDocument;
 
+#[cfg(feature = "vmjs")]
 mod dom2_geometry;
+#[cfg(feature = "vmjs")]
 pub use dom2_geometry::Dom2GeometryContext;
 
+#[cfg(feature = "vmjs")]
 mod browser_tab;
+#[cfg(feature = "vmjs")]
 pub use browser_tab::{
   BrowserTab, BrowserTabHost, BrowserTabJsExecutor, ModuleScriptExecutionStatus, SelectionAction,
 };
 
+#[cfg(feature = "vmjs")]
 mod browser_tab_vm_js_executor;
+#[cfg(feature = "vmjs")]
 pub use browser_tab_vm_js_executor::VmJsBrowserTabExecutor;
 
 #[derive(Default, Debug, Clone)]
@@ -1802,6 +1817,7 @@ impl RenderDiagnostics {
     js.record_script_executed();
   }
 
+  #[cfg(feature = "vmjs")]
   pub(crate) fn record_js_vm_error(&mut self, err: &vm_js::VmError) {
     let js = self.js_failure_diagnostics_mut();
     js.record_vm_error(err);
@@ -2106,6 +2122,7 @@ impl SharedRenderDiagnostics {
     }
   }
 
+  #[cfg(feature = "vmjs")]
   pub(crate) fn record_js_vm_error(&self, err: &vm_js::VmError) {
     if let Ok(mut guard) = self.inner.lock() {
       guard.record_js_vm_error(err);
@@ -3994,6 +4011,7 @@ impl JsFailureDiagnostics {
     self.scripts_executed = self.scripts_executed.saturating_add(1);
   }
 
+  #[cfg(feature = "vmjs")]
   fn record_vm_error(&mut self, err: &vm_js::VmError) {
     match err {
       vm_js::VmError::Unimplemented(reason) => self.record_unimplemented(reason),
@@ -4005,6 +4023,7 @@ impl JsFailureDiagnostics {
     }
   }
 
+  #[cfg(feature = "vmjs")]
   fn record_termination(&mut self, reason: vm_js::TerminationReason) {
     self.terminations_observed = self.terminations_observed.saturating_add(1);
     match reason {
@@ -12728,6 +12747,7 @@ impl FastRender {
   /// - Scripting semantics (affecting `<noscript>` parsing) follow this renderer's configuration
   ///   and runtime overrides (e.g. `FASTR_SCRIPTING`). For direct control, use
   ///   [`crate::dom2::parse_html_with_options`].
+  #[cfg(feature = "vmjs")]
   pub fn parse_html_dom2(&self, html: &str) -> Result<crate::dom2::Document> {
     let runtime_toggles = Arc::clone(&self.runtime_toggles);
     runtime::with_runtime_toggles(runtime_toggles, || {

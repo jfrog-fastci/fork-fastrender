@@ -32,7 +32,19 @@ resolver = "2"
 [features]
 # `direct_network` / `direct_websocket` gate in-process network stacks. Sandboxed renderer builds
 # should disable them and provide a `ResourceFetcher` that proxies over IPC.
-default = ["preserve3d_warp", "avif", "direct_network", "direct_websocket", "direct_filesystem"]
+default = [
+  "preserve3d_warp",
+  "avif",
+  "direct_network",
+  "direct_websocket",
+  "direct_filesystem",
+  # Enable the vm-js/dom2 runtime stack in normal builds. Tooling/CI can opt out with
+  # `--no-default-features` to keep compile times lean for renderer-only workflows.
+  "vmjs",
+  # Tooling / non-core helpers that are still built by default for developer workflows.
+  "bundles",
+  "wpt_import",
+]
 a11y_debug = []
 # Lightweight AccessKit support (types only). This is separate from `browser_ui_base`/`browser_ui`
 # so core DOM/unit tests can exercise accessibility behaviors without pulling in the full desktop UI
@@ -48,6 +60,21 @@ box_generation_demo = []
 disk_cache = ["fs2"]
 preserve3d_warp = []
 quickjs = ["dep:rquickjs"]
+# vm-js + WebIDL bindings runtime stack (dom2 + JS).
+#
+# This is intentionally enabled by default, but can be disabled (via `--no-default-features`) for
+# CI/agent workflows that only need the core renderer pipeline.
+vmjs = [
+  "dep:webidl_js_runtime",
+  "dep:webidl-vm-js",
+  "dep:vm-js",
+  "dep:parse-js",
+  "dep:diagnostics",
+  "dep:webidl",
+  "dep:aes",
+  "dep:aes-gcm",
+  "dep:sha1",
+]
 # Build the `macos_sandbox_probe` tool (macOS Seatbelt probe CLI).
 #
 # This is intentionally non-default so non-macOS CI/builds don't even consider the target.
@@ -72,6 +99,16 @@ direct_websocket = [
 # Used by CI (`--no-default-features --features renderer_minimal`) to ensure the renderer can be
 # built without linking reqwest/ureq/tungstenite.
 renderer_minimal = ["preserve3d_warp", "avif"]
+# Extra-fast build profile for offline renderer tooling (fixture rendering/diffing, CI helpers).
+#
+# This disables large subsystems that are irrelevant to one-shot rendering binaries like
+# `render_fixtures` / `diff_renders` (multiprocess sandboxing, site isolation, pageset helpers, WebIDL
+# snapshots). It is intended for use with `--no-default-features`.
+renderer_tools = []
+# Page bundle capture/replay support (e.g. `bundle_page`).
+bundles = ["dep:tar"]
+# Web Platform Test import tooling (`import_wpt*`).
+wpt_import = ["dep:glob", "dep:toml"]
 # Base desktop UI stack (winit + wgpu + AccessKit) that can be used by non-egui frontends (e.g. the
 # compositor UI backend).
 browser_ui_base = [
@@ -85,6 +122,7 @@ browser_ui_base = [
   "dep:directories",
   "fs2",
   "media",
+  "vmjs",
 ]
 # Full egui-based desktop UI stack used by `src/bin/browser.rs` (depends on `browser_ui_base`).
 browser_ui = [
@@ -144,14 +182,15 @@ ci = [
   "disk_cache",
   "preserve3d_warp",
   "quickjs",
+  "vmjs",
 ]
 
 [dependencies]
 fastrender-ipc = { path = "crates/fastrender-ipc" }
 fastrender-yuv = { path = "crates/fastrender-yuv" }
 base64 = "0.22"
-aes-gcm = "0.10"
-aes = "0.8"
+aes-gcm = { version = "0.10", optional = true }
+aes = { version = "0.8", optional = true }
 getrandom = "0.2"
 fastrender-shmem = { path = "crates/fastrender-shmem" }
 avif-decode = { version = "1.0", default-features = false, optional = true }
@@ -203,9 +242,9 @@ selectors = "0.32"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 bincode = "1.3"
-toml = "0.8"
+toml = { version = "0.8", optional = true }
 pathdiff = "0.2"
-glob = "0.3"
+glob = { version = "0.3", optional = true }
 regex = "1"
 tempfile = "3"
 taffy = { path = "vendor/taffy" }
@@ -240,9 +279,9 @@ tokio = { version = "1", optional = true, features = ["macros", "rt-multi-thread
 tokio-tungstenite = { version = "0.21", optional = true, default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", optional = true }
 wuff = "0.2"
-tar = "0.4"
+tar = { version = "0.4", optional = true }
 sha2 = "0.10"
-sha1 = "0.10"
+sha1 = { version = "0.10", optional = true }
 httpdate = "1.0"
 http = "1"
 libc = "0.2"
@@ -251,12 +290,12 @@ read-fonts = "0.20"
 skrifa = "0.20"
 walkdir = "2"
 # Legacy heap-only WebIDL runtime adapter (vendored ecma-rs workspace).
-webidl_js_runtime = { package = "webidl-js-runtime", path = "vendor/ecma-rs/webidl-runtime" }
-webidl-vm-js = { path = "vendor/ecma-rs/webidl-vm-js" }
-vm-js = { path = "vendor/ecma-rs/vm-js" }
-parse-js = { path = "vendor/ecma-rs/parse-js", features = ["diagnostics"] }
-diagnostics = { path = "vendor/ecma-rs/diagnostics" }
-webidl = { path = "vendor/ecma-rs/webidl" }
+webidl_js_runtime = { package = "webidl-js-runtime", path = "vendor/ecma-rs/webidl-runtime", optional = true }
+webidl-vm-js = { path = "vendor/ecma-rs/webidl-vm-js", optional = true }
+vm-js = { path = "vendor/ecma-rs/vm-js", optional = true }
+parse-js = { path = "vendor/ecma-rs/parse-js", features = ["diagnostics"], optional = true }
+diagnostics = { path = "vendor/ecma-rs/diagnostics", optional = true }
+webidl = { path = "vendor/ecma-rs/webidl", optional = true }
 
 # Optional desktop UI stack (winit + wgpu + egui) used by `src/bin/browser.rs`.
 # Kept behind a feature gate so core renderer builds stay lean.
@@ -410,6 +449,24 @@ path = "tools/browser_perf_log_summary.rs"
 name = "render_fixtures"
 path = "src/bin/render_fixtures.rs"
 test = false
+
+[[bin]]
+name = "bundle_page"
+path = "src/bin/bundle_page.rs"
+test = false
+required-features = ["bundles", "vmjs"]
+
+[[bin]]
+name = "import_wpt"
+path = "src/bin/import_wpt.rs"
+test = false
+required-features = ["wpt_import"]
+
+[[bin]]
+name = "import_wpt_dom"
+path = "src/bin/import_wpt_dom.rs"
+test = false
+required-features = ["wpt_import"]
 
 [[bin]]
 name = "network"

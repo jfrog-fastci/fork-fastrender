@@ -1,6 +1,7 @@
 use crate::compat::CompatProfile;
 use crate::dom::DomCompatibilityMode;
 use crate::image_output::OutputFormat;
+#[cfg(feature = "vmjs")]
 use crate::js::JsExecutionOptions;
 use crate::layout::engine::LayoutParallelism;
 use crate::layout::engine::DEFAULT_LAYOUT_MIN_FANOUT;
@@ -604,6 +605,7 @@ pub struct JsExecutionArgs {
 }
 
 impl JsExecutionArgs {
+  #[cfg(feature = "vmjs")]
   pub fn to_options(&self) -> JsExecutionOptions {
     let mut options = JsExecutionOptions::default();
 

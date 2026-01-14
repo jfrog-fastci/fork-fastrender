@@ -164,6 +164,7 @@ impl ScrollMetricsIpc {
   }
 }
 
+#[cfg(feature = "vmjs")]
 impl From<crate::ui::messages::ScrollMetrics> for ScrollMetricsIpc {
   fn from(metrics: crate::ui::messages::ScrollMetrics) -> Self {
     let bounds = metrics.bounds_css;
@@ -177,6 +178,7 @@ impl From<crate::ui::messages::ScrollMetrics> for ScrollMetricsIpc {
   }
 }
 
+#[cfg(feature = "vmjs")]
 impl From<ScrollMetricsIpc> for crate::ui::messages::ScrollMetrics {
   fn from(metrics: ScrollMetricsIpc) -> Self {
     let metrics = metrics.sanitize();

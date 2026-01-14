@@ -172,6 +172,14 @@ pub fn legacy_code_for_dom_exception_name(name: &str) -> u16 {
     .unwrap_or(0)
 }
 
+/// Resolve the legacy `DOMException.code` value for a given DOMException `name`.
+///
+/// This mirrors the WebIDL-specified legacy codes table plus historical aliases that still appear
+/// in some test harnesses.
+pub fn legacy_code_for_dom_exception_name(name: &str) -> u16 {
+  legacy_dom_exception_code_from_name(name)
+}
+
 fn data_desc(value: Value) -> PropertyDescriptor {
   PropertyDescriptor {
     enumerable: false,

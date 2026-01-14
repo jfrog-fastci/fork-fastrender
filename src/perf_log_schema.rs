@@ -58,6 +58,7 @@ impl PerfDurationMicros {
 #[serde(transparent)]
 pub struct PerfTabId(pub u64);
 
+#[cfg(feature = "vmjs")]
 impl From<crate::ui::TabId> for PerfTabId {
   fn from(tab_id: crate::ui::TabId) -> Self {
     Self(tab_id.0)

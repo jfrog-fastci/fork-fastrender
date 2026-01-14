@@ -4,7 +4,7 @@
 //! duplicating platform quirks.
 
 pub mod bench_limits;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(feature = "renderer_tools")))]
 pub mod macos_sandbox_exec;
 pub mod process_supervisor;
 pub mod renderer_sandbox;

@@ -299,6 +299,7 @@ fn crashed_iframe_placeholder_image(
   ))
 }
 
+#[cfg(not(feature = "renderer_tools"))]
 fn render_iframe_out_of_process(
   url: &str,
   html: Option<&str>,
@@ -405,6 +406,22 @@ fn render_iframe_out_of_process(
     css_height as f32,
     pixels,
   )))
+}
+
+#[cfg(feature = "renderer_tools")]
+fn render_iframe_out_of_process(
+  _url: &str,
+  _html: Option<&str>,
+  _base_url: Option<&str>,
+  _css_width: u32,
+  _css_height: u32,
+  _device_pixel_ratio: f32,
+  _max_iframe_depth: usize,
+) -> Result<Arc<ImageData>, OopifError> {
+  // Out-of-process iframe rendering is only used by the multiprocess browser embedding. Offline
+  // renderer tooling (`render_fixtures`, `diff_renders`) keeps builds lean by disabling the sandbox
+  // and process-spawning subsystems.
+  Err(OopifError::RendererUnavailable)
 }
 
 #[inline]

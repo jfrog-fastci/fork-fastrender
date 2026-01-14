@@ -36,6 +36,9 @@ if [[ "${FASTR_CARGO_DEBUG_INFO:-0}" != "1" ]]; then
   if [[ -z "${CARGO_PROFILE_TEST_DEBUG:-}" ]]; then
     export CARGO_PROFILE_TEST_DEBUG=0
   fi
+  if [[ -z "${CARGO_PROFILE_RELEASE_DEBUG:-}" ]]; then
+    export CARGO_PROFILE_RELEASE_DEBUG=0
+  fi
 fi
 
 # libaom (used for AVIF decoding via `avif-decode` → `aom-decode` → `libaom-sys`) requires an
@@ -719,11 +722,40 @@ run_cargo() {
   # allowing xtask to run nested cargo commands.
   if [[ "${subcommand}" == "xtask" ]]; then
     workdir="${repo_root}"
+    local xtask_bin_name="xtask"
+    local xtask_build_flags=()
+    local xtask_build_env=()
+    # Some workflows (notably `xtask refresh-progress-accuracy`) only need the renderer fixture
+    # diffing/syncing subcommands and should compile quickly on fresh clones. Use the slim
+    # `xtask_renderer` binary for those to avoid building heavy JS/WebIDL tooling.
+    case "${1:-}" in
+      refresh-progress-accuracy|fixture-chrome-diff|chrome-baseline-fixtures|sync-progress-accuracy)
+        xtask_bin_name="xtask_renderer"
+        xtask_build_flags+=(--no-default-features --features renderer_tools)
+        # Match the aggressive "fast dev build" settings used by the fixture diff tooling itself so
+        # shared deps (clap/image/etc.) are built once with consistent profile settings.
+         xtask_build_env+=(
+           CARGO_PROFILE_DEV_OPT_LEVEL=0
+           CARGO_PROFILE_DEV_DEBUG_ASSERTIONS=false
+           CARGO_PROFILE_DEV_OVERFLOW_CHECKS=false
+           CARGO_PROFILE_DEV_DEBUG=0
+           CARGO_PROFILE_DEV_INCREMENTAL=false
+           CARGO_PROFILE_DEV_PANIC=abort
+          CARGO_PROFILE_DEV_CODEGEN_UNITS=64
+         )
+         ;;
+     esac
     local build_cmd=(cargo)
     if [[ -n "${toolchain_arg}" ]]; then
       build_cmd+=("${toolchain_arg}")
     fi
-    build_cmd+=(build -p xtask --bin xtask)
+    build_cmd+=(build -p xtask --bin "${xtask_bin_name}")
+    if [[ "${#xtask_build_flags[@]}" -gt 0 ]]; then
+      build_cmd+=("${xtask_build_flags[@]}")
+    fi
+    if [[ "${#xtask_build_env[@]}" -gt 0 ]]; then
+      build_cmd=(env "${xtask_build_env[@]}" "${build_cmd[@]}")
+    fi
     if [[ -n "${jobs}" ]]; then
       build_cmd+=(-j "${jobs}")
     fi
@@ -747,7 +779,7 @@ run_cargo() {
     case "${OSTYPE:-}" in
       msys*|cygwin*|win32*) exe_suffix=".exe" ;;
     esac
-    local xtask_bin="${target_dir}/debug/xtask${exe_suffix}"
+    local xtask_bin="${target_dir}/debug/${xtask_bin_name}${exe_suffix}"
     if [[ ! -f "${xtask_bin}" ]]; then
       echo "xtask binary not found at ${xtask_bin}" >&2
       return 1

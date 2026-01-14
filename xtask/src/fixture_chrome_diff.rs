@@ -446,19 +446,73 @@ pub fn run_fixture_chrome_diff(args: FixtureChromeDiffArgs) -> Result<()> {
   if args.no_build {
     println!("Skipping renderer binary builds (--no-build set)...");
   } else {
-    let mut build_cmd = xtask::cmd::cargo_agent_command(&repo_root);
+    let mut build_cmd = crate::cmd::cargo_agent_command(&repo_root);
     build_cmd.arg("build");
     if !args.debug {
       build_cmd.arg("--release");
+    } else {
+      // For accuracy syncing we care far more about build latency than runtime speed.
+      //
+      // The repo's dev profile is lightly optimized (`opt-level=1`) to keep some debug workflows
+      // usable on hotspot fixtures. However, clean builds of the mega-crate renderer can exceed the
+      // global 10-minute command timeout when left even lightly optimized.
+      //
+      // Override to `opt-level=0` for the fixture tooling debug build to keep
+      // `xtask refresh-progress-accuracy` reliably usable on fresh clones.
+      build_cmd.env("CARGO_PROFILE_DEV_OPT_LEVEL", "0");
+      // The workspace sets `opt-level=3` for several hotspot dependencies (text/layout/SVG) to keep
+      // interactive debug workflows usable on real-world pages. For one-shot fixture tooling we
+      // prefer compilation speed, so explicitly override those back to `opt-level=0`.
+      build_cmd.env("CARGO_PROFILE_DEV_PACKAGE_TAFFY_OPT_LEVEL", "0");
+      build_cmd.env("CARGO_PROFILE_DEV_PACKAGE_RUSTYBUZZ_OPT_LEVEL", "0");
+      build_cmd.env("CARGO_PROFILE_DEV_PACKAGE_TTF_PARSER_OPT_LEVEL", "0");
+      build_cmd.env("CARGO_PROFILE_DEV_PACKAGE_FONTDB_OPT_LEVEL", "0");
+      build_cmd.env("CARGO_PROFILE_DEV_PACKAGE_RESVG_OPT_LEVEL", "0");
+      build_cmd.env("CARGO_PROFILE_DEV_PACKAGE_USVG_OPT_LEVEL", "0");
+      build_cmd.env("CARGO_PROFILE_DEV_PACKAGE_TINY_SKIA_OPT_LEVEL", "0");
+      build_cmd.env("CARGO_PROFILE_DEV_PACKAGE_TINY_SKIA_PATH_OPT_LEVEL", "0");
+      // Further speed up clean builds by disabling checks/debug settings that are not needed for
+      // offline fixture diffing.
+      build_cmd.env("CARGO_PROFILE_DEV_DEBUG_ASSERTIONS", "false");
+      build_cmd.env("CARGO_PROFILE_DEV_OVERFLOW_CHECKS", "false");
+      build_cmd.env("CARGO_PROFILE_DEV_DEBUG", "0");
+      build_cmd.env("CARGO_PROFILE_DEV_INCREMENTAL", "false");
+      build_cmd.env("CARGO_PROFILE_DEV_PANIC", "abort");
+      // Keep codegen units modest for clean builds: too many units can add significant overhead when
+      // compiling a very large crate in `opt-level=0` mode.
+      build_cmd.env("CARGO_PROFILE_DEV_CODEGEN_UNITS", "64");
+
+      // `fastrender` currently emits a large number of warnings in renderer-only feature sets
+      // (`--no-default-features --features ...`). Emitting them can add noticeable wall time in
+      // agent/CI environments and risks pushing `refresh-progress-accuracy` over the global timeout.
+      // Disable warnings for this one-shot tooling build to keep output + compile time lean.
+      let mut rustflags = std::env::var("RUSTFLAGS").unwrap_or_default();
+      if !rustflags.contains("-Awarnings") {
+        if !rustflags.trim().is_empty() {
+          rustflags.push(' ');
+        }
+        rustflags.push_str("-Awarnings");
+      }
+      build_cmd.env("RUSTFLAGS", rustflags);
     }
-    // Offline fixtures are expected to be fully self-contained. When building renderer binaries for
-    // fixture diffs, avoid linking the in-process network stacks enabled by the `fastrender`
-    // crate's default feature set (reqwest/ureq/tungstenite). This keeps builds lean and makes the
-    // "offline invariant" easier to enforce.
+    // `fixture-chrome-diff` runs offline and does not need the in-process network stacks enabled by
+    // the default feature set (`direct_network`, `direct_websocket`). Building with default
+    // features pulls in large dependency trees (reqwest/tokio/rustls/etc) that significantly slow
+    // down clean builds in CI/agent environments.
     //
-    // Use the curated `renderer_minimal` feature set (includes AVIF decoding) rather than enabling
-    // `avif` on top of the default feature set.
-    build_cmd.args(["--no-default-features", "--features", "renderer_minimal,avif"]);
+    // Compile renderer binaries with a lightweight, sandbox-friendly feature set.
+    //
+    // Notes:
+    // - Avoid enabling `avif`/`renderer_minimal` here: pulling in `libaom-sys` can dominate clean build
+    //   time and cause `xtask refresh-progress-accuracy` to exceed the global 10-minute timeout in
+    //   agent/CI environments.
+    // - `direct_filesystem` is still needed for `file://` webfonts embedded in fixtures.
+    // - `renderer_tools` disables subsystems irrelevant to offline fixture diffing (multiprocess, sandboxing).
+    build_cmd.arg("--no-default-features");
+    build_cmd.args([
+      "--features",
+      "preserve3d_warp,direct_filesystem,renderer_tools",
+    ]);
     if !args.no_fastrender {
       build_cmd.args(["--bin", "render_fixtures"]);
     }
@@ -662,7 +716,7 @@ fn apply_progress_selection(
     );
   }
 
-  let pages = xtask::pageset_failure_fixtures::read_progress_pages(&progress_dir, fixtures_root)?;
+  let pages = crate::pageset_failure_fixtures::read_progress_pages(&progress_dir, fixtures_root)?;
   println!(
     "Progress selection: discovered {} entr{} in {}",
     pages.len(),
@@ -1623,7 +1677,7 @@ fn build_render_fixtures_command(
   args: &FixtureChromeDiffArgs,
   layout: &Layout,
 ) -> Result<Command> {
-  let mut cmd = xtask::cmd::run_limited_command_default(repo_root);
+  let mut cmd = crate::cmd::run_limited_command_default(repo_root);
   // Keep renders deterministic across machines.
   cmd.env("FASTR_USE_BUNDLED_FONTS", "1");
   cmd.arg(render_fixtures_exe);
@@ -1686,7 +1740,7 @@ fn build_chrome_baseline_command(
   layout: &Layout,
 ) -> Result<Command> {
   let xtask = std::env::current_exe().context("resolve current xtask executable path")?;
-  let mut cmd = xtask::cmd::run_limited_xtask_command(repo_root);
+  let mut cmd = crate::cmd::run_limited_xtask_command(repo_root);
   cmd.arg(xtask);
   cmd.arg("chrome-baseline-fixtures");
   cmd.arg("--fixture-dir").arg(fixtures_root);
@@ -1731,7 +1785,7 @@ fn build_inspect_frag_overlay_command(
   }
 
   let overlay_png = layout.overlay.join(format!("{stem}.png"));
-  let mut cmd = xtask::cmd::run_limited_command_default(repo_root);
+  let mut cmd = crate::cmd::run_limited_command_default(repo_root);
   cmd.arg(inspect_frag_exe);
   cmd.arg(fixture_html);
   cmd.arg("--render-overlay").arg(overlay_png);
@@ -1751,7 +1805,7 @@ fn build_diff_renders_command(
   layout: &Layout,
   args: &FixtureChromeDiffArgs,
 ) -> Result<Command> {
-  let mut cmd = xtask::cmd::run_limited_command_default(repo_root);
+  let mut cmd = crate::cmd::run_limited_command_default(repo_root);
   cmd.arg(diff_renders_exe);
   cmd.arg("--before").arg(&layout.chrome);
   cmd.arg("--after").arg(&layout.fastrender);

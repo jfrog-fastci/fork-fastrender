@@ -4,7 +4,7 @@ use crate::style::computed::Visibility;
 use crate::style::types::{CursorKeyword, PointerEvents};
 use crate::tree::box_tree::{BoxNode, BoxTree, BoxType};
 use crate::tree::fragment_tree::{FragmentContent, FragmentTree};
-use crate::ui::messages::CursorKind;
+use crate::cursor::CursorKind;
 use rustc_hash::FxHashMap;
 #[cfg(feature = "browser_ui")]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -13,7 +13,25 @@ use std::ptr;
 
 use super::effective_disabled::DomIdLookup;
 use super::image_maps;
+#[cfg(not(feature = "renderer_tools"))]
 use super::engine::box_is_selectable_for_document_selection;
+
+#[cfg(feature = "renderer_tools")]
+fn box_is_selectable_for_document_selection(box_node: &BoxNode) -> bool {
+  // Keep this aligned with `interaction::selection_serialize::box_is_selectable` so painting and
+  // clipboard serialization see the same selectable content.
+  let style = box_node.style.as_ref();
+  if style.visibility != Visibility::Visible {
+    return false;
+  }
+  if style.user_select == crate::style::types::UserSelect::None {
+    return false;
+  }
+  if style.inert {
+    return false;
+  }
+  true
+}
 
 // -----------------------------------------------------------------------------
 // Test hooks

@@ -150,7 +150,9 @@ impl DomParseOptions {
   }
 }
 
+#[cfg(feature = "vmjs")]
 mod scripting_parser;
+#[cfg(feature = "vmjs")]
 #[allow(deprecated)]
 pub use scripting_parser::{parse_html_with_scripting, ScriptToken};
 

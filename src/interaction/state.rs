@@ -1,7 +1,9 @@
+#[cfg(feature = "vmjs")]
 use crate::dom2::{NodeId, RendererDomMapping};
+use crate::interaction::selection_serialize::{DocumentSelectionPoint, DocumentSelectionRange};
+#[cfg(feature = "vmjs")]
 use crate::interaction::selection_serialize::{
-  cmp_point_dom2, DocumentSelectionPoint, DocumentSelectionPointDom2, DocumentSelectionRange,
-  DocumentSelectionRangeDom2,
+  cmp_point_dom2, DocumentSelectionPointDom2, DocumentSelectionRangeDom2,
 };
 use crate::text::caret::CaretAffinity;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -120,6 +122,7 @@ impl DocumentSelectionState {
 /// Any logic that compares endpoints must use the current DOM tree order (e.g.
 /// [`crate::dom2::cmp_dom2_nodes`]) rather than `NodeId::index()`. When projecting the selection
 /// into renderer preorder space, use [`RendererDomMapping`].
+#[cfg(feature = "vmjs")]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DocumentSelectionStateDom2 {
   /// The entire rendered document (excluding non-selectable/hidden content).
@@ -128,6 +131,7 @@ pub enum DocumentSelectionStateDom2 {
   Ranges(DocumentSelectionRangesDom2),
 }
 
+#[cfg(feature = "vmjs")]
 impl DocumentSelectionStateDom2 {
   /// Returns true when this selection contains at least one non-collapsed range.
   pub fn has_highlight(&self) -> bool {
@@ -363,6 +367,7 @@ impl DocumentSelectionRanges {
 /// - normalized (`start <= end` in DOM order),
 /// - ordered by DOM position, and
 /// - non-overlapping (adjacent/overlapping ranges are merged).
+#[cfg(feature = "vmjs")]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DocumentSelectionRangesDom2 {
   pub ranges: Vec<DocumentSelectionRangeDom2>,
@@ -374,6 +379,7 @@ pub struct DocumentSelectionRangesDom2 {
   pub focus: DocumentSelectionPointDom2,
 }
 
+#[cfg(feature = "vmjs")]
 impl DocumentSelectionRangesDom2 {
   pub fn collapsed(point: DocumentSelectionPointDom2) -> Self {
     Self {
@@ -572,6 +578,7 @@ impl DocumentSelectionRangesDom2 {
 ///
 /// This mirrors the legacy `document_selection_contains_point` helper in `interaction::engine`, but
 /// operates on `dom2::NodeId` endpoints and uses the current preorder mapping for ordering.
+#[cfg(feature = "vmjs")]
 pub(crate) fn document_selection_contains_point_dom2(
   selection: &DocumentSelectionStateDom2,
   point: DocumentSelectionPointDom2,
@@ -1400,6 +1407,7 @@ pub struct TextEditPaintState {
 ///
 /// This is the stable counterpart to [`FormState`]. It is intended to be stored alongside a live
 /// `dom2` document where nodes can be inserted/removed without invalidating this state.
+#[cfg(feature = "vmjs")]
 #[derive(Debug, Clone, Default)]
 pub struct FormStateDom2 {
   /// Current value for value-bearing controls (`<input>` / `<textarea>` / etc.), keyed by stable
@@ -1416,6 +1424,7 @@ pub struct FormStateDom2 {
   pub select_selected: FxHashMap<NodeId, FxHashSet<NodeId>>,
 }
 
+#[cfg(feature = "vmjs")]
 impl FormStateDom2 {
   #[inline]
   pub fn has_overrides(&self) -> bool {
@@ -1481,6 +1490,7 @@ impl FormStateDom2 {
 
 /// In-progress IME (Input Method Editor) composition state for a focused control, keyed by stable
 /// `dom2` node ids.
+#[cfg(feature = "vmjs")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImePreeditStateDom2 {
   pub node_id: NodeId,
@@ -1490,6 +1500,7 @@ pub struct ImePreeditStateDom2 {
 
 /// Caret + selection state for a focused text control (`<input>` / `<textarea>`), keyed by stable
 /// `dom2` node ids.
+#[cfg(feature = "vmjs")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextEditPaintStateDom2 {
   pub node_id: NodeId,
@@ -1514,6 +1525,7 @@ pub struct TextEditPaintStateDom2 {
 /// document. When the renderer needs interaction state for a particular snapshot, project this
 /// stable state to preorder ids using [`InteractionStateDom2::project_to_preorder`] with the
 /// snapshot's [`RendererDomMapping`].
+#[cfg(feature = "vmjs")]
 #[derive(Debug, Clone, Default)]
 pub struct InteractionStateDom2 {
   /// Currently focused element `NodeId`.
@@ -1542,6 +1554,7 @@ pub struct InteractionStateDom2 {
   pub user_validity: FxHashSet<NodeId>,
 }
 
+#[cfg(feature = "vmjs")]
 impl InteractionStateDom2 {
   /// Drop or clear any interaction targets that are not connected for scripting in the live `dom2`
   /// document.

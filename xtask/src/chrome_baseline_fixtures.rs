@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, ValueEnum};
-use fastrender::cli_utils::fixture_html_patch;
+use crate::fixture_html_patch;
 use image::{GenericImage, ImageBuffer, Rgba};
 use serde::Serialize;
 use sha2::{Digest, Sha256};

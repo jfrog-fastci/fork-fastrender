@@ -1,25 +1,49 @@
 //! Shared helpers for the `xtask` developer workflow binary.
 
+// The `xtask` crate has two build modes:
+// - `full` (default): the full developer workflow binary (`xtask`).
+// - `renderer_tools`: a slim binary (`xtask_renderer`) that avoids pulling in heavy JS/WebIDL/etc
+//   infrastructure for CI/agent workflows that only need fixture diffing + progress syncing.
+//
+// The slim binary should compile with `--no-default-features --features renderer_tools`, so keep all
+// heavy modules behind the `full` feature.
+
+#[cfg(feature = "full")]
 pub mod browser;
+#[cfg(feature = "full")]
 pub mod capture_accuracy_fixtures;
+#[cfg(feature = "full")]
 pub mod capture_missing_failure_fixtures;
+#[cfg(feature = "full")]
 pub mod cmd;
+#[cfg(feature = "full")]
 pub mod js_string_literal;
+#[cfg(feature = "full")]
 pub mod freeze_page_fixture;
+#[cfg(feature = "full")]
 pub mod lint_no_openssl;
+#[cfg(feature = "full")]
 pub mod lint_no_panics;
+#[cfg(feature = "full")]
 pub mod lint_no_merge_conflicts;
+#[cfg(feature = "full")]
 pub mod lint_test_global_state;
+#[cfg(feature = "full")]
 pub mod page_loop_plan;
+#[cfg(feature = "full")]
 pub mod pageset_failure_fixtures;
 // `import_page_fixture` is normally only built for the `xtask` CLI binary, but we compile it in the
 // library crate for unit tests so its HTML rewrite logic can be exercised without enabling the
 // binary test harness (disabled in `xtask/Cargo.toml` for performance).
-#[cfg(test)]
+#[cfg(all(test, feature = "full"))]
 mod import_page_fixture;
+#[cfg(feature = "full")]
 pub mod webidl;
+#[cfg(feature = "full")]
 pub mod webidl_bindings_codegen;
+#[cfg(feature = "full")]
 use serde::Deserialize;
+#[cfg(feature = "full")]
 use std::process::Command;
 
 #[cfg(test)]
@@ -36,6 +60,7 @@ pub enum PagesetFontMode {
   System,
 }
 
+#[cfg(feature = "full")]
 pub fn apply_pageset_progress_font_mode(cmd: &mut Command, mode: PagesetFontMode) {
   match mode {
     PagesetFontMode::Bundled => {
@@ -51,6 +76,7 @@ pub fn apply_pageset_progress_font_mode(cmd: &mut Command, mode: PagesetFontMode
   }
 }
 
+#[cfg(feature = "full")]
 pub fn build_pageset_progress_run_command(
   disk_cache_feature: bool,
   jobs: usize,
@@ -78,6 +104,7 @@ pub fn build_pageset_progress_run_command(
   cmd
 }
 
+#[cfg(feature = "full")]
 /// Extract `--disk-cache-*` flags from an argument vector while preserving ordering.
 ///
 /// The pageset wrappers forward `args.extra` (intended for `pageset_progress`) through to
@@ -114,6 +141,7 @@ pub fn extract_disk_cache_args(extra: &[String]) -> Vec<String> {
   out
 }
 
+#[cfg(feature = "full")]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct PrefetchAssetsSupport {
@@ -134,6 +162,7 @@ pub struct PrefetchAssetsSupport {
   pub dry_run: bool,
 }
 
+#[cfg(feature = "full")]
 impl PrefetchAssetsSupport {
   pub fn assume_supported() -> Self {
     Self {
@@ -174,6 +203,7 @@ impl PrefetchAssetsSupport {
   }
 }
 
+#[cfg(feature = "full")]
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct PrefetchAssetsCapabilities {
@@ -182,12 +212,14 @@ pub struct PrefetchAssetsCapabilities {
   pub flags: PrefetchAssetsSupport,
 }
 
+#[cfg(feature = "full")]
 pub fn parse_prefetch_assets_capabilities(
   json: &str,
 ) -> Result<PrefetchAssetsCapabilities, serde_json::Error> {
   serde_json::from_str(json)
 }
 
+#[cfg(feature = "full")]
 pub fn extract_prefetch_assets_args(
   extra: &[String],
   support: PrefetchAssetsSupport,
@@ -257,6 +289,7 @@ pub fn extract_prefetch_assets_args(
   (prefetch_args, pageset_args)
 }
 
+#[cfg(feature = "full")]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct FetchPagesFlagOverrides {
   pub allow_http_error_status: bool,
@@ -265,6 +298,7 @@ pub struct FetchPagesFlagOverrides {
   pub timings: bool,
 }
 
+#[cfg(feature = "full")]
 /// Extract `fetch_pages`-specific flags from an argument vector.
 ///
 /// `bash scripts/cargo_agent.sh xtask pageset` forwards `args.extra` (intended for `pageset_progress run`) through to the
@@ -290,6 +324,7 @@ pub fn extract_fetch_pages_flag_overrides(
   (out, overrides)
 }
 
+#[cfg(feature = "full")]
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PagesetExtraArgsOverrides {
   pub jobs: Option<String>,
@@ -311,6 +346,7 @@ pub struct PagesetExtraArgsOverrides {
   pub render_timeout: Option<String>,
 }
 
+#[cfg(feature = "full")]
 /// Extract pageset wrapper knobs that should apply to fetch/prefetch/render steps.
 ///
 /// `bash scripts/cargo_agent.sh xtask pageset` has first-class flags for common knobs like `--pages`, but callers

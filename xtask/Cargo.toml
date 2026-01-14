@@ -12,30 +12,55 @@ path = "src/main.rs"
 # and may fail independently of the test-only checks. Disable unit-test harnesses for the binary and
 # rely on integration tests under `xtask/tests/`.
 test = false
+# The full developer workflow tool depends on large optional subsystems (WebIDL/JS tooling, fixture
+# capture, etc.). For CI/agent workflows that only need renderer fixture diffing/syncing, we provide
+# a slim `xtask_renderer` binary built with `--no-default-features`.
+required-features = ["full"]
+
+[[bin]]
+name = "xtask_renderer"
+path = "src/main_renderer.rs"
+test = false
+required-features = ["renderer_tools"]
+
+[features]
+# Default to the full developer workflow binary.
+default = ["full"]
+# Full `xtask` command set (includes JS/WebIDL tooling, fixture capture, and other heavy deps).
+full = [
+  "dep:conformance-harness",
+  "dep:fastrender",
+  "dep:webidl",
+  "dep:globset",
+  "dep:cssparser",
+  "dep:pathdiff",
+  "dep:toml",
+  "dep:serde_yaml",
+]
+# Minimal feature set used by `xtask_renderer` (refresh-progress-accuracy / fixture-chrome-diff).
+renderer_tools = []
 
 [dependencies]
 anyhow = "1.0"
+base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
-conformance-harness = { path = "../vendor/ecma-rs/conformance-harness" }
+conformance-harness = { path = "../vendor/ecma-rs/conformance-harness", optional = true }
 # `xtask` uses a tiny subset of the renderer crate (mostly committed WebIDL snapshots) and should
 # stay as lightweight as possible. Avoid compiling optional heavy dependencies (e.g. AVIF via
 # `libaom-sys`) when building `xtask` and its integration tests.
-fastrender = { path = "..", default-features = false }
-# `xtask js wpt-dom` defaults to exercising the in-tree vm-js backend, so ensure that backend is
-# compiled in when building xtask.
-js-wpt-dom-runner = { path = "../crates/js-wpt-dom-runner", features = ["vmjs"] }
-webidl = { path = "../vendor/ecma-rs/webidl" }
+fastrender = { path = "..", default-features = false, optional = true }
+webidl = { path = "../vendor/ecma-rs/webidl", optional = true }
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 regex = "1"
-globset = "0.4"
+globset = { version = "0.4", optional = true }
 sha2 = "0.10"
 url = "2.5"
 walkdir = "2.5"
 tempfile = "3.10"
-cssparser = "0.35"
+cssparser = { version = "0.35", optional = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
-pathdiff = "0.2"
-toml = "0.8"
-serde_yaml = "0.9"
+pathdiff = { version = "0.2", optional = true }
+toml = { version = "0.8", optional = true }
+serde_yaml = { version = "0.9", optional = true }

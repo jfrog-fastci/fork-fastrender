@@ -10,12 +10,30 @@ use crate::tree::box_tree::{
   BoxNode, BoxTree, FormControl, FormControlKind, ReplacedType, SelectControl, SelectItem, TextControlKind,
 };
 use crate::tree::fragment_tree::{FragmentNode, FragmentTree, TextSourceRange};
-use crate::ui::messages::{PointerButton, PointerModifiers};
-use crate::ui::render_worker::viewport_point_for_pos_css;
+use crate::pointer::{PointerButton, PointerModifiers};
 use crate::Length;
 use selectors::context::QuirksMode;
 use std::sync::Arc;
 use url::Url;
+
+fn viewport_point_for_pos_css(scroll: &ScrollState, pos_css: (f32, f32)) -> Point {
+  // Match the UI's pointer-position sentinel mapping (see `ui::render_worker::viewport_point_for_pos_css`).
+  if pos_css.0.is_finite() && pos_css.1.is_finite() && pos_css.0 >= 0.0 && pos_css.1 >= 0.0 {
+    Point::new(pos_css.0, pos_css.1)
+  } else {
+    let sx = if scroll.viewport.x.is_finite() {
+      scroll.viewport.x
+    } else {
+      0.0
+    };
+    let sy = if scroll.viewport.y.is_finite() {
+      scroll.viewport.y
+    } else {
+      0.0
+    };
+    Point::new(-sx - 1.0, -sy - 1.0)
+  }
+}
 
 fn doc(children: Vec<DomNode>) -> DomNode {
   DomNode {

@@ -17,10 +17,13 @@ use common::render_pipeline::{
   apply_test_render_delay, compute_soft_timeout_ms, format_error_with_chain, CLI_RENDER_STACK_SIZE,
 };
 use fastrender::api::{
-  BrowserTab, FastRenderPool, FastRenderPoolConfig, RenderArtifactRequest, RenderOptions,
+  FastRenderPool, FastRenderPoolConfig, RenderArtifactRequest, RenderOptions,
 };
+#[cfg(feature = "vmjs")]
+use fastrender::api::BrowserTab;
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::image_output::{encode_image, OutputFormat};
+#[cfg(feature = "vmjs")]
 use fastrender::js::JsExecutionOptions;
 use fastrender::render_control::{
   push_stage_listener, with_deadline, RenderDeadline, StageHeartbeat,
@@ -534,6 +537,60 @@ fn build_fixture_render_config(
     .with_dom_scripting_enabled(js_enabled)
 }
 
+#[cfg(feature = "vmjs")]
+fn render_fixture_with_js(
+  render_pool: &FastRenderPool,
+  html: &str,
+  base_url: &str,
+  options: RenderOptions,
+  js_max_frames: usize,
+  artifact_request: RenderArtifactRequest,
+) -> Result<(Pixmap, fastrender::RenderDiagnostics, RenderArtifacts), fastrender::Error> {
+  // Ensure JavaScript execution is bounded by the same cooperative render timeout. We keep this
+  // deadline alive through navigation + JS + render so `check_root` operations share one budget.
+  let deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+
+  let factory = render_pool.factory();
+  let renderer = factory.build_renderer()?;
+  let mut tab = BrowserTab::with_renderer_and_vmjs_and_js_execution_options(
+    renderer,
+    options.clone(),
+    JsExecutionOptions::default(),
+  )?;
+  // Register the (possibly patched) HTML contents at the fixture's canonical file:// URL so
+  // navigation/subresource resolution matches the non-JS fixture path.
+  tab.register_html_source(base_url, html.to_string());
+
+  let (pixmap, diagnostics) = with_deadline(Some(&deadline), || {
+    tab.navigate_to_url(base_url, options)?;
+    // Drive the JS event loop until stable with a bounded number of "frames" so hostile pages
+    // cannot hang the CLI indefinitely even if they keep scheduling work.
+    let _ = tab.run_until_stable(js_max_frames)?;
+    let pixmap = tab.render_frame()?;
+    let diagnostics = tab.diagnostics_snapshot().unwrap_or_default();
+    Ok::<_, fastrender::Error>((pixmap, diagnostics))
+  })?;
+
+  // JS-mode fixture renders currently do not capture pipeline artifacts for `diff_snapshots`.
+  let artifacts = RenderArtifacts::new(artifact_request);
+  Ok((pixmap, diagnostics, artifacts))
+}
+
+#[cfg(not(feature = "vmjs"))]
+fn render_fixture_with_js(
+  _render_pool: &FastRenderPool,
+  _html: &str,
+  _base_url: &str,
+  _options: RenderOptions,
+  _js_max_frames: usize,
+  _artifact_request: RenderArtifactRequest,
+) -> Result<(Pixmap, fastrender::RenderDiagnostics, RenderArtifacts), fastrender::Error> {
+  Err(fastrender::Error::Other(
+    "render_fixtures was built without JavaScript support (feature \"vmjs\" disabled); rerun without --js or rebuild with default features / --features vmjs"
+      .to_string(),
+  ))
+}
+
 fn run(cli: Cli) -> io::Result<()> {
   if cli.jobs == 0 {
     return Err(io::Error::new(
@@ -557,6 +614,12 @@ fn run(cli: Cli) -> io::Result<()> {
     return Err(io::Error::new(
       io::ErrorKind::InvalidInput,
       "dpr must be a finite number > 0",
+    ));
+  }
+  if cli.js && !cfg!(feature = "vmjs") {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      "--js requires fastrender to be built with feature \"vmjs\"",
     ));
   }
   if cli.js && cli.js_max_frames == 0 {
@@ -1763,35 +1826,14 @@ fn render_fixture(
       })?;
       (report.pixmap, report.diagnostics, report.artifacts)
     } else {
-      // Ensure JavaScript execution is bounded by the same cooperative render timeout. We keep this
-      // deadline alive through navigation + JS + render so `check_root` operations share one budget.
-      let deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
-
-      let factory = render_pool.factory();
-      let renderer = factory.build_renderer()?;
-      let mut tab = BrowserTab::with_renderer_and_vmjs_and_js_execution_options(
-        renderer,
-        options.clone(),
-        JsExecutionOptions::default(),
-      )?;
-      // Register the (possibly patched) HTML contents at the fixture's canonical file:// URL so
-      // navigation/subresource resolution matches the non-JS fixture path.
-      tab.register_html_source(base_url.clone(), html.clone());
-
-      let (pixmap, diagnostics) = with_deadline(Some(&deadline), || {
-        tab.navigate_to_url(&base_url, options.clone())?;
-        // Drive the JS event loop until stable with a bounded number of "frames" so hostile pages
-        // cannot hang the CLI indefinitely even if they keep scheduling work.
-        let _ = tab.run_until_stable(js_max_frames)?;
-        let pixmap = tab.render_frame()?;
-        let diagnostics = tab.diagnostics_snapshot().unwrap_or_default();
-        Ok::<_, fastrender::Error>((pixmap, diagnostics))
-      })?;
-
-      // JS-mode fixture renders currently do not capture pipeline artifacts for `diff_snapshots`.
-      let artifacts = RenderArtifacts::new(artifact_request);
-
-      (pixmap, diagnostics, artifacts)
+      render_fixture_with_js(
+        &render_pool,
+        &html,
+        &base_url,
+        options,
+        js_max_frames,
+        artifact_request,
+      )?
     };
 
     if let Some(determinism) = determinism.as_ref() {

@@ -1,4 +1,6 @@
+#[cfg(feature = "vmjs")]
 use crate::dom2;
+#[cfg(feature = "vmjs")]
 use crate::dom2::RendererDomMapping;
 use crate::style::computed::Visibility;
 use crate::style::display::Display;
@@ -43,21 +45,20 @@ pub struct DocumentSelectionPoint {
 /// `dom2::NodeId` indices are stable across DOM mutations, but they are **not** ordered by DOM
 /// position. Use [`cmp_point_dom2`] (via the current [`RendererDomMapping`]) to compare points in
 /// DOM order.
+#[cfg(feature = "vmjs")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DocumentSelectionPointDom2 {
   pub node_id: dom2::NodeId,
   pub char_offset: usize,
 }
 
+#[cfg(feature = "vmjs")]
 impl DocumentSelectionPointDom2 {
   /// Convert a renderer-preorder selection point into a stable `dom2` point.
   ///
   /// Returns `None` when `point.node_id` is not present in the current renderer DOM snapshot (for
   /// example: out-of-bounds ids or snapshot-specific synthetic roots).
-  pub fn from_preorder(
-    point: DocumentSelectionPoint,
-    mapping: &RendererDomMapping,
-  ) -> Option<Self> {
+  pub fn from_preorder(point: DocumentSelectionPoint, mapping: &RendererDomMapping) -> Option<Self> {
     let node_id = mapping.node_id_for_preorder(point.node_id)?;
     Some(Self {
       node_id,
@@ -78,18 +79,17 @@ impl DocumentSelectionPointDom2 {
   }
 }
 
+#[cfg(feature = "vmjs")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DocumentSelectionRangeDom2 {
   pub start: DocumentSelectionPointDom2,
   pub end: DocumentSelectionPointDom2,
 }
 
+#[cfg(feature = "vmjs")]
 impl DocumentSelectionRangeDom2 {
   /// Convert a renderer-preorder selection range into a stable `dom2` range.
-  pub fn from_preorder(
-    range: DocumentSelectionRange,
-    mapping: &RendererDomMapping,
-  ) -> Option<Self> {
+  pub fn from_preorder(range: DocumentSelectionRange, mapping: &RendererDomMapping) -> Option<Self> {
     Some(Self {
       start: DocumentSelectionPointDom2::from_preorder(range.start, mapping)?,
       end: DocumentSelectionPointDom2::from_preorder(range.end, mapping)?,
@@ -109,6 +109,7 @@ impl DocumentSelectionRangeDom2 {
 ///
 /// This is required because `dom2::NodeId::index()` is stable but does not reflect DOM order after
 /// mutations (inserts, moves, etc).
+#[cfg(feature = "vmjs")]
 pub(crate) fn cmp_point_dom2(
   a: DocumentSelectionPointDom2,
   b: DocumentSelectionPointDom2,
@@ -148,6 +149,7 @@ impl DocumentSelectionRange {
   }
 }
 
+#[cfg(feature = "vmjs")]
 impl DocumentSelectionRangeDom2 {
   pub fn normalized(mut self, mapping: &RendererDomMapping) -> Self {
     if cmp_point_dom2(self.start, self.end, mapping) == Ordering::Greater {

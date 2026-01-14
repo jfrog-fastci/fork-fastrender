@@ -59,6 +59,7 @@ use std::time::UNIX_EPOCH;
 use ureq::ResponseExt;
 use url::Url;
 
+#[cfg(feature = "bundles")]
 pub mod bundle;
 pub mod chrome;
 mod cors;

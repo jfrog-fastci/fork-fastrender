@@ -456,9 +456,11 @@ pub fn snapshot_composed_dom(dom: &DomNode) -> crate::Result<DomSnapshot> {
   Ok(snapshot_dom(&composed))
 }
 
+#[cfg(feature = "vmjs")]
 const DOM2_SNAPSHOT_TEXT_MAX_CHARS: usize = 200;
 
 /// Capture a `dom2::Document` snapshot (including parent pointers and inert subtree flags).
+#[cfg(feature = "vmjs")]
 pub fn snapshot_dom2(doc: &crate::dom2::Document) -> Dom2Snapshot {
   let root = doc.root().index();
   let nodes = doc
@@ -482,11 +484,13 @@ pub fn snapshot_dom2(doc: &crate::dom2::Document) -> Dom2Snapshot {
 }
 
 /// Convenience helper: snapshot the renderer's immutable [`DomNode`] produced by a `dom2` document.
+#[cfg(feature = "vmjs")]
 pub fn snapshot_dom_from_dom2(doc: &crate::dom2::Document) -> DomSnapshot {
   let renderer_dom = doc.to_renderer_dom();
   snapshot_dom(&renderer_dom)
 }
 
+#[cfg(feature = "vmjs")]
 fn snapshot_dom2_kind(kind: &crate::dom2::NodeKind) -> Dom2NodeKindSnapshot {
   match kind {
     crate::dom2::NodeKind::Document { quirks_mode } => Dom2NodeKindSnapshot::Document {
@@ -544,6 +548,7 @@ fn snapshot_dom2_kind(kind: &crate::dom2::NodeKind) -> Dom2NodeKindSnapshot {
   }
 }
 
+#[cfg(feature = "vmjs")]
 fn truncate_dom2_snapshot_text(text: &str) -> String {
   let mut chars = text.chars();
   let mut out = String::new();
@@ -560,6 +565,7 @@ fn truncate_dom2_snapshot_text(text: &str) -> String {
 }
 
 #[track_caller]
+#[cfg(feature = "vmjs")]
 pub fn assert_dom2_snapshot_invariants(snapshot: &Dom2Snapshot) {
   debug_assert!(
     snapshot.root < snapshot.nodes.len(),
@@ -608,6 +614,7 @@ pub fn assert_dom2_snapshot_invariants(snapshot: &Dom2Snapshot) {
 }
 
 #[track_caller]
+#[cfg(feature = "vmjs")]
 pub fn assert_dom2_snapshot_eq(actual: &Dom2Snapshot, expected: &Dom2Snapshot) {
   let actual_json = serde_json::to_string_pretty(actual)
     .unwrap_or_else(|err| format!("<failed to serialize actual Dom2Snapshot: {err}>"));
@@ -668,6 +675,7 @@ fn snapshot_attributes(attributes: &[(String, String)]) -> Vec<AttributeSnapshot
   attrs
 }
 
+#[cfg(feature = "vmjs")]
 fn snapshot_dom2_attributes(attributes: &[crate::dom2::Attribute]) -> Vec<AttributeSnapshot> {
   let mut attrs: Vec<_> = attributes
     .iter()

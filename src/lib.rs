@@ -195,11 +195,23 @@ extern crate self as fastrender;
 
 pub mod animation;
 pub mod api;
+pub mod browser_limits;
 pub mod clock;
 pub mod compat;
+pub mod cursor;
 pub mod error;
 pub mod geometry;
+// Media playback/decoding is a large subsystem (tens of thousands of lines + optional codec
+// backends). Offline renderer tooling (fixture rendering/diffing) does not need to decode video
+// streams, so `renderer_tools` builds use a small stub module to keep compile times low.
+#[cfg(not(feature = "renderer_tools"))]
+pub mod media;
+#[cfg(feature = "renderer_tools")]
+#[path = "media_renderer_tools.rs"]
+pub mod media;
+pub mod pointer;
 pub(crate) mod document_ticks;
+pub(crate) mod string_match;
 
 // ============================================================================
 // Pipeline Modules
@@ -241,33 +253,47 @@ pub mod audio;
 pub mod css;
 pub mod debug;
 pub mod dom;
+#[cfg(feature = "vmjs")]
 pub mod dom2;
 pub(crate) mod fallible_vec_writer;
+pub mod html_escape;
 pub mod html;
 pub mod image_compare;
 pub mod image_loader;
 pub mod image_output;
+#[cfg(not(feature = "renderer_tools"))]
 pub mod ipc;
 #[cfg(test)]
 pub(crate) mod testing;
+#[cfg(feature = "vmjs")]
 pub mod js;
 pub mod memory;
 pub mod perf_log;
 pub mod perf_log_schema;
+#[cfg(not(feature = "renderer_tools"))]
 pub mod multiprocess;
+#[cfg(not(feature = "renderer_tools"))]
 pub mod net;
+#[cfg(all(feature = "direct_websocket", not(feature = "renderer_tools")))]
 pub mod network_process;
+#[cfg(not(feature = "renderer_tools"))]
 pub mod pageset;
+#[cfg(not(feature = "renderer_tools"))]
 pub mod process_limits;
+#[cfg(not(feature = "renderer_tools"))]
 pub mod process_supervision;
+#[cfg(not(feature = "renderer_tools"))]
 pub mod sandbox;
+#[cfg(not(feature = "renderer_tools"))]
 pub mod site_isolation;
+#[cfg(not(feature = "renderer_tools"))]
 pub mod shm;
 pub(crate) mod rayon_global;
 pub mod resource;
 #[cfg(target_os = "macos")]
 pub mod sandbox_exec;
 pub mod cpu;
+#[cfg(not(feature = "renderer_tools"))]
 #[path = "ui/select_dropdown.rs"]
 pub mod select_dropdown;
 pub mod svg;
@@ -276,11 +302,14 @@ pub(crate) mod xml;
 pub mod system;
 pub(crate) mod thread_pool_cache;
 pub(crate) mod url_normalize;
-pub(crate) mod string_match;
+#[cfg(feature = "vmjs")]
 pub mod web;
+#[cfg(not(feature = "renderer_tools"))]
 pub mod webidl;
 
+#[cfg(feature = "vmjs")]
 pub mod ui;
+#[cfg(feature = "vmjs")]
 pub mod chrome_frame;
 #[cfg(feature = "a11y_accesskit")]
 pub mod renderer_chrome;
@@ -290,15 +319,25 @@ pub mod renderer_chrome;
 
 // Main entry point
 pub use api::BrowserDocument;
+#[cfg(feature = "vmjs")]
 pub use api::BrowserDocument2;
+#[cfg(feature = "vmjs")]
 pub use api::BrowserDocumentDom2;
+#[cfg(feature = "vmjs")]
 pub use api::BrowserDocumentJs;
+#[cfg(feature = "vmjs")]
 pub use api::ChromeFrameDocument;
+#[cfg(feature = "vmjs")]
 pub use api::BrowserTab;
+#[cfg(feature = "vmjs")]
 pub use api::BrowserTabHost;
+#[cfg(feature = "vmjs")]
 pub use api::BrowserTabJsExecutor;
+#[cfg(feature = "vmjs")]
 pub use api::Dom2HitTestResult;
+#[cfg(feature = "vmjs")]
 pub use api::ModuleScriptExecutionStatus;
+#[cfg(feature = "vmjs")]
 pub use api::SelectionAction;
 pub use api::CascadeDiagnostics;
 pub use api::ConsoleMessage;
@@ -311,6 +350,7 @@ pub use api::FastRenderPool;
 pub use api::FastRenderPoolConfig;
 pub use api::FontCacheConfig;
 pub use api::ImageCacheConfig;
+#[cfg(feature = "vmjs")]
 pub use api::JsException;
 pub use api::LayoutArtifacts;
 pub use api::LayoutDiagnostics;
@@ -334,14 +374,19 @@ pub use api::RenderStats;
 pub use api::ResourceDiagnostics;
 pub use api::ResourceFetchError;
 pub use api::ResourceKind;
+#[cfg(feature = "vmjs")]
 pub use api::RunUntilStableOutcome;
+#[cfg(feature = "vmjs")]
 pub use api::RunUntilStableStopReason;
+#[cfg(feature = "vmjs")]
 pub use api::VmJsBrowserTabExecutor;
 pub use compat::CompatProfile;
 pub use debug::inspect::{InspectQuery, InspectionSnapshot};
 pub use render_control::CancelCallback;
+#[cfg(not(feature = "renderer_tools"))]
 pub use site_isolation::SiteKey;
 // Renderer sandboxing (multiprocess security workstream).
+#[cfg(not(feature = "renderer_tools"))]
 pub use sandbox::{RendererSandboxConfig, SandboxStatus, ENV_DISABLE_RENDERER_SANDBOX};
 // CSS
 pub use css::parser::parse_stylesheet_with_errors;
@@ -351,12 +396,15 @@ pub use css::types::PropertyValue;
 pub use css::types::Transform;
 // Debug tools
 pub use debug::snapshot::{
-  assert_dom2_snapshot_eq, assert_dom2_snapshot_invariants, snapshot_box_tree, snapshot_dom,
-  snapshot_dom2, snapshot_dom_from_dom2, snapshot_fragment_tree, snapshot_pipeline,
-  snapshot_styled, BoxNodeSnapshot, BoxTreeSnapshot, DisplayItemSnapshot, DisplayListSnapshot,
-  Dom2NodeKindSnapshot, Dom2NodeSnapshot, Dom2Snapshot, DomNodeSnapshot, DomSnapshot,
-  FragmentNodeSnapshot, FragmentTreeSnapshot, PipelineSnapshot, QuirksModeSnapshot, SchemaVersion,
-  StyledNodeSnapshot, StyledSnapshot,
+  snapshot_box_tree, snapshot_dom, snapshot_fragment_tree, snapshot_pipeline, snapshot_styled,
+  BoxNodeSnapshot, BoxTreeSnapshot, DisplayItemSnapshot, DisplayListSnapshot, Dom2NodeKindSnapshot,
+  Dom2NodeSnapshot, Dom2Snapshot, DomNodeSnapshot, DomSnapshot, FragmentNodeSnapshot,
+  FragmentTreeSnapshot, PipelineSnapshot, QuirksModeSnapshot, SchemaVersion, StyledNodeSnapshot,
+  StyledSnapshot,
+};
+#[cfg(feature = "vmjs")]
+pub use debug::snapshot::{
+  assert_dom2_snapshot_eq, assert_dom2_snapshot_invariants, snapshot_dom2, snapshot_dom_from_dom2,
 };
 pub use debug::tree_printer::{
   ColorMode, DiffMode, DotExporter, EnhancedTreePrinter, JsonExportConfig, PrintConfig, TreeDiff,

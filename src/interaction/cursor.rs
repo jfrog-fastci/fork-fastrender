@@ -1,4 +1,4 @@
-use crate::ui::messages::CursorKind;
+use crate::cursor::CursorKind;
 
 use super::hit_test::{HitTestKind, HitTestResult};
 

@@ -1,6 +1,7 @@
 //! ASCII-only case-insensitive substring search helpers.
 //!
-//! These routines are intentionally:
+//! These routines are used in hot UI paths (omnibox scoring, visited/history searching) and some
+//! renderer-only parsing utilities (e.g. `<meta http-equiv=refresh>` heuristics). They are:
 //! - allocation-free,
 //! - ASCII-only for case folding (non-ASCII bytes must match exactly),
 //! - optimized for repeated queries by requiring the needle be pre-lowercased with
@@ -141,6 +142,8 @@ pub(crate) fn contains_ascii_case_insensitive(haystack: &str, needle_lower_ascii
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AsciiCaseInsensitive<'a>(pub &'a str);
 
+/// Backwards-compatible alias for [`AsciiCaseInsensitive`].
+pub(crate) use AsciiCaseInsensitive as AsciiCaseInsensitiveStr;
 impl PartialEq for AsciiCaseInsensitive<'_> {
   #[inline]
   fn eq(&self, other: &Self) -> bool {
@@ -291,5 +294,15 @@ mod tests {
 
     // Non-ASCII bytes must compare exactly (ASCII-only case folding policy).
     assert_ne!(AsciiCaseInsensitive("café"), AsciiCaseInsensitive("cafÉ"));
+  }
+
+  #[test]
+  fn ascii_case_insensitive_str_constructor_is_usable() {
+    use std::collections::HashSet;
+
+    let mut set: HashSet<AsciiCaseInsensitiveStr<'_>> = HashSet::new();
+    assert!(set.insert(AsciiCaseInsensitiveStr("Hello")));
+    assert!(!set.insert(AsciiCaseInsensitiveStr("hELLo")));
+    assert_eq!(set.len(), 1);
   }
 }

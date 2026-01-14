@@ -4,7 +4,9 @@ pub mod asset_discovery;
 pub mod base_url_tracker;
 pub mod color_scheme;
 pub mod content_security_policy;
+#[cfg(feature = "vmjs")]
 pub(crate) mod document_write;
+#[cfg(feature = "vmjs")]
 pub mod dom2_tree_sink;
 pub mod encoding;
 pub mod favicon;
@@ -16,6 +18,7 @@ pub mod media;
 pub mod meta_refresh;
 pub mod pausable_html5ever;
 pub mod referrer_policy;
+#[cfg(feature = "vmjs")]
 pub mod streaming_parser;
 pub mod title;
 pub mod viewport;

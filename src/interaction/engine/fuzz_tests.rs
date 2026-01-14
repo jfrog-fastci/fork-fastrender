@@ -14,7 +14,7 @@ use crate::style::types::{LineHeight, Overflow};
 use crate::style::ComputedStyle;
 use crate::tree::box_tree::{BoxNode, BoxTree};
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
-use crate::ui::messages::{PointerButton, PointerModifiers};
+use crate::pointer::{PointerButton, PointerModifiers};
 use selectors::context::QuirksMode;
 
 fn doc(children: Vec<DomNode>) -> DomNode {

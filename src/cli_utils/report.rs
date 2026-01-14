@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 
 /// Escape HTML entities for safe embedding.
-pub use crate::ui::html_escape::escape_html;
+pub use crate::html_escape::escape_html;
 
 /// Produce a path relative to the HTML/JSON output (falls back to absolute).
 pub fn path_for_report(base: &Path, target: &Path) -> String {

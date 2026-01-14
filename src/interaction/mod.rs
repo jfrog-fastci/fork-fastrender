@@ -1,17 +1,22 @@
 pub mod anchor_scroll;
 pub mod anchor_geometry;
 pub mod autofocus;
+#[cfg(feature = "vmjs")]
 pub mod autofocus_dom2;
 pub mod cursor;
 pub mod document_selection;
 pub mod dom_geometry;
 pub mod dom_index;
 pub mod dom_mutation;
+#[cfg(feature = "vmjs")]
 pub mod dom_mutation_dom2;
 pub(crate) mod effective_disabled;
+#[cfg(feature = "vmjs")]
 pub(crate) mod effective_disabled_dom2;
 pub mod element_geometry;
+#[cfg(not(feature = "renderer_tools"))]
 pub mod engine;
+#[cfg(feature = "vmjs")]
 pub mod engine_dom2;
 pub mod focus_scroll;
 pub(crate) mod form_controls;
@@ -19,6 +24,7 @@ pub mod form_submit;
 pub mod fragment_geometry;
 pub mod hit_test;
 pub mod hit_testing;
+#[cfg(feature = "vmjs")]
 pub(crate) mod label_assoc_dom2;
 mod image_maps;
 pub(crate) mod paint_overlays;
@@ -29,22 +35,28 @@ pub mod state;
 pub(crate) mod textarea_caret_scroll;
 pub mod url;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "vmjs"))]
 mod state_dom2_tests;
 
 pub use anchor_scroll::scroll_offset_for_fragment_target;
 pub use anchor_geometry::styled_node_anchor_css;
 pub use cursor::cursor_kind_for_hit;
+#[cfg(not(feature = "renderer_tools"))]
 pub use engine::{
   DateTimeInputKind, DragDropKind, InputModality, InteractionAction, InteractionEngine, KeyAction,
 };
+#[cfg(feature = "vmjs")]
 pub use engine_dom2::InteractionEngineDom2;
 pub use element_geometry::{element_geometry_for_styled_node_id, ElementBoxGeometry};
 pub use form_submit::{
-  form_submission, form_submission_dom2, form_submission_from_submitter_dom2, form_submission_get_url,
-  form_submission_get_url_dom2, form_submission_get_url_from_submitter_dom2,
-  form_submission_without_submitter_dom2, Dom2FileInputLookup, FormSubmission, FormSubmissionEnctype,
+  form_submission, form_submission_get_url, FormSubmission, FormSubmissionEnctype,
   FormSubmissionMethod,
+};
+#[cfg(feature = "vmjs")]
+pub use form_submit::{
+  form_submission_dom2, form_submission_from_submitter_dom2, form_submission_get_url_dom2,
+  form_submission_get_url_from_submitter_dom2, form_submission_without_submitter_dom2,
+  Dom2FileInputLookup,
 };
 pub use fragment_geometry::absolute_bounds_for_box_id;
 pub use fragment_geometry::absolute_bounds_by_styled_node_id;
@@ -60,9 +72,10 @@ pub use hit_testing::{
   hit_test_dom_with_scroll, hit_test_with_scroll,
 };
 pub use state::{
-  FormStateDom2, ImePreeditState, ImePreeditStateDom2, InteractionState, InteractionStateDom2,
-  TextEditPaintStateDom2,
+  ImePreeditState, InteractionState,
 };
+#[cfg(feature = "vmjs")]
+pub use state::{FormStateDom2, ImePreeditStateDom2, InteractionStateDom2, TextEditPaintStateDom2};
 pub use url::resolve_url;
 
 use crate::style::ComputedStyle;

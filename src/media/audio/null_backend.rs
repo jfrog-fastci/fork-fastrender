@@ -10,8 +10,8 @@ use super::{
   duration_to_frames_ceil, AudioBackend, AudioClock, AudioEngineConfig, AudioOutputInfo, AudioSink,
   AudioStreamConfig,
 };
+use crate::clock::{Clock, RealClock, VirtualClock};
 use crate::debug::trace::TraceHandle;
-use crate::js::clock::{Clock, RealClock};
 use crate::media::audio_clock::InterpolatedAudioClock;
 
 /// A silent audio backend intended for headless runs and deterministic tests.
@@ -152,7 +152,7 @@ impl NullAudioBackend {
   /// Creates a null backend driven by an injected monotonic clock.
   ///
   /// This is intended for deterministic A/V sync tests (e.g. using
-  /// [`crate::js::clock::VirtualClock`]).
+  /// [`crate::clock::VirtualClock`]).
   #[must_use]
   pub fn new_with_clock(clock: Arc<dyn Clock>, config: AudioStreamConfig) -> Self {
     Self::new_with_clock_and_trace(clock, config, TraceHandle::default())
@@ -237,7 +237,7 @@ impl NullAudioBackend {
     let sample_rate_hz = sample_rate_hz.clamp(1, MAX_SAMPLE_RATE_HZ);
     let channels = channels.clamp(1, MAX_CHANNELS);
     Self::new_with_clock_and_max_buffered_duration(
-      Arc::new(crate::js::VirtualClock::new()),
+      Arc::new(VirtualClock::new()),
       AudioStreamConfig::new(sample_rate_hz, channels),
       max_buffered_duration,
     )
@@ -645,7 +645,7 @@ fn frames_to_duration_floor(frames: u64, sample_rate_hz: u32) -> Duration {
 mod tests {
   use super::*;
   use crate::debug::trace::TraceHandle;
-  use crate::js::clock::VirtualClock;
+  use crate::clock::VirtualClock;
 
   #[test]
   fn null_audio_backend_advancing_clock_advances_frames_played() {

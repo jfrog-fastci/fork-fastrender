@@ -1,12 +1,13 @@
 use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE, SVG_NAMESPACE};
-use crate::dom2;
 use crate::resource::web_url::{WebUrlLimits, WebUrlSearchParams};
 
 use url::Url;
 
 use super::resolve_url;
-use super::state::{FileSelection, FormStateDom2, InteractionStateDom2};
 use super::InteractionState;
+#[cfg(feature = "vmjs")]
+use super::state::FileSelection;
+#[cfg(feature = "vmjs")]
 use rustc_hash::FxHashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,24 +74,28 @@ pub struct FormSubmission {
 ///
 /// `dom2` intentionally strips authored file input state from markup for security reasons, so hosts
 /// (interaction engines, UIs) must provide the user-selected files out-of-band.
+#[cfg(feature = "vmjs")]
 pub trait Dom2FileInputLookup {
-  fn files_for(&self, input: dom2::NodeId) -> Option<&[FileSelection]>;
+  fn files_for(&self, input: crate::dom2::NodeId) -> Option<&[FileSelection]>;
 }
 
-impl Dom2FileInputLookup for FxHashMap<dom2::NodeId, Vec<FileSelection>> {
-  fn files_for(&self, input: dom2::NodeId) -> Option<&[FileSelection]> {
+#[cfg(feature = "vmjs")]
+impl Dom2FileInputLookup for FxHashMap<crate::dom2::NodeId, Vec<FileSelection>> {
+  fn files_for(&self, input: crate::dom2::NodeId) -> Option<&[FileSelection]> {
     self.get(&input).map(|v| v.as_slice())
   }
 }
 
-impl Dom2FileInputLookup for FormStateDom2 {
-  fn files_for(&self, input: dom2::NodeId) -> Option<&[FileSelection]> {
+#[cfg(feature = "vmjs")]
+impl Dom2FileInputLookup for super::state::FormStateDom2 {
+  fn files_for(&self, input: crate::dom2::NodeId) -> Option<&[FileSelection]> {
     self.file_inputs.get(&input).map(|v| v.as_slice())
   }
 }
 
-impl Dom2FileInputLookup for InteractionStateDom2 {
-  fn files_for(&self, input: dom2::NodeId) -> Option<&[FileSelection]> {
+#[cfg(feature = "vmjs")]
+impl Dom2FileInputLookup for super::state::InteractionStateDom2 {
+  fn files_for(&self, input: crate::dom2::NodeId) -> Option<&[FileSelection]> {
     self
       .form_state
       .file_inputs
@@ -1032,6 +1037,11 @@ pub fn form_submission_get_url(
   (submission.method == FormSubmissionMethod::Get).then_some(submission.url)
 }
 
+#[cfg(feature = "vmjs")]
+mod dom2_support {
+use super::*;
+use crate::dom2;
+
 // --- dom2 --------------------------------------------------------------------
 
 fn is_html_element_tag_dom2(dom: &dom2::Document, node: dom2::NodeId, tag: &str) -> bool {
@@ -1096,8 +1106,8 @@ fn is_submit_control_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
 }
 
 fn is_disabled_or_inert_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
-  super::effective_disabled_dom2::is_effectively_disabled(node, dom)
-    || super::effective_disabled_dom2::is_effectively_inert(node, dom)
+  super::super::effective_disabled_dom2::is_effectively_disabled(node, dom)
+    || super::super::effective_disabled_dom2::is_effectively_inert(node, dom)
 }
 
 fn tree_root_boundary_dom2(dom: &dom2::Document, node: dom2::NodeId) -> Option<dom2::NodeId> {
@@ -1258,7 +1268,7 @@ fn collect_select_options_dom2(
     }
     // Skip inert `<template>` contents (and other inert subtrees) inside the select, matching the
     // renderer DOM's template-contents semantics.
-    if super::effective_disabled_dom2::is_effectively_inert(option, dom) {
+    if super::super::effective_disabled_dom2::is_effectively_inert(option, dom) {
       continue;
     }
     out.push(SelectOptionDom2 {
@@ -1837,6 +1847,14 @@ mod dom2_tests {
     );
   }
 }
+
+} // mod dom2_support
+
+#[cfg(feature = "vmjs")]
+pub use dom2_support::{
+  form_submission_dom2, form_submission_from_submitter_dom2, form_submission_get_url_dom2,
+  form_submission_get_url_from_submitter_dom2, form_submission_without_submitter_dom2,
+};
 
 #[cfg(test)]
 mod multipart_tests {

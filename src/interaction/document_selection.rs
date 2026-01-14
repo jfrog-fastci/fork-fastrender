@@ -1,6 +1,5 @@
-use crate::dom2::RendererDomMapping;
 use crate::interaction::selection_serialize::{DocumentSelectionPoint, DocumentSelectionRange};
-use crate::interaction::state::{DocumentSelectionState, DocumentSelectionStateDom2};
+use crate::interaction::state::DocumentSelectionState;
 use crate::style::computed::Visibility;
 use crate::style::types::UserSelect;
 use crate::tree::box_tree::{BoxNode, BoxTree, BoxType};
@@ -11,6 +10,11 @@ use std::ops::Range;
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+#[cfg(feature = "vmjs")]
+use crate::dom2::RendererDomMapping;
+#[cfg(feature = "vmjs")]
+use crate::interaction::state::DocumentSelectionStateDom2;
 
 fn box_is_selectable(node: &BoxNode) -> bool {
   // Keep this consistent with `interaction::selection_serialize::box_is_selectable`.
@@ -613,6 +617,7 @@ pub(crate) fn apply_document_selection_to_fragment_tree(
 ///
 /// This projects the selection into renderer preorder space using `mapping`, then reuses the legacy
 /// selection application logic.
+#[cfg(feature = "vmjs")]
 pub(crate) fn apply_document_selection_to_fragment_tree_dom2(
   box_tree: &BoxTree,
   fragment_tree: &mut FragmentTree,
