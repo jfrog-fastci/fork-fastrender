@@ -820,13 +820,19 @@ impl ModuleGraph {
   /// `execList` sorting (evaluation order + pending dependency counts + async-parent links). It
   /// intentionally does **not** execute module code.
   pub fn inner_module_evaluation(&mut self, vm: &mut Vm, module: ModuleId) -> Result<(), VmError> {
+    // Ensure this helper observes fuel/deadline/interrupt budgets even on small graphs.
+    vm.tick()?;
+
     // Reset the VM's async evaluation counter so repeated invocations on the same VM/graph assign
     // deterministic `[[AsyncEvaluationOrder]]` integers.
     vm.reset_module_async_evaluation_count();
 
     // Reset per-module async evaluation state so callers can invoke this deterministically on a
     // fresh graph (e.g. unit tests).
-    for state in &mut self.async_eval_states {
+    for (i, state) in self.async_eval_states.iter_mut().enumerate() {
+      if i != 0 && (i & (crate::tick::DEFAULT_TICK_EVERY - 1)) == 0 {
+        vm.tick()?;
+      }
       state.async_evaluation_order = AsyncEvaluationOrder::Unset;
       state.pending_async_dependencies = None;
       state.async_parent_modules.clear();
@@ -837,7 +843,12 @@ impl ModuleGraph {
     visited
       .try_reserve_exact(module_count)
       .map_err(|_| VmError::OutOfMemory)?;
-    visited.resize(module_count, false);
+    for i in 0..module_count {
+      if i != 0 && (i & (crate::tick::DEFAULT_TICK_EVERY - 1)) == 0 {
+        vm.tick()?;
+      }
+      visited.push(false);
+    }
     self.inner_module_evaluation_dfs(vm, module, &mut visited)
   }
 
@@ -855,25 +866,36 @@ impl ModuleGraph {
       return Ok(());
     }
     visited[idx] = true;
+    vm.tick()?;
 
     // Recurse into requested modules first (left-to-right).
     let mut deps: Vec<ModuleId> = Vec::new();
     deps
       .try_reserve_exact(self.modules[idx].requested_modules.len())
       .map_err(|_| VmError::OutOfMemory)?;
-    for request in &self.modules[idx].requested_modules {
+    const EDGE_TICK_EVERY: usize = 32;
+    for (i, request) in self.modules[idx].requested_modules.iter().enumerate() {
+      if i % EDGE_TICK_EVERY == 0 && i != 0 {
+        vm.tick()?;
+      }
       let Some(dep) = self.get_imported_module(module, request) else {
         continue;
       };
       deps.push(dep);
     }
-    for &dep in &deps {
+    for (i, &dep) in deps.iter().enumerate() {
+      if i % EDGE_TICK_EVERY == 0 && i != 0 {
+        vm.tick()?;
+      }
       self.inner_module_evaluation_dfs(vm, dep, visited)?;
     }
 
     // Compute PendingAsyncDependencies and build AsyncParentModules edges.
     let mut pending: usize = 0;
-    for &dep in &deps {
+    for (i, &dep) in deps.iter().enumerate() {
+      if i % EDGE_TICK_EVERY == 0 && i != 0 {
+        vm.tick()?;
+      }
       let dep_idx = module_index(dep);
       if self.async_eval_states[dep_idx]
         .async_evaluation_order
