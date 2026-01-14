@@ -117,6 +117,13 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
   - `FASTR_AUDIO_PREROLL_MS=<ms>`, `FASTR_AUDIO_LOW_BUFFER_MS=<ms>`,
     `FASTR_AUDIO_LOW_BUFFER_DEBOUNCE_MS=<ms>` – buffering thresholds used by the media pipeline.
     - Note: these are currently experimental and may not be fully wired into playback state yet.
+  - Legacy / test-only (deprecated; `src/media/audio/legacy.rs`):
+    - `FASTR_AUDIO_BACKEND=null|wav` – select the legacy audio backend used by
+      `audio::legacy::audio_backend_from_env` (used by `tests/audio_wav_backend.rs`).
+      - Default: `null`.
+      - Note: this does **not** affect the modern `AudioBackend::new_best_effort(...)` selection used
+        by the current media playback pipeline.
+    - `FASTR_AUDIO_WAV_PATH=/path/to/out.wav` – required when `FASTR_AUDIO_BACKEND=wav`.
 - `FASTR_MAX_FILE_INPUT_BYTES=<bytes>` – per-file read limit for `<input type=file>` selections (defaults to 10 MiB).
   - Files whose metadata-reported size exceeds the limit are skipped (not selected), preventing accidental OOM when selecting large local files.
   - Accepts `_` separators (e.g. `10_485_760`); invalid/zero values fall back to the default.
