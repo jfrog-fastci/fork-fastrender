@@ -266,20 +266,21 @@ fn await_expression_in_class_static_block_in_non_async_function_is_syntax_error(
 }
 
 #[test]
-fn await_expression_in_class_static_block_in_async_function_is_allowed() {
+fn await_expression_in_class_static_block_in_async_function_is_syntax_error() {
   let mut rt = new_runtime();
-  rt
+  let err = rt
     .exec_script("async function f(){ class C { static { await 0; } } }")
-    .unwrap();
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
 }
 
 #[test]
-fn await_expression_in_class_static_block_in_module_is_allowed() {
+fn await_expression_in_class_static_block_in_module_is_syntax_error() {
   let mut rt = new_runtime();
-  let value = rt
+  let err = rt
     .exec_module("main.js", "class C { static { await 0; } }")
-    .unwrap();
-  assert!(matches!(value, Value::Object(_)));
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
 }
 
 #[test]
@@ -292,23 +293,24 @@ fn for_await_of_in_class_static_block_in_non_async_function_is_syntax_error() {
 }
 
 #[test]
-fn for_await_of_in_class_static_block_in_async_function_is_allowed() {
+fn for_await_of_in_class_static_block_in_async_function_is_syntax_error() {
   let mut rt = new_runtime();
-  rt
+  let err = rt
     .exec_script("async function f(){ class C { static { for await (const x of []) {} } } }")
-    .unwrap();
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
 }
 
 #[test]
-fn for_await_of_in_class_static_block_in_module_is_allowed() {
+fn for_await_of_in_class_static_block_in_module_is_syntax_error() {
   let mut rt = new_runtime();
-  let value = rt
+  let err = rt
     .exec_module(
       "main.js",
       "class C { static { for await (const x of []) {} } }",
     )
-    .unwrap();
-  assert!(matches!(value, Value::Object(_)));
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
 }
 
 #[test]
@@ -802,9 +804,27 @@ fn await_in_async_arrow_function_params_in_module_is_syntax_error() {
 }
 
 #[test]
+fn await_in_async_generator_function_params_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("async function* g(a = await 1) {}")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn yield_in_generator_function_params_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script("function* g(a = yield 1) {}").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn yield_in_async_generator_function_params_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("async function* g(a = yield 1) {}")
+    .unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
 
