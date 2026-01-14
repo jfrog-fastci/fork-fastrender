@@ -104,3 +104,50 @@ fn module_record_top_level_await_scan_budgets_holey_array_patterns() {
   let err = SourceTextModuleRecord::parse_with_vm(&mut heap, &mut vm, &src).unwrap_err();
   assert_termination_reason(err, TerminationReason::OutOfFuel);
 }
+
+#[test]
+fn module_record_top_level_await_scan_skips_class_field_initializers() {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut vm = Vm::new(VmOptions::default());
+  vm.set_budget(Budget {
+    // Budget small enough that traversing the large holey array literal would terminate
+    // (see `module_record_top_level_await_scan_budgets_holey_array_literals`), but parsing should
+    // succeed and `[[HasTLA]]` detection should not descend into class field initializers.
+    fuel: Some(50),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let mut src = String::from("class C { x = [");
+  for _ in 0..20_000 {
+    src.push(',');
+  }
+  src.push_str("]; } export {};");
+
+  let record = SourceTextModuleRecord::parse_with_vm(&mut heap, &mut vm, &src)
+    .expect("module record parse should not traverse class field initializer");
+  assert!(!record.has_tla);
+}
+
+#[test]
+fn module_record_top_level_await_scan_skips_class_static_blocks() {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut vm = Vm::new(VmOptions::default());
+  vm.set_budget(Budget {
+    // Similar to class field initializers, class static blocks cannot contain `await`, so module
+    // `[[HasTLA]]` detection should not traverse their statement lists.
+    fuel: Some(50),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let mut src = String::from("class C { static { [");
+  for _ in 0..20_000 {
+    src.push(',');
+  }
+  src.push_str("]; } } export {};");
+
+  let record = SourceTextModuleRecord::parse_with_vm(&mut heap, &mut vm, &src)
+    .expect("module record parse should not traverse static block body");
+  assert!(!record.has_tla);
+}

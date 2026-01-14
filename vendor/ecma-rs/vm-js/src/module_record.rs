@@ -2461,10 +2461,19 @@ fn class_member_contains_top_level_await(
       return Ok(true);
     }
   }
-  Ok(
-    class_or_obj_key_contains_top_level_await(&member.stx.key, ctx)?
-      || class_or_obj_val_contains_top_level_await(&member.stx.val, ctx)?,
-  )
+
+  if class_or_obj_key_contains_top_level_await(&member.stx.key, ctx)? {
+    return Ok(true);
+  }
+
+  // Class field initializers (`x = ...`) reject top-level `await` as an early error, so the value
+  // expression cannot contribute to module `[[HasTLA]]` detection. Avoid descending into the
+  // initializer to keep the scan linear in the size of syntactically-relevant (await-bearing)
+  // subtrees.
+  match &member.stx.val {
+    ClassOrObjVal::Prop(_) => Ok(false),
+    other => class_or_obj_val_contains_top_level_await(other, ctx),
+  }
 }
 
 fn obj_member_contains_top_level_await(
