@@ -218,6 +218,11 @@ These are consumed by the experimental desktop browser UI (`browser` binary; see
   - CLI equivalent: `browser --headless-smoke`.
   - JS variant: combine with `browser --headless-smoke --js` (or set the env var and pass `--js`) to
     run a vm-js `api::BrowserTab` smoke test instead; on success it prints `HEADLESS_VMJS_SMOKE_OK`.
+- `FASTR_TEST_BROWSER_HEADLESS_SMOKE_DISABLE_WORKER=1` – **test-only** hook: disable the renderer worker during headless smoke runs (simulate the worker being unavailable).
+  - Type: presence/boolean (any non-empty value).
+  - When enabled, `src/ui/render_worker.rs` fails fast when spawning the worker thread, and
+    `src/bin/browser.rs` will only allow headless smoke runs to succeed for trusted in-process
+    `about:` rendering paths (startup/session plumbing without any worker activity).
 - `FASTR_TEST_BROWSER_HEADLESS_CRASH_SMOKE=1` – **test-only** hook: run a headless crash-isolation smoke test that intentionally crashes the renderer worker and validates that the crash is contained (future: renderer *process* crash isolation). On success it prints `HEADLESS_CRASH_SMOKE_OK` to stdout.
   - CLI equivalent: `browser --headless-crash-smoke`.
 - `FASTR_TEST_BROWSER_HEADLESS_SMOKE_SESSION_JSON=<json>` – **test-only** hook: override the restored session used by headless smoke mode with an explicit `BrowserSession` JSON value.
