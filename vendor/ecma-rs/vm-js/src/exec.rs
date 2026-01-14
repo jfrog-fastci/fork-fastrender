@@ -26577,7 +26577,10 @@ fn async_yield_star_begin(
   match step {
     crate::async_generator::YieldStarStep::Await(awaited) => {
       let mut suspend = AsyncSuspend {
-        kind: AsyncSuspendKind::Await,
+        // `AsyncYieldStar` already performed the `Await` algorithm's internal `PromiseResolve` step
+        // (via `promise_resolve_for_await_with_host_and_hooks`) so the outer async suspension
+        // machinery must not do it again, or it would observe `promise.constructor` twice.
+        kind: AsyncSuspendKind::AwaitResolved,
         await_value: awaited,
         frames: VecDeque::new(),
       };
