@@ -30,6 +30,39 @@ fn value_to_string(rt: &JsRuntime, value: Value) -> String {
   rt.heap.get_string(s).unwrap().to_utf8_lossy()
 }
 
+fn assert_async_out_in_ast_and_compiled(source: &str, expected: &str) -> Result<(), VmError> {
+  // AST interpreter path.
+  {
+    let mut rt = new_runtime();
+    rt.exec_script(source)?;
+
+    // No microtasks run yet.
+    let out = rt.exec_script("out")?;
+    assert_eq!(value_to_string(&rt, out), "");
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let out = rt.exec_script("out")?;
+    assert_eq!(value_to_string(&rt, out), expected);
+  }
+
+  // Compiled (HIR) script path.
+  {
+    let mut rt = new_runtime();
+    exec_compiled(&mut rt, source)?;
+
+    let out = rt.exec_script("out")?;
+    assert_eq!(value_to_string(&rt, out), "");
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let out = rt.exec_script("out")?;
+    assert_eq!(value_to_string(&rt, out), expected);
+  }
+
+  Ok(())
+}
+
 #[test]
 fn derived_constructor_super_call_in_finally_arrow_initializes_this() -> Result<(), VmError> {
   assert_true_in_ast_and_compiled(
@@ -165,9 +198,7 @@ fn derived_constructor_super_property_operations_use_initialized_this() -> Resul
 
 #[test]
 fn derived_constructor_async_arrow_super_property_ops_use_initialized_this() -> Result<(), VmError> {
-  let mut rt = new_runtime();
-
-  rt.exec_script(
+  assert_async_out_in_ast_and_compiled(
     r#"
       var out = '';
       class B {
@@ -195,16 +226,7 @@ fn derived_constructor_async_arrow_super_property_ops_use_initialized_this() -> 
       }
       run().then(v => out = String(v));
     "#,
+    "3:true",
   )?;
-
-  // No microtasks run yet.
-  let out = rt.exec_script("out")?;
-  assert_eq!(value_to_string(&rt, out), "");
-
-  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
-
-  let out = rt.exec_script("out")?;
-  assert_eq!(value_to_string(&rt, out), "3:true");
-
   Ok(())
 }
