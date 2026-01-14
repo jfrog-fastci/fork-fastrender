@@ -41,6 +41,13 @@ pub trait MediaClock: Send + Sync + 'static {
   }
 }
 
+/// Whether a [`PlaybackClock`] is currently advancing (`Playing`) or frozen (`Paused`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackState {
+  Playing,
+  Paused,
+}
+
 /// Adapter that exposes a [`crate::clock::Clock`] as a [`MediaClock`].
 ///
 /// This is useful when media clocking needs to reuse the host's injectable clock

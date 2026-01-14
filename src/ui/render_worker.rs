@@ -6802,7 +6802,7 @@ struct BrowserRuntime {
     tab: &mut TabState,
     generation_before_dispatch: u64,
   ) {
-    Self::pump_js_event_loop_after_dom_event_dispatch_inner(
+    Self::pump_js_event_loop_after_dom_event_dispatch(
       ui_tx,
       debug_log_enabled,
       tab_id,
@@ -6811,7 +6811,7 @@ struct BrowserRuntime {
     );
   }
 
-  fn pump_js_event_loop_after_dom_event_dispatch_inner(
+  fn pump_js_event_loop_after_dom_event_dispatch(
     ui_tx: &WorkerToUiSender,
     debug_log_enabled: bool,
     tab_id: TabId,
@@ -11149,6 +11149,26 @@ struct BrowserRuntime {
       };
 
       let action_is_none = matches!(&action, InteractionAction::None);
+
+      // Release the mutable borrow of the renderer document before pumping the JS event loop (which
+      // needs mutable access to `tab`).
+      drop(doc);
+
+      if dispatched_dom_event {
+        if let Some(before) = js_mutation_generation_before_dispatch {
+          Self::pump_js_event_loop_after_dom_event_dispatch_for_tab(
+            &self.ui_tx,
+            self.debug_log_enabled,
+            tab_id,
+            tab,
+            before,
+          );
+        }
+      }
+
+      let Some(doc) = tab.document.as_mut() else {
+        return;
+      };
       match action {
         InteractionAction::Navigate { href } => {
           if default_allowed {
