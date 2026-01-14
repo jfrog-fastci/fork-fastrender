@@ -277,6 +277,42 @@ fn hypot_infinity_overrides_nan() -> Result<(), VmError> {
 }
 
 #[test]
+fn hypot_returns_positive_zero_for_empty_args_and_negative_zero() -> Result<(), VmError> {
+  // test262:
+  // - built-ins/Math/hypot/arguments-length.js
+  // - built-ins/Math/hypot/negative-zero.js
+  let mut rt = TestRt::new(VmOptions::default())?;
+  let intr = *rt.realm.intrinsics();
+
+  let mut scope = rt.heap.scope();
+  let math = intr.math();
+  let hypot = get_data_property(&mut scope, math, "hypot")?.unwrap();
+
+  // Math.hypot() -> +0
+  let out = rt
+    .vm
+    .call_without_host(&mut scope, hypot, Value::Object(math), &[])?;
+  let Value::Number(n) = out else {
+    return Err(VmError::Unimplemented("Math.hypot did not return number"));
+  };
+  assert_is_pos_zero(n);
+
+  // Math.hypot(-0) -> +0
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    hypot,
+    Value::Object(math),
+    &[Value::Number(-0.0)],
+  )?;
+  let Value::Number(n) = out else {
+    return Err(VmError::Unimplemented("Math.hypot did not return number"));
+  };
+  assert_is_pos_zero(n);
+
+  Ok(())
+}
+
+#[test]
 fn clz32_and_imul_match_spec_int32_semantics() -> Result<(), VmError> {
   let mut rt = TestRt::new(VmOptions::default())?;
   let intr = *rt.realm.intrinsics();
@@ -309,6 +345,78 @@ fn clz32_and_imul_match_spec_int32_semantics() -> Result<(), VmError> {
     &[Value::Number(4_294_967_295.0), Value::Number(5.0)],
   )?;
   assert_eq!(out, Value::Number(-5.0));
+
+  Ok(())
+}
+
+#[test]
+fn clz32_converts_non_finite_and_fractional_values_via_touint32() -> Result<(), VmError> {
+  // test262:
+  // - built-ins/Math/clz32/S15.8.2.10_A2.js
+  // - built-ins/Math/clz32/S15.8.2.10_A3.js
+  let mut rt = TestRt::new(VmOptions::default())?;
+  let intr = *rt.realm.intrinsics();
+
+  let mut scope = rt.heap.scope();
+  let math = intr.math();
+  let clz32 = get_data_property(&mut scope, math, "clz32")?.unwrap();
+
+  // ToUint32(NaN/±Infinity) == 0, so clz32(...) == 32.
+  for x in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+    let out = rt
+      .vm
+      .call_without_host(&mut scope, clz32, Value::Object(math), &[Value::Number(x)])?;
+    assert_eq!(out, Value::Number(32.0));
+  }
+
+  // ToUint32(3.7) == 3 (0b11), so clz32(3.7) == 30.
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    clz32,
+    Value::Object(math),
+    &[Value::Number(3.7)],
+  )?;
+  assert_eq!(out, Value::Number(30.0));
+
+  Ok(())
+}
+
+#[test]
+fn imul_converts_arguments_via_touint32() -> Result<(), VmError> {
+  // test262: built-ins/Math/imul/S15.8.2.18_A2.js
+  let mut rt = TestRt::new(VmOptions::default())?;
+  let intr = *rt.realm.intrinsics();
+
+  let mut scope = rt.heap.scope();
+  let math = intr.math();
+  let imul = get_data_property(&mut scope, math, "imul")?.unwrap();
+
+  // ToUint32(NaN) == 0.
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    imul,
+    Value::Object(math),
+    &[Value::Number(f64::NAN), Value::Number(7.0)],
+  )?;
+  assert_eq!(out, Value::Number(0.0));
+
+  // Fractions truncate toward +0 (ToInt32/ToUint32).
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    imul,
+    Value::Object(math),
+    &[Value::Number(2.9), Value::Number(3.1)],
+  )?;
+  assert_eq!(out, Value::Number(6.0));
+
+  // Values wrap mod 2^32: (2^32 + 1) -> 1.
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    imul,
+    Value::Object(math),
+    &[Value::Number(4_294_967_297.0), Value::Number(1.0)],
+  )?;
+  assert_eq!(out, Value::Number(1.0));
 
   Ok(())
 }
@@ -432,6 +540,36 @@ fn fround_preserves_signed_zero_and_rounds_ties_to_even() -> Result<(), VmError>
     return Err(VmError::Unimplemented("Math.fround did not return number"));
   };
   assert_is_neg_zero(n);
+
+  Ok(())
+}
+
+#[test]
+fn fround_overflows_to_infinity() -> Result<(), VmError> {
+  // test262: built-ins/Math/fround/overflow.js
+  let mut rt = TestRt::new(VmOptions::default())?;
+  let intr = *rt.realm.intrinsics();
+
+  let mut scope = rt.heap.scope();
+  let math = intr.math();
+  let fround = get_data_property(&mut scope, math, "fround")?.unwrap();
+
+  let x = (f32::MAX as f64) * 2.0;
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    fround,
+    Value::Object(math),
+    &[Value::Number(x)],
+  )?;
+  assert_eq!(out, Value::Number(f64::INFINITY));
+
+  let out = rt.vm.call_without_host(
+    &mut scope,
+    fround,
+    Value::Object(math),
+    &[Value::Number(-x)],
+  )?;
+  assert_eq!(out, Value::Number(f64::NEG_INFINITY));
 
   Ok(())
 }
