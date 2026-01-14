@@ -1053,47 +1053,12 @@ impl TabState {
     }
   }
 
-  fn desired_next_tick(&mut self) -> Option<Duration> {
-    let timeline_time_ms = duration_to_ms_f32(self.tick_time);
-    let css_tick = self
-      .document
-      .as_mut()
-      .and_then(|doc| document_next_tick(doc, timeline_time_ms));
-    let js_tick = self
-      .js_tab
-      .as_mut()
-      .and_then(|js_tab| js_tab.next_tick_due_in());
-
-    match (css_tick, js_tick) {
-      (Some(a), Some(b)) => Some(a.min(b)),
-      (Some(a), None) => Some(a),
-      (None, Some(b)) => Some(b),
-      (None, None) => None,
-    }
-  }
-
   fn hit_test_fragment_tree_for_scroll(
     cache: &mut Option<HitTestFragmentTreeCache>,
     doc: &BrowserDocument,
     scroll: &ScrollState,
   ) -> Option<Arc<crate::FragmentTree>> {
     hit_test_fragment_tree_for_scroll_cached(cache, doc, scroll)
-  }
-
-  fn desired_next_tick(&mut self) -> Option<Duration> {
-    let timeline_time_ms = duration_to_ms_f32(self.tick_time);
-    let css_tick = self
-      .document
-      .as_mut()
-      .and_then(|doc| document_next_tick(doc, timeline_time_ms));
-    let js_tick = self.js_tab.as_mut().and_then(|js_tab| js_tab.next_tick_due_in());
-
-    match (css_tick, js_tick) {
-      (Some(a), Some(b)) => Some(a.min(b)),
-      (Some(a), None) => Some(a),
-      (None, Some(b)) => Some(b),
-      (None, None) => None,
-    }
   }
 }
 
@@ -2934,7 +2899,7 @@ struct BrowserRuntime {
 impl BrowserRuntime {
   // Intentionally a helper (no `&self`) so it can be called while holding `tab: &mut TabState`
   // borrowed from `self.tabs` without triggering borrow-checker errors (E0502).
-  fn emit_scroll_state_updated(ui_tx: &Sender<WorkerToUiMsg>, tab_id: TabId, tab: &mut TabState) {
+  fn emit_scroll_state_updated(ui_tx: &WorkerToUiSender, tab_id: TabId, tab: &mut TabState) {
     let scroll = tab.scroll_state.clone();
     tab.last_reported_scroll_state = scroll.clone();
     let _ = ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated { tab_id, scroll }));
