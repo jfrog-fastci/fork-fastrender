@@ -1451,11 +1451,16 @@ where
 
               match playback_origin.as_ref() {
                 Some(origin) => match playback.duration_since(origin) {
-                  Some(since_origin) => Some(
-                    playback_origin_offset
+                  Some(since_origin) => {
+                    // If playback timestamps jitter backwards, the derived device timeline could go
+                    // backwards and stall the interpolated clock (which is monotonic by design).
+                    // Clamp so we never lag behind the frame counter.
+                    let frames_end = frame_counter_time.saturating_add(buffer_duration);
+                    let device_end = playback_origin_offset
                       .saturating_add(since_origin)
-                      .saturating_add(buffer_duration),
-                  ),
+                      .saturating_add(buffer_duration);
+                    Some(device_end.max(frames_end))
+                  }
                   None => {
                     // Playback timestamps went backwards (device restart/glitch). Re-anchor and
                     // align to the frame counter so timestamp-based clocking can resume without a
