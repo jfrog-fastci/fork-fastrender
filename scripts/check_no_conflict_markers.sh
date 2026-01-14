@@ -161,7 +161,7 @@ if [[ -n "${matches}" ]]; then
   echo "error: found unresolved merge conflict markers in Rust source files:" >&2
   echo "${matches}" >&2
   echo >&2
-  echo "hint: resolve the merge conflicts and remove the marker lines (<<<<<<< / ======= / >>>>>>>)." >&2
+  echo "hint: resolve the merge conflicts and remove the marker lines (<<<<<<< / ||||||| / ======= / >>>>>>>)." >&2
   echo "note: conflict-marker fixtures under vendor/ecma-rs/parse-js/tests/TypeScript/** are allowed." >&2
   exit 1
 fi
