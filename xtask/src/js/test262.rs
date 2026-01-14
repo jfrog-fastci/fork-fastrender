@@ -63,6 +63,7 @@ pub enum Test262Suite {
   /// Minimal suite intended for quick wiring/smoke checks.
   Smoke,
   /// Module-focused smoke suite (import/export/import.meta/top-level await/dynamic import/JSON modules).
+  #[value(aliases = ["modules", "modules-smoke"])]
   ModulesSmoke,
   /// RegExp engine focused subset (named groups, indices, lookbehind, property escapes, etc).
   Regexp,

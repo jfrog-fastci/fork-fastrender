@@ -127,6 +127,7 @@ Or set `FASTR_TEST262_NO_GATE=1`.
   - Presets live under `tests/js/test262_suites/`:
     - `curated` (default): union of the curated thematic suites below.
     - `smoke`: minimal always-green suite for quick local wiring checks.
+    - `modules_smoke`: module-focused smoke suite (import/export/import.meta/top-level await/dynamic import/JSON modules).
     - `regexp`: RegExp engine conformance focused subset (named groups, indices, lookbehind, etc).
     - `regexp_unicode_sets`: RegExp `/v` (Unicode sets) focused subset.
     - `regexp_property_escapes_generated`: generated Unicode property escape corpus (large).
