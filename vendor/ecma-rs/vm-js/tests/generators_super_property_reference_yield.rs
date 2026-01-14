@@ -212,3 +212,68 @@ fn generator_super_computed_member_decrement_yield_in_key() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_super_computed_member_update_yield_in_key_to_numeric_error_is_throw_completion() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class B {
+          get x(){ return Symbol("s"); }
+          set x(v){ this._x = v; }
+        }
+        class D extends B {
+          constructor(){ super(); }
+          *gen(){
+            try {
+              super[(yield 0)]++;
+              return false;
+            } catch (e) {
+              return e instanceof TypeError;
+            }
+          }
+        }
+        const it = new D().gen();
+        const r1 = it.next();
+        const r2 = it.next("x");
+        r1.value === 0 && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_super_computed_member_update_yield_in_key_strict_putvalue_error_is_throw_completion() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class B {}
+        Object.defineProperty(B.prototype, "x", { value: 1, writable: false, configurable: true });
+        class D extends B {
+          constructor(){ super(); }
+          *gen(){
+            try {
+              super[(yield 0)]++;
+              return false;
+            } catch (e) {
+              return e instanceof TypeError;
+            }
+          }
+        }
+        const inst = new D();
+        const it = inst.gen();
+        const r1 = it.next();
+        const r2 = it.next("x");
+        r1.value === 0 && r1.done === false &&
+        r2.value === true && r2.done === true &&
+        // Ensure no own property was created on the receiver.
+        Object.prototype.hasOwnProperty.call(inst, "x") === false
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
