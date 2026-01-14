@@ -20618,7 +20618,7 @@ mod async_function_hir_exec_tests {
     assert!(script.contains_async_functions);
     assert!(
       !script.requires_ast_fallback,
-      "compiled scripts should only require full AST fallback for generators or top-level await"
+      "compiled scripts should only require full AST fallback for private names or unsupported top-level await patterns"
     );
 
     let result = rt.exec_compiled_script(script)?;
