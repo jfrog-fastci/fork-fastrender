@@ -1816,8 +1816,12 @@ fn map_vm_error(
       | TerminationReason::DeadlineExceeded
       | TerminationReason::OutOfFuel => ExecError::Cancelled,
 
-      // `vm-js` reports stack overflows via `TerminationReason::StackOverflow`, but test262 expects
-      // a JS-level `RangeError` (and the runner treats `ExecError::Cancelled` as a timeout).
+      // `vm-js` normally surfaces call-stack exhaustion as a JS-level `RangeError` via
+      // `VmOptions::max_stack_depth`. However, older versions (or unexpected internal paths) may
+      // still report a hard termination with `TerminationReason::StackOverflow`.
+      //
+      // Map it to a JS-level `RangeError` (and avoid treating it as `ExecError::Cancelled`, which
+      // would be reported as a timeout) so test262 sees the expected exception shape.
       //
       // Preserve the termination message (`execution terminated: stack overflow`) so failures still
       // clearly indicate the root cause in JSON reports.

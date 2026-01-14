@@ -73,7 +73,7 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   building it first (e.g. `CARGO_TARGET_DIR=target bash scripts/cargo_agent.sh build --manifest-path vendor/ecma-rs/Cargo.toml -p test262-semantic`).
 - Note: `test262-semantic` runs each case on a fresh large-stack thread (see
   `vendor/ecma-rs/test262-semantic/src/vm_js_executor.rs`) so deep-recursion tests should fail
-  cleanly with `execution terminated: stack overflow` rather than aborting the host process.
+  cleanly with a JS `RangeError` (call-stack exhaustion) rather than aborting the host process.
   `LIMIT_STACK=64M` (consumed by `scripts/run_limited.sh`) is still available as a safety net for
   other deeply recursive workloads.
 

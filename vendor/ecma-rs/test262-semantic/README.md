@@ -166,8 +166,12 @@ fatal runtime error: stack overflow
 ```
 
 To keep the harness robust (and ensure we can always write a full JSON report), the `vm-js`
-executor runs each test case on a fresh OS thread with an explicit large stack and maps
-`TerminationReason::StackOverflow` to a JS-visible `RangeError` (instead of reporting it as a
+executor runs each test case on a fresh OS thread with an explicit large stack. In normal
+operation, `vm-js` enforces `VmOptions::max_stack_depth` and surfaces call-stack exhaustion as a
+catchable JavaScript `RangeError` (like other engines' "Maximum call stack size exceeded").
+
+For backwards compatibility (and as a safety net for unexpected internal paths), the executor also
+maps `TerminationReason::StackOverflow` to a JS-visible `RangeError` (instead of reporting it as a
 timeout/cancellation).
 
 For wiring/CI experiments where you want the harness to run but always report
