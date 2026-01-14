@@ -191,7 +191,7 @@
 // Allow unit tests (compiled within this crate) to keep using `fastrender::...` paths after being
 // migrated out of `tests/` (integration) and into `src/` (unit tests).
 #[cfg(test)]
-  extern crate self as fastrender;
+extern crate self as fastrender;
 
 pub mod animation;
 pub mod api;
