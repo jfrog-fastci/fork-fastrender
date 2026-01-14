@@ -15304,6 +15304,126 @@ impl AsyncDestructuringAssignState {
 }
 
 #[derive(Debug)]
+enum TryForAwaitOfCatchPoll {
+  Complete(Flow),
+  Await {
+    kind: crate::exec::AsyncSuspendKind,
+    await_value: Value,
+  },
+}
+
+/// Async-aware evaluation of a `try { for await (...) { ... } } catch (...) { ... }` statement.
+///
+/// The compiled async evaluator intentionally only supports `for await..of` loops at the top
+/// statement-list level. However, `try/catch` around a `for await..of` loop is required to observe
+/// correct `AsyncIteratorClose` ordering (the loop must await `iterator.return()` before entering
+/// the `catch` clause).
+///
+/// This state machine supports the narrow pattern used by unit tests:
+/// - the `try` block is a single `for await..of` statement (no additional statements),
+/// - a `catch` clause is present,
+/// - no `finally` clause is present.
+#[derive(Debug)]
+struct TryForAwaitOfCatchState {
+  for_await: ForAwaitOfState,
+  catch_param: Option<hir_js::PatId>,
+  catch_body: hir_js::StmtId,
+}
+
+impl TryForAwaitOfCatchState {
+  fn new(
+    for_await: ForAwaitOfState,
+    catch_param: Option<hir_js::PatId>,
+    catch_body: hir_js::StmtId,
+  ) -> Self {
+    Self {
+      for_await,
+      catch_param,
+      catch_body,
+    }
+  }
+
+  fn teardown(&mut self, heap: &mut crate::Heap) {
+    self.for_await.teardown(heap);
+  }
+
+  fn poll(
+    &mut self,
+    evaluator: &mut HirEvaluator<'_>,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    resume_value: Option<Result<Value, VmError>>,
+  ) -> Result<TryForAwaitOfCatchPoll, VmError> {
+    match self.for_await.poll(evaluator, scope, body, resume_value) {
+      Ok(ForAwaitOfPoll::Await { kind, await_value }) => Ok(TryForAwaitOfCatchPoll::Await { kind, await_value }),
+      Ok(ForAwaitOfPoll::Complete(flow)) => {
+        // `ForAwaitOfState::poll` is expected to have cleaned up its persistent roots before
+        // returning `Complete`, but call `teardown` defensively so future changes cannot leak roots.
+        self.for_await.teardown(scope.heap_mut());
+        Ok(TryForAwaitOfCatchPoll::Complete(
+          flow.update_empty(Some(Value::Undefined)),
+        ))
+      }
+      Err(err) => {
+        // `ForAwaitOfState` should already have closed the iterator (AsyncIteratorClose) before
+        // surfacing the completion as an error. Ensure it cannot leak persistent roots.
+        self.for_await.teardown(scope.heap_mut());
+
+        // Only JS throw-completions are catchable.
+        if !err.is_throw_completion() {
+          return Err(err);
+        }
+        let thrown_value = err.thrown_value().unwrap_or(Value::Undefined);
+
+        // Evaluate the catch clause following the synchronous evaluator's semantics:
+        // - create a fresh declarative environment for the catch parameter (if present),
+        // - initialize bindings with TDZ semantics,
+        // - evaluate the catch body,
+        // - always restore the outer lexical environment.
+        let mut catch_scope = scope.reborrow();
+        catch_scope.push_root(thrown_value)?;
+
+        let outer_env = evaluator.env.lexical_env();
+        let catch_env = catch_scope.env_create(Some(outer_env))?;
+        evaluator.env.set_lexical_env(catch_scope.heap_mut(), catch_env);
+
+        let catch_result: Result<Flow, VmError> = (|| {
+          if let Some(param_pat_id) = self.catch_param {
+            // Pre-create all identifier bindings before evaluating any default initializers so
+            // self-references (e.g. `catch ({ x = x }) {}`) throw a ReferenceError.
+            let mut names: Vec<hir_js::NameId> = Vec::new();
+            evaluator.collect_pat_idents(body, param_pat_id, &mut names)?;
+            for name_id in names {
+              let name = evaluator.resolve_name(name_id)?;
+              if !catch_scope
+                .heap()
+                .env_has_binding(catch_env, name.as_str())?
+              {
+                catch_scope.env_create_mutable_binding(catch_env, name.as_str())?;
+              }
+            }
+
+            evaluator.bind_pattern(
+              &mut catch_scope,
+              body,
+              param_pat_id,
+              thrown_value,
+              PatBindingKind::Let,
+            )?;
+          }
+
+          evaluator.eval_stmt(&mut catch_scope, body, self.catch_body)
+        })();
+
+        evaluator.env.set_lexical_env(catch_scope.heap_mut(), outer_env);
+
+        catch_result.map(|flow| TryForAwaitOfCatchPoll::Complete(flow.update_empty(Some(Value::Undefined))))
+      }
+    }
+  }
+}
+
+#[derive(Debug)]
 enum HirAsyncBodyKind {
   Block { stmts: Box<[hir_js::StmtId]> },
   Expr { expr: hir_js::ExprId },
@@ -15311,6 +15431,7 @@ enum HirAsyncBodyKind {
 
 #[derive(Debug)]
 enum HirAsyncActive {
+  TryForAwaitOfCatch(TryForAwaitOfCatchState),
   ForAwaitOf(ForAwaitOfState),
   ForOf(ForOfState),
   ForTriple(ForTripleAwaitState),
@@ -15345,6 +15466,7 @@ enum HirAsyncActive {
 impl HirAsyncActive {
   fn teardown(&mut self, heap: &mut crate::Heap) {
     match self {
+      HirAsyncActive::TryForAwaitOfCatch(state) => state.teardown(heap),
       HirAsyncActive::ForAwaitOf(state) => state.teardown(heap),
       HirAsyncActive::ForOf(state) => state.teardown(heap),
       HirAsyncActive::ForTriple(state) => state.teardown(heap),
@@ -15683,6 +15805,65 @@ impl HirAsyncState {
     loop {
       if let Some(active) = &mut self.active {
         match active {
+          HirAsyncActive::TryForAwaitOfCatch(state) => {
+            let poll = state.poll(evaluator, scope, body, resume_value.take());
+            match poll {
+              Ok(TryForAwaitOfCatchPoll::Await { kind, await_value }) => {
+                let stmt_offset = match &self.body_kind {
+                  HirAsyncBodyKind::Block { stmts } => stmts
+                    .get(self.next_stmt_index)
+                    .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
+                    .map(|stmt| stmt.span.start)
+                    .unwrap_or(0),
+                  HirAsyncBodyKind::Expr { .. } => 0,
+                };
+                self.await_stmt_offset = stmt_offset;
+                return Ok(HirAsyncResult::Await { kind, await_value });
+              }
+              Ok(TryForAwaitOfCatchPoll::Complete(flow)) => {
+                // Ensure nested `for await..of` roots cannot leak.
+                state.teardown(scope.heap_mut());
+                self.active = None;
+                match flow {
+                  Flow::Normal(_) => {
+                    self.next_stmt_index = self.next_stmt_index.saturating_add(1);
+                    continue;
+                  }
+                  Flow::Return(v) => return Ok(HirAsyncResult::CompleteOk(v)),
+                  Flow::Break(..) | Flow::Continue(..) => {
+                    return Err(VmError::InvariantViolation(
+                      "async compiled function body produced break/continue completion",
+                    ))
+                  }
+                }
+              }
+              Err(err) => {
+                state.teardown(scope.heap_mut());
+                self.active = None;
+                let stmt_offset = match &self.body_kind {
+                  HirAsyncBodyKind::Block { stmts } => stmts
+                    .get(self.next_stmt_index)
+                    .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
+                    .map(|stmt| stmt.span.start)
+                    .unwrap_or(0),
+                  HirAsyncBodyKind::Expr { .. } => 0,
+                };
+                let err = finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  evaluator.script.source.as_ref(),
+                  stmt_offset,
+                  err,
+                );
+                match err {
+                  VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                    return Ok(HirAsyncResult::CompleteThrow(value))
+                  }
+                  other => return Err(other),
+                };
+              }
+            }
+          }
           HirAsyncActive::ForAwaitOf(state) => {
             let poll = state.poll(evaluator, scope, body, resume_value.take());
             match poll {
@@ -16689,6 +16870,51 @@ impl HirAsyncState {
             &[],
           )?));
           continue;
+        }
+      }
+
+      // Async-aware `try/catch` evaluation for the specific pattern:
+      //   `try { for await (...) { ... } } catch (...) { ... }`
+      //
+      // This is required to observe correct `AsyncIteratorClose` ordering: the `for await..of`
+      // loop must await `iterator.return()` before entering the `catch` clause.
+      if let hir_js::StmtKind::Try {
+        block,
+        catch,
+        finally_block: None,
+      } = &stmt.kind
+      {
+        if let Some(catch_clause) = catch {
+          let try_block_stmt = evaluator.get_stmt(body, *block)?;
+          if let hir_js::StmtKind::Block(try_stmts) = &try_block_stmt.kind {
+            if try_stmts.len() == 1 {
+              let inner_stmt = evaluator.get_stmt(body, try_stmts[0])?;
+              if let hir_js::StmtKind::ForIn {
+                left,
+                right,
+                body: inner,
+                is_for_of: true,
+                await_: true,
+              } = &inner_stmt.kind
+              {
+                // Budget:
+                // - `try` statement entry,
+                // - try-block `Block` statement entry,
+                // - loop statement entry.
+                evaluator.vm.tick()?;
+                evaluator.vm.tick()?;
+                evaluator.vm.tick()?;
+
+                let loop_state = ForAwaitOfState::new(left.clone(), *right, *inner, &[])?;
+                self.active = Some(HirAsyncActive::TryForAwaitOfCatch(TryForAwaitOfCatchState::new(
+                  loop_state,
+                  catch_clause.param,
+                  catch_clause.body,
+                )));
+                continue;
+              }
+            }
+          }
         }
       }
 

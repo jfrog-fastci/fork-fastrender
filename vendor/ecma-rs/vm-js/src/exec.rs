@@ -11353,19 +11353,29 @@ impl<'a> Evaluator<'a> {
       let receiver = self.get_this_binding(&mut key_scope)?;
       key_scope.push_root(receiver)?;
 
-      // `super[expr]` evaluates the key expression and performs `ToPropertyKey` *before* looking up
-      // the super base so prototype mutation during key conversion is observable.
+      // `super[expr]` evaluation order (ECMA-262):
+      // - GetThisBinding (already above),
+      // - capture the super base (`GetSuperBase()`),
+      // - then evaluate/coerce the computed key (`ToPropertyKey`).
+      //
+      // This ensures `GetSuperBase` is observed before `ToPropertyKey`, so prototype mutation during
+      // key conversion does not affect the lookup base.
+      //
+      // Note: because key conversion may mutate `home_object`'s prototype, root the captured super
+      // base across `ToPropertyKey` so it cannot be collected if it becomes unreachable.
+      let super_base = self.super_base(&mut key_scope)?;
+      key_scope.push_root(super_base)?;
+
       let member_value = self.eval_expr(&mut key_scope, &expr.member)?;
       key_scope.push_root(member_value)?;
       let key = self.to_property_key_operator(&mut key_scope, member_value)?;
 
-      // Root the key across super base lookup in case it allocates/GCs.
+      // Root the key across dereferencing (which can allocate/GC).
       match key {
         PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
         PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
       };
 
-      let super_base = self.super_base(&mut key_scope)?;
       let reference = Reference::SuperProperty {
         base: super_base,
         key,
@@ -11595,18 +11605,25 @@ impl<'a> Evaluator<'a> {
           let receiver = self.get_this_binding(&mut key_scope)?;
           key_scope.push_root(receiver)?;
 
+          // `super[expr]` evaluation order (ECMA-262):
+          // - GetThisBinding (already above),
+          // - capture the super base (`GetSuperBase()`),
+          // - then evaluate/coerce the computed key (`ToPropertyKey`).
+          //
+          // Root the captured super base across `ToPropertyKey` since key conversion may mutate the
+          // home object's prototype, potentially making the original super base unreachable.
+          let base = self.get_super_base(&mut key_scope)?;
+          key_scope.push_root(base)?;
+
           let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
           key_scope.push_root(member_value)?;
 
-          // `super[expr]` evaluates the key expression and performs `ToPropertyKey` before looking
-          // up the super base so prototype mutation during key conversion is observable.
           let key = self.to_property_key_operator(&mut key_scope, member_value)?;
-          // Root the key across super base lookup in case it allocates/GCs.
+          // Root the key across dereferencing (which can allocate/GC).
           match key {
             PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
             PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
           };
-          let base = self.get_super_base(&mut key_scope)?;
           return Ok(Reference::SuperProperty { base, key, receiver });
         }
 
@@ -14241,8 +14258,8 @@ impl<'a> Evaluator<'a> {
         // Evaluate the super property reference (including derived-constructor `this` binding errors)
         // before evaluating call arguments.
         //
-        // Spec: for computed super property references, `ToPropertyKey` must happen before
-        // `GetSuperBase()` so that prototype mutation during key conversion is observable.
+        // Spec: for `super[expr]`, `GetSuperBase()` is observed before `ToPropertyKey`, so prototype
+        // mutation during key conversion does not affect the lookup base.
         let mut key_scope = scope.reborrow();
         let receiver = self.get_this_binding(&mut key_scope)?;
         // Root `this` binding state (may be a DerivedConstructorState cell), the resolved receiver,
@@ -14257,17 +14274,21 @@ impl<'a> Evaluator<'a> {
         };
         key_scope.push_roots(roots)?;
 
+        // Capture and root the super base before evaluating the computed key. Key conversion can run
+        // user code that mutates `home_object`'s prototype (or triggers GC), so keep the original
+        // base alive explicitly.
+        let base = self.super_base(&mut key_scope)?;
+        key_scope.push_root(base)?;
+
         let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
         key_scope.push_root(member_value)?;
         let key = self.to_property_key_operator(&mut key_scope, member_value)?;
-        // Root the key across super base lookup and the final `[[Get]]`, which can invoke accessors
-        // and Proxy traps.
+        // Root the key across dereferencing, which can invoke accessors and Proxy traps.
         match key {
           PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
           PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
         };
 
-        let base = self.super_base(&mut key_scope)?;
         let reference = Reference::SuperProperty { base, key, receiver };
         let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
         (callee_value, receiver)
