@@ -7,15 +7,25 @@ use super::worker_harness::{WorkerHarness, WorkerToUiEvent};
 use fastrender::render_control::StageHeartbeat;
 use fastrender::ui::messages::{NavigationReason, RepaintReason, TabId, UiToWorker};
 use fastrender::ui::render_worker::{
-  reset_tick_stats_for_test, tick_delta_total_for_test, tick_handle_count_for_test,
+  disable_tick_stats_for_test, reset_tick_stats_for_test, tick_delta_total_for_test,
+  tick_handle_count_for_test,
 };
 use std::time::{Duration, Instant};
+
+struct TickStatsGuard;
+
+impl Drop for TickStatsGuard {
+  fn drop(&mut self) {
+    disable_tick_stats_for_test();
+  }
+}
 
 #[test]
 fn tick_burst_coalesces_in_worker_runtime() {
   let _lock = super::stage_listener_test_lock();
 
   reset_tick_stats_for_test();
+  let _tick_stats_guard = TickStatsGuard;
 
   // Slow down paints so we can deterministically enqueue a burst of Tick messages while the worker
   // runtime thread is busy painting.
@@ -128,4 +138,40 @@ fn tick_burst_coalesces_in_worker_runtime() {
     frames <= 2,
     "expected tick burst not to emit many frames; got {frames} frames; events={events:?}"
   );
+}
+
+#[test]
+fn tick_delta_is_clamped_in_worker() {
+  let _lock = super::stage_listener_test_lock();
+
+  reset_tick_stats_for_test();
+  let _tick_stats_guard = TickStatsGuard;
+
+  let h = WorkerHarness::spawn_with_test_render_delay(None);
+  let tab_id = TabId::new();
+  h.send(create_tab_msg(tab_id, None));
+
+  h.send(UiToWorker::Tick {
+    tab_id,
+    delta: Duration::from_secs(10),
+  });
+
+  let expected = Duration::from_secs(1);
+  let deadline = Instant::now() + DEFAULT_TIMEOUT;
+  loop {
+    let got = tick_delta_total_for_test(tab_id);
+    if got >= expected {
+      break;
+    }
+    if Instant::now() >= deadline {
+      panic!(
+        "timed out waiting for worker to process tick; expected {:?}, got {:?}",
+        expected, got
+      );
+    }
+    std::thread::sleep(Duration::from_millis(10));
+  }
+
+  assert_eq!(tick_handle_count_for_test(tab_id), 1);
+  assert_eq!(tick_delta_total_for_test(tab_id), expected);
 }

@@ -180,6 +180,16 @@ pub fn tick_delta_total_for_test(tab_id: TabId) -> Duration {
   stats.get(&tab_id).map(|s| s.delta_total).unwrap_or_default()
 }
 
+/// Disable tick stats collection and clear any accumulated state (test hook).
+#[cfg(feature = "browser_ui")]
+pub fn disable_tick_stats_for_test() {
+  UI_WORKER_TICK_STATS_ENABLED.store(false, Ordering::Relaxed);
+  let mut stats = ui_worker_tick_stats()
+    .lock()
+    .unwrap_or_else(|err| err.into_inner());
+  stats.clear();
+}
+
 /// Reset scroll-blit counters (test hook).
 #[cfg(feature = "browser_ui")]
 pub fn reset_scroll_blit_stats_for_test() {
