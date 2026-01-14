@@ -1891,7 +1891,7 @@ fn remove_first(items: &mut Vec<BookmarkId>, needle: BookmarkId) -> bool {
 #[cfg(feature = "browser_ui")]
 mod bookmarks_bar_ui {
   use super::{BookmarkId, BookmarkNode, BookmarkStore};
-  use egui::{Rect, Stroke};
+  use egui::{Pos2, Rect, Stroke};
 
   #[derive(Debug, Default)]
   pub struct BookmarksBarOutput {
@@ -1906,6 +1906,26 @@ mod bookmarks_bar_ui {
   struct DragState {
     dragging: Option<BookmarkId>,
     drop_index: Option<usize>,
+  }
+
+  pub(super) fn bookmarks_bar_item_widget_id(bookmark_id: BookmarkId) -> egui::Id {
+    egui::Id::new(("bookmarks_bar_item", bookmark_id))
+  }
+
+  #[derive(Debug, Clone, Copy)]
+  struct BookmarkBarItemContextMenuState {
+    open: bool,
+    /// Screen-space anchor position in egui points.
+    anchor_pos: Pos2,
+  }
+
+  impl Default for BookmarkBarItemContextMenuState {
+    fn default() -> Self {
+      Self {
+        open: false,
+        anchor_pos: Pos2::ZERO,
+      }
+    }
   }
 
   fn move_before_id(
@@ -2032,7 +2052,10 @@ mod bookmarks_bar_ui {
             let button = egui::Button::new(label)
               .small()
               .sense(egui::Sense::click_and_drag());
-            let response = ui.add(button).on_hover_text(tooltip.clone());
+            let response = ui
+              .add(button)
+              .on_hover_text(tooltip.clone())
+              .on_hover_cursor(egui::CursorIcon::PointingHand);
             if response.has_focus() && !response.hovered() {
               // Egui tooltips only show on pointer hover. Mirror the hover tooltip while
               // keyboard-focused so bookmark buttons remain discoverable for keyboard-only users.
@@ -2058,39 +2081,192 @@ mod bookmarks_bar_ui {
               drag_released = Some(id);
             }
 
-            // Keyboard-accessible reorder.
-            response.context_menu(|ui| {
-              ui.set_min_width(140.0);
-              if let Some(idx) = visible_ids.iter().position(|x| *x == id) {
-                ui.add_enabled_ui(idx > 0, |ui| {
-                  let move_left = ui.button("Move left");
-                  move_left.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Button, "Move bookmark left")
-                  });
-                  if move_left.clicked() {
-                    if let Some(new_order) =
-                      move_before_id(&bookmarks.roots, id, visible_ids[idx - 1])
-                    {
-                      out.reorder_roots = Some(new_order);
-                    }
-                    ui.close_menu();
-                  }
-                });
-                ui.add_enabled_ui(idx + 1 < visible_ids.len(), |ui| {
-                  let move_right = ui.button("Move right");
-                  move_right.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Button, "Move bookmark right")
-                  });
-                  if move_right.clicked() {
-                    if let Some(new_order) =
-                      move_after_id(&bookmarks.roots, id, visible_ids[idx + 1])
-                    {
-                      out.reorder_roots = Some(new_order);
-                    }
-                    ui.close_menu();
-                  }
-                });
+            // ---------------------------------------------------------------------------
+            // Bookmark reorder context menu
+            // ---------------------------------------------------------------------------
+            // Open the context menu with either:
+            // - Pointer: right click on the bookmark (existing behaviour)
+            // - Keyboard: Shift+F10 while the bookmark has focus (Windows-style context menu gesture)
+            //
+            // Egui's built-in `Response::context_menu` does not currently provide a keyboard
+            // activation path, so we manage open-state explicitly (similar to the tab-group chip
+            // context menu).
+            let button_id = bookmarks_bar_item_widget_id(id);
+            let menu_state_id = button_id.with("context_menu_state");
+            let mut menu_state = ui
+              .ctx()
+              .data(|d| d.get_temp::<BookmarkBarItemContextMenuState>(menu_state_id))
+              .unwrap_or_default();
+            let menu_open_prev = menu_state.open;
+
+            let open_by_pointer = response.clicked_by(egui::PointerButton::Secondary);
+            let open_by_keyboard = response.has_focus()
+              && ui.input_mut(|i| {
+                i.consume_key(
+                  egui::Modifiers {
+                    shift: true,
+                    ..Default::default()
+                  },
+                  egui::Key::F10,
+                )
+              });
+
+            let mut opened_now_via_keyboard = false;
+            if open_by_pointer {
+              // Anchor to the click/hover position so the menu appears where the user clicked.
+              menu_state.anchor_pos = response
+                .interact_pointer_pos()
+                .or_else(|| ui.input(|i| i.pointer.hover_pos()))
+                .unwrap_or(Pos2::new(response.rect.left(), response.rect.bottom()));
+              menu_state.open = true;
+            } else if open_by_keyboard {
+              if menu_state.open {
+                // Pressing Shift+F10 again closes the menu (standard toggle behaviour).
+                menu_state.open = false;
+              } else {
+                // Anchor below the button when opened via keyboard (no cursor position).
+                menu_state.anchor_pos = Pos2::new(response.rect.left(), response.rect.bottom());
+                menu_state.open = true;
+                opened_now_via_keyboard = true;
               }
+            }
+
+            // Clicking the button while its context menu is open should dismiss the menu (standard
+            // popup behaviour). We still allow the bookmark activation itself to proceed.
+            if menu_state.open
+              && (response.clicked()
+                || response.middle_clicked()
+                || (response.clicked() && ui.input(|i| i.modifiers.command)))
+            {
+              menu_state.open = false;
+            }
+
+            if menu_state.open {
+              let mut close_menu = false;
+              if ui.input_mut(|i| i.consume_key(Default::default(), egui::Key::Escape)) {
+                close_menu = true;
+              }
+
+              let menu_id = button_id.with("context_menu_popup");
+              let area = egui::Area::new(menu_id)
+                .order(egui::Order::Foreground)
+                .fixed_pos(menu_state.anchor_pos)
+                .constrain_to(ui.ctx().screen_rect())
+                .interactable(true);
+
+              let inner = area.show(ui.ctx(), |ui| {
+                // Scope the menu under a stable id derived from the bookmark ID so menu item ids are
+                // stable (important for focus + AccessKit).
+                ui.push_id(("bookmark_context_menu", id.0), |ui| {
+                  let frame = egui::Frame::popup(ui.style());
+                  frame
+                    .show(ui, |ui| {
+                      ui.set_min_width(140.0);
+
+                      let Some(idx) = visible_ids.iter().position(|x| *x == id) else {
+                        return;
+                      };
+
+                      let can_move_left = idx > 0;
+                      let can_move_right = idx + 1 < visible_ids.len();
+
+                      let move_left =
+                        ui.add_enabled(can_move_left, egui::Button::new("Move left"));
+                      move_left.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, "Move bookmark left")
+                      });
+                      if move_left.clicked() {
+                        if let Some(new_order) =
+                          move_before_id(&bookmarks.roots, id, visible_ids[idx - 1])
+                        {
+                          out.reorder_roots = Some(new_order);
+                        }
+                        close_menu = true;
+                      }
+
+                      let move_right =
+                        ui.add_enabled(can_move_right, egui::Button::new("Move right"));
+                      move_right.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, "Move bookmark right")
+                      });
+                      if move_right.clicked() {
+                        if let Some(new_order) =
+                          move_after_id(&bookmarks.roots, id, visible_ids[idx + 1])
+                        {
+                          out.reorder_roots = Some(new_order);
+                        }
+                        close_menu = true;
+                      }
+
+                      if opened_now_via_keyboard {
+                        // Focus the first enabled menu item so keyboard users can act immediately.
+                        if can_move_left {
+                          move_left.request_focus();
+                        } else if can_move_right {
+                          move_right.request_focus();
+                        }
+                      }
+
+                      #[cfg(test)]
+                      ui.ctx().data_mut(|d| {
+                        d.insert_temp(
+                          egui::Id::new(("test_bookmarks_bar_move_left_id", id.0)),
+                          move_left.id,
+                        );
+                        d.insert_temp(
+                          egui::Id::new(("test_bookmarks_bar_move_right_id", id.0)),
+                          move_right.id,
+                        );
+                      });
+
+                      if close_menu {
+                        ui.close_menu();
+                      }
+                    })
+                    .inner
+                });
+              });
+
+              let menu_rect = inner.response.rect;
+
+              // Best-effort: close when clicking outside the button and the popup.
+              let clicked_outside = ui.ctx().input(|i| {
+                i.pointer.any_pressed()
+                  && i
+                    .pointer
+                    .interact_pos()
+                    .or_else(|| i.pointer.latest_pos())
+                    .is_some_and(|pos| !response.rect.contains(pos) && !menu_rect.contains(pos))
+              });
+              if clicked_outside {
+                close_menu = true;
+              }
+
+              if close_menu {
+                menu_state.open = false;
+                // Return focus to the opener so the keyboard user isn't left in limbo.
+                response.request_focus();
+              }
+            }
+
+            if menu_open_prev != menu_state.open {
+              ui.ctx().request_repaint();
+            }
+
+            ui.ctx().data_mut(|d| {
+              d.insert_temp(menu_state_id, menu_state);
+            });
+
+            #[cfg(test)]
+            ui.ctx().data_mut(|d| {
+              d.insert_temp(
+                egui::Id::new(("test_bookmarks_bar_context_menu_open", id.0)),
+                menu_state.open,
+              );
+              d.insert_temp(
+                egui::Id::new(("test_bookmarks_bar_button_id", id.0)),
+                response.id,
+              );
             });
           });
         }
@@ -3141,6 +3317,150 @@ mod a11y_id_tests {
     assert_eq!(
       first_id_b, second_id_b,
       "expected bookmark B to keep the same AccessKit node id across reorder"
+    );
+  }
+}
+
+#[cfg(all(test, feature = "browser_ui"))]
+mod bookmarks_bar_ui_tests {
+  use super::*;
+  use crate::ui::a11y_test_util;
+
+  fn begin_frame(ctx: &egui::Context, events: Vec<egui::Event>) {
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::Pos2::new(0.0, 0.0),
+      egui::vec2(800.0, 600.0),
+    ));
+    raw.time = Some(0.0);
+    raw.focused = true;
+    raw.events = events;
+    ctx.begin_frame(raw);
+  }
+
+  fn render_bar(ctx: &egui::Context, store: &BookmarkStore) -> egui::FullOutput {
+    begin_frame(ctx, Vec::new());
+    egui::CentralPanel::default().show(ctx, |ui| {
+      let _out = bookmarks_bar_ui(ui, store, usize::MAX);
+    });
+    ctx.end_frame()
+  }
+
+  #[test]
+  fn bookmark_context_menu_opens_via_shift_f10_focuses_first_item_and_closes_on_escape() {
+    let mut store = BookmarkStore::default();
+    let _a = store
+      .add(
+        "https://a.example/".to_string(),
+        Some("A".to_string()),
+        None,
+      )
+      .unwrap();
+    let b = store
+      .add(
+        "https://b.example/".to_string(),
+        Some("B".to_string()),
+        None,
+      )
+      .unwrap();
+
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    // Frame 1: render once so button ids are registered.
+    let _ = render_bar(&ctx, &store);
+
+    let button_id = ctx
+      .data(|d| d.get_temp::<egui::Id>(egui::Id::new(("test_bookmarks_bar_button_id", b.0))))
+      .expect("expected bookmark button id to be stored for tests");
+
+    // Frame 2: focus the bookmark button.
+    ctx.memory_mut(|mem| mem.request_focus(button_id));
+    begin_frame(&ctx, Vec::new());
+    egui::CentralPanel::default().show(&ctx, |ui| {
+      let _out = bookmarks_bar_ui(ui, &store, usize::MAX);
+    });
+    let _ = ctx.end_frame();
+    assert!(
+      ctx.memory(|mem| mem.has_focus(button_id)),
+      "expected bookmark button to have focus"
+    );
+
+    // Frame 3: inject Shift+F10.
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::Pos2::new(0.0, 0.0),
+      egui::vec2(800.0, 600.0),
+    ));
+    raw.time = Some(0.0);
+    raw.focused = true;
+    raw.modifiers.shift = true;
+    raw.events = vec![egui::Event::Key {
+      key: egui::Key::F10,
+      pressed: true,
+      repeat: false,
+      modifiers: egui::Modifiers {
+        shift: true,
+        ..Default::default()
+      },
+    }];
+    ctx.begin_frame(raw);
+    egui::CentralPanel::default().show(&ctx, |ui| {
+      let _out = bookmarks_bar_ui(ui, &store, usize::MAX);
+    });
+    let output = ctx.end_frame();
+
+    let menu_open = ctx
+      .data(|d| d.get_temp::<bool>(egui::Id::new(("test_bookmarks_bar_context_menu_open", b.0))))
+      .unwrap_or(false);
+    assert!(
+      menu_open,
+      "expected bookmark context menu to be open after Shift+F10"
+    );
+
+    let move_left_id = ctx
+      .data(|d| d.get_temp::<egui::Id>(egui::Id::new(("test_bookmarks_bar_move_left_id", b.0))))
+      .expect("expected move-left id to be stored");
+    assert!(
+      ctx.memory(|mem| mem.has_focus(move_left_id)),
+      "expected first enabled menu item to have focus when opened via keyboard"
+    );
+
+    // AccessKit: ensure menu items are present when the menu is open.
+    let names = a11y_test_util::accesskit_names_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_pretty_json_from_full_output(&output);
+    assert!(
+      names
+        .iter()
+        .any(|n| n == "Move bookmark left" || n == "Move left"),
+      "expected Move left menu item in AccessKit output.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
+    );
+
+    // Frame 4: Escape closes the menu and returns focus to the opener.
+    begin_frame(
+      &ctx,
+      vec![egui::Event::Key {
+        key: egui::Key::Escape,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::default(),
+      }],
+    );
+    egui::CentralPanel::default().show(&ctx, |ui| {
+      let _out = bookmarks_bar_ui(ui, &store, usize::MAX);
+    });
+    let _ = ctx.end_frame();
+
+    let menu_open = ctx
+      .data(|d| d.get_temp::<bool>(egui::Id::new(("test_bookmarks_bar_context_menu_open", b.0))))
+      .unwrap_or(false);
+    assert!(
+      !menu_open,
+      "expected bookmark context menu to close on Escape"
+    );
+    assert!(
+      ctx.memory(|mem| mem.has_focus(button_id)),
+      "expected focus to return to bookmark button after closing menu"
     );
   }
 }
