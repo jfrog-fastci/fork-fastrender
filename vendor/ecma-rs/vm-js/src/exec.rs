@@ -12309,66 +12309,93 @@ impl<'a> Evaluator<'a> {
     ))?;
 
     // Compute `callee` and `this` similarly to `CallExpression` evaluation.
-    let (callee_value, this_value) = match &*expr.stx.function.stx {
-      Expr::Member(member) if member.stx.optional_chaining => {
-        let base = self.eval_expr(scope, &member.stx.left)?;
-        if is_nullish(base) {
-          // Optional chaining short-circuit on the base value.
-          return Ok(Value::Undefined);
+    //
+    // Parenthesized tag expressions break optional-chain propagation and member-call `this` binding:
+    // `(obj?.tag)\`x\`` and `(obj.tag)\`x\`` should not treat the tag as a property reference.
+    let callee_is_parenthesized = expr
+      .stx
+      .function
+      .assoc
+      .get::<ParenthesizedExpr>()
+      .is_some();
+
+    let (callee_value, this_value) = if callee_is_parenthesized {
+      let callee_value = self.eval_expr(scope, &expr.stx.function)?;
+      (callee_value, Value::Undefined)
+    } else {
+      match &*expr.stx.function.stx {
+        Expr::Member(member) if member.stx.optional_chaining => {
+          let base = self.eval_expr(scope, &member.stx.left)?;
+          if is_nullish(base) {
+            // Optional chaining short-circuit on the base value.
+            return Ok(Value::Undefined);
+          }
+
+          // Optional chaining member access: evaluate the property reference, preserving the base
+          // value for the call `this`.
+          let mut key_scope = scope.reborrow();
+          key_scope.push_root(base)?;
+          let reference = if member.stx.right.starts_with('#') {
+            let sym = key_scope
+              .heap()
+              .resolve_private_name_symbol(self.env.lexical_env, &member.stx.right)?
+              .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+            Reference::Private {
+              base,
+              sym,
+              name: &member.stx.right,
+            }
+          } else {
+            let key_s = key_scope.alloc_string(&member.stx.right)?;
+            Reference::Property {
+              base,
+              receiver: base,
+              key: PropertyKey::from_string(key_s),
+            }
+          };
+          let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
+          (callee_value, base)
         }
+        Expr::ComputedMember(member) if member.stx.optional_chaining => {
+          let base = self.eval_expr(scope, &member.stx.object)?;
+          if is_nullish(base) {
+            return Ok(Value::Undefined);
+          }
 
-        // Optional chaining member access: evaluate the property reference, preserving the base
-        // value for the call `this`.
-        let mut key_scope = scope.reborrow();
-        key_scope.push_root(base)?;
-        let key_s = key_scope.alloc_string(&member.stx.right)?;
-        let reference = Reference::Property {
-          base,
-          receiver: base,
-          key: PropertyKey::from_string(key_s),
-        };
-        let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
-        (callee_value, base)
-      }
-      Expr::ComputedMember(member) if member.stx.optional_chaining => {
-        let base = self.eval_expr(scope, &member.stx.object)?;
-        if is_nullish(base) {
-          return Ok(Value::Undefined);
+          // Optional chaining computed member access: `ToPropertyKey` on the member value may
+          // allocate and invoke user code. Only if the base is non-nullish do we proceed to
+          // dereference the property reference.
+          let mut key_scope = scope.reborrow();
+          key_scope.push_root(base)?;
+          let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
+          key_scope.push_root(member_value)?;
+          let key = self.to_property_key_operator(&mut key_scope, member_value)?;
+          let reference = Reference::Property {
+            base,
+            receiver: base,
+            key,
+          };
+          let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
+          (callee_value, base)
         }
+        Expr::Member(_) | Expr::ComputedMember(_) | Expr::Id(_) | Expr::IdPat(_) => {
+          let reference = self.eval_reference(scope, &expr.stx.function)?;
+          let this_value = match reference {
+            Reference::Property { receiver, .. } => receiver,
+            Reference::SuperProperty { receiver, .. } => receiver,
+            Reference::Private { base, .. } => base,
+            _ => Value::Undefined,
+          };
 
-        // Optional chaining computed member access: `ToPropertyKey` on the member value may
-        // allocate and invoke user code. Only if the base is non-nullish do we proceed to
-        // dereference the property reference.
-        let mut key_scope = scope.reborrow();
-        key_scope.push_root(base)?;
-        let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
-        key_scope.push_root(member_value)?;
-        let key = self.to_property_key_operator(&mut key_scope, member_value)?;
-        let reference = Reference::Property {
-          base,
-          receiver: base,
-          key,
-        };
-        let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
-        (callee_value, base)
-      }
-      Expr::Member(_) | Expr::ComputedMember(_) | Expr::Id(_) | Expr::IdPat(_) => {
-        let reference = self.eval_reference(scope, &expr.stx.function)?;
-        let this_value = match reference {
-          Reference::Property { receiver, .. } => receiver,
-          Reference::SuperProperty { receiver, .. } => receiver,
-          Reference::Private { base, .. } => base,
-          _ => Value::Undefined,
-        };
-
-        let mut callee_scope = scope.reborrow();
-        self.root_reference(&mut callee_scope, &reference)?;
-        let callee_value = self.get_value_from_reference(&mut callee_scope, &reference)?;
-        (callee_value, this_value)
-      }
-      _ => {
-        let callee_value = self.eval_expr(scope, &expr.stx.function)?;
-        (callee_value, Value::Undefined)
+          let mut callee_scope = scope.reborrow();
+          self.root_reference(&mut callee_scope, &reference)?;
+          let callee_value = self.get_value_from_reference(&mut callee_scope, &reference)?;
+          (callee_value, this_value)
+        }
+        _ => {
+          let callee_value = self.eval_expr(scope, &expr.stx.function)?;
+          (callee_value, Value::Undefined)
+        }
       }
     };
 
