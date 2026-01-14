@@ -145,7 +145,7 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
     }
     let err = io::Error::last_os_error();
     if err.kind() == io::ErrorKind::Interrupted {
-      continue;
+      continue 'recvmsg;
     }
     // Some older kernels/sandboxed environments reject MSG_CMSG_CLOEXEC with EINVAL. Retry without
     // the flag and set FD_CLOEXEC manually on the received fd.

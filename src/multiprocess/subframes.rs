@@ -33,6 +33,13 @@ impl SubframeToken {
   }
 }
 
+/// Backwards-compatible alias for the per-iframe stable identifier.
+///
+/// Historically this was named `SubframeId`; the codebase now uses [`SubframeToken`] to emphasize
+/// that this identifier is derived from renderer-reported DOM identity rather than the browser's
+/// internal [`FrameId`].
+pub type SubframeId = SubframeToken;
+
 // -----------------------------------------------------------------------------
 // IPC-ish message surface (browser → renderer / renderer → browser).
 // -----------------------------------------------------------------------------
