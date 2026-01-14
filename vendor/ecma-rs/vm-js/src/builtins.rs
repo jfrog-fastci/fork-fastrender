@@ -14743,6 +14743,12 @@ pub fn array_prototype_push(
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
 
+  // Root `this` and all arguments before any allocations (`ToObject`, key-string allocation, Proxy
+  // traps, etc). Host callers may invoke this builtin directly without `Vm::call_impl` argument
+  // rooting.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
+
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
 
@@ -14844,6 +14850,9 @@ pub fn array_prototype_pop(
 
   let element =
     idx_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+  // Root the extracted element across the subsequent delete/length update. These operations can
+  // invoke Proxy traps and trigger GC; without rooting, host callers can receive a stale handle.
+  idx_scope.push_root(element)?;
   let ok = idx_scope.delete_with_host_and_hooks(vm, host, hooks, obj, key)?;
   if !ok {
     return Err(VmError::TypeError("Array.prototype.pop failed"));
@@ -14904,6 +14913,9 @@ pub fn array_prototype_shift(
   let first_key = string_key(&mut scope, "0")?;
   let first =
     scope.get_with_host_and_hooks(vm, host, hooks, obj, first_key, Value::Object(obj))?;
+  // Root the extracted element across shifting + length update. These operations can trigger GC and
+  // the shifted-out value may be otherwise unreachable.
+  scope.push_root(first)?;
 
   // Shift existing elements down by one (holes preserved via HasProperty/Delete).
   for k in 1..len {
@@ -14930,6 +14942,7 @@ pub fn array_prototype_shift(
     )? {
       let value =
         iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, from_key, Value::Object(obj))?;
+      iter_scope.push_root(value)?;
       let ok = iter_scope.set_with_host_and_hooks(
         vm,
         host,
@@ -14990,6 +15003,11 @@ pub fn array_prototype_unshift(
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
 
+  // Root `this` and all arguments before any allocations/shifts. The unshift algorithm can trigger
+  // GC while moving existing elements; unprocessed arguments must be kept alive for host callers.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
+
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
 
@@ -15033,6 +15051,7 @@ pub fn array_prototype_unshift(
     )? {
       let value =
         iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, from_key, Value::Object(obj))?;
+      iter_scope.push_root(value)?;
       let ok = iter_scope.set_with_host_and_hooks(
         vm,
         host,
@@ -15105,6 +15124,12 @@ pub fn array_prototype_splice(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+
+  // Root `this` and all arguments. `splice` can trigger GC while coercing `start/deleteCount` and
+  // while shifting array elements, and unprocessed insertion items must remain alive for host
+  // callers.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
 
   let obj = scope.to_object(vm, host, hooks, this)?;
   scope.push_root(Value::Object(obj))?;
@@ -15186,6 +15211,7 @@ pub fn array_prototype_splice(
       from_key,
       Value::Object(obj),
     )?;
+    iter_scope.push_root(value)?;
     iter_scope.create_data_property_or_throw(removed, to_key, value)?;
   }
 
@@ -15226,6 +15252,7 @@ pub fn array_prototype_splice(
           from_key,
           Value::Object(obj),
         )?;
+        iter_scope.push_root(value)?;
         let ok = iter_scope.set_with_host_and_hooks(
           vm,
           host,
@@ -15302,6 +15329,7 @@ pub fn array_prototype_splice(
           from_key,
           Value::Object(obj),
         )?;
+        iter_scope.push_root(value)?;
         let ok = iter_scope.set_with_host_and_hooks(
           vm,
           host,

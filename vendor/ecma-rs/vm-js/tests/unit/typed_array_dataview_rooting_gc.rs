@@ -1,4 +1,4 @@
-use crate::{builtins, Heap, HeapLimits, JsRuntime, Job, RealmId, Value, Vm, VmError, VmHostHooks, VmOptions};
+use crate::{builtins, Heap, HeapLimits, JsRuntime, Job, PropertyKey, RealmId, Value, Vm, VmError, VmHostHooks, VmOptions};
 
 #[derive(Default)]
 struct NoopHostHooks;
@@ -1140,6 +1140,149 @@ fn array_slice_roots_end_across_gc_in_tonumber() -> Result<(), VmError> {
       .array_fast_own_data_element_value(out_arr, 2)?
       .ok_or(VmError::InvariantViolation("missing result[2]"))?,
     Value::Number(3.0)
+  );
+
+  Ok(())
+}
+
+#[test]
+fn array_push_roots_later_args_across_gc_in_set() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const arr = [];
+      const a = { id: 1 };
+      const b = { id: 2 };
+      return [arr, a, b];
+    })()"#,
+  )?;
+
+  let [arr_val, a_val, b_val] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.array_constructor();
+  let args = [a_val, b_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::array_prototype_push(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    arr_val,
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected Array.prototype.push to trigger GC under tiny heap limits"
+  );
+  assert_eq!(out, Value::Number(2.0));
+
+  // Validate array contents (`{id:1}`, `{id:2}`) to ensure arguments survived GC during insertion.
+  scope.push_root(arr_val)?;
+  let Value::Object(arr_obj) = arr_val else {
+    return Err(VmError::TypeError("expected array object"));
+  };
+  assert_eq!(scope.heap().array_length(arr_obj)?, 2);
+
+  let id_s = scope.alloc_string("id")?;
+  scope.push_root(Value::String(id_s))?;
+  let id_key = PropertyKey::from_string(id_s);
+
+  let e0 = scope
+    .heap()
+    .array_fast_own_data_element_value(arr_obj, 0)?
+    .ok_or(VmError::InvariantViolation("missing array[0]"))?;
+  let e1 = scope
+    .heap()
+    .array_fast_own_data_element_value(arr_obj, 1)?
+    .ok_or(VmError::InvariantViolation("missing array[1]"))?;
+
+  let Value::Object(o0) = e0 else {
+    return Err(VmError::InvariantViolation("expected array[0] to be object"));
+  };
+  let Value::Object(o1) = e1 else {
+    return Err(VmError::InvariantViolation("expected array[1] to be object"));
+  };
+
+  assert_eq!(
+    scope.heap().object_get_own_data_property_value(o0, &id_key)?,
+    Some(Value::Number(1.0))
+  );
+  assert_eq!(
+    scope.heap().object_get_own_data_property_value(o1, &id_key)?,
+    Some(Value::Number(2.0))
+  );
+
+  Ok(())
+}
+
+#[test]
+fn array_pop_roots_result_across_gc_in_length_set_trap() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const target = { length: 1, 0: { id: 1 } };
+      const p = new Proxy(target, {
+        set(t, prop, value, recv) {
+          if (prop === "length") ({});
+          return Reflect.set(t, prop, value, recv);
+        },
+      });
+      return [p, undefined, undefined];
+    })()"#,
+  )?;
+
+  let [proxy_val, _, _] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.array_constructor();
+
+  let mut scope = heap.scope();
+  let out = builtins::array_prototype_pop(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    proxy_val,
+    &[],
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected Array.prototype.pop to trigger GC under tiny heap limits"
+  );
+
+  // Root the returned value before allocating keys for inspection.
+  scope.push_root(out)?;
+  let Value::Object(obj) = out else {
+    return Err(VmError::InvariantViolation("expected popped value to be object"));
+  };
+
+  let id_s = scope.alloc_string("id")?;
+  scope.push_root(Value::String(id_s))?;
+  let id_key = PropertyKey::from_string(id_s);
+
+  assert_eq!(
+    scope.heap().object_get_own_data_property_value(obj, &id_key)?,
+    Some(Value::Number(1.0))
   );
 
   Ok(())
