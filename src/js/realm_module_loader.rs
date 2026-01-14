@@ -509,12 +509,10 @@ impl ModuleLoader {
           .ok_or(ModuleResolveError::UnknownReferrer)?,
       ),
       ModuleReferrer::Realm(_) => self.document_url.as_deref(),
-      ModuleReferrer::Script(script) => {
-        self
-          .script_url(script)
-          .or(tls_url.as_deref())
-          .or(self.document_url.as_deref())
-      }
+      ModuleReferrer::Script(script) => self
+        .script_url(script)
+        .or(tls_url.as_deref())
+        .or(self.document_url.as_deref()),
     };
 
     let Some(base_url) = base_url else {
