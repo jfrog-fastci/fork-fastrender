@@ -41599,38 +41599,6 @@ fn html_media_element_src_set_native(
   element_reflected_string_set_native(vm, scope, host, hooks, callee, this, args)
 }
 
-fn html_media_element_reflected_bool_get_native(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
-  this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  {
-    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
-    let _ = platform.require_html_media_element_handle(scope.heap(), this)?;
-  }
-  element_reflected_bool_get_native(vm, scope, host, hooks, callee, this, args)
-}
-
-fn html_media_element_reflected_bool_set_native(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
-  this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  {
-    let platform = dom_platform_mut(vm).ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
-    let _ = platform.require_html_media_element_handle(scope.heap(), this)?;
-  }
-  element_reflected_bool_set_native(vm, scope, host, hooks, callee, this, args)
-}
-
 fn html_media_element_current_src_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -62895,6 +62863,50 @@ mod tests {
         const p2 = video.play();
         if (!(p2 instanceof Promise)) throw new Error('expected play() to return a Promise (2)');
         if (fired !== 1) throw new Error(`expected fired 1 after second play, got ${fired}`);
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_controls_reflects_attribute_and_unblocks_play() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const video = document.createElement('video');
+        if (typeof video.controls !== 'boolean') throw new Error(`expected boolean controls, got ${typeof video.controls}`);
+        if (video.controls !== false) throw new Error(`expected controls false by default, got ${video.controls}`);
+        if (video.hasAttribute('controls')) throw new Error('expected controls attribute absent');
+
+        video.controls = true;
+        if (video.controls !== true) throw new Error(`expected controls true, got ${video.controls}`);
+        if (!video.hasAttribute('controls')) throw new Error('expected controls attribute present after set');
+
+        video.controls = false;
+        if (video.controls !== false) throw new Error(`expected controls false after reset, got ${video.controls}`);
+        if (video.hasAttribute('controls')) throw new Error('expected controls attribute removed after reset');
+
+        // Autoplay policy: controls should count as user intent and allow unmuted play().
+        video.controls = true;
+        const p = video.play();
+        if (!(p instanceof Promise)) throw new Error('expected play() to return a Promise');
+        if (video.paused !== false) throw new Error(`expected paused false when controls present, got ${video.paused}`);
+
+        // Brand checks: controls getter/setter must throw on non-media receivers.
+        const desc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'controls');
+        if (!desc || typeof desc.get !== 'function' || typeof desc.set !== 'function') throw new Error('missing controls accessor');
+        const bogus = {};
+        try { desc.get.call(bogus); throw new Error('expected illegal invocation (get)'); }
+        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') throw e; }
+        try { desc.set.call(bogus, true); throw new Error('expected illegal invocation (set)'); }
+        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') throw e; }
+
         return true;
       })()"#,
     )?;
