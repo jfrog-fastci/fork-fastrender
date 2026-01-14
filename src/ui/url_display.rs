@@ -6,6 +6,7 @@
 ///
 /// The main goal is to produce a *middle-ellipsis* representation for long URLs, preferably keeping
 /// the scheme+host prefix and the last path segment (e.g. `https://example.com/…/path`).
+use memchr::memchr3;
 use std::borrow::Cow;
 
 pub fn truncate_url_middle_cow(url: &str, max_chars: usize) -> Cow<'_, str> {
@@ -22,9 +23,7 @@ pub fn truncate_url_middle_cow(url: &str, max_chars: usize) -> Cow<'_, str> {
   if let Some(scheme_sep) = url.find("://") {
     let after_authority_start = scheme_sep + "://".len();
     let after = &url[after_authority_start..];
-    let authority_rel_end = after
-      .find(|c| matches!(c, '/' | '?' | '#'))
-      .unwrap_or(after.len());
+    let authority_rel_end = memchr3(b'/', b'?', b'#', after.as_bytes()).unwrap_or(after.len());
     let authority_end = after_authority_start + authority_rel_end;
     let prefix = &url[..authority_end];
     let remainder = &url[authority_end..];

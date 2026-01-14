@@ -3,6 +3,7 @@
 use crate::ui::browser_app::BrowserTabState;
 use crate::ui::string_match::find_ascii_case_insensitive;
 use crate::ui::TabId;
+use memchr::{memchr, memchr3, memrchr};
 use std::borrow::Cow;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,28 +116,26 @@ pub fn http_host(url: &str) -> Option<&str> {
   };
 
   // Authority ends at the first path/query/fragment delimiter.
-  let authority_end = rest
-    .find(|c| matches!(c, '/' | '?' | '#'))
-    .unwrap_or(rest.len());
+  let authority_end = memchr3(b'/', b'?', b'#', rest.as_bytes()).unwrap_or(rest.len());
   let authority = &rest[..authority_end];
 
   // Strip userinfo if present.
-  let hostport = authority
-    .rsplit_once('@')
-    .map(|(_, hostport)| hostport)
-    .unwrap_or(authority);
+  let hostport = match memrchr(b'@', authority.as_bytes()) {
+    Some(at) => &authority[at + 1..],
+    None => authority,
+  };
 
   if hostport.starts_with('[') {
-    let end = hostport.find(']')?;
+    let end = memchr(b']', hostport.as_bytes())?;
     let host = &hostport[1..end];
     let host = host.trim();
     (!host.is_empty()).then_some(host)
   } else {
-    let host = hostport
-      .split_once(':')
-      .map(|(host, _port)| host)
-      .unwrap_or(hostport)
-      .trim();
+    let host = match memchr(b':', hostport.as_bytes()) {
+      Some(colon) => &hostport[..colon],
+      None => hostport,
+    }
+    .trim();
     (!host.is_empty()).then_some(host)
   }
 }
