@@ -20,7 +20,7 @@ fn ui_perf_smoke_emits_tab_switch_scenario_summary() {
     ])
     // Keep the harness deterministic and avoid depending on system fonts.
     .env("FASTR_USE_BUNDLED_FONTS", "1")
-    .env("RAYON_NUM_THREADS", "1")
+    .env_remove("RAYON_NUM_THREADS")
     .stdout(Stdio::null())
     .output()
     .expect("run ui_perf_smoke");
@@ -56,7 +56,7 @@ fn ui_perf_smoke_emits_tab_switch_scenario_summary() {
   );
   assert_eq!(
     summary["run_config"]["rayon_threads_source"].as_str(),
-    Some("env"),
+    Some("harness_default"),
     "run_config.rayon_threads_source should record whether the thread count came from --rayon-threads, RAYON_NUM_THREADS, or the harness default"
   );
   assert_eq!(
