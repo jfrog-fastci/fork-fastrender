@@ -15995,18 +15995,20 @@ impl<'a> Evaluator<'a> {
               Reference::Property { key, .. } => {
                 self.eval_expr_named(&mut rhs_scope, &expr.right, key)?
               }
-              Reference::SuperProperty { key, .. } => {
-                // `super[expr]` stores the raw property-name *value* and defers `ToPropertyKey`
-                // conversion until `PutValue` (see `Reference::SuperProperty` docs). Avoid calling
-                // `ToPropertyKey` here when it would invoke user code (object keys), because
-                // `NamedEvaluation` runs before evaluating the RHS.
-                if matches!(key, Value::Object(_)) {
-                  self.eval_expr(&mut rhs_scope, &expr.right)?
-                } else {
-                  let key = self.to_property_key_operator(&mut rhs_scope, key)?;
-                  self.eval_expr_named(&mut rhs_scope, &expr.right, key)?
+              // `super[expr]` defers `ToPropertyKey` until `PutValue` to preserve correct evaluation
+              // order (and to avoid running user code during key conversion before base validation).
+              //
+              // Only apply inferred naming when the computed key is already a safe property key
+              // (`String`/`Symbol`); otherwise, evaluate the RHS without `NamedEvaluation`.
+              Reference::SuperProperty { key: key_value, .. } => match key_value {
+                Value::String(s) => {
+                  self.eval_expr_named(&mut rhs_scope, &expr.right, PropertyKey::String(s))?
                 }
-              }
+                Value::Symbol(sym) => {
+                  self.eval_expr_named(&mut rhs_scope, &expr.right, PropertyKey::Symbol(sym))?
+                }
+                _ => self.eval_expr(&mut rhs_scope, &expr.right)?,
+              },
               _ => self.eval_expr(&mut rhs_scope, &expr.right)?,
             };
             rhs_scope.push_root(value)?;
