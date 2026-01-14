@@ -365,4 +365,40 @@ mod tests {
     // *not* syntactic shorthand and must preserve `shorthand=false`.
     assert_first_prop("({ a: b = 1 } = obj);", false, "b", true);
   }
+
+  #[test]
+  fn class_initialization_code_disallows_arguments_identifier() {
+    let opts = ecma_script_opts();
+
+    let expected = SyntaxErrorType::ExpectedSyntax(
+      "`arguments` is not allowed in class field initializers or static initialization blocks",
+    );
+
+    // `arguments` is an early error in class field initializers.
+    let err = parse_with_options("class C { x = arguments; }", opts).unwrap_err();
+    assert_eq!(err.typ, expected);
+
+    // `arguments` is also an early error in `static {}` blocks.
+    let err = parse_with_options("class C { static { arguments; } }", opts).unwrap_err();
+    assert_eq!(err.typ, expected);
+
+    // Arrow functions do not introduce an `arguments` binding, so references remain disallowed.
+    let err = parse_with_options("class C { x = () => arguments; }", opts).unwrap_err();
+    assert_eq!(err.typ, expected);
+
+    // Non-arrow functions (and arrow functions nested within them) may reference their own
+    // `arguments` binding.
+    parse_with_options("class C { x = function () { return arguments; }; }", opts).unwrap();
+    parse_with_options(
+      "class C { x = function () { return () => arguments; }; }",
+      opts,
+    )
+    .unwrap();
+    parse_with_options("class C { x = function (a = arguments) {}; }", opts).unwrap();
+
+    // Even when a class is nested in a function with an `arguments` binding, class initialization
+    // code must not inherit it.
+    let err = parse_with_options("function f() { class C { x = arguments; } }", opts).unwrap_err();
+    assert_eq!(err.typ, expected);
+  }
 }
