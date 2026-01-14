@@ -35,6 +35,25 @@ fn direct_eval_in_public_field_initializer_allows_super_property() -> Result<(),
 }
 
 #[test]
+fn direct_eval_in_public_field_initializer_allows_super_computed_property() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+    var executed = false;
+    class A {}
+    class C extends A {
+      x = eval('executed = true; super["x"];');
+    }
+    new C();
+    executed;
+    "#,
+  )?;
+
+  assert_value_is_bool(value, true);
+  Ok(())
+}
+
+#[test]
 fn direct_eval_in_private_field_initializer_allows_super_property_in_arrow() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = rt.exec_script(
@@ -43,6 +62,27 @@ fn direct_eval_in_private_field_initializer_allows_super_property_in_arrow() -> 
     class A {}
     class C extends A {
       #f = eval('executed = true; () => super.x;');
+      run() { this.#f(); }
+    }
+    new C().run();
+    executed;
+    "#,
+  )?;
+
+  assert_value_is_bool(value, true);
+  Ok(())
+}
+
+#[test]
+fn direct_eval_in_private_field_initializer_allows_super_computed_property_in_arrow(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+    var executed = false;
+    class A {}
+    class C extends A {
+      #f = eval('executed = true; () => super["x"];');
       run() { this.#f(); }
     }
     new C().run();
@@ -66,6 +106,29 @@ fn indirect_eval_in_field_initializer_rejects_super_property_and_skips_side_effe
     class A {}
     class C extends A {
       x = indirectEval('executed = true; super.x;');
+    }
+    try { new C(); }
+    catch (e) { ok = e.name === 'SyntaxError'; }
+    ok && !executed;
+    "#,
+  )?;
+
+  assert_value_is_bool(value, true);
+  Ok(())
+}
+
+#[test]
+fn indirect_eval_in_field_initializer_rejects_super_computed_property_and_skips_side_effects() -> Result<(), VmError>
+{
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+    var executed = false;
+    var ok = false;
+    var indirectEval = eval;
+    class A {}
+    class C extends A {
+      x = indirectEval('executed = true; super["x"];');
     }
     try { new C(); }
     catch (e) { ok = e.name === 'SyntaxError'; }
