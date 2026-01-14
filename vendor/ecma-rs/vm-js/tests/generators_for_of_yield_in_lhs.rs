@@ -485,6 +485,27 @@ fn generator_for_of_yield_in_array_pattern_rest_assignment_target_computed_membe
 }
 
 #[test]
+fn generator_for_of_yield_in_object_pattern_rest_assignment_target_computed_member() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          var obj = {};
+          for ({...obj[yield "k"]} of [{a: 1, b: 2}]) { return obj.k.b; }
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next("k");
+        r1.done === false && r1.value === "k" &&
+        r2.done === true && r2.value === 2
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_for_of_let_default_initializer_has_tdz_across_yield() {
   let mut rt = new_runtime();
   let value = rt
