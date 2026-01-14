@@ -2352,6 +2352,7 @@ impl Vm {
     }
 
     let mut wrapped: String = String::new();
+    let mut prefix_len_override: Option<u32> = None;
     let top = match kind {
       // Most function snippets originate from classic scripts, which must be parsed in
       // `SourceType::Script` mode to preserve sloppy-mode semantics and grammar.
@@ -2382,7 +2383,36 @@ impl Vm {
         wrapped.push_str("function*__vmjs(){(class extends null {");
         wrapped.push_str(snippet);
         wrapped.push_str("});}");
-        parse_top(self, &wrapped, script_opts, module_opts, false, allow_top_level_yield)?
+        match parse_top(self, &wrapped, script_opts, module_opts, false, allow_top_level_yield) {
+          Ok(top) => top,
+          Err(err @ VmError::Syntax(_)) => {
+            // `await` expressions in class member computed keys (e.g. `[await x]() {}`) require an
+            // async parsing context. Since we only store a snippet span for lazy parsing, we don't
+            // know whether the original source was inside an async context; retry with an async
+            // generator wrapper when the non-async wrapper fails.
+            wrapped.clear();
+            let capacity = snippet.len().checked_add(49).ok_or(VmError::OutOfMemory)?;
+            wrapped
+              .try_reserve(capacity)
+              .map_err(|_| VmError::OutOfMemory)?;
+            wrapped.push_str("async function*__vmjs(){(class extends null {");
+            wrapped.push_str(snippet);
+            wrapped.push_str("});}");
+            match parse_top(self, &wrapped, script_opts, module_opts, false, allow_top_level_yield) {
+              Ok(top) => {
+                prefix_len_override = Some(45);
+                top
+              }
+              Err(retry_err) => {
+                if matches!(retry_err, VmError::Syntax(_)) {
+                  return Err(err);
+                }
+                return Err(retry_err);
+              }
+            }
+          }
+          Err(other) => return Err(other),
+        }
       }
       EcmaFunctionKind::ClassFieldInitializer => {
         wrapped.clear();
@@ -2631,6 +2661,9 @@ impl Vm {
       .ok_or_else(|| VmError::invalid_handle())?;
     slot.parsed = Some(func.clone());
     slot.parsed_memory = Some(token);
+    if let Some(prefix_len) = prefix_len_override {
+      slot.prefix_len = prefix_len;
+    }
     Ok(func)
   }
 
