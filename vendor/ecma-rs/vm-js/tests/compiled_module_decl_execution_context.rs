@@ -464,7 +464,10 @@ fn compiled_module_decl_functions_capture_realm_and_module_for_host_calls() -> R
 
   // Dynamic `import()` should use `m.js` as its referrer module.
   assert_eq!(
-    hooks.import_referrers.get("dep2.js").copied(),
+    hooks
+      .import_referrers
+      .get(&JsString::from_str("dep2.js").unwrap())
+      .copied(),
     Some(ModuleReferrer::Module(m)),
   );
 
@@ -535,7 +538,10 @@ fn compiled_module_decl_functions_capture_realm_and_module_for_host_calls() -> R
     scope.push_root(p)?;
 
     assert_eq!(
-      hooks.import_referrers.get("dep3.js").copied(),
+      hooks
+        .import_referrers
+        .get(&JsString::from_str("dep3.js").unwrap())
+        .copied(),
       Some(ModuleReferrer::Module(dep)),
     );
 
@@ -643,7 +649,10 @@ fn compiled_module_decl_functions_capture_realm_and_module_for_host_calls() -> R
     scope.push_root(p_value)?;
 
     assert_eq!(
-      hooks.import_referrers.get("dep4.js").copied(),
+      hooks
+        .import_referrers
+        .get(&JsString::from_str("dep4.js").unwrap())
+        .copied(),
       Some(ModuleReferrer::Module(dep)),
     );
 

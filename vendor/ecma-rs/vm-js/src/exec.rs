@@ -18678,6 +18678,40 @@ fn async_generator_handle_execution_result(
   loop {
     match result {
       AsyncBodyResult::Await {
+        kind: AsyncSuspendKind::AwaitResolved,
+        await_value,
+        frames,
+      } => {
+        state.frames = frames;
+
+        // `AwaitResolved` means the internal `PromiseResolve` step has already been performed.
+        // Do not call `PromiseResolve` again or we'd observe side effects twice.
+        debug_assert!(
+          matches!(await_value, Value::Object(obj) if scope.heap().is_promise_object(obj)),
+          "AwaitResolved suspension must carry a Promise object"
+        );
+        let awaited_promise = await_value;
+
+        // Suspend: store frames in the VM and wire a Promise job to resume.
+        cont.env.teardown(scope.heap_mut());
+        scope
+          .heap_mut()
+          .async_generator_set_continuation(gen_obj, Some(cont))?;
+
+        async_generator_schedule_await(
+          vm,
+          scope,
+          host,
+          hooks,
+          gen_obj,
+          awaited_promise,
+          AsyncGeneratorResumeKind::Await,
+          state,
+        )?;
+        return Ok(false);
+      }
+
+      AsyncBodyResult::Await {
         kind: AsyncSuspendKind::Await,
         await_value,
         frames,
@@ -52083,6 +52117,44 @@ mod tests {
         d.errName === 'ReferenceError' &&
         d.errMsg === "Must call super constructor in derived class before accessing 'this'" &&
         log.join(',') === 'key,m:true'
+    "#;
+
+    assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
+    assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn arrow_this_in_derived_constructor_computed_super_property_call_args_evaluation_order_and_no_pre_super_side_effects(
+  ) -> Result<(), VmError> {
+    let source = r#"
+      let log = [];
+      function key() { log.push('key'); return 'm'; }
+      function arg() { log.push('arg'); return 1; }
+
+      class B {
+        m(v) { log.push('m:' + v + ':' + (this instanceof D)); return v; }
+      }
+      class D extends B {
+        constructor() {
+          let f = () => super[key()](arg());
+
+          let errName;
+          let errMsg;
+          try { f(); } catch (e) { errName = e.name; errMsg = e.message; }
+
+          super();
+          this.v = f();
+          this.errName = errName;
+          this.errMsg = errMsg;
+        }
+      }
+
+      let d = new D();
+      d.v === 1 &&
+        d.errName === 'ReferenceError' &&
+        d.errMsg === "Must call super constructor in derived class before accessing 'this'" &&
+        log.join(',') === 'key,arg,m:1:true'
     "#;
 
     assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
