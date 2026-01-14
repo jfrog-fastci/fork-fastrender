@@ -1350,6 +1350,35 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
           inner = &label.stx.statement;
         }
         match &*inner.stx {
+          Stmt::Expr(expr_stmt) => {
+            let expr = &expr_stmt.stx.expr;
+            expr_is_direct_await_without_nested_await(expr)
+              || expr_is_supported_assignment_with_direct_await_rhs_without_nested_await(expr)
+              || expr_is_destructuring_assignment_with_direct_await_rhs_without_nested_await(expr)
+              || expr_is_object_destructuring_assignment_with_supported_await(expr)
+          }
+          Stmt::Throw(throw_stmt) => match &*throw_stmt.stx.value.stx {
+            Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => !expr_contains_await(&unary.stx.argument),
+            _ => false,
+          },
+          Stmt::VarDecl(decl) => decl.stx.declarators.iter().all(|d| {
+            if pat_contains_await(&d.pattern.stx.pat.stx) {
+              return false;
+            }
+
+            let Some(init) = d.initializer.as_ref() else {
+              return true;
+            };
+
+            if !expr_contains_await(init) {
+              return true;
+            }
+
+            match &*init.stx {
+              Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => !expr_contains_await(&unary.stx.argument),
+              _ => false,
+            }
+          }),
           Stmt::ForTriple(for_stmt) => for_triple_stmt_supported(for_stmt),
           Stmt::ForOf(for_of) if !for_of.stx.await_ => for_of_stmt_supported_with_async_head(for_of),
           Stmt::ForOf(for_of) if for_of.stx.await_ => {

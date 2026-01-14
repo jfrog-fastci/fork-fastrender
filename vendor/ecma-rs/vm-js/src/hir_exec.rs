@@ -16963,9 +16963,16 @@ impl HirAsyncState {
       if self.next_stmt_index >= stmts.len() {
         return Ok(HirAsyncResult::CompleteOk(Value::Undefined));
       }
-      let stmt_id = stmts[self.next_stmt_index];
-      let stmt = evaluator.get_stmt(body, stmt_id)?;
-      let stmt_offset = stmt.span.start;
+      let sync_stmt_id = stmts[self.next_stmt_index];
+      let sync_stmt = evaluator.get_stmt(body, sync_stmt_id)?;
+      let sync_stmt_offset = sync_stmt.span.start;
+      // For pure label chains (`a: b: <stmt>`), we may execute the *inner* statement using one of
+      // the compiled async fast paths while preserving the outer statement-list index. When doing
+      // so, `label_tick_count` tracks the number of label statements we bypass so we can charge the
+      // same budget as the synchronous evaluator would.
+      let mut label_tick_count: usize = 0;
+      let mut stmt = sync_stmt;
+      let mut stmt_offset = sync_stmt_offset;
 
       // Fast-path top-level label chains whose body is:
       // - a `for await..of` loop,
@@ -16982,7 +16989,7 @@ impl HirAsyncState {
       if let hir_js::StmtKind::Labeled {
         label: first_label,
         body: first_body,
-      } = &stmt.kind
+      } = &sync_stmt.kind
       {
         // Detect whether this is a pure label chain ending in a `for await..of`.
         //
@@ -17088,6 +17095,14 @@ impl HirAsyncState {
             continue;
           }
         }
+
+        // For non-loop label chains, the label statements themselves have no observable effect
+        // (since expression/var/throw statements cannot produce `break`/`continue` completions),
+        // but we still need to "see through" the labels so we can handle `await` in supported
+        // top-level statement forms.
+        label_tick_count = label_count;
+        stmt = inner_stmt;
+        stmt_offset = inner_stmt.span.start;
       }
 
       // Support a minimal async-aware `try/catch` form where the try block contains a single
@@ -17268,6 +17283,10 @@ impl HirAsyncState {
               }
             }
             if has_await_in_pattern {
+              for _ in 0..label_tick_count {
+                evaluator.vm.tick()?;
+              }
+
               // Evaluate the RHS synchronously (per spec) before beginning pattern assignment.
               let rhs_value = match evaluator.eval_expr(scope, body, *value) {
                 Ok(v) => v,
@@ -17334,6 +17353,9 @@ impl HirAsyncState {
       if let hir_js::StmtKind::Expr(expr_id) = &stmt.kind {
         let expr = evaluator.get_expr(body, *expr_id)?;
         if let hir_js::ExprKind::Await { expr: awaited_expr } = &expr.kind {
+          for _ in 0..label_tick_count {
+            evaluator.vm.tick()?;
+          }
           // Budget once for the statement and once for the await expression itself.
           evaluator.vm.tick()?;
           evaluator.vm.tick()?;
@@ -17383,12 +17405,15 @@ impl HirAsyncState {
               | hir_js::AssignOp::BitAndAssign
               | hir_js::AssignOp::BitXorAssign
           );
-          if *op == hir_js::AssignOp::Assign || compound_op {
-            let rhs = evaluator.get_expr(body, *value)?;
-            if let hir_js::ExprKind::Await { expr: awaited_expr } = &rhs.kind {
-              // Budget once for the statement and once for the await expression itself.
-              evaluator.vm.tick()?;
-              evaluator.vm.tick()?;
+            if *op == hir_js::AssignOp::Assign || compound_op {
+              let rhs = evaluator.get_expr(body, *value)?;
+              if let hir_js::ExprKind::Await { expr: awaited_expr } = &rhs.kind {
+                for _ in 0..label_tick_count {
+                  evaluator.vm.tick()?;
+                }
+                // Budget once for the statement and once for the await expression itself.
+                evaluator.vm.tick()?;
+                evaluator.vm.tick()?;
 
               // Destructuring assignment (`({x} = await <expr>);` / `[x] = await <expr>;`) evaluates
               // the RHS first and does not resolve an assignment reference prior to awaiting.
@@ -17593,6 +17618,9 @@ impl HirAsyncState {
       if let hir_js::StmtKind::Return(Some(expr_id)) = &stmt.kind {
         let expr = evaluator.get_expr(body, *expr_id)?;
         if let hir_js::ExprKind::Await { expr: awaited_expr } = &expr.kind {
+          for _ in 0..label_tick_count {
+            evaluator.vm.tick()?;
+          }
           evaluator.vm.tick()?;
           evaluator.vm.tick()?;
           let await_value = match evaluator.eval_expr(scope, body, *awaited_expr) {
@@ -17626,6 +17654,9 @@ impl HirAsyncState {
       if let hir_js::StmtKind::Throw(expr_id) = &stmt.kind {
         let expr = evaluator.get_expr(body, *expr_id)?;
         if let hir_js::ExprKind::Await { expr: awaited_expr } = &expr.kind {
+          for _ in 0..label_tick_count {
+            evaluator.vm.tick()?;
+          }
           evaluator.vm.tick()?;
           evaluator.vm.tick()?;
           let await_value = match evaluator.eval_expr(scope, body, *awaited_expr) {
@@ -17660,6 +17691,9 @@ impl HirAsyncState {
       // We handle this statement kind manually so we can suspend after evaluating the awaited
       // subexpression and resume by initializing the declarator binding.
       if let hir_js::StmtKind::Var(var_decl) = &stmt.kind {
+        for _ in 0..label_tick_count {
+          evaluator.vm.tick()?;
+        }
         // Budget once for the statement itself, matching `eval_stmt_labelled`.
         evaluator.vm.tick()?;
         for (j, declarator) in var_decl.declarators.iter().enumerate() {
@@ -17820,9 +17854,9 @@ impl HirAsyncState {
 
       // Evaluate non-awaiting statements synchronously.
       let stmt_result = if self.in_root_stmt_list {
-        evaluator.eval_root_stmt(scope, body, stmt_id)
+        evaluator.eval_root_stmt(scope, body, sync_stmt_id)
       } else {
-        evaluator.eval_stmt(scope, body, stmt_id)
+        evaluator.eval_stmt(scope, body, sync_stmt_id)
       };
       match stmt_result {
         Ok(flow) => match flow {
@@ -17848,7 +17882,7 @@ impl HirAsyncState {
             &*evaluator.vm,
             scope,
             evaluator.script.source.as_ref(),
-            stmt_offset,
+            sync_stmt_offset,
             err,
           );
           return match err {
