@@ -33,18 +33,19 @@ fn compiled_script_with_host_and_hooks_does_not_fall_back_for_async_function_def
       const h = async () => 3;
 
       const obj = {
-        async m() { return 4; }
+        async m() { return this === obj ? 4 : -100; }
       };
 
       class C {
-        async m() { return 5; }
+        async m() { return this instanceof C ? 5 : -100; }
       }
+      const inst = new C();
 
       f().then(v => { result += v; });
       g().then(v => { result += v; });
       h().then(v => { result += v; });
       obj.m().then(v => { result += v; });
-      (new C()).m().then(v => { result += v; });
+      inst.m().then(v => { result += v; });
     "#,
   )?;
 
