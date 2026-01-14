@@ -756,7 +756,10 @@ struct MixerState {
 struct MixStats {
   streams: u64,
   buffered_frames: u64,
+  buffered_frames_max: u64,
+  buffered_frames_total: u64,
   underruns: u64,
+  dropped_samples_total: u64,
 }
 
 impl MixerState {
@@ -897,7 +900,10 @@ impl MixerState {
     let mut stats = MixStats {
       streams: 0,
       buffered_frames: u64::MAX,
+      buffered_frames_max: 0,
+      buffered_frames_total: 0,
       underruns: 0,
+      dropped_samples_total: 0,
     };
 
     let sinks = self.sinks.read();
@@ -910,9 +916,14 @@ impl MixerState {
       let available_samples = sink.buffer.buffered_samples();
       let buffered_frames = (available_samples / channels) as u64;
       stats.buffered_frames = stats.buffered_frames.min(buffered_frames);
+      stats.buffered_frames_max = stats.buffered_frames_max.max(buffered_frames);
+      stats.buffered_frames_total = stats.buffered_frames_total.saturating_add(buffered_frames);
       if available_samples < output_samples_len {
         stats.underruns = stats.underruns.saturating_add(1);
       }
+      stats.dropped_samples_total = stats
+        .dropped_samples_total
+        .saturating_add(sink.dropped_samples.load(Ordering::Relaxed));
     }
 
     if stats.streams == 0 || stats.buffered_frames == u64::MAX {
@@ -930,6 +941,7 @@ impl MixerState {
 struct SinkState {
   config: AudioStreamConfig,
   buffer: AudioRingBuffer,
+  dropped_samples: AtomicU64,
   activity: IdleStreamHandle<CpalStreamControlBackend>,
   volume_target_bits: AtomicU32,
   discontinuity_state: AtomicU32,
@@ -955,6 +967,7 @@ impl SinkState {
     Self {
       config,
       buffer: AudioRingBuffer::new(capacity),
+      dropped_samples: AtomicU64::new(0),
       activity,
       volume_target_bits: AtomicU32::new(1.0f32.to_bits()),
       discontinuity_state: AtomicU32::new(DISC_STATE_NONE),
@@ -1171,6 +1184,14 @@ impl AudioSink for CpalAudioSink {
     }
 
     let written = self.state.buffer.push(&samples[..capped_len]);
+    if written < capped_len {
+      // Track best-effort dropped samples so trace captures can show producer-side overruns.
+      let dropped = capped_len - written;
+      self
+        .state
+        .dropped_samples
+        .fetch_add(dropped as u64, Ordering::Relaxed);
+    }
 
     // Re-assert after the write so a concurrent callback maintenance pass can't clobber us.
     if written != 0 {
@@ -1467,6 +1488,7 @@ where
   let mut playback_origin_offset = Duration::ZERO;
   let sample_rate_hz = mixer.config.sample_rate_hz;
   let trace_enabled = trace.is_enabled();
+  let mut last_dropped_samples_total: u64 = 0;
 
   let err_cb = {
     let diagnostics = diagnostics.clone();
@@ -1535,6 +1557,14 @@ where
             span.arg_u64("streams", stats.streams);
             span.arg_u64("underruns", stats.underruns);
             span.arg_u64("buffered_frames", stats.buffered_frames);
+            span.arg_u64("buffered_frames_max", stats.buffered_frames_max);
+            span.arg_u64("buffered_frames_total", stats.buffered_frames_total);
+
+            let dropped_total = stats.dropped_samples_total;
+            span.arg_u64("dropped_samples_total", dropped_total);
+            let dropped_delta = dropped_total.saturating_sub(last_dropped_samples_total);
+            span.arg_u64("dropped_samples_delta", dropped_delta);
+            last_dropped_samples_total = dropped_total;
           }
 
           let ts = info.timestamp();
