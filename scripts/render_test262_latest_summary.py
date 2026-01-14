@@ -394,7 +394,12 @@ def main(argv: list[str]) -> int:
         out_lines.append("_None._")
     out_lines.append("")
     out_lines.append("## Appendix: top failing tests (IDs + first-line error)\n")
-    out_lines.append("At least 50 mismatched cases, grouped by the largest mismatch buckets.\n")
+    out_lines.append(
+        "At least 50 mismatched cases, grouped by the largest mismatch buckets.\n"
+        "\n"
+        "(If the suite only has a few buckets with mismatches, the largest buckets will show more\n"
+        "than `--appendix-per-bucket` entries so the appendix still reaches the minimum count.)\n"
+    )
 
     mismatched_by_bucket: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in results:
@@ -402,12 +407,32 @@ def main(argv: list[str]) -> int:
             continue
         mismatched_by_bucket[_bucket2(r["id"])].append(r)
 
+    # Determine how many entries to show per bucket.
+    buckets_with_mismatches = [bucket for bucket, _ in sorted_buckets if mismatched_by_bucket.get(bucket)]
+    show_count: dict[str, int] = {}
     shown_total = 0
-    for bucket, stat in sorted_buckets:
-        mism = mismatched_by_bucket.get(bucket, [])
-        if not mism:
-            continue
-        shown = min(args.appendix_per_bucket, len(mism))
+    for bucket in buckets_with_mismatches:
+        base = min(args.appendix_per_bucket, len(mismatched_by_bucket[bucket]))
+        show_count[bucket] = base
+        shown_total += base
+
+    # Top up the largest buckets so we always show at least `appendix_min` entries overall.
+    need = max(0, args.appendix_min - shown_total)
+    if need:
+        for bucket in buckets_with_mismatches:
+            mism = mismatched_by_bucket[bucket]
+            avail = len(mism) - show_count[bucket]
+            if avail <= 0:
+                continue
+            extra = min(avail, need)
+            show_count[bucket] += extra
+            need -= extra
+            if need <= 0:
+                break
+
+    for bucket in buckets_with_mismatches:
+        mism = mismatched_by_bucket[bucket]
+        shown = show_count[bucket]
         out_lines.append(f"### `{bucket}` ({shown} shown / {len(mism)} mismatches)\n")
         mism_sorted = sorted(mism, key=lambda r: (r.get("id", ""), r.get("variant", "")))
         for r in mism_sorted[:shown]:
@@ -416,9 +441,6 @@ def main(argv: list[str]) -> int:
             reason = _first_nonempty_line(r.get("error"))
             out_lines.append(f"- `{test_id}#{variant}`: `{reason}`")
         out_lines.append("")
-        shown_total += shown
-        if shown_total >= args.appendix_min:
-            break
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text("\n".join(out_lines).rstrip() + "\n", encoding="utf-8")

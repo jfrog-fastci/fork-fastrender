@@ -181,7 +181,10 @@ _None._
 
 At least 50 mismatched cases, grouped by the largest mismatch buckets.
 
-### `language/statements` (10 shown / 985 mismatches)
+(If the suite only has a few buckets with mismatches, the largest buckets will show more
+than `--appendix-per-bucket` entries so the appendix still reaches the minimum count.)
+
+### `language/statements` (22 shown / 985 mismatches)
 
 - `language/statements/async-function/dflt-params-abrupt.js#non_strict`: `at language/statements/async-function/dflt-params-abrupt.js:207:36`
 - `language/statements/async-function/dflt-params-abrupt.js#strict`: `at language/statements/async-function/dflt-params-abrupt.js:209:36`
@@ -193,6 +196,18 @@ At least 50 mismatched cases, grouped by the largest mismatch buckets.
 - `language/statements/async-function/evaluation-default-that-throws.js#non_strict`: `value is not callable`
 - `language/statements/async-function/evaluation-default-that-throws.js#strict`: `value is not callable`
 - `language/statements/async-function/evaluation-mapped-arguments.js#non_strict`: `Test262Error: Expected SameValue(«1», «2») to be true`
+- `language/statements/async-generator/dflt-params-abrupt.js#non_strict`: `Expected a Test262Error to be thrown but no exception was thrown at all`
+- `language/statements/async-generator/dflt-params-abrupt.js#strict`: `Expected a Test262Error to be thrown but no exception was thrown at all`
+- `language/statements/async-generator/dflt-params-arg-val-not-undefined.js#non_strict`: `unimplemented: async generator functions`
+- `language/statements/async-generator/dflt-params-arg-val-not-undefined.js#strict`: `unimplemented: async generator functions`
+- `language/statements/async-generator/dflt-params-arg-val-undefined.js#non_strict`: `unimplemented: async generator functions`
+- `language/statements/async-generator/dflt-params-arg-val-undefined.js#strict`: `unimplemented: async generator functions`
+- `language/statements/async-generator/dflt-params-ref-later.js#non_strict`: `Expected a ReferenceError to be thrown but no exception was thrown at all`
+- `language/statements/async-generator/dflt-params-ref-later.js#strict`: `Expected a ReferenceError to be thrown but no exception was thrown at all`
+- `language/statements/async-generator/dflt-params-ref-prior.js#non_strict`: `unimplemented: async generator functions`
+- `language/statements/async-generator/dflt-params-ref-prior.js#strict`: `unimplemented: async generator functions`
+- `language/statements/async-generator/dflt-params-ref-self.js#non_strict`: `Expected a ReferenceError to be thrown but no exception was thrown at all`
+- `language/statements/async-generator/dflt-params-ref-self.js#strict`: `Expected a ReferenceError to be thrown but no exception was thrown at all`
 
 ### `built-ins/Set` (10 shown / 304 mismatches)
 
