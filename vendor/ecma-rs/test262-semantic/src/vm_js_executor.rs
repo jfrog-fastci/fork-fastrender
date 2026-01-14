@@ -1879,7 +1879,7 @@ fn map_vm_error(
       stack: stack_from_frames(runtime.vm.capture_stack()),
     }),
 
-    VmError::PrototypeChainTooDeep => ExecError::Js(JsError {
+    VmError::PrototypeChainTooDeep | VmError::RangeError(_) => ExecError::Js(JsError {
       phase: ExecPhase::Runtime,
       typ: Some("RangeError".to_string()),
       message: err.to_string(),
@@ -2218,6 +2218,37 @@ f(2000);
         js.message
       );
     }
+  }
+
+  #[test]
+  fn range_error_variant_maps_to_rangeerror_type() {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let case = test_case("range_error_variant.js");
+
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(
+      DEFAULT_HEAP_MAX_BYTES,
+      DEFAULT_HEAP_GC_THRESHOLD_BYTES,
+    ));
+    let mut runtime = vm_js::JsRuntime::new(vm, heap).expect("init runtime");
+
+    let err = map_vm_error(
+      &case,
+      "",
+      &cancel,
+      &mut runtime,
+      VmError::RangeError("Maximum call stack size exceeded"),
+    );
+    let ExecError::Js(js) = err else {
+      panic!("expected JS error, got {err:?}");
+    };
+    assert_eq!(js.phase, ExecPhase::Runtime);
+    assert_eq!(js.typ.as_deref(), Some("RangeError"));
+    assert!(
+      js.message.to_ascii_lowercase().contains("call stack"),
+      "expected call stack message, got: {}",
+      js.message
+    );
   }
 
   #[test]
