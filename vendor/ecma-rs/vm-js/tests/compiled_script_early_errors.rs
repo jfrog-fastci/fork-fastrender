@@ -165,10 +165,10 @@ fn compiled_module_with_budget_rejects_duplicate_exported_name_default_vs_named(
 }
 
 #[test]
-fn compiled_script_rejects_await_in_class_static_block() {
+fn compiled_script_falls_back_for_await_in_class_static_block() {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
 
-  let err = CompiledScript::compile_script(
+  let script = CompiledScript::compile_script(
     &mut heap,
     "test.js",
     r#"
@@ -179,16 +179,20 @@ fn compiled_script_rejects_await_in_class_static_block() {
       }
     "#,
   )
-  .unwrap_err();
-  assert!(matches!(err, VmError::Syntax(_)));
+  .expect("await in class static blocks is allowed in async classic scripts");
+  assert!(script.contains_top_level_await);
+  assert!(
+    script.top_level_await_requires_ast_fallback,
+    "await in class static blocks requires falling back to the AST async script evaluator"
+  );
 }
 
 #[test]
-fn compiled_script_with_budget_rejects_await_in_class_static_block() {
+fn compiled_script_with_budget_falls_back_for_await_in_class_static_block() {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut vm = Vm::new(VmOptions::default());
 
-  let err = CompiledScript::compile_script_with_budget(
+  let script = CompiledScript::compile_script_with_budget(
     &mut heap,
     &mut vm,
     "test.js",
@@ -200,6 +204,10 @@ fn compiled_script_with_budget_rejects_await_in_class_static_block() {
       }
     "#,
   )
-  .unwrap_err();
-  assert!(matches!(err, VmError::Syntax(_)));
+  .expect("await in class static blocks is allowed in async classic scripts");
+  assert!(script.contains_top_level_await);
+  assert!(
+    script.top_level_await_requires_ast_fallback,
+    "await in class static blocks requires falling back to the AST async script evaluator"
+  );
 }

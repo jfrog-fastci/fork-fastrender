@@ -73,42 +73,62 @@ fn async_class_evaluation_supports_static_blocks() -> Result<(), VmError> {
 }
 
 #[test]
-fn await_in_async_class_static_block_is_syntax_error() -> Result<(), VmError> {
+fn await_in_async_class_static_block_is_allowed() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
-  let err = rt
-    .exec_script(
-      r#"
-        async function f() {
-          class C {
-            static {
-              await Promise.resolve(0);
-            }
+  rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        class C {
+          static {
+            out += "a";
+            await Promise.resolve(0);
+            out += "b";
           }
         }
-      "#,
-    )
-    .unwrap_err();
-  assert!(matches!(err, VmError::Syntax(_)));
+        return out;
+      }
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "a");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "ab");
   Ok(())
 }
 
 #[test]
-fn await_in_class_static_block_is_syntax_error_in_script() -> Result<(), VmError> {
+fn script_await_in_class_static_block_runs_as_async_script() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
-  let err = rt
-    .exec_script(
-      r#"
-        class C {
-          static {
-            await Promise.resolve(0);
-          }
+  rt.exec_script(
+    r#"
+      var out = "";
+      out += "a";
+      class C {
+        static {
+          out += "b";
+          await Promise.resolve(0);
+          out += "c";
         }
-      "#,
-    )
-    .unwrap_err();
-  assert!(matches!(err, VmError::Syntax(_)));
+      }
+      out += "d";
+    "#,
+  )?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "ab");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "abcd");
   Ok(())
 }
 

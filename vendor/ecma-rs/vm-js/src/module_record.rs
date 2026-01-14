@@ -2514,9 +2514,9 @@ fn class_or_obj_val_contains_top_level_await(
       None => Ok(false),
     },
     ClassOrObjVal::IndexSignature(_) => Ok(false),
-    // `await` is a syntax error inside class static blocks, so they cannot contribute to module
-    // `[[HasTLA]]` detection.
-    ClassOrObjVal::StaticBlock(_) => Ok(false),
+    // Static blocks execute during class evaluation, so any `await` they contain contributes to
+    // module `[[HasTLA]]` (it can suspend module evaluation).
+    ClassOrObjVal::StaticBlock(block) => stmt_list_contains_top_level_await(&block.stx.body, ctx),
   }
 }
 
