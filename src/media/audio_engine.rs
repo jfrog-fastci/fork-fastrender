@@ -1,4 +1,5 @@
 use parking_lot::Mutex;
+use crate::media::audio::AudioError;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
@@ -25,12 +26,12 @@ pub struct AudioEngineTelemetry {
 ///
 /// For CPAL this typically corresponds to starting/stopping (dropping) the output stream.
 pub trait AudioBackend: Send + 'static {
-  fn start_stream(&mut self) -> Result<(), String>;
+  fn start_stream(&mut self) -> Result<(), AudioError>;
   fn stop_stream(&mut self);
 }
 
 impl<T: AudioBackend + ?Sized> AudioBackend for Box<T> {
-  fn start_stream(&mut self) -> Result<(), String> {
+  fn start_stream(&mut self) -> Result<(), AudioError> {
     (**self).start_stream()
   }
 
@@ -148,11 +149,11 @@ pub struct AudioStreamHandle<B: AudioBackend> {
 }
 
 impl<B: AudioBackend> AudioStreamHandle<B> {
-  pub fn set_active(&self, active: bool) -> Result<(), String> {
+  pub fn set_active(&self, active: bool) -> Result<(), AudioError> {
     self.set_active_at(active, Instant::now())
   }
 
-  fn set_active_at(&self, active: bool, now: Instant) -> Result<(), String> {
+  fn set_active_at(&self, active: bool, now: Instant) -> Result<(), AudioError> {
     if active {
       self.set_active_true(now)
     } else {
@@ -161,7 +162,7 @@ impl<B: AudioBackend> AudioStreamHandle<B> {
     }
   }
 
-  fn set_active_true(&self, now: Instant) -> Result<(), String> {
+  fn set_active_true(&self, now: Instant) -> Result<(), AudioError> {
     let Some(inner) = self.inner.upgrade() else {
       self.active.store(true, Ordering::Relaxed);
       return Ok(());
@@ -219,7 +220,7 @@ impl<B: AudioBackend> Drop for AudioStreamHandle<B> {
   }
 }
 
-fn maybe_start_backend<B: AudioBackend>(inner: &AudioEngineInner<B>) -> Result<(), String> {
+fn maybe_start_backend<B: AudioBackend>(inner: &AudioEngineInner<B>) -> Result<(), AudioError> {
   if inner.backend_running.load(Ordering::Relaxed) {
     return Ok(());
   }
@@ -309,7 +310,7 @@ impl NullAudioBackend {
 }
 
 impl AudioBackend for NullAudioBackend {
-  fn start_stream(&mut self) -> Result<(), String> {
+  fn start_stream(&mut self) -> Result<(), AudioError> {
     self.running = true;
     Ok(())
   }
@@ -344,11 +345,16 @@ impl WavAudioBackend {
 }
 
 impl AudioBackend for WavAudioBackend {
-  fn start_stream(&mut self) -> Result<(), String> {
+  fn start_stream(&mut self) -> Result<(), AudioError> {
     if self.file.is_some() {
       return Ok(());
     }
-    let file = std::fs::File::create(&self.path).map_err(|err| err.to_string())?;
+    let file = std::fs::File::create(&self.path).map_err(|err| {
+      AudioError::invalid_spec(format!(
+        "wav backend failed to create file '{}': {err}",
+        self.path.display()
+      ))
+    })?;
     self.file = Some(file);
     Ok(())
   }
@@ -385,7 +391,7 @@ mod tests {
   }
 
   impl AudioBackend for FakeBackend {
-    fn start_stream(&mut self) -> Result<(), String> {
+    fn start_stream(&mut self) -> Result<(), AudioError> {
       self.started.fetch_add(1, Ordering::SeqCst);
       self.running.store(true, Ordering::SeqCst);
       Ok(())

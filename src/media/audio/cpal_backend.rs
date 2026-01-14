@@ -217,7 +217,7 @@ fn gain_ramp_frames(sample_rate_hz: u32) -> u32 {
 
 enum StreamCommand {
   Start {
-    reply: std::sync::mpsc::Sender<Result<(), String>>,
+    reply: std::sync::mpsc::Sender<Result<(), AudioError>>,
   },
   Stop,
   Shutdown,
@@ -229,14 +229,14 @@ struct CpalStreamControlBackend {
 }
 
 impl IdleBackend for CpalStreamControlBackend {
-  fn start_stream(&mut self) -> Result<(), String> {
+  fn start_stream(&mut self) -> Result<(), AudioError> {
     let (tx, rx) = std::sync::mpsc::channel();
     self
       .command_tx
       .send(StreamCommand::Start { reply: tx })
-      .map_err(|_| "cpal audio thread terminated".to_string())?;
+      .map_err(|_| AudioError::BackendThreadTerminated { backend: "cpal" })?;
     rx.recv()
-      .map_err(|_| "cpal audio thread terminated".to_string())?
+      .map_err(|_| AudioError::BackendThreadTerminated { backend: "cpal" })?
   }
 
   fn stop_stream(&mut self) {
