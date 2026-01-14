@@ -6583,6 +6583,38 @@ html { scroll-snap-type: y mandatory; }
   }
 
   #[test]
+  fn dirty_style_nodes_may_affect_top_layer_state_checks_slot_attributes() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = "<!doctype html><html><body>\
+      <slot id=popover popover></slot>\
+      <slot id=open data-fastr-open=modal></slot>\
+      <slot id=modal data-fastr-modal=true></slot>\
+      </body></html>";
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(32, 32))?;
+
+    for (id, attr_name) in [
+      ("popover", "popover"),
+      ("open", "data-fastr-open"),
+      ("modal", "data-fastr-modal"),
+    ] {
+      let node = doc.dom().get_element_by_id(id).expect("slot node");
+      assert!(
+        matches!(doc.dom().node(node).kind, crate::dom2::NodeKind::Slot { .. }),
+        "expected #{id} to be a Slot node"
+      );
+      doc.dirty_style_nodes.clear();
+      doc.dirty_style_nodes.insert(node);
+      assert!(
+        doc.dirty_style_nodes_may_affect_top_layer_state(),
+        "expected slot #{id} to trigger top-layer detection via {attr_name}"
+      );
+    }
+
+    Ok(())
+  }
+
+  #[test]
   fn mutate_dom_false_does_not_invalidate() {
     let renderer = renderer_for_tests();
     let mut doc = BrowserDocumentDom2::new(
