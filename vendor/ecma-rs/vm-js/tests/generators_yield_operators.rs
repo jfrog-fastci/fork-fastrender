@@ -316,17 +316,20 @@ fn generators_yield_in_template_literals() {
       r#"
         function churn() {
           // Allocate enough to exceed the GC threshold and force a collection.
-          let junk = [];
-          for (let i = 0; i < 8; i++) {
-            junk.push(new Uint8Array(256 * 1024));
-          }
-          return junk.length;
+          //
+          // Use a single large ArrayBuffer-backed TypedArray so this stays fast while still
+          // deterministically triggering a GC due to the small `gc_threshold` configured above.
+          const buf = new Uint8Array(2 * 1024 * 1024);
+          return buf.length;
         }
 
         // `a${yield 1}b`
         function* tpl_simple() { return `a${yield 1}b`; }
         const it1 = tpl_simple();
         const a1 = it1.next();
+        // Trigger GC while the generator is suspended with a `LitTemplateAfterSubstitution` frame
+        // holding the already-appended prefix.
+        churn();
         const a2 = it1.next(10);
         const ok1 = a1.value === 1 && a1.done === false && a2.value === "a10b" && a2.done === true;
 
@@ -334,6 +337,7 @@ fn generators_yield_in_template_literals() {
         function* tpl_multi() { return `x${yield 1}y${yield 2}z`; }
         const it2 = tpl_multi();
         const b1 = it2.next();
+        churn();
         const b2 = it2.next("A");
         const b3 = it2.next("B");
         const ok2 =
