@@ -672,3 +672,24 @@ fn generator_for_of_let_object_default_initializer_has_tdz_across_yield() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_for_of_const_default_initializer_has_tdz_across_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var a = 99;
+        function* g() {
+          for (const [a = (yield 1, a)] of [[undefined]]) { return a; }
+        }
+        var it = g();
+        var r1 = it.next();
+        var threw = false;
+        try { it.next(0); } catch (e) { threw = e && e.name === "ReferenceError"; }
+        r1.done === false && r1.value === 1 && threw === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

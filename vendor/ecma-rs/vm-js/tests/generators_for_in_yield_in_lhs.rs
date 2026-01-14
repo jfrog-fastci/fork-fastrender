@@ -193,6 +193,29 @@ fn generator_for_in_let_object_default_initializer_has_tdz_across_yield() {
 }
 
 #[test]
+fn generator_for_in_const_default_initializer_has_tdz_across_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var a = 99;
+          function* g() {
+            for (const [a = (yield 1, a)] in {"": 0}) { return a; }
+          }
+          var it = g();
+          var r1 = it.next();
+          var threw = false;
+          try { it.next(0); } catch (e) { threw = e && e.name === "ReferenceError"; }
+          return r1.done === false && r1.value === 1 && threw === true;
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_for_in_yield_in_object_pattern_rest_assignment_target_computed_member() {
   let mut rt = new_runtime();
   let value = rt
