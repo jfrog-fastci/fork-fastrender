@@ -20,7 +20,7 @@
     "layout": 1669.1640663681317,
     "paint": 322.03165330769224
   },
-  "notes": "Accuracy diffs are dominated by font differences: Wikipedia sets `html,body{font-family:sans-serif}`, and pageset accuracy refreshes run FastRender with bundled fonts for determinism while Chrome uses system fonts for generic families.",
+  "notes": "Offline fixture: tests/pages/fixtures/en.wikipedia.org/index.html\nRepro: timeout -k 10 600 bash scripts/cargo_agent.sh xtask page-loop --fixture en.wikipedia.org --chrome --overlay --inspect-dump-json\nNote: accuracy diffs are dominated by font differences: Wikipedia sets `html,body{font-family:sans-serif}`, and pageset accuracy refreshes run FastRender with bundled fonts for determinism while Chrome uses system fonts for generic families.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 168195,
