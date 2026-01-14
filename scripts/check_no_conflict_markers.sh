@@ -167,8 +167,19 @@ if [[ -n "${matches}" ]]; then
   # GitHub Actions integration: annotate each match so the UI can hyperlink directly to the
   # offending file/line. Keep the plain `path:line:` output above for local runs and non-GHA CI.
   if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-    max_annotations=200
+    max_annotations=50
     n=0
+
+    gh_escape_prop() {
+      local value="$1"
+      value="${value//'%'/'%25'}"
+      value="${value//$'\r'/'%0D'}"
+      value="${value//$'\n'/'%0A'}"
+      value="${value//':'/'%3A'}"
+      value="${value//','/'%2C'}"
+      printf '%s' "${value}"
+    }
+
     while IFS= read -r match; do
       [[ -z "${match}" ]] && continue
       n=$((n + 1))
@@ -187,7 +198,10 @@ if [[ -n "${matches}" ]]; then
       esc="${esc//$'\r'/'%0D'}"
       esc="${esc//$'\n'/'%0A'}"
 
-      echo "::error file=${file},line=${line}::unresolved merge conflict marker: ${esc}" >&2
+      file_esc="$(gh_escape_prop "${file}")"
+      line_esc="$(gh_escape_prop "${line}")"
+
+      echo "::error file=${file_esc},line=${line_esc}::unresolved merge conflict marker: ${esc}" >&2
     done <<< "${matches}"
   fi
   exit 1
