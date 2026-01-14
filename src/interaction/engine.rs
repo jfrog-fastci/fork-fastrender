@@ -7734,7 +7734,7 @@ impl InteractionEngine {
   /// styling changes).
   pub fn mark_link_visited(&mut self, node_id: usize) -> bool {
     debug_assert!(node_id != 0);
-    self.state.visited_links.insert(node_id)
+    self.state.insert_visited_link(node_id)
   }
   /// Returns the most recent form submitter (pre-order DOM node id) that produced a submission
   /// navigation request during user activation.
