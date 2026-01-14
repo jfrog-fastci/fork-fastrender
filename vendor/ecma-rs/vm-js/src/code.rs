@@ -372,8 +372,8 @@ impl CompiledScript {
     let contains_async_generators = feature_flags.contains_async_generators;
     let contains_generators = feature_flags.contains_generators;
     let contains_async_functions = feature_flags.contains_async_functions;
-    let requires_ast_fallback = contains_generators || contains_async_functions;
     let contains_top_level_await = parsed.stx.body.iter().any(stmt_contains_await);
+    let requires_ast_fallback = contains_generators || contains_top_level_await;
     let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, parsed)
     }))
