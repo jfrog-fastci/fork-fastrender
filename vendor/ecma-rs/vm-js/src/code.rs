@@ -50,10 +50,12 @@ pub struct CompiledScript {
   ///
   /// Notes:
   /// - Generator bodies (`yield` / `yield*`) are not supported in the compiled executor.
-  /// - Classic scripts using top-level `await` require async script evaluation (also not yet
-  ///   supported in the compiled executor).
+  /// - Private-name syntax is not supported in the compiled executor.
   /// - Async function bodies execute via the AST interpreter at call-time (see
   ///   [`crate::Vm::call_user_function`]).
+  ///
+  /// Classic-script top-level await fallback is tracked separately in
+  /// [`CompiledScript::top_level_await_requires_ast_fallback`].
   pub requires_ast_fallback: bool,
   /// Whether this script/module contains a top-level `await` (or `for await..of`) that requires
   /// async evaluation.
@@ -681,7 +683,7 @@ fn expr_direct_await_arg(expr: &Node<Expr>) -> Option<&Node<Expr>> {
 
 fn expr_is_supported_assignment_target_for_hir_async_scripts(expr: &Node<Expr>) -> bool {
   match &*expr.stx {
-    Expr::Id(_) | Expr::Member(_) | Expr::ComputedMember(_) => true,
+    Expr::Id(_) | Expr::IdPat(_) | Expr::Member(_) | Expr::ComputedMember(_) => true,
     // TypeScript-only wrappers.
     Expr::Instantiation(inst) => expr_is_supported_assignment_target_for_hir_async_scripts(&inst.stx.expression),
     Expr::TypeAssertion(expr) => expr_is_supported_assignment_target_for_hir_async_scripts(&expr.stx.expression),
