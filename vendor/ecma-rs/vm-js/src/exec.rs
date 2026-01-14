@@ -61899,6 +61899,53 @@ mod tests {
   }
 
   #[test]
+  fn arrow_this_in_derived_constructor_super_returns_object_returned_arrow_using_super_property_get_uses_returned_object_as_receiver(
+  ) -> Result<(), VmError> {
+    let source = r#"
+      let log = [];
+      let returned;
+      class B {
+        constructor() {
+          returned = { marker: 1 };
+          return returned;
+        }
+        get x() {
+          log.push('get:' + (this === returned) + ':' + (this instanceof D));
+          return this.marker;
+        }
+      }
+      class D extends B {
+        constructor() {
+          let f = () => super.x;
+          let errName;
+          let errMsg;
+          try { f(); } catch (e) { errName = e.name; errMsg = e.message; }
+
+          super();
+          // Return a different object so the arrow must still observe the super() return value,
+          // not the constructor's explicit return value.
+          return { f, returned, errName, errMsg };
+        }
+      }
+
+      let o = new D();
+      let v1 = o.f();
+      let v2 = o.f();
+      v1 === 1 &&
+        v2 === 1 &&
+        o !== returned &&
+        o.returned === returned &&
+        o.errName === 'ReferenceError' &&
+        o.errMsg === "Must call super constructor in derived class before accessing 'this'" &&
+        log.join(',') === 'get:true:false,get:true:false'
+    "#;
+
+    assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
+    assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn arrow_this_in_derived_constructor_super_returns_object_super_property_set_uses_returned_object_as_receiver(
   ) -> Result<(), VmError> {
     let source = r#"
