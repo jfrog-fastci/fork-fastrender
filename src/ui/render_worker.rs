@@ -6960,29 +6960,25 @@ impl BrowserRuntime {
         let mouseup_target = up_hit.as_ref().map(|hit| hit.dom_node_id);
         let mouseup_target_element_id = up_hit.as_ref().and_then(|hit| hit.element_id.clone());
 
-        let click_target = engine.take_last_click_target();
-        let click_target_element_id = if click_target.is_some() && click_target == mouseup_target {
-          mouseup_target_element_id.clone()
-        } else {
-          click_target.and_then(|target_id| {
-            crate::dom::find_node_mut_by_preorder_id(dom, target_id)
-              .and_then(|node| node.get_attribute_ref("id"))
-              .map(|id| id.to_string())
-          })
-        };
+        let (click_target, engine_click_target_element_id) =
+          engine.take_last_click_target_with_element_id();
+        let click_target_element_id =
+          if click_target.is_some() && click_target == mouseup_target {
+            mouseup_target_element_id.clone()
+          } else {
+            engine_click_target_element_id
+          };
 
-        let form_submitter = engine.take_last_form_submitter();
-        let form_submitter_element_id = if form_submitter.is_some() && form_submitter == mouseup_target {
-          mouseup_target_element_id.clone()
-        } else if form_submitter.is_some() && form_submitter == click_target {
-          click_target_element_id.clone()
-        } else {
-          form_submitter.and_then(|submitter_id| {
-            crate::dom::find_node_mut_by_preorder_id(dom, submitter_id)
-              .and_then(|node| node.get_attribute_ref("id"))
-              .map(|id| id.to_string())
-          })
-        };
+        let (form_submitter, engine_form_submitter_element_id) =
+          engine.take_last_form_submitter_with_element_id();
+        let form_submitter_element_id =
+          if form_submitter.is_some() && form_submitter == mouseup_target {
+            mouseup_target_element_id.clone()
+          } else if form_submitter.is_some() && form_submitter == click_target {
+            click_target_element_id.clone()
+          } else {
+            engine_form_submitter_element_id
+          };
 
         let picker_value = match &action {
           InteractionAction::OpenDateTimePicker {
@@ -9306,12 +9302,8 @@ impl BrowserRuntime {
           document_url,
           base_url,
         );
-        let submitter = tab.interaction.take_last_form_submitter();
-        let submitter_element_id = submitter.and_then(|submitter_id| {
-          crate::dom::find_node_mut_by_preorder_id(dom, submitter_id)
-            .and_then(|node| node.get_attribute_ref("id"))
-            .map(|id| id.to_string())
-        });
+        let (submitter, submitter_element_id) =
+          tab.interaction.take_last_form_submitter_with_element_id();
         let focused = tab.interaction.focused_node_id();
         let (
           focused_element_id,
@@ -9416,12 +9408,8 @@ impl BrowserRuntime {
                 .interaction
                 .key_activate(dom, key, document_url, base_url);
             action = next_action;
-            submitter = tab.interaction.take_last_form_submitter();
-            submitter_element_id = submitter.and_then(|submitter_id| {
-              crate::dom::find_node_mut_by_preorder_id(dom, submitter_id)
-                .and_then(|node| node.get_attribute_ref("id"))
-                .map(|id| id.to_string())
-            });
+            (submitter, submitter_element_id) =
+              tab.interaction.take_last_form_submitter_with_element_id();
             focused = tab.interaction.focused_node_id();
             let (
               id,

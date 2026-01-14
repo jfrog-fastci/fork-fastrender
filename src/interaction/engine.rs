@@ -193,7 +193,9 @@ pub struct InteractionEngine {
   select_listbox_anchor: HashMap<usize, usize>,
   modality: InputModality,
   last_click_target: Option<usize>,
+  last_click_target_element_id: Option<String>,
   last_form_submitter: Option<usize>,
+  last_form_submitter_element_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -525,6 +527,15 @@ impl super::effective_disabled::DomIdLookup for DomIndexMut {
   fn parent_id(&self, node_id: usize) -> usize {
     self.parent.get(node_id).copied().unwrap_or(0)
   }
+}
+
+fn element_id_for_node(index: &DomIndexMut, node_id: usize) -> Option<String> {
+  index
+    .node(node_id)
+    .filter(|node| node.is_element())
+    .and_then(|node| node.get_attribute_ref("id"))
+    .filter(|id| !id.is_empty())
+    .map(|id| id.to_string())
 }
 
 #[cfg(test)]
@@ -6193,7 +6204,9 @@ impl InteractionEngine {
       select_listbox_anchor: HashMap::new(),
       modality: InputModality::Pointer,
       last_click_target: None,
+      last_click_target_element_id: None,
       last_form_submitter: None,
+      last_form_submitter_element_id: None,
     }
   }
 
@@ -7135,7 +7148,19 @@ impl InteractionEngine {
   /// (e.g. JavaScript DOM `"click"` listeners) using the same hit-test/label remapping semantics
   /// as the interaction engine's built-in default actions.
   pub fn take_last_click_target(&mut self) -> Option<usize> {
+    // Keep the id and element-id payloads in sync: when the UI consumes the click target, clear
+    // both.
+    self.last_click_target_element_id = None;
     self.last_click_target.take()
+  }
+
+  /// Like [`InteractionEngine::take_last_click_target`], but also returns the target element's HTML
+  /// `id` attribute when available.
+  pub fn take_last_click_target_with_element_id(&mut self) -> (Option<usize>, Option<String>) {
+    (
+      self.last_click_target.take(),
+      self.last_click_target_element_id.take(),
+    )
   }
   /// Returns the most recent form submitter (pre-order DOM node id) that produced a submission
   /// navigation request during user activation.
@@ -7144,7 +7169,17 @@ impl InteractionEngine {
   /// dispatch JS `"submit"` events and honor `event.preventDefault()` before committing the
   /// navigation.
   pub fn take_last_form_submitter(&mut self) -> Option<usize> {
+    self.last_form_submitter_element_id = None;
     self.last_form_submitter.take()
+  }
+
+  /// Like [`InteractionEngine::take_last_form_submitter`], but also returns the submitter element's
+  /// HTML `id` attribute when available.
+  pub fn take_last_form_submitter_with_element_id(&mut self) -> (Option<usize>, Option<String>) {
+    (
+      self.last_form_submitter.take(),
+      self.last_form_submitter_element_id.take(),
+    )
   }
 
   /// Returns the plain-text payload of the currently active drag-and-drop gesture, if any.
@@ -8810,6 +8845,12 @@ impl InteractionEngine {
     remap_opt(&mut self.pointer_down_target, old_index, new_ids);
     remap_opt(&mut self.last_click_target, old_index, new_ids);
     remap_opt(&mut self.last_form_submitter, old_index, new_ids);
+    if self.last_click_target.is_none() {
+      self.last_click_target_element_id = None;
+    }
+    if self.last_form_submitter.is_none() {
+      self.last_form_submitter_element_id = None;
+    }
     if let Some(state) = &mut self.link_drag {
       let new_node_id = old_index
         .id_to_node
@@ -9039,7 +9080,9 @@ impl InteractionEngine {
     base_url: &str,
   ) -> (bool, InteractionAction, Option<HitTestResult>) {
     self.last_click_target = None;
+    self.last_click_target_element_id = None;
     self.last_form_submitter = None;
+    self.last_form_submitter_element_id = None;
 
     let link_drag = self.link_drag.take();
     let range_drag = self.range_drag.take();
@@ -9449,6 +9492,8 @@ impl InteractionEngine {
     // committing default actions (e.g. link navigations).
     if matches!(button, PointerButton::Primary | PointerButton::Middle) {
       self.last_click_target = click_target;
+      self.last_click_target_element_id =
+        click_target.and_then(|target_id| element_id_for_node(&index, target_id));
     }
     // If a click lands within a details summary but does not qualify for our generic semantic
     // click-target heuristics (e.g. pointer-down on a non-interactive descendant, pointer-up on the
@@ -9457,6 +9502,7 @@ impl InteractionEngine {
     if is_primary_button && self.last_click_target.is_none() {
       if let Some((summary_id, _details_id)) = summary_toggle {
         self.last_click_target = Some(summary_id);
+        self.last_click_target_element_id = element_id_for_node(&index, summary_id);
       }
     }
 
@@ -9746,6 +9792,7 @@ impl InteractionEngine {
                   Some(&self.state),
                 ) {
                   self.last_form_submitter = Some(target_id);
+                  self.last_form_submitter_element_id = element_id_for_node(&index, target_id);
                   let target_blank = resolve_form_owner(&index, target_id).is_some_and(|form_id| {
                     submission_target_is_blank(&index, Some(target_id), form_id)
                   });
@@ -12268,6 +12315,7 @@ impl InteractionEngine {
     base_url: &str,
   ) -> (bool, InteractionAction) {
     self.last_form_submitter = None;
+    self.last_form_submitter_element_id = None;
     let prev_focus = self.state.focused;
 
     self.modality = InputModality::Keyboard;
@@ -12482,6 +12530,7 @@ impl InteractionEngine {
               Some(&self.state),
             ) {
               self.last_form_submitter = Some(focused);
+              self.last_form_submitter_element_id = element_id_for_node(&index, focused);
               let target_blank = resolve_form_owner(&index, focused)
                 .is_some_and(|form_id| submission_target_is_blank(&index, Some(focused), form_id));
               match submission.method {
@@ -12543,11 +12592,12 @@ impl InteractionEngine {
                   Some(&self.state),
                 ),
               };
-              if let Some(submission) = submission {
-                if let Some(submitter_id) = submitter_id {
-                  self.last_form_submitter = Some(submitter_id);
-                }
-                match submission.method {
+                if let Some(submission) = submission {
+                  if let Some(submitter_id) = submitter_id {
+                    self.last_form_submitter = Some(submitter_id);
+                    self.last_form_submitter_element_id = element_id_for_node(&index, submitter_id);
+                  }
+                  match submission.method {
                   FormSubmissionMethod::Get => {
                     if target_blank {
                       action = InteractionAction::OpenInNewTab {
@@ -12682,6 +12732,7 @@ impl InteractionEngine {
               Some(&self.state),
             ) {
               self.last_form_submitter = Some(focused);
+              self.last_form_submitter_element_id = element_id_for_node(&index, focused);
               let target_blank = resolve_form_owner(&index, focused)
                 .is_some_and(|form_id| submission_target_is_blank(&index, Some(focused), form_id));
               match submission.method {
@@ -12749,6 +12800,7 @@ impl InteractionEngine {
     base_url: &str,
   ) -> (bool, InteractionAction) {
     self.last_form_submitter = None;
+    self.last_form_submitter_element_id = None;
     let prev_focus = self.state.focused;
 
     self.modality = InputModality::Keyboard;
@@ -12952,6 +13004,7 @@ impl InteractionEngine {
               Some(&self.state),
             ) {
               self.last_form_submitter = Some(focused);
+              self.last_form_submitter_element_id = element_id_for_node(&index, focused);
               let target_blank = resolve_form_owner(&index, focused)
                 .is_some_and(|form_id| submission_target_is_blank(&index, Some(focused), form_id));
               match submission.method {
@@ -13016,6 +13069,7 @@ impl InteractionEngine {
               if let Some(submission) = submission {
                 if let Some(submitter_id) = submitter_id {
                   self.last_form_submitter = Some(submitter_id);
+                  self.last_form_submitter_element_id = element_id_for_node(&index, submitter_id);
                 }
                 match submission.method {
                   FormSubmissionMethod::Get => {
@@ -13152,6 +13206,7 @@ impl InteractionEngine {
               Some(&self.state),
             ) {
               self.last_form_submitter = Some(focused);
+              self.last_form_submitter_element_id = element_id_for_node(&index, focused);
               let target_blank = resolve_form_owner(&index, focused)
                 .is_some_and(|form_id| submission_target_is_blank(&index, Some(focused), form_id));
               match submission.method {
