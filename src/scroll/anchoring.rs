@@ -103,14 +103,6 @@ fn checked_point_sub(a: Point, b: Point) -> Option<Point> {
   (x.is_finite() && y.is_finite()).then_some(Point::new(x, y))
 }
 
-fn point_add(a: Point, b: Point) -> Point {
-  Point::new(a.x + b.x, a.y + b.y)
-}
-
-fn point_sub(a: Point, b: Point) -> Point {
-  Point::new(a.x - b.x, a.y - b.y)
-}
-
 fn checked_translate(origin: Point, delta: Point) -> Option<Point> {
   checked_point_add(origin, delta)
 }

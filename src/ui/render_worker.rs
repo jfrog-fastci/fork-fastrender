@@ -10152,7 +10152,7 @@ impl BrowserRuntime {
           let engine = &mut tab.interaction;
           let changed = doc.mutate_dom(|dom| {
             let (dom_changed, next_action) =
-              engine.key_activate(dom, key, document_url, base_url);
+              engine.key_activate(dom, key, document_url.as_str(), base_url.as_str());
             action = next_action;
             (submitter, submitter_element_id) = engine.take_last_form_submitter_with_element_id();
             focused = engine.focused_node_id();
