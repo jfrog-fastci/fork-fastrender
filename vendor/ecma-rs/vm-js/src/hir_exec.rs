@@ -6978,7 +6978,12 @@ impl<'vm> HirEvaluator<'vm> {
               let key_value = self.eval_expr(&mut scope, body, *expr_id)?;
               scope.push_root(key_value)?;
 
-              let super_base = scope.object_get_prototype(home_object)?;
+              let super_base = scope.get_prototype_of_with_host_and_hooks(
+                self.vm,
+                &mut *self.host,
+                &mut *self.hooks,
+                home_object,
+              )?;
               if let Some(super_base_obj) = super_base {
                 scope.push_root(Value::Object(super_base_obj))?;
               }
@@ -7003,7 +7008,12 @@ impl<'vm> HirEvaluator<'vm> {
               let key = self.eval_object_key(&mut scope, body, other)?;
               root_property_key(&mut scope, key)?;
 
-              let super_base = scope.object_get_prototype(home_object)?;
+              let super_base = scope.get_prototype_of_with_host_and_hooks(
+                self.vm,
+                &mut *self.host,
+                &mut *self.hooks,
+                home_object,
+              )?;
               let Some(super_base_obj) = super_base else {
                 return Err(throw_type_error(
                   self.vm,
@@ -8710,7 +8720,12 @@ impl<'vm> HirEvaluator<'vm> {
           scope.push_root(key_value)?;
 
           // `GetSuperBase` (ECMA-262) returns the prototype of `home_object`, which may be `null`.
-          let super_base = scope.object_get_prototype(home_object)?;
+          let super_base = scope.get_prototype_of_with_host_and_hooks(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            home_object,
+          )?;
           if let Some(super_base_obj) = super_base {
             scope.push_root(Value::Object(super_base_obj))?;
           }
@@ -8722,7 +8737,12 @@ impl<'vm> HirEvaluator<'vm> {
         other => {
           let key = self.eval_object_key(&mut scope, body, other)?;
           root_property_key(&mut scope, key)?;
-          let super_base = scope.object_get_prototype(home_object)?;
+          let super_base = scope.get_prototype_of_with_host_and_hooks(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            home_object,
+          )?;
           (key, super_base)
         }
       };
@@ -9098,7 +9118,12 @@ impl<'vm> HirEvaluator<'vm> {
                   let key_value = self.eval_expr(&mut scope, body, *expr_id)?;
                   scope.push_root(key_value)?;
 
-                  let super_base = scope.object_get_prototype(home_object)?;
+                  let super_base = scope.get_prototype_of_with_host_and_hooks(
+                    self.vm,
+                    &mut *self.host,
+                    &mut *self.hooks,
+                    home_object,
+                  )?;
                   if let Some(super_base_obj) = super_base {
                     scope.push_root(Value::Object(super_base_obj))?;
                   }
@@ -9123,7 +9148,12 @@ impl<'vm> HirEvaluator<'vm> {
                   let key = self.eval_object_key(&mut scope, body, other)?;
                   root_property_key(&mut scope, key)?;
 
-                  let super_base = scope.object_get_prototype(home_object)?;
+                  let super_base = scope.get_prototype_of_with_host_and_hooks(
+                    self.vm,
+                    &mut *self.host,
+                    &mut *self.hooks,
+                    home_object,
+                  )?;
                   let Some(super_base_obj) = super_base else {
                     return Err(throw_type_error(
                       self.vm,
@@ -9355,7 +9385,12 @@ impl<'vm> HirEvaluator<'vm> {
                   let key_value = self.eval_expr(&mut scope, body, *expr_id)?;
                   scope.push_root(key_value)?;
 
-                  let super_base = scope.object_get_prototype(home_object)?;
+                  let super_base = scope.get_prototype_of_with_host_and_hooks(
+                    self.vm,
+                    &mut *self.host,
+                    &mut *self.hooks,
+                    home_object,
+                  )?;
                   if let Some(super_base_obj) = super_base {
                     scope.push_root(Value::Object(super_base_obj))?;
                   }
@@ -9380,7 +9415,12 @@ impl<'vm> HirEvaluator<'vm> {
                   let key = self.eval_object_key(&mut scope, body, other)?;
                   root_property_key(&mut scope, key)?;
 
-                  let super_base = scope.object_get_prototype(home_object)?;
+                  let super_base = scope.get_prototype_of_with_host_and_hooks(
+                    self.vm,
+                    &mut *self.host,
+                    &mut *self.hooks,
+                    home_object,
+                  )?;
                   let Some(super_base_obj) = super_base else {
                     return Err(throw_type_error(
                       self.vm,
@@ -10114,7 +10154,12 @@ impl<'vm> HirEvaluator<'vm> {
                     hir_js::ObjectKey::Computed(expr_id) => {
                       let key_value = self.eval_expr(&mut prop_scope, body, *expr_id)?;
                       let key_value = prop_scope.push_root(key_value)?;
-                      let super_base = prop_scope.object_get_prototype(home_object)?;
+                      let super_base = prop_scope.get_prototype_of_with_host_and_hooks(
+                        self.vm,
+                        &mut *self.host,
+                        &mut *self.hooks,
+                        home_object,
+                      )?;
                       if let Some(super_base_obj) = super_base {
                         prop_scope.push_root(Value::Object(super_base_obj))?;
                       }
@@ -10127,7 +10172,12 @@ impl<'vm> HirEvaluator<'vm> {
                     other => {
                       let member_key = self.eval_object_key(&mut prop_scope, body, other)?;
                       root_property_key(&mut prop_scope, member_key)?;
-                      let super_base = prop_scope.object_get_prototype(home_object)?;
+                      let super_base = prop_scope.get_prototype_of_with_host_and_hooks(
+                        self.vm,
+                        &mut *self.host,
+                        &mut *self.hooks,
+                        home_object,
+                      )?;
                       if let Some(super_base_obj) = super_base {
                         prop_scope.push_root(Value::Object(super_base_obj))?;
                       }
@@ -10307,7 +10357,12 @@ impl<'vm> HirEvaluator<'vm> {
                   hir_js::ObjectKey::Computed(expr_id) => {
                     let key_value = self.eval_expr(scope, body, *expr_id)?;
                     let key_value = scope.push_root(key_value)?;
-                    let super_base = scope.object_get_prototype(home_object)?;
+                    let super_base = scope.get_prototype_of_with_host_and_hooks(
+                      self.vm,
+                      &mut *self.host,
+                      &mut *self.hooks,
+                      home_object,
+                    )?;
                     if let Some(super_base_obj) = super_base {
                       scope.push_root(Value::Object(super_base_obj))?;
                     }
@@ -10320,7 +10375,12 @@ impl<'vm> HirEvaluator<'vm> {
                   other => {
                     let member_key = self.eval_object_key(scope, body, other)?;
                     root_property_key(scope, member_key)?;
-                    let super_base = scope.object_get_prototype(home_object)?;
+                    let super_base = scope.get_prototype_of_with_host_and_hooks(
+                      self.vm,
+                      &mut *self.host,
+                      &mut *self.hooks,
+                      home_object,
+                    )?;
                     if let Some(super_base_obj) = super_base {
                       scope.push_root(Value::Object(super_base_obj))?;
                     }
@@ -10545,7 +10605,12 @@ impl<'vm> HirEvaluator<'vm> {
                     hir_js::ObjectKey::Computed(expr_id) => {
                       let key_value = self.eval_expr(&mut elem_scope, body, *expr_id)?;
                       let key_value = elem_scope.push_root(key_value)?;
-                      let super_base = elem_scope.object_get_prototype(home_object)?;
+                      let super_base = elem_scope.get_prototype_of_with_host_and_hooks(
+                        self.vm,
+                        &mut *self.host,
+                        &mut *self.hooks,
+                        home_object,
+                      )?;
                       if let Some(super_base_obj) = super_base {
                         elem_scope.push_root(Value::Object(super_base_obj))?;
                       }
@@ -10558,7 +10623,12 @@ impl<'vm> HirEvaluator<'vm> {
                     other => {
                       let member_key = self.eval_object_key(&mut elem_scope, body, other)?;
                       root_property_key(&mut elem_scope, member_key)?;
-                      let super_base = elem_scope.object_get_prototype(home_object)?;
+                      let super_base = elem_scope.get_prototype_of_with_host_and_hooks(
+                        self.vm,
+                        &mut *self.host,
+                        &mut *self.hooks,
+                        home_object,
+                      )?;
                       if let Some(super_base_obj) = super_base {
                         elem_scope.push_root(Value::Object(super_base_obj))?;
                       }
@@ -10774,7 +10844,12 @@ impl<'vm> HirEvaluator<'vm> {
                   hir_js::ObjectKey::Computed(expr_id) => {
                     let key_value = self.eval_expr(scope, body, *expr_id)?;
                     let key_value = scope.push_root(key_value)?;
-                    let super_base = scope.object_get_prototype(home_object)?;
+                    let super_base = scope.get_prototype_of_with_host_and_hooks(
+                      self.vm,
+                      &mut *self.host,
+                      &mut *self.hooks,
+                      home_object,
+                    )?;
                     if let Some(super_base_obj) = super_base {
                       scope.push_root(Value::Object(super_base_obj))?;
                     }
@@ -10787,7 +10862,12 @@ impl<'vm> HirEvaluator<'vm> {
                   other => {
                     let member_key = self.eval_object_key(scope, body, other)?;
                     root_property_key(scope, member_key)?;
-                    let super_base = scope.object_get_prototype(home_object)?;
+                    let super_base = scope.get_prototype_of_with_host_and_hooks(
+                      self.vm,
+                      &mut *self.host,
+                      &mut *self.hooks,
+                      home_object,
+                    )?;
                     if let Some(super_base_obj) = super_base {
                       scope.push_root(Value::Object(super_base_obj))?;
                     }
