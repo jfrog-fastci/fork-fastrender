@@ -115,7 +115,13 @@ impl Backend for QuickJsBackend {
     init: BackendInit,
     _host: Option<&mut dyn HostEnvironment>,
   ) -> Result<(), RunError> {
-    self.deadline = Some(Instant::now() + init.timeout);
+    // Per-test timeouts are enforced via QuickJS's interrupt handler. When tests execute in
+    // parallel, runtime/context creation can contend on global locks inside `rquickjs`/QuickJS.
+    // Starting the deadline before that init work can cause spurious timeouts (the JS never ran,
+    // but the wall clock deadline expired while waiting to initialize).
+    //
+    // To avoid flakiness, we start the deadline *after* the realm is fully initialized.
+    self.deadline = None;
     self.timed_out = false;
     self.max_tasks = init.max_tasks;
     self.max_microtasks = init.max_microtasks;
@@ -123,14 +129,6 @@ impl Backend for QuickJsBackend {
     self.microtasks_executed = 0;
 
     let rt = Runtime::new().map_err(|e| RunError::Js(e.to_string()))?;
-
-    // Interrupt handler for per-test wall-time.
-    let deadline = self.deadline.expect("deadline is set");
-    let deadline = Arc::new(deadline);
-    rt.set_interrupt_handler(Some(Box::new({
-      let deadline = Arc::clone(&deadline);
-      move || Instant::now() >= *deadline
-    })));
 
     let ctx = Context::full(&rt).map_err(|e| RunError::Js(e.to_string()))?;
 
@@ -153,6 +151,16 @@ impl Backend for QuickJsBackend {
 
       Ok(())
     })?;
+
+    // Interrupt handler for per-test wall-time. This must be installed *after* realm
+    // initialization; see comment above.
+    let deadline = Instant::now() + init.timeout;
+    self.deadline = Some(deadline);
+    let deadline = Arc::new(deadline);
+    rt.set_interrupt_handler(Some(Box::new({
+      let deadline = Arc::clone(&deadline);
+      move || Instant::now() >= *deadline
+    })));
 
     self.rt = Some(rt);
     self.ctx = Some(ctx);

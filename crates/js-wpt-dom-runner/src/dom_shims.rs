@@ -19,6 +19,8 @@ const DOM_SHIM: &str = r##"
   var NODE_CACHE = new Map(); // node id -> JS wrapper
   var STYLE_OWNER = Symbol("fastrender_style_owner");
   var STYLE_CACHE = new WeakMap(); // HTMLElement -> CSSStyleDeclaration
+  var COLLECTION_GET_IDS = Symbol("fastrender_collection_get_ids");
+  var NODELIST_ITEMS = Symbol("fastrender_nodelist_items");
 
   function illegal() {
     throw new TypeError("Illegal constructor");
@@ -222,6 +224,10 @@ const DOM_SHIM: &str = r##"
     return event.defaultPrevented ? false : true;
   };
 
+  // Brand the global object (`window`) as an EventTarget.
+  // This is required for WPT tests like `window instanceof EventTarget`.
+  Object.setPrototypeOf(g, EventTarget.prototype);
+
   function Node() { illegal(); }
   function Document() { illegal(); }
   function DocumentFragment() { illegal(); }
@@ -234,6 +240,21 @@ const DOM_SHIM: &str = r##"
   function HTMLFormElement() { illegal(); }
   function HTMLOptionElement() { illegal(); }
   function Text() { illegal(); }
+  function Comment() { illegal(); }
+  function NodeList() { illegal(); }
+  function MutationObserver(callback) {
+    if (typeof callback !== "function") {
+      throw new TypeError(
+        "Failed to construct 'MutationObserver': parameter 1 is not a function."
+      );
+    }
+    OBSERVER_STATE.set(this, {
+      callback: callback,
+      records: [],
+      targets: new Map(),
+    });
+  }
+  function MutationRecord() { illegal(); }
   function HTMLCollection() { illegal(); }
   function CSSStyleDeclaration() { illegal(); }
   function HTMLOptionsCollection() { illegal(); }
@@ -251,6 +272,10 @@ const DOM_SHIM: &str = r##"
   Object.setPrototypeOf(HTMLFormElement.prototype, HTMLElement.prototype);
   Object.setPrototypeOf(HTMLOptionElement.prototype, HTMLElement.prototype);
   Object.setPrototypeOf(Text.prototype, Node.prototype);
+  Object.setPrototypeOf(Comment.prototype, Node.prototype);
+  Object.setPrototypeOf(NodeList.prototype, Object.prototype);
+  Object.setPrototypeOf(MutationObserver.prototype, Object.prototype);
+  Object.setPrototypeOf(MutationRecord.prototype, Object.prototype);
   Object.setPrototypeOf(HTMLOptionsCollection.prototype, HTMLCollection.prototype);
   Object.setPrototypeOf(HTMLFormControlsCollection.prototype, HTMLCollection.prototype);
 
@@ -340,6 +365,203 @@ const DOM_SHIM: &str = r##"
     return o;
   }
 
+  function collectionGetIdsFromThis(self) {
+    if (typeof self !== "object" || self === null) {
+      throw new TypeError("Illegal invocation");
+    }
+    var getIds = self[COLLECTION_GET_IDS];
+    if (typeof getIds !== "function") {
+      throw new TypeError("Illegal invocation");
+    }
+    return getIds;
+  }
+
+  function nodelistItemsFromThis(self) {
+    if (typeof self !== "object" || self === null) {
+      throw new TypeError("Illegal invocation");
+    }
+    var items = self[NODELIST_ITEMS];
+    if (!items || typeof items.length !== "number") {
+      throw new TypeError("Illegal invocation");
+    }
+    return items;
+  }
+
+  NodeList.prototype.item = function (index) {
+    var items = nodelistItemsFromThis(this);
+    var i = Number(index);
+    if (!isFinite(i) || isNaN(i)) i = 0;
+    i = Math.trunc(i);
+    if (i < 0 || i >= items.length) return null;
+    return items[i] || null;
+  };
+
+  Object.defineProperty(NodeList.prototype, "length", {
+    get: function () {
+      var items = nodelistItemsFromThis(this);
+      return items.length;
+    },
+    configurable: true,
+  });
+
+  function makeStaticNodeList(nodes) {
+    var target = Object.create(NodeList.prototype);
+    target[NODELIST_ITEMS] = Array.isArray(nodes) ? nodes.slice() : [];
+    return new Proxy(target, {
+      get: function (t, prop, recv) {
+        if (isArrayIndex(prop)) {
+          var items = t[NODELIST_ITEMS];
+          var idx = Number(prop);
+          if (idx < items.length) return items[idx];
+          return undefined;
+        }
+        return Reflect.get(t, prop, recv);
+      },
+    });
+  }
+
+  function makeIterator(nextFn) {
+    return {
+      next: nextFn,
+      [Symbol.iterator]: function () {
+        return this;
+      },
+    };
+  }
+
+  NodeList.prototype.values = function () {
+    var items = nodelistItemsFromThis(this);
+    var i = 0;
+    return makeIterator(function () {
+      if (i >= items.length) return { done: true, value: undefined };
+      return { done: false, value: items[i++] };
+    });
+  };
+  NodeList.prototype.keys = function () {
+    var items = nodelistItemsFromThis(this);
+    var i = 0;
+    return makeIterator(function () {
+      if (i >= items.length) return { done: true, value: undefined };
+      return { done: false, value: i++ };
+    });
+  };
+  NodeList.prototype.entries = function () {
+    var items = nodelistItemsFromThis(this);
+    var i = 0;
+    return makeIterator(function () {
+      if (i >= items.length) return { done: true, value: undefined };
+      var idx = i++;
+      return { done: false, value: [idx, items[idx]] };
+    });
+  };
+  NodeList.prototype.forEach = function (callback, thisArg) {
+    var items = nodelistItemsFromThis(this);
+    if (callback === null || callback === undefined) return;
+    if (typeof callback !== "function") {
+      throw new TypeError("callback is not a function");
+    }
+    for (var i = 0; i < items.length; i++) {
+      callback.call(thisArg, items[i], i, this);
+    }
+  };
+  NodeList.prototype[Symbol.iterator] = NodeList.prototype.values;
+
+  HTMLCollection.prototype.values = function () {
+    var getIds = collectionGetIdsFromThis(this);
+    var ids = getIds();
+    var i = 0;
+    return makeIterator(function () {
+      if (i >= ids.length) return { done: true, value: undefined };
+      return { done: false, value: elementFromId(ids[i++]) };
+    });
+  };
+  HTMLCollection.prototype.keys = function () {
+    var getIds = collectionGetIdsFromThis(this);
+    var ids = getIds();
+    var i = 0;
+    return makeIterator(function () {
+      if (i >= ids.length) return { done: true, value: undefined };
+      return { done: false, value: i++ };
+    });
+  };
+  HTMLCollection.prototype.entries = function () {
+    var getIds = collectionGetIdsFromThis(this);
+    var ids = getIds();
+    var i = 0;
+    return makeIterator(function () {
+      if (i >= ids.length) return { done: true, value: undefined };
+      var idx = i++;
+      return { done: false, value: [idx, elementFromId(ids[idx])] };
+    });
+  };
+  HTMLCollection.prototype.forEach = function (callback, thisArg) {
+    var getIds = collectionGetIdsFromThis(this);
+    var ids = getIds();
+    if (callback === null || callback === undefined) return;
+    if (typeof callback !== "function") {
+      throw new TypeError("callback is not a function");
+    }
+    for (var i = 0; i < ids.length; i++) {
+      callback.call(thisArg, elementFromId(ids[i]), i, this);
+    }
+  };
+  HTMLCollection.prototype[Symbol.iterator] = HTMLCollection.prototype.values;
+
+  var TARGET_OBSERVERS = new WeakMap(); // target -> Set(observer)
+  var OBSERVER_STATE = new WeakMap(); // observer -> {callback,records,targets}
+
+  MutationObserver.prototype.observe = function (target, options) {
+    if (typeof target !== "object" || target === null) {
+      throw new TypeError("Failed to execute 'observe' on 'MutationObserver': parameter 1 is not of type 'Node'.");
+    }
+    var state = OBSERVER_STATE.get(this);
+    if (!state) throw new TypeError("Illegal invocation");
+    var opts = options && typeof options === "object" ? options : {};
+    state.targets.set(target, opts);
+    var set = TARGET_OBSERVERS.get(target);
+    if (!set) {
+      set = new Set();
+      TARGET_OBSERVERS.set(target, set);
+    }
+    set.add(this);
+  };
+
+  MutationObserver.prototype.disconnect = function () {
+    var state = OBSERVER_STATE.get(this);
+    if (!state) throw new TypeError("Illegal invocation");
+    state.targets.forEach(function (_opts, target) {
+      var set = TARGET_OBSERVERS.get(target);
+      if (set) set.delete(this);
+    }, this);
+    state.targets.clear();
+    state.records.length = 0;
+  };
+
+  MutationObserver.prototype.takeRecords = function () {
+    var state = OBSERVER_STATE.get(this);
+    if (!state) throw new TypeError("Illegal invocation");
+    var out = state.records.slice();
+    state.records.length = 0;
+    return out;
+  };
+
+  function queueChildListMutation(target, addedNodes, removedNodes) {
+    var observers = TARGET_OBSERVERS.get(target);
+    if (!observers) return;
+    observers.forEach(function (obs) {
+      var state = OBSERVER_STATE.get(obs);
+      if (!state) return;
+      var opts = state.targets.get(target);
+      if (!opts || !opts.childList) return;
+      var record = Object.create(MutationRecord.prototype);
+      record.type = "childList";
+      record.target = target;
+      record.addedNodes = makeStaticNodeList(addedNodes || []);
+      record.removedNodes = makeStaticNodeList(removedNodes || []);
+      state.records.push(record);
+    });
+  }
+
   function elementPrototypeForTag(tagNameLower) {
     // The shim only needs a small subset of element interfaces for WPT and common scripts.
     // Default to `HTMLElement` for all HTML tags.
@@ -374,6 +596,7 @@ const DOM_SHIM: &str = r##"
     var t = g.__fastrender_dom_get_node_type(id);
     if (t === Node.ELEMENT_NODE) return elementFromId(id);
     if (t === Node.TEXT_NODE) return makeNode(Text.prototype, id);
+    if (t === Node.COMMENT_NODE) return makeNode(Comment.prototype, id);
     if (t === Node.DOCUMENT_FRAGMENT_NODE) return makeNode(DocumentFragment.prototype, id);
     if (t === Node.DOCUMENT_NODE) return g.document;
     return makeNode(Node.prototype, id);
@@ -634,6 +857,7 @@ const DOM_SHIM: &str = r##"
 
   function makeLiveElementCollection(getIds, proto) {
     var target = Object.create(proto || HTMLCollection.prototype);
+    target[COLLECTION_GET_IDS] = getIds;
 
     Object.defineProperty(target, "length", {
       get: function () { return getIds().length; },
@@ -647,18 +871,6 @@ const DOM_SHIM: &str = r##"
       var ids = getIds();
       if (i < 0 || i >= ids.length) return null;
       return elementFromId(ids[i]);
-    };
-
-    target[Symbol.iterator] = function () {
-      var ids = getIds();
-      var i = 0;
-      return {
-        next: function () {
-          if (i >= ids.length) return { done: true, value: undefined };
-          return { done: false, value: elementFromId(ids[i++]) };
-        },
-        [Symbol.iterator]: function () { return this; }
-      };
     };
 
     return new Proxy(target, {
@@ -749,6 +961,28 @@ const DOM_SHIM: &str = r##"
   Element.prototype.removeAttribute = function (name) {
     g.__fastrender_dom_remove_attribute(nodeIdFromThis(this), String(name));
   };
+
+  var ELEMENT_CHILDREN_CACHE = new WeakMap();
+  Object.defineProperty(Element.prototype, "children", {
+    get: function () {
+      nodeIdFromThis(this);
+      var cached = ELEMENT_CHILDREN_CACHE.get(this);
+      if (cached) return cached;
+      var self = this;
+      var collection = makeLiveElementCollection(function () {
+        var ids = [];
+        var nodes = self.childNodes || [];
+        for (var i = 0; i < nodes.length; i++) {
+          var n = nodes[i];
+          if (n instanceof Element) ids.push(nodeIdFromThis(n));
+        }
+        return ids;
+      });
+      ELEMENT_CHILDREN_CACHE.set(this, collection);
+      return collection;
+    },
+    configurable: true,
+  });
 
   function cssStyleFromThis(self) {
     if (typeof self !== "object" || self === null) {
@@ -1342,6 +1576,7 @@ const DOM_SHIM: &str = r##"
         n.parentNode = this;
       }
       fragNodes.length = 0;
+      queueChildListMutation(this, moved, []);
       return child;
     }
 
@@ -1351,6 +1586,7 @@ const DOM_SHIM: &str = r##"
     var nodes = ensureArray(this, "childNodes");
     nodes.push(child);
     child.parentNode = this;
+    queueChildListMutation(this, [child], []);
     return child;
   };
 
@@ -1408,6 +1644,7 @@ const DOM_SHIM: &str = r##"
         n.parentNode = this;
       }
       fragNodes.length = 0;
+      queueChildListMutation(this, moved, []);
       return child;
     }
 
@@ -1419,6 +1656,7 @@ const DOM_SHIM: &str = r##"
     }
     parentNodes.splice(insertIdx, 0, child);
     child.parentNode = this;
+    queueChildListMutation(this, [child], []);
     return child;
   };
 
@@ -1458,6 +1696,7 @@ const DOM_SHIM: &str = r##"
       }
       fragNodes.length = 0;
       detachFromParent(oldChild);
+      queueChildListMutation(this, moved, [oldChild]);
       return oldChild;
     }
 
@@ -1467,6 +1706,7 @@ const DOM_SHIM: &str = r##"
     parentNodes.splice(idx, 1, child);
     oldChild.parentNode = null;
     child.parentNode = this;
+    queueChildListMutation(this, [child], [oldChild]);
     return oldChild;
   };
 
@@ -1481,6 +1721,7 @@ const DOM_SHIM: &str = r##"
     }
     g.__fastrender_dom_remove_child(parentId, childId);
     detachFromParent(child);
+    queueChildListMutation(this, [], [child]);
     return child;
   };
 
@@ -1519,6 +1760,7 @@ const DOM_SHIM: &str = r##"
       if (this instanceof DocumentFragment) return Node.DOCUMENT_FRAGMENT_NODE;
       if (this instanceof Element) return Node.ELEMENT_NODE;
       if (this instanceof Text) return Node.TEXT_NODE;
+      if (this instanceof Comment) return Node.COMMENT_NODE;
       return 0;
     },
     configurable: true,
@@ -1529,6 +1771,7 @@ const DOM_SHIM: &str = r##"
       var t = this.nodeType;
       if (t === Node.ELEMENT_NODE) return this.tagName;
       if (t === Node.TEXT_NODE) return "#text";
+      if (t === Node.COMMENT_NODE) return "#comment";
       if (t === Node.DOCUMENT_NODE) return "#document";
       if (t === Node.DOCUMENT_FRAGMENT_NODE) return "#document-fragment";
       return "";
@@ -1701,12 +1944,16 @@ const DOM_SHIM: &str = r##"
   Object.defineProperty(g, "HTMLFormElement", { value: HTMLFormElement, configurable: true, writable: true });
   Object.defineProperty(g, "HTMLOptionElement", { value: HTMLOptionElement, configurable: true, writable: true });
   Object.defineProperty(g, "Text", { value: Text, configurable: true, writable: true });
+  Object.defineProperty(g, "Comment", { value: Comment, configurable: true, writable: true });
+  Object.defineProperty(g, "NodeList", { value: NodeList, configurable: true, writable: true });
   Object.defineProperty(g, "HTMLCollection", { value: HTMLCollection, configurable: true, writable: true });
   Object.defineProperty(g, "CSSStyleDeclaration", { value: CSSStyleDeclaration, configurable: true, writable: true });
   Object.defineProperty(g, "HTMLOptionsCollection", { value: HTMLOptionsCollection, configurable: true, writable: true });
   Object.defineProperty(g, "HTMLFormControlsCollection", { value: HTMLFormControlsCollection, configurable: true, writable: true });
   Object.defineProperty(g, "EventTarget", { value: EventTarget, configurable: true, writable: true });
   Object.defineProperty(g, "Event", { value: Event, configurable: true, writable: true });
+  Object.defineProperty(g, "MutationObserver", { value: MutationObserver, configurable: true, writable: true });
+  Object.defineProperty(g, "MutationRecord", { value: MutationRecord, configurable: true, writable: true });
 
   // Allow using window as an EventTarget for DOM-style event paths.
   Object.defineProperty(g, "addEventListener", { value: EventTarget.prototype.addEventListener, configurable: true, writable: true });
@@ -1748,6 +1995,9 @@ enum NodeKind {
     attributes: Vec<(String, String)>,
   },
   Text {
+    content: String,
+  },
+  Comment {
     content: String,
   },
 }
@@ -1895,7 +2145,7 @@ impl Dom {
 
   fn validate_parent_can_have_children(&self, parent: NodeId) -> Result<(), DomShimError> {
     match &self.node_checked(parent)?.kind {
-      NodeKind::Text { .. } => Err(DomShimError::HierarchyRequestError),
+      NodeKind::Text { .. } | NodeKind::Comment { .. } => Err(DomShimError::HierarchyRequestError),
       _ => Ok(()),
     }
   }
@@ -1935,6 +2185,7 @@ impl Dom {
       NodeKind::DocumentFragment => 11,
       NodeKind::Element { .. } => 1,
       NodeKind::Text { .. } => 3,
+      NodeKind::Comment { .. } => 8,
     };
     Ok(value)
   }
@@ -2230,7 +2481,9 @@ impl Dom {
     let parent_tag = match &self.node_checked(parent)?.kind {
       NodeKind::Element { tag_name, .. } => tag_name.clone(),
       NodeKind::Document | NodeKind::DocumentFragment => "div".to_string(),
-      NodeKind::Text { .. } => return Err(DomShimError::HierarchyRequestError),
+      NodeKind::Text { .. } | NodeKind::Comment { .. } => {
+        return Err(DomShimError::HierarchyRequestError)
+      }
     };
 
     let replacement_idx = self
@@ -2345,6 +2598,7 @@ impl Dom {
     match &self.nodes[node.0].kind {
       NodeKind::Document => return Ok(None),
       NodeKind::Text { content } => return Ok(Some(content.clone())),
+      NodeKind::Comment { content } => return Ok(Some(content.clone())),
       NodeKind::Element { .. } | NodeKind::DocumentFragment => {}
     }
 
@@ -2354,6 +2608,7 @@ impl Dom {
       let node = self.node_checked(id)?;
       match &node.kind {
         NodeKind::Text { content } => out.push_str(content),
+        NodeKind::Comment { .. } => {}
         NodeKind::Element { .. } | NodeKind::DocumentFragment | NodeKind::Document => {
           for &child in node.children.iter().rev() {
             stack.push(child);
@@ -2371,6 +2626,15 @@ impl Dom {
       NodeKind::Document => return Ok(None),
       NodeKind::Text { .. } => {
         self.set_text_data(node, data)?;
+        return Ok(None);
+      }
+      NodeKind::Comment { .. } => {
+        let node = self.node_checked_mut(node)?;
+        let NodeKind::Comment { content } = &mut node.kind else {
+          return Err(DomShimError::InvalidNodeType);
+        };
+        content.clear();
+        content.push_str(data);
         return Ok(None);
       }
       NodeKind::Element { .. } | NodeKind::DocumentFragment => {}
@@ -2398,7 +2662,7 @@ impl Dom {
     mut matches: impl FnMut(&str, &[(String, String)]) -> bool,
   ) -> Result<Vec<NodeId>, DomShimError> {
     let root_node = self.node_checked(root)?;
-    if matches!(root_node.kind, NodeKind::Text { .. }) {
+    if matches!(root_node.kind, NodeKind::Text { .. } | NodeKind::Comment { .. }) {
       return Err(DomShimError::InvalidNodeType);
     }
     if root_node.is_inert_template {
@@ -2551,6 +2815,11 @@ impl Dom {
             NodeKind::Text { content } => {
               escape_text(out, content);
             }
+            NodeKind::Comment { content } => {
+              out.push_str("<!--");
+              out.push_str(content);
+              out.push_str("-->");
+            }
             NodeKind::Element {
               tag_name,
               attributes,
@@ -2636,6 +2905,13 @@ impl Dom {
               parent: item.parent,
               handle: child,
             });
+          }
+        }
+        NodeData::Comment { contents } => {
+          let content = contents.to_string();
+          let id = self.push_node(NodeKind::Comment { content }, item.parent);
+          if item.parent.is_none() {
+            roots.push(id);
           }
         }
         NodeData::Text { contents } => {
@@ -2776,28 +3052,38 @@ fn handle_children(handle: &Handle) -> Vec<Handle> {
 
 fn fragment_children_from_rcdom(rcdom: &RcDom) -> Vec<Handle> {
   let children = handle_children(&rcdom.document);
-  let significant: Vec<Handle> = children
-    .iter()
-    .filter(|handle| {
-      !matches!(
-        handle.data,
-        NodeData::Doctype { .. } | NodeData::Comment { .. }
-      )
-    })
-    .cloned()
+  let nodes: Vec<Handle> = children
+    .into_iter()
+    .filter(|handle| !matches!(handle.data, NodeData::Doctype { .. }))
     .collect();
 
-  // `html5ever`'s RcDom fragment parsing currently returns a synthetic `<html>` element as the sole
-  // significant child of the document, with the actual fragment nodes as its children.
-  if significant.len() == 1 {
-    if let NodeData::Element { name, .. } = &significant[0].data {
+  // `html5ever`'s RcDom fragment parsing currently returns a synthetic `<html>` element as a
+  // document child, with the actual fragment nodes as its children. Some inputs (notably comments)
+  // can appear as siblings of that synthetic node, so unwrap the `<html>` element in-place when it
+  // is the only element child of the document.
+  let element_children: Vec<(usize, &Handle)> = nodes
+    .iter()
+    .enumerate()
+    .filter(|(_idx, handle)| matches!(handle.data, NodeData::Element { .. }))
+    .collect();
+  if element_children.len() == 1 {
+    let (html_idx, html_handle) = element_children[0];
+    if let NodeData::Element { name, .. } = &html_handle.data {
       if name.ns.to_string() == HTML_NAMESPACE && name.local.as_ref().eq_ignore_ascii_case("html") {
-        return handle_children(&significant[0]);
+        let mut out: Vec<Handle> = Vec::new();
+        for (idx, handle) in nodes.into_iter().enumerate() {
+          if idx == html_idx {
+            out.extend(handle_children(&handle));
+          } else {
+            out.push(handle);
+          }
+        }
+        return out;
       }
     }
   }
 
-  significant
+  nodes
 }
 
 pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<()> {
