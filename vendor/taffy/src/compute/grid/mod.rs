@@ -494,7 +494,9 @@ fn collect_child_subgrid_line_names(style: &Style, axis: AbstractAxis) -> Vec<Ve
 #[inline]
 fn subgrid_auto_span_from_line_name_list_len(line_name_list_len: usize) -> u16 {
   let tracks = line_name_list_len.saturating_sub(1).max(1);
-  (tracks.min(u16::MAX as usize)) as u16
+  // `OriginZeroLine` coordinates are i16 and `GridTrackVec` indices are stored in u16 (2 * tracks + 1),
+  // so the total number of tracks in an axis must not exceed i16::MAX (32767) to remain representable.
+  (tracks.min(i16::MAX as usize)) as u16
 }
 
 #[inline]
@@ -1113,6 +1115,7 @@ fn collect_subgrid_virtual_items<
   let parent_axes_swapped = parent_style.axes_swapped();
 
   for item in items.iter().filter(|item| !item.is_virtual) {
+    check_layout_abort();
     collect_subgrid_virtual_items_recursive(
       tree,
       item,
@@ -1180,6 +1183,7 @@ fn record_subgrid_overrides<
   // child's local columns inherit from the parent's rows.
 
   for item in items.iter().filter(|item| !item.is_virtual) {
+    check_layout_abort();
     // Some WPT cases (e.g. nested subgrids with a writing-mode mismatch at the parent boundary)
     // expect that a subgrid with fully-automatic placement can still see the full set of parent
     // tracks, even when it happens to be auto-placed into a 1-track area.
@@ -1755,6 +1759,7 @@ where
   let mut has_align_self_baseline_item = false;
   let mut has_justify_self_baseline_item = false;
   for item in items.iter() {
+    check_layout_abort();
     has_align_self_baseline_item |= item.align_self == AlignSelf::Baseline;
     has_justify_self_baseline_item |= item.justify_self == AlignSelf::Baseline;
     if has_align_self_baseline_item && has_justify_self_baseline_item {
@@ -2256,6 +2261,7 @@ where
 
   // Position in-flow children (stored in items vector)
   for (index, item) in items.iter_mut().enumerate() {
+    check_layout_abort();
     let grid_area = Rect {
       top: rows[item.row_indexes.start as usize + 1].offset,
       bottom: rows[item.row_indexes.end as usize].offset,

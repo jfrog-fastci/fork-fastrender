@@ -681,12 +681,15 @@ fn place_indefinitely_positioned_item<I: crate::CheapCloneStr>(
     // existent tracks, and then we reset the primary axis back to zero and increment the secondary axis index.
     // We continue in this vein until we find a space that the item fits in.
     let implicit_track_limit = max_implicit_tracks_per_side() as usize;
+    let max_track_count = i16::MAX as usize;
     let max_primary_tracks = (cell_occupancy_matrix.track_counts(primary_axis).explicit as usize)
-      .saturating_add(implicit_track_limit.saturating_mul(2));
+      .saturating_add(implicit_track_limit.saturating_mul(2))
+      .min(max_track_count);
     let max_secondary_tracks = (cell_occupancy_matrix
       .track_counts(primary_axis.other_axis())
       .explicit as usize)
-      .saturating_add(implicit_track_limit.saturating_mul(2));
+      .saturating_add(implicit_track_limit.saturating_mul(2))
+      .min(max_track_count);
     // Upper bound on the number of distinct cell placements within the UA-limited grid.
     //
     // If we exceed this while still failing to find an unoccupied area, then clamping has prevented
