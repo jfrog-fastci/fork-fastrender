@@ -49,8 +49,16 @@ fn super_prop_in_instance_field_initializers() -> Result<(), VmError> {
         y = (() => super.m())();
         z = ((() => super.m()))();
         w = (/*a*/(() => super.m())/*b*/)();
+        v = (
+          // a
+          (() => super.m())
+        )();
+        u = (
+          (() => "http://" + super.m())
+        )
+        ();
       }
-      (new D()).x === 1 && (new D()).y === 1 && (new D()).z === 1 && (new D()).w === 1
+      (new D()).x === 1 && (new D()).y === 1 && (new D()).z === 1 && (new D()).w === 1 && (new D()).v === 1 && (new D()).u === "http://1"
     "#,
   ) {
     Ok(v) => v,

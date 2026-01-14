@@ -8676,7 +8676,12 @@ impl<'a> Evaluator<'a> {
                           continue 'outer;
                         }
 
-                        // Skip line comment `// ... \n`.
+                        // Skip comment-only line comments (`// ... \n`).
+                        //
+                        // We intentionally only treat `//` as a comment if it is the first
+                        // non-whitespace token on the line. This avoids mis-identifying `//` inside
+                        // string literals like `"http://..."` while doing this best-effort span
+                        // repair.
                         if saw_newline {
                           let mut line_start = idx;
                           while line_start > 0 {
@@ -8686,13 +8691,18 @@ impl<'a> Evaluator<'a> {
                             }
                             line_start -= 1;
                           }
+
                           let mut i = line_start;
-                          while i + 1 < idx {
-                            if bytes[i] == b'/' && bytes[i + 1] == b'/' {
-                              idx = i;
-                              continue 'outer;
+                          while i < idx {
+                            match bytes[i] {
+                              b' ' | b'\t' => i += 1,
+                              _ => break,
                             }
-                            i += 1;
+                          }
+
+                          if i + 1 < idx && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+                            idx = line_start;
+                            continue 'outer;
                           }
                         }
 
