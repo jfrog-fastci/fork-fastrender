@@ -302,10 +302,24 @@ impl<Host: 'static> Task<Host> {
   }
 }
 
+/// Per-spin limits for driving the JS host event loop.
+///
+/// These bounds apply to a *single* call to event loop driving APIs such as `run_until_idle` /
+/// `spin_until` (a single "spin" in FastRender terminology).
+///
+/// Note: [`RunLimits::max_wall_time`] is also used as an input to the VM deadline when running the
+/// `vm-js` backend: FastRender derives a per-entrypoint [`vm_js::Budget::deadline`] from the
+/// configured wall-time limit and the renderer-wide [`crate::render_control::RenderDeadline`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunLimits {
+  /// Maximum number of task callbacks executed per spin.
   pub max_tasks: usize,
+  /// Maximum number of microtask callbacks executed per spin.
   pub max_microtasks: usize,
+  /// Optional wall-time budget per spin.
+  ///
+  /// This is enforced by the host event loop and also propagated as part of the `vm-js` per-run
+  /// budget deadline.
   pub max_wall_time: Option<Duration>,
 }
 

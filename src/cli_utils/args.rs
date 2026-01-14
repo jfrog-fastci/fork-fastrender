@@ -577,6 +577,9 @@ pub struct JsExecutionArgs {
   /// Maximum wall-time per `EventLoop::run_until_idle`/`spin_until` "spin" in milliseconds.
   ///
   /// Use `0` to disable the wall-time spin limit (unbounded).
+  ///
+  /// When using the `vm-js` backend, this also contributes to the VM time deadline
+  /// (`vm_js::Budget::deadline`) so that tight loops inside the VM cannot run unbounded.
   #[arg(
     long = "js-max-wall-ms",
     alias = "js-max-wall-time-per-spin-ms",

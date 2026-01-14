@@ -146,12 +146,12 @@ pub struct JsExecutionOptions {
   /// This is a host-side guard against pathological `import "<very long string>"` inputs.
   pub max_module_specifier_length: usize,
 
-  /// VM budget: maximum number of VM "ticks" (fuel units) that may be executed before the VM
-  /// terminates execution.
+  /// VM budget: maximum `vm-js` fuel ("tick") units that may be consumed before terminating
+  /// execution.
   ///
-  /// Despite the name, this is **not** a literal "instruction counter". It is an engine-defined
-  /// cooperative budget: every `vm-js` "tick" consumes some amount of fuel, but fuel units are not
-  /// guaranteed to correspond 1:1 with bytecode instructions or source-level operations.
+  /// Despite the name, this is **not** a literal "instruction counter". `vm-js` charges fuel in
+  /// engine-defined "ticks" (see [`vm_js::Vm::tick`]): each tick consumes 1 fuel unit, but ticks are
+  /// not guaranteed to correspond 1:1 with bytecode instructions or source-level operations.
   ///
   /// For the `vm-js` backend, this maps to [`vm_js::Budget::fuel`].
   pub max_instruction_count: Option<u64>,

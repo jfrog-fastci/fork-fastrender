@@ -97,7 +97,8 @@ Run `--help` for per-binary defaults.
 The following shared `JsExecutionArgs` flags are available on: `fetch_and_render`, `render_pages`,
 `pageset_progress run`, and `bundle_page render`:
 
-- `--js-max-wall-ms <MS>`: wall-time budget per event-loop “spin” (0 disables the wall-time limit).
+- `--js-max-wall-ms <MS>`: wall-time budget per event-loop “spin” (0 disables the wall-time limit);
+  when using `vm-js`, this also contributes to the per-entrypoint `vm_js::Budget::deadline`.
 - `--js-max-script-bytes <BYTES>`: maximum bytes accepted for a single script source (inline or external).
 - `--js-max-tasks <N>` / `--js-max-microtasks <N>`: maximum tasks/microtasks executed per spin.
 - `--js-max-pending-tasks <N>`, `--js-max-pending-microtasks <N>`, `--js-max-pending-timers <N>`:
