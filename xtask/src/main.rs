@@ -708,19 +708,19 @@ struct BrowserArgs {
   #[arg(long)]
   release: bool,
 
-  /// Show the in-app HUD overlay (sets `FASTR_BROWSER_HUD=1`).
+  /// Show the in-app HUD overlay (passes `browser --hud`).
   #[arg(long, conflicts_with = "no_hud")]
   hud: bool,
 
-  /// Disable the HUD overlay even if `FASTR_BROWSER_HUD` is set.
+  /// Disable the HUD overlay even if `FASTR_BROWSER_HUD` is set (passes `browser --no-hud`).
   #[arg(long = "no-hud", conflicts_with = "hud")]
   no_hud: bool,
 
-  /// Enable responsiveness/perf logging (sets `FASTR_PERF_LOG=1`).
+  /// Enable responsiveness/perf logging (passes `browser --perf-log`).
   #[arg(long)]
   perf_log: bool,
 
-  /// Optional output path for responsiveness/perf logging (sets `FASTR_PERF_LOG_OUT=<path>`).
+  /// Optional output path for responsiveness/perf logging (passes `browser --perf-log-out <path>`).
   ///
   /// When unset, perf-log output defaults to stdout so it can be piped/tee'd.
   /// Passing this flag also enables perf logging.
@@ -732,14 +732,14 @@ struct BrowserArgs {
   #[arg(long, value_name = "PATH")]
   trace_out: Option<PathBuf>,
 
-  /// Apply an in-process address-space limit (MiB) via `FASTR_BROWSER_MEM_LIMIT_MB`.
+  /// Apply an in-process address-space limit (MiB) via `browser --mem-limit-mb`.
   ///
   /// This is applied by the `browser` binary itself after startup so Cargo/rustup can still run
   /// under the default outer `scripts/run_limited.sh --as 64G` cap.
   #[arg(long, value_name = "MB", value_parser = parse_u64_with_underscores)]
   mem_limit_mb: Option<u64>,
 
-  /// Run the browser in headless smoke-test mode (no window/wgpu) and exit.
+  /// Run the browser in headless smoke-test mode (no window/wgpu) and exit (`browser --headless-smoke`).
   #[arg(long)]
   headless_smoke: bool,
 }

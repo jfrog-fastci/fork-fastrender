@@ -97,7 +97,7 @@ fn browser_command_wraps_cargo_with_run_limited_and_cargo_agent() {
 }
 
 #[test]
-fn browser_command_supports_release_url_and_env_flags() {
+fn browser_command_supports_release_url_and_cli_flags() {
   let repo_root = repo_root();
   let url = "https://example.com/".to_string();
   let perf_log_out = PathBuf::from("target/perf.log");
@@ -128,34 +128,48 @@ fn browser_command_supports_release_url_and_env_flags() {
     "expected URL to be the final arg, got {args:?}"
   );
 
-  assert_eq!(
-    cmd_env(&cmd, FASTR_BROWSER_MEM_LIMIT_MB_ENV).as_deref(),
-    Some("1024"),
-    "expected mem limit env to be set"
+  assert!(
+    args.iter().any(|arg| arg == "--hud"),
+    "expected --hud in args, got {args:?}"
   );
-  assert_eq!(
-    cmd_env(&cmd, FASTR_TEST_BROWSER_HEADLESS_SMOKE_ENV).as_deref(),
-    Some("1"),
-    "expected headless smoke env to be set"
+  assert!(
+    args
+      .windows(2)
+      .any(|w| w == ["--perf-log-out", perf_log_out_value.as_str()]),
+    "expected --perf-log-out <path> in args, got {args:?}"
   );
-  assert_eq!(
-    cmd_env(&cmd, FASTR_BROWSER_HUD_ENV).as_deref(),
-    Some("1"),
-    "expected hud env to be set"
+  assert!(
+    args.windows(2).any(|w| w == ["--mem-limit-mb", "1024"]),
+    "expected --mem-limit-mb 1024 in args, got {args:?}"
   );
-  assert_eq!(
-    cmd_env(&cmd, FASTR_PERF_LOG_ENV).as_deref(),
-    Some("1"),
-    "expected perf log env to be set"
+  assert!(
+    args.iter().any(|arg| arg == "--headless-smoke"),
+    "expected --headless-smoke in args, got {args:?}"
   );
-  assert_eq!(
-    cmd_env(&cmd, FASTR_PERF_LOG_OUT_ENV).as_deref(),
-    Some(perf_log_out_value.as_str()),
-    "expected perf log out env to be set"
-  );
+
   assert_eq!(
     cmd_env(&cmd, FASTR_BROWSER_TRACE_OUT_ENV).as_deref(),
     Some(trace_out_value.as_str()),
     "expected trace out env to be set"
+  );
+  assert!(
+    cmd_env(&cmd, FASTR_BROWSER_MEM_LIMIT_MB_ENV).is_none(),
+    "expected mem limit env not to be set when CLI flag is available"
+  );
+  assert!(
+    cmd_env(&cmd, FASTR_TEST_BROWSER_HEADLESS_SMOKE_ENV).is_none(),
+    "expected headless smoke env not to be set when CLI flag is available"
+  );
+  assert!(
+    cmd_env(&cmd, FASTR_BROWSER_HUD_ENV).is_none(),
+    "expected hud env not to be set when CLI flag is available"
+  );
+  assert!(
+    cmd_env(&cmd, FASTR_PERF_LOG_ENV).is_none(),
+    "expected perf log env not to be set when CLI flag is available"
+  );
+  assert!(
+    cmd_env(&cmd, FASTR_PERF_LOG_OUT_ENV).is_none(),
+    "expected perf log out env not to be set when CLI flag is available"
   );
 }

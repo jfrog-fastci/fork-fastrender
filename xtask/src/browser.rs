@@ -45,23 +45,11 @@ pub fn build_browser_command(repo_root: &Path, args: &BrowserCommandArgs) -> Com
   cmd.current_dir(repo_root);
 
   // Apply in-process guardrails / test hooks expected by `src/bin/browser.rs`.
-  if let Some(enabled) = args.hud {
-    cmd.env(FASTR_BROWSER_HUD_ENV, if enabled { "1" } else { "0" });
-  }
-  if args.perf_log || args.perf_log_out.is_some() {
-    cmd.env(FASTR_PERF_LOG_ENV, "1");
-  }
-  if let Some(out) = args.perf_log_out.as_ref() {
-    cmd.env(FASTR_PERF_LOG_OUT_ENV, out.as_os_str());
-  }
+  //
+  // Prefer passing browser CLI flags where available so the wrapper doesn't leak debug/profiling
+  // env vars into the Cargo build environment.
   if let Some(out) = args.trace_out.as_ref() {
     cmd.env(FASTR_BROWSER_TRACE_OUT_ENV, out.as_os_str());
-  }
-  if let Some(limit_mb) = args.mem_limit_mb {
-    cmd.env(FASTR_BROWSER_MEM_LIMIT_MB_ENV, limit_mb.to_string());
-  }
-  if args.headless_smoke {
-    cmd.env(FASTR_TEST_BROWSER_HEADLESS_SMOKE_ENV, "1");
   }
 
   cmd.arg("bash");
@@ -77,6 +65,22 @@ pub fn build_browser_command(repo_root: &Path, args: &BrowserCommandArgs) -> Com
   // Always include the `--` separator so callers can append `<url>` without worrying about cargo
   // arg ordering. Cargo accepts a `run --` separator even when no trailing args are provided.
   cmd.arg("--");
+  if let Some(enabled) = args.hud {
+    cmd.arg(if enabled { "--hud" } else { "--no-hud" });
+  }
+  if let Some(out) = args.perf_log_out.as_ref() {
+    cmd.arg("--perf-log-out");
+    cmd.arg(out);
+  } else if args.perf_log {
+    cmd.arg("--perf-log");
+  }
+  if let Some(limit_mb) = args.mem_limit_mb {
+    cmd.arg("--mem-limit-mb");
+    cmd.arg(limit_mb.to_string());
+  }
+  if args.headless_smoke {
+    cmd.arg("--headless-smoke");
+  }
   if let Some(url) = args.url.as_deref() {
     cmd.arg(url);
   }
