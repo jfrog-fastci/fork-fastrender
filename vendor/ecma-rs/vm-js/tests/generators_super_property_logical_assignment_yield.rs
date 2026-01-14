@@ -133,6 +133,92 @@ fn generator_super_logical_or_assignment_captures_super_base_and_decision_across
 }
 
 #[test]
+fn generator_super_logical_and_assignment_captures_super_base_and_decision_across_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        const log = [];
+        class B1 {
+          get x(){ log.push("get1"); return this._x; }
+          set x(v){ log.push("set1:" + v); this._x = v; }
+        }
+        class B2 {
+          get x(){ log.push("get2"); return this._x; }
+          set x(v){ log.push("set2:" + v); this._x = v; }
+        }
+        class D extends B1 {
+          constructor(){ super(); this._x = 1; }
+          *gen() {
+            const r = (super.x &&= (yield 0));
+            return r === 5 && this._x === 5 && log.join(",") === "get1,set1:5";
+          }
+        }
+
+        const d = new D();
+        const it = d.gen();
+        const r1 = it.next();
+
+        // Mutate the LHS value and super base after the yield but before resuming.
+        // The assignment must still occur (decision was made before yielding) and target the
+        // original super base.
+        d._x = 0; // falsy now, but should not cancel the pending assignment
+        Object.setPrototypeOf(D.prototype, B2.prototype);
+
+        const r2 = it.next(5);
+
+        r1.value === 0 && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_super_nullish_coalescing_assignment_captures_super_base_and_decision_across_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        const log = [];
+        class B1 {
+          get x(){ log.push("get1"); return this._x; }
+          set x(v){ log.push("set1:" + v); this._x = v; }
+        }
+        class B2 {
+          get x(){ log.push("get2"); return this._x; }
+          set x(v){ log.push("set2:" + v); this._x = v; }
+        }
+        class D extends B1 {
+          constructor(){ super(); this._x = null; }
+          *gen() {
+            const r = (super.x ??= (yield 0));
+            return r === 5 && this._x === 5 && log.join(",") === "get1,set1:5";
+          }
+        }
+
+        const d = new D();
+        const it = d.gen();
+        const r1 = it.next();
+
+        // Mutate the LHS value and super base after the yield but before resuming.
+        // The assignment must still occur (decision was made before yielding) and target the
+        // original super base.
+        d._x = 0; // non-nullish now, but should not cancel the pending assignment
+        Object.setPrototypeOf(D.prototype, B2.prototype);
+
+        const r2 = it.next(5);
+
+        r1.value === 0 && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_super_logical_or_assignment_with_yield_in_computed_key_uses_updated_super_base_after_yield(
 ) {
   let mut rt = new_runtime();

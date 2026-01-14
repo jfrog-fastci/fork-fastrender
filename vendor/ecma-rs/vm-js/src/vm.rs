@@ -1,7 +1,7 @@
 use crate::error::Termination;
 use crate::error::TerminationReason;
 use crate::error::VmError;
-use crate::exec::{AsyncContinuation, AsyncGeneratorRuntimeState, RuntimeEnv};
+use crate::exec::{AsyncGeneratorRuntimeState, RuntimeEnv};
 use crate::hir_exec::HirAsyncContinuation;
 use crate::execution_context::ExecutionContext;
 use crate::execution_context::ModuleId;

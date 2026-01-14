@@ -106,6 +106,42 @@ fn generator_logical_and_assignment_captures_base_key_and_decision_across_yield(
 }
 
 #[test]
+fn generator_logical_or_assignment_captures_base_key_and_decision_across_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var o1 = { a: 0, b: 1 };
+        var o2 = { a: 100, b: 100 };
+        var o = o1;
+        var k = "a";
+
+        function* g() {
+          const r = (o[k] ||= (yield 0));
+          return r === 5 && o1.a === 5 && o1.b === 1 && o2.a === 100 && o2.b === 100;
+        }
+
+        const it = g();
+        const r1 = it.next();
+
+        // Mutate the LHS value and rebind the base/key after the yield but before resuming.
+        // The assignment must still occur (decision was made before yielding) and target the
+        // original base/key pair.
+        o1.a = 1; // truthy now, but should not cancel the pending assignment
+        o = o2;
+        k = "b";
+
+        const r2 = it.next(5);
+
+        r1.value === 0 && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_nullish_coalescing_assignment_captures_base_key_and_decision_across_yield() {
   let mut rt = new_runtime();
   let value = rt
