@@ -3395,4 +3395,50 @@ mod tests {
       "outer should snap to next item"
     );
   }
+
+  #[test]
+  fn apply_scroll_chain_can_defer_snapping_with_apply_snap_false() {
+    let mut target_style = ComputedStyle::default();
+    target_style.scroll_snap_align.block = ScrollSnapAlign::Start;
+    target_style.scroll_snap_align.inline = ScrollSnapAlign::Start;
+    let target_style = Arc::new(target_style);
+
+    let first = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      vec![],
+      target_style.clone(),
+    );
+    let second = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 200.0, 100.0, 100.0),
+      vec![],
+      target_style,
+    );
+
+    let mut container_style = ComputedStyle::default();
+    container_style.overflow_y = Overflow::Scroll;
+    container_style.scroll_snap_type.axis = ScrollSnapAxis::Y;
+    container_style.scroll_snap_type.strictness = ScrollSnapStrictness::Mandatory;
+    let container_style = Arc::new(container_style);
+
+    let container = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      vec![first, second],
+      container_style,
+    );
+
+    // With snapping enabled, the delta lands near the second snap point and should snap to it.
+    let mut chain = build_scroll_chain(&container, Size::new(100.0, 100.0), &[0]);
+    assert_eq!(chain.len(), 1);
+    let result = apply_scroll_chain(&mut chain, Point::new(0.0, 180.0), ScrollOptions::default());
+    assert!(result.remaining.y.abs() < 1e-3);
+    assert!((chain[0].scroll.y - 200.0).abs() < 1e-2);
+
+    // With snapping disabled, we should preserve the raw accumulated scroll offset.
+    let mut chain = build_scroll_chain(&container, Size::new(100.0, 100.0), &[0]);
+    let mut options = ScrollOptions::default();
+    options.apply_snap = false;
+    let result = apply_scroll_chain(&mut chain, Point::new(0.0, 180.0), options);
+    assert!(result.remaining.y.abs() < 1e-3);
+    assert!((chain[0].scroll.y - 180.0).abs() < 1e-2);
+  }
 }
