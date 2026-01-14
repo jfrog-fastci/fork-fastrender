@@ -2253,11 +2253,17 @@ impl ModuleGraph {
     fn ensure_outer_len<T>(
       v: &mut Vec<Vec<T>>,
       len: usize,
+      vm: &mut Vm,
     ) -> Result<(), VmError> {
       if v.len() < len {
         v.try_reserve_exact(len - v.len())
           .map_err(|_| VmError::OutOfMemory)?;
         while v.len() < len {
+          // Adding a large number of new modules can grow SCC vectors by a large amount. Ensure this
+          // work observes VM budgets even if the graph contains few/no edges.
+          if v.len() % RESET_TICK_EVERY == 0 && v.len() != 0 {
+            vm.tick()?;
+          }
           v.push(Vec::new());
         }
       } else if v.len() > len {
@@ -2266,9 +2272,9 @@ impl ModuleGraph {
       Ok(())
     }
 
-    ensure_outer_len(&mut self.scc_members, module_count)?;
-    ensure_outer_len(&mut self.scc_deps, module_count)?;
-    ensure_outer_len(&mut self.scc_parents, module_count)?;
+    ensure_outer_len(&mut self.scc_members, module_count, vm)?;
+    ensure_outer_len(&mut self.scc_deps, module_count, vm)?;
+    ensure_outer_len(&mut self.scc_parents, module_count, vm)?;
 
     for (i, module) in self.modules.iter_mut().enumerate() {
       if i % RESET_TICK_EVERY == 0 && i != 0 {
@@ -3174,6 +3180,9 @@ impl ModuleGraph {
     // Propagate the rejection to async parents.
     let parents_len = self.scc_parents.get(root_idx).map(|p| p.len()).unwrap_or(0);
     for parent_i in 0..parents_len {
+      if parent_i % 32 == 0 && parent_i != 0 {
+        vm.tick()?;
+      }
       let parent_root = self.scc_parents[root_idx][parent_i];
       let parent_idx = module_index(parent_root);
       if parent_idx >= self.modules.len() {
