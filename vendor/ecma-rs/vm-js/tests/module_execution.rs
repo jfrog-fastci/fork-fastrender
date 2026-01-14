@@ -126,7 +126,7 @@ fn compiled_module_instantiation_supports_anonymous_default_export_function() ->
   // compiled HIR.
   let src_a = SourceText::new_charged_arc(&mut heap, "a.js", src_a)?;
   let mut rec_a = SourceTextModuleRecord::compile_source(&mut heap, src_a)?;
-  rec_a.ast = None;
+  rec_a.clear_ast();
   let a = graph.add_module_with_specifier("a.js", rec_a)?;
 
   // Module B can remain AST-backed; it exercises the default import binding.

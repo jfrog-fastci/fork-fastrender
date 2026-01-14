@@ -107,11 +107,11 @@ fn compiled_modules_fall_back_to_ast_for_async_generators() -> Result<(), VmErro
       export async function* gen() { yield 1; }
     "#,
   )?;
-  let mut record_a = SourceTextModuleRecord::parse_source(compiled_a.source.clone())?;
+  let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, compiled_a.source.clone())?;
   record_a.compiled = Some(compiled_a);
   // Drop the AST + source so the fallback path must parse on demand from the stored compiled
   // `SourceText` (`record.compiled.source`).
-  record_a.ast = None;
+  record_a.clear_ast();
   record_a.source = None;
   let a = graph.add_module_with_specifier("a.js", record_a)?;
 
@@ -124,10 +124,10 @@ fn compiled_modules_fall_back_to_ast_for_async_generators() -> Result<(), VmErro
       export const p = gen().next();
     "#,
   )?;
-  let mut record_b = SourceTextModuleRecord::parse_source(compiled_b.source.clone())?;
+  let mut record_b = SourceTextModuleRecord::parse_source(&mut heap, compiled_b.source.clone())?;
   record_b.compiled = Some(compiled_b);
   // Drop the AST to ensure module evaluation actually runs through the compiled-module path.
-  record_b.ast = None;
+  record_b.clear_ast();
   record_b.source = None;
   let b = graph.add_module_with_specifier("b.js", record_b)?;
 
@@ -253,9 +253,9 @@ fn compiled_modules_fall_back_to_ast_for_async_generator_methods() -> Result<(),
     compiled_a.contains_async_generators,
     "expected compiled module to flag async generator methods"
   );
-  let mut record_a = SourceTextModuleRecord::parse_source(compiled_a.source.clone())?;
+  let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, compiled_a.source.clone())?;
   record_a.compiled = Some(compiled_a);
-  record_a.ast = None;
+  record_a.clear_ast();
   record_a.source = None;
   let a = graph.add_module_with_specifier("a.js", record_a)?;
 
@@ -268,9 +268,9 @@ fn compiled_modules_fall_back_to_ast_for_async_generator_methods() -> Result<(),
       export const p = obj.m().next();
     "#,
   )?;
-  let mut record_b = SourceTextModuleRecord::parse_source(compiled_b.source.clone())?;
+  let mut record_b = SourceTextModuleRecord::parse_source(&mut heap, compiled_b.source.clone())?;
   record_b.compiled = Some(compiled_b);
-  record_b.ast = None;
+  record_b.clear_ast();
   record_b.source = None;
   let b = graph.add_module_with_specifier("b.js", record_b)?;
 
@@ -387,9 +387,9 @@ fn compiled_modules_fall_back_to_ast_for_async_generator_class_methods() -> Resu
     compiled_a.contains_async_generators,
     "expected compiled module to flag async generator class methods"
   );
-  let mut record_a = SourceTextModuleRecord::parse_source(compiled_a.source.clone())?;
+  let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, compiled_a.source.clone())?;
   record_a.compiled = Some(compiled_a);
-  record_a.ast = None;
+  record_a.clear_ast();
   record_a.source = None;
   let a = graph.add_module_with_specifier("a.js", record_a)?;
 
@@ -402,9 +402,9 @@ fn compiled_modules_fall_back_to_ast_for_async_generator_class_methods() -> Resu
       export const p = new C().m().next();
     "#,
   )?;
-  let mut record_b = SourceTextModuleRecord::parse_source(compiled_b.source.clone())?;
+  let mut record_b = SourceTextModuleRecord::parse_source(&mut heap, compiled_b.source.clone())?;
   record_b.compiled = Some(compiled_b);
-  record_b.ast = None;
+  record_b.clear_ast();
   record_b.source = None;
   let b = graph.add_module_with_specifier("b.js", record_b)?;
 
@@ -513,9 +513,9 @@ fn compiled_modules_fall_back_to_ast_for_async_generators_eval_sync() -> Result<
       export async function* gen() { yield 1; }
     "#,
   )?;
-  let mut record_a = SourceTextModuleRecord::parse_source(compiled_a.source.clone())?;
+  let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, compiled_a.source.clone())?;
   record_a.compiled = Some(compiled_a);
-  record_a.ast = None;
+  record_a.clear_ast();
   record_a.source = None;
   let a = graph.add_module_with_specifier("a.js", record_a)?;
 
@@ -527,9 +527,9 @@ fn compiled_modules_fall_back_to_ast_for_async_generators_eval_sync() -> Result<
       export const p = gen().next();
     "#,
   )?;
-  let mut record_b = SourceTextModuleRecord::parse_source(compiled_b.source.clone())?;
+  let mut record_b = SourceTextModuleRecord::parse_source(&mut heap, compiled_b.source.clone())?;
   record_b.compiled = Some(compiled_b);
-  record_b.ast = None;
+  record_b.clear_ast();
   record_b.source = None;
   let b = graph.add_module_with_specifier("b.js", record_b)?;
 

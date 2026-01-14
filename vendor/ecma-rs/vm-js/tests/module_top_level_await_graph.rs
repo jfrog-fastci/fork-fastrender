@@ -205,7 +205,7 @@ fn tla_compiled_module_executes_via_hir_without_ast_fallback() -> Result<(), VmE
     )?;
     let mut record = SourceTextModuleRecord::compile_source(&mut heap, source)?;
     // Simulate an embedding that discards the `parse-js` AST after compilation.
-    record.ast = None;
+    record.clear_ast();
     record.source = None;
 
     let m = graph.add_module_with_specifier("m.js", record)?;

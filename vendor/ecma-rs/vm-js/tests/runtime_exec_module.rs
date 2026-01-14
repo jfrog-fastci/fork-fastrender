@@ -151,7 +151,7 @@ impl VmHostHooks for TestHostHooks {
           .ok_or_else(|| VmError::InvariantViolation("no source registered for module specifier"))?;
         let source =
           SourceText::new_charged_arc(scope.heap_mut(), specifier.as_str(), src.as_str())?;
-        let record = SourceTextModuleRecord::parse_source_with_vm(vm, source)?;
+        let record = SourceTextModuleRecord::parse_source_with_vm(vm, scope.heap_mut(), source)?;
         let id = modules.add_module_with_specifier(specifier.as_str(), record)?;
         self.modules.insert(specifier.clone(), id);
         id

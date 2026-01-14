@@ -129,7 +129,7 @@ fn compiled_module_requires_ast_fallback_parses_ast_before_linking_and_evaluates
     );
     // Drop both the retained AST and `record.source` so ModuleGraph must parse the AST on demand
     // from `compiled.source`.
-    rec_a.ast = None;
+    rec_a.clear_ast();
     rec_a.source = None;
 
     let a = graph.add_module_with_specifier("a.js", rec_a)?;
@@ -244,7 +244,7 @@ fn compiled_module_requires_ast_fallback_is_respected_by_evaluate_sync() -> Resu
         .is_some_and(|c| c.requires_ast_fallback),
       "expected private-name module to require AST fallback"
     );
-    rec_a.ast = None;
+    rec_a.clear_ast();
     rec_a.source = None;
     let a = graph.add_module_with_specifier("a.js", rec_a)?;
 
@@ -339,7 +339,7 @@ fn compiled_module_requires_ast_fallback_is_respected_for_compiled_importers_in_
         .is_some_and(|c| c.requires_ast_fallback),
       "expected private-name module to require AST fallback"
     );
-    rec_a.ast = None;
+    rec_a.clear_ast();
     rec_a.source = None;
     let a = graph.add_module_with_specifier("a.js", rec_a)?;
 
@@ -362,7 +362,7 @@ fn compiled_module_requires_ast_fallback_is_respected_for_compiled_importers_in_
         .is_some_and(|c| !c.requires_ast_fallback && !c.contains_async_generators),
       "expected importer module to be executable via the compiled HIR path"
     );
-    rec_b.ast = None;
+    rec_b.clear_ast();
     rec_b.source = None;
     let b = graph.add_module_with_specifier("b.js", rec_b)?;
 
@@ -457,7 +457,7 @@ fn compiled_module_requires_ast_fallback_is_respected_for_compiled_importers_in_
         .is_some_and(|c| c.requires_ast_fallback),
       "expected private-name module to require AST fallback"
     );
-    rec_a.ast = None;
+    rec_a.clear_ast();
     rec_a.source = None;
     let a = graph.add_module_with_specifier("a.js", rec_a)?;
 
@@ -480,7 +480,7 @@ fn compiled_module_requires_ast_fallback_is_respected_for_compiled_importers_in_
         .is_some_and(|c| !c.requires_ast_fallback && !c.contains_async_generators),
       "expected importer module to be executable via the compiled HIR path"
     );
-    rec_b.ast = None;
+    rec_b.clear_ast();
     rec_b.source = None;
     let b = graph.add_module_with_specifier("b.js", rec_b)?;
 

@@ -347,7 +347,7 @@ pub struct SourceTextModuleRecord {
 
 impl SourceTextModuleRecord {
   /// Clears the retained module AST, dropping any associated external-memory charge.
-  pub(crate) fn clear_ast(&mut self) {
+  pub fn clear_ast(&mut self) {
     // Drop the AST first so its memory is freed before releasing the external-memory charge.
     self.ast = None;
     self.ast_external_memory = None;
@@ -408,7 +408,7 @@ impl SourceTextModuleRecord {
   /// entry lists and `[[RequestedModules]]`.
   pub fn parse(heap: &mut Heap, source: &str) -> Result<Self, VmError> {
     let source = arc_try_new_vm(SourceText::new_charged(heap, "<inline>", source)?)?;
-    Self::parse_source(source)
+    Self::parse_source(heap, source)
   }
 
   /// Parse a module and additionally compile it to HIR so `ModuleGraph` can execute it via the
@@ -421,13 +421,22 @@ impl SourceTextModuleRecord {
     let script = CompiledScript::compile_module(heap, name, text)?;
     // Parse the module record fields from the same `SourceText` so error spans and `import.meta`
     // use consistent source metadata.
-    let mut record = Self::parse_source(script.source.clone())?;
+    let mut record = Self::parse_source(heap, script.source.clone())?;
     record.compiled = Some(script);
     Ok(record)
   }
 
   /// Parse a module and capture its [`SourceText`] + parsed AST for later evaluation.
-  pub fn parse_source(source: Arc<SourceText>) -> Result<Self, VmError> {
+  pub fn parse_source(heap: &mut Heap, source: Arc<SourceText>) -> Result<Self, VmError> {
+    // `parse-js` AST nodes can be significantly larger than the original source. Use the same
+    // conservative multiplier as `ModuleGraph::ensure_module_ast` so hostile modules can't bypass
+    // heap limits by forcing large retained ASTs.
+    let estimated_ast_bytes = source.text.len().saturating_mul(4);
+
+    // Charge before parsing so we can fail fast without allocating an untracked AST when the heap
+    // is already at its limit. If parsing fails, the token is dropped and the charge is released.
+    let token = arc_try_new_vm(heap.charge_external(estimated_ast_bytes)?)?;
+
     let opts = ParseOptions {
       dialect: Dialect::Ecma,
       source_type: SourceType::Module,
@@ -450,6 +459,7 @@ impl SourceTextModuleRecord {
     let mut record = module_record_from_top_level(&top, &mut cancel)?;
     record.source = Some(source);
     record.ast = Some(arc_try_new_vm(top)?);
+    record.ast_external_memory = Some(token);
     Ok(record)
   }
 
@@ -460,7 +470,7 @@ impl SourceTextModuleRecord {
   /// [`SourceTextModuleRecord::parse_source`], but has `compiled` populated so
   /// [`crate::ModuleGraph`] can execute it via `hir_exec`.
   pub fn compile_source(heap: &mut Heap, source: Arc<SourceText>) -> Result<Self, VmError> {
-    let mut record = Self::parse_source(source.clone())?;
+    let mut record = Self::parse_source(heap, source.clone())?;
     let ast = record
       .ast
       .as_deref()
@@ -473,6 +483,12 @@ impl SourceTextModuleRecord {
   /// Parses a source text module using VM budget/interrupt state.
   pub fn parse_with_vm(heap: &mut Heap, vm: &mut Vm, source: &str) -> Result<Self, VmError> {
     let source = arc_try_new_vm(SourceText::new_charged(heap, "<inline>", source)?)?;
+
+    // Charge external memory for the retained AST before parsing so hostile modules can't bypass
+    // `HeapLimits` by forcing large off-heap parse trees.
+    let estimated_ast_bytes = source.text.len().saturating_mul(4);
+    let token = arc_try_new_vm(heap.charge_external(estimated_ast_bytes)?)?;
+
     let opts = ParseOptions {
       dialect: Dialect::Ecma,
       source_type: SourceType::Module,
@@ -488,12 +504,22 @@ impl SourceTextModuleRecord {
     let mut record = module_record_from_top_level(&top, &mut cancel)?;
     record.source = Some(source);
     record.ast = Some(arc_try_new_vm(top)?);
+    record.ast_external_memory = Some(token);
     Ok(record)
   }
 
   /// Parses a source text module using VM budget/interrupt state, preserving the provided source
   /// metadata (URL/name/etc).
-  pub fn parse_source_with_vm(vm: &mut Vm, source: Arc<SourceText>) -> Result<Self, VmError> {
+  pub fn parse_source_with_vm(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    source: Arc<SourceText>,
+  ) -> Result<Self, VmError> {
+    // Charge external memory for the retained AST before parsing so hostile modules can't bypass
+    // `HeapLimits` by forcing large off-heap parse trees.
+    let estimated_ast_bytes = source.text.len().saturating_mul(4);
+    let token = arc_try_new_vm(heap.charge_external(estimated_ast_bytes)?)?;
+
     let opts = ParseOptions {
       dialect: Dialect::Ecma,
       source_type: SourceType::Module,
@@ -509,6 +535,7 @@ impl SourceTextModuleRecord {
     let mut record = module_record_from_top_level(&top, &mut cancel)?;
     record.source = Some(source);
     record.ast = Some(arc_try_new_vm(top)?);
+    record.ast_external_memory = Some(token);
     Ok(record)
   }
 
@@ -518,7 +545,7 @@ impl SourceTextModuleRecord {
     heap: &mut Heap,
     source: Arc<SourceText>,
   ) -> Result<Self, VmError> {
-    let mut record = Self::parse_source_with_vm(vm, source.clone())?;
+    let mut record = Self::parse_source_with_vm(vm, heap, source.clone())?;
     let ast = record
       .ast
       .as_deref()
@@ -2807,7 +2834,7 @@ mod tests {
     )
     .expect("SourceText::new_charged");
 
-    let err = SourceTextModuleRecord::parse_source_with_vm(&mut vm, source)
+    let err = SourceTextModuleRecord::parse_source_with_vm(&mut vm, &mut heap, source)
       .expect_err("expected fuel budget to terminate parsing");
     match err {
       VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::OutOfFuel),

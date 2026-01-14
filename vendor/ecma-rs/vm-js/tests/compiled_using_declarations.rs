@@ -117,10 +117,10 @@ fn compiled_module_supports_top_level_using_and_await_using() -> Result<(), VmEr
         export const out = 1;
       "#,
     )?;
-    let mut record = SourceTextModuleRecord::parse_source(compiled.source.clone())?;
+    let mut record = SourceTextModuleRecord::parse_source(rt.heap_mut(), compiled.source.clone())?;
     record.compiled = Some(compiled);
     // Force ModuleGraph to use the compiled-module (HIR) instantiation + execution path.
-    record.ast = None;
+    record.clear_ast();
 
     let global_object = rt.realm().global_object();
     let realm_id = rt.realm().id();

@@ -671,7 +671,8 @@ impl VmHostHooks for Test262ModuleHooks {
       }
     };
 
-    let record = match SourceTextModuleRecord::parse_source_with_vm(vm, Arc::clone(&source_text)) {
+    let record =
+      match SourceTextModuleRecord::parse_source_with_vm(vm, scope.heap_mut(), Arc::clone(&source_text)) {
       Ok(record) => record,
       Err(VmError::Syntax(mut diags)) => {
         // Preserve parse diagnostics when rejecting the module-loading promise.
@@ -1241,7 +1242,11 @@ fn execute_module(
       Ok(source) => source,
       Err(err) => return Err(map_vm_error(case, module_src, cancel, runtime, err)),
     };
-    let record = match SourceTextModuleRecord::parse_source_with_vm(&mut runtime.vm, module_source)
+    let record = match SourceTextModuleRecord::parse_source_with_vm(
+      &mut runtime.vm,
+      &mut runtime.heap,
+      module_source,
+    )
     {
       Ok(record) => record,
       Err(err) => return Err(map_vm_error(case, module_src, cancel, runtime, err)),

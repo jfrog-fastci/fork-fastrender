@@ -332,7 +332,7 @@ fn dynamic_import_inside_imported_function_uses_callee_module_as_referrer_for_co
   let src_a = "export function doImport() { return import('dep.js'); }";
   let src_a = SourceText::new_charged_arc(&mut heap, "a.js", src_a)?;
   let mut rec_a = SourceTextModuleRecord::compile_source(&mut heap, src_a)?;
-  rec_a.ast = None;
+  rec_a.clear_ast();
   let a = modules.add_module_with_specifier("a.js", rec_a)?;
 
   let b = modules.add_module_with_specifier(

@@ -99,12 +99,18 @@ fn compiled_module_graph_falls_back_for_async_generators() -> Result<(), VmError
 
   // Parse module record metadata (imports/exports) but drop the AST so the compiled-module path is
   // exercised. Async-generator modules must repopulate `ast` on-demand for the fallback evaluator.
-  let mut record_a = SourceTextModuleRecord::parse_source_with_vm(&mut rt.vm, compiled_a.source.clone())?;
-  record_a.compiled = Some(compiled_a);
-  record_a.ast = None;
-  let mut record_b = SourceTextModuleRecord::parse_source_with_vm(&mut rt.vm, compiled_b.source.clone())?;
-  record_b.compiled = Some(compiled_b);
-  record_b.ast = None;
+  let (record_a, record_b) = {
+    let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+    let mut record_a =
+      SourceTextModuleRecord::parse_source_with_vm(vm, heap, compiled_a.source.clone())?;
+    record_a.compiled = Some(compiled_a);
+    record_a.clear_ast();
+    let mut record_b =
+      SourceTextModuleRecord::parse_source_with_vm(vm, heap, compiled_b.source.clone())?;
+    record_b.compiled = Some(compiled_b);
+    record_b.clear_ast();
+    (record_a, record_b)
+  };
 
   let _a = rt.modules_mut().add_module_with_specifier("a", record_a)?;
   let b = rt.modules_mut().add_module_with_specifier("b", record_b)?;

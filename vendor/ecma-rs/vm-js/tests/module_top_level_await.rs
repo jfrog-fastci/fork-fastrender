@@ -22,7 +22,7 @@ fn add_compiled_module_with_specifier(
   source: &str,
 ) -> Result<ModuleId, VmError> {
   let script = CompiledScript::compile_module(heap, specifier, source)?;
-  let mut record = SourceTextModuleRecord::parse_source(script.source.clone())?;
+  let mut record = SourceTextModuleRecord::parse_source(heap, script.source.clone())?;
   record.compiled = Some(script);
   graph.add_module_with_specifier(specifier, record)
 }
@@ -403,7 +403,7 @@ fn import_meta_works_after_top_level_await_in_compiled_module() -> Result<(), Vm
   // Link once so instantiation can use the parse tree, then discard the AST to ensure top-level
   // await evaluation parses on demand and retains the AST across suspension.
   graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), m)?;
-  graph.module_mut(m).ast = None;
+  graph.module_mut(m).clear_ast();
   // The compiled script retains the `SourceText`; ensure evaluation does not require
   // `SourceTextModuleRecord::source` once compilation has happened.
   graph.module_mut(m).source = None;
@@ -485,7 +485,7 @@ fn compiled_module_top_level_await_falls_back_to_ast() -> Result<(), VmError> {
   graph.link_all_by_specifier();
 
   graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), m)?;
-  graph.module_mut(m).ast = None;
+  graph.module_mut(m).clear_ast();
   graph.module_mut(m).source = None;
 
   let eval_promise = graph.evaluate(

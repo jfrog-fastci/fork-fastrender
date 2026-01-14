@@ -23,8 +23,8 @@ fn module_graph_link_respects_fuel_budget_even_for_empty_modules() -> Result<(),
   let mut realm = Realm::new(&mut vm, &mut heap)?;
 
   let mut graph = ModuleGraph::new();
-  let record =
-    SourceTextModuleRecord::parse_source(SourceText::new_charged_arc(&mut heap, "m", "")?)?;
+  let source = SourceText::new_charged_arc(&mut heap, "m", "")?;
+  let record = SourceTextModuleRecord::parse_source(&mut heap, source)?;
   let module = graph.add_module(record)?;
 
   let err = graph
@@ -50,11 +50,8 @@ fn module_graph_namespace_creation_respects_fuel_budget() -> Result<(), VmError>
   let mut realm = Realm::new(&mut vm, &mut heap)?;
 
   let mut graph = ModuleGraph::new();
-  let record = SourceTextModuleRecord::parse_source(SourceText::new_charged_arc(
-    &mut heap,
-    "m",
-    "export const x = 1;",
-  )?)?;
+  let source = SourceText::new_charged_arc(&mut heap, "m", "export const x = 1;")?;
+  let record = SourceTextModuleRecord::parse_source(&mut heap, source)?;
   let module = graph.add_module(record)?;
 
   {

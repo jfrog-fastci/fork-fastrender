@@ -200,7 +200,7 @@ let mut modules = ModuleGraph::new();
 // Optional (if you have a global lexical env): modules.set_global_lexical_env(...);
 
 let source = SourceText::new_charged_arc(&mut heap, "file:///main.js", "import './dep.js';")?;
-let record = SourceTextModuleRecord::parse_source_with_vm(&mut vm, source)?;
+let record = SourceTextModuleRecord::parse_source_with_vm(&mut vm, &mut heap, source)?;
 let root = modules.add_module(record)?;
 ```
 
@@ -253,7 +253,7 @@ fn host_load_imported_module(
 
   // 2) Parse.
   let source = SourceText::new_charged_arc(scope.heap_mut(), &request.specifier, &src)?;
-  let record = SourceTextModuleRecord::parse_source_with_vm(vm, source)?;
+  let record = SourceTextModuleRecord::parse_source_with_vm(vm, scope.heap_mut(), source)?;
 
   // 3) Insert into graph.
   let module_id = modules.add_module(record)?;

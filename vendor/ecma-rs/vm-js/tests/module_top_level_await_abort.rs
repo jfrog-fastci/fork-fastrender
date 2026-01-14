@@ -234,7 +234,7 @@ fn abort_tla_evaluation_tears_down_compiled_module_state() -> Result<(), VmError
   let mut graph = ModuleGraph::new();
 
   let script = CompiledScript::compile_module(&mut heap, "m.js", "await new Promise(() => {}); export {};")?;
-  let mut record = SourceTextModuleRecord::parse_source(script.source.clone())?;
+  let mut record = SourceTextModuleRecord::parse_source(&mut heap, script.source.clone())?;
   record.compiled = Some(script);
 
   let entry = graph.add_module(record)?;
@@ -242,7 +242,7 @@ fn abort_tla_evaluation_tears_down_compiled_module_state() -> Result<(), VmError
   // Link once so instantiation can use the parse tree, then discard the AST to ensure top-level
   // await evaluation parses on demand and retains the AST across suspension.
   graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), entry)?;
-  graph.module_mut(entry).ast = None;
+  graph.module_mut(entry).clear_ast();
   graph.module_mut(entry).source = None;
 
   let promise = graph.evaluate(

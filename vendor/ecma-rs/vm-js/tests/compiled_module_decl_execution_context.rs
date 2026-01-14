@@ -258,9 +258,9 @@ fn compiled_module_decl_functions_capture_realm_and_module_for_host_calls() -> R
        export { h, gi, K } from 'dep.js';
      "#,
   )?;
-  let mut record_m = SourceTextModuleRecord::parse_source(compiled_m.source.clone())?;
+  let mut record_m = SourceTextModuleRecord::parse_source(heap, compiled_m.source.clone())?;
   record_m.compiled = Some(compiled_m);
-  record_m.ast = None;
+  record_m.clear_ast();
 
   let compiled_dep = CompiledScript::compile_module(
     heap,
@@ -277,24 +277,24 @@ fn compiled_module_decl_functions_capture_realm_and_module_for_host_calls() -> R
        }
      "#,
   )?;
-  let mut record_dep = SourceTextModuleRecord::parse_source(compiled_dep.source.clone())?;
+  let mut record_dep = SourceTextModuleRecord::parse_source(heap, compiled_dep.source.clone())?;
   record_dep.compiled = Some(compiled_dep);
-  record_dep.ast = None;
+  record_dep.clear_ast();
 
   let compiled_dep2 = CompiledScript::compile_module(heap, "dep2.js", "export const y = 2;")?;
-  let mut record_dep2 = SourceTextModuleRecord::parse_source(compiled_dep2.source.clone())?;
+  let mut record_dep2 = SourceTextModuleRecord::parse_source(heap, compiled_dep2.source.clone())?;
   record_dep2.compiled = Some(compiled_dep2);
-  record_dep2.ast = None;
+  record_dep2.clear_ast();
 
   let compiled_dep3 = CompiledScript::compile_module(heap, "dep3.js", "export const z = 3;")?;
-  let mut record_dep3 = SourceTextModuleRecord::parse_source(compiled_dep3.source.clone())?;
+  let mut record_dep3 = SourceTextModuleRecord::parse_source(heap, compiled_dep3.source.clone())?;
   record_dep3.compiled = Some(compiled_dep3);
-  record_dep3.ast = None;
+  record_dep3.clear_ast();
 
   let compiled_dep4 = CompiledScript::compile_module(heap, "dep4.js", "export const w = 4;")?;
-  let mut record_dep4 = SourceTextModuleRecord::parse_source(compiled_dep4.source.clone())?;
+  let mut record_dep4 = SourceTextModuleRecord::parse_source(heap, compiled_dep4.source.clone())?;
   record_dep4.compiled = Some(compiled_dep4);
-  record_dep4.ast = None;
+  record_dep4.clear_ast();
 
   let m = modules.add_module_with_specifier("m.js", record_m)?;
   let dep = modules.add_module_with_specifier("dep.js", record_dep)?;

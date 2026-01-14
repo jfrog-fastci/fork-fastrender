@@ -342,6 +342,9 @@ mod symbol_constructor_tests;
 #[cfg(test)]
 #[path = "../tests/unit/direct_eval_meta_properties.rs"]
 mod direct_eval_meta_properties_tests;
+#[cfg(test)]
+#[path = "../tests/unit/module_ast_memory.rs"]
+mod module_ast_memory_tests;
 
 pub use crate::handle::EnvRootId;
 

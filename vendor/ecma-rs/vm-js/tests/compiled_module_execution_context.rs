@@ -12,10 +12,10 @@ fn compiled_module_record(
   source: &str,
 ) -> Result<SourceTextModuleRecord, VmError> {
   let compiled = CompiledScript::compile_module(heap, specifier, source)?;
-  let mut record = SourceTextModuleRecord::parse_source(compiled.source.clone())?;
+  let mut record = SourceTextModuleRecord::parse_source(heap, compiled.source.clone())?;
   record.compiled = Some(compiled);
   // Force ModuleGraph to use the compiled-module (HIR) instantiation + execution path.
-  record.ast = None;
+  record.clear_ast();
   Ok(record)
 }
 
@@ -477,4 +477,3 @@ fn compiled_module_dynamic_import_referrer_uses_callee_module() -> Result<(), Vm
 
   result
 }
-

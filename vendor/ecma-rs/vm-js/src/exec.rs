@@ -3773,7 +3773,8 @@ impl JsRuntime {
   ) -> Result<Value, VmError> {
     let result: Result<Value, VmError> = (|| {
       // Parse as a Source Text Module Record using VM budget state.
-      let record = SourceTextModuleRecord::parse_source_with_vm(&mut self.vm, source.clone())?;
+      let record =
+        SourceTextModuleRecord::parse_source_with_vm(&mut self.vm, &mut self.heap, source.clone())?;
 
       // Register the module under its source name/specifier so tests and embeddings can easily
       // associate `import` specifiers with graph modules.

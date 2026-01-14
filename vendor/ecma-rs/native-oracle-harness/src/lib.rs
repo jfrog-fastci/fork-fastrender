@@ -2382,7 +2382,7 @@ impl VmHostHooks for FixtureModuleLoader {
     let name = self.stable_source_name(&canonical)?;
     let source_text = SourceText::new_charged_arc(scope.heap_mut(), &name, js)?;
 
-    let record = match SourceTextModuleRecord::parse_source_with_vm(vm, source_text) {
+    let record = match SourceTextModuleRecord::parse_source_with_vm(vm, scope.heap_mut(), source_text) {
       Ok(record) => record,
       Err(VmError::Syntax(diags)) => {
         let intr = vm
@@ -2491,7 +2491,7 @@ pub fn run_fixture_ts_module_dir(dir: impl AsRef<Path>) -> Result<String, Diagno
     };
     let entry_source_text = SourceText::new_charged_arc(heap, &entry_name, entry_js)
       .map_err(|err| vm_error_to_diagnostic_with_heap(&*heap, err))?;
-    let entry_record = SourceTextModuleRecord::parse_source_with_vm(vm, entry_source_text)
+    let entry_record = SourceTextModuleRecord::parse_source_with_vm(vm, heap, entry_source_text)
       .map_err(|err| vm_error_to_diagnostic_with_heap(&*heap, err))?;
     let entry_id = modules
       .add_module(entry_record)

@@ -418,7 +418,7 @@ impl ModuleLoader {
       .map_err(|_| VmError::TypeError(MODULE_FETCH_INVALID_UTF8_TYPE_ERROR))?;
 
     let source = SourceText::new_charged_arc(heap, &effective_url, source_text)?;
-    let record = SourceTextModuleRecord::parse_source(source)?;
+    let record = SourceTextModuleRecord::parse_source(heap, source)?;
     let module_id = modules.add_module(record)?;
     self.register_module(key, module_id, 0, next_total, effective_url)
   }
@@ -481,7 +481,7 @@ impl ModuleLoader {
     }
 
     let source = SourceText::new_charged_arc(heap, &key.url, source_text)?;
-    let record = SourceTextModuleRecord::parse_source(source)?;
+    let record = SourceTextModuleRecord::parse_source(heap, source)?;
     let module_id = modules.add_module(record)?;
     let effective_url = key.url.clone();
     self.register_module(key, module_id, 0, next_total, effective_url)
@@ -831,7 +831,7 @@ impl ModuleLoader {
         .map_err(|_| VmError::TypeError(MODULE_FETCH_INVALID_UTF8_TYPE_ERROR))?;
 
       let source = SourceText::new_charged_arc(heap, &effective_url, source_text)?;
-      let record = SourceTextModuleRecord::parse_source(source)?;
+      let record = SourceTextModuleRecord::parse_source(heap, source)?;
 
       let module_id = modules.add_module(record)?;
       self.register_module(key, module_id, depth, next_total, effective_url)

@@ -26,10 +26,10 @@ fn compile_module_record_without_ast(
     !script.requires_ast_fallback,
     "test module should compile without requiring full AST fallback"
   );
-  let mut record = SourceTextModuleRecord::parse_source(script.source.clone())?;
+  let mut record = SourceTextModuleRecord::parse_source(heap, script.source.clone())?;
   record.compiled = Some(script);
   // Force `ModuleGraph` to instantiate/evaluate via the compiled module path.
-  record.ast = None;
+  record.clear_ast();
   Ok(record)
 }
 
@@ -168,12 +168,12 @@ fn supports_compiled_modules(vm: &mut Vm, heap: &mut Heap, realm: &Realm) -> boo
       // silently skipping.
       Err(_) => return true,
     };
-    let mut record = match SourceTextModuleRecord::parse_source(script.source.clone()) {
+    let mut record = match SourceTextModuleRecord::parse_source(heap, script.source.clone()) {
       Ok(r) => r,
       Err(_) => return true,
     };
     record.compiled = Some(script);
-    record.ast = None;
+    record.clear_ast();
 
     if graph.add_module_with_specifier("a", record).is_err() {
       return true;
@@ -624,9 +624,9 @@ fn compiled_module_supports_anonymous_default_export_function_decls() -> Result<
         export const seenFromB = fromB;
       "#,
     )?;
-    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
     record_a.compiled = Some(script_a);
-    record_a.ast = None;
+    record_a.clear_ast();
     let a = graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
@@ -739,9 +739,9 @@ fn compiled_module_anonymous_default_export_class_decl_is_tdz_in_cycles() -> Res
       !script_a.requires_ast_fallback && !script_a.contains_async_generators,
       "expected module to be executable by compiled evaluator"
     );
-    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
     record_a.compiled = Some(script_a);
-    record_a.ast = None;
+    record_a.clear_ast();
     let a = graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
@@ -862,9 +862,9 @@ fn compiled_module_anonymous_default_export_class_namespace_is_tdz_in_cycles() -
       !script_a.requires_ast_fallback && !script_a.contains_async_generators,
       "expected module to be executable by compiled evaluator"
     );
-    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
     record_a.compiled = Some(script_a);
-    record_a.ast = None;
+    record_a.clear_ast();
     let a = graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
@@ -988,10 +988,10 @@ fn compiled_module_class_field_initializer_direct_eval_allows_super() -> Result<
       !script_a.requires_ast_fallback && !script_a.contains_async_generators,
       "expected module to be executable by compiled evaluator"
     );
-    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
     record_a.compiled = Some(script_a);
     // Drop the AST so module evaluation must use the compiled HIR path.
-    record_a.ast = None;
+    record_a.clear_ast();
     let a = graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
@@ -1095,10 +1095,10 @@ fn compiled_module_supports_anonymous_default_export_class_static_fields() -> Re
       !script_a.requires_ast_fallback && !script_a.contains_async_generators,
       "expected module to be executable by compiled evaluator"
     );
-    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
     record_a.compiled = Some(script_a);
     // Drop the AST so module evaluation must use the compiled HIR path.
-    record_a.ast = None;
+    record_a.clear_ast();
     let a = graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
@@ -1202,10 +1202,10 @@ fn compiled_module_supports_anonymous_default_export_class_instance_fields() -> 
       !script_a.requires_ast_fallback && !script_a.contains_async_generators,
       "expected module to be executable by compiled evaluator"
     );
-    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
     record_a.compiled = Some(script_a);
     // Drop the AST so module evaluation must use the compiled HIR path.
-    record_a.ast = None;
+    record_a.clear_ast();
     let a = graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
@@ -1314,10 +1314,10 @@ fn compiled_module_supports_anonymous_default_export_class_static_blocks() -> Re
       !script_a.requires_ast_fallback && !script_a.contains_async_generators,
       "expected module to be executable by compiled evaluator"
     );
-    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
     record_a.compiled = Some(script_a);
     // Drop the AST so module evaluation must use the compiled HIR path.
-    record_a.ast = None;
+    record_a.clear_ast();
     let a = graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
@@ -1417,10 +1417,10 @@ fn compiled_module_rejection_error_object_has_throw_site_stack() -> Result<(), V
       "m.js",
       "const err = new Error('boom');\nthrow err;\nexport const unreachable = 1;",
     )?;
-    let mut record = SourceTextModuleRecord::parse_source(script.source.clone())?;
+    let mut record = SourceTextModuleRecord::parse_source(&mut heap, script.source.clone())?;
     record.compiled = Some(script);
     // Drop the AST so module evaluation must use the compiled HIR path.
-    record.ast = None;
+    record.clear_ast();
     let m = graph.add_module_with_specifier("m.js", record)?;
     graph.link_all_by_specifier();
 
@@ -1533,9 +1533,9 @@ fn compiled_module_supports_anonymous_default_export_class_decls() -> Result<(),
         }
       "#,
     )?;
-    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
     record_a.compiled = Some(script_a);
-    record_a.ast = None;
+    record_a.clear_ast();
     let a = graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
@@ -1640,9 +1640,9 @@ fn compiled_module_export_default_expr_respects_statement_order() -> Result<(), 
         log.push("after");
       "#,
     )?;
-    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
     record_a.compiled = Some(script_a);
-    record_a.ast = None;
+    record_a.clear_ast();
     let a = graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
@@ -1742,9 +1742,9 @@ fn compiled_module_export_default_expr_applies_set_function_name_default() -> Re
         export default (() => 123);
       "#,
     )?;
-    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
     record_a.compiled = Some(script_a);
-    record_a.ast = None;
+    record_a.clear_ast();
     let a = graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
@@ -1856,9 +1856,9 @@ fn compiled_module_export_default_async_arrow_expr_applies_set_function_name_def
       "modules that only *define* async functions should be executable via the compiled evaluator"
     );
 
-    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
     record_a.compiled = Some(script_a);
-    record_a.ast = None;
+    record_a.clear_ast();
     let a = graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
@@ -1964,9 +1964,9 @@ fn compiled_module_export_default_async_function_expr_applies_set_function_name_
       "modules that only *define* async functions should be executable via the compiled evaluator"
     );
 
-    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
     record_a.compiled = Some(script_a);
-    record_a.ast = None;
+    record_a.clear_ast();
     let a = graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
@@ -2062,9 +2062,9 @@ fn compiled_module_export_default_class_expr_constructs_and_applies_set_function
         export default (class {});
       "#,
     )?;
-    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
     record_a.compiled = Some(script_a);
-    record_a.ast = None;
+    record_a.clear_ast();
     let a = graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
@@ -2162,9 +2162,9 @@ fn compiled_module_export_default_class_expr_static_name_method_can_override_and
         export default (class { static name(){} });
       "#,
     )?;
-    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
     record_a.compiled = Some(script_a);
-    record_a.ast = None;
+    record_a.clear_ast();
     let a = graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
@@ -2279,9 +2279,9 @@ fn compiled_module_export_default_function_expr_applies_set_function_name_defaul
         export default (function() { return 123; });
       "#,
     )?;
-    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
     record_a.compiled = Some(script_a);
-    record_a.ast = None;
+    record_a.clear_ast();
     let a = graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
@@ -2383,9 +2383,9 @@ fn compiled_module_export_default_class_expr_applies_set_function_name_default()
         export default (class { constructor() { this.x = 1; } });
       "#,
     )?;
-    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
     record_a.compiled = Some(script_a);
-    record_a.ast = None;
+    record_a.clear_ast();
     let a = graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
@@ -2502,9 +2502,9 @@ fn compiled_module_supports_anonymous_default_export_async_function_decls() -> R
       !script_a.requires_ast_fallback && !script_a.contains_async_generators,
       "modules that only *define* async functions should be executable via the compiled evaluator"
     );
-    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
     record_a.compiled = Some(script_a);
-    record_a.ast = None;
+    record_a.clear_ast();
     let a = graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
@@ -2609,9 +2609,9 @@ fn compiled_module_supports_anonymous_default_export_generator_function_decls() 
         export default function*() { yield 1; }
       "#,
     )?;
-    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
     record_a.compiled = Some(script_a);
-    record_a.ast = None;
+    record_a.clear_ast();
     graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
@@ -2705,9 +2705,9 @@ fn compiled_module_hoists_top_level_function_decls_into_module_env() -> Result<(
         export const x = f();
       "#,
     )?;
-    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
     record_a.compiled = Some(script_a);
-    record_a.ast = None;
+    record_a.clear_ast();
     graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
@@ -2794,9 +2794,9 @@ fn compiled_module_supports_named_default_export_function_decls() -> Result<(), 
         export default function foo() { return 1; }
       "#,
     )?;
-    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
     record_a.compiled = Some(script_a);
-    record_a.ast = None;
+    record_a.clear_ast();
     graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(
@@ -2897,9 +2897,9 @@ fn compiled_module_supports_anonymous_default_export_async_generator_function_de
         export default async function*() { yield 1; }
       "#,
     )?;
-    let mut record_a = SourceTextModuleRecord::parse_source(script_a.source.clone())?;
+    let mut record_a = SourceTextModuleRecord::parse_source(&mut heap, script_a.source.clone())?;
     record_a.compiled = Some(script_a);
-    record_a.ast = None;
+    record_a.clear_ast();
     graph.add_module_with_specifier("a", record_a)?;
 
     let b = graph.add_module_with_specifier(

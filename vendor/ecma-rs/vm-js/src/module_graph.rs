@@ -730,7 +730,7 @@ impl ModuleGraph {
       // compiled-module fallback ASTs). Teardown is intended to be safe and idempotent even when the
       // graph is reused, and these tokens are not represented as GC roots.
       for module in &mut self.modules {
-        if module.ast_external_memory.is_some() {
+        if module.ast.is_some() {
           module.clear_ast();
         }
       }
@@ -772,7 +772,7 @@ impl ModuleGraph {
 
       // Drop any charged retained ASTs so their external-memory tokens are released when tearing
       // down a graph (important for heap reuse).
-      if module.ast_external_memory.is_some() {
+      if module.ast.is_some() {
         module.clear_ast();
       }
     }
@@ -1055,6 +1055,17 @@ impl ModuleGraph {
     let entry_scc_root = self.modules[idx].cycle_root.unwrap_or(module);
     let entry_root_idx = module_index(entry_scc_root);
 
+    // Tear down any in-progress async module continuations *before* dropping module record ASTs.
+    //
+    // Async continuation frames store raw pointers into `parse-js` ASTs (see `AsyncFrame::StmtList`),
+    // so dropping `SourceTextModuleRecord.ast` while continuations are still live could lead to
+    // use-after-free. Teardown aborts continuations and unregisters their persistent roots.
+    for slot in &mut self.tla_states {
+      if let Some(state) = slot.take() {
+        state.teardown(vm, scope.heap_mut());
+      }
+    }
+
     // Iterate SCC roots in ascending module id order without allocating a separate root list. This
     // avoids abort-on-OOM behavior in `Vec::push` / stable sort scratch allocations.
     for root_idx in 0..self.scc_eval_states.len() {
@@ -1080,7 +1091,7 @@ impl ModuleGraph {
         if midx < self.modules.len() {
           self.modules[midx].status = ModuleStatus::Errored;
           let _ = self.cache_module_error_value(&mut scope, midx, reason);
-          if self.modules[midx].ast_external_memory.is_some() {
+          if self.modules[midx].ast.is_some() {
             self.modules[midx].clear_ast();
           }
         }
@@ -1093,7 +1104,7 @@ impl ModuleGraph {
         }
         self.modules[midx].status = ModuleStatus::Errored;
         let _ = self.cache_module_error_value(&mut scope, midx, reason);
-        if self.modules[midx].ast_external_memory.is_some() {
+        if self.modules[midx].ast.is_some() {
           self.modules[midx].clear_ast();
         }
       }
@@ -1122,14 +1133,6 @@ impl ModuleGraph {
     let had_dynamic_imports = !self.pending_dynamic_import_evaluations.is_empty();
     for (_id, entry) in self.pending_dynamic_import_evaluations.drain() {
       entry.state.teardown_roots(scope.heap_mut());
-    }
-
-    // Always tear down any remaining async module evaluation state (continuation frames, awaited
-    // promise root, etc) so persistent roots do not leak across heap reuse.
-    for slot in &mut self.tla_states {
-      if let Some(state) = slot.take() {
-        state.teardown(vm, scope.heap_mut());
-      }
     }
 
     // Restore `vm.module_graph_ptr` and clear the refcount. This ensures any queued resume callbacks
@@ -2049,7 +2052,7 @@ impl ModuleGraph {
         self.cache_module_error_from_err(vm, scope, idx, &err)?;
         // If we parsed and retained an AST solely for a compiled-module fallback, it is no longer
         // needed once the module has transitioned to an errored state.
-        if self.modules[idx].ast_external_memory.is_some() {
+        if self.modules[idx].ast.is_some() {
           self.modules[idx].clear_ast();
         }
         Err(err)
@@ -3038,7 +3041,7 @@ impl ModuleGraph {
       let idx = module_index(member);
       if idx < self.modules.len() {
         self.modules[idx].status = ModuleStatus::Evaluated;
-        if self.modules[idx].ast_external_memory.is_some() {
+        if self.modules[idx].ast.is_some() {
           self.modules[idx].clear_ast();
         }
       }
@@ -3160,7 +3163,7 @@ impl ModuleGraph {
       if idx < self.modules.len() {
         self.modules[idx].status = ModuleStatus::Errored;
         let _ = self.cache_module_error_value(scope, idx, reason);
-        if self.modules[idx].ast_external_memory.is_some() {
+        if self.modules[idx].ast.is_some() {
           self.modules[idx].clear_ast();
         }
       }
@@ -3179,7 +3182,7 @@ impl ModuleGraph {
       let _ = self.cache_module_error_value(scope, idx, reason);
       // If this module retained a charged AST for a compiled-module fallback, drop it now that the
       // module is irrecoverably errored.
-      if self.modules[idx].ast_external_memory.is_some() {
+      if self.modules[idx].ast.is_some() {
         self.modules[idx].clear_ast();
       }
     }
@@ -3479,7 +3482,7 @@ impl ModuleGraph {
     match eval_result {
       Ok(()) => {
         self.modules[idx].status = ModuleStatus::Evaluated;
-        if self.modules[idx].ast_external_memory.is_some() {
+        if self.modules[idx].ast.is_some() {
           self.modules[idx].clear_ast();
         }
         Ok(())
@@ -3487,7 +3490,7 @@ impl ModuleGraph {
       Err(err) => {
         self.modules[idx].status = ModuleStatus::Errored;
         self.cache_module_error_from_err(vm, scope, idx, &err)?;
-        if self.modules[idx].ast_external_memory.is_some() {
+        if self.modules[idx].ast.is_some() {
           self.modules[idx].clear_ast();
         }
         Err(err)
@@ -3596,7 +3599,7 @@ impl ModuleGraph {
     match eval_result {
       Ok(step) => {
         if matches!(step, ModuleTlaStepResult::Completed) {
-          if self.modules[idx].ast_external_memory.is_some() {
+          if self.modules[idx].ast.is_some() {
             self.modules[idx].clear_ast();
           }
         }
@@ -3605,7 +3608,7 @@ impl ModuleGraph {
       Err(err) => {
         self.modules[idx].status = ModuleStatus::Errored;
         self.cache_module_error_from_err(vm, scope, idx, &err)?;
-        if self.modules[idx].ast_external_memory.is_some() {
+        if self.modules[idx].ast.is_some() {
           self.modules[idx].clear_ast();
         }
         Err(err)
@@ -3894,14 +3897,17 @@ fn module_tla_resume_inner(
   // `vm.tick` is a potential termination point. Ensure we free persistent roots even if it returns
   // an error (termination, OOM, etc).
   if let Err(err) = vm.tick() {
+    // Tear down the suspended continuation before dropping any ASTs stored in module records. The
+    // async evaluator stores raw pointers into the AST statement list, so we must ensure the
+    // continuation is removed from the VM before freeing the backing AST.
+    state.teardown(vm, scope.heap_mut());
     if idx < graph.modules.len() {
       graph.modules[idx].status = ModuleStatus::Errored;
       let _ = graph.cache_module_error_from_err(vm, scope, idx, &err);
-      if graph.modules[idx].ast_external_memory.is_some() {
+      if graph.modules[idx].ast.is_some() {
         graph.modules[idx].clear_ast();
       }
     }
-    state.teardown(vm, scope.heap_mut());
     if graph.module_graph_ptr_refcount > 0 {
       graph.release_module_graph_ptr(vm);
     }
@@ -3987,8 +3993,11 @@ fn module_tla_resume_inner(
           graph.module_errored_value(vm, scope, idx)?
         };
 
-        let fail_res = graph.fail_scc(vm, scope, scc_root, host, hooks, reason, Some(&err));
+        // Abort the suspended continuation before failing the SCC: async continuation frames hold
+        // raw pointers into the module AST, so module records must not drop their ASTs while the
+        // continuation is still live.
         state.teardown(vm, scope.heap_mut());
+        let fail_res = graph.fail_scc(vm, scope, scc_root, host, hooks, reason, Some(&err));
         if graph.module_graph_ptr_refcount > 0 {
           graph.release_module_graph_ptr(vm);
         }
@@ -4009,8 +4018,11 @@ fn module_tla_resume_inner(
         graph.module_errored_value(vm, scope, idx)?
       };
 
-      let fail_res = graph.fail_scc(vm, scope, scc_root, host, hooks, reason, Some(&err));
+      // Abort the suspended continuation before failing the SCC: async continuation frames hold
+      // raw pointers into the module AST, so module records must not drop their ASTs while the
+      // continuation is still live.
       state.teardown(vm, scope.heap_mut());
+      let fail_res = graph.fail_scc(vm, scope, scc_root, host, hooks, reason, Some(&err));
       if graph.module_graph_ptr_refcount > 0 {
         graph.release_module_graph_ptr(vm);
       }

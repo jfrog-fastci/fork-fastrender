@@ -827,7 +827,8 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
     self.loaded_bytes = next_bytes;
 
     let source = vm_js::SourceText::new_charged_arc(scope.heap_mut(), url, source_text)?;
-    let record = match vm_js::SourceTextModuleRecord::parse_source_with_vm(vm, source) {
+    let record =
+      match vm_js::SourceTextModuleRecord::parse_source_with_vm(vm, scope.heap_mut(), source) {
       Ok(record) => record,
       Err(VmError::Syntax(diags)) => {
         let msg = vm_error_format::vm_error_to_string(scope.heap_mut(), VmError::Syntax(diags));
@@ -985,12 +986,9 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
     })?;
 
     let effective_url_owned = effective_url.to_string();
-    let source = vm_js::SourceText::new_charged_arc(
-      scope.heap_mut(),
-      &effective_url_owned,
-      source_text,
-    )?;
-    let record = match vm_js::SourceTextModuleRecord::parse_source_with_vm(vm, source) {
+    let source = vm_js::SourceText::new_charged_arc(scope.heap_mut(), &effective_url_owned, source_text)?;
+    let record =
+      match vm_js::SourceTextModuleRecord::parse_source_with_vm(vm, scope.heap_mut(), source) {
       Ok(record) => record,
       Err(VmError::Syntax(diags)) => {
         let msg = vm_error_format::vm_error_to_string(scope.heap_mut(), VmError::Syntax(diags));

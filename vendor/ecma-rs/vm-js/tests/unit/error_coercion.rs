@@ -262,7 +262,7 @@ fn evaluate_sync_coerces_unimplemented_to_throw_with_stack() -> Result<(), VmErr
     let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
 
     let source = SourceText::new_charged_arc(heap, "m.js", "await 1;")?;
-    let record = SourceTextModuleRecord::parse_source_with_vm(vm, source.clone())?;
+    let record = SourceTextModuleRecord::parse_source_with_vm(vm, heap, source.clone())?;
     let module = modules.add_module_with_specifier("m.js", record)?;
 
     let mut host = ();
