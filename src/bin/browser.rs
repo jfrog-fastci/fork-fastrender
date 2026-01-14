@@ -7299,11 +7299,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   // `ui::messages::NEXT_DOWNLOAD_ID` / `DownloadId::new`).
   let mut global_downloads = fastrender::ui::DownloadsState::default();
 
-  // Throttle/clamp expensive "clone full store" autosave update messages so frequent history
-  // mutations (e.g. navigating a lot) don't repeatedly clone large stores on the UI thread.
+  // Throttle/clamp expensive "clone full store" history autosave updates.
   //
-  // Bookmarks are normally sent as incremental deltas (`AutosaveMsg::ApplyBookmarkDeltas`), so they
-  // no longer need a UI-thread snapshot send scheduler.
+  // Visit recording (`NavigationCommitted`) forwards incremental deltas
+  // (`AutosaveMsg::ApplyHistoryVisitDeltas`) to the autosave worker, but destructive history
+  // mutations (clear/delete) still fall back to full-store sync.
   let mut history_autosave_send_scheduler =
     fastrender::ui::AutosaveSendScheduler::new(std::time::Duration::from_secs(1));
   // Throttle expensive about-page bookmark snapshot rebuilds. The snapshot is only used for
@@ -8224,6 +8224,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut session_dirty = false;
         let mut needs_follow_up_wake_any = false;
         let mut downloads_changed_any = false;
+        // Aggregate visit deltas across drained windows so we can forward them to the profile
+        // autosave worker in a single message.
+        let mut history_deltas_for_autosave: Vec<fastrender::ui::HistoryVisitDelta> = Vec::new();
 
         for window_id in window_order.iter().copied() {
           let mut request_redraw = false;
@@ -8455,7 +8458,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             for delta in &history_deltas {
               fastrender::ui::about_pages::apply_history_visit_delta(delta, &global_history);
             }
-            history_autosave_send_scheduler.mark_dirty();
             for (id, win) in windows.iter_mut() {
               // Evaluate redraw predicate before mutating state that may affect visibility flags
               // (e.g. omnibox open/closed).
@@ -8570,6 +8572,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 win.app.window.request_redraw();
               }
             }
+            history_deltas_for_autosave.append(&mut history_deltas);
+          }
+        }
+
+        // Forward all visit deltas from this drain to the autosave worker so it can update its
+        // in-memory history snapshot without requiring a full-store clone on the UI thread.
+        if let Some(tx) = profile_autosave_tx.as_ref() {
+          if !history_deltas_for_autosave.is_empty() {
+            let _ = tx.send(fastrender::ui::AutosaveMsg::ApplyHistoryVisitDeltas(
+              history_deltas_for_autosave,
+            ));
           }
         }
 
@@ -9293,56 +9306,74 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         // Keep the `about:processes` snapshot up to date with the current set of open tabs.
         //
-        // This is best-effort debug state: it is safe to update once per event-loop cycle, and the
-        // about-page renderer will gracefully handle missing/empty snapshot data.
-        let mut open_tabs = Vec::new();
-        for (window_id, win) in windows.iter() {
-          let window_debug = format!("{window_id:?}");
-          let active_tab_id = win.app.browser_state.active_tab_id().map(|id| id.0);
-          for tab in &win.app.browser_state.tabs {
-            let url = tab
-              .committed_url
-              .as_deref()
-              .or(tab.current_url.as_deref())
-              .unwrap_or("")
-              .trim();
-            if url.is_empty() {
-              continue;
+        // This is best-effort debug state: only compute it while an `about:processes` tab is
+        // actually visible to avoid doing per-tab URL/site-key work on every event-loop cycle.
+        let any_about_processes_visible = windows.values().any(|win| {
+          win
+            .app
+            .browser_state
+            .active_tab()
+            .and_then(|tab| tab.current_url.as_deref().or(tab.committed_url.as_deref()))
+            .is_some_and(|url| {
+              let base = url
+                .trim()
+                .split(|c| matches!(c, '?' | '#'))
+                .next()
+                .unwrap_or(url);
+              base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_PROCESSES)
+            })
+        });
+
+        if any_about_processes_visible {
+          let mut open_tabs = Vec::new();
+          for (window_id, win) in windows.iter() {
+            let window_debug = format!("{window_id:?}");
+            let active_tab_id = win.app.browser_state.active_tab_id().map(|id| id.0);
+            for tab in &win.app.browser_state.tabs {
+              let url = tab
+                .committed_url
+                .as_deref()
+                .or(tab.current_url.as_deref())
+                .unwrap_or("")
+                .trim();
+              if url.is_empty() {
+                continue;
+              }
+              let site_key = fastrender::ui::SiteKey::from_url(url)
+                .ok()
+                .map(|key| key.to_string());
+              let renderer_process = tab.renderer_process.map(|id| id.raw());
+              let is_active = active_tab_id == Some(tab.id.0);
+              let title = tab
+                .committed_title
+                .as_deref()
+                .or(tab.title.as_deref())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+              open_tabs.push(fastrender::ui::about_pages::OpenTabSnapshot {
+                window_id: Some(window_debug.clone()),
+                tab_id: tab.id.0,
+                url: url.to_string(),
+                title,
+                site_key,
+                renderer_process,
+                is_active,
+                loading: tab.loading,
+                crashed: tab.crashed,
+                unresponsive: tab.unresponsive,
+                renderer_crashed: tab.renderer_crashed,
+                crash_reason: tab.crash_reason.clone(),
+                renderer_protocol_violation: tab
+                  .renderer_protocol_violation
+                  .as_ref()
+                  .map(|v| v.to_string()),
+              });
             }
-            let site_key = fastrender::ui::SiteKey::from_url(url)
-              .ok()
-              .map(|key| key.to_string());
-            let renderer_process = tab.renderer_process.map(|id| id.raw());
-            let is_active = active_tab_id == Some(tab.id.0);
-            let title = tab
-              .committed_title
-              .as_deref()
-              .or(tab.title.as_deref())
-              .map(str::trim)
-              .filter(|s| !s.is_empty())
-              .map(str::to_string);
-            open_tabs.push(fastrender::ui::about_pages::OpenTabSnapshot {
-              window_id: Some(window_debug.clone()),
-              tab_id: tab.id.0,
-              url: url.to_string(),
-              title,
-              site_key,
-              renderer_process,
-              is_active,
-              loading: tab.loading,
-              crashed: tab.crashed,
-              unresponsive: tab.unresponsive,
-              renderer_crashed: tab.renderer_crashed,
-              crash_reason: tab.crash_reason.clone(),
-              renderer_protocol_violation: tab
-                .renderer_protocol_violation
-                .as_ref()
-                .map(|v| v.to_string()),
-            });
           }
+          open_tabs.sort_by(|a, b| a.window_id.cmp(&b.window_id).then(a.tab_id.cmp(&b.tab_id)));
+          fastrender::ui::about_pages::sync_about_page_snapshot_open_tabs(open_tabs);
         }
-        open_tabs.sort_by(|a, b| a.window_id.cmp(&b.window_id).then(a.tab_id.cmp(&b.tab_id)));
-        fastrender::ui::about_pages::sync_about_page_snapshot_open_tabs(open_tabs);
       }
       _ => {}
     }
@@ -9687,8 +9718,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       }
     }
 
-    // Debounce/clamp UI-thread autosave update messages so we only clone+send large stores at a
-    // limited rate (or on explicit flush requests handled above).
+    // Debounce/clamp full-store history autosave updates (used for destructive history mutations
+    // like clear/delete). Visit recording (`NavigationCommitted`) is forwarded as incremental deltas
+    // in the WorkerWake path above.
     if let Some(tx) = profile_autosave_tx.as_ref() {
       let now = std::time::Instant::now();
       if history_autosave_send_scheduler.take_if_due(now) {

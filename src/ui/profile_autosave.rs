@@ -4,7 +4,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use super::bookmarks::{BookmarkDelta, BookmarkStore};
-use super::global_history::GlobalHistoryStore;
+use super::global_history::{GlobalHistoryStore, HistoryVisitDelta};
 #[cfg(test)]
 use super::global_history::GlobalHistoryEntry;
 
@@ -22,6 +22,7 @@ pub enum AutosaveMsg {
   UpdateBookmarks(BookmarkStore),
   ApplyBookmarkDeltas(Vec<BookmarkDelta>),
   UpdateHistory(GlobalHistoryStore),
+  ApplyHistoryVisitDeltas(Vec<HistoryVisitDelta>),
   /// Test hook: force an immediate write of the latest pending snapshots.
   Flush(mpsc::Sender<()>),
   Shutdown,
@@ -185,7 +186,20 @@ fn autosave_worker_main(
       }
     };
   let mut bookmarks_dirty = false;
-  let mut pending_history: Option<GlobalHistoryStore> = None;
+  // Keep an in-memory snapshot of history so we can apply incremental visit deltas without
+  // repeatedly cloning the full store on the UI thread.
+  let mut history_state: GlobalHistoryStore =
+    match crate::ui::profile_persistence::load_history(&history_path) {
+      Ok(outcome) => outcome.value,
+      Err(err) => {
+        eprintln!(
+          "failed to load history from {} for autosave baseline: {err}",
+          history_path.display()
+        );
+        GlobalHistoryStore::default()
+      }
+    };
+  let mut history_dirty = false;
   let mut next_bookmarks_write: Option<Instant> = None;
   let mut next_history_write: Option<Instant> = None;
 
@@ -220,8 +234,15 @@ fn autosave_worker_main(
         }
       }
       Ok(AutosaveMsg::UpdateHistory(history)) => {
-        pending_history = Some(history);
+        history_state = history;
+        history_dirty = true;
         next_history_write = Some(Instant::now() + history_debounce);
+      }
+      Ok(AutosaveMsg::ApplyHistoryVisitDeltas(deltas)) => {
+        if !deltas.is_empty() && history_state.apply_visit_deltas(&deltas) {
+          history_dirty = true;
+          next_history_write = Some(Instant::now() + history_debounce);
+        }
       }
       Ok(AutosaveMsg::Flush(done_tx)) => {
         flush_pending(
@@ -229,7 +250,8 @@ fn autosave_worker_main(
           &history_path,
           &bookmarks_state,
           &mut bookmarks_dirty,
-          &mut pending_history,
+          &history_state,
+          &mut history_dirty,
           error_tx.as_ref(),
         );
         next_bookmarks_write = None;
@@ -242,7 +264,8 @@ fn autosave_worker_main(
           &history_path,
           &bookmarks_state,
           &mut bookmarks_dirty,
-          &mut pending_history,
+          &history_state,
+          &mut history_dirty,
           error_tx.as_ref(),
         );
         break;
@@ -266,18 +289,17 @@ fn autosave_worker_main(
           next_bookmarks_write = None;
         }
 
-        if next_history_write.is_some_and(|t| now >= t) {
-          if let Some(history) = pending_history.take() {
-            if let Err(err) = save_history_atomic(&history_path, &history) {
-              eprintln!("failed to autosave history to {}: {err}", history_path.display());
-              if let Some(tx) = error_tx.as_ref() {
-                let _ = tx.send(ProfileAutosaveError::History {
-                  path: history_path.to_string_lossy().to_string(),
-                  message: err,
-                });
-              }
+        if next_history_write.is_some_and(|t| now >= t) && history_dirty {
+          if let Err(err) = save_history_atomic(&history_path, &history_state) {
+            eprintln!("failed to autosave history to {}: {err}", history_path.display());
+            if let Some(tx) = error_tx.as_ref() {
+              let _ = tx.send(ProfileAutosaveError::History {
+                path: history_path.to_string_lossy().to_string(),
+                message: err,
+              });
             }
           }
+          history_dirty = false;
           next_history_write = None;
         }
       }
@@ -291,7 +313,8 @@ fn flush_pending(
   history_path: &Path,
   bookmarks_state: &BookmarkStore,
   bookmarks_dirty: &mut bool,
-  pending_history: &mut Option<GlobalHistoryStore>,
+  history_state: &GlobalHistoryStore,
+  history_dirty: &mut bool,
   error_tx: Option<&mpsc::Sender<ProfileAutosaveError>>,
 ) {
   if *bookmarks_dirty {
@@ -310,8 +333,8 @@ fn flush_pending(
     *bookmarks_dirty = false;
   }
 
-  if let Some(history) = pending_history.take() {
-    if let Err(err) = save_history_atomic(history_path, &history) {
+  if *history_dirty {
+    if let Err(err) = save_history_atomic(history_path, history_state) {
       eprintln!("failed to autosave history to {}: {err}", history_path.display());
       if let Some(tx) = error_tx {
         let _ = tx.send(ProfileAutosaveError::History {
@@ -320,6 +343,7 @@ fn flush_pending(
         });
       }
     }
+    *history_dirty = false;
   }
 }
 
@@ -461,6 +485,56 @@ mod tests {
     let saved_bookmarks: BookmarkStore =
       serde_json::from_str(&std::fs::read_to_string(&bookmarks_path).unwrap()).unwrap();
     assert_eq!(saved_bookmarks, expected);
+
+    autosave.shutdown_with_timeout(Duration::from_millis(500));
+  }
+
+  #[test]
+  fn apply_history_visit_deltas_writes_updated_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let bookmarks_path = dir.path().join("bookmarks.json");
+    let history_path = dir.path().join("history.json");
+
+    let autosave = ProfileAutosaveHandle::spawn_with_debounce(
+      bookmarks_path,
+      history_path.clone(),
+      Duration::from_secs(3600),
+      Duration::from_secs(3600),
+    )
+    .unwrap();
+
+    let delta_a = HistoryVisitDelta {
+      url: "https://a.example/".to_string(),
+      title: Some("A1".to_string()),
+      visited_at_ms: 1,
+    };
+    let delta_b = HistoryVisitDelta {
+      url: "https://b.example/".to_string(),
+      title: None,
+      visited_at_ms: 2,
+    };
+    let delta_a2 = HistoryVisitDelta {
+      url: "https://a.example/".to_string(),
+      title: Some("A2".to_string()),
+      visited_at_ms: 3,
+    };
+    autosave
+      .send(AutosaveMsg::ApplyHistoryVisitDeltas(vec![
+        delta_a.clone(),
+        delta_b.clone(),
+        delta_a2.clone(),
+      ]))
+      .unwrap();
+
+    autosave.flush(Duration::from_millis(500)).unwrap();
+
+    let saved_history: PersistedGlobalHistoryStore =
+      serde_json::from_str(&std::fs::read_to_string(&history_path).unwrap()).unwrap();
+    let mut expected = GlobalHistoryStore::default();
+    expected.apply_visit_delta(&delta_a);
+    expected.apply_visit_delta(&delta_b);
+    expected.apply_visit_delta(&delta_a2);
+    assert_eq!(saved_history, PersistedGlobalHistoryStore::from_store(&expected));
 
     autosave.shutdown_with_timeout(Duration::from_millis(500));
   }
