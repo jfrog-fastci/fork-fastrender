@@ -248,7 +248,9 @@ Note: startup/session restore:
     **Start new session** (discard restored tabs across all windows and close extra restored windows,
     leaving a single clean window) actions).
   - If repeated unclean exits are detected (crash loop), the browser may skip auto-restoring tabs and
-    start with a “safe” `about:newtab` instead. Use `--restore` to force restoring anyway.
+    start with a “safe” `about:newtab` instead.
+    - The windowed UI also shows a “Safe mode: …” toast.
+    - Use `--restore` to force restoring anyway.
 - When run **with** a URL, it opens that URL and does not restore tabs unless `--restore` is
   provided.
 - `--no-restore` disables tab/session restore even when no URL is provided.
