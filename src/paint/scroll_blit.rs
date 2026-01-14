@@ -109,7 +109,7 @@ mod tests {
   }
 
   #[test]
-  fn animation_timeline_list_repeats_to_match_names() {
+  fn animation_timeline_list_falls_back_to_last_value_to_match_names() {
     let style = ComputedStyle {
       animation_names: vec![Some("a".into()), Some("b".into())],
       animation_timelines: vec![AnimationTimeline::Scroll(Default::default())],
@@ -117,7 +117,7 @@ mod tests {
     };
     assert!(
       style_uses_scroll_linked_timelines(&style),
-      "expected repeated animation-timeline entries to be treated as scroll-linked"
+      "expected last animation-timeline value to be treated as the fallback for subsequent animations"
     );
   }
 
