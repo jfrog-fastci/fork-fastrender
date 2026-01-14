@@ -370,6 +370,188 @@ fn generator_nullish_coalescing_assignment_captures_base_key_and_decision_across
 }
 
 #[test]
+fn generator_logical_or_assignment_captures_binding_and_decision_across_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var x = 0;
+
+        function* rhs() {
+          yield 1;
+          yield 2;
+          return 5;
+        }
+
+        function* g() {
+          const r = (x ||= (yield* rhs()));
+          return r === 5 && x === 5;
+        }
+
+        const it = g();
+        const r1 = it.next();
+
+        // Mutate after yielding but before resuming; must not affect the already-made decision.
+        x = 1;
+
+        const r2 = it.next();
+
+        x = 0;
+
+        const r3 = it.next();
+
+        r1.value === 1 && r1.done === false &&
+        r2.value === 2 && r2.done === false &&
+        r3.value === true && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_logical_or_assignment_captures_base_and_decision_across_yield_star_for_member_expr() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var o1 = { a: 0 };
+        var o2 = { a: 100 };
+        var o = o1;
+
+        function* rhs() {
+          yield "rhs1";
+          yield "rhs2";
+          return 5;
+        }
+
+        function* g() {
+          const r = (o.a ||= (yield* rhs()));
+          return r === 5 && o1.a === 5 && o2.a === 100;
+        }
+
+        const it = g();
+        const r1 = it.next();
+
+        // Mutate the LHS value and rebind the base after yielding but before resuming.
+        // The pending assignment must still target the original base and proceed through the
+        // remaining yields.
+        o1.a = 1;
+        o = o2;
+
+        const r2 = it.next();
+
+        o1.a = 0;
+        o = o2;
+
+        const r3 = it.next();
+
+        r1.value === "rhs1" && r1.done === false &&
+        r2.value === "rhs2" && r2.done === false &&
+        r3.value === true && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_logical_and_assignment_captures_base_key_and_decision_across_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var o1 = { a: 1, b: 1 };
+        var o2 = { a: 100, b: 100 };
+        var o = o1;
+        var k = "a";
+
+        function* rhs() {
+          yield "rhs1";
+          yield "rhs2";
+          return 5;
+        }
+
+        function* g() {
+          const r = (o[k] &&= (yield* rhs()));
+          return r === 5 && o1.a === 5 && o1.b === 1 && o2.a === 100 && o2.b === 100;
+        }
+
+        const it = g();
+        const r1 = it.next();
+
+        // Mutate base/key/LHS value after yielding but before resuming. The assignment target and
+        // decision must still be the one determined before evaluating the RHS.
+        o1.a = 0;
+        o = o2;
+        k = "b";
+
+        const r2 = it.next();
+
+        o1.a = 1;
+        o = o2;
+        k = "a";
+
+        const r3 = it.next();
+
+        r1.value === "rhs1" && r1.done === false &&
+        r2.value === "rhs2" && r2.done === false &&
+        r3.value === true && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_nullish_coalescing_assignment_captures_base_key_and_decision_across_yield_star() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var o1 = { a: null, b: 1 };
+        var o2 = { a: null, b: null };
+        var o = o1;
+        var k = "a";
+
+        function* rhs() {
+          yield "rhs1";
+          yield "rhs2";
+          return 5;
+        }
+
+        function* g() {
+          const r = (o[k] ??= (yield* rhs()));
+          return r === 5 && o1.a === 5 && o1.b === 1 && o2.a === null && o2.b === null;
+        }
+
+        const it = g();
+        const r1 = it.next();
+
+        // Mutate base/key/LHS value after yielding but before resuming. The assignment target and
+        // decision must still be the one determined before evaluating the RHS.
+        o1.a = 0;
+        o = o2;
+        k = "b";
+
+        const r2 = it.next();
+
+        o1.a = null;
+        o = o2;
+        k = "a";
+
+        const r3 = it.next();
+
+        r1.value === "rhs1" && r1.done === false &&
+        r2.value === "rhs2" && r2.done === false &&
+        r3.value === true && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_logical_or_assignment_with_yield_in_computed_key_short_circuits_rhs_yield() {
   let mut rt = new_runtime();
   let value = rt
