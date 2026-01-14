@@ -8835,7 +8835,7 @@ frame={idx} repaint_after={:?}\n",
 
     // Frame 0: layout the chrome and capture the address bar rect.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
     let address_bar_rect = expect_temp_rect(&ctx, "chrome_address_bar_rect");
 
@@ -8858,12 +8858,12 @@ frame={idx} repaint_after={:?}\n",
         },
       ],
     );
-    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
 
     // Frame 2: move less than the drag threshold.
     begin_frame(&ctx, vec![egui::Event::PointerMoved(drop_pos)]);
-    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
 
     // Frame 3: release over the address bar.
@@ -8879,7 +8879,7 @@ frame={idx} repaint_after={:?}\n",
         },
       ],
     );
-    let actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -8907,7 +8907,7 @@ frame={idx} repaint_after={:?}\n",
 
     // Frame 0: layout the chrome and capture the address bar rect.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
     let address_bar_rect = expect_temp_rect(&ctx, "chrome_address_bar_rect");
 
@@ -8930,12 +8930,12 @@ frame={idx} repaint_after={:?}\n",
         },
       ],
     );
-    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
 
     // Frame 2: move beyond the drag threshold (still shouldn't start a link drag).
     begin_frame(&ctx, vec![egui::Event::PointerMoved(drag_pos)]);
-    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
 
     // Frame 3: release inside the address bar.
@@ -8951,7 +8951,7 @@ frame={idx} repaint_after={:?}\n",
         },
       ],
     );
-    let actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
