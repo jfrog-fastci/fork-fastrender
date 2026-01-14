@@ -21246,7 +21246,10 @@ fn split_display_list_for_remote_iframe_slots(
     match item {
       DisplayItem::RemoteFrameSlot(slot) => {
         append_stack_pops(&mut current_items, &active_stack);
-        layers.push(display_list.with_items(std::mem::take(&mut current_items)));
+        layers.push(crate::paint::display_list::DisplayList::from_items_with_metadata(
+          std::mem::take(&mut current_items),
+          display_list,
+        ));
 
         let mut slot = slot.clone();
         slot.slot_index = next_slot_index;
@@ -21284,7 +21287,10 @@ fn split_display_list_for_remote_iframe_slots(
   }
 
   append_stack_pops(&mut current_items, &active_stack);
-  layers.push(display_list.with_items(current_items));
+  layers.push(crate::paint::display_list::DisplayList::from_items_with_metadata(
+    current_items,
+    display_list,
+  ));
 
   Ok(LayeredDisplayListPlan { layers, slots })
 }
