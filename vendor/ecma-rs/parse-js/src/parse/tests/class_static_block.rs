@@ -515,7 +515,7 @@ fn escaped_arguments_identifier_reference_is_syntax_error_in_object_shorthand_in
 }
 
 #[test]
-fn arguments_is_allowed_as_label_identifier_in_static_block() {
+fn arguments_label_is_syntax_error_in_static_block() {
   let src = r#"
     class C {
       static {
@@ -529,11 +529,11 @@ fn arguments_is_allowed_as_label_identifier_in_static_block() {
   };
   let mut parser = Parser::new(Lexer::new(src), opts);
   let res = parser.parse_top_level();
-  assert!(res.is_ok(), "parse failed: {res:?}");
+  assert!(res.is_err(), "parse unexpectedly succeeded: {res:?}");
 }
 
 #[test]
-fn escaped_arguments_is_allowed_as_label_identifier_in_static_block() {
+fn escaped_arguments_label_is_syntax_error_in_static_block() {
   let src = r#"
     class C {
       static {
@@ -547,7 +547,7 @@ fn escaped_arguments_is_allowed_as_label_identifier_in_static_block() {
   };
   let mut parser = Parser::new(Lexer::new(src), opts);
   let res = parser.parse_top_level();
-  assert!(res.is_ok(), "parse failed: {res:?}");
+  assert!(res.is_err(), "parse unexpectedly succeeded: {res:?}");
 }
 
 #[test]
