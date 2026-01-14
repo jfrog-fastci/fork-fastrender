@@ -25,6 +25,7 @@ const DOM_SHIM: &str = r##"
   var SHADOW_ROOT_BY_HOST = new WeakMap(); // Element -> ShadowRoot
   var SLOT_MANUAL_ASSIGNMENTS = new WeakMap(); // HTMLSlotElement -> Node[]
   var NODE_MANUAL_ASSIGNED_SLOT = new WeakMap(); // Node -> HTMLSlotElement
+  var NODE_OWNER_DOCUMENT = new WeakMap(); // Node wrapper -> owning Document
 
   function illegal() {
     throw new TypeError("Illegal constructor");
@@ -424,6 +425,29 @@ const DOM_SHIM: &str = r##"
       o.tagName = String(tagName);
     }
     return o;
+  }
+
+  function owningDocumentForNode(node) {
+    // Unlike the real DOM, the QuickJS shim can create detached Document objects that are not
+    // backed by the Rust DOM. Treat Documents as self-owning.
+    if (node instanceof Document) return node;
+    return NODE_OWNER_DOCUMENT.get(node) || g.document;
+  }
+
+  function setOwnerDocumentForNode(node, doc) {
+    if (node === g.document) return;
+    if (!isNodeWrapper(node)) return;
+    if (!(doc instanceof Document)) doc = g.document;
+    NODE_OWNER_DOCUMENT.set(node, doc);
+  }
+
+  function setOwnerDocumentForSubtree(node, doc) {
+    setOwnerDocumentForNode(node, doc);
+    var kids = node.childNodes || [];
+    for (var i = 0; i < kids.length; i++) {
+      var child = kids[i];
+      if (isNodeWrapper(child)) setOwnerDocumentForSubtree(child, doc);
+    }
   }
 
   function collectionGetIdsFromThis(self) {
@@ -986,14 +1010,20 @@ const DOM_SHIM: &str = r##"
   });
 
   Document.prototype.createElement = function (tagName) {
+    if (!(this instanceof Document)) throw new TypeError("Illegal invocation");
     var raw = String(tagName);
     var id = g.__fastrender_dom_create_element(raw);
-    return makeNode(elementPrototypeForTag(raw.toLowerCase()), id, raw.toUpperCase());
+    var el = makeNode(elementPrototypeForTag(raw.toLowerCase()), id, raw.toUpperCase());
+    setOwnerDocumentForNode(el, this);
+    return el;
   };
 
   Document.prototype.createDocumentFragment = function () {
+    if (!(this instanceof Document)) throw new TypeError("Illegal invocation");
     var id = g.__fastrender_dom_create_document_fragment();
-    return makeNode(DocumentFragment.prototype, id);
+    var frag = makeNode(DocumentFragment.prototype, id);
+    setOwnerDocumentForNode(frag, this);
+    return frag;
   };
 
   Element.prototype.attachShadow = function (init) {
@@ -1041,13 +1071,106 @@ const DOM_SHIM: &str = r##"
   });
 
   Document.prototype.createTextNode = function (data) {
+    if (!(this instanceof Document)) throw new TypeError("Illegal invocation");
     var id = g.__fastrender_dom_create_text_node(String(data));
-    return makeNode(Text.prototype, id);
+    var t = makeNode(Text.prototype, id);
+    setOwnerDocumentForNode(t, this);
+    return t;
   };
 
   Document.prototype.createComment = function (data) {
+    if (!(this instanceof Document)) throw new TypeError("Illegal invocation");
     var id = g.__fastrender_dom_create_comment(String(data));
-    return makeNode(Comment.prototype, id);
+    var c = makeNode(Comment.prototype, id);
+    setOwnerDocumentForNode(c, this);
+    return c;
+  };
+
+  // ----------------------------------------------------------------------------
+  // DOMImplementation + multi-document basics (detached documents)
+  // ----------------------------------------------------------------------------
+  var DOM_IMPLEMENTATION = Object.create(Object.prototype);
+
+  DOM_IMPLEMENTATION.createHTMLDocument = function (title) {
+    // Create a detached Document without a browsing context. It is not backed by the Rust DOM's
+    // special Document node id (0), but it can still create/own real element/text nodes.
+    var doc = Object.create(Document.prototype);
+    doc.defaultView = null;
+    doc.location = null;
+    doc.baseURI = "about:blank";
+    doc.URL = "about:blank";
+    doc.title = title === undefined ? "" : String(title);
+
+    doc.documentElement = doc.createElement("html");
+    doc.head = doc.createElement("head");
+    doc.body = doc.createElement("body");
+    doc.documentElement.appendChild(doc.head);
+    doc.documentElement.appendChild(doc.body);
+    return doc;
+  };
+
+  Object.defineProperty(Document.prototype, "implementation", {
+    get: function () {
+      if (!(this instanceof Document)) throw new TypeError("Illegal invocation");
+      return DOM_IMPLEMENTATION;
+    },
+    configurable: true,
+  });
+
+  Document.prototype.importNode = function (node, deep) {
+    if (!(this instanceof Document)) throw new TypeError("Illegal invocation");
+    if (!isNodeWrapper(node)) {
+      throw new TypeError(
+        "Failed to execute 'importNode' on 'Document': parameter 1 is not of type 'Node'."
+      );
+    }
+    var deepClone = !!deep;
+    var t = node.nodeType;
+    if (t === Node.ELEMENT_NODE) {
+      // Clone via serialization/parsing so attributes and descendants are preserved.
+      var tmp = this.createElement("div");
+      tmp.innerHTML = String(node.outerHTML || "");
+      var cloned = tmp.firstChild;
+      if (!cloned) return null;
+      tmp.removeChild(cloned);
+      setOwnerDocumentForSubtree(cloned, this);
+      if (!deepClone) {
+        while (cloned.firstChild) cloned.removeChild(cloned.firstChild);
+      }
+      return cloned;
+    }
+    if (t === Node.TEXT_NODE) {
+      var txt = this.createTextNode(node.data);
+      // `createTextNode` already sets ownerDocument.
+      return txt;
+    }
+    if (t === Node.DOCUMENT_FRAGMENT_NODE) {
+      var frag = this.createDocumentFragment();
+      if (!deepClone) return frag;
+      var kids = node.childNodes || [];
+      for (var i = 0; i < kids.length; i++) {
+        var child = kids[i];
+        if (!isNodeWrapper(child)) continue;
+        frag.appendChild(this.importNode(child, true));
+      }
+      return frag;
+    }
+    // Minimal: other node types are not needed by the curated corpus yet.
+    throw new TypeError("Document.importNode: unsupported node type");
+  };
+
+  Document.prototype.adoptNode = function (node) {
+    if (!(this instanceof Document)) throw new TypeError("Illegal invocation");
+    if (!isNodeWrapper(node)) {
+      throw new TypeError(
+        "Failed to execute 'adoptNode' on 'Document': parameter 1 is not of type 'Node'."
+      );
+    }
+    if (node.parentNode) {
+      node.parentNode.removeChild(node);
+    }
+    setOwnerDocumentForSubtree(node, this);
+    return node;
   };
 
   // ----------------------------------------------------------------------------
@@ -2516,6 +2639,42 @@ const DOM_SHIM: &str = r##"
     parent.insertBefore(frag, reference);
   };
 
+  Element.prototype.insertAdjacentElement = function (position, element) {
+    nodeIdFromThis(this);
+    if (!(this instanceof Element)) throw new TypeError("Illegal invocation");
+    if (!isNodeWrapper(element) || !(element instanceof Element)) {
+      throw new TypeError(
+        "Failed to execute 'insertAdjacentElement' on 'Element': parameter 2 is not of type 'Element'."
+      );
+    }
+
+    var where = String(position).toLowerCase();
+    var parent = null;
+    var reference = null;
+    if (where === "beforebegin") {
+      parent = this.parentNode;
+      if (!parent) return null;
+      reference = this;
+    } else if (where === "afterbegin") {
+      parent = this;
+      reference = this.firstChild;
+    } else if (where === "beforeend") {
+      parent = this;
+      reference = null;
+    } else if (where === "afterend") {
+      parent = this.parentNode;
+      if (!parent) return null;
+      reference = this.nextSibling;
+    } else {
+      throw new TypeError(
+        "Failed to execute 'insertAdjacentElement' on 'Element': The provided position is not valid."
+      );
+    }
+
+    parent.insertBefore(element, reference);
+    return element;
+  };
+
   Element.prototype.matches = function (selectors) {
     nodeIdFromThis(this);
     if (!(this instanceof Element)) throw new TypeError("Illegal invocation");
@@ -2653,6 +2812,23 @@ const DOM_SHIM: &str = r##"
       throw new TypeError("Failed to execute 'appendChild' on 'Node': parameter 1 is not of type 'Node'.");
     }
 
+    var parentDoc = owningDocumentForNode(this);
+    if (child instanceof DocumentFragment) {
+      // DocumentFragment insertion adopts its children, but does not change the fragment's
+      // ownerDocument.
+      var fragNodes = ensureArray(child, "childNodes");
+      for (var i = 0; i < fragNodes.length; i++) {
+        var n = fragNodes[i];
+        if (isNodeWrapper(n) && owningDocumentForNode(n) !== parentDoc) {
+          setOwnerDocumentForSubtree(n, parentDoc);
+        }
+      }
+    } else {
+      if (owningDocumentForNode(child) !== parentDoc) {
+        setOwnerDocumentForSubtree(child, parentDoc);
+      }
+    }
+
     // Keep JS-level pointers/arrays in sync for the tiny smoke corpus. We do not attempt to fully
     // mirror the Rust DOM.
     if (child instanceof DocumentFragment) {
@@ -2720,6 +2896,21 @@ const DOM_SHIM: &str = r##"
       }
     }
 
+    var parentDoc = owningDocumentForNode(this);
+    if (child instanceof DocumentFragment) {
+      var fragNodes = ensureArray(child, "childNodes");
+      for (var i = 0; i < fragNodes.length; i++) {
+        var n = fragNodes[i];
+        if (isNodeWrapper(n) && owningDocumentForNode(n) !== parentDoc) {
+          setOwnerDocumentForSubtree(n, parentDoc);
+        }
+      }
+    } else {
+      if (owningDocumentForNode(child) !== parentDoc) {
+        setOwnerDocumentForSubtree(child, parentDoc);
+      }
+    }
+
     g.__fastrender_dom_insert_before(parentId, childId, referenceId);
 
     var parentNodes = ensureArray(this, "childNodes");
@@ -2770,6 +2961,21 @@ const DOM_SHIM: &str = r##"
     }
 
     if (child === oldChild) return oldChild;
+
+    var parentDoc = owningDocumentForNode(this);
+    if (child instanceof DocumentFragment) {
+      var fragNodes = ensureArray(child, "childNodes");
+      for (var i = 0; i < fragNodes.length; i++) {
+        var n = fragNodes[i];
+        if (isNodeWrapper(n) && owningDocumentForNode(n) !== parentDoc) {
+          setOwnerDocumentForSubtree(n, parentDoc);
+        }
+      }
+    } else {
+      if (owningDocumentForNode(child) !== parentDoc) {
+        setOwnerDocumentForSubtree(child, parentDoc);
+      }
+    }
 
     g.__fastrender_dom_replace_child(parentId, childId, oldId);
     runNodeIteratorPreRemoveSteps(oldChild);
@@ -2883,8 +3089,10 @@ const DOM_SHIM: &str = r##"
 
   Object.defineProperty(Node.prototype, "ownerDocument", {
     get: function () {
+      // Document.ownerDocument is always null (even for detached documents).
+      if (this instanceof Document) return null;
       nodeIdFromThis(this);
-      return this === g.document ? null : g.document;
+      return NODE_OWNER_DOCUMENT.get(this) || g.document;
     },
     configurable: true,
   });

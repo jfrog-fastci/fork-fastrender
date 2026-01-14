@@ -50,64 +50,10 @@ status = "xfail"
 reason = "QuickJS backend relies on a minimal DOM shim; NodeList/HTMLCollection prototype/constructor shape is validated on vm-js."
 
 [[expectations]]
-id = "dom/domimplementation_create_html_document.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend does not implement multi-document DOMImplementation APIs yet (vm-js shim supports them)."
-
-[[expectations]]
 id = "dom/domimplementation_create_document_type.window.js"
 backend = "quickjs"
 status = "xfail"
 reason = "DOMImplementation.createDocumentType is not implemented in the QuickJS WebIDL runtime yet (vm-js shim supports it)."
-
-[[expectations]]
-id = "dom/domimplementation-createhtmldocument.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend does not implement multi-document DOMImplementation APIs yet (vm-js shim supports them)."
-
-[[expectations]]
-id = "dom/document-importnode.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend does not implement multi-document Document.importNode yet (vm-js shim supports it)."
-
-[[expectations]]
-id = "dom/document-adoptnode.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend does not implement multi-document Document.adoptNode yet (vm-js shim supports it)."
-
-[[expectations]]
-id = "dom/cross-document-appendchild-adopts.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend does not yet implement multi-document DOM (createHTMLDocument) and cross-document adoption semantics."
-
-[[expectations]]
-id = "dom/cross-document-insertadjacentelement-adopts.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend does not yet implement multi-document DOM (createHTMLDocument) and cross-document adoption semantics."
-
-[[expectations]]
-id = "dom/cross-document-insertbefore-adopts.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend does not yet implement multi-document DOM (createHTMLDocument) and cross-document adoption semantics."
-
-[[expectations]]
-id = "dom/cross-document-replacechild-adopts.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend does not yet implement multi-document DOM (createHTMLDocument) and cross-document adoption semantics."
-
-[[expectations]]
-id = "dom/cross-document-appendchild-fragment-adopts.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend does not yet implement multi-document DOM (createHTMLDocument) and cross-document adoption semantics."
 
 [[expectations]]
 id = "dom/shadow_dom_manual_slot_assignment.window.js"
