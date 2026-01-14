@@ -12570,7 +12570,81 @@ mod compiled_hir_async_await_semantics_tests {
       ExpectedValue::Number(3.0),
     )
   }
- 
+  
+  #[test]
+  fn compiled_async_await_in_for_triple_init() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f(){
+          let i = await Promise.resolve(0);
+          let out='';
+          for (i = await Promise.resolve(0); i < 2; i++) { out += i; }
+          return out;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::String("01"),
+    )
+  }
+
+  #[test]
+  fn compiled_async_await_in_for_triple_test() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f(){
+          let i=0;
+          while(false){}
+          for (; await Promise.resolve(i<3); i++) {}
+          return i;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::Number(3.0),
+    )
+  }
+
+  #[test]
+  fn compiled_async_await_in_for_triple_update() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f(){
+          let i=0;
+          for (; i<3; i = await Promise.resolve(i+1)) {}
+          return i;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::Number(3.0),
+    )
+  }
+
+  #[test]
+  fn compiled_async_for_triple_await_break_continue() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f(){
+          let out='';
+          for (let i=0; await Promise.resolve(i<3); i = await Promise.resolve(i+1)) {
+            if (i===1) continue;
+            if (i===2) break;
+            out += i;
+          }
+          return out;
+        }
+        this.__f = f;
+        this.__p = f();
+        this.__p;
+      "#,
+      ExpectedValue::String("0"),
+    )
+  }
+
   #[test]
   fn compiled_async_try_finally_ordering() -> Result<(), VmError> {
     run_compiled_async_fn_case(
