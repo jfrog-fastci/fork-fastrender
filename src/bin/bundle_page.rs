@@ -10,6 +10,7 @@ use common::render_pipeline::{
   build_http_fetcher, build_render_configs, build_renderer_with_fetcher, decode_html_resource,
   render_fetched_document, RenderConfigBundle, RenderSurface,
 };
+use fastrender::api::BrowserTab;
 use fastrender::css::encoding::decode_css_bytes;
 use fastrender::css::loader::resolve_href;
 use fastrender::debug::runtime;
@@ -19,6 +20,7 @@ use fastrender::html::image_prefetch::{discover_image_prefetch_requests, ImagePr
 use fastrender::html::images::ImageSelectionContext;
 use fastrender::html::meta_refresh::{extract_js_location_redirect, extract_meta_refresh_url};
 use fastrender::image_output::encode_image;
+use fastrender::render_control::{DeadlineGuard, RenderDeadline};
 use fastrender::resource::bundle::{
   request_partitioned_resource_key_for_request, request_partitioned_resource_key_v3,
   vary_partitioned_resource_key, Bundle, BundleFetchProfile, BundleManifest, BundleRenderConfig,
@@ -38,8 +40,6 @@ use fastrender::resource::{
 };
 use fastrender::style::media::{MediaContext, MediaType};
 use fastrender::tree::box_tree::CrossOriginAttribute;
-use fastrender::api::BrowserTab;
-use fastrender::render_control::{DeadlineGuard, RenderDeadline};
 use fastrender::{OutputFormat, Result};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
@@ -651,6 +651,107 @@ impl RecordingFetcher {
       recorded: Arc::new(Mutex::new(HashMap::new())),
       recorded_by_request: Arc::new(Mutex::new(HashMap::new())),
       recorded_url_is_cors: Arc::new(Mutex::new(HashSet::new())),
+    }
+  }
+
+  fn record_prefetch_result(&self, req: FetchRequest<'_>, resource: FetchedResource) {
+    let url = req.url.to_string();
+    let destination = req.destination;
+    let referrer_url = req.referrer_url;
+    let client_origin = req.client_origin;
+    let referrer_policy = req.referrer_policy;
+    let credentials_mode = req.credentials_mode;
+
+    // Don't store `data:` URLs in bundle manifests: they can be extremely large (embedded
+    // fonts/images) and are already self-contained.
+    if is_data_url(&url) {
+      return;
+    }
+
+    // Mirror the partitioned recording semantics in `fetch_with_request` so CORS-mode responses can
+    // be replayed under the correct origin/credentials context.
+    if cors_cache_partitioning_enabled()
+      && matches!(
+        destination,
+        FetchDestination::Font
+          | FetchDestination::ImageCors
+          | FetchDestination::VideoCors
+          | FetchDestination::AudioCors
+          | FetchDestination::StyleCors
+      )
+    {
+      if let Some(manifest_key) = request_partitioned_resource_key_for_request(&req) {
+        if let Some((_, partition_key)) = manifest_key.rsplit_once("@@partition=") {
+          let key = RecordingRequestKey {
+            kind: destination.into(),
+            url: url.clone(),
+            partition_key: partition_key.to_string(),
+            credentials_mode,
+          };
+
+          if let Ok(mut map) = self.recorded.lock() {
+            match map.entry(url.clone()) {
+              std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(resource.clone());
+                if let Ok(mut set) = self.recorded_url_is_cors.lock() {
+                  set.insert(url.clone());
+                }
+              }
+              std::collections::hash_map::Entry::Occupied(_) => {}
+            }
+
+            if let Some(vary) = resource.vary.as_deref().filter(|v| *v != "*") {
+              let canonical_url = resource.final_url.as_deref().unwrap_or(url.as_str());
+              let request = FetchRequest {
+                url: canonical_url,
+                destination,
+                referrer_url,
+                client_origin,
+                referrer_policy,
+                credentials_mode,
+              };
+              if let Some(vary_key) =
+                compute_vary_key_for_request(&*self.inner, request, Some(vary))
+                  .filter(|key| !key.is_empty())
+              {
+                let manifest_key = vary_partitioned_resource_key(&url, &vary_key);
+                map.entry(manifest_key).or_insert_with(|| resource.clone());
+              }
+            }
+          }
+
+          if let Ok(mut map) = self.recorded_by_request.lock() {
+            map.insert(key, resource);
+          }
+          return;
+        }
+      }
+    }
+
+    if let Ok(mut map) = self.recorded.lock() {
+      map.insert(url.clone(), resource.clone());
+      if let Some(vary) = resource.vary.as_deref().filter(|v| *v != "*") {
+        let canonical_url = resource.final_url.as_deref().unwrap_or(url.as_str());
+        let request = FetchRequest {
+          url: canonical_url,
+          destination,
+          referrer_url,
+          client_origin,
+          referrer_policy,
+          credentials_mode,
+        };
+        if let Some(vary_key) = compute_vary_key_for_request(&*self.inner, request, Some(vary))
+          .filter(|key| !key.is_empty())
+        {
+          let manifest_key = vary_partitioned_resource_key(&url, &vary_key);
+          map.entry(manifest_key).or_insert_with(|| resource.clone());
+        }
+      }
+      if let Ok(mut set) = self.recorded_url_is_cors.lock() {
+        set.remove(url.as_str());
+      }
+    } else if let Ok(mut set) = self.recorded_url_is_cors.lock() {
+      set.remove(url.as_str());
     }
   }
 
@@ -1420,7 +1521,9 @@ fn render_bundle(args: RenderArgs) -> Result<()> {
     // (Today bundle_page does not expose timeout flags, but this keeps behavior consistent if the
     // caller installs a root deadline.)
     let deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
-    let _deadline_guard = deadline.is_enabled().then(|| DeadlineGuard::install(Some(&deadline)));
+    let _deadline_guard = deadline
+      .is_enabled()
+      .then(|| DeadlineGuard::install(Some(&deadline)));
 
     let renderer = build_renderer_with_fetcher(config, Arc::clone(&fetcher))?;
     let mut tab = BrowserTab::with_renderer_and_vmjs_and_js_execution_options(
@@ -2255,6 +2358,185 @@ fn crawl_document(
     Ok(out)
   }
 
+  fn discover_html_media(
+    html: &str,
+    base_url: &str,
+    dom_compat_mode: fastrender::dom::DomCompatibilityMode,
+  ) -> Result<Vec<(String, FetchDestination, FetchCredentialsMode)>> {
+    let dom = parse_html_with_options(
+      html,
+      DomParseOptions {
+        compatibility_mode: dom_compat_mode,
+        ..Default::default()
+      },
+    )?;
+
+    let mut out: Vec<(String, FetchDestination, FetchCredentialsMode)> = Vec::new();
+    let mut seen: HashSet<(String, FetchDestination, FetchCredentialsMode)> = HashSet::new();
+
+    // Track whether we're inside a `<video>` or `<audio>` element so `<source src>` candidates can
+    // inherit the request profile (including CORS mode/credentials settings).
+    let mut stack: Vec<(
+      &fastrender::dom::DomNode,
+      Option<(FetchDestination, FetchCredentialsMode)>,
+    )> = vec![(&dom, None)];
+
+    while let Some((node, in_media)) = stack.pop() {
+      let mut child_in_media = in_media;
+      match &node.node_type {
+        fastrender::dom::DomNodeType::Element {
+          tag_name,
+          namespace,
+          ..
+        } => {
+          if !(namespace.is_empty() || namespace == HTML_NAMESPACE) {
+            // Ignore non-HTML namespaces for media discovery.
+          } else if tag_name.eq_ignore_ascii_case("video") {
+            let crossorigin = match node.get_attribute_ref("crossorigin") {
+              None => CrossOriginAttribute::None,
+              Some(value) => {
+                let value = trim_ascii_whitespace(value);
+                if value.eq_ignore_ascii_case("use-credentials") {
+                  CrossOriginAttribute::UseCredentials
+                } else {
+                  // Empty, `anonymous`, and unknown tokens are treated as `anonymous`.
+                  CrossOriginAttribute::Anonymous
+                }
+              }
+            };
+
+            let (destination, credentials_mode) = match crossorigin {
+              CrossOriginAttribute::None => {
+                (FetchDestination::Video, FetchCredentialsMode::Include)
+              }
+              CrossOriginAttribute::Anonymous => (
+                FetchDestination::VideoCors,
+                CorsMode::Anonymous.credentials_mode(),
+              ),
+              CrossOriginAttribute::UseCredentials => (
+                FetchDestination::VideoCors,
+                CorsMode::UseCredentials.credentials_mode(),
+              ),
+            };
+            child_in_media = Some((destination, credentials_mode));
+
+            if let Some(src_raw) = node
+              .get_attribute_ref("src")
+              .filter(|value| !trim_ascii_whitespace(value).is_empty())
+            {
+              if let Some(resolved) = resolve_href(base_url, src_raw) {
+                if !should_skip_crawl_url(&resolved)
+                  && seen.insert((resolved.clone(), destination, credentials_mode))
+                {
+                  out.push((resolved, destination, credentials_mode));
+                }
+              }
+            }
+          } else if tag_name.eq_ignore_ascii_case("audio") {
+            let crossorigin = match node.get_attribute_ref("crossorigin") {
+              None => CrossOriginAttribute::None,
+              Some(value) => {
+                let value = trim_ascii_whitespace(value);
+                if value.eq_ignore_ascii_case("use-credentials") {
+                  CrossOriginAttribute::UseCredentials
+                } else {
+                  // Empty, `anonymous`, and unknown tokens are treated as `anonymous`.
+                  CrossOriginAttribute::Anonymous
+                }
+              }
+            };
+
+            let (destination, credentials_mode) = match crossorigin {
+              CrossOriginAttribute::None => {
+                (FetchDestination::Audio, FetchCredentialsMode::Include)
+              }
+              CrossOriginAttribute::Anonymous => (
+                FetchDestination::AudioCors,
+                CorsMode::Anonymous.credentials_mode(),
+              ),
+              CrossOriginAttribute::UseCredentials => (
+                FetchDestination::AudioCors,
+                CorsMode::UseCredentials.credentials_mode(),
+              ),
+            };
+            child_in_media = Some((destination, credentials_mode));
+
+            if let Some(src_raw) = node
+              .get_attribute_ref("src")
+              .filter(|value| !trim_ascii_whitespace(value).is_empty())
+            {
+              if let Some(resolved) = resolve_href(base_url, src_raw) {
+                if !should_skip_crawl_url(&resolved)
+                  && seen.insert((resolved.clone(), destination, credentials_mode))
+                {
+                  out.push((resolved, destination, credentials_mode));
+                }
+              }
+            }
+          } else if tag_name.eq_ignore_ascii_case("source") {
+            let Some(src_raw) = node
+              .get_attribute_ref("src")
+              .filter(|value| !trim_ascii_whitespace(value).is_empty())
+            else {
+              // `<source>` without `src` (or with only `srcset`) is typically an image candidate.
+              // We intentionally only consider `src` for media discovery.
+              continue;
+            };
+
+            // `<source>` can also appear inside `<picture>`. When we cannot reliably determine its
+            // context, default to the `<video>` request profile to keep behaviour deterministic.
+            let (destination, credentials_mode) =
+              in_media.unwrap_or((FetchDestination::Video, FetchCredentialsMode::Include));
+
+            if let Some(resolved) = resolve_href(base_url, src_raw) {
+              if !should_skip_crawl_url(&resolved)
+                && seen.insert((resolved.clone(), destination, credentials_mode))
+              {
+                out.push((resolved, destination, credentials_mode));
+              }
+            }
+          } else if tag_name.eq_ignore_ascii_case("track") {
+            let Some(src_raw) = node
+              .get_attribute_ref("src")
+              .filter(|value| !trim_ascii_whitespace(value).is_empty())
+            else {
+              continue;
+            };
+            if let Some(resolved) = resolve_href(base_url, src_raw) {
+              if !should_skip_crawl_url(&resolved)
+                && seen.insert((
+                  resolved.clone(),
+                  FetchDestination::Other,
+                  FetchCredentialsMode::Include,
+                ))
+              {
+                out.push((
+                  resolved,
+                  FetchDestination::Other,
+                  FetchCredentialsMode::Include,
+                ));
+              }
+            }
+          }
+        }
+        fastrender::dom::DomNodeType::ShadowRoot { .. } => {
+          // Conservative: do not discover media sources inside shadow roots.
+          continue;
+        }
+        _ => {}
+      }
+
+      if node.template_contents_are_inert() {
+        continue;
+      }
+      for child in node.children.iter().rev() {
+        stack.push((child, child_in_media));
+      }
+    }
+
+    Ok(out)
+  }
+
   fn handle_crawl_failure(
     fetcher: &RecordingFetcher,
     fetch_errors: &mut Vec<(String, String)>,
@@ -2567,14 +2849,25 @@ fn crawl_document(
   }
 
   if prefetch_media {
-    for url in html_media_urls {
+    let requests = if matches!(mode, CrawlMode::BestEffort) {
+      match discover_html_media(&document.html, &document.base_url, render.dom_compat_mode) {
+        Ok(requests) => requests,
+        Err(_) => html_media_urls
+          .into_iter()
+          .map(|url| (url, FetchDestination::Other, FetchCredentialsMode::Include))
+          .collect(),
+      }
+    } else {
+      discover_html_media(&document.html, &document.base_url, render.dom_compat_mode)?
+    };
+    for (url, destination, credentials_mode) in requests {
       enqueue_unique(
         &mut queue,
         &mut seen_urls,
         &mut queued,
         url,
-        FetchDestination::Other,
-        FetchCredentialsMode::Include,
+        destination,
+        credentials_mode,
         root_referrer,
         root_client_origin.as_ref(),
         root_referrer_policy,
@@ -2651,7 +2944,15 @@ fn crawl_document(
     if let Some(origin) = client_origin.as_ref() {
       req = req.with_client_origin(origin);
     }
-    let is_media_prefetch = prefetch_media && destination == FetchDestination::Other;
+    let is_media_prefetch = prefetch_media
+      && matches!(
+        destination,
+        FetchDestination::Video
+          | FetchDestination::VideoCors
+          | FetchDestination::Audio
+          | FetchDestination::AudioCors
+          | FetchDestination::Other
+      );
     let res = if is_media_prefetch {
       let remaining_total = if media_limits.max_total_bytes == 0 {
         usize::MAX
@@ -2816,27 +3117,7 @@ fn crawl_document(
       // `fetch_partial_with_request` against the underlying fetcher. Record the accepted bytes now
       // so they end up in the bundle manifest.
       media_bytes_downloaded = media_bytes_downloaded.saturating_add(res.bytes.len());
-      fetcher.record_override(&url, res.clone());
-      if let Some(vary) = res.vary.as_deref().filter(|v| *v != "*") {
-        let canonical_url = res.final_url.as_deref().unwrap_or(url.as_str());
-        let vary_req = FetchRequest {
-          url: canonical_url,
-          destination,
-          referrer_url: Some(referrer_url.as_str()),
-          client_origin: client_origin.as_ref(),
-          referrer_policy,
-          credentials_mode,
-        };
-        if let Some(vary_key) =
-          compute_vary_key_for_request(&*fetcher.inner, vary_req, Some(vary))
-            .filter(|key| !key.is_empty())
-        {
-          let manifest_key = vary_partitioned_resource_key(&url, &vary_key);
-          if let Ok(mut map) = fetcher.recorded.lock() {
-            map.entry(manifest_key).or_insert_with(|| res.clone());
-          }
-        }
-      }
+      fetcher.record_prefetch_result(req, res.clone());
     }
 
     if res.bytes.len() > MAX_CRAWL_IMAGE_BYTES
@@ -3129,14 +3410,26 @@ fn crawl_document(
         }
 
         if prefetch_media {
-          for url in html_media_urls {
+          let requests = if matches!(mode, CrawlMode::BestEffort) {
+            match discover_html_media(&doc.html, &doc.base_url, render.dom_compat_mode) {
+              Ok(requests) => requests,
+              Err(_) => html_media_urls
+                .into_iter()
+                .map(|url| (url, FetchDestination::Other, FetchCredentialsMode::Include))
+                .collect(),
+            }
+          } else {
+            discover_html_media(&doc.html, &doc.base_url, render.dom_compat_mode)?
+          };
+
+          for (url, destination, credentials_mode) in requests {
             enqueue_unique(
               &mut queue,
               &mut seen_urls,
               &mut queued,
               url,
-              FetchDestination::Other,
-              FetchCredentialsMode::Include,
+              destination,
+              credentials_mode,
               doc_referrer,
               doc_origin.as_ref(),
               doc_referrer_policy,
@@ -3625,10 +3918,10 @@ mod tests {
 
     let calls = inner.calls();
     assert!(
-      calls
-        .iter()
-        .any(|(url, dest)| url == "https://example.com/media.mp4" && *dest == FetchDestination::Other),
-      "expected video src to be fetched with FetchDestination::Other, got: {calls:?}"
+      calls.iter().any(
+        |(url, dest)| url == "https://example.com/media.mp4" && *dest == FetchDestination::Video
+      ),
+      "expected video src to be fetched with FetchDestination::Video, got: {calls:?}"
     );
 
     Ok(())
@@ -3718,7 +4011,9 @@ mod tests {
     );
 
     assert!(
-      !manifest.resources.contains_key("https://example.com/media.mp4"),
+      !manifest
+        .resources
+        .contains_key("https://example.com/media.mp4"),
       "expected media src to be excluded from bundle resources when prefetch_media is not set"
     );
 
@@ -3739,6 +4034,8 @@ mod tests {
       FetchDestination::Fetch,
       FetchDestination::Font,
       FetchDestination::ImageCors,
+      FetchDestination::VideoCors,
+      FetchDestination::AudioCors,
       FetchDestination::StyleCors,
       FetchDestination::ScriptCors,
     ] {

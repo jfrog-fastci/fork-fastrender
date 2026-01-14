@@ -879,22 +879,26 @@ mod disk_cache_main {
     let _ = insert_unique_with_cap(all, set, normalized, max_total, max_set);
   }
 
-  fn merge_media_destination(current: FetchDestination, incoming: FetchDestination) -> FetchDestination {
-    match (current, incoming) {
+  fn merge_media_request(
+    current: (FetchDestination, CrossOriginAttribute),
+    incoming: (FetchDestination, CrossOriginAttribute),
+  ) -> (FetchDestination, CrossOriginAttribute) {
+    let kind = match (current.0, incoming.0) {
       // If we discover the same URL for both <video> and <audio>, prefer the video request profile
       // (arbitrary but stable).
       (FetchDestination::Video, _) | (_, FetchDestination::Video) => FetchDestination::Video,
-      (FetchDestination::Audio, _) | (_, FetchDestination::Audio) => FetchDestination::Audio,
-      // Fallback: keep the more specific destination when possible.
-      (_, incoming) => incoming,
-    }
+      _ => FetchDestination::Audio,
+    };
+    let crossorigin = merge_crossorigin_attr(current.1, incoming.1);
+    (kind, crossorigin)
   }
 
   fn record_media_candidate(
     all: &RefCell<BTreeSet<String>>,
-    set: &mut BTreeMap<String, FetchDestination>,
+    set: &mut BTreeMap<String, (FetchDestination, CrossOriginAttribute)>,
     url: &str,
-    destination: FetchDestination,
+    kind: FetchDestination,
+    crossorigin: CrossOriginAttribute,
     max_total: usize,
     max_set: usize,
   ) {
@@ -905,7 +909,7 @@ mod disk_cache_main {
       return;
     }
     if let Some(existing) = set.get_mut(&normalized) {
-      *existing = merge_media_destination(*existing, destination);
+      *existing = merge_media_request(*existing, (kind, crossorigin));
       return;
     }
     {
@@ -917,7 +921,7 @@ mod disk_cache_main {
         all_urls.insert(normalized.clone());
       }
     }
-    set.insert(normalized, destination);
+    set.insert(normalized, (kind, crossorigin));
   }
 
   fn link_rel_is_icon_candidate(rel_tokens: &[String]) -> bool {
@@ -1336,9 +1340,7 @@ mod disk_cache_main {
       Err(_) => return,
     };
     let video_crossorigin_attr = match VIDEO_CROSSORIGIN_ATTR.get_or_init(|| {
-      Regex::new(
-        "(?is)\\scrossorigin(?:\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+)))?",
-      )
+      Regex::new("(?is)\\scrossorigin(?:\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+)))?")
     }) {
       Ok(re) => re,
       Err(_) => return,
@@ -1401,7 +1403,14 @@ mod disk_cache_main {
           }
           crossorigin => {
             let before = cors_image_urls.len();
-            record_cors_image_candidate(all, cors_image_urls, &resolved, crossorigin, max_total, max_total);
+            record_cors_image_candidate(
+              all,
+              cors_image_urls,
+              &resolved,
+              crossorigin,
+              max_total,
+              max_total,
+            );
             if cors_image_urls.len() > before {
               inserted += 1;
             }
@@ -1510,7 +1519,7 @@ mod disk_cache_main {
     all: &RefCell<BTreeSet<String>>,
     html: &str,
     base_url: &str,
-    out: &mut BTreeMap<String, FetchDestination>,
+    out: &mut BTreeMap<String, (FetchDestination, CrossOriginAttribute)>,
     max_total: usize,
   ) {
     // Keep worst-case work bounded for pages that embed many media tags.
@@ -1571,7 +1580,15 @@ mod disk_cache_main {
       }
       if let Some(resolved) = resolve_href(base_url, raw) {
         let before = out.len();
-        record_media_candidate(all, out, &resolved, destination, max_total, max_total);
+        record_media_candidate(
+          all,
+          out,
+          &resolved,
+          destination,
+          CrossOriginAttribute::None,
+          max_total,
+          max_total,
+        );
         if out.len() > before {
           inserted += 1;
         }
@@ -1583,14 +1600,15 @@ mod disk_cache_main {
     all: &RefCell<BTreeSet<String>>,
     dom: &DomNode,
     base_url: &str,
-    out: &mut BTreeMap<String, FetchDestination>,
+    out: &mut BTreeMap<String, (FetchDestination, CrossOriginAttribute)>,
     max_total: usize,
   ) {
     // Keep worst-case work bounded for pages that embed many <video>/<audio> tags with many
     // <source> children.
     const MAX_MEDIA_SOURCES_PER_PAGE: usize = 64;
 
-    let mut stack: Vec<(&DomNode, Option<FetchDestination>)> = vec![(dom, None)];
+    let mut stack: Vec<(&DomNode, Option<(FetchDestination, CrossOriginAttribute)>)> =
+      vec![(dom, None)];
     let mut inserted = 0usize;
 
     while let Some((node, in_media)) = stack.pop() {
@@ -1604,7 +1622,19 @@ mod disk_cache_main {
       let mut child_in_media = in_media;
       if let Some(tag) = node.tag_name() {
         if tag.eq_ignore_ascii_case("video") {
-          child_in_media = Some(FetchDestination::Video);
+          let crossorigin = match node.get_attribute_ref("crossorigin") {
+            None => CrossOriginAttribute::None,
+            Some(value) => {
+              let value = trim_ascii_whitespace(value);
+              if value.eq_ignore_ascii_case("use-credentials") {
+                CrossOriginAttribute::UseCredentials
+              } else {
+                // Empty, `anonymous`, and unknown tokens are treated as `anonymous`.
+                CrossOriginAttribute::Anonymous
+              }
+            }
+          };
+          child_in_media = Some((FetchDestination::Video, crossorigin));
           if let Some(src) = node
             .get_attribute_ref("src")
             .filter(|value| !trim_ascii_whitespace(value).is_empty())
@@ -1616,6 +1646,7 @@ mod disk_cache_main {
                 out,
                 &resolved,
                 FetchDestination::Video,
+                crossorigin,
                 max_total,
                 max_total,
               );
@@ -1625,7 +1656,19 @@ mod disk_cache_main {
             }
           }
         } else if tag.eq_ignore_ascii_case("audio") {
-          child_in_media = Some(FetchDestination::Audio);
+          let crossorigin = match node.get_attribute_ref("crossorigin") {
+            None => CrossOriginAttribute::None,
+            Some(value) => {
+              let value = trim_ascii_whitespace(value);
+              if value.eq_ignore_ascii_case("use-credentials") {
+                CrossOriginAttribute::UseCredentials
+              } else {
+                // Empty, `anonymous`, and unknown tokens are treated as `anonymous`.
+                CrossOriginAttribute::Anonymous
+              }
+            }
+          };
+          child_in_media = Some((FetchDestination::Audio, crossorigin));
           if let Some(src) = node
             .get_attribute_ref("src")
             .filter(|value| !trim_ascii_whitespace(value).is_empty())
@@ -1637,6 +1680,7 @@ mod disk_cache_main {
                 out,
                 &resolved,
                 FetchDestination::Audio,
+                crossorigin,
                 max_total,
                 max_total,
               );
@@ -1645,7 +1689,7 @@ mod disk_cache_main {
               }
             }
           }
-        } else if let Some(destination) = child_in_media {
+        } else if let Some((destination, crossorigin)) = child_in_media {
           if tag.eq_ignore_ascii_case("source") {
             if let Some(src) = node
               .get_attribute_ref("src")
@@ -1653,7 +1697,15 @@ mod disk_cache_main {
             {
               if let Some(resolved) = resolve_href(base_url, src) {
                 let before = out.len();
-                record_media_candidate(all, out, &resolved, destination, max_total, max_total);
+                record_media_candidate(
+                  all,
+                  out,
+                  &resolved,
+                  destination,
+                  crossorigin,
+                  max_total,
+                  max_total,
+                );
                 if out.len() > before {
                   inserted += 1;
                 }
@@ -2483,7 +2535,8 @@ mod disk_cache_main {
 
     let mut image_urls: BTreeSet<String> = BTreeSet::new();
     let mut cors_image_urls: BTreeMap<String, CrossOriginAttribute> = BTreeMap::new();
-    let mut media_urls: BTreeMap<String, FetchDestination> = BTreeMap::new();
+    let mut media_urls: BTreeMap<String, (FetchDestination, CrossOriginAttribute)> =
+      BTreeMap::new();
     let mut script_urls: BTreeSet<String> = BTreeSet::new();
     let mut cors_script_urls: BTreeMap<String, CorsMode> = BTreeMap::new();
     let mut document_urls: BTreeSet<String> = BTreeSet::new();
@@ -3129,13 +3182,27 @@ mod disk_cache_main {
       let mut remaining_budget = page_cap;
 
       let mut summary = summary.borrow_mut();
-      for (url, destination) in &media_urls {
+      for (url, profile) in &media_urls {
+        let (kind, crossorigin) = *profile;
+        let destination = match kind {
+          FetchDestination::Video => match crossorigin {
+            CrossOriginAttribute::None => FetchDestination::Video,
+            _ => FetchDestination::VideoCors,
+          },
+          FetchDestination::Audio => match crossorigin {
+            CrossOriginAttribute::None => FetchDestination::Audio,
+            _ => FetchDestination::AudioCors,
+          },
+          other => other,
+        };
+        let credentials_mode = match crossorigin {
+          CrossOriginAttribute::None => FetchCredentialsMode::Include,
+          CrossOriginAttribute::Anonymous => CorsMode::Anonymous.credentials_mode(),
+          CrossOriginAttribute::UseCredentials => CorsMode::UseCredentials.credentials_mode(),
+        };
         if page_cap != 0 && remaining_budget == 0 {
           summary.skipped_media += 1;
-          summary
-            .report
-            .media
-            .record_fetch_result(url.clone(), false);
+          summary.report.media.record_fetch_result(url.clone(), false);
           eprintln!(
             "Skipping media {} (no remaining page media budget: max_media_bytes_per_page={})",
             url, page_cap
@@ -3154,9 +3221,10 @@ mod disk_cache_main {
 
         // When both limits are disabled, do a single fetch just like other asset types.
         if max_allowed == u64::MAX {
-          let mut request = FetchRequest::new(url.as_str(), *destination)
+          let mut request = FetchRequest::new(url.as_str(), destination)
             .with_referrer_url(base_hint)
-            .with_referrer_policy(referrer_policy);
+            .with_referrer_policy(referrer_policy)
+            .with_credentials_mode(credentials_mode);
           if let Some(origin) = document_origin.as_ref() {
             request = request.with_client_origin(origin);
           }
@@ -3179,50 +3247,40 @@ mod disk_cache_main {
         }
 
         // Clamp the probe to `usize::MAX` to keep allocations bounded on 32-bit targets.
-        let probe_max_bytes = max_allowed
-          .saturating_add(1)
-          .min(usize::MAX as u64) as usize;
+        let probe_max_bytes = max_allowed.saturating_add(1).min(usize::MAX as u64) as usize;
 
-        let mut probe_request = FetchRequest::new(url.as_str(), *destination)
+        let mut probe_request = FetchRequest::new(url.as_str(), destination)
           .with_referrer_url(base_hint)
-          .with_referrer_policy(referrer_policy);
+          .with_referrer_policy(referrer_policy)
+          .with_credentials_mode(credentials_mode);
         if let Some(origin) = document_origin.as_ref() {
           probe_request = probe_request.with_client_origin(origin);
         }
 
-        let probe_size: u64 = match fetcher.fetch_partial_with_request(probe_request, probe_max_bytes)
-        {
-          Ok(res) => {
-            if ensure_http_success(&res, url)
-              .and_then(|()| ensure_media_mime_sane(&res, url))
-              .is_ok()
-            {
-              res.bytes.len() as u64
-            } else {
+        let probe_size: u64 =
+          match fetcher.fetch_partial_with_request(probe_request, probe_max_bytes) {
+            Ok(res) => {
+              if ensure_http_success(&res, url)
+                .and_then(|()| ensure_media_mime_sane(&res, url))
+                .is_ok()
+              {
+                res.bytes.len() as u64
+              } else {
+                summary.failed_media += 1;
+                summary.report.media.record_fetch_result(url.clone(), false);
+                continue;
+              }
+            }
+            Err(_) => {
               summary.failed_media += 1;
-              summary
-                .report
-                .media
-                .record_fetch_result(url.clone(), false);
+              summary.report.media.record_fetch_result(url.clone(), false);
               continue;
             }
-          }
-          Err(_) => {
-            summary.failed_media += 1;
-            summary
-              .report
-              .media
-              .record_fetch_result(url.clone(), false);
-            continue;
-          }
-        };
+          };
 
         if probe_size > max_allowed {
           summary.skipped_media += 1;
-          summary
-            .report
-            .media
-            .record_fetch_result(url.clone(), false);
+          summary.report.media.record_fetch_result(url.clone(), false);
 
           let mut reasons: Vec<String> = Vec::new();
           if per_file_cap != 0 && probe_size > per_file_cap {
@@ -3246,9 +3304,10 @@ mod disk_cache_main {
           remaining_budget = remaining_budget.saturating_sub(probe_size);
         }
 
-        let mut request = FetchRequest::new(url.as_str(), *destination)
+        let mut request = FetchRequest::new(url.as_str(), destination)
           .with_referrer_url(base_hint)
-          .with_referrer_policy(referrer_policy);
+          .with_referrer_policy(referrer_policy)
+          .with_credentials_mode(credentials_mode);
         if let Some(origin) = document_origin.as_ref() {
           request = request.with_client_origin(origin);
         }
