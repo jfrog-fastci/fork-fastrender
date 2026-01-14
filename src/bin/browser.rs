@@ -3022,6 +3022,26 @@ fn perf_log_config_from_cli_or_env(
   }
 }
 
+#[cfg(any(test, feature = "browser_ui"))]
+fn trace_out_from_cli_or_env(
+  cli_out_path: Option<&std::path::PathBuf>,
+  env_out_path: Option<std::ffi::OsString>,
+  env_legacy_out_path: Option<std::ffi::OsString>,
+) -> Option<std::path::PathBuf> {
+  // CLI always wins.
+  if let Some(path) = cli_out_path.filter(|p| !p.as_os_str().is_empty()) {
+    return Some(path.clone());
+  }
+
+  let Some(raw) = env_out_path.or_else(|| env_legacy_out_path) else {
+    return None;
+  };
+  if raw.to_string_lossy().trim().is_empty() {
+    return None;
+  }
+  Some(std::path::PathBuf::from(raw))
+}
+
 #[cfg(feature = "browser_ui")]
 fn parse_browser_show_menu_bar_env(raw: Option<&str>) -> Result<Option<bool>, String> {
   let Some(raw) = raw else {
@@ -3317,11 +3337,14 @@ mod browser_cli_flag_tests {
 
   #[test]
   fn parses_hud_and_perf_log_flags() {
-    let args = BrowserCliArgs::try_parse_from(["browser", "--hud", "--perf-log"]).unwrap();
+    let args =
+      BrowserCliArgs::try_parse_from(["browser", "--hud", "--perf-log", "--trace-out", "trace.json"])
+        .unwrap();
     assert!(args.hud);
     assert!(!args.no_hud);
     assert!(args.perf_log);
     assert!(args.perf_log_out.is_none());
+    assert_eq!(args.trace_out.as_deref(), Some(std::path::Path::new("trace.json")));
 
     let args =
       BrowserCliArgs::try_parse_from(["browser", "--no-hud", "--perf-log-out", "out.jsonl"])
@@ -3416,6 +3439,41 @@ mod browser_cli_flag_tests {
       perf_log_config_from_cli_or_env(out_only.perf_log, out_only.perf_log_out.as_ref(), None, None);
     assert!(config.enabled);
     assert_eq!(config.out_path.as_deref(), Some(std::path::Path::new("out.jsonl")));
+  }
+
+  #[test]
+  fn trace_out_cli_overrides_env_and_legacy_alias() {
+    let base = BrowserCliArgs::try_parse_from(["browser"]).unwrap();
+    assert!(base.trace_out.is_none());
+    assert_eq!(
+      trace_out_from_cli_or_env(
+        base.trace_out.as_ref(),
+        Some(std::ffi::OsString::from("target/env.json")),
+        None
+      )
+      .as_deref(),
+      Some(std::path::Path::new("target/env.json"))
+    );
+    assert_eq!(
+      trace_out_from_cli_or_env(
+        base.trace_out.as_ref(),
+        None,
+        Some(std::ffi::OsString::from("target/legacy.json"))
+      )
+      .as_deref(),
+      Some(std::path::Path::new("target/legacy.json"))
+    );
+
+    let cli = BrowserCliArgs::try_parse_from(["browser", "--trace-out", "target/cli.json"]).unwrap();
+    assert_eq!(
+      trace_out_from_cli_or_env(
+        cli.trace_out.as_ref(),
+        Some(std::ffi::OsString::from("target/env.json")),
+        Some(std::ffi::OsString::from("target/legacy.json"))
+      )
+      .as_deref(),
+      Some(std::path::Path::new("target/cli.json"))
+    );
   }
 
   #[test]
@@ -4467,6 +4525,12 @@ struct BrowserCliArgs {
   /// overrides `FASTR_PERF_LOG_OUT`.
   #[arg(long = "perf-log-out", value_name = "PATH")]
   perf_log_out: Option<std::path::PathBuf>,
+
+  /// Write a Chrome trace of the windowed browser UI event loop to this path
+  ///
+  /// CLI overrides `FASTR_BROWSER_TRACE_OUT` (and legacy alias `FASTR_PERF_TRACE_OUT`).
+  #[arg(long = "trace-out", value_name = "PATH")]
+  trace_out: Option<std::path::PathBuf>,
 
   /// wgpu adapter power preference when selecting a GPU
   ///
@@ -6673,17 +6737,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let perf_log_start = std::time::Instant::now();
   let cli = BrowserCliArgs::parse();
 
-  // Prefer the explicit browser UI trace env var, but accept the older `FASTR_PERF_TRACE_OUT` as an
-  // alias so existing perf-logging docs/scripts continue to work.
-  let browser_trace_out = std::env::var_os(ENV_BROWSER_TRACE_OUT)
-    .or_else(|| std::env::var_os(ENV_PERF_TRACE_OUT))
-    .and_then(|raw| {
-      if raw.to_string_lossy().trim().is_empty() {
-        None
-      } else {
-        Some(std::path::PathBuf::from(raw))
-      }
-    });
+  // Prefer the CLI flag when set, otherwise honor the explicit browser UI trace env var. Accept the
+  // older `FASTR_PERF_TRACE_OUT` as an alias so existing perf-logging docs/scripts continue to
+  // work.
+  let browser_trace_out = trace_out_from_cli_or_env(
+    cli.trace_out.as_ref(),
+    std::env::var_os(ENV_BROWSER_TRACE_OUT),
+    std::env::var_os(ENV_PERF_TRACE_OUT),
+  );
   let browser_trace = if browser_trace_out.is_some() {
     fastrender::debug::trace::TraceHandle::enabled()
   } else {
@@ -6741,15 +6802,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let perf_log_cpu_start_ms = perf_log_enabled.then(perf_log::process_cpu_time_ms).flatten();
 
   if let Some(writer) = perf_log_writer.as_ref() {
-    let trace_out = std::env::var_os(ENV_BROWSER_TRACE_OUT)
-      .or_else(|| std::env::var_os(ENV_PERF_TRACE_OUT))
-      .and_then(|raw| {
-        if raw.to_string_lossy().trim().is_empty() {
-          None
-        } else {
-          Some(raw.to_string_lossy().to_string())
-        }
-      });
+    let trace_out = browser_trace_out
+      .as_ref()
+      .map(|path| path.to_string_lossy().to_string());
     let rayon_threads = std::env::var_os("RAYON_NUM_THREADS")
       .and_then(|raw| raw.to_string_lossy().trim().parse::<u32>().ok());
 

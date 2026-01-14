@@ -257,8 +257,9 @@ scroll/resize smoothness, and input latency). See [`docs/perf-logging.md#browser
 and [`instructions/browser_responsiveness.md`](../instructions/browser_responsiveness.md) for how to
 interpret the metrics.
 
-CLI equivalents (override env vars): `browser --perf-log` (stdout) and
-`browser --perf-log-out <path>` (write JSONL to a file).
+CLI equivalents (override env vars): `browser --perf-log` (stdout),
+`browser --perf-log-out <path>` (write JSONL to a file), and `browser --trace-out <path>` (write a
+Perfetto/Chrome trace on exit).
 
 For an interactive capture helper (runs under `run_limited`, passes `browser --perf-log`, and tees
 the stdout JSONL stream to a file), see
@@ -299,6 +300,7 @@ the stdout JSONL stream to a file), see
 - `FASTR_BROWSER_TRACE_OUT=/path/to/trace.json` – write a Chrome trace of the windowed `browser`
   UI event loop (winit input handling, worker message draining, egui frame build, GPU submission,
   and present). The trace is written when the browser process exits.
+  - CLI equivalent (preferred): `browser --trace-out /path/to/trace.json` (CLI overrides env vars).
   - When audio output is active, the trace can also include audio pipeline spans such as
     `audio.callback` (output callback CPU time), `audio.mix` (mixing), and `audio.resample`
     (decoder-side resampling).

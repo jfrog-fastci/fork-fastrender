@@ -139,6 +139,12 @@ fn browser_command_supports_release_url_and_cli_flags() {
     "expected --perf-log-out <path> in args, got {args:?}"
   );
   assert!(
+    args
+      .windows(2)
+      .any(|w| w == ["--trace-out", trace_out_value.as_str()]),
+    "expected --trace-out <path> in args, got {args:?}"
+  );
+  assert!(
     args.windows(2).any(|w| w == ["--mem-limit-mb", "1024"]),
     "expected --mem-limit-mb 1024 in args, got {args:?}"
   );
@@ -147,10 +153,9 @@ fn browser_command_supports_release_url_and_cli_flags() {
     "expected --headless-smoke in args, got {args:?}"
   );
 
-  assert_eq!(
-    cmd_env(&cmd, FASTR_BROWSER_TRACE_OUT_ENV).as_deref(),
-    Some(trace_out_value.as_str()),
-    "expected trace out env to be set"
+  assert!(
+    cmd_env(&cmd, FASTR_BROWSER_TRACE_OUT_ENV).is_none(),
+    "expected trace out env not to be set when CLI flag is available"
   );
   assert!(
     cmd_env(&cmd, FASTR_BROWSER_MEM_LIMIT_MB_ENV).is_none(),

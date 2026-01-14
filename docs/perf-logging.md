@@ -14,7 +14,7 @@ When using `render_pages`/`fetch_and_render`, per-page logs are written to `fetc
   - `fetch_and_render` also supports `--trace-out trace.json`, and library consumers can set `RenderOptions::with_trace_output`.
   - Use `FASTR_TRACE_MAX_EVENTS=<N>` to cap the number of events retained per trace (default 200000). This applies to both `FASTR_TRACE_OUT` and `FASTR_BROWSER_TRACE_OUT`.
 
-- `FASTR_BROWSER_TRACE_OUT=/tmp/browser-trace.json` (legacy alias: `FASTR_PERF_TRACE_OUT`)
+- `browser --trace-out /tmp/browser-trace.json` (preferred; env: `FASTR_BROWSER_TRACE_OUT=/tmp/browser-trace.json`, legacy alias: `FASTR_PERF_TRACE_OUT`)
   - Writes a Chrome trace of the windowed `browser` UI event loop (winit event handling, egui frame build, worker message drain, frame uploads, wgpu present). The trace is written when the browser process exits.
   - When audio output is active, the trace can also include audio pipeline spans such as `audio.callback` (output callback CPU time), `audio.mix` (mixing), and `audio.resample` (decoder-side resampling).
   - Tip: to quickly validate that audio spans are showing up in the trace, run the browser with `FASTR_AUDIO_TEST_TONE=1` (plays a short startup tone; requires the `audio_cpal` build).
@@ -240,7 +240,7 @@ in [Perfetto UI](https://ui.perfetto.dev):
 
 - Renderer pipeline trace (parse/style/layout/paint): `FASTR_TRACE_OUT=/tmp/trace.json` (captures the
   most recent render).
-- Browser UI trace: `FASTR_BROWSER_TRACE_OUT=/tmp/ui_trace.json` (legacy alias: `FASTR_PERF_TRACE_OUT`).
+- Browser UI trace: `browser --trace-out /tmp/ui_trace.json` (or `FASTR_BROWSER_TRACE_OUT=/tmp/ui_trace.json`; legacy alias: `FASTR_PERF_TRACE_OUT`).
 
 ## Other useful profiling flags
 

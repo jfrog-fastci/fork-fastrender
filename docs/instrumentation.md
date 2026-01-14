@@ -136,6 +136,7 @@ Ways to produce traces:
 
 - `pageset_progress --trace-failures` or `--trace-slow-ms <ms>` to generate traces under `target/pageset/traces/`.
 - `FASTR_TRACE_OUT=/tmp/trace.json` with `render_pages` / `fetch_and_render` (see `docs/perf-logging.md`).
+- `browser --trace-out /tmp/ui_trace.json` (or `FASTR_BROWSER_TRACE_OUT=...`) to trace the windowed browser UI event loop. The trace is written when the browser process exits.
 - `FASTR_TRACE_MAX_EVENTS=<N>` caps the number of events retained per trace (default 200000). This
   applies to both `FASTR_TRACE_OUT` (renderer pipeline) and `FASTR_BROWSER_TRACE_OUT` (windowed
   browser UI).

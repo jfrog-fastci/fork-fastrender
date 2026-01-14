@@ -44,14 +44,6 @@ pub fn build_browser_command(repo_root: &Path, args: &BrowserCommandArgs) -> Com
   let mut cmd = crate::cmd::run_limited_command_default(repo_root);
   cmd.current_dir(repo_root);
 
-  // Apply in-process guardrails / test hooks expected by `src/bin/browser.rs`.
-  //
-  // Prefer passing browser CLI flags where available so the wrapper doesn't leak debug/profiling
-  // env vars into the Cargo build environment.
-  if let Some(out) = args.trace_out.as_ref() {
-    cmd.env(FASTR_BROWSER_TRACE_OUT_ENV, out.as_os_str());
-  }
-
   cmd.arg("bash");
   cmd.arg(repo_root.join("scripts/cargo_agent.sh"));
 
@@ -73,6 +65,10 @@ pub fn build_browser_command(repo_root: &Path, args: &BrowserCommandArgs) -> Com
     cmd.arg(out);
   } else if args.perf_log {
     cmd.arg("--perf-log");
+  }
+  if let Some(out) = args.trace_out.as_ref() {
+    cmd.arg("--trace-out");
+    cmd.arg(out);
   }
   if let Some(limit_mb) = args.mem_limit_mb {
     cmd.arg("--mem-limit-mb");
