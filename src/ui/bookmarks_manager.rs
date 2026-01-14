@@ -1398,7 +1398,7 @@ fn render_bookmark_row(
     .filter(|t| !t.is_empty())
     .unwrap_or(entry.url.as_str());
 
-  let url_display = crate::ui::url_display::truncate_url_middle(&entry.url, 80);
+  let url_display = crate::ui::url_display::truncate_url_middle_cow(&entry.url, 80);
   let folder_display = truncate_middle(parent_label, 48);
 
   let mut open_new_tab_clicked = false;
@@ -1450,12 +1450,12 @@ fn render_bookmark_row(
           }
           ui.label(title_text);
           ui.label(
-            egui::RichText::new(url_display)
+            egui::RichText::new(url_display.as_ref())
               .small()
               .color(ui.visuals().weak_text_color()),
           );
           ui.label(
-            egui::RichText::new(folder_display)
+            egui::RichText::new(folder_display.as_ref())
               .small()
               .color(ui.visuals().weak_text_color()),
           );
@@ -1463,7 +1463,7 @@ fn render_bookmark_row(
       });
     });
   })
-  .on_hover_text(entry.url.clone());
+  .on_hover_text(entry.url.as_str());
 
   row_resp.widget_info({
     let label = format!("Open bookmark: {title} ({})", entry.url);
@@ -1519,7 +1519,7 @@ fn folder_combo_box(
   let selected = folder_cache.label_for_parent(*value);
   let selected = truncate_middle(selected, 48);
   let response = egui::ComboBox::from_id_source(combo_id)
-    .selected_text(selected)
+    .selected_text(selected.as_ref())
     .show_ui(ui, |ui| {
       // Virtualize the dropdown: large bookmark trees can contain thousands of folders and rendering
       // them all every frame (while the popup is open) can cause noticeable jank.
@@ -1548,17 +1548,17 @@ fn normalize_optional_string(raw: &str) -> Option<String> {
   }
 }
 
-fn truncate_middle(s: &str, max_chars: usize) -> String {
+fn truncate_middle<'a>(s: &'a str, max_chars: usize) -> Cow<'a, str> {
   let s = s.trim();
   if max_chars == 0 || s.is_empty() {
-    return String::new();
+    return Cow::Borrowed("");
   }
   let len = s.chars().count();
   if len <= max_chars {
-    return s.to_string();
+    return Cow::Borrowed(s);
   }
   if max_chars <= 1 {
-    return "…".to_string();
+    return Cow::Borrowed("…");
   }
   let head = max_chars / 2;
   let tail = max_chars - head - 1;
@@ -1569,7 +1569,7 @@ fn truncate_middle(s: &str, max_chars: usize) -> String {
   let mut tail_rev = String::new();
   tail_rev.extend(s.chars().rev().take(tail));
   out.extend(tail_rev.chars().rev());
-  out
+  Cow::Owned(out)
 }
 
 fn with_alpha(color: egui::Color32, alpha: f32) -> egui::Color32 {

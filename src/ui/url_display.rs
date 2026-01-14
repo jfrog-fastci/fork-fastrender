@@ -6,13 +6,15 @@
 ///
 /// The main goal is to produce a *middle-ellipsis* representation for long URLs, preferably keeping
 /// the scheme+host prefix and the last path segment (e.g. `https://example.com/…/path`).
-pub fn truncate_url_middle(url: &str, max_chars: usize) -> String {
+use std::borrow::Cow;
+
+pub fn truncate_url_middle_cow(url: &str, max_chars: usize) -> Cow<'_, str> {
   if max_chars == 0 {
-    return String::new();
+    return Cow::Borrowed("");
   }
 
   if url.chars().count() <= max_chars {
-    return url.to_string();
+    return Cow::Borrowed(url);
   }
 
   // Prefer a structured `prefix/…/tail` truncation for hierarchical URLs of the form
@@ -34,14 +36,18 @@ pub fn truncate_url_middle(url: &str, max_chars: usize) -> String {
         if tail != "/" {
           let candidate = format!("{prefix}/…{tail}");
           if candidate.chars().count() <= max_chars {
-            return candidate;
+            return Cow::Owned(candidate);
           }
         }
       }
     }
   }
 
-  truncate_middle(url, max_chars)
+  Cow::Owned(truncate_middle(url, max_chars))
+}
+
+pub fn truncate_url_middle(url: &str, max_chars: usize) -> String {
+  truncate_url_middle_cow(url, max_chars).into_owned()
 }
 
 fn truncate_middle(value: &str, max_chars: usize) -> String {
