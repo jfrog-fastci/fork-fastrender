@@ -174,32 +174,26 @@ impl<R: Read + Seek> Mp4ParseDemuxer<R> {
       };
       let kind = mp4_track_kind(&track.track_type);
 
+      let (codec, codec_private) = track_codec_and_extradata(track);
+
       // Extract a conservative enabled flag. If mp4parse didn't parse tkhd, assume enabled.
       let enabled = track.tkhd.as_ref().map(|t| !t.disabled).unwrap_or(true);
 
-      let pixel_count = if matches!(kind, Mp4TrackKind::Video) {
-        video_pixel_count(track)
-      } else {
-        0
-      };
-
-      selection_infos.push(Mp4TrackSelectionInfo {
-        id,
-        kind,
-        enabled,
-        pixel_count,
-      });
-
-      let (media_track_type, video, audio) = match kind {
-        Mp4TrackKind::Video => {
+      // We currently only surface tracks that we can actually decode in-process.
+      let (media_track_type, video, audio, pixel_count) = match kind {
+        Mp4TrackKind::Video if matches!(codec, MediaCodec::H264 | MediaCodec::Vp9) => {
           let (width, height) = video_dimensions(track);
+          let pixel_count = match (width, height) {
+            (Some(w), Some(h)) => u64::from(w).saturating_mul(u64::from(h)),
+            _ => 0,
+          };
           let video = width.zip(height).map(|(w, h)| MediaVideoInfo {
             width: u32::from(w),
             height: u32::from(h),
           });
-          (MediaTrackType::Video, video, None)
+          (MediaTrackType::Video, video, None, pixel_count)
         }
-        Mp4TrackKind::Audio => {
+        Mp4TrackKind::Audio if matches!(codec, MediaCodec::Aac) => {
           let (sample_rate, channels) = audio_format(track);
           let audio = match (sample_rate, channels) {
             (Some(sr), Some(ch)) => Some(MediaAudioInfo {
@@ -208,13 +202,17 @@ impl<R: Read + Seek> Mp4ParseDemuxer<R> {
             }),
             _ => None,
           };
-          (MediaTrackType::Audio, None, audio)
+          (MediaTrackType::Audio, None, audio, 0)
         }
-        // We only surface audio/video tracks for now.
         _ => continue,
       };
 
-      let (codec, codec_private) = track_codec_and_extradata(track);
+      selection_infos.push(Mp4TrackSelectionInfo {
+        id,
+        kind,
+        enabled,
+        pixel_count,
+      });
 
       tracks.push(MediaTrackInfo {
         id: u64::from(id),
@@ -691,14 +689,6 @@ fn video_dimensions(track: &mp4parse::Track) -> (Option<u16>, Option<u16>) {
     }
   }
   (None, None)
-}
-
-fn video_pixel_count(track: &mp4parse::Track) -> u64 {
-  let (w, h) = video_dimensions(track);
-  match (w, h) {
-    (Some(w), Some(h)) => u64::from(w).saturating_mul(u64::from(h)),
-    _ => 0,
-  }
 }
 
 fn audio_format(track: &mp4parse::Track) -> (Option<u32>, Option<u16>) {

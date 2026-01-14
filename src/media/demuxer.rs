@@ -33,6 +33,21 @@ impl<R: Read + Seek + Send> MediaDemuxer for super::demux::webm::WebmDemuxer<R> 
   }
 }
 
+#[cfg(feature = "media_mp4")]
+impl<R: Read + Seek + Send> MediaDemuxer for super::demux::mp4parse::Mp4ParseDemuxer<R> {
+  fn tracks(&self) -> &[MediaTrackInfo] {
+    super::demux::mp4parse::Mp4ParseDemuxer::tracks(self)
+  }
+
+  fn next_packet(&mut self) -> MediaResult<Option<MediaPacket>> {
+    super::demux::mp4parse::Mp4ParseDemuxer::next_packet(self)
+  }
+
+  fn seek(&mut self, time_ns: u64) -> MediaResult<()> {
+    super::demux::mp4parse::Mp4ParseDemuxer::seek(self, time_ns)
+  }
+}
+
 // ============================================================================
 // MP4 packet demuxer (mp4 crate)
 // ============================================================================
@@ -743,7 +758,12 @@ mod tests {
     let cx = width / 2;
     let cy = height / 2;
     let idx = (cy * width + cx) * 4;
-    let center = [pixels[idx], pixels[idx + 1], pixels[idx + 2], pixels[idx + 3]];
+    let center = [
+      pixels[idx],
+      pixels[idx + 1],
+      pixels[idx + 2],
+      pixels[idx + 3],
+    ];
 
     RgbaStats {
       avg_r,

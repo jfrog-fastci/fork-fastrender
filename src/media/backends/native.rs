@@ -1,6 +1,6 @@
-use crate::media::demux::webm::WebmDemuxer;
 #[cfg(feature = "media_mp4")]
-use crate::media::demuxer::Mp4PacketDemuxer;
+use crate::media::demux::mp4parse::Mp4ParseDemuxer;
+use crate::media::demux::webm::WebmDemuxer;
 use crate::media::{MediaBackend, MediaDecodePipeline, MediaError, MediaResult, MediaSession};
 use std::sync::Arc;
 
@@ -17,7 +17,7 @@ impl NativeBackend {
 
 #[cfg(feature = "media_mp4")]
 fn try_open_mp4(bytes: Arc<[u8]>) -> MediaResult<MediaDecodePipeline> {
-  let demuxer = Mp4PacketDemuxer::from_bytes(bytes)?;
+  let demuxer = Mp4ParseDemuxer::open(std::io::Cursor::new(bytes))?;
   MediaDecodePipeline::new(Box::new(demuxer))
 }
 
