@@ -134,7 +134,7 @@ fn apply_form_control_paint_state(
   interaction_state: Option<&InteractionState>,
 ) {
   use crate::text::caret::CaretAffinity;
-  use crate::tree::box_tree::{FormControlKind, ImePreeditPaintState};
+  use crate::tree::box_tree::FormControlKind;
 
   match &mut control.control {
     FormControlKind::Text {

@@ -7,7 +7,8 @@ use crate::tree::box_tree::ImePreeditPaintState;
 ///
 /// This mirrors the logic in box generation so paint-time patching can reuse the same formatting:
 /// - No selected files → `None`
-/// - One selected file → show its path
+/// - One selected file → show a browser-like "value string" (`C:\fakepath\{filename}`), avoiding
+///   leaking real filesystem paths into paint-state.
 /// - Multiple selected files → show a count (`"{n} files"`)
 pub(crate) fn file_input_display_value(
   interaction_state: Option<&InteractionState>,
@@ -22,7 +23,7 @@ pub(crate) fn file_input_display_value_from_files(files: &[FileSelection]) -> Op
   if files.is_empty() {
     None
   } else if files.len() == 1 {
-    Some(files[0].path.to_string_lossy().to_string())
+    Some(format!("C:\\fakepath\\{}", files[0].filename))
   } else {
     Some(format!("{} files", files.len()))
   }
@@ -103,7 +104,7 @@ mod tests {
     state.file_inputs_mut().insert(node_id, Vec::new());
     assert_eq!(file_input_display_value(Some(&state), node_id), None);
 
-    // Single file uses its path.
+    // Single file uses the browser-like `C:\fakepath\...` value string.
     state.file_inputs_mut().insert(
       node_id,
       vec![FileSelection {
@@ -115,7 +116,7 @@ mod tests {
     );
     assert_eq!(
       file_input_display_value(Some(&state), node_id),
-      Some("/tmp/example.txt".to_string())
+      Some(r"C:\fakepath\example.txt".to_string())
     );
 
     // Multiple files uses a count.
