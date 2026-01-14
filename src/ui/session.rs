@@ -815,10 +815,9 @@ impl BrowserSessionWindow {
           continue;
         }
         tab.url = truncated.to_string();
-        if let Some(title) = tab.title.as_mut() {
-          if title.len() > MAX_TITLE_BYTES {
-            *title = clamp_untrusted_utf8(title, MAX_TITLE_BYTES);
-          }
+        if let Some(title) = tab.title.take() {
+          let sanitized = sanitize_untrusted_text(&title, MAX_TITLE_BYTES);
+          tab.title = (!sanitized.is_empty()).then_some(sanitized);
         }
         keep_rev.push(tab);
       }
