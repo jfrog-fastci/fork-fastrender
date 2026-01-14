@@ -1957,6 +1957,10 @@ impl TextItem {
       }
     }
 
+    // `collect_for_run` holds borrows into `runs`; drop it before sorting and applying spacing
+    // (which mutates glyph advances).
+    drop(collect_for_run);
+
     #[cfg(test)]
     APPLY_SPACING_CLUSTER_COUNT.with(|count| {
       count.set(count.get().saturating_add(clusters.len()));
