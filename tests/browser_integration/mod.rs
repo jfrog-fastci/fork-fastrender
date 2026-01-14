@@ -139,6 +139,7 @@ mod ui_browser_tab_controller_focus_scroll;
 mod ui_lazy_session_restore;
 mod ui_keyboard_scrolling;
 mod ui_tab_controller_keyboard_scrolling;
+mod ui_keyboard_scroll_focused_scroller;
 mod ui_navigation_messages;
 mod ui_number_input_wheel_step;
 mod ui_render_thread;

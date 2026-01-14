@@ -9711,6 +9711,7 @@ impl BrowserRuntime {
     let mut navigate_request: Option<FormSubmission> = None;
     let mut keyboard_scroll: Option<UiToWorker> = None;
     let mut media_command: Option<UiToWorker> = None;
+    let mut keyboard_scroll_hover_update_pos_css: Option<(f32, f32)> = None;
     let mut download_to_start: Option<(String, Option<String>)> = None;
 
     {
@@ -10394,10 +10395,10 @@ impl BrowserRuntime {
             }
           }
 
-          // Basic keyboard scrolling: when scroll keys are pressed and the focused element is not a
-          // form control that would normally consume them, treat the key as a viewport scrolling
-          // shortcut (matching common browser behaviour like Space scrolling even when a link is
-          // focused).
+          // Keyboard scrolling: when scroll keys are pressed and the focused element is not a form
+          // control that would normally consume them, scroll the nearest scroll container
+          // associated with focus (matching common browser behaviour like scrolling a focused
+          // `tabindex=0` overflow scroller).
           if action_is_none {
             // When a <video controls> has focus, browsers route Space/Arrow keys to media controls
             // (play/pause, seek, etc) rather than interpreting them as page scroll shortcuts.
@@ -10460,83 +10461,436 @@ impl BrowserRuntime {
             };
 
             if allow_scroll {
-              keyboard_scroll = match key {
-                crate::interaction::KeyAction::Home | crate::interaction::KeyAction::ShiftHome => {
-                  // Use a large delta rather than `ScrollTo`: keyboard Home/End should scroll the
-                  // nearest overflow scroll container for the focused element (not always the
-                  // viewport), so we route through the generic scroll handler which can resolve the
-                  // focus scroll chain.
-                  Some(UiToWorker::Scroll {
-                    tab_id,
-                    delta_css: (0.0, -1_000_000_000.0),
-                    pointer_css: None,
-                  })
+              let mut applied_focused_scroll = false;
+
+              if let Some(focused_node_id) = focused {
+                if let Some(prepared) = doc.prepared() {
+                  let box_ids = crate::interaction::dom_geometry::collect_box_ids_for_styled_node(
+                    prepared.box_tree(),
+                    focused_node_id,
+                  );
+                  if let Some(&box_id) = box_ids.first() {
+                    if let Some((root_kind, path)) =
+                      crate::interaction::dom_geometry::find_first_fragment_path_for_box_id(
+                        prepared.fragment_tree(),
+                        box_id,
+                      )
+                    {
+                      let sanitize_point = |point: Point| {
+                        Point::new(
+                          if point.x.is_finite() { point.x } else { 0.0 },
+                          if point.y.is_finite() { point.y } else { 0.0 },
+                        )
+                      };
+
+                      let scrollport_size_for_state = |state: &crate::scroll::ScrollChainState<'_>,
+                                                       is_viewport: bool|
+                       -> Size {
+                        if !is_viewport {
+                          if let Some(style) = state.container.style.as_deref() {
+                            return crate::scroll::scrollport_rect_for_fragment(
+                              state.container,
+                              style,
+                            )
+                            .size;
+                          }
+                        }
+
+                        let reservation = state.container.scrollbar_reservation;
+                        let reserve_left = if reservation.left.is_finite() {
+                          reservation.left.max(0.0)
+                        } else {
+                          0.0
+                        };
+                        let reserve_right = if reservation.right.is_finite() {
+                          reservation.right.max(0.0)
+                        } else {
+                          0.0
+                        };
+                        let reserve_top = if reservation.top.is_finite() {
+                          reservation.top.max(0.0)
+                        } else {
+                          0.0
+                        };
+                        let reserve_bottom = if reservation.bottom.is_finite() {
+                          reservation.bottom.max(0.0)
+                        } else {
+                          0.0
+                        };
+
+                        let width = state.viewport.width - reserve_left - reserve_right;
+                        let height = state.viewport.height - reserve_top - reserve_bottom;
+                        Size::new(
+                          if width.is_finite() { width.max(0.0) } else { 0.0 },
+                          if height.is_finite() { height.max(0.0) } else { 0.0 },
+                        )
+                      };
+
+                      let viewport_size =
+                        Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32);
+
+                      let options = crate::scroll::ScrollOptions {
+                        source: crate::scroll::ScrollSource::User,
+                        simulate_overscroll: false,
+                        apply_snap: true,
+                      };
+
+                      let current_scroll = tab.scroll_state.clone();
+                      let mut next = current_scroll.clone();
+
+                      match root_kind {
+                        crate::tree::fragment_tree::HitTestRoot::Root => {
+                          let mut chain = crate::scroll::build_scroll_chain(
+                            &prepared.fragment_tree().root,
+                            viewport_size,
+                            &path,
+                          );
+                          if !chain.is_empty() {
+                            let chain_len = chain.len();
+                            for (idx, state) in chain.iter_mut().enumerate() {
+                              if idx == chain_len - 1 {
+                                state.scroll = sanitize_point(current_scroll.viewport);
+                              } else if let Some(id) = state.container.box_id() {
+                                state.scroll =
+                                  sanitize_point(current_scroll.element_offset(id));
+                              } else {
+                                state.scroll = Point::ZERO;
+                              }
+                            }
+
+                            match key {
+                              crate::interaction::KeyAction::Home
+                              | crate::interaction::KeyAction::ShiftHome
+                              | crate::interaction::KeyAction::End
+                              | crate::interaction::KeyAction::ShiftEnd => {
+                                let target_idx = chain
+                                  .iter()
+                                  .position(|state| state.bounds.max_y > state.bounds.min_y + 1e-3)
+                                  .unwrap_or(chain_len - 1);
+                                let target_max_y = if chain[target_idx].bounds.max_y.is_finite() {
+                                  chain[target_idx].bounds.max_y
+                                } else {
+                                  0.0
+                                };
+                                let desired_y = if matches!(
+                                  key,
+                                  crate::interaction::KeyAction::Home
+                                    | crate::interaction::KeyAction::ShiftHome
+                                ) {
+                                  chain[target_idx].bounds.min_y
+                                } else {
+                                  target_max_y
+                                };
+                                let dy = desired_y - chain[target_idx].scroll.y;
+                                crate::scroll::apply_scroll_chain(
+                                  &mut chain[target_idx..=target_idx],
+                                  Point::new(0.0, dy),
+                                  options,
+                                );
+                              }
+                              _ => {
+                                let delta = match key {
+                                  crate::interaction::KeyAction::ArrowDown => Point::new(0.0, 40.0),
+                                  crate::interaction::KeyAction::ArrowUp => Point::new(0.0, -40.0),
+                                  crate::interaction::KeyAction::ArrowLeft => {
+                                    Point::new(-40.0, 0.0)
+                                  }
+                                  crate::interaction::KeyAction::ArrowRight => {
+                                    Point::new(40.0, 0.0)
+                                  }
+                                  crate::interaction::KeyAction::Space
+                                  | crate::interaction::KeyAction::ShiftSpace
+                                  | crate::interaction::KeyAction::PageDown
+                                  | crate::interaction::KeyAction::PageUp => {
+                                    let scrollport =
+                                      scrollport_size_for_state(&chain[0], chain_len == 1);
+                                    let mut dy = (scrollport.height * 0.9).max(1.0);
+                                    if matches!(
+                                      key,
+                                      crate::interaction::KeyAction::ShiftSpace
+                                        | crate::interaction::KeyAction::PageUp
+                                    ) {
+                                      dy = -dy;
+                                    }
+                                    Point::new(0.0, dy)
+                                  }
+                                  _ => Point::ZERO,
+                                };
+                                if delta != Point::ZERO {
+                                  crate::scroll::apply_scroll_chain(&mut chain, delta, options);
+                                }
+                              }
+                            }
+
+                            for (idx, state) in chain.iter().enumerate() {
+                              if idx == chain_len - 1 {
+                                next.viewport = state.scroll;
+                              } else if let Some(id) = state.container.box_id() {
+                                next.elements.insert(id, state.scroll);
+                              }
+                            }
+                          }
+                        }
+                        crate::tree::fragment_tree::HitTestRoot::Additional(idx) => {
+                          if let Some(root) =
+                            prepared.fragment_tree().additional_fragments.get(idx)
+                          {
+                            let mut chain = crate::scroll::build_scroll_chain_with_root_mode(
+                              root,
+                              root.bounds.size,
+                              &path,
+                              false,
+                            );
+
+                            for state in chain.iter_mut() {
+                              if let Some(id) = state.container.box_id() {
+                                state.scroll =
+                                  sanitize_point(current_scroll.element_offset(id));
+                              }
+                            }
+
+                            let mut remaining = Point::ZERO;
+
+                            match key {
+                              crate::interaction::KeyAction::Home
+                              | crate::interaction::KeyAction::ShiftHome
+                              | crate::interaction::KeyAction::End
+                              | crate::interaction::KeyAction::ShiftEnd => {
+                                if let Some(target_idx) = chain
+                                  .iter()
+                                  .position(|state| state.bounds.max_y > state.bounds.min_y + 1e-3)
+                                {
+                                  let target_max_y = if chain[target_idx].bounds.max_y.is_finite() {
+                                    chain[target_idx].bounds.max_y
+                                  } else {
+                                    0.0
+                                  };
+                                  let desired_y = if matches!(
+                                    key,
+                                    crate::interaction::KeyAction::Home
+                                      | crate::interaction::KeyAction::ShiftHome
+                                  ) {
+                                    chain[target_idx].bounds.min_y
+                                  } else {
+                                    target_max_y
+                                  };
+                                  let dy = desired_y - chain[target_idx].scroll.y;
+                                  crate::scroll::apply_scroll_chain(
+                                    &mut chain[target_idx..=target_idx],
+                                    Point::new(0.0, dy),
+                                    options,
+                                  );
+                                } else {
+                                  // No scrollable container in the additional-fragment chain;
+                                  // scroll the viewport instead.
+                                  let mut viewport_chain = crate::scroll::build_scroll_chain(
+                                    &prepared.fragment_tree().root,
+                                    viewport_size,
+                                    &[],
+                                  );
+                                  if !viewport_chain.is_empty() {
+                                    viewport_chain[0].scroll =
+                                      sanitize_point(current_scroll.viewport);
+                                    let target_idx = 0;
+                                    let target_max_y =
+                                      if viewport_chain[target_idx].bounds.max_y.is_finite() {
+                                        viewport_chain[target_idx].bounds.max_y
+                                      } else {
+                                        0.0
+                                      };
+                                    let desired_y = if matches!(
+                                      key,
+                                      crate::interaction::KeyAction::Home
+                                        | crate::interaction::KeyAction::ShiftHome
+                                    ) {
+                                      viewport_chain[target_idx].bounds.min_y
+                                    } else {
+                                      target_max_y
+                                    };
+                                    let dy = desired_y - viewport_chain[target_idx].scroll.y;
+                                    crate::scroll::apply_scroll_chain(
+                                      &mut viewport_chain[target_idx..=target_idx],
+                                      Point::new(0.0, dy),
+                                      options,
+                                    );
+                                    next.viewport = viewport_chain[0].scroll;
+                                  }
+                                }
+                              }
+                              _ => {
+                                let delta = match key {
+                                  crate::interaction::KeyAction::ArrowDown => Point::new(0.0, 40.0),
+                                  crate::interaction::KeyAction::ArrowUp => Point::new(0.0, -40.0),
+                                  crate::interaction::KeyAction::ArrowLeft => {
+                                    Point::new(-40.0, 0.0)
+                                  }
+                                  crate::interaction::KeyAction::ArrowRight => {
+                                    Point::new(40.0, 0.0)
+                                  }
+                                  crate::interaction::KeyAction::Space
+                                  | crate::interaction::KeyAction::ShiftSpace
+                                  | crate::interaction::KeyAction::PageDown
+                                  | crate::interaction::KeyAction::PageUp => {
+                                    let scrollport = chain
+                                      .first()
+                                      .map(|state| scrollport_size_for_state(state, false))
+                                      .unwrap_or(viewport_size);
+                                    let mut dy = (scrollport.height * 0.9).max(1.0);
+                                    if matches!(
+                                      key,
+                                      crate::interaction::KeyAction::ShiftSpace
+                                        | crate::interaction::KeyAction::PageUp
+                                    ) {
+                                      dy = -dy;
+                                    }
+                                    Point::new(0.0, dy)
+                                  }
+                                  _ => Point::ZERO,
+                                };
+                                if delta != Point::ZERO {
+                                  if !chain.is_empty() {
+                                    remaining = crate::scroll::apply_scroll_chain(
+                                      &mut chain,
+                                      delta,
+                                      options,
+                                    )
+                                    .remaining;
+                                  } else {
+                                    remaining = delta;
+                                  }
+                                }
+                              }
+                            }
+
+                            for state in chain.iter() {
+                              if let Some(id) = state.container.box_id() {
+                                next.elements.insert(id, state.scroll);
+                              }
+                            }
+
+                            if remaining != Point::ZERO {
+                              let mut viewport_chain = crate::scroll::build_scroll_chain(
+                                &prepared.fragment_tree().root,
+                                viewport_size,
+                                &[],
+                              );
+                              if !viewport_chain.is_empty() {
+                                viewport_chain[0].scroll =
+                                  sanitize_point(current_scroll.viewport);
+                                crate::scroll::apply_scroll_chain(
+                                  &mut viewport_chain,
+                                  remaining,
+                                  options,
+                                );
+                                next.viewport = viewport_chain[0].scroll;
+                              }
+                            }
+                          }
+                        }
+                      }
+
+                      // Canonicalize representation.
+                      next.elements.retain(|_, offset| *offset != Point::ZERO);
+
+                      if next.viewport != current_scroll.viewport
+                        || next.elements != current_scroll.elements
+                      {
+                        next.update_deltas_from(&current_scroll);
+                        doc.set_scroll_state(next.clone());
+                        tab.scroll_state = next;
+                        tab.sync_js_scroll_state();
+                        scroll_changed = true;
+                        tab.scroll_coalesce = true;
+                        tab.next_paint_is_scroll = true;
+                        let _ = self
+                          .ui_tx
+                          .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
+                            tab_id,
+                            scroll: tab.scroll_state.clone(),
+                          }));
+                        tab.last_reported_scroll_state = tab.scroll_state.clone();
+                        keyboard_scroll_hover_update_pos_css = tab.last_pointer_pos_css;
+
+                        if tab.scroll_state.viewport != current_scroll.viewport {
+                          if let Some(js_tab) = tab.js_tab.as_mut() {
+                            let _ = js_tab.dispatch_window_event(
+                              "scroll",
+                              web_events::EventInit {
+                                bubbles: false,
+                                cancelable: false,
+                                composed: false,
+                              },
+                            );
+                          }
+                        }
+                      }
+
+                      // Even if no scroll delta was applied (e.g. already at bounds), treat the key
+                      // as handled so we don't fall back to viewport scrolling.
+                      applied_focused_scroll = true;
+                    }
+                  }
                 }
-                crate::interaction::KeyAction::End | crate::interaction::KeyAction::ShiftEnd => {
-                  Some(UiToWorker::Scroll {
+              }
+
+              if !applied_focused_scroll {
+                // No focused node / no cached layout / couldn't resolve the focused fragment path.
+                // Fall back to viewport scrolling behaviour so scroll keys still work.
+                keyboard_scroll = match key {
+                  crate::interaction::KeyAction::Home | crate::interaction::KeyAction::ShiftHome => {
+                    Some(UiToWorker::ScrollTo {
+                      tab_id,
+                      pos_css: (tab.scroll_state.viewport.x, 0.0),
+                    })
+                  }
+                  crate::interaction::KeyAction::End | crate::interaction::KeyAction::ShiftEnd => {
+                    Some(UiToWorker::ScrollTo {
+                      tab_id,
+                      pos_css: (tab.scroll_state.viewport.x, f32::MAX),
+                    })
+                  }
+                  crate::interaction::KeyAction::ArrowDown => Some(UiToWorker::Scroll {
                     tab_id,
-                    delta_css: (0.0, 1_000_000_000.0),
+                    delta_css: (0.0, 40.0),
                     pointer_css: None,
-                  })
-                }
-                crate::interaction::KeyAction::ArrowDown => Some(UiToWorker::Scroll {
-                  tab_id,
-                  delta_css: (0.0, 40.0),
-                  pointer_css: None,
-                }),
-                crate::interaction::KeyAction::ArrowUp => Some(UiToWorker::Scroll {
-                  tab_id,
-                  delta_css: (0.0, -40.0),
-                  pointer_css: None,
-                }),
-                crate::interaction::KeyAction::ArrowRight => Some(UiToWorker::Scroll {
-                  tab_id,
-                  delta_css: (40.0, 0.0),
-                  pointer_css: None,
-                }),
-                crate::interaction::KeyAction::ArrowLeft => Some(UiToWorker::Scroll {
-                  tab_id,
-                  delta_css: (-40.0, 0.0),
-                  pointer_css: None,
-                }),
-                crate::interaction::KeyAction::Space => {
-                  let h = tab.viewport_css.1.max(1) as f32;
-                  let dy = (h * 0.9).max(1.0);
-                  Some(UiToWorker::Scroll {
+                  }),
+                  crate::interaction::KeyAction::ArrowUp => Some(UiToWorker::Scroll {
                     tab_id,
-                    delta_css: (0.0, dy),
+                    delta_css: (0.0, -40.0),
                     pointer_css: None,
-                  })
-                }
-                crate::interaction::KeyAction::ShiftSpace => {
-                  let h = tab.viewport_css.1.max(1) as f32;
-                  let dy = -((h * 0.9).max(1.0));
-                  Some(UiToWorker::Scroll {
+                  }),
+                  crate::interaction::KeyAction::ArrowLeft => Some(UiToWorker::Scroll {
                     tab_id,
-                    delta_css: (0.0, dy),
+                    delta_css: (-40.0, 0.0),
                     pointer_css: None,
-                  })
-                }
-                crate::interaction::KeyAction::PageDown => {
-                  let h = tab.viewport_css.1.max(1) as f32;
-                  let dy = (h * 0.9).max(1.0);
-                  Some(UiToWorker::Scroll {
+                  }),
+                  crate::interaction::KeyAction::ArrowRight => Some(UiToWorker::Scroll {
                     tab_id,
-                    delta_css: (0.0, dy),
+                    delta_css: (40.0, 0.0),
                     pointer_css: None,
-                  })
-                }
-                crate::interaction::KeyAction::PageUp => {
-                  let h = tab.viewport_css.1.max(1) as f32;
-                  let dy = -((h * 0.9).max(1.0));
-                  Some(UiToWorker::Scroll {
-                    tab_id,
-                    delta_css: (0.0, dy),
-                    pointer_css: None,
-                  })
-                }
-                _ => None,
-              };
+                  }),
+                  crate::interaction::KeyAction::Space
+                  | crate::interaction::KeyAction::ShiftSpace
+                  | crate::interaction::KeyAction::PageDown
+                  | crate::interaction::KeyAction::PageUp => {
+                    let h = tab.viewport_css.1.max(1) as f32;
+                    let mut dy = (h * 0.9).max(1.0);
+                    if matches!(
+                      key,
+                      crate::interaction::KeyAction::ShiftSpace
+                        | crate::interaction::KeyAction::PageUp
+                    ) {
+                      dy = -dy;
+                    }
+                    Some(UiToWorker::Scroll {
+                      tab_id,
+                      delta_css: (0.0, dy),
+                      pointer_css: None,
+                    })
+                  }
+                  _ => None,
+                };
+              }
             }
           }
           if changed || scroll_changed {
@@ -10577,6 +10931,15 @@ impl BrowserRuntime {
 
     if let Some(scroll_msg) = keyboard_scroll {
       self.handle_message(scroll_msg);
+    }
+
+    if let Some(pos_css) = keyboard_scroll_hover_update_pos_css {
+      self.handle_pointer_move(
+        tab_id,
+        pos_css,
+        PointerButton::None,
+        crate::ui::PointerModifiers::NONE,
+      );
     }
   }
 

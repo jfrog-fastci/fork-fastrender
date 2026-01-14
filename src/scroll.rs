@@ -2274,9 +2274,14 @@ impl<'a> ScrollChainState<'a> {
       }
     });
 
+    // Treat `overflow: hidden` as a scroll container too so keyboard/wheel scrolling (and
+    // scroll-state container queries) can observe/programmatically scroll them. This matches the
+    // behaviour of `apply_scroll_offsets`, which already honours hidden scroll offsets.
+    let scrollable_overflow =
+      |overflow: Overflow| matches!(overflow, Overflow::Auto | Overflow::Scroll | Overflow::Hidden);
     let is_scroll_container = treat_as_root
-      || matches!(overflow_x, Overflow::Auto | Overflow::Scroll | Overflow::Hidden)
-      || matches!(overflow_y, Overflow::Auto | Overflow::Scroll | Overflow::Hidden)
+      || scrollable_overflow(overflow_x)
+      || scrollable_overflow(overflow_y)
       || snap.is_some();
 
     if !is_scroll_container {
