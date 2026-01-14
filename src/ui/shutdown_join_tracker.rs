@@ -199,14 +199,18 @@ impl Default for ShutdownJoinTracker {
 #[cfg(test)]
 mod tests {
   use super::ShutdownJoinTracker;
+  use std::sync::mpsc;
   use std::time::{Duration, Instant};
 
   #[test]
   fn poll_is_non_blocking_and_times_out() {
     let mut tracker = ShutdownJoinTracker::with_detach_timeout(Duration::from_millis(50));
 
-    let join = std::thread::spawn(|| {
-      std::thread::sleep(Duration::from_millis(200));
+    // Use a channel so we can let the thread exit promptly even though the `JoinHandle` will be
+    // detached after the timeout.
+    let (tx, rx) = mpsc::channel::<()>();
+    let join = std::thread::spawn(move || {
+      let _ = rx.recv();
     });
 
     tracker.track_join("test-sleeper", join);
@@ -223,6 +227,10 @@ mod tests {
       !tracker.has_pending(),
       "expected join to be detached after timeout"
     );
+
+    // Allow the thread to exit so the test harness doesn't keep extra threads around.
+    let _ = tx.send(());
+    std::thread::sleep(Duration::from_millis(5));
   }
 
   #[test]
