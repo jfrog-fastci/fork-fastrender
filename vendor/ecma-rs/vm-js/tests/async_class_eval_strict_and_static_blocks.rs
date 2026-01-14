@@ -458,3 +458,34 @@ fn async_class_constructor_body_supports_super_property_access() -> Result<(), V
   assert_eq!(value_to_string(&rt, out), "b");
   Ok(())
 }
+
+#[test]
+fn async_class_constructor_body_supports_super_property_set() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        class B {
+          set foo(v) { this._foo = v; }
+          get foo() { return this._foo; }
+        }
+        class D extends (await Promise.resolve(B)) {
+          constructor() { super(); super.foo = "x"; }
+        }
+        return (new D()).foo;
+      }
+      f().then(v => out = v, e => out = e.name + ":" + e.message);
+    "#,
+  )?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "x");
+  Ok(())
+}
