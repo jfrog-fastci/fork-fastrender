@@ -687,6 +687,7 @@ mod tests {
   use super::MediaDemuxer;
   use super::Mp4PacketDemuxer;
   use crate::media::decoder::create_video_decoder;
+  use crate::media::demuxer::MediaDemuxer;
   use crate::media::{MediaCodec, MediaTrackType};
   use std::path::PathBuf;
 
