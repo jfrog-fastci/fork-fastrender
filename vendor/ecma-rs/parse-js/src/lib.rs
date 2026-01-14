@@ -419,6 +419,22 @@ mod tests {
     // code must not inherit it.
     let err = parse_with_options("function f() { class C { x = arguments; } }", opts).unwrap_err();
     assert_eq!(err.typ, expected);
+
+    // Similarly, class initialization code must not inherit `arguments` from functions nested inside
+    // other class initialization code.
+    let err = parse_with_options(
+      "class Outer { x = function () { class Inner { y = arguments; } }; }",
+      opts,
+    )
+    .unwrap_err();
+    assert_eq!(err.typ, expected);
+
+    let err = parse_with_options(
+      "class Outer { static { function f() { class Inner { y = arguments; } } } }",
+      opts,
+    )
+    .unwrap_err();
+    assert_eq!(err.typ, expected);
   }
 
   #[test]
