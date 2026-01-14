@@ -1,4 +1,5 @@
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
+use crate::text::pipeline::ShapedRun;
 use crate::{FastRender, FontConfig};
 
 fn find_first_block_with_line_children<'a>(node: &'a FragmentNode) -> Option<&'a FragmentNode> {
@@ -103,6 +104,66 @@ fn inline_x_in_line_containing_text(line: &FragmentNode, needle: &str) -> Option
     }
   }
   None
+}
+
+fn find_text_fragment_with_char_in_line<'a>(
+  line: &'a FragmentNode,
+  ch: char,
+) -> Option<(f32, &'a FragmentNode, usize)> {
+  fn walk<'a>(
+    node: &'a FragmentNode,
+    ch: char,
+    offset_x: f32,
+  ) -> Option<(f32, &'a FragmentNode, usize)> {
+    let offset_x = offset_x + node.bounds.x();
+    if let FragmentContent::Text { text, .. } = &node.content {
+      if let Some(byte_offset) = text.find(ch) {
+        return Some((offset_x, node, byte_offset));
+      }
+    }
+    for child in node.children.iter() {
+      if let Some(found) = walk(child, ch, offset_x) {
+        return Some(found);
+      }
+    }
+    None
+  }
+
+  for child in line.children.iter() {
+    if let Some(found) = walk(child, ch, 0.0) {
+      return Some(found);
+    }
+  }
+  None
+}
+
+fn shaped_runs(fragment: &FragmentNode) -> Option<&[ShapedRun]> {
+  match &fragment.content {
+    FragmentContent::Text { shaped, .. } => shaped.as_deref().map(|runs| runs.as_slice()),
+    _ => None,
+  }
+}
+
+fn glyph_origin_x_for_cluster(runs: &[ShapedRun], cluster: usize) -> Option<f32> {
+  for run in runs {
+    let mut x = 0.0f32;
+    for glyph in &run.glyphs {
+      let glyph_cluster = run.start.saturating_add(glyph.cluster as usize);
+      let origin = x + glyph.x_offset;
+      if glyph_cluster == cluster {
+        return Some(origin);
+      }
+      x += glyph.x_advance;
+    }
+  }
+  None
+}
+
+fn glyph_x_in_line(line: &FragmentNode, ch: char) -> Option<f32> {
+  let (frag_x, fragment, byte_offset) = find_text_fragment_with_char_in_line(line, ch)?;
+  let runs = shaped_runs(fragment)?;
+  let local_x = glyph_origin_x_for_cluster(runs, byte_offset)?;
+  Some(frag_x + local_x)
 }
 
 fn content_max_x_in_line(line: &FragmentNode) -> f32 {
@@ -790,5 +851,27 @@ fn text_spacing_trim_does_not_trim_proportional_quotes() {
   assert!(
     trim_max_x <= line_end + 0.05,
     "expected trim-both not to hang the proportional closing quote past the line bounds (max_x={trim_max_x:.3}, line_end={line_end:.3})"
+  );
+}
+
+#[test]
+fn text_spacing_trim_does_not_split_or_reposition_proportional_quotes() {
+  // Regression test: proportional punctuation should not be split into standalone text runs for
+  // `text-spacing-trim`. Doing so can drop kerning and cause the following glyphs to shift.
+  let space_all = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: space-all;",
+    "“A",
+  );
+  let trim_start = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: trim-start;",
+    "“A",
+  );
+
+  let space_a_x = glyph_x_in_line(&space_all[0], 'A').expect("'A' glyph x (space-all)");
+  let trim_a_x = glyph_x_in_line(&trim_start[0], 'A').expect("'A' glyph x (trim-start)");
+
+  assert!(
+    (trim_a_x - space_a_x).abs() < 0.2,
+    "expected trim-start not to affect glyph positioning for proportional quotes (space-all x={space_a_x:.3} trim-start x={trim_a_x:.3})"
   );
 }
