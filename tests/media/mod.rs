@@ -298,7 +298,7 @@ fn webm_vp9_opus_decodes_first_video_and_audio() -> MediaResult<()> {
 }
 
 #[test]
-fn mp4_vp9_decodes_first_video() -> MediaResult<()> {
+fn mp4_vp9_first_frame_is_red() -> MediaResult<()> {
   let demuxer = Mp4PacketDemuxer::open("tests/fixtures/media/vp9_in_mp4.mp4")?;
   let mut pipeline = MediaDecodePipeline::new(Box::new(demuxer))?;
 
