@@ -173,3 +173,24 @@ fn generator_for_of_iterator_is_closed_on_return_while_suspended_in_lhs() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_for_of_yield_in_assignment_target_computed_member() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          var obj = {};
+          for (obj[yield "k"] of [3]) { return obj.k; }
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next("k");
+        r1.done === false && r1.value === "k" &&
+        r2.done === true && r2.value === 3
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
