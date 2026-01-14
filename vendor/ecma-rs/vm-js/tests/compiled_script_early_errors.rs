@@ -308,3 +308,51 @@ fn compiled_script_rejects_super_call_in_async_arrow_function() {
     other => panic!("expected VmError::Syntax, got {other:?}"),
   }
 }
+
+#[test]
+fn compiled_script_rejects_super_call_in_class_field_initializer() {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let err = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    "class B {} class A extends B { x = super(); }",
+  )
+  .unwrap_err();
+
+  match err {
+    VmError::Syntax(diags) => assert!(!diags.is_empty()),
+    other => panic!("expected VmError::Syntax, got {other:?}"),
+  }
+}
+
+#[test]
+fn compiled_script_rejects_super_call_in_static_field_initializer() {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let err = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    "class B {} class A extends B { static x = super(); }",
+  )
+  .unwrap_err();
+
+  match err {
+    VmError::Syntax(diags) => assert!(!diags.is_empty()),
+    other => panic!("expected VmError::Syntax, got {other:?}"),
+  }
+}
+
+#[test]
+fn compiled_script_rejects_super_call_in_class_static_block() {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let err = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    "class B {} class A extends B { static { super(); } }",
+  )
+  .unwrap_err();
+
+  match err {
+    VmError::Syntax(diags) => assert!(!diags.is_empty()),
+    other => panic!("expected VmError::Syntax, got {other:?}"),
+  }
+}

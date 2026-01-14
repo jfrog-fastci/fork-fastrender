@@ -921,6 +921,33 @@ fn super_call_in_nested_function_in_derived_constructor_is_syntax_error() {
 }
 
 #[test]
+fn super_call_in_class_field_initializer_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("class B {} class A extends B { x = super(); }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn super_call_in_static_field_initializer_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("class B {} class A extends B { static x = super(); }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn super_call_in_class_static_block_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("class B {} class A extends B { static { super(); } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn with_statement_in_strict_mode_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script(r#""use strict"; with ({}) {}"#).unwrap_err();
