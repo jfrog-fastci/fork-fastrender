@@ -485,7 +485,20 @@ fn generators_yield_in_template_literals() {
           d1.value === 1 && d1.done === false &&
           d2.value === "aXb" && d2.done === true;
 
-        ok1 && ok2 && ok3 && ok4 && ok5
+        // `yield;` inside a substitution yields `undefined` regardless of `undefined` shadowing.
+        function* tpl_yield_no_arg() {
+          var undefined = 123;
+          return `a${yield}b`;
+        }
+        const it6 = tpl_yield_no_arg();
+        const e1 = it6.next();
+        churn();
+        const e2 = it6.next("X");
+        const ok6 =
+          e1.value === void 0 && e1.done === false &&
+          e2.value === "aXb" && e2.done === true;
+
+        ok1 && ok2 && ok3 && ok4 && ok5 && ok6
       "#,
     )
     .unwrap();
