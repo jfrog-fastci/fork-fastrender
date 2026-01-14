@@ -374,9 +374,16 @@ mod tests {
 
     let mut search_text = String::new();
     let mut request_focus_search = false;
+    let mut searcher = crate::ui::GlobalHistorySearcher::new();
 
     begin_frame(&ctx);
-    let _out = history_panel_ui(&ctx, &history, &mut search_text, &mut request_focus_search);
+    let _out = history_panel_ui(
+      &ctx,
+      &history,
+      &mut searcher,
+      &mut search_text,
+      &mut request_focus_search,
+    );
     let output1 = ctx.end_frame();
     let id1 = accesskit_button_id_by_name(&output1, &delete_label);
 
@@ -385,7 +392,13 @@ mod tests {
     history.record(url_a, None);
 
     begin_frame(&ctx);
-    let _out = history_panel_ui(&ctx, &history, &mut search_text, &mut request_focus_search);
+    let _out = history_panel_ui(
+      &ctx,
+      &history,
+      &mut searcher,
+      &mut search_text,
+      &mut request_focus_search,
+    );
     let output2 = ctx.end_frame();
     let id2 = accesskit_button_id_by_name(&output2, &delete_label);
 
@@ -402,12 +415,19 @@ mod tests {
     let ctx = egui::Context::default();
     let history = GlobalHistoryStore::default();
 
+    let mut searcher = crate::ui::GlobalHistorySearcher::new();
     let mut search_text = String::new();
     let mut request_focus_search = true;
 
     // Frame 1: open panel and focus the search field.
     begin_frame_with_events(&ctx, Vec::new());
-    let out = history_panel_ui(&ctx, &history, &mut search_text, &mut request_focus_search);
+    let out = history_panel_ui(
+      &ctx,
+      &history,
+      &mut searcher,
+      &mut search_text,
+      &mut request_focus_search,
+    );
     let _ = ctx.end_frame();
     assert!(
       !out.close_requested,
@@ -417,7 +437,13 @@ mod tests {
     // Frame 2: with a non-empty query, Escape clears the search but keeps the panel open.
     search_text = "example".to_string();
     begin_frame_with_events(&ctx, vec![key_press(egui::Key::Escape)]);
-    let out = history_panel_ui(&ctx, &history, &mut search_text, &mut request_focus_search);
+    let out = history_panel_ui(
+      &ctx,
+      &history,
+      &mut searcher,
+      &mut search_text,
+      &mut request_focus_search,
+    );
     let _ = ctx.end_frame();
     assert_eq!(search_text, "");
     assert!(
@@ -427,7 +453,13 @@ mod tests {
 
     // Frame 3: with an empty query, Escape requests panel close.
     begin_frame_with_events(&ctx, vec![key_press(egui::Key::Escape)]);
-    let out = history_panel_ui(&ctx, &history, &mut search_text, &mut request_focus_search);
+    let out = history_panel_ui(
+      &ctx,
+      &history,
+      &mut searcher,
+      &mut search_text,
+      &mut request_focus_search,
+    );
     let _ = ctx.end_frame();
     assert_eq!(search_text, "");
     assert!(
