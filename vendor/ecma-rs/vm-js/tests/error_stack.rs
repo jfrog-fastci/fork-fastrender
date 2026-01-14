@@ -57,6 +57,44 @@ f().catch(e => { captured = e.stack; });
 }
 
 #[test]
+fn error_stack_for_async_expr_body_implicit_throw_contains_frames() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  rt.exec_script(
+    r#"
+var captured = "";
+var f = async () => await (null).x;
+f().catch(e => { captured = e.stack; });
+"#,
+  )?;
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let v = rt.exec_script(
+    r#"typeof captured === "string" && captured.includes("TypeError") && captured.includes("at ")"#,
+  )?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn error_stack_for_async_expr_body_implicit_throw_after_await_contains_frames() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  rt.exec_script(
+    r#"
+var captured = "";
+var f = async () => (await 0, (null).x);
+f().catch(e => { captured = e.stack; });
+"#,
+  )?;
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let v = rt.exec_script(
+    r#"typeof captured === "string" && captured.includes("TypeError") && captured.includes("at ")"#,
+  )?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn error_stack_for_generator_implicit_throw_contains_frames() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
   let v = rt.exec_script(

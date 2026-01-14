@@ -14900,7 +14900,7 @@ pub(crate) enum AsyncFrame {
   /// Root frame for block-bodied async functions (`async function f(){...}`).
   RootBlockBody,
   /// Root frame for expression-bodied async arrow functions (`async () => expr`).
-  RootExprBody,
+  RootExprBody { expr: *const Node<Expr> },
   /// Root frame for async module evaluation (`run_module_async` / top-level await).
   RootModuleBody,
   /// Root frame for async classic script evaluation (top-level await / `for await...of` in scripts).
@@ -17323,6 +17323,42 @@ fn finalize_throw_completion_for_stmt(
     )),
     other => other,
   }
+}
+
+fn finalize_throw_value_for_expr_best_effort(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &Node<Expr>,
+  value: Value,
+  mut stack: Vec<StackFrame>,
+) -> Value {
+  let source = evaluator.env.source();
+  let rel_start = expr.loc.start_u32().saturating_sub(evaluator.env.prefix_len());
+  let abs_offset = evaluator.env.base_offset().saturating_add(rel_start);
+  let (line, col) = source.line_col(abs_offset);
+
+  // If the throw is missing a captured stack (implicit throw), capture one now.
+  //
+  // This is best-effort: `capture_stack` can return an empty vector under allocator pressure.
+  let mut should_patch_top = false;
+  if stack.is_empty() {
+    stack = evaluator.vm.capture_stack();
+    should_patch_top = true;
+  }
+
+  // If the stack was captured while executing a native builtin, the top frame will typically have
+  // a `<native>:0:0` location. Patch it to this expression location so user code sees where the
+  // exception was triggered.
+  if !should_patch_top && stack.first().is_some_and(|top| top.line == 0) {
+    should_patch_top = true;
+  }
+
+  if should_patch_top {
+    patch_stack_top_frame_best_effort(&mut stack, source.name.clone(), line, col);
+  }
+
+  crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+  value
 }
 
 fn async_eval_stmt_list(
@@ -27347,16 +27383,24 @@ fn async_start_body(
     FuncBody::Expression(expr) => match async_eval_expr(evaluator, scope, expr) {
       Ok(AsyncEval::Complete(v)) => Ok(AsyncBodyResult::CompleteOk(v)),
       Ok(AsyncEval::Suspend(mut suspend)) => {
-        async_frames_push(&mut suspend.frames, AsyncFrame::RootExprBody)?;
+        async_frames_push(
+          &mut suspend.frames,
+          AsyncFrame::RootExprBody {
+            expr: expr as *const Node<Expr>,
+          },
+        )?;
         Ok(AsyncBodyResult::Await {
           kind: suspend.kind,
           await_value: suspend.await_value,
           frames: suspend.frames,
         })
       }
-      Err(VmError::Throw(value)) | Err(VmError::ThrowWithStack { value, .. }) => {
-        Ok(AsyncBodyResult::CompleteThrow(value))
-      }
+      Err(VmError::Throw(value)) => Ok(AsyncBodyResult::CompleteThrow(
+        finalize_throw_value_for_expr_best_effort(evaluator, scope, expr, value, Vec::new()),
+      )),
+      Err(VmError::ThrowWithStack { value, stack }) => Ok(AsyncBodyResult::CompleteThrow(
+        finalize_throw_value_for_expr_best_effort(evaluator, scope, expr, value, stack),
+      )),
       Err(err) => Err(err),
     },
     FuncBody::Block(stmts) => match async_eval_stmt_list(evaluator, scope, stmts) {
@@ -27435,7 +27479,7 @@ fn async_resume_from_frames(
         "async continuation resumed with empty frame stack",
       ));
     };
-
+ 
     match frame {
       AsyncFrame::HirAsync {
         state: mut hir_state,
@@ -27492,11 +27536,20 @@ fn async_resume_from_frames(
         }
       },
 
-      AsyncFrame::RootExprBody => match state {
+      AsyncFrame::RootExprBody { expr } => match state {
         AsyncState::Expr(res) => match res {
           Ok(v) => return Ok(AsyncBodyResult::CompleteOk(v)),
-          Err(VmError::Throw(value) | VmError::ThrowWithStack { value, .. }) => {
-            return Ok(AsyncBodyResult::CompleteThrow(value))
+          Err(VmError::Throw(value)) => {
+            let expr = unsafe { &*expr };
+            let thrown_value =
+              finalize_throw_value_for_expr_best_effort(evaluator, scope, expr, value, Vec::new());
+            return Ok(AsyncBodyResult::CompleteThrow(thrown_value));
+          }
+          Err(VmError::ThrowWithStack { value, stack }) => {
+            let expr = unsafe { &*expr };
+            let thrown_value =
+              finalize_throw_value_for_expr_best_effort(evaluator, scope, expr, value, stack);
+            return Ok(AsyncBodyResult::CompleteThrow(thrown_value));
           }
           Err(err) => return Err(err),
         },
