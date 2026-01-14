@@ -127,13 +127,16 @@ build constraints.
 
 | Library | Pros | Cons |
 |---------|------|------|
+| Bundled codecs (OpenH264 + libvpx + libopus + Symphonia AAC) | Hermetic builds (no system codec deps); deterministic CI; cross-platform | C build dependencies; narrower format coverage than FFmpeg |
 | ffmpeg (via bindings) | Full format support | Large dependency, licensing |
 | gstreamer | Plugin architecture | Complex, system dependency |
 | libvpx + libopus | Open codecs only | No H.264 |
 | av1-decoder + opus | Modern, open | Limited legacy support |
 | System codecs | Native perf, legal clarity | Platform-specific |
 
-**Recommendation**: Start with system codecs (AVFoundation on macOS, Media Foundation on Windows, GStreamer on Linux) for H.264, add libvpx/opus for VP8/VP9/WebM.
+**Current repo approach**: use bundled/container-safe demuxers + bundled codecs (OpenH264, libvpx,
+libopus, Symphonia AAC) for offline/CI friendliness. The optional `media_ffmpeg_cli` feature can be
+used as a developer fallback when native codecs are unavailable.
 
 ### Integration points
 
