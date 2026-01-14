@@ -4725,4 +4725,44 @@ mod tests {
     realm.teardown(&mut heap);
     Ok(())
   }
+
+  #[test]
+  fn clear_loaded_modules_for_script_and_realm_removes_entries() -> Result<(), VmError> {
+    let mut graph = ModuleGraph::new();
+
+    let script_id = ScriptId::from_raw(1);
+    let realm_id = RealmId::from_raw(1);
+    let module = ModuleId::from_raw(0);
+
+    graph
+      .script_loaded_modules_mut(script_id)?
+      .push(LoadedModuleRequest::new(
+        module_request_from_specifier("m")?,
+        module,
+      ));
+    graph
+      .realm_loaded_modules_mut(realm_id)?
+      .push(LoadedModuleRequest::new(
+        module_request_from_specifier("n")?,
+        module,
+      ));
+
+    assert!(graph.script_loaded_modules.contains_key(&script_id));
+    assert!(graph.realm_loaded_modules.contains_key(&realm_id));
+
+    graph.clear_loaded_modules_for_script(script_id);
+    assert!(!graph.script_loaded_modules.contains_key(&script_id));
+    assert!(graph.realm_loaded_modules.contains_key(&realm_id));
+
+    // No-op when no entry exists.
+    graph.clear_loaded_modules_for_script(ScriptId::from_raw(999));
+
+    graph.clear_loaded_modules_for_realm(realm_id);
+    assert!(!graph.realm_loaded_modules.contains_key(&realm_id));
+
+    // No-op when no entry exists.
+    graph.clear_loaded_modules_for_realm(RealmId::from_raw(999));
+
+    Ok(())
+  }
 }
