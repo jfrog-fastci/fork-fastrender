@@ -12,13 +12,17 @@ fn direct_eval_allows_super_in_instance_field_initializer() {
   let value = rt
     .exec_script(
       r#"
-       class B { get x() { return 1; } }
-       class A extends B { y = eval("super.x"); }
+       class B { get x() { return this.marker; } }
+       class A extends B {
+         get x() { return 0; }
+         marker = 123;
+         y = eval("super.x");
+       }
        (new A()).y
      "#,
     )
     .unwrap();
-  assert_eq!(value, Value::Number(1.0));
+  assert_eq!(value, Value::Number(123.0));
 }
 
 #[test]
@@ -27,8 +31,10 @@ fn direct_eval_allows_super_in_private_instance_field_initializer() {
   let value = rt
     .exec_script(
       r#"
-      class B { get x() { return 3; } }
+      class B { get x() { return this.marker; } }
       class A extends B {
+        get x() { return 0; }
+        marker = 456;
         #y = eval("super.x");
         get y() { return this.#y; }
       }
@@ -36,7 +42,7 @@ fn direct_eval_allows_super_in_private_instance_field_initializer() {
     "#,
     )
     .unwrap();
-  assert_eq!(value, Value::Number(3.0));
+  assert_eq!(value, Value::Number(456.0));
 }
 
 #[test]
@@ -45,13 +51,37 @@ fn direct_eval_allows_super_in_static_field_initializer() {
   let value = rt
     .exec_script(
       r#"
-      class B { static get x() { return 2; } }
-      class A extends B { static y = eval("super.x"); }
+      class B { static get x() { return this.marker; } }
+      class A extends B {
+        static get x() { return 0; }
+        static marker = 789;
+        static y = eval("super.x");
+      }
       A.y
     "#,
     )
     .unwrap();
-  assert_eq!(value, Value::Number(2.0));
+  assert_eq!(value, Value::Number(789.0));
+}
+
+#[test]
+fn direct_eval_allows_super_in_private_static_field_initializer() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      class B { static get x() { return this.marker; } }
+      class A extends B {
+        static get x() { return 0; }
+        static marker = 999;
+        static #y = eval("super.x");
+        static get y() { return this.#y; }
+      }
+      A.y
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Number(999.0));
 }
 
 #[test]
