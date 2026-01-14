@@ -26965,6 +26965,8 @@ fn async_for_in_after_rhs(
     root_scope.heap_mut().add_root(Value::Object(object))?
   };
 
+  let is_typed_array_original = scope.heap().is_typed_array_object(object);
+
   // Snapshot enumerable string keys across the prototype chain, skipping duplicates.
   //
   // Note: this is intentionally minimal and does not track mutations during iteration.
@@ -27059,6 +27061,28 @@ fn async_for_in_after_rhs(
         // Non-enumerable keys shadow prototypes but are not yielded.
         if !desc.enumerable {
           continue;
+        }
+
+        // Typed arrays have integer-indexed exotic `[[HasProperty]]` semantics: for numeric index
+        // keys they do **not** consult prototypes. This means prototype numeric keys must be
+        // skipped when the typed array does not actually have a valid index (e.g. length 0,
+        // detached/out-of-bounds).
+        //
+        // Mirror `ForInEnumerator`'s filtering here so async `for..in` matches sync semantics.
+        if is_typed_array_original && obj != object {
+          let is_numeric_index = collect_scope
+            .heap()
+            .canonical_numeric_index_string(s)
+            .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut collect_scope, err))?
+            .is_some();
+          if is_numeric_index {
+            let has_property = collect_scope
+              .ordinary_has_property_with_tick(evaluator.vm, object, key, Vm::tick)
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut collect_scope, err))?;
+            if !has_property {
+              continue;
+            }
+          }
         }
 
         // Ensure we have space in `keys` before allocating a persistent root so we don't leak the
