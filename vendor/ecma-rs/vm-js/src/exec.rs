@@ -41216,20 +41216,75 @@ fn gen_eval_call(
   scope: &mut Scope<'_>,
   expr: &CallExpr,
 ) -> Result<GenEval<Completion>, VmError> {
-  // Parenthesized member expressions are not treated as reference calls:
-  // `((obj.m))()` should call the value with `this = undefined`, not the base object.
-  //
-  // This also affects optional chaining: `(obj?.m)()` must not propagate the optional-chain
-  // short-circuit into the call.
+  // Optional member calls (`obj?.m()` / `obj?.[k]()`) only apply when the optional-chain member
+  // expression is directly in the call callee position (i.e. not parenthesized). Parenthesizing
+  // the callee breaks optional-chain propagation into the call, e.g. `(obj?.m)()` and
+  // `(a?.b.c)()`.
   let callee_is_parenthesized = expr.callee.assoc.get::<ParenthesizedExpr>().is_some();
 
   match &*expr.callee.stx {
-    Expr::Member(member)
-      if !callee_is_parenthesized && matches!(&*member.stx.left.stx, Expr::Super(_)) =>
-    {
+    // `super.prop(...args)`.
+    Expr::Member(member) if matches!(&*member.stx.left.stx, Expr::Super(_)) => {
       gen_call_super_member(evaluator, scope, expr, &member.stx)
     }
-    Expr::Member(member) if !callee_is_parenthesized => match gen_eval_chain_base(
+    // `super[expr](...args)`.
+    Expr::ComputedMember(member) if matches!(&*member.stx.object.stx, Expr::Super(_)) => {
+      gen_call_super_computed_member(evaluator, scope, expr, &member.stx)
+    }
+    // Optional member call (e.g. `obj?.method()`): only applies when the optional member expression
+    // is directly in the call callee position (i.e. not parenthesized).
+    Expr::Member(member) if member.stx.optional_chaining && !callee_is_parenthesized => {
+      match gen_eval_chain_base(evaluator, scope, &member.stx.left)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(v) => gen_call_member_after_base(
+            evaluator,
+            scope,
+            expr,
+            &member.stx,
+            v.unwrap_or(Value::Undefined),
+          ),
+          abrupt => Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::CallMemberAfterBase {
+              expr: expr as *const CallExpr,
+              member: &*member.stx as *const MemberExpr,
+            },
+          )?;
+          Ok(GenEval::Suspend(suspend))
+        }
+      }
+    }
+    // Optional computed-member call (e.g. `obj?.[expr]()`).
+    Expr::ComputedMember(member) if member.stx.optional_chaining && !callee_is_parenthesized => {
+      match gen_eval_chain_base(evaluator, scope, &member.stx.object)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(v) => gen_call_computed_member_after_base(
+            evaluator,
+            scope,
+            expr,
+            &member.stx,
+            v.unwrap_or(Value::Undefined),
+          ),
+          abrupt => Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::CallComputedMemberAfterBase {
+              expr: expr as *const CallExpr,
+              member: &*member.stx as *const ComputedMemberExpr,
+            },
+          )?;
+          Ok(GenEval::Suspend(suspend))
+        }
+      }
+    }
+    // Ordinary member call (e.g. `obj.method()`), but with optional-chain propagation when the base
+    // expression is an unparenthesized optional chain (e.g. `a?.b.c()`).
+    Expr::Member(member) if !member.stx.optional_chaining => match gen_eval_chain_base(
       evaluator,
       scope,
       &member.stx.left,
@@ -41255,12 +41310,8 @@ fn gen_eval_call(
         Ok(GenEval::Suspend(suspend))
       }
     },
-    Expr::ComputedMember(member)
-      if !callee_is_parenthesized && matches!(&*member.stx.object.stx, Expr::Super(_)) =>
-    {
-      gen_call_super_computed_member(evaluator, scope, expr, &member.stx)
-    }
-    Expr::ComputedMember(member) if !callee_is_parenthesized => match gen_eval_chain_base(
+    // Ordinary computed-member call (e.g. `obj[expr]()`), but with optional-chain propagation.
+    Expr::ComputedMember(member) if !member.stx.optional_chaining => match gen_eval_chain_base(
       evaluator,
       scope,
       &member.stx.object,
@@ -41499,6 +41550,12 @@ fn gen_call_computed_member_after_base(
   // Optional-chain propagation compatibility: if the base is the internal optional-chain sentinel,
   // propagate it without evaluating the member/key expression.
   if is_optional_chain_sentinel(evaluator.vm, base) {
+    let callee_is_parenthesized = call.callee.assoc.get::<ParenthesizedExpr>().is_some();
+    if callee_is_parenthesized {
+      // `(a?.b[expr])()` is not part of the optional chain: the callee evaluates to `undefined`, and
+      // the call should throw (after evaluating arguments) like any other `undefined()`.
+      return gen_call_begin(evaluator, scope, call, Value::Undefined, Value::Undefined);
+    }
     return Ok(GenEval::Complete(Completion::normal(base)));
   }
   if member.optional_chaining && is_nullish(base) {
