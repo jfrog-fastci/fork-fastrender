@@ -3743,24 +3743,37 @@ impl<'a> LineBuilder<'a> {
       return *cached;
     }
 
-    let advance = match self.shaper.shape_with_context_hashed(
-      inserted,
-      style,
-      &self.font_context,
-      pipeline_dir_from_style(base_direction),
-      explicit_bidi,
-      style_hash,
-    ) {
-      Ok(mut runs) => {
-        TextItem::apply_spacing_to_runs(
-          &mut runs,
-          inserted,
-          style.letter_spacing,
-          style.word_spacing,
-        );
-        runs.iter().map(|r| r.advance).sum()
+    let advance = if style.letter_spacing == 0.0 && style.word_spacing == 0.0 {
+      match self.shaper.shape_with_context_arc(
+        inserted,
+        style,
+        &self.font_context,
+        pipeline_dir_from_style(base_direction),
+        explicit_bidi,
+      ) {
+        Ok(runs) => runs.iter().map(|r| r.advance).sum(),
+        Err(_) => style.font_size * 0.5,
       }
-      Err(_) => style.font_size * 0.5,
+    } else {
+      match self.shaper.shape_with_context_hashed(
+        inserted,
+        style,
+        &self.font_context,
+        pipeline_dir_from_style(base_direction),
+        explicit_bidi,
+        style_hash,
+      ) {
+        Ok(mut runs) => {
+          TextItem::apply_spacing_to_runs(
+            &mut runs,
+            inserted,
+            style.letter_spacing,
+            style.word_spacing,
+          );
+          runs.iter().map(|r| r.advance).sum()
+        }
+        Err(_) => style.font_size * 0.5,
+      }
     };
 
     self.hyphen_advance_cache.insert(key, advance);
