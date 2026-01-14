@@ -133,12 +133,12 @@ fn return_in_static_block_is_syntax_error_even_inside_function() {
 }
 
 #[test]
-fn yield_in_static_block_is_syntax_error_even_inside_generator() {
+fn yield_expression_is_syntax_error_in_static_block_inside_generator() {
   let src = r#"
       function *g() {
         class C {
          static {
-           yield;
+            yield;
          }
        }
      }
