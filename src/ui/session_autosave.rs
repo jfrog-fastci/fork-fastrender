@@ -1060,35 +1060,47 @@ mod tests {
 
     // Phase 2: keep spamming the final snapshot until we observe it written, without requiring the
     // sender to become idle (i.e. without waiting for the trailing-edge debounce window to expire).
-    let final_url = "about:final";
-    let baseline_before_final = autosave.successful_write_count();
+    //
+    // Use unique URLs so we can assert the forced write persisted the most recent snapshot we had
+    // sent at the time we observed the write.
+    let mut writes_seen = autosave.successful_write_count();
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut observed_final_write = false;
+    let mut observed_url = None::<String>;
+    let mut last_sent_url = None::<String>;
+    let mut i = 0usize;
     while Instant::now() < deadline {
-      autosave.request_save(BrowserSession::single(final_url.to_string()));
-      std::thread::sleep(tick);
-
-      // Only start reading from disk once we know a write happened during phase 2. This keeps the
-      // loop cheap while still guaranteeing we observe a forced write under continuous saves.
-      if autosave.successful_write_count() > baseline_before_final {
-        let session = load_session(&path).unwrap().unwrap();
-        if session.windows[0].tabs[0].url == final_url {
-          observed_final_write = true;
-          break;
+      let current_writes = autosave.successful_write_count();
+      if current_writes > writes_seen {
+        writes_seen = current_writes;
+        if let Some(last_url) = last_sent_url.as_deref() {
+          let session = load_session(&path).unwrap().unwrap();
+          if session.windows[0].tabs[0].url == last_url {
+            observed_final_write = true;
+            observed_url = Some(last_url.to_string());
+            break;
+          }
         }
       }
+
+      let url = format!("about:final#{i}");
+      last_sent_url = Some(url.clone());
+      autosave.request_save(BrowserSession::single(url));
+      i = i.saturating_add(1);
+      std::thread::sleep(tick);
     }
 
     assert!(
       observed_final_write,
-      "expected at least one write of the latest snapshot even while Save requests keep arriving within the debounce window; baseline={baseline}, after_phase1={baseline_before_final}, after={}",
+      "expected at least one write of the latest snapshot even while Save requests keep arriving within the debounce window; baseline={baseline}, after={}",
       autosave.successful_write_count()
     );
 
+    let observed_url = observed_url.expect("expected observed_url to be set when observed_final_write=true");
     let session = load_session(&path).unwrap().unwrap();
     assert_eq!(session.windows.len(), 1);
     assert_eq!(
-      session.windows[0].tabs[0].url, final_url,
+      session.windows[0].tabs[0].url, observed_url,
       "expected the max-write-interval flush to persist the latest snapshot"
     );
     assert!(
