@@ -60,6 +60,9 @@ run_vm_js_test generators_assignment_update_yield_in_base
 run_vm_js_test generators_binary_ops_yield
 run_vm_js_test generators_binary_more_ops_yield
 
+# Class evaluation + `yield` integration (extends/computed keys/static blocks).
+run_vm_js_test generators_class_yield
+
 # Optional chaining + yield interaction (short-circuiting + this binding).
 run_vm_js_test generators_optional_chaining_yield
 run_vm_js_test generators_optional_chaining_yield_star
