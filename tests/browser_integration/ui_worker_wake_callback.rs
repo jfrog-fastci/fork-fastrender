@@ -76,6 +76,7 @@ fn ui_worker_wake_callback_not_invoked_after_receiver_drop() {
   let (ui_tx, ui_rx_raw, join) =
     spawn_browser_ui_worker("ui-worker-wake-callback-disconnect", Some(wake))
       .expect("spawn_browser_ui_worker");
+  let ui_rx = WorkerToUiInbox::new(ui_rx);
   calls.store(0, Ordering::Relaxed);
   drop(ui_rx_raw);
 

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>MDN switch toggle (appearance:none)</title>
+    <style>
+      /*
+        Minimal offline regression fixture for the MDN `<mdn-switch>` component.
+
+        This intentionally relies on `appearance: none` (without extra border/padding resets) so
+        UA-style leakage is visible in the screenshot diff.
+      */
+
+      @property --switch-position {
+        syntax: "<percentage>";
+        inherits: false;
+        initial-value: 0;
+      }
+
+      :root {
+        /* Minimal token definitions referenced by the MDN shadow-root snippet. */
+        --color-text-secondary: #6b7280;
+        --color-background-primary: #ffffff;
+        --color-link-normal: #0069c2;
+        --radius-full: 9999px;
+      }
+
+      .switch__input {
+        --switch-size: 1.25em;
+        appearance: none;
+        background-color: var(--color-text-secondary);
+        background-image: radial-gradient(
+          circle at calc(var(--switch-size) / 2),
+          var(--color-background-primary) calc((var(--switch-size) / 2) * 0.8),
+          #0000 calc((var(--switch-size) / 2) * 0.8 + 1px)
+        );
+        background-position: var(--switch-position) 0;
+        background-repeat: no-repeat;
+        background-size: var(--switch-size);
+        border-radius: var(--radius-full);
+        display: inline-block;
+        height: var(--switch-size);
+        margin: 0;
+        transition: --switch-position 0.2s;
+        width: calc(var(--switch-size) * 1.6);
+      }
+
+      .switch__input:checked {
+        --switch-position: 100%;
+        background-color: var(--color-link-normal);
+      }
+    </style>
+  </head>
+  <body>
+    <p>
+      Inline text before
+      <label>
+        the switch <input type="checkbox" class="switch__input" /> inline text after
+      </label>
+      and outside-label text after.
+    </p>
+    <p>
+      Second line (no form controls) to make baseline/line-height issues easier to spot.
+    </p>
+  </body>
+</html>
+

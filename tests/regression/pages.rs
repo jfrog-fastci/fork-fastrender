@@ -387,6 +387,11 @@ const PAGE_FIXTURES: &[PageFixture] = &[
     shots: DEFAULT_SHOTS,
   },
   PageFixture {
+    name: "mdn_switch_toggle_appearance_none",
+    html: "mdn_switch_toggle_appearance_none/index.html",
+    shots: DEFAULT_SHOTS,
+  },
+  PageFixture {
     name: "form_controls_comparison_panel",
     html: "form_controls_comparison_panel/index.html",
     shots: DEFAULT_SHOTS,
