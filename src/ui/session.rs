@@ -3270,7 +3270,6 @@ pub fn load_session_outcome(path: &Path) -> Result<SessionLoadOutcome, String> {
     }
   }
 }
-
 /// Attempt to read + parse a session file. Missing file is not an error.
 ///
 /// If the primary session file is unreadable, corrupt, or too large, we will attempt to fall back

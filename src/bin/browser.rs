@@ -6372,6 +6372,37 @@ fn single_tab_session_preserving_config(
   session.sanitized()
 }
 
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug, Clone)]
+struct StartupSessionDiagnostics {
+  wants_restore: bool,
+  /// Whether the primary session file was unreadable and a `.bak` backup was used.
+  recovered_from_backup: bool,
+  backup_path: Option<std::path::PathBuf>,
+  primary_error: Option<String>,
+  /// When session loading fails (both primary and backup are unreadable), this is the error string.
+  load_error: Option<String>,
+  /// Whether the windowed UI should autosave the startup crash marker snapshot immediately.
+  ///
+  /// This is `false` when the primary session file exists but is unreadable: we avoid overwriting it
+  /// automatically so users can attempt manual recovery.
+  can_write_startup_snapshot: bool,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+impl Default for StartupSessionDiagnostics {
+  fn default() -> Self {
+    Self {
+      wants_restore: false,
+      recovered_from_backup: false,
+      backup_path: None,
+      primary_error: None,
+      load_error: None,
+      can_write_startup_snapshot: true,
+    }
+  }
+}
+
 #[cfg(feature = "browser_ui")]
 fn determine_startup_session(
   cli_url: Option<String>,
@@ -6380,8 +6411,7 @@ fn determine_startup_session(
 ) -> (
   fastrender::ui::BrowserSession,
   StartupSessionSource,
-  Option<(fastrender::ui::ToastKind, String)>,
-  bool,
+  StartupSessionDiagnostics,
 ) {
   let wants_restore = match restore {
     RestoreMode::Disable => false,
@@ -6389,7 +6419,10 @@ fn determine_startup_session(
     RestoreMode::Force => true,
   };
 
-  let mut session_load_toast: Option<(fastrender::ui::ToastKind, String)> = None;
+  let mut diagnostics = StartupSessionDiagnostics {
+    wants_restore,
+    ..StartupSessionDiagnostics::default()
+  };
 
   let loaded_session_outcome = match fastrender::ui::session::load_session_outcome(session_path) {
     Ok(outcome) => outcome,
@@ -6398,17 +6431,10 @@ fn determine_startup_session(
         "failed to load session from {}: {err}",
         session_path.display()
       );
-
-      const MAX_TOAST_PATH_BYTES: usize = 240;
-      const MAX_TOAST_ERROR_BYTES: usize = 200;
-      let path = sanitize_path_for_toast(session_path, MAX_TOAST_PATH_BYTES);
-      let err_short = sanitize_toast_detail_single_line(&err, MAX_TOAST_ERROR_BYTES)
-        .unwrap_or_else(|| "unknown error".to_string());
-      session_load_toast = Some((
-        fastrender::ui::ToastKind::Error,
-        format!("Failed to load session on startup.\nPath: {path}\nError: {err_short}"),
-      ));
-
+      diagnostics.can_write_startup_snapshot = false;
+      if wants_restore {
+        diagnostics.load_error = Some(err);
+      }
       fastrender::ui::session::SessionLoadOutcome {
         source: fastrender::ui::session::SessionLoadSource::None,
         session: None,
@@ -6417,8 +6443,19 @@ fn determine_startup_session(
     }
   };
 
-  let session_recovered_from_backup =
-    loaded_session_outcome.source == fastrender::ui::session::SessionLoadSource::Backup;
+  if loaded_session_outcome.source == fastrender::ui::session::SessionLoadSource::Backup {
+    diagnostics.recovered_from_backup = true;
+    diagnostics.primary_error = loaded_session_outcome.primary_error.clone();
+    diagnostics.backup_path = Some(match session_path.file_name() {
+      Some(file_name) => {
+        let mut backup_name = file_name.to_os_string();
+        backup_name.push(".bak");
+        session_path.with_file_name(backup_name)
+      }
+      None => session_path.with_extension("bak"),
+    });
+    diagnostics.can_write_startup_snapshot = false;
+  }
 
   let mut loaded_session = loaded_session_outcome.session;
 
@@ -6437,12 +6474,7 @@ fn determine_startup_session(
           fastrender::ui::about_pages::ABOUT_NEWTAB.to_string(),
           Some(&session),
         );
-        return (
-          safe,
-          StartupSessionSource::SafeMode,
-          session_load_toast,
-          session_recovered_from_backup,
-        );
+        return (safe, StartupSessionSource::SafeMode, diagnostics);
       }
 
       if !session.did_exit_cleanly {
@@ -6451,35 +6483,20 @@ fn determine_startup_session(
           session.unclean_exit_streak
         );
       }
-      return (
-        session.sanitized(),
-        StartupSessionSource::Restored,
-        session_load_toast,
-        session_recovered_from_backup,
-      );
+      return (session.sanitized(), StartupSessionSource::Restored, diagnostics);
     }
   }
 
   if let Some(url) = cli_url {
     let session = single_tab_session_preserving_config(url, loaded_session.as_ref());
-    return (
-      session,
-      StartupSessionSource::CliUrl,
-      session_load_toast,
-      session_recovered_from_backup,
-    );
+    return (session, StartupSessionSource::CliUrl, diagnostics);
   }
 
   let session = single_tab_session_preserving_config(
     fastrender::ui::about_pages::ABOUT_NEWTAB.to_string(),
     loaded_session.as_ref(),
   );
-  (
-    session,
-    StartupSessionSource::DefaultNewTab,
-    session_load_toast,
-    session_recovered_from_backup,
-  )
+  (session, StartupSessionSource::DefaultNewTab, diagnostics)
 }
 
 #[cfg(feature = "browser_ui")]
@@ -7182,12 +7199,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     const OVERRIDE_ENV: &str = "FASTR_TEST_BROWSER_HEADLESS_SMOKE_SESSION_JSON";
-    let (startup_session, source, _startup_session_toast, _session_recovered_from_backup) =
-      match std::env::var(OVERRIDE_ENV) {
+    let (startup_session, source, _diagnostics) = match std::env::var(OVERRIDE_ENV) {
       Ok(raw) if !raw.trim().is_empty() => {
         let session = fastrender::ui::session::parse_session_json(&raw)
           .map_err(|err| format!("{OVERRIDE_ENV}: invalid JSON: {err}"))?;
-        (session, StartupSessionSource::HeadlessOverride, None, false)
+        (
+          session,
+          StartupSessionSource::HeadlessOverride,
+          StartupSessionDiagnostics::default(),
+        )
       }
       _ => determine_startup_session(cli_url, restore, &session_path),
     };
@@ -7213,9 +7233,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
   }
 
-  let (startup_session, source, startup_session_toast, session_recovered_from_backup) =
+  let (startup_session, source, startup_session_diagnostics) =
     determine_startup_session(cli_url, restore, &session_path);
+  let session_recovered_from_backup = startup_session_diagnostics.recovered_from_backup;
   let startup_session = startup_session.sanitized();
+  let can_write_startup_snapshot = startup_session_diagnostics.can_write_startup_snapshot;
   let show_crash_recovery_infobar =
     should_show_crash_recovery_infobar(source, startup_session.did_exit_cleanly);
   let show_safe_mode_toast = matches!(source, StartupSessionSource::SafeMode);
@@ -7236,12 +7258,43 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let mut startup_profile_notifications: Vec<String> = Vec::new();
   let mut startup_profile_toast_kind: Option<fastrender::ui::ToastKind> = None;
   if record_startup_profile_notifications {
-    if let Some((kind, msg)) = startup_session_toast {
-      startup_profile_toast_kind = Some(match startup_profile_toast_kind {
-        Some(existing) => max_toast_kind(existing, kind),
-        None => kind,
-      });
-      startup_profile_notifications.push(msg);
+    if source == StartupSessionSource::Restored && startup_session_diagnostics.recovered_from_backup
+    {
+      if let (Some(backup_path), Some(primary_err)) = (
+        startup_session_diagnostics.backup_path.as_deref(),
+        startup_session_diagnostics.primary_error.as_deref(),
+      ) {
+        if let Some(msg) =
+          fastrender::ui::startup_notifications::format_session_recovered_from_backup_toast(
+            &session_path,
+            backup_path,
+            primary_err,
+          )
+        {
+          startup_profile_toast_kind = Some(match startup_profile_toast_kind {
+            Some(existing) => max_toast_kind(existing, fastrender::ui::ToastKind::Warning),
+            None => fastrender::ui::ToastKind::Warning,
+          });
+          startup_profile_notifications.push(msg);
+        }
+      }
+    }
+
+    if startup_session_diagnostics.wants_restore {
+      if let Some(err) = startup_session_diagnostics.load_error.as_deref() {
+        if let Some(msg) =
+          fastrender::ui::startup_notifications::format_session_restore_failed_toast(
+            &session_path,
+            err,
+          )
+        {
+          startup_profile_toast_kind = Some(match startup_profile_toast_kind {
+            Some(existing) => max_toast_kind(existing, fastrender::ui::ToastKind::Warning),
+            None => fastrender::ui::ToastKind::Warning,
+          });
+          startup_profile_notifications.push(msg);
+        }
+      }
     }
   }
   let bookmarks = match fastrender::ui::load_bookmarks(&bookmarks_path) {
@@ -7995,7 +8048,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   //
   // If the existing session file is unreadable (JSON corruption), avoid overwriting it
   // automatically—wait for the first explicit save request.
-  let can_write_startup_snapshot = fastrender::ui::session::load_session(&session_path).is_ok();
   let mut session_autosave = if can_write_startup_snapshot {
     let active_window_index = active_window_id
       .and_then(|id| window_order.iter().position(|other| *other == id))
