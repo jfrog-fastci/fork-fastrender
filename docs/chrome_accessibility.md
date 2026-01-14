@@ -20,6 +20,12 @@ For a page-focused workflow doc (inspecting the renderer’s accessibility tree 
 viewport CSS bounds are computed/mapped, and manual screen reader testing), see
 [page_accessibility.md](page_accessibility.md).
 
+For cross-platform manual chrome QA that includes lightweight accessibility spot checks (labels,
+focus order), see:
+
+- [chrome_test_matrix.md](chrome_test_matrix.md) (quick)
+- [browser_chrome_manual_test_matrix.md](browser_chrome_manual_test_matrix.md) (full)
+
 ---
 
 ## Overview: why AccessKit + where it lives
