@@ -182,11 +182,6 @@ pub struct Parser<'a> {
   /// Depth of "class initialization" parsing contexts where identifier reference to `arguments` is
   /// disallowed (class field initializers and `static {}` blocks).
   disallow_arguments_in_class_init: u32,
-  /// Depth of class static initialization blocks currently being parsed.
-  ///
-  /// This is used only to provide a more precise early-error message for `arguments` in `static {}`
-  /// blocks vs class field initializers.
-  in_class_static_block: u32,
   cancel: Option<Arc<AtomicBool>>,
   cancel_check: Option<Box<dyn FnMut() -> bool + 'a>>,
 }
@@ -227,7 +222,6 @@ impl<'a> Parser<'a> {
       labels: Vec::new(),
       arguments_allowed: 0,
       disallow_arguments_in_class_init: 0,
-      in_class_static_block: 0,
       cancel,
       cancel_check: None,
     }
@@ -257,7 +251,6 @@ impl<'a> Parser<'a> {
       labels: Vec::new(),
       arguments_allowed: 0,
       disallow_arguments_in_class_init: 0,
-      in_class_static_block: 0,
       cancel: None,
       cancel_check: Some(cancel_check),
     }

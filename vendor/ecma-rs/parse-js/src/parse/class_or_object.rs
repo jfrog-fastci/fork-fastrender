@@ -286,11 +286,8 @@ impl<'a> Parser<'a> {
                 await_expr_allowed,
                 yield_expr_allowed: ctx.rules.yield_expr_allowed,
               });
-              let prev_in_class_static_block = p.in_class_static_block;
-              p.in_class_static_block = prev_in_class_static_block.saturating_add(1);
               let body_res =
                 p.with_disallow_arguments_in_class_init(|p| p.stmts(block_ctx, TT::BraceClose));
-              p.in_class_static_block = prev_in_class_static_block;
               p.in_iteration = prev_in_iteration;
               p.in_switch = prev_in_switch;
               p.in_function = prev_in_function;
