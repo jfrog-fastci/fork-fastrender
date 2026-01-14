@@ -9,6 +9,10 @@ fn new_runtime() -> JsRuntime {
 
 fn exec_compiled(rt: &mut JsRuntime, source: &str) -> Result<Value, VmError> {
   let script = CompiledScript::compile_script(rt.heap_mut(), "<inline>", source)?;
+  assert!(
+    !script.requires_ast_fallback,
+    "test script should execute via compiled (HIR) script executor"
+  );
   rt.exec_compiled_script(script)
 }
 
@@ -99,6 +103,28 @@ const SOURCE_COMPUTED_BEFORE_SUPER_KEY_ORDER: &str = r#"
 fn async_super_computed_property_before_super_does_not_eval_key_ast() -> Result<(), VmError> {
   let mut rt = new_runtime();
   rt.exec_script(SOURCE_COMPUTED_BEFORE_SUPER_KEY_ORDER)?;
+
+  let key_eval = rt.exec_script("key_eval")?;
+  assert_eq!(key_eval, Value::Number(0.0));
+
+  // No microtasks run yet.
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(
+    value_to_string(&rt, out),
+    "ReferenceError:Must call super constructor in derived class before accessing 'this'"
+  );
+  Ok(())
+}
+
+#[test]
+fn async_super_computed_property_before_super_does_not_eval_key_hir() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  exec_compiled(&mut rt, SOURCE_COMPUTED_BEFORE_SUPER_KEY_ORDER)?;
 
   let key_eval = rt.exec_script("key_eval")?;
   assert_eq!(key_eval, Value::Number(0.0));
@@ -265,4 +291,3 @@ fn async_super_computed_property_update_in_derived_constructor_arrow_hir() -> Re
   assert_eq!(value_to_string(&rt, out), "1,2");
   Ok(())
 }
-
