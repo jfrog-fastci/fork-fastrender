@@ -756,6 +756,54 @@ fn direct_eval_in_private_static_field_initializer_allows_super_computed_propert
 }
 
 #[test]
+fn direct_eval_in_private_static_field_initializer_allows_super_property_set_in_arrow() -> Result<(), VmError>
+{
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+    var executed = false;
+    class B { static set x(v) { this._x = v; } }
+    class C extends B {
+      static _x = 0;
+      static #f = eval('executed = true; () => { super.x = 7; return this._x; }');
+      static getF() { return C.#f; }
+    }
+    var f = C.getF();
+    var before = executed;
+    var r = f.call({ _x: 123 });
+    before === false && executed === true && r === 7 && C._x === 7;
+    "#,
+  )?;
+
+  assert_value_is_bool(value, true);
+  Ok(())
+}
+
+#[test]
+fn direct_eval_in_private_static_field_initializer_allows_super_computed_property_set_in_arrow(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+    var executed = false;
+    class B { static set x(v) { this._x = v; } }
+    class C extends B {
+      static _x = 0;
+      static #f = eval('executed = true; () => { super["x"] = 7; return this._x; }');
+      static getF() { return C.#f; }
+    }
+    var f = C.getF();
+    var before = executed;
+    var r = f.call({ _x: 123 });
+    before === false && executed === true && r === 7 && C._x === 7;
+    "#,
+  )?;
+
+  assert_value_is_bool(value, true);
+  Ok(())
+}
+
+#[test]
 fn indirect_eval_in_static_field_initializer_rejects_super_property_and_skips_side_effects(
 ) -> Result<(), VmError> {
   let mut rt = new_runtime();
@@ -771,6 +819,30 @@ fn indirect_eval_in_static_field_initializer_rejects_super_property_and_skips_si
       }
     } catch (e) { ok = e.name === 'SyntaxError'; }
     ok && !executed;
+    "#,
+  )?;
+
+  assert_value_is_bool(value, true);
+  Ok(())
+}
+
+#[test]
+fn indirect_eval_in_private_static_field_initializer_rejects_super_property_set_and_skips_side_effects(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+    var executed = false;
+    var setterExecuted = false;
+    var ok = false;
+    var indirectEval = eval;
+    class B { static set x(v) { setterExecuted = true; } }
+    try {
+      class C extends B {
+        static #f = indirectEval('executed = true; () => { super.x = 7; }');
+      }
+    } catch (e) { ok = e.name === 'SyntaxError'; }
+    ok && !executed && !setterExecuted;
     "#,
   )?;
 
