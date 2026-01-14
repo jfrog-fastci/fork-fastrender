@@ -2062,11 +2062,14 @@ mod tests {
   use crate::MicrotaskQueue;
   use crate::TerminationReason;
   use crate::Job;
+  use crate::JobCallback;
   use crate::Realm;
   use crate::RealmId;
   use crate::test_alloc::FailAllocsGuard;
+  use crate::RootId;
   use crate::test_alloc::FailNextMatchingAllocGuard;
   use crate::VmHostHooks;
+  use crate::VmJobContext;
   use crate::VmOptions;
 
   #[repr(C)]
@@ -2487,6 +2490,190 @@ mod tests {
         (after_idx as u64) < (baseline_idx as u64 + 3),
         "expected root id reuse after FinishLoadingImportedModule termination"
       );
+    }));
+
+    realm.teardown(&mut heap);
+    if let Err(panic) = result {
+      std::panic::resume_unwind(panic);
+    }
+  }
+
+  #[test]
+  fn dynamic_import_reaction_callbacks_preserve_job_realm_and_script_or_module_for_async_finish() {
+    // Regression test: When a host completes module loading asynchronously (calling
+    // `FinishLoadingImportedModule` without an active execution context), dynamic import's internal
+    // Promise reaction callbacks must still carry `[[JobRealm]]` and `[[ScriptOrModule]]` metadata
+    // from the initiating `import()` call.
+    struct Host {
+      captured: Option<(ModuleReferrer, ModuleRequest, ModuleLoadPayload)>,
+      callbacks: Vec<GcObject>,
+      jobs: Vec<Job>,
+    }
+    impl VmHostHooks for Host {
+      fn host_enqueue_promise_job(&mut self, job: Job, _realm: Option<RealmId>) {
+        self.jobs.push(job);
+      }
+
+      fn host_make_job_callback(&mut self, callback: GcObject) -> Result<JobCallback, VmError> {
+        self.callbacks.push(callback);
+        JobCallback::try_new(callback)
+      }
+
+      fn host_load_imported_module(
+        &mut self,
+        _vm: &mut Vm,
+        _scope: &mut Scope<'_>,
+        _modules: &mut ModuleGraph,
+        referrer: ModuleReferrer,
+        module_request: ModuleRequest,
+        _host_defined: HostDefined,
+        payload: ModuleLoadPayload,
+      ) -> Result<(), VmError> {
+        assert!(self.captured.is_none(), "expected a single dynamic import load request");
+        self.captured = Some((referrer, module_request, payload));
+        Ok(())
+      }
+    }
+
+    struct DiscardCtx<'a> {
+      heap: &'a mut Heap,
+    }
+    impl VmJobContext for DiscardCtx<'_> {
+      fn call(
+        &mut self,
+        _host: &mut dyn VmHostHooks,
+        _callee: Value,
+        _this: Value,
+        _args: &[Value],
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("discard-only job context"))
+      }
+
+      fn construct(
+        &mut self,
+        _host: &mut dyn VmHostHooks,
+        _callee: Value,
+        _args: &[Value],
+        _new_target: Value,
+      ) -> Result<Value, VmError> {
+        Err(VmError::Unimplemented("discard-only job context"))
+      }
+
+      fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+        self.heap.add_root(value)
+      }
+
+      fn remove_root(&mut self, id: RootId) {
+        self.heap.remove_root(id);
+      }
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap).unwrap();
+
+    // Ensure we always call `Realm::teardown` even if the test panics, otherwise `Realm`'s `Drop`
+    // will panic in debug builds.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      let mut host = Host {
+        captured: None,
+        callbacks: Vec::new(),
+        jobs: Vec::new(),
+      };
+      let mut host_ctx = ();
+      let mut modules = ModuleGraph::new();
+
+      let module_id = modules
+        .add_module(crate::module_record::SourceTextModuleRecord::parse(&mut heap, "").unwrap())
+        .unwrap();
+
+      let global_object = realm.global_object();
+
+      let mut scope = heap.scope();
+
+      // Ensure dynamic import sees an active Realm and ScriptOrModule.
+      let script_id = vm.fresh_script_id().unwrap();
+      {
+        let mut ctx_guard = vm
+          .execution_context_guard(ExecutionContext {
+            realm: realm.id(),
+            script_or_module: Some(ScriptOrModule::Script(script_id)),
+          })
+          .unwrap();
+
+        let specifier = scope.alloc_string("dep").unwrap();
+        let _promise = start_dynamic_import_with_host_and_hooks(
+          &mut ctx_guard,
+          &mut scope,
+          &mut modules,
+          &mut host_ctx,
+          &mut host,
+          global_object,
+          Value::String(specifier),
+          Value::Undefined,
+        )
+        .unwrap();
+      }
+
+      let (referrer, module_request, payload) = host.captured.take().expect("expected payload");
+      assert_eq!(payload.kind(), ModuleLoadPayloadKind::PromiseCapability);
+
+      // The host finishes loading *without* an active execution context.
+      assert_eq!(vm.current_realm(), None);
+      assert_eq!(vm.get_active_script_or_module(), None);
+
+      vm.finish_loading_imported_module_with_host_and_hooks(
+        &mut host_ctx,
+        &mut scope,
+        &mut modules,
+        &mut host,
+        referrer,
+        module_request,
+        payload,
+        Ok(module_id),
+      )
+      .unwrap();
+
+      // Release the mutable borrow of `heap` held by `Scope` before inspecting heap objects and
+      // tearing down jobs/graphs.
+      drop(scope);
+
+      // Find the dynamic import internal reaction callbacks recorded via `HostMakeJobCallback`.
+      let mut matches = Vec::<GcObject>::new();
+      for cb in &host.callbacks {
+        let name = heap
+          .get_string(heap.get_function_name(*cb).unwrap())
+          .unwrap()
+          .to_utf8_lossy();
+        if name == "dynamicImportEvalOnFulfilled" || name == "dynamicImportEvalOnRejected" {
+          matches.push(*cb);
+        }
+      }
+      assert_eq!(
+        matches.len(),
+        2,
+        "expected both dynamicImportEvalOnFulfilled and dynamicImportEvalOnRejected callbacks"
+      );
+
+      for cb in matches {
+        assert_eq!(heap.get_function_job_realm(cb), Some(realm.id()));
+        assert_eq!(heap.get_function_realm(cb).unwrap(), Some(global_object));
+        let token = heap.get_function_script_or_module_token(cb);
+        assert_eq!(
+          vm.resolve_script_or_module_token_opt(token),
+          Some(ScriptOrModule::Script(script_id))
+        );
+      }
+
+      // Discard queued jobs so we don't leak persistent roots.
+      let mut discard_ctx = DiscardCtx { heap: &mut heap };
+      for job in host.jobs.drain(..) {
+        job.discard(&mut discard_ctx);
+      }
+
+      // `finish_loading_imported_module_with_host_and_hooks` can leave `vm.module_graph_ptr` installed
+      // while async continuations are pending; ensure it is cleared before dropping `modules`.
+      modules.teardown(&mut vm, &mut heap);
     }));
 
     realm.teardown(&mut heap);
