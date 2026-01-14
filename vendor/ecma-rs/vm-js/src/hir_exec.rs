@@ -15402,6 +15402,16 @@ impl HirAsyncState {
                 return Ok(HirAsyncResult::Await { kind, await_value });
               }
               Ok(ForAwaitOfPoll::Complete(flow)) => {
+                // `ForAwaitOfState::poll` is expected to have cleaned up its persistent roots before
+                // returning `Complete`, but call `teardown` defensively so future changes to the
+                // state machine cannot leak roots.
+                state.teardown(scope.heap_mut());
+                let flow = match flow {
+                  Flow::Break(Some(target), value) if state.label_set.iter().any(|l| *l == target) => {
+                    Flow::Normal(value)
+                  }
+                  other => other,
+                };
                 self.active = None;
                 match flow {
                   Flow::Normal(_) => {
@@ -16103,6 +16113,84 @@ impl HirAsyncState {
       let stmt_id = stmts[self.next_stmt_index];
       let stmt = evaluator.get_stmt(body, stmt_id)?;
       let stmt_offset = stmt.span.start;
+
+      // Fast-path top-level label chains whose body is a `for await..of` loop.
+      //
+      // This supports patterns like:
+      //   `outer: for await (const x of iterable) { break outer; }`
+      //   `a: b: for await (const x of iterable) { break a; }`
+      //
+      // This is intentionally narrow: the compiled async evaluator only supports `for await..of`
+      // loops at the top statement-list level (not nested under other statement kinds).
+      if let hir_js::StmtKind::Labeled {
+        label: first_label,
+        body: first_body,
+      } = &stmt.kind
+      {
+        // Detect whether this is a pure label chain ending in a `for await..of`.
+        //
+        // Avoid ticking unless we actually handle the construct, so label statements that do *not*
+        // contain await suspension continue to be evaluated via the synchronous evaluator without
+        // double-charging budget.
+        let mut label_count: usize = 1;
+        let mut current_stmt_id: hir_js::StmtId = *first_body;
+        loop {
+          let inner_stmt = evaluator.get_stmt(body, current_stmt_id)?;
+          match &inner_stmt.kind {
+            hir_js::StmtKind::Labeled { body: inner, .. } => {
+              label_count = label_count.saturating_add(1);
+              current_stmt_id = *inner;
+            }
+            _ => break,
+          }
+        }
+
+        let inner_stmt = evaluator.get_stmt(body, current_stmt_id)?;
+        if let hir_js::StmtKind::ForIn {
+          left,
+          right,
+          body: inner,
+          is_for_of: true,
+          await_: true,
+        } = &inner_stmt.kind
+        {
+          // Collect the label set so:
+          // - `continue <label>` targeted at any label in the chain is consumed by the loop
+          // - `break <label>` completions can be consumed by the enclosing label statement(s)
+          let mut label_set: Vec<hir_js::NameId> = Vec::new();
+          label_set
+            .try_reserve_exact(label_count)
+            .map_err(|_| VmError::OutOfMemory)?;
+          label_set.push(*first_label);
+          let mut current_stmt_id = *first_body;
+          loop {
+            let inner_stmt = evaluator.get_stmt(body, current_stmt_id)?;
+            match &inner_stmt.kind {
+              hir_js::StmtKind::Labeled { label, body: inner } => {
+                label_set.push(*label);
+                current_stmt_id = *inner;
+              }
+              _ => break,
+            }
+          }
+
+          // Budget once per label statement and once for the loop statement itself, matching the
+          // synchronous evaluator's statement-entry ticks.
+          for _ in 0..label_set.len() {
+            evaluator.vm.tick()?;
+          }
+          evaluator.vm.tick()?;
+
+          self.active = Some(HirAsyncActive::ForAwaitOf(ForAwaitOfState::new(
+            left.clone(),
+            *right,
+            *inner,
+            label_set.as_slice(),
+          )?));
+          continue;
+        }
+      }
+
       if let hir_js::StmtKind::ForIn {
         left,
         right,

@@ -35,8 +35,13 @@ impl<'a> Parser<'a> {
     // `new.target` is syntactically allowed inside parameter initializers when a `new.target`
     // binding exists (functions and class elements).
     let prev_new_target_allowed = self.new_target_allowed;
+    // Class field initializers / static blocks disallow `arguments` (early error
+    // `ContainsArguments`), but nested non-arrow functions introduce their own `arguments`
+    // binding and therefore lift that restriction for their parameters.
+    let prev_disallow_arguments_in_class_init = self.disallow_arguments_in_class_init;
     if introduces_new_target {
       self.new_target_allowed += 1;
+      self.disallow_arguments_in_class_init = 0;
     }
     let res = (|| {
       self.require(TT::ParenthesisOpen)?;
@@ -211,6 +216,7 @@ impl<'a> Parser<'a> {
       Ok(parameters)
     })();
     self.new_target_allowed = prev_new_target_allowed;
+    self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
     res
   }
 

@@ -1152,6 +1152,32 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
         }
       }
 
+      // Support `label: for await (...) { ... }` (including nested label chains like
+      // `a: b: for await (...) { ... }`) as long as the labelled statement ultimately labels a
+      // supported top-level `for await..of` loop.
+      Stmt::Label(label) => {
+        let mut inner = &label.stx.statement;
+        while let Stmt::Label(label) = &*inner.stx {
+          inner = &label.stx.statement;
+        }
+        match &*inner.stx {
+          Stmt::ForOf(for_of) if for_of.stx.await_ => {
+            if for_in_of_lhs_contains_await(&for_of.stx.lhs) {
+              false
+            } else {
+              let rhs = &for_of.stx.rhs;
+              let rhs_supported = if let Some(arg) = expr_direct_await_arg(rhs) {
+                !expr_contains_await(arg)
+              } else {
+                !expr_contains_await(rhs)
+              };
+              rhs_supported && !for_of.stx.body.stx.body.iter().any(stmt_contains_await)
+            }
+          }
+          _ => false,
+        }
+      }
+
       // Everything else is unsupported for the compiled async evaluator for now.
       _ => false,
     };

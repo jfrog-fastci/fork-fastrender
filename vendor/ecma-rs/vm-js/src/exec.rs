@@ -49301,7 +49301,12 @@ pub(crate) fn run_module_async_start(
             )
             .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut await_scope, err))?,
             AsyncSuspendKind::AwaitResolved => await_value,
-            AsyncSuspendKind::Yield | AsyncSuspendKind::YieldIteratorResult => {
+            AsyncSuspendKind::YieldIteratorResult => {
+              return Err(VmError::InvariantViolation(
+                "unexpected async generator yield* suspension in module start",
+              ))
+            }
+            AsyncSuspendKind::Yield => {
               return Err(VmError::InvariantViolation(
                 "unexpected async generator yield suspension in module start",
               ))
@@ -49466,7 +49471,12 @@ pub(crate) fn run_module_async_resume(
           )
           .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut await_scope, err))?,
           AsyncSuspendKind::AwaitResolved => await_value,
-          AsyncSuspendKind::Yield | AsyncSuspendKind::YieldIteratorResult => {
+          AsyncSuspendKind::YieldIteratorResult => {
+            return Err(VmError::InvariantViolation(
+              "unexpected async generator yield* suspension in module resume",
+            ))
+          }
+          AsyncSuspendKind::Yield => {
             return Err(VmError::InvariantViolation(
               "unexpected async generator yield suspension in module resume",
             ))
