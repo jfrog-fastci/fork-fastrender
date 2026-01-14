@@ -448,4 +448,59 @@ mod tests {
     assert_eq!(cfg.default_sample_rate_hz, MAX_SAMPLE_RATE_HZ);
     assert_eq!(cfg.default_channels, MAX_CHANNELS);
   }
+
+  #[test]
+  fn env_parsing_reads_duration_thresholds() {
+    let cfg = AudioEngineConfig::from_env_map(&HashMap::from([
+      (
+        AudioEngineConfig::ENV_IDLE_TIMEOUT_MS.to_string(),
+        "1500".to_string(),
+      ),
+      (
+        AudioEngineConfig::ENV_PREROLL_THRESHOLD_MS.to_string(),
+        "123".to_string(),
+      ),
+      (
+        AudioEngineConfig::ENV_LOW_BUFFER_THRESHOLD_MS.to_string(),
+        "45".to_string(),
+      ),
+      (
+        AudioEngineConfig::ENV_LOW_BUFFER_DEBOUNCE_MS.to_string(),
+        "6_000".to_string(),
+      ),
+    ]));
+
+    assert_eq!(cfg.idle_timeout, Duration::from_millis(1500));
+    assert_eq!(cfg.preroll_buffer_threshold, Duration::from_millis(123));
+    assert_eq!(cfg.low_buffer_threshold, Duration::from_millis(45));
+    assert_eq!(cfg.low_buffer_debounce, Duration::from_millis(6000));
+  }
+
+  #[test]
+  fn env_parsing_invalid_thresholds_fall_back_to_defaults() {
+    let defaults = AudioEngineConfig::default();
+    let cfg = AudioEngineConfig::from_env_map(&HashMap::from([
+      (
+        AudioEngineConfig::ENV_IDLE_TIMEOUT_MS.to_string(),
+        "-1".to_string(),
+      ),
+      (
+        AudioEngineConfig::ENV_PREROLL_THRESHOLD_MS.to_string(),
+        "not-a-number".to_string(),
+      ),
+      (
+        AudioEngineConfig::ENV_LOW_BUFFER_THRESHOLD_MS.to_string(),
+        "-5".to_string(),
+      ),
+      (
+        AudioEngineConfig::ENV_LOW_BUFFER_DEBOUNCE_MS.to_string(),
+        "oops".to_string(),
+      ),
+    ]));
+
+    assert_eq!(cfg.idle_timeout, defaults.idle_timeout);
+    assert_eq!(cfg.preroll_buffer_threshold, defaults.preroll_buffer_threshold);
+    assert_eq!(cfg.low_buffer_threshold, defaults.low_buffer_threshold);
+    assert_eq!(cfg.low_buffer_debounce, defaults.low_buffer_debounce);
+  }
 }
