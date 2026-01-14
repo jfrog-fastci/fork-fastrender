@@ -122,3 +122,75 @@ fn generator_dynamic_import_options_can_yield() -> Result<(), VmError> {
   assert_eq!(hooks.last_specifier.as_deref(), Some("./m.js"));
   Ok(())
 }
+
+#[test]
+fn generator_dynamic_import_evaluates_specifier_before_options_yield() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let mut hooks = RejectingImportHooks::new();
+  let value = rt.exec_script_with_hooks(
+    &mut hooks,
+    r#"
+      var log = "";
+      function spec() { log += "S"; return "./m.js"; }
+
+      function* g() {
+        return import(spec(), (yield 0));
+      }
+
+      var it = g();
+      var first = it.next();
+      var logAfterFirst = log;
+      var second = it.next(undefined);
+
+      first.value === 0 &&
+        first.done === false &&
+        logAfterFirst === "S" &&
+        second.done === true &&
+        second.value &&
+        typeof second.value.then === "function"
+    "#,
+  )?;
+  hooks.teardown_jobs(&mut rt);
+  assert_eq!(value, Value::Bool(true));
+  assert_eq!(hooks.last_specifier.as_deref(), Some("./m.js"));
+  Ok(())
+}
+
+#[test]
+fn generator_dynamic_import_options_frame_specifier_is_traced_across_gc() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let mut hooks = RejectingImportHooks::new();
+
+  // Suspend with the specifier stored only in the generator continuation frame.
+  let value = rt.exec_script_with_hooks(
+    &mut hooks,
+    r#"
+      function* g() {
+        return import({ toString() { return "./m.js"; } }, (yield 0));
+      }
+      var it = g();
+      var first = it.next();
+      first.value === 0 && first.done === false
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+
+  // Force GC while the generator is suspended so the continuation frame must trace its captured
+  // specifier value.
+  rt.heap_mut().collect_garbage();
+
+  let value = rt.exec_script_with_hooks(
+    &mut hooks,
+    r#"
+      var second = it.next(undefined);
+      second.done === true &&
+        second.value &&
+        typeof second.value.then === "function"
+    "#,
+  )?;
+  hooks.teardown_jobs(&mut rt);
+
+  assert_eq!(value, Value::Bool(true));
+  assert_eq!(hooks.last_specifier.as_deref(), Some("./m.js"));
+  Ok(())
+}
