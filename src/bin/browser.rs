@@ -1393,6 +1393,22 @@ fn sanitize_toast_detail_single_line(raw: &str, max_bytes: usize) -> Option<Stri
   if max_bytes == 0 {
     return None;
   }
+  // Avoid O(n) scans over attacker-controlled strings (e.g. corrupted session files, verbose nested
+  // errors). We only need enough input to populate our small output buffer, so cap the amount of
+  // text we inspect.
+  const ABSURD_INPUT_BYTES_MULTIPLIER: usize = 64;
+  let absurd_limit = max_bytes.saturating_mul(ABSURD_INPUT_BYTES_MULTIPLIER);
+  let mut raw = raw;
+  let mut truncated_from_input = false;
+  if raw.len() > absurd_limit {
+    let mut end = absurd_limit.min(raw.len());
+    while end > 0 && !raw.is_char_boundary(end) {
+      end -= 1;
+    }
+    raw = raw.get(..end).unwrap_or("");
+    truncated_from_input = true;
+  }
+
   let raw = raw.trim();
   if raw.is_empty() {
     return None;
@@ -1401,7 +1417,7 @@ fn sanitize_toast_detail_single_line(raw: &str, max_bytes: usize) -> Option<Stri
   // Avoid allocating based on `raw.len()` (could be very large). Pre-allocate up to the limit.
   let mut out = String::with_capacity(max_bytes.min(128));
   let mut pending_space = false;
-  let mut truncated = false;
+  let mut truncated = truncated_from_input;
 
   for ch in raw.chars() {
     if ch.is_whitespace() || ch.is_control() {
