@@ -122,7 +122,8 @@ fn event_timestamp_ms(event: &BrowserPerfLogEvent) -> Option<u64> {
       | BrowserPerfLogEventV2::CpuSummary { t_ms, ts_ms, .. }
       | BrowserPerfLogEventV2::IdleSample { t_ms, ts_ms, .. }
       | BrowserPerfLogEventV2::FrameUpload { t_ms, ts_ms, .. }
-      | BrowserPerfLogEventV2::MemorySummary { t_ms, ts_ms, .. } => (*t_ms).or(*ts_ms),
+      | BrowserPerfLogEventV2::MemorySummary { t_ms, ts_ms, .. }
+      | BrowserPerfLogEventV2::WorkerWakeSummary { t_ms, ts_ms, .. } => (*t_ms).or(*ts_ms),
       BrowserPerfLogEventV2::Unknown => None,
     },
     BrowserPerfLogEvent::V1(event) => match event {
@@ -153,6 +154,7 @@ fn matches_event_filter(event: &BrowserPerfLogEvent, filter: EventFilter) -> boo
       BrowserPerfLogEventV2::MemorySummary { .. } => filter == EventFilter::MemorySummary,
       BrowserPerfLogEventV2::FrameUpload { .. } => filter == EventFilter::FrameUpload,
       BrowserPerfLogEventV2::IdleSample { .. } => filter == EventFilter::IdleSample,
+      BrowserPerfLogEventV2::WorkerWakeSummary { .. } => false,
       BrowserPerfLogEventV2::Unknown => false,
     },
     BrowserPerfLogEvent::V1(event) => match event {
@@ -590,6 +592,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 samples.rss_last_bytes = Some(rss);
               }
             }
+            BrowserPerfLogEventV2::WorkerWakeSummary { .. } => {}
             BrowserPerfLogEventV2::Unknown => {
               unknown_events = unknown_events.saturating_add(1);
             }

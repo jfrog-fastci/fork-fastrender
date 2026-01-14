@@ -2857,7 +2857,8 @@ fn crawl_document(
       match discover_html_media(&document.html, &document.base_url, render.dom_compat_mode) {
         Ok(requests) => requests,
         Err(_) => html_media_urls
-          .into_iter()
+          .iter()
+          .cloned()
           .map(|url| (url, FetchDestination::Other, FetchCredentialsMode::Include))
           .collect(),
       }
@@ -3253,6 +3254,7 @@ fn crawl_document(
           images: html_image_urls,
           media: html_media_urls,
           documents: html_documents,
+          ..
         } = fastrender::html::asset_discovery::discover_html_asset_urls(&doc.html, &doc.base_url);
         if matches!(mode, CrawlMode::BestEffort) {
           if let Ok(requests) = discover_html_images(&doc.html, &doc.base_url, render) {
@@ -3418,7 +3420,8 @@ fn crawl_document(
             match discover_html_media(&doc.html, &doc.base_url, render.dom_compat_mode) {
               Ok(requests) => requests,
               Err(_) => html_media_urls
-                .into_iter()
+                .iter()
+                .cloned()
                 .map(|url| (url, FetchDestination::Other, FetchCredentialsMode::Include))
                 .collect(),
             }

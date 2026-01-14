@@ -139,10 +139,6 @@ pub const CHROME_ACTION_SCHEME: &str = "chrome-action";
 impl ChromeActionUrl {
   pub const SCHEME: &'static str = CHROME_ACTION_SCHEME;
 
-  pub(crate) fn parse_url(url: &Url) -> Result<Self, String> {
-    Self::parse(url.as_str())
-  }
-
   pub fn parse_url(url: &Url) -> Result<Self, String> {
     Self::parse(url.as_str())
   }

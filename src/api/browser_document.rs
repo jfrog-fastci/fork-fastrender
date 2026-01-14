@@ -266,6 +266,7 @@ fn apply_paint_interaction_state_to_fragment_tree(
     }
   }
 }
+
 fn is_text_editable_focus_target(node: &DomNode) -> bool {
   let Some(tag) = node.tag_name() else {
     return false;

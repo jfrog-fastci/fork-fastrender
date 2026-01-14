@@ -14577,7 +14577,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
     let (capped_end, target_len) =
       enforce_range_request_size_limit(self.policy.as_ref(), start, end, max_bytes)?;
     let range = start..=capped_end;
-    let slice_range = range.clone();
+    let range_for_cached_slice = range.clone();
 
     // Use the same cache partitioning as `fetch_with_request` so range fetches can reuse cached
     // full responses, while remaining isolated across origins/credentials.
@@ -14599,7 +14599,8 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
     let slice_cached = |cached: &FetchedResource| -> Result<FetchedResource> {
       ensure_http_success(cached, url)?;
       let total_len = u64::try_from(cached.bytes.len()).unwrap_or(u64::MAX);
-      let bytes = slice_bytes_for_fetch_range(url, &cached.bytes, slice_range.clone(), target_len)?;
+      let bytes =
+        slice_bytes_for_fetch_range(url, &cached.bytes, range_for_cached_slice.clone(), target_len)?;
       let mut out = clone_fetched_resource_with_bytes(cached, bytes);
       if !out.bytes.is_empty() {
         let end = start
