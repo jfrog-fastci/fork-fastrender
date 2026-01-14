@@ -67,6 +67,9 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
 - `FASTR_FETCH_ALTERNATE_STYLESHEETS=0|1` – allow skipping `<link rel="alternate stylesheet">` entries when disabled (defaults to on).
 - `FASTR_FETCH_ENFORCE_CORS=0|false|no|off` – opt out of browser-like CORS checks (`Access-Control-Allow-Origin`) for cross-origin web fonts and `<img crossorigin>` images (enabled by default).
 - `FASTR_PAINT_BACKEND=display_list|legacy` – select the paint pipeline (defaults to `display_list`). Use `legacy` to force the immediate painter.
+- `FASTR_MAX_FILE_INPUT_BYTES=<bytes>` – per-file read limit for `<input type=file>` selections (defaults to 10 MiB).
+  - Files whose metadata-reported size exceeds the limit are skipped (not selected), preventing accidental OOM when selecting large local files.
+  - Accepts `_` separators (e.g. `10_485_760`); invalid/zero values fall back to the default.
 - `FASTR_DISABLE_RENDERER_SANDBOX=0|1` – debug escape hatch: disable the renderer OS sandbox (INSECURE).
   - Any non-empty value **other than** `0`/`false`/`no`/`off` disables sandboxing (e.g. `1`).
   - Windows alias: `FASTR_WINDOWS_RENDERER_SANDBOX=off` (`off`/`0`/`false`/`no` disable).
