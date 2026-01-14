@@ -282,6 +282,7 @@ enum Command {
   Shutdown(mpsc::Sender<Result<(), String>>),
 }
 
+<<<<<<< HEAD
 trait ThreadSpawner {
   fn spawn<F>(&self, name: String, f: F) -> std::io::Result<std::thread::JoinHandle<()>>
   where
@@ -296,6 +297,110 @@ impl ThreadSpawner for StdThreadSpawner {
     F: FnOnce() + Send + 'static,
   {
     std::thread::Builder::new().name(name).spawn(f)
+=======
+#[derive(Debug)]
+struct SyncFallbackState {
+  current_session: BrowserSession,
+  pending_session: Option<BrowserSession>,
+  last_write_result: Result<(), String>,
+}
+
+/// Synchronous fallback path used when spawning the writer thread fails.
+///
+/// This keeps `SessionAutosave` functional (no silent data loss) at the cost of doing disk I/O on
+/// the caller's thread.
+struct SyncFallback {
+  path: PathBuf,
+  save_fn: SaveSessionFn,
+  write_count: Arc<AtomicUsize>,
+  status: Arc<SessionAutosaveStatusShared>,
+  state: Mutex<SyncFallbackState>,
+}
+
+impl SyncFallback {
+  fn request_save(&self, session: BrowserSession) {
+    let mut state = self
+      .state
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let mut to_write = session;
+    to_write.did_exit_cleanly = false;
+    // Preserve the crash-loop streak tracked at startup.
+    to_write.unclean_exit_streak = state.current_session.unclean_exit_streak;
+
+    let result = (self.save_fn)(self.path.as_path(), &to_write);
+    self.status.record_attempt(&result, Instant::now());
+    state.last_write_result = result;
+
+    if state.last_write_result.is_ok() {
+      self.write_count.fetch_add(1, Ordering::Relaxed);
+      state.pending_session = None;
+      state.current_session = to_write;
+    } else {
+      state.pending_session = Some(to_write);
+    }
+  }
+
+  fn flush(&self) -> Result<(), String> {
+    let mut state = self
+      .state
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if let Some(mut session) = state.pending_session.take() {
+      session.did_exit_cleanly = false;
+      session.unclean_exit_streak = state.current_session.unclean_exit_streak;
+      let result = (self.save_fn)(self.path.as_path(), &session);
+      self.status.record_attempt(&result, Instant::now());
+      state.last_write_result = result;
+      if state.last_write_result.is_ok() {
+        self.write_count.fetch_add(1, Ordering::Relaxed);
+        state.current_session = session;
+      } else {
+        state.pending_session = Some(session);
+      }
+      return state.last_write_result.clone();
+    }
+
+    if state.last_write_result.is_err() {
+      state.current_session.did_exit_cleanly = false;
+      let result = (self.save_fn)(self.path.as_path(), &state.current_session);
+      self.status.record_attempt(&result, Instant::now());
+      state.last_write_result = result;
+      if state.last_write_result.is_ok() {
+        self.write_count.fetch_add(1, Ordering::Relaxed);
+      }
+    }
+
+    state.last_write_result.clone()
+  }
+
+  fn shutdown(self) -> Result<(), String> {
+    let mut state = self
+      .state
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let mut to_write = state
+      .pending_session
+      .take()
+      .unwrap_or_else(|| state.current_session.clone());
+    to_write.did_exit_cleanly = true;
+    to_write.unclean_exit_streak = 0;
+
+    let result = (self.save_fn)(self.path.as_path(), &to_write);
+    self.status.record_attempt(&result, Instant::now());
+    state.last_write_result = result.clone();
+    if result.is_ok() {
+      self.write_count.fetch_add(1, Ordering::Relaxed);
+      state.current_session = to_write;
+    } else {
+      state.pending_session = Some(to_write);
+    }
+
+    result
+>>>>>>> 70796210 (fix(ui): fall back to sync session autosave when thread spawn fails)
   }
 }
 
@@ -307,6 +412,7 @@ pub struct SessionAutosave {
   path: PathBuf,
   tx: Option<mpsc::Sender<Command>>,
   join: Option<std::thread::JoinHandle<()>>,
+  sync_fallback: Option<SyncFallback>,
   write_count: Arc<AtomicUsize>,
   status: SessionAutosaveStatusHandle,
   save_fn: SaveSessionFn,
@@ -344,6 +450,7 @@ impl SessionAutosave {
     debounce: Duration,
     initial_session: Option<BrowserSession>,
   ) -> Self {
+<<<<<<< HEAD
     Self::new_with_debounce_and_initial_and_max_interval(
       path,
       debounce,
@@ -408,6 +515,69 @@ impl SessionAutosave {
     spawner: &S,
   ) -> Self {
     let path_for_struct = path.clone();
+=======
+    let save_fn: SaveSessionFn = Arc::new(|path, session| save_session_atomic(path, session));
+    Self::new_with_debounce_and_initial_and_saver(path, debounce, initial_session, save_fn)
+  }
+
+  fn new_with_debounce_and_initial_and_saver(
+    path: PathBuf,
+    debounce: Duration,
+    initial_session: Option<BrowserSession>,
+    save_fn: SaveSessionFn,
+  ) -> Self {
+    Self::new_with_debounce_and_initial_and_saver_and_spawner(
+      path,
+      debounce,
+      initial_session,
+      save_fn,
+      |thread_main| {
+        std::thread::Builder::new()
+          .name("browser_session_autosave".to_string())
+          .spawn(thread_main)
+      },
+    )
+  }
+
+  #[cfg(test)]
+  fn new_with_debounce_and_saver(
+    path: PathBuf,
+    debounce: Duration,
+    save_fn: SaveSessionFn,
+  ) -> Self {
+    Self::new_with_debounce_and_initial_and_saver(path, debounce, None, save_fn)
+  }
+
+  #[cfg(test)]
+  fn new_with_debounce_and_saver_forced_spawn_failure(
+    path: PathBuf,
+    debounce: Duration,
+    save_fn: SaveSessionFn,
+  ) -> Self {
+    Self::new_with_debounce_and_initial_and_saver_and_spawner(
+      path,
+      debounce,
+      None,
+      save_fn,
+      |_thread_main| {
+        Err(std::io::Error::new(
+          std::io::ErrorKind::Other,
+          "forced spawn failure (test)",
+        ))
+      },
+    )
+  }
+
+  fn new_with_debounce_and_initial_and_saver_and_spawner(
+    path: PathBuf,
+    debounce: Duration,
+    initial_session: Option<BrowserSession>,
+    save_fn: SaveSessionFn,
+    spawner: impl FnOnce(
+      Box<dyn FnOnce() + Send + 'static>,
+    ) -> std::io::Result<std::thread::JoinHandle<()>>,
+  ) -> Self {
+>>>>>>> 70796210 (fix(ui): fall back to sync session autosave when thread spawn fails)
     let (tx, rx) = mpsc::channel::<Command>();
     let write_count = Arc::new(AtomicUsize::new(0));
     let status = Arc::new(SessionAutosaveStatusShared::default());
@@ -415,6 +585,7 @@ impl SessionAutosave {
       shared: Arc::clone(&status),
     };
 
+<<<<<<< HEAD
     // Preserve the initial snapshot for a synchronous fallback in case thread spawning fails.
     let initial_session_cell = Arc::new(Mutex::new(initial_session));
 
@@ -464,10 +635,50 @@ impl SessionAutosave {
           initial_session,
           &write_count,
           status.as_ref(),
+=======
+    let thread_main: Box<dyn FnOnce() + Send + 'static> = Box::new({
+      let path = path.clone();
+      let initial_session = initial_session.clone();
+      let write_count = Arc::clone(&write_count);
+      let status = Arc::clone(&status);
+      let save_fn = Arc::clone(&save_fn);
+      move || {
+        session_writer_thread(
+          path,
+          debounce,
+          initial_session,
+          rx,
+          write_count,
+          status,
+          save_fn,
+        )
+      }
+    });
+
+    match spawner(thread_main) {
+      Ok(join) => Self {
+        tx: Some(tx),
+        join: Some(join),
+        sync_fallback: None,
+        write_count,
+        status: status_handle,
+      },
+      Err(err) => {
+        eprintln!(
+          "failed to spawn session autosave writer thread ({err}); falling back to synchronous session saves"
+        );
+
+        let (current_session, last_write_result) = startup_mark_unclean(
+          path.as_path(),
+          initial_session,
+          &write_count,
+          &status,
+>>>>>>> 70796210 (fix(ui): fall back to sync session autosave when thread spawn fails)
           &save_fn,
         );
 
         Self {
+<<<<<<< HEAD
           path: path_for_struct,
           tx: None,
           join: None,
@@ -476,6 +687,23 @@ impl SessionAutosave {
           save_fn,
           worker_running: AtomicBool::new(false),
           spawn_error: Some(format!("failed to spawn session autosave thread: {err}")),
+=======
+          tx: None,
+          join: None,
+          sync_fallback: Some(SyncFallback {
+            path,
+            save_fn,
+            write_count: Arc::clone(&write_count),
+            status: Arc::clone(&status),
+            state: Mutex::new(SyncFallbackState {
+              current_session,
+              pending_session: None,
+              last_write_result,
+            }),
+          }),
+          write_count,
+          status: status_handle,
+>>>>>>> 70796210 (fix(ui): fall back to sync session autosave when thread spawn fails)
         }
       }
     }
@@ -499,6 +727,7 @@ impl SessionAutosave {
   /// This call is non-blocking; it simply sends the snapshot to the writer thread. Multiple rapid
   /// calls are debounced/coalesced so only the latest snapshot is persisted.
   pub fn request_save(&self, session: BrowserSession) {
+<<<<<<< HEAD
     let mut session = session;
     // Running sessions should always be persisted as "unclean". The clean marker is only written
     // on explicit shutdown.
@@ -520,10 +749,24 @@ impl SessionAutosave {
     }
 
     self.save_sync(session);
+=======
+    if let Some(sync) = self.sync_fallback.as_ref() {
+      sync.request_save(session);
+      return;
+    }
+    let Some(tx) = self.tx.as_ref() else {
+      return;
+    };
+    let _ = tx.send(Command::Save(session));
+>>>>>>> 70796210 (fix(ui): fall back to sync session autosave when thread spawn fails)
   }
 
   /// Block until the currently queued snapshot (if any) has been written.
   pub fn flush(&self, timeout: Duration) -> Result<(), String> {
+    if let Some(sync) = self.sync_fallback.as_ref() {
+      let _ = timeout;
+      return sync.flush();
+    }
     let Some(tx) = self.tx.as_ref() else {
       return Err("session autosave thread is not running".to_string());
     };
@@ -547,6 +790,13 @@ impl SessionAutosave {
   ///
   /// Best-effort: on timeout the writer thread may continue running in the background.
   pub fn shutdown(&mut self, timeout: Duration) -> Result<(), String> {
+    if let Some(sync) = self.sync_fallback.take() {
+      let _ = timeout;
+      self.tx = None;
+      self.join = None;
+      return sync.shutdown();
+    }
+
     let deadline = Instant::now() + timeout;
     let Some(tx) = self.tx.take() else {
       self.worker_running.store(false, Ordering::Release);
@@ -675,6 +925,77 @@ impl Drop for SessionAutosave {
   }
 }
 
+fn startup_mark_unclean(
+  path: &Path,
+  initial_session: Option<BrowserSession>,
+  write_count: &AtomicUsize,
+  status: &SessionAutosaveStatusShared,
+  save_fn: &SaveSessionFn,
+) -> (BrowserSession, Result<(), String>) {
+  match initial_session {
+    Some(mut session) => {
+      // Crash-loop tracking: bump the unclean-exit streak when we mark the session as running.
+      //
+      // When an initial in-memory snapshot is supplied, it does not contain the previous-run crash
+      // marker. Best-effort read the on-disk marker to determine whether the previous run exited
+      // cleanly.
+      let (prev_clean, prev_streak) = match load_session(path) {
+        Ok(Some(prev)) => (prev.did_exit_cleanly, prev.unclean_exit_streak),
+        Ok(None) => (true, 0),
+        Err(_) => (true, 0),
+      };
+      session.unclean_exit_streak = if prev_clean {
+        1
+      } else {
+        prev_streak.saturating_add(1)
+      };
+
+      session.did_exit_cleanly = false;
+      let result = save_fn(path, &session);
+      status.record_attempt(&result, Instant::now());
+      if result.is_ok() {
+        write_count.fetch_add(1, Ordering::Relaxed);
+      }
+      (session, result)
+    }
+    None => match load_session(path) {
+      Ok(Some(mut session)) => {
+        session.unclean_exit_streak = if session.did_exit_cleanly {
+          1
+        } else {
+          session.unclean_exit_streak.saturating_add(1)
+        };
+        session.did_exit_cleanly = false;
+        let result = save_fn(path, &session);
+        status.record_attempt(&result, Instant::now());
+        if result.is_ok() {
+          write_count.fetch_add(1, Ordering::Relaxed);
+        }
+        (session, result)
+      }
+      Ok(None) => {
+        let mut session = BrowserSession::single(about_pages::ABOUT_NEWTAB.to_string());
+        session.did_exit_cleanly = false;
+        session.unclean_exit_streak = 1;
+        let result = save_fn(path, &session);
+        status.record_attempt(&result, Instant::now());
+        if result.is_ok() {
+          write_count.fetch_add(1, Ordering::Relaxed);
+        }
+        (session, result)
+      }
+      Err(_) => {
+        let mut session = BrowserSession::single(about_pages::ABOUT_NEWTAB.to_string());
+        session.did_exit_cleanly = false;
+        session.unclean_exit_streak = 1;
+        // Leave `last_write_result` as Ok so `flush()` doesn't try to "repair" the file by writing
+        // our fallback session.
+        (session, Ok(()))
+      }
+    },
+  }
+}
+
 fn session_writer_thread(
   path: PathBuf,
   debounce: Duration,
@@ -685,6 +1006,7 @@ fn session_writer_thread(
   status: Arc<SessionAutosaveStatusShared>,
   save_fn: SaveSessionFn,
 ) {
+<<<<<<< HEAD
   let (mut current_session, mut last_write_result) = session_startup_unclean_marker(
     &path,
     initial_session,
@@ -695,6 +1017,26 @@ fn session_writer_thread(
 
   // (session, updated_at, first_pending_at)
   let mut pending: Option<(BrowserSession, Instant, Instant)> = None;
+=======
+  // On startup: best-effort mark the on-disk session as "unclean" so crash recovery can detect
+  // abnormal exits.
+  //
+  // If an initial in-memory snapshot is provided, prefer that over whatever happens to be on disk.
+  // This ensures early crashes (before the UI's first autosave tick) still leave a correct session
+  // snapshot for recovery.
+  //
+  // If the on-disk session cannot be parsed, do **not** overwrite it with a blank default session:
+  // leave the file untouched and wait for the first explicit Save request from the UI.
+  let (mut current_session, mut last_write_result) = startup_mark_unclean(
+    path.as_path(),
+    initial_session,
+    &write_count,
+    &status,
+    &save_fn,
+  );
+
+  let mut pending: Option<(BrowserSession, Instant)> = None;
+>>>>>>> 70796210 (fix(ui): fall back to sync session autosave when thread spawn fails)
 
   loop {
     // If there's a pending snapshot and either the debounce window elapsed or we've exceeded the
@@ -780,7 +1122,11 @@ fn session_writer_thread(
       Ok(Command::Shutdown(done_tx)) => {
         let mut to_write = pending
           .take()
+<<<<<<< HEAD
           .map(|(session, _, _)| session)
+=======
+          .map(|(session, _)| session)
+>>>>>>> 70796210 (fix(ui): fall back to sync session autosave when thread spawn fails)
           .unwrap_or(current_session);
         to_write.did_exit_cleanly = true;
         to_write.unclean_exit_streak = 0;
@@ -973,6 +1319,28 @@ mod tests {
     assert_eq!(session.windows[0].tabs.len(), 1);
     assert_eq!(session.windows[0].tabs[0].url, about_pages::ABOUT_NEWTAB);
     assert_eq!(session.windows[0].active_tab_index, 0);
+  }
+
+  #[test]
+  fn spawn_failure_falls_back_to_synchronous_saves() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+    assert!(!path.exists());
+
+    let save_fn: SaveSessionFn = Arc::new(|path, session| save_session_atomic(path, session));
+    let autosave = SessionAutosave::new_with_debounce_and_saver_forced_spawn_failure(
+      path.clone(),
+      Duration::from_millis(10),
+      save_fn,
+    );
+
+    autosave.request_save(BrowserSession::single("about:blank".to_string()));
+    autosave.flush(Duration::from_secs(2)).unwrap();
+
+    let session = load_session(&path).unwrap().unwrap();
+    assert_eq!(session.windows[0].tabs[0].url, "about:blank");
+    assert!(!session.did_exit_cleanly);
+    assert_eq!(session.unclean_exit_streak, 1);
   }
 
   #[test]
