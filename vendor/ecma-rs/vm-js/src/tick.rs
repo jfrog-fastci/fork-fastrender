@@ -32,6 +32,10 @@ pub(crate) fn sort_unstable_by_with_ticks<T>(
   mut compare: impl FnMut(&T, &T) -> Ordering,
   mut tick: impl FnMut() -> Result<(), VmError>,
 ) -> Result<(), VmError> {
+  // Ensure very small sorts still observe VM budgets. Without this pre-tick, a sort that performs
+  // fewer than `DEFAULT_TICK_EVERY` comparisons could run without *any* budget/interrupt checks.
+  tick()?;
+
   // Use a sentinel to abort `sort_unstable_by` early when `tick()` fails.
   struct TickAbort;
 
@@ -42,7 +46,7 @@ pub(crate) fn sort_unstable_by_with_ticks<T>(
     slice.sort_unstable_by(|a, b| {
       comparisons = comparisons.wrapping_add(1);
       // Avoid ticking on the first comparison so small sorts don't effectively double-charge fuel
-      // (most call sites tick once before entering this helper).
+      // too aggressively (we already tick once before entering this helper).
       if (comparisons & (DEFAULT_TICK_EVERY - 1)) == 0 {
         if let Err(err) = tick() {
           tick_err = Some(err);
