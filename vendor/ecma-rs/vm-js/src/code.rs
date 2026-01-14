@@ -680,6 +680,28 @@ fn expr_direct_await_arg(expr: &Node<Expr>) -> Option<&Node<Expr>> {
   }
 }
 
+fn expr_is_direct_await_without_nested_await(expr: &Node<Expr>) -> bool {
+  expr_direct_await_arg(expr).is_some_and(|arg| !expr_contains_await(arg))
+}
+
+fn expr_is_assignment_with_direct_await_rhs_without_nested_await(expr: &Node<Expr>) -> bool {
+  let Expr::Binary(binary) = &*expr.stx else {
+    return false;
+  };
+  if binary.stx.operator != OperatorName::Assignment {
+    return false;
+  }
+  let Some(arg) = expr_direct_await_arg(&binary.stx.right) else {
+    return false;
+  };
+  if !expr_is_supported_assignment_target_for_hir_async_scripts(&binary.stx.left) {
+    return false;
+  }
+  // The compiled evaluator does not support nested `await` within the assignment target (including
+  // computed member keys) or within the awaited operand.
+  !expr_contains_await(&binary.stx.left) && !expr_contains_await(arg)
+}
+
 fn expr_is_supported_assignment_target_for_hir_async_scripts(expr: &Node<Expr>) -> bool {
   match &*expr.stx {
     // Note: `parse-js` represents identifier assignment targets using the `IdPat` AST node (because
@@ -995,6 +1017,16 @@ fn stmt_contains_await(stmt: &Node<Stmt>) -> bool {
 /// Any top-level await outside of these supported shapes requires an AST fallback to ensure
 /// correctness (before executing any HIR).
 fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
+  fn for_triple_head_expr_supported(expr: &Node<Expr>, allow_assignment: bool) -> bool {
+    if !expr_contains_await(expr) {
+      return true;
+    }
+    if expr_is_direct_await_without_nested_await(expr) {
+      return true;
+    }
+    allow_assignment && expr_is_assignment_with_direct_await_rhs_without_nested_await(expr)
+  }
+
   for stmt in stmts {
     if !stmt_contains_await(stmt) {
       continue;
@@ -1003,6 +1035,15 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
     let supported = match &*stmt.stx {
       // `await <expr>;` as a standalone statement item.
       Stmt::Expr(expr_stmt) => match &*expr_stmt.stx.expr.stx {
+        Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => {
+          // The compiled evaluator does not yet support nested `await` inside the awaited operand.
+          !expr_contains_await(&unary.stx.argument)
+        }
+        _ => false,
+      },
+
+      // `throw await <expr>;` as a standalone statement item.
+      Stmt::Throw(throw_stmt) => match &*throw_stmt.stx.value.stx {
         Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => {
           // The compiled evaluator does not yet support nested `await` inside the awaited operand.
           !expr_contains_await(&unary.stx.argument)
@@ -1032,6 +1073,45 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
           _ => false,
         }
       }),
+
+      // `for (init; test; update) { ... }` loops at top-level.
+      //
+      // The compiled evaluator supports suspension/resumption at direct `await` boundaries (and
+      // simple `x = await <expr>` assignments) in the loop head, but does not yet support `await`
+      // inside the loop body or within initializer declarations.
+      Stmt::ForTriple(for_stmt) => {
+        // Loop body must not contain any other `await`.
+        if for_stmt.stx.body.stx.body.iter().any(stmt_contains_await) {
+          false
+        } else {
+          let init_supported = match &for_stmt.stx.init {
+            ForTripleStmtInit::None => true,
+            ForTripleStmtInit::Expr(expr) => for_triple_head_expr_supported(expr, /* allow_assignment */ true),
+            ForTripleStmtInit::Decl(decl) => decl.stx.declarators.iter().all(|d| {
+              !pat_contains_await(&d.pattern.stx.pat.stx)
+                && d.initializer.as_ref().is_none_or(|init| !expr_contains_await(init))
+            }),
+          };
+          if !init_supported {
+            false
+          } else {
+            let test_supported = for_stmt
+              .stx
+              .cond
+              .as_ref()
+              .is_none_or(|test| for_triple_head_expr_supported(test, /* allow_assignment */ false));
+            if !test_supported {
+              false
+            } else {
+              for_stmt
+                .stx
+                .post
+                .as_ref()
+                .is_none_or(|post| for_triple_head_expr_supported(post, /* allow_assignment */ true))
+            }
+          }
+        }
+      },
 
       // `for await (<lhs> of <rhs>) { ... }` at top-level.
       //
