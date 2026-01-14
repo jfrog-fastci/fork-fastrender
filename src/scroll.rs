@@ -16,7 +16,9 @@ use crate::style::{
   PhysicalSide,
 };
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
-pub use anchoring::{apply_scroll_anchoring, capture_scroll_anchors, ScrollAnchor, ScrollAnchorSnapshot};
+pub use anchoring::{
+  apply_scroll_anchoring, capture_scroll_anchors, ScrollAnchor, ScrollAnchorSnapshot,
+};
 pub(crate) use anchoring::apply_scroll_anchoring_with_scroll_snap;
 pub(crate) mod anchoring_debug;
 
