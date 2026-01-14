@@ -3115,14 +3115,14 @@ impl<'vm> HirEvaluator<'vm> {
     // The compiled (HIR) executor does not yet support generator / async-generator bodies
     // (`yield`, `yield*`). Allocate generator functions as interpreter-backed ECMAScript functions
     // so calling them can still execute via the AST interpreter.
-    let func_obj = if is_generator {
+    let (func_obj, async_ast_fallback) = if is_generator {
       let code_id = self.vm.register_ecma_function(
         self.env.source(),
         def_span.start,
         def_span.end,
         kind,
       )?;
-      scope.alloc_ecma_function(
+      let func_obj = scope.alloc_ecma_function(
         code_id,
         is_constructable,
         name_s,
@@ -3130,9 +3130,10 @@ impl<'vm> HirEvaluator<'vm> {
         this_mode,
         is_strict,
         closure_env,
-      )?
+      )?;
+      (/* func_obj */ func_obj, /* async_ast_fallback */ None)
     } else {
-      scope.alloc_user_function_with_env(
+      let func_obj = scope.alloc_user_function_with_env(
         CompiledFunctionRef {
           script,
           body: body_id,
@@ -3144,7 +3145,8 @@ impl<'vm> HirEvaluator<'vm> {
         this_mode,
         is_strict,
         closure_env,
-      )?
+      )?;
+      (/* func_obj */ func_obj, /* async_ast_fallback */ ast_fallback)
     };
 
     let meta_property_context = if is_arrow {
@@ -3179,8 +3181,8 @@ impl<'vm> HirEvaluator<'vm> {
     // compiled path), but tag them so `Vm::call_user_function` delegates body execution to the AST
     // interpreter.
     if async_needs_ast_fallback {
-      let code_id = ast_fallback.ok_or(VmError::InvariantViolation(
-        "async function marked as needing AST fallback but missing call handler fallback metadata",
+      let code_id = async_ast_fallback.ok_or(VmError::InvariantViolation(
+        "async function missing call-time AST fallback metadata",
       ))?;
       scope
         .heap_mut()

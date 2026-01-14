@@ -185,6 +185,7 @@ fn compiled_script_falls_back_for_await_in_class_static_block() {
     script.top_level_await_requires_ast_fallback,
     "await in class static blocks requires falling back to the AST async script evaluator"
   );
+  assert!(script.requires_ast_fallback);
 }
 
 #[test]
@@ -210,4 +211,5 @@ fn compiled_script_with_budget_falls_back_for_await_in_class_static_block() {
     script.top_level_await_requires_ast_fallback,
     "await in class static blocks requires falling back to the AST async script evaluator"
   );
+  assert!(script.requires_ast_fallback);
 }

@@ -104,10 +104,10 @@ fn await_in_async_class_static_block_is_allowed() -> Result<(), VmError> {
 }
 
 #[test]
-fn script_await_in_class_static_block_runs_as_async_script() -> Result<(), VmError> {
+fn await_in_class_static_block_runs_as_async_script() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
-  rt.exec_script(
+  let value = rt.exec_script(
     r#"
       var out = "";
       out += "a";
@@ -121,6 +121,12 @@ fn script_await_in_class_static_block_runs_as_async_script() -> Result<(), VmErr
       out += "d";
     "#,
   )?;
+  let Value::Object(promise_obj) = value else {
+    return Err(VmError::InvariantViolation(
+      "expected top-level await in script to return a promise object",
+    ));
+  };
+  assert!(rt.heap.is_promise_object(promise_obj));
 
   let out = rt.exec_script("out")?;
   assert_eq!(value_to_string(&rt, out), "ab");
