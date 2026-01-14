@@ -4440,6 +4440,15 @@ enum UserEvent {
   },
   /// Discard the currently restored session and start fresh (single clean `about:newtab` window).
   StartNewSession(winit::window::WindowId),
+  /// Request showing a transient chrome toast on a specific window.
+  ///
+  /// This is primarily used by background helper threads (native dialogs) which cannot directly
+  /// mutate the `App` state.
+  ShowChromeToast {
+    window_id: winit::window::WindowId,
+    kind: fastrender::ui::ToastKind,
+    text: String,
+  },
   PageExportNativeDialogFallback {
     window_id: winit::window::WindowId,
     tab_id: fastrender::ui::TabId,
@@ -8516,6 +8525,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           if request_redraw {
             win.app.window.request_redraw();
           }
+        }
+      }
+      Event::UserEvent(UserEvent::ShowChromeToast {
+        window_id,
+        kind,
+        text,
+      }) => {
+        if let Some(win) = windows.get_mut(&window_id) {
+          win.app.show_chrome_toast_kind(kind, text);
+          win.app.window.request_redraw();
         }
       }
       Event::UserEvent(UserEvent::PageExportNativeDialogFallback {
@@ -16642,46 +16661,82 @@ impl App {
     multiple: bool,
     accept: Option<String>,
   ) {
+    let proxy = self.event_loop_proxy.clone();
+    let window_id = self.window.id();
     let renderer_backend = self.renderer_backend.clone();
     let cancel: Option<fastrender::ui::cancel::CancelGens> = self.tab_cancel.get(&tab_id).cloned();
 
-    let spawn_result = std::thread::Builder::new()
-      .name(format!("fastr-file-picker-{}", tab_id.0))
-      .spawn(move || {
-        let extensions = rfd_extensions_from_html_accept(accept.as_deref());
+    let spawn_result = {
+      let proxy = proxy.clone();
+      let cancel = cancel.clone();
+      let renderer_backend = renderer_backend.clone();
+      std::thread::Builder::new()
+        .name(format!("fastr-file-picker-{}", tab_id.0))
+        .spawn(move || {
+          let selection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let extensions = rfd_extensions_from_html_accept(accept.as_deref());
 
-        let dialog = if extensions.is_empty() {
-          rfd::FileDialog::new()
-        } else {
-          let ext_refs: Vec<&str> = extensions.iter().map(|s| s.as_str()).collect();
-          rfd::FileDialog::new().add_filter("Allowed files", &ext_refs)
-        };
+            let dialog = if extensions.is_empty() {
+              rfd::FileDialog::new()
+            } else {
+              let ext_refs: Vec<&str> = extensions.iter().map(|s| s.as_str()).collect();
+              rfd::FileDialog::new().add_filter("Allowed files", &ext_refs)
+            };
 
-        let chosen: Option<Vec<std::path::PathBuf>> = if multiple {
-          dialog.pick_files()
-        } else {
-          dialog.pick_file().map(|path| vec![path])
-        };
+            if multiple {
+              dialog.pick_files()
+            } else {
+              dialog.pick_file().map(|path| vec![path])
+            }
+          }));
 
-        let msg = match chosen {
-          Some(paths) if !paths.is_empty() => fastrender::ui::UiToWorker::FilePickerChoose {
-            tab_id,
-            input_node_id,
-            paths,
-          },
-          _ => fastrender::ui::UiToWorker::FilePickerCancel { tab_id },
-        };
+          let msg = match selection {
+            Ok(chosen) => match chosen {
+              Some(paths) if !paths.is_empty() => fastrender::ui::UiToWorker::FilePickerChoose {
+                tab_id,
+                input_node_id,
+                paths,
+              },
+              _ => fastrender::ui::UiToWorker::FilePickerCancel { tab_id },
+            },
+            Err(panic_payload) => {
+              let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                (*s).to_string()
+              } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                s.clone()
+              } else {
+                "unknown panic".to_string()
+              };
+              eprintln!("rfd file picker dialog panicked: {msg}");
+              let _ = proxy.send_event(UserEvent::ShowChromeToast {
+                window_id,
+                kind: fastrender::ui::ToastKind::Error,
+                text: "Failed to open native file dialog".to_string(),
+              });
+              fastrender::ui::UiToWorker::FilePickerCancel { tab_id }
+            }
+          };
 
-        if let Some(cancel) = cancel {
-          // Mirror `App::send_worker_msg` cancellation semantics for repaint-driving UI events.
-          cancel.bump_paint();
-        }
-        // Best-effort: the UI may have already shut down.
-        let _ = renderer_backend.send(msg);
-      });
+          if let Some(cancel) = cancel {
+            // Mirror `App::send_worker_msg` cancellation semantics for repaint-driving UI events.
+            cancel.bump_paint();
+          }
+          // Best-effort: the UI may have already shut down.
+          let _ = renderer_backend.send(msg);
+        })
+    };
 
     if let Err(err) = spawn_result {
       eprintln!("failed to spawn native file picker dialog thread: {err}");
+      if let Some(cancel) = cancel {
+        cancel.bump_paint();
+      }
+      let _ = renderer_backend.send(fastrender::ui::UiToWorker::FilePickerCancel { tab_id });
+      let _ = proxy.send_event(UserEvent::ShowChromeToast {
+        window_id,
+        kind: fastrender::ui::ToastKind::Error,
+        text: "Failed to open native file dialog".to_string(),
+      });
     }
   }
 
