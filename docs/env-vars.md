@@ -85,6 +85,10 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
   - Defaults: 20ms / 80ms / 40ms (see `src/media/av_sync.rs` and `docs/media_clocking.md`).
   - Note: `FASTRENDER_AVSYNC_*` are read directly from the process environment (not via
     `RuntimeToggles`), while the legacy `FASTR_AV_SYNC_*` names flow through `RuntimeToggles`.
+- Media playback (VP9 decode threading):
+  - `FASTR_VP9_DECODE_THREADS=<N>` – override the number of threads used by the bundled libvpx VP9
+    decoder (used by `src/media/decoder.rs`).
+  - Defaults to `min(available_parallelism(), 4)` and is clamped to at least 1.
 - `FASTR_MAX_FILE_INPUT_BYTES=<bytes>` – per-file read limit for `<input type=file>` selections (defaults to 10 MiB).
   - Files whose metadata-reported size exceeds the limit are skipped (not selected), preventing accidental OOM when selecting large local files.
   - Accepts `_` separators (e.g. `10_485_760`); invalid/zero values fall back to the default.
