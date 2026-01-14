@@ -247,6 +247,48 @@ fn arguments_identifier_reference_is_syntax_error_in_static_block() {
 }
 
 #[test]
+fn arguments_identifier_reference_is_syntax_error_in_static_block_inside_function() {
+  let src = r#"
+    function f() {
+      class C {
+        static {
+          arguments;
+        }
+      }
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let res = parser.parse_top_level();
+  assert!(res.is_err(), "parse unexpectedly succeeded: {res:?}");
+}
+
+#[test]
+fn arguments_identifier_reference_is_syntax_error_in_static_block_inside_method() {
+  let src = r#"
+    class Outer {
+      m() {
+        class C {
+          static {
+            arguments;
+          }
+        }
+      }
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let res = parser.parse_top_level();
+  assert!(res.is_err(), "parse unexpectedly succeeded: {res:?}");
+}
+
+#[test]
 fn arguments_identifier_reference_is_syntax_error_in_arrow_in_static_block() {
   let src = r#"
     class C {
