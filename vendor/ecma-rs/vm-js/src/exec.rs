@@ -8858,7 +8858,6 @@ impl<'a> Evaluator<'a> {
         } else {
           prototype_obj
         };
-        let class_ctor = func_obj;
 
         let member_loc_start = member.loc.start_u32();
         let (key_loc_start, key_is_computed) = match &member.stx.key {
@@ -9039,12 +9038,12 @@ impl<'a> Evaluator<'a> {
               let slot_base = crate::class_fields::CLASS_CTOR_SLOT_INSTANCE_FIELDS_START
                 .saturating_add(instance_private_method_idx.saturating_mul(2));
               member_scope.heap_mut().set_function_native_slot(
-                func_obj,
+                class_ctor,
                 slot_base,
                 Value::Symbol(sym),
               )?;
               member_scope.heap_mut().set_function_native_slot(
-                func_obj,
+                class_ctor,
                 slot_base.saturating_add(1),
                 Value::Object(method_func_obj),
               )?;
@@ -9578,9 +9577,9 @@ impl<'a> Evaluator<'a> {
                 instance_field_slot_start.saturating_add(instance_field_idx.saturating_mul(2));
               member_scope
                 .heap_mut()
-                .set_function_native_slot(func_obj, slot_base, key_value)?;
+                .set_function_native_slot(class_ctor, slot_base, key_value)?;
               member_scope.heap_mut().set_function_native_slot(
-                func_obj,
+                class_ctor,
                 slot_base.saturating_add(1),
                 init_value,
               )?;
