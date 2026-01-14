@@ -721,6 +721,27 @@ fn expr_is_supported_assignment_with_direct_await_rhs_without_nested_await(expr:
   !expr_contains_await(&binary.stx.left) && !expr_contains_await(arg)
 }
 
+fn expr_is_destructuring_assignment_with_direct_await_rhs_without_nested_await(expr: &Node<Expr>) -> bool {
+  let Expr::Binary(binary) = &*expr.stx else {
+    return false;
+  };
+  if binary.stx.operator != OperatorName::Assignment {
+    return false;
+  }
+  let Some(arg) = expr_direct_await_arg(&binary.stx.right) else {
+    return false;
+  };
+  // Restrict this fast-path to actual destructuring patterns. `parse-js` represents destructuring
+  // assignment targets using dedicated AST nodes (e.g. `ObjPat` / `ArrPat`).
+  match &*binary.stx.left.stx {
+    Expr::ArrPat(_) | Expr::ObjPat(_) => {}
+    _ => return false,
+  };
+  // The compiled evaluator does not support `await` in the destructuring pattern itself (computed
+  // keys / default values) or nested `await` inside the awaited operand.
+  !expr_contains_await(&binary.stx.left) && !expr_contains_await(arg)
+}
+
 fn expr_is_supported_assignment_target_for_hir_async_scripts(expr: &Node<Expr>) -> bool {
   match &*expr.stx {
     // Note: `parse-js` represents identifier assignment targets using the `IdPat` AST node (because
@@ -1170,10 +1191,12 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
       // - `await <expr>;`
       // - `x = await <expr>;`
       // - `x += await <expr>;` (and other arithmetic/bitwise compound assignment operators)
+      // - `({ ... } = await <expr>);` / `[ ... ] = await <expr>;` (destructuring assignment patterns)
       Stmt::Expr(expr_stmt) => {
         let expr = &expr_stmt.stx.expr;
         expr_is_direct_await_without_nested_await(expr)
           || expr_is_supported_assignment_with_direct_await_rhs_without_nested_await(expr)
+          || expr_is_destructuring_assignment_with_direct_await_rhs_without_nested_await(expr)
       }
 
       // `throw await <expr>;` as a standalone statement item.

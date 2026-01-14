@@ -15171,6 +15171,12 @@ enum HirAsyncActive {
     next_stmt_index: usize,
     pending_assign: Option<PendingAssignment>,
   },
+  /// Suspended at a destructuring assignment expression statement whose RHS is a direct
+  /// `await <expr>` (`({x} = await <expr>);` / `[x] = await <expr>;`).
+  AwaitDestructuringAssignStmt {
+    next_stmt_index: usize,
+    pat_id: hir_js::PatId,
+  },
   /// Suspended at a `return await <expr>;`.
   AwaitReturn,
   /// Suspended at a `throw await <expr>;`.
@@ -15191,6 +15197,7 @@ impl HirAsyncActive {
       HirAsyncActive::DestructuringAssign(state) => state.teardown(heap),
       HirAsyncActive::AwaitExprStmt { .. }
       | HirAsyncActive::AwaitAssignmentStmt { pending_assign: None, .. }
+      | HirAsyncActive::AwaitDestructuringAssignStmt { .. }
       | HirAsyncActive::AwaitReturn
       | HirAsyncActive::AwaitThrow
       | HirAsyncActive::AwaitVarDecl { .. } => {}
@@ -15871,6 +15878,78 @@ impl HirAsyncState {
               }
               Err(err) => {
                 pending.teardown(scope.heap_mut());
+                let err = finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  evaluator.script.source.as_ref(),
+                  stmt_offset,
+                  err,
+                );
+                match err {
+                  VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                    return Ok(HirAsyncResult::CompleteThrow(value))
+                  }
+                  other => return Err(other),
+                }
+              }
+            }
+          }
+          HirAsyncActive::AwaitDestructuringAssignStmt {
+            next_stmt_index,
+            pat_id,
+          } => {
+            let next_stmt_index = *next_stmt_index;
+            let pat_id = *pat_id;
+            let Some(resume) = resume_value.take() else {
+              return Err(VmError::InvariantViolation(
+                "hir async await destructuring assignment statement missing resume value",
+              ));
+            };
+            self.active = None;
+
+            let await_stmt_index = next_stmt_index.saturating_sub(1);
+            let stmt_offset = match &self.body_kind {
+              HirAsyncBodyKind::Block { stmts } => stmts
+                .get(await_stmt_index)
+                .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
+                .map(|stmt| stmt.span.start)
+                .unwrap_or(0),
+              HirAsyncBodyKind::Expr { .. } => 0,
+            };
+
+            // Promise rejection becomes a throw at the await site.
+            let resumed_value = match resume {
+              Ok(v) => v,
+              Err(err) => {
+                let err = finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  evaluator.script.source.as_ref(),
+                  stmt_offset,
+                  err,
+                );
+                match err {
+                  VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                    return Ok(HirAsyncResult::CompleteThrow(value))
+                  }
+                  other => return Err(other),
+                }
+              }
+            };
+
+            let assign_res: Result<(), VmError> = (|| {
+              let mut assign_scope = scope.reborrow();
+              assign_scope.push_root(resumed_value)?;
+              evaluator.assign_to_pat(&mut assign_scope, body, pat_id, resumed_value)?;
+              Ok(())
+            })();
+
+            match assign_res {
+              Ok(()) => {
+                self.next_stmt_index = next_stmt_index;
+                continue;
+              }
+              Err(err) => {
                 let err = finalize_throw_with_stack_at_source_offset(
                   &*evaluator.vm,
                   scope,
@@ -16636,6 +16715,49 @@ impl HirAsyncState {
               // Budget once for the statement and once for the await expression itself.
               evaluator.vm.tick()?;
               evaluator.vm.tick()?;
+
+              // Destructuring assignment (`({x} = await <expr>);` / `[x] = await <expr>;`) evaluates
+              // the RHS first and does not resolve an assignment reference prior to awaiting.
+              let target_pat = evaluator.get_pat(body, *target)?;
+              if !matches!(
+                target_pat.kind,
+                hir_js::PatKind::Ident(_) | hir_js::PatKind::AssignTarget(_)
+              ) {
+                if compound_op {
+                  return Err(VmError::InvariantViolation(
+                    "compound assignment used with a destructuring pattern",
+                  ));
+                }
+
+                let await_value = match evaluator.eval_expr(scope, body, *awaited_expr) {
+                  Ok(v) => v,
+                  Err(err) => {
+                    let err = finalize_throw_with_stack_at_source_offset(
+                      &*evaluator.vm,
+                      scope,
+                      evaluator.script.source.as_ref(),
+                      stmt_offset,
+                      err,
+                    );
+                    return match err {
+                      VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                        Ok(HirAsyncResult::CompleteThrow(value))
+                      }
+                      other => Err(other),
+                    };
+                  }
+                };
+
+                self.active = Some(HirAsyncActive::AwaitDestructuringAssignStmt {
+                  next_stmt_index: self.next_stmt_index.saturating_add(1),
+                  pat_id: *target,
+                });
+                self.await_stmt_offset = stmt_offset;
+                return Ok(HirAsyncResult::Await {
+                  kind: crate::exec::AsyncSuspendKind::Await,
+                  await_value,
+                });
+              }
 
               let reference = match evaluator.eval_assignment_reference(scope, body, *target) {
                 Ok(r) => r,

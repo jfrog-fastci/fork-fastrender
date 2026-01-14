@@ -532,6 +532,107 @@ fn tla_compiled_module_assignment_await_executes_via_hir_without_ast_fallback() 
 }
 
 #[test]
+fn tla_compiled_module_destructuring_assignment_await_executes_via_hir_without_ast_fallback() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+  let mut promise_root: Option<RootId> = None;
+  let mut graph = ModuleGraph::new();
+
+  let result = (|| -> Result<(), VmError> {
+    let source = vm_js::SourceText::new_charged_arc(
+      &mut heap,
+      "m.js",
+      r#"
+        export let a = 0;
+        export let b = 0;
+        ({ x: a } = await Promise.resolve({ x: 1 }));
+        [b] = await Promise.resolve([2]);
+      "#,
+    )?;
+    let mut record = SourceTextModuleRecord::compile_source(&mut heap, source)?;
+    // Simulate an embedding that discards the `parse-js` AST after compilation.
+    record.clear_ast();
+    record.source = None;
+
+    let m = graph.add_module_with_specifier("m.js", record)?;
+    graph.link_all_by_specifier();
+
+    let baseline_external = heap.vm_external_bytes();
+
+    let promise = graph.evaluate(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      m,
+      &mut host,
+      &mut hooks,
+    )?;
+    let promise_obj = expect_promise_object(promise);
+
+    promise_root = Some(root_value(&mut heap, promise)?);
+    assert_eq!(heap.promise_state(promise_obj)?, PromiseState::Pending);
+
+    // If the module graph fell back to the async AST evaluator, it would parse a module AST on
+    // demand and charge it against `Heap::vm_external_bytes()`.
+    assert_eq!(
+      heap.vm_external_bytes(),
+      baseline_external,
+      "expected compiled TLA evaluation to not parse/retain an AST"
+    );
+
+    // Force a GC cycle while the module is suspended on the first `await`.
+    let gc_runs_before = heap.gc_runs();
+    heap.collect_garbage();
+    assert!(
+      heap.gc_runs() > gc_runs_before,
+      "expected explicit heap GC to increment gc_runs"
+    );
+
+    drain_microtasks(&mut vm, &mut heap, &mut hooks)?;
+
+    let promise = heap
+      .get_root(promise_root.ok_or_else(|| VmError::InvariantViolation("promise root missing"))?)
+      .ok_or_else(VmError::invalid_handle)?;
+    let promise_obj = expect_promise_object(promise);
+    assert_eq!(heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+    let mut scope = heap.scope();
+    let ns = graph.get_module_namespace(m, &mut vm, &mut scope)?;
+    assert_eq!(
+      ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "a")?,
+      Value::Number(1.0)
+    );
+    assert_eq!(
+      ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "b")?,
+      Value::Number(2.0)
+    );
+
+    drop(scope);
+    graph.teardown(&mut vm, &mut heap);
+    Ok(())
+  })();
+
+  graph.teardown(&mut vm, &mut heap);
+  if let Some(root) = promise_root {
+    heap.remove_root(root);
+  }
+  graph.teardown(&mut vm, &mut heap);
+  teardown_jobs(&mut vm, &mut heap, &mut hooks);
+  realm.teardown(&mut heap);
+  {
+    let mut ctx = JobCtx {
+      vm: &mut vm,
+      heap: &mut heap,
+    };
+    hooks.teardown(&mut ctx);
+  }
+  vm.teardown_microtasks(&mut heap);
+  result
+}
+
+#[test]
 fn tla_compiled_module_compound_assignment_await_survives_gc_without_ast_fallback() -> Result<(), VmError> {
   let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
   let mut hooks = MicrotaskQueue::new();
