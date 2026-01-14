@@ -257,3 +257,152 @@ if (!import.meta.url.includes("import_meta_url.js")) {
     "expected module case to pass: {result:#?}"
   );
 }
+
+#[test]
+fn vm_js_executor_module_top_level_await_smoke() {
+  let _guard = VM_JS_SMOKE_LOCK
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner());
+  let temp = tempdir().unwrap();
+
+  // Minimal fake test262 checkout: harness + test directories.
+  fs::create_dir_all(temp.path().join("harness")).unwrap();
+  fs::write(
+    temp.path().join("harness/assert.js"),
+    r#"
+var assert = {};
+assert.sameValue = function (actual, expected) {
+  if (actual !== expected) {
+    throw new Error("assert.sameValue failed: expected " + expected + ", got " + actual);
+  }
+};
+"#,
+  )
+  .unwrap();
+  fs::write(temp.path().join("harness/sta.js"), "").unwrap();
+
+  let test_dir = temp.path().join("test");
+  fs::create_dir_all(&test_dir).unwrap();
+
+  // Top-level await should resolve and allow the module to call $DONE.
+  fs::write(
+    test_dir.join("tla.js"),
+    r#"/*---
+flags: [module, async]
+---*/
+var x = await Promise.resolve(1);
+assert.sameValue(x, 1);
+$DONE();
+"#,
+  )
+  .unwrap();
+
+  let discovered = discover_tests(temp.path()).unwrap();
+  let cases = expand_cases(&discovered, &Filter::Regex(Regex::new(r"^tla\.js$").unwrap())).unwrap();
+  assert_eq!(cases.len(), 1);
+  assert_eq!(cases[0].variant, test262_semantic::report::Variant::Module);
+
+  let expectations = Expectations::empty();
+  let executor = default_executor();
+  let timeout_manager = TimeoutManager::new();
+
+  let results = test262_semantic::runner::run_cases(
+    temp.path(),
+    HarnessMode::Test262,
+    &cases,
+    &expectations,
+    executor.as_ref(),
+    false,
+    Duration::from_secs(1),
+    &timeout_manager,
+  );
+
+  assert_eq!(results.len(), 1);
+  let result = &results[0];
+  assert_eq!(result.id, "tla.js");
+  assert_eq!(result.variant, test262_semantic::report::Variant::Module);
+  assert_eq!(
+    result.outcome,
+    TestOutcome::Passed,
+    "expected module case to pass: {result:#?}"
+  );
+}
+
+#[test]
+fn vm_js_executor_module_dynamic_import_of_async_module_smoke() {
+  let _guard = VM_JS_SMOKE_LOCK
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner());
+  let temp = tempdir().unwrap();
+
+  // Minimal fake test262 checkout: harness + test directories.
+  fs::create_dir_all(temp.path().join("harness")).unwrap();
+  fs::write(
+    temp.path().join("harness/assert.js"),
+    r#"
+var assert = {};
+assert.sameValue = function (actual, expected) {
+  if (actual !== expected) {
+    throw new Error("assert.sameValue failed: expected " + expected + ", got " + actual);
+  }
+};
+"#,
+  )
+  .unwrap();
+  fs::write(temp.path().join("harness/sta.js"), "").unwrap();
+
+  let test_dir = temp.path().join("test");
+  fs::create_dir_all(&test_dir).unwrap();
+
+  fs::write(
+    test_dir.join("dep.js"),
+    r#"
+await 1;
+export default 42;
+"#,
+  )
+  .unwrap();
+
+  fs::write(
+    test_dir.join("dyn_import.js"),
+    r#"/*---
+flags: [module, async]
+---*/
+import("./dep.js")
+  .then(ns => assert.sameValue(ns.default, 42))
+  .then($DONE, $DONE);
+"#,
+  )
+  .unwrap();
+
+  let discovered = discover_tests(temp.path()).unwrap();
+  let cases =
+    expand_cases(&discovered, &Filter::Regex(Regex::new(r"^dyn_import\.js$").unwrap())).unwrap();
+  assert_eq!(cases.len(), 1);
+  assert_eq!(cases[0].variant, test262_semantic::report::Variant::Module);
+
+  let expectations = Expectations::empty();
+  let executor = default_executor();
+  let timeout_manager = TimeoutManager::new();
+
+  let results = test262_semantic::runner::run_cases(
+    temp.path(),
+    HarnessMode::Test262,
+    &cases,
+    &expectations,
+    executor.as_ref(),
+    false,
+    Duration::from_secs(1),
+    &timeout_manager,
+  );
+
+  assert_eq!(results.len(), 1);
+  let result = &results[0];
+  assert_eq!(result.id, "dyn_import.js");
+  assert_eq!(result.variant, test262_semantic::report::Variant::Module);
+  assert_eq!(
+    result.outcome,
+    TestOutcome::Passed,
+    "expected module case to pass: {result:#?}"
+  );
+}
