@@ -3083,6 +3083,25 @@ mod tests {
   }
 
   #[test]
+  fn load_session_outcome_reports_none_when_primary_is_missing_even_if_backup_exists() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let session_path = dir.path().join("session.json");
+    let backup_path = session_backup_path(&session_path);
+
+    let backup_session = BrowserSession::single("about:blank".to_string());
+    std::fs::write(
+      &backup_path,
+      serde_json::to_string(&backup_session).expect("serialize backup session"),
+    )
+    .expect("write backup session");
+
+    let loaded = load_session_outcome(&session_path).expect("load session");
+    assert_eq!(loaded.source, SessionLoadSource::None);
+    assert_eq!(loaded.primary_error, None);
+    assert_eq!(loaded.session, None);
+  }
+
+  #[test]
   fn load_session_outcome_reports_primary_when_primary_is_valid() {
     let dir = tempfile::tempdir().expect("temp dir");
     let session_path = dir.path().join("session.json");
