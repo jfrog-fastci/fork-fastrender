@@ -3108,7 +3108,7 @@ impl JsRuntime {
             )
             .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err)),
             AsyncSuspendKind::AwaitResolved => Ok(await_value),
-            AsyncSuspendKind::Yield | AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
+            AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
               "unexpected async generator yield suspension in async script evaluation",
             )),
             AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
@@ -3692,7 +3692,7 @@ impl JsRuntime {
             )
             .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err)),
             AsyncSuspendKind::AwaitResolved => Ok(await_value),
-            AsyncSuspendKind::Yield | AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
+            AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
               "unexpected async generator yield suspension in async script evaluation",
             )),
             AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
@@ -56670,7 +56670,7 @@ pub(crate) fn run_ecma_function(
           )
           .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut root_scope, err)),
           AsyncSuspendKind::AwaitResolved => Ok(await_value),
-          AsyncSuspendKind::Yield | AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
+          AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
             "unexpected async generator yield suspension in async function start",
           )),
           AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
@@ -57644,7 +57644,7 @@ pub(crate) fn resume_module_tla_evaluation(
             )
             .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err)),
             AsyncSuspendKind::AwaitResolved => Ok(await_value),
-            AsyncSuspendKind::Yield | AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
+            AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
               "unexpected async generator yield suspension in module evaluation",
             )),
             AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
