@@ -308,6 +308,9 @@ impl<'a> Parser<'a> {
   /// This models the early-error behavior for class field initializers and `static {}` blocks:
   /// `arguments` is a syntax error unless it is *shadowed* by an inner non-arrow function (which
   /// provides its own `arguments` binding).
+  //
+  // Keep a single implementation of this helper (and its corresponding validator) to avoid
+  // duplicate-definition build breakages in `parse-js`.
   pub fn with_disallow_arguments_in_class_init<R, F: FnOnce(&mut Self) -> R>(&mut self, f: F) -> R {
     // Only enforce this early error in strict ECMAScript parsing mode (Dialect::Ecma). Other
     // dialects use recovery and accept a broader syntax surface.
