@@ -284,13 +284,15 @@ include = [
 ]
 
 exclude = [
-  # No module support yet.
+  # Modules are supported by vm-js, but this curated suite intentionally focuses on script
+  # semantics and stays CI-friendly. Use `xtask js test262 --suite modules_smoke` to run module
+  # tests.
   "language/import/**",
   "language/export/**",
   "language/module-code/**",
 
   # Some tests are module-only (flagged `module` in frontmatter) even though they live under
-  # `language/statements/**`. Keep modules fully excluded until module execution lands.
+  # `language/statements/**`. Keep them excluded here; run the module suite instead.
   "language/statements/labeled/value-await-module*.js",
   "language/statements/for-of/head-await-using-bound-names-in-stmt.js",
   "language/statements/for-of/head-await-using-fresh-binding-per-iteration.js",

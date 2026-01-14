@@ -116,8 +116,9 @@ include = [
 ]
 
 exclude = [
-  # No module support yet (some built-in tests live under module-only language directories, but
-  # keep this here for consistency with other curated suites).
+  # Modules are supported by vm-js, but this suite intentionally excludes module tests for
+  # consistency with other curated suites. Use `xtask js test262 --suite modules_smoke` to run
+  # module tests.
   "language/import/**",
   "language/export/**",
   "language/module-code/**",

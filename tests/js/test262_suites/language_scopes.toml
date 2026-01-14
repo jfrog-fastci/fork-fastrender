@@ -5,7 +5,8 @@
 #   - `let`/`const`/TDZ behavior (`language/block-scope`)
 #   - strict mode / directive prologue parsing (`language/directive-prologue`)
 #   - function body parsing/execution edge cases (`language/function-code`)
-# - Keep modules excluded until module execution lands.
+# - Modules are supported by vm-js, but excluded from this suite to keep it focused on script
+#   semantics. Use `xtask js test262 --suite modules_smoke` to run module tests.
 #
 # Test IDs are paths relative to `test/` in the tc39/test262 checkout.
 include = [
@@ -15,9 +16,9 @@ include = [
 ]
 
 exclude = [
-  # No module support yet (kept for consistency with other curated suites).
+  # Modules are supported by vm-js, but excluded from this suite for consistency with other
+  # curated suites. Use `xtask js test262 --suite modules_smoke` to run module tests.
   "language/import/**",
   "language/export/**",
   "language/module-code/**",
 ]
-

@@ -2,7 +2,9 @@
 #
 # Intent:
 # - Expand coverage beyond expression operators while staying deterministic/CI-friendly.
-# - Focus on "script" semantics; module tests remain excluded until module support lands.
+# - Focus on "script" semantics. Modules are supported by vm-js, but excluded from this suite to
+#   keep it focused and CI-friendly. Use `xtask js test262 --suite modules_smoke` to run module
+#   tests.
 #
 # Test IDs are paths relative to `test/` in the tc39/test262 checkout.
 include = [
@@ -42,13 +44,15 @@ include = [
 ]
 
 exclude = [
-  # No module support yet.
+  # Modules are supported by vm-js, but this suite intentionally excludes module tests to keep it
+  # focused on script semantics. Use `xtask js test262 --suite modules_smoke` to run module tests.
   "language/import/**",
   "language/export/**",
   "language/module-code/**",
 
   # Some statement tests are explicitly module-only (flagged `module` in frontmatter) even though
-  # they live under `language/statements/**`.
+  # they live under `language/statements/**`. Keep them excluded here; run the module suite
+  # instead.
   "language/statements/labeled/value-await-module*.js",
   "language/statements/for-of/head-await-using-bound-names-in-stmt.js",
   "language/statements/for-of/head-await-using-fresh-binding-per-iteration.js",
