@@ -7934,6 +7934,18 @@ impl InlineFormattingContext {
       )
     }
 
+    fn is_trimmable_fullwidth_punctuation_advance(adv: f32, font_size: f32) -> bool {
+      // CSS Text 4 specifies that for proportional fullwidth punctuation glyphs (i.e. glyphs whose
+      // advance is already smaller than the CJK advance measure), UAs must not add/remove space: the
+      // given advance is treated as both fullwidth and halfwidth.
+      //
+      // FastRender does not currently compute the exact CJK advance measure (`ic`). As a conservative
+      // heuristic, only apply trimming when the glyph advance is reasonably close to 1em.
+      // (This prevents quartering punctuation in fonts that already provide narrow glyph advances,
+      // such as Latin curly quotes in DejaVu Sans.)
+      adv >= font_size * 0.6
+    }
+
     fn first_cluster_advance(text: &TextItem) -> Option<f32> {
       let first = text.text.chars().next()?;
       let offset = first.len_utf8();
@@ -8188,6 +8200,9 @@ impl InlineFormattingContext {
             if adv <= 0.0 {
               return None;
             }
+            if !is_trimmable_fullwidth_punctuation_advance(adv, t.style.font_size) {
+              return None;
+            }
             Some(adv * 0.5)
           }
           InlineItem::InlineBox(b) => {
@@ -8340,6 +8355,9 @@ impl InlineFormattingContext {
             if adv <= 0.0 {
               return None;
             }
+            if !is_trimmable_fullwidth_punctuation_advance(adv, t.style.font_size) {
+              return None;
+            }
             Some((adv * 0.5, t.style.text_spacing_trim))
           }
           InlineItem::InlineBox(b) => {
@@ -8370,6 +8388,9 @@ impl InlineFormattingContext {
             if adv <= 0.0 {
               return None;
             }
+            if !is_trimmable_fullwidth_punctuation_advance(adv, t.style.font_size) {
+              return None;
+            }
             Some((adv * 0.5, t.style.text_spacing_trim))
           }
           InlineItem::InlineBox(b) => {
@@ -8398,6 +8419,9 @@ impl InlineFormattingContext {
             }
             let adv = first_cluster_advance(t)?;
             if adv <= 0.0 {
+              return None;
+            }
+            if !is_trimmable_fullwidth_punctuation_advance(adv, t.style.font_size) {
               return None;
             }
             Some((adv * 0.5, t.style.text_spacing_trim))
@@ -8774,6 +8798,9 @@ impl InlineFormattingContext {
             }
             let adv = last_cluster_advance(t)?;
             if adv <= 0.0 {
+              return None;
+            }
+            if !is_trimmable_fullwidth_punctuation_advance(adv, t.style.font_size) {
               return None;
             }
             Some(adv * 0.5)

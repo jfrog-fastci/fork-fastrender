@@ -745,3 +745,44 @@ fn text_spacing_trim_does_not_trim_halfwidth_punctuation() {
     "expected halfwidth punctuation not to hang into the start edge, got x={trim_x:.3}"
   );
 }
+
+#[test]
+fn text_spacing_trim_does_not_trim_proportional_quotes() {
+  // DejaVu Sans provides narrow (proportional) glyph advances for curly quotes. CSS Text 4 treats
+  // such punctuation as simultaneously fullwidth and halfwidth, so UAs must not add/remove space.
+  let open_space_all = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: space-all;",
+    "“H",
+  );
+  let open_trim_start = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: trim-start;",
+    "“H",
+  );
+
+  let open_space_x = first_text_x_in_line(&open_space_all[0]).expect("open quote x (space-all)");
+  let open_trim_x = first_text_x_in_line(&open_trim_start[0]).expect("open quote x (trim-start)");
+  assert!(
+    (open_trim_x - open_space_x).abs() < 0.01,
+    "expected trim-start not to affect proportional opening quotes (space-all x={open_space_x:.3} trim-start x={open_trim_x:.3})"
+  );
+  assert!(
+    open_trim_x >= -0.01,
+    "expected proportional opening quotes not to hang into the start edge, got x={open_trim_x:.3}"
+  );
+
+  let close_space_all = layout_lines_with_box_style(
+    "width: 200px; white-space: nowrap; text-align: right; text-spacing-trim: space-all;",
+    "H”",
+  );
+  let close_trim_both = layout_lines_with_box_style(
+    "width: 200px; white-space: nowrap; text-align: right; text-spacing-trim: trim-both;",
+    "H”",
+  );
+
+  let close_space_x = text_x_in_line(&close_space_all[0], "”").expect("close quote x (space-all)");
+  let close_trim_x = text_x_in_line(&close_trim_both[0], "”").expect("close quote x (trim-both)");
+  assert!(
+    (close_trim_x - close_space_x).abs() < 0.01,
+    "expected trim-both not to affect proportional closing quotes (space-all x={close_space_x:.3} trim-both x={close_trim_x:.3})"
+  );
+}
