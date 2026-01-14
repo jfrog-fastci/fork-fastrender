@@ -6891,6 +6891,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       .map(|path| path.to_string_lossy().to_string());
     let rayon_threads = std::env::var_os("RAYON_NUM_THREADS")
       .and_then(|raw| raw.to_string_lossy().trim().parse::<u32>().ok());
+    let rss_bytes = fastrender::memory::current_rss_bytes();
 
     let event = perf_log::PerfEvent::RunStart {
       schema_version: perf_log::SCHEMA_VERSION,
@@ -6909,6 +6910,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         )),
         perf_log_out: perf_log_out.clone(),
       },
+      rss_bytes,
     };
 
     if let Ok(mut writer) = writer.try_borrow_mut() {

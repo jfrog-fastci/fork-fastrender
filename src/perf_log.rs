@@ -197,6 +197,9 @@ pub enum PerfEvent<'a> {
     build: BuildInfo,
     #[serde(default)]
     config: RunConfig,
+    /// Best-effort RSS snapshot at startup (Linux-only; nullable elsewhere).
+    #[serde(default)]
+    rss_bytes: Option<u64>,
   },
   /// Emitted once on graceful shutdown (best-effort).
   RunEnd {
@@ -618,6 +621,7 @@ mod tests {
         }),
         perf_log_out: Some("target/perf.jsonl".to_string()),
       },
+      rss_bytes: Some(42),
     };
 
     let mut buf = Vec::new();

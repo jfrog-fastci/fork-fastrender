@@ -133,7 +133,11 @@ fn event_timestamp_ms(event: &BrowserPerfLogEvent) -> Option<u64> {
 fn matches_event_filter(event: &BrowserPerfLogEvent, filter: EventFilter) -> bool {
   match event {
     BrowserPerfLogEvent::V2(event) => match event {
-      BrowserPerfLogEventV2::RunStart { .. } | BrowserPerfLogEventV2::RunEnd { .. } => false,
+      // Run-level events are not typically included in filters, but `run_start`/`run_end` carry RSS
+      // snapshots that are useful when summarizing memory usage.
+      BrowserPerfLogEventV2::RunStart { .. } | BrowserPerfLogEventV2::RunEnd { .. } => {
+        filter == EventFilter::MemorySummary
+      }
       BrowserPerfLogEventV2::Frame { .. } => filter == EventFilter::Frame,
       BrowserPerfLogEventV2::Input { input_kind, .. } => match filter {
         EventFilter::Input => true,
@@ -592,7 +596,16 @@ fn run(cli: Cli) -> Result<(), String> {
 
         match event {
           BrowserPerfLogEvent::V2(event) => match event {
-            BrowserPerfLogEventV2::RunStart { .. } | BrowserPerfLogEventV2::RunEnd { .. } => {}
+            BrowserPerfLogEventV2::RunStart { rss_bytes, .. }
+            | BrowserPerfLogEventV2::RunEnd { rss_bytes, .. } => {
+              if let Some(rss) = rss_bytes {
+                samples.rss_bytes.push(rss);
+                if samples.rss_first_bytes.is_none() {
+                  samples.rss_first_bytes = Some(rss);
+                }
+                samples.rss_last_bytes = Some(rss);
+              }
+            }
             BrowserPerfLogEventV2::Frame { ui_frame_ms, .. } => {
               if let Some(ms) = ui_frame_ms.filter(f64::is_finite) {
                 samples.ui_frame_time_ms.push(ms);

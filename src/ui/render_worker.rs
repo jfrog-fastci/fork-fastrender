@@ -4195,10 +4195,10 @@ impl BrowserRuntime {
                 let changed = step_result.unwrap_or(false);
                 (changed, step_result)
               }) {
-              if let Some(dom_changed) = step_result {
-                scroll_handled = true;
-                changed |= dom_changed;
-              }
+                if let Some(dom_changed) = step_result {
+                  scroll_handled = true;
+                  changed |= dom_changed;
+                }
             }
 
             if scroll_handled {

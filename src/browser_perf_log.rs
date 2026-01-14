@@ -50,6 +50,9 @@ pub enum BrowserPerfLogEventV2 {
     pid: Option<u32>,
     #[serde(default)]
     start_unix_ms: Option<u64>,
+    /// Best-effort RSS snapshot at startup (Linux-only in the browser; nullable elsewhere).
+    #[serde(default)]
+    rss_bytes: Option<u64>,
     /// Nested build metadata (shape is defined by `fastrender::perf_log::BuildInfo`).
     #[serde(default)]
     build: Option<serde_json::Value>,
@@ -390,6 +393,7 @@ mod tests {
       "schema_version":2,
       "t_ms":0,
       "pid":123,
+      "rss_bytes":1048576,
       "start_unix_ms":1700000000000,
       "build":{"crate_version":"0.1.0","debug":true,"target":"x86_64-linux"},
       "config":{"hud_enabled":true,"perf_log_enabled":true}
@@ -397,8 +401,9 @@ mod tests {
 
     let event: BrowserPerfLogEvent = serde_json::from_str(json).expect("parse event");
     match event {
-      BrowserPerfLogEvent::V2(BrowserPerfLogEventV2::RunStart { pid, .. }) => {
+      BrowserPerfLogEvent::V2(BrowserPerfLogEventV2::RunStart { pid, rss_bytes, .. }) => {
         assert_eq!(pid, Some(123));
+        assert_eq!(rss_bytes, Some(1048576));
       }
       other => panic!("unexpected event parsed: {other:?}"),
     }
