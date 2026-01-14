@@ -38990,7 +38990,9 @@ fn html_element_click_native(
         if tag_name.eq_ignore_ascii_case("a") && dom.is_html_case_insensitive_namespace(namespace) {
           if let Ok(Some(href)) = dom.get_attribute(current, "href") {
             let href = trim_ascii_whitespace(href);
-            if !href.is_empty() && !is_javascript_url(href) {
+            // Match common browser behavior: an explicit `href` attribute is a navigation target
+            // even when it is empty/whitespace-only (`<a href="">`).
+            if !is_javascript_url(href) {
               return Some(href.to_string());
             }
           }

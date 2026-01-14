@@ -8294,7 +8294,9 @@ impl BrowserTab {
           {
             if let Ok(Some(href)) = dom.get_attribute(current, "href") {
               let href = trim_ascii_whitespace(&href);
-              if !href.is_empty() && !is_javascript_url(href) {
+              // Match common browser behavior: an explicit `href` attribute is a navigation target
+              // even when it is empty/whitespace-only (`<a href="">`).
+              if !is_javascript_url(href) {
                 return Some(href.to_string());
               }
             }
@@ -8310,9 +8312,6 @@ impl BrowserTab {
 
     fn resolve_href(document_url: Option<&str>, href: &str) -> Option<String> {
       let href = trim_ascii_whitespace(href);
-      if href.is_empty() {
-        return None;
-      }
 
       if let Ok(url) = url::Url::parse(href) {
         if url.scheme().eq_ignore_ascii_case("javascript") {

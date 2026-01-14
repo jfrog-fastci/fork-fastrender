@@ -70,6 +70,48 @@ fn click_default_action_resolves_link_when_not_canceled() -> Result<()> {
 }
 
 #[test]
+fn click_default_action_resolves_empty_href_against_base_url() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let html = r#"<!doctype html>
+<base href="https://example.com/dir/page.html#frag">
+<a id="link" href="">reload</a>
+"#;
+
+  let executor = VmJsBrowserTabExecutor::new();
+  let mut tab = BrowserTab::from_html(html, RenderOptions::new().with_viewport(64, 64), executor)?;
+
+  let link = tab
+    .dom()
+    .get_element_by_id("link")
+    .expect("expected <a id=link> to be present");
+
+  let resolved = tab.resolve_navigation_for_click(link)?;
+  assert_eq!(resolved.as_deref(), Some("https://example.com/dir/page.html"));
+  Ok(())
+}
+
+#[test]
+fn click_default_action_resolves_whitespace_href_against_base_url() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let html = r#"<!doctype html>
+<base href="https://example.com/dir/page.html#frag">
+<a id="link" href="   ">reload</a>
+"#;
+
+  let executor = VmJsBrowserTabExecutor::new();
+  let mut tab = BrowserTab::from_html(html, RenderOptions::new().with_viewport(64, 64), executor)?;
+
+  let link = tab
+    .dom()
+    .get_element_by_id("link")
+    .expect("expected <a id=link> to be present");
+
+  let resolved = tab.resolve_navigation_for_click(link)?;
+  assert_eq!(resolved.as_deref(), Some("https://example.com/dir/page.html"));
+  Ok(())
+}
+
+#[test]
 fn click_listeners_can_schedule_tasks_via_event_loop_web_apis() -> Result<()> {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let html = r#"<!doctype html>
