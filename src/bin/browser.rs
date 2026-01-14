@@ -25789,7 +25789,10 @@ impl App {
                   "unknown panic".to_string()
                 };
                 eprintln!("rfd import file dialog panicked: {msg}");
-                self.show_chrome_toast("Failed to open native file dialog");
+                self.show_chrome_toast_kind(
+                  fastrender::ui::ToastKind::Error,
+                  "Failed to open native file dialog",
+                );
               }
             }
           }
@@ -25814,7 +25817,10 @@ impl App {
                   "unknown panic".to_string()
                 };
                 eprintln!("rfd export file dialog panicked: {msg}");
-                self.show_chrome_toast("Failed to open native file dialog");
+                self.show_chrome_toast_kind(
+                  fastrender::ui::ToastKind::Error,
+                  "Failed to open native file dialog",
+                );
               }
             }
           }
