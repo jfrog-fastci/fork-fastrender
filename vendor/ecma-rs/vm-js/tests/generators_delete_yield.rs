@@ -99,6 +99,30 @@ fn generator_delete_optional_chain_computed_member_evaluates_yield_in_key_when_n
 }
 
 #[test]
+fn generator_delete_optional_chain_propagates_and_skips_yield_in_key_after_base_short_circuit() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        // If the base short-circuits (`(yield null)` resumes to null), the entire optional-chain
+        // expression becomes non-reference and `delete` must return true without evaluating any
+        // following member operations (including yields in computed keys).
+        return delete (yield null)?.x[(yield "should-not-yield")];
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(null);
+      r1.value === null && r1.done === false &&
+      r2.value === true && r2.done === true
+    "#,
+    )
+    .unwrap();
+
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_delete_super_computed_member_evaluates_key_and_to_property_key_before_reference_error() {
   let mut rt = new_runtime();
   let value = rt

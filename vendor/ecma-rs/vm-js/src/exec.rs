@@ -35878,7 +35878,10 @@ fn gen_eval_delete_expr(
         }
       }
     }
-    Expr::Member(member) => match gen_eval_expr(evaluator, scope, &member.stx.left)? {
+    // Use `gen_eval_chain_base` (not `gen_eval_expr`) so optional-chain short-circuit sentinels can
+    // propagate through subsequent member operations (`delete a?.b.c` should not throw when `a` is
+    // nullish).
+    Expr::Member(member) => match gen_eval_chain_base(evaluator, scope, &member.stx.left)? {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => {
           let base = v.unwrap_or(Value::Undefined);
@@ -35897,7 +35900,8 @@ fn gen_eval_delete_expr(
         Ok(GenEval::Suspend(suspend))
       }
     },
-    Expr::ComputedMember(member) => match gen_eval_expr(evaluator, scope, &member.stx.object)? {
+    Expr::ComputedMember(member) => match gen_eval_chain_base(evaluator, scope, &member.stx.object)?
+    {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => gen_delete_computed_member_after_base(
           evaluator,
