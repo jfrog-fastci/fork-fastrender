@@ -3556,7 +3556,8 @@ mod tests {
       "<kbd>Option</kbd>+<kbd>Enter</kbd>",
       "Open omnibox input in a new tab",
       // Bookmarks.
-      "<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>D</kbd>",
+      "<kbd>Ctrl</kbd>+<kbd>D</kbd>",
+      "<kbd>Cmd</kbd>+<kbd>D</kbd>",
       "Toggle bookmark",
       "<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd>",
       "Show bookmarks manager",
@@ -3584,7 +3585,8 @@ mod tests {
       // Downloads.
       "<kbd>Ctrl</kbd>+<kbd>J</kbd>",
       "<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>J</kbd>",
-      "Toggle downloads panel",
+      "Show downloads",
+      "Window → Show Downloads…",
       // Zoom.
       "<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>+</kbd>",
       "<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>-</kbd>",
