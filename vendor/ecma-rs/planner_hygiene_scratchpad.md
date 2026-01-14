@@ -8,58 +8,74 @@ this swarm environment.)
 
 Last checked: 2026-01-14
 
-- `timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p parse-js --lib` — **PASS** (`115` tests)
+- `timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p parse-js --lib` — **PASS** (`149` tests)
 
-- `timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p vm-js --test early_errors` — **FAIL** (1 test)
-  - `await_using_declaration_in_script_block_is_syntax_error`
-    - `vm-js/tests/early_errors.rs:1556:57`
-    - `called Result::unwrap_err() on an Ok value`
+- `timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p vm-js --test early_errors` — **PASS** (`199` tests)
 
-- `timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p vm-js --lib` — **FAIL** (`11` tests)
-  - `compiled_module_execution_context_tests::compiled_module_import_meta_uses_callee_module_and_is_cached`
-    - `vm-js/tests/compiled_module_execution_context.rs:320:7` (`Rejected` vs `Fulfilled`)
-  - `compiled_module_execution_context_tests::compiled_module_dynamic_import_referrer_uses_callee_module`
-    - `Error: Unimplemented(\"unbound identifier\")`
-  - `compiled_module_decl_execution_context_tests::compiled_module_decl_functions_capture_realm_and_module_for_host_calls`
-    - `vm-js/tests/compiled_module_decl_execution_context.rs:371:7` (`Rejected` vs `Fulfilled`)
-  - `compiled_module_graph_tests::compiled_module_graph_dynamic_import_from_compiled_module_resolves`
-    - `Error: ThrowWithStack { ... }`
-  - `compiled_module_graph_tests::compiled_module_graph_import_meta_is_cached_within_compiled_module`
-    - `Error: ThrowWithStack { ... }`
-  - `compiled_module_graph_tests::compiled_module_hoists_top_level_function_decls_into_module_env`
-    - `vm-js/tests/compiled_module_graph.rs:2983:5` (`Rejected` vs `Fulfilled`)
-  - `compiled_module_graph_tests::compiled_module_supports_named_default_export_function_decls`
-    - `vm-js/tests/compiled_module_graph.rs:3073:5` (`Rejected` vs `Fulfilled`)
-  - `hir_exec::hir_async_await_control_flow_regression_tests::labelled_continue_across_await`
-    - `Error: InvariantViolation(\"PromiseReactionJob handler threw while capability is undefined\")`
-  - `typed_array_dataview_rooting_gc_tests::function_bind_roots_bound_args_across_gc_in_length_get_trap`
-    - panic at `vm-js/src/heap.rs:9376:7` (`debug_value_is_valid_or_primitive`)
-  - `typed_array_dataview_rooting_gc_tests::array_pop_roots_result_across_gc_in_length_set_trap`
-    - panic at `vm-js/src/heap.rs:9376:7` (`debug_value_is_valid_or_primitive`)
-  - `typed_array_dataview_rooting_gc_tests::reflect_apply_roots_target_across_gc_in_create_list_from_array_like`
-    - panic at `vm-js/src/heap.rs:9376:7` (`debug_value_is_valid_or_primitive`)
+- `timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p vm-js --lib` — **FAIL** (`14` tests)
+  - `compiled_module_graph_tests::compiled_module_export_default_expr_applies_set_function_name_default`
+    - `vm-js/tests/compiled_module_graph.rs:2090` (`assertion left == right failed; left: Rejected, right: Fulfilled`)
+  - `compiled_module_graph_tests::compiled_module_export_default_async_arrow_expr_applies_set_function_name_default`
+    - `vm-js/tests/compiled_module_graph.rs:2187` (`assertion left == right failed: module evaluation should complete synchronously; left: Rejected, right: Fulfilled`)
+  - `compiled_module_graph_tests::compiled_module_export_default_async_function_expr_applies_set_function_name_default`
+    - `vm-js/tests/compiled_module_graph.rs:2296` (`assertion left == right failed: module evaluation should complete synchronously; left: Rejected, right: Fulfilled`)
+  - `compiled_module_graph_tests::compiled_module_export_default_class_expr_constructs_and_applies_set_function_name_default`
+    - `vm-js/tests/compiled_module_graph.rs:2409` (`assertion left == right failed; left: Rejected, right: Fulfilled`)
+  - `compiled_module_graph_tests::compiled_module_export_default_class_expr_static_name_method_can_override_and_internal_name_is_default`
+    - `vm-js/tests/compiled_module_graph.rs:2511` (`assertion left == right failed; left: Rejected, right: Fulfilled`)
+  - `compiled_module_graph_tests::compiled_module_export_default_function_expr_applies_set_function_name_default`
+    - `vm-js/tests/compiled_module_graph.rs:2627` (`assertion left == right failed; left: Rejected, right: Fulfilled`)
+  - `compiled_module_graph_tests::compiled_module_export_default_class_expr_applies_set_function_name_default`
+    - `vm-js/tests/compiled_module_graph.rs:2731` (`assertion left == right failed; left: Rejected, right: Fulfilled`)
+  - `compiled_module_graph_tests::compiled_module_export_default_expr_respects_statement_order`
+    - `vm-js/tests/compiled_module_graph.rs:1987` (`assertion left == right failed; left: Rejected, right: Fulfilled`)
+  - `compiled_module_graph_tests::compiled_module_graph_default_export_expression_is_evaluated_once`
+    - `ThrowWithStack { source: "a.js", line: 1, col: 1 }`
+  - `hir_exec::async_for_await_of_async_iterator_close_tests::compiled_hir_async_fn_for_await_of_throw_awaits_async_iterator_close_before_catch`
+    - `vm-js/src/hir_exec.rs` (`InvariantViolation("for-await-of executed in synchronous HIR evaluator")`)
+  - `object_literal_super_tests::super_computed_getsuperbase_before_topropertykey_getvalue`
+    - `vm-js/tests/unit/object_literal_super.rs:64` (`unexpected interpreter result: Bool(false)`)
+  - `object_literal_super_tests::super_computed_getsuperbase_before_topropertykey_putvalue`
+    - `vm-js/tests/unit/object_literal_super.rs:64` (`unexpected interpreter result: Bool(false)`)
+  - `object_literal_super_tests::super_computed_getsuperbase_before_topropertykey_putvalue_compound_assign`
+    - `vm-js/tests/unit/object_literal_super.rs:64` (`unexpected interpreter result: Bool(false)`)
+  - `object_literal_super_tests::super_computed_getsuperbase_before_topropertykey_putvalue_increment`
+    - `vm-js/tests/unit/object_literal_super.rs:64` (`unexpected interpreter result: Bool(false)`)
 
 ## Open tasks
 
-- Fix `vm-js --test early_errors` failure:
-  - `await_using_declaration_in_script_block_is_syntax_error` (`vm-js/tests/early_errors.rs:1556:57` — `unwrap_err` called on `Ok`)
-
 - Fix `vm-js --lib` failures:
-  - Compiled module tests:
-    - `compiled_module_execution_context_tests::compiled_module_import_meta_uses_callee_module_and_is_cached` (`Rejected` vs `Fulfilled`)
-    - `compiled_module_execution_context_tests::compiled_module_dynamic_import_referrer_uses_callee_module` (`Unimplemented("unbound identifier")`)
-    - `compiled_module_decl_execution_context_tests::compiled_module_decl_functions_capture_realm_and_module_for_host_calls` (`Rejected` vs `Fulfilled`)
-    - `compiled_module_graph_tests::compiled_module_graph_dynamic_import_from_compiled_module_resolves` (`ThrowWithStack`)
-    - `compiled_module_graph_tests::compiled_module_graph_import_meta_is_cached_within_compiled_module` (`ThrowWithStack`)
-    - `compiled_module_graph_tests::compiled_module_hoists_top_level_function_decls_into_module_env` (`Rejected` vs `Fulfilled`)
-    - `compiled_module_graph_tests::compiled_module_supports_named_default_export_function_decls` (`Rejected` vs `Fulfilled`)
-  - Async/await control flow regression:
-    - `hir_exec::hir_async_await_control_flow_regression_tests::labelled_continue_across_await`
-      - `InvariantViolation("PromiseReactionJob handler threw while capability is undefined")`
-  - GC rooting/debug assertion panics (`vm-js/src/heap.rs:9376:7`):
-    - `typed_array_dataview_rooting_gc_tests::function_bind_roots_bound_args_across_gc_in_length_get_trap`
-    - `typed_array_dataview_rooting_gc_tests::array_pop_roots_result_across_gc_in_length_set_trap`
-    - `typed_array_dataview_rooting_gc_tests::reflect_apply_roots_target_across_gc_in_create_list_from_array_like`
+  - Compiled module graph default-export evaluation is rejecting unexpectedly:
+    - `compiled_module_graph_tests::compiled_module_export_default_expr_applies_set_function_name_default`
+      (`left: Rejected, right: Fulfilled`)
+    - `compiled_module_graph_tests::compiled_module_export_default_async_arrow_expr_applies_set_function_name_default`
+      (`left: Rejected, right: Fulfilled`)
+    - `compiled_module_graph_tests::compiled_module_export_default_async_function_expr_applies_set_function_name_default`
+      (`left: Rejected, right: Fulfilled`)
+    - `compiled_module_graph_tests::compiled_module_export_default_class_expr_constructs_and_applies_set_function_name_default`
+      (`left: Rejected, right: Fulfilled`)
+    - `compiled_module_graph_tests::compiled_module_export_default_class_expr_static_name_method_can_override_and_internal_name_is_default`
+      (`left: Rejected, right: Fulfilled`)
+    - `compiled_module_graph_tests::compiled_module_export_default_function_expr_applies_set_function_name_default`
+      (`left: Rejected, right: Fulfilled`)
+    - `compiled_module_graph_tests::compiled_module_export_default_class_expr_applies_set_function_name_default`
+      (`left: Rejected, right: Fulfilled`)
+    - `compiled_module_graph_tests::compiled_module_export_default_expr_respects_statement_order`
+      (`left: Rejected, right: Fulfilled`)
+    - `compiled_module_graph_tests::compiled_module_graph_default_export_expression_is_evaluated_once`
+      (`ThrowWithStack { source: "a.js", line: 1, col: 1 }`)
+  - Async `for await..of` in compiled HIR:
+    - `hir_exec::async_for_await_of_async_iterator_close_tests::compiled_hir_async_fn_for_await_of_throw_awaits_async_iterator_close_before_catch`
+      (`InvariantViolation("for-await-of executed in synchronous HIR evaluator")`)
+  - `super` in object literal computed properties produces incorrect side-effect ordering:
+    - `object_literal_super_tests::super_computed_getsuperbase_before_topropertykey_getvalue`
+      (`unexpected interpreter result: Bool(false)`)
+    - `object_literal_super_tests::super_computed_getsuperbase_before_topropertykey_putvalue`
+      (`unexpected interpreter result: Bool(false)`)
+    - `object_literal_super_tests::super_computed_getsuperbase_before_topropertykey_putvalue_compound_assign`
+      (`unexpected interpreter result: Bool(false)`)
+    - `object_literal_super_tests::super_computed_getsuperbase_before_topropertykey_putvalue_increment`
+      (`unexpected interpreter result: Bool(false)`)
 
 ## Completed
 
