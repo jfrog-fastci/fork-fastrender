@@ -264,6 +264,32 @@ fn generator_yield_in_update_expression_computed_key_prefix() {
 }
 
 #[test]
+fn generator_yield_in_update_expression_computed_key_captures_base_before_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var o1 = { a: 1 };
+        var o2 = { a: 10 };
+        var o = o1;
+        function* g() {
+          var r = o[(yield 0)]--;
+          return r === 1 && o1.a === 0 && o2.a === 10;
+        }
+        var it = g();
+        var r1 = it.next();
+        // If the base is not captured before the yield, the update would apply to `o2`.
+        o = o2;
+        var r2 = it.next("a");
+        r1.value === 0 && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_yield_in_new_expression_arguments() {
   let mut rt = new_runtime();
   let value = rt

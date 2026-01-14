@@ -117,3 +117,28 @@ fn generator_prefix_update_expression_yield_in_base() -> Result<(), VmError> {
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn generator_prefix_decrement_update_expression_yield_in_base() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      function* g(){
+        var obj = {a: 2};
+        var out = --(yield obj).a;
+        return out === 1 && obj.a === 1;
+      }
+      var it = g();
+      var r1 = it.next();
+      var a1 = r1.value.a;
+      var r2 = it.next(r1.value);
+      r1.done === false &&
+      a1 === 2 &&
+      r2.done === true &&
+      r2.value === true &&
+      r1.value.a === 1
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}

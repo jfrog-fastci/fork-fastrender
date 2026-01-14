@@ -52,6 +52,50 @@ fn generator_yield_then_prefix_update_identifier() {
 }
 
 #[test]
+fn generator_yield_then_postfix_decrement_identifier() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          let x = 2;
+          const r = (yield 0, x--);
+          return r === 2 && x === 1;
+        }
+        const it = g();
+        const a1 = it.next();
+        const a2 = it.next();
+        a1.value === 0 && a1.done === false &&
+        a2.value === true && a2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_yield_then_prefix_decrement_identifier() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          let x = 2;
+          const r = (yield 0, --x);
+          return r === 1 && x === 1;
+        }
+        const it = g();
+        const a1 = it.next();
+        const a2 = it.next();
+        a1.value === 0 && a1.done === false &&
+        a2.value === true && a2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_yield_in_bigint_update_expression_computed_key_postfix() {
   let mut rt = new_runtime();
   let value = rt
@@ -72,4 +116,3 @@ fn generator_yield_in_bigint_update_expression_computed_key_postfix() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
-
