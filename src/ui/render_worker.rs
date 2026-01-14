@@ -10469,7 +10469,6 @@ struct BrowserRuntime {
       .last_committed_url
       .as_deref()
       .unwrap_or(about_pages::ABOUT_BASE_URL);
-
     let parse_bool_like = |v: &str| -> Option<bool> {
       let v = v.trim();
       if v.eq_ignore_ascii_case("true")

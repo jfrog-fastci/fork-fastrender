@@ -840,6 +840,54 @@ fn p1_document_write_limit_per_call_bytes_exceeded_throws_rangeerror_and_parsing
 }
 
 #[test]
+fn p1_document_writeln_limit_per_call_bytes_exceeded_includes_newline_throws_rangeerror_and_parsing_continues(
+) -> Result<()> {
+  // `document.writeln` appends a newline to the written string. With a per-call limit of 4 bytes,
+  // writing a 4-byte string must still exceed the limit once the newline is accounted for.
+  let js_options = JsExecutionOptions {
+    max_document_write_bytes_per_call: 4,
+    ..JsExecutionOptions::default()
+  };
+  let mut h = Harness::new(
+    "https://example.invalid/p1_document_writeln_limit_per_call.html",
+    js_options,
+  )?;
+
+  h.register_html_source(
+    r#"<!doctype html><body><script>document.writeln('1234');</script><script>
+      console.log("after");
+      let found = false;
+      for (const n of document.body.childNodes) {
+        if (n.nodeType === 3 && n.nodeValue.includes("1234")) found = true;
+      }
+      console.log("wrote:" + found);
+    </script><div id="tail_writeln"></div></body>"#,
+  );
+
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  assert_eq!(
+    console_logs(&h.tab),
+    vec!["after".to_string(), "wrote:false".to_string()]
+  );
+  let exc = js_exception_messages(&h.tab).join("\n");
+  assert!(
+    exc.contains("document.write exceeded max bytes per call"),
+    "expected JS exception mentioning document.write per-call byte limit, got: {exc:?}"
+  );
+  assert!(
+    exc.contains("RangeError"),
+    "expected document.writeln limit to surface as a RangeError, got: {exc:?}"
+  );
+  assert!(
+    h.tab.dom().get_element_by_id("tail_writeln").is_some(),
+    "expected parser to continue and parse trailing markup after document.writeln byte limit error"
+  );
+  Ok(())
+}
+
+#[test]
 fn p1_document_write_limit_max_calls_exceeded_throws_rangeerror_and_is_deterministic() -> Result<()> {
   let js_options = JsExecutionOptions {
     max_document_write_calls: 1,
