@@ -1047,8 +1047,8 @@ impl BrowserDocument {
       crate::interaction::scroll_wheel::ScrollWheelInput { delta_x, delta_y },
     );
 
-    let changed_offsets =
-      next.viewport != current_scroll_state.viewport || next.elements != current_scroll_state.elements;
+    let changed_offsets = next.viewport != current_scroll_state.viewport
+      || next.elements != current_scroll_state.elements;
     if changed_offsets {
       next.update_deltas_from(&current_scroll_state);
       self.set_scroll_state(next);
@@ -1253,10 +1253,7 @@ impl BrowserDocument {
         let mut element_deltas: HashMap<usize, Point> = HashMap::new();
         for (&id, old_offset) in &scroll_state.elements {
           let new_offset = anchored.elements.get(&id).copied().unwrap_or(Point::ZERO);
-          let delta = Point::new(
-            new_offset.x - old_offset.x,
-            new_offset.y - old_offset.y,
-          );
+          let delta = Point::new(new_offset.x - old_offset.x, new_offset.y - old_offset.y);
           if delta != Point::ZERO {
             element_deltas.insert(id, delta);
           }
@@ -1954,9 +1951,8 @@ mod tests {
     );
 
     let mut selected_state = base_state.clone();
-    selected_state.set_document_selection(Some(
-      crate::interaction::state::DocumentSelectionState::All,
-    ));
+    selected_state
+      .set_document_selection(Some(crate::interaction::state::DocumentSelectionState::All));
 
     let (frame1, stages) = capture_stages_with_output(|| {
       document
@@ -1981,6 +1977,123 @@ mod tests {
       count_document_selection_pixels(&frame1.pixmap) > 0,
       "expected selection highlight pixels after selection is applied"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn apply_paint_interaction_state_helper_updates_selection_and_appearance_none_controls(
+  ) -> Result<()> {
+    use crate::text::caret::CaretAffinity;
+    use crate::tree::box_tree::FormControlKind;
+    use crate::tree::fragment_tree::FragmentContent;
+
+    fn fragment_tree_has_selection(tree: &FragmentTree) -> bool {
+      let mut stack: Vec<&crate::tree::fragment_tree::FragmentNode> = Vec::new();
+      stack.push(&tree.root);
+      for root in tree.additional_fragments.iter() {
+        stack.push(root);
+      }
+      while let Some(node) = stack.pop() {
+        if let FragmentContent::Text {
+          document_selection: Some(ranges),
+          ..
+        } = &node.content
+        {
+          if !ranges.is_empty() {
+            return true;
+          }
+        }
+        if matches!(
+          node.content,
+          FragmentContent::RunningAnchor { .. } | FragmentContent::FootnoteAnchor { .. }
+        ) {
+          continue;
+        }
+        for child in node.children.iter().rev() {
+          stack.push(child);
+        }
+      }
+      false
+    }
+
+    let renderer = renderer_for_tests();
+    let html = r#"
+      <style>
+        html, body { margin: 0; background: white; }
+        input {
+          font: 16px monospace;
+          appearance: none;
+          -webkit-appearance: none;
+          border: 0;
+          padding: 0;
+          margin: 0;
+          background: white;
+          color: black;
+        }
+      </style>
+      <div>Hello world</div>
+      <input value="abcdef">
+    "#;
+    let mut document =
+      BrowserDocument::new(renderer, html, RenderOptions::new().with_viewport(200, 40))?;
+    let input_id = find_first_element_preorder_id(document.dom(), "input")
+      .expect("expected to find <input> preorder id");
+
+    // Simulate the cached paint flow: prepare layout without selection/caret state, then apply
+    // paint-time interaction overlays onto a cloned fragment tree.
+    let prepared = document.prepare_dom_with_options_and_interaction_state(None)?;
+    let mut fragment_tree = prepared.fragment_tree().clone();
+
+    let mut state = InteractionState::default();
+    state.set_document_selection(Some(crate::interaction::state::DocumentSelectionState::All));
+    state.set_focused(Some(input_id));
+    state.set_focus_chain(vec![input_id]);
+    state.set_text_edit(Some(crate::interaction::state::TextEditPaintState {
+      node_id: input_id,
+      caret: 0,
+      caret_affinity: CaretAffinity::Downstream,
+      selection: None,
+    }));
+
+    apply_paint_interaction_state_to_fragment_tree(
+      prepared.box_tree(),
+      &mut fragment_tree,
+      Some(&state),
+    );
+
+    assert!(
+      fragment_tree_has_selection(&fragment_tree),
+      "expected document selection ranges to be populated"
+    );
+
+    let controls = fragment_tree
+      .appearance_none_form_controls
+      .as_ref()
+      .expect("expected appearance-none form control map")
+      .as_ref();
+    assert!(
+      !controls.is_empty(),
+      "expected appearance-none form controls to be present"
+    );
+
+    let box_id_to_node_id = collect_box_id_to_styled_node_id(prepared.box_tree());
+    let input_box_id = box_id_to_node_id
+      .iter()
+      .find_map(|(box_id, node_id)| {
+        (*node_id == input_id && controls.contains_key(box_id)).then_some(*box_id)
+      })
+      .expect("expected to find box id for <input> in appearance-none map");
+
+    let control = controls
+      .get(&input_box_id)
+      .expect("expected form control entry for <input>");
+    match &control.control {
+      FormControlKind::Text { caret, .. } => {
+        assert_eq!(*caret, 0, "expected caret overlay to be applied");
+      }
+      other => panic!("expected text form control; got {other:?}"),
+    }
+
     Ok(())
   }
 
