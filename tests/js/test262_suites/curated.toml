@@ -107,6 +107,9 @@ include = [
   "language/statements/class/elements/arrow-body-derived-cls-direct-eval-contains-superproperty-1.js",
   "language/statements/class/elements/derived-cls-direct-eval-err-contains-supercall.js",
   "language/statements/class/elements/arrow-body-derived-cls-direct-eval-err-contains-supercall.js",
+  # Private elements must not be added to non-extensible receivers.
+  "language/statements/class/elements/private-class-field-on-nonextensible-objects.js",
+  "language/statements/class/subclass/private-class-field-on-nonextensible-return-override.js",
   "language/statements/class/elements/privatefieldget-typeerror-4.js",
   # Private accessors without the corresponding getter/setter must throw TypeError.
   "language/statements/class/elements/get-access-of-missing-private-getter.js",
