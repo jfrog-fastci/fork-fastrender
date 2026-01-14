@@ -522,7 +522,7 @@ impl ModuleLoader {
         .map(|url| url.to_string())
         .map_err(|_| ModuleResolveError::RelativeWithoutBase);
     };
-    let base_url = Url::parse(base_url).map_err(|_| ModuleResolveError::Url)?;
+    let base_url = Url::parse(base_url.as_ref()).map_err(|_| ModuleResolveError::Url)?;
     resolve_import_map_specifier(
       &mut self.import_map_state,
       &specifier,

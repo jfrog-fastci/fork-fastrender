@@ -1,8 +1,8 @@
 use super::event_loop::EventLoop;
 use crate::error::{Error, Result};
+use std::alloc::{alloc, Layout};
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::alloc::{alloc, Layout};
 
 type PromiseResult<T> = Result<T>;
 

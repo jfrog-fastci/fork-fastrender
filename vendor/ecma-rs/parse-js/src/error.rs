@@ -27,6 +27,7 @@ use std::fmt::Display;
 /// - `PS0014`: [`SyntaxErrorType::TryStatementHasNoCatchOrFinally`]
 /// - `PS0015`: [`SyntaxErrorType::UnexpectedEnd`]
 /// - `PS0016`: [`SyntaxErrorType::Cancelled`]
+/// - `PS0017`: [`SyntaxErrorType::ArgumentsNotAllowedInClassInit`]
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum SyntaxErrorType {
   ExpectedNotFound,
@@ -45,6 +46,7 @@ pub enum SyntaxErrorType {
   TryStatementHasNoCatchOrFinally,
   UnexpectedEnd,
   Cancelled,
+  ArgumentsNotAllowedInClassInit,
 }
 
 #[derive(Clone)]
@@ -138,6 +140,7 @@ impl SyntaxErrorType {
       SyntaxErrorType::TryStatementHasNoCatchOrFinally => "PS0014",
       SyntaxErrorType::UnexpectedEnd => "PS0015",
       SyntaxErrorType::Cancelled => "PS0016",
+      SyntaxErrorType::ArgumentsNotAllowedInClassInit => "PS0017",
     }
   }
 
@@ -174,6 +177,10 @@ impl SyntaxErrorType {
         .map(|tok| format!("unexpected end before {:?}", tok))
         .unwrap_or_else(|| "unexpected end of input".into()),
       SyntaxErrorType::Cancelled => "parsing cancelled".into(),
+      SyntaxErrorType::ArgumentsNotAllowedInClassInit => {
+        "`arguments` is not allowed in class field initializers or static initialization blocks"
+          .into()
+      }
     }
   }
 

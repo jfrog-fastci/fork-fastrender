@@ -1,6 +1,6 @@
 use crate::geometry::{Point, Rect, Size};
-use crate::scroll::anchoring::apply_scroll_anchoring;
-use crate::scroll::{capture_scroll_anchors, ScrollState};
+use crate::scroll::anchoring::{apply_scroll_anchoring, capture_scroll_anchors};
+use crate::scroll::ScrollState;
 use crate::style::types::{Overflow, OverflowAnchor};
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 use crate::ComputedStyle;

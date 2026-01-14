@@ -2,14 +2,14 @@ use crate::debug::trace::TraceHandle;
 use crate::error::{Error, RenderStage, Result};
 use crate::render_control::{self, record_stage, StageGuard, StageHeartbeat};
 use smallvec::SmallVec;
+use std::alloc::{alloc, Layout};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
-use std::alloc::{alloc, Layout};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::clock::{Clock, RealClock};
 use super::time::duration_to_ms_f64;
+use crate::clock::{Clock, RealClock};
 use vm_js::PromiseHandle;
 
 pub type MicrotaskCheckpointHook<Host> = fn(&mut Host, &mut EventLoop<Host>) -> Result<()>;
@@ -169,12 +169,18 @@ impl<Host: 'static> ExternalTaskQueueHandle<Host> {
   }
 
   fn wake_callback(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
-    let lock = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let lock = self
+      .inner
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     lock.wake.clone()
   }
 
   pub fn set_wake_callback(&self, cb: Option<Arc<dyn Fn() + Send + Sync>>) {
-    let mut lock = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut lock = self
+      .inner
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     lock.wake = cb;
   }
 
@@ -183,14 +189,20 @@ impl<Host: 'static> ExternalTaskQueueHandle<Host> {
   }
 
   fn set_max_pending_tasks(&self, max_pending_tasks: usize) {
-    let mut lock = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut lock = self
+      .inner
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     lock.max_pending_tasks = max_pending_tasks;
     // If the cap shrinks below the current queue length, we keep existing entries; subsequent
     // enqueue attempts will fail until the event loop drains enough work.
   }
 
   fn close(&self) {
-    let mut lock = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut lock = self
+      .inner
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     lock.closed = true;
     lock.queue.clear();
     // Ensure embeddings can release any wake resources once an event loop is dropped/reset.
@@ -198,12 +210,18 @@ impl<Host: 'static> ExternalTaskQueueHandle<Host> {
   }
 
   fn is_empty(&self) -> bool {
-    let lock = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let lock = self
+      .inner
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     lock.queue.is_empty()
   }
 
   fn drain(&self) -> Vec<ExternalTask<Host>> {
-    let mut lock = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut lock = self
+      .inner
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     lock.queue.drain(..).collect()
   }
 
@@ -216,9 +234,14 @@ impl<Host: 'static> ExternalTaskQueueHandle<Host> {
     F: for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + Send + 'static,
   {
     let wake = {
-      let mut lock = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      let mut lock = self
+        .inner
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
       if lock.closed {
-        return Err(Error::Other("EventLoop external task queue is closed".to_string()));
+        return Err(Error::Other(
+          "EventLoop external task queue is closed".to_string(),
+        ));
       }
       if lock.queue.len() >= lock.max_pending_tasks {
         return Err(Error::Other(format!(
@@ -900,7 +923,11 @@ impl<Host: 'static> EventLoop<Host> {
         reserved_source_idx,
         "external task queue front changed during drain"
       );
-      self.task_queues[reserved_source_idx].push_back(Task { source, seq, runnable });
+      self.task_queues[reserved_source_idx].push_back(Task {
+        source,
+        seq,
+        runnable,
+      });
       self.pending_tasks += 1;
     }
 
@@ -931,7 +958,11 @@ impl<Host: 'static> EventLoop<Host> {
       .try_reserve(1)
       .map_err(|_| Error::Other(String::new()))?;
     let runnable = try_box_runnable(runnable)?;
-    queue.push_back(Task { source, seq, runnable });
+    queue.push_back(Task {
+      source,
+      seq,
+      runnable,
+    });
     self.pending_tasks += 1;
     Ok(())
   }
@@ -994,12 +1025,7 @@ impl<Host: 'static> EventLoop<Host> {
   {
     let callback: TimerCallback<Host> =
       box_try_new(callback).ok_or_else(|| Error::Other(String::new()))?;
-    Ok(self.add_timer(
-      TimerKind::Interval,
-      interval,
-      Some(interval),
-      callback,
-    )?)
+    Ok(self.add_timer(TimerKind::Interval, interval, Some(interval), callback)?)
   }
 
   pub fn clear_timeout(&mut self, id: TimerId) {
@@ -1082,7 +1108,11 @@ impl<Host: 'static> EventLoop<Host> {
 
   pub fn cancel_idle_callback(&mut self, id: IdleCallbackId) {
     self.idle_callbacks.remove(&id);
-    if let Some(idx) = self.idle_callback_queue.iter().position(|queued| *queued == id) {
+    if let Some(idx) = self
+      .idle_callback_queue
+      .iter()
+      .position(|queued| *queued == id)
+    {
       let _ = self.idle_callback_queue.remove(idx);
     }
     if self.idle_callbacks.is_empty() {
@@ -2370,12 +2400,16 @@ impl<Host: 'static> EventLoop<Host> {
       let deadline = match self.idle_period_deadline {
         Some(deadline) => deadline,
         None => {
-          let mut deadline = now.checked_add(DEFAULT_IDLE_BUDGET).unwrap_or(Duration::MAX);
+          let mut deadline = now
+            .checked_add(DEFAULT_IDLE_BUDGET)
+            .unwrap_or(Duration::MAX);
           if self.has_pending_animation_frame_callbacks() {
             // When rendering work is pending (e.g. requestAnimationFrame callbacks), HTML clamps the
             // idle period deadline so idle callbacks don't assume a full 50ms budget when a render
             // opportunity is imminent.
-            let frame_deadline = now.checked_add(DEFAULT_FRAME_BUDGET).unwrap_or(Duration::MAX);
+            let frame_deadline = now
+              .checked_add(DEFAULT_FRAME_BUDGET)
+              .unwrap_or(Duration::MAX);
             deadline = deadline.min(frame_deadline);
           }
           if let Some(next_due) = self.next_timer_due_time() {
@@ -2391,11 +2425,11 @@ impl<Host: 'static> EventLoop<Host> {
       if now >= deadline {
         self.idle_period_deadline = None;
         0.0
-       } else {
-         let remaining = deadline.saturating_sub(now);
-         duration_to_ms_f64(remaining).max(0.0)
-       }
-     };
+      } else {
+        let remaining = deadline.saturating_sub(now);
+        duration_to_ms_f64(remaining).max(0.0)
+      }
+    };
 
     let Some(mut callback) = state.callback.take() else {
       return Err(Error::Other(
@@ -3956,11 +3990,14 @@ mod tests {
     // Fill the task queue so promoting timed-out idle callbacks fails.
     event_loop.queue_task(TaskSource::Script, |_host, _event_loop| Ok(()))?;
 
-    let id = event_loop.request_idle_callback(Some(Duration::from_millis(0)), |host, _, did_timeout, _| {
-      assert!(did_timeout);
-      host.fired += 1;
-      Ok(())
-    })?;
+    let id = event_loop.request_idle_callback(
+      Some(Duration::from_millis(0)),
+      |host, _, did_timeout, _| {
+        assert!(did_timeout);
+        host.fired += 1;
+        Ok(())
+      },
+    )?;
 
     let err = event_loop
       .queue_due_idle_callbacks()
@@ -4484,13 +4521,16 @@ mod tests {
     let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
 
     let clock_for_first = clock.clone();
-    event_loop.request_idle_callback(None, move |host, _event_loop, did_timeout, remaining_ms| {
-      assert!(!did_timeout);
-      host.remaining.push(remaining_ms);
-      // Simulate time passing during the idle period so subsequent callbacks see less time.
-      clock_for_first.advance(Duration::from_millis(10));
-      Ok(())
-    })?;
+    event_loop.request_idle_callback(
+      None,
+      move |host, _event_loop, did_timeout, remaining_ms| {
+        assert!(!did_timeout);
+        host.remaining.push(remaining_ms);
+        // Simulate time passing during the idle period so subsequent callbacks see less time.
+        clock_for_first.advance(Duration::from_millis(10));
+        Ok(())
+      },
+    )?;
 
     event_loop.request_idle_callback(None, |host, _event_loop, did_timeout, remaining_ms| {
       assert!(!did_timeout);
@@ -4526,22 +4566,25 @@ mod tests {
     let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
 
     let clock_for_microtasks = clock.clone();
-    event_loop.request_idle_callback(None, move |host, event_loop, did_timeout, remaining_ms| {
-      assert!(!did_timeout);
-      host.remaining.push(remaining_ms);
+    event_loop.request_idle_callback(
+      None,
+      move |host, event_loop, did_timeout, remaining_ms| {
+        assert!(!did_timeout);
+        host.remaining.push(remaining_ms);
 
-      // Queue a microtask which itself queues another microtask. This exercises that microtasks
-      // running as part of an idle callback's microtask checkpoint do not reset the shared idle
-      // period deadline.
-      let clock_for_microtasks = clock_for_microtasks.clone();
-      event_loop.queue_microtask(move |_host, event_loop| {
-        clock_for_microtasks.advance(Duration::from_millis(10));
-        event_loop.queue_microtask(|_host, _event_loop| Ok(()))?;
+        // Queue a microtask which itself queues another microtask. This exercises that microtasks
+        // running as part of an idle callback's microtask checkpoint do not reset the shared idle
+        // period deadline.
+        let clock_for_microtasks = clock_for_microtasks.clone();
+        event_loop.queue_microtask(move |_host, event_loop| {
+          clock_for_microtasks.advance(Duration::from_millis(10));
+          event_loop.queue_microtask(|_host, _event_loop| Ok(()))?;
+          Ok(())
+        })?;
+
         Ok(())
-      })?;
-
-      Ok(())
-    })?;
+      },
+    )?;
 
     event_loop.request_idle_callback(None, |host, _event_loop, did_timeout, remaining_ms| {
       assert!(!did_timeout);
@@ -4588,7 +4631,10 @@ mod tests {
     })?;
 
     let mut host = Host::default();
-    assert!(event_loop.run_next_task(&mut host)?, "expected idle callback task to run");
+    assert!(
+      event_loop.run_next_task(&mut host)?,
+      "expected idle callback task to run"
+    );
     assert!(
       event_loop.idle_period_deadline.is_some(),
       "expected idle callback to initialize an idle period deadline"
@@ -4615,13 +4661,16 @@ mod tests {
     let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
 
     let clock_for_first = clock.clone();
-    event_loop.request_idle_callback(None, move |host, _event_loop, did_timeout, _remaining_ms| {
-      assert!(!did_timeout);
-      host.log.push("a");
-      // Advance beyond the default idle budget (50ms) so the idle period expires.
-      clock_for_first.advance(Duration::from_millis(60));
-      Ok(())
-    })?;
+    event_loop.request_idle_callback(
+      None,
+      move |host, _event_loop, did_timeout, _remaining_ms| {
+        assert!(!did_timeout);
+        host.log.push("a");
+        // Advance beyond the default idle budget (50ms) so the idle period expires.
+        clock_for_first.advance(Duration::from_millis(60));
+        Ok(())
+      },
+    )?;
 
     event_loop.request_idle_callback(None, |host, _event_loop, did_timeout, _remaining_ms| {
       assert!(!did_timeout);
@@ -4790,8 +4839,15 @@ mod tests {
     // One task should have been queued; the others must remain in the external buffer.
     assert_eq!(event_loop.pending_task_count(), 1);
     {
-      let lock = handle.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-      assert_eq!(lock.queue.len(), 2, "remaining external tasks should not be lost");
+      let lock = handle
+        .inner
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+      assert_eq!(
+        lock.queue.len(),
+        2,
+        "remaining external tasks should not be lost"
+      );
     }
 
     // Increase capacity and drain again; all tasks should now run.
@@ -4830,11 +4886,14 @@ mod tests {
 
     let remaining_ms: Rc<Cell<Option<f64>>> = Rc::new(Cell::new(None));
     let remaining_ms_for_cb = Rc::clone(&remaining_ms);
-    event_loop.request_idle_callback(None, move |_host, _event_loop, did_timeout, remaining_ms| {
-      assert!(!did_timeout);
-      remaining_ms_for_cb.set(Some(remaining_ms));
-      Ok(())
-    })?;
+    event_loop.request_idle_callback(
+      None,
+      move |_host, _event_loop, did_timeout, remaining_ms| {
+        assert!(!did_timeout);
+        remaining_ms_for_cb.set(Some(remaining_ms));
+        Ok(())
+      },
+    )?;
 
     let mut host = Host::default();
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
@@ -5015,11 +5074,14 @@ mod tests {
 
     let checks = Arc::new(AtomicUsize::new(0));
     let checks_for_cancel = Arc::clone(&checks);
-    let deadline = RenderDeadline::new(None, Some(Arc::new(move || {
-      // `run_animation_frame` checks once before starting and again before each callback.
-      // Trip on the second check to abort before any callbacks are popped/executed.
-      checks_for_cancel.fetch_add(1, Ordering::SeqCst) >= 1
-    })));
+    let deadline = RenderDeadline::new(
+      None,
+      Some(Arc::new(move || {
+        // `run_animation_frame` checks once before starting and again before each callback.
+        // Trip on the second check to abort before any callbacks are popped/executed.
+        checks_for_cancel.fetch_add(1, Ordering::SeqCst) >= 1
+      })),
+    );
 
     let mut host = Host::default();
     {
