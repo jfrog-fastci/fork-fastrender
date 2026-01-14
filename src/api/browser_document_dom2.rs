@@ -6486,11 +6486,8 @@ html { scroll-snap-type: y mandatory; }
   #[test]
   fn incremental_relayout_preserves_svg_id_defs_raw_metadata() -> Result<()> {
     let renderer = renderer_for_tests();
-<<<<<<< HEAD
     // NOTE: this HTML contains `href="#icon"`, so it must use a raw string delimiter with at least
     // two `#` characters to avoid terminating the literal early.
-=======
->>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
     let html = r##"
       <svg width="0" height="0" style="position:absolute">
         <symbol id="icon" viewBox="0 0 10 10">
