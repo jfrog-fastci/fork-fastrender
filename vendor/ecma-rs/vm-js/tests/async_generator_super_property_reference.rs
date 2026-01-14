@@ -703,3 +703,43 @@ fn async_generator_arrow_captures_lexical_super_and_observes_dynamic_prototype_a
   assert_eq!(rt.exec_script("out")?, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn async_generator_arrow_captures_lexical_super_and_observes_dynamic_prototype_across_await(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = false;
+
+      class B1 { m() { return "b1"; } }
+      class D extends B1 {
+        async *gen() {
+          const f = () => super.m();
+          // Suspend via await before calling `f`.
+          await Promise.resolve(0);
+          return f();
+        }
+      }
+
+      var proto2 = { m() { return "p2"; } };
+
+      async function f() {
+        const it = (new D()).gen();
+        // Start the generator and let it suspend at `await`.
+        const p = it.next();
+        Object.setPrototypeOf(D.prototype, proto2);
+        const r0 = await p;
+        return r0.value === "p2" && r0.done === true;
+      }
+
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  assert_eq!(rt.exec_script("out")?, Value::Bool(false));
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  assert_eq!(rt.exec_script("out")?, Value::Bool(true));
+  Ok(())
+}

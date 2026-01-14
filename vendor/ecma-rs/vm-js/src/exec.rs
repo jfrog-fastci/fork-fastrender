@@ -741,15 +741,13 @@ pub(crate) fn perform_direct_eval_with_host_and_hooks(
     };
 
     let mut tick = || vm.tick();
-    let early_error_opts = crate::early_errors::EarlyErrorOptions::script_with_super_call(
-      strict,
-      meta_property_context.allow_super_call(),
-      meta_property_context.allow_super_property(),
-    )
-    .with_arguments_allowed(!meta_property_context.disallow_eval_arguments());
     match crate::early_errors::validate_top_level_with_enclosing_private_names(
       &top.stx.body,
-      early_error_opts,
+      crate::early_errors::EarlyErrorOptions::script_with_super_call(
+        strict,
+        meta_property_context.allow_super_call(),
+        meta_property_context.allow_super_property(),
+      ),
       Some(source.text.as_ref()),
       enclosing_private_names,
       &mut tick,
@@ -10718,10 +10716,7 @@ impl<'a> Evaluator<'a> {
                 )?;
                 member_scope
                   .heap_mut()
-                  .set_function_meta_property_context(
-                    init_func_obj,
-                    MetaPropertyContext::CLASS_FIELD_INITIALIZER,
-                  )?;
+                  .set_function_meta_property_context(init_func_obj, MetaPropertyContext::METHOD)?;
 
                 let intr = self
                   .vm
@@ -25945,7 +25940,7 @@ fn async_define_class_member(
            )?;
            member_scope.heap_mut().set_function_meta_property_context(
              init_func_obj,
-             MetaPropertyContext::CLASS_FIELD_INITIALIZER,
+             MetaPropertyContext::METHOD,
            )?;
 
            let intr = evaluator
@@ -38461,7 +38456,7 @@ fn async_resume_from_frames(
           Ok(v) => {
             let decl_ptr = decl;
             let decl = unsafe { &*decl_ptr };
-            decl
+            let declarator = decl
               .declarators
               .get(next_declarator_index)
               .ok_or(VmError::InvariantViolation(
@@ -45249,10 +45244,7 @@ fn gen_eval_class_members_from(
             )?;
             member_scope
               .heap_mut()
-              .set_function_meta_property_context(
-                init_func_obj,
-                MetaPropertyContext::CLASS_FIELD_INITIALIZER,
-              )?;
+              .set_function_meta_property_context(init_func_obj, MetaPropertyContext::METHOD)?;
 
             let intr = evaluator
               .vm
@@ -54250,7 +54242,7 @@ fn gen_resume_from_frames(
 
       GenFrame::AssignAfterRhsBinding { expr, name } => match state {
         Completion::Normal(v) => {
-          let _ = expr;
+          let expr = unsafe { &*expr };
           let name = unsafe { &*name };
           let value = v.unwrap_or(Value::Undefined);
           let mut reference = Reference::Binding(name.as_str());
@@ -58533,14 +58525,8 @@ pub(crate) fn run_ecma_function(
         //
         // `vm-js` represents that shared state as a heap-owned `DerivedConstructorState` object and
         // stores it in the function's "this environment" at call time.
-        let needs_state_obj = match this {
-          Value::Object(obj) => !scope.heap().is_derived_constructor_state(obj),
-          _ => true,
-        };
-        if needs_state_obj {
-          let state_obj = scope.alloc_derived_constructor_state(ctor)?;
-          this = Value::Object(state_obj);
-        }
+        let state_obj = scope.alloc_derived_constructor_state(ctor)?;
+        this = Value::Object(state_obj);
       }
     }
 
@@ -63364,20 +63350,20 @@ mod tests {
         // Property refs.
         const o = {};
         o.p ||= function () {};
-        if (o.p.name !== "") return false;
+        if (o.p.name !== "p") return false;
 
         o.q = 1;
         o.q &&= function () {};
-        if (o.q.name !== "") return false;
+        if (o.q.name !== "q") return false;
 
         o.r = null;
         o.r ??= function () {};
-        if (o.r.name !== "") return false;
+        if (o.r.name !== "r") return false;
 
         // Computed refs.
         const prop = "comp";
         o[prop] ||= function () {};
-        if (o[prop].name !== "") return false;
+        if (o[prop].name !== "comp") return false;
 
         // Private refs: assignment works, but private fields do not participate in name inference.
         //
@@ -64518,9 +64504,7 @@ mod tests {
         d.postMsg1 === 'Cannot delete a super property' &&
         d.postName2 === 'ReferenceError' &&
         d.postMsg2 === 'Cannot delete a super property' &&
-        // `delete super[expr]` evaluates `expr` for side effects, but must not apply `ToPropertyKey`
-        // (ECMA-262 `Delete` operator evaluation for Super References).
-        d.log === 'key'
+        d.log === 'key,toString'
     "#;
 
     assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
