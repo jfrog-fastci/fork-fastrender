@@ -1692,6 +1692,30 @@ mod tests {
   }
 
   #[test]
+  fn quarantine_failure_does_not_block_saving_and_is_recorded() {
+    // Use an invalid path (`""`) so `quarantine_corrupt_session_file` fails deterministically without
+    // relying on platform-specific filesystem permission behavior.
+    let path = Path::new("");
+
+    let status = SessionAutosaveStatusShared::default();
+    let save_fn: SaveSessionFn = Arc::new(|_path, _session| Ok(()));
+    let session = BrowserSession::single("about:blank".to_string());
+    let mut needs_quarantine = true;
+
+    save_session_with_quarantine_if_needed(path, &session, &mut needs_quarantine, &status, &save_fn)
+      .unwrap();
+
+    // Save succeeded, so quarantine should no longer be attempted.
+    assert!(!needs_quarantine);
+
+    let snapshot = status.snapshot();
+    assert!(
+      snapshot.last_warning.is_some(),
+      "expected quarantine failure to be recorded as a warning"
+    );
+  }
+
+  #[test]
   fn records_error_state_on_failure() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("session.json");
