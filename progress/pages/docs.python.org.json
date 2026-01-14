@@ -14,7 +14,7 @@
     "layout": 24.104911836734697,
     "paint": 22.096169183673467
   },
-  "notes": "Layout matches Chrome; remaining diffs concentrate around header/nav background shading plus text AA/weight (glyph rasterization/hinting differences) vs the Chrome headless baseline. Likely subsystem: background painting/cascade + text rasterization.",
+  "notes": "Layout matches Chrome; remaining diffs are widespread and dominated by text rasterization/hinting/AA differences vs Chrome/Skia (text-heavy page), rather than a localized layout issue.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 85487,
