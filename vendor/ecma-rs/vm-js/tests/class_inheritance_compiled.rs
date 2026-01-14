@@ -681,3 +681,59 @@ fn derived_ctor_arrow_super_computed_logical_or_assignment_before_super_does_not
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn derived_ctor_arrow_super_computed_logical_and_assignment_before_super_does_not_evaluate_key_or_rhs_compiled(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var key_side = 0;
+      var rhs_side = 0;
+      var ok = false;
+      class B {}
+      class D extends B {
+        constructor() {
+          let f = () => (super[(key_side = 1, "__x")] &&= (rhs_side = 1, 1));
+          try { f(); } catch (e) {
+            ok = e instanceof ReferenceError && key_side === 0 && rhs_side === 0;
+          }
+          super();
+        }
+      }
+      new D();
+      ok
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn derived_ctor_arrow_super_computed_nullish_assignment_before_super_does_not_evaluate_key_or_rhs_compiled(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var key_side = 0;
+      var rhs_side = 0;
+      var ok = false;
+      class B {}
+      class D extends B {
+        constructor() {
+          let f = () => (super[(key_side = 1, "__x")] ??= (rhs_side = 1, 1));
+          try { f(); } catch (e) {
+            ok = e instanceof ReferenceError && key_side === 0 && rhs_side === 0;
+          }
+          super();
+        }
+      }
+      new D();
+      ok
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
