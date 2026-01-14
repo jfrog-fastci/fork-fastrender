@@ -128,6 +128,31 @@ fn generator_yield_in_object_destructuring_computed_key_preserves_assignment_res
 }
 
 #[test]
+fn generator_yield_in_object_destructuring_default_not_evaluated_when_present_for_computed_key() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      (() => {
+        function* g(){
+          let a = 0;
+          let rhs = {x: 5};
+          let res = ({[(yield 1)]: a = yield 2} = rhs);
+          return res === rhs && a === 5;
+        }
+        var it = g();
+        var r1 = it.next();
+        if (r1.done !== false || r1.value !== 1) return false;
+        var r2 = it.next("x");
+        return r2.done === true && r2.value === true;
+      })()
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_yield_in_object_destructuring_computed_key_suspends_before_next_property() {
   let mut rt = new_runtime();
   let value = rt
@@ -364,6 +389,94 @@ fn generator_yield_in_array_destructuring_default_suspends_before_next_element()
         if (steps.indexOf("1") !== -1) return false;
         var r2 = it.next(3);
         return r2.done === true && r2.value === true;
+      })()
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_yield_in_object_destructuring_default_suspends_before_rest_property() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      (() => {
+        var steps = [];
+        var rest;
+        function* g(){
+          let a = 0;
+          let rhs = new Proxy({b: 2}, {
+            ownKeys: function(t) {
+              steps.push("ownKeys");
+              return Reflect.ownKeys(t);
+            },
+            get: function(t, k, r) {
+              steps.push("get:" + String(k));
+              return Reflect.get(t, k, r);
+            }
+          });
+          let res = ({a = (steps.push("default"), (yield 1)), ...rest} = rhs);
+          return (
+            res === rhs &&
+            a === 3 &&
+            rest.b === 2 &&
+            steps.indexOf("ownKeys") > steps.indexOf("default") &&
+            steps.indexOf("get:b") > steps.indexOf("ownKeys")
+          );
+        }
+
+        var it = g();
+        var r1 = it.next();
+        if (r1.done !== false || r1.value !== 1) return false;
+        if (steps.join("|") !== "get:a|default") return false;
+        if (typeof rest !== "undefined") return false;
+
+        var r2 = it.next(3);
+        return r2.done === true && r2.value === true;
+      })()
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_yield_in_array_destructuring_default_suspends_before_rest_element() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      (() => {
+        var steps = [];
+        var rest;
+
+        function* g(){
+          let a = 0;
+          let rhs = new Proxy([undefined, 2, 3], {
+            get: function(t, k, r) {
+              steps.push(String(k));
+              return Reflect.get(t, k, r);
+            }
+          });
+          let res = ([a = (steps.push("default"), (yield 1)), ...rest] = rhs);
+          return res === rhs && a === 7 && rest.length === 2 && rest[0] === 2 && rest[1] === 3;
+        }
+
+        var it = g();
+        var r1 = it.next();
+        if (r1.done !== false || r1.value !== 1) return false;
+        if (steps.indexOf("1") !== -1 || steps.indexOf("2") !== -1) return false;
+        if (typeof rest !== "undefined") return false;
+
+        var r2 = it.next(7);
+        if (r2.done !== true || r2.value !== true) return false;
+
+        var idxDefault = steps.indexOf("default");
+        var idx1 = steps.indexOf("1");
+        var idx2 = steps.indexOf("2");
+        return idxDefault !== -1 && idx1 > idxDefault && idx2 > idx1;
       })()
     "#,
     )
