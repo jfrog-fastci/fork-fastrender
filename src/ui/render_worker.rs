@@ -9860,16 +9860,12 @@ impl BrowserRuntime {
       return;
     };
 
-    let base_url = base_url_for_links(
-      tab.last_base_url.as_deref(),
-      tab.last_committed_url.as_deref(),
-    )
-    .to_string();
+    let base_url =
+      base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref());
     let document_url = tab
       .last_committed_url
       .as_deref()
-      .unwrap_or(about_pages::ABOUT_BASE_URL)
-      .to_string();
+      .unwrap_or(about_pages::ABOUT_BASE_URL);
 
     let parse_bool_like = |v: &str| -> Option<bool> {
       let v = v.trim();
@@ -9926,8 +9922,8 @@ impl BrowserRuntime {
         let (dom_changed, _) = tab.interaction.key_activate(
           dom,
           crate::interaction::KeyAction::Enter,
-          &document_url,
-          &base_url,
+          document_url,
+          base_url,
         );
         changed |= dom_changed;
         return changed;
@@ -11374,7 +11370,7 @@ impl BrowserRuntime {
           if debug_log_enabled {
             let msg = payload
               .downcast_ref::<&str>()
-              .map(|s| (*s).to_string())
+              .map(|s| s.to_string())
               .or_else(|| payload.downcast_ref::<String>().cloned())
               .unwrap_or_else(|| "unknown panic".to_string());
             msgs.push(WorkerToUi::DebugLog {
@@ -11544,7 +11540,7 @@ impl BrowserRuntime {
         Err(payload) => {
           let msg = payload
             .downcast_ref::<&str>()
-            .map(|s| (*s).to_string())
+            .map(|s| s.to_string())
             .or_else(|| payload.downcast_ref::<String>().cloned())
             .unwrap_or_else(|| "unknown panic".to_string());
           msgs.push(WorkerToUi::DebugLog {
@@ -11571,7 +11567,7 @@ impl BrowserRuntime {
         Err(payload) => {
           let msg = payload
             .downcast_ref::<&str>()
-            .map(|s| (*s).to_string())
+            .map(|s| s.to_string())
             .or_else(|| payload.downcast_ref::<String>().cloned())
             .unwrap_or_else(|| "unknown panic".to_string());
           msgs.push(WorkerToUi::DebugLog {

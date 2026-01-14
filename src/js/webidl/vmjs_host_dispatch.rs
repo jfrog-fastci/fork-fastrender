@@ -2367,7 +2367,6 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       Err(SyncChildrenError::Dom(err)) => return Err(self.dom_error_to_vm_error(vm, scope, err)),
       Err(SyncChildrenError::OutOfMemory) => return Err(VmError::OutOfMemory),
     };
-
     sync_dom_node_collection_object(vm, scope, collection_obj, document_id, &children)
   }
 
