@@ -21001,17 +21001,22 @@ impl App {
       PageContextMenuAction::BookmarkPage(url) => {
         // `Bookmark Page` uses the current page URL (also ultimately renderer-supplied); apply the
         // same scheme allowlist and length limits as other renderer-driven UI URL actions.
-        let action = PageContextMenuAction::BookmarkPage(
-          fastrender::ui::url::sanitize_worker_url_for_ui(&url).unwrap_or_default(),
-        );
-        let result = apply_page_context_menu_action(
-          &mut self.bookmarks,
-          &mut self.history_panel_open,
-          &mut self.bookmarks_panel_open,
-          &action,
-        );
-        if result.bookmarks_changed {
-          self.record_bookmark_deltas(result.bookmark_deltas, false);
+        if let Some(url) = fastrender::ui::url::sanitize_worker_url_for_ui(&url) {
+          let action = PageContextMenuAction::BookmarkPage(url);
+          let result = apply_page_context_menu_action(
+            &mut self.bookmarks,
+            &mut self.history_panel_open,
+            &mut self.bookmarks_panel_open,
+            &action,
+          );
+          if result.bookmarks_changed {
+            self.record_bookmark_deltas(result.bookmark_deltas, false);
+          }
+        } else {
+          self.show_chrome_toast_kind(
+            fastrender::ui::ToastKind::Warning,
+            "Blocked attempt to bookmark an invalid URL",
+          );
         }
       }
       PageContextMenuAction::ToggleHistoryPanel => {
