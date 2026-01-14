@@ -120,6 +120,25 @@ fn super_method_call_uses_primitive_this_binding_as_receiver() {
 }
 
 #[test]
+fn super_computed_member_call_supports_symbol_property_keys() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var sym = Symbol("m");
+        Object.prototype[sym] = function () { return this.x; };
+        class C {
+          constructor() { this.x = 1; }
+          m() { return super[sym](); }
+        }
+        new C().m() === 1
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn super_method_call_uses_this_binding_as_receiver() {
   let mut rt = new_runtime();
   let value = rt
