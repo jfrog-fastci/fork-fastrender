@@ -774,56 +774,64 @@ impl TreeSink for Dom2TreeSink {
         .eq_ignore_ascii_case("shadowrootserializable")
     });
 
-    let mut doc = self.document.borrow_mut();
-    let (location_tag_name, location_namespace) = match &doc.node(*location).kind {
-      NodeKind::Element {
-        tag_name,
-        namespace,
-        ..
-      } => (tag_name.clone(), namespace.clone()),
-      NodeKind::Slot { namespace, .. } => {
-        // `attachShadow()` is not permitted on `<slot>`; keep this branch for completeness.
-        ("slot".to_string(), namespace.clone())
-      }
-      _ => return false,
-    };
-    let is_valid_shadow_host = doc.is_html_case_insensitive_namespace(location_namespace.as_str())
-      && is_valid_shadow_host_name(location_tag_name.as_str());
-    if !is_valid_shadow_host {
-      return false;
-    }
-    let location_children = doc.node(*location).children.clone();
-    if location_children
-      .iter()
-      .any(|&child| matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. }))
     {
-      return false;
+      let doc = self.document.borrow();
+      if location.index() >= doc.nodes_len() {
+        return false;
+      }
+      let (location_tag_name, location_namespace) = match &doc.node(*location).kind {
+        NodeKind::Element {
+          tag_name,
+          namespace,
+          ..
+        } => (tag_name.as_str(), namespace.as_str()),
+        NodeKind::Slot { namespace, .. } => {
+          // `attachShadow()` is not permitted on `<slot>`; keep this branch for completeness.
+          ("slot", namespace.as_str())
+        }
+        _ => return false,
+      };
+      let is_valid_shadow_host = doc.is_html_case_insensitive_namespace(location_namespace)
+        && is_valid_shadow_host_name(location_tag_name);
+      if !is_valid_shadow_host {
+        return false;
+      }
+      if doc
+        .node(*location)
+        .children
+        .iter()
+        .copied()
+        .any(|child| matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. }))
+      {
+        return false;
+      }
     }
 
-    let shadow_root_id = doc.push_node(
-      NodeKind::ShadowRoot {
-        mode,
-        delegates_focus,
-        slot_assignment: SlotAssignmentMode::Named,
-        clonable,
-        serializable,
-        declarative: true,
-      },
-      None,
-      /* inert_subtree */ false,
-    );
-    let range_child_index = doc.tree_child_index_from_raw_index_for_range(*location, 0);
-    let inserted_count = doc.inserted_tree_children_count_for_range(*location, &[shadow_root_id]);
-    doc.live_mutation.pre_insert(*location, 0, 1);
-<<<<<<< HEAD
-    doc.live_range_pre_insert_steps(*location, range_child_index, inserted_count);
-=======
-    let tree_child_index = doc.tree_child_index_from_raw_index_for_range(*location, 0);
-    let inserted_count = doc.inserted_tree_children_count_for_range(*location, &[shadow_root_id]);
-    doc.live_range_pre_insert_steps(*location, tree_child_index, inserted_count);
->>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
-    doc.node_mut(*location).children.insert(0, shadow_root_id);
-    doc.node_mut(shadow_root_id).parent = Some(*location);
+    let shadow_root_id = {
+      let mut doc = self.document.borrow_mut();
+      if location.index() >= doc.nodes_len() {
+        return false;
+      }
+      let shadow_root_id = doc.push_node(
+        NodeKind::ShadowRoot {
+          mode,
+          delegates_focus,
+          slot_assignment: SlotAssignmentMode::Named,
+          clonable,
+          serializable,
+          declarative: true,
+        },
+        None,
+        /* inert_subtree */ false,
+      );
+      let range_child_index = doc.tree_child_index_from_raw_index_for_range(*location, 0);
+      let inserted_count = doc.inserted_tree_children_count_for_range(*location, &[shadow_root_id]);
+      doc.live_mutation.pre_insert(*location, 0, 1);
+      doc.live_range_pre_insert_steps(*location, range_child_index, inserted_count);
+      doc.node_mut(*location).children.insert(0, shadow_root_id);
+      doc.node_mut(shadow_root_id).parent = Some(*location);
+      shadow_root_id
+    };
 
     self
       .declarative_shadow_templates
@@ -1127,20 +1135,12 @@ impl TreeSink for Dom2TreeSink {
         doc.inserted_tree_children_count_for_range(*new_parent, &moved_children_snapshot);
       doc
         .live_mutation
-<<<<<<< HEAD
         .pre_insert(*new_parent, old_len, moved_children_len);
       doc.live_range_pre_insert_steps(
         *new_parent,
         range_child_index,
         inserted_count,
       );
-=======
-        .pre_insert(*new_parent, old_len, moved_children_snapshot.len());
-      let tree_child_index = doc.tree_child_index_from_raw_index_for_range(*new_parent, old_len);
-      let inserted_count =
-        doc.inserted_tree_children_count_for_range(*new_parent, &moved_children_snapshot);
-      doc.live_range_pre_insert_steps(*new_parent, tree_child_index, inserted_count);
->>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
     }
     let moved_children = std::mem::take(&mut doc.node_mut(*node).children);
     if moved_children.is_empty() {
