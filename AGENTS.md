@@ -200,6 +200,20 @@ if [[ -d target ]]; then
 fi
 ```
 
+### Git hygiene (file modes / dirty submodules)
+
+If your clone shows lots of noise diffs like `old mode 100755/new mode 100644` (or submodules showing
+`Subproject commit ...-dirty`), **do not push** those changes.
+
+If you have **no intended local changes**, the quickest cleanup is:
+
+```bash
+git restore --source=HEAD --staged --worktree .
+git submodule foreach --recursive 'git reset --hard'
+```
+
+After cleanup, `git status --porcelain` should be clean (or only show your intended diffs).
+
 ## Regression philosophy (required)
 
 Live pages motivate fixes, but regressions keep them fixed:
