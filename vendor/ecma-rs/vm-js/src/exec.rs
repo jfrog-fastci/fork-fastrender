@@ -60559,7 +60559,7 @@ mod tests {
   }
 
   #[test]
-  fn class_static_block_contains_yield_is_syntax_error() -> Result<(), VmError> {
+  fn class_static_block_yield_is_syntax_error_even_inside_generator() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;
@@ -60577,7 +60577,17 @@ mod tests {
       )
       .unwrap_err();
     match err {
-      VmError::Syntax(_) => Ok(()),
+      VmError::Syntax(diags) => {
+        assert!(
+          // Depending on parser/early-error split, this can surface either as a parser diagnostic
+          // (PS*) or an engine early error (VMJS0004).
+          diags
+            .iter()
+            .any(|d| d.code.as_str() == "VMJS0004" || d.code.as_str().starts_with("PS")),
+          "expected PS* or VMJS0004, got {diags:?}"
+        );
+        Ok(())
+      }
       other => panic!("expected VmError::Syntax, got {other:?}"),
     }
   }
