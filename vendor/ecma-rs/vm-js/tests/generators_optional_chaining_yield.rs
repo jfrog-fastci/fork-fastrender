@@ -861,3 +861,145 @@ fn generators_optional_chain_call_evaluates_yield_in_arg_before_throwing_type_er
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generators_optional_chain_private_method_call_short_circuits_and_skips_yield_in_arg() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class C {
+          #x = 1;
+          #m(v) { return this.#x + v; }
+          *g() {
+            const o = (yield 0);
+            const r = o?.#m(yield "should-not-yield");
+            return r === undefined;
+          }
+        }
+
+        const it = new C().g();
+        const r1 = it.next();
+        const r2 = it.next(null);
+
+        r1.value === 0 && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generators_optional_chain_private_method_call_evaluates_yield_in_arg_when_not_short_circuited() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class C {
+          #x = 1;
+          #m(v) { return this.#x + v; }
+          *g() {
+            const o = (yield 0);
+            const r = o?.#m(yield 1);
+            return r;
+          }
+        }
+
+        const obj = new C();
+        const it = obj.g();
+        const r1 = it.next();
+        const r2 = it.next(obj);
+        const r3 = it.next(41);
+
+        r1.value === 0 && r1.done === false &&
+        r2.value === 1 && r2.done === false &&
+        r3.value === 42 && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generators_parenthesized_optional_chain_private_method_callee_does_not_short_circuit_and_yield_in_arg_runs() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class C {
+          #m(_) { return 0; }
+          *g() {
+            const o = (yield 0);
+            try {
+              return (o?.#m)(yield 1);
+            } catch (e) {
+              return e.name;
+            }
+          }
+        }
+
+        const it = new C().g();
+        const r1 = it.next();
+        const r2 = it.next(null);
+        const r3 = it.next(0);
+
+        r1.value === 0 && r1.done === false &&
+        r2.value === 1 && r2.done === false &&
+        r3.value === "TypeError" && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generators_super_property_optional_call_short_circuits_and_skips_yield_in_arg() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class Base {}
+        class Derived extends Base {
+          *g() { return super.m?.(yield "should-not-yield"); }
+        }
+
+        const it = new Derived().g();
+        const r = it.next();
+
+        r.value === undefined && r.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generators_super_property_optional_call_preserves_this_binding_across_yield_in_arg() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class Base {
+          m(x) {
+            'use strict';
+            return this === expected && x === 42;
+          }
+        }
+        let expected;
+        class Derived extends Base {
+          constructor() { super(); expected = this; }
+          *g() { return super.m?.(yield 1); }
+        }
+
+        const it = new Derived().g();
+        const r1 = it.next();
+        const r2 = it.next(42);
+
+        r1.value === 1 && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
