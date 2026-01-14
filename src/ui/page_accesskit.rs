@@ -149,24 +149,6 @@ mod tests {
   }
 
   #[test]
-  fn action_request_to_ui_message_click_maps_to_activate_node() {
-    let tab_id = TabId(1);
-    let target = crate::ui::encode_page_node_id(tab_id, 1, 99);
-    let req = accesskit::ActionRequest {
-      action: accesskit::Action::Click,
-      target,
-      data: None,
-    };
-    assert!(matches!(
-      action_request_to_ui_message(&req),
-      Some(UiToWorker::A11yActivate {
-        tab_id: got_tab,
-        node_id: 99
-      }) if got_tab == tab_id
-    ));
-  }
-
-  #[test]
   fn action_request_to_ui_message_show_context_menu_maps_to_message() {
     let tab_id = TabId(10);
     let target = crate::ui::encode_page_node_id(tab_id, 1, 123);

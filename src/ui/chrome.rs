@@ -4524,7 +4524,7 @@ const HOVER_STATUS_OVERLAY_SLIDE_PX: f32 = 6.0;
 const HOVER_STATUS_OVERLAY_PADDING_X: f32 = 10.0;
 const HOVER_STATUS_OVERLAY_PADDING_Y: f32 = 6.0;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct HoverStatusOverlayCache {
   cached_url: Option<Arc<str>>,
   text_width_font_id: Option<egui::FontId>,
