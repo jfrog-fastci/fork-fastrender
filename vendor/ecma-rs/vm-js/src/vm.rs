@@ -4443,7 +4443,10 @@ impl Vm {
       .hir
       .body(func.body)
       .and_then(|b| b.function.as_ref())
-      .map(|m| m.async_)
+      // Treat only async non-generator functions as "async" for teardown purposes. HIR generator
+      // support (including async generators) is not implemented, so generator calls must still tear
+      // down eagerly.
+      .map(|m| m.async_ && !m.generator)
       .ok_or(VmError::InvariantViolation(
         "compiled function body missing metadata",
       ))?;

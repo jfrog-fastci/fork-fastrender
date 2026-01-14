@@ -157,24 +157,40 @@ fn compiled_async_unimplemented_does_not_leak_env_roots() -> Result<(), VmError>
   let result: Result<(), VmError> = (|| {
     let baseline_env_roots = heap.persistent_env_root_count();
 
-    let mut scope = heap.scope();
-    let name_s = scope.alloc_string("f")?;
-    let f_obj = scope.alloc_user_function(
-      CompiledFunctionRef {
-        script,
-        body: f_body,
-      },
-      name_s,
-      0,
-    )?;
-    scope.push_root(Value::Object(f_obj))?;
+    // Allocate and call inside a short-lived scope so we can borrow `heap` mutably again to run
+    // microtasks.
+    let call_res = {
+      let mut scope = heap.scope();
+      let name_s = scope.alloc_string("f")?;
+      let f_obj = scope.alloc_user_function(
+        CompiledFunctionRef {
+          script,
+          body: f_body,
+        },
+        name_s,
+        0,
+      )?;
+      scope.push_root(Value::Object(f_obj))?;
+      vm.call_without_host(&mut scope, Value::Object(f_obj), Value::Undefined, &[])
+    };
 
-    let call_res = vm.call_without_host(&mut scope, Value::Object(f_obj), Value::Undefined, &[]);
     match call_res {
-      Ok(_) => Ok(()),
+      Ok(_promise) => {
+        // Async compiled functions schedule Promise jobs to resume after `await`; drain them so we
+        // don't drop `Job`s with leaked persistent roots.
+        vm.perform_microtask_checkpoint(&mut heap)?;
+        assert_eq!(
+          heap.persistent_env_root_count(),
+          baseline_env_roots,
+          "async compiled call leaked a persistent env root"
+        );
+        Ok(())
+      }
       Err(err) => {
+        let mut scope = heap.scope();
+
         // `Vm::call` routes errors through `coerce_error_to_throw`, which converts
-        // `VmError::Unimplemented` into a thrown `Error("unimplemented: …")`. Detect both the raw
+        // `VmError::Unimplemented` into a thrown `Error(\"unimplemented: …\")`. Detect both the raw
         // and thrown forms here.
         let is_unimplemented_async = match &err {
           VmError::Unimplemented(msg) => msg.contains("async functions (hir-js compiled path)"),

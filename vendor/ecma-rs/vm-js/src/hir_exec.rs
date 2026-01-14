@@ -10425,12 +10425,14 @@ enum HirAsyncBodyKind {
 #[derive(Debug)]
 enum HirAsyncActive {
   ForAwaitOf(ForAwaitOfState),
+  AwaitExprStmt { next_stmt_index: usize },
 }
 
 impl HirAsyncActive {
   fn teardown(&mut self, heap: &mut crate::Heap) {
     match self {
       HirAsyncActive::ForAwaitOf(state) => state.teardown(heap),
+      HirAsyncActive::AwaitExprStmt { .. } => {}
     }
   }
 }
@@ -10556,37 +10558,63 @@ impl HirAsyncState {
 
     loop {
       if let Some(active) = &mut self.active {
-        let poll = match active {
-          HirAsyncActive::ForAwaitOf(state) => state.poll(evaluator, scope, body, resume_value.take()),
-        };
-        match poll {
-          Ok(ForAwaitOfPoll::Await(await_value)) => return Ok(HirAsyncResult::Await { await_value }),
-          Ok(ForAwaitOfPoll::Complete(flow)) => {
+        match active {
+          HirAsyncActive::ForAwaitOf(state) => {
+            let poll = state.poll(evaluator, scope, body, resume_value.take());
+            match poll {
+              Ok(ForAwaitOfPoll::Await(await_value)) => return Ok(HirAsyncResult::Await { await_value }),
+              Ok(ForAwaitOfPoll::Complete(flow)) => {
+                self.active = None;
+                match flow {
+                  Flow::Normal(_) => {
+                    self.next_stmt_index = self.next_stmt_index.saturating_add(1);
+                    continue;
+                  }
+                  Flow::Return(v) => return Ok(HirAsyncResult::CompleteOk(v)),
+                  Flow::Break(..) | Flow::Continue(..) => {
+                    return Err(VmError::InvariantViolation(
+                      "async compiled function body produced break/continue completion",
+                    ))
+                  }
+                }
+              }
+              Err(err) => {
+                self.active = None;
+                let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+                match err {
+                  VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                    return Ok(HirAsyncResult::CompleteThrow(value))
+                  }
+                  other => return Err(other),
+                }
+              }
+            }
+          }
+          HirAsyncActive::AwaitExprStmt { next_stmt_index } => {
+            let next_stmt_index = *next_stmt_index;
+            let Some(resume_res) = resume_value.take() else {
+              return Err(VmError::InvariantViolation(
+                "async compiled function resumed without a value",
+              ));
+            };
             self.active = None;
-            match flow {
-              Flow::Normal(_) => {
-                self.next_stmt_index = self.next_stmt_index.saturating_add(1);
+            match resume_res {
+              Ok(_v) => {
+                self.next_stmt_index = next_stmt_index;
                 continue;
               }
-              Flow::Return(v) => return Ok(HirAsyncResult::CompleteOk(v)),
-              Flow::Break(..) | Flow::Continue(..) => {
-                return Err(VmError::InvariantViolation(
-                  "async compiled function body produced break/continue completion",
-                ))
+              Err(err) => {
+                let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+                match err {
+                  VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                    return Ok(HirAsyncResult::CompleteThrow(value))
+                  }
+                  other => return Err(other),
+                }
               }
             }
           }
-          Err(err) => {
-            self.active = None;
-            let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
-            match err {
-              VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
-                return Ok(HirAsyncResult::CompleteThrow(value))
-              }
-              other => return Err(other),
-            }
-          }
-        }
+        };
       }
 
       let HirAsyncBodyKind::Block { stmts } = &self.body_kind else {
@@ -10613,6 +10641,21 @@ impl HirAsyncState {
       }
       let stmt_id = stmts[self.next_stmt_index];
       let stmt = evaluator.get_stmt(body, stmt_id)?;
+      // Fast-path `await` expression statements. The synchronous compiled evaluator does not yet
+      // support `ExprKind::Await`, so async function execution must suspend explicitly.
+      if let hir_js::StmtKind::Expr(expr_id) = stmt.kind {
+        let expr = evaluator.get_expr(body, expr_id)?;
+        if let hir_js::ExprKind::Await { expr: awaited_expr } = expr.kind {
+          // Budget once for the statement and once for the await expression itself.
+          evaluator.vm.tick()?;
+          evaluator.vm.tick()?;
+          let await_value = evaluator.eval_expr(scope, body, awaited_expr)?;
+          self.active = Some(HirAsyncActive::AwaitExprStmt {
+            next_stmt_index: self.next_stmt_index.saturating_add(1),
+          });
+          return Ok(HirAsyncResult::Await { await_value });
+        }
+      }
       if let hir_js::StmtKind::ForIn {
         left,
         right,
