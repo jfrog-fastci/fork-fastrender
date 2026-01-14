@@ -1912,7 +1912,7 @@ mod bookmarks_bar_ui {
     drop_index: Option<usize>,
   }
 
-  #[derive(Debug, Default)]
+  #[derive(Debug, Default, Clone)]
   struct BookmarkBarA11yLabelCache {
     revision: u64,
     labels: FxHashMap<BookmarkId, Arc<str>>,
