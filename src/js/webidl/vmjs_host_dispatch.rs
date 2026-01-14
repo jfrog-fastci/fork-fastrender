@@ -3032,9 +3032,15 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           match result {
             Ok((document_element_id, old_parent_id)) => {
               // Keep cached `childNodes` NodeLists updated on the document element.
-              if let Some(wrapper) = require_dom_platform_mut(vm)?
-                .get_existing_wrapper_for_document_id(scope.heap(), document_id, document_element_id)
-              {
+              let wrapper = {
+                let platform = require_dom_platform_mut(vm)?;
+                platform.get_existing_wrapper_for_document_id(
+                  scope.heap(),
+                  document_id,
+                  document_element_id,
+                )
+              };
+              if let Some(wrapper) = wrapper {
                 self.sync_cached_child_nodes_for_wrapper(
                   vm,
                   scope,
@@ -3043,13 +3049,20 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                   document_id,
                 )?;
               }
+
               // If the new body element was moved from another parent, sync that parent's cached
               // NodeList too.
               if let Some(old_parent_id) = old_parent_id {
                 if old_parent_id != document_element_id {
-                  if let Some(wrapper) = require_dom_platform_mut(vm)?
-                    .get_existing_wrapper_for_document_id(scope.heap(), document_id, old_parent_id)
-                  {
+                  let wrapper = {
+                    let platform = require_dom_platform_mut(vm)?;
+                    platform.get_existing_wrapper_for_document_id(
+                      scope.heap(),
+                      document_id,
+                      old_parent_id,
+                    )
+                  };
+                  if let Some(wrapper) = wrapper {
                     self.sync_cached_child_nodes_for_wrapper(
                       vm,
                       scope,
@@ -4690,9 +4703,11 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         match result {
           Ok((new_id, parent_id)) => {
             if let Some(parent_id) = parent_id {
-              if let Some(parent_wrapper) = require_dom_platform_mut(vm)?
-                .get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
-              {
+              let parent_wrapper = {
+                let platform = require_dom_platform_mut(vm)?;
+                platform.get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
+              };
+              if let Some(parent_wrapper) = parent_wrapper {
                 self.sync_cached_child_nodes_for_wrapper(
                   vm,
                   scope,
@@ -4860,9 +4875,11 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               // `NodeId` values are only unique within a document, so only skip when the old parent
               // is *actually* the same node as the insertion parent.
               if !(child_document_id == document_id && old_parent_id == parent_id) {
-                if let Some(old_parent_wrapper) = require_dom_platform_mut(vm)?
-                  .get_existing_wrapper_for_document_id(scope.heap(), child_document_id, old_parent_id)
-                {
+                let old_parent_wrapper = {
+                  let platform = require_dom_platform_mut(vm)?;
+                  platform.get_existing_wrapper_for_document_id(scope.heap(), child_document_id, old_parent_id)
+                };
+                if let Some(old_parent_wrapper) = old_parent_wrapper {
                   self.sync_cached_child_nodes_for_wrapper(
                     vm,
                     scope,
@@ -5028,9 +5045,11 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             }
             if let Some(old_parent_id) = old_parent_id {
               if !(child_document_id == document_id && old_parent_id == parent_id) {
-                if let Some(old_parent_wrapper) = require_dom_platform_mut(vm)?
-                  .get_existing_wrapper_for_document_id(scope.heap(), child_document_id, old_parent_id)
-                {
+                let old_parent_wrapper = {
+                  let platform = require_dom_platform_mut(vm)?;
+                  platform.get_existing_wrapper_for_document_id(scope.heap(), child_document_id, old_parent_id)
+                };
+                if let Some(old_parent_wrapper) = old_parent_wrapper {
                   self.sync_cached_child_nodes_for_wrapper(
                     vm,
                     scope,
@@ -5259,9 +5278,15 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             }
             if let Some(old_parent_id) = old_parent_id {
               if !(new_child_document_id == document_id && old_parent_id == parent_id) {
-                if let Some(old_parent_wrapper) = require_dom_platform_mut(vm)?
-                  .get_existing_wrapper_for_document_id(scope.heap(), new_child_document_id, old_parent_id)
-                {
+                let old_parent_wrapper = {
+                  let platform = require_dom_platform_mut(vm)?;
+                  platform.get_existing_wrapper_for_document_id(
+                    scope.heap(),
+                    new_child_document_id,
+                    old_parent_id,
+                  )
+                };
+                if let Some(old_parent_wrapper) = old_parent_wrapper {
                   self.sync_cached_child_nodes_for_wrapper(
                     vm,
                     scope,
@@ -5345,9 +5370,11 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         })?;
         match result {
           Ok(Some(parent_id)) => {
-            if let Some(parent_wrapper) = require_dom_platform_mut(vm)?
-              .get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
-            {
+            let parent_wrapper = {
+              let platform = require_dom_platform_mut(vm)?;
+              platform.get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
+            };
+            if let Some(parent_wrapper) = parent_wrapper {
               self.sync_cached_child_nodes_for_wrapper(
                 vm,
                 scope,
@@ -8878,9 +8905,11 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               // `outerHTML` replaces this element in its parent; keep cached `childNodes` live
               // NodeLists updated for the parent if it is wrapped.
               if let Some(parent_id) = parent_id {
-                if let Some(parent_wrapper) = require_dom_platform_mut(vm)?
-                  .get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
-                {
+                let parent_wrapper = {
+                  let platform = require_dom_platform_mut(vm)?;
+                  platform.get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
+                };
+                if let Some(parent_wrapper) = parent_wrapper {
                   self.sync_cached_child_nodes_for_wrapper(
                     vm,
                     scope,
@@ -9200,9 +9229,11 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               )?;
             }
 
-            if let Some(parent_wrapper) = require_dom_platform_mut(vm)?
-              .get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
-            {
+            let parent_wrapper = {
+              let platform = require_dom_platform_mut(vm)?;
+              platform.get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
+            };
+            if let Some(parent_wrapper) = parent_wrapper {
               self.sync_cached_child_nodes_for_wrapper(vm, scope, parent_wrapper, parent_id, document_id)?;
             }
             for old_parent in old_parents {
@@ -9211,9 +9242,15 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               if old_parent.document_id == document_id && old_parent.node_id == parent_id {
                 continue;
               }
-              if let Some(old_parent_wrapper) = require_dom_platform_mut(vm)?
-                .get_existing_wrapper_for_document_id(scope.heap(), old_parent.document_id, old_parent.node_id)
-              {
+              let old_parent_wrapper = {
+                let platform = require_dom_platform_mut(vm)?;
+                platform.get_existing_wrapper_for_document_id(
+                  scope.heap(),
+                  old_parent.document_id,
+                  old_parent.node_id,
+                )
+              };
+              if let Some(old_parent_wrapper) = old_parent_wrapper {
                 self.sync_cached_child_nodes_for_wrapper(
                   vm,
                   scope,
@@ -9224,9 +9261,15 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               }
             }
             for fragment in fragments {
-              if let Some(fragment_wrapper) = require_dom_platform_mut(vm)?
-                .get_existing_wrapper_for_document_id(scope.heap(), fragment.document_id, fragment.node_id)
-              {
+              let fragment_wrapper = {
+                let platform = require_dom_platform_mut(vm)?;
+                platform.get_existing_wrapper_for_document_id(
+                  scope.heap(),
+                  fragment.document_id,
+                  fragment.node_id,
+                )
+              };
+              if let Some(fragment_wrapper) = fragment_wrapper {
                 self.sync_cached_child_nodes_for_wrapper(
                   vm,
                   scope,
@@ -9291,9 +9334,11 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                   Ok(host.with_dom(|dom| dom.parent(element_id)))
                 })?;
                 if let Ok(Some(parent_id)) = parent_id {
-                  if let Some(parent_wrapper) = require_dom_platform_mut(vm)?
-                    .get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
-                  {
+                  let parent_wrapper = {
+                    let platform = require_dom_platform_mut(vm)?;
+                    platform.get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
+                  };
+                  if let Some(parent_wrapper) = parent_wrapper {
                     self.sync_cached_child_nodes_for_wrapper(
                       vm,
                       scope,
@@ -9410,23 +9455,37 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             if let Some(parent_id) = target_parent {
               if parent_id.document_id == document_id && parent_id.node_id == element_id {
                 self.sync_cached_child_nodes_for_wrapper(vm, scope, obj, element_id, document_id)?;
-              } else if let Some(parent_wrapper) = require_dom_platform_mut(vm)?
-                .get_existing_wrapper_for_document_id(scope.heap(), parent_id.document_id, parent_id.node_id)
-              {
-                self.sync_cached_child_nodes_for_wrapper(
-                  vm,
-                  scope,
-                  parent_wrapper,
-                  parent_id.node_id,
-                  parent_id.document_id,
-                )?;
+              } else {
+                let parent_wrapper = {
+                  let platform = require_dom_platform_mut(vm)?;
+                  platform.get_existing_wrapper_for_document_id(
+                    scope.heap(),
+                    parent_id.document_id,
+                    parent_id.node_id,
+                  )
+                };
+                if let Some(parent_wrapper) = parent_wrapper {
+                  self.sync_cached_child_nodes_for_wrapper(
+                    vm,
+                    scope,
+                    parent_wrapper,
+                    parent_id.node_id,
+                    parent_id.document_id,
+                  )?;
+                }
               }
             }
             if let Some(old_parent) = old_parent {
               if Some(old_parent) != target_parent {
-                if let Some(old_parent_wrapper) = require_dom_platform_mut(vm)?
-                  .get_existing_wrapper_for_document_id(scope.heap(), old_parent.document_id, old_parent.node_id)
-                {
+                let old_parent_wrapper = {
+                  let platform = require_dom_platform_mut(vm)?;
+                  platform.get_existing_wrapper_for_document_id(
+                    scope.heap(),
+                    old_parent.document_id,
+                    old_parent.node_id,
+                  )
+                };
+                if let Some(old_parent_wrapper) = old_parent_wrapper {
                   self.sync_cached_child_nodes_for_wrapper(
                     vm,
                     scope,
@@ -9477,9 +9536,11 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                   Ok(host.with_dom(|dom| dom.parent(element_id)))
                 })?;
                 if let Ok(Some(parent_id)) = parent_id {
-                  if let Some(parent_wrapper) = require_dom_platform_mut(vm)?
-                    .get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
-                  {
+                  let parent_wrapper = {
+                    let platform = require_dom_platform_mut(vm)?;
+                    platform.get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
+                  };
+                  if let Some(parent_wrapper) = parent_wrapper {
                     self.sync_cached_child_nodes_for_wrapper(
                       vm,
                       scope,
@@ -9863,9 +9924,11 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         match result {
           Ok(Some(parent_id)) => {
-            if let Some(parent_wrapper) = require_dom_platform_mut(vm)?
-              .get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
-            {
+            let parent_wrapper = {
+              let platform = require_dom_platform_mut(vm)?;
+              platform.get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
+            };
+            if let Some(parent_wrapper) = parent_wrapper {
               self.sync_cached_child_nodes_for_wrapper(
                 vm,
                 scope,
