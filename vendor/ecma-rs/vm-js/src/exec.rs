@@ -22078,6 +22078,22 @@ fn async_frames_push(frames: &mut VecDeque<AsyncFrame>, frame: AsyncFrame) -> Re
   vecdeque_try_push_back(frames, frame)
 }
 
+fn async_frames_try_push(
+  heap: &mut Heap,
+  frames: &mut VecDeque<AsyncFrame>,
+  mut frame: AsyncFrame,
+) -> Result<(), VmError> {
+  if frames.try_reserve(1).is_err() {
+    async_teardown_frame(heap, &mut frame);
+    for mut f in frames.drain(..) {
+      async_teardown_frame(heap, &mut f);
+    }
+    return Err(VmError::OutOfMemory);
+  }
+  frames.push_back(frame);
+  Ok(())
+}
+
 fn async_frames_try_append(
   heap: &mut Heap,
   dst: &mut VecDeque<AsyncFrame>,
@@ -22651,7 +22667,8 @@ fn async_eval_try(
   match async_eval_block_stmt(evaluator, scope, &stmt.wrapped.stx)? {
     AsyncEval::Complete(c) => async_try_after_wrapped(evaluator, scope, stmt, c),
     AsyncEval::Suspend(mut suspend) => {
-      async_frames_push(
+      async_frames_try_push(
+        scope.heap_mut(),
         &mut suspend.frames,
         AsyncFrame::TryAfterWrapped {
           stmt: stmt as *const TryStmt,
@@ -22677,11 +22694,20 @@ fn async_eval_with(
       let outer = evaluator.env.lexical_env;
 
       let mut label_vec: Vec<String> = Vec::new();
-      label_vec
-        .try_reserve_exact(label_set.len())
-        .map_err(|_| VmError::OutOfMemory)?;
+      if label_vec.try_reserve_exact(label_set.len()).is_err() {
+        for mut frame in suspend.frames {
+          async_teardown_frame(scope.heap_mut(), &mut frame);
+        }
+        return Err(VmError::OutOfMemory);
+      }
       label_vec.extend_from_slice(label_set);
 
+      if suspend.frames.try_reserve(1).is_err() {
+        for mut frame in suspend.frames {
+          async_teardown_frame(scope.heap_mut(), &mut frame);
+        }
+        return Err(VmError::OutOfMemory);
+      }
       async_frames_push(
         &mut suspend.frames,
         AsyncFrame::WithAfterObject {
@@ -22689,7 +22715,8 @@ fn async_eval_with(
           label_set: label_vec,
           outer,
         },
-      )?;
+      )
+      .expect("async_frames_push should not fail after try_reserve");
       Ok(AsyncEval::Suspend(suspend))
     }
   }
@@ -26317,18 +26344,25 @@ fn async_eval_while(
   stmt: &WhileStmt,
   label_set: &[String],
 ) -> Result<AsyncEval<Completion>, VmError> {
-  let v_root = scope.heap_mut().add_root(Value::Undefined)?;
   let mut label_vec: Vec<String> = Vec::new();
   label_vec
     .try_reserve_exact(label_set.len())
     .map_err(|_| VmError::OutOfMemory)?;
   label_vec.extend_from_slice(label_set);
+  let v_root = scope.heap_mut().add_root(Value::Undefined)?;
 
   match async_eval_expr(evaluator, scope, &stmt.condition) {
     Ok(AsyncEval::Complete(test)) => {
       async_while_after_test(evaluator, scope, stmt, label_vec, v_root, test)
     }
     Ok(AsyncEval::Suspend(mut suspend)) => {
+      if suspend.frames.try_reserve(1).is_err() {
+        for mut frame in suspend.frames {
+          async_teardown_frame(scope.heap_mut(), &mut frame);
+        }
+        scope.heap_mut().remove_root(v_root);
+        return Err(VmError::OutOfMemory);
+      }
       async_frames_push(
         &mut suspend.frames,
         AsyncFrame::WhileAfterTest {
@@ -26336,7 +26370,8 @@ fn async_eval_while(
           label_set: label_vec,
           v_root,
         },
-      )?;
+      )
+      .expect("async_frames_push should not fail after try_reserve");
       Ok(AsyncEval::Suspend(suspend))
     }
     Err(err) => {
@@ -26368,6 +26403,13 @@ fn async_while_after_test(
   match async_eval_stmt_labelled(evaluator, scope, &stmt.body, &[])? {
     AsyncEval::Complete(c) => async_while_after_body(evaluator, scope, stmt, label_set, v_root, c),
     AsyncEval::Suspend(mut suspend) => {
+      if suspend.frames.try_reserve(1).is_err() {
+        for mut frame in suspend.frames {
+          async_teardown_frame(scope.heap_mut(), &mut frame);
+        }
+        scope.heap_mut().remove_root(v_root);
+        return Err(VmError::OutOfMemory);
+      }
       async_frames_push(
         &mut suspend.frames,
         AsyncFrame::WhileAfterBody {
@@ -26375,7 +26417,8 @@ fn async_while_after_test(
           label_set,
           v_root,
         },
-      )?;
+      )
+      .expect("async_frames_push should not fail after try_reserve");
       Ok(AsyncEval::Suspend(suspend))
     }
   }
@@ -26410,6 +26453,13 @@ fn async_while_after_body(
       async_while_after_test(evaluator, scope, stmt, label_set, v_root, test)
     }
     Ok(AsyncEval::Suspend(mut suspend)) => {
+      if suspend.frames.try_reserve(1).is_err() {
+        for mut frame in suspend.frames {
+          async_teardown_frame(scope.heap_mut(), &mut frame);
+        }
+        scope.heap_mut().remove_root(v_root);
+        return Err(VmError::OutOfMemory);
+      }
       async_frames_push(
         &mut suspend.frames,
         AsyncFrame::WhileAfterTest {
@@ -26417,7 +26467,8 @@ fn async_while_after_body(
           label_set,
           v_root,
         },
-      )?;
+      )
+      .expect("async_frames_push should not fail after try_reserve");
       Ok(AsyncEval::Suspend(suspend))
     }
     Err(err) => {
@@ -26433,18 +26484,25 @@ fn async_eval_do_while(
   stmt: &DoWhileStmt,
   label_set: &[String],
 ) -> Result<AsyncEval<Completion>, VmError> {
-  let v_root = scope.heap_mut().add_root(Value::Undefined)?;
   let mut label_vec: Vec<String> = Vec::new();
   label_vec
     .try_reserve_exact(label_set.len())
     .map_err(|_| VmError::OutOfMemory)?;
   label_vec.extend_from_slice(label_set);
+  let v_root = scope.heap_mut().add_root(Value::Undefined)?;
 
   match async_eval_stmt_labelled(evaluator, scope, &stmt.body, &[]) {
     Ok(AsyncEval::Complete(c)) => {
       async_do_while_after_body(evaluator, scope, stmt, label_vec, v_root, c)
     }
     Ok(AsyncEval::Suspend(mut suspend)) => {
+      if suspend.frames.try_reserve(1).is_err() {
+        for mut frame in suspend.frames {
+          async_teardown_frame(scope.heap_mut(), &mut frame);
+        }
+        scope.heap_mut().remove_root(v_root);
+        return Err(VmError::OutOfMemory);
+      }
       async_frames_push(
         &mut suspend.frames,
         AsyncFrame::DoWhileAfterBody {
@@ -26452,7 +26510,8 @@ fn async_eval_do_while(
           label_set: label_vec,
           v_root,
         },
-      )?;
+      )
+      .expect("async_frames_push should not fail after try_reserve");
       Ok(AsyncEval::Suspend(suspend))
     }
     Err(err) => {
@@ -26493,6 +26552,13 @@ fn async_do_while_after_body(
       async_do_while_after_test(evaluator, scope, stmt, label_set, v_root, test)
     }
     Ok(AsyncEval::Suspend(mut suspend)) => {
+      if suspend.frames.try_reserve(1).is_err() {
+        for mut frame in suspend.frames {
+          async_teardown_frame(scope.heap_mut(), &mut frame);
+        }
+        scope.heap_mut().remove_root(v_root);
+        return Err(VmError::OutOfMemory);
+      }
       async_frames_push(
         &mut suspend.frames,
         AsyncFrame::DoWhileAfterTest {
@@ -26500,7 +26566,8 @@ fn async_do_while_after_body(
           label_set,
           v_root,
         },
-      )?;
+      )
+      .expect("async_frames_push should not fail after try_reserve");
       Ok(AsyncEval::Suspend(suspend))
     }
     Err(err) => {
@@ -26536,6 +26603,13 @@ fn async_do_while_after_test(
       async_do_while_after_body(evaluator, scope, stmt, label_set, v_root, c)
     }
     Ok(AsyncEval::Suspend(mut suspend)) => {
+      if suspend.frames.try_reserve(1).is_err() {
+        for mut frame in suspend.frames {
+          async_teardown_frame(scope.heap_mut(), &mut frame);
+        }
+        scope.heap_mut().remove_root(v_root);
+        return Err(VmError::OutOfMemory);
+      }
       async_frames_push(
         &mut suspend.frames,
         AsyncFrame::DoWhileAfterBody {
@@ -26543,7 +26617,8 @@ fn async_do_while_after_test(
           label_set,
           v_root,
         },
-      )?;
+      )
+      .expect("async_frames_push should not fail after try_reserve");
       Ok(AsyncEval::Suspend(suspend))
     }
     Err(err) => {
@@ -26639,12 +26714,12 @@ fn async_eval_for_triple(
   stmt: &ForTripleStmt,
   label_set: &[String],
 ) -> Result<AsyncEval<Completion>, VmError> {
-  let v_root = scope.heap_mut().add_root(Value::Undefined)?;
   let mut label_vec: Vec<String> = Vec::new();
   label_vec
     .try_reserve_exact(label_set.len())
     .map_err(|_| VmError::OutOfMemory)?;
   label_vec.extend_from_slice(label_set);
+  let v_root = scope.heap_mut().add_root(Value::Undefined)?;
 
   let needs_explicit_iter_tick =
     stmt.cond.is_none() && stmt.post.is_none() && stmt.body.stx.body.is_empty();
@@ -26726,7 +26801,18 @@ fn async_eval_for_triple(
           }
           Ok(AsyncEval::Suspend(mut suspend)) => {
             // Restore the outer lexical environment after the loop completes.
-            async_frames_push(&mut suspend.frames, AsyncFrame::RestoreLexEnv { outer: outer_lex })?;
+            if suspend.frames.try_reserve(1).is_err() {
+              evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+              for mut frame in suspend.frames {
+                async_teardown_frame(scope.heap_mut(), &mut frame);
+              }
+              return Err(VmError::OutOfMemory);
+            }
+            async_frames_push(
+              &mut suspend.frames,
+              AsyncFrame::RestoreLexEnv { outer: outer_lex },
+            )
+            .expect("async_frames_push should not fail after try_reserve");
             Ok(AsyncEval::Suspend(suspend))
           }
           Err(err) => {
@@ -26739,6 +26825,14 @@ fn async_eval_for_triple(
         }
       }
       Ok(AsyncEval::Suspend(mut suspend)) => {
+        if suspend.frames.try_reserve(2).is_err() {
+          evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+          scope.heap_mut().remove_root(v_root);
+          for mut frame in suspend.frames {
+            async_teardown_frame(scope.heap_mut(), &mut frame);
+          }
+          return Err(VmError::OutOfMemory);
+        }
         async_frames_push(
           &mut suspend.frames,
           AsyncFrame::ForTripleAfterInit {
@@ -26748,12 +26842,14 @@ fn async_eval_for_triple(
             needs_explicit_iter_tick,
             outer_lex: Some(outer_lex),
           },
-        )?;
+        )
+        .expect("async_frames_push should not fail after try_reserve");
         // Restore the outer lexical environment after the loop completes.
         async_frames_push(
           &mut suspend.frames,
           AsyncFrame::RestoreLexEnv { outer: outer_lex },
-        )?;
+        )
+        .expect("async_frames_push should not fail after try_reserve");
         Ok(AsyncEval::Suspend(suspend))
       }
       Err(err) => {
@@ -26786,6 +26882,13 @@ fn async_eval_for_triple(
         None,
       ),
       Ok(AsyncEval::Suspend(mut suspend)) => {
+        if suspend.frames.try_reserve(1).is_err() {
+          scope.heap_mut().remove_root(v_root);
+          for mut frame in suspend.frames {
+            async_teardown_frame(scope.heap_mut(), &mut frame);
+          }
+          return Err(VmError::OutOfMemory);
+        }
         async_frames_push(
           &mut suspend.frames,
           AsyncFrame::ForTripleAfterInit {
@@ -26795,7 +26898,8 @@ fn async_eval_for_triple(
             needs_explicit_iter_tick,
             outer_lex: None,
           },
-        )?;
+        )
+        .expect("async_frames_push should not fail after try_reserve");
         Ok(AsyncEval::Suspend(suspend))
       }
       Err(err) => {
@@ -26820,6 +26924,13 @@ fn async_eval_for_triple(
         )
       }
       Ok(AsyncEval::Suspend(mut suspend)) => {
+        if suspend.frames.try_reserve(1).is_err() {
+          scope.heap_mut().remove_root(v_root);
+          for mut frame in suspend.frames {
+            async_teardown_frame(scope.heap_mut(), &mut frame);
+          }
+          return Err(VmError::OutOfMemory);
+        }
         async_frames_push(
           &mut suspend.frames,
           AsyncFrame::ForTripleAfterInit {
@@ -26829,7 +26940,8 @@ fn async_eval_for_triple(
             needs_explicit_iter_tick,
             outer_lex: None,
           },
-        )?;
+        )
+        .expect("async_frames_push should not fail after try_reserve");
         Ok(AsyncEval::Suspend(suspend))
       }
       Err(err) => {
@@ -26896,6 +27008,16 @@ fn async_for_triple_begin_iteration(
         test,
       ),
       Ok(AsyncEval::Suspend(mut suspend)) => {
+        if suspend.frames.try_reserve(1).is_err() {
+          for mut frame in suspend.frames {
+            async_teardown_frame(scope.heap_mut(), &mut frame);
+          }
+          scope.heap_mut().remove_root(v_root);
+          if let Some(outer) = outer_lex {
+            evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+          }
+          return Err(VmError::OutOfMemory);
+        }
         async_frames_push(
           &mut suspend.frames,
           AsyncFrame::ForTripleAfterTest {
@@ -26905,7 +27027,8 @@ fn async_for_triple_begin_iteration(
             needs_explicit_iter_tick,
             outer_lex,
           },
-        )?;
+        )
+        .expect("async_frames_push should not fail after try_reserve");
         Ok(AsyncEval::Suspend(suspend))
       }
       Err(err) => {
@@ -26958,6 +27081,16 @@ fn async_for_triple_after_test(
       c,
     ),
     Ok(AsyncEval::Suspend(mut suspend)) => {
+      if suspend.frames.try_reserve(1).is_err() {
+        for mut frame in suspend.frames {
+          async_teardown_frame(scope.heap_mut(), &mut frame);
+        }
+        scope.heap_mut().remove_root(v_root);
+        if let Some(outer) = outer_lex {
+          evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+        }
+        return Err(VmError::OutOfMemory);
+      }
       async_frames_push(
         &mut suspend.frames,
         AsyncFrame::ForTripleAfterBody {
@@ -26967,7 +27100,8 @@ fn async_for_triple_after_test(
           needs_explicit_iter_tick,
           outer_lex,
         },
-      )?;
+      )
+      .expect("async_frames_push should not fail after try_reserve");
       Ok(AsyncEval::Suspend(suspend))
     }
     Err(err) => {
@@ -27023,6 +27157,16 @@ fn async_for_triple_after_body(
         outer_lex,
       ),
       Ok(AsyncEval::Suspend(mut suspend)) => {
+        if suspend.frames.try_reserve(1).is_err() {
+          for mut frame in suspend.frames {
+            async_teardown_frame(scope.heap_mut(), &mut frame);
+          }
+          scope.heap_mut().remove_root(v_root);
+          if let Some(outer) = outer_lex {
+            evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+          }
+          return Err(VmError::OutOfMemory);
+        }
         async_frames_push(
           &mut suspend.frames,
           AsyncFrame::ForTripleAfterPost {
@@ -27032,7 +27176,8 @@ fn async_for_triple_after_body(
             needs_explicit_iter_tick,
             outer_lex,
           },
-        )?;
+        )
+        .expect("async_frames_push should not fail after try_reserve");
         Ok(AsyncEval::Suspend(suspend))
       }
       Err(err) => {
@@ -27096,17 +27241,26 @@ fn async_eval_for_in(
           async_for_in_after_rhs(evaluator, scope, stmt, label_vec, rhs_value)
         }
         Ok(AsyncEval::Suspend(mut suspend)) => {
+          if suspend.frames.try_reserve(2).is_err() {
+            evaluator.env.set_lexical_env(scope.heap_mut(), old_lex);
+            for mut frame in suspend.frames {
+              async_teardown_frame(scope.heap_mut(), &mut frame);
+            }
+            return Err(VmError::OutOfMemory);
+          }
           async_frames_push(
             &mut suspend.frames,
             AsyncFrame::RestoreLexEnv { outer: old_lex },
-          )?;
+          )
+          .expect("async_frames_push should not fail after try_reserve");
           async_frames_push(
             &mut suspend.frames,
             AsyncFrame::ForInAfterRhs {
               stmt: stmt as *const ForInStmt,
               label_set: label_vec,
             },
-          )?;
+          )
+          .expect("async_frames_push should not fail after try_reserve");
           Ok(AsyncEval::Suspend(suspend))
         }
         Err(err) => {
@@ -27122,13 +27276,20 @@ fn async_eval_for_in(
       async_for_in_after_rhs(evaluator, scope, stmt, label_vec, rhs_value)
     }
     Ok(AsyncEval::Suspend(mut suspend)) => {
+      if suspend.frames.try_reserve(1).is_err() {
+        for mut frame in suspend.frames {
+          async_teardown_frame(scope.heap_mut(), &mut frame);
+        }
+        return Err(VmError::OutOfMemory);
+      }
       async_frames_push(
         &mut suspend.frames,
         AsyncFrame::ForInAfterRhs {
           stmt: stmt as *const ForInStmt,
           label_set: label_vec,
         },
-      )?;
+      )
+      .expect("async_frames_push should not fail after try_reserve");
       Ok(AsyncEval::Suspend(suspend))
     }
     Err(err) => Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?)),
@@ -27553,11 +27714,24 @@ fn async_for_in_loop_from(
         }
       }
       AsyncEval::Suspend(mut suspend) => {
+        let extra_frames = if iter_env_created { 2 } else { 1 };
+        if suspend.frames.try_reserve(extra_frames).is_err() {
+          for mut frame in suspend.frames {
+            async_teardown_frame(scope.heap_mut(), &mut frame);
+          }
+          if iter_env_created {
+            evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+          }
+          async_for_in_cleanup(scope, object_root, &mut key_roots, v_root);
+          return Err(VmError::OutOfMemory);
+        }
+
         if iter_env_created {
           async_frames_push(
             &mut suspend.frames,
             AsyncFrame::RestoreLexEnv { outer: outer_lex },
-          )?;
+          )
+          .expect("async_frames_push should not fail after try_reserve");
         }
 
         async_frames_push(
@@ -27571,7 +27745,8 @@ fn async_for_in_loop_from(
             v_root,
             outer_lex,
           },
-        )?;
+        )
+        .expect("async_frames_push should not fail after try_reserve");
         return Ok(AsyncEval::Suspend(suspend));
       }
     }
@@ -27668,14 +27843,20 @@ fn async_eval_for_await_of(
           )
         }
         Ok(AsyncEval::Suspend(mut suspend)) => {
-          if let Err(err) = async_frames_push(
+          if suspend.frames.try_reserve(2).is_err() {
+            evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+            scope.heap_mut().remove_root(v_root);
+            for mut frame in suspend.frames {
+              async_teardown_frame(scope.heap_mut(), &mut frame);
+            }
+            return Err(VmError::OutOfMemory);
+          }
+          async_frames_push(
             &mut suspend.frames,
             AsyncFrame::RestoreLexEnv { outer: outer_lex },
-          ) {
-            scope.heap_mut().remove_root(v_root);
-            return Err(err);
-          }
-          if let Err(err) = async_frames_push(
+          )
+          .expect("async_frames_push should not fail after try_reserve");
+          async_frames_push(
             &mut suspend.frames,
             AsyncFrame::ForAwaitOfAfterRhs {
               stmt: stmt as *const ForOfStmt,
@@ -27683,10 +27864,8 @@ fn async_eval_for_await_of(
               v_root,
               outer_lex,
             },
-          ) {
-            scope.heap_mut().remove_root(v_root);
-            return Err(err);
-          }
+          )
+          .expect("async_frames_push should not fail after try_reserve");
           Ok(AsyncEval::Suspend(suspend))
         }
         Err(err) => {
@@ -27703,7 +27882,14 @@ fn async_eval_for_await_of(
       evaluator, scope, stmt, label_vec, v_root, outer_lex, iterable,
     ),
     Ok(AsyncEval::Suspend(mut suspend)) => {
-      if let Err(err) = async_frames_push(
+      if suspend.frames.try_reserve(1).is_err() {
+        scope.heap_mut().remove_root(v_root);
+        for mut frame in suspend.frames {
+          async_teardown_frame(scope.heap_mut(), &mut frame);
+        }
+        return Err(VmError::OutOfMemory);
+      }
+      async_frames_push(
         &mut suspend.frames,
         AsyncFrame::ForAwaitOfAfterRhs {
           stmt: stmt as *const ForOfStmt,
@@ -27711,10 +27897,8 @@ fn async_eval_for_await_of(
           v_root,
           outer_lex,
         },
-      ) {
-        scope.heap_mut().remove_root(v_root);
-        return Err(err);
-      }
+      )
+      .expect("async_frames_push should not fail after try_reserve");
       Ok(AsyncEval::Suspend(suspend))
     }
     Err(err) => {
@@ -28435,17 +28619,26 @@ fn async_eval_for_of(
           async_for_of_after_rhs(evaluator, scope, stmt, label_vec, iterable)
         }
         Ok(AsyncEval::Suspend(mut suspend)) => {
+          if suspend.frames.try_reserve(2).is_err() {
+            evaluator.env.set_lexical_env(scope.heap_mut(), old_lex);
+            for mut frame in suspend.frames {
+              async_teardown_frame(scope.heap_mut(), &mut frame);
+            }
+            return Err(VmError::OutOfMemory);
+          }
           async_frames_push(
             &mut suspend.frames,
             AsyncFrame::RestoreLexEnv { outer: old_lex },
-          )?;
+          )
+          .expect("async_frames_push should not fail after try_reserve");
           async_frames_push(
             &mut suspend.frames,
             AsyncFrame::ForOfAfterRhs {
               stmt: stmt as *const ForOfStmt,
               label_set: label_vec,
             },
-          )?;
+          )
+          .expect("async_frames_push should not fail after try_reserve");
           Ok(AsyncEval::Suspend(suspend))
         }
         Err(err) => {
@@ -28461,13 +28654,20 @@ fn async_eval_for_of(
       async_for_of_after_rhs(evaluator, scope, stmt, label_vec, iterable)
     }
     Ok(AsyncEval::Suspend(mut suspend)) => {
+      if suspend.frames.try_reserve(1).is_err() {
+        for mut frame in suspend.frames {
+          async_teardown_frame(scope.heap_mut(), &mut frame);
+        }
+        return Err(VmError::OutOfMemory);
+      }
       async_frames_push(
         &mut suspend.frames,
         AsyncFrame::ForOfAfterRhs {
           stmt: stmt as *const ForOfStmt,
           label_set: label_vec,
         },
-      )?;
+      )
+      .expect("async_frames_push should not fail after try_reserve");
       Ok(AsyncEval::Suspend(suspend))
     }
     Err(err) => Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?)),
@@ -28538,10 +28738,15 @@ fn async_for_of_after_rhs(
   let (iterator_root, next_method_root) = {
     let mut root_scope = iter_scope.reborrow();
     root_scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
-    let iterator_root = root_scope.heap_mut().add_root(iterator_record.iterator)?;
-    let next_method_root = root_scope
-      .heap_mut()
-      .add_root(iterator_record.next_method)?;
+    let heap = root_scope.heap_mut();
+    let iterator_root = heap.add_root(iterator_record.iterator)?;
+    let next_method_root = match heap.add_root(iterator_record.next_method) {
+      Ok(id) => id,
+      Err(err) => {
+        heap.remove_root(iterator_root);
+        return Err(err);
+      }
+    };
     (iterator_root, next_method_root)
   };
 
@@ -28781,11 +28986,24 @@ fn async_for_of_loop(
         }
       }
       AsyncEval::Suspend(mut suspend) => {
+        let extra_frames = if iter_env_created { 2 } else { 1 };
+        if suspend.frames.try_reserve(extra_frames).is_err() {
+          for mut frame in suspend.frames {
+            async_teardown_frame(scope.heap_mut(), &mut frame);
+          }
+          if iter_env_created {
+            evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
+          }
+          async_for_of_cleanup(scope, iterator_root, next_method_root, v_root);
+          return Err(VmError::OutOfMemory);
+        }
+
         if iter_env_created {
           async_frames_push(
             &mut suspend.frames,
             AsyncFrame::RestoreLexEnv { outer: outer_lex },
-          )?;
+          )
+          .expect("async_frames_push should not fail after try_reserve");
         }
 
         async_frames_push(
@@ -28799,7 +29017,8 @@ fn async_for_of_loop(
             v_root,
             outer_lex,
           },
-        )?;
+        )
+        .expect("async_frames_push should not fail after try_reserve");
         return Ok(AsyncEval::Suspend(suspend));
       }
     }
@@ -28816,7 +29035,8 @@ fn async_eval_switch(
       async_switch_after_discriminant(evaluator, scope, stmt, discriminant)
     }
     Ok(AsyncEval::Suspend(mut suspend)) => {
-      async_frames_push(
+      async_frames_try_push(
+        scope.heap_mut(),
         &mut suspend.frames,
         AsyncFrame::SwitchAfterDiscriminant {
           stmt: stmt as *const SwitchStmt,
