@@ -502,3 +502,102 @@ fn text_decoration_skip_spaces_end_clips_physical_end_after_bidi_reordering() {
     deco_item.line_width
   );
 }
+
+#[test]
+fn text_decoration_skip_spaces_end_uses_line_physical_end_even_when_first_run_is_rtl() {
+  crate::testing::init_rayon_for_tests(2);
+
+  // The line's base direction is LTR, but the first run is an isolated RTL span.
+  // `text-decoration-skip-spaces: end` must still clip the physical inline-end (right side)
+  // trailing spaces, rather than treating the line as RTL because the first run is RTL.
+  let html = r#"<!doctype html><html><head><style>
+    body { margin: 0; }
+    .sample {
+      font-family: "DejaVu Sans";
+      font-size: 20px;
+      direction: ltr;
+      white-space: pre;
+      text-decoration: underline overline;
+      text-decoration-skip-ink: none;
+      text-decoration-skip-spaces: end;
+    }
+    .rtl {
+      direction: rtl;
+      unicode-bidi: isolate;
+    }
+  </style></head><body><div class="sample"><span class="rtl">אב</span>hi   </div></body></html>"#;
+
+  let tree = render_fragment_tree(html, 320, 120);
+  let font_ctx = FontContext::with_config(FontConfig::bundled_only());
+
+  let mut text_frags = Vec::new();
+  collect_text_fragments(&tree.root, crate::geometry::Point::ZERO, &mut text_frags);
+  let (ltr_frag, ltr_rect) = text_frags
+    .into_iter()
+    .find(|(node, _)| match &node.content {
+      FragmentContent::Text { text, .. } => text.contains("hi"),
+      _ => false,
+    })
+    .expect("expected LTR text fragment containing 'hi'");
+
+  let runs = shaped_runs_for_fragment(ltr_frag, &font_ctx);
+  assert!(!runs.is_empty(), "expected shaped runs for LTR fragment");
+  let expected_skip_end = spacer_advance_in_runs(&runs, SpacerEdge::End, false);
+  assert!(
+    expected_skip_end > 0.0,
+    "expected non-zero trailing spacer advance in LTR fragment"
+  );
+
+  let list = DisplayListBuilder::new()
+    .with_font_context(font_ctx)
+    .build_tree(&tree);
+
+  let deco_item = list
+    .items()
+    .iter()
+    .filter_map(|item| match item {
+      DisplayItem::TextDecoration(deco) if !deco.inline_vertical => Some(deco),
+      _ => None,
+    })
+    .find(|deco| {
+      (deco.line_start - ltr_rect.x()).abs() < 0.5
+        && (deco.line_width - ltr_rect.width()).abs() < 0.5
+    })
+    .expect("expected TextDecorationItem for LTR fragment");
+
+  let expected_end = deco_item.line_width - expected_skip_end;
+
+  let segments = underline_segments(deco_item);
+  assert_eq!(
+    segments.len(),
+    1,
+    "expected exactly one underline segment after skip-spaces clipping, got {segments:?}"
+  );
+  let (start, end) = segments[0];
+  assert!(
+    start.abs() < 0.05,
+    "expected skip-spaces:end not to clip the physical start: start={start} segments={segments:?}"
+  );
+  assert!(
+    (end - expected_end).abs() < 0.05,
+    "expected skip-spaces:end to clip physical end-side spaces even when first run is RTL: end={end} expected_end={expected_end} line_width={} skip={expected_skip_end} segments={segments:?}",
+    deco_item.line_width
+  );
+
+  let segments = overline_segments(deco_item);
+  assert_eq!(
+    segments.len(),
+    1,
+    "expected exactly one overline segment after skip-spaces clipping, got {segments:?}"
+  );
+  let (start, end) = segments[0];
+  assert!(
+    start.abs() < 0.05,
+    "expected skip-spaces:end not to clip the physical start of overline: start={start} segments={segments:?}"
+  );
+  assert!(
+    (end - expected_end).abs() < 0.05,
+    "expected skip-spaces:end to clip physical end-side spaces for overline even when first run is RTL: end={end} expected_end={expected_end} line_width={} skip={expected_skip_end} segments={segments:?}",
+    deco_item.line_width
+  );
+}
