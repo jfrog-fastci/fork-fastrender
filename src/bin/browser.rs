@@ -22734,8 +22734,12 @@ impl App {
 
     // Lazily create the FastRender-backed chrome document.
     if self.chrome_frame_doc.is_none() {
+      let chrome_fetcher: std::sync::Arc<dyn fastrender::resource::ResourceFetcher> =
+        std::sync::Arc::new(fastrender::ui::trusted_chrome_fetcher::TrustedChromeFetcher::new(
+          std::sync::Arc::new(self.chrome_dynamic_fetcher.clone()),
+        ));
       let renderer = fastrender::FastRender::builder()
-        .fetcher(std::sync::Arc::new(self.chrome_dynamic_fetcher.clone()))
+        .fetcher(chrome_fetcher)
         .build();
       match renderer.and_then(|renderer| {
         fastrender::ui::chrome_frame::ChromeFrameDocument::new_with_renderer(

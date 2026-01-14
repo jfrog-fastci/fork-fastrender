@@ -87,11 +87,10 @@ impl ChromeFrameDocument {
   }
 
   pub fn new_with_renderer(
-    mut renderer: FastRender,
+    renderer: FastRender,
     viewport_css: (u32, u32),
     dpr: f32,
   ) -> Result<Self> {
-    renderer.set_fetcher(crate::ui::trusted_chrome_fetcher::trusted_chrome_fetcher());
     let options = RenderOptions::new()
       .with_viewport(viewport_css.0, viewport_css.1)
       .with_device_pixel_ratio(dpr);
