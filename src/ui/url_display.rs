@@ -14,6 +14,13 @@ pub fn truncate_url_middle_cow(url: &str, max_chars: usize) -> Cow<'_, str> {
     return Cow::Borrowed("");
   }
 
+  // ASCII/byte-length fast path: `chars().count()` is O(n). If the URL is already <= max bytes then
+  // it is necessarily <= max chars (every char is at least 1 byte).
+  if url.len() <= max_chars {
+    return Cow::Borrowed(url);
+  }
+
+  // Unicode fallback: URLs can contain multi-byte characters so the byte check isn't sufficient.
   if url.chars().count() <= max_chars {
     return Cow::Borrowed(url);
   }
@@ -34,7 +41,9 @@ pub fn truncate_url_middle_cow(url: &str, max_chars: usize) -> Cow<'_, str> {
         let tail = &remainder[last_slash..];
         if tail != "/" {
           let candidate = format!("{prefix}/…{tail}");
-          if candidate.chars().count() <= max_chars {
+          // Same byte-length fast path as above: avoid a char-count scan when the candidate is
+          // clearly short enough.
+          if candidate.len() <= max_chars || candidate.chars().count() <= max_chars {
             return Cow::Owned(candidate);
           }
         }
@@ -42,20 +51,17 @@ pub fn truncate_url_middle_cow(url: &str, max_chars: usize) -> Cow<'_, str> {
     }
   }
 
-  Cow::Owned(truncate_middle(url, max_chars))
+  Cow::Owned(truncate_middle_long(url, max_chars))
 }
 
 pub fn truncate_url_middle(url: &str, max_chars: usize) -> String {
   truncate_url_middle_cow(url, max_chars).into_owned()
 }
 
-fn truncate_middle(value: &str, max_chars: usize) -> String {
+/// Truncate `value` with a middle ellipsis, assuming it is longer than `max_chars`.
+fn truncate_middle_long(value: &str, max_chars: usize) -> String {
   if max_chars == 0 {
     return String::new();
-  }
-  let len = value.chars().count();
-  if len <= max_chars {
-    return value.to_string();
   }
   if max_chars == 1 {
     return "…".to_string();
@@ -64,14 +70,15 @@ fn truncate_middle(value: &str, max_chars: usize) -> String {
   let keep_start = (max_chars - 1) / 2;
   let keep_end = max_chars - 1 - keep_start;
 
-  let mut start = String::new();
-  start.extend(value.chars().take(keep_start));
+  let mut out = String::new();
+  out.extend(value.chars().take(keep_start));
+  out.push('…');
 
-  let mut end_rev = String::new();
-  end_rev.extend(value.chars().rev().take(keep_end));
-  let end = end_rev.chars().rev().collect::<String>();
-
-  format!("{start}…{end}")
+  // Avoid allocating a full `Vec<char>` for long strings; only keep the tail slice we need.
+  let mut tail_rev = String::new();
+  tail_rev.extend(value.chars().rev().take(keep_end));
+  out.extend(tail_rev.chars().rev());
+  out
 }
 
 #[cfg(test)]
