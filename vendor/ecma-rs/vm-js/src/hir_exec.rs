@@ -3346,7 +3346,9 @@ impl<'vm> HirEvaluator<'vm> {
           hir_js::VarDeclKind::Let => scope.env_create_mutable_binding(tdz_env, name.as_str())?,
           hir_js::VarDeclKind::Const
           | hir_js::VarDeclKind::Using
-          | hir_js::VarDeclKind::AwaitUsing => scope.env_create_immutable_binding(tdz_env, name.as_str())?,
+          | hir_js::VarDeclKind::AwaitUsing => {
+            scope.env_create_immutable_binding(tdz_env, name.as_str(), /* strict */ true)?
+          }
           _ => {
             return Err(VmError::InvariantViolation(
               "unexpected VarDeclKind in for-in/of head TDZ environment creation",
@@ -3479,7 +3481,7 @@ impl<'vm> HirEvaluator<'vm> {
       // binding initialization.
       let func_env = scope.env_create(Some(outer_env))?;
       scope.push_env_root(func_env)?;
-      scope.env_create_immutable_binding(func_env, name)?;
+      scope.env_create_immutable_binding(func_env, name, /* strict */ false)?;
       (Some(func_env), Some((func_env, name)))
     } else {
       (Some(outer_env), None)
@@ -4742,7 +4744,9 @@ impl<'vm> HirEvaluator<'vm> {
           hir_js::VarDeclKind::Let => scope.env_create_mutable_binding(env, name.as_str())?,
           hir_js::VarDeclKind::Const
           | hir_js::VarDeclKind::Using
-          | hir_js::VarDeclKind::AwaitUsing => scope.env_create_immutable_binding(env, name.as_str())?,
+          | hir_js::VarDeclKind::AwaitUsing => {
+            scope.env_create_immutable_binding(env, name.as_str(), /* strict */ true)?
+          }
           _ => {
             return Err(VmError::InvariantViolation(
               "unexpected VarDeclKind in lexical declaration instantiation",
@@ -5207,7 +5211,7 @@ impl<'vm> HirEvaluator<'vm> {
                   hir_js::VarDeclKind::Const
                   | hir_js::VarDeclKind::Using
                   | hir_js::VarDeclKind::AwaitUsing => {
-                    scope.env_create_immutable_binding(loop_env, name.as_str())?;
+                    scope.env_create_immutable_binding(loop_env, name.as_str(), /* strict */ true)?;
                   }
                   _ => {
                     return Err(VmError::InvariantViolation(
@@ -5953,7 +5957,7 @@ impl<'vm> HirEvaluator<'vm> {
           if !init_scope.heap().env_has_binding(outer, binding_name)? {
             // Non-block statement contexts may not have performed lexical hoisting yet.
             if binding_name == "*default*" {
-              init_scope.env_create_immutable_binding(outer, binding_name)?;
+              init_scope.env_create_immutable_binding(outer, binding_name, /* strict */ true)?;
             } else {
               init_scope.env_create_mutable_binding(outer, binding_name)?;
             }
@@ -6289,7 +6293,9 @@ impl<'vm> HirEvaluator<'vm> {
               hir_js::VarDeclKind::Let => scope.env_create_mutable_binding(env_rec, name.as_str())?,
               hir_js::VarDeclKind::Const
               | hir_js::VarDeclKind::Using
-              | hir_js::VarDeclKind::AwaitUsing => scope.env_create_immutable_binding(env_rec, name.as_str())?,
+              | hir_js::VarDeclKind::AwaitUsing => {
+                scope.env_create_immutable_binding(env_rec, name.as_str(), /* strict */ true)?
+              }
               _ => {
                 return Err(VmError::InvariantViolation(
                   "unexpected VarDeclKind in for-in/of TDZ binding creation",
@@ -8932,7 +8938,10 @@ impl<'vm> HirEvaluator<'vm> {
               AssignmentReference::Binding(binding) => {
                 self.eval_expr_named_from_string(&mut scope, body, value, binding.name())?
               }
-              _ => self.eval_expr(&mut scope, body, value)?,
+              AssignmentReference::Property { key, .. }
+              | AssignmentReference::SuperProperty { key, .. } => {
+                self.eval_expr_named(&mut scope, body, value, *key)?
+              }
             };
             scope.push_root(v)?;
             self.put_value_to_assignment_reference(&mut scope, &reference, v)?;
@@ -9014,7 +9023,15 @@ impl<'vm> HirEvaluator<'vm> {
             let mut scope = scope.reborrow();
             self.root_assignment_reference(&mut scope, &reference)?;
 
-            let v = self.eval_expr(&mut scope, body, value)?;
+            let v = match &reference {
+              // Note: `PatKind::AssignTarget(Ident)` represents a parenthesized identifier (e.g.
+              // `(x) = function() {}`), which must not infer names.
+              AssignmentReference::Property { key, .. }
+              | AssignmentReference::SuperProperty { key, .. } => {
+                self.eval_expr_named(&mut scope, body, value, *key)?
+              }
+              _ => self.eval_expr(&mut scope, body, value)?,
+            };
             scope.push_root(v)?;
             self.put_value_to_assignment_reference(&mut scope, &reference, v)?;
             Ok(v)
@@ -10466,12 +10483,15 @@ impl<'vm> HirEvaluator<'vm> {
         Pat(hir_js::PatId),
       }
       let mut target = PropTarget::Pat(prop.value);
-      // For destructuring *assignment* defaults, name inference is gated by `IsIdentifierRef`.
+      // For destructuring *assignment* defaults, name inference can come from either:
+      // - an unparenthesized identifier assignment target (`IsIdentifierRef`), or
+      // - a property-reference assignment target (`o.x` / `super.x`), where the property key is the
+      //   inferred name.
       //
-      // We model this by inferring names only for `PatKind::Ident` (an unparenthesized identifier
-      // assignment target). Parenthesized identifiers lower to `PatKind::AssignTarget(Ident)`, which
-      // must not infer names (e.g. `({ a: (x) = class {} } = ...)`).
+      // Parenthesized identifiers lower to `PatKind::AssignTarget(Ident)` and must not infer names
+      // (e.g. `({ a: (x) = class {} } = ...)`).
       let mut inferred_name: Option<&str> = None;
+      let mut inferred_key: Option<PropertyKey> = None;
       {
         let value_pat = self.get_pat(body, prop.value)?;
         match value_pat.kind {
@@ -10559,6 +10579,7 @@ impl<'vm> HirEvaluator<'vm> {
                       if let Some(super_base_obj) = super_base {
                         prop_scope.push_root(Value::Object(super_base_obj))?;
                       }
+                      inferred_key = Some(member_key);
                       target = PropTarget::SuperMember {
                         super_base,
                         receiver,
@@ -10578,6 +10599,7 @@ impl<'vm> HirEvaluator<'vm> {
                     other => {
                       let member_key = self.eval_object_key(&mut prop_scope, body, other)?;
                       root_property_key(&mut prop_scope, member_key)?;
+                      inferred_key = Some(member_key);
                       target = PropTarget::Member { base, key: member_key };
                     }
                   }
@@ -10594,7 +10616,9 @@ impl<'vm> HirEvaluator<'vm> {
         prop_scope.get_with_host_and_hooks(self.vm, &mut *self.host, &mut *self.hooks, obj, key, src_value)?;
       if matches!(prop_value, Value::Undefined) {
         if let Some(default_expr) = prop.default_value {
-          prop_value = if let Some(name) = inferred_name {
+          prop_value = if let Some(key) = inferred_key {
+            self.eval_expr_named(&mut prop_scope, body, default_expr, key)?
+          } else if let Some(name) = inferred_name {
             self.eval_expr_named_from_string(&mut prop_scope, body, default_expr, name)?
           } else {
             self.eval_expr(&mut prop_scope, body, default_expr)?
@@ -10926,9 +10950,12 @@ impl<'vm> HirEvaluator<'vm> {
         Pat(hir_js::PatId),
       }
       let mut target = ElemTarget::Pat(elem.pat);
-      // For destructuring *assignment* defaults, name inference is gated by `IsIdentifierRef`.
-      // See the analogous logic in `assign_object_pattern`.
+      // For destructuring *assignment* defaults, name inference can come from either:
+      // - an unparenthesized identifier assignment target (`IsIdentifierRef`), or
+      // - a property-reference assignment target (`o.x` / `super.x`), where the property key is the
+      //   inferred name.
       let mut inferred_name: Option<&str> = None;
+      let mut inferred_key: Option<PropertyKey> = None;
       {
         let elem_pat = self.get_pat(body, elem.pat)?;
         match elem_pat.kind {
@@ -11016,6 +11043,7 @@ impl<'vm> HirEvaluator<'vm> {
                       if let Some(super_base_obj) = super_base {
                         elem_scope.push_root(Value::Object(super_base_obj))?;
                       }
+                      inferred_key = Some(member_key);
                       target = ElemTarget::SuperMember {
                         super_base,
                         receiver,
@@ -11035,6 +11063,7 @@ impl<'vm> HirEvaluator<'vm> {
                     other => {
                       let member_key = self.eval_object_key(&mut elem_scope, body, other)?;
                       root_property_key(&mut elem_scope, member_key)?;
+                      inferred_key = Some(member_key);
                       target = ElemTarget::Member { base, key: member_key };
                     }
                   }
@@ -11061,7 +11090,12 @@ impl<'vm> HirEvaluator<'vm> {
 
       if matches!(item, Value::Undefined) {
         if let Some(default_expr) = elem.default_value {
-          item = if let Some(name) = inferred_name {
+          item = if let Some(key) = inferred_key {
+            match self.eval_expr_named(&mut elem_scope, body, default_expr, key) {
+              Ok(v) => v,
+              Err(err) => return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err),
+            }
+          } else if let Some(name) = inferred_name {
             match self.eval_expr_named_from_string(&mut elem_scope, body, default_expr, name) {
               Ok(v) => v,
               Err(err) => return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err),
@@ -12652,14 +12686,14 @@ impl<'vm> HirEvaluator<'vm> {
        // The binding must exist (but be uninitialized) so a class can observe TDZ semantics when
        // referencing its own name in the `extends` clause (e.g. `class C extends C {}` should throw
        // a ReferenceError, not consult outer bindings).
-       if let Some(name) = binding_name {
-         if scope.heap().env_has_binding(class_env, name)? {
-           return Err(VmError::InvariantViolation(
-             "class binding already exists in class environment",
-           ));
-         }
-         scope.env_create_immutable_binding(class_env, name)?;
-       }
+        if let Some(name) = binding_name {
+          if scope.heap().env_has_binding(class_env, name)? {
+            return Err(VmError::InvariantViolation(
+              "class binding already exists in class environment",
+            ));
+          }
+          scope.env_create_immutable_binding(class_env, name, /* strict */ true)?;
+        }
 
         // Evaluate `extends` (class heritage), if present.
         //
@@ -14321,7 +14355,7 @@ impl ForAwaitOfState {
                     hir_js::VarDeclKind::Const
                     | hir_js::VarDeclKind::Using
                     | hir_js::VarDeclKind::AwaitUsing => {
-                      scope.env_create_immutable_binding(tdz_env, name.as_str())?
+                      scope.env_create_immutable_binding(tdz_env, name.as_str(), /* strict */ true)?
                     }
                     _ => {
                       return Err(VmError::InvariantViolation(
@@ -16400,7 +16434,7 @@ impl HirAsyncClassDeclState {
                 "class binding already exists in class environment",
               ));
             }
-            scope.env_create_immutable_binding(class_env, name)?;
+            scope.env_create_immutable_binding(class_env, name, /* strict */ true)?;
           }
           self.inner_binding_created = true;
 
@@ -16799,7 +16833,7 @@ impl HirAsyncClassDeclState {
 
             if !init_scope.heap().env_has_binding(self.outer_lex, binding_name)? {
               if binding_name == "*default*" {
-                init_scope.env_create_immutable_binding(self.outer_lex, binding_name)?;
+                init_scope.env_create_immutable_binding(self.outer_lex, binding_name, /* strict */ true)?;
               } else {
                 init_scope.env_create_mutable_binding(self.outer_lex, binding_name)?;
               }
@@ -17486,7 +17520,7 @@ impl ForOfState {
                       hir_js::VarDeclKind::Const
                       | hir_js::VarDeclKind::Using
                       | hir_js::VarDeclKind::AwaitUsing => {
-                        scope.env_create_immutable_binding(tdz_env, name.as_str())?
+                        scope.env_create_immutable_binding(tdz_env, name.as_str(), /* strict */ true)?
                       }
                       _ => {
                         return Err(VmError::InvariantViolation(
@@ -18415,7 +18449,7 @@ impl ForInState {
                       hir_js::VarDeclKind::Const
                       | hir_js::VarDeclKind::Using
                       | hir_js::VarDeclKind::AwaitUsing => {
-                        scope.env_create_immutable_binding(tdz_env, name.as_str())?
+                        scope.env_create_immutable_binding(tdz_env, name.as_str(), /* strict */ true)?
                       }
                       _ => {
                         return Err(VmError::InvariantViolation(
@@ -18679,7 +18713,7 @@ impl ForTripleAwaitState {
                     hir_js::VarDeclKind::Const
                     | hir_js::VarDeclKind::Using
                     | hir_js::VarDeclKind::AwaitUsing => {
-                      scope.env_create_immutable_binding(loop_env, name.as_str())?
+                      scope.env_create_immutable_binding(loop_env, name.as_str(), /* strict */ true)?
                     }
                     _ => {
                       return Err(VmError::InvariantViolation(

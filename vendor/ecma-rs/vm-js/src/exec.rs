@@ -8244,7 +8244,7 @@ impl<'a> Evaluator<'a> {
         if mutable {
           scope.env_create_mutable_binding(env, &id.stx.name)?;
         } else {
-          scope.env_create_immutable_binding(env, &id.stx.name)?;
+          scope.env_create_immutable_binding(env, &id.stx.name, /* strict */ true)?;
         }
         Ok(())
       }
@@ -9516,7 +9516,7 @@ impl<'a> Evaluator<'a> {
               "class binding already exists in class environment",
             ));
           }
-          scope.env_create_immutable_binding(class_env, name)?;
+          scope.env_create_immutable_binding(class_env, name, /* strict */ true)?;
         }
       }
 
@@ -13409,7 +13409,7 @@ impl<'a> Evaluator<'a> {
       // Create the function name environment and keep it rooted across function allocation.
       let func_env = scope.env_create(Some(outer_env))?;
       scope.push_env_root(func_env)?;
-      scope.env_create_immutable_binding(func_env, name)?;
+      scope.env_create_immutable_binding(func_env, name, /* strict */ false)?;
       (Some(func_env), Some((func_env, name)))
     } else {
       (Some(outer_env), None)
@@ -15971,6 +15971,9 @@ impl<'a> Evaluator<'a> {
               Reference::Binding(name) if is_identifier_ref(&expr.left) => {
                 let name_s = rhs_scope.alloc_string(name)?;
                 let key = PropertyKey::from_string(name_s);
+                self.eval_expr_named(&mut rhs_scope, &expr.right, key)?
+              }
+              Reference::Property { key, .. } | Reference::SuperProperty { key, .. } => {
                 self.eval_expr_named(&mut rhs_scope, &expr.right, key)?
               }
               _ => self.eval_expr(&mut rhs_scope, &expr.right)?,
@@ -23052,7 +23055,7 @@ fn async_bind_var_declarator_value(
         .heap()
         .env_has_binding(evaluator.env.lexical_env, name)?
       {
-        scope.env_create_immutable_binding(evaluator.env.lexical_env, name)?;
+        scope.env_create_immutable_binding(evaluator.env.lexical_env, name, /* strict */ true)?;
       }
       scope
         .heap_mut()
@@ -23091,7 +23094,7 @@ fn async_bind_var_declarator_value(
           .heap()
           .env_has_binding(evaluator.env.lexical_env, name)?
         {
-          scope.env_create_immutable_binding(evaluator.env.lexical_env, name)?;
+          scope.env_create_immutable_binding(evaluator.env.lexical_env, name, /* strict */ true)?;
         }
         scope
           .heap_mut()
@@ -24256,7 +24259,7 @@ fn async_eval_class(
             "class binding already exists in class environment",
           ));
         }
-        scope.env_create_immutable_binding(class_env, name)?;
+        scope.env_create_immutable_binding(class_env, name, /* strict */ true)?;
       }
     }
 
@@ -41405,7 +41408,7 @@ fn gen_bind_var_declarator_value(
         .heap()
         .env_has_binding(evaluator.env.lexical_env, name)?
       {
-        scope.env_create_immutable_binding(evaluator.env.lexical_env, name)?;
+        scope.env_create_immutable_binding(evaluator.env.lexical_env, name, /* strict */ true)?;
       }
       scope
         .heap_mut()
@@ -41445,7 +41448,7 @@ fn gen_bind_var_declarator_value(
         .heap()
         .env_has_binding(evaluator.env.lexical_env, name)?
       {
-        scope.env_create_immutable_binding(evaluator.env.lexical_env, name)?;
+        scope.env_create_immutable_binding(evaluator.env.lexical_env, name, /* strict */ true)?;
       }
       scope
         .heap_mut()
@@ -43628,7 +43631,7 @@ fn gen_eval_class(
             "class binding already exists in class environment",
           ));
         }
-        scope.env_create_immutable_binding(class_env, name)?;
+        scope.env_create_immutable_binding(class_env, name, /* strict */ true)?;
       }
     }
 

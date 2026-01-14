@@ -164,3 +164,64 @@ fn generator_destructuring_default_initializer_infers_after_yield() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn named_function_expression_name_binding_is_non_strict_immutable() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        // In sloppy mode, assignment to a named function expression's BindingIdentifier
+        // is ignored (does not throw, does not update the binding).
+        var ref = function BindingIdentifier() {
+          BindingIdentifier = 1;
+          return BindingIdentifier;
+        };
+        ref() === ref
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn named_function_expression_name_binding_throws_in_strict_mode() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        'use strict';
+        var ref = function BindingIdentifier() {
+          BindingIdentifier = 1;
+          return BindingIdentifier;
+        };
+        try {
+          ref();
+          false
+        } catch (e) {
+          e instanceof TypeError
+        }
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn const_assignment_throws_even_in_sloppy_mode() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        const x = 1;
+        try {
+          x = 2;
+          false
+        } catch (e) {
+          e instanceof TypeError
+        }
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

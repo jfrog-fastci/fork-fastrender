@@ -1972,7 +1972,7 @@ impl ModuleGraph {
                 let ns = self.get_module_namespace(imported_module, vm, scope)?;
                 let mut init_scope = scope.reborrow();
                 init_scope.push_root(Value::Object(ns))?;
-                init_scope.env_create_immutable_binding(module_env, &entry.local_name)?;
+                init_scope.env_create_immutable_binding(module_env, &entry.local_name, /* strict */ true)?;
                 init_scope
                   .heap_mut()
                   .env_initialize_binding(module_env, &entry.local_name, Value::Object(ns))?;
@@ -2029,7 +2029,7 @@ impl ModuleGraph {
                     let ns = self.get_module_namespace(resolution.module, vm, scope)?;
                     let mut init_scope = scope.reborrow();
                     init_scope.push_root(Value::Object(ns))?;
-                    init_scope.env_create_immutable_binding(module_env, &entry.local_name)?;
+                    init_scope.env_create_immutable_binding(module_env, &entry.local_name, /* strict */ true)?;
                     init_scope
                       .heap_mut()
                       .env_initialize_binding(module_env, &entry.local_name, Value::Object(ns))?;
@@ -2063,7 +2063,7 @@ impl ModuleGraph {
       // Ensure `*default*` exists for `export default <expr>`.
       if has_default_export {
         if !scope.heap().env_has_binding(module_env, "*default*")? {
-          scope.env_create_immutable_binding(module_env, "*default*")?;
+          scope.env_create_immutable_binding(module_env, "*default*", /* strict */ true)?;
         }
       }
 

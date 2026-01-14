@@ -363,7 +363,7 @@ fn bind_identifier(
       let env_rec = env.lexical_env();
       if !scope.heap().env_has_binding(env_rec, name)? {
         // Non-block statement contexts may not have performed lexical hoisting yet.
-        scope.env_create_immutable_binding(env_rec, name)?;
+        scope.env_create_immutable_binding(env_rec, name, /* strict */ true)?;
       }
       scope.heap_mut().env_initialize_binding(env_rec, name, value)
     }
@@ -737,7 +737,14 @@ fn bind_object_pattern(
                   _ => None,
                 }
               } else {
-                None
+                match &*target.stx {
+                  Expr::Member(member)
+                    if !member.stx.optional_chaining && !member.stx.right.starts_with('#') =>
+                  {
+                    Some(member.stx.right.as_str())
+                  }
+                  _ => None,
+                }
               }
             }
             _ => None,
@@ -1460,7 +1467,14 @@ fn bind_array_pattern(
                   _ => None,
                 }
               } else {
-                None
+                match &*target.stx {
+                  Expr::Member(member)
+                    if !member.stx.optional_chaining && !member.stx.right.starts_with('#') =>
+                  {
+                    Some(member.stx.right.as_str())
+                  }
+                  _ => None,
+                }
               }
             }
             _ => None,

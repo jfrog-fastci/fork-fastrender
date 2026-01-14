@@ -8493,7 +8493,7 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     env: GcEnv,
     name: GcString,
     value: Value,
-    _strict: bool,
+    strict: bool,
   ) -> Result<(), VmError> {
     debug_assert!(self.debug_value_is_valid_or_primitive(value));
 
@@ -8527,8 +8527,17 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     }
 
     if !binding.mutable {
-      // const assignment sentinel; see `env_set_mutable_binding`.
-      return Err(VmError::Throw(Value::Undefined));
+      // Assignment to an immutable binding.
+      //
+      // In spec terms, `strict` corresponds to the strictness of the Reference. For const bindings,
+      // `binding.strict` is true so assignment throws even in sloppy code; named function expression
+      // name bindings use `binding.strict = false` so sloppy assignments are ignored.
+      if strict || binding.strict {
+        // const assignment sentinel; see `env_set_mutable_binding`.
+        return Err(VmError::Throw(Value::Undefined));
+      }
+      // Sloppy assignment to a non-strict immutable binding is ignored.
+      return Ok(());
     }
 
     if let EnvBindingValue::Direct(slot) = &mut binding.value {
@@ -8546,7 +8555,7 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     env: GcEnv,
     name: &str,
     value: Value,
-    _strict: bool,
+    strict: bool,
   ) -> Result<(), VmError> {
     debug_assert!(self.debug_value_is_valid_or_primitive(value));
 
@@ -8572,11 +8581,20 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     }
 
     if !binding.mutable {
-      // Assignment to const.
+      // Assignment to an immutable binding.
       //
-      // Like TDZ, this is currently a sentinel throw value that is later mapped to a TypeError
-      // object by higher-level evaluation code.
-      return Err(VmError::Throw(Value::Undefined));
+      // This mirrors ECMA-262 `DeclarativeEnvironmentRecord.SetMutableBinding`:
+      // - if the binding is immutable and the assignment is strict => throw TypeError
+      // - if the binding is immutable and non-strict => ignore
+      //
+      // Additionally, the spec's `CreateImmutableBinding(N, S)` flag is stored as `binding.strict`:
+      // const bindings have `binding.strict = true` so assignment throws even in sloppy code.
+      if strict || binding.strict {
+        // Like TDZ, this is currently a sentinel throw value that is later mapped to a TypeError
+        // object by higher-level evaluation code.
+        return Err(VmError::Throw(Value::Undefined));
+      }
+      return Ok(());
     }
 
     if let EnvBindingValue::Direct(slot) = &mut binding.value {
@@ -11957,6 +11975,7 @@ impl<'a> Scope<'a> {
     &mut self,
     env: GcEnv,
     name: &str,
+    strict: bool,
   ) -> Result<(), VmError> {
     if self.heap().env_has_binding(env, name)? {
       return Err(VmError::Unimplemented("duplicate binding"));
@@ -11976,7 +11995,7 @@ impl<'a> Scope<'a> {
         value: EnvBindingValue::Direct(Value::Undefined),
         mutable: false,
         initialized: false,
-        strict: false,
+        strict,
       },
     )
   }
