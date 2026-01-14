@@ -17,9 +17,9 @@ fn generator_compound_assignment_property_captures_old_value_before_yield() {
       var it = g();
       it.next();
       o.a = 100;
-      var r = it.next(2);
+      var r = it.next(5);
       // Must use the pre-yield old value (1), not the mutated value (100).
-      r.done === true && r.value === 3 && o.a === 3
+      r.done === true && r.value === 6 && o.a === 6
     "#,
     )
     .unwrap();
