@@ -27771,9 +27771,9 @@ fn async_yield_star_begin(
   match step {
     YieldStarStep::Await(awaited) => {
       let mut suspend = AsyncSuspend {
-        // `AsyncYieldStar` already performed the `Await` algorithm's internal `PromiseResolve` step
-        // (via `promise_resolve_for_await_with_host_and_hooks`) so the outer async suspension
-        // machinery must not do it again, or it would observe `promise.constructor` twice.
+        // `AsyncYieldStar` performs the `Await` operation's `PromiseResolve` step internally so it
+        // can enforce async-generator `yield*` error-precedence semantics. Do not `PromiseResolve`
+        // again at the outer suspension boundary or we'd observe `promise.constructor` twice.
         kind: AsyncSuspendKind::AwaitResolved,
         await_value: awaited,
         frames: VecDeque::new(),
@@ -33816,6 +33816,8 @@ fn async_resume_from_frames(
             }
             async_frames_try_append(scope.heap_mut(), &mut out_frames, &mut frames)?;
             return Ok(AsyncBodyResult::Await {
+              // See `async_yield_star_begin`: `AsyncYieldStar` already performed `PromiseResolve`
+              // for the awaited value.
               kind: AsyncSuspendKind::AwaitResolved,
               await_value: awaited,
               frames: out_frames,

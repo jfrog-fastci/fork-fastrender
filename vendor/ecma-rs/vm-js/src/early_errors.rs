@@ -2086,10 +2086,10 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       //
       // In `vm-js`, this includes:
       // - async functions,
-      // - module top-level await, and
-      // - async classic scripts (top-level await).
+      // - modules (top-level await), and
+      // - "async classic scripts" (top-level await in scripts).
       //
-      // Note: In Script goal, `using` / `await using` remain restricted to specific syntactic
+      // Note: in Script goal, `using` / `await using` remain restricted to specific syntactic
       // containers; this is enforced separately via `ctx.using_allowed`.
       let await_using_allowed = ctx.await_allowed;
       if !await_using_allowed {

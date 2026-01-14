@@ -100,9 +100,10 @@ fn number_conversion_large_string_does_not_abort_on_oom() {
 #[test]
 fn parse_float_large_string_does_not_abort_on_oom() {
   // Large `parseFloat(string)` should not abort under memory pressure.
-  // Keep this below the input-string allocation failure threshold so the harness can reliably
-  // allocate the initial `S` string before the actual parseFloat call runs.
-  run_oom_harness("parseFloat", 22_000_000);
+  //
+  // Note: keep this comfortably below the input-string allocation threshold under the test
+  // RLIMIT_AS, which can shift as `vm-js` runtime overhead changes.
+  run_oom_harness("parseFloat", 20_000_000);
 }
 
 #[test]
@@ -117,14 +118,10 @@ fn array_map_large_length_does_not_abort_on_oom() {
   // `Array.prototype.map` formats `ToString(k)` for each index `k < length`. Ensure tight-loop index
   // key formatting is fallible and does not abort under allocator OOM.
   //
-  // Use a slightly larger length to reduce total runtime: a larger backing string leaves less
-  // headroom under RLIMIT_AS, so the per-iteration key allocations hit OOM sooner.
-  // Keep this below the input-string allocation failure threshold so the harness can reliably
-  // allocate the initial `S` string before the actual test loop runs.
-  //
-  // This threshold is sensitive to runtime/library initialization overhead (and may vary slightly
-  // across environments), so keep a bit of slack to avoid flakiness.
-  run_oom_harness("arrayMap", 22_000_000);
+  // Use a large length so the harness runs under meaningful pressure, but keep it comfortably below
+  // the input-string allocation threshold under RLIMIT_AS (which can shift as runtime overhead
+  // changes).
+  run_oom_harness("arrayMap", 20_000_000);
 }
 
 #[test]
@@ -274,10 +271,9 @@ fn register_ecma_function_does_not_abort_on_oom() {
   //
   // Use a more aggressive filler buffer so we reliably hit allocator OOM quickly (otherwise this
   // test can take a very long time to complete when `Function('')` creation succeeds).
-  //
-  // Leave enough headroom under RLIMIT_AS for the Agent/VM to initialize on smaller/fragmented
-  // allocators.
-  const REGISTER_FILLER_BYTES: usize = 160 * 1024 * 1024;
+  // Keep this below the point where the harness itself cannot allocate the filler buffer under the
+  // chosen RLIMIT_AS; runtime overhead can shift that threshold over time.
+  const REGISTER_FILLER_BYTES: usize = 163 * 1024 * 1024;
   run_oom_harness_with_limits(
     "register_ecma_function",
     200_000,
