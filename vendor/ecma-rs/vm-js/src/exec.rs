@@ -39556,6 +39556,19 @@ fn gen_bind_object_pattern_from(
 
   let receiver = src_value;
 
+  // Root excluded keys across destructuring steps that can allocate and trigger GC (computed keys,
+  // default initializers, rest processing, etc).
+  //
+  // Unlike real engines, `vm-js` strings are not interned, so pattern keys like `"a"` are not
+  // necessarily reachable from the source object even when the object has an `"a"` property. Treat
+  // them as ephemeral handles that must be rooted explicitly.
+  for key in excluded.iter().copied() {
+    match key {
+      PropertyKey::String(s) => scope.push_root(Value::String(s))?,
+      PropertyKey::Symbol(sym) => scope.push_root(Value::Symbol(sym))?,
+    };
+  }
+
   for (idx, prop) in pat
     .properties
     .iter()
@@ -39606,6 +39619,11 @@ fn gen_bind_object_pattern_from(
     };
 
     excluded.push(key);
+    // Root the newly added excluded key so it survives across subsequent allocations/GC.
+    match key {
+      PropertyKey::String(s) => scope.push_root(Value::String(s))?,
+      PropertyKey::Symbol(sym) => scope.push_root(Value::Symbol(sym))?,
+    };
 
     let mut prop_value = match scope.get_with_host_and_hooks(
       evaluator.vm,
