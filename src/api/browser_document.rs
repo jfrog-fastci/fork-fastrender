@@ -7,7 +7,6 @@ use crate::geometry::{Point, Size};
 use crate::interaction::{form_controls, InteractionState};
 use crate::resource::ReferrerPolicy;
 use crate::scroll::ScrollState;
-use crate::style::cascade::StyledNode;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::fragment_tree::FragmentTree;
 use rustc_hash::FxHashMap;
