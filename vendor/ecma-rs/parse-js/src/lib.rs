@@ -376,12 +376,25 @@ mod tests {
     let err = parse_with_options("class C { x = arguments; }", opts).unwrap_err();
     assert_eq!(err.typ, expected);
 
+    // The restriction applies equally to static fields and private fields.
+    let err = parse_with_options("class C { static x = arguments; }", opts).unwrap_err();
+    assert_eq!(err.typ, expected);
+
+    let err = parse_with_options("class C { #x = arguments; }", opts).unwrap_err();
+    assert_eq!(err.typ, expected);
+
+    let err = parse_with_options("class C { static #x = arguments; }", opts).unwrap_err();
+    assert_eq!(err.typ, expected);
+
     // `arguments` is also an early error in `static {}` blocks.
     let err = parse_with_options("class C { static { arguments; } }", opts).unwrap_err();
     assert_eq!(err.typ, expected);
 
     // Arrow functions do not introduce an `arguments` binding, so references remain disallowed.
     let err = parse_with_options("class C { x = () => arguments; }", opts).unwrap_err();
+    assert_eq!(err.typ, expected);
+
+    let err = parse_with_options("class C { static x = () => arguments; }", opts).unwrap_err();
     assert_eq!(err.typ, expected);
 
     // Arrow parameter initializers similarly have no `arguments` binding.
