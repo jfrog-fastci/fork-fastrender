@@ -980,6 +980,25 @@ enum ClassBinding<'a> {
 pub(crate) struct RuntimeEnv {
   global_object: GcObject,
   lexical_env: GcEnv,
+  /// When evaluating default parameter initializers, functions with parameter expressions use a
+  /// dedicated "parameter environment record" that is distinct from the variable environment.
+  ///
+  /// This is used to model ECMA-262's `FunctionDeclarationInstantiation` and in particular:
+  /// - allow `var`/function declarations in the function body to redeclare parameters, and
+  /// - reject sloppy direct `eval("var x")` in parameter initializers when it would collide with a
+  ///   parameter binding (test262: `eval-var-scope-syntax-err.js`).
+  ///
+  /// This is `None` for functions with a simple parameter list and for non-function execution
+  /// contexts.
+  parameter_env: Option<GcEnv>,
+  /// Whether the current execution is still evaluating function parameter initializers.
+  ///
+  /// This is used to distinguish:
+  /// - sloppy direct eval executed from *within* parameter initializers (where `var` declarations
+  ///   must be rejected if they collide with parameter bindings), from
+  /// - eval executed from the *function body* (where `var` declarations may redeclare parameters and
+  ///   collisions must be checked against the function-body lexical environment instead).
+  in_parameter_init: bool,
   /// Persistent env root used while this `RuntimeEnv` is stored outside the GC heap (e.g. on the
   /// Rust stack during normal execution, or in `AsyncContinuation`).
   ///
@@ -1007,6 +1026,9 @@ impl Trace for RuntimeEnv {
   fn trace(&self, tracer: &mut Tracer<'_>) {
     tracer.trace_value(Value::Object(self.global_object));
     tracer.trace_env(self.lexical_env);
+    if let Some(env) = self.parameter_env {
+      tracer.trace_env(env);
+    }
     if let VarEnv::Env(env) = self.var_env {
       tracer.trace_env(env);
     }
@@ -1103,6 +1125,8 @@ impl RuntimeEnv {
     Ok(Self {
       global_object,
       lexical_env,
+      parameter_env: None,
+      in_parameter_init: false,
       lexical_root,
       var_env: VarEnv::GlobalObject,
       global_var_deletable: false,
@@ -1135,6 +1159,8 @@ impl RuntimeEnv {
     Ok(Self {
       global_object,
       lexical_env,
+      parameter_env: None,
+      in_parameter_init: false,
       lexical_root,
       var_env: VarEnv::Env(var_env),
       global_var_deletable: false,
@@ -1163,6 +1189,8 @@ impl RuntimeEnv {
     Ok(Self {
       global_object,
       lexical_env,
+      parameter_env: None,
+      in_parameter_init: false,
       lexical_root,
       var_env: VarEnv::GlobalObject,
       global_var_deletable: false,
@@ -1629,6 +1657,30 @@ impl RuntimeEnv {
         // Note: module/static early errors already reject illegal lexical-vs-var collisions, and
         // strict-mode `eval` does not introduce `var` bindings into surrounding scopes.
 
+        // Functions with parameter expressions create an intermediate parameter environment record
+        // whose outer is the VariableEnvironment. That environment contains parameter bindings, but
+        // `var` declarations in the function body (including sloppy direct eval) are allowed to
+        // redeclare parameters; collision checks should instead use the function-body lexical
+        // environment record.
+        //
+        // In those cases, the function-body lexical environment is the env whose outer is the
+        // parameter environment (usually one hop inside it).
+        if !self.in_parameter_init {
+          if let (Some(param_env), Some(found)) = (self.parameter_env, var_scope_lex) {
+          if found == param_env {
+            let mut current = Some(self.lexical_env);
+            while let Some(env) = current {
+              let outer = scope.heap().env_outer(env)?;
+              if outer == Some(param_env) {
+                var_scope_lex = Some(env);
+                break;
+              }
+              current = outer;
+            }
+          }
+          }
+        }
+
         if let Some(var_scope_lex) = var_scope_lex {
           // `var_scope_lex` is usually the function-body lexical environment record, which is
           // distinct from the variable environment (and contains only lexical declarations).
@@ -1713,6 +1765,16 @@ impl RuntimeEnv {
         Ok(())
       }
       VarEnv::Env(env) => {
+        // In functions with parameter expressions, parameter bindings live in an inner parameter
+        // environment record. `var` declarations are allowed to redeclare parameters and must not
+        // create a new binding that would shadow the parameter binding in the environment chain.
+        if let Some(param_env) = self.parameter_env {
+          if scope.heap().env_outer(param_env)? == Some(env)
+            && scope.heap().env_has_binding(param_env, name)?
+          {
+            return Ok(());
+          }
+        }
         if scope.heap().env_has_binding(env, name)? {
           return Ok(());
         }
@@ -5240,6 +5302,12 @@ impl<'a> Evaluator<'a> {
       param.stx.default_value.is_some() || pat_contains_expression(&param.stx.pattern.stx.pat.stx)
     });
 
+    // Reset the parameter environment marker for this function call. `Evaluator` instances can be
+    // reused (e.g. when instantiating nested functions), and only functions with parameter
+    // expressions use a dedicated parameter environment.
+    self.env.parameter_env = None;
+    self.env.in_parameter_init = has_parameter_expressions;
+
     // Functions with default parameter expressions (and other parameter-list expressions like
     // computed destructuring keys) evaluate their parameter list in a dedicated Environment Record
     // nested within the function's `var` Environment.
@@ -5251,6 +5319,7 @@ impl<'a> Evaluator<'a> {
       if let VarEnv::Env(var_env) = self.env.var_env() {
         let param_env = scope.env_create(Some(var_env))?;
         self.env.set_lexical_env(scope.heap_mut(), param_env);
+        self.env.parameter_env = Some(param_env);
       }
     }
 
@@ -5460,9 +5529,21 @@ impl<'a> Evaluator<'a> {
         }
       }
 
-      scope.env_create_mutable_binding(self.env.lexical_env, "arguments")?;
+      // `arguments` is a var-scoped binding. When the function has a parameter environment, bind
+      // `arguments` in the **variable** environment so sloppy direct eval `var arguments` in default
+      // parameter initializers does not incorrectly throw due to a collision.
+      let arguments_env = if has_parameter_expressions {
+        match self.env.var_env() {
+          VarEnv::Env(env) => env,
+          VarEnv::GlobalObject => self.env.lexical_env,
+        }
+      } else {
+        self.env.lexical_env
+      };
+
+      scope.env_create_mutable_binding(arguments_env, "arguments")?;
       scope.heap_mut().env_initialize_binding(
-        self.env.lexical_env,
+        arguments_env,
         "arguments",
         Value::Object(args_obj),
       )?;
@@ -5553,18 +5634,43 @@ impl<'a> Evaluator<'a> {
       )?;
     }
 
-    if let Some(FuncBody::Block(stmts)) = &func.stx.body {
-      // Create a dedicated function-body lexical environment nested inside the function's var/env
-      // record.
-      //
-      // This matches the spec's execution-context split where `var`/parameter bindings live in the
-      // VariableEnvironment and `let`/`const`/`class` bindings live in a separate
-      // LexicalEnvironment.
-      let outer = self.env.lexical_env;
-      let body_lex = scope.env_create(Some(outer))?;
-      self.env.set_lexical_env(scope.heap_mut(), body_lex);
+    // Default parameter initializers have finished evaluating; subsequent execution (declaration
+    // instantiation and the function body itself) uses the ordinary function-body semantics for
+    // direct eval `var` declarations.
+    self.env.in_parameter_init = false;
 
-      self.instantiate_stmt_list(scope, stmts)?;
+    if let Some(body) = &func.stx.body {
+      match body {
+        FuncBody::Block(stmts) => {
+          // Create a dedicated function-body lexical environment nested inside the function's
+          // parameter environment (when present).
+          //
+          // This matches the spec's execution-context split where:
+          // - `var`/function declarations are var-scoped (VariableEnvironment), and
+          // - `let`/`const`/`class` are block-scoped (LexicalEnvironment).
+          //
+          // When a separate parameter environment exists, this ensures the body can still resolve
+          // parameters while keeping var declarations out of scope for default initializers.
+          let outer = self.env.lexical_env;
+          let body_lex = scope.env_create(Some(outer))?;
+          self.env.set_lexical_env(scope.heap_mut(), body_lex);
+          self.instantiate_stmt_list(scope, stmts)?;
+        }
+        FuncBody::Expression(_) => {
+          // Arrow functions with expression bodies do not create a block lexical environment.
+          //
+          // However, when the parameter list contains expressions, we create an empty "body" lexical
+          // environment nested inside the parameter environment so:
+          // - direct eval in the body observes the correct var-scope collision rules, and
+          // - `eval("var x")` in the body can redeclare parameters (as in ordinary function bodies),
+          //   while still rejecting such declarations during parameter initialization.
+          if has_parameter_expressions {
+            let outer = self.env.lexical_env;
+            let body_lex = scope.env_create(Some(outer))?;
+            self.env.set_lexical_env(scope.heap_mut(), body_lex);
+          }
+        }
+      }
     }
     Ok(())
   }
