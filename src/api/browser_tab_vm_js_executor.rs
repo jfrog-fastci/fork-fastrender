@@ -638,12 +638,14 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     }
     let clock = event_loop.clock();
     let webidl_bindings_host_ptr = self.webidl_bindings_host;
-    let name: Arc<str> = if let Some(url) = spec.src.as_deref() {
-      Arc::from(url)
+    // Avoid allocating `Arc<str>` for the source name here: `SourceText::new_charged_arc` performs a
+    // fallible `Arc<str>` allocation internally, so this should remain OOM-safe.
+    let name = if let Some(url) = spec.src.as_deref() {
+      vm_js::SourceTextInput::from(url)
     } else if let Some(node_id) = current_script {
-      Arc::from(format!("<inline script node_id={}>", node_id.index()))
+      vm_js::SourceTextInput::from(format!("<inline script node_id={}>", node_id.index()))
     } else {
-      Arc::from("<inline>")
+      vm_js::SourceTextInput::from("<inline>")
     };
     let js_execution_options = self.js_execution_options;
     let module_loader = realm.module_loader_handle();

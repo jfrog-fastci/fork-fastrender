@@ -987,7 +987,7 @@ impl<'a, Host: WindowRealmHost + 'static> VmJsModuleHooks<'a, Host> {
     let effective_url_owned = effective_url.to_string();
     let source = vm_js::SourceText::new_charged_arc(
       scope.heap_mut(),
-      effective_url_owned.clone(),
+      &effective_url_owned,
       source_text,
     )?;
     let record = match vm_js::SourceTextModuleRecord::parse_source_with_vm(vm, source) {
