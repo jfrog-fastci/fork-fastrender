@@ -381,6 +381,8 @@ Sidecar files:
 - **Backup file (`*.bak`):** the browser retains a last-known-good backup of the session file
   (for example `fastrender_session.json.bak` next to `fastrender_session.json`). If the primary
   session file is corrupted/unparseable, the backup can be used to recover.
+  - This backup is updated on overwrite when the existing session parses successfully; it is intended
+    as a recovery path for corruption or manual edits.
 
 The session file format is versioned (currently v2) and includes:
 
