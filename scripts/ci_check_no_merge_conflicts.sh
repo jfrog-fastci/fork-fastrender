@@ -132,56 +132,61 @@ else
   fi
 
   matches="$(
-    "${py}" - <<'PY' "${scan_root}"
-import os
-import re
-import sys
-from pathlib import Path
-
-root = Path(sys.argv[1]).resolve()
-
-marker_re = re.compile(r"^(<<<<<<<\s|\|\|\|\|\|\|\|\s|=======\s*$|>>>>>>>\s)")
-
-skip_prefixes = [
-    ".git",
-    "target",
-    "target_pages",
-    "fetches",
-    "tmp",
-    "vendor/ecma-rs/parse-js/tests/TypeScript",
-    "specs",
-    "tests/wpt/_import_testdata",
-    "tests/wpt/_offline_validator_testdata",
-    "tests/wpt/expected",
-    "tests/wpt/tests",
-    "tests/wpt_dom/resources",
-    "tests/wpt_dom/tests",
-    "vendor/ecma-rs/test262/data",
-    "vendor/ecma-rs/test262-semantic/data",
-]
-
-def should_skip_dir(rel_posix: str) -> bool:
-    for prefix in skip_prefixes:
-        if rel_posix == prefix or rel_posix.startswith(prefix + "/"):
-            return True
-    return False
-
-for dirpath, dirnames, filenames in os.walk(root):
-    rel = Path(dirpath).resolve().relative_to(root).as_posix()
-    if rel == ".":
-        rel = ""
-
-    # Prune excluded directories.
-    pruned = []
-    for d in list(dirnames):
-        sub_rel = f"{rel}/{d}" if rel else d
-        if should_skip_dir(sub_rel):
-            pruned.append(d)
-    for d in pruned:
-        dirnames.remove(d)
-
-    for name in filenames:
-        path = Path(dirpath) / name
+    "${py}" - <<'PY' "${scan_root}" "${repo_root}"
+ import os
+ import re
+ import sys
+ from pathlib import Path
+ 
+ root = Path(sys.argv[1]).resolve()
+ repo_root = Path(sys.argv[2]).resolve()
+ 
+ marker_re = re.compile(r"^(<<<<<<<\s|\|\|\|\|\|\|\|\s|=======\s*$|>>>>>>>\s)")
+ 
+ # Note: when scanning `--path <dir>`, we still want to apply the same exclusions as the main
+ # repo-wide scan (spec submodules, large WPT/test262 corpora, etc). Use absolute paths so the
+ # exclusions remain correct regardless of `--path` root.
+ excluded_dirs = [
+     repo_root / ".git",
+     repo_root / "target",
+     repo_root / "target_pages",
+     repo_root / "fetches",
+     repo_root / "tmp",
+     repo_root / "vendor/ecma-rs/parse-js/tests/TypeScript",
+     repo_root / "specs",
+     repo_root / "tests/wpt/_import_testdata",
+     repo_root / "tests/wpt/_offline_validator_testdata",
+     repo_root / "tests/wpt/expected",
+     repo_root / "tests/wpt/tests",
+     repo_root / "tests/wpt_dom/resources",
+     repo_root / "tests/wpt_dom/tests",
+     repo_root / "vendor/ecma-rs/test262/data",
+     repo_root / "vendor/ecma-rs/test262-semantic/data",
+ ]
+ excluded_dirs = [p.resolve() for p in excluded_dirs]
+ 
+ def should_skip_abs(path: Path) -> bool:
+     path = path.resolve()
+     for ex in excluded_dirs:
+         try:
+             path.relative_to(ex)
+             return True
+         except ValueError:
+             pass
+     return False
+ 
+ # If the scan root itself is an excluded directory, skip the scan entirely.
+ if should_skip_abs(root):
+     sys.exit(0)
+ 
+ for dirpath, dirnames, filenames in os.walk(root):
+     # Prune excluded directories.
+     for d in list(dirnames):
+         if should_skip_abs(Path(dirpath) / d):
+             dirnames.remove(d)
+ 
+     for name in filenames:
+         path = Path(dirpath) / name
         try:
             with path.open("rb") as f:
                 data = f.read()
