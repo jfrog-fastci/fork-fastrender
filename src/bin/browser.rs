@@ -21877,10 +21877,47 @@ impl App {
     }
   }
 
+  fn update_page_hover_for_media_controls_overlay(
+    &mut self,
+    ctx: &egui::Context,
+    prev_rect: Option<egui::Rect>,
+  ) {
+    let cursor_pos_points = self
+      .last_cursor_pos_points
+      .or_else(|| ctx.input(|i| i.pointer.hover_pos()));
+    let prev_contains_cursor =
+      cursor_pos_points.is_some_and(|pos| prev_rect.is_some_and(|rect| rect.contains(pos)));
+    let now_contains_cursor = cursor_pos_points.is_some_and(|pos| {
+      self
+        .open_media_controls_rect
+        .is_some_and(|rect| rect.contains(pos))
+    });
+
+    if !self.pointer_captured
+      && !self.media_controls_overlay_pointer_capture
+      && prev_contains_cursor
+      && !now_contains_cursor
+    {
+      // The media controls overlay is anchored to page content, so it can move away from (or be
+      // closed under) a stationary cursor while scrolling/resizing. When this happens and the
+      // cursor is now over the page, request a hover re-sync so hovered-link + cursor state update
+      // without waiting for another CursorMoved event.
+      if cursor_pos_points.is_some_and(|pos| {
+        self
+          .page_rect_points
+          .is_some_and(|page_rect| page_rect.contains(pos))
+      }) {
+        self.hover_sync_pending = true;
+      }
+    }
+  }
+
   fn render_media_controls(&mut self, ctx: &egui::Context) {
     use fastrender::ui::messages::MediaCommand;
     use fastrender::ui::ChromeAction;
     use fastrender::ui::UiToWorker;
+
+    let prev_rect = self.open_media_controls_rect;
 
     // If the mouse button was released while we missed the winit `MouseInput` release event (rare
     // but can happen when the window loses focus mid-drag), clear capture based on egui input.
@@ -21909,6 +21946,7 @@ impl App {
       // must keep capture until the corresponding release (or egui reports the pointer is up) so we
       // don't forward a "half click" into the page.
       self.open_media_controls_rect = None;
+      self.update_page_hover_for_media_controls_overlay(ctx, prev_rect);
       return;
     };
 
@@ -21923,6 +21961,7 @@ impl App {
     if self.browser_state.active_tab_id() != Some(tab_id) {
       self.cancel_media_controls();
       self.window.request_redraw();
+      self.update_page_hover_for_media_controls_overlay(ctx, prev_rect);
       return;
     }
 
@@ -21937,6 +21976,7 @@ impl App {
     // `rendered_scroll_state.viewport` so async-scroll texture translation continues to line up.
     let Some(tab) = self.browser_state.tab(tab_id) else {
       self.close_media_controls();
+      self.update_page_hover_for_media_controls_overlay(ctx, prev_rect);
       return;
     };
     let scroll_offset = tab.scroll_state.viewport;
@@ -21998,10 +22038,12 @@ impl App {
       .flatten()
     else {
       self.close_media_controls();
+      self.update_page_hover_for_media_controls_overlay(ctx, prev_rect);
       return;
     };
     let Some(rect_points) = mapping.rect_css_to_rect_points_clamped(anchor_css) else {
       self.close_media_controls();
+      self.update_page_hover_for_media_controls_overlay(ctx, prev_rect);
       return;
     };
     anchor_rect_points = rect_points;
@@ -22013,6 +22055,7 @@ impl App {
       && anchor_rect_points.max.y.is_finite();
     if !anchor_finite || anchor_rect_points.width() <= 0.0 || anchor_rect_points.height() <= 0.0 {
       self.close_media_controls();
+      self.update_page_hover_for_media_controls_overlay(ctx, prev_rect);
       return;
     }
 
@@ -22021,6 +22064,7 @@ impl App {
     bar_h = bar_h.min(anchor_rect_points.height());
     if bar_h < 18.0 {
       self.close_media_controls();
+      self.update_page_hover_for_media_controls_overlay(ctx, prev_rect);
       return;
     }
 
@@ -22032,6 +22076,7 @@ impl App {
     bar_rect = bar_rect.intersect(ctx.screen_rect());
     if bar_rect.width() <= 0.0 || bar_rect.height() <= 0.0 {
       self.close_media_controls();
+      self.update_page_hover_for_media_controls_overlay(ctx, prev_rect);
       return;
     }
 
@@ -22144,6 +22189,7 @@ impl App {
       });
 
     self.open_media_controls_rect = Some(bar.response.rect);
+    self.update_page_hover_for_media_controls_overlay(ctx, prev_rect);
 
     // Persist UI-local slider state.
     if let Some(controls) = self.open_media_controls.as_mut() {
