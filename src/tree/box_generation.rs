@@ -4644,6 +4644,122 @@ fn generate_boxes_for_styled_into(
     Arc::new(owned)
   }
 
+  fn strip_ua_form_control_edge_styles_for_appearance_none(
+    styled: &StyledNode,
+    mut style: Arc<ComputedStyle>,
+    form_control: Option<&Arc<FormControl>>,
+  ) -> Arc<ComputedStyle> {
+    use crate::style::cascade_order_origin;
+    use crate::style::CascadeOrderOrigin;
+    use crate::style::types::Appearance;
+    use crate::style::types::BorderStyle;
+
+    if !matches!(style.appearance, Appearance::None) {
+      return style;
+    }
+
+    let is_form_control_element = form_control.is_some()
+      || match &styled.node.node_type {
+        DomNodeType::Element {
+          tag_name,
+          namespace,
+          ..
+        } => (namespace.is_empty() || namespace == HTML_NAMESPACE)
+          && (tag_name.eq_ignore_ascii_case("input")
+            || tag_name.eq_ignore_ascii_case("textarea")
+            || tag_name.eq_ignore_ascii_case("select")
+            || tag_name.eq_ignore_ascii_case("button")),
+        _ => false,
+      };
+
+    if !is_form_control_element {
+      return style;
+    }
+
+    let ua = Some(CascadeOrderOrigin::UserAgent);
+
+    // When `appearance: none` disables native replaced control rendering, browsers treat the form
+    // control as a normal element and do not apply UA default border/padding/background-color. We
+    // mimic Chromium by stripping these values *only* when they are currently winning from the UA
+    // origin (i.e. do not clobber author styles).
+
+    // Padding.
+    if cascade_order_origin(style.logical.padding_orders.top) == ua {
+      let s = Arc::make_mut(&mut style);
+      s.padding_top = Length::px(0.0);
+      s.logical.padding_orders.top = -1;
+    }
+    if cascade_order_origin(style.logical.padding_orders.right) == ua {
+      let s = Arc::make_mut(&mut style);
+      s.padding_right = Length::px(0.0);
+      s.logical.padding_orders.right = -1;
+    }
+    if cascade_order_origin(style.logical.padding_orders.bottom) == ua {
+      let s = Arc::make_mut(&mut style);
+      s.padding_bottom = Length::px(0.0);
+      s.logical.padding_orders.bottom = -1;
+    }
+    if cascade_order_origin(style.logical.padding_orders.left) == ua {
+      let s = Arc::make_mut(&mut style);
+      s.padding_left = Length::px(0.0);
+      s.logical.padding_orders.left = -1;
+    }
+
+    // Border widths.
+    if cascade_order_origin(style.logical.border_width_orders.top) == ua {
+      let s = Arc::make_mut(&mut style);
+      s.border_top_width = Length::px(0.0);
+      s.logical.border_width_orders.top = -1;
+    }
+    if cascade_order_origin(style.logical.border_width_orders.right) == ua {
+      let s = Arc::make_mut(&mut style);
+      s.border_right_width = Length::px(0.0);
+      s.logical.border_width_orders.right = -1;
+    }
+    if cascade_order_origin(style.logical.border_width_orders.bottom) == ua {
+      let s = Arc::make_mut(&mut style);
+      s.border_bottom_width = Length::px(0.0);
+      s.logical.border_width_orders.bottom = -1;
+    }
+    if cascade_order_origin(style.logical.border_width_orders.left) == ua {
+      let s = Arc::make_mut(&mut style);
+      s.border_left_width = Length::px(0.0);
+      s.logical.border_width_orders.left = -1;
+    }
+
+    // Border styles.
+    if cascade_order_origin(style.logical.border_style_orders.top) == ua {
+      let s = Arc::make_mut(&mut style);
+      s.border_top_style = BorderStyle::None;
+      s.logical.border_style_orders.top = -1;
+    }
+    if cascade_order_origin(style.logical.border_style_orders.right) == ua {
+      let s = Arc::make_mut(&mut style);
+      s.border_right_style = BorderStyle::None;
+      s.logical.border_style_orders.right = -1;
+    }
+    if cascade_order_origin(style.logical.border_style_orders.bottom) == ua {
+      let s = Arc::make_mut(&mut style);
+      s.border_bottom_style = BorderStyle::None;
+      s.logical.border_style_orders.bottom = -1;
+    }
+    if cascade_order_origin(style.logical.border_style_orders.left) == ua {
+      let s = Arc::make_mut(&mut style);
+      s.border_left_style = BorderStyle::None;
+      s.logical.border_style_orders.left = -1;
+    }
+
+    // Background color.
+    if cascade_order_origin(style.logical.background_color_order) == ua {
+      let s = Arc::make_mut(&mut style);
+      s.background_color = Rgba::TRANSPARENT;
+      s.background_color_is_system = false;
+      s.logical.background_color_order = -1;
+    }
+
+    style
+  }
+
   fn html_represents_nothing_element(tag: &str) -> bool {
     // HTML defines a set of elements that "represent nothing" and must never generate boxes,
     // regardless of any authored `display` overrides (unlike `[hidden]`, which is overrideable).
@@ -5292,7 +5408,11 @@ fn generate_boxes_for_styled_into(
         }
 
         let original_display = base_style.display;
-        let style = transform_style_for_box_generation_if_needed(&base_style, &stack);
+        let style = strip_ua_form_control_edge_styles_for_appearance_none(
+          styled,
+          transform_style_for_box_generation_if_needed(&base_style, &stack),
+          form_control.as_ref(),
+        );
         let display = style.display;
         let fc_type = display
           .formatting_context_type()
