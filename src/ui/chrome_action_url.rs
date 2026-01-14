@@ -46,6 +46,9 @@ use crate::ui::messages::TabId;
 use crate::ui::ChromeAction;
 use url::Url;
 
+/// Canonical scheme name for chrome-action URLs.
+pub const CHROME_ACTION_SCHEME: &str = "chrome-action";
+
 /// A parsed `chrome-action:` URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChromeActionUrl {
@@ -132,9 +135,6 @@ pub enum ChromeActionUrl {
   OpenHomeUrlDialog,
   ToggleDownloadsPanel,
 }
-
-/// Legacy constant used by older call sites; prefer [`ChromeActionUrl::SCHEME`].
-pub const CHROME_ACTION_SCHEME: &str = "chrome-action";
 
 impl ChromeActionUrl {
   pub const SCHEME: &'static str = CHROME_ACTION_SCHEME;
