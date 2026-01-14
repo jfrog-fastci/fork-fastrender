@@ -14,7 +14,7 @@
     "layout": 155.9784271296572,
     "paint": 28.99598965871833
   },
-  "notes": "",
+  "notes": "MDN fixture note: current page-loop diffs do NOT meaningfully exercise the text-orientation live sample.\nThe `iframe.sample-code-frame` is far below the fold in the default screenshot (y≈3690px), so the diff is generic MDN layout.\nSee `investigation/mdn_vertical_writing_fixtures.md` and unit test `src/layout/tests/mdn_text_orientation_upright.rs`.\nNext step: render the iframe `assets/*.html` as its own fixture (or scroll baseline) to validate vertical text orientation end-to-end.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 41205,

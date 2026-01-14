@@ -14,7 +14,7 @@
     "layout": 100.97517907092198,
     "paint": 35.99115293617021
   },
-  "notes": "",
+  "notes": "Noticeable mismatch in the header/nav and some story blocks: some items are missing or aligned differently and some decorative accents/backgrounds differ.\nLikely subsystem: flex/grid layout + pseudo-elements/border/background painting in the header/cards.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 92356,

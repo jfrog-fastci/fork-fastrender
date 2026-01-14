@@ -14,7 +14,7 @@
     "layout": 44.00312349425287,
     "paint": 42.00298151724137
   },
-  "notes": "",
+  "notes": "Large mismatch vs Chrome: big section/panel backgrounds render as white/absent and parts of the page appear missing/collapsed.\nLikely subsystem: pseudo-element/background painting (e.g. ::before/::after decorative blocks) and/or flex/grid layout producing incorrect sizes.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 224025,

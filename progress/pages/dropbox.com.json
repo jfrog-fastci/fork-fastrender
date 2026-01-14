@@ -14,7 +14,7 @@
     "layout": 347.9330261062216,
     "paint": 41.99191694385433
   },
-  "notes": "",
+  "notes": "Overall structure/spacing are close, but hero/nav styling differs (background gradients, some icons/logos) and text AA/weight differs.\nLikely subsystem: paint (gradients/SVG) + text rasterization.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 44111,

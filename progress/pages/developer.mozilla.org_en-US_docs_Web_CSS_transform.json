@@ -14,7 +14,7 @@
     "layout": 146.18115550462105,
     "paint": 29.035982942698706
   },
-  "notes": "",
+  "notes": "MDN fixture note: the interactive demos are in `iframe.sample-code-frame` elements with `src=about:blank` + `data-live-path`/`data-live-id` (populated by JS on the real site).\nIn page-loop, JS is disabled (CSP `script-src 'none'`) and network is denied, so the live samples do not load; diffs are therefore generic MDN page layout.\nSee `investigation/mdn_vertical_writing_fixtures.md` for the general MDN live-sample caveat and existing vertical-writing tests (if needed as a template).\nNext step: capture the live-sample HTML as standalone fixtures (or teach the fixture patcher to rewrite `data-live-*` to local `assets/*.html` when present).",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 90386,

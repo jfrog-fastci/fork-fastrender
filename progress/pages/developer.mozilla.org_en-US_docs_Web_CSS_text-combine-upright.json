@@ -14,7 +14,7 @@
     "layout": 91.06272853830646,
     "paint": 30.02067973790323
   },
-  "notes": "",
+  "notes": "MDN fixture note: current page-loop diffs do NOT meaningfully exercise text-combine-upright.\nThe `iframe.sample-code-frame` live sample is offscreen in the default viewport (y≈3774px), so the diff is generic MDN layout.\nSee `investigation/mdn_vertical_writing_fixtures.md` (iframe positions/hotspots). Existing vertical-writing related tests include `src/layout/tests/mdn_writing_mode_live_sample.rs` and `src/layout/tests/mdn_text_orientation_upright.rs`.\nNext step: add a standalone fixture/test for the sample iframe HTML and fix remaining vertical writing/text-combine primitives.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 49254,

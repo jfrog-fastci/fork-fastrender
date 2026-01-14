@@ -14,7 +14,7 @@
     "layout": 132.0034338232044,
     "paint": 21.000546290055247
   },
-  "notes": "",
+  "notes": "MDN fixture note: the main demo is an `iframe.sample-code-frame` with `src=about:blank` + `data-live-path`/`data-live-id` (normally loaded by JS).\nIn page-loop, JS is disabled and network is denied, so the demo iframe stays blank; diffs are generic MDN layout rather than form rendering correctness.\nSee `investigation/mdn_vertical_writing_fixtures.md` for the general MDN live-sample caveat and unit-test patterns.\nNext step: add standalone fixtures for the demo iframe content (or rewrite `data-live-*` to local assets during fixture generation).",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 65306,

@@ -14,7 +14,7 @@
     "layout": 280.33436290679305,
     "paint": 95.11344455766194
   },
-  "notes": "",
+  "notes": "Mostly correct; diffs are concentrated in the header/nav (icons/glyphs) plus minor text AA/color differences.\nLikely subsystem: icon/SVG + text rasterization/paint.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 99306,

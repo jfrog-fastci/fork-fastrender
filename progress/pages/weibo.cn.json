@@ -14,7 +14,7 @@
     "layout": 12.00501896385542,
     "paint": 22.009201433734937
   },
-  "notes": "",
+  "notes": "Looks nearly identical; diffs are tiny and appear to be color rounding / text AA noise.\nLikely subsystem: paint/text rasterization.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 34320,

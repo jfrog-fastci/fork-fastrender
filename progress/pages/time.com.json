@@ -14,7 +14,7 @@
     "layout": 107.1838458467742,
     "paint": 45.0773183467742
   },
-  "notes": "",
+  "notes": "Page structure is largely correct; remaining diffs are mostly minor color/tint differences and text AA/hinting.\nLikely subsystem: paint color matching + text rasterization (font metrics/hinting).",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 32049,

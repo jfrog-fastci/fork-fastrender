@@ -16,7 +16,7 @@
     "layout": 208.05081243531825,
     "paint": 91.02223044045174
   },
-  "notes": "",
+  "notes": "Most layout blocks are present, but there are noticeable styling diffs in the top nav + hero CTA (background/gradient/button styling and typography weight).\nLikely subsystem: paint (background/gradient/shadow) + text rasterization.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 91764,

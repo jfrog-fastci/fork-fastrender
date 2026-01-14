@@ -14,7 +14,7 @@
     "layout": 52.981749059016394,
     "paint": 33.98829184918033
   },
-  "notes": "",
+  "notes": "Overall layout matches Chrome; diffs are dominated by text rasterization (AA/hinting/weight) rather than box layout.\nLikely subsystem: text shaping/rasterization + font fallback metrics.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 184759,

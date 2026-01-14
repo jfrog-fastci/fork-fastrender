@@ -14,7 +14,7 @@
     "layout": 24.104911836734697,
     "paint": 22.096169183673467
   },
-  "notes": "",
+  "notes": "Mostly correct; diffs concentrate around header/nav background shading and text AA/weight.\nLikely subsystem: background painting/cascade + text rasterization.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 85972,

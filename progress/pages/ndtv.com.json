@@ -16,7 +16,7 @@
     "layout": 613.9833989288578,
     "paint": 693.9812359228457
   },
-  "notes": "",
+  "notes": "Major layout mismatch: Chrome shows the expected dense multi-column news layout, while FastRender has heavily different stacking/sectioning (many modules misplaced or effectively missing).\nLikely subsystem: layout primitives (grid/flex/float/positioning) rather than pure paint/text.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 416114,

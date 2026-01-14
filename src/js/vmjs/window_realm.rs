@@ -62517,7 +62517,10 @@ mod tests {
     host: &mut dyn VmHost,
     source: &str,
   ) -> Result<Value, VmError> {
+    let webidl_limits = realm.js_execution_options().webidl_limits;
     let dataset_ctx = realm.dataset_exotic_context();
+    let collections_ctx = realm.collections_exotic_context();
+    let collections_ctx = realm.collections_exotic_context();
     let collections_ctx = realm.collections_exotic_context();
     let mut hooks = DomShimHostHooks::new(
       host,
@@ -63073,12 +63076,9 @@ mod tests {
 
     let dataset_ctx = realm.dataset_exotic_context();
     let collections_ctx = realm.collections_exotic_context();
-    let mut hooks = DomShimHostHooks::new(
-      &mut host,
-      dataset_ctx,
-      collections_ctx,
-      realm.js_execution_options().webidl_limits,
-    );
+    let webidl_limits = realm.js_execution_options().webidl_limits;
+    let mut hooks =
+      DomShimHostHooks::new(&mut host, dataset_ctx, collections_ctx, webidl_limits);
     realm.dispatch_media_event(
       &mut host,
       &mut hooks,
@@ -66896,6 +66896,7 @@ mod tests {
        __et.addEventListener('x', () => { __calls++; });",
     )?;
 
+    let webidl_limits = realm.js_execution_options().webidl_limits;
     let dataset_ctx = realm.dataset_exotic_context();
     let collections_ctx = realm.collections_exotic_context();
     let realm_id = realm.realm_id;
@@ -66912,12 +66913,8 @@ mod tests {
       other => panic!("expected EventTarget object, got {other:?}"),
     };
 
-    let mut hooks = DomShimHostHooks::new(
-      &mut host,
-      dataset_ctx,
-      collections_ctx,
-      realm.js_execution_options().webidl_limits,
-    );
+    let mut hooks =
+      DomShimHostHooks::new(&mut host, dataset_ctx, collections_ctx, webidl_limits);
     dispatch_simple_dom_event(&mut vm, &mut scope, &mut host, &mut hooks, et_obj, "x")?;
 
     let calls = get_prop(&mut vm, &mut scope, global, "__calls")?;
@@ -66939,6 +66936,7 @@ mod tests {
        delete globalThis.Event;",
     )?;
 
+    let webidl_limits = realm.js_execution_options().webidl_limits;
     let dataset_ctx = realm.dataset_exotic_context();
     let collections_ctx = realm.collections_exotic_context();
     let realm_id = realm.realm_id;
@@ -66955,12 +66953,8 @@ mod tests {
       other => panic!("expected EventTarget object, got {other:?}"),
     };
 
-    let mut hooks = DomShimHostHooks::new(
-      &mut host,
-      dataset_ctx,
-      collections_ctx,
-      realm.js_execution_options().webidl_limits,
-    );
+    let mut hooks =
+      DomShimHostHooks::new(&mut host, dataset_ctx, collections_ctx, webidl_limits);
     dispatch_simple_dom_event(&mut vm, &mut scope, &mut host, &mut hooks, et_obj, "x")?;
 
     let calls = get_prop(&mut vm, &mut scope, global, "__calls")?;

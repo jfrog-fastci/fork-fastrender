@@ -14,7 +14,7 @@
     "layout": 107.99317656,
     "paint": 792.94989826
   },
-  "notes": "",
+  "notes": "Visually very close to Chrome; diff metrics are dominated by text AA/hinting with a small mismatch in the top logo/icon area.\nLikely subsystem: text rasterization and minor icon/SVG paint differences.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 195263,

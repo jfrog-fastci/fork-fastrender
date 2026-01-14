@@ -14,7 +14,7 @@
     "layout": 15.005759017857144,
     "paint": 21.008062624999997
   },
-  "notes": "",
+  "notes": "Layout is mostly correct; small differences in header background shade and text AA/weight.\nLikely subsystem: background paint + text rasterization.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 88664,

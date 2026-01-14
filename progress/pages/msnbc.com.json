@@ -14,7 +14,7 @@
     "layout": 327.2264375251989,
     "paint": 46.03185359681697
   },
-  "notes": "",
+  "notes": "Severe mismatch: FastRender mostly renders the top header, but the main page content below is largely blank/missing vs Chrome.\nLikely subsystem: layout/visibility causing large sections to end up zero-sized or culled (flex/grid/overflow/positioning).",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 83629,

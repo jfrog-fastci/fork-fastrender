@@ -14,7 +14,7 @@
     "layout": 202.0423519101124,
     "paint": 21.004402921348316
   },
-  "notes": "",
+  "notes": "Overall structure is similar to Chrome. Remaining diffs are concentrated in the top header/nav and a handful of module cards (background shades, small glyph/icon details, typography).\nLikely subsystem: paint (background colors/gradients, SVG/icon rendering) + text rasterization.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 46730,

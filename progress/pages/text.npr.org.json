@@ -16,7 +16,7 @@
     "layout": 4.997449411764706,
     "paint": 18.99030776470588
   },
-  "notes": "",
+  "notes": "Mostly correct; main visible diff is page/header background color: Chrome uses a light gray (#f4f4f4) while FastRender paints white at the top (first mismatch y≈24).\nLikely subsystem: background-color propagation/painting on html/body. Remaining diffs are minor text AA.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 57507,

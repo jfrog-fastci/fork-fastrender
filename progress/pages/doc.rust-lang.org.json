@@ -16,7 +16,7 @@
     "layout": 7.998438330434782,
     "paint": 20.995900617391303
   },
-  "notes": "",
+  "notes": "Mostly correct, but sidebar/header sizing/position differs and some gray backgrounds/borders from the docs theme are missing.\nLikely subsystem: flex layout (sidebar) + background/border painting (cascade/paint).",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 112815,

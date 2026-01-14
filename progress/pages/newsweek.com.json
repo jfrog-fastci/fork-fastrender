@@ -14,7 +14,7 @@
     "layout": 435.05950586065575,
     "paint": 59.00807090983607
   },
-  "notes": "",
+  "notes": "Visually looks good; remaining diffs are mostly minor text AA and small color differences.\nLikely subsystem: text rasterization/paint.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 27784,

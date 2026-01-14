@@ -14,7 +14,7 @@
     "layout": 50.0652525,
     "paint": 29.03784645
   },
-  "notes": "",
+  "notes": "Main layout/typography are close to Chrome, but the page background is wrong: Chrome has a light gray background while FastRender paints white (first mismatch is a gray→white pixel).\nLikely subsystem: background-color propagation/painting on html/body (or cascade). Remaining diffs are mostly text AA.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 136465,

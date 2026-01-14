@@ -14,7 +14,7 @@
     "layout": 183.2262716660959,
     "paint": 29.035857258561645
   },
-  "notes": "",
+  "notes": "MDN fixture note: current page-loop diffs do NOT meaningfully exercise the writing-mode live samples.\nThe `iframe.sample-code-frame` demo content is far below the fold in the default 1040x1240 screenshot (y≈7078px and y≈10125px), so the diff is dominated by generic MDN layout.\nSee `investigation/mdn_vertical_writing_fixtures.md` (iframe positions + hotspots) and existing unit tests: `src/layout/tests/mdn_writing_mode_live_sample.rs`, `src/layout/tests/mdn_writing_mode_live_sample_table.rs`.\nNext step: add standalone fixtures for the `assets/*.html` live samples (or a scroll-to-sample baseline mode) and fix remaining vertical-rl root/layout issues.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 34751,

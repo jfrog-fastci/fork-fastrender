@@ -16,7 +16,7 @@
     "layout": 34.05967062195122,
     "paint": 19.033345347560974
   },
-  "notes": "Fixed consecutive <br> handling before block siblings (HN footer uses <br><br> before a <form>). We now drop only a single redundant boundary break so multiple breaks still produce a blank line.",
+  "notes": "Fixed consecutive <br> handling before block siblings (HN footer uses <br><br> before a <form>). We now drop only a single redundant boundary break so multiple breaks still produce a blank line. Remaining diffs are mostly text AA and minor color differences (e.g. top orange bar).",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 85329,

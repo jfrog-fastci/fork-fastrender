@@ -14,7 +14,7 @@
     "layout": 298.0814338274688,
     "paint": 141.03853077071508
   },
-  "notes": "",
+  "notes": "Major structural mismatch vs Chrome: large portions of the top header/nav and content modules are missing/collapsed, leaving big blank areas.\nLikely subsystem: complex layout (grid/flex/positioned/sticky) and/or visibility/overflow causing zero-sized or skipped blocks.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 69389,
