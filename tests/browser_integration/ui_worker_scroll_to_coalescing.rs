@@ -27,13 +27,13 @@ fn scroll_to_burst_applies_last_position() {
     .send(viewport_changed_msg(tab_id, (200, 100), 1.0))
     .expect("ViewportChanged");
 
-  // Wait for the initial frame and scroll update so subsequent assertions are deterministic.
+  // Wait for the initial frame so the document is live.
   super::support::recv_for_tab(&ui_rx, tab_id, DEFAULT_TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::FrameReady { .. })
   })
   .expect("initial FrameReady");
   // The worker does not guarantee a `ScrollStateUpdated` after navigation; drain follow-up messages
-  // instead of waiting for one.
+  // instead of waiting for one so subsequent assertions are deterministic.
   let _ = drain_for(&ui_rx, Duration::from_millis(200));
 
   // Fire a burst of ScrollTo messages and ensure the last position wins.
