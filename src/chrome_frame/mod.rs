@@ -157,7 +157,8 @@ impl ChromeFrameDocument {
   }
 
   /// Create a chrome frame document from the canonical renderer-chrome template.
-  pub fn new(renderer: FastRender, options: RenderOptions) -> Result<Self> {
+  pub fn new(mut renderer: FastRender, options: RenderOptions) -> Result<Self> {
+    renderer.set_fetcher(crate::ui::trusted_chrome_fetcher::trusted_chrome_fetcher());
     // Bootstrap with an empty/default browser state; callers are expected to drive state → DOM sync
     // via [`ChromeFrameDocument::sync_state`].
     let bootstrap_state = BrowserAppState::new();
@@ -183,7 +184,6 @@ impl ChromeFrameDocument {
         "chrome frame template missing element id={CHROME_ADDRESS_BAR_ID:?}"
       ))
     })?;
-
     Ok(Self {
       document,
       interaction: InteractionEngine::new(),

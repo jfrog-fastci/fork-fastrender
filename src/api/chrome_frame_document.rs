@@ -31,7 +31,8 @@ impl ChromeFrameDocument {
   }
 
   /// Creates a new chrome document from an HTML string using the provided renderer.
-  pub fn new(renderer: FastRender, html: &str, options: RenderOptions) -> Result<Self> {
+  pub fn new(mut renderer: FastRender, html: &str, options: RenderOptions) -> Result<Self> {
+    renderer.set_fetcher(crate::ui::trusted_chrome_fetcher::trusted_chrome_fetcher());
     Ok(Self {
       document: BrowserDocument::new(renderer, html, options)?,
       interaction: InteractionEngine::new(),

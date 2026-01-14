@@ -1,4 +1,4 @@
-use crate::api::{BrowserDocument, Pixmap, RenderOptions};
+use crate::api::{BrowserDocument, FastRender, Pixmap, RenderOptions};
 use crate::error::Result;
 use crate::interaction::{InteractionAction, InteractionEngine, KeyAction};
 
@@ -33,7 +33,9 @@ impl DialogDocument {
     options: RenderOptions,
   ) -> Result<Self> {
     let html = dialog_html(&kind, message.as_ref());
-    let document = BrowserDocument::from_html(&html, options)?;
+    let mut renderer = FastRender::new()?;
+    renderer.set_fetcher(crate::ui::trusted_chrome_fetcher::trusted_chrome_fetcher());
+    let document = BrowserDocument::new(renderer, &html, options)?;
     Ok(Self {
       document,
       interaction: InteractionEngine::new(),

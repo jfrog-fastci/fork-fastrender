@@ -1,5 +1,6 @@
 use crate::error::{Error, ResourceError, Result};
 use crate::resource::{data_url::decode_data_url, FetchedResource, ResourceFetcher};
+use super::chrome_assets::ChromeAssetsFetcher;
 use std::sync::Arc;
 use url::Url;
 
@@ -52,6 +53,15 @@ impl TrustedChromeFetcher {
   pub fn new(inner: Arc<dyn ResourceFetcher>) -> Self {
     Self { inner }
   }
+}
+
+/// Construct the default trusted-chrome fetcher stack used by renderer-chrome documents.
+///
+/// This pairs the strict [`TrustedChromeFetcher`] policy wrapper with the built-in
+/// [`ChromeAssetsFetcher`] so chrome HTML can load `chrome://...` assets and inline `data:` URLs,
+/// but cannot accidentally fetch arbitrary network or filesystem resources.
+pub fn trusted_chrome_fetcher() -> Arc<dyn ResourceFetcher> {
+  Arc::new(TrustedChromeFetcher::new(Arc::new(ChromeAssetsFetcher::new())))
 }
 
 impl ResourceFetcher for TrustedChromeFetcher {

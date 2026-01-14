@@ -16654,6 +16654,17 @@ impl FastRender {
     self.layout_engine.reset_cached_formatting_contexts();
   }
 
+  /// Replace the resource fetcher used for external loads (images, stylesheets, etc).
+  ///
+  /// This updates all fetcher consumers owned by the renderer (including the image caches inside
+  /// the layout engine) so subsequent renders use the new policy/backend.
+  pub fn set_fetcher(&mut self, fetcher: Arc<dyn ResourceFetcher>) {
+    self.fetcher = fetcher.clone();
+    self.image_cache.set_fetcher(fetcher.clone());
+    self.layout_engine.image_cache_mut().set_fetcher(fetcher);
+    self.layout_engine.reset_cached_formatting_contexts();
+  }
+
   /// Replaces the font context used for layout and painting.
   ///
   /// This is primarily used by test harnesses to install a deterministic set
