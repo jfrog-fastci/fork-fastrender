@@ -2035,17 +2035,82 @@ fn hir_for_await_of_loop_is_supported(
   let Some(rhs_expr) = hir_get_expr(body, right) else {
     return false;
   };
-  if let hir_js::ExprKind::Await { expr: awaited_expr } = rhs_expr.kind {
-    if hir_expr_contains_await(hir, body, awaited_expr, visited_bodies) {
+  if let hir_js::ExprKind::Await { expr: awaited_expr } = &rhs_expr.kind {
+    if hir_expr_contains_await(hir, body, *awaited_expr, visited_bodies) {
       return false;
     }
   } else if hir_expr_contains_await(hir, body, right, visited_bodies) {
     return false;
   }
 
-  // The compiled async evaluator currently evaluates the loop body synchronously.
-  // Ensure the body contains no nested awaits.
-  !hir_stmt_contains_await(hir, body, inner, visited_bodies)
+  // The compiled async evaluator evaluates the loop body synchronously for most statement forms.
+  // Allow a narrow subset where the body is a single compound assignment statement with a direct
+  // `await` RHS: `out += await <expr>;`.
+  if hir_stmt_contains_await(hir, body, inner, visited_bodies) {
+    let Some(stmt) = hir_get_stmt(body, inner) else {
+      return false;
+    };
+    let maybe_expr_id: Option<hir_js::ExprId> = match &stmt.kind {
+      hir_js::StmtKind::Expr(expr_id) => Some(*expr_id),
+      hir_js::StmtKind::Block(stmts) if stmts.len() == 1 => {
+        let Some(inner_stmt) = hir_get_stmt(body, stmts[0]) else {
+          return false;
+        };
+        match &inner_stmt.kind {
+          hir_js::StmtKind::Expr(expr_id) => Some(*expr_id),
+          _ => None,
+        }
+      }
+      _ => None,
+    };
+    let Some(expr_id) = maybe_expr_id else {
+      return false;
+    };
+    let Some(expr) = hir_get_expr(body, expr_id) else {
+      return false;
+    };
+    let hir_js::ExprKind::Assignment { op, target, value } = &expr.kind else {
+      return false;
+    };
+
+    if !hir_compound_assign_op_supported(*op) {
+      return false;
+    }
+
+    // Target must be a binding assignment (the async loop body support only handles binding
+    // references).
+    let Some(target_pat) = hir_get_pat(body, *target) else {
+      return false;
+    };
+    match &target_pat.kind {
+      hir_js::PatKind::Ident(_) => {}
+      hir_js::PatKind::AssignTarget(expr_id) => {
+        let Some(target_expr) = hir_get_expr(body, *expr_id) else {
+          return false;
+        };
+        if !matches!(target_expr.kind, hir_js::ExprKind::Ident(_)) {
+          return false;
+        }
+      }
+      _ => return false,
+    }
+
+    if hir_pat_contains_await(hir, body, *target, visited_bodies) {
+      return false;
+    }
+
+    let Some(rhs) = hir_get_expr(body, *value) else {
+      return false;
+    };
+    let hir_js::ExprKind::Await { expr: awaited_expr } = &rhs.kind else {
+      return false;
+    };
+    if hir_expr_contains_await(hir, body, *awaited_expr, visited_bodies) {
+      return false;
+    }
+  }
+
+  true
 }
 
 fn hir_for_of_loop_is_supported(
@@ -2059,14 +2124,66 @@ fn hir_for_of_loop_is_supported(
   if !hir_for_head_allows_direct_object_pat_awaits(hir, body, left, visited_bodies) {
     return false;
   }
-  // RHS + body are evaluated synchronously.
-  if hir_expr_contains_await(hir, body, right, visited_bodies) {
+  // Support direct `await` in the RHS expression (`for (x of await <expr>) {}`).
+  let Some(rhs_expr) = hir_get_expr(body, right) else {
+    return false;
+  };
+  if let hir_js::ExprKind::Await { expr: awaited_expr } = &rhs_expr.kind {
+    if hir_expr_contains_await(hir, body, *awaited_expr, visited_bodies) {
+      return false;
+    }
+  } else if hir_expr_contains_await(hir, body, right, visited_bodies) {
     return false;
   }
   if hir_stmt_contains_await(hir, body, inner, visited_bodies) {
     return false;
   }
   true
+}
+
+fn hir_for_in_loop_is_supported(
+  hir: &hir_js::LowerResult,
+  body: &hir_js::Body,
+  left: &hir_js::ForHead,
+  right: hir_js::ExprId,
+  inner: hir_js::StmtId,
+  visited_bodies: &mut BTreeSet<hir_js::BodyId>,
+) -> bool {
+  // Loop head patterns must be synchronous (await-free).
+  match left {
+    hir_js::ForHead::Pat(pat_id) => {
+      if hir_pat_contains_await(hir, body, *pat_id, visited_bodies) {
+        return false;
+      }
+    }
+    hir_js::ForHead::Var(decl) => {
+      for declarator in &decl.declarators {
+        if hir_pat_contains_await(hir, body, declarator.pat, visited_bodies) {
+          return false;
+        }
+        if let Some(init_id) = declarator.init {
+          if hir_expr_contains_await(hir, body, init_id, visited_bodies) {
+            return false;
+          }
+        }
+      }
+    }
+  }
+
+  // Support direct `await` in the RHS expression (`for (k in await <expr>) {}`).
+  let Some(rhs_expr) = hir_get_expr(body, right) else {
+    return false;
+  };
+  if let hir_js::ExprKind::Await { expr: awaited_expr } = &rhs_expr.kind {
+    if hir_expr_contains_await(hir, body, *awaited_expr, visited_bodies) {
+      return false;
+    }
+  } else if hir_expr_contains_await(hir, body, right, visited_bodies) {
+    return false;
+  }
+
+  // Loop bodies are still evaluated synchronously; reject nested awaits.
+  !hir_stmt_contains_await(hir, body, inner, visited_bodies)
 }
 
 fn hir_for_triple_expr_is_supported(
@@ -2328,6 +2445,14 @@ fn hir_async_root_stmt_is_supported(
       await_: false,
       ..
     } => hir_for_of_loop_is_supported(hir, body, left, *right, *inner, visited_bodies),
+
+    hir_js::StmtKind::ForIn {
+      left,
+      right,
+      body: inner,
+      is_for_of: false,
+      await_: false,
+    } => hir_for_in_loop_is_supported(hir, body, left, *right, *inner, visited_bodies),
 
     hir_js::StmtKind::Labeled { body: inner, .. } => {
       // Support top-level label chains around async-aware loop forms handled by the compiled async
