@@ -885,12 +885,12 @@ impl<'a> Parser<'a> {
         // Class field initializers do not inherit `await`/`yield` expression parsing contexts
         // from enclosing modules or functions.
         let is_module = self.is_module();
-        let init_ctx = ctx.with_rules(ParsePatternRules {
-          await_allowed: !is_module,
-          yield_allowed: !is_module,
-          await_expr_allowed: false,
-          yield_expr_allowed: false,
-        });
+         let init_ctx = ctx.with_rules(ParsePatternRules {
+            await_allowed: !is_module,
+            yield_allowed: !is_module,
+            await_expr_allowed: false,
+            yield_expr_allowed: false,
+          });
         let initializer = self.with_disallow_arguments_in_class_init(|p| {
           p.expr_with_asi(init_ctx, [TT::Semicolon, TT::BraceClose], &mut asi)
         });

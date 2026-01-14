@@ -3193,13 +3193,13 @@ impl PreparedDocument {
     &self.box_tree
   }
 
+  pub(crate) fn box_tree_and_fragment_tree_mut(&mut self) -> (&BoxTree, &mut FragmentTree) {
+    (&self.box_tree, &mut self.fragment_tree)
+  }
+
   /// Returns the laid-out fragment tree prior to any scroll translations.
   pub fn fragment_tree(&self) -> &FragmentTree {
     &self.fragment_tree
-  }
-
-  pub(crate) fn box_tree_and_fragment_tree_mut(&mut self) -> (&BoxTree, &mut FragmentTree) {
-    (&self.box_tree, &mut self.fragment_tree)
   }
 
   /// Applies sticky offsets using an explicit scroll state that can include element scroll offsets.

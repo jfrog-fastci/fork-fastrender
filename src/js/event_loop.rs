@@ -1451,7 +1451,7 @@ impl<Host: 'static> EventLoop<Host> {
     &mut self,
     host: &mut Host,
     limits: RunLimits,
-    mut hook: impl for<'a> FnMut(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()>,
+    mut hook: impl FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()>,
   ) -> Result<RunUntilIdleOutcome> {
     let previous_stage = render_control::active_stage();
     let _stage_guard = StageGuard::install(previous_stage.or(Some(RenderStage::Script)));
@@ -1523,7 +1523,7 @@ impl<Host: 'static> EventLoop<Host> {
   ) -> Result<RunUntilIdleOutcome>
   where
     OnError: FnMut(Error),
-    Hook: for<'a> FnMut(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()>,
+    Hook: FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()>,
   {
     let previous_stage = render_control::active_stage();
     let _stage_guard = StageGuard::install(previous_stage.or(Some(RenderStage::Script)));
@@ -1581,7 +1581,7 @@ impl<Host: 'static> EventLoop<Host> {
     &mut self,
     host: &mut Host,
     run_state: &mut RunState,
-    hook: &mut impl for<'a> FnMut(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()>,
+    hook: &mut impl FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()>,
   ) -> RunStepResult<RunUntilIdleOutcome> {
     loop {
       run_state.check_deadline()?;
@@ -1658,7 +1658,7 @@ impl<Host: 'static> EventLoop<Host> {
   ) -> RunStepResult<RunUntilIdleOutcome>
   where
     OnError: FnMut(Error),
-    Hook: for<'a> FnMut(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()>,
+    Hook: FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()>,
   {
     loop {
       run_state.check_deadline()?;

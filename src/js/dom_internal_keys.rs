@@ -18,6 +18,7 @@ pub(crate) const COLLECTION_LENGTH_KEY: &str = "__fastrender_collection_length";
 pub(crate) const NODE_LIST_PROTOTYPE_KEY: &str = "__fastrender_node_list_prototype";
 pub(crate) const HTML_COLLECTION_PROTOTYPE_KEY: &str = "__fastrender_html_collection_prototype";
 pub(crate) const HTML_COLLECTION_ROOT_KEY: &str = "__fastrender_html_collection_root";
+pub(crate) const NODE_ITERATOR_PROTOTYPE_KEY: &str = "__fastrender_node_iterator_prototype";
 
 // --- Event wrappers ---
 

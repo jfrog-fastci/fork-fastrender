@@ -6620,7 +6620,11 @@ impl BrowserRuntime {
         &scroll_snapshot,
       );
       let hit_tree_after = next_scroll.as_ref().and_then(|scroll| {
-        hit_test_fragment_tree_for_scroll_cached(&mut tab.hit_test_fragment_tree_cache, doc, scroll)
+        hit_test_fragment_tree_for_scroll_cached(
+          &mut tab.hit_test_fragment_tree_cache,
+          doc,
+          scroll,
+        )
       });
       let engine = &mut tab.interaction;
       let (
@@ -6640,7 +6644,6 @@ impl BrowserRuntime {
               &scroll_snapshot,
               viewport_point,
             );
-
           let mut fragment_tree_for_cursor = fragment_tree_before;
           let mut scroll_for_cursor = &scroll_snapshot;
           if let Some(scroll_after) = next_scroll.as_ref() {
@@ -6661,7 +6664,6 @@ impl BrowserRuntime {
             fragment_tree_for_cursor = fragment_tree_after;
             scroll_for_cursor = scroll_after;
           }
-
           // Textarea selection drag autoscroll: while dragging a selection/caret in a textarea,
           // moving the pointer outside the control should scroll it so the caret line stays
           // visible.
@@ -6786,10 +6788,12 @@ impl BrowserRuntime {
     let mut scroll_changed = false;
     if let Some(next_scroll) = next_scroll {
       if next_scroll != tab.scroll_state {
-        let Some(doc) = tab.document.as_mut() else {
-          return;
-        };
-        doc.set_scroll_state(next_scroll.clone());
+        {
+          let Some(doc) = tab.document.as_mut() else {
+            return;
+          };
+          doc.set_scroll_state(next_scroll.clone());
+        }
         tab.scroll_state = next_scroll;
         TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
         tab.history.update_scroll_state(&tab.scroll_state);

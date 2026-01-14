@@ -106,7 +106,7 @@ impl<Host: 'static, T: Clone + 'static> JsPromise<Host, T> {
     let maybe_result = { self.state.borrow().result.clone() };
     if let Some(result) = maybe_result {
       // Promise reactions run as microtasks, even when the promise is already settled.
-      event_loop.queue_microtask(move |host, event_loop| {
+      event_loop.queue_microtask(move |host: &mut Host, event_loop: &mut EventLoop<Host>| {
         reaction(&mut *host, &mut *event_loop, result)
       })?;
       return Ok(());
@@ -196,7 +196,7 @@ impl<Host: 'static, T: Clone + 'static> JsPromiseResolver<Host, T> {
 
     for reaction in reactions {
       let result = result.clone();
-      event_loop.queue_microtask(move |host, event_loop| {
+      event_loop.queue_microtask(move |host: &mut Host, event_loop: &mut EventLoop<Host>| {
         reaction(&mut *host, &mut *event_loop, result)
       })?;
     }

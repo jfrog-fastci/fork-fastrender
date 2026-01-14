@@ -13,7 +13,8 @@ use crate::js::dom_internal_keys::{
   CSS_STYLE_DECL_PROTOTYPE_KEY, EVENT_BRAND_KEY, EVENT_ID_KEY, EVENT_IMMEDIATE_STOP_KEY,
   EVENT_INITIALIZED_KEY, EVENT_KIND_KEY, HTML_COLLECTION_PROTOTYPE_KEY, HTML_COLLECTION_ROOT_KEY,
   IFRAME_CONTENT_DOCUMENT_KEY, IFRAME_CONTENT_WINDOW_KEY,
-  NODE_CHILD_NODES_KEY, NODE_CHILDREN_KEY, NODE_ID_KEY, NODE_LIST_PROTOTYPE_KEY,
+  NODE_CHILD_NODES_KEY, NODE_CHILDREN_KEY, NODE_ID_KEY, NODE_ITERATOR_PROTOTYPE_KEY,
+  NODE_LIST_PROTOTYPE_KEY,
   STYLE_CSS_TEXT_GET_KEY, STYLE_CSS_TEXT_SET_KEY, STYLE_CURSOR_GET_KEY, STYLE_CURSOR_SET_KEY,
   STYLE_DISPLAY_GET_KEY, STYLE_DISPLAY_SET_KEY, STYLE_GET_PROPERTY_VALUE_KEY,
   STYLE_HEIGHT_GET_KEY, STYLE_HEIGHT_SET_KEY, STYLE_REMOVE_PROPERTY_KEY, STYLE_SET_PROPERTY_KEY,
@@ -3699,7 +3700,7 @@ const NODE_LIST_ITERATOR_KIND_ENTRIES: u8 = 2;
 //
 // This is used by `document.createNodeIterator` to wire up the correct prototype without walking
 // `globalThis`, and is copied onto realm-owned documents so their iterators behave consistently.
-const NODE_ITERATOR_PROTOTYPE_KEY: &str = "__fastrender_node_iterator_prototype";
+const NODE_ITERATOR_ID_KEY: &str = "__fastrender_node_iterator_id";
 const NODE_ITERATOR_DOCUMENT_KEY: &str = "__fastrender_node_iterator_document";
 const NODE_ITERATOR_ROOT_KEY: &str = "__fastrender_node_iterator_root";
 const NODE_ITERATOR_REFERENCE_KEY: &str = "__fastrender_node_iterator_reference";

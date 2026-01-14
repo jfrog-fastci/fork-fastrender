@@ -50,14 +50,6 @@ pub struct ClockMediaClock {
   clock: Arc<dyn Clock>,
 }
 
-impl std::fmt::Debug for ClockMediaClock {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.debug_struct("ClockMediaClock")
-      .field("clock", &"<dyn Clock>")
-      .finish()
-  }
-}
-
 impl ClockMediaClock {
   #[must_use]
   pub fn new(clock: Arc<dyn Clock>) -> Self {
