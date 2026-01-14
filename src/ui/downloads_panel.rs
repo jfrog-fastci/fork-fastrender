@@ -92,7 +92,6 @@ fn download_matches_tokens(entry: &DownloadEntry, tokens_lower: &[&str]) -> bool
     DownloadStatus::Failed { error } => Some(error.trim()).filter(|e| !e.is_empty()),
     _ => None,
   };
-  let mut path: Option<Cow<'_, str>> = None;
 
   for token_lower in tokens_lower {
     if contains_ascii_case_insensitive(file_name, token_lower)
@@ -102,8 +101,7 @@ fn download_matches_tokens(entry: &DownloadEntry, tokens_lower: &[&str]) -> bool
     {
       continue;
     }
-    let path = path.get_or_insert_with(|| entry.path.to_string_lossy());
-    if contains_ascii_case_insensitive(path.as_ref(), token_lower) {
+    if contains_ascii_case_insensitive(entry.path_display.as_str(), token_lower) {
       continue;
     }
     return false;
@@ -414,7 +412,7 @@ pub fn downloads_panel_ui(
 
                 ui.add(
                   egui::Label::new(
-                    egui::RichText::new(entry.path.display().to_string())
+                    egui::RichText::new(entry.path_display.as_str())
                       .small()
                       .color(ui.visuals().weak_text_color()),
                   )
@@ -505,7 +503,7 @@ pub fn downloads_panel_ui(
                         )
                       });
                       if copy_path_resp.clicked() {
-                        out.copy_requests.push(entry.path.display().to_string());
+                        out.copy_requests.push(entry.path_display.clone());
                       }
                       #[cfg(test)]
                       store_test_id(
@@ -551,7 +549,7 @@ pub fn downloads_panel_ui(
                         )
                       });
                       if copy_path_resp.clicked() {
-                        out.copy_requests.push(entry.path.display().to_string());
+                        out.copy_requests.push(entry.path_display.clone());
                       }
                       #[cfg(test)]
                       store_test_id(
@@ -597,7 +595,7 @@ pub fn downloads_panel_ui(
                         )
                       });
                       if copy_path_resp.clicked() {
-                        out.copy_requests.push(entry.path.display().to_string());
+                        out.copy_requests.push(entry.path_display.clone());
                       }
                       #[cfg(test)]
                       store_test_id(
@@ -942,6 +940,7 @@ mod tests {
       url: "https://example.com/a.zip".to_string(),
       file_name: "a.zip".to_string(),
       path: PathBuf::from("downloads/a.zip"),
+      path_display: "downloads/a.zip".to_string(),
       status: DownloadStatus::Completed,
     };
     let copy_path_label = a11y_labels::download_copy_path_label(&download_a.file_name);
@@ -966,6 +965,7 @@ mod tests {
       url: "https://example.com/b.zip".to_string(),
       file_name: "b.zip".to_string(),
       path: PathBuf::from("downloads/b.zip"),
+      path_display: "downloads/b.zip".to_string(),
       status: DownloadStatus::Completed,
     };
     let downloads = vec![download_a.clone(), download_b];
@@ -1078,6 +1078,7 @@ mod tests {
       url: url.to_string(),
       file_name: file_name.to_string(),
       path: PathBuf::from("/tmp/example"),
+      path_display: "/tmp/example".to_string(),
       status: DownloadStatus::Completed,
     }
   }
@@ -1119,6 +1120,7 @@ mod tests {
       url: "https://example.com/files/Report.pdf".to_string(),
       file_name: "Report.pdf".to_string(),
       path: PathBuf::from("/home/user/Downloads/Report.pdf"),
+      path_display: "/home/user/Downloads/Report.pdf".to_string(),
       status: DownloadStatus::Completed,
     };
 
@@ -1140,6 +1142,7 @@ mod tests {
       url: "https://example.com/file.zip".to_string(),
       file_name: "file.zip".to_string(),
       path: PathBuf::from("/tmp/file.zip"),
+      path_display: "/tmp/file.zip".to_string(),
       status: DownloadStatus::Failed {
         error: "disk full".to_string(),
       },
@@ -1152,6 +1155,7 @@ mod tests {
       url: "https://example.com/file.zip".to_string(),
       file_name: "file.zip".to_string(),
       path: PathBuf::from("/tmp/file.zip"),
+      path_display: "/tmp/file.zip".to_string(),
       status: DownloadStatus::Completed,
     };
     assert!(download_matches_query(&completed, "completed"));
@@ -1162,6 +1166,7 @@ mod tests {
       url: "https://example.com/file.zip".to_string(),
       file_name: "file.zip".to_string(),
       path: PathBuf::from("/tmp/file.zip"),
+      path_display: "/tmp/file.zip".to_string(),
       status: DownloadStatus::InProgress {
         received_bytes: 10,
         total_bytes: Some(20),
@@ -1175,6 +1180,7 @@ mod tests {
       url: "https://example.com/file.zip".to_string(),
       file_name: "file.zip".to_string(),
       path: PathBuf::from("/tmp/file.zip"),
+      path_display: "/tmp/file.zip".to_string(),
       status: DownloadStatus::Cancelled,
     };
     assert!(download_matches_query(&cancelled, "cancelled"));
@@ -1194,6 +1200,7 @@ mod tests {
       url: "https://example.com/file.zip".to_string(),
       file_name: "file.zip".to_string(),
       path: PathBuf::from("/tmp/file.zip"),
+      path_display: "/tmp/file.zip".to_string(),
       status: DownloadStatus::Completed,
     };
 
@@ -1256,6 +1263,7 @@ mod tests {
       url: "https://example.com/file.zip".to_string(),
       file_name: "file.zip".to_string(),
       path: PathBuf::from("downloads/file.zip"),
+      path_display: "downloads/file.zip".to_string(),
       status: DownloadStatus::Failed {
         error: "network error".to_string(),
       },
@@ -1303,7 +1311,7 @@ mod tests {
     );
     let _ = ctx.end_frame();
 
-    assert_eq!(output.copy_requests, vec![entry.path.display().to_string()]);
+    assert_eq!(output.copy_requests, vec![entry.path_display.clone()]);
   }
 
   #[test]
@@ -1320,6 +1328,7 @@ mod tests {
         url: "https://example.com/file.bin".to_string(),
         file_name: "file.bin".to_string(),
         path: PathBuf::from("downloads/file.bin"),
+        path_display: "downloads/file.bin".to_string(),
         status: DownloadStatus::InProgress {
           received_bytes: 10,
           total_bytes: Some(100),
@@ -1331,6 +1340,7 @@ mod tests {
         url: "https://example.com/file.zip".to_string(),
         file_name: "file.zip".to_string(),
         path: PathBuf::from("downloads/file.zip"),
+        path_display: "downloads/file.zip".to_string(),
         status: DownloadStatus::Completed,
       },
     ];

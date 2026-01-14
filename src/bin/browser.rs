@@ -15109,12 +15109,15 @@ impl App {
           fastrender::ui::DownloadStatus::Cancelled
         }
       };
+      let path = download.path;
+      let path_display = path.display().to_string();
       self.browser_state.downloads.downloads.push(fastrender::ui::DownloadEntry {
         download_id: fastrender::ui::DownloadId::new(),
         tab_id: active_tab_id,
         url: download.url,
         file_name: download.file_name,
-        path: download.path,
+        path,
+        path_display,
         status,
       });
     }

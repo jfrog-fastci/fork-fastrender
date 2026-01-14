@@ -319,6 +319,11 @@ pub struct DownloadEntry {
   pub url: String,
   pub file_name: String,
   pub path: PathBuf,
+  /// Cached `path.display().to_string()` for UI display/search.
+  ///
+  /// Formatting a `Path` for display can be surprisingly expensive (notably on Windows where paths
+  /// are UTF-16). Downloads panel UI is rendered every frame, so cache it per entry.
+  pub path_display: String,
   pub status: DownloadStatus,
 }
 
@@ -346,6 +351,7 @@ mod download_entry_retry_tests {
       url: url.clone(),
       file_name: file_name.clone(),
       path: PathBuf::from("/tmp/file.zip"),
+      path_display: "/tmp/file.zip".to_string(),
       status: DownloadStatus::Failed {
         error: "network error".to_string(),
       },
@@ -508,12 +514,15 @@ impl DownloadsState {
           &safe_file_name,
           MAX_DOWNLOAD_FILE_NAME_BYTES,
         );
+        let path = path.clone();
+        let path_display = path.display().to_string();
         self.insert_or_update(DownloadEntry {
           download_id: *download_id,
           tab_id: *tab_id,
           url: safe_url,
           file_name: safe_file_name,
-          path: path.clone(),
+          path,
+          path_display,
           status: DownloadStatus::InProgress {
             received_bytes: 0,
             total_bytes: *total_bytes,
@@ -3794,6 +3803,7 @@ mod browser_app_tests {
       url: format!("https://example.test/{download_id}"),
       file_name: format!("file-{download_id}"),
       path: std::path::PathBuf::from(format!("file-{download_id}")),
+      path_display: format!("file-{download_id}"),
       status,
     }
   }
