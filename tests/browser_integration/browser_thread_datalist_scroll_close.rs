@@ -1,3 +1,5 @@
+#![cfg(feature = "browser_ui")]
+
 use super::support;
 use base64::Engine as _;
 use fastrender::ui::messages::{KeyAction, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi};
