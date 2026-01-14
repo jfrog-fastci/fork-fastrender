@@ -220,35 +220,12 @@ fn textarea_max_scroll_y(
   let FormControlKind::TextArea { value, .. } = &control.control else {
     return None;
   };
-
-  let metrics = if matches!(style.line_height, crate::style::types::LineHeight::Normal) {
-    super::resolve_scaled_metrics_for_interaction(style)
-  } else {
-    None
-  };
-  let line_height =
-    compute_line_height_with_metrics_viewport(style, metrics.as_ref(), Some(viewport_size), None);
-  if line_height <= 0.0 || !line_height.is_finite() {
-    return None;
-  }
-
-  let border_rect = Rect::from_xywh(0.0, 0.0, fragment.bounds.width(), fragment.bounds.height());
-  let content_rect = select_content_rect(border_rect, style, viewport_size);
-  let text_rect = inset_rect(content_rect, 2.0, 2.0, 2.0, 2.0);
-  let viewport_height = text_rect.height().max(0.0);
-  if viewport_height <= 0.0 || !viewport_height.is_finite() {
-    return None;
-  }
-
-  let chars_per_line = crate::textarea::textarea_chars_per_line(style, text_rect.width());
-  let layout = crate::textarea::build_textarea_visual_lines(value, chars_per_line);
-  let content_height = layout.lines.len() as f32 * line_height;
-  if !content_height.is_finite() {
-    return None;
-  }
-
-  let max_scroll_y = (content_height - viewport_height).max(0.0);
-  max_scroll_y.is_finite().then_some(max_scroll_y)
+  super::textarea_scroll::textarea_max_scroll_y_for_value(
+    viewport_size,
+    fragment.bounds.size,
+    style,
+    value,
+  )
 }
 
 fn patch_form_control_scroll_bounds(

@@ -161,6 +161,7 @@ mod ui_select_listbox_click_after_wheel_scroll;
 mod ui_select_typeahead_hidden_option;
 mod ui_stage_heartbeat_forwarding;
 mod ui_text_editing;
+mod ui_textarea_auto_scroll;
 mod ui_tabindex_negative_pointer_focus;
 mod ui_worker_about_pages;
 mod ui_worker_a11y_actions;

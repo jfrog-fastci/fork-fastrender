@@ -24,6 +24,7 @@ mod image_maps;
 pub(crate) mod paint_overlays;
 pub mod selection_serialize;
 pub mod scroll_wheel;
+pub(crate) mod textarea_scroll;
 pub mod state;
 pub(crate) mod textarea_caret_scroll;
 pub mod url;
