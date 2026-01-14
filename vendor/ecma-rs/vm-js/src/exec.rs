@@ -10803,7 +10803,7 @@ impl<'a> Evaluator<'a> {
           // Spec ordering: evaluate `GetThisBinding()` (and throw in derived constructors before
           // `super()`) before evaluating the computed key expression.
           let receiver = self.get_this_binding(scope)?;
-          let home_object = self.home_object.ok_or(VmError::InvariantViolation(
+          let _home_object = self.home_object.ok_or(VmError::InvariantViolation(
             "super property access missing [[HomeObject]]",
           ))?;
 
@@ -37180,84 +37180,6 @@ fn gen_eval_assignment_apply_reference(
           gen_frames_push(
             &mut suspend.frames,
             GenFrame::AssignAddAfterRhs {
-              expr: expr as *const BinaryExpr,
-              base,
-              key,
-              receiver,
-              left,
-            },
-          )?;
-          Ok(GenEval::Suspend(suspend))
-        }
-      }
-    }
-    OperatorName::AssignmentExponentiation => {
-      let mut op_scope = scope.reborrow();
-      evaluator.root_reference(&mut op_scope, &reference)?;
-
-      let left = evaluator
-        .get_value_from_reference(&mut op_scope, &reference)
-        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
-      op_scope.push_root(left)?;
-
-      match gen_eval_expr(evaluator, &mut op_scope, &expr.right)? {
-        GenEval::Complete(c) => match c {
-          Completion::Normal(v) => {
-            let right = v.unwrap_or(Value::Undefined);
-            let mut exp_scope = op_scope.reborrow();
-            exp_scope.push_root(right)?;
-            let value = evaluator
-              .exponentiation_operator(&mut exp_scope, left, right)
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut exp_scope, err))?;
-            exp_scope.push_root(value)?;
-            evaluator
-              .put_value_to_reference(&mut exp_scope, &reference, value)
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut exp_scope, err))?;
-            Ok(GenEval::Complete(Completion::normal(value)))
-          }
-          abrupt => Ok(GenEval::Complete(abrupt)),
-        },
-        GenEval::Suspend(mut suspend) => {
-          let (base, key, receiver) = match reference {
-            Reference::Binding(_) => (None, None, None),
-            Reference::Property { base, key } => {
-              let key_value = match key {
-                PropertyKey::String(s) => Value::String(s),
-                PropertyKey::Symbol(sym) => Value::Symbol(sym),
-              };
-              (Some(base), Some(key_value), None)
-            }
-            Reference::SuperProperty {
-              base,
-              key,
-              receiver,
-            } => {
-              let key_value = match key {
-                PropertyKey::String(s) => Value::String(s),
-                PropertyKey::Symbol(sym) => Value::Symbol(sym),
-              };
-              (Some(base), Some(key_value), Some(receiver))
-            }
-            Reference::Private { base, sym, .. } => (Some(base), Some(Value::Symbol(sym)), None),
-          };
-
-          // Root the reference components (and the saved left value) so they survive until the next
-          // yield boundary.
-          drop(op_scope);
-          if let Some(b) = base {
-            scope.push_root(b)?;
-          }
-          if let Some(k) = key {
-            scope.push_root(k)?;
-          }
-          if let Some(r) = receiver {
-            scope.push_root(r)?;
-          }
-          scope.push_root(left)?;
-
-          gen_frames_push(
-            &mut suspend.frames,
-            GenFrame::AssignExpAfterRhs {
               expr: expr as *const BinaryExpr,
               base,
               key,
