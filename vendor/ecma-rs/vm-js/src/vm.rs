@@ -1819,6 +1819,26 @@ impl Vm {
 
       let mut ctx = TeardownCtx { heap };
       self.microtasks.teardown(&mut ctx);
+
+      // Async continuations are resumed exclusively via Promise jobs. Since we are abandoning the
+      // remaining microtasks on termination, any in-progress async continuations would become
+      // permanently unreachable (and would leak their persistent roots) unless we explicitly tear
+      // them down here.
+      drop(ctx);
+      if !self.async_continuations.is_empty() {
+        let continuations = mem::take(&mut self.async_continuations);
+        let mut scope = heap.scope();
+        for (_, cont) in continuations {
+          match cont {
+            VmAsyncContinuation::Ast(cont) => {
+              crate::exec::async_teardown_continuation(&mut scope, cont)
+            }
+            VmAsyncContinuation::Hir(cont) => {
+              crate::hir_exec::hir_async_teardown_continuation(&mut scope, cont)
+            }
+          }
+        }
+      }
     }
 
     self.microtasks.end_checkpoint();
@@ -5366,10 +5386,48 @@ mod tests {
  
       rt.heap.collect_garbage();
     }
- 
+
     Ok(())
   }
- 
+
+  #[test]
+  fn microtask_checkpoint_termination_tears_down_async_continuations() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let baseline_roots = rt.heap.persistent_root_count();
+    let baseline_env_roots = rt.heap.persistent_env_root_count();
+
+    let _promise = rt.exec_script("async function f(){ await 1; } f();")?;
+
+    assert!(
+      !rt.vm.microtask_queue().is_empty(),
+      "expected async function await to enqueue a microtask"
+    );
+    assert!(
+      rt.vm.async_continuation_count() > 0,
+      "expected async function await to store an async continuation"
+    );
+
+    // Force a termination when the checkpoint attempts to run the first job.
+    rt.vm.set_budget(Budget {
+      fuel: Some(0),
+      deadline: None,
+      check_time_every: 1,
+    });
+    let err = rt
+      .vm
+      .perform_microtask_checkpoint(&mut rt.heap)
+      .expect_err("expected microtask checkpoint to terminate");
+    assert!(matches!(err, VmError::Termination(_)));
+
+    // Termination is treated as a hard stop: remaining microtasks are discarded. Ensure we also
+    // tore down any in-progress async continuations so their persistent roots aren't leaked.
+    assert!(rt.vm.microtask_queue().is_empty());
+    assert_eq!(rt.vm.async_continuation_count(), 0);
+    assert_eq!(rt.heap.persistent_root_count(), baseline_roots);
+    assert_eq!(rt.heap.persistent_env_root_count(), baseline_env_roots);
+    Ok(())
+  }
+
   #[test]
   fn teardown_realm_clears_template_registry_and_intrinsics() -> Result<(), VmError> {
     use crate::exec::eval_script_with_host_and_hooks;
