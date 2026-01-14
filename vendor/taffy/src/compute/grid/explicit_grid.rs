@@ -4,6 +4,7 @@ use super::types::{GridTrack, TrackCounts};
 use crate::geometry::AbsoluteAxis;
 use crate::style::{LengthPercentage, RepetitionCount, TrackSizingFunction};
 use crate::style_helpers::TaffyAuto;
+use crate::util::check_layout_abort;
 use crate::util::sys::{ceil, floor, Vec};
 use crate::util::MaybeMath;
 use crate::util::ResolveOrZero;
@@ -308,6 +309,7 @@ pub(super) fn initialize_grid_tracks(
       let target_explicit_end = (counts.negative_implicit as usize) + (counts.explicit as usize);
 
       for track_sizing_function in track_template.clone() {
+        check_layout_abort();
         if current_track_index >= target_explicit_end {
           break;
         }
@@ -328,6 +330,7 @@ pub(super) fn initialize_grid_tracks(
                 .cycle()
                 .take(repeat.track_count() as usize * count as usize);
               for sizing_function in track_iter {
+                check_layout_abort();
                 if current_track_index >= target_explicit_end {
                   break;
                 }
@@ -342,6 +345,7 @@ pub(super) fn initialize_grid_tracks(
             RepetitionCount::AutoFit | RepetitionCount::AutoFill => {
               let iter = repeat.tracks().cycle();
               for track_def in iter.take(auto_repeated_track_count) {
+                check_layout_abort();
                 if current_track_index >= target_explicit_end {
                   break;
                 }
@@ -409,6 +413,7 @@ fn create_implicit_tracks(
   gap: LengthPercentage,
 ) {
   for _ in 0..count {
+    check_layout_abort();
     let track_def = auto_tracks_iter.next().unwrap();
     tracks.push(GridTrack::new(
       track_def.min_sizing_function(),
