@@ -305,7 +305,6 @@ pub enum PlaybackState {
   Playing,
   Paused,
 }
-
 /// Mapping from a chosen *master clock* (audio device clock or system monotonic clock) to a media
 /// **timeline time** that supports pause/seek/playbackRate.
 ///

@@ -319,7 +319,10 @@ mod linux_tests {
 
     let result = apply_linux_env_overrides(RendererSandboxConfig::default())
       .expect("apply_linux_env_overrides should succeed");
-    assert!(result.is_none());
+    assert!(
+      result.is_none(),
+      "expected sandbox configuration to be disabled when {ENV_DISABLE_RENDERER_SANDBOX}=1"
+    );
 
     restore_env(prev_disable, prev_seccomp, prev_landlock);
   }

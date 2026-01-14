@@ -340,7 +340,7 @@ impl LineBaselineAccumulator {
           // sizes due to font hinting. Using the raw float-scaled metric can accumulate into
           // noticeable vertical drift on text-heavy pages that rely on `vertical-align: middle`
           // (e.g. lobste.rs bylines with avatar images).
-          .and_then(|m| m.x_height.map(|xh| xh.round() * 0.5))
+          .and_then(|m| m.x_height.map(|xh| xh.ceil() * 0.5))
           .or_else(|| parent_metrics.map(|m| m.ascent * 0.5))
           .unwrap_or(0.0);
         // `vertical-align` aligns the inline box itself, not its margins. `BaselineMetrics.height`
@@ -760,10 +760,10 @@ mod tests {
   }
 
   #[test]
-  fn middle_alignment_rounds_parent_x_height_to_whole_css_pixels() {
-    // Blink's hinting tends to snap font metrics to whole pixels. Ensure we mirror that behavior
-    // for baseline-relative middle alignment so small subpixel errors don't accumulate into visible
-    // vertical drift on text-heavy pages (e.g. lobste.rs bylines).
+  fn middle_alignment_snaps_parent_x_height_to_whole_css_pixels() {
+    // Blink/FreeType hinting tends to snap font metrics to whole pixels. Ensure we mirror that
+    // behavior for baseline-relative middle alignment so small subpixel errors don't accumulate
+    // into visible vertical drift on text-heavy pages (e.g. lobste.rs bylines).
     let parent = BaselineMetrics {
       baseline_offset: 10.0,
       height: 14.0,
@@ -771,12 +771,12 @@ mod tests {
       descent: 4.0,
       line_gap: 0.0,
       line_height: 14.0,
-      x_height: Some(7.6),
+      x_height: Some(7.1),
     };
     let replaced = BaselineMetrics::for_replaced(16.0);
     let acc = LineBaselineAccumulator::new(&parent);
     let shift = acc.compute_baseline_shift(VerticalAlign::Middle, &replaced, Some(&parent));
-    // shift = 16 - 8 - round(7.6)/2 = 8 - 4 = 4
+    // shift = 16 - 8 - ceil(7.1)/2 = 8 - 4 = 4
     assert!((shift - 4.0).abs() < 1e-3, "unexpected shift: {shift}");
   }
 

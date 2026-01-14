@@ -45,8 +45,8 @@ pub struct ScrollAnchorSnapshot {
 
 fn sanitize_point(p: Point) -> Point {
   Point::new(
-    if p.x.is_finite() { p.x.max(0.0) } else { 0.0 },
-    if p.y.is_finite() { p.y.max(0.0) } else { 0.0 },
+    if p.x.is_finite() { p.x } else { 0.0 },
+    if p.y.is_finite() { p.y } else { 0.0 },
   )
 }
 
