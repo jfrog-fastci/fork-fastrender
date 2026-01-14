@@ -13,7 +13,9 @@ cd "${repo_root}"
 # - vendor/ecma-rs/parse-js/tests/TypeScript/**: TypeScript's own test suite includes conflict marker
 #   trivia fixtures (e.g. `formatConflictMarker1.ts`).
 # - specs/**: spec submodules use `=======` as a delimiter in Bikeshed sources.
-# - tests/wpt{,_dom,_suites}/**: vendored Web Platform Tests corpora (massive, not project source).
+# - tests/wpt*/{tests,resources,expected}/**: vendored Web Platform Tests corpora (large, not
+#   project source). Note that we still scan curated manifests like `tests/wpt_dom/expectations.toml`
+#   so configuration files can't accidentally land with conflict markers.
 # - vendor/ecma-rs/test262*/data/**: vendored JS corpora (massive, not project source).
 #
 # Implementation note:
@@ -78,9 +80,12 @@ if [[ "${use_git}" -eq 1 ]]; then
     "${scan_root}"
     ':!vendor/ecma-rs/parse-js/tests/TypeScript/**'
     ':!specs/**'
-    ':!tests/wpt/**'
-    ':!tests/wpt_dom/**'
-    ':!tests/wpt_suites/**'
+    ':!tests/wpt/_import_testdata/**'
+    ':!tests/wpt/_offline_validator_testdata/**'
+    ':!tests/wpt/expected/**'
+    ':!tests/wpt/tests/**'
+    ':!tests/wpt_dom/resources/**'
+    ':!tests/wpt_dom/tests/**'
     ':!vendor/ecma-rs/test262/data/**'
     ':!vendor/ecma-rs/test262-semantic/data/**'
   )
