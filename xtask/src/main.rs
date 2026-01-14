@@ -724,11 +724,17 @@ struct BrowserArgs {
   ///
   /// When unset, perf-log output defaults to stdout so it can be piped/tee'd.
   /// Passing this flag also enables perf logging.
+  ///
+  /// Note: relative paths are resolved relative to the repo root (where the browser runs), not the
+  /// caller's current directory.
   #[arg(long, value_name = "PATH")]
   perf_log_out: Option<PathBuf>,
 
   /// Write a Chrome trace of the browser UI event loop to this path (passes
   /// `browser --trace-out <path>`).
+  ///
+  /// Note: relative paths are resolved relative to the repo root (where the browser runs), not the
+  /// caller's current directory.
   #[arg(long, value_name = "PATH")]
   trace_out: Option<PathBuf>,
 
