@@ -15108,7 +15108,14 @@ enum HirAsyncResumePoint {
   ///
   /// The continuation stores a `ForAwaitOfState` state machine that drives the loop across
   /// suspensions. When the loop completes, evaluation continues from `next_stmt_index`.
-  ForAwaitOf { next_stmt_index: usize },
+  ///
+  /// If `break_label` is `Some`, this `for await..of` was wrapped in a single top-level label
+  /// statement (`label: for await (...) { ... }`). In that case, a `break label;` completion from
+  /// the loop must be consumed by the label statement and treated as a normal completion.
+  ForAwaitOf {
+    next_stmt_index: usize,
+    break_label: Option<hir_js::NameId>,
+  },
 }
 
 #[derive(Debug)]
@@ -15356,6 +15363,82 @@ fn hir_eval_stmt_list_until_await(
       continue;
     }
 
+    // Fast-path a single top-level label statement whose body is a `for await..of` loop.
+    //
+    // This supports patterns like:
+    //   `outer: for await (const x of iterable) { break outer; }`
+    //
+    // This is intentionally narrow: nested label statements still fall back to the AST executor.
+    if let hir_js::StmtKind::Labeled { label, body: labeled_body } = &stmt.kind {
+      // Budget once for the label statement itself, matching `eval_stmt_labelled`.
+      evaluator.vm.tick()?;
+      let inner_stmt = evaluator.get_stmt(body, *labeled_body)?;
+      if let hir_js::StmtKind::ForIn {
+        left,
+        right,
+        body: inner,
+        is_for_of: true,
+        await_: true,
+      } = &inner_stmt.kind
+      {
+        // Budget once for the loop statement itself, matching the `StmtKind::ForIn` branch in
+        // `eval_stmt_labelled`.
+        evaluator.vm.tick()?;
+        let label_set = [*label];
+        let mut state = ForAwaitOfState::new(left.clone(), *right, *inner, &label_set)?;
+        match state.poll(evaluator, scope, body, None) {
+          Ok(ForAwaitOfPoll::Await { kind, await_value }) => {
+            return Ok(HirAsyncEvalResult::Await {
+              kind,
+              await_value,
+              resume: HirAsyncResumePoint::ForAwaitOf {
+                next_stmt_index: i.saturating_add(1),
+                break_label: Some(*label),
+              },
+              assign_reference: None,
+              for_await_of_state: Some(state),
+            });
+          }
+          Ok(ForAwaitOfPoll::Complete(flow)) => {
+            // Defensive cleanup: `poll(Init)` should return `Await`, but keep this robust.
+            state.teardown(scope.heap_mut());
+            let flow = match flow {
+              Flow::Break(Some(target), value) if target == *label => Flow::Normal(value),
+              other => other,
+            };
+            match flow {
+              Flow::Normal(v) => {
+                if let Some(v) = v {
+                  *last_value_is_set = true;
+                  scope.heap_mut().set_root(last_value_root, v);
+                }
+              }
+              Flow::Return(_) => {
+                return Err(VmError::InvariantViolation(
+                  "script evaluation produced Return flow (early errors should prevent this)",
+                ))
+              }
+              Flow::Break(..) => {
+                return Err(VmError::InvariantViolation(
+                  "script evaluation produced Break flow (early errors should prevent this)",
+                ))
+              }
+              Flow::Continue(..) => {
+                return Err(VmError::InvariantViolation(
+                  "script evaluation produced Continue flow (early errors should prevent this)",
+                ))
+              }
+            }
+            continue;
+          }
+          Err(err) => {
+            state.teardown(scope.heap_mut());
+            return Err(err);
+          }
+        }
+      }
+    }
+
     // Top-level `for await..of` evaluation is driven by `ForAwaitOfState` so we can suspend on the
     // implicit iterator `await`s without running the synchronous HIR evaluator (which does not yet
     // support `await_` loop heads).
@@ -15377,6 +15460,7 @@ fn hir_eval_stmt_list_until_await(
             await_value,
             resume: HirAsyncResumePoint::ForAwaitOf {
               next_stmt_index: i.saturating_add(1),
+              break_label: None,
             },
             assign_reference: None,
             for_await_of_state: Some(state),
@@ -16329,7 +16413,10 @@ pub(crate) fn hir_async_resume_continuation(
             &mut cont.last_value_is_set,
           )
         }
-        HirAsyncResumePoint::ForAwaitOf { next_stmt_index } => {
+        HirAsyncResumePoint::ForAwaitOf {
+          next_stmt_index,
+          break_label,
+        } => {
           // Attach any throw stack to the `for await..of` statement span.
           let stmt_index = next_stmt_index.checked_sub(1).ok_or(VmError::InvariantViolation(
             "hir async for-await-of resume missing statement index",
@@ -16350,7 +16437,10 @@ pub(crate) fn hir_async_resume_continuation(
             Ok(ForAwaitOfPoll::Await { kind, await_value }) => Ok(HirAsyncEvalResult::Await {
               kind,
               await_value,
-              resume: HirAsyncResumePoint::ForAwaitOf { next_stmt_index },
+              resume: HirAsyncResumePoint::ForAwaitOf {
+                next_stmt_index,
+                break_label,
+              },
               assign_reference: None,
               for_await_of_state: Some(state),
             }),
@@ -16359,6 +16449,10 @@ pub(crate) fn hir_async_resume_continuation(
               // returning `Complete`, but call `teardown` defensively so future changes to the state
               // machine cannot leak roots.
               state.teardown(scope.heap_mut());
+              let flow = match (break_label, flow) {
+                (Some(label), Flow::Break(Some(target), value)) if target == label => Flow::Normal(value),
+                (_, other) => other,
+              };
               match flow {
                 Flow::Normal(v) => {
                   if let Some(v) = v {

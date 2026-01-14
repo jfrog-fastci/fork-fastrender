@@ -741,6 +741,19 @@ fn stmt_contains_unsupported_await_for_hir_async_scripts(stmt: &Node<Stmt>) -> b
         expr_contains_await(init)
       }
     }),
+    // Support `label: for await (...) { ... }` as long as the labelled statement is a simple
+    // top-level `for await..of` loop with no nested `await` expressions.
+    //
+    // Note that `break label;` inside the loop must be handled by the compiled async classic-script
+    // executor (it produces a labelled break completion that the label statement consumes).
+    Stmt::Label(label) => match &*label.stx.statement.stx {
+      Stmt::ForOf(for_of) if for_of.stx.await_ => {
+        for_in_of_lhs_contains_await(&for_of.stx.lhs)
+          || expr_contains_await(&for_of.stx.rhs)
+          || for_of.stx.body.stx.body.iter().any(stmt_contains_await)
+      }
+      _ => stmt_contains_await(stmt),
+    },
     Stmt::ForOf(for_of) => {
       if !for_of.stx.await_ {
         // `for (x of xs) { await ... }` is not supported in the compiled async script executor.
