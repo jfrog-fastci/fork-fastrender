@@ -12318,6 +12318,106 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
   }
 
   #[cfg(feature = "disk_cache")]
+  fn cached_entry_resource_slice(
+    &self,
+    key: &CacheKey,
+    request: Option<FetchRequest<'_>>,
+    start: usize,
+    max_bytes: usize,
+  ) -> Option<Result<FetchedResource>> {
+    self.state.lock().ok().and_then(|mut state| {
+      let base_request = request.unwrap_or_else(|| FetchRequest::new(&key.url, key.kind.into()));
+      let canonical = self.resolve_alias_locked(&mut state, key, base_request);
+      let bucket = match state.lru.get(&canonical) {
+        Some(bucket) => bucket,
+        None => {
+          if &canonical != key {
+            let request_sig = inflight_signature_for_request(&self.inner, base_request);
+            Self::remove_alias_mapping_locked(&mut state, key, &request_sig);
+          }
+          return None;
+        }
+      };
+
+      let request = FetchRequest {
+        url: &canonical.url,
+        destination: base_request.destination,
+        referrer_url: base_request.referrer_url,
+        client_origin: base_request.client_origin,
+        referrer_policy: base_request.referrer_policy,
+        credentials_mode: base_request.credentials_mode,
+      };
+
+      let vary_key = compute_vary_key_for_request(&self.inner, request, bucket.vary.as_deref())?;
+      let entry = bucket.entries.get(&vary_key)?;
+
+      Some(match &entry.value {
+        CacheValue::Resource(res) => {
+          let start = start.min(res.bytes.len());
+          let end = start
+            .saturating_add(max_bytes)
+            .min(res.bytes.len());
+          let bytes = res.bytes[start..end].to_vec();
+          Ok(FetchedResource {
+            bytes,
+            content_type: res.content_type.clone(),
+            nosniff: res.nosniff,
+            content_encoding: res.content_encoding.clone(),
+            status: res.status,
+            etag: res.etag.clone(),
+            last_modified: res.last_modified.clone(),
+            access_control_allow_origin: res.access_control_allow_origin.clone(),
+            timing_allow_origin: res.timing_allow_origin.clone(),
+            vary: res.vary.clone(),
+            response_referrer_policy: res.response_referrer_policy,
+            access_control_allow_credentials: res.access_control_allow_credentials,
+            final_url: res.final_url.clone(),
+            cache_policy: res.cache_policy.clone(),
+            response_headers: res.response_headers.clone(),
+          })
+        }
+        CacheValue::Error(err) => Err(err.clone()),
+      })
+    })
+  }
+
+  #[cfg(feature = "disk_cache")]
+  fn cached_entry_resource_range(
+    &self,
+    key: &CacheKey,
+    request: Option<FetchRequest<'_>>,
+    range: std::ops::RangeInclusive<u64>,
+    max_bytes: usize,
+  ) -> Option<Result<FetchedResource>> {
+    if let Some(result) = self.with_cached_resource(key, request, |res| {
+      let bytes = slice_bytes_for_fetch_range(&key.url, &res.bytes, range, max_bytes)?;
+      Ok(FetchedResource {
+        bytes,
+        content_type: res.content_type.clone(),
+        nosniff: res.nosniff,
+        content_encoding: res.content_encoding.clone(),
+        status: res.status,
+        etag: res.etag.clone(),
+        last_modified: res.last_modified.clone(),
+        access_control_allow_origin: res.access_control_allow_origin.clone(),
+        timing_allow_origin: res.timing_allow_origin.clone(),
+        vary: res.vary.clone(),
+        response_referrer_policy: res.response_referrer_policy,
+        access_control_allow_credentials: res.access_control_allow_credentials,
+        final_url: res.final_url.clone(),
+        cache_policy: res.cache_policy.clone(),
+        response_headers: res.response_headers.clone(),
+      })
+    }) {
+      return Some(result);
+    }
+
+    // Miss (or cached error): fall back to the canonical snapshot lookup. Because
+    // `with_cached_resource` returned `None`, this cannot clone a cached body.
+    self.cached_entry(key, request).map(|snapshot| snapshot.value.as_result())
+  }
+
+  #[cfg(feature = "disk_cache")]
   pub(crate) fn cached_snapshot(
     &self,
     kind: FetchContextKind,

@@ -4408,8 +4408,11 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       policy.ensure_url_allowed(url)?;
     }
 
-    if let Some(snapshot) = self.memory.cached_snapshot(kind, url) {
-      let result = snapshot.value.as_result();
+    let key = CacheKey::new(kind, url.to_string());
+    if let Some(result) = self
+      .memory
+      .cached_entry_resource_slice(&key, None, 0, max_bytes)
+    {
       if let Ok(mut res) = result {
         if res.bytes.len() > max_bytes {
           res.bytes.truncate(max_bytes);
@@ -4466,8 +4469,10 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       super::CacheCredentialsPartition::for_request(&req),
     );
 
-    if let Some(snapshot) = self.memory.cached_entry(&key, Some(req)) {
-      let result = snapshot.value.as_result();
+    if let Some(result) = self
+      .memory
+      .cached_entry_resource_slice(&key, Some(req), 0, max_bytes)
+    {
       if let Ok(mut res) = result {
         if res.bytes.len() > max_bytes {
           res.bytes.truncate(max_bytes);
@@ -4534,10 +4539,11 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       super::CacheCredentialsPartition::for_request(&req),
     );
 
-    if let Some(snapshot) = self.memory.cached_entry(&key, Some(req)) {
-      let result = snapshot.value.as_result();
-      if let Ok(mut res) = result {
-        res.bytes = super::slice_bytes_for_fetch_range(url, &res.bytes, range.clone(), max_bytes)?;
+    if let Some(result) = self
+      .memory
+      .cached_entry_resource_range(&key, Some(req), range.clone(), max_bytes)
+    {
+      if let Ok(res) = result {
         super::record_cache_fresh_hit();
         super::record_resource_cache_bytes(res.bytes.len());
         super::reserve_policy_bytes(&self.policy, &res)?;
@@ -5345,6 +5351,139 @@ mod tests {
     }
   }
 
+  #[derive(Clone)]
+  struct LargeFetcher {
+    calls: Arc<AtomicUsize>,
+  }
+
+  impl ResourceFetcher for LargeFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      self.calls.fetch_add(1, Ordering::SeqCst);
+      let size = 1024 * 1024;
+      let mut bytes = vec![0u8; size];
+      for i in 0u8..=255 {
+        bytes[i as usize] = i;
+      }
+      let mut res = FetchedResource::new(bytes, Some("application/octet-stream".to_string()));
+      res.final_url = Some(url.to_string());
+      Ok(res)
+    }
+  }
+
+  fn clear_directory(path: &Path) {
+    let entries = match fs::read_dir(path) {
+      Ok(entries) => entries,
+      Err(_) => return,
+    };
+    for entry in entries.flatten() {
+      let path = entry.path();
+      if path.is_dir() {
+        let _ = fs::remove_dir_all(&path);
+      } else {
+        let _ = fs::remove_file(&path);
+      }
+    }
+  }
+
+  #[test]
+  fn disk_caching_fetcher_partial_memory_hit_does_not_clone_full_body() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let disk = DiskCachingFetcher::new(
+      LargeFetcher {
+        calls: Arc::clone(&calls),
+      },
+      tmp.path(),
+    );
+    let url = "https://example.com/large.bin";
+
+    let seeded = disk.fetch(url).expect("seed full body");
+    assert_eq!(seeded.bytes.len(), 1024 * 1024);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    // Prevent the partial fetch from falling back to the disk cache on a bugged memory miss.
+    clear_directory(tmp.path());
+
+    // Ensure the full body is present in the in-memory cache (so the partial fetch cannot fall
+    // back to disk without failing this test).
+    let key = CacheKey::new(TEST_KIND, url.to_string());
+    {
+      let state = disk
+        .memory
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+      assert!(
+        state.lru.peek(&key).is_some(),
+        "expected entry to be present in the in-memory cache"
+      );
+    }
+
+    let req = FetchRequest::new(url, FetchDestination::Other);
+    let res = disk
+      .fetch_partial_with_request(req, 16)
+      .expect("partial fetch");
+    assert_eq!(res.bytes.len(), 16);
+    assert_eq!(res.bytes, (0u8..16).collect::<Vec<_>>());
+    assert!(
+      res.bytes.capacity() <= 64,
+      "expected partial memory hit to allocate a small Vec; got capacity {}",
+      res.bytes.capacity()
+    );
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      1,
+      "expected partial fetch to be served from memory without hitting the inner fetcher"
+    );
+  }
+
+  #[test]
+  fn disk_caching_fetcher_range_memory_hit_does_not_clone_full_body() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let disk = DiskCachingFetcher::new(
+      LargeFetcher {
+        calls: Arc::clone(&calls),
+      },
+      tmp.path(),
+    );
+    let url = "https://example.com/large.bin";
+
+    let seeded = disk.fetch(url).expect("seed full body");
+    assert_eq!(seeded.bytes.len(), 1024 * 1024);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    let key = CacheKey::new(TEST_KIND, url.to_string());
+    {
+      let state = disk
+        .memory
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+      assert!(
+        state.lru.peek(&key).is_some(),
+        "expected entry to be present in the in-memory cache"
+      );
+    }
+
+    let req = FetchRequest::new(url, FetchDestination::Other);
+    let res = disk
+      .fetch_range_with_request(req, 128, 16)
+      .expect("range fetch");
+    assert_eq!(res.bytes.len(), 16);
+    assert_eq!(res.bytes, (128u8..144).collect::<Vec<_>>());
+    assert!(
+      res.bytes.capacity() <= 64,
+      "expected range memory hit to allocate a small Vec; got capacity {}",
+      res.bytes.capacity()
+    );
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      1,
+      "expected range fetch to be served from memory without hitting the inner fetcher"
+    );
+  }
+
   #[test]
   fn disk_caching_fetcher_fetch_http_request_caches_get_and_bypasses_post() {
     #[derive(Clone)]
@@ -5527,7 +5666,7 @@ mod tests {
 
             let body = n.to_string();
             let response = format!(
-              "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nVary: Sec-Fetch-Site\r\nConnection: close\r\n\r\n",
+              "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nVary: X-Foo\r\nConnection: close\r\n\r\n",
               body.len()
             );
             let _ = stream.write_all(response.as_bytes());
@@ -5558,9 +5697,9 @@ mod tests {
     let url = format!("http://{addr}/vary.txt");
 
     let first = fetcher.fetch(&url).expect("first fetch");
-    assert_eq!(first.vary.as_deref(), Some("sec-fetch-site"));
+    assert_eq!(first.vary.as_deref(), Some("x-foo"));
     let second = fetcher.fetch(&url).expect("second fetch");
-    assert_eq!(second.vary.as_deref(), Some("sec-fetch-site"));
+    assert_eq!(second.vary.as_deref(), Some("x-foo"));
 
     handle.join().unwrap();
 
@@ -5694,7 +5833,7 @@ mod tests {
 
             let body = n.to_string();
             let response = format!(
-              "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nVary: Sec-Fetch-Site\r\nConnection: close\r\n\r\n",
+              "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nVary: Cookie\r\nConnection: close\r\n\r\n",
               body.len()
             );
             let _ = stream.write_all(response.as_bytes());
@@ -5737,7 +5876,7 @@ mod tests {
       allow_config,
     );
     let first = allow_fetcher.fetch(&url).expect("first fetch");
-    assert_eq!(first.vary.as_deref(), Some("sec-fetch-site"));
+    assert_eq!(first.vary.as_deref(), Some("cookie"));
 
     // A subsequent fetcher instance (with the default strict Vary policy) must not reuse the
     // persisted entry even though it exists on disk.
@@ -5746,7 +5885,7 @@ mod tests {
       cache_dir,
     );
     let second = strict_fetcher.fetch(&url).expect("second fetch");
-    assert_eq!(second.vary.as_deref(), Some("sec-fetch-site"));
+    assert_eq!(second.vary.as_deref(), Some("cookie"));
 
     handle.join().unwrap();
 
