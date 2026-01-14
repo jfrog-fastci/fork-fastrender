@@ -1,3 +1,10 @@
+//! In-process performance-log buffer used mainly by browser integration tests.
+//!
+//! Note: this module is **not** the windowed `browser` JSONL perf log (emitted by
+//! `browser --perf-log` / `browser --perf-log-out`). Instead, it stores a small set of perf events
+//! in a process-global ring buffer so tests can assert behaviors without spawning a full browser
+//! process.
+
 use crate::ui::messages::TabId;
 use serde::Serialize;
 use std::collections::VecDeque;
