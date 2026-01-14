@@ -1736,6 +1736,53 @@ mod tests {
     assert!(post_seek_audio, "expected AAC packet after seek");
   }
 
+  #[cfg(feature = "codec_aac")]
+  #[test]
+  fn demuxer_aac_track_extradata_initializes_decoder_and_decodes_packet() {
+    let fixture_path = crate::testing::fixture_path("fixtures/media/test_h264_aac.mp4");
+    let bytes = std::fs::read(fixture_path).expect("read mp4 fixture");
+    let mut demuxer = Mp4Demuxer::open(Cursor::new(bytes.as_slice())).expect("open mp4");
+
+    // Extract AAC track info up-front so we don't hold an immutable borrow of `demuxer` while
+    // iterating packets (`next_packet` requires `&mut self`).
+    let (track_id, asc, sample_rate, channels) = {
+      let track = demuxer
+        .tracks()
+        .iter()
+        .find(|t| t.codec == MediaCodec::Aac)
+        .expect("AAC track");
+      let info = track.audio.expect("AAC track audio info");
+      (
+        track.id,
+        track.codec_private.clone(),
+        info.sample_rate,
+        info.channels,
+      )
+    };
+    assert!(!asc.is_empty(), "AAC codec_private (ASC) must be non-empty");
+
+    let mut decoder =
+      crate::media::codecs::aac::AacDecoder::new(&asc, sample_rate, channels).expect("init AAC");
+
+    for _ in 0..256 {
+      let Some(pkt) = demuxer.next_packet().expect("read packet") else {
+        break;
+      };
+      if pkt.track_id != track_id {
+        continue;
+      }
+      if let Some(decoded) = decoder.decode(&pkt).expect("decode AAC") {
+        assert!(
+          !decoded.samples.is_empty(),
+          "expected decoded samples from AAC packet"
+        );
+        return;
+      }
+    }
+
+    panic!("expected at least one decodable AAC packet from fixture");
+  }
+
   #[test]
   fn demuxer_packets_are_interleaved_by_global_dts() {
     let fixture_path = crate::testing::fixture_path("fixtures/media/test_h264_aac.mp4");
