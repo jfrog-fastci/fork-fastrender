@@ -391,7 +391,7 @@ impl<'a> Parser<'a> {
     if string_value.as_ref() == "arguments" {
       return Err(loc.error(
         SyntaxErrorType::ExpectedSyntax(
-          "`arguments` is not allowed in class field initializers or static blocks",
+          "'arguments' is not allowed in class field initializer or static initialization block",
         ),
         None,
       ));
