@@ -608,51 +608,6 @@ struct DrainOutcome {
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
-fn scroll_change_marks_session_dirty(
-  prev_viewport: Option<fastrender::Point>,
-  next_viewport: Option<fastrender::Point>,
-) -> bool {
-  match (prev_viewport, next_viewport) {
-    (Some(prev), Some(next)) => prev != next,
-    _ => false,
-  }
-}
-
-#[cfg(test)]
-mod scroll_change_marks_session_dirty_tests {
-  use super::scroll_change_marks_session_dirty;
-  use fastrender::Point;
-
-  #[test]
-  fn frame_ready_with_same_scroll_does_not_mark_dirty() {
-    let prev = Some(Point::new(0.0, 0.0));
-    let next = Some(Point::new(0.0, 0.0));
-    assert!(!scroll_change_marks_session_dirty(prev, next));
-  }
-
-  #[test]
-  fn frame_ready_with_different_scroll_marks_dirty() {
-    let prev = Some(Point::new(10.0, 20.0));
-    let next = Some(Point::new(10.0, 40.0));
-    assert!(scroll_change_marks_session_dirty(prev, next));
-  }
-
-  #[test]
-  fn scroll_state_updated_with_different_scroll_marks_dirty() {
-    let prev = Some(Point::new(0.0, 0.0));
-    let next = Some(Point::new(5.0, 0.0));
-    assert!(scroll_change_marks_session_dirty(prev, next));
-  }
-
-  #[test]
-  fn scroll_state_updated_identical_does_not_mark_dirty() {
-    let prev = Some(Point::new(1.0, 2.0));
-    let next = Some(Point::new(1.0, 2.0));
-    assert!(!scroll_change_marks_session_dirty(prev, next));
-  }
-}
-
-#[cfg(any(test, feature = "browser_ui"))]
 #[allow(dead_code)]
 fn drain_mpsc_receiver_with_budget<T>(
   rx: &std::sync::mpsc::Receiver<T>,
@@ -7873,17 +7828,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   // session snapshot on every geometry update is expensive, so we debounce window-state autosaves
   // with a trailing-edge timer.
   //
-  // Similarly, scroll updates can arrive at high frequency (trackpads/momentum scroll). Persisting
-  // scroll offsets is still important for session restore, but snapshot generation should happen
-  // only once after scrolling becomes idle.
-  //
   // All other session-dirty events continue to use the normal session-save scheduler.
   let mut pending_window_state_autosave_deadline: Option<std::time::Instant> = None;
   let mut window_state_autosave_due = false;
   let window_state_autosave_debounce = std::time::Duration::from_millis(500);
-  let mut pending_scroll_autosave_deadline: Option<std::time::Instant> = None;
-  let mut scroll_autosave_due = false;
-  let scroll_autosave_debounce = std::time::Duration::from_millis(800);
 
   // Startup crash marker: persist the *restored* in-memory snapshot (including any platform window
   // state) as soon as the autosave worker starts.
@@ -7963,16 +7911,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     // Opportunistically observe any background shutdown joins without blocking the UI thread.
     shutdown_join_tracker.poll();
-
-    // Promote a pending scroll autosave deadline to "due" once it elapses (trailing-edge). Like the
-    // window-state debounce, we defer the snapshot build until later so it can be coalesced with any
-    // other autosave triggers.
-    (pending_scroll_autosave_deadline, scroll_autosave_due) =
-      fastrender::ui::scroll_autosave_debounce::poll_deadline(
-        pending_scroll_autosave_deadline,
-        scroll_autosave_due,
-        now,
-      );
 
     // `EventLoop::run` never returns, so do shutdown hygiene (dropping channels and joining
     // threads) explicitly when the loop is torn down.
@@ -8391,39 +8329,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 break;
               };
               drained_count = drained_count.saturating_add(1);
-              // Scroll autosave debounce: track viewport changes driven by the worker so we can
-              // persist scroll offsets without rebuilding session snapshots continuously during
-              // active scrolling.
-              let scroll_tab_id = match &item {
-                QueuedMsg::Worker(fastrender::ui::WorkerToUi::FrameReady { tab_id, .. })
-                | QueuedMsg::Worker(fastrender::ui::WorkerToUi::ScrollStateUpdated { tab_id, .. }) => {
-                  Some(*tab_id)
-                }
-                _ => None,
-              };
-              let prev_scroll_viewport = scroll_tab_id
-                .and_then(|tab_id| win.app.browser_state.tab(tab_id))
-                .map(|tab| tab.scroll_state.viewport);
+              if let QueuedMsg::Worker(msg) = &item {
+                session_dirty |= matches!(
+                  msg,
+                  fastrender::ui::WorkerToUi::NavigationCommitted { .. }
+                    | fastrender::ui::WorkerToUi::RequestOpenInNewTab { .. }
+                    | fastrender::ui::WorkerToUi::RequestOpenInNewTabRequest { .. }
+                    | fastrender::ui::WorkerToUi::DownloadStarted { .. }
+                    | fastrender::ui::WorkerToUi::DownloadFinished { .. }
+                );
+              }
               let window_is_active = active_window_id == Some(window_id);
               let result = match item {
                 QueuedMsg::Worker(msg) => win.app.handle_worker_message(msg, window_is_active),
                 QueuedMsg::Clipboard(update) => win.app.handle_worker_clipboard_update(update),
               };
-              if let Some(tab_id) = scroll_tab_id {
-                let next_scroll_viewport = win
-                  .app
-                  .browser_state
-                  .tab(tab_id)
-                  .map(|tab| tab.scroll_state.viewport);
-                if scroll_change_marks_session_dirty(prev_scroll_viewport, next_scroll_viewport) {
-                  let now = std::time::Instant::now();
-                  (pending_scroll_autosave_deadline, scroll_autosave_due) =
-                    fastrender::ui::scroll_autosave_debounce::note_scroll_change(
-                      now,
-                      scroll_autosave_debounce,
-                    );
-                }
-              }
               request_redraw |= result.request_redraw;
               history_deltas.extend(result.history_deltas);
             }
@@ -8450,28 +8370,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
             let window_is_active = active_window_id == Some(window_id);
             for (tab_id, frame) in win.app.frame_ready_bridge_coalescer.drain() {
-              let prev_scroll_viewport = win
-                .app
-                .browser_state
-                .tab(tab_id)
-                .map(|tab| tab.scroll_state.viewport);
               let result = win.app.handle_worker_message(
                 fastrender::ui::WorkerToUi::FrameReady { tab_id, frame },
                 window_is_active,
               );
-              let next_scroll_viewport = win
-                .app
-                .browser_state
-                .tab(tab_id)
-                .map(|tab| tab.scroll_state.viewport);
-              if scroll_change_marks_session_dirty(prev_scroll_viewport, next_scroll_viewport) {
-                let now = std::time::Instant::now();
-                (pending_scroll_autosave_deadline, scroll_autosave_due) =
-                  fastrender::ui::scroll_autosave_debounce::note_scroll_change(
-                    now,
-                    scroll_autosave_debounce,
-                  );
-              }
               request_redraw |= result.request_redraw;
               history_deltas.extend(result.history_deltas);
             }
@@ -9837,14 +9739,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let session_snapshot_due =
       session_save_scheduler.should_flush(now) && session_save_scheduler.take_pending();
     let window_state_snapshot_due = window_state_autosave_due;
-    let scroll_snapshot_due = scroll_autosave_due;
-    if session_snapshot_due || window_state_snapshot_due || scroll_snapshot_due {
+    if session_snapshot_due || window_state_snapshot_due {
       // We're about to persist the latest session snapshot; clear any pending debounces so we don't
       // immediately clone+save again.
       pending_window_state_autosave_deadline = None;
       window_state_autosave_due = false;
-      pending_scroll_autosave_deadline = None;
-      scroll_autosave_due = false;
       request_autosave(&windows, &window_order, active_window_id);
     }
 
@@ -9898,12 +9797,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // keep process-level CPU/RSS sampling armed even when no frames are being drawn.
     let mut next_deadline = session_save_scheduler.next_deadline(now);
     if let Some(deadline) = pending_window_state_autosave_deadline {
-      next_deadline = Some(match next_deadline {
-        Some(existing) => existing.min(deadline),
-        None => deadline,
-      });
-    }
-    if let Some(deadline) = pending_scroll_autosave_deadline {
       next_deadline = Some(match next_deadline {
         Some(existing) => existing.min(deadline),
         None => deadline,
