@@ -7937,6 +7937,46 @@ fn footnote_body_snapshots_use_footnote_area_content_width() {
 }
 
 #[test]
+fn footnote_area_padding_offsets_body_content() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 200px; margin: 0; @footnote { padding-left: 50px; } }
+          body { margin: 0; font-size: 10px; line-height: 10px; }
+          p { margin: 0; }
+          .note { float: footnote; display: block; height: 10px; }
+        </style>
+      </head>
+      <body>
+        <p>Main<span class="note">Footnote body</span></p>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+  assert!(!page_roots.is_empty());
+
+  let page1 = page_roots[0];
+  let wrapper = page_document_wrapper(page1);
+  assert_eq!(wrapper.children.len(), 2);
+  let footnote_area = wrapper.children.get(1).expect("footnote area");
+
+  let (text_x, _) = find_text_position(footnote_area, "Footnote body", (0.0, 0.0))
+    .expect("Footnote body in footnote area");
+  let relative_x = text_x - footnote_area.bounds.x();
+  assert!(
+    relative_x >= 49.0,
+    "expected @footnote padding-left to offset body content (relative_x={relative_x})"
+  );
+}
+
+#[test]
 fn footnote_display_block_stacks_footnotes() {
   let html = r#"
     <html>
@@ -8070,7 +8110,7 @@ fn footnote_display_compact_is_more_compact_than_block() {
 }
 
 #[test]
-fn footnote_area_background_and_padding_paint() {
+fn footnote_area_paints_background_and_border() {
   let html = r#"
     <html>
       <head>
@@ -8166,6 +8206,88 @@ fn footnote_area_max_height_defers_excess_footnotes() {
   assert!(find_text(content2, "Alpha").is_none());
   assert!(find_text(footnote_area2, "Footnote two").is_some());
   assert!(find_text(footnote_area2, "Footnote one").is_none());
+}
+
+#[test]
+fn footnote_area_max_height_defers_and_continues_across_pages() {
+  let mut notes = String::new();
+  for idx in 1..=25 {
+    notes.push_str(&format!(r#"<span class="note">Footnote {idx}</span>"#));
+  }
+
+  let html = format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          @page {{ size: 200px 200px; margin: 0; @footnote {{ max-height: 30px; }} }}
+          body {{ margin: 0; font-size: 10px; line-height: 10px; }}
+          p {{ margin: 0; }}
+          .note {{ float: footnote; footnote-policy: auto; display: block; height: 10px; }}
+        </style>
+      </head>
+      <body>
+        <p>Main{notes}</p>
+      </body>
+    </html>
+  "#
+  );
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(
+    page_roots.len() >= 3,
+    "expected max-height to create continuation pages, got {}",
+    page_roots.len()
+  );
+
+  let page1 = page_roots[0];
+  let wrapper1 = page_document_wrapper(page1);
+  assert_eq!(wrapper1.children.len(), 2);
+  let content1 = page_content(page1);
+  let footnote_area1 = wrapper1.children.get(1).expect("page 1 footnote area");
+  assert!(find_text(content1, "Main").is_some());
+  assert!(find_text(content1, "1").is_some(), "call marker should remain on page 1");
+  assert!(find_text(footnote_area1, "Footnote 1").is_some());
+  assert!(find_text(footnote_area1, "Footnote 2").is_some());
+  assert!(
+    find_text(footnote_area1, "Footnote 3").is_none(),
+    "expected Footnote 3 body to be deferred by max-height"
+  );
+  assert!(
+    footnote_area1.bounds.height() <= 30.5,
+    "expected page 1 @footnote max-height to cap the footnote area (h={})",
+    footnote_area1.bounds.height()
+  );
+
+  // Subsequent pages should contain only deferred footnote bodies (the call marker stays on page 1).
+  let last = *page_roots.last().expect("last page");
+  let wrapper_last = page_document_wrapper(last);
+  assert_eq!(wrapper_last.children.len(), 2);
+  let content_last = page_content(last);
+  let footnote_area_last = wrapper_last.children.get(1).expect("last footnote area");
+  assert!(
+    find_text(content_last, "Main").is_none(),
+    "expected continuation pages to omit in-flow content"
+  );
+  assert!(
+    find_text(content_last, "1").is_none(),
+    "expected call marker to remain on the original page"
+  );
+  assert!(
+    find_text(footnote_area_last, "Footnote 25").is_some(),
+    "expected the last deferred footnote body to appear on a later page"
+  );
+  assert!(
+    footnote_area_last.bounds.height() > 30.5,
+    "expected footnote-only continuation pages to ignore @footnote max-height (h={})",
+    footnote_area_last.bounds.height()
+  );
 }
 
 #[test]
