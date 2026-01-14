@@ -14,6 +14,7 @@ use crate::util::debug::debug_log;
 use crate::util::sys::Map;
 use crate::util::sys::{f32_max, GridTrackVec, Vec};
 use crate::util::MaybeMath;
+use crate::util::check_layout_abort;
 use crate::util::{MaybeResolve, ResolveOrZero};
 use crate::{
   style_helpers::*, AlignContent, BoxGenerationMode, BoxSizing, CoreStyle, GridContainerStyle,
@@ -217,6 +218,7 @@ fn to_ident_line_names(names: &[Vec<Ident>]) -> Vec<Vec<Ident>> {
 
 fn merge_line_names(base: &mut [Vec<Ident>], extra: &[Vec<Ident>]) {
   for (i, extra_names) in extra.iter().enumerate() {
+    check_layout_abort();
     if let Some(target) = base.get_mut(i) {
       target.extend(extra_names.iter().cloned());
     }
@@ -231,6 +233,7 @@ fn inherited_line_names(
 ) -> Vec<Vec<Ident>> {
   let mut result: Vec<Vec<Ident>> = Vec::with_capacity(span as usize + 1);
   for i in 0..=span {
+    check_layout_abort();
     let mut names: Vec<Ident> = Vec::new();
     // Use i32 arithmetic to avoid i16 overflow when the subgrid start is near the representable
     // bounds and the span is large.
@@ -257,6 +260,7 @@ fn inherited_area_line_names(
 
   let mut result: Vec<Vec<Ident>> = Vec::with_capacity(span as usize + 1);
   for _ in 0..=span {
+    check_layout_abort();
     result.push(Vec::new());
   }
 
@@ -271,6 +275,7 @@ fn inherited_area_line_names(
   );
 
   for area in parent_areas.iter() {
+    check_layout_abort();
     let (axis_start, axis_end) = match axis {
       AbstractAxis::Inline => (area.column_start, area.column_end),
       AbstractAxis::Block => (area.row_start, area.row_end),
@@ -334,6 +339,7 @@ fn inherited_template_areas_for_subgrid(
 
   let mut result: Vec<GridTemplateArea<Ident>> = Vec::new();
   for area in parent_areas.iter() {
+    check_layout_abort();
     let (row_start, row_end, col_start, col_end) = if swap_axes {
       (area.column_start, area.column_end, area.row_start, area.row_end)
     } else {
@@ -974,6 +980,7 @@ fn collect_subgrid_virtual_items_recursive<
   // Convert placements from subgrid coordinates to ancestor coordinates, clamping in any axis
   // where the subgrid chain is broken.
   for (index, mut sub_item) in subgrid_items.into_iter().enumerate() {
+    check_layout_abort();
     // CSS Grid subgrids with different gaps apply an "extra layer of margin" to their items.
     // The spec says this extra margin accumulates through multiple levels of subgrids, so when we
     // synthesise virtual items for descendants we need to include any extra margin already applied
