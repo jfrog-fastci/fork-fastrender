@@ -252,7 +252,6 @@ pub mod image_loader;
 pub mod image_output;
 pub mod ipc;
 pub mod js;
-pub mod media;
 pub mod memory;
 pub mod multiprocess;
 pub mod net;

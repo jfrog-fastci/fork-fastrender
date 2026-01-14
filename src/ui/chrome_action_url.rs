@@ -145,6 +145,10 @@ impl ChromeActionUrl {
     Self::parse(url.as_str())
   }
 
+  pub fn parse_url(url: &Url) -> Result<Self, String> {
+    Self::parse(url.as_str())
+  }
+
   /// Parse a `chrome-action:` URL string.
   ///
   /// Invariants:
