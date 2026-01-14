@@ -3041,22 +3041,6 @@ fn show_menu_bar_override_from_env() -> Option<bool> {
 //
 // This mirrors the behaviour of appearance env overrides, which intentionally do not mutate the
 // persisted `browser_state.appearance`.
-#[cfg(any(test, feature = "browser_ui"))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MenuBarVisibility {
-  /// Persisted preference (what should be stored in the session snapshot).
-  persisted: bool,
-  /// Effective runtime visibility after applying an optional env override.
-  effective: bool,
-}
-
-#[cfg(any(test, feature = "browser_ui"))]
-fn resolve_menu_bar_visibility(persisted: bool, env_override: Option<bool>) -> MenuBarVisibility {
-  MenuBarVisibility {
-    persisted,
-    effective: env_override.unwrap_or(persisted),
-  }
-}
 
 #[cfg(test)]
 mod browser_hud_env_tests {
@@ -3168,18 +3152,6 @@ mod browser_renderer_watchdog_env_tests {
     assert_eq!(parse_allow_crash_urls_env(Some("no")), Ok(false));
     assert_eq!(parse_allow_crash_urls_env(Some("off")), Ok(false));
     assert!(parse_allow_crash_urls_env(Some("maybe")).is_err());
-  }
-}
-
-#[cfg(test)]
-mod menu_bar_visibility_tests {
-  use super::resolve_menu_bar_visibility;
-
-  #[test]
-  fn env_override_does_not_mutate_persisted_preference() {
-    let visibility = resolve_menu_bar_visibility(true, Some(false));
-    assert_eq!(visibility.persisted, true);
-    assert_eq!(visibility.effective, false);
   }
 }
 
@@ -14777,7 +14749,7 @@ impl App {
   }
 
   fn effective_show_menu_bar(&self) -> bool {
-    resolve_menu_bar_visibility(
+    fastrender::ui::session::resolve_menu_bar_visibility(
       self.browser_state.chrome.show_menu_bar,
       self.show_menu_bar_env_override,
     )

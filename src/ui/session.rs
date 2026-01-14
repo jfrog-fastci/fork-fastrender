@@ -336,6 +336,30 @@ fn is_default_show_menu_bar(value: &bool) -> bool {
   *value == default_show_menu_bar()
 }
 
+/// Persisted vs effective menu bar visibility.
+///
+/// The browser session file stores a per-window `show_menu_bar` preference. Separately, the windowed
+/// `browser` binary supports a runtime-only env override (`FASTR_BROWSER_SHOW_MENU_BAR`) that forces
+/// the menu bar shown/hidden for the current process without mutating the persisted preference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuBarVisibility {
+  /// Persisted preference (what should be stored in the session snapshot).
+  pub persisted: bool,
+  /// Effective runtime visibility after applying an optional env override.
+  pub effective: bool,
+}
+
+/// Resolve the effective menu bar visibility for the current process.
+///
+/// When `env_override` is `Some`, it takes precedence but must not mutate the persisted preference.
+#[must_use]
+pub fn resolve_menu_bar_visibility(persisted: bool, env_override: Option<bool>) -> MenuBarVisibility {
+  MenuBarVisibility {
+    persisted,
+    effective: env_override.unwrap_or(persisted),
+  }
+}
+
 fn default_tab_group_title() -> String {
   "Group".to_string()
 }
@@ -1122,6 +1146,13 @@ fn sanitize_window_pos(value: Option<i64>) -> Option<i64> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn menu_bar_visibility_env_override_does_not_mutate_persisted_preference() {
+    let visibility = resolve_menu_bar_visibility(true, Some(false));
+    assert_eq!(visibility.persisted, true);
+    assert_eq!(visibility.effective, false);
+  }
 
   #[test]
   fn session_sanitizes_invalid_zoom_values() {
