@@ -968,6 +968,22 @@ fn snap_device_x(coord: f32, translation: f32) -> f32 {
   device.round() - translation
 }
 
+#[inline]
+fn snap_device_y(coord: f32, translation: f32) -> f32 {
+  // See `snap_device_x`. Chrome's baseline harness disables subpixel positioning, which effectively
+  // snaps glyph origins to whole device pixels. Our layout can yield fractional Y origins (e.g. from
+  // em-based line heights/margins), so snap the baseline-aligned glyph Y as well when snapping is
+  // enabled.
+  if !coord.is_finite() || !translation.is_finite() {
+    return coord;
+  }
+  let device = coord + translation;
+  if !device.is_finite() {
+    return coord;
+  }
+  device.round() - translation
+}
+
 fn color_glyph_transform(skew: f32, glyph_x: f32, glyph_y: f32, left: f32, top: f32) -> Transform {
   // Color glyph rasters are already in device pixels with a Y-down origin, so we
   // only need to add the synthetic oblique shear in X and translate to the glyph
@@ -1929,7 +1945,10 @@ impl TextRasterizer {
       if snap_glyph_positions {
         glyph_x = snap_device_x(glyph_x, state.transform.tx);
       }
-      let glyph_y = baseline_y + cursor_y + glyph.y_offset;
+      let mut glyph_y = baseline_y + cursor_y + glyph.y_offset;
+      if snap_glyph_positions {
+        glyph_y = snap_device_y(glyph_y, state.transform.ty);
+      }
 
       // Color glyph (if available) is painted after the outline stroke/fill so the fill lands on top.
       let color_glyph = if draw_fill {
@@ -2916,6 +2935,24 @@ mod tests {
       assert!(
         (device - device.round()).abs() < 1e-6,
         "expected snapped coord to land on device pixel: coord={coord} tx={tx} -> snapped={snapped} device={device}",
+      );
+    }
+  }
+
+  #[test]
+  fn snap_device_y_aligns_to_integer_device_pixels() {
+    for (coord, ty) in [
+      (0.0, 0.0),
+      (0.25, 0.0),
+      (10.2, 0.3),
+      (-5.8, 2.25),
+      (1234.567, -0.125),
+    ] {
+      let snapped = snap_device_y(coord, ty);
+      let device = snapped + ty;
+      assert!(
+        (device - device.round()).abs() < 1e-6,
+        "expected snapped coord to land on device pixel: coord={coord} ty={ty} -> snapped={snapped} device={device}",
       );
     }
   }
