@@ -83,7 +83,10 @@ impl<'a> Parser<'a> {
       t if is_valid_pattern_identifier(t, ctx.rules) => {
         let tok = self.consume();
         (
-          ModuleExportImportName::Ident(self.identifier_string_from_token(&tok)?),
+          // Preserve original source spelling for module import/export names so
+          // `emit-js`/`vm-js` can roundtrip and decode IdentifierName escapes
+          // like `\u0061` when needed.
+          ModuleExportImportName::Ident(self.string(tok.loc)),
           false,
         )
       },
@@ -121,6 +124,17 @@ impl<'a> Parser<'a> {
             name: self.string(t_alias.loc),
           },
         )
+      } else if is_export && t_alias.typ == TT::Identifier {
+        // Preserve escapes (e.g. `export { a as \u0061 }`) in exported
+        // `IdentifierName` positions so emission can roundtrip the original
+        // syntax.
+        self.consume();
+        Node::new(
+          t_alias.loc,
+          IdPat {
+            name: self.string(t_alias.loc),
+          },
+        )
       } else {
         self.id_pat(ctx)?
       }
@@ -130,11 +144,28 @@ impl<'a> Parser<'a> {
       // `import { default }`, or `import { while }`).
       return Err(t0.error(SyntaxErrorType::ExpectedSyntax("identifier")));
     } else {
-      // Create a "virtual" node representing the alias as if `a as a` was declared instead. (See AST for rationale.)
+      // Create a "virtual" node representing the alias as if `a as a` was
+      // declared instead. (See AST for rationale.)
+      //
+      // Note: for imports, the alias is a `BindingIdentifier`, so we must use
+      // the identifier's StringValue (decode any escapes) so binding resolution
+      // sees the correct name. For exports, the alias is an `IdentifierName`
+      // and should preserve the original spelling for emission.
+      let alias_name = if is_export {
+        target.as_str().to_string()
+      } else {
+        match &target {
+          ModuleExportImportName::Ident(raw) => self
+            .identifier_name_string_value(raw)
+            .unwrap_or_else(|| std::borrow::Cow::Borrowed(raw))
+            .into_owned(),
+          ModuleExportImportName::Str(_) => target.as_str().to_string(),
+        }
+      };
       Node::new(
         t0.loc,
         IdPat {
-          name: target.as_str().to_string(),
+          name: alias_name,
         },
       )
     };
