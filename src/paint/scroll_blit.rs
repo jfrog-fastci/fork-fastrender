@@ -8,8 +8,8 @@
 //! present, scroll-blit optimizations must be disabled and the renderer must fall back to a full
 //! repaint.
 
-use crate::style::ComputedStyle;
 use crate::style::types::AnimationTimeline;
+use crate::style::ComputedStyle;
 
 pub(crate) fn style_uses_scroll_linked_timelines(style: &ComputedStyle) -> bool {
   if style_uses_scroll_linked_animation_timeline(style) {
@@ -30,28 +30,26 @@ fn style_uses_scroll_linked_animation_timeline(style: &ComputedStyle) -> bool {
   }
 
   let timelines = &style.animation_timelines;
-  let timelines_len = timelines.len();
-  let names_len = names.len();
-
-  if timelines_len == 0 {
+  if timelines.is_empty() {
     // `animation-timeline` defaults to `auto`, which is time-based (not scroll-linked).
     return false;
   }
 
-  // Match CSS list semantics: the effective animation entry count is the max of list lengths,
-  // with shorter lists repeating from the start.
-  let entry_count = names_len.max(timelines_len);
-
-  for idx in 0..entry_count {
-    let name = names
-      .get(idx % names_len)
-      .and_then(|name| name.as_deref())
-      .unwrap_or("");
+  // Match the engine's animation list semantics: the number of animations is defined by
+  // `animation-name`, and other `animation-*` lists are indexed by the same `idx`, falling back to
+  // their last value when shorter (see `animation::pick`).
+  for (idx, name) in names.iter().enumerate() {
+    let Some(name) = name.as_deref() else {
+      continue;
+    };
     if name.is_empty() {
       continue;
     }
 
-    if animation_timeline_is_scroll_linked(&timelines[idx % timelines_len]) {
+    let timeline = timelines
+      .get(idx)
+      .unwrap_or_else(|| timelines.last().expect("timelines list is non-empty"));
+    if animation_timeline_is_scroll_linked(timeline) {
       return true;
     }
   }
@@ -159,6 +157,39 @@ mod tests {
     assert!(
       !style_uses_scroll_linked_timelines(&style),
       "expected no animations (empty animation-name list) to be treated as not scroll-linked"
+    );
+  }
+
+  #[test]
+  fn extra_animation_timeline_entries_are_ignored_when_no_corresponding_animation_names() {
+    let style = ComputedStyle {
+      animation_names: vec![Some("a".into())],
+      animation_timelines: vec![
+        AnimationTimeline::Auto,
+        AnimationTimeline::Scroll(Default::default()),
+      ],
+      ..ComputedStyle::default()
+    };
+    assert!(
+      !style_uses_scroll_linked_timelines(&style),
+      "expected extra animation-timeline values beyond animation-name list to be ignored"
+    );
+  }
+
+  #[test]
+  fn scroll_linked_timelines_in_backdrop_are_detected() {
+    let backdrop = ComputedStyle {
+      animation_names: vec![Some("a".into())],
+      animation_timelines: vec![AnimationTimeline::View(Default::default())],
+      ..ComputedStyle::default()
+    };
+    let style = ComputedStyle {
+      backdrop: Some(std::sync::Arc::new(backdrop)),
+      ..ComputedStyle::default()
+    };
+    assert!(
+      style_uses_scroll_linked_timelines(&style),
+      "expected scroll-linked timelines in the backdrop pseudo-element to disable scroll blit"
     );
   }
 }
