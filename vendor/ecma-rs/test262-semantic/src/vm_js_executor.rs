@@ -2026,6 +2026,32 @@ f(2000);
   }
 
   #[test]
+  fn termination_stack_overflow_maps_to_rangeerror_not_cancelled() {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let case = test_case("termination_stack_overflow.js");
+
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(
+      DEFAULT_HEAP_MAX_BYTES,
+      DEFAULT_HEAP_GC_THRESHOLD_BYTES,
+    ));
+    let mut runtime = vm_js::JsRuntime::new(vm, heap).expect("init runtime");
+
+    let term = vm_js::Termination::new(TerminationReason::StackOverflow, Vec::new());
+    let err = map_vm_error(&case, "", &cancel, &mut runtime, VmError::Termination(term));
+    let ExecError::Js(js) = err else {
+      panic!("expected JS error, got {err:?}");
+    };
+    assert_eq!(js.phase, ExecPhase::Runtime);
+    assert_eq!(js.typ.as_deref(), Some("RangeError"));
+    assert!(
+      js.message.to_ascii_lowercase().contains("stack overflow"),
+      "expected stack overflow message, got: {}",
+      js.message
+    );
+  }
+
+  #[test]
   fn eval_script_creates_global_lexical_bindings() {
     let exec = VmJsExecutor::default();
     let cancel = Arc::new(AtomicBool::new(false));
