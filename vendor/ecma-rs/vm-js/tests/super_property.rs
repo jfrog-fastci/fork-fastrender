@@ -72,6 +72,24 @@ fn super_property_getter_setter_use_this_binding() {
 }
 
 #[test]
+fn super_call_in_static_method_uses_this_binding_as_receiver() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class A { static f() { return this.x; } }
+        class B extends A {
+          static g() { return super.f(); }
+        }
+        B.x = 1;
+        B.g() === 1
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn derived_ctor_super_prop_before_super_throws_reference_error() {
   let mut rt = new_runtime();
   let value = rt
