@@ -248,12 +248,10 @@ pub mod image_compare;
 pub mod image_loader;
 pub mod image_output;
 pub mod ipc;
-pub mod media;
 #[cfg(test)]
 pub(crate) mod testing;
 pub mod js;
 pub mod memory;
-pub mod media;
 pub mod perf_log;
 pub mod perf_log_schema;
 pub mod multiprocess;

@@ -37540,54 +37540,6 @@ fn range_collapsed_get_native(
   Ok(Value::Bool(collapsed))
 }
 
-fn range_create_contextual_fragment_native(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
-  let html_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let html_value = scope.heap_mut().to_string(html_value)?;
-  let html = scope
-    .heap()
-    .get_string(html_value)
-    .map(|s| s.to_utf8_lossy())
-    .unwrap_or_default();
-
-  let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
-    return Err(VmError::TypeError("Illegal invocation"));
-  };
-
-  let context_node = {
-    // SAFETY: `dom_ptr` is valid for the duration of this native call.
-    let dom = unsafe { dom_ptr.as_ref() };
-    dom
-      .range_start_container(handle.range_id)
-      .map_err(|_| VmError::TypeError("Illegal invocation"))?
-  };
-
-  let fragment_id = {
-    // SAFETY: `dom_ptr` points at the `dom2::Document` backing this range, and we have exclusive
-    // access for the duration of this native call.
-    let dom = unsafe { dom_ptr.as_mut() };
-    match dom.create_contextual_fragment(context_node, &html) {
-      Ok(id) => id,
-      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
-    }
-  };
-
-  let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
-  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, handle.document_obj, needs_microtask)?;
-
-  // SAFETY: `dom_ptr` is valid for the duration of this native call.
-  let dom = unsafe { dom_ptr.as_ref() };
-  get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), fragment_id)
-}
-
 fn range_set_start_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
