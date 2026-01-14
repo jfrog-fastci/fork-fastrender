@@ -67220,9 +67220,9 @@ mod tests {
        __et.addEventListener('x', () => { __calls++; });",
     )?;
 
-    let webidl_limits = realm.js_execution_options().webidl_limits;
     let dataset_ctx = realm.dataset_exotic_context();
     let collections_ctx = realm.collections_exotic_context();
+    let webidl_limits = realm.js_execution_options().webidl_limits;
     let realm_id = realm.realm_id;
     let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
@@ -67259,9 +67259,9 @@ mod tests {
        delete globalThis.Event;",
     )?;
 
-    let webidl_limits = realm.js_execution_options().webidl_limits;
     let dataset_ctx = realm.dataset_exotic_context();
     let collections_ctx = realm.collections_exotic_context();
+    let webidl_limits = realm.js_execution_options().webidl_limits;
     let realm_id = realm.realm_id;
     let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
