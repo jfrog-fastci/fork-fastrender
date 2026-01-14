@@ -182,6 +182,61 @@ fn generator_yield_in_array_destructuring_two_defaults_yields_twice() {
 }
 
 #[test]
+fn generator_yield_in_nested_object_destructuring_yields_twice() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      (() => {
+        function* g(){
+          let b = 0;
+          let rhs = {a: {x: undefined}};
+          let res = ({a: {[(yield 1)]: b = yield 2}} = rhs);
+          return res === rhs && b === 7;
+        }
+        var it = g();
+        var r1 = it.next();
+        if (r1.done !== false || r1.value !== 1) return false;
+        var r2 = it.next("x");
+        if (r2.done !== false || r2.value !== 2) return false;
+        var r3 = it.next(7);
+        return r3.done === true && r3.value === true;
+      })()
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_yield_in_nested_array_destructuring_yields_twice() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      (() => {
+        function* g(){
+          let a = 0;
+          let b = 0;
+          let rhs = [[]];
+          let res = ([[a = yield 1, b = yield 2]] = rhs);
+          return res === rhs && a === 3 && b === 4;
+        }
+        var it = g();
+        var r1 = it.next();
+        if (r1.done !== false || r1.value !== 1) return false;
+        var r2 = it.next(3);
+        if (r2.done !== false || r2.value !== 2) return false;
+        var r3 = it.next(4);
+        return r3.done === true && r3.value === true;
+      })()
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_yield_in_object_destructuring_computed_key_then_default_evaluation_order() {
   let mut rt = new_runtime();
   let value = rt
