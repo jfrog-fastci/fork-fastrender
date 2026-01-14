@@ -732,10 +732,11 @@ pub fn downloads_panel_ui(
   out
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "browser_ui"))]
 mod tests {
   use std::path::PathBuf;
 
+  use crate::ui::{a11y_labels, a11y_test_util};
   use crate::ui::theme::BrowserTheme;
   use crate::ui::{DownloadEntry, DownloadId, DownloadStatus, TabId};
 
@@ -801,6 +802,22 @@ mod tests {
     ctx
       .data(|d| d.get_temp::<egui::Id>(egui::Id::new(key)))
       .unwrap_or_else(|| panic!("expected temp id {key:?}"))
+  }
+
+  fn accesskit_button_id_by_name(output: &egui::FullOutput, name: &str) -> String {
+    let snapshot = a11y_test_util::accesskit_snapshot_from_full_output(output);
+    let json = a11y_test_util::accesskit_pretty_json_from_full_output(output);
+    let matches: Vec<_> = snapshot
+      .nodes
+      .iter()
+      .filter(|node| node.role == "Button" && node.name == name)
+      .collect();
+    assert!(
+      matches.len() == 1,
+      "expected exactly one AccessKit Button named {name:?}; found {}.\n\nsnapshot:\n{json}",
+      matches.len()
+    );
+    matches[0].id.clone()
   }
 
   #[test]
@@ -906,6 +923,96 @@ mod tests {
       output.open_requests,
       vec![download_dir],
       "expected click on Show downloads folder to open injected dir"
+    );
+  }
+
+  #[test]
+  fn downloads_panel_accesskit_node_ids_stable_across_row_insertion() {
+    let ctx = egui::Context::default();
+    // AccessKit output is typically enabled/disabled by the platform adapter (egui-winit).
+    // In headless unit tests we force it on to ensure egui emits an update.
+    ctx.enable_accesskit();
+    let theme = BrowserTheme::dark(None);
+    let download_dir = PathBuf::from("test-download-dir");
+    let mut search_query = String::new();
+
+    let download_a = DownloadEntry {
+      download_id: DownloadId(1),
+      tab_id: TabId(1),
+      url: "https://example.com/a.zip".to_string(),
+      file_name: "a.zip".to_string(),
+      path: PathBuf::from("downloads/a.zip"),
+      status: DownloadStatus::Completed,
+    };
+    let copy_path_label = a11y_labels::download_copy_path_label(&download_a.file_name);
+
+    begin_frame(&ctx, Vec::new());
+    let _ = downloads_panel_ui(
+      &ctx,
+      &[download_a.clone()],
+      &mut search_query,
+      &theme,
+      false,
+      download_dir.as_path(),
+    );
+    let output1 = ctx.end_frame();
+    let id1 = accesskit_button_id_by_name(&output1, &copy_path_label);
+
+    // Insert another download at the end of the slice so it becomes the most recent entry, shifting
+    // the existing row down (virtualized list ordering changes).
+    let download_b = DownloadEntry {
+      download_id: DownloadId(2),
+      tab_id: TabId(1),
+      url: "https://example.com/b.zip".to_string(),
+      file_name: "b.zip".to_string(),
+      path: PathBuf::from("downloads/b.zip"),
+      status: DownloadStatus::Completed,
+    };
+    let downloads = vec![download_a.clone(), download_b];
+
+    begin_frame(&ctx, Vec::new());
+    let _ = downloads_panel_ui(
+      &ctx,
+      &downloads,
+      &mut search_query,
+      &theme,
+      false,
+      download_dir.as_path(),
+    );
+    let output2 = ctx.end_frame();
+    let id2 = accesskit_button_id_by_name(&output2, &copy_path_label);
+
+    let snapshot1 = a11y_test_util::accesskit_pretty_json_from_full_output(&output1);
+    let snapshot2 = a11y_test_util::accesskit_pretty_json_from_full_output(&output2);
+    assert_eq!(
+      id1, id2,
+      "expected AccessKit node id for {copy_path_label:?} to remain stable when a download row is inserted above it.\n\nbefore:\n{snapshot1}\n\nafter:\n{snapshot2}"
+    );
+  }
+
+  #[test]
+  fn request_initial_focus_moves_focus_to_search_input() {
+    let ctx = egui::Context::default();
+    let theme = BrowserTheme::light(None);
+    let download_dir = PathBuf::from("test-download-dir");
+    let downloads: Vec<DownloadEntry> = Vec::new();
+    let mut search_query = String::new();
+
+    begin_frame(&ctx, Vec::new());
+    let _ = downloads_panel_ui(
+      &ctx,
+      &downloads,
+      &mut search_query,
+      &theme,
+      true,
+      download_dir.as_path(),
+    );
+    let _ = ctx.end_frame();
+    let search_id = expect_temp_id(&ctx, "downloads_panel_search_input_id");
+
+    assert!(
+      ctx.memory(|mem| mem.has_focus(search_id)),
+      "expected request_initial_focus=true to move focus to downloads search input"
     );
   }
 
