@@ -295,3 +295,51 @@ fn derived_ctor_arrow_this_escapes_without_super_and_throws_when_called_compiled
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn derived_ctor_arrow_super_computed_property_before_super_does_not_evaluate_key_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var side = 0;
+      var ok = false;
+      class B { __m() { return 0; } }
+      class D extends B {
+        constructor() {
+          let f = () => super[(side = 1, "__m")];
+          try { f(); } catch (e) { ok = e instanceof ReferenceError && side === 0; }
+          super();
+        }
+      }
+      new D();
+      ok
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn derived_ctor_arrow_super_computed_call_before_super_does_not_evaluate_key_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var side = 0;
+      var ok = false;
+      class B { __m() { return 0; } }
+      class D extends B {
+        constructor() {
+          let f = () => super[(side = 1, "__m")]();
+          try { f(); } catch (e) { ok = e instanceof ReferenceError && side === 0; }
+          super();
+        }
+      }
+      new D();
+      ok
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
