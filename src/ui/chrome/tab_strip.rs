@@ -1282,9 +1282,7 @@ fn group_chip_ui(
       .unwrap_or_else(|| group_chip_width(ui, title));
     let (_, chip_rect) = ui.allocate_space(Vec2::new(width, TAB_HEIGHT));
     let mut response = ui.interact(chip_rect, id, Sense::click());
-    if response.hovered() {
-      response = response.on_hover_text(title);
-    }
+    super::show_tooltip_on_hover_or_focus(ui, &response, title);
 
     // AccessKit may request explicit expand/collapse actions when the node exposes an expanded state.
     // Prefer Expand when both actions are requested in the same frame.
@@ -1658,7 +1656,16 @@ fn tab_ui(
 
   let (_, tab_rect) = ui.allocate_space(Vec2::new(tab_width.max(0.0), TAB_HEIGHT));
   let tab_id = tab_strip_tab_widget_id(tab.id);
-  let title = tab.display_title().to_string();
+  let title = if let Some(title) = tab
+    .title
+    .as_deref()
+    .map(str::trim)
+    .filter(|t| !t.is_empty())
+  {
+    title
+  } else {
+    tab.current_url.as_deref().unwrap_or("New Tab")
+  };
   let mut response = ui.interact(
     tab_rect,
     tab_id,
@@ -1675,20 +1682,29 @@ fn tab_ui(
     let has_warning = warn.is_some();
     if hovered {
       if err.is_none() && warn.is_none() {
-        response = response.on_hover_text(title.clone());
+        super::show_tooltip_on_hover_or_focus(ui, &response, title);
       } else {
         let cache_id = egui::Id::new("tab_strip_status_tooltip_cache");
         let mut cache: TabStatusTooltipCache = ui.ctx().data_mut(|d| {
           std::mem::take(d.get_temp_mut_or_default::<TabStatusTooltipCache>(cache_id))
         });
-        let tooltip = cache.tooltip(&title, err, warn);
+        let tooltip = cache.tooltip(title, err, warn);
         super::show_tooltip_on_hover_or_focus(ui, &response, tooltip);
         ui.ctx().data_mut(|d| d.insert_temp(cache_id, cache));
       }
     }
     (has_error, has_warning)
   };
-  let a11y_label = tab.tab_accessible_label(&title, is_active, has_error, has_warning);
+  let tab_loading = tab.loading;
+  let tab_pinned = tab.pinned;
+  let a11y_label = tab.tab_a11y_label_cache.get_or_update(
+    title,
+    is_active,
+    tab_pinned,
+    tab_loading,
+    has_error,
+    has_warning,
+  );
   // Note: `egui::WidgetInfo::labeled` takes `impl ToString` and therefore allocates a `String` when
   // the closure is executed. Keep the captured label as `Arc<str>` so registering the closure is
   // allocation-free on the steady-state hot path (the closure only runs when egui requests widget
@@ -1705,7 +1721,7 @@ fn tab_ui(
     }
   });
   if interactive {
-    super::show_tooltip_on_focus(ui, &response, &title);
+    super::show_tooltip_on_focus(ui, &response, title);
   }
   // Accessibility: when focus moves to a tab that is currently scrolled out of view, scroll the
   // tab-strip so the focused tab becomes visible.
@@ -1889,7 +1905,8 @@ fn tab_ui(
       store_test_close_id(ui.ctx(), tab.id, close_resp.id);
       store_test_close_rect(ui.ctx(), tab.id, close_rect);
     }
-    let close_a11y_label = tab.tab_close_accessible_label(title);
+    let close_label = BrowserIcon::CloseTab.a11y_label();
+    let close_a11y_label = tab.tab_close_a11y_label_cache.get_or_update(close_label, title);
     close_resp.widget_info({
       let close_a11y_label = close_a11y_label;
       move || egui::WidgetInfo::labeled(egui::WidgetType::Button, close_a11y_label.as_ref())
@@ -2079,7 +2096,16 @@ fn pinned_tab_ui(
 
   let (_, tab_rect) = ui.allocate_space(Vec2::new(tab_width.max(0.0), TAB_HEIGHT));
   let tab_id = tab_strip_tab_widget_id(tab.id);
-  let title = tab.display_title().to_string();
+  let title = if let Some(title) = tab
+    .title
+    .as_deref()
+    .map(str::trim)
+    .filter(|t| !t.is_empty())
+  {
+    title
+  } else {
+    tab.current_url.as_deref().unwrap_or("New Tab")
+  };
   let mut response = ui.interact(
     tab_rect,
     tab_id,
@@ -2095,20 +2121,29 @@ fn pinned_tab_ui(
     let has_warning = warn.is_some();
     if !closing && response.hovered() {
       if err.is_none() && warn.is_none() {
-        response = response.on_hover_text(title.clone());
+        super::show_tooltip_on_hover_or_focus(ui, &response, title);
       } else {
         let cache_id = egui::Id::new("tab_strip_status_tooltip_cache");
         let mut cache: TabStatusTooltipCache = ui.ctx().data_mut(|d| {
           std::mem::take(d.get_temp_mut_or_default::<TabStatusTooltipCache>(cache_id))
         });
-        let tooltip = cache.tooltip(&title, err, warn);
+        let tooltip = cache.tooltip(title, err, warn);
         super::show_tooltip_on_hover_or_focus(ui, &response, tooltip);
         ui.ctx().data_mut(|d| d.insert_temp(cache_id, cache));
       }
     }
     (has_error, has_warning)
   };
-  let a11y_label = tab.tab_accessible_label(&title, is_active, has_error, has_warning);
+  let tab_loading = tab.loading;
+  let tab_pinned = tab.pinned;
+  let a11y_label = tab.tab_a11y_label_cache.get_or_update(
+    title,
+    is_active,
+    tab_pinned,
+    tab_loading,
+    has_error,
+    has_warning,
+  );
   // See note in `tab_ui`: constructing `WidgetInfo` allocates when the closure is executed.
   response.widget_info({
     let a11y_label = a11y_label;
@@ -2122,7 +2157,7 @@ fn pinned_tab_ui(
     }
   });
   if !closing {
-    super::show_tooltip_on_focus(ui, &response, &title);
+    super::show_tooltip_on_focus(ui, &response, title);
   }
   // Accessibility: keep the focused pinned tab visible when the pinned segment overflows and the
   // focused tab is currently out of view.

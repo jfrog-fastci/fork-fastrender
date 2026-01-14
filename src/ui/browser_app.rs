@@ -799,11 +799,11 @@ pub struct BrowserTabState {
   pub page_accesskit_subtree: Option<crate::ui::messages::PageAccessKitSubtree>,
   debug_log: VecDeque<String>,
   #[cfg(any(test, feature = "browser_ui"))]
-  tab_a11y_label_cache: crate::ui::tab_accessible_label::TabAccessibleLabelCache,
+  pub(crate) tab_a11y_label_cache: crate::ui::tab_accessible_label::TabAccessibleLabelCache,
   #[cfg(any(test, feature = "browser_ui"))]
-  tab_close_a11y_label_cache: crate::ui::tab_accessible_label::TitlePrefixedLabelCache,
+  pub(crate) tab_close_a11y_label_cache: crate::ui::tab_accessible_label::TitlePrefixedLabelCache,
   #[cfg(any(test, feature = "browser_ui"))]
-  tab_search_row_a11y_label_cache:
+  pub(crate) tab_search_row_a11y_label_cache:
     crate::ui::tab_accessible_label::TabSearchRowAccessibleLabelCache,
 }
 
