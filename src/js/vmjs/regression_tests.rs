@@ -1787,7 +1787,7 @@ mod webidl_vmjs_promise_resolve_smoke {
   fn vmjs_webidl_runtime_adapter_promise_resolve_smoke() -> Result<(), VmError> {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
-    let realm = Realm::new(&mut vm, &mut heap)?;
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
 
     let state = VmJsWebIdlBindingsState::<()>::new(
       realm.global_object(),

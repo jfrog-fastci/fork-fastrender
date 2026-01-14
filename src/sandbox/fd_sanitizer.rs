@@ -442,6 +442,7 @@ mod tests {
   #[cfg(target_os = "linux")]
   #[test]
   fn set_cloexec_on_fds_except_prevents_fd_leaks_into_execed_child() {
+    use std::os::fd::AsRawFd;
     use std::os::fd::{FromRawFd, OwnedFd};
     use std::os::unix::process::CommandExt as _;
 
