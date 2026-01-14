@@ -6425,6 +6425,7 @@ dependencies = [
  "icu_properties",
  "itoa",
  "parse-js",
+ "rustc-hash 2.1.1",
  "ryu",
  "semantic-js",
  "thiserror 1.0.69",
