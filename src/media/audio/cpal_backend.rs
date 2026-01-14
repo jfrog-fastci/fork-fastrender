@@ -623,13 +623,14 @@ impl AudioBackend for CpalAudioBackend {
       };
     }
 
-    let callback_frames = self.fixed_callback_frames.or_else(|| match self
-      .last_callback_frames
-      .load(Ordering::Relaxed)
-    {
-      0 => None,
-      v => Some(v),
-    });
+    // Prefer the observed callback size once available, since a restarted stream may choose a
+    // different buffer size than the initial stream config.
+    let last = self.last_callback_frames.load(Ordering::Relaxed);
+    let callback_frames = if last != 0 {
+      Some(last)
+    } else {
+      self.fixed_callback_frames
+    };
 
     AudioOutputInfo {
       config: self.config,
