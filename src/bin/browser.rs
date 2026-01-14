@@ -7331,6 +7331,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|text| !text.is_empty());
 
       if show_safe_mode_toast {
+        let kind = if profile_autosave_failure_toast
+          .as_deref()
+          .is_some_and(|text| !text.trim().is_empty())
+          || startup_profile_toast_text.is_some()
+        {
+          fastrender::ui::ToastKind::Error
+        } else {
+          fastrender::ui::ToastKind::Warning
+        };
         let mut toast_text =
           "Safe mode: session restore skipped after repeated crashes.\nUse --restore to force restoring anyway."
             .to_string();
@@ -7346,7 +7355,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           toast_text.push_str(extra);
         }
         app.chrome_toast.show(
-          fastrender::ui::ToastKind::Warning,
+          kind,
           toast_text,
           now,
           std::time::Duration::from_secs(10),
