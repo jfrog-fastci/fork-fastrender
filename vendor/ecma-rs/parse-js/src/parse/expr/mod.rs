@@ -856,9 +856,7 @@ impl<'a> Parser<'a> {
 
   pub fn id_expr(&mut self, ctx: ParseCtx) -> SyntaxResult<Node<IdExpr>> {
     let expr = self.with_loc(|p| {
-      let t = p.peek();
       let name = p.id_name(ctx)?;
-      p.validate_arguments_not_disallowed_in_class_init(t.loc, &name)?;
       Ok(IdExpr { name })
     })?;
     Ok(expr)
