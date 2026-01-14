@@ -32,6 +32,13 @@ fn modules_smoke_suite_selects_module_tests() {
     "/*---\nflags: [module]\n---*/\nexport { x } from './does-not-exist.js';\n",
   )
   .unwrap();
+  // Ensure `include = ["language/module-code/early-*.js"]` stays wired up (this id is *not* listed
+  // explicitly under `tests = [...]` in the suite).
+  fs::write(
+    module_dir.join("early-other.js"),
+    "/*---\nflags: [module]\n---*/\nexport {};\n",
+  )
+  .unwrap();
   fs::write(
     module_dir.join("export-default-basic.js"),
     "/*---\nflags: [module]\n---*/\nexport default 1;\n",
@@ -72,6 +79,13 @@ fn modules_smoke_suite_selects_module_tests() {
     "/*---\nflags: [module]\n---*/\nimport { a as a } from './x.js';\n",
   )
   .unwrap();
+  // Ensure `include = ["language/import/dup-*.js"]` stays wired up (this id is *not* listed
+  // explicitly under `tests = [...]` in the suite).
+  fs::write(
+    import_dir.join("dup-custom.js"),
+    "/*---\nflags: [module]\n---*/\nexport {};\n",
+  )
+  .unwrap();
   fs::write(
     import_attr_dir.join("json-value-string.js"),
     "/*---\nflags: [module]\n---*/\nimport value from './fixture.json' with { type: 'json' };\nvalue;\n",
@@ -79,6 +93,13 @@ fn modules_smoke_suite_selects_module_tests() {
   .unwrap();
   fs::write(
     export_dir.join("escaped-default.js"),
+    "/*---\nflags: [module]\n---*/\nexport default 1;\n",
+  )
+  .unwrap();
+  // Ensure `include = ["language/export/escaped-*.js"]` stays wired up (this id is *not* listed
+  // explicitly under `tests = [...]` in the suite).
+  fs::write(
+    export_dir.join("escaped-custom.js"),
     "/*---\nflags: [module]\n---*/\nexport default 1;\n",
   )
   .unwrap();
@@ -98,6 +119,10 @@ fn modules_smoke_suite_selects_module_tests() {
       .iter()
       .any(|id| id == "language/module-code/early-export-unresolvable.js"),
     "expected suite to include early-export-unresolvable.js, got: {selected:#?}"
+  );
+  assert!(
+    selected.iter().any(|id| id == "language/module-code/early-other.js"),
+    "expected suite to include language/module-code/early-other.js, got: {selected:#?}"
   );
   assert!(
     selected
@@ -146,6 +171,10 @@ fn modules_smoke_suite_selects_module_tests() {
     "expected suite to include language/import/dup-bound-names.js, got: {selected:#?}"
   );
   assert!(
+    selected.iter().any(|id| id == "language/import/dup-custom.js"),
+    "expected suite to include language/import/dup-custom.js, got: {selected:#?}"
+  );
+  assert!(
     selected
       .iter()
       .any(|id| id == "language/import/import-attributes/json-value-string.js"),
@@ -154,6 +183,10 @@ fn modules_smoke_suite_selects_module_tests() {
   assert!(
     selected.iter().any(|id| id == "language/export/escaped-default.js"),
     "expected suite to include language/export/escaped-default.js, got: {selected:#?}"
+  );
+  assert!(
+    selected.iter().any(|id| id == "language/export/escaped-custom.js"),
+    "expected suite to include language/export/escaped-custom.js, got: {selected:#?}"
   );
   assert!(
     selected
