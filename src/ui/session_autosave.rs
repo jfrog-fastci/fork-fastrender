@@ -897,22 +897,31 @@ mod tests {
       std::thread::sleep(tick);
     }
 
-    // Phase 2: spam the final snapshot for long enough to guarantee at least one forced write of it,
-    // even if a forced write happened during phase 1.
+    // Phase 2: keep spamming the final snapshot until we observe it written, without requiring the
+    // sender to become idle (i.e. without waiting for the trailing-edge debounce window to expire).
     let final_url = "about:final";
-    let start = Instant::now();
-    while start.elapsed() < max_write_interval.saturating_mul(3) {
+    let baseline_before_final = autosave.successful_write_count();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut observed_final_write = false;
+    while Instant::now() < deadline {
       autosave.request_save(BrowserSession::single(final_url.to_string()));
       std::thread::sleep(tick);
+
+      // Only start reading from disk once we know a write happened during phase 2. This keeps the
+      // loop cheap while still guaranteeing we observe a forced write under continuous saves.
+      if autosave.successful_write_count() > baseline_before_final {
+        let session = load_session(&path).unwrap().unwrap();
+        if session.windows[0].tabs[0].url == final_url {
+          observed_final_write = true;
+          break;
+        }
+      }
     }
 
-    // Give the writer thread a chance to persist after the max interval elapses, but do not wait
-    // long enough for the (huge) debounce window to expire.
-    std::thread::sleep(max_write_interval.saturating_mul(2));
-
     assert!(
-      autosave.successful_write_count() >= baseline + 1,
-      "expected at least one write even while Save requests keep arriving within the debounce window"
+      observed_final_write,
+      "expected at least one write of the latest snapshot even while Save requests keep arriving within the debounce window; baseline={baseline}, after_phase1={baseline_before_final}, after={}",
+      autosave.successful_write_count()
     );
 
     let session = load_session(&path).unwrap().unwrap();
