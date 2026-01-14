@@ -35,8 +35,8 @@ fn scroll_anchoring_adjusts_along_block_axis_in_vertical_writing_mode() {
   );
   let next_tree = FragmentTree::with_viewport(root_new, Size::new(100.0, 100.0));
 
-  // Non-zero scroll offset in the block axis (horizontal for vertical writing modes).
-  let scroll_state = ScrollState::with_viewport(Point::new(20.0, 0.0));
+  // Non-zero scroll offset in the block axis (horizontal for `vertical-rl`).
+  let scroll_state = ScrollState::with_viewport(Point::new(-20.0, 0.0));
 
   let adjusted = apply_scroll_anchoring_between_fragment_trees(&prev_tree, &next_tree, &scroll_state);
 
