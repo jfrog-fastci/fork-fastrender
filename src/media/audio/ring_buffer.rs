@@ -353,15 +353,28 @@ impl AudioRingBuffer {
     }
 
     if fade_samples != 0 {
+      // Fade the tail *to exact silence* (gain==0 on the last available frame) so the output
+      // doesn't hard-step to 0 when the ring buffer runs out.
+      //
+      // Note: `GainRamp` reaches `target_gain` *after* the final call to `advance_frame()`. To make
+      // the last mixed frame use `target_gain`, we therefore set `frames_remaining = fade_frames-1`.
       ramp.target_gain = 0.0;
       let fade_frames_u32 = u32::try_from(fade_frames).unwrap_or(u32::MAX).max(1);
-      if (ramp.current_gain - ramp.target_gain).abs() <= f32::EPSILON {
-        ramp.current_gain = ramp.target_gain;
+
+      // Sanitize non-finite gains defensively.
+      if !ramp.current_gain.is_finite() {
+        ramp.current_gain = 0.0;
+      }
+
+      if fade_frames_u32 <= 1 || (ramp.current_gain - ramp.target_gain).abs() <= f32::EPSILON {
+        // With a single frame available, sacrifice the last frame (mute it) so we end at silence.
+        ramp.current_gain = 0.0;
         ramp.step = 0.0;
         ramp.frames_remaining = 0;
       } else {
-        ramp.frames_remaining = fade_frames_u32;
-        ramp.step = (ramp.target_gain - ramp.current_gain) / ramp.frames_remaining as f32;
+        let denom = fade_frames_u32.saturating_sub(1).max(1);
+        ramp.frames_remaining = denom;
+        ramp.step = (ramp.target_gain - ramp.current_gain) / denom as f32;
       }
       self.pop_add_into_ramped(
         &mut dst[head_samples..head_samples + fade_samples],
@@ -535,9 +548,9 @@ mod tests {
 
     // First 6 frames untouched.
     assert!(out[..6].iter().all(|v| (*v - 1.0).abs() < 1e-6));
-    // Last 4 available frames are faded: 1.0, 0.75, 0.5, 0.25.
+    // Last 4 available frames are faded: 1.0, 2/3, 1/3, 0.0.
     let faded = &out[6..10];
-    let expected = [1.0f32, 0.75, 0.5, 0.25];
+    let expected = [1.0f32, 2.0 / 3.0, 1.0 / 3.0, 0.0];
     for (got, exp) in faded.iter().zip(expected) {
       assert!((*got - exp).abs() < 1e-6, "expected {exp}, got {got}");
     }
