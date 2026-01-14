@@ -248,6 +248,10 @@ mod dynamic_import_module_tests;
 mod compiled_module_decl_execution_context_tests;
 
 #[cfg(test)]
+#[path = "../tests/compiled_module_execution_context.rs"]
+mod compiled_module_execution_context_tests;
+
+#[cfg(test)]
 #[path = "../tests/compiled_module_async_generators_fallback.rs"]
 mod compiled_module_async_generators_fallback_tests;
 
