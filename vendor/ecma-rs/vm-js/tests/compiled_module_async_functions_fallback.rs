@@ -212,11 +212,11 @@ fn compiled_module_does_not_fall_back_for_async_function_defs() -> Result<(), Vm
       "a.js",
       r#"
         export async function f() {
-          return this === undefined ? 1 : -100;
+          return this === undefined ? 1 : (this === globalThis ? -100 : 6);
         }
 
         export const g = async function () {
-          return this === undefined ? 2 : -100;
+          return this === undefined ? 2 : (this === globalThis ? -100 : 7);
         };
 
         export const h = async () => (this === undefined ? 3 : -100);
@@ -254,7 +254,11 @@ fn compiled_module_does_not_fall_back_for_async_function_defs() -> Result<(), Vm
           export let result = 0;
           const inst = new C();
           f().then(v => { result += v; });
+          // Ensure explicit receiver binding is preserved when async function bodies execute via
+          // call-time AST fallback.
+          f.call({}).then(v => { result += v; });
           g().then(v => { result += v; });
+          g.call({}).then(v => { result += v; });
           // Async arrow functions execute via call-time AST fallback; ensure they still use *lexical*
           // `this` rather than the call-site receiver (even when invoked via `.call`).
           h.call({}).then(v => { result += v; });
@@ -299,7 +303,7 @@ fn compiled_module_does_not_fall_back_for_async_function_defs() -> Result<(), Vm
     let ns_b = graph.get_module_namespace(b, &mut vm, &mut scope)?;
     assert_eq!(
       ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "result")?,
-      Value::Number(15.0)
+      Value::Number(28.0)
     );
     drop(scope);
 
