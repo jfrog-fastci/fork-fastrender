@@ -41395,8 +41395,11 @@ fn gen_eval_var_decl(
               VarDeclMode::Let => BindingKind::Let,
               VarDeclMode::Const => BindingKind::Const,
               VarDeclMode::Using | VarDeclMode::AwaitUsing => {
-                return Err(VmError::Unimplemented(
-                  "yield in using declaration binding pattern",
+                // `using`/`await using` declarations do not allow destructuring patterns (early
+                // errors). Since `Pat::Id` cannot contain `yield`, reaching this arm indicates a
+                // mismatch between early-error validation and `pat_contains_yield`.
+                return Err(VmError::InvariantViolation(
+                  "yield in using declaration binding pattern should be unreachable",
                 ));
               }
             };
@@ -56756,8 +56759,8 @@ fn gen_resume_from_frames(
               VarDeclMode::Let => BindingKind::Let,
               VarDeclMode::Const => BindingKind::Const,
               VarDeclMode::Using | VarDeclMode::AwaitUsing => {
-                return Err(VmError::Unimplemented(
-                  "yield in using declaration binding pattern",
+                return Err(VmError::InvariantViolation(
+                  "yield in using declaration binding pattern should be unreachable",
                 ));
               }
             };

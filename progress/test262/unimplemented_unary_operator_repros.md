@@ -6,7 +6,7 @@ reason (0 hits). The failures that look like the same underlying “`yield` reac
 execution path” issue are now split into more specific buckets:
 
 - `unimplemented: yield in expression type` (previously 11) — fixed in this change
-- `unimplemented: yield in for-of binding pattern` (48) — still failing
+- `unimplemented: yield in for-of binding pattern` (48) — fixed
 
 This doc records the **AST shapes** + **minimal JS repro snippets** for those buckets.
 
@@ -86,7 +86,7 @@ passes.
 
 ---
 
-## Bucket: `unimplemented: yield in for-of binding pattern` (still failing)
+## Bucket: `unimplemented: yield in for-of binding pattern` (fixed)
 
 ### Representative failing tests
 
@@ -112,14 +112,11 @@ Expected:
 - If the generator is closed while suspended, the RHS iterator must be closed (tests assert
   `IteratorClose` behavior via `.return()` calls).
 
-### Likely implementation gap
+### Fix summary
 
-`gen_eval_for_of` bails out early when `for_in_of_lhs_contains_yield(&stmt.lhs)` is true, returning
-`VmError::Unimplemented("yield in for-of binding pattern")`.
+Generator `for..of` now supports suspending within the LHS binding pattern (including defaults,
+computed keys, rest patterns) and preserves iterator-close semantics when the generator is closed
+while suspended.
 
-Fixing this likely requires a generator-aware destructuring binder (similar in spirit to the async
-pattern binder) which can:
-- suspend during default initializers / nested patterns
-- resume correctly
-- ensure iterator-close semantics when unwinding/returning/throwing while suspended in the pattern
-
+Verification:
+- `vendor/ecma-rs/vm-js/tests/generators_for_of_yield_in_lhs.rs`
