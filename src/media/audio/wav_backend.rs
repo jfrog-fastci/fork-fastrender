@@ -13,6 +13,7 @@ use super::{
   AudioEngineConfig, AudioOutputInfo, AudioSink, AudioStreamConfig,
 };
 use super::limits::MAX_BUFFERED_DURATION;
+use crate::debug::trace::TraceHandle;
 use crate::media::audio_clock::InterpolatedAudioClock;
 
 /// Offline audio backend that mixes to a fixed output format and writes into a `.wav` file.
@@ -26,6 +27,7 @@ pub struct WavAudioBackend {
   mixer: Arc<MixerState>,
   clock: Arc<InterpolatedAudioClock>,
   writer: Mutex<WavWriter>,
+  trace: TraceHandle,
 }
 
 impl WavAudioBackend {
@@ -37,19 +39,35 @@ impl WavAudioBackend {
     Self::new_with_engine_config(path, &cfg)
   }
 
+  /// Like [`Self::new`], but wires up tracing spans into the provided handle.
+  pub fn new_with_trace<P: AsRef<Path>>(path: P, trace: TraceHandle) -> io::Result<Self> {
+    let cfg = audio_engine_config();
+    Self::new_with_engine_config_and_trace(path, &cfg, trace)
+  }
+
   /// Create a WAV backend using an explicit [`AudioEngineConfig`].
   pub fn new_with_engine_config<P: AsRef<Path>>(
     path: P,
     engine_cfg: &AudioEngineConfig,
   ) -> io::Result<Self> {
+    Self::new_with_engine_config_and_trace(path, engine_cfg, TraceHandle::default())
+  }
+
+  /// Like [`Self::new_with_engine_config`], but wires up tracing spans into the provided handle.
+  pub fn new_with_engine_config_and_trace<P: AsRef<Path>>(
+    path: P,
+    engine_cfg: &AudioEngineConfig,
+    trace: TraceHandle,
+  ) -> io::Result<Self> {
     let config = AudioStreamConfig::new(
       engine_cfg.default_sample_rate_hz,
       engine_cfg.default_channels,
     );
-    Self::new_with_output_config(
+    Self::new_with_output_config_and_trace(
       path,
       config,
       engine_cfg.per_stream_max_buffered_duration,
+      trace,
     )
   }
 
@@ -58,6 +76,16 @@ impl WavAudioBackend {
     path: P,
     config: AudioStreamConfig,
     max_buffered_duration: Duration,
+  ) -> io::Result<Self> {
+    Self::new_with_output_config_and_trace(path, config, max_buffered_duration, TraceHandle::default())
+  }
+
+  /// Like [`Self::new_with_output_config`], but wires up tracing spans into the provided handle.
+  pub fn new_with_output_config_and_trace<P: AsRef<Path>>(
+    path: P,
+    config: AudioStreamConfig,
+    max_buffered_duration: Duration,
+    trace: TraceHandle,
   ) -> io::Result<Self> {
     let max_buffered_duration = max_buffered_duration.min(MAX_BUFFERED_DURATION);
     let mixer = Arc::new(MixerState::new(config));
@@ -73,6 +101,7 @@ impl WavAudioBackend {
       mixer,
       clock,
       writer: Mutex::new(WavWriter { file, data_bytes: 0 }),
+      trace,
     })
   }
 
@@ -92,12 +121,27 @@ impl WavAudioBackend {
       return Ok(());
     }
 
+    let trace_enabled = self.trace.is_enabled();
+    let mut callback_span = if trace_enabled {
+      let mut span = self.trace.span("audio.callback", "audio");
+      span.arg_u64("frames", frames as u64);
+      Some(span)
+    } else {
+      None
+    };
+
     // Lock the writer for the duration of the render. This ensures single-consumer semantics for
     // the ring buffers (only one `render()` at a time) and keeps file writes serialized.
     let mut writer = self.writer.lock();
 
     let mut mix: Vec<f32> = vec![0.0; samples];
+    let mix_span = if trace_enabled {
+      Some(self.trace.span("audio.mix", "audio"))
+    } else {
+      None
+    };
     self.mixer.mix_into(&mut mix);
+    drop(mix_span);
 
     // Convert to 16-bit PCM bytes.
     let mut pcm = vec![0u8; samples * 2];
@@ -128,6 +172,8 @@ impl WavAudioBackend {
     self
       .clock
       .on_callback_end_with_device_time(frames_u32, device_time_at_end);
+
+    drop(callback_span);
 
     Ok(())
   }
@@ -317,6 +363,7 @@ mod tests {
   use std::time::Duration;
 
   use super::*;
+  use crate::debug::trace::TraceHandle;
   use crate::media::audio::test_signal;
 
   #[test]
@@ -393,5 +440,50 @@ mod tests {
 
     let accepted = sink.push_interleaved_f32(&vec![1.0f32; 10]);
     assert_eq!(accepted, 3);
+  }
+
+  #[test]
+  fn wav_backend_trace_emits_audio_callback_and_mix() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let wav_path = dir.path().join("out.wav");
+    let trace = TraceHandle::enabled_with_max_events(32);
+
+    let backend = WavAudioBackend::new_with_output_config_and_trace(
+      &wav_path,
+      AudioStreamConfig::new(48_000, 2),
+      Duration::from_millis(250),
+      trace.clone(),
+    )
+    .expect("backend");
+    let sink = backend.create_sink();
+
+    // Ensure mixing has audio to consume.
+    let samples = vec![0.25f32; 48_000 * 2];
+    assert_eq!(sink.push_interleaved_f32(&samples), samples.len());
+
+    for _ in 0..4 {
+      backend.render(240).expect("render");
+    }
+
+    let trace_path = dir.path().join("trace.json");
+    trace.write_chrome_trace(&trace_path).expect("write trace");
+
+    let json = std::fs::read_to_string(&trace_path).expect("read trace");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("parse trace");
+    let trace_events = value["traceEvents"]
+      .as_array()
+      .expect("traceEvents array");
+    let names: Vec<&str> = trace_events
+      .iter()
+      .filter_map(|event| event["name"].as_str())
+      .collect();
+    assert!(
+      names.iter().any(|name| *name == "audio.callback"),
+      "expected audio.callback span in trace"
+    );
+    assert!(
+      names.iter().any(|name| *name == "audio.mix"),
+      "expected audio.mix span in trace"
+    );
   }
 }
