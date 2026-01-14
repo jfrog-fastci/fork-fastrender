@@ -4,6 +4,7 @@ target_pages/
 /tmp/
 /tests/ref/fixtures/**/failures/
 .cargo_home_local/
+.cargo_home_agent/
 .venv/
 __pycache__/
 *.py[cod]
