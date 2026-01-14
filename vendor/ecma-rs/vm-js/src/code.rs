@@ -747,11 +747,8 @@ fn expr_is_supported_assignment_target_for_hir_async_scripts(expr: &Node<Expr>) 
 }
 
 fn operator_is_supported_assignment_for_hir_async_scripts(op: OperatorName) -> bool {
-  // The compiled async classic-script executor currently supports only plain (`=`) and arithmetic/
-  // bitwise compound assignment forms whose RHS is a direct `await <expr>`.
-  //
-  // Logical assignment operators (`&&=`, `||=`, `??=`) require control-flow short-circuiting across
-  // an `await` boundary and are not supported yet.
+  // The compiled async classic-script executor supports only plain (`=`), arithmetic/bitwise
+  // compound assignment, and logical assignment forms whose RHS is a direct `await <expr>`.
   matches!(
     op,
     OperatorName::Assignment
@@ -767,6 +764,9 @@ fn operator_is_supported_assignment_for_hir_async_scripts(op: OperatorName) -> b
       | OperatorName::AssignmentBitwiseOr
       | OperatorName::AssignmentBitwiseAnd
       | OperatorName::AssignmentBitwiseXor
+      | OperatorName::AssignmentLogicalAnd
+      | OperatorName::AssignmentLogicalOr
+      | OperatorName::AssignmentNullishCoalescing
   )
 }
 
@@ -855,10 +855,11 @@ fn stmt_contains_unsupported_await_for_hir_async_scripts(stmt: &Node<Stmt>) -> b
     // - `await <expr>;`
     // - `x = await <expr>;`
     // - `x += await <expr>;` (and other arithmetic/bitwise compound assignment operators)
+    // - `x ||= await <expr>;` / `x &&= await <expr>;` / `x ??= await <expr>;`
     // - `const x = await <expr>;` (and `var`/`let`)
     // - `for (init; test; update) { ... }` loops where the head may contain direct `await` (and
-    //   simple `x = await <expr>` assignments) in the init/test/update positions, and the loop body
-    //   contains no other `await`
+    //   assignments with direct `await <expr>` RHS) in the init/test/update positions, and the loop
+    //   body contains no other `await`
     // - `for await (<head> of <rhs>) { ... }` where:
       //   - `<rhs>` is either a normal expression with no `await`, or a direct `await <expr>` with no
       //     nested `await` inside `<expr>`, and

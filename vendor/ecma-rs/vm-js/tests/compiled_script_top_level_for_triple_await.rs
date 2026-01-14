@@ -69,6 +69,98 @@ fn compiled_script_top_level_for_triple_await_in_init_suspends_and_resumes() -> 
 }
 
 #[test]
+fn compiled_script_top_level_for_triple_logical_assignment_in_init_roots_lhs_reference_across_gc(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var log = [];
+      function makeObj() {
+        return {
+          get x() { log.push("get"); return 0; },
+          set x(v) { log.push("set:" + v); },
+        };
+      }
+
+      for (makeObj().x ||= await Promise.resolve("ok"); false; ) {}
+      log.join(",")
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await in a for-loop init logical assignment should be supported by the HIR async classic-script executor"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let result_root = rt.heap_mut().add_root(result)?;
+
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(rt.heap().is_promise_object(promise_obj));
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
+
+  // The loop init has suspended; force a full GC while the loop state machine holds the pending
+  // assignment reference.
+  rt.heap.collect_garbage();
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let resolved = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  assert_eq!(value_to_utf8(&rt, resolved), "get,set:ok");
+
+  rt.heap_mut().remove_root(result_root);
+  Ok(())
+}
+
+#[test]
+fn compiled_script_top_level_for_triple_logical_assignment_in_init_short_circuits_without_awaiting(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var log = [];
+      var x = 1;
+      for (x ||= await Promise.resolve((log.push("rhs"), 2)); false; ) {}
+      log.push("after");
+      log.join(",")
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await in a for-loop init logical assignment should be supported by the HIR async classic-script executor"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(rt.heap().is_promise_object(promise_obj));
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+  let resolved = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  assert_eq!(value_to_utf8(&rt, resolved), "after");
+
+  assert_eq!(rt.exec_script("x")?, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_script_top_level_for_triple_await_in_test_suspends_and_resumes() -> Result<(), VmError> {
   let mut rt = new_runtime();
 

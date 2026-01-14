@@ -23421,14 +23421,30 @@ fn hir_eval_stmt_list_until_await(
           let expr = evaluator.get_expr(body, *expr_id)?;
           match &expr.kind {
             hir_js::ExprKind::Await { .. } => has_await = true,
-            hir_js::ExprKind::Assignment {
-              op: hir_js::AssignOp::Assign,
-              value,
-              ..
-            } => {
-              let rhs = evaluator.get_expr(body, *value)?;
-              if matches!(rhs.kind, hir_js::ExprKind::Await { .. }) {
-                has_await = true;
+            hir_js::ExprKind::Assignment { op, value, .. } => {
+              if matches!(
+                op,
+                hir_js::AssignOp::Assign
+                  | hir_js::AssignOp::AddAssign
+                  | hir_js::AssignOp::SubAssign
+                  | hir_js::AssignOp::MulAssign
+                  | hir_js::AssignOp::DivAssign
+                  | hir_js::AssignOp::RemAssign
+                  | hir_js::AssignOp::ExponentAssign
+                  | hir_js::AssignOp::ShiftLeftAssign
+                  | hir_js::AssignOp::ShiftRightAssign
+                  | hir_js::AssignOp::ShiftRightUnsignedAssign
+                  | hir_js::AssignOp::BitOrAssign
+                  | hir_js::AssignOp::BitAndAssign
+                  | hir_js::AssignOp::BitXorAssign
+                  | hir_js::AssignOp::LogicalAndAssign
+                  | hir_js::AssignOp::LogicalOrAssign
+                  | hir_js::AssignOp::NullishAssign
+              ) {
+                let rhs = evaluator.get_expr(body, *value)?;
+                if matches!(rhs.kind, hir_js::ExprKind::Await { .. }) {
+                  has_await = true;
+                }
               }
             }
             _ => {}
@@ -23462,14 +23478,30 @@ fn hir_eval_stmt_list_until_await(
         let update_expr = evaluator.get_expr(body, *update)?;
         match &update_expr.kind {
           hir_js::ExprKind::Await { .. } => has_await = true,
-          hir_js::ExprKind::Assignment {
-            op: hir_js::AssignOp::Assign,
-            value,
-            ..
-          } => {
-            let rhs = evaluator.get_expr(body, *value)?;
-            if matches!(rhs.kind, hir_js::ExprKind::Await { .. }) {
-              has_await = true;
+          hir_js::ExprKind::Assignment { op, value, .. } => {
+            if matches!(
+              op,
+              hir_js::AssignOp::Assign
+                | hir_js::AssignOp::AddAssign
+                | hir_js::AssignOp::SubAssign
+                | hir_js::AssignOp::MulAssign
+                | hir_js::AssignOp::DivAssign
+                | hir_js::AssignOp::RemAssign
+                | hir_js::AssignOp::ExponentAssign
+                | hir_js::AssignOp::ShiftLeftAssign
+                | hir_js::AssignOp::ShiftRightAssign
+                | hir_js::AssignOp::ShiftRightUnsignedAssign
+                | hir_js::AssignOp::BitOrAssign
+                | hir_js::AssignOp::BitAndAssign
+                | hir_js::AssignOp::BitXorAssign
+                | hir_js::AssignOp::LogicalAndAssign
+                | hir_js::AssignOp::LogicalOrAssign
+                | hir_js::AssignOp::NullishAssign
+            ) {
+              let rhs = evaluator.get_expr(body, *value)?;
+              if matches!(rhs.kind, hir_js::ExprKind::Await { .. }) {
+                has_await = true;
+              }
             }
           }
           _ => {}
@@ -23585,12 +23617,139 @@ fn hir_eval_stmt_list_until_await(
         }
       }
 
+      // Fast-path logical assignments where the RHS is a direct await expression (e.g.
+      // `x ||= await foo();`).
+      //
+      // This supports common top-level await patterns without requiring full async expression
+      // support in the synchronous HIR executor.
+      if let hir_js::ExprKind::Assignment { op, target, value } = &expr.kind {
+        if matches!(
+          op,
+          hir_js::AssignOp::LogicalAndAssign
+            | hir_js::AssignOp::LogicalOrAssign
+            | hir_js::AssignOp::NullishAssign
+        ) {
+          let rhs = evaluator.get_expr(body, *value)?;
+          if let hir_js::ExprKind::Await { expr: awaited_expr } = rhs.kind {
+            // Budget once for the statement itself. We'll only budget the `await` expression node if
+            // the logical assignment actually evaluates the RHS (it may short-circuit).
+            evaluator.vm.tick()?;
+
+            // Evaluate the assignment reference (including computed keys) before evaluating the
+            // current LHS value, matching `eval_assignment` ordering.
+            let reference = match evaluator.eval_assignment_reference(scope, body, *target) {
+              Ok(r) => r,
+              Err(err) => {
+                return Err(finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  source.as_ref(),
+                  stmt_offset,
+                  err,
+                ))
+              }
+            };
+
+            let mut await_scope = scope.reborrow();
+            if let Err(err) = evaluator.root_assignment_reference(&mut await_scope, &reference) {
+              return Err(finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                &mut await_scope,
+                source.as_ref(),
+                stmt_offset,
+                err,
+              ));
+            }
+
+            let left = match evaluator.get_value_from_assignment_reference(&mut await_scope, &reference) {
+              Ok(v) => v,
+              Err(err) => {
+                return Err(finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  &mut await_scope,
+                  source.as_ref(),
+                  stmt_offset,
+                  err,
+                ))
+              }
+            };
+
+            let should_assign = match *op {
+              hir_js::AssignOp::LogicalAndAssign => match await_scope.heap().to_boolean(left) {
+                Ok(v) => v,
+                Err(err) => {
+                  return Err(finalize_throw_with_stack_at_source_offset(
+                    &*evaluator.vm,
+                    &mut await_scope,
+                    source.as_ref(),
+                    stmt_offset,
+                    err,
+                  ))
+                }
+              },
+              hir_js::AssignOp::LogicalOrAssign => match await_scope.heap().to_boolean(left) {
+                Ok(v) => !v,
+                Err(err) => {
+                  return Err(finalize_throw_with_stack_at_source_offset(
+                    &*evaluator.vm,
+                    &mut await_scope,
+                    source.as_ref(),
+                    stmt_offset,
+                    err,
+                  ))
+                }
+              },
+              hir_js::AssignOp::NullishAssign => matches!(left, Value::Null | Value::Undefined),
+              _ => unreachable!(),
+            };
+
+            if !should_assign {
+              // Short-circuit: do not evaluate the awaited operand. The expression statement
+              // completes with the LHS value.
+              *last_value_is_set = true;
+              await_scope.heap_mut().set_root(last_value_root, left);
+              continue;
+            }
+
+            // Budget once for the await expression node (the awaited subexpression itself is
+            // budgeted by `eval_expr`).
+            evaluator.vm.tick()?;
+
+            let await_value = match evaluator.eval_expr(&mut await_scope, body, awaited_expr) {
+              Ok(v) => v,
+              Err(err) => {
+                return Err(finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  &mut await_scope,
+                  source.as_ref(),
+                  stmt_offset,
+                  err,
+                ))
+              }
+            };
+
+            return Ok(HirAsyncEvalResult::Await {
+              kind: crate::exec::AsyncSuspendKind::Await,
+              await_value,
+              resume: HirAsyncResumePoint::Assignment {
+                next_stmt_index: i.saturating_add(1),
+              },
+              assign_reference: Some(reference),
+              // Logical assignments become plain `PutValue` after the await resolves.
+              assign_op: None,
+              assign_left_value: None,
+              for_await_of_state: None,
+              for_triple_state: None,
+            });
+          }
+        }
+      }
+
       // Fast-path compound assignments where the RHS is a direct await expression (e.g.
       // `x += await foo();`).
       if let hir_js::ExprKind::Assignment { op, target, value } = &expr.kind {
-        // Restrict to arithmetic/bitwise compound assignment operators; logical assignments require
-        // short-circuiting semantics that the compiled executor does not yet support across an
-        // `await` boundary.
+        // Restrict to arithmetic/bitwise compound assignment operators; logical assignments are
+        // handled separately above.
         if matches!(
           op,
           hir_js::AssignOp::AddAssign

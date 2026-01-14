@@ -529,6 +529,51 @@ fn compiled_script_top_level_await_in_compound_assignment_reads_lhs_before_await
 }
 
 #[test]
+fn compiled_script_top_level_await_logical_assignment_short_circuits_without_awaiting() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var log = [];
+      var x = 1;
+      x ||= await Promise.resolve((log.push("rhs"), 2));
+      log.push("after");
+      log.join(",")
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await in a logical assignment should be supported by the HIR async classic-script executor"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(
+    rt.heap().is_promise_object(promise_obj),
+    "expected Promise return value from async classic script"
+  );
+
+  // `x ||= await ...` must short-circuit when `x` is truthy, so the script should complete
+  // synchronously and the await operand should not execute.
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let promise_result = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  assert_eq!(value_to_utf8(&rt, promise_result), "after");
+
+  assert_eq!(rt.exec_script("x")?, Value::Number(1.0));
+  let log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, log), "after");
+  Ok(())
+}
+
+#[test]
 fn compiled_script_top_level_await_assignment_roots_lhs_reference_across_gc() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
@@ -626,6 +671,64 @@ fn compiled_script_top_level_await_computed_member_assignment_roots_key_across_g
     .promise_result(promise_obj)?
     .expect("fulfilled promise should have a result");
   assert_eq!(value_to_utf8(&rt, promise_result), "set:ok");
+
+  rt.heap_mut().remove_root(result_root);
+  Ok(())
+}
+
+#[test]
+fn compiled_script_top_level_await_logical_assignment_roots_lhs_reference_across_gc() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var log = [];
+      function makeObj() {
+        return {
+          get x() { log.push("get"); return 0; },
+          set x(v) { log.push("set:" + v); },
+        };
+      }
+      makeObj().x ||= await Promise.resolve("ok");
+      log.join(",")
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await in a logical assignment should be supported by the HIR async classic-script executor"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let result_root = rt.heap_mut().add_root(result)?;
+
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(
+    rt.heap().is_promise_object(promise_obj),
+    "expected Promise return value from async classic script"
+  );
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
+
+  // Force a full GC while the async classic script is suspended. The assignment target object is
+  // not referenced from user code after LHS evaluation, so the compiled executor must keep the
+  // assignment reference alive via persistent roots.
+  rt.heap.collect_garbage();
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let promise_result = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  assert_eq!(value_to_utf8(&rt, promise_result), "get,set:ok");
+
+  let log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, log), "get,set:ok");
 
   rt.heap_mut().remove_root(result_root);
   Ok(())
