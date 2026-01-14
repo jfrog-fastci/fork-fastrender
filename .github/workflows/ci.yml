@@ -100,6 +100,10 @@ jobs:
             exit 1
           fi
 
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        shell: bash
+        run: bash scripts/check_no_conflict_markers.sh
+
       - name: TypeScript version sync (ecma-rs)
         shell: bash
         run: bash vendor/ecma-rs/scripts/check_typescript_version_sync.sh
