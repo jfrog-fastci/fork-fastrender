@@ -7501,12 +7501,12 @@ impl<'vm> HirEvaluator<'vm> {
           let home_object = self
             .home_object
             .ok_or(VmError::InvariantViolation("super reference missing [[HomeObject]]"))?;
-  
+
           scope.push_roots(&[receiver, Value::Object(home_object)])?;
 
-          // Spec: for `super[expr]`, `GetSuperBase` is observed before `ToPropertyKey` (test262:
-          // `prop-expr-getsuperbase-before-topropertykey-*`), so prototype mutation during key
-          // coercion does not affect the resolved super base.
+          // Spec: for computed `super[expr]`, `GetSuperBase` must be observed before `ToPropertyKey`
+          // so prototype mutation during key coercion does not affect the captured super base for
+          // the current operation.
           let (key, super_base_obj) = match &member.property {
             hir_js::ObjectKey::Computed(expr_id) => {
               let key_value = self.eval_expr(&mut scope, body, *expr_id)?;
@@ -7527,7 +7527,7 @@ impl<'vm> HirEvaluator<'vm> {
               root_property_key(&mut scope, key)?;
 
               // Dereferencing a super property on a null super base throws a TypeError, but
-              // `ToPropertyKey` must still be observed first (per spec ordering above).
+              // `ToPropertyKey` must still be observed first (per spec ordering).
               let Some(super_base_obj) = super_base else {
                 return Err(throw_type_error(
                   self.vm,
@@ -8100,7 +8100,7 @@ impl<'vm> HirEvaluator<'vm> {
           let this_value = self.resolve_this_binding(&mut update_scope)?;
           update_scope.push_root(this_value)?;
 
-          // `super[expr]++` evaluation order (ECMA-262):
+          // `super[expr]++` / `super[expr]--` evaluation order (ECMA-262):
           // - evaluate the key expression to a value,
           // - capture the super base (`GetSuperBase`),
           // - then perform `ToPropertyKey` (test262: `prop-expr-getsuperbase-before-topropertykey-*`).
@@ -9248,9 +9248,9 @@ impl<'vm> HirEvaluator<'vm> {
         .home_object
         .ok_or(VmError::InvariantViolation("super reference missing [[HomeObject]]"))?;
 
-      // Spec: for `super[expr]`, `GetSuperBase` is observed before `ToPropertyKey` (test262:
-      // `prop-expr-getsuperbase-before-topropertykey-*`), so prototype mutation during key
-      // coercion does not affect the resolved super base.
+      // Spec: for computed `super[expr]`, `GetSuperBase` must be observed before `ToPropertyKey` so
+      // prototype mutation during key coercion does not affect the captured super base for the
+      // current operation.
       let (key, super_base) = match &member.property {
         hir_js::ObjectKey::Computed(expr_id) => {
           let key_value = self.eval_expr(&mut scope, body, *expr_id)?;
@@ -9647,9 +9647,9 @@ impl<'vm> HirEvaluator<'vm> {
                 .home_object
                 .ok_or(VmError::InvariantViolation("super reference missing [[HomeObject]]"))?;
 
-              // Spec: for `super[expr]`, `GetSuperBase` is observed before `ToPropertyKey` (test262:
-              // `prop-expr-getsuperbase-before-topropertykey-*`), so prototype mutation during key
-              // coercion does not affect the resolved super base.
+              // Spec: for computed `super[expr]`, `GetSuperBase` must be observed before
+              // `ToPropertyKey` so prototype mutation during key coercion does not affect the
+              // captured super base for the current operation.
               let (key, super_base_obj) = match &member.property {
                 hir_js::ObjectKey::Computed(expr_id) => {
                   let key_value = self.eval_expr(&mut scope, body, *expr_id)?;
@@ -9912,9 +9912,9 @@ impl<'vm> HirEvaluator<'vm> {
                 .home_object
                 .ok_or(VmError::InvariantViolation("super reference missing [[HomeObject]]"))?;
 
-              // Spec: for `super[expr]`, `GetSuperBase` is observed before `ToPropertyKey` (test262:
-              // `prop-expr-getsuperbase-before-topropertykey-*`), so prototype mutation during key
-              // coercion does not affect the resolved super base.
+              // Spec: for computed `super[expr]`, `GetSuperBase` must be observed before
+              // `ToPropertyKey` so prototype mutation during key coercion does not affect the
+              // captured super base for the current operation.
               let (key, super_base_obj) = match &member.property {
                 hir_js::ObjectKey::Computed(expr_id) => {
                   let key_value = self.eval_expr(&mut scope, body, *expr_id)?;
@@ -9935,7 +9935,7 @@ impl<'vm> HirEvaluator<'vm> {
                   root_property_key(&mut scope, key)?;
 
                   // Dereferencing a super property on a null super base throws a TypeError, but
-                  // `ToPropertyKey` must still be observed first (per spec ordering above).
+                  // `ToPropertyKey` must still be observed first (per spec ordering).
                   let Some(super_base_obj) = super_base else {
                     return Err(throw_type_error(
                       self.vm,
@@ -12547,8 +12547,7 @@ impl<'vm> HirEvaluator<'vm> {
           // `super[expr](...args)` evaluation order (ECMA-262):
           // - evaluate the key expression to a value,
           // - capture the super base (`GetSuperBase`),
-          // - then perform `ToPropertyKey` (test262:
-          //   `prop-expr-getsuperbase-before-topropertykey-*`),
+          // - perform `ToPropertyKey`,
           // - and finally `[[Get]]` the callee from the captured base with `receiver = this`.
           //
           // Key conversion side effects must not affect the captured base for the current call.
@@ -13339,6 +13338,14 @@ impl<'vm> HirEvaluator<'vm> {
 
       let var_env = block_scope.env_create(Some(saved_lex))?;
       let body_lex = block_scope.env_create(Some(var_env))?;
+      // Mark the static block lexical environment as a "this environment" so arrow functions created
+      // within the block resolve lexical `this` / `new.target` to the class constructor object.
+      block_scope
+        .heap_mut()
+        .env_set_this_value(body_lex, Some(Value::Object(receiver)))?;
+      block_scope
+        .heap_mut()
+        .env_set_new_target(body_lex, Some(Value::Undefined))?;
       self.env.set_var_env(VarEnv::Env(var_env));
       self.env.set_lexical_env(block_scope.heap_mut(), body_lex);
 

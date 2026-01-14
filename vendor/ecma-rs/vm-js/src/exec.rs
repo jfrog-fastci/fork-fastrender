@@ -10898,6 +10898,14 @@ impl<'a> Evaluator<'a> {
 
     let var_env = block_scope.env_create(Some(saved_lex))?;
     let body_lex = block_scope.env_create(Some(var_env))?;
+    // Mark the static block lexical environment as a "this environment" so arrow functions created
+    // within the block resolve lexical `this` / `new.target` to the class constructor object.
+    block_scope
+      .heap_mut()
+      .env_set_this_value(body_lex, Some(Value::Object(receiver)))?;
+    block_scope
+      .heap_mut()
+      .env_set_new_target(body_lex, Some(Value::Undefined))?;
     self.env.set_var_env(VarEnv::Env(var_env));
     self.env.set_lexical_env(block_scope.heap_mut(), body_lex);
     if let Err(err) = self.env.push_disposable_scope(&mut block_scope) {
@@ -25246,6 +25254,14 @@ fn async_eval_class_static_init_from(
 
         let var_env = block_scope.env_create(Some(saved_lex))?;
         let body_lex = block_scope.env_create(Some(var_env))?;
+        // Mark the static block lexical environment as a "this environment" so arrow functions
+        // created within the block resolve lexical `this` / `new.target` to the class constructor.
+        block_scope
+          .heap_mut()
+          .env_set_this_value(body_lex, Some(Value::Object(func_obj)))?;
+        block_scope
+          .heap_mut()
+          .env_set_new_target(body_lex, Some(Value::Undefined))?;
         evaluator.env.set_var_env(VarEnv::Env(var_env));
         evaluator
           .env
@@ -44904,6 +44920,14 @@ fn gen_eval_class_static_inits_from(
 
         let var_env = block_scope.env_create(Some(saved_lex))?;
         let body_lex = block_scope.env_create(Some(var_env))?;
+        // Mark the static block lexical environment as a "this environment" so arrow functions
+        // created within the block resolve lexical `this` / `new.target` to the class constructor.
+        block_scope
+          .heap_mut()
+          .env_set_this_value(body_lex, Some(Value::Object(func_obj)))?;
+        block_scope
+          .heap_mut()
+          .env_set_new_target(body_lex, Some(Value::Undefined))?;
         evaluator.env.set_var_env(VarEnv::Env(var_env));
         evaluator.env.set_lexical_env(block_scope.heap_mut(), body_lex);
 
