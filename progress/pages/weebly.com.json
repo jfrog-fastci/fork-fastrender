@@ -16,7 +16,7 @@
     "layout": 20.027554898785425,
     "paint": 105.14466321862348
   },
-  "notes": "",
+  "notes": "Page-loop vs Chrome looks visually matching. Remaining diffs are mostly subtle font rasterization/antialiasing differences and small shadow/gradient blur mismatches.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 25277,

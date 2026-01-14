@@ -14,7 +14,7 @@
     "layout": 234.217152,
     "paint": 20.01856
   },
-  "notes": "Visually close to Chrome at 1200x800; remaining diff is dominated by text rasterization/anti-aliasing differences (and small rounding noise) rather than major layout bugs (perceptual≈0.03).",
+  "notes": "Visually close to Chrome (page-loop at 1200x800). Remaining diffs are dominated by text rasterization/antialiasing and minor rounding/shading noise rather than major layout bugs (perceptual≈0.03).",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 170586,

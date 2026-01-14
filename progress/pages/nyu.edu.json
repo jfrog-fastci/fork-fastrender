@@ -14,7 +14,7 @@
     "layout": 72.04010286166009,
     "paint": 406.22613558102773
   },
-  "notes": "",
+  "notes": "Visually matches Chrome in page-loop. Remaining diffs are tiny and mostly attributable to text antialiasing/subpixel rounding and thin border/shadow rasterization.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 15480,

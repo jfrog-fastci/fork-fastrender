@@ -15,7 +15,7 @@
     "layout": 118.07387653012049,
     "paint": 120.0751286746988
   },
-  "notes": "",
+  "notes": "Not visually matching in page-loop: large full-viewport background/color mismatches (very high diff%/perceptual). Likely missing/incorrect background/gradient/blend rendering; needs dedicated follow-up.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 916568,
