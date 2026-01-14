@@ -142,3 +142,73 @@ fn generator_catch_parameter_pattern_can_yield() {
   assert_eq!(value, Value::Bool(true));
 }
 
+#[test]
+fn generator_binding_array_rest_pattern_default_can_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        let [...[a = (yield 1)]] = [undefined];
+        return a;
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(5);
+      r1.done === false && r1.value === 1 && r2.done === true && r2.value === 5
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_binding_rest_pattern_default_can_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        for (let [...[a = (yield 1)]] of [[undefined]]) {
+          return a;
+        }
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(5);
+      r1.done === false && r1.value === 1 && r2.done === true && r2.value === 5
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_assignment_target_identifier_resolution_is_fixed_across_yield_strict() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      (() => {
+        function* g() {
+          "use strict";
+          ({ a: x = (yield 1) } = { a: undefined });
+          return x;
+        }
+
+        var it = g();
+        var r1 = it.next();
+        if (r1.done !== false || r1.value !== 1) return false;
+
+        // Create the global property after the binding reference has already been resolved.
+        globalThis.x = 123;
+
+        var threw = false;
+        try { it.next(5); } catch (e) { threw = e instanceof ReferenceError; }
+        return threw === true;
+      })()
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
