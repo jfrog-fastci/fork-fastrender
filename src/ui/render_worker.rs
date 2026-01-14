@@ -3219,8 +3219,18 @@ impl BrowserRuntime {
     }
 
     fn flush_ticks(runtime: &mut BrowserRuntime, pending_ticks: &mut HashMap<TabId, Duration>) {
-      for (tab_id, delta) in pending_ticks.drain() {
-        runtime.handle_message(UiToWorker::Tick { tab_id, delta });
+      if pending_ticks.is_empty() {
+        return;
+      }
+
+      // Deterministic ordering avoids test flakiness when multiple tabs are ticking.
+      let mut tab_ids: Vec<TabId> = pending_ticks.keys().copied().collect();
+      tab_ids.sort_by_key(|tab_id| tab_id.0);
+
+      for tab_id in tab_ids {
+        if let Some(delta) = pending_ticks.remove(&tab_id) {
+          runtime.handle_message(UiToWorker::Tick { tab_id, delta });
+        }
       }
     }
 
@@ -3305,6 +3315,22 @@ impl BrowserRuntime {
     let mut pending_ticks: HashMap<TabId, Duration> = HashMap::new();
     let mut saw_tick = false;
 
+    fn flush_ticks(runtime: &mut BrowserRuntime, pending_ticks: &mut HashMap<TabId, Duration>) {
+      if pending_ticks.is_empty() {
+        return;
+      }
+
+      // Deterministic ordering avoids test flakiness when multiple tabs are ticking.
+      let mut tab_ids: Vec<TabId> = pending_ticks.keys().copied().collect();
+      tab_ids.sort_by_key(|tab_id| tab_id.0);
+
+      for tab_id in tab_ids {
+        if let Some(delta) = pending_ticks.remove(&tab_id) {
+          runtime.handle_tick(tab_id, delta);
+        }
+      }
+    }
+
     loop {
       let msg = match self.try_recv_message() {
         Some(msg) => Some(msg),
@@ -3333,13 +3359,15 @@ impl BrowserRuntime {
       match msg {
         UiToWorker::Tick { tab_id, delta } => {
           saw_tick = true;
+          let delta = delta.min(MAX_COALESCED_TICK_DELTA);
           let entry = pending_ticks.entry(tab_id).or_insert(Duration::ZERO);
-          *entry = entry.checked_add(delta).unwrap_or(Duration::MAX);
+          *entry = entry.checked_add(delta).unwrap_or(MAX_COALESCED_TICK_DELTA);
+          if *entry > MAX_COALESCED_TICK_DELTA {
+            *entry = MAX_COALESCED_TICK_DELTA;
+          }
         }
         other => {
-          for (tab_id, delta) in pending_ticks.drain() {
-            self.handle_tick(tab_id, delta);
-          }
+          flush_ticks(self, &mut pending_ticks);
           // Defer non-tick messages (clicks, navigations, etc) until after we render the coalesced
           // tick frame.
           self.deferred_msgs.push_front(other);
@@ -3348,9 +3376,7 @@ impl BrowserRuntime {
       }
     }
 
-    for (tab_id, delta) in pending_ticks.drain() {
-      self.handle_tick(tab_id, delta);
-    }
+    flush_ticks(self, &mut pending_ticks);
   }
 
   fn flush_pending_hover_syncs(&mut self) {
