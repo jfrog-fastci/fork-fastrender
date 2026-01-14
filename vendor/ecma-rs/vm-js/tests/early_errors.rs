@@ -358,10 +358,10 @@ fn super_private_member_access_is_syntax_error() {
 }
 
 #[test]
-fn nested_class_does_not_inherit_private_names_is_syntax_error() {
+fn private_name_not_visible_across_classes_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
-    .exec_script("class C { #x; m(){ class D { m(){ this.#x; } } } }")
+    .exec_script("class C { #x; } class D { m(c) { c.#x; } }")
     .unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
@@ -665,6 +665,24 @@ fn restricted_arguments_param_in_function_made_strict_by_directive_are_syntax_er
 fn duplicate_parameter_names_in_non_simple_parameter_list_are_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script("function f(a = 0, a) {}").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn use_strict_directive_in_function_with_non_simple_params_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#"function f(a = 0) { "use strict"; }"#)
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn use_strict_directive_in_arrow_function_with_non_simple_params_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#"((a = 0) => { "use strict"; });"#)
+    .unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
 
