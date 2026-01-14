@@ -83,7 +83,10 @@ impl ValidationReport {
   }
 }
 
-pub fn run_cli(args: ValidateArgs) -> Result<ExitCode> {
+pub fn run_cli(mut args: ValidateArgs) -> Result<ExitCode> {
+  // Keep CLI behavior consistent with the main runner: the default `--test262-dir` should work both
+  // from the `ecma-rs` workspace root and from within the crate directory.
+  args.test262_dir = crate::resolve_default_test262_dir(args.test262_dir);
   let discovered = discover_tests(&args.test262_dir)?;
   let discovered_ids = discovered
     .iter()
