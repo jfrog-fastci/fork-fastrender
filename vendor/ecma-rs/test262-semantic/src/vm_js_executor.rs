@@ -2177,6 +2177,45 @@ f(2000);
   }
 
   #[test]
+  fn termination_stack_overflow_maps_to_rangeerror_with_phase_even_when_cancelled() {
+    let case = test_case("termination_stack_overflow_phase.js");
+
+    // `map_vm_error_with_phase` is used by module execution paths; ensure it preserves the
+    // requested phase and still maps stack overflow to a JS RangeError even if the cancel flag is
+    // set.
+    for cancelled in [false, true] {
+      let cancel = Arc::new(AtomicBool::new(cancelled));
+
+      let vm = Vm::new(VmOptions::default());
+      let heap = Heap::new(HeapLimits::new(
+        DEFAULT_HEAP_MAX_BYTES,
+        DEFAULT_HEAP_GC_THRESHOLD_BYTES,
+      ));
+      let mut runtime = vm_js::JsRuntime::new(vm, heap).expect("init runtime");
+
+      let term = vm_js::Termination::new(TerminationReason::StackOverflow, Vec::new());
+      let err = map_vm_error_with_phase(
+        &case,
+        "",
+        &cancel,
+        &mut runtime,
+        ExecPhase::Resolution,
+        VmError::Termination(term),
+      );
+      let ExecError::Js(js) = err else {
+        panic!("expected JS error, got {err:?} (cancelled={cancelled})");
+      };
+      assert_eq!(js.phase, ExecPhase::Resolution);
+      assert_eq!(js.typ.as_deref(), Some("RangeError"));
+      assert!(
+        js.message.to_ascii_lowercase().contains("stack overflow"),
+        "expected stack overflow message, got: {}",
+        js.message
+      );
+    }
+  }
+
+  #[test]
   fn eval_script_creates_global_lexical_bindings() {
     let exec = VmJsExecutor::default();
     let cancel = Arc::new(AtomicBool::new(false));
