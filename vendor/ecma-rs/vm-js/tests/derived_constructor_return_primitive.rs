@@ -82,3 +82,63 @@ fn derived_constructor_return_primitive_without_super_throws_type_error_compiled
   assert_value_is_utf8(&rt, value, "TypeError");
   Ok(())
 }
+
+#[test]
+fn derived_constructor_return_null_after_super_throws_type_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class A {}
+        class B extends A { constructor() { super(); return null; } }
+        try { new B(); "no" } catch (e) { e.name }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "TypeError");
+}
+
+#[test]
+fn derived_constructor_return_null_after_super_throws_type_error_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class A {}
+      class B extends A { constructor() { super(); return null; } }
+      try { new B(); "no" } catch (e) { e.name }
+    "#,
+  )?;
+  assert_value_is_utf8(&rt, value, "TypeError");
+  Ok(())
+}
+
+#[test]
+fn derived_constructor_return_null_without_super_throws_type_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class A {}
+        class B extends A { constructor() { return null; } }
+        try { new B(); "no" } catch (e) { e.name }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "TypeError");
+}
+
+#[test]
+fn derived_constructor_return_null_without_super_throws_type_error_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class A {}
+      class B extends A { constructor() { return null; } }
+      try { new B(); "no" } catch (e) { e.name }
+    "#,
+  )?;
+  assert_value_is_utf8(&rt, value, "TypeError");
+  Ok(())
+}
