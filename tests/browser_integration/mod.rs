@@ -73,6 +73,7 @@ mod history_navigation;
 mod js_diagnostics;
 mod js_rendering;
 mod js_time;
+mod media_playback_rate;
 mod render_fixtures_js;
 mod location_navigation;
 mod navigation_streaming;

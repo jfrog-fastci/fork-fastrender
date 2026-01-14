@@ -73,7 +73,6 @@ use vm_js::{
 use webidl_vm_js::bindings_runtime::to_uint32_f64;
 use webidl_vm_js::VmJsHostHooksPayload;
 use webidl_vm_js::WebIdlBindingsHost;
-
 /// Fallible `Box::new` that returns `VmError::OutOfMemory` instead of aborting the process.
 ///
 /// This is used for runtime-owned structures (like `ModuleGraph`) that are allocated in fallible
@@ -363,6 +362,8 @@ pub(crate) struct WindowRealmUserData {
   pub(crate) module_graph: Option<Box<ModuleGraph>>,
   /// Cached native call handler id for `import.meta.resolve`.
   pub(crate) import_meta_resolve_call_id: Option<NativeFunctionId>,
+  /// Cached native call handler id for the HTMLMediaElement `timeupdate` setInterval callback.
+  pub(crate) html_media_element_timeupdate_tick_call_id: Option<NativeFunctionId>,
   pub(crate) worker_registry: crate::js::window_worker::WorkerRegistry,
   media_master_clock: Arc<dyn crate::media::clock::MediaClock>,
   media_element_state_registry: MediaElementStateRegistry,
@@ -559,6 +560,7 @@ impl WindowRealmUserData {
       module_loader,
       module_graph: None,
       import_meta_resolve_call_id: None,
+      html_media_element_timeupdate_tick_call_id: None,
       worker_registry: crate::js::window_worker::WorkerRegistry::default(),
       media_master_clock,
       media_element_state_registry: MediaElementStateRegistry::default(),
@@ -42454,6 +42456,124 @@ fn html_media_element_playback_rate_set_native(
   Ok(Value::Undefined)
 }
 
+fn html_media_element_default_playback_rate_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?
+    .require_html_media_element_handle(scope.heap(), this)?;
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+  };
+  let state = data.media_element_state_mut(key);
+  Ok(Value::Number(state.default_playback_rate()))
+}
+
+fn html_media_element_default_playback_rate_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+  };
+  let key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?
+    .require_html_media_element_handle(scope.heap(), this)?;
+
+  let mut rate = scope
+    .heap_mut()
+    .to_number(args.get(0).copied().unwrap_or(Value::Undefined))?;
+  if !rate.is_finite() || rate.is_nan() {
+    rate = 1.0;
+  }
+  // Clamp to a non-negative value (MVP: reverse playback is not supported).
+  if rate < 0.0 {
+    rate = 0.0;
+  }
+
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+  };
+  let state = data.media_element_state_mut(key);
+  let old_default = state.default_playback_rate();
+  let before = state.playback_rate();
+  if old_default != rate {
+    state.set_default_playback_rate(rate);
+    // If playbackRate was still tied to the default, update it too (spec-ish behavior).
+    if before == old_default {
+      state.set_playback_rate(rate);
+    }
+  }
+  let after = state.playback_rate();
+  if before != after {
+    dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "ratechange")?;
+  }
+  Ok(Value::Undefined)
+}
+
+fn ensure_html_media_element_timeupdate_tick_call_id(
+  vm: &mut Vm,
+) -> Result<NativeFunctionId, VmError> {
+  if let Some(id) = vm
+    .user_data::<WindowRealmUserData>()
+    .and_then(|data| data.html_media_element_timeupdate_tick_call_id)
+  {
+    return Ok(id);
+  }
+
+  let id = vm.register_native_call(html_media_element_timeupdate_tick_native)?;
+  if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
+    data.html_media_element_timeupdate_tick_call_id = Some(id);
+  }
+  Ok(id)
+}
+
+fn html_media_element_timeupdate_tick_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let Some(Value::Object(target_obj)) = slots.first().copied() else {
+    return Ok(Value::Undefined);
+  };
+
+  let key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?
+    .require_html_media_element_handle(scope.heap(), Value::Object(target_obj))?;
+
+  let should_dispatch = {
+    let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+      return Ok(Value::Undefined);
+    };
+    data
+      .media_element_state_registry_mut()
+      .get_mut(key)
+      .is_some_and(|state| !state.paused())
+  };
+
+  if should_dispatch {
+    dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, target_obj, "timeupdate")?;
+  }
+
+  Ok(Value::Undefined)
+}
+
 fn html_media_element_play_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -42518,25 +42638,91 @@ fn html_media_element_play_native(
   // Ensure readiness state + load events before playing.
   html_media_element_ensure_loaded(vm, &mut scope, host, hooks, obj, key)?;
 
-  let was_paused = {
+  let (was_paused, should_start_interval) = {
     let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
       return Err(VmError::TypeError("Illegal invocation"));
     };
-    data.media_element_state_mut(key).paused()
-  };
-  if was_paused {
-    {
-      let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
-        return Err(VmError::TypeError("Illegal invocation"));
-      };
-      data.media_element_state_mut(key).play();
+    let state = data.media_element_state_mut(key);
+    let was_paused = state.paused();
+    if was_paused {
+      state.play();
     }
+    (
+      was_paused,
+      hooks_have_event_loop(hooks) && state.timeupdate_interval_id().is_none(),
+    )
+  };
+
+  if was_paused {
     dispatch_dom_event_from_global_event_ctor_best_effort(vm, &mut scope, host, hooks, obj, "play")?;
     dispatch_dom_event_from_global_event_ctor_best_effort(vm, &mut scope, host, hooks, obj, "playing")?;
     // Deliver at least one `timeupdate` for scripts that key off progress events instead of
     // `playing`. Real browsers dispatch `timeupdate` periodically while playback advances; FastRender
     // currently provides a single best-effort signal at playback start.
     dispatch_dom_event_from_global_event_ctor_best_effort(vm, &mut scope, host, hooks, obj, "timeupdate")?;
+  }
+
+  if should_start_interval {
+    let tick_call_id = ensure_html_media_element_timeupdate_tick_call_id(vm)?;
+    let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+      "HTMLMediaElement.play requires intrinsics (create a Realm first)",
+    ))?;
+
+    let base = scope.heap().stack_root_len();
+    scope.push_root(Value::Object(obj))?;
+
+    let callback_name = scope.alloc_string("HTMLMediaElement timeupdate tick")?;
+    scope.push_root(Value::String(callback_name))?;
+    let callback = scope.alloc_native_function_with_slots(
+      tick_call_id,
+      None,
+      callback_name,
+      0,
+      &[Value::Object(obj)],
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(callback, Some(intr.function_prototype()))?;
+    scope.push_root(Value::Object(callback))?;
+
+    let global = vm
+      .user_data::<WindowRealmUserData>()
+      .and_then(|data| data.window_obj())
+      .ok_or(VmError::InvariantViolation(
+        "missing window global object for HTMLMediaElement timers",
+      ))?;
+    scope.push_root(Value::Object(global))?;
+
+    let set_interval_key = alloc_key(&mut scope, "setInterval")?;
+    let set_interval = scope
+      .heap()
+      .object_get_own_data_property_value(global, &set_interval_key)?
+      .unwrap_or(Value::Undefined);
+    scope.push_root(set_interval)?;
+
+    // Use the same default cadence as browsers (roughly 4Hz).
+    let interval_ms = 250.0_f64;
+    let id_value = vm.call_with_host_and_hooks(
+      host,
+      &mut scope,
+      hooks,
+      set_interval,
+      Value::Undefined,
+      &[Value::Object(callback), Value::Number(interval_ms)],
+    )?;
+    let interval_id = match id_value {
+      Value::Number(n) if n.is_finite() => Some(n),
+      _ => None,
+    };
+
+    scope.heap_mut().truncate_stack_roots(base);
+
+    if let Some(interval_id) = interval_id {
+      if let Some(data) = vm.user_data_mut::<WindowRealmUserData>() {
+        let state = data.media_element_state_mut(key);
+        state.set_timeupdate_interval_id(Some(interval_id));
+      }
+    }
   }
 
   // Resolve once playback has started (after firing `playing`).
@@ -42570,9 +42756,46 @@ fn html_media_element_pause_native(
   let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
     return Err(VmError::TypeError("Illegal invocation"));
   };
-  let state = data.media_element_state_mut(key);
-  if !state.paused() {
-    state.pause();
+  let (should_dispatch_pause, interval_id) = {
+    let state = data.media_element_state_mut(key);
+    let was_playing = !state.paused();
+    if was_playing {
+      state.pause();
+    }
+    (was_playing, state.take_timeupdate_interval_id())
+  };
+
+  if let Some(interval_id) = interval_id {
+    let global = vm
+      .user_data::<WindowRealmUserData>()
+      .and_then(|data| data.window_obj())
+      .ok_or(VmError::InvariantViolation(
+        "missing window global object for HTMLMediaElement timers",
+      ))?;
+
+    let base = scope.heap().stack_root_len();
+    scope.push_root(Value::Object(global))?;
+
+    let clear_interval_key = alloc_key(scope, "clearInterval")?;
+    let clear_interval = scope
+      .heap()
+      .object_get_own_data_property_value(global, &clear_interval_key)?
+      .unwrap_or(Value::Undefined);
+    scope.push_root(clear_interval)?;
+
+    let _ = vm.call_with_host_and_hooks(
+      host,
+      scope,
+      hooks,
+      clear_interval,
+      Value::Undefined,
+      &[Value::Number(interval_id)],
+    );
+
+    scope.heap_mut().truncate_stack_roots(base);
+  }
+
+  if should_dispatch_pause {
     dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "pause")?;
   }
 
@@ -54359,6 +54582,90 @@ fn init_window_globals(
       idl_attribute_desc(Value::Object(paused_get_func), Value::Undefined),
     )?;
 
+    // HTMLMediaElement.prototype.playbackRate
+    let playback_rate_get_call_id = vm.register_native_call(html_media_element_playback_rate_get_native)?;
+    let playback_rate_get_name = scope.alloc_string("get playbackRate")?;
+    scope.push_root(Value::String(playback_rate_get_name))?;
+    let playback_rate_get_func = scope.alloc_native_function(
+      playback_rate_get_call_id,
+      None,
+      playback_rate_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      playback_rate_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(playback_rate_get_func))?;
+
+    let playback_rate_set_call_id = vm.register_native_call(html_media_element_playback_rate_set_native)?;
+    let playback_rate_set_name = scope.alloc_string("set playbackRate")?;
+    scope.push_root(Value::String(playback_rate_set_name))?;
+    let playback_rate_set_func = scope.alloc_native_function(
+      playback_rate_set_call_id,
+      None,
+      playback_rate_set_name,
+      1,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      playback_rate_set_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(playback_rate_set_func))?;
+
+    let playback_rate_key = alloc_key(&mut scope, "playbackRate")?;
+    scope.define_property(
+      html_media_element_proto,
+      playback_rate_key,
+      idl_attribute_desc(
+        Value::Object(playback_rate_get_func),
+        Value::Object(playback_rate_set_func),
+      ),
+    )?;
+
+    // HTMLMediaElement.prototype.defaultPlaybackRate
+    let default_playback_rate_get_call_id =
+      vm.register_native_call(html_media_element_default_playback_rate_get_native)?;
+    let default_playback_rate_get_name = scope.alloc_string("get defaultPlaybackRate")?;
+    scope.push_root(Value::String(default_playback_rate_get_name))?;
+    let default_playback_rate_get_func = scope.alloc_native_function(
+      default_playback_rate_get_call_id,
+      None,
+      default_playback_rate_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      default_playback_rate_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(default_playback_rate_get_func))?;
+
+    let default_playback_rate_set_call_id =
+      vm.register_native_call(html_media_element_default_playback_rate_set_native)?;
+    let default_playback_rate_set_name = scope.alloc_string("set defaultPlaybackRate")?;
+    scope.push_root(Value::String(default_playback_rate_set_name))?;
+    let default_playback_rate_set_func = scope.alloc_native_function(
+      default_playback_rate_set_call_id,
+      None,
+      default_playback_rate_set_name,
+      1,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      default_playback_rate_set_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(default_playback_rate_set_func))?;
+
+    let default_playback_rate_key = alloc_key(&mut scope, "defaultPlaybackRate")?;
+    scope.define_property(
+      html_media_element_proto,
+      default_playback_rate_key,
+      idl_attribute_desc(
+        Value::Object(default_playback_rate_get_func),
+        Value::Object(default_playback_rate_set_func),
+      ),
+    )?;
+
     // HTMLMediaElement.prototype.currentTime
     let current_time_get_call_id =
       vm.register_native_call(html_media_element_current_time_get_native)?;
@@ -54483,49 +54790,6 @@ fn init_window_globals(
       html_media_element_proto,
       volume_key,
       idl_attribute_desc(Value::Object(volume_get_func), Value::Object(volume_set_func)),
-    )?;
-
-    // HTMLMediaElement.prototype.playbackRate
-    let playback_rate_get_call_id =
-      vm.register_native_call(html_media_element_playback_rate_get_native)?;
-    let playback_rate_get_name = scope.alloc_string("get playbackRate")?;
-    scope.push_root(Value::String(playback_rate_get_name))?;
-    let playback_rate_get_func = scope.alloc_native_function(
-      playback_rate_get_call_id,
-      None,
-      playback_rate_get_name,
-      0,
-    )?;
-    scope.heap_mut().object_set_prototype(
-      playback_rate_get_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
-    scope.push_root(Value::Object(playback_rate_get_func))?;
-
-    let playback_rate_set_call_id =
-      vm.register_native_call(html_media_element_playback_rate_set_native)?;
-    let playback_rate_set_name = scope.alloc_string("set playbackRate")?;
-    scope.push_root(Value::String(playback_rate_set_name))?;
-    let playback_rate_set_func = scope.alloc_native_function(
-      playback_rate_set_call_id,
-      None,
-      playback_rate_set_name,
-      1,
-    )?;
-    scope.heap_mut().object_set_prototype(
-      playback_rate_set_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
-    scope.push_root(Value::Object(playback_rate_set_func))?;
-
-    let playback_rate_key = alloc_key(&mut scope, "playbackRate")?;
-    scope.define_property(
-      html_media_element_proto,
-      playback_rate_key,
-      idl_attribute_desc(
-        Value::Object(playback_rate_get_func),
-        Value::Object(playback_rate_set_func),
-      ),
     )?;
 
     // HTMLMediaElement.prototype.play()
@@ -62956,6 +63220,7 @@ mod tests {
         const muted = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'muted');
         const defaultMuted = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'defaultMuted');
         const volume = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'volume');
+        const defaultPlaybackRate = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'defaultPlaybackRate');
         const playbackRate = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'playbackRate');
         if (!networkState || typeof networkState.get !== 'function' || networkState.set !== undefined) return false;
         if (!readyState || typeof readyState.get !== 'function' || readyState.set !== undefined) return false;
@@ -62964,6 +63229,7 @@ mod tests {
         if (!muted || typeof muted.get !== 'function' || typeof muted.set !== 'function') return false;
         if (!defaultMuted || typeof defaultMuted.get !== 'function' || typeof defaultMuted.set !== 'function') return false;
         if (!volume || typeof volume.get !== 'function' || typeof volume.set !== 'function') return false;
+        if (!defaultPlaybackRate || typeof defaultPlaybackRate.get !== 'function' || typeof defaultPlaybackRate.set !== 'function') return false;
         if (!playbackRate || typeof playbackRate.get !== 'function' || typeof playbackRate.set !== 'function') return false;
  
         if (typeof HTMLMediaElement.prototype.load !== 'function') return false;
@@ -62991,6 +63257,10 @@ mod tests {
         try { volume.get.call(bogus); return false; }
         catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
         try { volume.set.call(bogus, 0.5); return false; }
+        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
+        try { defaultPlaybackRate.get.call(bogus); return false; }
+        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
+        try { defaultPlaybackRate.set.call(bogus, 2.0); return false; }
         catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
         try { playbackRate.get.call(bogus); return false; }
         catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }

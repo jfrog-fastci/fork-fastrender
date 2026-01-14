@@ -184,6 +184,10 @@ pub struct DriftResampler {
   src_rate_hz: u32,
   dst_rate_hz: u32,
   base_ratio: f64,
+  /// User-controlled playback rate multiplier (e.g. `HTMLMediaElement.playbackRate`).
+  ///
+  /// This is applied on top of the drift controller's small adjustment.
+  user_playback_rate: f64,
   controller: DriftController,
   /// Fractional position between `frame0` and `frame1`, in `[0, 1)`.
   phase: f64,
@@ -218,6 +222,7 @@ impl DriftResampler {
       src_rate_hz,
       dst_rate_hz,
       base_ratio,
+      user_playback_rate: 1.0,
       controller: DriftController::new(controller_cfg),
       phase: 0.0,
       frame0: vec![0.0; channels],
@@ -225,6 +230,19 @@ impl DriftResampler {
       initialized: false,
       last_input_frames: 0,
     }
+  }
+
+  /// Sets the user playback-rate multiplier (e.g. from `HTMLMediaElement.playbackRate`).
+  ///
+  /// Invalid values (NaN/Inf/negative) are treated as `0.0` (paused).
+  pub fn set_user_playback_rate(&mut self, rate: f64) {
+    self.user_playback_rate = if rate.is_finite() && rate >= 0.0 { rate } else { 0.0 };
+  }
+
+  /// Returns the current user playback-rate multiplier.
+  #[inline]
+  pub fn user_playback_rate(&self) -> f64 {
+    self.user_playback_rate
   }
 
   /// Returns the controller's current playback-rate multiplier.
@@ -270,6 +288,13 @@ impl DriftResampler {
     debug_assert_eq!(queue.channels(), channels);
     debug_assert_eq!(queue.sample_rate_hz(), self.src_rate_hz);
 
+    // Playback paused: output silence and do not consume queued audio.
+    if !(self.user_playback_rate.is_finite()) || self.user_playback_rate <= 0.0 {
+      out[..out_samples].fill(0.0);
+      self.last_input_frames = 0;
+      return out_samples;
+    }
+
     let dt_s = out_frames as f64 / f64::from(self.dst_rate_hz);
     let buffered_frames = queue
       .buffered_frames()
@@ -277,9 +302,12 @@ impl DriftResampler {
     let buffered_s = buffered_frames as f64 / f64::from(self.src_rate_hz);
 
     let playback_rate = self.controller.update(buffered_s, dt_s);
-    let mut step = self.base_ratio * playback_rate;
+    let mut step = self.base_ratio * playback_rate * self.user_playback_rate;
     if !(step.is_finite()) || step <= 0.0 {
-      step = self.base_ratio;
+      step = self.base_ratio * self.user_playback_rate;
+      if !(step.is_finite()) || step <= 0.0 {
+        step = self.base_ratio;
+      }
     }
 
     // Default to silence; we'll overwrite as we successfully synthesize frames.
@@ -363,6 +391,12 @@ impl DriftResampler {
     debug_assert_eq!(queue.channels(), channels);
     debug_assert_eq!(queue.sample_rate_hz(), self.src_rate_hz);
 
+    // Playback paused: do not consume queued audio.
+    if !(self.user_playback_rate.is_finite()) || self.user_playback_rate <= 0.0 {
+      self.last_input_frames = 0;
+      return out_samples;
+    }
+
     // Defensively treat non-finite/denormal gains as silence so we never poison the mix.
     // Note: we still drain the queue even when the effective gain is 0, so muting does not behave
     // like pausing.
@@ -379,9 +413,12 @@ impl DriftResampler {
     let buffered_s = buffered_frames as f64 / f64::from(self.src_rate_hz);
 
     let playback_rate = self.controller.update(buffered_s, dt_s);
-    let mut step = self.base_ratio * playback_rate;
+    let mut step = self.base_ratio * playback_rate * self.user_playback_rate;
     if !(step.is_finite()) || step <= 0.0 {
-      step = self.base_ratio;
+      step = self.base_ratio * self.user_playback_rate;
+      if !(step.is_finite()) || step <= 0.0 {
+        step = self.base_ratio;
+      }
     }
 
     self.last_input_frames = 0;

@@ -1,0 +1,58 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>playback_rate</title>
+
+<video id="v"></video>
+<div id="marker" data-result="init"></div>
+
+<script>
+  (() => {
+    const v = document.getElementById("v");
+    const marker = document.getElementById("marker");
+
+    marker.setAttribute("data-result", "running");
+
+    // Guard against hangs: if no `timeupdate` arrives within 1s of virtual time, fail.
+    setTimeout(() => {
+      if (marker.getAttribute("data-result") === "running") {
+        marker.setAttribute("data-result", "fail");
+        marker.setAttribute("data-error", "timeout");
+      }
+    }, 1000);
+
+    // Allow autoplay policy without needing a user gesture.
+    v.muted = true;
+    v.playbackRate = 2;
+
+    let t0 = performance.now();
+    let c0 = v.currentTime;
+    let timeupdates = 0;
+    let done = false;
+
+    v.addEventListener("timeupdate", () => {
+      if (done) return;
+      timeupdates += 1;
+      if (timeupdates < 2) return;
+
+      done = true;
+      const dt = (performance.now() - t0) / 1000;
+      const dc = v.currentTime - c0;
+      const ratio = dc / dt;
+
+      marker.setAttribute("data-dt", String(dt));
+      marker.setAttribute("data-dc", String(dc));
+      marker.setAttribute("data-ratio", String(ratio));
+
+      const ok = Number.isFinite(ratio) && ratio > 1.5 && ratio < 2.5;
+      marker.setAttribute("data-result", ok ? "pass" : "fail");
+    });
+
+    const p = v.play();
+    if (p && typeof p.catch === "function") {
+      p.catch((e) => {
+        marker.setAttribute("data-result", "fail");
+        marker.setAttribute("data-error", String(e && e.message ? e.message : e));
+      });
+    }
+  })();
+</script>

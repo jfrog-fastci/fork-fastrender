@@ -36,6 +36,12 @@ pub(crate) const HAVE_ENOUGH_DATA: u16 = 4;
 #[derive(Debug)]
 pub(crate) struct MediaElementState {
   playback: Arc<MediaPlaybackControl>,
+  default_playback_rate: f64,
+  /// Active `setInterval` id for periodic `timeupdate` events (when an event loop is available).
+  ///
+  /// Stored here so `play()`/`pause()` native bindings can ensure only one interval is active per
+  /// element.
+  timeupdate_interval_id: Option<f64>,
   muted: bool,
   muted_overridden: bool,
   volume: f64,
@@ -59,6 +65,8 @@ impl MediaElementState {
     let playback = Arc::new(MediaPlaybackControl::new(master_clock));
     Self {
       playback,
+      default_playback_rate: 1.0,
+      timeupdate_interval_id: None,
       muted: false,
       muted_overridden: false,
       volume: 1.0,
@@ -105,6 +113,26 @@ impl MediaElementState {
     Arc::clone(&self.playback)
   }
 
+  pub(crate) fn default_playback_rate(&self) -> f64 {
+    self.default_playback_rate
+  }
+
+  pub(crate) fn set_default_playback_rate(&mut self, rate: f64) {
+    self.default_playback_rate = rate;
+  }
+
+  pub(crate) fn timeupdate_interval_id(&self) -> Option<f64> {
+    self.timeupdate_interval_id
+  }
+
+  pub(crate) fn set_timeupdate_interval_id(&mut self, id: Option<f64>) {
+    self.timeupdate_interval_id = id;
+  }
+
+  pub(crate) fn take_timeupdate_interval_id(&mut self) -> Option<f64> {
+    self.timeupdate_interval_id.take()
+  }
+
   pub(crate) fn muted(&self) -> bool {
     self.muted
   }
@@ -140,6 +168,10 @@ pub(crate) struct MediaElementStateRegistry {
 impl MediaElementStateRegistry {
   pub(crate) fn len(&self) -> usize {
     self.states.len()
+  }
+
+  pub(crate) fn get_mut(&mut self, key: DomNodeKey) -> Option<&mut MediaElementState> {
+    self.states.get_mut(&key)
   }
 
   #[cfg(test)]
