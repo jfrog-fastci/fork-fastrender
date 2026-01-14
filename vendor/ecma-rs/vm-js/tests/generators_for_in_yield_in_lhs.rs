@@ -299,3 +299,57 @@ fn generator_for_in_yield_in_let_lhs_preserves_per_iteration_env() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_for_in_yield_in_object_pattern_rest_assignment_target_computed_member_multiple_iterations() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          var obj = {};
+          var out = [];
+          for ({...obj[yield 1]} in {a: 0, bb: 0}) {
+            out.push(obj.k[0] + (obj.k[1] || ""));
+          }
+          return out.join(",");
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next("k");
+        var r3 = it.next("k");
+        r1.done === false && r1.value === 1 &&
+        r2.done === false && r2.value === 1 &&
+        r3.done === true && r3.value === "a,bb"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_in_yield_in_array_pattern_rest_assignment_target_computed_member_multiple_iterations() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          var obj = {};
+          var out = [];
+          for ([...obj[yield 1]] in {a: 0, bb: 0}) {
+            out.push(obj.k.join(""));
+          }
+          return out.join(",");
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next("k");
+        var r3 = it.next("k");
+        r1.done === false && r1.value === 1 &&
+        r2.done === false && r2.value === 1 &&
+        r3.done === true && r3.value === "a,bb"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
