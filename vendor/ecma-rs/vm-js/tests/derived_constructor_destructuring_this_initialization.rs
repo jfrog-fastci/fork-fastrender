@@ -102,6 +102,84 @@ fn derived_constructor_body_destructuring_default_this_throws_reference_error_co
 }
 
 #[test]
+fn derived_constructor_param_destructuring_default_super_property_throws_reference_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class A {}
+        class B extends A {
+          constructor({ a = super.m } = {}) { super(); }
+        }
+        try { new B({}); "no"; } catch (e) { e.name }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+}
+
+#[test]
+fn derived_constructor_param_destructuring_default_super_property_throws_reference_error_compiled(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class A {}
+      class B extends A {
+        constructor({ a = super.m } = {}) { super(); }
+      }
+      try { new B({}); "no"; } catch (e) { e.name }
+    "#,
+  )?;
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn derived_constructor_body_destructuring_default_super_property_throws_reference_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class A {}
+        class B extends A {
+          constructor() {
+            let a;
+            ({ a = super.m } = {});
+            super();
+          }
+        }
+        try { new B(); "no"; } catch (e) { e.name }
+      "#,
+    )
+    .unwrap();
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+}
+
+#[test]
+fn derived_constructor_body_destructuring_default_super_property_throws_reference_error_compiled(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class A {}
+      class B extends A {
+        constructor() {
+          let a;
+          ({ a = super.m } = {});
+          super();
+        }
+      }
+      try { new B(); "no"; } catch (e) { e.name }
+    "#,
+  )?;
+  assert_value_is_utf8(&rt, value, "ReferenceError");
+  Ok(())
+}
+
+#[test]
 fn derived_constructor_param_destructuring_default_super_computed_key_does_not_run() {
   let mut rt = new_runtime();
   let value = rt
@@ -110,7 +188,7 @@ fn derived_constructor_param_destructuring_default_super_computed_key_does_not_r
         var side = 0;
         class A {}
         class B extends A {
-          constructor({ a = delete super[(side = 1, "m")] } = {}) { super(); }
+          constructor({ a = super[(side = 1, "m")] } = {}) { super(); }
         }
         try { new B({}); "no"; } catch (e) { e.name + ":" + side }
       "#,
@@ -129,7 +207,7 @@ fn derived_constructor_param_destructuring_default_super_computed_key_does_not_r
       var side = 0;
       class A {}
       class B extends A {
-        constructor({ a = delete super[(side = 1, "m")] } = {}) { super(); }
+        constructor({ a = super[(side = 1, "m")] } = {}) { super(); }
       }
       try { new B({}); "no"; } catch (e) { e.name + ":" + side }
     "#,
@@ -149,7 +227,7 @@ fn derived_constructor_body_destructuring_default_super_computed_key_does_not_ru
         class B extends A {
           constructor() {
             let a;
-            ({ a = delete super[(side = 1, "m")] } = {});
+            ({ a = super[(side = 1, "m")] } = {});
             super();
           }
         }
@@ -172,7 +250,7 @@ fn derived_constructor_body_destructuring_default_super_computed_key_does_not_ru
       class B extends A {
         constructor() {
           let a;
-          ({ a = delete super[(side = 1, "m")] } = {});
+          ({ a = super[(side = 1, "m")] } = {});
           super();
         }
       }
