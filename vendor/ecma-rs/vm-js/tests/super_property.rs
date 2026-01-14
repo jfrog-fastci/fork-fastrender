@@ -15,6 +15,22 @@ fn assert_value_is_utf8(rt: &JsRuntime, value: Value, expected: &str) {
 }
 
 #[test]
+fn super_property_in_base_class_method_reads_from_object_prototype() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class A {
+          m() { return super.toString === Object.prototype.toString; }
+        }
+        new A().m()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn super_method_call_uses_this_binding_as_receiver() {
   let mut rt = new_runtime();
   let value = rt
@@ -78,4 +94,3 @@ fn derived_ctor_super_prop_before_super_throws_reference_error() {
     "ReferenceError:Must call super constructor in derived class before accessing 'this'",
   );
 }
-
