@@ -14,7 +14,7 @@
     "layout": 5.359728242208649,
     "paint": 59.06754282692259
   },
-  "notes": "Live etsy.com is behind DataDome bot protection (often 403/challenge in CI), so the pageset uses an offline archived homepage fixture (JS disabled) that still includes Etsy’s DataDome tags.js loader for fixture validation. Although Chrome and FastRender render the same page content, it is extremely text/icon heavy, so small font raster/antialiasing and subtle background shade differences accumulate across thousands of pixels, producing a large diff_percent and a non-trivial SSIM perceptual score.",
+  "notes": "Live etsy.com is behind DataDome bot protection (often 403/challenge in CI), so the pageset uses an offline archived homepage fixture with JS disabled; the HTML still includes Etsy’s DataDome tags.js loader but no network requests are made. Chrome and FastRender render the same static content, but the page is extremely text/icon heavy and uses subtle gray backgrounds, so small font raster/antialiasing differences and 1–2 RGB shade shifts accumulate across the viewport, yielding a large diff_percent and a non-trivial SSIM (ssim_windowed_v2) perceptual score.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 331696,
