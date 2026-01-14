@@ -170,6 +170,7 @@ impl ChromeDynamicAssetFetcher {
   }
 
   fn try_fetch_favicon(&self, url: &str) -> Option<Result<FetchedResource>> {
+    let url = trim_ascii_whitespace(url);
     let tab_id = match parse_favicon_tab_id_from_url(url)? {
       Ok(tab_id) => tab_id,
       Err(err) => return Some(Err(err)),
@@ -262,7 +263,13 @@ fn transparent_png_bytes() -> &'static Vec<u8> {
   })
 }
 
+fn trim_ascii_whitespace(value: &str) -> &str {
+  // Match HTML URL-ish attribute whitespace rules (TAB/LF/FF/CR/SPACE).
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 fn parse_favicon_tab_id_from_url(url: &str) -> Option<Result<TabId>> {
+  let url = trim_ascii_whitespace(url);
   let parsed = url::Url::parse(url).ok()?;
   if parsed.scheme() != "chrome" {
     return None;
@@ -352,6 +359,29 @@ mod tests {
 
     let url = ChromeDynamicAssetFetcher::favicon_url(tab_id);
     let res = fetcher.fetch(&url).expect("fetch favicon");
+    assert_eq!(res.content_type.as_deref(), Some("image/png"));
+    assert_eq!(res.bytes, png);
+  }
+
+  #[test]
+  fn fetch_favicon_trims_ascii_whitespace() {
+    let inner: Arc<dyn ResourceFetcher> = Arc::new(PanicFetcher);
+    let fetcher = ChromeDynamicAssetFetcher::new(inner);
+    let tab_id = TabId(123);
+    let png = tiny_png_bytes();
+
+    fetcher
+      .set_tab_favicon_png(tab_id, png.clone(), 1, 1)
+      .expect("set favicon");
+
+    let expected = ChromeDynamicAssetFetcher::favicon_url(tab_id);
+    let url = format!(" \t{expected}\n");
+    let res = fetcher.fetch(&url).expect("fetch favicon with whitespace");
+    assert_eq!(
+      res.final_url.as_deref(),
+      Some(expected.as_str()),
+      "expected canonical final_url"
+    );
     assert_eq!(res.content_type.as_deref(), Some("image/png"));
     assert_eq!(res.bytes, png);
   }

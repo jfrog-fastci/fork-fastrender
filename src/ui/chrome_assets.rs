@@ -184,7 +184,13 @@ fn decoded_equals_dot_segment(segment: &str) -> bool {
   decoded == "." || decoded == ".."
 }
 
+fn trim_ascii_whitespace(value: &str) -> &str {
+  // Match HTML URL-ish attribute whitespace rules (TAB/LF/FF/CR/SPACE).
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 fn parse_chrome_url(url: &str) -> Result<ParsedChromeUrl<'_>> {
+  let url = trim_ascii_whitespace(url);
   let Some(scheme) = url.get(..7) else {
     return Err(Error::Resource(ResourceError::new(
       url,
@@ -275,6 +281,7 @@ fn parse_chrome_url(url: &str) -> Result<ParsedChromeUrl<'_>> {
 
 impl ResourceFetcher for ChromeAssetsFetcher {
   fn fetch(&self, url: &str) -> Result<FetchedResource> {
+    let url = trim_ascii_whitespace(url);
     let parsed = parse_chrome_url(url)?;
     let host = parsed.host.to_ascii_lowercase();
 
@@ -331,6 +338,15 @@ mod tests {
     );
     assert_eq!(res.content_type.as_deref(), Some("text/css"));
     assert_eq!(res.final_url.as_deref(), Some(url));
+  }
+
+  #[test]
+  fn fetch_chrome_css_trims_ascii_whitespace() {
+    let fetcher = ChromeAssetsFetcher::new();
+    let url = " \nchrome://styles/chrome.css\t";
+    let res = fetcher.fetch(url).expect("fetch chrome.css with whitespace");
+    assert_eq!(res.content_type.as_deref(), Some("text/css"));
+    assert_eq!(res.final_url.as_deref(), Some("chrome://styles/chrome.css"));
   }
 
   #[test]
