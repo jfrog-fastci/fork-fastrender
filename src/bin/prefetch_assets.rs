@@ -188,10 +188,11 @@ mod disk_cache_main {
   use fastrender::image_loader::ImageCache;
   use fastrender::pageset::{cache_html_path, pageset_entries, PagesetEntry, PagesetFilter};
   use fastrender::resource::{
-    ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane, ensure_script_mime_sane,
-    ensure_stylesheet_mime_sane, is_data_url, origin_from_url, CachingFetcherConfig, CorsMode,
-    DiskCachingFetcher, DocumentOrigin, FetchCredentialsMode, FetchDestination, FetchRequest,
-    FetchedResource, ReferrerPolicy, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
+    ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane, ensure_media_mime_sane,
+    ensure_script_mime_sane, ensure_stylesheet_mime_sane, is_data_url, origin_from_url,
+    CachingFetcherConfig, CorsMode, DiskCachingFetcher, DocumentOrigin, FetchCredentialsMode,
+    FetchDestination, FetchRequest, FetchedResource, ReferrerPolicy, ResourceFetcher,
+    DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
   };
   use fastrender::style::media::{MediaContext, MediaQuery, MediaQueryCache};
   use fastrender::tree::box_tree::CrossOriginAttribute;
@@ -3160,7 +3161,9 @@ mod disk_cache_main {
             request = request.with_client_origin(origin);
           }
           let success = match fetcher.fetch_with_request(request) {
-            Ok(res) => ensure_http_success(&res, url).is_ok(),
+            Ok(res) => ensure_http_success(&res, url)
+              .and_then(|()| ensure_media_mime_sane(&res, url))
+              .is_ok(),
             Err(_) => false,
           };
           if success {
@@ -3190,7 +3193,10 @@ mod disk_cache_main {
         let probe_size: u64 = match fetcher.fetch_partial_with_request(probe_request, probe_max_bytes)
         {
           Ok(res) => {
-            if ensure_http_success(&res, url).is_ok() {
+            if ensure_http_success(&res, url)
+              .and_then(|()| ensure_media_mime_sane(&res, url))
+              .is_ok()
+            {
               res.bytes.len() as u64
             } else {
               summary.failed_media += 1;
@@ -3247,7 +3253,9 @@ mod disk_cache_main {
           request = request.with_client_origin(origin);
         }
         let success = match fetcher.fetch_with_request(request) {
-          Ok(res) => ensure_http_success(&res, url).is_ok(),
+          Ok(res) => ensure_http_success(&res, url)
+            .and_then(|()| ensure_media_mime_sane(&res, url))
+            .is_ok(),
           Err(_) => false,
         };
         if success {
