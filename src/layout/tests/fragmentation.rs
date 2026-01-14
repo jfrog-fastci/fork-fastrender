@@ -1811,66 +1811,88 @@ fn break_before_column_only_applies_in_column_context() {
 #[test]
 fn abspos_break_before_after_are_ignored_in_page_fragmentation() {
   // CSS Break 3: break-before/after/inside do not apply to absolutely-positioned boxes
-  // (they form parallel flows).
-  let first =
-    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 80.0, 20.0), 1, vec![]);
-  let second =
-    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 30.0, 80.0, 20.0), 2, vec![]);
+  // (they form parallel flows). Include `fixed` which is also absolutely-positioned.
+  for position in [Position::Absolute, Position::Fixed] {
+    let first =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 80.0, 20.0), 1, vec![]);
+    let second =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 30.0, 80.0, 20.0), 2, vec![]);
 
-  let mut abs_style = ComputedStyle::default();
-  abs_style.position = Position::Absolute;
-  abs_style.break_before = BreakBetween::Page;
-  abs_style.break_after = BreakBetween::Page;
+    let mut abs_style = ComputedStyle::default();
+    abs_style.position = position;
+    abs_style.break_before = BreakBetween::Page;
+    abs_style.break_after = BreakBetween::Page;
 
-  let mut abspos =
-    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 20.0, 80.0, 10.0), 3, vec![]);
-  abspos.style = Some(Arc::new(abs_style));
+    let mut abspos =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 20.0, 80.0, 10.0), 3, vec![]);
+    abspos.style = Some(Arc::new(abs_style));
 
-  let root = FragmentNode::new_block(
-    Rect::from_xywh(0.0, 0.0, 80.0, 50.0),
-    vec![first, abspos, second],
-  );
+    let root = FragmentNode::new_block(
+      Rect::from_xywh(0.0, 0.0, 80.0, 50.0),
+      vec![first, abspos, second],
+    );
 
-  let fragments = fragment_tree(&root, &FragmentationOptions::new(100.0)).unwrap();
-  assert_eq!(
-    fragments.len(),
-    1,
-    "abspos break hints must not force pagination boundaries"
-  );
-  assert_eq!(fragments_with_id(&fragments[0], 1).len(), 1);
-  assert_eq!(fragments_with_id(&fragments[0], 2).len(), 1);
+    let boundaries =
+      resolve_fragmentation_boundaries_with_context(&root, 100.0, FragmentationContext::Page)
+        .unwrap();
+    assert_eq!(
+      boundaries.len(),
+      2,
+      "abspos break hints must not contribute forced boundaries (position={position:?}, boundaries={boundaries:?})"
+    );
+
+    let fragments = fragment_tree(&root, &FragmentationOptions::new(100.0)).unwrap();
+    assert_eq!(
+      fragments.len(),
+      1,
+      "abspos break hints must not force pagination boundaries (position={position:?})"
+    );
+    assert_eq!(fragments_with_id(&fragments[0], 1).len(), 1);
+    assert_eq!(fragments_with_id(&fragments[0], 2).len(), 1);
+  }
 }
 
 #[test]
 fn abspos_break_before_after_are_ignored_in_column_fragmentation() {
-  let first =
-    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 80.0, 20.0), 1, vec![]);
-  let second =
-    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 30.0, 80.0, 20.0), 2, vec![]);
+  for position in [Position::Absolute, Position::Fixed] {
+    let first =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 80.0, 20.0), 1, vec![]);
+    let second =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 30.0, 80.0, 20.0), 2, vec![]);
 
-  let mut abs_style = ComputedStyle::default();
-  abs_style.position = Position::Absolute;
-  abs_style.break_before = BreakBetween::Column;
-  abs_style.break_after = BreakBetween::Column;
+    let mut abs_style = ComputedStyle::default();
+    abs_style.position = position;
+    abs_style.break_before = BreakBetween::Column;
+    abs_style.break_after = BreakBetween::Column;
 
-  let mut abspos =
-    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 20.0, 80.0, 10.0), 3, vec![]);
-  abspos.style = Some(Arc::new(abs_style));
+    let mut abspos =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 20.0, 80.0, 10.0), 3, vec![]);
+    abspos.style = Some(Arc::new(abs_style));
 
-  let root = FragmentNode::new_block(
-    Rect::from_xywh(0.0, 0.0, 80.0, 50.0),
-    vec![first, abspos, second],
-  );
+    let root = FragmentNode::new_block(
+      Rect::from_xywh(0.0, 0.0, 80.0, 50.0),
+      vec![first, abspos, second],
+    );
 
-  let options = FragmentationOptions::new(100.0).with_columns(2, 0.0);
-  let fragments = fragment_tree(&root, &options).unwrap();
-  assert_eq!(
-    fragments.len(),
-    1,
-    "abspos break hints must not force column fragmentation boundaries"
-  );
-  assert_eq!(fragments_with_id(&fragments[0], 1).len(), 1);
-  assert_eq!(fragments_with_id(&fragments[0], 2).len(), 1);
+    let boundaries =
+      resolve_fragmentation_boundaries_with_context(&root, 100.0, FragmentationContext::Column)
+        .unwrap();
+    assert_eq!(
+      boundaries.len(),
+      2,
+      "abspos break hints must not contribute forced boundaries (position={position:?}, boundaries={boundaries:?})"
+    );
+
+    let options = FragmentationOptions::new(100.0).with_columns(2, 0.0);
+    let fragments = fragment_tree(&root, &options).unwrap();
+    assert_eq!(
+      fragments.len(),
+      1,
+      "abspos break hints must not force column fragmentation boundaries (position={position:?})"
+    );
+    assert_eq!(fragments_with_id(&fragments[0], 1).len(), 1);
+    assert_eq!(fragments_with_id(&fragments[0], 2).len(), 1);
+  }
 }
 
 #[test]
