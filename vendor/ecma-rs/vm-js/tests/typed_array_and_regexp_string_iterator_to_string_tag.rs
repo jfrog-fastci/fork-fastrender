@@ -123,3 +123,107 @@ fn regexp_string_iterator_prototype_has_to_string_tag() -> Result<(), VmError> {
   Ok(())
 }
 
+#[test]
+fn iterator_prototype_to_string_tag_and_constructor_weird_setter() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  let value = rt.exec_script(
+    r#"
+    (() => {
+      if (typeof Iterator !== "function") return false;
+      if (Object.getPrototypeOf(Iterator) !== Function.prototype) return false;
+
+      let threw = false;
+      try { Iterator(); } catch (e) { threw = e instanceof TypeError; }
+      if (!threw) return false;
+      threw = false;
+      try { new Iterator(); } catch (e) { threw = e instanceof TypeError; }
+      if (!threw) return false;
+
+      class SubIterator extends Iterator {}
+      const sub = new SubIterator();
+      if (!(sub instanceof SubIterator)) return false;
+      if (!(sub instanceof Iterator)) return false;
+
+      const IteratorPrototype = Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]()));
+      if (Iterator.prototype !== IteratorPrototype) return false;
+
+      // --- @@toStringTag ---
+      const tagDesc = Object.getOwnPropertyDescriptor(Iterator.prototype, Symbol.toStringTag);
+      if (!tagDesc) return false;
+      if (typeof tagDesc.get !== "function") return false;
+      if (typeof tagDesc.set !== "function") return false;
+      if (tagDesc.configurable !== true) return false;
+      if (tagDesc.enumerable !== false) return false;
+
+      if (Iterator.prototype[Symbol.toStringTag] !== "Iterator") return false;
+      if (tagDesc.get.call() !== "Iterator") return false;
+
+      threw = false; try { tagDesc.set.call(undefined, ""); } catch (e) { threw = e instanceof TypeError; }
+      if (!threw) return false;
+      threw = false; try { tagDesc.set.call(null, ""); } catch (e) { threw = e instanceof TypeError; }
+      if (!threw) return false;
+      threw = false; try { tagDesc.set.call(true, ""); } catch (e) { threw = e instanceof TypeError; }
+      if (!threw) return false;
+
+      threw = false; try { tagDesc.set.call(IteratorPrototype, ""); } catch (e) { threw = e instanceof TypeError; }
+      if (!threw) return false;
+      threw = false; try { IteratorPrototype[Symbol.toStringTag] = ""; } catch (e) { threw = e instanceof TypeError; }
+      if (!threw) return false;
+
+      // --- constructor ---
+      const ctorDesc = Object.getOwnPropertyDescriptor(Iterator.prototype, "constructor");
+      if (!ctorDesc) return false;
+      if (typeof ctorDesc.get !== "function") return false;
+      if (typeof ctorDesc.set !== "function") return false;
+      if (ctorDesc.configurable !== true) return false;
+      if (ctorDesc.enumerable !== false) return false;
+
+      if (Iterator.prototype.constructor !== Iterator) return false;
+      if (ctorDesc.get.call() !== Iterator) return false;
+
+      threw = false; try { ctorDesc.set.call(undefined, ""); } catch (e) { threw = e instanceof TypeError; }
+      if (!threw) return false;
+      threw = false; try { ctorDesc.set.call(null, ""); } catch (e) { threw = e instanceof TypeError; }
+      if (!threw) return false;
+      threw = false; try { ctorDesc.set.call(true, ""); } catch (e) { threw = e instanceof TypeError; }
+      if (!threw) return false;
+
+      threw = false; try { ctorDesc.set.call(IteratorPrototype, ""); } catch (e) { threw = e instanceof TypeError; }
+      if (!threw) return false;
+      threw = false; try { IteratorPrototype.constructor = ""; } catch (e) { threw = e instanceof TypeError; }
+      if (!threw) return false;
+
+      // Freeze home before exercising the CreateDataPropertyOrThrow path.
+      Object.freeze(IteratorPrototype);
+
+      const sentinelTag = "a";
+      const fake1 = Object.create(IteratorPrototype);
+      fake1[Symbol.toStringTag] = sentinelTag;
+      if (fake1[Symbol.toStringTag] !== sentinelTag) return false;
+
+      const tagObj = { [Symbol.toStringTag]: sentinelTag + "a" };
+      tagDesc.set.call(tagObj, sentinelTag);
+      if (tagObj[Symbol.toStringTag] !== sentinelTag) return false;
+
+      const sentinelObj = {};
+      const fake2 = Object.create(IteratorPrototype);
+      fake2.constructor = sentinelObj;
+      if (fake2.constructor !== sentinelObj) return false;
+
+      const ctorObj = { constructor: sentinelObj + "a" };
+      ctorDesc.set.call(ctorObj, sentinelObj);
+      if (ctorObj.constructor !== sentinelObj) return false;
+
+      // Home values must remain stable.
+      if (Iterator.prototype[Symbol.toStringTag] !== "Iterator") return false;
+      if (Iterator.prototype.constructor !== Iterator) return false;
+
+      return true;
+    })()
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+
+  Ok(())
+}

@@ -372,6 +372,14 @@ impl Realm {
         &mut scope,
         global_object,
         &mut installed_globals,
+        "Iterator",
+        Value::Object(intrinsics.iterator()),
+      )?;
+
+      define_global_data_property_once(
+        &mut scope,
+        global_object,
+        &mut installed_globals,
         "ArrayBuffer",
         Value::Object(intrinsics.array_buffer()),
       )?;

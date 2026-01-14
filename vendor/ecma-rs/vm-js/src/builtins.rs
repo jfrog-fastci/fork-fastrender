@@ -3707,6 +3707,60 @@ pub fn array_buffer_prototype_slice(
   Ok(Value::Object(new_obj))
 }
 
+/// `%Iterator%` (ECMA-262 iterator helpers).
+///
+/// `%Iterator%` is a global intrinsic that is *not* directly callable/constructible, but is
+/// designed to be subclassed (`class X extends Iterator {}`).
+pub fn iterator_constructor_call(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError("Iterator is not directly callable"))
+}
+
+pub fn iterator_constructor_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-iterator
+  //
+  // If NewTarget is undefined or the active function object, throw a TypeError exception.
+  if matches!(new_target, Value::Undefined) || new_target == Value::Object(callee) {
+    return Err(VmError::TypeError("Iterator is not directly constructible"));
+  }
+  let Value::Object(_) = new_target else {
+    return Err(VmError::TypeError("Iterator newTarget must be an object"));
+  };
+
+  let mut scope = scope.reborrow();
+  scope.push_root(new_target)?;
+
+  let intr = require_intrinsics(vm)?;
+  let default_proto = intr.iterator_prototype();
+  let proto = crate::spec_ops::get_prototype_from_constructor_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    new_target,
+    default_proto,
+  )?;
+  scope.push_root(Value::Object(proto))?;
+
+  let obj = scope.alloc_object_with_prototype(Some(proto))?;
+  Ok(Value::Object(obj))
+}
+
 /// `%TypedArray%` (ECMA-262).
 ///
 /// `%TypedArray%` is an intrinsic constructor that is observable via e.g.
@@ -9474,6 +9528,161 @@ pub fn iterator_prototype_iterator(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   Ok(this)
+}
+
+fn setter_that_ignores_prototype_properties(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  this: Value,
+  home: GcObject,
+  key: PropertyKey,
+  value: Value,
+) -> Result<(), VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-setterthatignoresprototypeproperties
+  //
+  // 1. If this is not an Object, throw TypeError.
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError(
+      "SetterThatIgnoresPrototypeProperties called on non-object",
+    ));
+  };
+
+  // 2. If this is home, throw TypeError.
+  //
+  // Note: throwing here emulates assignment to a non-writable data property on `home` in strict
+  // mode code.
+  if obj == home {
+    return Err(VmError::TypeError(
+      "SetterThatIgnoresPrototypeProperties called on home object",
+    ));
+  }
+
+  // Root inputs across potential allocations from Proxy traps and property definition.
+  let mut scope = scope.reborrow();
+  let key_root = match key {
+    PropertyKey::String(s) => Value::String(s),
+    PropertyKey::Symbol(s) => Value::Symbol(s),
+  };
+  scope.push_roots(&[Value::Object(obj), key_root, value])?;
+
+  // 3. Let desc be ? this.[[GetOwnProperty]](p).
+  let desc = scope.object_get_own_property_with_host_and_hooks(vm, host, hooks, obj, key)?;
+
+  if desc.is_none() {
+    // 4. If desc is undefined, Perform ? CreateDataPropertyOrThrow(this, p, v).
+    crate::spec_ops::create_data_property_or_throw_with_host_and_hooks(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      obj,
+      key,
+      value,
+    )?;
+  } else {
+    // 5. Else, Perform ? Set(this, p, v, true).
+    let ok = crate::spec_ops::internal_set_with_host_and_hooks(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      obj,
+      key,
+      value,
+      Value::Object(obj),
+    )?;
+    if !ok {
+      return Err(VmError::TypeError("Set rejected"));
+    }
+  }
+
+  Ok(())
+}
+
+/// `get %Iterator.prototype%[@@toStringTag]` (ECMA-262 iterator helpers).
+pub fn iterator_prototype_to_string_tag_get(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(Value::String(scope.alloc_string("Iterator")?))
+}
+
+/// `set %Iterator.prototype%[@@toStringTag]` (ECMA-262 iterator helpers).
+pub fn iterator_prototype_to_string_tag_set(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let v = args.get(0).copied().unwrap_or(Value::Undefined);
+  setter_that_ignores_prototype_properties(
+    vm,
+    scope,
+    host,
+    hooks,
+    this,
+    intr.iterator_prototype(),
+    PropertyKey::from_symbol(intr.well_known_symbols().to_string_tag),
+    v,
+  )?;
+  Ok(Value::Undefined)
+}
+
+/// `get %Iterator.prototype%.constructor` (ECMA-262 iterator helpers).
+pub fn iterator_prototype_constructor_get(
+  vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  Ok(Value::Object(intr.iterator()))
+}
+
+/// `set %Iterator.prototype%.constructor` (ECMA-262 iterator helpers).
+pub fn iterator_prototype_constructor_set(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let v = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  // Root `this` and `v` across potential string allocation in `common_key_constructor`.
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[this, v])?;
+  let constructor_key_s = scope.common_key_constructor()?;
+  let key = PropertyKey::from_string(constructor_key_s);
+
+  setter_that_ignores_prototype_properties(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    this,
+    intr.iterator_prototype(),
+    key,
+    v,
+  )?;
+  Ok(Value::Undefined)
 }
 
 /// `%IteratorPrototype%[@@dispose]` (tc39/proposal-explicit-resource-management).

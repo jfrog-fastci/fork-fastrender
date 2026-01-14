@@ -98,6 +98,7 @@ pub struct Intrinsics {
   bigint_constructor: GcObject,
   date_constructor: GcObject,
   symbol_constructor: GcObject,
+  iterator: GcObject,
   array_buffer: GcObject,
   typed_array: GcObject,
   uint8_array: GcObject,
@@ -701,6 +702,7 @@ impl Intrinsics {
 
     let array_prototype_values_fn: GcObject;
     let regexp_string_iterator_prototype: GcObject;
+    let iterator: GcObject;
 
     // --- Base prototypes ---
     let object_prototype = alloc_rooted_object(scope, roots)?;
@@ -724,6 +726,8 @@ impl Intrinsics {
     scope
       .heap_mut()
       .object_set_prototype(iterator_prototype, Some(object_prototype))?;
+    // `Iterator.prototype[@@toStringTag]` is installed later as an accessor property (iterator
+    // helpers proposal) with a "weird setter" (see `SetterThatIgnoresPrototypeProperties`).
 
     // `%ArrayIteratorPrototype%`
     let array_iterator_prototype = alloc_rooted_object(scope, roots)?;
@@ -1057,6 +1061,14 @@ impl Intrinsics {
     let iterator_prototype_iterator = vm.register_native_call(builtins::iterator_prototype_iterator)?;
     let iterator_prototype_symbol_dispose =
       vm.register_native_call(builtins::iterator_prototype_symbol_dispose)?;
+    let iterator_prototype_to_string_tag_get_call =
+      vm.register_native_call(builtins::iterator_prototype_to_string_tag_get)?;
+    let iterator_prototype_to_string_tag_set_call =
+      vm.register_native_call(builtins::iterator_prototype_to_string_tag_set)?;
+    let iterator_prototype_constructor_get_call =
+      vm.register_native_call(builtins::iterator_prototype_constructor_get)?;
+    let iterator_prototype_constructor_set_call =
+      vm.register_native_call(builtins::iterator_prototype_constructor_set)?;
     let string_prototype_to_string = vm.register_native_call(builtins::string_prototype_to_string)?;
     let string_prototype_value_of = vm.register_native_call(builtins::string_prototype_value_of)?;
     let string_prototype_char_code_at =
@@ -1337,6 +1349,8 @@ impl Intrinsics {
     let encode_uri_component_call = vm.register_native_call(builtins::global_encode_uri_component)?;
     let decode_uri_call = vm.register_native_call(builtins::global_decode_uri)?;
     let decode_uri_component_call = vm.register_native_call(builtins::global_decode_uri_component)?;
+    let iterator_call = vm.register_native_call(builtins::iterator_constructor_call)?;
+    let iterator_construct = vm.register_native_construct(builtins::iterator_constructor_construct)?;
 
     // `%IteratorPrototype%[@@iterator]`
     {
@@ -1368,6 +1382,93 @@ impl Intrinsics {
         iterator_prototype,
         PropertyKey::Symbol(well_known_symbols.dispose),
         data_desc(Value::Object(dispose_fn), true, false, true),
+      )?;
+    }
+
+    // `%Iterator%` (iterator helpers proposal).
+    //
+    // This intrinsic is observable as the global `Iterator`, and also via
+    // `Iterator.prototype === %IteratorPrototype%`.
+    let iterator_name = scope.alloc_string("Iterator")?;
+    let iterator_obj = alloc_rooted_native_function(
+      scope,
+      roots,
+      iterator_call,
+      Some(iterator_construct),
+      iterator_name,
+      0,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(iterator_obj, Some(function_prototype))?;
+    scope.define_property(
+      iterator_obj,
+      common.prototype,
+      data_desc(Value::Object(iterator_prototype), false, false, false),
+    )?;
+    iterator = iterator_obj;
+
+    // `%IteratorPrototype%.constructor` (iterator helpers proposal).
+    {
+      let get_name = scope.alloc_string("get constructor")?;
+      scope.push_root(Value::String(get_name))?;
+      let get = scope.alloc_native_function(iterator_prototype_constructor_get_call, None, get_name, 0)?;
+      scope.push_root(Value::Object(get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get, Some(function_prototype))?;
+
+      let set_name = scope.alloc_string("set constructor")?;
+      scope.push_root(Value::String(set_name))?;
+      let set = scope.alloc_native_function(iterator_prototype_constructor_set_call, None, set_name, 1)?;
+      scope.push_root(Value::Object(set))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(set, Some(function_prototype))?;
+
+      scope.define_property(
+        iterator_prototype,
+        common.constructor,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
+        },
+      )?;
+    }
+
+    // `%IteratorPrototype%[@@toStringTag]` (iterator helpers proposal).
+    {
+      let get_name = scope.alloc_string("get [Symbol.toStringTag]")?;
+      scope.push_root(Value::String(get_name))?;
+      let get = scope.alloc_native_function(iterator_prototype_to_string_tag_get_call, None, get_name, 0)?;
+      scope.push_root(Value::Object(get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get, Some(function_prototype))?;
+
+      let set_name = scope.alloc_string("set [Symbol.toStringTag]")?;
+      scope.push_root(Value::String(set_name))?;
+      let set = scope.alloc_native_function(iterator_prototype_to_string_tag_set_call, None, set_name, 1)?;
+      scope.push_root(Value::Object(set))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(set, Some(function_prototype))?;
+
+      scope.define_property(
+        iterator_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Object(set),
+          },
+        },
       )?;
     }
 
@@ -8553,6 +8654,7 @@ impl Intrinsics {
       bigint_constructor,
       date_constructor,
       symbol_constructor,
+      iterator,
       array_buffer,
       typed_array,
       uint8_array,
@@ -8867,6 +8969,10 @@ impl Intrinsics {
 
   pub fn symbol_constructor(&self) -> GcObject {
     self.symbol_constructor
+  }
+
+  pub fn iterator(&self) -> GcObject {
+    self.iterator
   }
 
   pub fn array_buffer(&self) -> GcObject {
