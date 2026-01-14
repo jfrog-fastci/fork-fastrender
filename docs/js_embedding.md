@@ -81,8 +81,11 @@ What `BrowserTab` does today:
 - for `BrowserTab::from_html(...)` / `BrowserTab::navigate_to_html(...)` / `BrowserTab::navigate_to_url(...)`,
   drives a script-aware streaming parser so **parser-inserted** classic `<script>` elements execute
   at parse time (scripts observe a partially-built DOM). Parsing runs in bounded slices and yields
-  back to the event loop based on `JsExecutionOptions.dom_parse_budget`, which lets “as soon as
-  possible” scripts (`async` / ordered-asap modules) interleave ahead of later parser work,
+  back to the event loop based on `JsExecutionOptions.dom_parse_budget`. In addition to
+  `max_pump_iterations`, `ParseBudget` supports `max_input_bytes_per_task` to cap the amount of HTML
+  (UTF-8 bytes) fed into the streaming parser per task, which makes yields more predictable on
+  inputs like a single very-large text chunk. This lets “as soon as possible” scripts (`async` /
+  ordered-asap modules) interleave ahead of later parser work,
 - fetches external scripts through the document’s `ResourceFetcher`,
 - executes classic scripts plus module/import-map scripts when `JsExecutionOptions.supports_module_scripts`
   is enabled (including dynamic `import()` and top-level `await`),
@@ -94,7 +97,8 @@ What it does **not** do yet (important gaps):
 - fully spec-correct HTML script processing in all edge cases (task-source partitioning, preload
   scanning, full Fetch/CORS/SRI nuance, etc.), though `BrowserTab` now parses under a per-task
   `ParseBudget` (`JsExecutionOptions.dom_parse_budget`) so async-ready work can interleave with
-  parsing,
+  parsing (see `max_input_bytes_per_task` if you need more predictable yields based on consumed
+  input, not just pump iteration count),
 - full Web platform coverage: the DOM/WebIDL/Web API surface exposed to JS is still a subset.
 
 Module support status:
