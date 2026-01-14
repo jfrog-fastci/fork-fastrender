@@ -218,3 +218,28 @@ fn generator_array_literal_spread_yield_star_final_value_is_spread() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_array_literal_yield_after_spread_uses_updated_index() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() { return [ ...(yield 0), (yield 1) ]; }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next([1, 2]);
+      var r3 = it.next(99);
+      r1.value === 0 && r1.done === false &&
+      r2.value === 1 && r2.done === false &&
+      r3.done === true &&
+      Array.isArray(r3.value) &&
+      r3.value.length === 3 &&
+      r3.value[0] === 1 &&
+      r3.value[1] === 2 &&
+      r3.value[2] === 99
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
