@@ -36331,24 +36331,7 @@ fn gen_eval_assignment_to_member_after_base(
   member: &MemberExpr,
   base: Value,
 ) -> Result<GenEval<Completion>, VmError> {
-  if is_nullish(base) {
-    return Err(throw_type_error(
-      evaluator.vm,
-      scope,
-      "Cannot convert undefined or null to object",
-    )?);
-  }
-
-  let reference = {
-    let mut key_scope = scope.reborrow();
-    key_scope.push_root(base)?;
-    let key_s = key_scope.alloc_string(&member.right)?;
-    Reference::Property {
-      base,
-      key: PropertyKey::from_string(key_s),
-    }
-  };
-
+  let reference = gen_reference_from_member(evaluator, scope, member, base)?;
   gen_eval_assignment_apply_reference(evaluator, scope, expr, reference)
 }
 
@@ -38866,16 +38849,34 @@ fn gen_resume_from_frames(
               },
               (Some(base), Some(key_value), None) => {
                 assign_scope.push_roots(&[base, key_value])?;
-                let key = match key_value {
-                  Value::String(s) => PropertyKey::from_string(s),
-                  Value::Symbol(s) => PropertyKey::from_symbol(s),
-                  _ => {
-                    return Err(VmError::InvariantViolation(
-                      "assignment key should be a string or symbol",
-                    ))
+                // Private-name assignments store the private symbol in `key_value` but must resume as
+                // `Reference::Private` so we avoid Proxy traps and perform brand checks.
+                match &*expr.left.stx {
+                  Expr::Member(member) if member.stx.right.starts_with('#') => {
+                    let Value::Symbol(sym) = key_value else {
+                      return Err(VmError::InvariantViolation(
+                        "private assignment key should be a symbol",
+                      ));
+                    };
+                    Reference::Private {
+                      base,
+                      sym,
+                      name: member.stx.right.as_str(),
+                    }
                   }
-                };
-                Reference::Property { base, key }
+                  _ => {
+                    let key = match key_value {
+                      Value::String(s) => PropertyKey::from_string(s),
+                      Value::Symbol(s) => PropertyKey::from_symbol(s),
+                      _ => {
+                        return Err(VmError::InvariantViolation(
+                          "assignment key should be a string or symbol",
+                        ))
+                      }
+                    };
+                    Reference::Property { base, key }
+                  }
+                }
               }
               (Some(base), Some(key_value), Some(receiver)) => {
                 assign_scope.push_roots(&[base, key_value, receiver])?;
@@ -38941,16 +38942,32 @@ fn gen_resume_from_frames(
                 }
               },
               (Some(base), Some(key_value), None) => {
-                let key = match key_value {
-                  Value::String(s) => PropertyKey::from_string(s),
-                  Value::Symbol(s) => PropertyKey::from_symbol(s),
-                  _ => {
-                    return Err(VmError::InvariantViolation(
-                      "assignment key should be a string or symbol",
-                    ))
+                match &*expr.left.stx {
+                  Expr::Member(member) if member.stx.right.starts_with('#') => {
+                    let Value::Symbol(sym) = key_value else {
+                      return Err(VmError::InvariantViolation(
+                        "private assignment key should be a symbol",
+                      ));
+                    };
+                    Reference::Private {
+                      base,
+                      sym,
+                      name: member.stx.right.as_str(),
+                    }
                   }
-                };
-                Reference::Property { base, key }
+                  _ => {
+                    let key = match key_value {
+                      Value::String(s) => PropertyKey::from_string(s),
+                      Value::Symbol(s) => PropertyKey::from_symbol(s),
+                      _ => {
+                        return Err(VmError::InvariantViolation(
+                          "assignment key should be a string or symbol",
+                        ))
+                      }
+                    };
+                    Reference::Property { base, key }
+                  }
+                }
               }
               (Some(base), Some(key_value), Some(receiver)) => {
                 let key = match key_value {
@@ -39029,16 +39046,32 @@ fn gen_resume_from_frames(
                 }
               },
               (Some(base), Some(key_value), None) => {
-                let key = match key_value {
-                  Value::String(s) => PropertyKey::from_string(s),
-                  Value::Symbol(s) => PropertyKey::from_symbol(s),
-                  _ => {
-                    return Err(VmError::InvariantViolation(
-                      "assignment key should be a string or symbol",
-                    ))
+                match &*expr.left.stx {
+                  Expr::Member(member) if member.stx.right.starts_with('#') => {
+                    let Value::Symbol(sym) = key_value else {
+                      return Err(VmError::InvariantViolation(
+                        "private assignment key should be a symbol",
+                      ));
+                    };
+                    Reference::Private {
+                      base,
+                      sym,
+                      name: member.stx.right.as_str(),
+                    }
                   }
-                };
-                Reference::Property { base, key }
+                  _ => {
+                    let key = match key_value {
+                      Value::String(s) => PropertyKey::from_string(s),
+                      Value::Symbol(s) => PropertyKey::from_symbol(s),
+                      _ => {
+                        return Err(VmError::InvariantViolation(
+                          "assignment key should be a string or symbol",
+                        ))
+                      }
+                    };
+                    Reference::Property { base, key }
+                  }
+                }
               }
               (Some(base), Some(key_value), Some(receiver)) => {
                 let key = match key_value {
