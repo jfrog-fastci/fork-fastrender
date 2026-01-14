@@ -141,3 +141,74 @@ fn generator_nullish_coalescing_assignment_captures_base_key_and_decision_across
   assert_eq!(value, Value::Bool(true));
 }
 
+#[test]
+fn generator_logical_or_assignment_with_yield_in_computed_key_short_circuits_rhs_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          const o = { a: 1 };
+          // Yield in the computed key expression happens first.
+          // Because o.a is truthy, `||=` must short-circuit and never evaluate the RHS yield.
+          o[(yield "k")] ||= (yield 0);
+          return o.a;
+        }
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next("a");
+        r1.value === "k" && r1.done === false &&
+        r2.value === 1 && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_logical_and_assignment_with_yield_in_computed_key_short_circuits_rhs_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          const o = { a: 0 };
+          // Yield in the computed key expression happens first.
+          // Because o.a is falsy, `&&=` must short-circuit and never evaluate the RHS yield.
+          o[(yield "k")] &&= (yield 0);
+          return o.a;
+        }
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next("a");
+        r1.value === "k" && r1.done === false &&
+        r2.value === 0 && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_nullish_coalescing_assignment_with_yield_in_computed_key_short_circuits_rhs_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          const o = { a: 0 };
+          // Yield in the computed key expression happens first.
+          // Because o.a is non-nullish, `??=` must short-circuit and never evaluate the RHS yield.
+          o[(yield "k")] ??= (yield 0);
+          return o.a;
+        }
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next("a");
+        r1.value === "k" && r1.done === false &&
+        r2.value === 0 && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
