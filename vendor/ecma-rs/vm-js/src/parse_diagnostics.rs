@@ -3,24 +3,26 @@ use parse_js::error::{SyntaxError, SyntaxErrorType};
 
 const EARLY_ERROR_CODE: &str = "VMJS0004";
 
-// `parse-js` may tweak the wording of this early error; accept both known spellings so
-// VM-level diagnostic codes remain stable.
-const ARGUMENTS_DISALLOWED_IN_CLASS_INIT_V1: &str =
-  "'arguments' is not allowed in class field initializer or static initialization block";
-const ARGUMENTS_DISALLOWED_IN_CLASS_INIT_V2: &str =
-  "`arguments` is not allowed in class field initializers or static blocks";
-const ARGUMENTS_DISALLOWED_IN_CLASS_INIT_V3: &str =
-  "`arguments` is not allowed in class field initializers or static initialization blocks";
-const AWAIT_DISALLOWED_IN_STATIC_BLOCK: &str =
-  "'await' is not allowed in class static initialization block";
+// `parse-js` may tweak the wording of these early errors. Match on key phrases rather than exact
+// strings so VM-level diagnostic codes remain stable.
+fn is_arguments_disallowed_in_class_init_message(message: &str) -> bool {
+  message.contains("arguments")
+    && message.contains("not allowed")
+    && (message.contains("class field") || message.contains("static"))
+}
+
+fn is_await_disallowed_in_class_static_block_message(message: &str) -> bool {
+  message.contains("await")
+    && message.contains("not allowed")
+    && message.contains("class")
+    && message.contains("static")
+}
 
 fn parse_js_error_is_vmjs_early_error(typ: SyntaxErrorType) -> bool {
   match typ {
     SyntaxErrorType::ExpectedSyntax(message)
-      if message == ARGUMENTS_DISALLOWED_IN_CLASS_INIT_V1
-        || message == ARGUMENTS_DISALLOWED_IN_CLASS_INIT_V2
-        || message == ARGUMENTS_DISALLOWED_IN_CLASS_INIT_V3
-        || message == AWAIT_DISALLOWED_IN_STATIC_BLOCK =>
+      if is_arguments_disallowed_in_class_init_message(message)
+        || is_await_disallowed_in_class_static_block_message(message) =>
     {
       true
     }
