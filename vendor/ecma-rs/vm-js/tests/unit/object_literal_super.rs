@@ -1,6 +1,35 @@
 use crate::property::{PropertyKey, PropertyKind};
 use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
+fn assert_script_returns_true_in_interpreter_and_compiled(source: &str) -> Result<(), VmError> {
+  // AST interpreter.
+  {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let result = rt.exec_script(source)?;
+    assert!(
+      matches!(result, Value::Bool(true)),
+      "unexpected interpreter result: {result:?}"
+    );
+  }
+
+  // Compiled HIR executor.
+  {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let script = CompiledScript::compile_script(&mut rt.heap, "<inline>", source)?;
+    let result = rt.exec_compiled_script(script)?;
+    assert!(
+      matches!(result, Value::Bool(true)),
+      "unexpected compiled result: {result:?}"
+    );
+  }
+
+  Ok(())
+}
+
 #[test]
 fn object_literal_method_super_call_uses_home_object_prototype() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
@@ -133,6 +162,126 @@ fn object_literal_arrow_captures_lexical_super_and_observes_dynamic_prototype() 
 }
 
 #[test]
+fn super_computed_getsuperbase_before_topropertykey_getvalue() -> Result<(), VmError> {
+  // Mirrors test262: language/expressions/super/prop-expr-getsuperbase-before-topropertykey-getvalue.js
+  assert_script_returns_true_in_interpreter_and_compiled(
+    r#"
+      var proto = { p: "ok" };
+      var proto2 = { p: "bad" };
+
+      var obj = {
+        __proto__: proto,
+        m() {
+          return super[key];
+        }
+      };
+
+      var key = {
+        toString() {
+          Object.setPrototypeOf(obj, proto2);
+          return "p";
+        }
+      };
+
+      obj.m() === "ok";
+    "#,
+  )
+}
+
+#[test]
+fn super_computed_getsuperbase_before_topropertykey_putvalue() -> Result<(), VmError> {
+  // Mirrors test262: language/expressions/super/prop-expr-getsuperbase-before-topropertykey-putvalue.js
+  assert_script_returns_true_in_interpreter_and_compiled(
+    r#"
+      var result;
+
+      var proto = {
+        set p(v) {
+          result = "ok";
+        }
+      };
+
+      var proto2 = {
+        set p(v) {
+          result = "bad";
+        }
+      };
+
+      var obj = {
+        __proto__: proto,
+        m() {
+          super[key] = 10;
+        }
+      };
+
+      var key = {
+        toString() {
+          Object.setPrototypeOf(obj, proto2);
+          return "p";
+        }
+      };
+
+      obj.m();
+      result === "ok";
+    "#,
+  )
+}
+
+#[test]
+fn super_computed_getsuperbase_before_topropertykey_putvalue_compound_assign() -> Result<(), VmError> {
+  // Mirrors test262: language/expressions/super/prop-expr-getsuperbase-before-topropertykey-putvalue-compound-assign.js
+  assert_script_returns_true_in_interpreter_and_compiled(
+    r#"
+      var proto = { p: 1 };
+      var proto2 = { p: -1 };
+
+      var obj = {
+        __proto__: proto,
+        m() {
+          return super[key] += 1;
+        }
+      };
+
+      var key = {
+        toString() {
+          Object.setPrototypeOf(obj, proto2);
+          return "p";
+        }
+      };
+
+      obj.m() === 2;
+    "#,
+  )
+}
+
+#[test]
+fn super_computed_getsuperbase_before_topropertykey_putvalue_increment() -> Result<(), VmError> {
+  // Mirrors test262: language/expressions/super/prop-expr-getsuperbase-before-topropertykey-putvalue-increment.js
+  assert_script_returns_true_in_interpreter_and_compiled(
+    r#"
+      var proto = { p: 1 };
+      var proto2 = { p: -1 };
+
+      var obj = {
+        __proto__: proto,
+        m() {
+          return ++super[key];
+        }
+      };
+
+      var key = {
+        toString() {
+          Object.setPrototypeOf(obj, proto2);
+          return "p";
+        }
+      };
+
+      obj.m() === 2;
+    "#,
+  )
+}
+
+#[test]
 fn compiled_hir_object_literal_methods_and_accessors_set_home_object() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
@@ -246,4 +395,3 @@ fn compiled_hir_arrow_functions_capture_home_object_from_method() -> Result<(), 
   );
   Ok(())
 }
-

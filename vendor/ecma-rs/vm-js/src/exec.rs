@@ -11130,44 +11130,59 @@ impl<'a> Evaluator<'a> {
           "optional chaining used with super property access",
         ));
       }
-      // `super[expr]` must resolve the current `this` binding *before* evaluating the computed key
-      // expression. In derived constructors before `super()`, `GetThisBinding` throws a
-      // ReferenceError, and that error must happen before any side effects from evaluating `expr`.
-      let mut super_scope = scope.reborrow();
+      // `GetThisBinding` must be observed before evaluating the computed key expression, so derived
+      // constructors throw before `super()` returns.
+      let home_object = self.home_object.ok_or(VmError::InvariantViolation(
+        "super property access missing [[HomeObject]]",
+      ))?;
+
       // Root the raw `this` binding (which may be a derived-constructor state cell) and
-      // `[[HomeObject]]` together so a GC triggered by root-stack growth cannot collect the
-      // not-yet-pushed entry.
-      let mut roots_buf = [self.this, Value::Undefined];
-      let roots = if let Some(home) = self.home_object {
-        roots_buf[1] = Value::Object(home);
-        &roots_buf[..]
-      } else {
-        &roots_buf[..1]
-      };
-      super_scope.push_roots(roots)?;
-      let actual_this = self.get_this_binding(&mut super_scope)?;
-      super_scope.push_root(actual_this)?;
-      let member_value = self.eval_expr(&mut super_scope, &expr.member)?;
-      super_scope.push_root(member_value)?;
-      let key = self.to_property_key_operator(&mut super_scope, member_value)?;
+      // `[[HomeObject]]` across `GetThisBinding`, key evaluation, and `GetSuperBase`.
+      let mut key_scope = scope.reborrow();
+      let roots = [self.this, Value::Object(home_object)];
+      key_scope.push_roots(&roots)?;
 
-      // Root the property key before computing the super reference (which can allocate).
+      let receiver = self.get_this_binding(&mut key_scope)?;
+      key_scope.push_root(receiver)?;
+
+      let member_value = self.eval_expr(&mut key_scope, &expr.member)?;
+      key_scope.push_root(member_value)?;
+
+      // Spec: `GetSuperBase` is observed before `ToPropertyKey` when dereferencing a `super[expr]`
+      // reference (e.g. `super[key]` should read from the original prototype even if `key.toString`
+      // mutates it).
+      //
+      // Capture the super base first and keep it rooted across `ToPropertyKey` so prototype
+      // mutation/GC during key conversion cannot invalidate it.
+      let super_base = key_scope.get_prototype_of_with_host_and_hooks(
+        self.vm,
+        &mut *self.host,
+        &mut *self.hooks,
+        home_object,
+      )?;
+      let Some(super_base) = super_base else {
+        return Err(throw_type_error(
+          self.vm,
+          &mut key_scope,
+          "Cannot convert undefined or null to object",
+        )?);
+      };
+      key_scope.push_root(Value::Object(super_base))?;
+
+      let key = self.to_property_key_operator(&mut key_scope, member_value)?;
+      // Root the key across the final `[[Get]]`, which can invoke accessors/Proxy traps.
       match key {
-        PropertyKey::String(s) => {
-          super_scope.push_root(Value::String(s))?;
-        }
-        PropertyKey::Symbol(s) => {
-          super_scope.push_root(Value::Symbol(s))?;
-        }
-      }
-
-      let super_base = self.super_base(&mut super_scope)?;
-      let reference = Reference::SuperProperty {
-        base: super_base,
-        key,
-        receiver: actual_this,
+        PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
+        PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
       };
-      let value = self.get_value_from_reference(&mut super_scope, &reference)?;
+      let value = key_scope.get_with_host_and_hooks(
+        self.vm,
+        &mut *self.host,
+        &mut *self.hooks,
+        super_base,
+        key,
+        receiver,
+      )?;
       return Ok(OptionalChainEval::Value(value));
     }
 
@@ -11381,37 +11396,30 @@ impl<'a> Evaluator<'a> {
           ));
         }
         if matches!(&*member.stx.object.stx, Expr::Super(_)) {
-          // `super[expr]` must resolve the current `this` binding *before* evaluating the computed
-          // key expression. In derived constructors before `super()`, `GetThisBinding` throws a
-          // ReferenceError, and that error must happen before any side effects from evaluating
-          // `expr`.
+          // Evaluating a `super[expr]` reference requires an initialized `this` binding. In derived
+          // constructors before `super()`, this check happens before evaluating the computed key
+          // expression.
           let home_object = self.home_object.ok_or(VmError::InvariantViolation(
             "super property access missing [[HomeObject]]",
           ))?;
-          let mut super_scope = scope.reborrow();
-          // Root `this` binding state (may be a DerivedConstructorState cell) and `[[HomeObject]]`
-          // across `GetThisBinding`, key evaluation, and `GetSuperBase()`. These steps can allocate
-          // and may invoke user code (Proxy traps).
-          super_scope.push_roots(&[self.this, Value::Object(home_object)])?;
 
-          let receiver = self.get_this_binding(&mut super_scope)?;
-          super_scope.push_root(receiver)?;
+          let mut key_scope = scope.reborrow();
+          key_scope.push_roots(&[self.this, Value::Object(home_object)])?;
 
-          let member_value = self.eval_expr(&mut super_scope, &member.stx.member)?;
-          super_scope.push_root(member_value)?;
-          let key = self.to_property_key_operator(&mut super_scope, member_value)?;
+          let receiver = self.get_this_binding(&mut key_scope)?;
+          key_scope.push_root(receiver)?;
 
-          // Root the property key before computing the super reference (which can allocate).
-          match key {
-            PropertyKey::String(s) => {
-              super_scope.push_root(Value::String(s))?;
-            }
-            PropertyKey::Symbol(s) => {
-              super_scope.push_root(Value::Symbol(s))?;
-            }
-          }
+          let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
+          key_scope.push_root(member_value)?;
 
-          let base = self.super_base(&mut super_scope)?;
+          // Spec: `GetSuperBase` must happen before `ToPropertyKey` for computed super properties.
+          //
+          // Root the captured super base across `ToPropertyKey` in case key conversion runs user
+          // code that mutates the home object's prototype and/or triggers GC.
+          let base = self.get_super_base(&mut key_scope)?;
+          key_scope.push_root(base)?;
+
+          let key = self.to_property_key_operator(&mut key_scope, member_value)?;
           return Ok(Reference::SuperProperty { base, key, receiver });
         }
 
@@ -14056,44 +14064,55 @@ impl<'a> Evaluator<'a> {
             "optional chaining used with super property access",
           ));
         }
-        // Resolve the `this` binding before evaluating the computed key expression. In derived
-        // constructors before `super()`, `GetThisBinding` throws a ReferenceError and must happen
-        // before any side effects from evaluating the key expression.
-        let mut super_scope = scope.reborrow();
-        // Root the raw `this` binding (which may be a derived-constructor state cell) and
-        // `[[HomeObject]]` together so a GC triggered by root-stack growth cannot collect the
-        // not-yet-pushed entry.
-        let mut roots_buf = [self.this, Value::Undefined];
-        let roots = if let Some(home) = self.home_object {
-          roots_buf[1] = Value::Object(home);
-          &roots_buf[..]
-        } else {
-          &roots_buf[..1]
-        };
-        super_scope.push_roots(roots)?;
-        let actual_this = self.get_this_binding(&mut super_scope)?;
-        super_scope.push_root(actual_this)?;
-        let member_value = self.eval_expr(&mut super_scope, &member.stx.member)?;
-        super_scope.push_root(member_value)?;
-        let key = self.to_property_key_operator(&mut super_scope, member_value)?;
-        // Root the property key before computing the super reference (which can allocate).
-        match key {
-          PropertyKey::String(s) => {
-            super_scope.push_root(Value::String(s))?;
-          }
-          PropertyKey::Symbol(s) => {
-            super_scope.push_root(Value::Symbol(s))?;
-          }
-        }
+        // `GetThisBinding` must be observed before evaluating the computed key expression.
+        let home_object = self.home_object.ok_or(VmError::InvariantViolation(
+          "super property access missing [[HomeObject]]",
+        ))?;
 
-        let super_base = self.super_base(&mut super_scope)?;
-        let reference = Reference::SuperProperty {
-          base: super_base,
-          key,
-          receiver: actual_this,
+        let mut key_scope = scope.reborrow();
+        let roots = [self.this, Value::Object(home_object)];
+        key_scope.push_roots(&roots)?;
+
+        let receiver = self.get_this_binding(&mut key_scope)?;
+        key_scope.push_root(receiver)?;
+
+        // Root receiver + home object across evaluation of the computed key, `GetSuperBase`,
+        // `ToPropertyKey`, and the final `[[Get]]`.
+        let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
+        key_scope.push_root(member_value)?;
+
+        // Spec: `GetSuperBase` must happen before `ToPropertyKey` for computed super properties.
+        let super_base = key_scope.get_prototype_of_with_host_and_hooks(
+          self.vm,
+          &mut *self.host,
+          &mut *self.hooks,
+          home_object,
+        )?;
+        let Some(super_base) = super_base else {
+          return Err(throw_type_error(
+            self.vm,
+            &mut key_scope,
+            "Cannot convert undefined or null to object",
+          )?);
         };
-        let callee_value = self.get_value_from_reference(&mut super_scope, &reference)?;
-        (callee_value, actual_this)
+        key_scope.push_root(Value::Object(super_base))?;
+
+        let key = self.to_property_key_operator(&mut key_scope, member_value)?;
+        // Root the computed key across the `[[Get]]`, which can invoke accessors/Proxy traps.
+        match key {
+          PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
+          PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
+        };
+
+        let callee_value = key_scope.get_with_host_and_hooks(
+          self.vm,
+          &mut *self.host,
+          &mut *self.hooks,
+          super_base,
+          key,
+          receiver,
+        )?;
+        (callee_value, receiver)
       }
       // Optional member call (e.g. `obj?.method()`): only applies when the optional-chain member
       // expression is directly in the call callee position (i.e. not parenthesized).
@@ -25960,15 +25979,14 @@ fn async_eval_expr_chain(
         // expression. In derived constructors, this must throw before any `await` in the key.
         let _ = async_get_super_receiver(evaluator, scope)?;
 
-        // Evaluating a `super[expr]` reference requires an initialized `this` binding. In derived
-        // constructors (and in arrow/eval code nested within them) before `super()`, this check
-        // must happen before evaluating the computed key expression (and thus before any `await`
-        // side effects).
         let mut member_scope = scope.reborrow();
+        // Root the raw `this` binding (which may be a derived-constructor state cell) and home
+        // object across `GetThisBinding` and key evaluation, which can allocate and trigger GC.
         member_scope.push_root(evaluator.this)?;
         if let Some(home) = evaluator.home_object {
           member_scope.push_root(Value::Object(home))?;
         }
+        // `GetThisBinding` must run before evaluating the key expression.
         let _ = async_get_super_receiver(evaluator, &mut member_scope)?;
 
         match async_eval_expr(evaluator, &mut member_scope, &member.stx.member)? {
@@ -27482,36 +27500,31 @@ fn async_eval_assignment_to_computed_member(
 
     let mut member_scope = scope.reborrow();
     // Root the raw `this` binding (which may be a derived-constructor state cell) and home object
-    // across receiver resolution and key evaluation, which can allocate and trigger GC.
+    // across `GetThisBinding` and key evaluation, which can allocate and trigger GC.
     member_scope.push_root(evaluator.this)?;
     if let Some(home) = evaluator.home_object {
       member_scope.push_root(Value::Object(home))?;
     }
-    // `GetThisBinding` for Super References must throw before evaluating the computed key
-    // expression (and therefore before any potential `await` / thenable side effects).
-    //
-    // This also ensures arrow/eval code in derived constructors observes `this` initialization
-    // correctly when `evaluator.this` is a `DerivedConstructorState` cell.
+    // `GetThisBinding` must run before evaluating the key expression (including `await`), so
+    // derived constructors throw before `super()` returns.
     let _ = async_get_super_receiver(evaluator, &mut member_scope)?;
     match async_eval_expr(evaluator, &mut member_scope, &member.member)? {
       AsyncEval::Complete(member_value) => {
         let mut key_scope = member_scope.reborrow();
         key_scope.push_root(member_value)?;
-        let key = evaluator
-          .to_property_key_operator(&mut key_scope, member_value)
-          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-
-        // Root the key across `GetThisBinding`/`GetSuperBase()` (which can invoke proxy traps and GC).
-        match key {
-          PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
-          PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
-        };
-
         let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
         key_scope.push_root(receiver)?;
 
+        // Spec: `GetSuperBase` must be observed before `ToPropertyKey` for computed super
+        // properties.
         let base = evaluator
           .get_super_base(&mut key_scope)
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+        // Keep the captured super base alive across `ToPropertyKey`.
+        key_scope.push_root(base)?;
+
+        let key = evaluator
+          .to_property_key_operator(&mut key_scope, member_value)
           .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
         let reference = Reference::SuperProperty { base, key, receiver };
         async_eval_assignment_apply_reference(evaluator, &mut key_scope, expr, reference)
@@ -28270,28 +28283,27 @@ fn async_eval_update_expression(
         if let Some(home) = evaluator.home_object {
           member_scope.push_root(Value::Object(home))?;
         }
-        // `GetThisBinding` for Super References must throw before evaluating the computed key
-        // expression (and therefore before any `await` side effects in the key).
+        // `GetThisBinding` must run before evaluating the key expression.
         let _ = async_get_super_receiver(evaluator, &mut member_scope)?;
         match async_eval_expr(evaluator, &mut member_scope, &member.member)? {
           AsyncEval::Complete(member_value) => {
             let mut key_scope = member_scope.reborrow();
             key_scope.push_root(member_value)?;
 
-            let key = evaluator
-              .to_property_key_operator(&mut key_scope, member_value)
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-            // Root the computed key across `GetThisBinding`/`GetSuperBase()` (Proxy traps can allocate/GC).
-            match key {
-              PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
-              PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
-            };
-
             let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
             key_scope.push_root(receiver)?;
 
+            // Spec: `GetSuperBase` must be observed before `ToPropertyKey` for computed super
+            // properties.
             let base = evaluator
               .get_super_base(&mut key_scope)
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+            // Keep the captured super base rooted across `ToPropertyKey`, which can invoke user code
+            // and trigger GC.
+            key_scope.push_root(base)?;
+
+            let key = evaluator
+              .to_property_key_operator(&mut key_scope, member_value)
               .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
             let reference = Reference::SuperProperty { base, key, receiver };
             let value =
@@ -29551,35 +29563,23 @@ fn async_computed_member_after_member(
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))
 }
 
-fn async_super_get(
+fn async_super_computed_member_after_member(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
-  key: PropertyKey,
+  member_value: Value,
 ) -> Result<Value, VmError> {
   let home_object = evaluator.home_object.ok_or(VmError::InvariantViolation(
     "super property reference is missing [[HomeObject]]",
   ))?;
 
   let mut super_scope = scope.reborrow();
-  // Resolve the current `this` binding used as the receiver for Super References.
-  //
-  // Note: for computed super members (`super[expr]`), `GetThisBinding` must have been observed
-  // before evaluating the computed key expression (ECMA-262 `SuperProperty : super [ Expression ]`).
-  //
-  // Call sites enforce the evaluation order by calling `async_get_super_receiver` before evaluating
-  // the key expression (so derived constructors before `super()` throw before any `await`/thenable
-  // side effects). We still resolve the receiver here because we need its value for the actual
-  // property access.
-  let this_value = async_get_super_receiver(evaluator, &mut super_scope)?;
-  let key_value = match key {
-    PropertyKey::String(s) => Value::String(s),
-    PropertyKey::Symbol(sym) => Value::Symbol(sym),
-  };
-  // Root everything used across `GetPrototypeOf` (Proxy traps can allocate + trigger GC).
-  super_scope.push_roots(&[Value::Object(home_object), this_value, key_value])?;
+  // Root everything used across `GetThisBinding`, `GetPrototypeOf` (Proxy traps), and
+  // `ToPropertyKey` (which can invoke user code) in case any step allocates and triggers GC.
+  super_scope.push_roots(&[Value::Object(home_object), evaluator.this, member_value])?;
 
-  // Super property references resolve against `[[HomeObject]].[[Prototype]]` and use the current
-  // `this` value as the receiver.
+  let receiver = async_get_super_receiver(evaluator, &mut super_scope)?;
+  super_scope.push_root(receiver)?;
+
   let super_base = super_scope
     .get_prototype_of_with_host_and_hooks(
       evaluator.vm,
@@ -29589,7 +29589,6 @@ fn async_super_get(
     )
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut super_scope, err))?;
   let Some(super_base) = super_base else {
-    // `super` base is `null`.
     return Err(throw_type_error(
       evaluator.vm,
       &mut super_scope,
@@ -29598,6 +29597,15 @@ fn async_super_get(
   };
   super_scope.push_root(Value::Object(super_base))?;
 
+  let key = evaluator
+    .to_property_key_operator(&mut super_scope, member_value)
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut super_scope, err))?;
+  // Root the key across the final `[[Get]]`, which can invoke accessors/Proxy traps.
+  match key {
+    PropertyKey::String(s) => super_scope.push_root(Value::String(s))?,
+    PropertyKey::Symbol(sym) => super_scope.push_root(Value::Symbol(sym))?,
+  };
+
   super_scope
     .get_with_host_and_hooks(
       evaluator.vm,
@@ -29605,26 +29613,9 @@ fn async_super_get(
       &mut *evaluator.hooks,
       super_base,
       key,
-      this_value,
+      receiver,
     )
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut super_scope, err))
-}
-
-fn async_super_computed_member_after_member(
-  evaluator: &mut Evaluator<'_>,
-  scope: &mut Scope<'_>,
-  member_value: Value,
-) -> Result<Value, VmError> {
-  let mut key_scope = scope.reborrow();
-  key_scope.push_root(member_value)?;
-  let key = evaluator
-    .to_property_key_operator(&mut key_scope, member_value)
-    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-
-  // Drop `key_scope` before calling `async_super_get` (which reborrows `scope`).
-  drop(key_scope);
-
-  async_super_get(evaluator, scope, key)
 }
 fn async_binary_after_left(
   evaluator: &mut Evaluator<'_>,
@@ -30267,16 +30258,24 @@ fn async_call_computed_member_after_base(
     )?));
   }
 
-  if matches!(&*member.object.stx, Expr::Super(_)) {
-    // `GetThisBinding` must run before evaluating the computed key expression so derived
-    // constructors throw before any `await` in the key can suspend.
-    let _ = async_get_super_receiver(evaluator, scope)?;
-  }
+  let is_super = matches!(&*member.object.stx, Expr::Super(_));
 
-  // Root the base across evaluation of the computed key expression in case it allocates/GCs.
+  // Root values across evaluation of the computed key expression in case it allocates/GCs.
   let member_eval = {
     let mut member_scope = scope.reborrow();
-    member_scope.push_root(base)?;
+    if is_super {
+      // For `super[expr](...)`, `GetThisBinding` must run before evaluating the key expression.
+      //
+      // Root the raw `this` binding (which may be a derived-constructor state cell) and home object
+      // across `GetThisBinding` and key evaluation.
+      member_scope.push_root(evaluator.this)?;
+      if let Some(home) = evaluator.home_object {
+        member_scope.push_root(Value::Object(home))?;
+      }
+      let _ = async_get_super_receiver(evaluator, &mut member_scope)?;
+    } else {
+      member_scope.push_root(base)?;
+    }
     async_eval_expr(evaluator, &mut member_scope, &member.member)?
   };
 
@@ -30312,24 +30311,27 @@ fn async_call_computed_member_after_member(
   let is_super = matches!(&*member.object.stx, Expr::Super(_));
 
   let mut key_scope = scope.reborrow();
-  key_scope.push_roots(&[base, member_value])?;
-  let key = evaluator
-    .to_property_key_operator(&mut key_scope, member_value)
-    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+  if is_super {
+    key_scope.push_roots(&[evaluator.this, member_value])?;
+  } else {
+    key_scope.push_roots(&[base, member_value])?;
+  }
 
   let (callee_value, this_value) = if is_super {
     let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
-
-    // Root receiver + key across `GetSuperBase()` and any proxy traps.
     key_scope.push_root(receiver)?;
-    match key {
-      PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
-      PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
-    };
 
+    // Spec: `GetSuperBase` must be observed before `ToPropertyKey` for computed super properties.
     let super_base = evaluator
       .get_super_base(&mut key_scope)
       .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+    // Keep the captured super base alive across `ToPropertyKey`.
+    key_scope.push_root(super_base)?;
+
+    let key = evaluator
+      .to_property_key_operator(&mut key_scope, member_value)
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+
     let reference = Reference::SuperProperty {
       base: super_base,
       key,
@@ -30340,6 +30342,9 @@ fn async_call_computed_member_after_member(
       .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
     (callee_value, receiver)
   } else {
+    let key = evaluator
+      .to_property_key_operator(&mut key_scope, member_value)
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
     if is_nullish(base) {
       return Err(throw_type_error(
         evaluator.vm,
@@ -33167,23 +33172,20 @@ fn async_resume_from_frames(
                 let mut key_scope = scope.reborrow();
                 key_scope.push_root(member_value)?;
 
-                let key = evaluator
-                  .to_property_key_operator(&mut key_scope, member_value)
-                  .map_err(|err| {
-                    coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err)
-                  })?;
-
-                // Root the computed key across `GetThisBinding`/`GetSuperBase()` (Proxy traps can allocate / GC).
-                match key {
-                  PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
-                  PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
-                };
-
                 let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
                 key_scope.push_root(receiver)?;
 
+                // Spec: `GetSuperBase` must be observed before `ToPropertyKey` for computed super
+                // properties.
                 let base = evaluator
                   .get_super_base(&mut key_scope)
+                  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+                // Keep the captured super base alive across `ToPropertyKey` which can invoke user
+                // code and trigger GC.
+                key_scope.push_root(base)?;
+
+                let key = evaluator
+                  .to_property_key_operator(&mut key_scope, member_value)
                   .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
                 let reference = Reference::SuperProperty { base, key, receiver };
                 async_eval_assignment_apply_reference(evaluator, &mut key_scope, expr, reference)
@@ -33791,24 +33793,22 @@ fn async_resume_from_frames(
                 let mut key_scope = scope.reborrow();
                 key_scope.push_root(member_value)?;
 
+                let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
+                key_scope.push_root(receiver)?;
+
+                // Spec: `GetSuperBase` must be observed before `ToPropertyKey` for computed super
+                // properties.
+                let base = evaluator
+                  .get_super_base(&mut key_scope)
+                  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+                // Keep the captured super base alive across `ToPropertyKey`.
+                key_scope.push_root(base)?;
+
                 let key = evaluator
                   .to_property_key_operator(&mut key_scope, member_value)
                   .map_err(|err| {
                     coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err)
                   })?;
-
-                // Root the computed key across `GetThisBinding`/`GetSuperBase()` (Proxy traps can allocate / GC).
-                match key {
-                  PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
-                  PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
-                };
-
-                let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
-                key_scope.push_root(receiver)?;
-
-                let base = evaluator
-                  .get_super_base(&mut key_scope)
-                  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
                 let reference = Reference::SuperProperty { base, key, receiver };
                 async_apply_update_to_reference(evaluator, &mut key_scope, &reference, delta, prefix)
               })();
@@ -41193,25 +41193,19 @@ fn gen_reference_from_super_computed_member_after_member(
   scope: &mut Scope<'_>,
   member_value: Value,
 ) -> Result<Reference<'static>, VmError> {
-  // `GetThisBinding` must run before `ToPropertyKey` and `GetSuperBase` so derived constructors throw
-  // before any key conversion work.
+  // `GetThisBinding` must run before any key conversion work so derived constructors throw before
+  // evaluating the computed key expression.
   let receiver = evaluator.get_this_binding(scope)?;
 
   let mut key_scope = scope.reborrow();
-  key_scope.push_roots(&[receiver, member_value])?;
-  let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
-
-  // Root the property key across `GetSuperBase()` which can invoke proxy traps.
-  match key {
-    PropertyKey::String(s) => {
-      key_scope.push_root(Value::String(s))?;
-    }
-    PropertyKey::Symbol(s) => {
-      key_scope.push_root(Value::Symbol(s))?;
-    }
-  }
-
+  key_scope.push_roots(&[evaluator.this, receiver, member_value])?;
+  // Spec: `GetSuperBase` must be observed before `ToPropertyKey` for computed super properties.
   let base = evaluator.get_super_base(&mut key_scope)?;
+  // Keep the captured super base alive across `ToPropertyKey`, which can invoke user code and
+  // trigger GC.
+  key_scope.push_root(base)?;
+
+  let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
   Ok(Reference::SuperProperty { base, key, receiver })
 }
 
@@ -41801,15 +41795,13 @@ fn gen_eval_assignment_to_super_computed_member_after_member(
 ) -> Result<GenEval<Completion>, VmError> {
   let mut key_scope = scope.reborrow();
   key_scope.push_roots(&[receiver, member_value])?;
-  let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
-
-  // Root the key across `GetSuperBase()` which can invoke proxy traps.
-  match key {
-    PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
-    PropertyKey::Symbol(sym) => key_scope.push_root(Value::Symbol(sym))?,
-  };
-
+  // Spec: `GetSuperBase` must be observed before `ToPropertyKey` for computed super properties.
   let base = evaluator.get_super_base(&mut key_scope)?;
+  // Keep the captured super base alive across `ToPropertyKey`, which can invoke user code and
+  // trigger GC.
+  key_scope.push_root(base)?;
+
+  let key = evaluator.to_property_key_operator(&mut key_scope, member_value)?;
   let reference = Reference::SuperProperty { base, key, receiver };
   gen_eval_assignment_apply_reference(evaluator, &mut key_scope, expr, reference)
 }
