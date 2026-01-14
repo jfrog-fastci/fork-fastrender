@@ -740,10 +740,12 @@ fn layout_containment_disables_column_subgrid_track_inheritance() {
 }
 
 #[test]
-fn layout_containment_disables_column_subgrid_axis_inheritance() {
-  // `GridAxisStyle::effective_for_grid_container` inherits the parent writing-mode for active
-  // subgrids so their track coordinates stay in the parent axis space. With layout containment the
-  // subgrid is disabled, so the grid must use its own writing-mode.
+fn layout_containment_disables_subgrid_but_grid_uses_local_writing_mode() {
+  // Per CSS Grid 2 §9.7 ("Subgrid"), layout containment forces an independent formatting context,
+  // which disables subgrid and makes the used value `grid-template-*: none`.
+  //
+  // Ensure a contained "would-be subgrid" behaves like an independent grid, using its own
+  // `writing-mode` for axis mapping (columns -> physical Y in vertical writing modes).
   let mut parent_style = ComputedStyle::default();
   parent_style.display = Display::Grid;
   parent_style.grid_template_columns = vec![GridTrack::Length(Length::px(60.0))];
