@@ -9612,6 +9612,7 @@ mod tests {
       config.session_storage_namespace_id,
       None,
       config.web_storage_quota_utf16_bytes,
+      Arc::clone(&config.clock),
     )
   }
 

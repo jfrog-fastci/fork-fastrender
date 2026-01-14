@@ -12843,6 +12843,7 @@ mod element_dispatch_tests {
       Some(1),
       None,
       5 * 1024 * 1024,
+      std::sync::Arc::new(crate::clock::RealClock::default()),
     ));
 
     let mut scope = heap.scope();
