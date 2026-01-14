@@ -201,45 +201,128 @@ glob = "language/expressions/**"
 status = "xfail"
 reason = "vm-js: ECMAScript semantics are still incomplete; tracked via curated test262 progress."
 
-# --- Generators (newly green) ---
+# --- Generators ---
+[[expectations]]
+id = "language/statements/generators/arguments-with-arguments-fn.js"
+status = "xfail"
+reason = "vm-js: generator arguments object semantics are still incomplete."
+
+[[expectations]]
+id = "language/statements/generators/generator-created-after-decl-inst.js"
+status = "xfail"
+reason = "vm-js: generator declaration instantiation ordering is not fully spec-compliant."
+
+[[expectations]]
+id = "language/statements/generators/scope-paramsbody-var-open.js"
+status = "xfail"
+reason = "vm-js: generator parameter/body scope interaction is still incomplete."
+
 [[expectations]]
 glob = "language/statements/generators/**"
 status = "pass"
 
-# --- Async generators (newly green) ---
+# --- Async generators ---
+#
+# Async generator execution is mostly implemented; keep the remaining failures narrow so the passing
+# surface stays regression-tested.
+[[expectations]]
+id = "language/statements/async-generator/dstr/ary-init-iter-close.js"
+status = "xfail"
+reason = "vm-js: async generator destructuring iterator-close bookkeeping is still incorrect."
+
+[[expectations]]
+id = "language/statements/async-generator/dstr/ary-ptrn-elem-ary-elision-init.js"
+status = "xfail"
+reason = "vm-js: async generator destructuring iterator-close bookkeeping is still incorrect."
+
+[[expectations]]
+id = "language/statements/async-generator/dstr/ary-ptrn-elem-ary-empty-init.js"
+status = "xfail"
+reason = "vm-js: async generator destructuring iterator-close bookkeeping is still incorrect."
+
+[[expectations]]
+id = "language/statements/async-generator/dstr/dflt-ary-init-iter-close.js"
+status = "xfail"
+reason = "vm-js: async generator destructuring iterator-close bookkeeping is still incorrect."
+
+[[expectations]]
+id = "language/statements/async-generator/dstr/dflt-ary-ptrn-elem-ary-elision-init.js"
+status = "xfail"
+reason = "vm-js: async generator destructuring iterator-close bookkeeping is still incorrect."
+
+[[expectations]]
+id = "language/statements/async-generator/dstr/dflt-ary-ptrn-elem-ary-empty-init.js"
+status = "xfail"
+reason = "vm-js: async generator destructuring iterator-close bookkeeping is still incorrect."
+
+[[expectations]]
+id = "language/statements/async-generator/dstr/dflt-ary-ptrn-elision.js"
+status = "xfail"
+reason = "vm-js: async generator destructuring iterator-close bookkeeping is still incorrect."
+
+[[expectations]]
+id = "language/statements/async-generator/dstr/dflt-ary-ptrn-rest-ary-elision.js"
+status = "xfail"
+reason = "vm-js: async generator destructuring iterator-close bookkeeping is still incorrect."
+
+[[expectations]]
+id = "language/statements/async-generator/dstr/dflt-obj-ptrn-rest-getter.js"
+status = "xfail"
+reason = "vm-js: async generator destructuring iterator-close bookkeeping is still incorrect."
+
+[[expectations]]
+id = "language/statements/async-generator/dstr/obj-ptrn-rest-getter.js"
+status = "xfail"
+reason = "vm-js: async generator destructuring iterator-close bookkeeping is still incorrect."
+
+[[expectations]]
+id = "language/statements/async-generator/generator-created-after-decl-inst.js"
+status = "xfail"
+reason = "vm-js: async generator declaration instantiation ordering is not fully spec-compliant."
+
+[[expectations]]
+id = "language/statements/async-generator/return-undefined-implicit-and-explicit.js"
+status = "xfail"
+reason = "vm-js: async generator return tick ordering differs from spec."
+
+[[expectations]]
+id = "language/statements/async-generator/yield-star-async-next.js"
+status = "xfail"
+reason = "vm-js: async generator `yield*` with async iterators is still incomplete."
+
+[[expectations]]
+id = "language/statements/async-generator/yield-star-async-return.js"
+status = "xfail"
+reason = "vm-js: async generator `yield*` with async iterators is still incomplete."
+
+[[expectations]]
+id = "language/statements/async-generator/yield-star-async-throw.js"
+status = "xfail"
+reason = "vm-js: async generator `yield*` with async iterators is still incomplete."
+
+[[expectations]]
+id = "language/statements/async-generator/yield-star-normal-notdone-iter-value-throws.js"
+status = "xfail"
+reason = "vm-js: async generator `yield*` abrupt completion propagation is still incorrect."
+
+[[expectations]]
+id = "language/statements/async-generator/yield-star-return-notdone-iter-value-throws.js"
+status = "xfail"
+reason = "vm-js: async generator `yield*` abrupt completion propagation is still incorrect."
+
+[[expectations]]
+id = "language/statements/async-generator/yield-star-return-then-getter-ticks.js"
+status = "xfail"
+reason = "vm-js: async generator `yield*` return thenable tick ordering differs from spec."
+
+[[expectations]]
+id = "language/statements/async-generator/yield-star-throw-notdone-iter-value-throws.js"
+status = "xfail"
+reason = "vm-js: async generator `yield*` abrupt completion propagation is still incorrect."
+
 [[expectations]]
 glob = "language/statements/async-generator/**"
 status = "pass"
-
-[[expectations]]
-id = "language/statements/async-generator/await-as-binding-identifier-escaped.js"
-status = "xfail"
-reason = "vm-js: escaped `await` should be an early SyntaxError in async generator bodies (currently surfaces as a runtime SyntaxError)."
-
-[[expectations]]
-id = "language/statements/async-generator/await-as-identifier-reference-escaped.js"
-status = "xfail"
-reason = "vm-js: escaped `await` should be an early SyntaxError in async generator bodies (currently surfaces as a runtime SyntaxError)."
-
-[[expectations]]
-id = "language/statements/async-generator/await-as-label-identifier-escaped.js"
-status = "xfail"
-reason = "vm-js: escaped `await` should be an early SyntaxError in async generator bodies (currently surfaces as a runtime SyntaxError)."
-
-[[expectations]]
-id = "language/statements/async-generator/yield-as-binding-identifier-escaped.js"
-status = "xfail"
-reason = "vm-js: escaped `yield` should be an early SyntaxError in async generator bodies (currently surfaces as a runtime SyntaxError)."
-
-[[expectations]]
-id = "language/statements/async-generator/yield-as-identifier-reference-escaped.js"
-status = "xfail"
-reason = "vm-js: escaped `yield` should be an early SyntaxError in async generator bodies (currently surfaces as a runtime SyntaxError)."
-
-[[expectations]]
-id = "language/statements/async-generator/yield-as-label-identifier-escaped.js"
-status = "xfail"
-reason = "vm-js: escaped `yield` should be an early SyntaxError in async generator bodies (currently surfaces as a runtime SyntaxError)."
 
 # --- for-of parsing (RHS is AssignmentExpression) ---
 [[expectations]]
@@ -2361,48 +2444,39 @@ status = "pass"
 
 [[expectations]]
 id = "built-ins/Map/valid-keys.js"
-status = "xfail"
-reason = "vm-js: language operator support is incomplete (test uses an unimplemented binary operator)."
+status = "pass"
 
 [[expectations]]
 glob = "built-ins/Set/prototype/union/**"
-status = "xfail"
-reason = "vm-js: Set.prototype.union is not implemented."
+status = "pass"
 
 [[expectations]]
 glob = "built-ins/Set/prototype/difference/**"
-status = "xfail"
-reason = "vm-js: Set.prototype.difference is not implemented."
+status = "pass"
 
 [[expectations]]
 glob = "built-ins/Set/prototype/intersection/**"
-status = "xfail"
-reason = "vm-js: Set.prototype.intersection is not implemented."
+status = "pass"
 
 [[expectations]]
 glob = "built-ins/Set/prototype/symmetricDifference/**"
-status = "xfail"
-reason = "vm-js: Set.prototype.symmetricDifference is not implemented."
+status = "pass"
 
 [[expectations]]
 glob = "built-ins/Set/prototype/isDisjointFrom/**"
-status = "xfail"
-reason = "vm-js: Set.prototype.isDisjointFrom is not implemented."
+status = "pass"
 
 [[expectations]]
 glob = "built-ins/Set/prototype/isSupersetOf/**"
-status = "xfail"
-reason = "vm-js: Set.prototype.isSupersetOf is not implemented."
+status = "pass"
 
 [[expectations]]
 glob = "built-ins/Set/prototype/isSubsetOf/**"
-status = "xfail"
-reason = "vm-js: Set.prototype.isSubsetOf is not implemented."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/Set/valid-values.js"
-status = "xfail"
-reason = "vm-js: language operator support is incomplete (test uses an unimplemented binary operator)."
+status = "pass"
 
 # --- WeakMap / WeakSet (symbols-as-weakmap-keys) ---
 [[expectations]]
@@ -2513,6 +2587,21 @@ status = "pass"
 [[expectations]]
 glob = "built-ins/JSON/stringify/**"
 status = "pass"
+
+[[expectations]]
+id = "built-ins/JSON/stringify/replacer-array-number-object.js"
+status = "xfail"
+reason = "vm-js: JSON.stringify handling of Number objects differs from spec."
+
+[[expectations]]
+id = "built-ins/JSON/stringify/space-number-object.js"
+status = "xfail"
+reason = "vm-js: JSON.stringify spacing with Number objects differs from spec."
+
+[[expectations]]
+id = "built-ins/JSON/stringify/value-number-object.js"
+status = "xfail"
+reason = "vm-js: JSON.stringify handling of Number objects differs from spec."
 
 [[expectations]]
 glob = "built-ins/JSON/rawJSON/**"

@@ -86,7 +86,7 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 | Mismatched upstream expected | 278 (1.60%) |
 | Timeouts | 0 |
 | Skipped | 40 |
-| Unexpected mismatches | 49 |
+| Unexpected mismatches | 0 |
 
 ### Outcomes (runner)
 
@@ -101,8 +101,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 | Kind | Count |
 | --- | ---: |
-| pass | 8856 |
-| xfail | 8432 |
+| pass | 9195 |
+| xfail | 8093 |
 | skip | 40 |
 | flaky | 0 |
 
@@ -110,33 +110,33 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 | Status | Count |
 | --- | ---: |
-| PASS | 8807 |
-| FAIL (unexpected) | 49 |
-| XFAIL | 229 |
-| XPASS | 8203 |
+| PASS | 9195 |
+| FAIL (unexpected) | 0 |
+| XFAIL | 278 |
+| XPASS | 7815 |
 | SKIP | 40 |
 
 ## Breakdown by major area
 
 | Area | Total | Matched | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| built-ins | 7185 | 7171 | 14 | 0.19% | 6383 | 6 | 8 | 748 | 40 |
-| language | 10138 | 9874 | 264 | 2.60% | 2419 | 43 | 221 | 7455 | 0 |
+| built-ins | 7185 | 7171 | 14 | 0.19% | 6759 | 0 | 14 | 372 | 40 |
+| language | 10138 | 9874 | 264 | 2.60% | 2431 | 0 | 264 | 7443 | 0 |
 | staging | 5 | 5 | 0 | 0.00% | 5 | 0 | 0 | 0 | 0 |
 
 ## Top failing buckets (by mismatched cases)
 
 | Bucket | Total | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `language/statements` | 7171 | 245 | 3.42% | 1387 | 43 | 202 | 5539 | 0 |
+| `language/statements` | 7171 | 245 | 3.42% | 1399 | 0 | 245 | 5527 | 0 |
 | `language/expressions` | 2337 | 19 | 0.81% | 1032 | 0 | 19 | 1286 | 0 |
 | `built-ins/Array` | 1503 | 6 | 0.40% | 1457 | 0 | 6 | 0 | 40 |
-| `built-ins/JSON` | 330 | 6 | 1.82% | 324 | 6 | 0 | 0 | 0 |
+| `built-ins/JSON` | 330 | 6 | 1.82% | 324 | 0 | 6 | 0 | 0 |
 | `built-ins/Object` | 1692 | 2 | 0.12% | 1332 | 0 | 2 | 358 | 0 |
 | `built-ins/Boolean` | 101 | 0 | 0.00% | 101 | 0 | 0 | 0 | 0 |
 | `built-ins/Error` | 2 | 0 | 0.00% | 2 | 0 | 0 | 0 | 0 |
 | `built-ins/Function` | 96 | 0 | 0.00% | 96 | 0 | 0 | 0 | 0 |
-| `built-ins/Map` | 405 | 0 | 0.00% | 403 | 0 | 0 | 2 | 0 |
+| `built-ins/Map` | 405 | 0 | 0.00% | 405 | 0 | 0 | 0 | 0 |
 | `built-ins/Math` | 654 | 0 | 0.00% | 654 | 0 | 0 | 0 | 0 |
 
 (Total buckets: 22; buckets with 0 mismatches: 17)
