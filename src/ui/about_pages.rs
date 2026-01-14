@@ -2998,6 +2998,27 @@ mod tests {
     // Ensure help content stays in sync with the shortcut mapping.
     let html = html_for_about_url(ABOUT_HELP).unwrap();
 
+    // Focus address bar: Ctrl/Cmd+L and Ctrl/Cmd+K.
+    for key in [Key::L, Key::K] {
+      assert_eq!(
+        map_shortcut_with_platform(
+          KeyEvent::new(key, Modifiers::new(true, false, false, false)),
+          Platform::Other
+        ),
+        Some(ShortcutAction::FocusAddressBar)
+      );
+      assert_eq!(
+        map_shortcut_with_platform(
+          KeyEvent::new(key, Modifiers::new(false, false, false, true)),
+          Platform::Mac
+        ),
+        Some(ShortcutAction::FocusAddressBar)
+      );
+    }
+    assert!(html.contains(
+      r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>L</kbd> / <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>K</kbd> — Focus address bar"#
+    ));
+
     // Find in page: Ctrl/Cmd+F.
     assert_eq!(
       map_shortcut_with_platform(
@@ -3014,6 +3035,59 @@ mod tests {
       Some(ShortcutAction::FindInPage)
     );
     assert!(html.contains(r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>F</kbd> — Find in page"#));
+
+    // New tab: Ctrl/Cmd+T.
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::T, Modifiers::new(true, false, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::NewTab)
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::T, Modifiers::new(false, false, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::NewTab)
+    );
+    assert!(html.contains(r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>T</kbd> — New tab"#));
+
+    // Reopen last closed tab: Ctrl/Cmd+Shift+T.
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::T, Modifiers::new(true, true, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::ReopenClosedTab)
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::T, Modifiers::new(false, true, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::ReopenClosedTab)
+    );
+    assert!(html.contains(
+      r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> — Reopen last closed tab"#
+    ));
+
+    // Close tab: Ctrl/Cmd+W.
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::W, Modifiers::new(true, false, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::CloseTab)
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::W, Modifiers::new(false, false, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::CloseTab)
+    );
+    assert!(html.contains(r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>W</kbd> — Close tab"#));
 
     // Downloads panel: Ctrl+J (Win/Linux), Cmd+Shift+J (macOS).
     assert_eq!(
@@ -3066,6 +3140,65 @@ mod tests {
     ] {
       assert!(html.contains(needle));
     }
+
+    // Back/forward: Alt+Left/Right (Win/Linux); Cmd+[ / Cmd+] (macOS).
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::Left, Modifiers::new(false, false, true, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::Back)
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::Right, Modifiers::new(false, false, true, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::Forward)
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::OpenBracket, Modifiers::new(false, false, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::Back)
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::CloseBracket, Modifiers::new(false, false, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::Forward)
+    );
+    assert!(html.contains(
+      r#"<kbd>Alt</kbd>+<kbd>Left</kbd> / <kbd>Alt</kbd>+<kbd>Right</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>[</kbd> / <kbd>Cmd</kbd>+<kbd>]</kbd> (macOS) — Back/forward"#
+    ));
+
+    // Reload: Ctrl/Cmd+R / F5.
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::R, Modifiers::new(true, false, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::Reload)
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::R, Modifiers::new(false, false, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::Reload)
+    );
+    for platform in [Platform::Other, Platform::Mac] {
+      assert_eq!(
+        map_shortcut_with_platform(KeyEvent::new(Key::F5, Modifiers::default()), platform),
+        Some(ShortcutAction::Reload),
+        "expected F5 on {platform:?} to map to Reload"
+      );
+    }
+    assert!(html.contains(
+      r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>R</kbd> / <kbd>F5</kbd> — Reload"#
+    ));
 
     // Fullscreen: F11 (Win/Linux); Ctrl+Cmd+F (macOS).
     assert_eq!(
@@ -3154,6 +3287,72 @@ mod tests {
     );
     assert!(html.contains(
       r#"<kbd>Ctrl</kbd>+<kbd>D</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>D</kbd> (macOS) — Toggle bookmark"#
+    ));
+
+    // Activate tab number: Ctrl/Cmd+1..9.
+    for (key, idx) in [(Key::Num1, 1u8), (Key::Num9, 9u8)] {
+      assert_eq!(
+        map_shortcut_with_platform(
+          KeyEvent::new(key, Modifiers::new(true, false, false, false)),
+          Platform::Other
+        ),
+        Some(ShortcutAction::ActivateTabNumber(idx))
+      );
+      assert_eq!(
+        map_shortcut_with_platform(
+          KeyEvent::new(key, Modifiers::new(false, false, false, true)),
+          Platform::Mac
+        ),
+        Some(ShortcutAction::ActivateTabNumber(idx))
+      );
+    }
+    assert!(html.contains(
+      r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>1</kbd>…<kbd>9</kbd> — Activate tab (9 = last)"#
+    ));
+
+    // Bookmarks manager: Ctrl/Cmd+Shift+O.
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::O, Modifiers::new(true, true, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::ShowBookmarksManager)
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::O, Modifiers::new(false, true, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::ShowBookmarksManager)
+    );
+    assert!(html.contains(
+      r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> — Show bookmarks manager"#
+    ));
+
+    // Show history: Ctrl+H (Win/Linux); Cmd+Y / Cmd+Shift+H (macOS).
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::H, Modifiers::new(true, false, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::ShowHistory)
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::Y, Modifiers::new(false, false, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::ShowHistory)
+    );
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::H, Modifiers::new(false, true, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::ShowHistory)
+    );
+    assert!(html.contains(
+      r#"<kbd>Ctrl</kbd>+<kbd>H</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>Y</kbd> / <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> (macOS) — Show history"#
     ));
   }
 
