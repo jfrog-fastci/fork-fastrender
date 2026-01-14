@@ -8877,10 +8877,6 @@ impl<'a> Evaluator<'a> {
           PropertyKey::Symbol(s) => member_scope.push_root(Value::Symbol(s))?,
         };
 
-        // Keep the class constructor object accessible even in branches that bind `func_obj` for
-        // class element function objects.
-        let class_ctor = func_obj;
-
         match &member.stx.val {
           ClassOrObjVal::Method(method) => {
             let func_node = &method.stx.func;
@@ -23423,9 +23419,6 @@ fn async_define_class_member(
   target_obj: GcObject,
   key: PropertyKey,
 ) -> Result<(), VmError> {
-  let is_private_key =
-    matches!(&member.stx.key, ClassOrObjKey::Direct(direct) if direct.stx.tt == TT::PrivateMember);
-
   let mut member_scope = scope.reborrow();
   member_scope.push_root(Value::Object(target_obj))?;
   match key {
