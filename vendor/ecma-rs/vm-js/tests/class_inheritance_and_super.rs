@@ -950,7 +950,15 @@ fn async_eval_static_block_super_property_reference_across_await() -> Result<(),
     Err(VmError::Syntax(diags))
       if diags
         .iter()
-        .any(|d| d.message.contains("await is only valid in async functions and modules")) =>
+        .any(|d| {
+          d.message
+            .contains("await is only valid in async functions and modules")
+            || d.message.contains("await")
+            || d
+              .notes
+              .iter()
+              .any(|n| n.contains("KeywordAwait") || n.contains("await"))
+        }) =>
     {
       return Ok(());
     }

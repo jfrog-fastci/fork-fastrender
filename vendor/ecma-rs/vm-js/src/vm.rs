@@ -4612,13 +4612,13 @@ impl Vm {
       // construction (regardless of whether `this` was initialized).
       Value::Object(o) => Ok(Value::Object(o)),
 
-      // `return;` / no explicit return, OR an explicit non-object return value.
+      // `return;` / no explicit return / explicit `return undefined;`.
       //
-      // Per ECMA-262, constructors ignore non-object return values and instead yield `this`.
-      // Derived constructors are special only in that they may have an uninitialized `this` binding
-      // if `super()` was never called; in that case, returning a non-object must throw a
+      // Per ECMA-262, constructors fall back to returning `this` for an `undefined` return value.
+      // Derived constructors are special only in that they may still have an uninitialized `this`
+      // binding if `super()` was never called; in that case, returning `undefined` must throw a
       // ReferenceError.
-      _ => {
+      Value::Undefined => {
         if derived_constructor {
           let this_root_idx = this_root_idx.ok_or(VmError::InvariantViolation(
             "derived constructor missing this root slot",
@@ -4644,13 +4644,25 @@ impl Vm {
             }
           }
         } else {
-          // Base/ordinary constructors always allocate `this` up-front and ignore non-object return
-          // values.
+          // Base/ordinary constructors always allocate `this` up-front.
           let this_obj = this_obj.ok_or(VmError::InvariantViolation(
             "base constructor missing allocated this object",
           ))?;
           Ok(Value::Object(this_obj))
         }
+      }
+
+      // Derived constructors may only return an object or `undefined`. Any other explicit non-object
+      // return value must throw a TypeError.
+      _ if derived_constructor => Err(VmError::TypeError(
+        "Derived constructor returned non-object (only object or undefined is allowed)",
+      )),
+
+      // Base/ordinary constructors ignore explicit non-object return values.
+      _ => {
+        let this_obj =
+          this_obj.ok_or(VmError::InvariantViolation("base constructor missing allocated this object"))?;
+        Ok(Value::Object(this_obj))
       }
     }
   }
