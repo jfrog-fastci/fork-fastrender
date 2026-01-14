@@ -52,19 +52,19 @@ impl ChromeDocumentContext<'_> {
     *self.needs_redraw = true;
   }
 
-  fn dispatch_focus_change_to_js(&mut self, prev: Option<usize>, next: Option<usize>) {
+  fn dispatch_focus_change_to_js(
+    &mut self,
+    prev: Option<usize>,
+    prev_element_id: Option<&str>,
+    next: Option<usize>,
+    next_element_id: Option<&str>,
+  ) {
     if prev == next {
       return;
     }
     let Some(js_tab) = self.js_tab.as_mut() else {
       return;
     };
-
-    fn element_id_for_node(dom: &mut DomNode, node_id: usize) -> Option<String> {
-      crate::dom::find_node_mut_by_preorder_id(dom, node_id)
-        .and_then(|node| node.get_attribute_ref("id"))
-        .map(|id| id.to_string())
-    }
 
     fn js_dom_node_for_preorder_id(
       js_tab: &mut BrowserTab,
@@ -92,13 +92,10 @@ impl ChromeDocumentContext<'_> {
       element_id.and_then(|id| js_tab.dom().get_element_by_id(id))
     }
 
-    let prev_element_id = prev.and_then(|id| element_id_for_node(self.dom, id));
-    let next_element_id = next.and_then(|id| element_id_for_node(self.dom, id));
-
     let prev_js_node_id =
-      prev.and_then(|id| js_dom_node_for_preorder_id(js_tab, id, prev_element_id.as_deref()));
+      prev.and_then(|id| js_dom_node_for_preorder_id(js_tab, id, prev_element_id));
     let next_js_node_id =
-      next.and_then(|id| js_dom_node_for_preorder_id(js_tab, id, next_element_id.as_deref()));
+      next.and_then(|id| js_dom_node_for_preorder_id(js_tab, id, next_element_id));
 
     // Dispatch `focusin`/`focusout` first so bubbled listeners observe a deterministic sequence.
     // Keep non-bubbling `blur`/`focus` as the final notifications.
@@ -118,11 +115,20 @@ impl ChromeDocumentContext<'_> {
 
   fn focus_node_id(&mut self, node_id: usize) -> (bool, InteractionAction) {
     let prev = self.interaction.focused_node_id();
+    // Cache the focused element id before the focus mutation so we can dispatch JS focus events
+    // without doing an additional DOM preorder walk just to read `id=`.
+    let prev_element_id = self.interaction.focused_element_id().map(|id| id.to_string());
     let (changed, action) = self
       .interaction
       .focus_node_id(self.dom, Some(node_id), true);
     let next = self.interaction.focused_node_id();
-    self.dispatch_focus_change_to_js(prev, next);
+    let next_element_id = self.interaction.focused_element_id().map(|id| id.to_string());
+    self.dispatch_focus_change_to_js(
+      prev,
+      prev_element_id.as_deref(),
+      next,
+      next_element_id.as_deref(),
+    );
     (changed, action)
   }
 }
