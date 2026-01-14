@@ -8102,11 +8102,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       );
       session.home_url = home_url;
       session.did_exit_cleanly = false;
-      if session_autosave.is_background_thread_running() {
-        session_autosave.request_save(session);
-      } else if let Err(err) = fastrender::ui::session::save_session_atomic(&session_path, &session)
-      {
-        eprintln!("failed to save session to {}: {err}", session_path.display());
+      session_autosave.request_save(session);
+      // When the autosave worker is unavailable we fall back to synchronous writes inside
+      // `SessionAutosave::request_save`. This preserves crash-loop tracking (`unclean_exit_streak`)
+      // which is managed by `SessionAutosave` and not present in UI-generated snapshots.
+      if !session_autosave.is_background_thread_running() {
+        if let Some(err) = session_autosave.last_error() {
+          eprintln!("failed to save session to {}: {err}", session_path.display());
+        }
       }
     };
 
