@@ -76,6 +76,15 @@ fn arguments_identifier_reference_in_class_static_block_is_syntax_error() {
 }
 
 #[test]
+fn arguments_identifier_reference_in_arrow_in_class_static_block_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("class C { static { () => arguments; } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn await_as_binding_identifier_in_class_static_block_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
@@ -171,6 +180,24 @@ fn optional_chaining_on_super_call_is_syntax_error() {
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn super_call_outside_derived_constructor_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("class B {} class A extends B { m() { super(); } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn super_call_in_arrow_function_outside_derived_constructor_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("class B {} class A extends B { m() { () => super(); } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
 }
 
 #[test]
