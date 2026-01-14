@@ -1611,6 +1611,10 @@ fn tab_ui(
     (has_error, has_warning)
   };
   let a11y_label = tab.tab_accessible_label(title, is_active, has_error, has_warning);
+  // Note: `egui::WidgetInfo::labeled` takes `impl ToString` and therefore allocates a `String` when
+  // the closure is executed. Keep the captured label as `Arc<str>` so registering the closure is
+  // allocation-free on the steady-state hot path (the closure only runs when egui requests widget
+  // info, e.g. for AccessKit updates).
   response.widget_info({
     let a11y_label = a11y_label.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
@@ -2028,6 +2032,7 @@ fn pinned_tab_ui(
     (has_error, has_warning)
   };
   let a11y_label = tab.tab_accessible_label(title, is_active, has_error, has_warning);
+  // See note in `tab_ui`: constructing `WidgetInfo` allocates when the closure is executed.
   response.widget_info({
     let a11y_label = a11y_label.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
