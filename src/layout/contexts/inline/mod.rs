@@ -7726,6 +7726,7 @@ impl InlineFormattingContext {
     let mut prev_ended_with_hard_break = false;
 
     for (idx, line) in lines.into_iter().enumerate() {
+      let ends_with_hard_break = line.ends_with_hard_break;
       let starts_after_forced_break = prev_ended_with_hard_break;
       let line_block_offset = start_y + line.y_offset;
       let line_direction = line.resolved_direction;
@@ -7773,7 +7774,7 @@ impl InlineFormattingContext {
         effective_align = map_text_align(TextAlign::Start, line_direction);
       }
       let line_fragment = self.create_line_fragment(
-        &line,
+        line,
         line_block_offset,
         line_width,
         line_box_width,
@@ -7790,7 +7791,7 @@ impl InlineFormattingContext {
         positioned_containing_blocks.as_deref_mut(),
       );
       fragments.push(line_fragment);
-      prev_ended_with_hard_break = line.ends_with_hard_break;
+      prev_ended_with_hard_break = ends_with_hard_break;
     }
 
     fragments
@@ -7799,7 +7800,7 @@ impl InlineFormattingContext {
   /// Creates a line fragment with positioned children
   fn create_line_fragment(
     &self,
-    line: &Line,
+    line: Line,
     block_offset: f32,
     available_width: f32,
     line_box_width: f32,
@@ -7826,9 +7827,19 @@ impl InlineFormattingContext {
     };
     let root_font_metrics = self.factory.root_font_metrics();
 
+    let Line {
+      items: mut items,
+      width: line_width,
+      height: line_height,
+      baseline: line_baseline,
+      left_offset: line_left_offset,
+      y_offset: line_y_offset,
+      ends_with_hard_break: line_ends_with_hard_break,
+      ..
+    } = line;
+
     let should_justify =
       is_justify_align(line_align) && !matches!(resolved_justify, TextJustify::None);
-    let mut items: Vec<PositionedItem> = line.items.clone();
     let rtl = matches!(direction, crate::style::types::Direction::Rtl);
     if rtl {
       items.reverse();
@@ -7851,7 +7862,7 @@ impl InlineFormattingContext {
     let usable_width = if available_width.is_finite() {
       available_width.max(0.0)
     } else {
-      line.width
+      line_width
     };
 
     // CSS Text 4 `text-spacing-trim` hanging punctuation (minimal implementation).
@@ -9199,7 +9210,7 @@ impl InlineFormattingContext {
 
       // `pre-wrap` whitespace before a forced line break is only conditionally hangable: any portion
       // that would overflow the line hangs, but any portion that fits remains in-flow.
-      if line.ends_with_hard_break && trailing > 0.0 {
+      if line_ends_with_hard_break && trailing > 0.0 {
         let overflow = (total_width - usable_width).max(0.0);
         trailing = trailing.min(overflow);
       }
@@ -9268,10 +9279,10 @@ impl InlineFormattingContext {
     if log_line {
       eprintln!(
                 "[inline-baseline] line y_offset={:.2} block_offset={:.2} height={:.2} baseline={:.2} items={}",
-                line.y_offset,
+                line_y_offset,
                 block_offset,
-                line.height,
-                line.baseline,
+                line_height,
+                line_baseline,
                 items.len()
             );
     }
@@ -9280,13 +9291,13 @@ impl InlineFormattingContext {
     // in the inline stream. Record their **baseline** position in the line so static positioning
     // can account for the element's own baseline metrics (notably for replaced elements, where the
     // baseline sits at the bottom margin edge).
-    let anchor_baseline_position = block_offset + line.baseline;
-    let line_origin = Point::new(line.left_offset, block_offset);
+    let anchor_baseline_position = block_offset + line_baseline;
+    let line_origin = Point::new(line_left_offset, block_offset);
 
     for (i, positioned) in items.iter().enumerate() {
       let item_width = positioned.item.width();
       let mut inline_pos = if rtl { cursor - item_width } else { cursor };
-      let mut block_pos = line.baseline + positioned.baseline_offset
+      let mut block_pos = line_baseline + positioned.baseline_offset
         - positioned.item.baseline_metrics().baseline_offset;
       if let InlineItem::InlineBox(box_item) = &positioned.item {
         // Inline boxes can have vertical padding/borders that extend above the line-height strut.
@@ -9319,7 +9330,7 @@ impl InlineFormattingContext {
       if let InlineItem::StaticPositionAnchor(anchor) = &positioned.item {
         if anchor.running.is_none() && anchor.footnote.is_none() {
           if let Some(map) = anchor_positions.as_deref_mut() {
-            let inline_origin = line.left_offset + inline_pos;
+            let inline_origin = line_left_offset + inline_pos;
             let anchor_point = StaticPositionAnchorPoint {
               baseline: Point::new(inline_origin, anchor_baseline_position),
               line_top: Point::new(inline_origin, block_offset),
@@ -9398,8 +9409,8 @@ impl InlineFormattingContext {
       }
     }
 
-    let bounds = Rect::from_xywh(line.left_offset, block_offset, line_box_width, line.height);
-    FragmentNode::new_line(bounds, line.baseline, children)
+    let bounds = Rect::from_xywh(line_left_offset, block_offset, line_box_width, line_height);
+    FragmentNode::new_line(bounds, line_baseline, children)
   }
 
   fn count_internal_justify_opportunities(item: &InlineItem, mode: TextJustify) -> usize {
