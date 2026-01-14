@@ -37485,6 +37485,8 @@ fn range_end_offset_get_native(
   Ok(Value::Number(offset as f64))
 }
 
+// NOTE: Merge fallout: this native binding was previously defined twice in this file. Keep each
+// native function defined exactly once to avoid duplicate-definition compilation failures.
 fn range_common_ancestor_container_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -37494,14 +37496,14 @@ fn range_common_ancestor_container_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+  let handle = range_handle_from_this(vm, scope, this, ILLEGAL_INVOCATION_ERROR)?;
   let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
-    .ok_or(VmError::TypeError("Illegal invocation"))?;
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let dom = unsafe { dom_ptr.as_ref() };
   let node_id = dom
     .range_common_ancestor_container(handle.range_id)
-    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+    .map_err(|_| VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
   get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), node_id)
 }
 
@@ -40862,7 +40864,8 @@ fn seconds_f64_to_duration(seconds: f64) -> Duration {
 
   Duration::new(secs, subsec_nanos)
 }
-
+// NOTE: Merge fallout: HTMLMediaElement native bindings were previously duplicated in this file,
+// causing duplicate-definition compilation failures.
 fn html_media_element_paused_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
