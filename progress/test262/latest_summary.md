@@ -84,8 +84,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 | Metric | Count |
 | --- | ---: |
 | Total cases | 17318 |
-| Matched upstream expected | 16006 (92.42%) |
-| Mismatched upstream expected | 1312 (7.58%) |
+| Matched upstream expected | 15988 (92.32%) |
+| Mismatched upstream expected | 1330 (7.68%) |
 | Timeouts | 0 |
 | Skipped | 40 |
 | Unexpected mismatches | 664 |
@@ -94,8 +94,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 | Outcome | Count |
 | --- | ---: |
-| passed | 15966 |
-| failed | 1312 |
+| passed | 15948 |
+| failed | 1330 |
 | timed_out | 0 |
 | skipped | 40 |
 
@@ -114,8 +114,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 | --- | ---: |
 | PASS | 8042 |
 | FAIL (unexpected) | 664 |
-| XFAIL | 648 |
-| XPASS | 7924 |
+| XFAIL | 666 |
+| XPASS | 7906 |
 | SKIP | 40 |
 
 ## Breakdown by major area
@@ -123,14 +123,14 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 | Area | Total | Matched | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | built-ins | 7185 | 6871 | 314 | 4.37% | 6249 | 0 | 314 | 582 | 40 |
-| language | 10128 | 9130 | 998 | 9.85% | 1788 | 664 | 334 | 7342 | 0 |
+| language | 10128 | 9112 | 1016 | 10.03% | 1788 | 664 | 352 | 7324 | 0 |
 | staging | 5 | 5 | 0 | 0.00% | 5 | 0 | 0 | 0 | 0 |
 
 ## Top failing buckets (by mismatched cases)
 
 | Bucket | Total | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `language/statements` | 7161 | 971 | 13.56% | 756 | 664 | 307 | 5434 | 0 |
+| `language/statements` | 7161 | 989 | 13.81% | 756 | 664 | 325 | 5416 | 0 |
 | `built-ins/Set` | 764 | 304 | 39.79% | 390 | 0 | 304 | 70 | 0 |
 | `language/expressions` | 2337 | 27 | 1.16% | 1032 | 0 | 27 | 1278 | 0 |
 | `built-ins/Array` | 1503 | 6 | 0.40% | 1457 | 0 | 6 | 0 | 40 |
@@ -142,8 +142,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 ## Top mismatch reasons (first line of `error`)
 
 Mismatched cases by high-level bucket:
-- exception/other: 840 (64.02%)
-- VmError::Unimplemented: 472 (35.98%)
+- exception/other: 858 (64.51%)
+- VmError::Unimplemented: 472 (35.49%)
 
 ### Top 20
 
@@ -152,7 +152,7 @@ Mismatched cases by high-level bucket:
 | 1 | VmError::Unimplemented | 413 | `unimplemented: async generator functions` |
 | 2 | exception/other | 206 | `value is not callable` |
 | 3 | exception/other | 116 | `Expected a Test262Error to be thrown but no exception was thrown at all` |
-| 4 | exception/other | 72 | `Expected a TypeError to be thrown but no exception was thrown at all` |
+| 4 | exception/other | 84 | `Expected a TypeError to be thrown but no exception was thrown at all` |
 | 5 | exception/other | 66 | `Expected SameValue(«"xCls2"», «"xCls2"») to be false` |
 | 6 | exception/other | 60 | `Expected SameValue(«"xCover"», «"xCover"») to be false` |
 | 7 | VmError::Unimplemented | 48 | `unimplemented: yield in for-of binding pattern` |
@@ -182,7 +182,7 @@ _None._
 
 Sample mismatched cases (ID + first non-empty `error` line), grouped by the largest mismatch buckets.
 
-### `language/statements` (10 shown / 971 mismatches)
+### `language/statements` (10 shown / 989 mismatches)
 
 - `language/statements/async-function/dflt-params-abrupt.js#non_strict`: `at language/statements/async-function/dflt-params-abrupt.js:207:36`
 - `language/statements/async-function/dflt-params-abrupt.js#strict`: `at language/statements/async-function/dflt-params-abrupt.js:209:36`
