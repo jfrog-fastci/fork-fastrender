@@ -106,7 +106,10 @@ fn format_rejection_stack_trace_limited(frames: &[StackFrame]) -> String {
     end -= 1;
   }
   out.truncate(end);
-  out.push_str("...");
+  // Best-effort: avoid aborting on OOM while appending the ellipsis.
+  if out.try_reserve("...".len()).is_ok() {
+    out.push_str("...");
+  }
   out
 }
 
