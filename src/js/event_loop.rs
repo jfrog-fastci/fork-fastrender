@@ -12,7 +12,8 @@ use super::time::duration_to_ms_f64;
 use crate::clock::{Clock, RealClock};
 use vm_js::PromiseHandle;
 
-pub type MicrotaskCheckpointHook<Host> = fn(&mut Host, &mut EventLoop<Host>) -> Result<()>;
+pub type MicrotaskCheckpointHook<Host> =
+  for<'a> fn(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()>;
 const MAX_MICROTASK_CHECKPOINT_HOOKS: usize = 8;
 type MicrotaskCheckpointHooks<Host> =
   SmallVec<[MicrotaskCheckpointHook<Host>; MAX_MICROTASK_CHECKPOINT_HOOKS]>;
