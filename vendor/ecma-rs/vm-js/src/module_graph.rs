@@ -1233,7 +1233,9 @@ impl ModuleGraph {
     // which in turn calls `GetModuleNamespace` for the target module. Self-referential namespaces
     // (or cycles across multiple modules) would otherwise recurse infinitely if we only populated
     // `module.[[Namespace]]` after the exports list was fully constructed.
-    let namespace_obj = scope.alloc_module_namespace_object(Vec::new().into_boxed_slice())?;
+    // Avoid `Vec::into_boxed_slice`, which can reallocate infallibly if the vector has spare
+    // capacity. An empty boxed slice is always representable without allocation.
+    let namespace_obj = scope.alloc_module_namespace_object(Box::<[ModuleNamespaceExport]>::default())?;
     let root = scope.heap_mut().add_root(Value::Object(namespace_obj))?;
     self.modules[idx].namespace = Some(ModuleNamespaceCache {
       object: root,
