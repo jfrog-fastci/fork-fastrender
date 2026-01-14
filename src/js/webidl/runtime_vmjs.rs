@@ -2425,6 +2425,7 @@ impl<Host: 'static> webidl_js_runtime::WebIdlJsRuntime for VmJsWebIdlBindingsCx<
         vm_js::promise_resolve(&mut *rt.cx.vm, &mut rt.cx.scope, &mut noop_hooks, value)
       }
     })?;
+    // Root the Promise object so WebIDL conversions can hold it across further allocations.
     self.cx.scope.push_root(promise)?;
     Ok(promise)
   }
