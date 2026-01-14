@@ -1,47 +1,24 @@
-use clap::Parser;
-use fastrender::perf_log;
+//! Summarize windowed `browser` JSONL perf-log captures.
+//!
+//! The windowed UI can emit newline-delimited JSON (JSONL) perf events (`browser --perf-log`).
+//! This tool consumes both:
+//! - the **current** `event=...` schema (v2), and
+//! - the **legacy** `type=...` schema (v1),
+//! and emits headline percentile stats for common responsiveness metrics.
+//!
+//! Output:
+//! - A machine-readable JSON summary is always written to **stdout** (pretty-printed).
+//! - A human-readable summary is written to **stderr** (unless `--json` is passed).
+
+use clap::{ArgAction, Parser};
+use fastrender::browser_perf_log::{
+  BrowserPerfLogEvent, BrowserPerfLogEventV1, BrowserPerfLogEventV2, InputKind,
+};
+use fastrender::memory::BYTES_PER_MIB;
 use serde::Serialize;
-use serde_json::Value;
-use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
 use std::path::PathBuf;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-enum OnlyEvent {
-  Frame,
-  Input,
-  Resize,
-  Ttfp,
-  #[value(
-    name = "idle_sample",
-    aliases = ["idle-sample", "idle_summary", "idle-summary"]
-  )]
-  IdleSample,
-  #[value(name = "cpu_summary", alias = "cpu-summary")]
-  CpuSummary,
-}
-
-impl OnlyEvent {
-  fn as_str(self) -> &'static str {
-    match self {
-      OnlyEvent::Frame => "frame",
-      OnlyEvent::Input => "input",
-      OnlyEvent::Resize => "resize",
-      OnlyEvent::Ttfp => "ttfp",
-      OnlyEvent::IdleSample => "idle_sample",
-      OnlyEvent::CpuSummary => "cpu_summary",
-    }
-  }
-
-  fn matches(self, event: &str) -> bool {
-    match self {
-      // Backward compatibility: older logs emitted `idle_summary`.
-      OnlyEvent::IdleSample => event == "idle_sample" || event == "idle_summary",
-      other => event == other.as_str(),
-    }
-  }
-}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -51,403 +28,400 @@ impl OnlyEvent {
   term_width = 90
 )]
 struct Args {
-  /// Read JSONL input from a file (defaults to stdin)
+  /// Read JSONL input from a file (defaults to stdin). Use "-" to force stdin.
   #[arg(long)]
   input: Option<PathBuf>,
 
-  /// Only include events at or after this timestamp (ms)
-  #[arg(long)]
-  from_ms: Option<f64>,
+  /// Only include events at or after this timestamp (ms since process start).
+  #[arg(long, value_name = "MS")]
+  from_ms: Option<u64>,
 
-  /// Only include events at or before this timestamp (ms)
-  #[arg(long)]
-  to_ms: Option<f64>,
+  /// Only include events at or before this timestamp (ms since process start).
+  #[arg(long, value_name = "MS")]
+  to_ms: Option<u64>,
 
-  /// Only include a single event type
-  #[arg(long)]
-  only_event: Option<OnlyEvent>,
+  /// Only include events of the given kind.
+  ///
+  /// Common values:
+  /// - `frame` (UI frame samples)
+  /// - `input` (keyboard + scroll latency)
+  /// - `scroll` (scroll latency only)
+  /// - `tab_switch`
+  /// - `resize`
+  /// - `ttfp`
+  /// - `cpu_summary`
+  /// - `memory_summary`
+  /// - `frame_upload`
+  /// - `idle_sample` (legacy alias: `idle_summary`)
+  #[arg(long, value_name = "EVENT")]
+  only_event: Option<String>,
+
+  /// Backward-compatible alias: some callers historically used `--json` to request JSON output.
+  ///
+  /// This tool now always writes JSON to stdout; `--json` suppresses the human-readable stderr
+  /// summary for scripts that want a quiet mode.
+  #[arg(long, action = ArgAction::SetTrue)]
+  json: bool,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
-struct SeriesStats {
-  count: usize,
-  mean: f64,
-  p50: f64,
-  p95: f64,
-  max: f64,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EventFilter {
+  Frame,
+  Input,
+  Scroll,
+  Resize,
+  Ttfp,
+  CpuSummary,
+  MemorySummary,
+  FrameUpload,
+  IdleSample,
+  TabSwitch,
+}
+
+fn parse_event_filter(raw: &str) -> Result<EventFilter, String> {
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return Err("--only-event must not be empty".to_string());
+  }
+  match raw.to_ascii_lowercase().as_str() {
+    "frame" => Ok(EventFilter::Frame),
+    "input" => Ok(EventFilter::Input),
+    "scroll" => Ok(EventFilter::Scroll),
+    "resize" => Ok(EventFilter::Resize),
+    "ttfp" => Ok(EventFilter::Ttfp),
+    "cpu_summary" | "cpu" => Ok(EventFilter::CpuSummary),
+    "memory_summary" | "memory" => Ok(EventFilter::MemorySummary),
+    "frame_upload" | "upload" => Ok(EventFilter::FrameUpload),
+    "idle_sample" | "idle_summary" => Ok(EventFilter::IdleSample),
+    "tab_switch" | "tabswitch" | "tab-switch" => Ok(EventFilter::TabSwitch),
+    other => Err(format!(
+      "unknown --only-event {other:?}; expected frame|input|scroll|resize|ttfp|cpu_summary|memory_summary|frame_upload|idle_sample|tab_switch"
+    )),
+  }
+}
+
+fn f64_timestamp_ms_to_u64(ts_ms: Option<f64>) -> Option<u64> {
+  let ts_ms = ts_ms?;
+  if !ts_ms.is_finite() || ts_ms < 0.0 {
+    return None;
+  }
+  let capped = ts_ms.min(u64::MAX as f64);
+  Some(capped as u64)
+}
+
+fn event_timestamp_ms(event: &BrowserPerfLogEvent) -> Option<u64> {
+  match event {
+    BrowserPerfLogEvent::V2(event) => match event {
+      BrowserPerfLogEventV2::RunStart { t_ms, ts_ms, .. }
+      | BrowserPerfLogEventV2::RunEnd { t_ms, ts_ms, .. }
+      | BrowserPerfLogEventV2::Frame { t_ms, ts_ms, .. }
+      | BrowserPerfLogEventV2::Input { t_ms, ts_ms, .. }
+      | BrowserPerfLogEventV2::TabSwitch { t_ms, ts_ms, .. }
+      | BrowserPerfLogEventV2::Resize { t_ms, ts_ms, .. }
+      | BrowserPerfLogEventV2::Ttfp { t_ms, ts_ms, .. }
+      | BrowserPerfLogEventV2::CpuSummary { t_ms, ts_ms, .. }
+      | BrowserPerfLogEventV2::IdleSample { t_ms, ts_ms, .. }
+      | BrowserPerfLogEventV2::FrameUpload { t_ms, ts_ms, .. }
+      | BrowserPerfLogEventV2::MemorySummary { t_ms, ts_ms, .. } => (*t_ms).or(*ts_ms),
+      BrowserPerfLogEventV2::Unknown => None,
+    },
+    BrowserPerfLogEvent::V1(event) => match event {
+      BrowserPerfLogEventV1::UiFrameTime { ts_ms, .. }
+      | BrowserPerfLogEventV1::TimeToFirstPaint { ts_ms, .. }
+      | BrowserPerfLogEventV1::Latency { ts_ms, .. }
+      | BrowserPerfLogEventV1::ResourceSample { ts_ms, .. } => f64_timestamp_ms_to_u64(*ts_ms),
+      BrowserPerfLogEventV1::Unknown => None,
+    },
+    BrowserPerfLogEvent::Unknown(_) => None,
+  }
+}
+
+fn matches_event_filter(event: &BrowserPerfLogEvent, filter: EventFilter) -> bool {
+  match event {
+    BrowserPerfLogEvent::V2(event) => match event {
+      BrowserPerfLogEventV2::RunStart { .. } | BrowserPerfLogEventV2::RunEnd { .. } => false,
+      BrowserPerfLogEventV2::Frame { .. } => filter == EventFilter::Frame,
+      BrowserPerfLogEventV2::Input { input_kind, .. } => match filter {
+        EventFilter::Input => true,
+        EventFilter::Scroll => input_kind.unwrap_or(InputKind::Unknown) == InputKind::MouseWheel,
+        _ => false,
+      },
+      BrowserPerfLogEventV2::TabSwitch { .. } => filter == EventFilter::TabSwitch,
+      BrowserPerfLogEventV2::Resize { .. } => filter == EventFilter::Resize,
+      BrowserPerfLogEventV2::Ttfp { .. } => filter == EventFilter::Ttfp,
+      BrowserPerfLogEventV2::CpuSummary { .. } => filter == EventFilter::CpuSummary,
+      BrowserPerfLogEventV2::MemorySummary { .. } => filter == EventFilter::MemorySummary,
+      BrowserPerfLogEventV2::FrameUpload { .. } => filter == EventFilter::FrameUpload,
+      BrowserPerfLogEventV2::IdleSample { .. } => filter == EventFilter::IdleSample,
+      BrowserPerfLogEventV2::Unknown => false,
+    },
+    BrowserPerfLogEvent::V1(event) => match event {
+      BrowserPerfLogEventV1::UiFrameTime { .. } => filter == EventFilter::Frame,
+      BrowserPerfLogEventV1::TimeToFirstPaint { .. } => filter == EventFilter::Ttfp,
+      BrowserPerfLogEventV1::Latency { kind, .. } => match kind.to_ascii_lowercase().as_str() {
+        "scroll" => filter == EventFilter::Scroll,
+        "resize" => filter == EventFilter::Resize,
+        "input" => filter == EventFilter::Input,
+        "tab_switch" | "tabswitch" | "tab-switch" => filter == EventFilter::TabSwitch,
+        _ => false,
+      },
+      BrowserPerfLogEventV1::ResourceSample { .. } => {
+        matches!(filter, EventFilter::CpuSummary | EventFilter::MemorySummary)
+      }
+      BrowserPerfLogEventV1::Unknown => false,
+    },
+    BrowserPerfLogEvent::Unknown(_) => false,
+  }
 }
 
 #[derive(Debug, Default)]
-struct Series {
-  values: Vec<f64>,
+struct Samples {
+  ui_frame_time_ms: Vec<f64>,
+  ttfp_ms: Vec<f64>,
+  scroll_latency_ms: Vec<f64>,
+  resize_latency_ms: Vec<f64>,
+  input_latency_ms: Vec<f64>,
+  tab_switch_latency_ms: Vec<f64>,
+  tab_switch_cached_latency_ms: Vec<f64>,
+  tab_switch_uncached_latency_ms: Vec<f64>,
+  upload_total_ms: Vec<f64>,
+  upload_last_ms: Vec<f64>,
+  coalesced_frames: Vec<f64>,
+  cpu_percent: Vec<f64>,
+  idle_fps: Vec<f64>,
+  rss_bytes: Vec<u64>,
+  rss_first_bytes: Option<u64>,
+  rss_last_bytes: Option<u64>,
 }
 
-impl Series {
-  fn push(&mut self, value: f64) {
-    if value.is_finite() {
-      self.values.push(value);
-    }
-  }
-
-  fn stats(&self) -> Option<SeriesStats> {
-    if self.values.is_empty() {
-      return None;
-    }
-
-    let mut sorted = self.values.clone();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-
-    let count = sorted.len();
-    let sum: f64 = sorted.iter().copied().sum();
-    let mean = sum / (count as f64);
-    let max = *sorted.last().unwrap();
-    let p50 = percentile_nearest_rank_sorted(&sorted, 50.0);
-    let p95 = percentile_nearest_rank_sorted(&sorted, 95.0);
-
-    Some(SeriesStats {
-      count,
-      mean,
-      p50,
-      p95,
-      max,
-    })
-  }
-}
-
-fn percentile_nearest_rank_sorted(sorted: &[f64], pct: f64) -> f64 {
-  assert!(!sorted.is_empty());
-  let pct = pct.clamp(0.0, 100.0);
-  if pct <= 0.0 {
-    return sorted[0];
-  }
-  if pct >= 100.0 {
-    return sorted[sorted.len() - 1];
-  }
-
-  // Nearest-rank percentile:
-  //   https://en.wikipedia.org/wiki/Percentile#The_nearest-rank_method
-  //
-  // rank is 1-indexed; we convert to an index. This is deterministic and avoids interpolation.
-  let rank = ((pct / 100.0) * (sorted.len() as f64)).ceil() as usize;
-  let idx = rank.saturating_sub(1).min(sorted.len() - 1);
-  sorted[idx]
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Serialize)]
 struct Summary {
-  source_schema_version: u32,
-  #[serde(skip_serializing_if = "Option::is_none")]
-  run_start: Option<Value>,
-  #[serde(skip_serializing_if = "Option::is_none")]
-  run_end: Option<Value>,
-  filters: Filters,
-  frames: Option<FrameSummary>,
-  input: Option<InputSummary>,
-  resize: Option<ResizeSummary>,
-  ttfp: Option<TtfpSummary>,
-  idle_summary: Option<IdleSummary>,
-  cpu_summary: Option<CpuSummary>,
+  meta: MetaSummary,
+  ui_frame_time_ms: TimeStats,
+  ttfp_ms: TimeStats,
+  scroll_latency_ms: TimeStats,
+  resize_latency_ms: TimeStats,
+  input_latency_ms: TimeStats,
+  tab_switch_latency_ms: TimeStats,
+  tab_switch_cached_latency_ms: TimeStats,
+  tab_switch_uncached_latency_ms: TimeStats,
+  upload_total_ms: TimeStats,
+  upload_last_ms: TimeStats,
+  coalesced_frames: ScalarStats,
+  cpu_percent: ScalarStats,
+  idle_fps: ScalarStats,
+  rss_bytes: RssStats,
+  rss_mb: ScalarStats,
+  rss_first_mb: Option<f64>,
+  rss_last_mb: Option<f64>,
+  rss_delta_mb: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
-struct Filters {
-  from_ms: Option<f64>,
-  to_ms: Option<f64>,
-  only_event: Option<String>,
+#[derive(Serialize)]
+struct MetaSummary {
+  lines_total: u64,
+  events_parsed: u64,
+  parse_errors: u64,
+  unknown_events: u64,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
-struct FrameSummary {
-  ui_frame_ms: SeriesStats,
-  fps: Option<SeriesStats>,
+#[derive(Serialize)]
+struct TimeStats {
+  count: u64,
+  mean: Option<f64>,
+  p50: Option<f64>,
+  p95: Option<f64>,
+  max: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
-struct InputSummary {
-  input_to_present_ms: SeriesStats,
-  by_kind: BTreeMap<String, SeriesStats>,
+#[derive(Serialize)]
+struct ScalarStats {
+  count: u64,
+  min: Option<f64>,
+  max: Option<f64>,
+  mean: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
-struct ResizeSummary {
-  resize_to_present_ms: SeriesStats,
+#[derive(Serialize)]
+struct RssStats {
+  count: u64,
+  min: Option<u64>,
+  max: Option<u64>,
+  mean: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
-struct TtfpSummary {
-  ttfp_ms: SeriesStats,
+fn percentile(sorted: &[f64], percentile: f64) -> Option<f64> {
+  if sorted.is_empty() {
+    return None;
+  }
+  let n = sorted.len();
+  if n == 1 {
+    return Some(sorted[0]);
+  }
+  let rank = (percentile / 100.0) * (n.saturating_sub(1)) as f64;
+  let lower = rank.floor() as usize;
+  let upper = rank.ceil() as usize;
+  if lower >= n || upper >= n {
+    return Some(*sorted.last()?);
+  }
+  if lower == upper {
+    return Some(sorted[lower]);
+  }
+  let weight = rank - (lower as f64);
+  Some(sorted[lower] + (sorted[upper] - sorted[lower]) * weight)
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
-struct IdleSummary {
-  idle_frames: SeriesStats,
+fn mean_f64(values: &[f64]) -> Option<f64> {
+  if values.is_empty() {
+    return None;
+  }
+  Some(values.iter().sum::<f64>() / (values.len() as f64))
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
-struct CpuSummary {
-  cpu_percent_recent: SeriesStats,
-  cpu_time_ms_total: Option<SeriesStats>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct WindowFilter {
-  from_ms: Option<f64>,
-  to_ms: Option<f64>,
-  only_event: Option<OnlyEvent>,
-}
-
-fn matches_only_event(event: &perf_log::PerfEvent<'_>, only: OnlyEvent) -> bool {
-  match event {
-    perf_log::PerfEvent::Frame { .. } => matches!(only, OnlyEvent::Frame),
-    perf_log::PerfEvent::Input { .. } => matches!(only, OnlyEvent::Input),
-    perf_log::PerfEvent::Resize { .. } => matches!(only, OnlyEvent::Resize),
-    perf_log::PerfEvent::Ttfp { .. } => matches!(only, OnlyEvent::Ttfp),
-    perf_log::PerfEvent::IdleSample { .. } => matches!(only, OnlyEvent::IdleSample),
-    perf_log::PerfEvent::CpuSummary { .. } => matches!(only, OnlyEvent::CpuSummary),
-    _ => false,
+fn time_stats(values: &mut Vec<f64>) -> TimeStats {
+  values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+  let count = values.len() as u64;
+  TimeStats {
+    count,
+    mean: mean_f64(values),
+    p50: percentile(values, 50.0),
+    p95: percentile(values, 95.0),
+    max: values.last().copied(),
   }
 }
 
-fn should_include_timestamp(t_ms: f64, filter: WindowFilter) -> bool {
-  if let Some(from) = filter.from_ms {
-    if t_ms < from {
-      return false;
-    }
+fn scalar_stats(values: &mut Vec<f64>) -> ScalarStats {
+  values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+  let count = values.len() as u64;
+  ScalarStats {
+    count,
+    min: values.first().copied(),
+    max: values.last().copied(),
+    mean: mean_f64(values),
   }
-  if let Some(to) = filter.to_ms {
-    if t_ms > to {
-      return false;
-    }
-  }
-  true
 }
 
-fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summary, String> {
-  let mut frame_ms = Series::default();
-  let mut fps_series = Series::default();
-  let mut input_overall = Series::default();
-  let mut input_by_kind: BTreeMap<String, Series> = BTreeMap::new();
-  let mut resize_ms = Series::default();
-  let mut ttfp_ms_series = Series::default();
-  let mut idle_frames = Series::default();
-  let mut cpu_percent_recent_series = Series::default();
-  let mut cpu_time_ms_total_series = Series::default();
-
-  let mut run_start: Option<Value> = None;
-  let mut run_end: Option<Value> = None;
-  let mut schema_version_seen: Option<u32> = None;
-
-  for (idx, line) in reader.lines().enumerate() {
-    let line_no = idx + 1;
-    let line = line.map_err(|err| format!("failed to read line {line_no}: {err}"))?;
-    let line = line.trim();
-    if line.is_empty() {
-      continue;
-    }
-
-    let event = perf_log::parse_jsonl_line(line)
-      .map_err(|err| format!("line {line_no}: invalid perf log event: {err}"))?;
-
-    if let Some(schema_version) = event.schema_version() {
-      match schema_version_seen {
-        Some(seen) if seen != schema_version => {
-          return Err(format!(
-            "line {line_no}: mixed FASTR_PERF_LOG schema_version {schema_version} (previously saw {seen})"
-          ));
-        }
-        None => {
-          schema_version_seen = Some(schema_version);
-        }
-        _ => {}
-      }
-    }
-
-    match &event {
-      perf_log::PerfEvent::RunStart { .. } => {
-        if run_start.is_none() {
-          run_start = serde_json::to_value(&event).ok();
-        }
-      }
-      perf_log::PerfEvent::RunEnd { .. } => {
-        // Keep the most recent run_end in case multiple are present.
-        run_end = serde_json::to_value(&event).ok();
-      }
-      _ => {}
-    }
-
-    let Some(t_ms) = event.timestamp_ms().map(|t| t as f64) else {
-      continue;
-    };
-
-    if !should_include_timestamp(t_ms, filter) {
-      continue;
-    }
-
-    if let Some(only) = filter.only_event {
-      if !matches_only_event(&event, only) {
-        continue;
-      }
-    }
-
-    match event {
-      perf_log::PerfEvent::Frame {
-        ui_frame_ms,
-        fps: frame_fps,
-        ..
-      } => {
-        frame_ms.push(ui_frame_ms);
-        if let Some(fps_value) = frame_fps {
-          fps_series.push(fps_value);
-        } else if ui_frame_ms.is_finite() && ui_frame_ms > 0.0 {
-          // Legacy fallback: older logs did not include an explicit FPS measurement, so estimate it
-          // from CPU frame time.
-          fps_series.push(1000.0 / ui_frame_ms);
-        }
-      }
-      perf_log::PerfEvent::Input {
-        input_to_present_ms,
-        input_kind,
-        ..
-      } => {
-        input_overall.push(input_to_present_ms);
-
-        input_by_kind
-          .entry(input_kind.as_str().to_string())
-          .or_insert_with(Series::default)
-          .push(input_to_present_ms);
-      }
-      perf_log::PerfEvent::Resize {
-        resize_to_present_ms,
-        ..
-      } => {
-        resize_ms.push(resize_to_present_ms);
-      }
-      perf_log::PerfEvent::Ttfp { ttfp_ms, .. } => {
-        ttfp_ms_series.push(ttfp_ms);
-      }
-      perf_log::PerfEvent::IdleSample {
-        idle_fps,
-        idle_frames_total,
-        ..
-      } => {
-        let value = if idle_fps > 0.0 {
-          f64::from(idle_fps)
-        } else {
-          idle_frames_total as f64
-        };
-        idle_frames.push(value);
-      }
-      perf_log::PerfEvent::CpuSummary {
-        cpu_percent_recent: cpu_percent_recent_value,
-        cpu_time_ms_total: cpu_time_ms_total_value,
-        ..
-      } => {
-        cpu_percent_recent_series.push(cpu_percent_recent_value);
-        cpu_time_ms_total_series.push(cpu_time_ms_total_value as f64);
-      }
-      _ => {
-        // Unknown events are ignored so the tool stays forward-compatible with extra event types.
-      }
-    };
-  }
-
-  let schema_version_seen = schema_version_seen
-    .or_else(|| perf_log::SUPPORTED_SCHEMA_VERSIONS.last().copied())
-    .unwrap_or(0);
-
-  let fps_stats = fps_series.stats();
-  let frames = frame_ms.stats().map(|ui_frame_ms| FrameSummary {
-    ui_frame_ms,
-    fps: fps_stats,
-  });
-
-  let input = if let Some(input_to_present_ms) = input_overall.stats() {
-    let mut by_kind: BTreeMap<String, SeriesStats> = BTreeMap::new();
-    for (kind, series) in input_by_kind {
-      if let Some(stats) = series.stats() {
-        by_kind.insert(kind, stats);
-      }
-    }
-    Some(InputSummary {
-      input_to_present_ms,
-      by_kind,
-    })
-  } else {
+fn rss_stats(values: &mut Vec<u64>) -> RssStats {
+  values.sort_unstable();
+  let count = values.len() as u64;
+  let mean = if values.is_empty() {
     None
+  } else {
+    Some(values.iter().map(|v| *v as f64).sum::<f64>() / (values.len() as f64))
   };
-
-  let resize = resize_ms.stats().map(|resize_to_present_ms| ResizeSummary {
-    resize_to_present_ms,
-  });
-
-  let ttfp = ttfp_ms_series.stats().map(|ttfp_ms| TtfpSummary { ttfp_ms });
-
-  let idle_summary = idle_frames
-    .stats()
-    .map(|idle_frames| IdleSummary { idle_frames });
-
-  let cpu_summary = cpu_percent_recent_series.stats().map(|cpu_percent_recent| {
-    let cpu_time_ms_total = cpu_time_ms_total_series.stats();
-    CpuSummary {
-      cpu_percent_recent,
-      cpu_time_ms_total,
-    }
-  });
-
-  Ok(Summary {
-    source_schema_version: schema_version_seen,
-    run_start,
-    run_end,
-    filters: Filters {
-      from_ms: filter.from_ms,
-      to_ms: filter.to_ms,
-      only_event: filter.only_event.map(|e| e.as_str().to_string()),
-    },
-    frames,
-    input,
-    resize,
-    ttfp,
-    idle_summary,
-    cpu_summary,
-  })
-}
-
-fn fmt_ms(value: f64) -> String {
-  if !value.is_finite() {
-    return "NaN".to_string();
+  RssStats {
+    count,
+    min: values.first().copied(),
+    max: values.last().copied(),
+    mean,
   }
-  format!("{value:.2}ms")
 }
 
-fn fmt_fps(value: f64) -> String {
-  if !value.is_finite() {
-    return "NaN".to_string();
+fn fmt_opt_f64(value: Option<f64>, decimals: usize) -> String {
+  match value {
+    Some(v) => format!("{v:.decimals$}"),
+    None => "-".to_string(),
   }
-  format!("{value:.2}fps")
 }
 
-fn fmt_pct(value: f64) -> String {
-  if !value.is_finite() {
-    return "NaN".to_string();
+fn fmt_opt_u64(value: Option<u64>) -> String {
+  match value {
+    Some(v) => v.to_string(),
+    None => "-".to_string(),
   }
-  format!("{value:.2}%")
 }
 
-fn print_series(label: &str, stats: &SeriesStats, unit: &str) {
-  let fmt = |v| match unit {
-    "ms" => fmt_ms(v),
-    "fps" => fmt_fps(v),
-    "pct" => fmt_pct(v),
-    _ => format!("{v:.2}"),
-  };
+fn print_human_summary(summary: &Summary) {
+  eprintln!(
+    "{:<22} {:>7} {:>9} {:>9} {:>9} {:>9}",
+    "metric", "count", "mean", "p50", "p95", "max"
+  );
+
+  let rows: [(&str, &TimeStats); 10] = [
+    ("ui_frame_time_ms", &summary.ui_frame_time_ms),
+    ("ttfp_ms", &summary.ttfp_ms),
+    ("scroll_latency_ms", &summary.scroll_latency_ms),
+    ("resize_latency_ms", &summary.resize_latency_ms),
+    ("input_latency_ms", &summary.input_latency_ms),
+    ("tab_switch_latency_ms", &summary.tab_switch_latency_ms),
+    (
+      "tab_switch_cached_latency_ms",
+      &summary.tab_switch_cached_latency_ms,
+    ),
+    (
+      "tab_switch_uncached_latency_ms",
+      &summary.tab_switch_uncached_latency_ms,
+    ),
+    ("upload_total_ms", &summary.upload_total_ms),
+    ("upload_last_ms", &summary.upload_last_ms),
+  ];
+
+  for (name, stats) in rows {
+    eprintln!(
+      "{:<22} {:>7} {:>9} {:>9} {:>9} {:>9}",
+      name,
+      stats.count,
+      fmt_opt_f64(stats.mean, 2),
+      fmt_opt_f64(stats.p50, 2),
+      fmt_opt_f64(stats.p95, 2),
+      fmt_opt_f64(stats.max, 2),
+    );
+  }
+
+  eprintln!();
+  eprintln!(
+    "{:<22} {:>7} {:>12} {:>12} {:>12}",
+    "metric", "count", "min", "mean", "max"
+  );
+
+  for (name, stats) in [
+    ("coalesced_frames", &summary.coalesced_frames),
+    ("cpu_percent", &summary.cpu_percent),
+    ("idle_fps", &summary.idle_fps),
+    ("rss_mb", &summary.rss_mb),
+  ] {
+    eprintln!(
+      "{:<22} {:>7} {:>12} {:>12} {:>12}",
+      name,
+      stats.count,
+      fmt_opt_f64(stats.min, 2),
+      fmt_opt_f64(stats.mean, 2),
+      fmt_opt_f64(stats.max, 2),
+    );
+  }
 
   eprintln!(
-    "{label}: n={} mean={} p50={} p95={} max={}",
-    stats.count,
-    fmt(stats.mean),
-    fmt(stats.p50),
-    fmt(stats.p95),
-    fmt(stats.max)
+    "{:<22} {:>7} {:>12} {:>12} {:>12}",
+    "rss_bytes",
+    summary.rss_bytes.count,
+    fmt_opt_u64(summary.rss_bytes.min),
+    fmt_opt_f64(summary.rss_bytes.mean, 2),
+    fmt_opt_u64(summary.rss_bytes.max),
+  );
+
+  for (name, value) in [
+    ("rss_first_mb", summary.rss_first_mb),
+    ("rss_last_mb", summary.rss_last_mb),
+    ("rss_delta_mb", summary.rss_delta_mb),
+  ] {
+    let count = u64::from(value.is_some());
+    eprintln!(
+      "{:<22} {:>7} {:>12} {:>12} {:>12}",
+      name,
+      count,
+      fmt_opt_f64(value, 2),
+      fmt_opt_f64(value, 2),
+      fmt_opt_f64(value, 2),
+    );
+  }
+
+  eprintln!();
+  eprintln!(
+    "lines={} parsed={} parse_errors={} unknown_events={}",
+    summary.meta.lines_total,
+    summary.meta.events_parsed,
+    summary.meta.parse_errors,
+    summary.meta.unknown_events
   );
 }
 
@@ -456,121 +430,284 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
   if let (Some(from), Some(to)) = (args.from_ms, args.to_ms) {
     if from > to {
-      return Err(format!("--from-ms ({from}) must be <= --to-ms ({to})").into());
+      return Err(format!(
+        "--from-ms ({from}) must be less than or equal to --to-ms ({to})"
+      )
+      .into());
     }
   }
 
-  let filter = WindowFilter {
-    from_ms: args.from_ms,
-    to_ms: args.to_ms,
-    only_event: args.only_event,
+  let only_event = match args.only_event.as_deref() {
+    Some(raw) => Some(parse_event_filter(raw)?),
+    None => None,
   };
 
-  let summary = if let Some(path) = args.input.as_ref() {
-    let file = File::open(path)?;
-    summarize_reader(BufReader::new(file), filter).map_err(|err| format!("{path:?}: {err}"))?
-  } else {
-    let stdin = io::stdin();
-    summarize_reader(stdin.lock(), filter).map_err(|err| format!("stdin: {err}"))?
+  let mut reader: Box<dyn BufRead> = match args.input {
+    Some(path) if path.as_os_str() == "-" => Box::new(BufReader::new(io::stdin())),
+    Some(path) => {
+      let file = File::open(&path).map_err(|err| format!("open {}: {err}", path.display()))?;
+      Box::new(BufReader::new(file))
+    }
+    None => Box::new(BufReader::new(io::stdin())),
   };
 
-  if let Some(run_start) = summary.run_start.as_ref().and_then(Value::as_object) {
-    let pid = run_start.get("pid").and_then(Value::as_u64);
-    let schema_version = run_start.get("schema_version").and_then(Value::as_u64);
-    let build = run_start.get("build").and_then(Value::as_object);
-    let version = build.and_then(|b| b.get("crate_version")).and_then(Value::as_str);
-    let debug = build.and_then(|b| b.get("debug")).and_then(Value::as_bool);
-    let target = build
-      .and_then(|b| b.get("target"))
-      .and_then(Value::as_str)
-      .unwrap_or("unknown");
-    eprintln!(
-      "run_start: schema_version={} pid={} version={} debug={} target={}",
-      schema_version
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| "?".to_string()),
-      pid.map(|v| v.to_string()).unwrap_or_else(|| "?".to_string()),
-      version.unwrap_or("?"),
-      debug
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| "?".to_string()),
-      target
-    );
-  }
-  if let Some(run_end) = summary.run_end.as_ref().and_then(Value::as_object) {
-    let frames_presented = run_end.get("frames_presented").and_then(Value::as_u64);
-    let idle_frames = run_end.get("idle_frames").and_then(Value::as_u64);
-    let input_events = run_end.get("input_events").and_then(Value::as_u64);
-    let dropped_frames = run_end.get("dropped_frames").and_then(Value::as_u64);
-    let elapsed_ms = run_end.get("elapsed_ms").and_then(Value::as_u64);
-    eprintln!(
-      "run_end: frames_presented={} idle_frames={} input_events={} dropped_frames={} elapsed_ms={}",
-      frames_presented
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| "?".to_string()),
-      idle_frames
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| "?".to_string()),
-      input_events
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| "?".to_string()),
-      dropped_frames
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| "?".to_string()),
-      elapsed_ms
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| "?".to_string()),
-    );
+  let mut raw = String::new();
+  let mut lines_total = 0u64;
+  let mut events_parsed = 0u64;
+  let mut parse_errors = 0u64;
+  let mut unknown_events = 0u64;
+  let mut samples = Samples::default();
+
+  loop {
+    raw.clear();
+    match reader.read_line(&mut raw) {
+      Ok(0) => break,
+      Ok(_) => {
+        lines_total = lines_total.saturating_add(1);
+      }
+      Err(err) => return Err(format!("read input: {err}").into()),
+    }
+
+    let line = raw.trim();
+    if line.is_empty() {
+      continue;
+    }
+
+    match serde_json::from_str::<BrowserPerfLogEvent>(line) {
+      Ok(event) => {
+        events_parsed = events_parsed.saturating_add(1);
+
+        if let Some(filter) = only_event {
+          if !matches_event_filter(&event, filter) {
+            continue;
+          }
+        }
+        if args.from_ms.is_some() || args.to_ms.is_some() {
+          let Some(ts_ms) = event_timestamp_ms(&event) else {
+            // When a time window is specified we can only make a decision for events that carry a
+            // timestamp; skip any unknown/legacy events without one.
+            continue;
+          };
+          if args.from_ms.is_some_and(|from| ts_ms < from) {
+            continue;
+          }
+          if args.to_ms.is_some_and(|to| ts_ms > to) {
+            continue;
+          }
+        }
+
+        match event {
+          BrowserPerfLogEvent::V2(event) => match event {
+            BrowserPerfLogEventV2::RunStart { .. } | BrowserPerfLogEventV2::RunEnd { .. } => {}
+            BrowserPerfLogEventV2::Frame { ui_frame_ms, .. } => {
+              if let Some(ms) = ui_frame_ms.filter(|v| v.is_finite()) {
+                samples.ui_frame_time_ms.push(ms);
+              }
+            }
+            BrowserPerfLogEventV2::TabSwitch {
+              latency_ms,
+              switch_to_present_ms,
+              had_cached_texture,
+              cached,
+              ..
+            } => {
+              let ms = switch_to_present_ms
+                .filter(|v| v.is_finite())
+                .or_else(|| latency_ms.map(|ms| ms as f64));
+              let Some(ms) = ms else {
+                continue;
+              };
+              samples.tab_switch_latency_ms.push(ms);
+
+              let cached_switch = had_cached_texture.or(cached).unwrap_or(false);
+              if cached_switch {
+                samples.tab_switch_cached_latency_ms.push(ms);
+              } else {
+                samples.tab_switch_uncached_latency_ms.push(ms);
+              }
+            }
+            BrowserPerfLogEventV2::Ttfp { ttfp_ms, .. } => {
+              if let Some(ms) = ttfp_ms.filter(|v| v.is_finite()) {
+                samples.ttfp_ms.push(ms);
+              }
+            }
+            BrowserPerfLogEventV2::Resize {
+              resize_to_present_ms,
+              ..
+            } => {
+              if let Some(ms) = resize_to_present_ms.filter(|v| v.is_finite()) {
+                samples.resize_latency_ms.push(ms);
+              }
+            }
+            BrowserPerfLogEventV2::Input {
+              input_kind,
+              input_to_present_ms,
+              ..
+            } => {
+              let Some(ms) = input_to_present_ms.filter(|v| v.is_finite()) else {
+                continue;
+              };
+              match input_kind.unwrap_or(InputKind::Unknown) {
+                InputKind::Keyboard => samples.input_latency_ms.push(ms),
+                InputKind::MouseWheel => samples.scroll_latency_ms.push(ms),
+                _ => {}
+              }
+            }
+            BrowserPerfLogEventV2::CpuSummary {
+              cpu_percent_recent, ..
+            } => {
+              if let Some(cpu) = cpu_percent_recent.filter(|v| v.is_finite()) {
+                samples.cpu_percent.push(cpu);
+              }
+            }
+            BrowserPerfLogEventV2::IdleSample { idle_fps, .. } => {
+              if let Some(fps) = idle_fps.filter(|v| v.is_finite()) {
+                samples.idle_fps.push(f64::from(fps));
+              }
+            }
+            BrowserPerfLogEventV2::FrameUpload {
+              upload_last_ms,
+              upload_total_ms,
+              overwritten_frames,
+              ..
+            } => {
+              if let Some(ms) = upload_total_ms.filter(|v| v.is_finite()) {
+                samples.upload_total_ms.push(ms);
+              }
+              if let Some(ms) = upload_last_ms.filter(|v| v.is_finite()) {
+                samples.upload_last_ms.push(ms);
+              }
+              if let Some(frames) = overwritten_frames {
+                samples.coalesced_frames.push(frames as f64);
+              }
+            }
+            BrowserPerfLogEventV2::MemorySummary { rss_bytes, .. } => {
+              if let Some(rss) = rss_bytes {
+                samples.rss_bytes.push(rss);
+                if samples.rss_first_bytes.is_none() {
+                  samples.rss_first_bytes = Some(rss);
+                }
+                samples.rss_last_bytes = Some(rss);
+              }
+            }
+            BrowserPerfLogEventV2::Unknown => {
+              unknown_events = unknown_events.saturating_add(1);
+            }
+          },
+          BrowserPerfLogEvent::V1(event) => match event {
+            BrowserPerfLogEventV1::UiFrameTime { frame_time_ms, .. } => {
+              if frame_time_ms.is_finite() {
+                samples.ui_frame_time_ms.push(frame_time_ms);
+              }
+            }
+            BrowserPerfLogEventV1::TimeToFirstPaint { ttfp_ms, .. } => {
+              if ttfp_ms.is_finite() {
+                samples.ttfp_ms.push(ttfp_ms);
+              }
+            }
+            BrowserPerfLogEventV1::Latency {
+              kind, latency_ms, ..
+            } => {
+              if !latency_ms.is_finite() {
+                continue;
+              }
+              match kind.to_ascii_lowercase().as_str() {
+                "scroll" => samples.scroll_latency_ms.push(latency_ms),
+                "resize" => samples.resize_latency_ms.push(latency_ms),
+                "input" => samples.input_latency_ms.push(latency_ms),
+                "tab_switch" | "tabswitch" | "tab-switch" => {
+                  samples.tab_switch_latency_ms.push(latency_ms);
+                }
+                _ => {}
+              }
+            }
+            BrowserPerfLogEventV1::ResourceSample {
+              cpu_percent,
+              rss_bytes,
+              ..
+            } => {
+              if let Some(cpu) = cpu_percent {
+                if cpu.is_finite() {
+                  samples.cpu_percent.push(cpu);
+                }
+              }
+              if let Some(rss) = rss_bytes {
+                samples.rss_bytes.push(rss);
+                if samples.rss_first_bytes.is_none() {
+                  samples.rss_first_bytes = Some(rss);
+                }
+                samples.rss_last_bytes = Some(rss);
+              }
+            }
+            BrowserPerfLogEventV1::Unknown => {
+              unknown_events = unknown_events.saturating_add(1);
+            }
+          },
+          BrowserPerfLogEvent::Unknown(_) => {
+            unknown_events = unknown_events.saturating_add(1);
+          }
+        }
+      }
+      Err(err) => {
+        parse_errors = parse_errors.saturating_add(1);
+        eprintln!("warn: failed to parse perf log line {lines_total}: {err}");
+      }
+    }
   }
 
-  // Human-readable summary to stderr.
-  if let Some(frames) = summary.frames.as_ref() {
-    print_series("frames.ui_frame_ms", &frames.ui_frame_ms, "ms");
-    if let Some(fps) = frames.fps.as_ref() {
-      print_series("frames.fps", fps, "fps");
-    }
-  }
-  if let Some(input) = summary.input.as_ref() {
-    print_series(
-      "input.input_to_present_ms",
-      &input.input_to_present_ms,
-      "ms",
-    );
-    for (kind, stats) in &input.by_kind {
-      print_series(
-        &format!("input.by_kind.{kind}.input_to_present_ms"),
-        stats,
-        "ms",
-      );
-    }
-  }
-  if let Some(resize) = summary.resize.as_ref() {
-    print_series(
-      "resize.resize_to_present_ms",
-      &resize.resize_to_present_ms,
-      "ms",
-    );
-  }
-  if let Some(ttfp) = summary.ttfp.as_ref() {
-    print_series("ttfp.ttfp_ms", &ttfp.ttfp_ms, "ms");
-  }
-  if let Some(idle) = summary.idle_summary.as_ref() {
-    // This is a count-like metric in many logs, but we still report it via the generic stats
-    // structure so p50/p95/max are available.
-    print_series("idle_summary.idle_frames", &idle.idle_frames, "");
-  }
-  if let Some(cpu) = summary.cpu_summary.as_ref() {
-    print_series(
-      "cpu_summary.cpu_percent_recent",
-      &cpu.cpu_percent_recent,
-      "pct",
-    );
-    if let Some(total) = cpu.cpu_time_ms_total.as_ref() {
-      print_series("cpu_summary.cpu_time_ms_total", total, "ms");
-    }
+  let rss_bytes = rss_stats(&mut samples.rss_bytes);
+  let rss_mb = ScalarStats {
+    count: rss_bytes.count,
+    min: rss_bytes
+      .min
+      .map(|bytes| bytes as f64 / BYTES_PER_MIB as f64),
+    max: rss_bytes
+      .max
+      .map(|bytes| bytes as f64 / BYTES_PER_MIB as f64),
+    mean: rss_bytes.mean.map(|bytes| bytes / BYTES_PER_MIB as f64),
+  };
+  let rss_first_mb = samples
+    .rss_first_bytes
+    .map(|bytes| bytes as f64 / BYTES_PER_MIB as f64);
+  let rss_last_mb = samples
+    .rss_last_bytes
+    .map(|bytes| bytes as f64 / BYTES_PER_MIB as f64);
+  let rss_delta_mb = match (samples.rss_first_bytes, samples.rss_last_bytes) {
+    (Some(first), Some(last)) => Some((last as f64 - first as f64) / BYTES_PER_MIB as f64),
+    _ => None,
+  };
+
+  let summary = Summary {
+    meta: MetaSummary {
+      lines_total,
+      events_parsed,
+      parse_errors,
+      unknown_events,
+    },
+    ui_frame_time_ms: time_stats(&mut samples.ui_frame_time_ms),
+    ttfp_ms: time_stats(&mut samples.ttfp_ms),
+    scroll_latency_ms: time_stats(&mut samples.scroll_latency_ms),
+    resize_latency_ms: time_stats(&mut samples.resize_latency_ms),
+    input_latency_ms: time_stats(&mut samples.input_latency_ms),
+    tab_switch_latency_ms: time_stats(&mut samples.tab_switch_latency_ms),
+    tab_switch_cached_latency_ms: time_stats(&mut samples.tab_switch_cached_latency_ms),
+    tab_switch_uncached_latency_ms: time_stats(&mut samples.tab_switch_uncached_latency_ms),
+    upload_total_ms: time_stats(&mut samples.upload_total_ms),
+    upload_last_ms: time_stats(&mut samples.upload_last_ms),
+    coalesced_frames: scalar_stats(&mut samples.coalesced_frames),
+    cpu_percent: scalar_stats(&mut samples.cpu_percent),
+    idle_fps: scalar_stats(&mut samples.idle_fps),
+    rss_bytes,
+    rss_mb,
+    rss_first_mb,
+    rss_last_mb,
+    rss_delta_mb,
+  };
+
+  if !args.json {
+    print_human_summary(&summary);
   }
 
-  // JSON summary to stdout.
   serde_json::to_writer_pretty(io::stdout(), &summary)?;
   println!();
 
@@ -589,159 +726,42 @@ mod tests {
   use super::*;
 
   #[test]
-  fn percentile_nearest_rank_behaviour() {
-    let sorted = vec![1.0, 2.0, 3.0, 4.0];
-    assert_eq!(percentile_nearest_rank_sorted(&sorted, 0.0), 1.0);
-    assert_eq!(percentile_nearest_rank_sorted(&sorted, 50.0), 2.0);
-    assert_eq!(percentile_nearest_rank_sorted(&sorted, 95.0), 4.0);
-    assert_eq!(percentile_nearest_rank_sorted(&sorted, 100.0), 4.0);
-
-    let sorted = vec![10.0, 20.0];
-    assert_eq!(percentile_nearest_rank_sorted(&sorted, 50.0), 10.0);
-    assert_eq!(percentile_nearest_rank_sorted(&sorted, 95.0), 20.0);
+  fn parse_event_filter_accepts_aliases() {
+    assert_eq!(
+      parse_event_filter("idle_summary").unwrap(),
+      EventFilter::IdleSample
+    );
+    assert_eq!(
+      parse_event_filter("idle_sample").unwrap(),
+      EventFilter::IdleSample
+    );
+    assert_eq!(parse_event_filter("cpu").unwrap(), EventFilter::CpuSummary);
+    assert_eq!(
+      parse_event_filter("cpu_summary").unwrap(),
+      EventFilter::CpuSummary
+    );
+    assert_eq!(
+      parse_event_filter("memory").unwrap(),
+      EventFilter::MemorySummary
+    );
+    assert_eq!(
+      parse_event_filter("memory_summary").unwrap(),
+      EventFilter::MemorySummary
+    );
+    assert_eq!(
+      parse_event_filter("tab-switch").unwrap(),
+      EventFilter::TabSwitch
+    );
   }
 
   #[test]
-  fn summarize_synthetic_jsonl_log() {
-    let log = r#"
-{"schema_version":1,"event":"frame","ts_ms":0,"window_id":"WindowId(1)","ui_frame_ms":10}
-{"schema_version":1,"event":"frame","ts_ms":16,"window_id":"WindowId(1)","ui_frame_ms":20}
-{"schema_version":1,"event":"input","ts_ms":30,"window_id":"WindowId(1)","input_kind":"keyboard","input_to_present_ms":40}
-{"schema_version":1,"event":"input","ts_ms":40,"window_id":"WindowId(1)","input_kind":"mouse","input_to_present_ms":50}
-{"schema_version":1,"event":"resize","ts_ms":50,"window_id":"WindowId(1)","resize_to_present_ms":60}
-{"schema_version":1,"event":"ttfp","ts_ms":70,"window_id":"WindowId(1)","ttfp_ms":80}
-{"schema_version":1,"event":"idle_sample","t_ms":90,"window_id":"WindowId(1)","rolling_window_ms":2000,"idle_fps":100,"idle_frames_total":100,"idle_frames_window":200}
-{"schema_version":1,"event":"cpu_summary","ts_ms":100,"window_id":"process","cpu_time_ms_total":1234,"cpu_percent_recent":1.5}
-"#;
+  fn matches_event_filter_scroll_matches_mouse_wheel_input() {
+    let input_json =
+      r#"{"event":"input","t_ms":10,"input_kind":"mouse_wheel","input_to_present_ms":3.0}"#;
+    let event: BrowserPerfLogEvent = serde_json::from_str(input_json).expect("parse input");
 
-    let summary = summarize_reader(
-      BufReader::new(log.as_bytes()),
-      WindowFilter {
-        from_ms: None,
-        to_ms: None,
-        only_event: None,
-      },
-    )
-    .expect("summary should succeed");
-
-    assert_eq!(summary.source_schema_version, 1);
-
-    let frames = summary.frames.expect("expected frame stats");
-    assert_eq!(frames.ui_frame_ms.count, 2);
-    assert_eq!(frames.ui_frame_ms.mean, 15.0);
-    assert_eq!(frames.ui_frame_ms.p50, 10.0);
-    assert_eq!(frames.ui_frame_ms.p95, 20.0);
-    assert_eq!(frames.ui_frame_ms.max, 20.0);
-
-    let fps = frames.fps.expect("expected fps stats");
-    assert_eq!(fps.count, 2);
-    assert!((fps.mean - 75.0).abs() < 1e-6);
-    assert!((fps.p50 - 50.0).abs() < 1e-6);
-    assert!((fps.p95 - 100.0).abs() < 1e-6);
-    assert!((fps.max - 100.0).abs() < 1e-6);
-
-    let input = summary.input.expect("expected input stats");
-    assert_eq!(input.input_to_present_ms.count, 2);
-    assert_eq!(input.input_to_present_ms.mean, 45.0);
-    assert_eq!(input.by_kind.get("keyboard").unwrap().mean, 40.0);
-    assert_eq!(input.by_kind.get("mouse").unwrap().mean, 50.0);
-
-    let resize = summary.resize.expect("expected resize stats");
-    assert_eq!(resize.resize_to_present_ms.count, 1);
-    assert_eq!(resize.resize_to_present_ms.mean, 60.0);
-
-    let ttfp = summary.ttfp.expect("expected ttfp stats");
-    assert_eq!(ttfp.ttfp_ms.count, 1);
-    assert_eq!(ttfp.ttfp_ms.mean, 80.0);
-
-    let idle = summary.idle_summary.expect("expected idle stats");
-    assert_eq!(idle.idle_frames.count, 1);
-    assert_eq!(idle.idle_frames.mean, 100.0);
-
-    let cpu = summary.cpu_summary.expect("expected cpu stats");
-    assert_eq!(cpu.cpu_percent_recent.count, 1);
-    assert_eq!(cpu.cpu_percent_recent.mean, 1.5);
-    let total = cpu.cpu_time_ms_total.expect("expected cpu_time_ms_total stats");
-    assert_eq!(total.count, 1);
-    assert_eq!(total.mean, 1234.0);
-  }
-
-  #[test]
-  fn summarize_includes_run_metadata_when_present() {
-    let log = r#"
-{"event":"run_start","schema_version":2,"t_ms":0,"pid":123}
-{"event":"frame","schema_version":2,"t_ms":1,"window_id":"WindowId(1)","ui_frame_ms":10}
-{"event":"run_end","schema_version":2,"t_ms":2,"frames_presented":1,"elapsed_ms":2}
-"#;
-
-    let summary = summarize_reader(
-      BufReader::new(log.as_bytes()),
-      WindowFilter {
-        from_ms: None,
-        to_ms: None,
-        only_event: None,
-      },
-    )
-    .expect("summary should succeed");
-
-    assert_eq!(summary.source_schema_version, 2);
-
-    let run_start = summary.run_start.expect("expected run_start to be captured");
-    assert_eq!(run_start["event"], "run_start");
-    assert_eq!(run_start["pid"], 123);
-
-    let run_end = summary.run_end.expect("expected run_end to be captured");
-    assert_eq!(run_end["event"], "run_end");
-    assert_eq!(run_end["frames_presented"], 1);
-    assert_eq!(run_end["elapsed_ms"], 2);
-  }
-
-  #[test]
-  fn summarize_schema_v2_ignores_stage_events() {
-    let log = r#"
-{"schema_version":2,"event":"stage","t_ms":5,"window_id":"WindowId(1)","tab_id":1,"stage":"layout","hotspot":"layout"}
-{"event":"worker_wake_summary","t_ms":7,"window_id":"process","wake_count":1}
-{"schema_version":2,"event":"frame","t_ms":10,"window_id":"WindowId(1)","ui_frame_ms":10}
-{"schema_version":2,"event":"frame","t_ms":16,"window_id":"WindowId(1)","ui_frame_ms":20}
-"#;
-
-    let summary = summarize_reader(
-      BufReader::new(log.as_bytes()),
-      WindowFilter {
-        from_ms: None,
-        to_ms: None,
-        only_event: None,
-      },
-    )
-    .expect("summary should succeed");
-
-    assert_eq!(summary.source_schema_version, 2);
-
-    let frames = summary.frames.expect("expected frame stats");
-    assert_eq!(frames.ui_frame_ms.count, 2);
-    assert_eq!(frames.ui_frame_ms.mean, 15.0);
-  }
-
-  #[test]
-  fn summarize_with_time_window_filter() {
-    let log = r#"
-{"schema_version":1,"event":"frame","t_ms":0,"ui_frame_ms":10}
-{"schema_version":1,"event":"frame","t_ms":16,"ui_frame_ms":20}
-{"schema_version":1,"event":"frame","t_ms":32,"ui_frame_ms":30}
-"#;
-
-    let summary = summarize_reader(
-      BufReader::new(log.as_bytes()),
-      WindowFilter {
-        from_ms: Some(10.0),
-        to_ms: Some(20.0),
-        only_event: Some(OnlyEvent::Frame),
-      },
-    )
-    .expect("summary should succeed");
-
-    let frames = summary.frames.expect("expected frame stats");
-    assert_eq!(frames.ui_frame_ms.count, 1);
-    assert_eq!(frames.ui_frame_ms.mean, 20.0);
+    assert!(matches_event_filter(&event, EventFilter::Input));
+    assert!(matches_event_filter(&event, EventFilter::Scroll));
+    assert!(!matches_event_filter(&event, EventFilter::Resize));
   }
 }

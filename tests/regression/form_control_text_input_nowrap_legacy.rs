@@ -346,6 +346,7 @@ fn legacy_password_input_forces_single_line_mask_no_wrap() {
 
   let options = RenderOptions::new()
     .with_viewport(120, 120)
+    .with_layout_parallelism(LayoutParallelism::disabled())
     .with_runtime_toggles(toggles);
   let pixmap = renderer
     .render_html_with_options(html, options)
