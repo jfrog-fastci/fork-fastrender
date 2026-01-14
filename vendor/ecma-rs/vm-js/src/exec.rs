@@ -8837,6 +8837,7 @@ impl<'a> Evaluator<'a> {
         } else {
           prototype_obj
         };
+        let class_ctor = func_obj;
 
         let member_loc_start = member.loc.start_u32();
         let (key_loc_start, key_is_computed) = match &member.stx.key {
