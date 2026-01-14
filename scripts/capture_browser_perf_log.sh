@@ -13,6 +13,10 @@ set -euo pipefail
 # Usage (flag form, for scripts):
 #   bash scripts/capture_browser_perf_log.sh --out target/browser.perf.jsonl --url about:test-layout-stress
 #
+# Optional:
+#   --trace-out <path> passes `browser --trace-out <path>` so you can capture a Perfetto/Chrome trace
+#   alongside the stdout JSONL perf log.
+#
 # Add `--summary` to run `browser_perf_log_summary` after capture.
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,9 +25,9 @@ cd "${repo_root}"
 
 usage() {
   cat <<'EOF' >&2
-usage:
+ usage:
   scripts/capture_browser_perf_log.sh [--summary] <out.jsonl> [url] [browser args...]
-  scripts/capture_browser_perf_log.sh --out <out.jsonl> [--url <url>] [--summary] [-- <browser args...>]
+  scripts/capture_browser_perf_log.sh --out <out.jsonl> [--url <url>] [--trace-out <trace.json>] [--summary] [-- <browser args...>]
 
 Capture the windowed `browser` perf JSONL log (`browser --perf-log`) to <out.jsonl>.
 
@@ -33,6 +37,10 @@ Examples:
 
   # Flag form:
   bash scripts/capture_browser_perf_log.sh --out target/browser.perf.jsonl --url about:test-layout-stress
+
+  # Capture perf JSONL + a browser UI trace:
+  bash scripts/capture_browser_perf_log.sh --out target/browser.perf.jsonl --url about:test-layout-stress \
+    --trace-out target/browser_trace.json
 
   # Capture + summarize:
   bash scripts/capture_browser_perf_log.sh --summary target/browser.perf.jsonl about:test-layout-stress
@@ -55,6 +63,7 @@ require_value() {
 
 url=""
 out=""
+trace_out=""
 run_summary=0
 extra_browser_args=()
 
@@ -84,6 +93,15 @@ while [[ $# -gt 0 ]]; do
       ;;
     --out=*)
       out="${1#--out=}"
+      shift
+      ;;
+    --trace-out)
+      require_value "$1" "${2:-}"
+      trace_out="$2"
+      shift 2
+      ;;
+    --trace-out=*)
+      trace_out="${1#--trace-out=}"
       shift
       ;;
     --)
@@ -141,6 +159,11 @@ if [[ "${out_path}" != /* ]]; then
   out_path="${repo_root}/${out_path}"
 fi
 
+trace_out_path="${trace_out}"
+if [[ -n "${trace_out_path}" && "${trace_out_path}" != /* ]]; then
+  trace_out_path="${repo_root}/${trace_out_path}"
+fi
+
 mkdir -p -- "$(dirname "${out_path}")"
 # Ensure the output is truncated before running so repeated captures don't accumulate.
 : > "${out_path}"
@@ -148,6 +171,9 @@ mkdir -p -- "$(dirname "${out_path}")"
 echo "capture_browser_perf_log: output=${out_path}" >&2
 if [[ -n "${url}" ]]; then
   echo "capture_browser_perf_log: url=${url}" >&2
+fi
+if [[ -n "${trace_out_path}" ]]; then
+  echo "capture_browser_perf_log: trace_out=${trace_out_path}" >&2
 fi
 
 exe_suffix=""
@@ -174,6 +200,12 @@ for arg in "${extra_browser_args[@]}"; do
       echo "hint: run the browser directly with: browser --perf-log-out <path> ..." >&2
       exit 2
       ;;
+    --trace-out|--trace-out=*)
+      if [[ -n "${trace_out_path}" ]]; then
+        echo "capture_browser_perf_log: error: do not pass ${arg} when using --trace-out; this script will forward the trace flag for you." >&2
+        exit 2
+      fi
+      ;;
   esac
 done
 
@@ -181,6 +213,9 @@ done
 # `--perf-log` explicitly in forwarded args.
 if ! printf '%s\n' "${extra_browser_args[@]}" | grep -q -- '^--perf-log$'; then
   browser_cmd+=("--perf-log")
+fi
+if [[ -n "${trace_out_path}" ]]; then
+  browser_cmd+=("--trace-out" "${trace_out_path}")
 fi
 
 if [[ -n "${url}" ]]; then

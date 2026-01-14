@@ -66,6 +66,10 @@ For interactive captures, prefer the convenience wrapper (runs under the repo gu
 ```bash
 timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --url about:test-layout-stress --out target/browser_perf.jsonl
 
+# Capture perf log + a browser UI trace (Perfetto/Chrome trace written on exit):
+timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --url about:test-layout-stress --out target/browser_perf.jsonl \
+  --trace-out target/browser_trace.json
+
 # Capture + summarize (runs `browser_perf_log_summary` after the browser exits):
 timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --url about:test-layout-stress --out target/browser_perf.jsonl --summary
 ```
