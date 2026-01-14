@@ -26145,10 +26145,34 @@ impl App {
           use fastrender::ui::UiToWorker;
 
           let active_tab_id = self.browser_state.active_tab_id();
+          let active_document_generation = active_tab_id.and_then(|tab_id| {
+            self
+              .browser_state
+              .tab(tab_id)
+              .and_then(|tab| tab.page_accessibility.as_ref())
+              .map(|snap| snap.document_generation)
+          });
           let mut msgs: Vec<UiToWorker> = Vec::new();
           let mut page_focus_requested = false;
 
           for req in page_accesskit_action_requests {
+            // If the action request targets a canonical page node id (tab+generation+dom id),
+            // validate that it matches the currently active document generation. This prevents
+            // stale screen-reader requests from a previous navigation from affecting the new page.
+            //
+            // Note: The tag-bit page node ids (`ui::page_accesskit_ids`) do not encode a generation,
+            // so they cannot be filtered here; they are kept only for compatibility.
+            if !fastrender::ui::page_accesskit_ids::is_page_node_id(req.target) {
+              let Some((tab_id, generation, _dom_node_id)) =
+                fastrender::ui::decode_page_node_id(req.target)
+              else {
+                continue;
+              };
+              if Some(tab_id) != active_tab_id || active_document_generation != Some(generation) {
+                continue;
+              }
+            }
+
             let Some(msg) = fastrender::ui::page_accesskit::action_request_to_ui_message(&req) else {
               continue;
             };
@@ -26158,6 +26182,7 @@ impl App {
               UiToWorker::A11ySetFocus { tab_id, .. }
               | UiToWorker::A11yActivate { tab_id, .. }
               | UiToWorker::A11yScrollIntoView { tab_id, .. }
+              | UiToWorker::A11yShowContextMenu { tab_id, .. }
               | UiToWorker::A11ySetTextValue { tab_id, .. }
               | UiToWorker::A11ySetTextSelectionRange { tab_id, .. } => *tab_id,
               _ => continue,
@@ -26166,7 +26191,13 @@ impl App {
               continue;
             }
 
-            if matches!(msg, UiToWorker::A11ySetFocus { .. } | UiToWorker::A11yActivate { .. }) {
+            if matches!(
+              msg,
+              UiToWorker::A11ySetFocus { .. }
+                | UiToWorker::A11yActivate { .. }
+                | UiToWorker::A11ySetTextValue { .. }
+                | UiToWorker::A11ySetTextSelectionRange { .. }
+            ) {
               page_focus_requested = true;
             }
 
@@ -26174,6 +26205,9 @@ impl App {
             let should_replace = |existing: &UiToWorker| match (&msg, existing) {
               // Only the latest requested focus matters.
               (UiToWorker::A11ySetFocus { .. }, UiToWorker::A11ySetFocus { .. }) => true,
+              (UiToWorker::A11yShowContextMenu { .. }, UiToWorker::A11yShowContextMenu { .. }) => {
+                true
+              }
               // Keep only the latest request per target node.
               (
                 UiToWorker::A11yActivate { node_id: a, .. },
