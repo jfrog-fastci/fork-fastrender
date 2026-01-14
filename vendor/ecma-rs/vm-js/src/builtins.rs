@@ -31165,6 +31165,23 @@ fn get_set_record(
   if num_size.is_nan() {
     return Err(VmError::TypeError("GetSetRecord size is NaN"));
   }
+  // 4. Let intSize be ? ToIntegerOrInfinity(numSize).
+  //
+  // `ToIntegerOrInfinity` does not invoke user code after `ToNumber` has produced a numeric
+  // result, so this preserves the spec requirement that size coercion runs exactly once.
+  let int_size = if num_size == 0.0 {
+    // `ToIntegerOrInfinity` normalizes NaN and ±0 to +0. NaN is handled above.
+    0.0
+  } else if !num_size.is_finite() {
+    num_size
+  } else {
+    num_size.trunc()
+  };
+
+  // 6. If intSize < 0, throw a RangeError exception.
+  if int_size < 0.0 {
+    return Err(VmError::RangeError("GetSetRecord size is negative"));
+  }
 
   // 7. Let has be ? Get(obj, "has").
   // 8. If IsCallable(has) is false, throw a TypeError exception.
@@ -31186,7 +31203,7 @@ fn get_set_record(
 
   Ok(SetRecord {
     set: value,
-    size: num_size,
+    size: int_size,
     has,
     keys,
   })

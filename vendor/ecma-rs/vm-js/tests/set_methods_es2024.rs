@@ -16,6 +16,18 @@ fn value_as_utf8(rt: &JsRuntime, value: Value) -> String {
 }
 
 fn assert_script_throws_type_error(rt: &mut JsRuntime, source: &str) -> Result<(), VmError> {
+  assert_script_throws_error_named(rt, source, "TypeError")
+}
+
+fn assert_script_throws_range_error(rt: &mut JsRuntime, source: &str) -> Result<(), VmError> {
+  assert_script_throws_error_named(rt, source, "RangeError")
+}
+
+fn assert_script_throws_error_named(
+  rt: &mut JsRuntime,
+  source: &str,
+  expected_name: &str,
+) -> Result<(), VmError> {
   let err = match rt.exec_script(source) {
     Ok(v) => panic!("expected script to throw, got {v:?}"),
     Err(err) => err,
@@ -70,7 +82,10 @@ fn assert_script_throws_type_error(rt: &mut JsRuntime, source: &str) -> Result<(
 
   let name = get_string_from_chain(rt, err_obj, &name_key)?.unwrap_or_default();
   let message = get_string_from_chain(rt, err_obj, &message_key)?.unwrap_or_default();
-  assert_eq!(name, "TypeError", "unexpected error name: {name} ({message})");
+  assert_eq!(
+    name, expected_name,
+    "unexpected error name: {name} ({message})"
+  );
   Ok(())
 }
 
@@ -206,6 +221,43 @@ fn set_union_does_not_invoke_other_has_and_difference_avoids_other_keys_based_on
     "#,
   )?;
   assert_eq!(value_as_utf8(&rt, value), "1,2,3,4|1");
+  Ok(())
+}
+
+#[test]
+fn get_set_record_reads_size_once_and_rejects_negative_sizes() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  // `GetSetRecord` must only coerce `size` once.
+  let value = rt.exec_script(
+    r#"
+      (() => {
+        const s1 = new Set([1, 2]);
+        let sizeGets = 0;
+        const other = {
+          get size() { sizeGets++; return 0; },
+          has() { return false; },
+          keys() { return [].values(); },
+        };
+        s1.union(other);
+        return sizeGets;
+      })();
+    "#,
+  )?;
+  assert_eq!(value_as_utf8(&rt, value), "1");
+
+  // Negative sizes must be rejected with a RangeError.
+  assert_script_throws_range_error(
+    &mut rt,
+    r#"
+      (() => {
+        const s1 = new Set([1, 2]);
+        const other = { size: -1, has() { return false; }, keys() { return [].values(); } };
+        s1.difference(other);
+      })();
+    "#,
+  )?;
+
   Ok(())
 }
 
