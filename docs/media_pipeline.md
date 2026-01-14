@@ -35,7 +35,7 @@ Legend: ✅ implemented, ⚠️ partial, 🚧 planned, ❌ missing.
 | Media backends (`MediaBackend`) | ✅ | Native: [`src/media/backends/native.rs`](../src/media/backends/native.rs); optional CLI fallback: [`src/media/backends/ffmpeg_cli.rs`](../src/media/backends/ffmpeg_cli.rs) behind `media_ffmpeg_cli` |
 | `<video>` paint hook + frame caching | ⚠️ | Paint can query a `MediaFrameProvider` (`src/paint/display_list_builder.rs`); `SizeHintMediaFrameProvider` exists ([`src/media/frame_provider.rs`](../src/media/frame_provider.rs)), but no full HTMLMediaElement playback loop is wired yet |
 | A/V sync helper | ✅ | [`src/media/av_sync.rs`](../src/media/av_sync.rs) (+ env overrides) |
-| Audio output plumbing | ✅ (not wired to HTMLMediaElement yet) | [`src/media/audio/`](../src/media/audio/) (real output via `audio_cpal`; null backend is default) |
+| Audio output plumbing | ✅ (not wired to HTMLMediaElement yet) | [`src/media/audio/`](../src/media/audio/) (real output via `audio_cpal`; deterministic file output via `audio_wav`; null backend is default) |
 
 ## Design goals / constraints (current)
 
@@ -48,9 +48,10 @@ Legend: ✅ implemented, ⚠️ partial, 🚧 planned, ❌ missing.
   - Native playback avoids *system* FFmpeg/GStreamer dependencies.
   - Codec/container features pull in C build dependencies (OpenH264/libvpx/libopus); optional
     `media_ffmpeg_cli` can be used as a fallback if native codecs are unavailable.
-  - Optional features may require extra dependencies:
+  - Optional features may require extra dependencies or tooling:
     - `browser_ui` (windowed browser): GUI dev packages on Linux (see `docs/browser_ui.md`).
     - `audio_cpal`: real audio output; may require ALSA headers on Linux.
+    - `audio_wav`: WAV file output backend for deterministic audio debugging/tests (pure Rust).
     - `media_ffmpeg_cli`: requires `ffmpeg`/`ffprobe` binaries on PATH.
 - **No required assembler in the default media build**:
   - VP9 decode uses `crates/libvpx-sys-bundled`, which aims to avoid `nasm`/`yasm` by forcing a
