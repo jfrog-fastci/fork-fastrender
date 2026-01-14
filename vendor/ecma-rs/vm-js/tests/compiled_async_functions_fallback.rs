@@ -9,7 +9,7 @@ fn new_runtime() -> JsRuntime {
 }
 
 #[test]
-fn compiled_script_does_not_fall_back_for_async_function_decls() -> Result<(), VmError> {
+fn compiled_script_does_not_fall_back_for_async_function_decls_or_exprs() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   let script = CompiledScript::compile_script(
@@ -22,7 +22,15 @@ fn compiled_script_does_not_fall_back_for_async_function_decls() -> Result<(), V
         return 1;
       }
 
-      f().then(v => { result = v; });
+      const g = async function () {
+        return 2;
+      };
+
+      const h = async () => 3;
+
+      f().then(v => { result += v; });
+      g().then(v => { result += v; });
+      h().then(v => { result += v; });
     "#,
   )?;
 
@@ -39,6 +47,6 @@ fn compiled_script_does_not_fall_back_for_async_function_decls() -> Result<(), V
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
   let value = rt.exec_script("result")?;
-  assert_eq!(value, Value::Number(1.0));
+  assert_eq!(value, Value::Number(6.0));
   Ok(())
 }
