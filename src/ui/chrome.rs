@@ -805,6 +805,20 @@ fn tab_search_overlay_id() -> egui::Id {
   egui::Id::new("tab_search_overlay")
 }
 
+fn tab_search_row_id(tab_id: TabId) -> egui::Id {
+  egui::Id::new(("tab_search_row", tab_id))
+}
+
+fn accesskit_node_id_for_egui_id(id: egui::Id) -> accesskit::NodeId {
+  // SAFETY: In egui's AccessKit integration, node ids are derived from `egui::Id`'s internal u64
+  // hash value (see egui's `Id::accesskit_id`, which is crate-private). Mirror that mapping here so
+  // we can reference other egui widgets via AccessKit relations like `active_descendant`.
+  let raw: u64 = unsafe { std::mem::transmute::<egui::Id, u64>(id) };
+  accesskit::NodeId(
+    std::num::NonZeroU128::new(u128::from(raw).max(1)).expect("egui id maps to non-zero NodeId"),
+  )
+}
+
 fn egui_id_from_focus_token(token: UiFocusToken) -> egui::Id {
   tab_strip::tab_strip_tab_widget_id(TabId(token.0))
 }
@@ -949,6 +963,7 @@ fn tab_search_overlay_ui(
       let _ = ctx.accesskit_node_builder(input.id, |builder| {
         builder.set_role(accesskit::Role::SearchBox);
         builder.set_expanded(app.chrome.tab_search.open);
+        builder.clear_active_descendant();
       });
       // Keep focus in the search box while the overlay is open.
       if app.chrome.tab_search.open && shortcuts_enabled {
@@ -1054,7 +1069,7 @@ fn tab_search_overlay_ui(
 
                 // Use an explicit per-tab widget id so the AccessKit node id remains stable even if
                 // the filtered matches list reorders while the overlay is open.
-                let row_id = egui::Id::new(("tab_search_row", tab.id));
+                let row_id = tab_search_row_id(tab.id);
                 let (_, rect) =
                   ui.allocate_space(egui::vec2(ui.available_width().max(0.0), row_height));
                 let response = ui.interact(rect, row_id, egui::Sense::click());
@@ -1152,6 +1167,17 @@ fn tab_search_overlay_ui(
         builder.set_role(accesskit::Role::ListBox);
         builder.set_name("Tab search results".to_string());
       });
+
+      if app.chrome.tab_search.open {
+        if let Some(m) = matches.get(selected) {
+          let active_descendant = accesskit_node_id_for_egui_id(tab_search_row_id(m.tab_id));
+          let _ = ctx.accesskit_node_builder(input.id, |builder| {
+            builder.set_role(accesskit::Role::SearchBox);
+            builder.set_expanded(app.chrome.tab_search.open);
+            builder.set_active_descendant(active_descendant);
+          });
+        }
+      }
 
       app.chrome.tab_search.selected = selected;
       clicked
@@ -5929,6 +5955,56 @@ mod tests {
         "expected tab search option {name:?} selected={should_be_selected}, got {selected}.\n\noptions: {options:#?}\n\nsnapshot:\n{snapshot}"
       );
     }
+  }
+
+  #[test]
+  fn tab_search_input_accesskit_active_descendant_points_at_selected_row() {
+    let mut app = BrowserAppState::new();
+    let mut tab_a = BrowserTabState::new(TabId(1), "https://a.example".to_string());
+    tab_a.title = Some("Alpha".to_string());
+    let mut tab_b = BrowserTabState::new(TabId(2), "https://b.example".to_string());
+    tab_b.title = Some("Beta".to_string());
+    let mut tab_c = BrowserTabState::new(TabId(3), "https://c.example".to_string());
+    tab_c.title = Some("Gamma".to_string());
+    app.push_tab(tab_a, true);
+    app.push_tab(tab_b, false);
+    app.push_tab(tab_c, false);
+
+    app.chrome.tab_search.open = true;
+    app.chrome.tab_search.query.clear();
+    app.chrome.tab_search.selected = 2;
+
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, ctx.wants_keyboard_input(), true, |_| None);
+    let output = ctx.end_frame();
+
+    let snapshot = a11y_test_util::accesskit_pretty_json_from_full_output(&output);
+    let update = accesskit_update(&output);
+
+    let (_input_id, input_node) =
+      accesskit_node_by_name(update, crate::ui::a11y::TAB_SEARCH_LABEL);
+
+    let mut selected_row_id: Option<accesskit::NodeId> = None;
+    for (id, node) in &update.nodes {
+      if node.role() == accesskit::Role::ListBoxOption && accesskit_node_selected(node) {
+        assert!(
+          selected_row_id.is_none(),
+          "expected exactly one selected tab search row in AccessKit output.\n\nsnapshot:\n{snapshot}"
+        );
+        selected_row_id = Some(*id);
+      }
+    }
+    let selected_row_id = selected_row_id
+      .expect("expected a selected tab search row in AccessKit output (selected index 2)");
+
+    assert_eq!(
+      input_node.active_descendant(),
+      Some(selected_row_id),
+      "expected tab search input active-descendant to point at the selected row.\n\nsnapshot:\n{snapshot}"
+    );
   }
 
   #[test]
