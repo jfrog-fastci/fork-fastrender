@@ -500,6 +500,67 @@ mod tests {
   }
 
   #[test]
+  fn nv12_to_rgba_respects_strides_with_padding() {
+    let width = 4usize;
+    let height = 4usize;
+    let uv_width = width / 2;
+    let uv_height = height / 2;
+
+    let y_tight: Vec<u8> = (0..(width * height)).map(|i| 40u8 + (i as u8)).collect();
+    let u_tight: Vec<u8> = vec![90, 140, 200, 40]; // 2x2
+    let v_tight: Vec<u8> = vec![200, 40, 90, 140]; // 2x2
+
+    let mut ref_out = vec![0u8; width * height * 4];
+    yuv420p_to_rgba(
+      width,
+      height,
+      &y_tight,
+      width,
+      &u_tight,
+      uv_width,
+      &v_tight,
+      uv_width,
+      &mut ref_out,
+    );
+
+    // Interleave U/V into NV12 UV plane (tight).
+    let uv_row_bytes = uv_width * 2;
+    let mut uv_tight = vec![0u8; uv_row_bytes * uv_height];
+    for row in 0..uv_height {
+      for col in 0..uv_width {
+        let idx = row * uv_width + col;
+        let out = row * uv_row_bytes + col * 2;
+        uv_tight[out] = u_tight[idx];
+        uv_tight[out + 1] = v_tight[idx];
+      }
+    }
+
+    // Padded planes.
+    let y_stride = width + 3;
+    let uv_stride = uv_row_bytes + 5;
+
+    let mut y_padded = vec![0xEEu8; y_stride * height];
+    for row in 0..height {
+      let src_off = row * width;
+      let dst_off = row * y_stride;
+      y_padded[dst_off..dst_off + width].copy_from_slice(&y_tight[src_off..src_off + width]);
+    }
+
+    let mut uv_padded = vec![0xDDu8; uv_stride * uv_height];
+    for row in 0..uv_height {
+      let src_off = row * uv_row_bytes;
+      let dst_off = row * uv_stride;
+      uv_padded[dst_off..dst_off + uv_row_bytes]
+        .copy_from_slice(&uv_tight[src_off..src_off + uv_row_bytes]);
+    }
+
+    let mut out = vec![0u8; width * height * 4];
+    nv12_to_rgba(width, height, &y_padded, y_stride, &uv_padded, uv_stride, &mut out);
+
+    assert_eq!(out, ref_out);
+  }
+
+  #[test]
   fn nv21_to_rgba_2x2_known_output_with_non_neutral_chroma() {
     let width = 2;
     let height = 2;
@@ -580,6 +641,67 @@ mod tests {
     );
 
     assert_eq!(out_nv21, out_planar);
+  }
+
+  #[test]
+  fn nv21_to_rgba_respects_strides_with_padding() {
+    let width = 4usize;
+    let height = 4usize;
+    let uv_width = width / 2;
+    let uv_height = height / 2;
+
+    let y_tight: Vec<u8> = (0..(width * height)).map(|i| 40u8 + (i as u8)).collect();
+    let u_tight: Vec<u8> = vec![90, 140, 200, 40]; // 2x2
+    let v_tight: Vec<u8> = vec![200, 40, 90, 140]; // 2x2
+
+    let mut ref_out = vec![0u8; width * height * 4];
+    yuv420p_to_rgba(
+      width,
+      height,
+      &y_tight,
+      width,
+      &u_tight,
+      uv_width,
+      &v_tight,
+      uv_width,
+      &mut ref_out,
+    );
+
+    // Interleave V/U into NV21 VU plane (tight).
+    let vu_row_bytes = uv_width * 2;
+    let mut vu_tight = vec![0u8; vu_row_bytes * uv_height];
+    for row in 0..uv_height {
+      for col in 0..uv_width {
+        let idx = row * uv_width + col;
+        let out = row * vu_row_bytes + col * 2;
+        vu_tight[out] = v_tight[idx];
+        vu_tight[out + 1] = u_tight[idx];
+      }
+    }
+
+    // Padded planes.
+    let y_stride = width + 3;
+    let vu_stride = vu_row_bytes + 5;
+
+    let mut y_padded = vec![0xEEu8; y_stride * height];
+    for row in 0..height {
+      let src_off = row * width;
+      let dst_off = row * y_stride;
+      y_padded[dst_off..dst_off + width].copy_from_slice(&y_tight[src_off..src_off + width]);
+    }
+
+    let mut vu_padded = vec![0xDDu8; vu_stride * uv_height];
+    for row in 0..uv_height {
+      let src_off = row * vu_row_bytes;
+      let dst_off = row * vu_stride;
+      vu_padded[dst_off..dst_off + vu_row_bytes]
+        .copy_from_slice(&vu_tight[src_off..src_off + vu_row_bytes]);
+    }
+
+    let mut out = vec![0u8; width * height * 4];
+    nv21_to_rgba(width, height, &y_padded, y_stride, &vu_padded, vu_stride, &mut out);
+
+    assert_eq!(out, ref_out);
   }
 
   #[test]
