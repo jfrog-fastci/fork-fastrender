@@ -146,3 +146,29 @@ async function {name}() {{ await (null).x; }}
   assert_eq!(v, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn error_stack_for_async_await_revoked_proxy_promise_resolve_throw_contains_frames() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  rt.exec_script(
+    r#"
+var captured = "";
+async function f() {
+  const { proxy, revoke } = Proxy.revocable({}, {});
+  revoke();
+  await proxy;
+}
+f().catch(e => { captured = e.stack; });
+"#,
+  )?;
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let v = rt.exec_script(
+    r#"typeof captured === "string"
+      && captured.includes("TypeError")
+      && captured.includes("revoked Proxy")
+      && captured.includes("at ")"#,
+  )?;
+  assert_eq!(v, Value::Bool(true));
+  Ok(())
+}
