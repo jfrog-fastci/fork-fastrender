@@ -274,6 +274,7 @@ impl<'a> Parser<'a> {
               // Static blocks have their own `Await` / `Yield` context and parse as
               // `StatementList[~Yield, +Await, ~Return]opt`:
               // - `await` is reserved as an identifier,
+              // - `await` expressions are always invalid (ECMA-262 `ContainsAwait` early error),
               // - `yield` is not treated as a keyword from an enclosing generator, and
               // - `return` is not permitted (handled above via `in_function = 0`).
               let is_module = p.is_module();
