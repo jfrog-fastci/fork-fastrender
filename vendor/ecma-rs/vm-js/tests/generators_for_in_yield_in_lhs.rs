@@ -463,6 +463,56 @@ fn generator_for_in_yield_in_array_pattern_elem_assignment_target_super_computed
 }
 
 #[test]
+fn generator_for_in_multiple_yields_in_array_pattern_elem_super_computed_member_and_default() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class Base { set k(v) { this._k = v; } }
+        class Derived extends Base {
+          *g() {
+            for ([super[yield "k"] = yield 1] in {"": 0}) { return this._k; }
+          }
+        }
+        var it = (new Derived()).g();
+        var r1 = it.next();
+        var r2 = it.next("k");
+        var r3 = it.next(42);
+        r1.done === false && r1.value === "k" &&
+        r2.done === false && r2.value === 1 &&
+        r3.done === true && r3.value === 42
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_in_multiple_yields_in_object_pattern_prop_super_computed_member_and_default() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class Base { set k(v) { this._k = v; } }
+        class Derived extends Base {
+          *g() {
+            for ({missing: super[yield "k"] = yield 1} in {abc: 0}) { return this._k; }
+          }
+        }
+        var it = (new Derived()).g();
+        var r1 = it.next();
+        var r2 = it.next("k");
+        var r3 = it.next(42);
+        r1.done === false && r1.value === "k" &&
+        r2.done === false && r2.value === 1 &&
+        r3.done === true && r3.value === 42
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_for_in_yield_in_lhs_does_not_re_evaluate_rhs() {
   let mut rt = new_runtime();
   let value = rt
