@@ -127,17 +127,12 @@ timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 Filtering options (see `browser_perf_log_summary --help`):
 
 - `--from-ms <ms>` / `--to-ms <ms>`: limit to a timestamp window.
-- `--only-event frame|input|scroll|resize|ttfp|idle_sample|cpu_summary|memory_summary|frame_upload`: summarize a single event type.
+- `--only-event frame|input|resize|ttfp|idle_sample|cpu_summary`: summarize a single event type.
   (`idle_summary` is accepted as a legacy alias.)
 
-To focus specifically on RSS over a windowed interaction, combine the event filter and time window:
-
-```bash
-timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- \
-  --input target/browser_perf.jsonl --only-event memory_summary --from-ms 0 --to-ms 60000
-```
-
-The summary output includes both `rss_bytes` and a convenience `rss_mb` row.
+Note: the perf log contains additional event types (e.g. `frame_upload`, `memory_summary`,
+`worker_wake_summary`) that are currently not summarized by `browser_perf_log_summary`; use
+`jq`/pandas for custom analysis.
 
 ### Headless benchmark harness: `ui_perf_smoke`
 
