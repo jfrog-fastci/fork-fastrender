@@ -9,6 +9,8 @@
 # Test IDs are paths relative to `test/` in the tc39/test262 checkout.
 include = [
   "language/module-code/**/*.js",
+  "language/import/**/*.js",
+  "language/export/**/*.js",
   "language/expressions/import.meta/**/*.js",
   "language/expressions/dynamic-import/**/*.js",
   "language/module-code/top-level-await/**/*.js",
@@ -17,6 +19,7 @@ include = [
 exclude = [
   # `vm-js` only implements standard `import()`; skip stage/proposal syntax that depends on
   # non-standard host hooks (import phases / source phase imports).
+  "language/import/import-defer/**/*.js",
   "language/module-code/source-phase-import/**/*.js",
   "language/expressions/dynamic-import/**/*import-source*.js",
   "language/expressions/dynamic-import/**/*import-defer*.js",
