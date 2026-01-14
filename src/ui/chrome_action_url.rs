@@ -46,9 +46,6 @@ use crate::ui::messages::TabId;
 use crate::ui::ChromeAction;
 use url::Url;
 
-/// Canonical scheme name for chrome-action URLs.
-pub const CHROME_ACTION_SCHEME: &str = ChromeActionUrl::SCHEME;
-
 /// A parsed `chrome-action:` URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChromeActionUrl {
@@ -136,14 +133,9 @@ pub enum ChromeActionUrl {
   ToggleDownloadsPanel,
 }
 
-/// Canonical `chrome-action:` URL scheme string.
-///
-/// Prefer [`ChromeActionUrl::SCHEME`] for new code; this constant is kept for convenience and for
-/// legacy call sites.
-pub const CHROME_ACTION_SCHEME: &str = ChromeActionUrl::SCHEME;
-
 impl ChromeActionUrl {
   pub const SCHEME: &'static str = "chrome-action";
+
   /// Parse a `chrome-action:` URL string.
   ///
   /// Invariants:
@@ -171,7 +163,10 @@ impl ChromeActionUrl {
     }
 
     if !url.cannot_be_a_base() {
-      return Err("chrome-action URLs must use the opaque form `chrome-action:<action>` (no `//`)".to_string());
+      return Err(
+        "chrome-action URLs must use the opaque form `chrome-action:<action>` (no `//`)"
+          .to_string(),
+      );
     }
     if url.fragment().is_some() {
       return Err("chrome-action URLs must not include a fragment".to_string());
@@ -424,11 +419,14 @@ impl ChromeActionUrl {
         case_sensitive,
       } => {
         out.push_str("find-query");
-        append_query(&mut out, &[
-          ("tab", tab_id.0.to_string()),
-          ("query", query.clone()),
-          ("case_sensitive", bool_to_string(*case_sensitive)),
-        ]);
+        append_query(
+          &mut out,
+          &[
+            ("tab", tab_id.0.to_string()),
+            ("query", query.clone()),
+            ("case_sensitive", bool_to_string(*case_sensitive)),
+          ],
+        );
       }
       Self::FindNext { tab_id } => {
         out.push_str("find-next");
@@ -704,7 +702,10 @@ fn required_param<'a>(params: &'a [(String, String)], key: &str) -> Result<&'a s
   required_param_any(params, &[key], key)
 }
 
-fn optional_param<'a>(params: &'a [(String, String)], key: &str) -> Result<Option<&'a str>, String> {
+fn optional_param<'a>(
+  params: &'a [(String, String)],
+  key: &str,
+) -> Result<Option<&'a str>, String> {
   optional_param_any(params, &[key])
 }
 
@@ -713,10 +714,14 @@ fn required_param_any<'a>(
   keys: &[&str],
   canonical: &str,
 ) -> Result<&'a str, String> {
-  optional_param_any(params, keys)?.ok_or_else(|| format!("missing chrome-action param: {canonical}"))
+  optional_param_any(params, keys)?
+    .ok_or_else(|| format!("missing chrome-action param: {canonical}"))
 }
 
-fn optional_param_any<'a>(params: &'a [(String, String)], keys: &[&str]) -> Result<Option<&'a str>, String> {
+fn optional_param_any<'a>(
+  params: &'a [(String, String)],
+  keys: &[&str],
+) -> Result<Option<&'a str>, String> {
   let mut found_key: Option<&str> = None;
   let mut found_val: Option<&'a str> = None;
 
@@ -728,7 +733,9 @@ fn optional_param_any<'a>(params: &'a [(String, String)], keys: &[&str]) -> Resu
     }
     if let Some(val) = val {
       if let Some(prev) = found_key {
-        return Err(format!("conflicting chrome-action params: {prev} and {key}"));
+        return Err(format!(
+          "conflicting chrome-action params: {prev} and {key}"
+        ));
       }
       found_key = Some(key);
       found_val = Some(val);
@@ -840,7 +847,10 @@ mod tests {
       (ChromeActionUrl::Home, ChromeAction::Home),
       // Tab management.
       (ChromeActionUrl::NewTab, ChromeAction::NewTab),
-      (ChromeActionUrl::ReopenClosedTab, ChromeAction::ReopenClosedTab),
+      (
+        ChromeActionUrl::ReopenClosedTab,
+        ChromeAction::ReopenClosedTab,
+      ),
       (
         ChromeActionUrl::CloseTab { tab_id },
         ChromeAction::CloseTab(tab_id),
@@ -874,10 +884,19 @@ mod tests {
         ChromeAction::TogglePinTab(tab_id),
       ),
       // Window/chrome.
-      (ChromeActionUrl::FocusAddressBar, ChromeAction::FocusAddressBar),
+      (
+        ChromeActionUrl::FocusAddressBar,
+        ChromeAction::FocusAddressBar,
+      ),
       (ChromeActionUrl::NewWindow, ChromeAction::NewWindow),
-      (ChromeActionUrl::ToggleFullScreen, ChromeAction::ToggleFullScreen),
-      (ChromeActionUrl::OpenFindInPage, ChromeAction::OpenFindInPage),
+      (
+        ChromeActionUrl::ToggleFullScreen,
+        ChromeAction::ToggleFullScreen,
+      ),
+      (
+        ChromeActionUrl::OpenFindInPage,
+        ChromeAction::OpenFindInPage,
+      ),
       (ChromeActionUrl::SavePage, ChromeAction::SavePage),
       (ChromeActionUrl::PrintPage, ChromeAction::PrintPage),
       (
@@ -901,8 +920,14 @@ mod tests {
           case_sensitive: true,
         },
       ),
-      (ChromeActionUrl::FindNext { tab_id }, ChromeAction::FindNext(tab_id)),
-      (ChromeActionUrl::FindPrev { tab_id }, ChromeAction::FindPrev(tab_id)),
+      (
+        ChromeActionUrl::FindNext { tab_id },
+        ChromeAction::FindNext(tab_id),
+      ),
+      (
+        ChromeActionUrl::FindPrev { tab_id },
+        ChromeAction::FindPrev(tab_id),
+      ),
       (
         ChromeActionUrl::CloseFindInPage { tab_id },
         ChromeAction::CloseFindInPage(tab_id),
@@ -922,9 +947,18 @@ mod tests {
       ),
       // Panels / chrome UI.
       (ChromeActionUrl::OpenTabSearch, ChromeAction::OpenTabSearch),
-      (ChromeActionUrl::CloseTabSearch, ChromeAction::CloseTabSearch),
-      (ChromeActionUrl::ToggleBookmarksBar, ChromeAction::ToggleBookmarksBar),
-      (ChromeActionUrl::ToggleHistoryPanel, ChromeAction::ToggleHistoryPanel),
+      (
+        ChromeActionUrl::CloseTabSearch,
+        ChromeAction::CloseTabSearch,
+      ),
+      (
+        ChromeActionUrl::ToggleBookmarksBar,
+        ChromeAction::ToggleBookmarksBar,
+      ),
+      (
+        ChromeActionUrl::ToggleHistoryPanel,
+        ChromeAction::ToggleHistoryPanel,
+      ),
       (
         ChromeActionUrl::ToggleBookmarksManager,
         ChromeAction::ToggleBookmarksManager,
@@ -933,7 +967,10 @@ mod tests {
         ChromeActionUrl::OpenClearBrowsingDataDialog,
         ChromeAction::OpenClearBrowsingDataDialog,
       ),
-      (ChromeActionUrl::OpenHomeUrlDialog, ChromeAction::OpenHomeUrlDialog),
+      (
+        ChromeActionUrl::OpenHomeUrlDialog,
+        ChromeAction::OpenHomeUrlDialog,
+      ),
       (
         ChromeActionUrl::ToggleDownloadsPanel,
         ChromeAction::ToggleDownloadsPanel,
@@ -978,16 +1015,16 @@ mod tests {
 
   #[test]
   fn errors_on_empty_url() {
-    assert!(
-      ChromeActionUrl::Navigate { url: "   ".to_string() }
-        .into_chrome_action()
-        .is_err()
-    );
-    assert!(
-      ChromeActionUrl::OpenUrlInNewTab { url: "".to_string() }
-        .into_chrome_action()
-        .is_err()
-    );
+    assert!(ChromeActionUrl::Navigate {
+      url: "   ".to_string()
+    }
+    .into_chrome_action()
+    .is_err());
+    assert!(ChromeActionUrl::OpenUrlInNewTab {
+      url: "".to_string()
+    }
+    .into_chrome_action()
+    .is_err());
   }
 
   #[test]
@@ -1100,7 +1137,10 @@ mod tests {
 
   #[test]
   fn parses_representative_strings() {
-    assert_eq!(ChromeActionUrl::parse("chrome-action:back").unwrap(), ChromeActionUrl::Back);
+    assert_eq!(
+      ChromeActionUrl::parse("chrome-action:back").unwrap(),
+      ChromeActionUrl::Back
+    );
     assert_eq!(
       ChromeActionUrl::parse("chrome-action:navigate?url=https%3A%2F%2Fexample.com%2F").unwrap(),
       ChromeActionUrl::Navigate {
