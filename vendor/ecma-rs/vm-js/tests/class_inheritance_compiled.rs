@@ -925,3 +925,135 @@ fn derived_ctor_eval_created_arrow_super_call_initializes_this_compiled() -> Res
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn derived_ctor_arrow_super_method_call_before_super_does_not_evaluate_args_compiled(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var arg_side = 0;
+      var ok = false;
+      class B { __m(x) { return x; } }
+      class D extends B {
+        constructor() {
+          let f = () => super.__m((arg_side = 1, 123));
+          try { f(); } catch (e) {
+            ok = e instanceof ReferenceError && arg_side === 0;
+          }
+          super();
+        }
+      }
+      new D();
+      ok
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn derived_ctor_arrow_super_computed_call_before_super_does_not_evaluate_key_or_args_compiled(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var key_side = 0;
+      var arg_side = 0;
+      var ok = false;
+      class B { __m(x) { return x; } }
+      class D extends B {
+        constructor() {
+          let f = () => super[(key_side = 1, "__m")]((arg_side = 1, 123));
+          try { f(); } catch (e) {
+            ok = e instanceof ReferenceError && key_side === 0 && arg_side === 0;
+          }
+          super();
+        }
+      }
+      new D();
+      ok
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn derived_ctor_arrow_super_property_assignment_before_super_does_not_evaluate_rhs_compiled(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var rhs_side = 0;
+      var ok = false;
+      class B {}
+      class D extends B {
+        constructor() {
+          let f = () => (super.__x = (rhs_side = 1, 1));
+          try { f(); } catch (e) {
+            ok = e instanceof ReferenceError && rhs_side === 0;
+          }
+          super();
+        }
+      }
+      new D();
+      ok
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn derived_ctor_arrow_super_call_after_super_throws_reference_error_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var called = 0;
+      var ok = false;
+      class B { constructor() { called += 1; } }
+      class D extends B {
+        constructor() {
+          let f = () => super();
+          super();
+          try { f(); } catch (e) { ok = e instanceof ReferenceError; }
+        }
+      }
+      new D();
+      ok && called === 1
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn derived_ctor_arrow_new_target_is_available_before_super_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var before;
+      var after;
+      class B {}
+      class D extends B {
+        constructor() {
+          let f = () => new.target;
+          before = f();
+          super();
+          after = f();
+        }
+      }
+      class E extends D {}
+      new E();
+      before === E && after === E
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
