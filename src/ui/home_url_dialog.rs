@@ -37,7 +37,25 @@ pub fn home_url_dialog_ui(
     return out;
   }
 
+  // Focus trap: keep Tab/Shift+Tab traversal inside the dialog controls.
+  //
+  // Egui's default focus traversal walks every focusable widget in the frame. When this dialog is
+  // open, we want it to behave like a modal: focus must not escape to the underlying chrome.
+  let tab_pressed = ctx.input_mut(|i| i.consume_key(egui::Modifiers::default(), egui::Key::Tab));
+  let shift_tab_pressed = ctx.input_mut(|i| {
+    i.consume_key(
+      egui::Modifiers {
+        shift: true,
+        ..Default::default()
+      },
+      egui::Key::Tab,
+    )
+  });
+
   let mut close_dialog = false;
+  let mut close_button_id: Option<egui::Id> = None;
+  let mut save_button_id: Option<egui::Id> = None;
+  let mut cancel_button_id: Option<egui::Id> = None;
 
   // Backdrop (modal scrim). Draw behind the window to dim the underlying UI and intercept pointer
   // events so the dialog feels modal.
@@ -67,9 +85,12 @@ pub fn home_url_dialog_ui(
     .show(ctx, |ui| {
       ui.set_min_width(520.0);
 
-      panel_header(ui, BrowserIcon::Home, "Set home page", || {
+      let header = panel_header(ui, BrowserIcon::Home, "Set home page", || {
         close_dialog = true;
       });
+      close_button_id = Some(header.close_response.id);
+      #[cfg(test)]
+      store_test_id(ctx, "home_url_dialog_close_id", header.close_response.id);
       ui.add_space(10.0);
 
       ui.label("Enter the URL to open when you click the Home button.");
@@ -101,6 +122,8 @@ pub fn home_url_dialog_ui(
           .margin(egui::Vec2::new(8.0, 8.0)),
       );
       resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Home page URL"));
+      #[cfg(test)]
+      store_test_id(ctx, "home_url_dialog_input_id", resp.id);
       if resp.changed() {
         *error = None;
       }
@@ -122,14 +145,20 @@ pub fn home_url_dialog_ui(
       ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         let save = ui.button("Save");
         save.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Save home page"));
+        save_button_id = Some(save.id);
         #[cfg(test)]
         store_test_rect(ctx, "home_url_dialog_save_button_rect", save.rect);
+        #[cfg(test)]
+        store_test_id(ctx, "home_url_dialog_save_id", save.id);
         if save.clicked() {
           save_requested = true;
         }
 
         let cancel = ui.button("Cancel");
         cancel.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Cancel"));
+        cancel_button_id = Some(cancel.id);
+        #[cfg(test)]
+        store_test_id(ctx, "home_url_dialog_cancel_id", cancel.id);
         if cancel.clicked() {
           close_dialog = true;
         }
@@ -154,6 +183,59 @@ pub fn home_url_dialog_ui(
       });
     });
 
+  // Apply focus trapping once the dialog controls have been built so we have their IDs.
+  if *open {
+    let mut focus_order = Vec::new();
+    if let Some(id) = close_button_id {
+      focus_order.push(id);
+    }
+    focus_order.push(input_id);
+    if let Some(id) = save_button_id {
+      focus_order.push(id);
+    }
+    if let Some(id) = cancel_button_id {
+      focus_order.push(id);
+    }
+
+    if !focus_order.is_empty() {
+      // Prefer to start focus on the URL input.
+      let first_id = input_id;
+      let last_id = cancel_button_id
+        .or_else(|| focus_order.last().copied())
+        .unwrap_or(first_id);
+
+      let focused = ctx.memory(|mem| mem.focus());
+      let focused_idx = focused.and_then(|id| focus_order.iter().position(|f| *f == id));
+
+      let mut request_focus: Option<egui::Id> = None;
+      if tab_pressed || shift_tab_pressed {
+        request_focus = Some(match (focused_idx, shift_tab_pressed) {
+          (Some(idx), false) => focus_order[(idx + 1) % focus_order.len()],
+          (Some(idx), true) => {
+            let prev = if idx == 0 {
+              focus_order.len() - 1
+            } else {
+              idx - 1
+            };
+            focus_order[prev]
+          }
+          (None, false) => first_id,
+          (None, true) => last_id,
+        });
+      } else if !request_initial_focus {
+        // If focus somehow escaped (e.g. dialog opened without requesting initial focus), pull it
+        // back into the modal.
+        if focused_idx.is_none() {
+          request_focus = Some(first_id);
+        }
+      }
+
+      if let Some(id) = request_focus {
+        ctx.memory_mut(|mem| mem.request_focus(id));
+      }
+    }
+  }
+
   if close_dialog {
     *open = false;
   }
@@ -168,9 +250,17 @@ fn store_test_rect(ctx: &egui::Context, key: &'static str, rect: egui::Rect) {
   });
 }
 
+#[cfg(test)]
+fn store_test_id(ctx: &egui::Context, key: &'static str, id: egui::Id) {
+  ctx.data_mut(|d| {
+    d.insert_temp(egui::Id::new(key), id);
+  });
+}
+
 #[cfg(all(test, feature = "browser_ui"))]
 mod tests {
   use super::{home_url_dialog_ui, HomeUrlDialogOutput};
+  use crate::ui::a11y_test_util;
 
   fn begin_frame(ctx: &egui::Context, events: Vec<egui::Event>) {
     let mut raw = egui::RawInput::default();
@@ -209,6 +299,54 @@ mod tests {
     ]
   }
 
+  fn key_press(key: egui::Key) -> egui::Event {
+    egui::Event::Key {
+      key,
+      pressed: true,
+      repeat: false,
+      modifiers: egui::Modifiers::default(),
+    }
+  }
+
+  fn shift_tab_press() -> egui::Event {
+    egui::Event::Key {
+      key: egui::Key::Tab,
+      pressed: true,
+      repeat: false,
+      modifiers: egui::Modifiers {
+        shift: true,
+        ..Default::default()
+      },
+    }
+  }
+
+  fn outside_ui(ctx: &egui::Context, request_focus: bool) -> egui::Id {
+    let mut out: Option<egui::Id> = None;
+    egui::CentralPanel::default().show(ctx, |ui| {
+      let resp = ui.button("Outside");
+      if request_focus {
+        resp.request_focus();
+      }
+      out = Some(resp.id);
+    });
+    out.expect("outside button must be created")
+  }
+
+  fn expect_temp_id(ctx: &egui::Context, key: &'static str) -> egui::Id {
+    ctx
+      .data(|d| d.get_temp::<egui::Id>(egui::Id::new(key)))
+      .unwrap_or_else(|| panic!("expected temp id {key:?}"))
+  }
+
+  fn dialog_ids(ctx: &egui::Context) -> Vec<egui::Id> {
+    vec![
+      expect_temp_id(ctx, "home_url_dialog_close_id"),
+      expect_temp_id(ctx, "home_url_dialog_input_id"),
+      expect_temp_id(ctx, "home_url_dialog_save_id"),
+      expect_temp_id(ctx, "home_url_dialog_cancel_id"),
+    ]
+  }
+
   #[test]
   fn save_emits_normalized_url_and_closes_dialog() {
     let ctx = egui::Context::default();
@@ -243,5 +381,127 @@ mod tests {
 
     assert_eq!(out.save_url.as_deref(), Some("https://example.com/"));
     assert!(!open, "dialog should close after successful save");
+  }
+
+  #[test]
+  fn home_url_dialog_traps_tab_focus_inside_modal() {
+    let ctx = egui::Context::default();
+    let mut open = true;
+    let mut url_text = "example.com".to_string();
+    let mut error: Option<String> = None;
+    // Intentionally *do not* request initial focus to ensure the dialog traps focus even if it was
+    // opened while another widget had it.
+    let mut request_initial_focus = false;
+
+    // Frame 0: focus the outside control and render the dialog once.
+    begin_frame(&ctx, Vec::new());
+    let outside_id = outside_ui(&ctx, true);
+    let _ = home_url_dialog_ui(
+      &ctx,
+      &mut open,
+      &mut url_text,
+      &mut error,
+      &mut request_initial_focus,
+    );
+    let _ = ctx.end_frame();
+
+    assert!(open, "dialog should remain open");
+    assert!(
+      !ctx.memory(|mem| mem.has_focus(outside_id)),
+      "expected focus to move off the outside widget when the dialog opens"
+    );
+
+    // Subsequent frames: press Tab repeatedly. Focus must never escape to the outside control.
+    for step in 0..12 {
+      begin_frame(&ctx, vec![key_press(egui::Key::Tab)]);
+      let outside_id_now = outside_ui(&ctx, false);
+      let _ = home_url_dialog_ui(
+        &ctx,
+        &mut open,
+        &mut url_text,
+        &mut error,
+        &mut request_initial_focus,
+      );
+      let _ = ctx.end_frame();
+
+      assert!(open, "dialog should remain open during Tab trapping test");
+
+      let ids = dialog_ids(&ctx);
+      let focused = ids
+        .iter()
+        .copied()
+        .find(|id| ctx.memory(|mem| mem.has_focus(*id)));
+
+      assert!(
+        focused.is_some(),
+        "focus escaped the dialog after Tab step {step}; focus ids: {ids:?}, outside id: {outside_id:?}"
+      );
+      assert!(
+        !ctx.memory(|mem| mem.has_focus(outside_id_now)),
+        "focus escaped to outside control after Tab step {step}"
+      );
+    }
+
+    // Also verify Shift+Tab stays inside.
+    for step in 0..12 {
+      begin_frame(&ctx, vec![shift_tab_press()]);
+      let outside_id_now = outside_ui(&ctx, false);
+      let _ = home_url_dialog_ui(
+        &ctx,
+        &mut open,
+        &mut url_text,
+        &mut error,
+        &mut request_initial_focus,
+      );
+      let _ = ctx.end_frame();
+
+      assert!(open, "dialog should remain open during Shift+Tab trapping test");
+
+      let ids = dialog_ids(&ctx);
+      let focused = ids
+        .iter()
+        .copied()
+        .find(|id| ctx.memory(|mem| mem.has_focus(*id)));
+
+      assert!(
+        focused.is_some(),
+        "focus escaped the dialog after Shift+Tab step {step}; focus ids: {ids:?}, outside id: {outside_id:?}"
+      );
+      assert!(
+        !ctx.memory(|mem| mem.has_focus(outside_id_now)),
+        "focus escaped to outside control after Shift+Tab step {step}"
+      );
+    }
+  }
+
+  #[test]
+  fn home_url_dialog_emits_accesskit_names_for_primary_controls() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    let mut open = true;
+    let mut url_text = "example.com".to_string();
+    let mut error: Option<String> = None;
+    let mut request_initial_focus = true;
+
+    begin_frame(&ctx, Vec::new());
+    let _outside = outside_ui(&ctx, false);
+    let _ = home_url_dialog_ui(
+      &ctx,
+      &mut open,
+      &mut url_text,
+      &mut error,
+      &mut request_initial_focus,
+    );
+    let output = ctx.end_frame();
+
+    let names = a11y_test_util::accesskit_names_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_pretty_json_from_full_output(&output);
+
+    for expected in ["Home page URL", "Save home page", "Cancel"] {
+      assert!(
+        names.iter().any(|n| n == expected),
+        "expected AccessKit name {expected:?} in home URL dialog output.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
+      );
+    }
   }
 }
