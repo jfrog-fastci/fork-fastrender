@@ -9,3 +9,6 @@ pub(crate) use crate::string_match::{
   find_ascii_case_insensitive_bytes_from, AsciiCaseInsensitiveStr,
 };
 
+// `ui::omnibox` (and related benches/tests) historically used `AsciiCaseInsensitive`. Keep that
+// name as an alias for compatibility.
+pub(crate) use crate::string_match::AsciiCaseInsensitiveStr as AsciiCaseInsensitive;
