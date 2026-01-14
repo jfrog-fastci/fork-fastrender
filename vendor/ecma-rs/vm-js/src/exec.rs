@@ -18404,9 +18404,26 @@ fn stmt_contains_yield(stmt: &Node<Stmt>) -> bool {
     | Stmt::Import(_)
     | Stmt::ExportList(_)
     | Stmt::FunctionDecl(_)
-    | Stmt::ClassDecl(_)
     | Stmt::Break(_)
     | Stmt::Continue(_) => false,
+    Stmt::ClassDecl(class) => {
+      class.stx.extends.as_ref().is_some_and(expr_contains_yield)
+        || class.stx.members.iter().any(|member| {
+          let key_has_yield = match &member.stx.key {
+            ClassOrObjKey::Direct(_) => false,
+            ClassOrObjKey::Computed(expr) => expr_contains_yield(expr),
+          };
+          if key_has_yield {
+            return true;
+          }
+
+          match &member.stx.val {
+            ClassOrObjVal::Prop(Some(expr)) if member.stx.static_ => expr_contains_yield(expr),
+            ClassOrObjVal::StaticBlock(block) => block.stx.body.iter().any(stmt_contains_yield),
+            _ => false,
+          }
+        })
+    }
     Stmt::Expr(expr_stmt) => expr_contains_yield(&expr_stmt.stx.expr),
     Stmt::Return(ret) => ret.stx.value.as_ref().is_some_and(expr_contains_yield),
     Stmt::Throw(throw_stmt) => expr_contains_yield(&throw_stmt.stx.value),
@@ -37570,8 +37587,8 @@ fn gen_eval_stmt_labelled(
     | Stmt::Debugger(_)
     | Stmt::Import(_)
     | Stmt::ExportList(_)
-    | Stmt::FunctionDecl(_)
-    | Stmt::ClassDecl(_) => Ok(GenEval::Complete(Completion::empty())),
+    | Stmt::FunctionDecl(_) => Ok(GenEval::Complete(Completion::empty())),
+    Stmt::ClassDecl(_) => Err(VmError::Unimplemented("yield in class declaration")),
     Stmt::Expr(expr_stmt) => gen_eval_expr(evaluator, scope, &expr_stmt.stx.expr),
     Stmt::Return(ret) => {
       let Some(value_expr) = &ret.stx.value else {
