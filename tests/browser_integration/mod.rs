@@ -17,6 +17,7 @@ mod browser_mem_limit_env;
 mod browser_bookmarks_history_restore;
 mod browser_session_backup_restore;
 mod browser_session_oversized_restore;
+mod browser_startup_profile_load_failures;
 mod browser_session_restore;
 mod browser_session_unclean_restore;
 mod browser_session_multi_window_restore;
