@@ -8207,16 +8207,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               global_history.clone(),
             ));
           }
-          // Downloads are not synced via deltas across windows; merge the per-window lists so we
-          // persist a complete snapshot on shutdown.
-          let mut merged_downloads = fastrender::ui::DownloadsState::default();
-          for win in windows.values() {
-            merged_downloads
-              .downloads
-              .extend(win.app.browser_state.downloads.downloads.clone());
-          }
-          let _ =
-            tx.send(fastrender::ui::AutosaveMsg::UpdateDownloads(merged_downloads));
+          let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateDownloads(
+            global_downloads.clone(),
+          ));
         }
         autosave.shutdown_with_timeout(std::time::Duration::from_millis(500));
       } else {
@@ -8234,13 +8227,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             history_path.display()
           );
         }
-        let mut merged_downloads = fastrender::ui::DownloadsState::default();
-        for win in windows.values() {
-          merged_downloads
-            .downloads
-            .extend(win.app.browser_state.downloads.downloads.clone());
-        }
-        if let Err(err) = fastrender::ui::save_downloads_atomic(&downloads_path, &merged_downloads) {
+        if let Err(err) = fastrender::ui::save_downloads_atomic(&downloads_path, &global_downloads)
+        {
           eprintln!(
             "failed to save downloads to {}: {err}",
             downloads_path.display()
@@ -8467,6 +8455,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // and starve input/resize/OS events.
         let mut session_dirty = false;
         let mut downloads_changed_any = false;
+        // Whether the persisted downloads snapshot should be refreshed.
+        //
+        // We intentionally do *not* mark this for `DownloadProgress` to avoid writing unchanged
+        // downloads JSON to disk every few seconds during long downloads.
+        let mut downloads_persist_changed_any = false;
         let mut needs_follow_up_wake_any = false;
         // Aggregate visit deltas across drained windows so we can forward them to the profile
         // autosave worker in a single message.
@@ -8549,12 +8542,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     // Renderer-driven downloads are untrusted. Only accept new downloads for known
                     // tabs so compromised renderers can't grow memory by inventing tab ids.
                     if win.app.browser_state.tab(*tab_id).is_some() {
-                      downloads_changed_any |= global_downloads.apply_worker_msg(msg);
+                      let changed = global_downloads.apply_worker_msg(msg);
+                      downloads_changed_any |= changed;
+                      // A new in-progress download can evict old terminal downloads due to the
+                      // in-memory cap, so persist a snapshot (in-progress entries are filtered out
+                      // by `save_downloads_atomic`).
+                      downloads_persist_changed_any |= changed;
                     }
                   }
                   fastrender::ui::WorkerToUi::DownloadProgress { .. }
                   | fastrender::ui::WorkerToUi::DownloadFinished { .. } => {
-                    downloads_changed_any |= global_downloads.apply_worker_msg(msg);
+                    let changed = global_downloads.apply_worker_msg(msg);
+                    downloads_changed_any |= changed;
+                    if matches!(msg, fastrender::ui::WorkerToUi::DownloadFinished { .. }) {
+                      // Only persist terminal updates; progress updates are not persisted across
+                      // restarts.
+                      downloads_persist_changed_any |= changed;
+                    }
                   }
                   _ => {}
                 }
@@ -8690,6 +8694,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           }
 
           downloads_changed_any |= downloads_changed;
+          downloads_persist_changed_any |= downloads_changed;
 
           // Propagate history updates immediately so subsequent windows process their worker
           // messages against the latest global store (avoids lost history entries when multiple
@@ -8835,15 +8840,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           }
         }
 
-        if downloads_changed_any {
+        if downloads_persist_changed_any {
           if let Some(tx) = profile_autosave_tx.as_ref() {
-            let mut merged_downloads = fastrender::ui::DownloadsState::default();
-            for win in windows.values() {
-              merged_downloads
-                .downloads
-                .extend(win.app.browser_state.downloads.downloads.clone());
-            }
-            let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateDownloads(merged_downloads));
+            let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateDownloads(
+              global_downloads.clone(),
+            ));
           }
         }
 
@@ -8876,6 +8877,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if !(win.app.window_occluded || win.app.window_minimized) {
               win.app.window.request_redraw();
             }
+          }
+          if let Some(tx) = profile_autosave_tx.as_ref() {
+            let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateDownloads(
+              global_downloads.clone(),
+            ));
           }
           session_save_scheduler.mark_dirty(std::time::Instant::now());
         }
