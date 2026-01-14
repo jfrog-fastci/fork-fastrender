@@ -1075,12 +1075,9 @@ impl<'vm> HirEvaluator<'vm> {
         .env_initialize_binding(env, name, Value::Object(func_obj))?;
     }
 
-    // Async functions are not yet supported by the compiled/HIR executor. However, we still
+    // Async functions currently execute via the AST interpreter at call-time. However, we still
     // allocate them as compiled user functions so surrounding code can execute in the compiled
     // path and so call sites can observe `CallHandler::User`.
-    //
-    // When an async function is invoked, `Vm::call_user_function` consults this metadata and
-    // delegates execution to the AST interpreter via the cached `EcmaFunctionId`.
     if is_async && !is_generator {
       let code_id = self.vm.register_ecma_function(
         self.env.source(),
@@ -1090,7 +1087,7 @@ impl<'vm> HirEvaluator<'vm> {
       )?;
       scope
         .heap_mut()
-        .set_function_data(func_obj, FunctionData::EcmaFallback { code_id })?;
+        .set_function_data(func_obj, FunctionData::AsyncEcmaFallback { code_id })?;
     }
 
     // Arrow functions capture lexical `this`/`new.target`.
@@ -13949,8 +13946,8 @@ mod async_function_ast_fallback_tests {
 
     let func_data = rt.heap.get_function_data(func_obj)?;
     assert!(
-      matches!(func_data, FunctionData::EcmaFallback { .. }),
-      "expected async function to carry FunctionData::EcmaFallback metadata, got {func_data:?}"
+      matches!(func_data, FunctionData::AsyncEcmaFallback { .. }),
+      "expected async function to carry FunctionData::AsyncEcmaFallback metadata, got {func_data:?}"
     );
 
     // Calling the async function should execute via the AST interpreter and produce a resolved

@@ -71,6 +71,12 @@ pub(crate) enum FunctionData {
   /// When the function is invoked, the VM delegates execution to the AST interpreter using this
   /// cached [`EcmaFunctionId`].
   EcmaFallback { code_id: EcmaFunctionId },
+  /// A compiled HIR async function whose body is currently executed via the AST interpreter.
+  ///
+  /// This is intentionally distinct from [`FunctionData::EcmaFallback`] so async functions can be
+  /// represented as compiled user functions without being tagged as a generic "compiled → AST
+  /// fallback" in observable metadata/tests.
+  AsyncEcmaFallback { code_id: EcmaFunctionId },
   /// ECMAScript function object that represents the user-written `constructor(...) { ... }` body
   /// for a class definition.
   ///
@@ -403,6 +409,7 @@ impl Trace for JsFunction {
     match self.data {
       FunctionData::None => {}
       FunctionData::EcmaFallback { .. } => {}
+      FunctionData::AsyncEcmaFallback { .. } => {}
       FunctionData::ClassConstructorBody { class_constructor } => {
         tracer.trace_value(Value::Object(class_constructor));
       }
