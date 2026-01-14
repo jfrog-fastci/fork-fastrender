@@ -74,12 +74,19 @@ fn task_source_name(source: TaskSource) -> &'static str {
   }
 }
 
+<<<<<<< HEAD
 type Runnable<Host> = Box<
   dyn for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + 'static,
 >;
 type ExternalRunnable<Host> = Box<
   dyn for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + Send + 'static,
 >;
+=======
+type Runnable<Host> =
+  Box<dyn for<'a> FnOnce(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()> + 'static>;
+type ExternalRunnable<Host> =
+  Box<dyn for<'a> FnOnce(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()> + Send + 'static>;
+>>>>>>> ac5c2202c (fix: remove merge artifacts and restore build)
 
 /// Fallible `Box::new` that returns `None` on allocator OOM instead of aborting the process.
 ///
@@ -109,7 +116,11 @@ fn box_try_new<T>(value: T) -> Option<Box<T>> {
 fn try_box_runnable<Host, F>(runnable: F) -> Result<Runnable<Host>>
 where
   Host: 'static,
+<<<<<<< HEAD
   F: for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + 'static,
+=======
+  F: for<'a> FnOnce(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()> + 'static,
+>>>>>>> ac5c2202c (fix: remove merge artifacts and restore build)
 {
   let boxed: Box<F> = box_try_new(runnable).ok_or_else(|| Error::Other(String::new()))?;
   Ok(boxed as Runnable<Host>)
@@ -119,7 +130,11 @@ where
 fn try_box_external_runnable<Host, F>(runnable: F) -> Result<ExternalRunnable<Host>>
 where
   Host: 'static,
+<<<<<<< HEAD
   F: for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + Send + 'static,
+=======
+  F: for<'a> FnOnce(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()> + Send + 'static,
+>>>>>>> ac5c2202c (fix: remove merge artifacts and restore build)
 {
   let boxed: Box<F> = box_try_new(runnable).ok_or_else(|| Error::Other(String::new()))?;
   Ok(boxed as ExternalRunnable<Host>)
@@ -213,7 +228,11 @@ impl<Host: 'static> ExternalTaskQueueHandle<Host> {
   /// event loop was dropped/reset), this returns an error.
   pub fn queue_task<F>(&self, source: TaskSource, runnable: F) -> Result<()>
   where
+<<<<<<< HEAD
     F: for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + Send + 'static,
+=======
+    F: for<'a> FnOnce(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()> + Send + 'static,
+>>>>>>> ac5c2202c (fix: remove merge artifacts and restore build)
   {
     let wake = {
       let mut lock = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -255,7 +274,11 @@ pub struct Task<Host: 'static> {
 impl<Host: 'static> Task<Host> {
   pub fn new<F>(source: TaskSource, runnable: F) -> Self
   where
+<<<<<<< HEAD
     F: for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + 'static,
+=======
+    F: for<'a> FnOnce(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()> + 'static,
+>>>>>>> ac5c2202c (fix: remove merge artifacts and restore build)
   {
     Self {
       source,
@@ -266,7 +289,7 @@ impl<Host: 'static> Task<Host> {
 
   fn new_with_seq<F>(source: TaskSource, seq: u64, runnable: F) -> Self
   where
-    F: FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static,
+    F: for<'a> FnOnce(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()> + 'static,
   {
     Self {
       source,
@@ -417,6 +440,7 @@ pub(crate) struct PromiseRejectionTrackerState {
 }
 
 type TimerCallback<Host> =
+<<<<<<< HEAD
   Box<dyn for<'a, 'b> FnMut(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + 'static>;
 
 type AnimationFrameCallback<Host> =
@@ -426,6 +450,15 @@ type IdleCallback<Host> =
   Box<
     dyn for<'a, 'b> FnMut(&'a mut Host, &'b mut EventLoop<Host>, bool, f64) -> Result<()> + 'static,
   >;
+=======
+  Box<dyn for<'a> FnMut(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()> + 'static>;
+
+type AnimationFrameCallback<Host> =
+  Box<dyn for<'a> FnMut(&'a mut Host, &'a mut EventLoop<Host>, f64) -> Result<()> + 'static>;
+
+type IdleCallback<Host> =
+  Box<dyn for<'a> FnMut(&'a mut Host, &'a mut EventLoop<Host>, bool, f64) -> Result<()> + 'static>;
+>>>>>>> ac5c2202c (fix: remove merge artifacts and restore build)
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TimerKind {
@@ -909,7 +942,11 @@ impl<Host: 'static> EventLoop<Host> {
 
   pub fn queue_task<F>(&mut self, source: TaskSource, runnable: F) -> Result<()>
   where
+<<<<<<< HEAD
     F: for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + 'static,
+=======
+    F: for<'a> FnOnce(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()> + 'static,
+>>>>>>> ac5c2202c (fix: remove merge artifacts and restore build)
   {
     // If new work becomes pending, the event loop is no longer in an idle period, so discard any
     // previously computed idle deadline.
@@ -938,7 +975,11 @@ impl<Host: 'static> EventLoop<Host> {
 
   pub fn queue_microtask<F>(&mut self, runnable: F) -> Result<()>
   where
+<<<<<<< HEAD
     F: for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + 'static,
+=======
+    F: for<'a> FnOnce(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()> + 'static,
+>>>>>>> ac5c2202c (fix: remove merge artifacts and restore build)
   {
     // Microtasks indicate that the event loop is not idle, so reset any active idle period budget.
     //
@@ -973,7 +1014,11 @@ impl<Host: 'static> EventLoop<Host> {
 
   pub fn set_timeout<F>(&mut self, delay: Duration, callback: F) -> Result<TimerId>
   where
+<<<<<<< HEAD
     F: for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + 'static,
+=======
+    F: for<'a> FnOnce(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()> + 'static,
+>>>>>>> ac5c2202c (fix: remove merge artifacts and restore build)
   {
     let mut maybe = Some(callback);
     let callback: TimerCallback<Host> = box_try_new(
@@ -990,7 +1035,11 @@ impl<Host: 'static> EventLoop<Host> {
 
   pub fn set_interval<F>(&mut self, interval: Duration, callback: F) -> Result<TimerId>
   where
+<<<<<<< HEAD
     F: for<'a, 'b> FnMut(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + 'static,
+=======
+    F: for<'a> FnMut(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()> + 'static,
+>>>>>>> ac5c2202c (fix: remove merge artifacts and restore build)
   {
     let callback: TimerCallback<Host> =
       box_try_new(callback).ok_or_else(|| Error::Other(String::new()))?;
@@ -1422,7 +1471,7 @@ impl<Host: 'static> EventLoop<Host> {
     &mut self,
     host: &mut Host,
     limits: RunLimits,
-    mut hook: impl FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()>,
+    mut hook: impl for<'a> FnMut(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()>,
   ) -> Result<RunUntilIdleOutcome> {
     let previous_stage = render_control::active_stage();
     let _stage_guard = StageGuard::install(previous_stage.or(Some(RenderStage::Script)));
@@ -1494,7 +1543,7 @@ impl<Host: 'static> EventLoop<Host> {
   ) -> Result<RunUntilIdleOutcome>
   where
     OnError: FnMut(Error),
-    Hook: FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()>,
+    Hook: for<'a> FnMut(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()>,
   {
     let previous_stage = render_control::active_stage();
     let _stage_guard = StageGuard::install(previous_stage.or(Some(RenderStage::Script)));
@@ -1552,7 +1601,7 @@ impl<Host: 'static> EventLoop<Host> {
     &mut self,
     host: &mut Host,
     run_state: &mut RunState,
-    hook: &mut impl FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()>,
+    hook: &mut impl for<'a> FnMut(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()>,
   ) -> RunStepResult<RunUntilIdleOutcome> {
     loop {
       run_state.check_deadline()?;
@@ -1629,7 +1678,7 @@ impl<Host: 'static> EventLoop<Host> {
   ) -> RunStepResult<RunUntilIdleOutcome>
   where
     OnError: FnMut(Error),
-    Hook: FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()>,
+    Hook: for<'a> FnMut(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()>,
   {
     loop {
       run_state.check_deadline()?;

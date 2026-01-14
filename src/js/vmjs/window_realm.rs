@@ -41557,16 +41557,25 @@ fn html_media_element_seeking_get_native(
 fn html_media_element_load_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
+<<<<<<< HEAD
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
+=======
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+>>>>>>> ac5c2202c (fix: remove merge artifacts and restore build)
   _callee: GcObject,
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
+<<<<<<< HEAD
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError("Illegal invocation"));
   };
   let key = dom_platform_mut(vm)
+=======
+  let _ = dom_platform_mut(vm)
+>>>>>>> ac5c2202c (fix: remove merge artifacts and restore build)
     .ok_or(VmError::TypeError("Illegal invocation"))?
     .require_html_media_element_handle(scope.heap(), this)?;
   html_media_element_ensure_loaded(vm, scope, host, hooks, obj, key)?;

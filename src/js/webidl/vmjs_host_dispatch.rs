@@ -9022,7 +9022,11 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
               (old_parents, fragments, adopt_roots)
             }))
+<<<<<<< HEAD
           })?;
+=======
+        })?;
+>>>>>>> ac5c2202c (fix: remove merge artifacts and restore build)
 
         // Snapshot subtree mappings for adoption. Apply wrapper remaps only after the DOM mutation
         // succeeds so failed `replaceWith` calls don't corrupt wrapper identity / `ownerDocument`.
