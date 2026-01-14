@@ -2652,6 +2652,10 @@ fn subgrid_tracks_transpose_when_writing_mode_differs() {
   subgrid_style.grid_column_end = 3;
   // Flip writing mode to ensure axes come from the parent grid, not the subgrid's own mode.
   subgrid_style.writing_mode = WritingMode::VerticalRl;
+  // Avoid `justify/align-content: normal` distributing free space into tracks, which would make the
+  // observed inherited offsets depend on the available size rather than just (track + gap).
+  subgrid_style.justify_content = JustifyContent::Start;
+  subgrid_style.align_content = AlignContent::Start;
 
   let mut first_child = ComputedStyle::default();
   first_child.display = Display::Block;
@@ -3870,6 +3874,8 @@ fn column_subgrid_inherits_gap_in_vertical_parent() {
   subgrid_style.grid_column_subgrid = true;
   subgrid_style.grid_column_start = 1;
   subgrid_style.grid_column_end = 3;
+  subgrid_style.justify_content = JustifyContent::Start;
+  subgrid_style.align_content = AlignContent::Start;
 
   let mut child1_style = ComputedStyle::default();
   child1_style.display = Display::Block;
@@ -4275,6 +4281,8 @@ fn subgrid_inherits_area_lines_when_axes_differ() {
   subgrid_style.grid_column_start = 1;
   subgrid_style.grid_column_end = 3;
   subgrid_style.writing_mode = WritingMode::HorizontalTb;
+  subgrid_style.justify_content = JustifyContent::Start;
+  subgrid_style.align_content = AlignContent::Start;
 
   let mut nav_child = ComputedStyle::default();
   nav_child.display = Display::Block;
