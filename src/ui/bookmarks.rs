@@ -665,7 +665,7 @@ impl BookmarkStore {
     } else {
       Cow::Borrowed(query)
     };
-    let mut tokens_iter = query_lower.split_whitespace().filter(|t| !t.is_empty());
+    let mut tokens_iter = query_lower.split_whitespace();
     let Some(first_token) = tokens_iter.next() else {
       return Vec::new();
     };
