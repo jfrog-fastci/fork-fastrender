@@ -426,6 +426,33 @@ fn with_statement_in_strict_mode_is_syntax_error() {
 }
 
 #[test]
+fn duplicate_function_decl_in_strict_block_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#""use strict"; { function f(){} function f(){} }"#)
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn duplicate_async_function_decl_in_sloppy_block_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#"{ async function f(){} async function f(){} }"#)
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn duplicate_generator_function_decl_in_sloppy_block_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#"{ function* f(){} function* f(){} }"#)
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn duplicate_parameter_names_in_strict_mode_are_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
