@@ -37,7 +37,8 @@ pub enum VideoSyncAction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AvSyncConfig {
-  /// How much "ahead" of `master_time` we still consider acceptable to present immediately.
+  /// In-sync window: if `|frame_pts - master_time| <= tolerance`, treat the frame as in-sync and
+  /// present it.
   pub tolerance: Duration,
   /// If a frame is this far behind the master clock, it is dropped.
   pub max_late: Duration,
@@ -196,29 +197,29 @@ pub fn suggest_wake_after(
 /// logic.
 #[must_use]
 pub fn decide(master_time: Duration, frame_pts: Duration, cfg: &AvSyncConfig) -> VideoSyncAction {
-  // Too-late threshold: `master_time - max_late` (saturating to `0` to avoid underflow).
-  let drop_before = master_time.saturating_sub(cfg.max_late);
-  if frame_pts < drop_before {
-    return VideoSyncAction::Drop;
+  if frame_pts >= master_time {
+    // Early / on-time.
+    let early_by = frame_pts.saturating_sub(master_time);
+    if early_by <= cfg.tolerance {
+      VideoSyncAction::PresentNow
+    } else if early_by > cfg.max_early {
+      VideoSyncAction::WaitUntil(early_by)
+    } else {
+      // Slightly early: present rather than holding to avoid excessive jitter/holding.
+      VideoSyncAction::PresentNow
+    }
+  } else {
+    // Late.
+    let late_by = master_time.saturating_sub(frame_pts);
+    if late_by <= cfg.tolerance {
+      VideoSyncAction::PresentNow
+    } else if late_by > cfg.max_late {
+      VideoSyncAction::Drop
+    } else {
+      // Slightly late: present so we can catch up without dropping.
+      VideoSyncAction::PresentNow
+    }
   }
-
-  // Present-now threshold: `master_time + tolerance` (saturating to avoid overflow).
-  let present_until = master_time.saturating_add(cfg.tolerance);
-  if frame_pts <= present_until {
-    return VideoSyncAction::PresentNow;
-  }
-
-  // Frame is early; compute the wait time using saturating arithmetic so jitter never causes a
-  // negative duration.
-  let wait = frame_pts.saturating_sub(master_time);
-
-  // If the frame is very early (beyond `max_early`), the scheduler should definitely wait.
-  // For slightly-early frames (beyond `tolerance`), we also wait until `frame_pts`.
-  let wait_threshold = master_time.saturating_add(cfg.max_early);
-  if frame_pts > wait_threshold {
-    return VideoSyncAction::WaitUntil(wait);
-  }
-  VideoSyncAction::WaitUntil(wait)
 }
 
 #[cfg(test)]
@@ -332,15 +333,27 @@ mod tests {
       VideoSyncAction::PresentNow
     );
 
-    // Just outside tolerance: should wait.
+    // Just outside tolerance, but below max_early: present.
     assert_eq!(
       decide(master, master + cfg.tolerance + Duration::from_nanos(1), &cfg),
-      VideoSyncAction::WaitUntil(cfg.tolerance + Duration::from_nanos(1))
+      VideoSyncAction::PresentNow
+    );
+
+    // Exactly at max_early: still present (hold is strictly greater-than).
+    assert_eq!(
+      decide(master, master + cfg.max_early, &cfg),
+      VideoSyncAction::PresentNow
+    );
+
+    // Beyond max_early: hold until the target PTS.
+    assert_eq!(
+      decide(master, master + cfg.max_early + Duration::from_nanos(1), &cfg),
+      VideoSyncAction::WaitUntil(cfg.max_early + Duration::from_nanos(1))
     );
   }
 
   #[test]
-  fn waits_for_early_frames() {
+  fn holds_only_when_frame_is_very_early() {
     let cfg = AvSyncConfig {
       tolerance: Duration::from_millis(5),
       max_late: Duration::from_millis(50),
@@ -353,7 +366,7 @@ mod tests {
     let pts = master + Duration::from_millis(10);
     assert_eq!(
       decide(master, pts, &cfg),
-      VideoSyncAction::WaitUntil(Duration::from_millis(10))
+      VideoSyncAction::PresentNow
     );
 
     // Beyond max_early also waits (same WaitUntil value).
