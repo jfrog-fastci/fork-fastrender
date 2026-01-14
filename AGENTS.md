@@ -214,6 +214,18 @@ git submodule foreach --recursive 'git reset --hard'
 
 After cleanup, `git status --porcelain` should be clean (or only show your intended diffs).
 
+To proactively catch accidental filemode-only diffs before committing, you can run:
+
+```bash
+bash scripts/check_no_filemode_only_changes.sh
+```
+
+If your environment frequently flips the executable bit, consider setting (local-only):
+
+```bash
+git config core.filemode false
+```
+
 ## Regression philosophy (required)
 
 Live pages motivate fixes, but regressions keep them fixed:
