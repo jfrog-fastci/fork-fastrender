@@ -588,14 +588,15 @@ fn build_omnibox_suggestions_with_provider_iter_at_time<'a>(
         }
       }
 
-      let primary_raw = suggestion_primary_key_raw(&suggestion);
+      let (primary_kind, primary_raw) = suggestion_dedup_key_raw(&suggestion);
 
-      // De-dupe by primary key (case-insensitive), matching the previous behaviour of using
-      // `to_ascii_lowercase` keys.
-      if let Some(existing_idx) = selected
-        .iter()
-        .position(|s| primary_raw.eq_ignore_ascii_case(suggestion_primary_key_raw(&s.suggestion)))
-      {
+      // De-dupe by kind + primary key (case-insensitive). This preserves the existing URL/query
+      // de-duping semantics, but avoids collisions between different actions that happen to share
+      // the same text.
+      if let Some(existing_idx) = selected.iter().position(|s| {
+        let (existing_kind, existing_raw) = suggestion_dedup_key_raw(&s.suggestion);
+        primary_kind == existing_kind && primary_raw.eq_ignore_ascii_case(existing_raw)
+      }) {
         if score < selected[existing_idx].score {
           continue;
         }
@@ -1017,12 +1018,19 @@ fn suggestion_source_rank(source: OmniboxSuggestionSource) -> i64 {
   }
 }
 
-fn suggestion_primary_key_raw(s: &OmniboxSuggestion) -> &str {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SuggestionDedupKind {
+  Url,
+  Search,
+}
+
+fn suggestion_dedup_key_raw(s: &OmniboxSuggestion) -> (SuggestionDedupKind, &str) {
   match &s.action {
-    OmniboxAction::ActivateTab(_) | OmniboxAction::NavigateToUrl => {
-      s.url.as_deref().unwrap_or_default()
-    }
-    OmniboxAction::Search(query) => query.as_str(),
+    OmniboxAction::ActivateTab(_) | OmniboxAction::NavigateToUrl => (
+      SuggestionDedupKind::Url,
+      s.url.as_deref().unwrap_or_default(),
+    ),
+    OmniboxAction::Search(query) => (SuggestionDedupKind::Search, query.as_str()),
   }
 }
 
@@ -1550,6 +1558,141 @@ mod tests {
       }),
       "expected about:newtab suggestion, got {suggestions:?}"
     );
+  }
+
+  #[test]
+  fn urls_differing_only_in_case_are_deduped() {
+    struct Provider;
+    impl OmniboxProvider for Provider {
+      fn suggestions(&self, _ctx: &OmniboxContext<'_>, _input: &str) -> Vec<OmniboxSuggestion> {
+        vec![
+          OmniboxSuggestion {
+            action: OmniboxAction::NavigateToUrl,
+            title: None,
+            url: Some("https://EXAMPLE.com/Path".to_string()),
+            source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
+          },
+          OmniboxSuggestion {
+            action: OmniboxAction::NavigateToUrl,
+            title: None,
+            url: Some("https://example.COM/path".to_string()),
+            source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
+          },
+        ]
+      }
+    }
+
+    let open_tabs = Vec::new();
+    let closed_tabs = Vec::new();
+    let visited = VisitedUrlStore::new();
+    let ctx = OmniboxContext {
+      open_tabs: &open_tabs,
+      closed_tabs: &closed_tabs,
+      visited: &visited,
+      active_tab_id: None,
+      bookmarks: None,
+      remote_search_suggest: None,
+    };
+
+    let suggestions =
+      build_omnibox_suggestions_with_providers(&ctx, "example", 10, vec![Box::new(Provider)]);
+    assert_eq!(
+      suggestions.len(),
+      1,
+      "expected case-insensitive URL dedup; got {suggestions:?}"
+    );
+  }
+
+  #[test]
+  fn search_queries_differing_only_in_case_are_deduped() {
+    struct Provider;
+    impl OmniboxProvider for Provider {
+      fn suggestions(&self, _ctx: &OmniboxContext<'_>, _input: &str) -> Vec<OmniboxSuggestion> {
+        vec![
+          OmniboxSuggestion {
+            action: OmniboxAction::Search("Cats".to_string()),
+            title: None,
+            url: None,
+            source: OmniboxSuggestionSource::Search(OmniboxSearchSource::RemoteSuggest),
+          },
+          OmniboxSuggestion {
+            action: OmniboxAction::Search("cats".to_string()),
+            title: None,
+            url: None,
+            source: OmniboxSuggestionSource::Search(OmniboxSearchSource::RemoteSuggest),
+          },
+        ]
+      }
+    }
+
+    let open_tabs = Vec::new();
+    let closed_tabs = Vec::new();
+    let visited = VisitedUrlStore::new();
+    let ctx = OmniboxContext {
+      open_tabs: &open_tabs,
+      closed_tabs: &closed_tabs,
+      visited: &visited,
+      active_tab_id: None,
+      bookmarks: None,
+      remote_search_suggest: None,
+    };
+
+    let suggestions =
+      build_omnibox_suggestions_with_providers(&ctx, "cats", 10, vec![Box::new(Provider)]);
+    assert_eq!(
+      suggestions.len(),
+      1,
+      "expected case-insensitive search dedup; got {suggestions:?}"
+    );
+  }
+
+  #[test]
+  fn url_and_search_with_same_text_do_not_dedup() {
+    struct Provider;
+    impl OmniboxProvider for Provider {
+      fn suggestions(&self, _ctx: &OmniboxContext<'_>, _input: &str) -> Vec<OmniboxSuggestion> {
+        vec![
+          OmniboxSuggestion {
+            action: OmniboxAction::NavigateToUrl,
+            title: None,
+            url: Some("example".to_string()),
+            source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
+          },
+          OmniboxSuggestion {
+            action: OmniboxAction::Search("example".to_string()),
+            title: None,
+            url: None,
+            source: OmniboxSuggestionSource::Search(OmniboxSearchSource::RemoteSuggest),
+          },
+        ]
+      }
+    }
+
+    let open_tabs = Vec::new();
+    let closed_tabs = Vec::new();
+    let visited = VisitedUrlStore::new();
+    let ctx = OmniboxContext {
+      open_tabs: &open_tabs,
+      closed_tabs: &closed_tabs,
+      visited: &visited,
+      active_tab_id: None,
+      bookmarks: None,
+      remote_search_suggest: None,
+    };
+
+    let suggestions =
+      build_omnibox_suggestions_with_providers(&ctx, "example", 10, vec![Box::new(Provider)]);
+    assert_eq!(
+      suggestions.len(),
+      2,
+      "expected URL and Search suggestions to not dedup across actions; got {suggestions:?}"
+    );
+    assert!(suggestions
+      .iter()
+      .any(|s| matches!(s.action, OmniboxAction::NavigateToUrl)));
+    assert!(suggestions
+      .iter()
+      .any(|s| matches!(s.action, OmniboxAction::Search(_))));
   }
 
   #[test]
