@@ -963,7 +963,11 @@ fn try_clone_module_request(vm: &mut Vm, value: &ModuleRequest) -> Result<Module
     }
     attributes.push(try_clone_import_attribute(vm, attr)?);
   }
-  Ok(ModuleRequest::new(
+  // `ModuleRequest`s stored by the VM are canonicalized (attribute list sorting), so cloning an
+  // existing request preserves canonical ordering. Avoid re-sorting here: an infallible
+  // `sort_unstable_by` would be uninterruptible and could bypass fuel/deadline/interrupt budgets for
+  // large attribute lists.
+  Ok(ModuleRequest::new_with_canonicalized_attributes(
     try_clone_js_string(vm, &value.specifier)?,
     attributes,
   ))

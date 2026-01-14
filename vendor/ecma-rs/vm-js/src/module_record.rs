@@ -2748,7 +2748,9 @@ fn clone_module_request(
   }
 
   let specifier = crate::JsString::from_code_units(req.specifier.as_code_units())?;
-  Ok(ModuleRequest::new(specifier, attrs))
+  // `req` was created via `ModuleRequest::try_new`, so its attributes are already canonicalized.
+  // Preserve that ordering while cloning to avoid an additional uninterruptible sort.
+  Ok(ModuleRequest::new_with_canonicalized_attributes(specifier, attrs))
 }
 
 fn syntax_error(loc: parse_js::loc::Loc, message: &str) -> VmError {
