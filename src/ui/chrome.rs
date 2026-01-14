@@ -296,6 +296,36 @@ impl FindInPageMatchLabelCache {
 }
 
 #[derive(Debug, Clone, Default)]
+struct ZoomUiLabelCache {
+  percent: u32,
+  reset_label: String,
+  button_label: String,
+}
+
+impl ZoomUiLabelCache {
+  fn update(&mut self, percent: u32) {
+    if self.percent == percent && !self.reset_label.is_empty() && !self.button_label.is_empty() {
+      return;
+    }
+
+    // Reserve enough space for typical `Zoom: 123% (reset)` strings.
+    if self.reset_label.capacity() < 32 {
+      self.reset_label.reserve(32 - self.reset_label.capacity());
+    }
+    self.reset_label.clear();
+    let _ = write!(&mut self.reset_label, "Zoom: {percent}% (reset)");
+
+    if self.button_label.capacity() < 8 {
+      self.button_label.reserve(8 - self.button_label.capacity());
+    }
+    self.button_label.clear();
+    let _ = write!(&mut self.button_label, "{percent}%");
+
+    self.percent = percent;
+  }
+}
+
+#[derive(Debug, Clone, Default)]
 struct DownloadsUiLabelCache {
   hover_active_count: usize,
   hover_received_bytes: u64,
@@ -1683,8 +1713,15 @@ pub fn chrome_ui_with_bookmarks(
       if is_compact {
         if zoom_non_default {
           let percent = zoom::zoom_percent(zoom_factor);
-          let reset_zoom_label = format!("Zoom: {percent}% (reset)");
-          let reset_btn = egui::Button::new(format!("{percent}%")).min_size(egui::vec2(
+          let zoom_label_cache_id = ui.make_persistent_id("zoom_label_cache");
+          let mut zoom_label_cache: ZoomUiLabelCache = ctx.data_mut(|d| {
+            std::mem::take(d.get_temp_mut_or_default::<ZoomUiLabelCache>(zoom_label_cache_id))
+          });
+          zoom_label_cache.update(percent);
+          let reset_zoom_label = zoom_label_cache.reset_label.as_str();
+          let reset_btn_label = zoom_label_cache.button_label.as_str();
+
+          let reset_btn = egui::Button::new(reset_btn_label).min_size(egui::vec2(
             MIN_CHROME_HIT_TARGET_POINTS,
             MIN_CHROME_HIT_TARGET_POINTS,
           ));
@@ -1694,14 +1731,16 @@ pub fn chrome_ui_with_bookmarks(
           show_tooltip_on_hover_or_focus(ui, &reset_zoom_response, "Reset zoom (Ctrl/Cmd+0)");
           paint_focus_ring(ui, &reset_zoom_response, focus_ring);
           reset_zoom_response.widget_info({
-            let reset_zoom_label = reset_zoom_label.clone();
-            move || egui::WidgetInfo::labeled(egui::WidgetType::Button, reset_zoom_label.clone())
+            let label = reset_zoom_label;
+            move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
           });
           if reset_zoom_response.clicked() {
             if let Some(tab) = app.active_tab_mut() {
               tab.zoom = zoom::zoom_reset();
             }
           }
+
+          ctx.data_mut(|d| d.insert_temp(zoom_label_cache_id, zoom_label_cache));
         }
       } else {
         let response = icon_button(ui, BrowserIcon::ZoomOut, "Zoom out (Ctrl/Cmd+-)", true);
@@ -1713,18 +1752,21 @@ pub fn chrome_ui_with_bookmarks(
           }
         }
         let percent = zoom::zoom_percent(zoom_factor);
-        let (reset_zoom_label, reset_btn_label) = if zoom_non_default {
-          (
-            std::borrow::Cow::Owned(format!("Zoom: {percent}% (reset)")),
-            std::borrow::Cow::Owned(format!("{percent}%")),
-          )
+        let zoom_label_cache_id = ui.make_persistent_id("zoom_label_cache");
+        let mut zoom_label_cache = if zoom_non_default {
+          Some(ctx.data_mut(|d| {
+            std::mem::take(d.get_temp_mut_or_default::<ZoomUiLabelCache>(zoom_label_cache_id))
+          }))
         } else {
-          (
-            std::borrow::Cow::Borrowed("Zoom: 100% (reset)"),
-            std::borrow::Cow::Borrowed("100%"),
-          )
+          None
         };
-        let reset_btn = egui::Button::new(reset_btn_label.as_ref()).min_size(egui::vec2(
+        let (reset_zoom_label, reset_btn_label) = if let Some(cache) = zoom_label_cache.as_mut() {
+          cache.update(percent);
+          (cache.reset_label.as_str(), cache.button_label.as_str())
+        } else {
+          ("Zoom: 100% (reset)", "100%")
+        };
+        let reset_btn = egui::Button::new(reset_btn_label).min_size(egui::vec2(
           MIN_CHROME_HIT_TARGET_POINTS,
           MIN_CHROME_HIT_TARGET_POINTS,
         ));
@@ -1734,13 +1776,16 @@ pub fn chrome_ui_with_bookmarks(
         show_tooltip_on_hover_or_focus(ui, &reset_zoom_response, "Reset zoom (Ctrl/Cmd+0)");
         paint_focus_ring(ui, &reset_zoom_response, focus_ring);
         reset_zoom_response.widget_info({
-          let label = reset_zoom_label.as_ref();
+          let label = reset_zoom_label;
           move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
         });
         if reset_zoom_response.clicked() {
           if let Some(tab) = app.active_tab_mut() {
             tab.zoom = zoom::zoom_reset();
           }
+        }
+        if let Some(cache) = zoom_label_cache {
+          ctx.data_mut(|d| d.insert_temp(zoom_label_cache_id, cache));
         }
         let response = icon_button(ui, BrowserIcon::ZoomIn, "Zoom in (Ctrl/Cmd++)", true);
         #[cfg(test)]
@@ -3110,8 +3155,8 @@ pub fn chrome_ui_with_bookmarks(
             );
             popup_focus_ids.push(toggle_bookmark.id);
             toggle_bookmark.widget_info({
-              let label = toggle_bookmark_label.to_string();
-              move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+              let label = toggle_bookmark_label;
+              move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
             });
             if menu_opened_now && !active_url_trim.is_empty() {
               toggle_bookmark.request_focus();
@@ -4178,8 +4223,8 @@ pub fn chrome_ui_with_bookmarks(
             let pin_button = ui.button(if is_pinned { "Unpin Tab" } else { "Pin Tab" });
             popup_focus_ids.push(pin_button.id);
             pin_button.widget_info({
-              let label = pin_label.to_string();
-              move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+              let label = pin_label;
+              move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label)
             });
             if pin_button.clicked() {
               actions.push(ChromeAction::TogglePinTab(tab_id));
@@ -4214,7 +4259,9 @@ pub fn chrome_ui_with_bookmarks(
                         popup_focus_ids.push(move_to_group.id);
                         move_to_group.widget_info({
                           let label = format!("Move to group: {title}");
-                          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+                          move || {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Button, label.as_str())
+                          }
                         });
                         if move_to_group.clicked() {
                           app.add_tab_to_group(tab_id, *group_id);
@@ -4254,7 +4301,7 @@ pub fn chrome_ui_with_bookmarks(
                         popup_focus_ids.push(add_to_group.id);
                         add_to_group.widget_info({
                           let label = format!("Add to group: {title}");
-                          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+                          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.as_str())
                         });
                         if add_to_group.clicked() {
                           app.add_tab_to_group(tab_id, *group_id);
