@@ -16150,32 +16150,6 @@ impl HirAsyncState {
                 other => return Err(other),
               }
             }
-            // Explicit Resource Management: `using` / `await using` declarations must throw a
-            // TypeError if the initializer value is not an object, `null`, or `undefined`.
-            if matches!(
-              var_decl.kind,
-              hir_js::VarDeclKind::Using | hir_js::VarDeclKind::AwaitUsing
-            ) {
-              match resumed_value {
-                Value::Null | Value::Undefined | Value::Object(_) => {}
-                _ => {
-                  let err = finalize_throw_with_stack_at_source_offset(
-                    &*evaluator.vm,
-                    scope,
-                    evaluator.script.source.as_ref(),
-                    stmt_offset,
-                    VmError::TypeError("Using declaration initializer must be an object"),
-                  );
-                  match err {
-                    VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
-                      return Ok(HirAsyncResult::CompleteThrow(value))
-                    }
-                    other => return Err(other),
-                  }
-                }
-              }
-            }
-
             // Explicit Resource Management: `using` and `await using` initializers must be objects,
             // `null`, or `undefined` (mirror `HirEvaluator::eval_var_decl`).
             if matches!(
