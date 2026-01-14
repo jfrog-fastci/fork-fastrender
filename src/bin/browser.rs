@@ -10341,8 +10341,11 @@ fn run_headless_smoke_mode(
   };
   let wants_scroll_persist = scroll_to_y_css.is_some();
 
-  let (pixmap_w, pixmap_h, viewport_css, dpr) =
-    if fastrender::ui::about_pages::is_about_url(&active_url) && !wants_scroll_persist {
+  let (pixmap_w, pixmap_h, viewport_css, dpr) = if fastrender::ui::about_pages::is_about_url(
+    &active_url,
+  ) && !wants_scroll_persist
+    && (perf_log_writer.is_none() || worker_disabled)
+  {
       // Trusted about: rendering: do not spawn the renderer worker and do not send any navigation
       // messages. This keeps bookmarks/history data in the browser process.
       let mut renderer = fastrender::FastRender::new()?;
@@ -10433,6 +10436,22 @@ fn run_headless_smoke_mode(
       let mut last_frame_meta: Option<(u32, u32, (u32, u32), f32)> = None;
       let mut frames_seen: u32 = 0;
 
+      let mut maybe_log_stage = |tab_id: TabId, stage: fastrender::render_control::StageHeartbeat| {
+        if let Some(writer) = perf_log_writer.as_ref() {
+          if let Ok(mut writer) = writer.try_borrow_mut() {
+            let event = perf_log::PerfEvent::Stage {
+              schema_version: perf_log::SCHEMA_VERSION,
+              t_ms: writer.ms_since_start(Instant::now()),
+              window_id: "headless".into(),
+              tab_id: tab_id.0,
+              stage: stage.as_str().into(),
+              hotspot: stage.hotspot().into(),
+            };
+            writer.emit(&event);
+          }
+        }
+      };
+
       match renderer_watchdog_timeout {
         Some(timeout) => {
           let deadline = Instant::now() + timeout;
@@ -10453,6 +10472,9 @@ fn run_headless_smoke_mode(
                   smoke_summary = last_frame_meta;
                   break;
                 }
+              }
+              Ok(WorkerToUi::Stage { tab_id, stage }) => {
+                maybe_log_stage(tab_id, stage);
               }
               Ok(_) => {}
               Err(RecvTimeoutError::Timeout) => break,
@@ -10478,6 +10500,9 @@ fn run_headless_smoke_mode(
                 smoke_summary = last_frame_meta;
                 break;
               }
+            }
+            Ok(WorkerToUi::Stage { tab_id, stage }) => {
+              maybe_log_stage(tab_id, stage);
             }
             Ok(_) => {}
             Err(_) => {
@@ -10557,6 +10582,9 @@ fn run_headless_smoke_mode(
             if (pos_css.1 - scroll_to_y_css).abs() <= 2.0 {
               observed_scroll = Some(pos_css);
             }
+          }
+          WorkerToUi::Stage { tab_id, stage } => {
+            maybe_log_stage(tab_id, stage);
           }
           _ => {}
         };
