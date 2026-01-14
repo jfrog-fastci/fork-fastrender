@@ -17024,6 +17024,7 @@ pub(crate) enum AsyncFrame {
     members: *const Vec<Node<ClassMember>>,
     binding_name: Option<*const str>,
     func_name: *const str,
+    inferred_name: Option<RootedPropertyKey>,
   },
 
   /// Continue class evaluation after evaluating a computed member key.
@@ -18649,6 +18650,11 @@ fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
     }
     AsyncFrame::TryAfterFinally { pending } => pending.teardown(heap),
     AsyncFrame::ComputedMemberAfterMember { base_root, .. } => heap.remove_root(*base_root),
+    AsyncFrame::ClassAfterHeritage { inferred_name, .. } => {
+      if let Some(key) = inferred_name.take() {
+        heap.remove_root(key.root);
+      }
+    }
     AsyncFrame::ClassAfterComputedKey { func_root, .. } => heap.remove_root(*func_root),
     AsyncFrame::ClassAfterStaticBlock {
       func_root,
@@ -22359,6 +22365,12 @@ fn async_eval_var_decl(
 
     match async_eval_expr(evaluator, scope, init) {
       Ok(AsyncEval::Complete(v)) => {
+        if let Pat::Id(id) = &*declarator.pattern.stx.pat.stx {
+          if is_anonymous_function_definition(init) {
+            maybe_set_anonymous_function_name(scope, v, id.stx.name.as_str())
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))?;
+          }
+        }
         match async_bind_var_declarator_value(evaluator, scope, decl, idx, v)? {
           AsyncEval::Complete(()) => {}
           AsyncEval::Suspend(mut suspend) => {
@@ -23366,6 +23378,7 @@ fn async_eval_class_decl(
     scope,
     inner_binding,
     func_name,
+    None,
     &decl.stx.members,
     decl.stx.extends.as_ref(),
   );
@@ -23440,6 +23453,42 @@ fn async_eval_class_expr_inferred_name(
     scope,
     ClassBinding::None,
     inferred_func_name,
+    None,
+    &expr.stx.members,
+    expr.stx.extends.as_ref(),
+  )
+}
+
+fn async_eval_class_expr_named(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &Node<ClassExpr>,
+  inferred_name: PropertyKey,
+) -> Result<AsyncEval<Value>, VmError> {
+  // Only apply inferred names to *anonymous* class expressions. If the class has an explicit name,
+  // that name must be used both as the constructor name and as the inner binding identifier.
+  if expr.stx.name.is_some() {
+    return async_eval_class_expr(evaluator, scope, expr);
+  }
+
+  if !expr.stx.decorators.is_empty() {
+    return Err(VmError::Unimplemented("class decorators"));
+  }
+  if expr.stx.type_parameters.is_some() {
+    return Err(VmError::Unimplemented("class type parameters"));
+  }
+  if !expr.stx.implements.is_empty() {
+    return Err(VmError::Unimplemented("class implements"));
+  }
+
+  let inferred_name = async_root_property_key(scope, inferred_name)?;
+
+  async_eval_class(
+    evaluator,
+    scope,
+    ClassBinding::None,
+    "",
+    Some(inferred_name),
     &expr.stx.members,
     expr.stx.extends.as_ref(),
   )
@@ -23469,6 +23518,7 @@ fn async_eval_class_expr(
         scope,
         ClassBinding::None,
         "",
+        None,
         &expr.stx.members,
         expr.stx.extends.as_ref(),
       );
@@ -23481,6 +23531,7 @@ fn async_eval_class_expr(
       scope,
       ClassBinding::Immutable(name.stx.name.as_str()),
       name.stx.name.as_str(),
+      None,
       &expr.stx.members,
       expr.stx.extends.as_ref(),
     )
@@ -23514,6 +23565,7 @@ fn async_eval_class(
   scope: &mut Scope<'_>,
   binding: ClassBinding<'_>,
   func_name: &str,
+  inferred_name: Option<RootedPropertyKey>,
   members: &Vec<Node<ClassMember>>,
   extends: Option<&Node<Expr>>,
 ) -> Result<AsyncEval<Value>, VmError> {
@@ -23527,6 +23579,38 @@ fn async_eval_class(
   // evaluation, restoring it afterwards (including across `await` suspensions).
   let saved_strict = evaluator.strict;
   evaluator.strict = true;
+
+  // Keep the inferred-name key alive across any fallible work during class evaluation. The key is
+  // rooted in the heap root table so it can survive `await` suspensions in the `extends` clause.
+  //
+  // If we successfully suspend, the root is moved into `AsyncFrame::ClassAfterHeritage`. If we
+  // complete class construction, the root is passed down to `async_eval_class_after_super` which
+  // consumes and removes it. For all other exit paths, this guard ensures the root is removed so we
+  // don't leak.
+  struct InferredNameRootGuard {
+    heap: *mut Heap,
+    key: Option<RootedPropertyKey>,
+  }
+  impl InferredNameRootGuard {
+    fn take(&mut self) -> Option<RootedPropertyKey> {
+      self.key.take()
+    }
+  }
+  impl Drop for InferredNameRootGuard {
+    fn drop(&mut self) {
+      // Safety: `async_eval_class` does not move the heap while this guard is alive.
+      unsafe {
+        if let Some(key) = self.key.take() {
+          (&mut *self.heap).remove_root(key.root);
+        }
+      }
+    }
+  }
+  let heap_ptr = scope.heap_mut() as *mut Heap;
+  let mut inferred_name_guard = InferredNameRootGuard {
+    heap: heap_ptr,
+    key: inferred_name,
+  };
 
   let result = (|| {
     let class_env = evaluator.env.lexical_env;
@@ -23609,27 +23693,36 @@ fn async_eval_class(
             ClassBinding::Immutable(name) => Some(name as *const str),
           };
 
-          let push_res = async_frames_push(
-            &mut suspend.frames,
-            AsyncFrame::ClassAfterHeritage {
-              members: members as *const Vec<Node<ClassMember>>,
-              binding_name,
-              func_name: func_name as *const str,
-            },
-          );
-          if let Err(err) = push_res {
+          // Reserve space for the continuation frame before moving any rooted values into it (so we
+          // can clean up those roots if the reservation fails).
+          if let Err(_) = suspend.frames.try_reserve(1) {
             // Best-effort cleanup: tear down any rooted frames so we don't leak GC roots on OOM.
             for mut frame in suspend.frames {
               async_teardown_frame(scope.heap_mut(), &mut frame);
             }
-            return Err(err);
+            return Err(VmError::OutOfMemory);
           }
+
+          suspend.frames.push_back(AsyncFrame::ClassAfterHeritage {
+            members: members as *const Vec<Node<ClassMember>>,
+            binding_name,
+            func_name: func_name as *const str,
+            inferred_name: inferred_name_guard.take(),
+          });
           return Ok(AsyncEval::Suspend(suspend));
         }
       },
     };
 
-    async_eval_class_after_super(evaluator, scope, binding, func_name, members, super_value)
+    async_eval_class_after_super(
+      evaluator,
+      scope,
+      binding,
+      func_name,
+      inferred_name_guard.take(),
+      members,
+      super_value,
+    )
   })();
 
   match result {
@@ -23695,14 +23788,43 @@ fn async_eval_class_after_super(
   scope: &mut Scope<'_>,
   binding: ClassBinding<'_>,
   func_name: &str,
+  inferred_name: Option<RootedPropertyKey>,
   members: &Vec<Node<ClassMember>>,
   super_value: Value,
 ) -> Result<AsyncEval<Value>, VmError> {
   let class_env = evaluator.env.lexical_env;
 
+  let mut class_scope = scope.reborrow();
+
+  // Keep the inferred-name key alive across any fallible work during class construction, and ensure
+  // it is eventually removed from the heap root table on all exit paths.
+  struct InferredNameRootGuard {
+    heap: *mut Heap,
+    key: Option<RootedPropertyKey>,
+  }
+  impl InferredNameRootGuard {
+    fn take(&mut self) -> Option<RootedPropertyKey> {
+      self.key.take()
+    }
+  }
+  impl Drop for InferredNameRootGuard {
+    fn drop(&mut self) {
+      // Safety: `async_eval_class_after_super` does not move the heap while this guard is alive.
+      unsafe {
+        if let Some(key) = self.key.take() {
+          (&mut *self.heap).remove_root(key.root);
+        }
+      }
+    }
+  }
+  let heap_ptr = class_scope.heap_mut() as *mut Heap;
+  let mut inferred_name_guard = InferredNameRootGuard {
+    heap: heap_ptr,
+    key: inferred_name,
+  };
+
   // Root `super_value` across class-constructor allocation so it cannot be collected even if it is
   // not otherwise reachable (e.g. `class B extends (class {}) {}`).
-  let mut class_scope = scope.reborrow();
   class_scope.push_root(super_value)?;
 
   // Count instance elements stored in the class constructor's native slots so `[[Construct]]` can
@@ -23852,6 +23974,38 @@ fn async_eval_class_after_super(
     super_value,
     instance_field_count,
   )?;
+
+  // ECMA-262-ish `NamedEvaluation` / `SetFunctionName` behaviour: for anonymous class expressions
+  // used as object-literal property values, infer `name` from the property key.
+  //
+  // This must happen *before* defining class elements: a class can define a `static name() {}`
+  // method which should override the constructor's initial `"name"` property. Setting the name
+  // after class evaluation would overwrite the method.
+  if func_name.is_empty() {
+    if let Some(name_key) = inferred_name_guard.take() {
+      let root = name_key.root;
+      let name_key = name_key.key;
+      let set_res: Result<(), VmError> = (|| {
+        let mut name_scope = class_scope.reborrow();
+        name_scope.push_root(Value::Object(func_obj))?;
+        match name_key {
+          PropertyKey::String(s) => {
+            name_scope.push_root(Value::String(s))?;
+          }
+          PropertyKey::Symbol(sym) => {
+            name_scope.push_root(Value::Symbol(sym))?;
+          }
+        };
+        crate::function_properties::set_function_name(&mut name_scope, func_obj, name_key, None)
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut name_scope, err))?;
+        Ok(())
+      })();
+      class_scope.heap_mut().remove_root(root);
+      set_res?;
+    }
+  } else if let Some(name_key) = inferred_name_guard.take() {
+    class_scope.heap_mut().remove_root(name_key.root);
+  }
 
   // Create a persistent root for the class constructor object so it remains GC-safe across `await`
   // suspensions during computed member key evaluation.
@@ -28774,7 +28928,40 @@ fn async_eval_lit_obj_apply_valued_member(
         None => false,
       };
 
-      match async_eval_expr(evaluator, &mut member_scope, value_expr)? {
+      let value_eval = if is_proto_setter {
+        // `__proto__` setters do not define a property and do not participate in `SetFunctionName`
+        // inference.
+        async_eval_expr(evaluator, &mut member_scope, value_expr)?
+      } else if !expr_contains_await(value_expr) {
+        // Fast path: if the value expression cannot suspend, use the synchronous evaluator so we
+        // preserve `NamedEvaluation` / `SetFunctionName` inference for anonymous
+        // function/class definitions.
+        //
+        // `async_eval_expr` would tick once and then delegate to `eval_expr_chain` (which ticks
+        // again). Mirror that fuel usage so async + sync paths remain comparable.
+        evaluator.tick()?;
+        let value = evaluator
+          .eval_expr_named(&mut member_scope, value_expr, key)
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut member_scope, err))?;
+        AsyncEval::Complete(value)
+      } else if let Expr::Class(class_expr) = &*value_expr.stx {
+        if class_expr.stx.name.is_none() {
+          // Anonymous class expressions require inferred names to be applied *during* class
+          // construction (before defining elements) so static blocks and `static name() {}` methods
+          // can observe/override the inferred name.
+          //
+          // Since this class can suspend on `await`, use the async class evaluator with an inferred
+          // property-key name.
+          evaluator.tick()?;
+          async_eval_class_expr_named(evaluator, &mut member_scope, class_expr, key)?
+        } else {
+          async_eval_expr(evaluator, &mut member_scope, value_expr)?
+        }
+      } else {
+        async_eval_expr(evaluator, &mut member_scope, value_expr)?
+      };
+
+      match value_eval {
         AsyncEval::Complete(value) => {
           member_scope.push_root(value)?;
           if is_proto_setter {
@@ -34367,6 +34554,7 @@ fn async_resume_from_frames(
         members,
         binding_name,
         func_name,
+        inferred_name,
       } => match state {
         AsyncState::Expr(heritage_res) => {
           let members = unsafe { &*members };
@@ -34382,10 +34570,18 @@ fn async_resume_from_frames(
                 match async_class_heritage_value_to_super_value(evaluator, scope, heritage_value) {
                   Ok(v) => v,
                   Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                    if let Some(key) = inferred_name {
+                      scope.heap_mut().remove_root(key.root);
+                    }
                     state = AsyncState::Expr(Err(err));
                     continue;
                   }
-                  Err(err) => return Err(err),
+                  Err(err) => {
+                    if let Some(key) = inferred_name {
+                      scope.heap_mut().remove_root(key.root);
+                    }
+                    return Err(err);
+                  }
                 };
 
               match async_eval_class_after_super(
@@ -34393,6 +34589,7 @@ fn async_resume_from_frames(
                 scope,
                 binding,
                 func_name,
+                inferred_name,
                 members,
                 super_value,
               ) {
@@ -34411,7 +34608,12 @@ fn async_resume_from_frames(
                 Err(err) => return Err(err),
               }
             }
-            Err(err) => state = AsyncState::Expr(Err(err)),
+            Err(err) => {
+              if let Some(key) = inferred_name {
+                scope.heap_mut().remove_root(key.root);
+              }
+              state = AsyncState::Expr(Err(err))
+            }
           }
         }
         AsyncState::Completion(_) => {
@@ -36972,6 +37174,21 @@ fn async_resume_from_frames(
           Ok(v) => {
             let decl_ptr = decl;
             let decl = unsafe { &*decl_ptr };
+            let declarator = decl
+              .declarators
+              .get(next_declarator_index)
+              .ok_or(VmError::InvariantViolation(
+                "async var decl continuation out of bounds",
+              ))?;
+            let init = declarator.initializer.as_ref().ok_or(VmError::InvariantViolation(
+              "async var decl continuation missing initializer",
+            ))?;
+            if let Pat::Id(id) = &*declarator.pattern.stx.pat.stx {
+              if is_anonymous_function_definition(init) {
+                maybe_set_anonymous_function_name(scope, v, id.stx.name.as_str())
+                  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))?;
+              }
+            }
             match async_bind_var_declarator_value(evaluator, scope, decl, next_declarator_index, v)
             {
               Ok(AsyncEval::Complete(())) => {}
