@@ -69,6 +69,13 @@ const MAX_SESSION_URL_BYTES: usize = protocol_limits::MAX_URL_BYTES;
 /// Maximum UTF-8 bytes retained for tab group titles stored in the session file.
 const MAX_SESSION_GROUP_TITLE_BYTES: usize = 256;
 
+/// Maximum UTF-8 bytes retained for appearance-theme fields in the session file.
+///
+/// These values are tiny (theme names + hex colors) so aggressively bounding them avoids allocating
+/// large strings if the session JSON is corrupted or hand-edited.
+const MAX_SESSION_THEME_BYTES: usize = 32;
+const MAX_SESSION_ACCENT_COLOR_BYTES: usize = 64;
+
 fn deserialize_string_truncated<'de, D, const MAX_BYTES: usize>(
   deserializer: D,
 ) -> Result<String, D::Error>
@@ -222,6 +229,51 @@ where
   D: Deserializer<'de>,
 {
   deserialize_window_tabs(deserializer)
+}
+
+fn deserialize_appearance_settings<'de, D>(deserializer: D) -> Result<AppearanceSettings, D::Error>
+where
+  D: Deserializer<'de>,
+{
+  #[derive(Deserialize)]
+  struct RawAppearanceSettings<'de> {
+    #[serde(default)]
+    theme: Option<Cow<'de, str>>,
+    #[serde(default, alias = "accent")]
+    accent_color: Option<Cow<'de, str>>,
+    #[serde(default)]
+    ui_scale: Option<f32>,
+    #[serde(default)]
+    high_contrast: bool,
+    #[serde(default)]
+    reduced_motion: bool,
+  }
+
+  let raw: Option<RawAppearanceSettings<'de>> = Option::deserialize(deserializer)?;
+  let Some(raw) = raw else {
+    return Ok(AppearanceSettings::default());
+  };
+
+  let mut settings = AppearanceSettings::default();
+  if let Some(theme_raw) = raw.theme {
+    let truncated = truncate_utf8_to_max_bytes(theme_raw.as_ref(), MAX_SESSION_THEME_BYTES).trim();
+    settings.theme = crate::ui::theme_parsing::parse_browser_theme(truncated)
+      .unwrap_or(crate::ui::theme_parsing::BrowserTheme::System);
+  }
+  if let Some(accent_raw) = raw.accent_color {
+    let truncated =
+      truncate_utf8_to_max_bytes(accent_raw.as_ref(), MAX_SESSION_ACCENT_COLOR_BYTES).trim();
+    if !truncated.is_empty() {
+      settings.accent_color = Some(truncated.to_string());
+    }
+  }
+  if let Some(ui_scale) = raw.ui_scale {
+    settings.ui_scale = ui_scale;
+  }
+  settings.high_contrast = raw.high_contrast;
+  settings.reduced_motion = raw.reduced_motion;
+
+  Ok(settings)
 }
 
 fn default_did_exit_cleanly() -> bool {
@@ -772,7 +824,11 @@ pub struct BrowserSession {
   pub windows: Vec<BrowserSessionWindow>,
   #[serde(default)]
   pub active_window_index: usize,
-  #[serde(default, skip_serializing_if = "AppearanceSettings::is_default")]
+  #[serde(
+    default,
+    deserialize_with = "deserialize_appearance_settings",
+    skip_serializing_if = "AppearanceSettings::is_default"
+  )]
   pub appearance: AppearanceSettings,
   /// Whether the previous browser process believes it shut down cleanly.
   ///
@@ -2011,6 +2067,7 @@ mod tests {
       "a".repeat(MAX_SESSION_URL_BYTES + 64)
     );
     let long_title = "€".repeat(MAX_SESSION_GROUP_TITLE_BYTES + 64);
+    let long_accent = "a".repeat(MAX_SESSION_ACCENT_COLOR_BYTES + 64);
 
     let tabs: Vec<serde_json::Value> = (0..(MAX_SESSION_TABS_PER_WINDOW + 10))
       .map(|idx| {
@@ -2042,7 +2099,8 @@ mod tests {
       "version": SESSION_VERSION,
       "home_url": long_url,
       "windows": windows,
-      "active_window_index": 0
+      "active_window_index": 0,
+      "appearance": {"accent_color": long_accent}
     })
     .to_string();
 
@@ -2059,6 +2117,11 @@ mod tests {
     assert!(
       session.windows[0].tab_groups[0].title.as_bytes().len() <= MAX_SESSION_GROUP_TITLE_BYTES
     );
+    assert!(session
+      .appearance
+      .accent_color
+      .as_ref()
+      .is_some_and(|accent| accent.as_bytes().len() <= MAX_SESSION_ACCENT_COLOR_BYTES));
   }
 
   #[test]
