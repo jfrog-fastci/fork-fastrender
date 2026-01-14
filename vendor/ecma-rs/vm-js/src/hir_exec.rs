@@ -2328,10 +2328,24 @@ impl<'vm> HirEvaluator<'vm> {
         closure_env,
       )?
     } else {
+      // Async function bodies still execute via the AST interpreter at call time. Cache the lazy
+      // parse metadata so `Vm::call_user_function` can delegate without requiring a full AST
+      // fallback for the entire surrounding script.
+      let ast_fallback = if is_async {
+        Some(self.vm.register_ecma_function(
+          self.env.source(),
+          def_span.start,
+          def_span.end,
+          kind,
+        )?)
+      } else {
+        None
+      };
       scope.alloc_user_function_with_env(
         CompiledFunctionRef {
           script,
           body: body_id,
+          ast_fallback,
         },
         is_constructable,
         name_s,
@@ -2384,7 +2398,6 @@ impl<'vm> HirEvaluator<'vm> {
         .heap_mut()
         .set_function_data(func_obj, FunctionData::AsyncEcmaFallback { code_id })?;
     }
-
     // Arrow functions capture lexical `this`/`new.target`.
     if is_arrow {
       scope.heap_mut().set_function_bound_this(func_obj, self.this)?;
@@ -11039,8 +11052,8 @@ impl<'vm> HirEvaluator<'vm> {
                 Err(err) => return Err(err),
               };
               scope.push_root(Value::Object(obj))?;
-              (key, obj)
-            }
+               (key, obj)
+             }
           };
 
           let func = scope.get_with_host_and_hooks(
@@ -18595,9 +18608,12 @@ mod async_function_ast_fallback_tests {
     };
 
     let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+    let CallHandler::User(func_ref) = call_handler else {
+      panic!("expected async function to be allocated as a compiled user function, got {call_handler:?}");
+    };
     assert!(
-      matches!(call_handler, CallHandler::User(_)),
-      "expected async function to be allocated as a compiled user function, got {call_handler:?}"
+      func_ref.ast_fallback.is_some(),
+      "expected compiled async function call handler to carry AST fallback metadata"
     );
 
     let func_data = rt.heap.get_function_data(func_obj)?;

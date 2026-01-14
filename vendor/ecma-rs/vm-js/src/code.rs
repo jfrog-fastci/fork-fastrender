@@ -15,6 +15,7 @@ use crate::SourceTextInput;
 use crate::Heap;
 use crate::VmError;
 use crate::Vm;
+use crate::function::EcmaFunctionId;
 use diagnostics::FileId;
 use derive_visitor::{Drive, Event, Visitor};
 use parse_js::ast::class_or_object::{ClassOrObjKey, ClassOrObjVal, ObjMemberType};
@@ -465,6 +466,11 @@ impl CompiledScript {
 pub struct CompiledFunctionRef {
   pub script: Arc<CompiledScript>,
   pub body: hir_js::BodyId,
+  /// Optional call-time fallback to the AST interpreter for this compiled function body.
+  ///
+  /// This is currently used for async functions: the surrounding script can execute in the compiled
+  /// (HIR) path, but async function bodies still execute via the AST interpreter when invoked.
+  pub ast_fallback: Option<EcmaFunctionId>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]

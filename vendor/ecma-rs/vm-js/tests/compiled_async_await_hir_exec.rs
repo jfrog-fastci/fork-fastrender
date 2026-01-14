@@ -114,6 +114,7 @@ fn compiled_await_does_not_invoke_species_constructor() -> Result<(), VmError> {
     CompiledFunctionRef {
       script: f_script,
       body: f_body,
+      ast_fallback: None,
     },
     "f",
   )?;
@@ -151,6 +152,7 @@ fn compiled_async_throw_rejects_promise_instead_of_throwing_synchronously() -> R
     CompiledFunctionRef {
       script: f_script,
       body: f_body,
+      ast_fallback: None,
     },
     "f",
   )?;
@@ -185,6 +187,7 @@ fn compiled_async_return_resolves_promise() -> Result<(), VmError> {
     CompiledFunctionRef {
       script: f_script,
       body: f_body,
+      ast_fallback: None,
     },
     "f",
   )?;
@@ -229,6 +232,7 @@ fn compiled_async_assignment_await_suspends_and_resumes() -> Result<(), VmError>
     CompiledFunctionRef {
       script: f_script,
       body: f_body,
+      ast_fallback: None,
     },
     "f",
   )?;
@@ -277,6 +281,7 @@ fn compiled_async_compound_assignment_reads_lhs_before_await() -> Result<(), VmE
     CompiledFunctionRef {
       script: f_script,
       body: f_body,
+      ast_fallback: None,
     },
     "f",
   )?;

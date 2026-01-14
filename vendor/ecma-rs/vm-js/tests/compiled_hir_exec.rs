@@ -51,6 +51,7 @@ fn compile_and_call0(source: &str, func_name: &str) -> Result<Value, VmError> {
       CompiledFunctionRef {
         script,
         body: f_body,
+        ast_fallback: None,
       },
       name,
       0,
@@ -103,6 +104,7 @@ fn compiled_closure_capture_semantics() -> Result<(), VmError> {
     CompiledFunctionRef {
       script: script.clone(),
       body: make_adder_body,
+      ast_fallback: None,
     },
     name,
     1,
@@ -170,6 +172,7 @@ fn compiled_for_loop_let_creates_per_iteration_envs() -> Result<(), VmError> {
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -572,6 +575,7 @@ fn compiled_bigint_literal_executes() -> Result<(), VmError> {
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -604,6 +608,7 @@ fn compiled_bigint_unary_minus_executes() -> Result<(), VmError> {
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -657,6 +662,7 @@ fn compiled_new_target_is_undefined_in_normal_call() -> Result<(), VmError> {
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -714,6 +720,7 @@ fn compiled_array_literal_holes_and_length() -> Result<(), VmError> {
       CompiledFunctionRef {
         script: script.clone(),
         body: f_body,
+        ast_fallback: None,
       },
       name,
       0,
@@ -751,6 +758,7 @@ fn compiled_array_literal_spread_join() -> Result<(), VmError> {
       CompiledFunctionRef {
         script: script.clone(),
         body: f_body,
+        ast_fallback: None,
       },
       name,
       0,
@@ -918,6 +926,7 @@ fn compiled_strict_equality_compares_string_contents() -> Result<(), VmError> {
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -949,6 +958,7 @@ fn compiled_strict_equality_compares_bigint_values() -> Result<(), VmError> {
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     2,
@@ -992,6 +1002,7 @@ fn compiled_template_literal_concatenates() -> Result<(), VmError> {
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -1178,6 +1189,7 @@ fn compiled_hir_exec_unary_minus_bigint() -> Result<(), VmError> {
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -1220,6 +1232,7 @@ fn compiled_hir_exec_unary_plus_coerces_object() -> Result<(), VmError> {
       CompiledFunctionRef {
         script: script.clone(),
         body: f_body,
+        ast_fallback: None,
       },
       name,
       0,
@@ -1282,6 +1295,7 @@ fn compiled_hir_exec_unary_minus_object_preserves_bigint() -> Result<(), VmError
       CompiledFunctionRef {
         script: script.clone(),
         body: f_body,
+        ast_fallback: None,
       },
       name,
       0,
@@ -1599,6 +1613,7 @@ fn compiled_execution_respects_fuel_budget_in_infinite_loop() -> Result<(), VmEr
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -1644,6 +1659,7 @@ fn compiled_execution_is_gc_safe_under_stress() -> Result<(), VmError> {
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     name,
     1,
@@ -2054,6 +2070,7 @@ fn compiled_object_spread_copies_properties() -> Result<(), VmError> {
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -2083,6 +2100,7 @@ fn compiled_object_spread_ignores_nullish() -> Result<(), VmError> {
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -2134,6 +2152,7 @@ fn compiled_object_literal_getter_works() -> Result<(), VmError> {
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -2168,6 +2187,7 @@ fn compiled_object_literal_setter_works() -> Result<(), VmError> {
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -2200,6 +2220,7 @@ fn compiled_object_literal_getter_returns_2() -> Result<(), VmError> {
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -2234,6 +2255,7 @@ fn compiled_object_literal_setter_sets_3() -> Result<(), VmError> {
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -3494,6 +3516,7 @@ fn compiled_user_function_is_constructable() -> Result<(), VmError> {
       CompiledFunctionRef {
         script,
         body: c_body,
+        ast_fallback: None,
       },
       name,
       1,
@@ -3591,6 +3614,7 @@ fn compiled_member_get_dispatches_proxy_get_trap() -> Result<(), VmError> {
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     f_name,
     1,
@@ -3677,6 +3701,7 @@ fn compiled_object_spread_dispatches_proxy_get_trap() -> Result<(), VmError> {
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     f_name,
     1,
@@ -3795,6 +3820,7 @@ fn compiled_object_spread_dispatches_proxy_own_keys_trap() -> Result<(), VmError
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     f_name,
     1,
@@ -3879,6 +3905,7 @@ fn compiled_member_set_dispatches_proxy_set_trap() -> Result<(), VmError> {
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     f_name,
     1,
@@ -3963,6 +3990,7 @@ fn compiled_member_delete_dispatches_proxy_delete_trap() -> Result<(), VmError> 
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     f_name,
     1,
@@ -4009,6 +4037,7 @@ fn compiled_strict_equality_compares_strings_by_value() -> Result<(), VmError> {
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -4039,6 +4068,7 @@ fn compiled_strict_equality_string_literal_is_true() -> Result<(), VmError> {
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -4070,6 +4100,7 @@ fn compiled_strict_equality_compares_concatenated_strings_by_value() -> Result<(
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -4101,6 +4132,7 @@ fn compiled_strict_equality_bigint_literal_is_true() -> Result<(), VmError> {
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -4133,6 +4165,7 @@ fn compiled_numeric_literal_object_key_is_canonicalized() -> Result<(), VmError>
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -4168,6 +4201,7 @@ fn compiled_class_declaration_basic() -> Result<(), VmError> {
       CompiledFunctionRef {
         script: script.clone(),
         body: f_body,
+        ast_fallback: None,
       },
       name,
       0,
@@ -4209,6 +4243,7 @@ fn compiled_class_expression_basic() -> Result<(), VmError> {
       CompiledFunctionRef {
         script: script.clone(),
         body: f_body,
+        ast_fallback: None,
       },
       name,
       0,
@@ -5553,6 +5588,7 @@ fn compiled_strict_equality_compares_bigints_by_value() -> Result<(), VmError> {
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -5669,6 +5705,7 @@ fn compiled_bigint_mixing_throws_type_error() -> Result<(), VmError> {
       CompiledFunctionRef {
         script,
         body: f_body,
+        ast_fallback: None,
       },
       name,
       0,
@@ -6211,6 +6248,7 @@ fn compiled_numeric_ops_call_toprimitive_on_objects() -> Result<(), VmError> {
       CompiledFunctionRef {
         script: script.clone(),
         body: mul_body,
+        ast_fallback: None,
       },
       mul_name,
       0,
@@ -6223,6 +6261,7 @@ fn compiled_numeric_ops_call_toprimitive_on_objects() -> Result<(), VmError> {
       CompiledFunctionRef {
         script: script.clone(),
         body: plus_body,
+        ast_fallback: None,
       },
       plus_name,
       0,
@@ -6235,6 +6274,7 @@ fn compiled_numeric_ops_call_toprimitive_on_objects() -> Result<(), VmError> {
       CompiledFunctionRef {
         script: script.clone(),
         body: or_body,
+        ast_fallback: None,
       },
       or_name,
       0,
@@ -6247,6 +6287,7 @@ fn compiled_numeric_ops_call_toprimitive_on_objects() -> Result<(), VmError> {
       CompiledFunctionRef {
         script: script.clone(),
         body: shl_body,
+        ast_fallback: None,
       },
       shl_name,
       0,
@@ -6259,6 +6300,7 @@ fn compiled_numeric_ops_call_toprimitive_on_objects() -> Result<(), VmError> {
       CompiledFunctionRef {
         script,
         body: ushr_body,
+        ast_fallback: None,
       },
       ushr_name,
       0,
@@ -6297,6 +6339,7 @@ fn compiled_numeric_ops_root_lhs_across_rhs_eval_under_gc_stress() -> Result<(),
       CompiledFunctionRef {
         script,
         body: f_body,
+        ast_fallback: None,
       },
       name,
       0,
@@ -6376,6 +6419,7 @@ fn compiled_var_is_hoisted_in_function_body() -> Result<(), VmError> {
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -6410,6 +6454,7 @@ fn compiled_var_declaration_without_initializer_is_noop() -> Result<(), VmError>
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -6439,6 +6484,7 @@ fn compiled_var_assignment_before_decl_uses_hoisted_binding() -> Result<(), VmEr
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -6468,6 +6514,7 @@ fn compiled_var_in_blocks_is_function_scoped() -> Result<(), VmError> {
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -7870,6 +7917,7 @@ fn compiled_array_literal_holes_respect_fuel_budget() -> Result<(), VmError> {
       CompiledFunctionRef {
         script,
         body: f_body,
+        ast_fallback: None,
       },
       name,
       0,
@@ -7917,6 +7965,7 @@ fn compiled_array_literal_string_spread_respects_fuel_budget() -> Result<(), VmE
       CompiledFunctionRef {
         script,
         body: f_body,
+        ast_fallback: None,
       },
       name,
       0,
@@ -8167,6 +8216,7 @@ fn compiled_switch_function_basic_match_and_break() -> Result<(), VmError> {
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     1,
@@ -8218,6 +8268,7 @@ fn compiled_switch_function_fallthrough() -> Result<(), VmError> {
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     1,
@@ -8266,6 +8317,7 @@ fn compiled_switch_fallthrough_and_break() -> Result<(), VmError> {
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     1,
@@ -8341,6 +8393,7 @@ fn compiled_switch_case_matching_uses_strict_equality() -> Result<(), VmError> {
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     1,
@@ -8424,6 +8477,7 @@ fn compiled_switch_function_labeled_break_exits_outer_statement() -> Result<(), 
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     1,
@@ -8478,6 +8532,7 @@ fn compiled_switch_function_default_in_middle_falls_through() -> Result<(), VmEr
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     1,
@@ -8544,6 +8599,7 @@ fn compiled_switch_function_discriminant_evaluated_once() -> Result<(), VmError>
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -8642,6 +8698,7 @@ fn compiled_update_expr_postfix_increments_identifier_in_function() -> Result<()
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -8674,6 +8731,7 @@ fn compiled_update_expr_postfix_updates_member_and_returns_old_value_in_function
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -8708,6 +8766,7 @@ fn compiled_compound_assignment_add_assign_in_function() -> Result<(), VmError> 
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -8741,6 +8800,7 @@ fn compiled_member_compound_assignment_add_assign_executes_in_function() -> Resu
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -9209,6 +9269,7 @@ fn compiled_typeof_on_unbound_identifier_returns_undefined_string() -> Result<()
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -9243,6 +9304,7 @@ fn compiled_in_operator_works() -> Result<(), VmError> {
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -9272,6 +9334,7 @@ fn compiled_bitwise_and_operator_works() -> Result<(), VmError> {
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -9301,6 +9364,7 @@ fn compiled_shift_left_operator_works() -> Result<(), VmError> {
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -9818,6 +9882,7 @@ fn compiled_instanceof_uses_proxy_get_trap_for_has_instance() -> Result<(), VmEr
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     f_name,
     2,
@@ -11231,6 +11296,7 @@ fn compiled_rest_parameters_collect_remaining_args() -> Result<(), VmError> {
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     1,
@@ -11271,6 +11337,7 @@ fn compiled_rest_parameters_support_indexing() -> Result<(), VmError> {
     CompiledFunctionRef {
       script: script.clone(),
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -11753,6 +11820,7 @@ fn compiled_typeof_unbound_identifier() -> Result<(), VmError> {
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -11789,6 +11857,7 @@ fn compiled_update_prefix_postfix() -> Result<(), VmError> {
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -11823,6 +11892,7 @@ fn compiled_bigint_update() -> Result<(), VmError> {
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -11857,6 +11927,7 @@ fn compiled_delete_member() -> Result<(), VmError> {
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -11897,6 +11968,7 @@ fn compiled_named_function_expr_recursion_works() -> Result<(), VmError> {
     CompiledFunctionRef {
       script,
       body: f_body,
+      ast_fallback: None,
     },
     name,
     0,
@@ -12898,6 +12970,7 @@ fn compiled_import_call_returns_promise_like_value() -> Result<(), VmError> {
       CompiledFunctionRef {
         script: script.clone(),
         body: f_body,
+        ast_fallback: None,
       },
       name,
       0,

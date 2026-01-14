@@ -31,6 +31,7 @@ fn user_function_keeps_compiled_script_alive_and_releases_on_gc() -> Result<(), 
       CompiledFunctionRef {
         script,
         body: function_body,
+        ast_fallback: None,
       },
       name,
       0,

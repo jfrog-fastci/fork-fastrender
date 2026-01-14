@@ -56,6 +56,7 @@ fn compiled_async_function_suspension_does_not_teardown_env() -> Result<(), VmEr
       CompiledFunctionRef {
         script,
         body: f_body,
+        ast_fallback: None,
       },
       name_s,
       0,
@@ -125,6 +126,7 @@ fn compiled_async_return_await() -> Result<(), VmError> {
       CompiledFunctionRef {
         script,
         body: f_body,
+        ast_fallback: None,
       },
       name_s,
       0,
@@ -192,6 +194,7 @@ fn compiled_async_throw_await() -> Result<(), VmError> {
       CompiledFunctionRef {
         script,
         body: f_body,
+        ast_fallback: None,
       },
       name_s,
       0,
@@ -259,6 +262,7 @@ fn compiled_async_throw_await_rejects_without_leaking_env_roots() -> Result<(), 
       CompiledFunctionRef {
         script,
         body: f_body,
+        ast_fallback: None,
       },
       name_s,
       0,
@@ -328,6 +332,7 @@ fn compiled_async_var_decl_await() -> Result<(), VmError> {
       CompiledFunctionRef {
         script,
         body: f_body,
+        ast_fallback: None,
       },
       name_s,
       0,
@@ -397,6 +402,7 @@ fn compiled_async_var_decl_multi_declarator_mixed_await_preserves_order() -> Res
       CompiledFunctionRef {
         script,
         body: f_body,
+        ast_fallback: None,
       },
       name_s,
       0,
@@ -466,6 +472,7 @@ fn compiled_async_var_decl_destructuring_await_binds_pattern() -> Result<(), VmE
       CompiledFunctionRef {
         script,
         body: f_body,
+        ast_fallback: None,
       },
       name_s,
       0,
@@ -536,6 +543,7 @@ fn compiled_async_var_decl_await_rejects_without_leaking_env_roots() -> Result<(
       CompiledFunctionRef {
         script,
         body: f_body,
+        ast_fallback: None,
       },
       name_s,
       0,
@@ -613,6 +621,7 @@ fn compiled_async_unimplemented_nested_await_rejects_without_leaking_env_roots()
       CompiledFunctionRef {
         script,
         body: f_body,
+        ast_fallback: None,
       },
       name_s,
       0,
@@ -695,6 +704,7 @@ fn compiled_async_await_expr_stmt_rejects_without_leaking_env_roots() -> Result<
       CompiledFunctionRef {
         script,
         body: f_body,
+        ast_fallback: None,
       },
       name_s,
       0,
@@ -768,6 +778,7 @@ fn compiled_async_return_await_rejects_without_leaking_env_roots() -> Result<(),
       CompiledFunctionRef {
         script,
         body: f_body,
+        ast_fallback: None,
       },
       name_s,
       0,
@@ -872,6 +883,7 @@ fn compiled_async_arrow_expr_body_await() -> Result<(), VmError> {
       CompiledFunctionRef {
         script,
         body: f_body,
+        ast_fallback: None,
       },
       name_s,
       0,
@@ -939,6 +951,7 @@ fn compiled_async_arrow_expr_body_await_rejects_without_leaking_env_roots() -> R
       CompiledFunctionRef {
         script,
         body: f_body,
+        ast_fallback: None,
       },
       name_s,
       0,
@@ -1010,6 +1023,7 @@ fn compiled_async_assignment_await_with_gc() -> Result<(), VmError> {
       CompiledFunctionRef {
         script,
         body: f_body,
+        ast_fallback: None,
       },
       name_s,
       0,
@@ -1083,6 +1097,7 @@ fn compiled_async_await_operand_throw_rejects_promise() -> Result<(), VmError> {
       CompiledFunctionRef {
         script,
         body: f_body,
+        ast_fallback: None,
       },
       name_s,
       0,

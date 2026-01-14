@@ -138,6 +138,7 @@ fn compiled_async_expr_body_implicit_throw_has_error_stack() -> Result<(), VmErr
       CompiledFunctionRef {
         script,
         body: func_body,
+        ast_fallback: None,
       },
       name_s,
       0,
@@ -230,6 +231,7 @@ fn compiled_async_block_body_await_expr_stmt_implicit_throw_has_error_stack() ->
       CompiledFunctionRef {
         script,
         body: func_body,
+        ast_fallback: None,
       },
       name_s,
       0,
@@ -322,6 +324,7 @@ fn compiled_async_block_body_await_var_decl_throw_after_resume_has_error_stack()
       CompiledFunctionRef {
         script,
         body: func_body,
+        ast_fallback: None,
       },
       name_s,
       0,
@@ -416,6 +419,7 @@ fn compiled_async_block_body_throw_await_attaches_error_stack() -> Result<(), Vm
       CompiledFunctionRef {
         script,
         body: func_body,
+        ast_fallback: None,
       },
       name_s,
       0,
@@ -511,6 +515,7 @@ fn compiled_async_block_body_await_revoked_proxy_promise_resolve_throw_has_error
       CompiledFunctionRef {
         script,
         body: func_body,
+        ast_fallback: None,
       },
       name_s,
       0,

@@ -4576,10 +4576,15 @@ impl Vm {
       }
     };
 
-    // Some compiled functions may be executed via the AST interpreter when the compiled (HIR)
-    // executor does not yet support a feature (call-time fallback). These are still allocated as
-    // compiled user functions (`CallHandler::User`) so surrounding compiled script execution can
-    // proceed without falling back to the interpreter for the entire script.
+    // Some compiled functions are executed via the AST interpreter.
+    //
+    // These are still allocated as compiled user functions (CallHandler::User) so compiled script
+    // execution can proceed without falling back to the interpreter for the entire script.
+    if let Some(code_id) = func.ast_fallback {
+      // Ensure the function has a realm/global object set (see `global_object` synthesis above).
+      return self.call_ecma_function(scope, host, hooks, code_id, callee, this, args);
+    }
+    // Backwards-compatible fallback metadata stored on the function object itself.
     if let FunctionData::EcmaFallback { code_id } | FunctionData::AsyncEcmaFallback { code_id } = func_data {
       // Ensure the function has a realm/global object set (see `global_object` synthesis above).
       return self.call_ecma_function(scope, host, hooks, code_id, callee, this, args);

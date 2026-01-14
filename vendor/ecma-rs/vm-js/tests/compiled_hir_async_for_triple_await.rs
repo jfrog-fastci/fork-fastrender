@@ -39,6 +39,7 @@ fn run_async_fn_case<T>(script_src: &str, map: impl FnOnce(&Heap, Value) -> T) -
       CompiledFunctionRef {
         script: script.clone(),
         body: body_id,
+        ast_fallback: None,
       },
       name,
       0,
