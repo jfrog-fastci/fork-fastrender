@@ -1426,3 +1426,149 @@ fn generator_for_of_yield_in_object_pattern_prop_assignment_target_super_compute
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_for_of_yield_in_array_pattern_rest_assignment_target_computed_member_key_yield_happens_before_rhs_iterator_step()
+{
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var nextCalls = 0;
+          var rhs = {
+            [Symbol.iterator]() {
+              var i = 0;
+              var vals = [1, 2, 3];
+              return {
+                next() {
+                  nextCalls++;
+                  if (i < vals.length) return { value: vals[i++], done: false };
+                  return { value: undefined, done: true };
+                },
+              };
+            },
+          };
+
+          function* g() {
+            var obj = {};
+            for ([...obj[yield 1]] of [rhs]) { return nextCalls + ":" + obj.k[1]; }
+          }
+
+          var it = g();
+          var r1 = it.next();
+          if (r1.done !== false || r1.value !== 1 || nextCalls !== 0) return false;
+          var r2 = it.next("k");
+          return r2.done === true && r2.value === "4:2";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_yield_in_array_pattern_rest_assignment_target_super_computed_member_key_yield_happens_before_rhs_iterator_step()
+{
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var nextCalls = 0;
+          var rhs = {
+            [Symbol.iterator]() {
+              var i = 0;
+              var vals = [1, 2, 3];
+              return {
+                next() {
+                  nextCalls++;
+                  if (i < vals.length) return { value: vals[i++], done: false };
+                  return { value: undefined, done: true };
+                },
+              };
+            },
+          };
+
+          class Base { set k(v) { this._k = v; } }
+          class Derived extends Base {
+            *g() {
+              for ([...super[yield 1]] of [rhs]) { return nextCalls + ":" + this._k[1]; }
+            }
+          }
+
+          var it = (new Derived()).g();
+          var r1 = it.next();
+          if (r1.done !== false || r1.value !== 1 || nextCalls !== 0) return false;
+          var r2 = it.next("k");
+          return r2.done === true && r2.value === "4:2";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_yield_in_object_pattern_rest_assignment_target_computed_member_key_yield_happens_before_get()
+{
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var gets = 0;
+          var src = {
+            get a() { gets++; return 1; },
+            b: 2,
+          };
+
+          function* g() {
+            var obj = {};
+            for ({...obj[yield 1]} of [src]) { return gets + ":" + obj.k.b; }
+          }
+
+          var it = g();
+          var r1 = it.next();
+          if (r1.done !== false || r1.value !== 1 || gets !== 0) return false;
+          var r2 = it.next("k");
+          return r2.done === true && r2.value === "1:2";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_yield_in_object_pattern_rest_assignment_target_super_computed_member_key_yield_happens_before_get()
+{
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var gets = 0;
+          var src = {
+            get a() { gets++; return 1; },
+            b: 2,
+          };
+
+          class Base { set k(v) { this._k = v; } }
+          class Derived extends Base {
+            *g() {
+              for ({...super[yield 1]} of [src]) { return gets + ":" + this._k.b; }
+            }
+          }
+
+          var it = (new Derived()).g();
+          var r1 = it.next();
+          if (r1.done !== false || r1.value !== 1 || gets !== 0) return false;
+          var r2 = it.next("k");
+          return r2.done === true && r2.value === "1:2";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
