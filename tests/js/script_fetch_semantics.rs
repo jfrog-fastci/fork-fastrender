@@ -1031,7 +1031,7 @@ fn crossorigin_use_credentials_blocks_without_allow_credentials_or_with_wildcard
 }
 
 #[test]
-fn module_scripts_enforce_cors_and_block_on_missing_acao() -> Result<()> {
+fn module_script_cross_origin_enforces_cors_and_blocks_on_missing_acao() -> Result<()> {
   let _net_lock = net_test_lock();
   let Some(doc_listener) = try_bind_localhost("module cors script document server") else {
     return Ok(());
@@ -1145,7 +1145,7 @@ fn module_scripts_enforce_cors_and_block_on_missing_acao() -> Result<()> {
 }
 
 #[test]
-fn module_crossorigin_use_credentials_includes_cookies_and_honors_same_origin_default() -> Result<()> {
+fn module_script_crossorigin_use_credentials_includes_cookie_and_requires_acac() -> Result<()> {
   let _net_lock = net_test_lock();
   let Some(doc_listener) = try_bind_localhost("module cors credentials document server") else {
     return Ok(());
