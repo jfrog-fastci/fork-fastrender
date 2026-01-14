@@ -253,6 +253,9 @@ impl ChromeFrameDocument {
           || dom
             .get_element_by_id(&format!("tab-title-{}", tab.id.0))
             .is_none()
+          || dom
+            .get_element_by_id(&format!("tab-close-{}", tab.id.0))
+            .is_none()
         {
           patch_failed = true;
           return false;
@@ -269,6 +272,7 @@ impl ChromeFrameDocument {
       for tab in &app.tabs {
         let is_active = active_tab_id == Some(tab.id);
         let aria_selected = if is_active { "true" } else { "false" };
+        let close_label = format!("Close tab: {}", tab.display_title());
         changed |=
           dom_mut::toggle_class_by_element_id(dom, &tab_element_id(tab.id), "active", is_active);
         changed |= dom_mut::set_attribute_by_element_id(
@@ -281,6 +285,12 @@ impl ChromeFrameDocument {
           dom,
           &format!("tab-title-{}", tab.id.0),
           tab.display_title(),
+        );
+        changed |= dom_mut::set_attribute_by_element_id(
+          dom,
+          &format!("tab-close-{}", tab.id.0),
+          "aria-label",
+          Some(&close_label),
         );
       }
 
@@ -955,7 +965,6 @@ mod tests {
   use crate::ui::chrome_dynamic_asset_fetcher::ChromeDynamicAssetFetcher;
   use crate::ui::CursorKind;
   use crate::ui::BrowserTabState;
-  use crate::ui::CursorKind;
   use crate::ui::{OmniboxSuggestion, OmniboxSuggestionSource, OmniboxUrlSource};
   use crate::FontConfig;
   use std::collections::hash_map::DefaultHasher;
@@ -1262,6 +1271,61 @@ mod tests {
       .get_attribute(node, "value")
       .expect("get value attribute");
     assert_eq!(value, Some("hello world"));
+  }
+
+  #[test]
+  fn chrome_frame_sync_state_updates_tab_close_label_without_reset() {
+    let mut app = BrowserAppState::new_with_initial_tab("https://example.invalid/".to_string());
+    app.tabs[0].title = Some("Old title".to_string());
+    let close_id = format!("tab-close-{}", app.tabs[0].id.0);
+
+    let fetcher = Arc::new(ChromeDynamicAssetFetcher::new(Arc::new(
+      ChromeAssetsFetcher::new(),
+    )));
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .fetcher(fetcher)
+      .build()
+      .expect("build deterministic renderer");
+    let mut chrome =
+      ChromeFrameDocument::new_with_renderer(renderer, (600, 64), 1.0).expect("create chrome doc");
+
+    assert!(
+      chrome.sync_state(&app).expect("sync state"),
+      "expected first sync_state call to rebuild the chrome document"
+    );
+
+    let close = chrome
+      .doc
+      .dom()
+      .get_element_by_id(&close_id)
+      .expect("tab close button");
+    let label = chrome
+      .doc
+      .dom()
+      .get_attribute(close, "aria-label")
+      .expect("get aria-label");
+    assert_eq!(label, Some("Close tab: Old title"));
+
+    app.tabs[0].title = Some("New title".to_string());
+    assert!(
+      !chrome.sync_state(&app).expect("sync state"),
+      "expected tab label updates to avoid full reset"
+    );
+
+    let close2 = chrome
+      .doc
+      .dom()
+      .get_element_by_id(&close_id)
+      .expect("tab close button");
+    assert_eq!(close, close2, "expected close button node id to be stable");
+
+    let label2 = chrome
+      .doc
+      .dom()
+      .get_attribute(close, "aria-label")
+      .expect("get aria-label");
+    assert_eq!(label2, Some("Close tab: New title"));
   }
 
   #[test]

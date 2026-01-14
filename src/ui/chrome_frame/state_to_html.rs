@@ -221,7 +221,9 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     out.push_str("</a>\n");
 
     // Close button.
-    out.push_str("        <a class=\"tab-close\" role=\"button\" aria-label=\"Close tab: ");
+    out.push_str("        <a id=\"tab-close-");
+    out.push_str(&tab_id);
+    out.push_str("\" class=\"tab-close\" role=\"button\" aria-label=\"Close tab: ");
     out.push_str(&title);
     out.push_str("\" href=\"chrome-action:close-tab?tab=");
     out.push_str(&tab_id);
