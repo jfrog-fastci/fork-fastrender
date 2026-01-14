@@ -22,6 +22,8 @@ const WEBM_DEMUX_IO_DEADLINE_STRIDE: usize = 8192;
 /// Hard cap on encoded packet size to avoid unbounded memory usage on corrupted/adversarial WebM
 /// files.
 const MAX_WEBM_PACKET_BYTES: usize = 64 * 1024 * 1024;
+/// Hard cap on codec-private ("extradata") size to avoid unbounded memory usage on corrupted files.
+const MAX_WEBM_CODEC_PRIVATE_BYTES: usize = 1024 * 1024;
 
 fn webm_packet_too_large_error(track_id: u64, len: usize) -> MediaError {
   MediaError::Demux(format!(
@@ -29,9 +31,22 @@ fn webm_packet_too_large_error(track_id: u64, len: usize) -> MediaError {
   ))
 }
 
+fn webm_codec_private_too_large_error(track_id: u64, len: usize) -> MediaError {
+  MediaError::Demux(format!(
+    "WebM codec_private too large (track {track_id}, size {len} bytes, cap {MAX_WEBM_CODEC_PRIVATE_BYTES} bytes)"
+  ))
+}
+
 fn check_webm_packet_size(track_id: u64, len: usize) -> MediaResult<()> {
   if len > MAX_WEBM_PACKET_BYTES {
     return Err(webm_packet_too_large_error(track_id, len));
+  }
+  Ok(())
+}
+
+fn check_webm_codec_private_size(track_id: u64, len: usize) -> MediaResult<()> {
+  if len > MAX_WEBM_CODEC_PRIVATE_BYTES {
+    return Err(webm_codec_private_too_large_error(track_id, len));
   }
   Ok(())
 }
@@ -265,7 +280,9 @@ impl<R: Read + Seek> WebmDemuxer<R> {
       reject_unsupported_track_encodings(&encoding_meta)?;
 
       let id = track.track_number().get();
-      let codec_private = track.codec_private().unwrap_or(&[]).to_vec();
+      let codec_private_bytes = track.codec_private().unwrap_or(&[]);
+      check_webm_codec_private_size(id, codec_private_bytes.len())?;
+      let codec_private = codec_private_bytes.to_vec();
       let codec_delay = track.codec_delay().unwrap_or(0);
       let seek_pre_roll = track.seek_pre_roll().unwrap_or(0);
 
@@ -1058,6 +1075,30 @@ mod tests {
     );
     assert!(
       msg.contains(&format!("cap {MAX_WEBM_PACKET_BYTES} bytes")),
+      "expected error mentioning cap, got {msg:?}"
+    );
+  }
+
+  #[test]
+  fn rejects_oversized_webm_codec_private() {
+    check_webm_codec_private_size(7, MAX_WEBM_CODEC_PRIVATE_BYTES)
+      .expect("cap-sized codec_private should be allowed");
+
+    let len = MAX_WEBM_CODEC_PRIVATE_BYTES + 1;
+    let err = check_webm_codec_private_size(7, len).expect_err("expected codec_private cap error");
+    let MediaError::Demux(msg) = err else {
+      panic!("expected demux error, got {err:?}");
+    };
+    assert!(
+      msg.contains("track 7"),
+      "expected error mentioning track id, got {msg:?}"
+    );
+    assert!(
+      msg.contains(&format!("size {len} bytes")),
+      "expected error mentioning size, got {msg:?}"
+    );
+    assert!(
+      msg.contains(&format!("cap {MAX_WEBM_CODEC_PRIVATE_BYTES} bytes")),
       "expected error mentioning cap, got {msg:?}"
     );
   }

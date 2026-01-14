@@ -115,6 +115,8 @@ Current behavior:
 - Safety: individual encoded packets are rejected if they exceed a hard cap (currently **64 MiB**;
   see `MAX_WEBM_PACKET_BYTES` in `src/media/demux/webm.rs`) to avoid unbounded memory usage on
   corrupted/adversarial files.
+- Safety: codec-private (`codec_private`) blobs are also capped (currently **1 MiB**; see
+  `MAX_WEBM_CODEC_PRIVATE_BYTES` in `src/media/demux/webm.rs`).
 - Track selection/filtering:
   - Track metadata is used to pick “primary” audio/video tracks (see
     [`src/media/track_selection.rs`](../src/media/track_selection.rs)).
