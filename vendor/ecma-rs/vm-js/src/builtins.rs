@@ -31025,27 +31025,27 @@ mod object_builtins_regression_tests {
 
           // Instance override should work for builtinTag-derived objects (Array / Function / Error / Date / RegExp).
           let a = [];
-          a[Symbol.toStringTag] = "test262";
-          const okArrayOverride = toString.call(a) === "[object test262]";
-          let f = function () {};
-          f[Symbol.toStringTag] = "test262";
-          const okFuncOverride = toString.call(f) === "[object test262]";
-          let e = new Error("x");
-          // `%Error.prototype%[@@toStringTag]` is a non-writable data property, so assignment cannot
-          // create an own property shadowing it; define directly instead.
-          Object.defineProperty(e, Symbol.toStringTag, { configurable: true, value: "test262" });
-          const okErrorOverride = toString.call(e) === "[object test262]";
-          let d = new Date(0);
-          d[Symbol.toStringTag] = "test262";
-          const okDateOverride = toString.call(d) === "[object test262]";
-          let r = /./;
-          // `%RegExp.prototype%[@@toStringTag]` is non-writable; define directly instead.
-          Object.defineProperty(r, Symbol.toStringTag, { configurable: true, value: "test262" });
-          const okRegExpOverride = toString.call(r) === "[object test262]";
+           a[Symbol.toStringTag] = "test262";
+           const okArrayOverride = toString.call(a) === "[object test262]";
+           let f = function () {};
+           f[Symbol.toStringTag] = "test262";
+           const okFuncOverride = toString.call(f) === "[object test262]";
+           let e = new Error("x");
+           // `%Error.prototype%[@@toStringTag]` is a non-writable data property, so assignment cannot
+           // create an own property shadowing it; define directly instead.
+           Object.defineProperty(e, Symbol.toStringTag, { configurable: true, value: "test262" });
+           const okErrorOverride = toString.call(e) === "[object test262]";
+           let d = new Date(0);
+           d[Symbol.toStringTag] = "test262";
+           const okDateOverride = toString.call(d) === "[object test262]";
+           let r = /./;
+           // `%RegExp.prototype%[@@toStringTag]` is non-writable; define directly instead.
+           Object.defineProperty(r, Symbol.toStringTag, { configurable: true, value: "test262" });
+           const okRegExpOverride = toString.call(r) === "[object test262]";
 
-          // Async function tag should come from %AsyncFunction.prototype%[@@toStringTag].
-          const af = async function () {};
-          const okAsyncFn = toString.call(af) === "[object AsyncFunction]";
+           // Async function tag should come from %AsyncFunction.prototype%[@@toStringTag].
+           const af = async function () {};
+           const okAsyncFn = toString.call(af) === "[object AsyncFunction]";
           const okAsyncProxy = toString.call(new Proxy(af, {})) === "[object AsyncFunction]";
 
           return (

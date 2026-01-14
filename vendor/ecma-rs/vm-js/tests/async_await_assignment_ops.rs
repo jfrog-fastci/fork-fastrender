@@ -565,3 +565,71 @@ fn async_await_compound_assignment_getvalue_happens_before_awaiting_rhs() -> Res
   assert_eq!(value_to_string(&rt, value), "get,rhs-pre,rhs-post,set:3,");
   Ok(())
 }
+
+#[test]
+fn async_await_logical_or_and_nullish_assignment_ops() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var hit = "";
+      async function f() {
+        let a = 0;
+        a ||= await Promise.resolve(2);
+
+        let b = 1;
+        b ||= (hit = "or", await Promise.resolve(3));
+
+        let c = null;
+        c ??= await Promise.resolve(4);
+
+        let d = 0;
+        d ??= (hit = "nullish", await Promise.resolve(5));
+
+        return [a, b, c, hit].join("|");
+      }
+      f().then(v => out = v);
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "2|1|4|");
+  Ok(())
+}
+
+#[test]
+fn async_await_logical_assignment_applies_anonymous_function_name_inference() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        let x = 1;
+        x &&= await Promise.resolve(function() {});
+
+        let y = 0;
+        y ||= await Promise.resolve(function() {});
+
+        let z = null;
+        z ??= await Promise.resolve(function() {});
+
+        return [x.name, y.name, z.name].join("|");
+      }
+      f().then(v => out = v);
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "x|y|z");
+  Ok(())
+}

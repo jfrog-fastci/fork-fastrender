@@ -16673,7 +16673,6 @@ pub(crate) enum GenFrame {
     value: Value,
     kind: BindingKind,
   },
-
   /// Continue an assignment expression after evaluating a member base expression.
   AssignMemberAfterBase {
     expr: *const BinaryExpr,
@@ -25735,6 +25734,9 @@ fn async_eval_assignment_to_binding(
     AsyncEval::Complete(value) => {
       rhs_scope.push_root(value)?;
       evaluator
+        .maybe_set_anonymous_function_name_for_assignment(&mut rhs_scope, &reference, value)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut rhs_scope, err))?;
+      evaluator
         .put_value_to_reference(&mut rhs_scope, &reference, value)
         .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut rhs_scope, err))?;
       Ok(AsyncEval::Complete(value))
@@ -26006,6 +26008,9 @@ fn async_eval_assignment_apply_reference(
       match async_eval_expr(evaluator, &mut rhs_scope, &expr.right)? {
         AsyncEval::Complete(value) => {
           rhs_scope.push_root(value)?;
+          evaluator
+            .maybe_set_anonymous_function_name_for_assignment(&mut rhs_scope, &reference, value)
+            .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut rhs_scope, err))?;
           evaluator
             .put_value_to_reference(&mut rhs_scope, &reference, value)
             .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut rhs_scope, err))?;
@@ -45204,8 +45209,10 @@ mod tests {
     match err {
       VmError::Syntax(diags) => {
         assert!(
-          diags.iter().any(|d| d.code.as_str() == "VMJS0004"),
-          "expected early error VMJS0004, got {diags:?}"
+          diags
+            .iter()
+            .any(|d| matches!(d.code.as_str(), "VMJS0004" | "PS0002")),
+          "expected early error VMJS0004 (vm-js) or PS0002 (parse-js), got {diags:?}"
         );
         Ok(())
       }
