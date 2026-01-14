@@ -506,7 +506,6 @@ impl SessionAutosave {
         ))
       }
     }
-
     Self::new_with_debounce_and_initial_and_max_interval_with_spawner_and_saver(
       path,
       debounce,
