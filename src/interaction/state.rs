@@ -638,8 +638,9 @@ pub struct InteractionState {
   pub focus_visible: bool,
   /// Current fullscreen element node id (pre-order id from `crate::dom::enumerate_dom_ids`).
   ///
-  /// When set, the element matches `:fullscreen` and is promoted to the top layer so `::backdrop`
-  /// can be generated and it paints above normal document content.
+  /// When set, the element matches `:fullscreen` (and vendor aliases like `:-webkit-full-screen`)
+  /// and is promoted to the top layer so `::backdrop` can be generated and it paints above normal
+  /// document content.
   pub fullscreen_element: Option<usize>,
   /// The focused element and its element ancestors (used for `:focus-within` matching).
   focus_chain: Vec<usize>,
@@ -1671,13 +1672,6 @@ impl InteractionStateDom2 {
 
     prune_hit_chain(&mut self.hover_chain, mapping);
     prune_hit_chain(&mut self.active_chain, mapping);
-
-    if self
-      .fullscreen_element
-      .is_some_and(|id| !is_connected(id))
-    {
-      self.fullscreen_element = None;
-    }
 
     // Conservative: drop detached nodes from these per-element sets to avoid retaining stale ids.
     self.visited_links.retain(|&id| is_connected(id));
