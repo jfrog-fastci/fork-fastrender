@@ -18031,7 +18031,7 @@ mod async_function_ast_fallback_tests {
   use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOptions};
 
   #[test]
-  fn compiled_script_async_function_with_nested_await_uses_call_time_ast_fallback() -> Result<(), VmError> {
+  fn compiled_script_async_function_with_trivial_body_executes_via_compiled_async_evaluator() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     // Async functions allocate Promise/job machinery; use a slightly larger heap to avoid spurious
     // OOMs as builtin surface area grows.
@@ -18042,7 +18042,71 @@ mod async_function_ast_fallback_tests {
       &mut rt.heap,
       "<inline>",
       r#"
-        async function f() { return await (await Promise.resolve(1)); }
+        async function f() { return 1; }
+        f;
+      "#,
+    )?;
+    assert!(script.contains_async_functions);
+    assert!(!script.contains_generators);
+    assert!(!script.contains_async_generators);
+    assert!(
+      !script.requires_ast_fallback,
+      "compiled scripts should only require full AST fallback for generators or top-level await"
+    );
+    let result = rt.exec_compiled_script(script)?;
+    let Value::Object(func_obj) = result else {
+      panic!("expected async function object, got {result:?}");
+    };
+
+    let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+    assert!(
+      matches!(call_handler, CallHandler::User(_)),
+      "expected async function to be allocated as a compiled user function, got {call_handler:?}"
+    );
+
+    let func_data = rt.heap.get_function_data(func_obj)?;
+    assert!(
+      matches!(func_data, FunctionData::None),
+      "expected async function with trivial body to execute via compiled async evaluator, got {func_data:?}"
+    );
+
+    // Calling the async function should produce a resolved Promise.
+    let promise = {
+      let mut scope = rt.heap.scope();
+      rt.vm
+        .call_without_host(&mut scope, Value::Object(func_obj), Value::Undefined, &[])?
+    };
+    let promise_root = rt.heap.add_root(promise)?;
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+      panic!("expected async function call to return a Promise object");
+    };
+    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+    assert_eq!(
+      rt.heap.promise_result(promise_obj)?,
+      Some(Value::Number(1.0))
+    );
+    rt.heap.remove_root(promise_root);
+    Ok(())
+  }
+
+  #[test]
+  fn compiled_script_async_function_with_unsupported_await_uses_call_time_ast_fallback() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    // Async functions allocate Promise/job machinery; use a slightly larger heap to avoid spurious
+    // OOMs as builtin surface area grows.
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let script = CompiledScript::compile_script(
+      &mut rt.heap,
+      "<inline>",
+      r#"
+        // This `await` form is intentionally rejected by `async_function_body_is_hir_supported`:
+        // the awaited value is nested inside a larger expression.
+        async function f() { return (await Promise.resolve(1)) + 1; }
         f;
       "#,
     )?;
@@ -18086,7 +18150,7 @@ mod async_function_ast_fallback_tests {
     assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
     assert_eq!(
       rt.heap.promise_result(promise_obj)?,
-      Some(Value::Number(1.0))
+      Some(Value::Number(2.0))
     );
     rt.heap.remove_root(promise_root);
     Ok(())
