@@ -97,6 +97,7 @@ pub mod loading_overlay;
 // Viewport-change throttling is used only by the windowed browser UI.
 pub mod viewport_throttle;
 pub mod notifications;
+pub mod toast_sanitization;
 pub mod clear_browsing_data_toast;
 pub mod async_scroll;
 pub mod chrome_dynamic_asset_fetcher;

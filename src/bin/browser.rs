@@ -1385,79 +1385,11 @@ const NEW_WINDOW_ERROR_DETAIL_MAX_BYTES: usize = 200;
 /// - Adds an ellipsis when truncation occurs (and there is room).
 #[cfg(any(test, feature = "browser_ui"))]
 fn format_new_window_error_detail(raw: &str) -> String {
-  sanitize_toast_detail_single_line(raw, NEW_WINDOW_ERROR_DETAIL_MAX_BYTES).unwrap_or_default()
-}
-
-#[cfg(any(test, feature = "browser_ui"))]
-fn sanitize_toast_detail_single_line(raw: &str, max_bytes: usize) -> Option<String> {
-  if max_bytes == 0 {
-    return None;
-  }
-  // Avoid O(n) scans over attacker-controlled strings (e.g. corrupted session files, verbose nested
-  // errors). We only need enough input to populate our small output buffer, so cap the amount of
-  // text we inspect.
-  const ABSURD_INPUT_BYTES_MULTIPLIER: usize = 64;
-  let absurd_limit = max_bytes.saturating_mul(ABSURD_INPUT_BYTES_MULTIPLIER);
-  let mut raw = raw;
-  let mut truncated_from_input = false;
-  if raw.len() > absurd_limit {
-    let mut end = absurd_limit.min(raw.len());
-    while end > 0 && !raw.is_char_boundary(end) {
-      end -= 1;
-    }
-    raw = raw.get(..end).unwrap_or("");
-    truncated_from_input = true;
-  }
-
-  let raw = raw.trim();
-  if raw.is_empty() {
-    return None;
-  }
-
-  // Avoid allocating based on `raw.len()` (could be very large). Pre-allocate up to the limit.
-  let mut out = String::with_capacity(max_bytes.min(128));
-  let mut pending_space = false;
-  let mut truncated = truncated_from_input;
-
-  for ch in raw.chars() {
-    if ch.is_whitespace() || ch.is_control() {
-      pending_space = true;
-      continue;
-    }
-
-    if pending_space && !out.is_empty() {
-      if out.len() + 1 > max_bytes {
-        truncated = true;
-        break;
-      }
-      out.push(' ');
-    }
-    pending_space = false;
-
-    let ch_len = ch.len_utf8();
-    if out.len() + ch_len > max_bytes {
-      truncated = true;
-      break;
-    }
-    out.push(ch);
-  }
-
-  if truncated && !out.is_empty() {
-    const ELLIPSIS: char = '…';
-    let ellipsis_len = ELLIPSIS.len_utf8();
-    if out.len() + ellipsis_len > max_bytes {
-      truncate_utf8_string_in_place(&mut out, max_bytes.saturating_sub(ellipsis_len));
-    }
-    if !out.is_empty() {
-      out.push(ELLIPSIS);
-    }
-  }
-
-  if out.is_empty() {
-    None
-  } else {
-    Some(out)
-  }
+  fastrender::ui::toast_sanitization::sanitize_toast_detail_single_line(
+    raw,
+    NEW_WINDOW_ERROR_DETAIL_MAX_BYTES,
+  )
+  .unwrap_or_default()
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
@@ -1475,7 +1407,10 @@ fn bookmark_reorder_failure_toast(
     other => format!("{other:?}"),
   };
   let detail =
-    sanitize_toast_detail_single_line(&detail_raw, BOOKMARK_REORDER_TOAST_MAX_DETAIL_BYTES);
+    fastrender::ui::toast_sanitization::sanitize_toast_detail_single_line(
+      &detail_raw,
+      BOOKMARK_REORDER_TOAST_MAX_DETAIL_BYTES,
+    );
 
   let mut text = "Failed to reorder bookmarks. Please retry.".to_string();
   if let Some(detail) = detail {
@@ -1485,73 +1420,6 @@ fn bookmark_reorder_failure_toast(
   (ToastKind::Error, text)
 }
 
-#[cfg(any(test, feature = "browser_ui"))]
-const PROFILE_AUTOSAVE_ERROR_SUMMARY_MAX_BYTES: usize = 160;
-
-#[cfg(any(test, feature = "browser_ui"))]
-fn format_profile_autosave_spawn_failure_toast(err: &str) -> String {
-  let base = "Failed to start profile autosave\nBookmarks/history changes may not be saved.";
-  let Some(summary) =
-    sanitize_toast_detail_single_line(err, PROFILE_AUTOSAVE_ERROR_SUMMARY_MAX_BYTES)
-  else {
-    return base.to_string();
-  };
-  format!("Failed to start profile autosave: {summary}\nBookmarks/history changes may not be saved.")
-}
-
-#[cfg(test)]
-mod profile_autosave_toast_tests {
-  use super::{
-    format_profile_autosave_spawn_failure_toast, PROFILE_AUTOSAVE_ERROR_SUMMARY_MAX_BYTES,
-  };
-
-  #[test]
-  fn profile_autosave_toast_truncates_extremely_long_errors() {
-    let long_error = "x".repeat(PROFILE_AUTOSAVE_ERROR_SUMMARY_MAX_BYTES * 10);
-    let toast = format_profile_autosave_spawn_failure_toast(&long_error);
-    let (first, second) = toast
-      .split_once('\n')
-      .expect("toast should contain a second line");
-    assert_eq!(second, "Bookmarks/history changes may not be saved.");
-    let summary = first
-      .split_once(':')
-      .map(|(_, tail)| tail.trim())
-      .unwrap_or("");
-    assert!(summary.ends_with('…'));
-    assert!(
-      summary.len() <= PROFILE_AUTOSAVE_ERROR_SUMMARY_MAX_BYTES,
-      "summary was not truncated: {} bytes",
-      summary.len()
-    );
-  }
-
-  #[test]
-  fn profile_autosave_toast_empty_error_is_generic() {
-    let toast = format_profile_autosave_spawn_failure_toast("");
-    assert_eq!(
-      toast,
-      "Failed to start profile autosave\nBookmarks/history changes may not be saved."
-    );
-  }
-
-  #[test]
-  fn profile_autosave_toast_whitespace_error_is_generic() {
-    let toast = format_profile_autosave_spawn_failure_toast("  \n\t  ");
-    assert_eq!(
-      toast,
-      "Failed to start profile autosave\nBookmarks/history changes may not be saved."
-    );
-  }
-
-  #[test]
-  fn profile_autosave_toast_control_only_error_is_generic() {
-    let toast = format_profile_autosave_spawn_failure_toast("\u{0000}\u{0007}\n");
-    assert_eq!(
-      toast,
-      "Failed to start profile autosave\nBookmarks/history changes may not be saved."
-    );
-  }
-}
 
 #[cfg(any(test, feature = "browser_ui"))]
 type ToastText = String;
@@ -1570,102 +1438,6 @@ fn max_toast_kind(
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
-fn sanitize_path_for_toast(path: &std::path::Path, max_bytes: usize) -> String {
-  if max_bytes == 0 {
-    return String::new();
-  }
-
-  // When truncating, we keep the *tail* of the string so filenames remain visible.
-  // Reserve space for a single leading ellipsis.
-  const ELLIPSIS: char = '…';
-  let ellipsis_bytes = ELLIPSIS.len_utf8();
-  if max_bytes <= ellipsis_bytes {
-    return ELLIPSIS.to_string();
-  }
-  let keep_bytes = max_bytes - ellipsis_bytes;
-
-  let raw = path.to_string_lossy();
-  let mut raw = raw.as_ref();
-
-  // Avoid scanning arbitrarily huge strings in full: keep only the tail portion for sanitization.
-  // This keeps worst-case work bounded when the persisted path is corrupt or attacker-controlled
-  // (e.g. from a malformed session file).
-  const ABSURD_PATH_BYTES_MULTIPLIER: usize = 64;
-  let absurd_limit = max_bytes.saturating_mul(ABSURD_PATH_BYTES_MULTIPLIER);
-
-  // We only need the full string when it fits within the byte limit. Otherwise, keep just the
-  // tail (bounded) to avoid allocating based on attacker-controlled path lengths.
-  let mut full = String::with_capacity(max_bytes.min(128));
-  let mut overflowed = false;
-  if raw.len() > absurd_limit {
-    let start = raw.len().saturating_sub(absurd_limit);
-    let mut start = start.min(raw.len());
-    while start < raw.len() && !raw.is_char_boundary(start) {
-      start += 1;
-    }
-    raw = raw.get(start..).unwrap_or(raw);
-    // The displayed output will necessarily be truncated vs the original string.
-    overflowed = true;
-  }
-
-  use std::collections::VecDeque;
-  let mut tail: VecDeque<char> = VecDeque::new();
-  let mut tail_bytes: usize = 0;
-
-  let mut pending_space = false;
-  let mut emitted_any = false;
-
-  let mut push_out = |ch: char| {
-    let ch_len = ch.len_utf8();
-
-    // Track whether the output exceeded our display limit (before we add the ellipsis).
-    if !overflowed {
-      if full.len() + ch_len > max_bytes {
-        overflowed = true;
-      } else {
-        full.push(ch);
-      }
-    }
-
-    tail.push_back(ch);
-    tail_bytes += ch_len;
-    while tail_bytes > keep_bytes {
-      if let Some(front) = tail.pop_front() {
-        tail_bytes = tail_bytes.saturating_sub(front.len_utf8());
-      } else {
-        tail_bytes = 0;
-        break;
-      }
-    }
-  };
-
-  for ch in raw.chars() {
-    if ch.is_whitespace() || ch.is_control() {
-      pending_space = true;
-      continue;
-    }
-
-    if pending_space && emitted_any {
-      push_out(' ');
-    }
-    pending_space = false;
-    emitted_any = true;
-    push_out(ch);
-  }
-
-  if !overflowed {
-    return full;
-  }
-
-  let mut out = String::with_capacity(max_bytes.min(128));
-  out.push(ELLIPSIS);
-  for ch in tail {
-    out.push(ch);
-  }
-  out
-}
-
-#[cfg(any(test, feature = "browser_ui"))]
 fn check_download_path_exists_for_ui(path: &std::path::Path) -> Result<(), ToastText> {
   if path.exists() {
     return Ok(());
@@ -1674,7 +1446,8 @@ fn check_download_path_exists_for_ui(path: &std::path::Path) -> Result<(), Toast
   // Keep toast messages small/robust: sanitize control characters/newlines (paths can be untrusted
   // or corrupted) and truncate extreme lengths so we don't flood the UI.
   const MAX_TOAST_PATH_BYTES: usize = 240;
-  let display_path = sanitize_path_for_toast(path, MAX_TOAST_PATH_BYTES);
+  let display_path =
+    fastrender::ui::toast_sanitization::sanitize_path_for_toast(path, MAX_TOAST_PATH_BYTES);
   Err(format!("File no longer exists: {display_path}"))
 }
 
@@ -7558,7 +7331,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         None,
         None,
         None,
-        Some(format_profile_autosave_spawn_failure_toast(&err)),
+        Some(fastrender::ui::toast_sanitization::format_profile_autosave_spawn_failure_toast(&err)),
       )
     }
   };
@@ -8109,8 +7882,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let (toast_kind, toast_text) = if let Some(err) = session_autosave.spawn_error() {
       eprintln!("failed to start session autosave worker: {err}");
-      let detail =
-        sanitize_toast_detail_single_line(err, SESSION_AUTOSAVE_FALLBACK_ERROR_MAX_BYTES);
+      let detail = fastrender::ui::toast_sanitization::sanitize_toast_detail_single_line(
+        err,
+        SESSION_AUTOSAVE_FALLBACK_ERROR_MAX_BYTES,
+      );
       let mut text = "Session autosave is running in synchronous fallback.\nSaving may block the UI."
         .to_string();
       if let Some(detail) = detail {
@@ -10009,14 +9784,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       loop {
         match rx.try_recv() {
           Ok(err) => {
-            autosave_error_toast = Some(match err {
-              fastrender::ui::ProfileAutosaveError::Bookmarks { path, message } => {
-                format!("Failed to save bookmarks\n{path}\n{message}")
-              }
-              fastrender::ui::ProfileAutosaveError::History { path, message } => {
-                format!("Failed to save history\n{path}\n{message}")
-              }
-            });
+            autosave_error_toast = Some(
+              fastrender::ui::toast_sanitization::format_profile_autosave_save_error_toast(&err),
+            );
           }
           Err(std::sync::mpsc::TryRecvError::Empty) => break,
           Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -10030,11 +9800,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       profile_autosave_error_rx = None;
     }
     if let Some(text) = autosave_error_toast {
-      for win in windows.values_mut() {
-        win
-          .app
-          .show_chrome_toast_kind(fastrender::ui::ToastKind::Error, text.clone());
-        win.app.window.request_redraw();
+      let target_id = active_window_id
+        .filter(|id| windows.contains_key(id))
+        .or_else(|| window_order.iter().copied().find(|id| windows.contains_key(id)));
+      if let Some(target_id) = target_id {
+        if let Some(win) = windows.get_mut(&target_id) {
+          win
+            .app
+            .show_chrome_toast_kind(fastrender::ui::ToastKind::Error, text);
+          win.app.window.request_redraw();
+        }
       }
     }
 
