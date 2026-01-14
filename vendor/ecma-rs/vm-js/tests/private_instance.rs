@@ -213,6 +213,8 @@ fn optional_chaining_private_instance_field_short_circuits_on_nullish_base() {
       class C {
         #m = 'test262';
         static access(obj) { return obj?.#m; }
+        static accessLen(obj) { return obj?.#m.length; }
+        static accessLenParen(obj) { return (obj?.#m).length; }
       }
 
       let ok = true;
@@ -223,7 +225,20 @@ fn optional_chaining_private_instance_field_short_circuits_on_nullish_base() {
       let threw = false;
       try { C.access({}); } catch (e) { threw = e instanceof TypeError; }
 
-      ok && threw
+      ok = ok && C.accessLen(new C()) === 7;
+      ok = ok && C.accessLen(null) === undefined;
+      ok = ok && C.accessLen(undefined) === undefined;
+
+      let threwLen = false;
+      try { C.accessLen({}); } catch (e) { threwLen = e instanceof TypeError; }
+
+      let threwParenNull = false;
+      try { C.accessLenParen(null); } catch (e) { threwParenNull = e instanceof TypeError; }
+
+      let threwParenUndef = false;
+      try { C.accessLenParen(undefined); } catch (e) { threwParenUndef = e instanceof TypeError; }
+
+      ok && threw && threwLen && threwParenNull && threwParenUndef
     "#,
     )
     .unwrap();
@@ -268,6 +283,7 @@ fn optional_chaining_private_field_after_optional_chain_short_circuits_on_nullis
         #f = 'init';
         constructor(v) { this.#f = v; }
         method(o) { return o?.c.#f; }
+        methodParen(o) { return (o?.c).#f; }
       }
 
       const a = new C('a');
@@ -281,7 +297,15 @@ fn optional_chaining_private_field_after_optional_chain_short_circuits_on_nullis
       let threw = false;
       try { a.method({ c: {} }); } catch (e) { threw = e instanceof TypeError; }
 
-      ok && threw
+      ok = ok && a.methodParen({ c: b }) === 'b';
+
+      let threwParenNull = false;
+      try { a.methodParen(null); } catch (e) { threwParenNull = e instanceof TypeError; }
+
+      let threwParenUndef = false;
+      try { a.methodParen(undefined); } catch (e) { threwParenUndef = e instanceof TypeError; }
+
+      ok && threw && threwParenNull && threwParenUndef
     "#,
     )
     .unwrap();
@@ -330,6 +354,8 @@ fn compiled_script_with_private_optional_chain_field_falls_back_and_executes() -
       class C {
         #m = 'test262';
         static access(obj) { return obj?.#m; }
+        static accessLen(obj) { return obj?.#m.length; }
+        static accessLenParen(obj) { return (obj?.#m).length; }
       }
 
       let ok = true;
@@ -340,7 +366,20 @@ fn compiled_script_with_private_optional_chain_field_falls_back_and_executes() -
       let threw = false;
       try { C.access({}); } catch (e) { threw = e instanceof TypeError; }
 
-      ok && threw
+      ok = ok && C.accessLen(new C()) === 7;
+      ok = ok && C.accessLen(null) === undefined;
+      ok = ok && C.accessLen(undefined) === undefined;
+
+      let threwLen = false;
+      try { C.accessLen({}); } catch (e) { threwLen = e instanceof TypeError; }
+
+      let threwParenNull = false;
+      try { C.accessLenParen(null); } catch (e) { threwParenNull = e instanceof TypeError; }
+
+      let threwParenUndef = false;
+      try { C.accessLenParen(undefined); } catch (e) { threwParenUndef = e instanceof TypeError; }
+
+      ok && threw && threwLen && threwParenNull && threwParenUndef
     "#,
   )?;
 
@@ -401,6 +440,7 @@ fn compiled_script_with_private_field_after_optional_chain_falls_back_and_execut
         #f = 'init';
         constructor(v) { this.#f = v; }
         method(o) { return o?.c.#f; }
+        methodParen(o) { return (o?.c).#f; }
       }
 
       const a = new C('a');
@@ -414,7 +454,15 @@ fn compiled_script_with_private_field_after_optional_chain_falls_back_and_execut
       let threw = false;
       try { a.method({ c: {} }); } catch (e) { threw = e instanceof TypeError; }
 
-      ok && threw
+      ok = ok && a.methodParen({ c: b }) === 'b';
+
+      let threwParenNull = false;
+      try { a.methodParen(null); } catch (e) { threwParenNull = e instanceof TypeError; }
+
+      let threwParenUndef = false;
+      try { a.methodParen(undefined); } catch (e) { threwParenUndef = e instanceof TypeError; }
+
+      ok && threw && threwParenNull && threwParenUndef
     "#,
   )?;
 
