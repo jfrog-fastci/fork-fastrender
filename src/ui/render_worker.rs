@@ -367,6 +367,70 @@ mod media_controls_anchor_fallback_tests {
   }
 }
 
+#[cfg(test)]
+mod scroll_paint_backoff_gate_tests {
+  use super::*;
+
+  #[test]
+  fn scroll_paint_backoff_only_gates_scroll_repaints() {
+    let factory = default_ui_worker_factory().expect("expected default ui worker factory");
+
+    let (_ui_tx, ui_rx) = std::sync::mpsc::channel::<UiToWorker>();
+    let (worker_tx, _worker_rx) = std::sync::mpsc::channel::<WorkerToUiMsg>();
+    let downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>> =
+      Arc::new(Mutex::new(HashMap::new()));
+    let ui_tx = WorkerToUiSender::new(worker_tx, None);
+    let mut runtime = BrowserRuntime::new(ui_rx, ui_tx, factory, downloads);
+
+    let tab_id = TabId::new();
+    runtime.tabs.insert(tab_id, TabState::new(CancelGens::new()));
+    runtime.active_tab = Some(tab_id);
+
+    // Simulate a backed-off scroll repaint.
+    let now = Instant::now();
+    {
+      let tab = runtime.tabs.get_mut(&tab_id).expect("tab exists");
+      tab.needs_repaint = true;
+      tab.next_paint_is_scroll = true;
+      tab.repaint_after = Some(now + Duration::from_secs(60));
+    }
+    assert!(
+      !runtime.has_runnable_jobs(now),
+      "expected scroll repaint backoff to block runnable paint jobs"
+    );
+
+    // A subsequent non-scroll invalidation should bypass the scroll backoff.
+    {
+      let tab = runtime.tabs.get_mut(&tab_id).expect("tab exists");
+      tab.request_non_scroll_repaint();
+      // Keep the backoff set to ensure gating is based on `next_paint_is_scroll`, not just the
+      // presence of `repaint_after`.
+      tab.repaint_after = Some(now + Duration::from_secs(60));
+    }
+
+    assert!(
+      runtime.has_runnable_jobs(now),
+      "expected non-scroll repaint to be runnable even while a scroll backoff is set"
+    );
+
+    let job = runtime.next_job();
+    match job {
+      Some(Job::Paint {
+        tab_id: got_tab,
+        is_scroll,
+        ..
+      }) => {
+        assert_eq!(got_tab, tab_id);
+        assert!(
+          !is_scroll,
+          "expected non-scroll invalidation to schedule a non-scroll paint"
+        );
+      }
+      other => panic!("expected paint job, got {other:?}"),
+    }
+  }
+}
+
 /// Handle to the browser worker thread.
 ///
 /// The UI thread sends [`UiToWorker`] messages over `tx`, and receives [`WorkerToUi`] updates on
@@ -974,7 +1038,9 @@ struct TabState {
   force_repaint: bool,
   /// Backoff timestamp after a scroll paint deadline timeout.
   ///
-  /// When set and in the future, the tab is not considered paintable even if `needs_repaint==true`.
+  /// This backoff only gates scroll-triggered repaints (`next_paint_is_scroll == true`). Non-scroll
+  /// invalidations should clear it so clicks/viewport changes/etc are not delayed by a previous
+  /// scroll paint timeout.
   repaint_after: Option<Instant>,
 
   tick_time: Duration,
@@ -1050,6 +1116,17 @@ impl TabState {
       site_mismatch_restarts: 0,
       find: FindInPageWorkerState::default(),
     }
+  }
+
+  fn is_ready_to_paint(&self, now: Instant) -> bool {
+    self.needs_repaint
+      && (!self.next_paint_is_scroll || self.repaint_after.is_none_or(|t| t <= now))
+  }
+
+  fn request_non_scroll_repaint(&mut self) {
+    self.needs_repaint = true;
+    self.next_paint_is_scroll = false;
+    self.repaint_after = None;
   }
 
   fn sync_js_viewport_state_for(
@@ -3248,8 +3325,7 @@ impl BrowserRuntime {
 
   fn has_runnable_jobs(&self, now: Instant) -> bool {
     self.tabs.values().any(|tab| {
-      tab.pending_navigation.is_some()
-        || (tab.needs_repaint && tab.repaint_after.is_none_or(|t| t <= now))
+      tab.pending_navigation.is_some() || tab.is_ready_to_paint(now)
     })
   }
 
@@ -3257,7 +3333,7 @@ impl BrowserRuntime {
     self
       .tabs
       .values()
-      .filter(|tab| tab.needs_repaint)
+      .filter(|tab| tab.needs_repaint && tab.next_paint_is_scroll)
       .filter_map(|tab| tab.repaint_after)
       .filter(|t| *t > now)
       .min()
@@ -3752,7 +3828,7 @@ impl BrowserRuntime {
           if let Some(doc) = tab.document.as_mut() {
             doc.set_runtime_toggles(Some(Arc::clone(&self.runtime_toggles)));
             tab.cancel.bump_paint();
-            tab.needs_repaint = true;
+            tab.request_non_scroll_repaint();
             tab.force_repaint = true;
           }
           if let Some(js_tab) = tab.js_tab.as_mut() {
@@ -3814,7 +3890,7 @@ impl BrowserRuntime {
         };
         if dom_changed {
           tab.cancel.bump_paint();
-          tab.needs_repaint = true;
+          tab.request_non_scroll_repaint();
         }
 
         // Switching tabs should clear any stale hover state (cursor + hovered URL) until the UI
@@ -4011,7 +4087,7 @@ impl BrowserRuntime {
           tab.cancel.bump_paint();
 
           if let Some(doc) = tab.document.as_mut() {
-            tab.needs_repaint = true;
+            tab.request_non_scroll_repaint();
             tab.force_repaint = true;
             doc.set_viewport(tab.viewport_css.0, tab.viewport_css.1);
             doc.set_device_pixel_ratio(tab.dpr);
@@ -4634,7 +4710,7 @@ impl BrowserRuntime {
               "input",
             ) else {
               tab.cancel.bump_paint();
-              tab.needs_repaint = true;
+              tab.request_non_scroll_repaint();
               return;
             };
 
@@ -4679,7 +4755,7 @@ impl BrowserRuntime {
             }
           }
           tab.cancel.bump_paint();
-          tab.needs_repaint = true;
+          tab.request_non_scroll_repaint();
         }
       }
       UiToWorker::A11ySetTextSelectionRange {
@@ -4707,7 +4783,7 @@ impl BrowserRuntime {
         });
         if changed {
           tab.cancel.bump_paint();
-          tab.needs_repaint = true;
+          tab.request_non_scroll_repaint();
         }
       }
       UiToWorker::ImePreedit {
@@ -4749,7 +4825,7 @@ impl BrowserRuntime {
         let changed = doc.mutate_dom(|dom| tab.interaction.focus_node_id(dom, None, false).0);
         if changed {
           tab.cancel.bump_paint();
-          tab.needs_repaint = true;
+          tab.request_non_scroll_repaint();
         }
       }
       UiToWorker::MediaCommand {
@@ -4858,10 +4934,18 @@ impl BrowserRuntime {
         #[cfg(test)]
         let repaint_viewport_snapshot = (tab.viewport_css, tab.dpr);
         tab.cancel.bump_paint();
-        tab.needs_repaint = true;
         tab.force_repaint = true;
-        tab.next_paint_is_scroll =
-          matches!(reason, crate::ui::messages::RepaintReason::Scroll);
+        if matches!(reason, crate::ui::messages::RepaintReason::Scroll) {
+          // Preserve existing non-scroll repaint reasons so scroll-triggered repaints don't apply
+          // the optional scroll deadline/backoff when the tab is already repainting for input,
+          // viewport changes, etc.
+          if !tab.needs_repaint || tab.next_paint_is_scroll {
+            tab.next_paint_is_scroll = true;
+          }
+          tab.needs_repaint = true;
+        } else {
+          tab.request_non_scroll_repaint();
+        }
         #[cfg(test)]
         {
           self
@@ -5733,7 +5817,7 @@ impl BrowserRuntime {
               }));
 
             tab.cancel.bump_paint();
-            tab.needs_repaint = true;
+            tab.request_non_scroll_repaint();
             return;
           }
         }
@@ -5881,7 +5965,7 @@ impl BrowserRuntime {
           // boundary.
           let time_ms = duration_to_ms_f32(tab.tick_time);
           doc.set_animation_time_ms(time_ms);
-          tab.needs_repaint = true;
+          tab.request_non_scroll_repaint();
           tab.tick_coalesce = true;
         }
       }
@@ -5910,7 +5994,7 @@ impl BrowserRuntime {
         if generation_before != prev_generation || generation_after != generation_before {
           tab.js_dom_dirty = true;
           tab.cancel.bump_paint();
-          tab.needs_repaint = true;
+          tab.request_non_scroll_repaint();
           tab.tick_coalesce = true;
         }
         tab.js_dom_mutation_generation = generation_after;
@@ -6015,7 +6099,7 @@ impl BrowserRuntime {
       // Force a repaint so any highlight overlays are cleared.
       if tab.document.is_some() {
         tab.cancel.bump_paint();
-        tab.needs_repaint = true;
+        tab.request_non_scroll_repaint();
         tab.force_repaint = true;
       }
       return;
@@ -6048,7 +6132,7 @@ impl BrowserRuntime {
 
     if tab.document.is_some() {
       tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
       tab.force_repaint = true;
     }
   }
@@ -6082,7 +6166,7 @@ impl BrowserRuntime {
         }));
       if tab.document.is_some() {
         tab.cancel.bump_paint();
-        tab.needs_repaint = true;
+        tab.request_non_scroll_repaint();
         tab.force_repaint = true;
       }
       return;
@@ -6106,7 +6190,7 @@ impl BrowserRuntime {
 
     if tab.document.is_some() {
       tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
       tab.force_repaint = true;
     }
   }
@@ -6140,7 +6224,7 @@ impl BrowserRuntime {
         }));
       if tab.document.is_some() {
         tab.cancel.bump_paint();
-        tab.needs_repaint = true;
+        tab.request_non_scroll_repaint();
         tab.force_repaint = true;
       }
       return;
@@ -6165,7 +6249,7 @@ impl BrowserRuntime {
 
     if tab.document.is_some() {
       tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
       tab.force_repaint = true;
     }
   }
@@ -6189,7 +6273,7 @@ impl BrowserRuntime {
 
     if tab.document.is_some() {
       tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
       tab.force_repaint = true;
     }
   }
@@ -6469,7 +6553,7 @@ impl BrowserRuntime {
     {
       tab.js_dom_dirty = true;
       tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
     }
     tab.js_dom_mutation_generation = generation_after_dispatch;
 
@@ -6793,7 +6877,7 @@ impl BrowserRuntime {
 
     if changed || scroll_changed {
       tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
     }
 
     let tooltip = if pointer_in_page {
@@ -7326,7 +7410,7 @@ impl BrowserRuntime {
     if changed {
       // Preserve existing repaint behaviour for interaction-engine state changes.
       tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
     }
   }
 
@@ -7938,7 +8022,7 @@ impl BrowserRuntime {
         if default_allowed {
           navigate_to = Some(href);
         } else if dom_changed || scroll_changed {
-          tab.needs_repaint = true;
+          tab.request_non_scroll_repaint();
         }
       }
       InteractionAction::OpenInNewTab { href } => {
@@ -7946,7 +8030,7 @@ impl BrowserRuntime {
           open_in_new_tab = Some(href);
         }
         if dom_changed || scroll_changed {
-          tab.needs_repaint = true;
+          tab.request_non_scroll_repaint();
         }
       }
       InteractionAction::OpenInNewWindow { href } => {
@@ -7954,7 +8038,7 @@ impl BrowserRuntime {
           open_in_new_window = Some(href);
         }
         if dom_changed || scroll_changed {
-          tab.needs_repaint = true;
+          tab.request_non_scroll_repaint();
         }
       }
       InteractionAction::OpenInNewTabRequest { request } => {
@@ -7962,7 +8046,7 @@ impl BrowserRuntime {
           open_in_new_tab_request = Some(request);
         }
         if dom_changed || scroll_changed {
-          tab.needs_repaint = true;
+          tab.request_non_scroll_repaint();
         }
       }
       InteractionAction::Download { href, file_name } => {
@@ -7972,14 +8056,14 @@ impl BrowserRuntime {
         // Downloads do not navigate away from the current page; repaint so visited-link styles and
         // other DOM mutations become visible.
         if dom_changed || scroll_changed {
-          tab.needs_repaint = true;
+          tab.request_non_scroll_repaint();
         }
       }
       InteractionAction::NavigateRequest { request } => {
         if default_allowed {
           navigate_request = Some(request);
         } else if dom_changed || scroll_changed {
-          tab.needs_repaint = true;
+          tab.request_non_scroll_repaint();
         }
       }
       InteractionAction::TextDrop { target_dom_id, text } => {
@@ -8095,7 +8179,7 @@ impl BrowserRuntime {
           }
 
           if dom_changed || scroll_changed || apply_changed {
-            tab.needs_repaint = true;
+            tab.request_non_scroll_repaint();
           }
           if apply_changed {
             tab.cancel.bump_paint();
@@ -8112,7 +8196,7 @@ impl BrowserRuntime {
               );
             }
           }
-          tab.needs_repaint = true;
+          tab.request_non_scroll_repaint();
         }
       }
       InteractionAction::OpenSelectDropdown {
@@ -8155,7 +8239,7 @@ impl BrowserRuntime {
             anchor_css,
           }));
         if dom_changed || scroll_changed {
-          tab.needs_repaint = true;
+          tab.request_non_scroll_repaint();
         }
       }
       InteractionAction::OpenDateTimePicker {
@@ -8193,7 +8277,7 @@ impl BrowserRuntime {
             anchor_css,
           }));
         if dom_changed || scroll_changed {
-          tab.needs_repaint = true;
+          tab.request_non_scroll_repaint();
         }
       }
       InteractionAction::OpenColorPicker { input_node_id } => {
@@ -8227,7 +8311,7 @@ impl BrowserRuntime {
             anchor_css,
           }));
         if dom_changed || scroll_changed {
-          tab.needs_repaint = true;
+          tab.request_non_scroll_repaint();
         }
       }
       InteractionAction::OpenFilePicker {
@@ -8264,7 +8348,7 @@ impl BrowserRuntime {
             anchor_css,
           }));
         if dom_changed || scroll_changed {
-          tab.needs_repaint = true;
+          tab.request_non_scroll_repaint();
         }
       }
       InteractionAction::OpenMediaControls { media_node_id, kind } => {
@@ -8300,12 +8384,12 @@ impl BrowserRuntime {
           }));
 
         if dom_changed || scroll_changed {
-          tab.needs_repaint = true;
+          tab.request_non_scroll_repaint();
         }
       }
       _ => {
         if dom_changed || scroll_changed {
-          tab.needs_repaint = true;
+          tab.request_non_scroll_repaint();
         }
       }
     }
@@ -8473,7 +8557,7 @@ impl BrowserRuntime {
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
       tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
     }
 
     if dispatched_dom_event {
@@ -8716,7 +8800,7 @@ impl BrowserRuntime {
 
     if changed {
       tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
     }
 
     // Dispatch a cancelable `contextmenu` event before opening the default UI context menu.
@@ -8944,7 +9028,7 @@ impl BrowserRuntime {
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
       tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
     }
   }
 
@@ -9047,7 +9131,7 @@ impl BrowserRuntime {
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
       tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
     }
   }
 
@@ -9103,7 +9187,7 @@ impl BrowserRuntime {
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
       tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
     }
   }
 
@@ -9292,7 +9376,7 @@ impl BrowserRuntime {
 
     if changed || scroll_changed {
       tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
     }
   }
 
@@ -9329,7 +9413,7 @@ impl BrowserRuntime {
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
       tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
     }
   }
 
@@ -9363,7 +9447,7 @@ impl BrowserRuntime {
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
       tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
     }
   }
 
@@ -9405,7 +9489,7 @@ impl BrowserRuntime {
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
       tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
     }
   }
 
@@ -9420,7 +9504,7 @@ impl BrowserRuntime {
     let changed = doc.mutate_dom(|dom| tab.interaction.ime_preedit(dom, text, cursor));
     if changed {
       tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
     }
   }
 
@@ -9493,7 +9577,7 @@ impl BrowserRuntime {
 
     if changed || scroll_changed {
       tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
     }
   }
 
@@ -9508,7 +9592,7 @@ impl BrowserRuntime {
     let changed = doc.mutate_dom(|dom| tab.interaction.ime_cancel(dom));
     if changed {
       tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
     }
   }
 
@@ -9568,7 +9652,7 @@ impl BrowserRuntime {
 
     if changed || scroll_changed {
       tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
     }
   }
 
@@ -9694,7 +9778,7 @@ impl BrowserRuntime {
 
     if changed || scroll_changed {
       tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
     }
   }
 
@@ -9768,7 +9852,7 @@ impl BrowserRuntime {
 
     if changed || scroll_changed {
       tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
     }
   }
 
@@ -9838,7 +9922,7 @@ impl BrowserRuntime {
 
     if changed || scroll_changed {
       tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
       if scroll_changed {
         tab.scroll_coalesce = true;
       }
@@ -9887,7 +9971,7 @@ impl BrowserRuntime {
           &mut tab.last_reported_scroll_state,
         );
         tab.cancel.bump_paint();
-        tab.needs_repaint = true;
+        tab.request_non_scroll_repaint();
         tab.scroll_coalesce = true;
       }
     }
@@ -9978,7 +10062,7 @@ impl BrowserRuntime {
 
     if changed {
       tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
     }
   }
 
@@ -10444,7 +10528,7 @@ impl BrowserRuntime {
             navigate_to = Some(href);
           } else if changed || scroll_changed {
             tab.cancel.bump_paint();
-            tab.needs_repaint = true;
+            tab.request_non_scroll_repaint();
           }
         }
         InteractionAction::OpenInNewTab { href } => {
@@ -10458,7 +10542,7 @@ impl BrowserRuntime {
           }
           if changed || scroll_changed {
             tab.cancel.bump_paint();
-            tab.needs_repaint = true;
+            tab.request_non_scroll_repaint();
           }
         }
         InteractionAction::OpenInNewWindow { href } => {
@@ -10472,7 +10556,7 @@ impl BrowserRuntime {
           }
           if changed || scroll_changed {
             tab.cancel.bump_paint();
-            tab.needs_repaint = true;
+            tab.request_non_scroll_repaint();
           }
         }
         InteractionAction::OpenInNewTabRequest { request } => {
@@ -10483,7 +10567,7 @@ impl BrowserRuntime {
           }
           if changed || scroll_changed {
             tab.cancel.bump_paint();
-            tab.needs_repaint = true;
+            tab.request_non_scroll_repaint();
           }
         }
         InteractionAction::Download { href, file_name } => {
@@ -10492,7 +10576,7 @@ impl BrowserRuntime {
           }
           if changed || scroll_changed {
             tab.cancel.bump_paint();
-            tab.needs_repaint = true;
+            tab.request_non_scroll_repaint();
           }
         }
         InteractionAction::NavigateRequest { request } => {
@@ -10500,7 +10584,7 @@ impl BrowserRuntime {
             navigate_request = Some(request);
           } else if changed || scroll_changed {
             tab.cancel.bump_paint();
-            tab.needs_repaint = true;
+            tab.request_non_scroll_repaint();
           }
         }
         InteractionAction::OpenSelectDropdown {
@@ -10537,7 +10621,7 @@ impl BrowserRuntime {
             }));
           if changed {
             tab.cancel.bump_paint();
-            tab.needs_repaint = true;
+            tab.request_non_scroll_repaint();
           }
         }
         InteractionAction::OpenDateTimePicker { input_node_id, kind } => {
@@ -10591,7 +10675,7 @@ impl BrowserRuntime {
 
           if changed {
             tab.cancel.bump_paint();
-            tab.needs_repaint = true;
+            tab.request_non_scroll_repaint();
           }
         }
         InteractionAction::OpenColorPicker { input_node_id } => {
@@ -10628,7 +10712,7 @@ impl BrowserRuntime {
 
           if changed {
             tab.cancel.bump_paint();
-            tab.needs_repaint = true;
+            tab.request_non_scroll_repaint();
           }
         }
         InteractionAction::OpenFilePicker {
@@ -10660,7 +10744,7 @@ impl BrowserRuntime {
 
           if changed {
             tab.cancel.bump_paint();
-            tab.needs_repaint = true;
+            tab.request_non_scroll_repaint();
           }
         }
         _ => {
@@ -11225,7 +11309,7 @@ impl BrowserRuntime {
           }
           if changed || scroll_changed {
             tab.cancel.bump_paint();
-            tab.needs_repaint = true;
+            tab.request_non_scroll_repaint();
           }
         }
       }
@@ -11289,7 +11373,7 @@ impl BrowserRuntime {
       if self
         .tabs
         .get(&active)
-        .is_some_and(|t| t.needs_repaint && t.repaint_after.is_none_or(|t| t <= now))
+        .is_some_and(|t| t.is_ready_to_paint(now))
       {
         if let Some(tab) = self.tabs.get_mut(&active) {
           let force = std::mem::take(&mut tab.force_repaint);
@@ -11324,7 +11408,7 @@ impl BrowserRuntime {
       .tabs
       .iter()
       .find_map(|(id, tab)| {
-        (tab.needs_repaint && tab.repaint_after.is_none_or(|t| t <= now)).then_some(*id)
+        tab.is_ready_to_paint(now).then_some(*id)
       })
     {
       if let Some(tab) = self.tabs.get_mut(&tab_id) {
@@ -11662,7 +11746,7 @@ impl BrowserRuntime {
     }
 
     tab.cancel.bump_paint();
-    tab.needs_repaint = true;
+    tab.request_non_scroll_repaint();
     true
   }
 
@@ -11865,7 +11949,7 @@ impl BrowserRuntime {
         // The navigation attempt may have cleared a pending repaint (e.g. a scroll). Ensure we
         // repaint the still-committed document if needed.
         if tab.document.is_some() {
-          tab.needs_repaint = true;
+          tab.request_non_scroll_repaint();
         }
 
         return Some(JobOutput {
@@ -12630,7 +12714,7 @@ impl BrowserRuntime {
 
           // Ensure the next loop iteration paints with the latest `CancelGens` snapshot (and any
           // queued scroll/viewport updates).
-          tab.needs_repaint = true;
+          tab.request_non_scroll_repaint();
 
           return Some(JobOutput {
             tab_id,
@@ -12937,10 +13021,10 @@ impl BrowserRuntime {
         }
         emitted_frame = true;
       } else {
-        tab.needs_repaint = true;
+        tab.request_non_scroll_repaint();
       }
     } else {
-      tab.needs_repaint = true;
+      tab.request_non_scroll_repaint();
     }
 
     if !emitted_frame && tab.scroll_state != tab.last_reported_scroll_state {
