@@ -7080,6 +7080,38 @@ fn disposable_stack_push_record(
   Ok(())
 }
 
+fn async_disposable_stack_push_record(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  stack: GcObject,
+  resource_value: Value,
+  dispose_method: Value,
+  hint_is_async: bool,
+) -> Result<(), VmError> {
+  // Record shape: [resourceValue, disposeMethod, hintIsAsync]
+  let record = create_array_object(vm, scope, 0)?;
+  scope.push_root(Value::Object(record))?;
+  scope.push_roots(&[resource_value, dispose_method])?;
+
+  let (k0, k0_root) = alloc_array_index_key_from_usize(scope, 0)?;
+  scope.push_root(k0_root)?;
+  scope.create_data_property_or_throw(record, k0, resource_value)?;
+
+  let (k1, k1_root) = alloc_array_index_key_from_usize(scope, 1)?;
+  scope.push_root(k1_root)?;
+  scope.create_data_property_or_throw(record, k1, dispose_method)?;
+
+  let (k2, k2_root) = alloc_array_index_key_from_usize(scope, 2)?;
+  scope.push_root(k2_root)?;
+  scope.create_data_property_or_throw(record, k2, Value::Bool(hint_is_async))?;
+
+  let len = scope.heap().array_length(stack)? as usize;
+  let (k, k_root) = alloc_array_index_key_from_usize(scope, len)?;
+  scope.push_root(k_root)?;
+  scope.create_data_property_or_throw(stack, k, Value::Object(record))?;
+  Ok(())
+}
+
 pub fn disposable_stack_constructor_call(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
@@ -7256,7 +7288,7 @@ pub fn disposable_stack_prototype_defer(
     return Err(VmError::NotCallable);
   }
 
-  disposable_stack_push_record(vm, &mut scope, stack, Value::Undefined, on_dispose)?;
+  async_disposable_stack_push_record(vm, &mut scope, stack, Value::Undefined, on_dispose, true)?;
   Ok(Value::Undefined)
 }
 
@@ -7298,7 +7330,7 @@ pub fn disposable_stack_prototype_adopt(
     .object_set_prototype(closure, Some(intr.function_prototype()))?;
   set_function_job_realm_to_current(vm, &mut scope, closure)?;
 
-  disposable_stack_push_record(vm, &mut scope, stack, Value::Undefined, Value::Object(closure))?;
+  async_disposable_stack_push_record(vm, &mut scope, stack, Value::Undefined, Value::Object(closure), true)?;
   Ok(value)
 }
 
@@ -7570,6 +7602,9 @@ pub fn async_disposable_stack_constructor_construct(
   let stack_sym = scope
     .heap_mut()
     .ensure_internal_async_disposable_stack_stack_symbol()?;
+  let dispose_promise_sym = scope
+    .heap_mut()
+    .ensure_internal_async_disposable_stack_dispose_promise_symbol()?;
 
   let stack = create_array_object(vm, &mut scope, 0)?;
   scope.push_root(Value::Object(stack))?;
@@ -7583,6 +7618,11 @@ pub fn async_disposable_stack_constructor_construct(
     obj,
     PropertyKey::from_symbol(stack_sym),
     data_desc(Value::Object(stack), true, false, false),
+  )?;
+  scope.define_property(
+    obj,
+    PropertyKey::from_symbol(dispose_promise_sym),
+    data_desc(Value::Undefined, true, false, false),
   )?;
 
   Ok(Value::Object(obj))
@@ -7609,13 +7649,10 @@ pub fn async_disposable_stack_prototype_use(
   }
 
   let value = args.get(0).copied().unwrap_or(Value::Undefined);
-  scope.push_root(value)?;
-
-  // `async-dispose` does not special-case null/undefined; it records an unused resource.
   if matches!(value, Value::Null | Value::Undefined) {
-    disposable_stack_push_record(vm, &mut scope, stack, Value::Undefined, Value::Undefined)?;
     return Ok(value);
   }
+  scope.push_root(value)?;
 
   let Value::Object(_) = value else {
     return Err(VmError::TypeError(
@@ -7634,8 +7671,8 @@ pub fn async_disposable_stack_prototype_use(
     value,
     PropertyKey::from_symbol(async_dispose_sym),
   )?;
-  let method = match method {
-    Some(m) => m,
+  let (method, hint_is_async) = match method {
+    Some(m) => (m, true),
     None => {
       let method = crate::spec_ops::get_method_with_host_and_hooks(
         vm,
@@ -7645,14 +7682,17 @@ pub fn async_disposable_stack_prototype_use(
         value,
         PropertyKey::from_symbol(dispose_sym),
       )?;
-      method.ok_or(VmError::TypeError(
-        "AsyncDisposableStack.use value is not disposable",
-      ))?
+      (
+        method.ok_or(VmError::TypeError(
+          "AsyncDisposableStack.use value is not disposable",
+        ))?,
+        false,
+      )
     }
   };
   scope.push_root(method)?;
 
-  disposable_stack_push_record(vm, &mut scope, stack, value, method)?;
+  async_disposable_stack_push_record(vm, &mut scope, stack, value, method, hint_is_async)?;
   Ok(value)
 }
 
@@ -7808,6 +7848,368 @@ pub fn async_disposable_stack_prototype_disposed_get(
   Ok(Value::Bool(is_disposed))
 }
 
+#[derive(Debug, Clone, Copy)]
+enum AsyncDisposableStackDisposeOutcome {
+  Pending,
+  Complete { has_completion: bool, completion: Value },
+}
+
+fn async_disposable_stack_finish_dispose_promise(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  resolve: Value,
+  reject: Value,
+  has_completion: bool,
+  completion: Value,
+) -> Result<(), VmError> {
+  // Root call inputs across the host call: resolve/reject are user-callable values.
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[resolve, reject])?;
+  if has_completion {
+    scope.push_root(completion)?;
+    let _ = vm.call_with_host_and_hooks(host, &mut scope, hooks, reject, Value::Undefined, &[completion])?;
+  } else {
+    let _ = vm.call_with_host_and_hooks(host, &mut scope, hooks, resolve, Value::Undefined, &[Value::Undefined])?;
+  }
+  Ok(())
+}
+
+fn async_disposable_stack_dispose_step(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  stack: GcObject,
+  mut next_index: i64,
+  mut has_completion: bool,
+  mut completion: Value,
+  resolve: Value,
+  reject: Value,
+) -> Result<AsyncDisposableStackDisposeOutcome, VmError> {
+  let intr = require_intrinsics(vm)?;
+  let suppressed_error_prototype = intr.suppressed_error_prototype();
+
+  // Root state across allocations in this step.
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[Value::Object(stack), resolve, reject])?;
+  if has_completion {
+    scope.push_root(completion)?;
+  }
+
+  const TICK_EVERY: u32 = 32;
+  while next_index >= 0 {
+    let i = next_index as u32;
+    if i % TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+
+    // Fast path for internal arrays; fall back to property lookup for sparse/slow arrays.
+    let record = match scope.heap().array_fast_own_data_element_value(stack, i) {
+      Ok(Some(v)) => v,
+      Ok(None) => {
+        let key = scope.alloc_array_index_key(i)?;
+        if let PropertyKey::String(s) = key {
+          scope.push_root(Value::String(s))?;
+        }
+        match get_data_property_value(vm, &mut scope, stack, &key)? {
+          Some(v) => v,
+          None => {
+            next_index -= 1;
+            continue;
+          }
+        }
+      }
+      Err(err) => return Err(err),
+    };
+
+    next_index -= 1;
+
+    let Value::Object(record_obj) = record else {
+      continue;
+    };
+
+    let resource = scope
+      .heap()
+      .array_fast_own_data_element_value(record_obj, 0)?
+      .unwrap_or(Value::Undefined);
+    let method = scope
+      .heap()
+      .array_fast_own_data_element_value(record_obj, 1)?
+      .unwrap_or(Value::Undefined);
+    let hint_is_async = match scope.heap().array_fast_own_data_element_value(record_obj, 2)? {
+      Some(Value::Bool(b)) => b,
+      _ => false,
+    };
+
+    if matches!(method, Value::Undefined) {
+      continue;
+    }
+
+    // Root the call inputs across the host call.
+    let call_result = {
+      let mut call_scope = scope.reborrow();
+      call_scope.push_roots(&[resource, method])?;
+      vm.call_with_host_and_hooks(host, &mut call_scope, hooks, method, resource, &[])
+    };
+
+    match call_result {
+      Ok(result) => {
+        if !hint_is_async {
+          // Do not await return values from sync disposers, even if they return a Promise.
+          continue;
+        }
+
+        // Await the async disposal result.
+        let awaited = match crate::promise_ops::promise_resolve_for_await_with_host_and_hooks(
+          vm,
+          &mut scope,
+          host,
+          hooks,
+          result,
+        ) {
+          Ok(v) => v,
+          Err(err) => {
+            if err.is_throw_completion() {
+              let err = crate::vm::coerce_error_to_throw(&*vm, &mut scope, err);
+              let Some(thrown) = err.thrown_value() else {
+                return Err(err);
+              };
+              completion = if !has_completion {
+                has_completion = true;
+                thrown
+              } else {
+                create_suppressed_error(
+                  vm,
+                  &mut scope,
+                  suppressed_error_prototype,
+                  thrown,
+                  completion,
+                )?
+              };
+              scope.push_root(completion)?;
+              continue;
+            }
+            return Err(err);
+          }
+        };
+
+        // Root the awaited promise across continuation allocation + PerformPromiseThen.
+        scope.push_root(awaited)?;
+
+        let call_id = vm.async_disposable_stack_dispose_continuation_call_id()?;
+        let name = scope.alloc_string("")?;
+
+        let completion_slot = if has_completion { completion } else { Value::Undefined };
+        let base_slots = [
+          Value::Object(stack),
+          Value::Number(next_index as f64),
+          Value::Bool(has_completion),
+          completion_slot,
+          resolve,
+          reject,
+        ];
+
+        // onFulfilled handler.
+        let on_fulfilled = scope.alloc_native_function_with_slots(
+          call_id,
+          None,
+          name,
+          1,
+          &[
+            base_slots[0],
+            base_slots[1],
+            base_slots[2],
+            base_slots[3],
+            base_slots[4],
+            base_slots[5],
+            Value::Bool(false),
+          ],
+        )?;
+        scope.push_root(Value::Object(on_fulfilled))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(on_fulfilled, Some(intr.function_prototype()))?;
+        set_function_job_realm_to_current(vm, &mut scope, on_fulfilled)?;
+
+        // onRejected handler.
+        let on_rejected = scope.alloc_native_function_with_slots(
+          call_id,
+          None,
+          name,
+          1,
+          &[
+            base_slots[0],
+            base_slots[1],
+            base_slots[2],
+            base_slots[3],
+            base_slots[4],
+            base_slots[5],
+            Value::Bool(true),
+          ],
+        )?;
+        scope.push_root(Value::Object(on_rejected))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(on_rejected, Some(intr.function_prototype()))?;
+        set_function_job_realm_to_current(vm, &mut scope, on_rejected)?;
+
+        perform_promise_then_no_capability(
+          vm,
+          &mut scope,
+          hooks,
+          awaited,
+          Value::Object(on_fulfilled),
+          Value::Object(on_rejected),
+        )?;
+        return Ok(AsyncDisposableStackDisposeOutcome::Pending);
+      }
+      Err(err) => {
+        if err.is_throw_completion() {
+          let err = crate::vm::coerce_error_to_throw(&*vm, &mut scope, err);
+          let Some(thrown) = err.thrown_value() else {
+            return Err(err);
+          };
+          completion = if !has_completion {
+            has_completion = true;
+            thrown
+          } else {
+            create_suppressed_error(
+              vm,
+              &mut scope,
+              suppressed_error_prototype,
+              thrown,
+              completion,
+            )?
+          };
+          scope.push_root(completion)?;
+        } else {
+          return Err(err);
+        }
+      }
+    }
+  }
+
+  Ok(AsyncDisposableStackDisposeOutcome::Complete {
+    has_completion,
+    completion,
+  })
+}
+
+pub fn async_disposable_stack_dispose_continuation_call(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Native slots: [stack, nextIndex, hasCompletion, completion, resolve, reject, isReject]
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  if slots.len() != 7 {
+    return Err(VmError::InvariantViolation(
+      "AsyncDisposableStack dispose continuation has wrong native slot count",
+    ));
+  }
+
+  let Value::Object(stack) = slots[0] else {
+    return Err(VmError::InvariantViolation(
+      "AsyncDisposableStack dispose continuation stack slot is not an object",
+    ));
+  };
+  let Value::Number(next_index) = slots[1] else {
+    return Err(VmError::InvariantViolation(
+      "AsyncDisposableStack dispose continuation nextIndex slot is not a number",
+    ));
+  };
+  let Value::Bool(mut has_completion) = slots[2] else {
+    return Err(VmError::InvariantViolation(
+      "AsyncDisposableStack dispose continuation hasCompletion slot is not a bool",
+    ));
+  };
+  let mut completion = slots[3];
+  let resolve = slots[4];
+  let reject = slots[5];
+  let Value::Bool(is_reject) = slots[6] else {
+    return Err(VmError::InvariantViolation(
+      "AsyncDisposableStack dispose continuation isReject slot is not a bool",
+    ));
+  };
+
+  // Root state across allocations.
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[Value::Object(stack), resolve, reject])?;
+  if has_completion {
+    scope.push_root(completion)?;
+  }
+
+  if is_reject {
+    let intr = require_intrinsics(vm)?;
+    let suppressed_error_prototype = intr.suppressed_error_prototype();
+    let reason = args.get(0).copied().unwrap_or(Value::Undefined);
+    scope.push_root(reason)?;
+
+    completion = if !has_completion {
+      has_completion = true;
+      reason
+    } else {
+      create_suppressed_error(
+        vm,
+        &mut scope,
+        suppressed_error_prototype,
+        reason,
+        completion,
+      )?
+    };
+    scope.push_root(completion)?;
+  }
+
+  let outcome = async_disposable_stack_dispose_step(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    stack,
+    next_index as i64,
+    has_completion,
+    completion,
+    resolve,
+    reject,
+  );
+
+  match outcome {
+    Ok(AsyncDisposableStackDisposeOutcome::Pending) => Ok(Value::Undefined),
+    Ok(AsyncDisposableStackDisposeOutcome::Complete { has_completion, completion }) => {
+      async_disposable_stack_finish_dispose_promise(
+        vm,
+        &mut scope,
+        host,
+        hooks,
+        resolve,
+        reject,
+        has_completion,
+        completion,
+      )?;
+      Ok(Value::Undefined)
+    }
+    Err(err) => {
+      if err.is_throw_completion() {
+        let err = crate::vm::coerce_error_to_throw(&*vm, &mut scope, err);
+        let Some(thrown) = err.thrown_value() else {
+          return Err(err);
+        };
+        scope.push_root(thrown)?;
+        let _ = vm.call_with_host_and_hooks(host, &mut scope, hooks, reject, Value::Undefined, &[thrown])?;
+        Ok(Value::Undefined)
+      } else {
+        Err(err)
+      }
+    }
+  }
+}
+
 pub fn async_disposable_stack_prototype_dispose_async(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -7821,51 +8223,128 @@ pub fn async_disposable_stack_prototype_dispose_async(
   let mut scope = scope.reborrow();
   scope.push_root(this)?;
 
+  let (this_obj, is_disposed, stack) = match require_async_disposable_stack(vm, &mut scope, this) {
+    Ok(v) => v,
+    Err(err) => {
+      // `disposeAsync` must never throw synchronously: reject a new Promise instead.
+      let capability =
+        crate::promise_ops::new_promise_capability_with_host_and_hooks(vm, &mut scope, host, hooks)?;
+      scope.push_roots(&[capability.promise, capability.reject])?;
+      if err.is_throw_completion() {
+        return if_abrupt_reject_promise(vm, &mut scope, host, hooks, capability, err);
+      }
+      return Err(err);
+    }
+  };
+
+  // Idempotency: return the cached dispose promise if present.
+  let dispose_promise_sym = scope
+    .heap_mut()
+    .ensure_internal_async_disposable_stack_dispose_promise_symbol()?;
+  let dispose_promise_key = PropertyKey::from_symbol(dispose_promise_sym);
+  let existing_dispose_promise =
+    match get_data_property_value(vm, &mut scope, this_obj, &dispose_promise_key)? {
+      Some(v) => v,
+      None => {
+        // Treat missing `[[DisposePromise]]` as a missing internal slot.
+        let capability =
+          crate::promise_ops::new_promise_capability_with_host_and_hooks(vm, &mut scope, host, hooks)?;
+        scope.push_roots(&[capability.promise, capability.reject])?;
+        return if_abrupt_reject_promise(
+          vm,
+          &mut scope,
+          host,
+          hooks,
+          capability,
+          VmError::TypeError("AsyncDisposableStack method called on an object missing internal slots"),
+        );
+      }
+    };
+
+  if let Value::Object(p) = existing_dispose_promise {
+    return Ok(Value::Object(p));
+  }
+
+  if is_disposed {
+    // If the stack is already disposed but no cached promise exists (e.g. after `.move()`), create
+    // and cache a resolved Promise.
+    let resolved = crate::promise_ops::promise_resolve_with_host_and_hooks(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      Value::Undefined,
+    )?;
+    scope.push_root(resolved)?;
+    scope.define_property(
+      this_obj,
+      dispose_promise_key,
+      data_desc(resolved, true, false, false),
+    )?;
+    return Ok(resolved);
+  }
+
   // NewPromiseCapability(%Promise%).
   let capability =
     crate::promise_ops::new_promise_capability_with_host_and_hooks(vm, &mut scope, host, hooks)?;
   scope.push_roots(&[capability.promise, capability.resolve, capability.reject])?;
 
-  let completion: Result<(), VmError> = (|| {
-    let (this_obj, is_disposed, _stack) = require_async_disposable_stack(vm, &mut scope, this)?;
-    if is_disposed {
-      return Ok(());
-    }
+  // Cache the promise before performing disposal so re-entrant calls return the same promise.
+  scope.define_property(
+    this_obj,
+    dispose_promise_key,
+    data_desc(capability.promise, true, false, false),
+  )?;
 
-    // Mark as disposed.
-    let state_sym = scope
-      .heap_mut()
-      .ensure_internal_async_disposable_stack_state_symbol()?;
-    scope.define_property(
-      this_obj,
-      PropertyKey::from_symbol(state_sym),
-      data_desc(Value::Bool(true), true, false, false),
-    )?;
+  // Mark as disposed.
+  let state_sym = scope
+    .heap_mut()
+    .ensure_internal_async_disposable_stack_state_symbol()?;
+  scope.define_property(
+    this_obj,
+    PropertyKey::from_symbol(state_sym),
+    data_desc(Value::Bool(true), true, false, false),
+  )?;
 
-    // (Minimal) clear the internal stack.
-    let stack_sym = scope
-      .heap_mut()
-      .ensure_internal_async_disposable_stack_stack_symbol()?;
-    let empty = create_array_object(vm, &mut scope, 0)?;
-    scope.push_root(Value::Object(empty))?;
-    scope.define_property(
-      this_obj,
-      PropertyKey::from_symbol(stack_sym),
-      data_desc(Value::Object(empty), true, false, false),
-    )?;
+  // Clear the internal stack slot to avoid retaining disposed resources via the stack object.
+  let stack_sym = scope
+    .heap_mut()
+    .ensure_internal_async_disposable_stack_stack_symbol()?;
+  let empty = create_array_object(vm, &mut scope, 0)?;
+  scope.push_root(Value::Object(empty))?;
+  scope.define_property(
+    this_obj,
+    PropertyKey::from_symbol(stack_sym),
+    data_desc(Value::Object(empty), true, false, false),
+  )?;
 
-    Ok(())
-  })();
+  // Start disposing resources from the transferred stack capability.
+  let start_index = scope.heap().array_length(stack)? as i64 - 1;
+  let outcome = async_disposable_stack_dispose_step(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    stack,
+    start_index,
+    false,
+    Value::Undefined,
+    capability.resolve,
+    capability.reject,
+  );
 
-  match completion {
-    Ok(()) => {
-      let _ = vm.call_with_host_and_hooks(
-        host,
+  match outcome {
+    Ok(AsyncDisposableStackDisposeOutcome::Pending) => Ok(capability.promise),
+    Ok(AsyncDisposableStackDisposeOutcome::Complete { has_completion, completion }) => {
+      async_disposable_stack_finish_dispose_promise(
+        vm,
         &mut scope,
+        host,
         hooks,
         capability.resolve,
-        Value::Undefined,
-        &[Value::Undefined],
+        capability.reject,
+        has_completion,
+        completion,
       )?;
       Ok(capability.promise)
     }

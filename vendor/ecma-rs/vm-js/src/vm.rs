@@ -523,6 +523,7 @@ pub struct Vm {
   async_iterator_close_on_fulfilled_call: Option<NativeFunctionId>,
   async_iterator_close_on_rejected_call: Option<NativeFunctionId>,
   disposable_stack_adopt_closure_call: Option<NativeFunctionId>,
+  async_disposable_stack_dispose_continuation_call: Option<NativeFunctionId>,
   next_async_continuation_id: u32,
   async_continuations: HashMap<u32, VmAsyncContinuation>,
   async_generator_continuations: HashMap<GcObject, AsyncGeneratorRuntimeState>,
@@ -813,6 +814,7 @@ impl Vm {
       async_iterator_close_on_fulfilled_call: None,
       async_iterator_close_on_rejected_call: None,
       disposable_stack_adopt_closure_call: None,
+      async_disposable_stack_dispose_continuation_call: None,
       next_async_continuation_id: 0,
       async_continuations: HashMap::new(),
       async_generator_continuations: HashMap::new(),
@@ -1387,6 +1389,17 @@ impl Vm {
     }
     let id = self.register_native_call(crate::builtins::disposable_stack_adopt_closure_call)?;
     self.disposable_stack_adopt_closure_call = Some(id);
+    Ok(id)
+  }
+
+  pub(crate) fn async_disposable_stack_dispose_continuation_call_id(
+    &mut self,
+  ) -> Result<NativeFunctionId, VmError> {
+    if let Some(id) = self.async_disposable_stack_dispose_continuation_call {
+      return Ok(id);
+    }
+    let id = self.register_native_call(crate::builtins::async_disposable_stack_dispose_continuation_call)?;
+    self.async_disposable_stack_dispose_continuation_call = Some(id);
     Ok(id)
   }
 
