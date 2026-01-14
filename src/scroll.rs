@@ -1704,7 +1704,6 @@ pub fn apply_scroll_anchoring_between_fragment_trees(
   let (anchored, _next_snapshot) = apply_scroll_anchoring(&snapshot, next, scroll);
   anchored
 }
-
 fn apply_viewport_scroll_cancel_to_fixed(
   node: &mut FragmentNode,
   viewport_scroll: Point,

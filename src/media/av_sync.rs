@@ -8,6 +8,13 @@ pub const ENV_AV_SYNC_MAX_LATE_MS: &str = "FASTR_AV_SYNC_MAX_LATE_MS";
 /// Environment variable override for [`AvSyncConfig::max_early`].
 pub const ENV_AV_SYNC_MAX_EARLY_MS: &str = "FASTR_AV_SYNC_MAX_EARLY_MS";
 
+/// Environment variable override for [`AvSyncConfig::tolerance`] (preferred).
+pub const ENV_FASTRENDER_AVSYNC_IN_SYNC_MS: &str = "FASTRENDER_AVSYNC_IN_SYNC_MS";
+/// Environment variable override for [`AvSyncConfig::max_late`] (preferred).
+pub const ENV_FASTRENDER_AVSYNC_DROP_LATE_MS: &str = "FASTRENDER_AVSYNC_DROP_LATE_MS";
+/// Environment variable override for [`AvSyncConfig::max_early`] (preferred).
+pub const ENV_FASTRENDER_AVSYNC_DELAY_EARLY_MS: &str = "FASTRENDER_AVSYNC_DELAY_EARLY_MS";
+
 /// Default in-sync tolerance, in milliseconds.
 pub const DEFAULT_AV_SYNC_TOLERANCE_MS: u64 = 20;
 /// Default drop threshold (video late), in milliseconds.
@@ -78,7 +85,48 @@ impl AvSyncConfig {
       DEFAULT_AV_SYNC_MAX_EARLY_MS,
       ENV_AV_SYNC_MAX_EARLY_MS,
     );
+
+    // Newer env var names (preferred). We read these directly (instead of via `RuntimeToggles`)
+    // because they intentionally do not use the `FASTR_` prefix.
+    let in_sync_ms = std::env::var(ENV_FASTRENDER_AVSYNC_IN_SYNC_MS).ok();
+    let drop_late_ms = std::env::var(ENV_FASTRENDER_AVSYNC_DROP_LATE_MS).ok();
+    let delay_early_ms = std::env::var(ENV_FASTRENDER_AVSYNC_DELAY_EARLY_MS).ok();
+    out.apply_fast_render_env_overrides(
+      in_sync_ms.as_deref(),
+      drop_late_ms.as_deref(),
+      delay_early_ms.as_deref(),
+    );
+
     out
+  }
+
+  fn from_fast_render_env_values(
+    in_sync_ms: Option<&str>,
+    drop_late_ms: Option<&str>,
+    delay_early_ms: Option<&str>,
+  ) -> Self {
+    let mut out = Self::default();
+    out.apply_fast_render_env_overrides(in_sync_ms, drop_late_ms, delay_early_ms);
+    out
+  }
+
+  fn apply_fast_render_env_overrides(
+    &mut self,
+    in_sync_ms: Option<&str>,
+    drop_late_ms: Option<&str>,
+    delay_early_ms: Option<&str>,
+  ) {
+    // Important: these overrides are best-effort. Invalid values are ignored so callers can
+    // experiment without breaking playback or requiring configuration resets.
+    if let Ok(Some(ms)) = parse_env_ms(in_sync_ms) {
+      self.tolerance = Duration::from_millis(ms);
+    }
+    if let Ok(Some(ms)) = parse_env_ms(drop_late_ms) {
+      self.max_late = Duration::from_millis(ms);
+    }
+    if let Ok(Some(ms)) = parse_env_ms(delay_early_ms) {
+      self.max_early = Duration::from_millis(ms);
+    }
   }
 }
 
@@ -251,6 +299,29 @@ mod tests {
       assert_eq!(cfg.max_late, ms(50));
       assert_eq!(cfg.max_early, ms(60));
     });
+  }
+
+  #[test]
+  fn av_sync_env_parses_valid_values() {
+    let cfg = AvSyncConfig::from_fast_render_env_values(Some("5"), Some("100"), Some("1_250"));
+    assert_eq!(cfg.tolerance, ms(5));
+    assert_eq!(cfg.max_late, ms(100));
+    assert_eq!(cfg.max_early, ms(1_250));
+  }
+
+  #[test]
+  fn av_sync_env_ignores_invalid_values_and_keeps_defaults() {
+    let default = AvSyncConfig::default();
+
+    // Invalid values (non-numeric / negative / empty) should be ignored.
+    let cfg = AvSyncConfig::from_fast_render_env_values(Some("nope"), Some("-10"), Some(""));
+    assert_eq!(cfg, default);
+
+    // Mixed values: apply the valid one; ignore the invalid ones.
+    let cfg = AvSyncConfig::from_fast_render_env_values(Some("20"), Some("bad"), Some("-3"));
+    assert_eq!(cfg.tolerance, ms(20));
+    assert_eq!(cfg.max_late, default.max_late);
+    assert_eq!(cfg.max_early, default.max_early);
   }
 
   #[test]
