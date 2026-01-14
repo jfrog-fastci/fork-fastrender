@@ -1101,10 +1101,10 @@ impl BookmarkStore {
   /// This is optimized for UI dropdowns: it avoids allocating a full `Vec<String>` per folder (as
   /// [`Self::folders_in_display_order`] does).
   pub fn folders_in_display_order_joined(&self) -> Vec<(BookmarkId, String)> {
-    fn walk<'a>(
-      store: &'a BookmarkStore,
+    fn walk(
+      store: &BookmarkStore,
       folder_id: BookmarkId,
-      path: &mut Vec<&'a str>,
+      path: &mut String,
       out: &mut Vec<(BookmarkId, String)>,
     ) {
       let Some(node) = store.nodes.get(&folder_id) else {
@@ -1114,17 +1114,13 @@ impl BookmarkStore {
         return;
       };
 
-      path.push(folder.title.as_str());
-
-      let total_len = path.iter().map(|s| s.len()).sum::<usize>() + path.len().saturating_sub(1);
-      let mut joined = String::with_capacity(total_len);
-      for (idx, part) in path.iter().enumerate() {
-        if idx > 0 {
-          joined.push('/');
-        }
-        joined.push_str(part);
+      // Maintain an in-place `root/…/leaf` path buffer to avoid rebuilding strings for every folder.
+      let prev_len = path.len();
+      if !path.is_empty() {
+        path.push('/');
       }
-      out.push((folder_id, joined));
+      path.push_str(folder.title.as_str());
+      out.push((folder_id, path.clone()));
 
       for child in &folder.children {
         if matches!(store.nodes.get(child), Some(BookmarkNode::Folder(_))) {
@@ -1132,11 +1128,11 @@ impl BookmarkStore {
         }
       }
 
-      path.pop();
+      path.truncate(prev_len);
     }
 
     let mut out = Vec::new();
-    let mut path: Vec<&str> = Vec::new();
+    let mut path = String::new();
     for id in &self.roots {
       if matches!(self.nodes.get(id), Some(BookmarkNode::Folder(_))) {
         walk(self, *id, &mut path, &mut out);
