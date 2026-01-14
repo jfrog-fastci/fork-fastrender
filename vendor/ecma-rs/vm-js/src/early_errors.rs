@@ -555,10 +555,14 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       StmtListKind::BlockLike => {
         ctx.using_allowed = true;
       }
-      // Switch clause statement lists are valid `using` containers (a `switch` CaseBlock forms a
-      // single lexical scope for all clauses).
+      // Explicit Resource Management early error:
+      // `using` / `await using` declarations are not permitted directly within the StatementList of
+      // a `CaseClause` / `DefaultClause`.
+      //
+      // Note: nested blocks within a clause *are* valid `using` containers, and will re-enable
+      // `using_allowed` via `StmtListKind::BlockLike` when entered.
       StmtListKind::SwitchClause => {
-        ctx.using_allowed = true;
+        ctx.using_allowed = false;
       }
     }
 
