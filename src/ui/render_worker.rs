@@ -14203,7 +14203,12 @@ mod scroll_state_updated_tests {
     let mut tab = TabState::new(CancelGens::new());
     tab.scroll_state = ScrollState::with_viewport(Point::new(10.0, 20.0));
 
-    BrowserRuntime::emit_scroll_state_updated(&tx, tab_id, &mut tab);
+    BrowserRuntime::emit_scroll_state_updated(
+      &tx,
+      tab_id,
+      &tab.scroll_state,
+      &mut tab.last_reported_scroll_state,
+    );
 
     assert_eq!(tab.last_reported_scroll_state, tab.scroll_state);
     match rx.recv_timeout(Duration::from_millis(50)).expect("ScrollStateUpdated") {
