@@ -4212,6 +4212,11 @@ impl<'a> Scope<'a> {
         tick()?;
       }
       index_keys.sort_by_key(|(idx, _)| *idx);
+      // Array index properties can be represented both in the ordinary property list (e.g. when
+      // created via generic object operations) and in the array's dense fast-elements table.
+      //
+      // `[[OwnPropertyKeys]]` must not report duplicate keys, so dedupe here after sorting.
+      index_keys.dedup_by_key(|(idx, _)| *idx);
       if !index_keys.is_empty() {
         tick()?;
       }

@@ -93,7 +93,7 @@ pub fn get_iterator(
 /// `GetIterator` (ECMA-262) via iterator protocol only (no internal fast paths).
 ///
 /// This exists for spec-shaped callers (notably `yield*` delegation) that must receive an iterator
-/// record with a callable `next_method`.
+/// record by consulting the iterator protocol (i.e. by calling `@@iterator`).
 pub fn get_iterator_protocol(
   vm: &mut Vm,
   host: &mut dyn VmHost,
@@ -139,13 +139,6 @@ pub fn get_iterator_from_method(
     next_key,
     Value::Object(iterator_obj),
   )?;
-
-  // `GetIteratorFromMethod` must return an iterator record with a callable `next` method.
-  if !scope.heap().is_callable(next)? {
-    return Err(VmError::TypeError(
-      "GetIteratorFromMethod: iterator.next is not callable",
-    ));
-  }
 
   Ok(IteratorRecord {
     iterator,

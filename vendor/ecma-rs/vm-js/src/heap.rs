@@ -6333,6 +6333,14 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
       match prop.key {
         PropertyKey::String(s) => {
           if let Some(idx) = self.string_to_array_index(s) {
+            // Array index properties can exist either in the array's fast elements table or in the
+            // ordinary property list. When an index is represented in both, only report it once.
+            if let Some(elements) = fast_indices {
+              let u = idx as usize;
+              if u < elements.len() && elements[u].is_some() {
+                continue;
+              }
+            }
             array_keys.push((idx, prop.key));
           } else {
             string_keys.push(prop.key);
