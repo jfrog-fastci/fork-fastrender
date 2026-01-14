@@ -306,6 +306,9 @@ impl ChromeFrameRuntime {
       InteractionAction::Navigate { href }
       | InteractionAction::OpenInNewTab { href }
       | InteractionAction::OpenInNewWindow { href } => {
+        // Chrome-frame HTML should only link to trusted `chrome-action:` URLs. The chrome frame does
+        // not currently implement distinct "open in new tab/window" behaviors; the `chrome-action:`
+        // target itself can request `new-tab`, `new-window`, etc.
         out.push_action(self.chrome_action_from_href(&href)?);
       }
       InteractionAction::NavigateRequest { request }
