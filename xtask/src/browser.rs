@@ -2,20 +2,30 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Environment variable read by `src/bin/browser.rs` to apply an in-process address-space cap (MiB).
+///
+/// Preferred: pass `browser --mem-limit-mb <MiB>`.
 pub const FASTR_BROWSER_MEM_LIMIT_MB_ENV: &str = "FASTR_BROWSER_MEM_LIMIT_MB";
 
 /// Environment variable read by `src/bin/browser.rs` to run without initializing winit/wgpu.
+///
+/// Preferred: pass `browser --headless-smoke`.
 pub const FASTR_TEST_BROWSER_HEADLESS_SMOKE_ENV: &str = "FASTR_TEST_BROWSER_HEADLESS_SMOKE";
 
 /// Environment variable read by `src/bin/browser.rs` to show the in-app HUD overlay.
+///
+/// Preferred: pass `browser --hud` / `browser --no-hud`.
 pub const FASTR_BROWSER_HUD_ENV: &str = "FASTR_BROWSER_HUD";
 
-/// Environment variable used to enable lightweight responsiveness/perf logging in the browser UI.
+/// Legacy env var used to enable lightweight responsiveness/perf logging in the browser UI.
+///
+/// Preferred: pass `browser --perf-log`.
 pub const FASTR_PERF_LOG_ENV: &str = "FASTR_PERF_LOG";
 
-/// Optional output path for `FASTR_PERF_LOG` logs, when supported.
+/// Legacy env var: optional output path for `FASTR_PERF_LOG` logs, when supported.
 ///
 /// When unset/empty, logs are written to stdout so they can be piped/tee'd.
+///
+/// Preferred: pass `browser --perf-log-out <path>`.
 pub const FASTR_PERF_LOG_OUT_ENV: &str = "FASTR_PERF_LOG_OUT";
 
 /// Legacy env var used to write a Chrome trace of the windowed browser event loop.
