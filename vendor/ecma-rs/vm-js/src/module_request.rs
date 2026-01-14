@@ -176,8 +176,9 @@ impl ModuleRequest {
   ///
   /// Import attributes are compared **order-insensitively** (with a length check).
   ///
-  /// Note: when both `ModuleRequest`s are canonicalized (e.g. built via [`ModuleRequest::new`]),
-  /// `self == other` is equivalent to this method.
+  /// This is an `O(n^2)` comparison in the number of attributes. When both requests are
+  /// canonicalized (sorted attributes; e.g. built via [`ModuleRequest::new`]), `self == other` is
+  /// equivalent and should be preferred for large attribute lists.
   pub fn spec_equal(&self, other: &Self) -> bool {
     module_requests_equal(self, other)
   }
