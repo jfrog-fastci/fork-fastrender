@@ -6,15 +6,14 @@
 //! capture user intent. Side effects (worker messages, OS open/reveal) are performed by the caller
 //! (typically `src/bin/browser.rs`).
 
-use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
+use super::string_match::contains_ascii_case_insensitive;
 use super::{
   a11y_labels, motion::UiMotion, panel_empty_state, panel_header_with_actions, panel_search_field,
   theme::BrowserTheme, BrowserIcon, DownloadEntry, DownloadId, DownloadStatus, TabId,
 };
-use super::string_match::contains_ascii_case_insensitive;
 
 fn format_bytes(bytes: u64) -> String {
   const KB: f64 = 1024.0;
@@ -71,51 +70,22 @@ fn download_progress_a11y_label(
   }
 }
 
-fn download_status_search_haystack(status: &DownloadStatus) -> &'static str {
-  match status {
-    DownloadStatus::InProgress { .. } => "downloading inprogress in-progress",
-    DownloadStatus::Completed => "completed complete done",
-    DownloadStatus::Cancelled => "cancelled canceled",
-    DownloadStatus::Failed { .. } => "failed error",
-  }
-}
-
-fn download_matches_tokens(entry: &DownloadEntry, tokens_lower: &[&str]) -> bool {
-  if tokens_lower.is_empty() {
+fn download_matches_query_lower(entry: &DownloadEntry, query_lower: &str) -> bool {
+  if query_lower.is_empty() {
     return true;
   }
 
   let file_name = entry.file_name.trim();
   let url = entry.url.trim();
-  let status = download_status_search_haystack(&entry.status);
-  let error = match &entry.status {
-    DownloadStatus::Failed { error } => Some(error.trim()).filter(|e| !e.is_empty()),
-    _ => None,
-  };
-
-  for token_lower in tokens_lower {
-    if contains_ascii_case_insensitive(file_name, token_lower)
-      || contains_ascii_case_insensitive(url, token_lower)
-      || contains_ascii_case_insensitive(status, token_lower)
-      || error.is_some_and(|err| contains_ascii_case_insensitive(err, token_lower))
-    {
-      continue;
-    }
-    if contains_ascii_case_insensitive(entry.path_display.as_str(), token_lower) {
-      continue;
-    }
-    return false;
-  }
-
-  true
+  contains_ascii_case_insensitive(file_name, query_lower)
+    || contains_ascii_case_insensitive(url, query_lower)
 }
 
 /// Returns `true` when `entry` should be included for `query`.
 ///
 /// Search semantics:
-/// - Query is split by whitespace into tokens; every token must match at least one download field.
 /// - Matching is ASCII case-insensitive (non-ASCII bytes must match exactly).
-/// - Tokens match against file name, URL, local path display, and status words ("failed", etc).
+/// - The trimmed query must be a substring of either the file name or the URL.
 pub fn download_matches_query(entry: &DownloadEntry, query: &str) -> bool {
   let query = query.trim();
   if query.is_empty() {
@@ -128,8 +98,7 @@ pub fn download_matches_query(entry: &DownloadEntry, query: &str) -> bool {
   } else {
     Cow::Borrowed(query)
   };
-  let tokens: SmallVec<[&str; 4]> = query_lower.split_whitespace().collect();
-  download_matches_tokens(entry, tokens.as_slice())
+  download_matches_query_lower(entry, query_lower.as_ref())
 }
 
 #[derive(Debug, Default)]
@@ -244,7 +213,11 @@ pub fn downloads_panel_ui(
 
           let show_folder = ui.small_button("Show downloads folder");
           #[cfg(test)]
-          store_test_id(ui.ctx(), "downloads_panel_show_folder_button_id", show_folder.id);
+          store_test_id(
+            ui.ctx(),
+            "downloads_panel_show_folder_button_id",
+            show_folder.id,
+          );
           show_folder.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, "Show downloads folder")
           });
@@ -274,7 +247,11 @@ pub fn downloads_panel_ui(
         out.close_requested = true;
       }
       #[cfg(test)]
-      store_test_id(ui.ctx(), "downloads_panel_search_input_id", search_out.response.id);
+      store_test_id(
+        ui.ctx(),
+        "downloads_panel_search_input_id",
+        search_out.response.id,
+      );
 
       ui.add_space(8.0);
       ui.separator();
@@ -314,14 +291,14 @@ pub fn downloads_panel_ui(
       let row_total_h = row_content_h + row_gap;
 
       let query = search_query.trim();
+      let has_query = !query.is_empty();
+
       // Most queries are already lowercase; avoid allocating unless needed.
       let query_lower: Cow<'_, str> = if query.as_bytes().iter().any(|b| b.is_ascii_uppercase()) {
         Cow::Owned(query.to_ascii_lowercase())
       } else {
         Cow::Borrowed(query)
       };
-      let tokens: SmallVec<[&str; 4]> = query_lower.split_whitespace().collect();
-      let has_query = !tokens.is_empty();
 
       let filtered_count = if !has_query {
         None
@@ -329,7 +306,7 @@ pub fn downloads_panel_ui(
         let matches = downloads
           .iter()
           .rev()
-          .filter(|entry| download_matches_tokens(entry, &tokens))
+          .filter(|entry| download_matches_query_lower(entry, query_lower.as_ref()))
           .count();
         if matches == 0 {
           panel_empty_state(ui, BrowserIcon::Search, "No matching downloads", None, None);
@@ -495,139 +472,139 @@ pub fn downloads_panel_ui(
                             a11y_labels::download_open_label(&entry.file_name),
                           )
                         });
-                      if open_resp.clicked() {
-                        out.open_requests.push(entry.path.clone());
-                      }
+                        if open_resp.clicked() {
+                          out.open_requests.push(entry.path.clone());
+                        }
 
-                      let copy_path_resp = ui.small_button("Copy path");
-                      copy_path_resp.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                          egui::WidgetType::Button,
-                          a11y_labels::download_copy_path_label(&entry.file_name),
-                        )
-                      });
-                      if copy_path_resp.clicked() {
-                        out.copy_requests.push(entry.path_display.clone());
-                      }
-                      #[cfg(test)]
-                      store_test_id(
-                        ui.ctx(),
-                        ("downloads_copy_path_button_id", entry.download_id.0),
-                        copy_path_resp.id,
-                      );
+                        let copy_path_resp = ui.small_button("Copy path");
+                        copy_path_resp.widget_info(|| {
+                          egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            a11y_labels::download_copy_path_label(&entry.file_name),
+                          )
+                        });
+                        if copy_path_resp.clicked() {
+                          out.copy_requests.push(entry.path_display.clone());
+                        }
+                        #[cfg(test)]
+                        store_test_id(
+                          ui.ctx(),
+                          ("downloads_copy_path_button_id", entry.download_id.0),
+                          copy_path_resp.id,
+                        );
 
-                      let copy_link_resp = ui.small_button("Copy link");
-                      copy_link_resp.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                          egui::WidgetType::Button,
-                          a11y_labels::download_copy_link_label(&entry.file_name),
-                        )
-                      });
-                      if copy_link_resp.clicked() {
-                        out.copy_requests.push(entry.url.clone());
+                        let copy_link_resp = ui.small_button("Copy link");
+                        copy_link_resp.widget_info(|| {
+                          egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            a11y_labels::download_copy_link_label(&entry.file_name),
+                          )
+                        });
+                        if copy_link_resp.clicked() {
+                          out.copy_requests.push(entry.url.clone());
+                        }
+                        #[cfg(test)]
+                        store_test_id(
+                          ui.ctx(),
+                          ("downloads_copy_link_button_id", entry.download_id.0),
+                          copy_link_resp.id,
+                        );
                       }
-                      #[cfg(test)]
-                      store_test_id(
-                        ui.ctx(),
-                        ("downloads_copy_link_button_id", entry.download_id.0),
-                        copy_link_resp.id,
-                      );
-                    }
-                    DownloadStatus::Cancelled => {
-                      let retry_resp = ui.small_button("Retry");
-                      retry_resp.widget_info(|| {
+                      DownloadStatus::Cancelled => {
+                        let retry_resp = ui.small_button("Retry");
+                        retry_resp.widget_info(|| {
                           egui::WidgetInfo::labeled(
                             egui::WidgetType::Button,
                             a11y_labels::download_retry_label(&entry.file_name),
                           )
                         });
-                      if retry_resp.clicked() {
-                        out.retry_requests.push(entry.retry_request());
-                      }
+                        if retry_resp.clicked() {
+                          out.retry_requests.push(entry.retry_request());
+                        }
 
-                      let copy_path_resp = ui.small_button("Copy path");
-                      copy_path_resp.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                          egui::WidgetType::Button,
-                          a11y_labels::download_copy_path_label(&entry.file_name),
-                        )
-                      });
-                      if copy_path_resp.clicked() {
-                        out.copy_requests.push(entry.path_display.clone());
-                      }
-                      #[cfg(test)]
-                      store_test_id(
-                        ui.ctx(),
-                        ("downloads_copy_path_button_id", entry.download_id.0),
-                        copy_path_resp.id,
-                      );
+                        let copy_path_resp = ui.small_button("Copy path");
+                        copy_path_resp.widget_info(|| {
+                          egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            a11y_labels::download_copy_path_label(&entry.file_name),
+                          )
+                        });
+                        if copy_path_resp.clicked() {
+                          out.copy_requests.push(entry.path_display.clone());
+                        }
+                        #[cfg(test)]
+                        store_test_id(
+                          ui.ctx(),
+                          ("downloads_copy_path_button_id", entry.download_id.0),
+                          copy_path_resp.id,
+                        );
 
-                      let copy_link_resp = ui.small_button("Copy link");
-                      copy_link_resp.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                          egui::WidgetType::Button,
-                          a11y_labels::download_copy_link_label(&entry.file_name),
-                        )
-                      });
-                      if copy_link_resp.clicked() {
-                        out.copy_requests.push(entry.url.clone());
+                        let copy_link_resp = ui.small_button("Copy link");
+                        copy_link_resp.widget_info(|| {
+                          egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            a11y_labels::download_copy_link_label(&entry.file_name),
+                          )
+                        });
+                        if copy_link_resp.clicked() {
+                          out.copy_requests.push(entry.url.clone());
+                        }
+                        #[cfg(test)]
+                        store_test_id(
+                          ui.ctx(),
+                          ("downloads_copy_link_button_id", entry.download_id.0),
+                          copy_link_resp.id,
+                        );
                       }
-                      #[cfg(test)]
-                      store_test_id(
-                        ui.ctx(),
-                        ("downloads_copy_link_button_id", entry.download_id.0),
-                        copy_link_resp.id,
-                      );
-                    }
-                    DownloadStatus::Failed { .. } => {
-                      let retry_resp = ui.small_button("Retry");
-                      retry_resp.widget_info(|| {
+                      DownloadStatus::Failed { .. } => {
+                        let retry_resp = ui.small_button("Retry");
+                        retry_resp.widget_info(|| {
                           egui::WidgetInfo::labeled(
                             egui::WidgetType::Button,
                             a11y_labels::download_retry_label(&entry.file_name),
                           )
                         });
-                      if retry_resp.clicked() {
-                        out.retry_requests.push(entry.retry_request());
-                      }
+                        if retry_resp.clicked() {
+                          out.retry_requests.push(entry.retry_request());
+                        }
 
-                      let copy_path_resp = ui.small_button("Copy path");
-                      copy_path_resp.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                          egui::WidgetType::Button,
-                          a11y_labels::download_copy_path_label(&entry.file_name),
-                        )
-                      });
-                      if copy_path_resp.clicked() {
-                        out.copy_requests.push(entry.path_display.clone());
-                      }
-                      #[cfg(test)]
-                      store_test_id(
-                        ui.ctx(),
-                        ("downloads_copy_path_button_id", entry.download_id.0),
-                        copy_path_resp.id,
-                      );
+                        let copy_path_resp = ui.small_button("Copy path");
+                        copy_path_resp.widget_info(|| {
+                          egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            a11y_labels::download_copy_path_label(&entry.file_name),
+                          )
+                        });
+                        if copy_path_resp.clicked() {
+                          out.copy_requests.push(entry.path_display.clone());
+                        }
+                        #[cfg(test)]
+                        store_test_id(
+                          ui.ctx(),
+                          ("downloads_copy_path_button_id", entry.download_id.0),
+                          copy_path_resp.id,
+                        );
 
-                      let copy_link_resp = ui.small_button("Copy link");
-                      copy_link_resp.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                          egui::WidgetType::Button,
-                          a11y_labels::download_copy_link_label(&entry.file_name),
-                        )
-                      });
-                      if copy_link_resp.clicked() {
-                        out.copy_requests.push(entry.url.clone());
+                        let copy_link_resp = ui.small_button("Copy link");
+                        copy_link_resp.widget_info(|| {
+                          egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            a11y_labels::download_copy_link_label(&entry.file_name),
+                          )
+                        });
+                        if copy_link_resp.clicked() {
+                          out.copy_requests.push(entry.url.clone());
+                        }
+                        #[cfg(test)]
+                        store_test_id(
+                          ui.ctx(),
+                          ("downloads_copy_link_button_id", entry.download_id.0),
+                          copy_link_resp.id,
+                        );
                       }
-                      #[cfg(test)]
-                      store_test_id(
-                        ui.ctx(),
-                        ("downloads_copy_link_button_id", entry.download_id.0),
-                        copy_link_resp.id,
-                      );
-                    }
-                  },
-                );
-              });
+                    },
+                  );
+                });
 
                 if let DownloadStatus::Failed { error } = &entry.status {
                   let err = error.trim();
@@ -714,7 +691,7 @@ pub fn downloads_panel_ui(
           } else {
             let mut match_idx = 0usize;
             for entry in downloads.iter().rev() {
-              if !download_matches_tokens(entry, &tokens) {
+              if !download_matches_query_lower(entry, query_lower.as_ref()) {
                 continue;
               }
               if match_idx < row_range.start {
@@ -738,8 +715,8 @@ pub fn downloads_panel_ui(
 mod tests {
   use std::path::PathBuf;
 
-  use crate::ui::{a11y_labels, a11y_test_util};
   use crate::ui::theme::BrowserTheme;
+  use crate::ui::{a11y_labels, a11y_test_util};
   use crate::ui::{DownloadEntry, DownloadId, DownloadStatus, TabId};
 
   use super::{download_matches_query, download_progress_a11y_label, downloads_panel_ui};
@@ -797,7 +774,9 @@ mod tests {
       }
     }
 
-    shapes.iter().find_map(|clipped| in_shape(&clipped.shape, needle))
+    shapes
+      .iter()
+      .find_map(|clipped| in_shape(&clipped.shape, needle))
   }
 
   fn expect_temp_id(
@@ -950,6 +929,8 @@ mod tests {
       path: PathBuf::from("downloads/a.zip"),
       path_display: "downloads/a.zip".to_string(),
       status: DownloadStatus::Completed,
+      started_at_ms: None,
+      finished_at_ms: None,
     };
     let copy_path_label = a11y_labels::download_copy_path_label(&download_a.file_name);
 
@@ -975,6 +956,8 @@ mod tests {
       path: PathBuf::from("downloads/b.zip"),
       path_display: "downloads/b.zip".to_string(),
       status: DownloadStatus::Completed,
+      started_at_ms: None,
+      finished_at_ms: None,
     };
     let downloads = vec![download_a.clone(), download_b];
 
@@ -1162,7 +1145,7 @@ mod tests {
   }
 
   #[test]
-  fn download_matches_query_tokenized_matches_filename_url_and_path() {
+  fn download_matches_query_does_not_tokenize_or_match_path() {
     let entry = DownloadEntry {
       download_id: DownloadId(1),
       tab_id: TabId(1),
@@ -1171,68 +1154,43 @@ mod tests {
       path: PathBuf::from("/home/user/Downloads/Report.pdf"),
       path_display: "/home/user/Downloads/Report.pdf".to_string(),
       status: DownloadStatus::Completed,
+      started_at_ms: None,
+      finished_at_ms: None,
     };
 
     assert!(
-      download_matches_query(&entry, "report example downloads"),
-      "expected tokens to match across file name/url/path"
-    );
-    assert!(
-      !download_matches_query(&entry, "report example missingtoken"),
-      "expected non-matching token to reject the entry"
+      !download_matches_query(&entry, "report example downloads"),
+      "expected query to not tokenize across file name/url/path"
     );
   }
 
   #[test]
-  fn download_matches_query_matches_status_words() {
+  fn download_matches_query_does_not_match_status_or_error() {
     let failed = DownloadEntry {
       download_id: DownloadId(1),
       tab_id: TabId(1),
       url: "https://example.com/file.zip".to_string(),
       file_name: "file.zip".to_string(),
       path: PathBuf::from("/tmp/file.zip"),
-      path_display: "/tmp/file.zip".to_string(),
+      path_display: "/home/user/Downloads/file.zip".to_string(),
       status: DownloadStatus::Failed {
         error: "disk full".to_string(),
       },
+      started_at_ms: None,
+      finished_at_ms: None,
     };
-    assert!(download_matches_query(&failed, "failed"));
-
-    let completed = DownloadEntry {
-      download_id: DownloadId(2),
-      tab_id: TabId(1),
-      url: "https://example.com/file.zip".to_string(),
-      file_name: "file.zip".to_string(),
-      path: PathBuf::from("/tmp/file.zip"),
-      path_display: "/tmp/file.zip".to_string(),
-      status: DownloadStatus::Completed,
-    };
-    assert!(download_matches_query(&completed, "completed"));
-
-    let active = DownloadEntry {
-      download_id: DownloadId(3),
-      tab_id: TabId(1),
-      url: "https://example.com/file.zip".to_string(),
-      file_name: "file.zip".to_string(),
-      path: PathBuf::from("/tmp/file.zip"),
-      path_display: "/tmp/file.zip".to_string(),
-      status: DownloadStatus::InProgress {
-        received_bytes: 10,
-        total_bytes: Some(20),
-      },
-    };
-    assert!(download_matches_query(&active, "downloading"));
-
-    let cancelled = DownloadEntry {
-      download_id: DownloadId(4),
-      tab_id: TabId(1),
-      url: "https://example.com/file.zip".to_string(),
-      file_name: "file.zip".to_string(),
-      path: PathBuf::from("/tmp/file.zip"),
-      path_display: "/tmp/file.zip".to_string(),
-      status: DownloadStatus::Cancelled,
-    };
-    assert!(download_matches_query(&cancelled, "cancelled"));
+    assert!(
+      !download_matches_query(&failed, "failed"),
+      "expected status words to not match (only file name + URL are searched)"
+    );
+    assert!(
+      !download_matches_query(&failed, "disk"),
+      "expected error text to not match (only file name + URL are searched)"
+    );
+    assert!(
+      !download_matches_query(&failed, "downloads"),
+      "expected local path display to not match (only file name + URL are searched)"
+    );
   }
 
   #[test]
@@ -1251,6 +1209,8 @@ mod tests {
       path: PathBuf::from("/tmp/file.zip"),
       path_display: "/tmp/file.zip".to_string(),
       status: DownloadStatus::Completed,
+      started_at_ms: None,
+      finished_at_ms: None,
     };
 
     // Frame 0: render once to capture widget ids.
@@ -1316,6 +1276,8 @@ mod tests {
       status: DownloadStatus::Failed {
         error: "network error".to_string(),
       },
+      started_at_ms: None,
+      finished_at_ms: None,
     };
 
     // Frame 0: render once to capture widget ids.
@@ -1382,6 +1344,8 @@ mod tests {
           received_bytes: 10,
           total_bytes: Some(100),
         },
+        started_at_ms: None,
+        finished_at_ms: None,
       },
       DownloadEntry {
         download_id: DownloadId(2),
@@ -1391,6 +1355,8 @@ mod tests {
         path: PathBuf::from("downloads/file.zip"),
         path_display: "downloads/file.zip".to_string(),
         status: DownloadStatus::Completed,
+        started_at_ms: None,
+        finished_at_ms: None,
       },
     ];
 
@@ -1458,7 +1424,10 @@ mod tests {
       download_dir.as_path(),
     );
     let _ = ctx.end_frame();
-    assert!(!output.close_requested, "panel should not request close on open");
+    assert!(
+      !output.close_requested,
+      "panel should not request close on open"
+    );
     let search_id = expect_temp_id(&ctx, "downloads_panel_search_input_id");
 
     // Frame 1: Escape should clear the query (and not close).
