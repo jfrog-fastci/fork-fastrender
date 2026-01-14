@@ -16976,6 +16976,11 @@ impl App {
     self
       .overlay_scrollbar_visibility
       .register_interaction(std::time::Instant::now());
+    if pointer_css.is_none() {
+      if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+        tab.apply_optimistic_viewport_scroll_delta(delta_css);
+      }
+    }
     self
       .pending_scroll
       .push_scroll(tab_id, delta_css, pointer_css);
@@ -23282,6 +23287,9 @@ impl App {
               fastrender::ui::scrollbars::ScrollbarAxis::Vertical => (0.0, axis_delta_css),
               fastrender::ui::scrollbars::ScrollbarAxis::Horizontal => (axis_delta_css, 0.0),
             };
+            if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+              tab.apply_optimistic_viewport_scroll_delta(delta_css);
+            }
             if let Some(hud) = self.hud.as_mut() {
               hud.note_scroll_input(std::time::Instant::now());
             }

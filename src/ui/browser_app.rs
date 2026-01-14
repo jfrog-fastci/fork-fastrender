@@ -981,6 +981,39 @@ impl BrowserTabState {
     self.debug_log.iter().map(String::as_str)
   }
 
+  pub fn apply_optimistic_viewport_scroll_delta(&mut self, delta_css: (f32, f32)) -> bool {
+    let sanitize = |v: f32| if v.is_finite() { v } else { 0.0 };
+    let clamp_nonneg = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+
+    let dx = sanitize(delta_css.0);
+    let dy = sanitize(delta_css.1);
+
+    let prev = self.scroll_state.clone();
+    let prev_viewport_x = sanitize(prev.viewport.x);
+    let prev_viewport_y = sanitize(prev.viewport.y);
+
+    let mut next_viewport =
+      crate::geometry::Point::new(prev_viewport_x + dx, prev_viewport_y + dy);
+
+    if let Some(metrics) = self.scroll_metrics.as_ref() {
+      next_viewport = metrics.bounds_css.clamp(next_viewport);
+    } else {
+      next_viewport = crate::geometry::Point::new(
+        clamp_nonneg(next_viewport.x),
+        clamp_nonneg(next_viewport.y),
+      );
+    }
+
+    self.scroll_state.viewport = next_viewport;
+    self.scroll_state.update_deltas_from(&prev);
+
+    if let Some(metrics) = self.scroll_metrics.as_mut() {
+      metrics.scroll_css = (self.scroll_state.viewport.x, self.scroll_state.viewport.y);
+    }
+
+    prev.viewport != self.scroll_state.viewport
+  }
+
   fn reset_load_progress(&mut self) {
     self.load_stage = None;
     self.load_progress = Some(0.0);
@@ -1031,8 +1064,10 @@ pub struct ClosedTabState {
 #[cfg(test)]
 mod tab_tests {
   use super::BrowserTabState;
+  use crate::geometry::Point;
   use crate::render_control::StageHeartbeat;
-  use crate::ui::messages::{NavigationReason, UiToWorker};
+  use crate::scroll::ScrollBounds;
+  use crate::ui::messages::{NavigationReason, ScrollMetrics, UiToWorker};
   use crate::ui::{CursorKind, TabId};
 
   #[test]
@@ -1213,6 +1248,55 @@ mod tab_tests {
     tab.title = None;
     tab.current_url = None;
     assert_eq!(tab.display_title(), "New Tab");
+  }
+
+  #[test]
+  fn optimistic_viewport_scroll_clamps_to_bounds_and_updates_metrics_and_delta() {
+    let mut tab = BrowserTabState::new(TabId(1), "about:newtab".to_string());
+    tab.scroll_state.viewport = Point::new(95.0, 40.0);
+    tab.scroll_metrics = Some(ScrollMetrics {
+      viewport_css: (800, 600),
+      scroll_css: (95.0, 40.0),
+      bounds_css: ScrollBounds {
+        min_x: 0.0,
+        min_y: 0.0,
+        max_x: 100.0,
+        max_y: 50.0,
+      },
+      content_css: (900.0, 650.0),
+    });
+
+    let changed = tab.apply_optimistic_viewport_scroll_delta((10.0, 20.0));
+
+    assert!(changed);
+    assert_eq!(tab.scroll_state.viewport, Point::new(100.0, 50.0));
+    assert_eq!(tab.scroll_state.viewport_delta, Point::new(5.0, 10.0));
+    assert_eq!(tab.scroll_metrics.as_ref().unwrap().scroll_css, (100.0, 50.0));
+  }
+
+  #[test]
+  fn optimistic_viewport_scroll_ignores_non_finite_deltas() {
+    let mut tab = BrowserTabState::new(TabId(1), "about:newtab".to_string());
+    tab.scroll_state.viewport = Point::new(10.0, 20.0);
+    tab.scroll_metrics = Some(ScrollMetrics {
+      viewport_css: (800, 600),
+      scroll_css: (10.0, 20.0),
+      bounds_css: ScrollBounds {
+        min_x: 0.0,
+        min_y: 0.0,
+        max_x: 100.0,
+        max_y: 100.0,
+      },
+      content_css: (900.0, 900.0),
+    });
+
+    let changed =
+      tab.apply_optimistic_viewport_scroll_delta((f32::NAN, f32::INFINITY));
+
+    assert!(!changed);
+    assert_eq!(tab.scroll_state.viewport, Point::new(10.0, 20.0));
+    assert_eq!(tab.scroll_state.viewport_delta, Point::ZERO);
+    assert_eq!(tab.scroll_metrics.as_ref().unwrap().scroll_css, (10.0, 20.0));
   }
 }
 
