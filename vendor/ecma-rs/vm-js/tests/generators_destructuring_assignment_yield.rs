@@ -546,3 +546,148 @@ fn generator_array_destructuring_assignment_rhs_and_default_yield_with_rest_are_
   let assigned = rt.exec_script("assigned").unwrap();
   assert_eq!(assigned, Value::Object(rhs_arr));
 }
+
+#[test]
+fn generator_object_destructuring_assignment_rhs_from_yield_then_rest_target_yields_is_gc_safe() {
+  let mut rt = new_runtime();
+
+  // Allocate the RHS object and the holder object in Rust so we can validate GC safety while the
+  // generator is suspended inside the rest target.
+  let (rhs_obj, holder_obj) = {
+    let (_vm, realm, heap) = rt.vm_realm_and_heap_mut();
+    let global = realm.global_object();
+    let mut scope = heap.scope();
+
+    let rhs = scope.alloc_object().unwrap();
+    let holder = scope.alloc_object().unwrap();
+    scope
+      .push_roots(&[Value::Object(rhs), Value::Object(holder)])
+      .unwrap();
+
+    let key_a = scope.alloc_string("a").unwrap();
+    let key_b = scope.alloc_string("b").unwrap();
+    scope
+      .define_property(rhs, PropertyKey::from_string(key_a), data_desc(Value::Number(1.0)))
+      .unwrap();
+    scope
+      .define_property(rhs, PropertyKey::from_string(key_b), data_desc(Value::Number(2.0)))
+      .unwrap();
+
+    let rhs_key = scope.alloc_string("rhsRestTarget").unwrap();
+    scope
+      .define_property(
+        global,
+        PropertyKey::from_string(rhs_key),
+        data_desc(Value::Object(rhs)),
+      )
+      .unwrap();
+
+    let holder_key = scope.alloc_string("holderObj").unwrap();
+    scope
+      .define_property(
+        global,
+        PropertyKey::from_string(holder_key),
+        data_desc(Value::Object(holder)),
+      )
+      .unwrap();
+
+    (rhs, holder)
+  };
+
+  rt
+    .exec_script(
+      r#"
+        var assigned;
+        function* g() {
+          var a = 0;
+          assigned = ({a, ...globalThis.holderObj[(yield 1)]} = yield 0);
+          return a === 1;
+        }
+        var it = g();
+        var r1 = it.next();
+      "#,
+    )
+    .unwrap();
+  assert_eq!(
+    rt.exec_script("r1.done === false && r1.value === 0").unwrap(),
+    Value::Bool(true)
+  );
+
+  // Resume with the RHS value. The generator should then suspend inside the rest target's computed
+  // member key expression (`yield 1`), after the rest object has been created.
+  rt
+    .exec_script(
+      r#"
+        var r2 = it.next(globalThis.rhsRestTarget);
+        delete globalThis.rhsRestTarget;
+        delete globalThis.holderObj;
+      "#,
+    )
+    .unwrap();
+  assert_eq!(
+    rt.exec_script("r2.done === false && r2.value === 1 && typeof assigned === \"undefined\"")
+      .unwrap(),
+    Value::Bool(true)
+  );
+
+  // Force GC while suspended inside the rest target, with no external references to either object.
+  rt.heap.collect_garbage();
+  assert!(
+    rt.heap.is_valid_object(rhs_obj),
+    "RHS object should be kept alive by generator continuation frames"
+  );
+  assert!(
+    rt.heap.is_valid_object(holder_obj),
+    "rest target base object should be kept alive by generator continuation frames"
+  );
+
+  // Keep the holder alive for postconditions even if `it.next` triggers allocations/GC after
+  // the generator completes.
+  let holder_root = rt.heap.add_root(Value::Object(holder_obj)).unwrap();
+
+  assert_eq!(
+    rt.exec_script("var r3 = it.next(\"k\"); r3.done === true && r3.value === true")
+      .unwrap(),
+    Value::Bool(true)
+  );
+
+  // The assignment expression should evaluate to the original RHS object.
+  assert_eq!(rt.exec_script("assigned").unwrap(), Value::Object(rhs_obj));
+
+  // `holder_obj.k` should contain the rest object, which should only have `b`.
+  {
+    let mut scope = rt.heap.scope();
+    scope.push_root(Value::Object(holder_obj)).unwrap();
+
+    let key_k = scope.alloc_string("k").unwrap();
+    let rest_val = scope
+      .heap()
+      .get(holder_obj, &PropertyKey::from_string(key_k))
+      .unwrap();
+    let rest_obj = match rest_val {
+      Value::Object(o) => o,
+      _ => panic!("expected rest target to receive an object"),
+    };
+
+    let key_b = scope.alloc_string("b").unwrap();
+    assert_eq!(
+      scope
+        .heap()
+        .get(rest_obj, &PropertyKey::from_string(key_b))
+        .unwrap(),
+      Value::Number(2.0)
+    );
+
+    let key_a = scope.alloc_string("a").unwrap();
+    assert!(
+      scope
+        .heap()
+        .object_get_own_property(rest_obj, &PropertyKey::from_string(key_a))
+        .unwrap()
+        .is_none(),
+      "rest object should not include excluded property 'a'"
+    );
+  }
+
+  rt.heap.remove_root(holder_root);
+}
