@@ -326,6 +326,8 @@ see
   UI event loop (winit input handling, worker message draining, egui frame build, GPU submission,
   and present). The trace is written when the browser process exits.
   - CLI equivalent (preferred): `browser --trace-out /path/to/trace.json` (CLI overrides env vars).
+  - Use `FASTR_TRACE_MAX_EVENTS=<N>` to cap the number of trace events retained per trace (default
+    200000). Excess events are dropped deterministically and counted in the trace output JSON.
   - When audio output is active, the trace can also include audio pipeline spans such as
     `audio.callback` (output callback CPU time), `audio.mix` (mixing), `audio.resample`
     (decoder-side resampling), and `audio.sink.drop` (decoder-side pushes where the sink drops
