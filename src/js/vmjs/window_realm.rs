@@ -14324,7 +14324,12 @@ fn element_query_selector_all_native(
     ));
   };
 
-  let handle = element_handle_from_wrapper_obj(
+  // `querySelectorAll` is exposed via the `ParentNode` / `DocumentOrShadowRoot` mixins, so it must
+  // be callable on Element, DocumentFragment, and ShadowRoot wrappers (and on Document when borrowed
+  // from another prototype). Historically FastRender wired these methods through the Element-native
+  // implementation, which rejected non-Element receivers; we loosen the brand check to match the
+  // DOM Standard.
+  let handle = parent_node_handle_from_wrapper_obj(
     vm,
     scope,
     wrapper_obj,
@@ -36882,6 +36887,40 @@ fn element_handle_from_wrapper_obj_opt(
     .ok()?;
   let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_key.node_id).ok()?;
   Some(ElementHandle {
+    document_id: node_key.document_id,
+    node_id: node_key.node_id,
+    document_obj,
+  })
+}
+
+fn parent_node_handle_from_wrapper_obj(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  wrapper_obj: GcObject,
+  error_message: &'static str,
+) -> Result<NodeHandle, VmError> {
+  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError(error_message))?;
+
+  // `querySelector(All)` is defined on `ParentNode` (Document/Element/DocumentFragment) and
+  // `DocumentOrShadowRoot` (Document/ShadowRoot). Since FastRender often reuses a single function
+  // object across these prototypes, we accept any wrapper implementing one of those interfaces.
+  let node_key = if let Ok(key) =
+    platform.require_document_handle(scope.heap(), Value::Object(wrapper_obj))
+  {
+    key
+  } else if let Ok(key) =
+    platform.require_element_handle(scope.heap(), Value::Object(wrapper_obj))
+  {
+    key
+  } else {
+    platform
+      .require_document_fragment_handle(scope.heap(), Value::Object(wrapper_obj))
+      .map_err(|_| VmError::TypeError(error_message))?
+  };
+
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_key.node_id)
+    .map_err(|_| VmError::TypeError(error_message))?;
+  Ok(NodeHandle {
     document_id: node_key.document_id,
     node_id: node_key.node_id,
     document_obj,

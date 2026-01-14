@@ -106,6 +106,9 @@ test(() => {
   host.innerHTML = "<div></div><div></div><div></div>";
 
   const list = document.querySelectorAll("#nodelist-iterable-test > div");
+  assert_false(Array.isArray(list), "querySelectorAll must not return an Array");
+  assert_equals(Object.getPrototypeOf(list), NodeList.prototype, "NodeList prototype");
+  assert_true(list instanceof NodeList, "NodeList instanceof check");
   assert_array_equals(Array.from(list.keys()), [0, 1, 2]);
 
   const entries = Array.from(list.entries());
