@@ -416,42 +416,6 @@ fn sync_cached_child_nodes_for_wrapper(
   sync_dom_node_collection_object(vm, scope, list_obj, document_id, &children)
 }
 
-fn sync_cached_children_for_wrapper(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  wrapper_obj: GcObject,
-  document_id: DocumentId,
-  node_id: NodeId,
-  dom: &crate::dom2::Document,
-) -> Result<(), VmError> {
-  if node_id.index() >= dom.nodes_len() {
-    return Ok(());
-  }
-
-  let children_key = key_from_str(scope, NODE_CHILDREN_KEY)?;
-  let Some(Value::Object(collection_obj)) = scope
-    .heap()
-    .object_get_own_data_property_value(wrapper_obj, &children_key)?
-  else {
-    return Ok(());
-  };
-
-  let children: Vec<(NodeId, DomInterface)> = dom
-    .children_elements(node_id)
-    .into_iter()
-    .map(|child_id| {
-      let primary = if child_id.index() >= dom.nodes_len() {
-        DomInterface::Node
-      } else {
-        DomInterface::primary_for_node_kind(&dom.node(child_id).kind)
-      };
-      (child_id, primary)
-    })
-    .collect();
-
-  sync_dom_node_collection_object(vm, scope, collection_obj, document_id, &children)
-}
-
 fn require_dom_token_list_receiver(
   scope: &Scope<'_>,
   receiver: Option<Value>,
@@ -9188,8 +9152,11 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         match result {
           Ok(()) => {
+            // Keep cached `childNodes` live NodeLists updated for:
+            // - the target parent;
+            // - any old parents of moved nodes (e.g. `a.append(b)` moves `b` out of its old parent);
+            // - fragment-like nodes that are emptied by insertion (e.g. DocumentFragment).
             self.sync_cached_child_nodes_for_wrapper(vm, scope, wrapper_obj, parent_id, document_id)?;
-            self.sync_cached_children_for_wrapper(vm, scope, wrapper_obj, parent_id, document_id)?;
             // Sync old parents for moved nodes (if wrappers exist / had `childNodes` cached).
             for old_parent in old_parents {
               if old_parent == parent_id {
@@ -9213,6 +9180,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                 self.sync_cached_child_nodes_for_wrapper(vm, scope, wrapper, fragment_id, document_id)?;
               }
             }
+            // `children` is a live HTMLCollection and is kept up to date via `sync_live_html_collections`.
             self.sync_live_html_collections(vm, scope)?;
             Ok(Value::Undefined)
           }
