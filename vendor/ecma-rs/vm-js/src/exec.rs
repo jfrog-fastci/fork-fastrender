@@ -45646,6 +45646,31 @@ mod tests {
     assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
     Ok(())
   }
+
+  #[test]
+  fn arrow_this_in_derived_constructor_returned_arrow_without_super_throws_on_call() -> Result<(), VmError> {
+    let source = r#"
+      let errName;
+      let errMsg;
+      try {
+        // Returning an object from a derived constructor is allowed even without calling `super()`.
+        // However, the (never-initialized) `this` binding must remain observable as uninitialized
+        // through closures.
+        (new (class extends class {} {
+          constructor() { return () => this; }
+        })())();
+      } catch (e) {
+        errName = e.name;
+        errMsg = e.message;
+      }
+      errName === 'ReferenceError' &&
+        errMsg === "Must call super constructor in derived class before accessing 'this'"
+    "#;
+
+    assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
+    assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
+    Ok(())
+  }
 }
 
 #[cfg(test)]
