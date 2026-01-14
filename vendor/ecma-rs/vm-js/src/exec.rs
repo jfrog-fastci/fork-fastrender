@@ -15987,6 +15987,14 @@ pub(crate) enum GenFrame {
     decl: *const VarDecl,
     next_declarator_index: usize,
   },
+  /// Continue a `var`/`let`/`const` declaration after binding a declarator value suspends.
+  ///
+  /// This is used when a destructuring binding pattern contains `yield` (e.g. default initializers
+  /// or computed property keys) and therefore needs to suspend mid-binding.
+  VarDeclAfterBind {
+    decl: *const VarDecl,
+    next_declarator_index: usize,
+  },
 
   /// Continue an `if` statement after evaluating the test expression.
   IfAfterTest {
@@ -34298,13 +34306,38 @@ fn gen_eval_var_decl(
     match gen_eval_expr(evaluator, scope, init)? {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => {
-          gen_bind_var_declarator_value(
-            evaluator,
-            scope,
-            decl,
-            idx,
-            v.unwrap_or(Value::Undefined),
-          )?;
+          let value = v.unwrap_or(Value::Undefined);
+          let pat = &declarator.pattern.stx.pat.stx;
+          if pat_contains_yield(pat) {
+            let kind = match decl.mode {
+              VarDeclMode::Var => BindingKind::Var,
+              VarDeclMode::Let => BindingKind::Let,
+              VarDeclMode::Const => BindingKind::Const,
+              VarDeclMode::Using | VarDeclMode::AwaitUsing => {
+                return Err(VmError::Unimplemented(
+                  "yield in using declaration binding pattern",
+                ));
+              }
+            };
+            match gen_bind_pattern(evaluator, scope, pat, value, kind)? {
+              GenEval::Complete(bind_completion) => match bind_completion {
+                Completion::Normal(_) => {}
+                abrupt => return Ok(GenEval::Complete(abrupt)),
+              },
+              GenEval::Suspend(mut suspend) => {
+                gen_frames_push(
+                  &mut suspend.frames,
+                  GenFrame::VarDeclAfterBind {
+                    decl: decl as *const VarDecl,
+                    next_declarator_index: idx.saturating_add(1),
+                  },
+                )?;
+                return Ok(GenEval::Suspend(suspend));
+              }
+            }
+          } else {
+            gen_bind_var_declarator_value(evaluator, scope, decl, idx, value)?;
+          }
         }
         abrupt => return Ok(GenEval::Complete(abrupt)),
       },
@@ -39853,18 +39886,92 @@ fn gen_resume_from_frames(
         Completion::Normal(v) => {
           let decl = unsafe { &*decl };
           let value = v.unwrap_or(Value::Undefined);
-          if let Err(err) =
-            gen_bind_var_declarator_value(evaluator, scope, decl, next_declarator_index, value)
-          {
-            state = gen_error_to_completion(evaluator, scope, err)?;
-            continue;
+          let declarator = match decl.declarators.get(next_declarator_index) {
+            Some(d) => d,
+            None => {
+              state = gen_error_to_completion(
+                evaluator,
+                scope,
+                VmError::InvariantViolation("generator var decl continuation out of bounds"),
+              )?;
+              continue;
+            }
+          };
+
+          if pat_contains_yield(&declarator.pattern.stx.pat.stx) {
+            let kind = match decl.mode {
+              VarDeclMode::Var => BindingKind::Var,
+              VarDeclMode::Let => BindingKind::Let,
+              VarDeclMode::Const => BindingKind::Const,
+              VarDeclMode::Using | VarDeclMode::AwaitUsing => {
+                return Err(VmError::Unimplemented("yield in using declaration binding pattern"));
+              }
+            };
+
+            match gen_bind_pattern(evaluator, scope, &declarator.pattern.stx.pat.stx, value, kind)? {
+              GenEval::Complete(bind_completion) => match bind_completion {
+                Completion::Normal(_) => {
+                  // Continue var-decl evaluation from the next declarator.
+                  match gen_eval_var_decl(
+                    evaluator,
+                    scope,
+                    decl,
+                    next_declarator_index.saturating_add(1),
+                  ) {
+                    Ok(GenEval::Complete(c)) => state = c,
+                    Ok(GenEval::Suspend(mut suspend)) => {
+                      vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                      return Ok(GenEval::Suspend(suspend));
+                    }
+                    Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+                  }
+                }
+                abrupt => state = abrupt,
+              },
+              GenEval::Suspend(mut suspend) => {
+                gen_frames_push(
+                  &mut suspend.frames,
+                  GenFrame::VarDeclAfterBind {
+                    decl: decl as *const VarDecl,
+                    next_declarator_index: next_declarator_index.saturating_add(1),
+                  },
+                )?;
+                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                return Ok(GenEval::Suspend(suspend));
+              }
+            }
+          } else {
+            if let Err(err) =
+              gen_bind_var_declarator_value(evaluator, scope, decl, next_declarator_index, value)
+            {
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+            match gen_eval_var_decl(
+              evaluator,
+              scope,
+              decl,
+              next_declarator_index.saturating_add(1),
+            ) {
+              Ok(GenEval::Complete(c)) => state = c,
+              Ok(GenEval::Suspend(mut suspend)) => {
+                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                return Ok(GenEval::Suspend(suspend));
+              }
+              Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+            }
           }
-          match gen_eval_var_decl(
-            evaluator,
-            scope,
-            decl,
-            next_declarator_index.saturating_add(1),
-          ) {
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::VarDeclAfterBind {
+        decl,
+        next_declarator_index,
+      } => match state {
+        Completion::Normal(_) => {
+          let decl = unsafe { &*decl };
+          match gen_eval_var_decl(evaluator, scope, decl, next_declarator_index) {
             Ok(GenEval::Complete(c)) => state = c,
             Ok(GenEval::Suspend(mut suspend)) => {
               vecdeque_try_append(&mut suspend.frames, &mut frames)?;
