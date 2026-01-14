@@ -20809,15 +20809,20 @@ fn async_generator_handle_execution_result(
           }
         };
 
+        // Root the awaited promise while we tear down the continuation env and schedule resumption:
+        // these operations can allocate and/or trigger GC, and stack values are not traced.
+        let mut await_scope = scope.reborrow();
+        await_scope.push_root(awaited_promise)?;
+
         // Suspend: store frames in the VM and wire a Promise job to resume.
-        cont.env.teardown(scope.heap_mut());
-        scope
+        cont.env.teardown(await_scope.heap_mut());
+        await_scope
           .heap_mut()
           .async_generator_set_continuation(gen_obj, Some(cont))?;
 
         async_generator_schedule_await(
           vm,
-          scope,
+          &mut await_scope,
           host,
           hooks,
           gen_obj,
@@ -24658,7 +24663,6 @@ fn async_eval_class_after_super(
       .saturating_sub(evaluator.env.prefix_len());
     let span_start = evaluator.env.base_offset().saturating_add(rel_start);
     let span_end = evaluator.env.base_offset().saturating_add(rel_end);
-
     let code = evaluator.vm.register_ecma_function(
       evaluator.env.source(),
       span_start,
