@@ -253,3 +253,49 @@ fn async_generator_super_computed_member_update_yield_in_key() -> Result<(), VmE
   assert_eq!(rt.exec_script("out")?, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn async_generator_super_computed_member_access_yield_star_in_key() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = false;
+
+      async function* keyIter() {
+        // Force a `yield*` suspension before producing the final key.
+        yield 0;
+        return "x";
+      }
+
+      class B { get x() { return this.v; } }
+      class D extends B {
+        constructor() { super(); this.v = 42; }
+        async *gen() {
+          // `yield*` in the computed key should suspend and resume correctly, and the resulting key
+          // should still be applied as a Super Reference.
+          yield super[yield* keyIter()];
+        }
+      }
+
+      async function f() {
+        const it = new D().gen();
+        const r0 = await it.next();
+        const r1 = await it.next();
+        const r2 = await it.next();
+        return (
+          r0.value === 0 && r0.done === false &&
+          r1.value === 42 && r1.done === false &&
+          r2.value === undefined && r2.done === true
+        );
+      }
+
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  assert_eq!(rt.exec_script("out")?, Value::Bool(false));
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  assert_eq!(rt.exec_script("out")?, Value::Bool(true));
+  Ok(())
+}
