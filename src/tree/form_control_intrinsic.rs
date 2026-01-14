@@ -44,7 +44,16 @@ fn measure_text_width(
   }
 
   if let Some(shaper) = shaper {
-    if let Ok(mut runs) = shaper.shape(text, style, font_context) {
+    if style.letter_spacing == 0.0 && style.word_spacing == 0.0 {
+      if let Ok(runs) = shaper.shape_arc(text, style, font_context) {
+        if !runs.is_empty() {
+          let width: f32 = runs.iter().map(|run| run.advance).sum();
+          if width.is_finite() && width >= 0.0 {
+            return width;
+          }
+        }
+      }
+    } else if let Ok(mut runs) = shaper.shape(text, style, font_context) {
       if !runs.is_empty() {
         TextItem::apply_spacing_to_runs(&mut runs, text, style.letter_spacing, style.word_spacing);
         let width: f32 = runs.iter().map(|run| run.advance).sum();

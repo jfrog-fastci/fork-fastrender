@@ -4111,16 +4111,21 @@ fn text_delete_range_for_key(
 fn shape_text_runs_for_interaction(
   text: &str,
   style: &ComputedStyle,
-) -> Option<Vec<crate::text::pipeline::ShapedRun>> {
+) -> Option<Arc<Vec<crate::text::pipeline::ShapedRun>>> {
   if text.is_empty() {
-    return Some(Vec::new());
+    return Some(Arc::new(Vec::new()));
   }
-  let runs = super::shaping_pipeline_for_interaction()
-    .shape(text, style, super::font_context_for_interaction())
-    .ok()?;
-  let mut runs = runs;
+
+  let pipeline = super::shaping_pipeline_for_interaction();
+  let font_ctx = super::font_context_for_interaction();
+
+  if style.letter_spacing == 0.0 && style.word_spacing == 0.0 {
+    return pipeline.shape_arc(text, style, font_ctx).ok();
+  }
+
+  let mut runs = pipeline.shape(text, style, font_ctx).ok()?;
   TextItem::apply_spacing_to_runs(&mut runs, text, style.letter_spacing, style.word_spacing);
-  Some(runs)
+  Some(Arc::new(runs))
 }
 
 fn fallback_text_advance(text: &str, style: &ComputedStyle) -> f32 {
@@ -4152,8 +4157,9 @@ fn caret_position_for_x_in_text(
   }
 
   let fallback_advance = fallback_text_advance(text, style);
-  let runs = shape_text_runs_for_interaction(text, style).unwrap_or_default();
-  let total_advance = shaped_total_advance(&runs, fallback_advance);
+  let runs = shape_text_runs_for_interaction(text, style)
+    .unwrap_or_else(|| Arc::new(Vec::new()));
+  let total_advance = shaped_total_advance(runs.as_ref(), fallback_advance);
   let start_x = aligned_text_start_x(style, rect, total_advance);
 
   let mut local_x = x - start_x;
@@ -4163,7 +4169,7 @@ fn caret_position_for_x_in_text(
   local_x = local_x.clamp(0.0, total_advance);
 
   let allowed_boundaries = grapheme_cluster_boundaries_char_idx(boundary_text);
-  let stops = crate::text::caret::caret_stops_for_runs(text, &runs, total_advance);
+  let stops = crate::text::caret::caret_stops_for_runs(text, runs.as_ref(), total_advance);
   let Some(best) = stops
     .iter()
     .filter(|stop| is_grapheme_cluster_boundary(&allowed_boundaries, stop.char_idx))
@@ -11396,9 +11402,11 @@ impl InteractionEngine {
             let line_text = current.get(start_byte..end_byte).unwrap_or("");
 
             let fallback_advance = fallback_text_advance(line_text, shape_style);
-            let runs = shape_text_runs_for_interaction(line_text, shape_style).unwrap_or_default();
-            let total_advance = shaped_total_advance(&runs, fallback_advance);
-            let stops = crate::text::caret::caret_stops_for_runs(line_text, &runs, total_advance);
+            let runs = shape_text_runs_for_interaction(line_text, shape_style)
+              .unwrap_or_else(|| Arc::new(Vec::new()));
+            let total_advance = shaped_total_advance(runs.as_ref(), fallback_advance);
+            let stops =
+              crate::text::caret::caret_stops_for_runs(line_text, runs.as_ref(), total_advance);
             let grapheme_boundaries = grapheme_cluster_boundaries_char_idx(line_text);
 
             if let Some((start, end)) = selection.filter(|_| !extend_selection) {
@@ -11516,9 +11524,10 @@ impl InteractionEngine {
             };
 
             let fallback_advance = fallback_text_advance(text, shape_style);
-            let runs = shape_text_runs_for_interaction(text, shape_style).unwrap_or_default();
-            let total_advance = shaped_total_advance(&runs, fallback_advance);
-            let stops = crate::text::caret::caret_stops_for_runs(text, &runs, total_advance);
+            let runs = shape_text_runs_for_interaction(text, shape_style)
+              .unwrap_or_else(|| Arc::new(Vec::new()));
+            let total_advance = shaped_total_advance(runs.as_ref(), fallback_advance);
+            let stops = crate::text::caret::caret_stops_for_runs(text, runs.as_ref(), total_advance);
             // Grapheme cluster boundary indices are based on the underlying value, not on the
             // display text (e.g. password inputs render bullets), so we don't allow the caret to be
             // placed within a multi-scalar grapheme cluster.
@@ -11783,13 +11792,13 @@ impl InteractionEngine {
                             .min(cur_line.len_chars());
 
                           let fallback_advance = fallback_text_advance(cur_text, style);
-                          let runs =
-                            shape_text_runs_for_interaction(cur_text, style).unwrap_or_default();
-                          let total_advance = shaped_total_advance(&runs, fallback_advance);
+                          let runs = shape_text_runs_for_interaction(cur_text, style)
+                            .unwrap_or_else(|| Arc::new(Vec::new()));
+                          let total_advance = shaped_total_advance(runs.as_ref(), fallback_advance);
                           let start_x = aligned_text_start_x(style, line_rect, total_advance);
                           let stops = crate::text::caret::caret_stops_for_runs(
                             cur_text,
-                            &runs,
+                            runs.as_ref(),
                             total_advance,
                           );
                           let caret_x_local = crate::text::caret::caret_x_for_position(

@@ -6862,10 +6862,22 @@ fn prepare_fragment_tree_paint_state(
                     fallback_advance = 0.0;
                   }
 
-                  let mut shaped_runs: Option<Vec<crate::text::pipeline::ShapedRun>> = None;
+                  let mut shaped_runs: Option<Arc<Vec<crate::text::pipeline::ShapedRun>>> = None;
                   let mut total_advance = fallback_advance;
                   if !display_text.is_empty() {
-                    if let Ok(mut runs) = crate::interaction::shaping_pipeline_for_interaction()
+                    if style.letter_spacing == 0.0 && style.word_spacing == 0.0 {
+                      if let Ok(runs) = crate::interaction::shaping_pipeline_for_interaction()
+                        .shape_arc(display_text, style, font_context)
+                      {
+                        if !runs.is_empty() {
+                          let adv: f32 = runs.iter().map(|run| run.advance).sum();
+                          if adv.is_finite() {
+                            total_advance = adv.max(0.0);
+                          }
+                          shaped_runs = Some(runs);
+                        }
+                      }
+                    } else if let Ok(mut runs) = crate::interaction::shaping_pipeline_for_interaction()
                       .shape(display_text, style, font_context)
                     {
                       if !runs.is_empty() {
@@ -6879,7 +6891,7 @@ fn prepare_fragment_tree_paint_state(
                         if adv.is_finite() {
                           total_advance = adv.max(0.0);
                         }
-                        shaped_runs = Some(runs);
+                        shaped_runs = Some(Arc::new(runs));
                       }
                     }
                   }
@@ -18556,15 +18568,29 @@ impl FastRender {
     }
     let text = alt;
 
-    let mut runs = self
-      .shaping_pipeline
-      .shape(text, style, &self.font_context)
-      .ok()?;
-    if runs.is_empty() {
-      return None;
-    }
-
-    TextItem::apply_spacing_to_runs(&mut runs, text, style.letter_spacing, style.word_spacing);
+    let (runs, width): (Arc<Vec<crate::text::pipeline::ShapedRun>>, f32) =
+      if style.letter_spacing == 0.0 && style.word_spacing == 0.0 {
+        let runs = self
+          .shaping_pipeline
+          .shape_arc(text, style, &self.font_context)
+          .ok()?;
+        if runs.is_empty() {
+          return None;
+        }
+        let width: f32 = runs.iter().map(|r| r.advance).sum();
+        (runs, width)
+      } else {
+        let mut runs = self
+          .shaping_pipeline
+          .shape(text, style, &self.font_context)
+          .ok()?;
+        if runs.is_empty() {
+          return None;
+        }
+        TextItem::apply_spacing_to_runs(&mut runs, text, style.letter_spacing, style.word_spacing);
+        let width: f32 = runs.iter().map(|r| r.advance).sum();
+        (Arc::new(runs), width)
+      };
 
     let metrics_scaled = self.resolve_scaled_metrics(style);
     let viewport = Size::new(self.default_width as f32, self.default_height as f32);
@@ -18575,8 +18601,7 @@ impl FastRender {
       self.font_context.root_font_metrics(),
     );
     let metrics =
-      TextItem::metrics_from_runs(&self.font_context, &runs, line_height, style.font_size);
-    let width: f32 = runs.iter().map(|r| r.advance).sum();
+      TextItem::metrics_from_runs(&self.font_context, runs.as_ref(), line_height, style.font_size);
     let height = metrics.height;
 
     if width.is_finite() && height.is_finite() && height > 0.0 {
