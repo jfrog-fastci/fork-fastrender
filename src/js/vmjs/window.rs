@@ -1238,7 +1238,7 @@ mod tests {
   fn default_test_fetcher() -> Arc<dyn ResourceFetcher> {
     #[cfg(feature = "direct_network")]
     {
-      return Arc::new(HttpFetcher::new());
+      return Arc::new(crate::resource::HttpFetcher::new());
     }
     #[cfg(not(feature = "direct_network"))]
     {
@@ -2044,16 +2044,19 @@ mod tests {
   fn exec_compare_document_position_smoke(backend: DomBindingsBackend) -> Result<()> {
     let dom = dom2::parse_html("<!doctype html><html><head></head><body></body></html>")
       .expect("parse_html");
-    let mut host = WindowHost::new_with_fetcher_and_clock_and_options_and_dom_backend(
+    let mut event_loop = EventLoop::<WindowHostState>::new();
+    let clock = event_loop.clock();
+    let mut host = WindowHostState::new_with_fetcher_and_clock_and_options_and_dom_backend(
       dom,
       "https://example.invalid/",
-      Arc::new(HttpFetcher::new()),
-      Arc::new(RealClock::default()),
+      default_test_fetcher(),
+      clock,
       JsExecutionOptions::default(),
       backend,
     )?;
 
-    let ok = host.exec_script(
+    let ok = host.exec_script_in_event_loop(
+      &mut event_loop,
       "(() => {\n\
         const parent = document.createElement('div');\n\
         const child = document.createElement('span');\n\

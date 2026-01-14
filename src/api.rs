@@ -23682,8 +23682,8 @@ mod tests {
   use crate::layout::formatting_context::intrinsic_cache_clear;
   use crate::render_control::RenderDeadline;
   use crate::resource::{
-    origin_from_url, FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource,
-    ReferrerPolicy, ResourceAccessPolicy, ResourceFetcher,
+    origin_from_url, CachingFetcher, FetchCredentialsMode, FetchDestination, FetchRequest,
+    FetchedResource, HttpFetcher, ReferrerPolicy, ResourceAccessPolicy, ResourceFetcher,
   };
   use crate::style::cascade::apply_style_set_with_media_target_and_imports_cached;
   use crate::style::cascade::ContainerQueryContext;
@@ -26422,6 +26422,7 @@ mod tests {
   }
 
   #[test]
+  #[cfg(feature = "direct_network")]
   fn inline_stylesheet_http_403_records_fetch_error_status_and_url() {
     use std::io::{Read, Write};
     use std::net::TcpListener;
