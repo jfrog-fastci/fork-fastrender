@@ -1683,7 +1683,7 @@ fn list_row(
 // Tests (AccessKit / a11y labels)
 // -----------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, feature = "browser_ui"))]
 mod tests {
   use super::{
     bookmarks_manager_side_panel, BookmarksManagerOutput, BookmarksManagerState, CreateFolderState,
@@ -1861,8 +1861,12 @@ mod tests {
     for expected in [
       // Whitespace in bookmark titles should be collapsed for screen readers.
       "Open bookmark in new tab: Example Title",
+      "Edit bookmark: Example Title",
+      "Delete bookmark: Example Title",
       // When the title is missing, the label should fall back to the URL.
       "Open bookmark in new tab: https://second.example/path",
+      "Edit bookmark: https://second.example/path",
+      "Delete bookmark: https://second.example/path",
     ] {
       assert!(
         names.iter().any(|n| n == expected),
