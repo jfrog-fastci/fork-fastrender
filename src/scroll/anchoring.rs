@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::geometry::{Point, Rect, Size};
 use crate::style::display::Display;
+use crate::style::position::Position;
 use crate::style::types::{Direction, Overflow, OverflowAnchor, WritingMode};
 use crate::style::ComputedStyle;
 use crate::style::{block_axis_positive, inline_axis_is_horizontal, inline_axis_positive};
@@ -102,6 +103,14 @@ fn checked_point_sub(a: Point, b: Point) -> Option<Point> {
   (x.is_finite() && y.is_finite()).then_some(Point::new(x, y))
 }
 
+fn point_add(a: Point, b: Point) -> Point {
+  Point::new(a.x + b.x, a.y + b.y)
+}
+
+fn point_sub(a: Point, b: Point) -> Point {
+  Point::new(a.x - b.x, a.y - b.y)
+}
+
 fn checked_translate(origin: Point, delta: Point) -> Option<Point> {
   checked_point_add(origin, delta)
 }
@@ -124,7 +133,11 @@ fn fragment_excludes_scroll_anchoring(node: &FragmentNode) -> bool {
   node
     .style
     .as_deref()
-    .is_some_and(|style| style.overflow_anchor == OverflowAnchor::None)
+    .is_some_and(|style| {
+      style.overflow_anchor == OverflowAnchor::None
+        || style.display.is_none()
+        || matches!(style.position, Position::Fixed)
+    })
 }
 
 fn fragment_is_non_atomic_inline(node: &FragmentNode) -> bool {
@@ -590,6 +603,11 @@ fn select_element_anchor(
   scroll: Point,
 ) -> Option<ScrollAnchor> {
   let container = find_fragment_by_box_id(tree, container_box_id)?;
+  // CSS Scroll Anchoring §2.2 step 1: `overflow-anchor:none` on the scrolling element disables
+  // selecting an anchor for that scrolling box entirely.
+  if fragment_excludes_scroll_anchoring(container) {
+    return None;
+  }
   let scrollport = element_scrollport(container, scroll);
   if !rect_is_finite(scrollport) {
     return None;
@@ -625,9 +643,18 @@ pub fn capture_scroll_anchors_with_priority(
 ) -> ScrollAnchorSnapshot {
   let mut snapshot = ScrollAnchorSnapshot::default();
 
-  let viewport_scroll = sanitize_point(scroll.viewport);
-  snapshot.viewport =
-    select_viewport_anchor_with_priority_candidate(tree, viewport_scroll, priority);
+  if tree
+    .root
+    .style
+    .as_deref()
+    .is_some_and(|style| style.overflow_anchor == OverflowAnchor::None)
+  {
+    snapshot.viewport = None;
+  } else {
+    let viewport_scroll = sanitize_point(scroll.viewport);
+    snapshot.viewport =
+      select_viewport_anchor_with_priority_candidate(tree, viewport_scroll, priority);
+  }
 
   for (&container_id, &offset) in &scroll.elements {
     let offset = sanitize_point(offset);
@@ -672,6 +699,7 @@ pub fn apply_scroll_anchoring(
   new_tree: &FragmentTree,
   scroll: &ScrollState,
 ) -> (ScrollState, ScrollAnchorSnapshot) {
+  let viewport_for_units = new_tree.viewport_size();
   let mut next_scroll = scroll.clone();
   next_scroll.viewport = sanitize_point(next_scroll.viewport);
   next_scroll.viewport_delta = sanitize_point(next_scroll.viewport_delta);
@@ -685,8 +713,48 @@ pub fn apply_scroll_anchoring(
   let (viewport_writing_mode, viewport_direction) =
     writing_mode_and_direction_from_style(new_tree.root.style.as_deref());
 
+  // Pre-clamp scroll offsets to the new layout's bounds so anchoring never leaves the scroll state
+  // outside its valid range.
+  let viewport_bounds = super::scroll_bounds_for_fragment(
+    &new_tree.root,
+    Point::ZERO,
+    viewport_for_units,
+    viewport_for_units,
+    true,
+    false,
+  );
+  next_scroll.viewport = viewport_bounds.clamp(next_scroll.viewport);
+  let element_ids: Vec<usize> = next_scroll.elements.keys().copied().collect();
+  for id in element_ids {
+    let Some(container) = find_fragment_by_box_id(new_tree, id) else {
+      continue;
+    };
+    let desired = sanitize_point(next_scroll.elements.get(&id).copied().unwrap_or(Point::ZERO));
+    let bounds = super::scroll_bounds_for_fragment(
+      container,
+      Point::ZERO,
+      container.bounds.size,
+      viewport_for_units,
+      false,
+      false,
+    );
+    next_scroll.elements.insert(id, bounds.clamp(desired));
+  }
+
   // Viewport scroll anchoring.
-  if let Some(prev_anchor) = previous.viewport.filter(|a| point_is_finite(a.origin)) {
+  // CSS Scroll Anchoring §2.2 step 1: `overflow-anchor:none` on the scrolling element disables
+  // anchoring for that scroll container.
+  if new_tree
+    .root
+    .style
+    .as_deref()
+    .is_some_and(|style| style.overflow_anchor == OverflowAnchor::None)
+  {
+    next_snapshot.viewport = None;
+  } else if next_scroll.viewport == Point::ZERO {
+    // CSS Scroll Anchoring §2.4 suppression trigger: if the scroll offset is zero, suppress.
+    next_snapshot.viewport = select_viewport_anchor(new_tree, next_scroll.viewport);
+  } else if let Some(prev_anchor) = previous.viewport.filter(|a| point_is_finite(a.origin)) {
     let root_origin = Point::new(new_tree.root.bounds.x(), new_tree.root.bounds.y());
     let new_origin = find_anchor_origin_in_subtree(
       &new_tree.root,
@@ -702,6 +770,7 @@ pub fn apply_scroll_anchoring(
         viewport_writing_mode,
         viewport_direction,
       );
+      next_scroll.viewport = viewport_bounds.clamp(next_scroll.viewport);
       next_snapshot.viewport = Some(ScrollAnchor {
         box_id: prev_anchor.box_id,
         origin: new_origin,
@@ -729,11 +798,40 @@ pub fn apply_scroll_anchoring(
     };
     let (writing_mode, direction) = writing_mode_and_direction_from_style(container.style.as_deref());
 
+    // Suppress/disable if the current scroll offset is at the origin or the container opts out.
+    if current_offset == Point::ZERO {
+      if let Some(anchor) = select_element_anchor(new_tree, container_id, current_offset) {
+        next_snapshot.elements.insert(container_id, anchor);
+      }
+      continue;
+    }
+    if container
+      .style
+      .as_deref()
+      .is_some_and(|style| style.overflow_anchor == OverflowAnchor::None)
+    {
+      // Ensure we do not preserve any prior anchor for containers that disable anchoring.
+      continue;
+    }
+
     let new_origin =
       find_anchor_origin_in_subtree(container, prev_anchor.box_id, Point::ZERO, false);
     if let Some(new_origin) = new_origin {
       let adjusted = apply_one_adjustment(current_offset, prev_anchor, new_origin, writing_mode, direction);
-      next_scroll.elements.insert(container_id, adjusted);
+      let bounds = super::scroll_bounds_for_fragment(
+        container,
+        Point::ZERO,
+        container.bounds.size,
+        viewport_for_units,
+        false,
+        false,
+      );
+      let adjusted = bounds.clamp(adjusted);
+      if adjusted == Point::ZERO {
+        next_scroll.elements.remove(&container_id);
+      } else {
+        next_scroll.elements.insert(container_id, adjusted);
+      }
       next_snapshot.elements.insert(
         container_id,
         ScrollAnchor {

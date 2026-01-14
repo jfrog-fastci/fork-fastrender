@@ -3015,6 +3015,7 @@ mod tests {
   mod offset_translates_promoted_fragments_test;
   mod overflow_clipping_test;
   mod scroll_anchoring_abspos_candidate_examination_test;
+  mod scroll_anchoring_core_test;
   mod scroll_anchoring_depends_on_scroll_offset_test;
   mod scroll_anchoring_missing_anchor_test;
   mod scroll_anchoring_non_finite_test;
