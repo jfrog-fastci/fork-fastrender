@@ -82,8 +82,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 | Metric | Count |
 | --- | ---: |
 | Total cases | 17437 |
-| Matched upstream expected | 17311 (99.28%) |
-| Mismatched upstream expected | 126 (0.72%) |
+| Matched upstream expected | 17309 (99.27%) |
+| Mismatched upstream expected | 128 (0.73%) |
 | Timeouts | 0 |
 | Skipped | 52 |
 | Unexpected mismatches | 0 |
@@ -92,8 +92,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 | Outcome | Count |
 | --- | ---: |
-| passed | 17259 |
-| failed | 126 |
+| passed | 17257 |
+| failed | 128 |
 | timed_out | 0 |
 | skipped | 52 |
 
@@ -101,8 +101,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 | Kind | Count |
 | --- | ---: |
-| pass | 15025 |
-| xfail | 2360 |
+| pass | 16379 |
+| xfail | 1006 |
 | skip | 52 |
 | flaky | 0 |
 
@@ -110,18 +110,18 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 | Status | Count |
 | --- | ---: |
-| PASS | 15025 |
+| PASS | 16379 |
 | FAIL (unexpected) | 0 |
-| XFAIL | 126 |
-| XPASS | 2234 |
+| XFAIL | 128 |
+| XPASS | 878 |
 | SKIP | 52 |
 
 ## Breakdown by major area
 
 | Area | Total | Matched | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| built-ins | 7185 | 7173 | 12 | 0.17% | 7129 | 0 | 12 | 0 | 44 |
-| language | 10247 | 10133 | 114 | 1.11% | 7891 | 0 | 114 | 2234 | 8 |
+| built-ins | 7185 | 7179 | 6 | 0.08% | 7135 | 0 | 6 | 0 | 44 |
+| language | 10247 | 10125 | 122 | 1.19% | 9239 | 0 | 122 | 878 | 8 |
 | staging | 5 | 5 | 0 | 0.00% | 5 | 0 | 0 | 0 | 0 |
 
 ## Top failing buckets (by mismatched cases)
@@ -129,22 +129,22 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 | Bucket | Total | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `language/statements` | 7208 | 103 | 1.43% | 6849 | 0 | 103 | 248 | 8 |
-| `language/expressions` | 2409 | 11 | 0.46% | 1042 | 0 | 11 | 1356 | 0 |
+| `language/expressions` | 2409 | 19 | 0.79% | 2390 | 0 | 19 | 0 | 0 |
 | `built-ins/Array` | 1503 | 6 | 0.40% | 1453 | 0 | 6 | 0 | 44 |
-| `built-ins/JSON` | 330 | 6 | 1.82% | 324 | 0 | 6 | 0 | 0 |
 | `built-ins/Boolean` | 101 | 0 | 0.00% | 101 | 0 | 0 | 0 | 0 |
 | `built-ins/Error` | 2 | 0 | 0.00% | 2 | 0 | 0 | 0 | 0 |
 | `built-ins/Function` | 96 | 0 | 0.00% | 96 | 0 | 0 | 0 | 0 |
+| `built-ins/JSON` | 330 | 0 | 0.00% | 330 | 0 | 0 | 0 | 0 |
 | `built-ins/Map` | 405 | 0 | 0.00% | 405 | 0 | 0 | 0 | 0 |
 | `built-ins/Math` | 654 | 0 | 0.00% | 654 | 0 | 0 | 0 | 0 |
 | `built-ins/Number` | 302 | 0 | 0.00% | 302 | 0 | 0 | 0 | 0 |
 
-(Total buckets: 22; buckets with 0 mismatches: 18)
+(Total buckets: 22; buckets with 0 mismatches: 19)
 
 ## Top mismatch reasons (first line of `error`)
 
 Mismatched cases by high-level bucket:
-- exception/other: 126 (100.00%)
+- exception/other: 128 (100.00%)
 - VmError::Unimplemented: 0 (0.00%)
 - termination: 0 (0.00%)
 
@@ -159,19 +159,19 @@ Mismatched cases by high-level bucket:
 | 5 | exception/other | 6 | `Object` |
 | 6 | exception/other | 6 | `TypeError: Cannot convert undefined or null to object` |
 | 7 | exception/other | 4 | `#1: __evaluated === 4. Actual:  __evaluated ===4 Expected SameValue(«4», «undefined») to be true` |
-| 8 | exception/other | 4 | `Expected SameValue(«"inside"», «"outside"») to be true` |
-| 9 | exception/other | 4 | `Expected SameValue(«3», «undefined») to be true` |
-| 10 | exception/other | 3 | `#19: myObj.value === "value". Actual:  myObj.value ===myObj_value` |
-| 11 | exception/other | 3 | `Expected SameValue(«6», «undefined») to be true` |
-| 12 | exception/other | 2 | `#1: callee === 0. Actual: callee ===1` |
-| 13 | exception/other | 2 | `#7.1: Exception.toString()==="URIError: message". Actual: Exception is TypeError: Error options must be an object` |
-| 14 | exception/other | 2 | `#7: Exception.toString()==="URIError: message". Actual: Exception is TypeError: Error options must be an object` |
-| 15 | exception/other | 2 | `Actual [4] and expected [4, 0] should have the same contents.` |
-| 16 | exception/other | 2 | `Actual [] and expected [0, 1, 2] should have the same contents.` |
-| 17 | exception/other | 2 | `Actual [has:Object, get:Symbol(Symbol.unscopables), get:Object] and expected [has:Object, get:Symbol(Symbol.unscopables), has:Object, get:Object] should have the same contents.` |
-| 18 | exception/other | 2 | `Actual [undefined, undefined, undefined, undefined] and expected [1, 2, undefined, undefined] should have the same contents.` |
-| 19 | exception/other | 2 | `Expected SameValue(«"undefined"», «"object"») to be true` |
-| 20 | exception/other | 2 | `Expected SameValue(«"{\"key\":\"str\"}"», «"{\"key\":\"toString\"}"») to be true` |
+| 8 | exception/other | 4 | `Expected SameValue(«"bad"», «"ok"») to be true` |
+| 9 | exception/other | 4 | `Expected SameValue(«"inside"», «"outside"») to be true` |
+| 10 | exception/other | 4 | `Expected SameValue(«0», «2») to be true` |
+| 11 | exception/other | 4 | `Expected SameValue(«3», «undefined») to be true` |
+| 12 | exception/other | 3 | `#19: myObj.value === "value". Actual:  myObj.value ===myObj_value` |
+| 13 | exception/other | 3 | `Expected SameValue(«6», «undefined») to be true` |
+| 14 | exception/other | 2 | `#1: callee === 0. Actual: callee ===1` |
+| 15 | exception/other | 2 | `#7.1: Exception.toString()==="URIError: message". Actual: Exception is TypeError: Error options must be an object` |
+| 16 | exception/other | 2 | `#7: Exception.toString()==="URIError: message". Actual: Exception is TypeError: Error options must be an object` |
+| 17 | exception/other | 2 | `Actual [4] and expected [4, 0] should have the same contents.` |
+| 18 | exception/other | 2 | `Actual [] and expected [0, 1, 2] should have the same contents.` |
+| 19 | exception/other | 2 | `Actual [has:Object, get:Symbol(Symbol.unscopables), get:Object] and expected [has:Object, get:Symbol(Symbol.unscopables), has:Object, get:Object] should have the same contents.` |
+| 20 | exception/other | 2 | `Actual [undefined, undefined, undefined, undefined] and expected [1, 2, undefined, undefined] should have the same contents.` |
 
 ## Timed-out tests
 
@@ -184,7 +184,7 @@ At least 50 mismatched cases, grouped by the largest mismatch buckets.
 (If the suite only has a few buckets with mismatches, the largest buckets will show more
 than `--appendix-per-bucket` entries so the appendix still reaches the minimum count.)
 
-### `language/statements` (28 shown / 103 mismatches)
+### `language/statements` (34 shown / 103 mismatches)
 
 - `language/statements/async-generator/generator-created-after-decl-inst.js#non_strict`: `Expected SameValue(«[object AsyncGenerator]», «[object AsyncGenerator]») to be false`
 - `language/statements/async-generator/generator-created-after-decl-inst.js#strict`: `Expected SameValue(«[object AsyncGenerator]», «[object AsyncGenerator]») to be false`
@@ -214,8 +214,14 @@ than `--appendix-per-bucket` entries so the appendix still reaches the minimum c
 - `language/statements/for/tco-const-body.js#strict`: `Maximum call stack size exceeded`
 - `language/statements/for/tco-let-body.js#strict`: `Maximum call stack size exceeded`
 - `language/statements/for/tco-lhs-body.js#strict`: `Maximum call stack size exceeded`
+- `language/statements/for/tco-var-body.js#strict`: `Maximum call stack size exceeded`
+- `language/statements/function/S13.2.2_A17_T3.js#non_strict`: `#4: __obj.getRight() === false. Actual: __obj.getRight()===right`
+- `language/statements/function/S13.2.2_A18_T1.js#non_strict`: `#1: callee === 0. Actual: callee ===1`
+- `language/statements/function/S13.2.2_A18_T2.js#non_strict`: `#1: callee === 0. Actual: callee ===1`
+- `language/statements/function/scope-paramsbody-var-open.js#non_strict`: `Expected SameValue(«"inside"», «"outside"») to be true`
+- `language/statements/function/scope-paramsbody-var-open.js#strict`: `Expected SameValue(«"inside"», «"outside"») to be true`
 
-### `language/expressions` (10 shown / 11 mismatches)
+### `language/expressions` (10 shown / 19 mismatches)
 
 - `language/expressions/comma/tco-final.js#strict`: `Maximum call stack size exceeded`
 - `language/expressions/logical-and/tco-right.js#strict`: `Maximum call stack size exceeded`
@@ -226,7 +232,7 @@ than `--appendix-per-bucket` entries so the appendix still reaches the minimum c
 - `language/expressions/new/non-ctor-err-realm.js#strict`: `production including Arguments Expected a TypeError but got a different error constructor with the same name`
 - `language/expressions/super/call-proto-not-ctor.js#non_strict`: `Expected SameValue(«"undefined"», «"object"») to be true`
 - `language/expressions/super/call-proto-not-ctor.js#strict`: `Expected SameValue(«"undefined"», «"object"») to be true`
-- `language/expressions/tagged-template/tco-call.js#strict`: `Maximum call stack size exceeded`
+- `language/expressions/super/prop-expr-getsuperbase-before-topropertykey-getvalue.js#non_strict`: `Expected SameValue(«"bad"», «"ok"») to be true`
 
 ### `built-ins/Array` (6 shown / 6 mismatches)
 
@@ -236,12 +242,3 @@ than `--appendix-per-bucket` entries so the appendix still reaches the minimum c
 - `built-ins/Array/prototype/slice/coerced-start-end-shrink.js#strict`: `Actual [undefined, undefined, undefined, undefined] and expected [1, 2, undefined, undefined] should have the same contents.`
 - `built-ins/Array/prototype/slice/resizable-buffer.js#non_strict`: `Actual [] and expected [0, 1, 2] should have the same contents.`
 - `built-ins/Array/prototype/slice/resizable-buffer.js#strict`: `Actual [] and expected [0, 1, 2] should have the same contents.`
-
-### `built-ins/JSON` (6 shown / 6 mismatches)
-
-- `built-ins/JSON/stringify/replacer-array-string-object.js#non_strict`: `Expected SameValue(«"{\"str\":1}"», «"{\"toString\":2}"») to be true`
-- `built-ins/JSON/stringify/replacer-array-string-object.js#strict`: `Expected SameValue(«"{\"str\":1}"», «"{\"toString\":2}"») to be true`
-- `built-ins/JSON/stringify/space-string-object.js#non_strict`: `Expected SameValue(«"{\nxxx\"a1\": {\nxxxxxx\"b1\": [\nxxxxxxxxx1,\nxxxxxxxxx2,\nxxxxxxxxx3,\nxxxxxxxxx4\nxxxxxx],\nxxxxxx\"b2\": {\nxxxxxxxxx\"c1\": 1,\nxxxxxxxxx\"c2\": 2\nxxxxxx}\nxxx},\nxxx\"a2\": \"a2\"\n}"», «"{\n---\"a1\": {\n------\"b1\": [\n---------1,\n---------2,\n---------3,\n---------4\n------],\n------\"b2\": {\n---------\"c1\": 1,\n---------\"c2\": 2\n------}\n---},\n---\"a2\": \"a2\"\n}"») to be true`
-- `built-ins/JSON/stringify/space-string-object.js#strict`: `Expected SameValue(«"{\nxxx\"a1\": {\nxxxxxx\"b1\": [\nxxxxxxxxx1,\nxxxxxxxxx2,\nxxxxxxxxx3,\nxxxxxxxxx4\nxxxxxx],\nxxxxxx\"b2\": {\nxxxxxxxxx\"c1\": 1,\nxxxxxxxxx\"c2\": 2\nxxxxxx}\nxxx},\nxxx\"a2\": \"a2\"\n}"», «"{\n---\"a1\": {\n------\"b1\": [\n---------1,\n---------2,\n---------3,\n---------4\n------],\n------\"b2\": {\n---------\"c1\": 1,\n---------\"c2\": 2\n------}\n---},\n---\"a2\": \"a2\"\n}"») to be true`
-- `built-ins/JSON/stringify/value-string-object.js#non_strict`: `Expected SameValue(«"{\"key\":\"str\"}"», «"{\"key\":\"toString\"}"») to be true`
-- `built-ins/JSON/stringify/value-string-object.js#strict`: `Expected SameValue(«"{\"key\":\"str\"}"», «"{\"key\":\"toString\"}"») to be true`

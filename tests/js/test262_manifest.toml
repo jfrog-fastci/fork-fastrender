@@ -122,6 +122,158 @@ glob = "language/expressions/instanceof/**"
 status = "pass"
 
 [[expectations]]
+glob = "language/expressions/addition/**"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/relational/S9.1_A1_T4.js"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/array/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/concatenation/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/greater-than/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/greater-than-or-equal/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/less-than/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/less-than-or-equal/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/equals/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/does-not-equals/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/strict-equals/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/strict-does-not-equals/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/multiplication/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/division/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/modulus/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/subtraction/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/unary-plus/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/unary-minus/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/typeof/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/void/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/logical-not/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/grouping/**"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/logical-assignment/left-hand-side-private-reference-*.js"
+status = "pass"
+
+[[expectations]]
+glob = "language/expressions/in/private-field-*.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-or/tco-right.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls."
+
+[[expectations]]
+glob = "language/expressions/logical-or/**"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-and/tco-right.js"
+status = "xfail"
+reason = "vm-js does not yet implement proper tail calls."
+
+[[expectations]]
+glob = "language/expressions/logical-and/**"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/new/non-ctor-err-realm.js"
+status = "xfail"
+reason = "vm-js: cross-realm TypeError identity for non-constructable `new` differs from test262."
+
+[[expectations]]
+glob = "language/expressions/new/**"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/super/call-proto-not-ctor.js"
+status = "xfail"
+reason = "vm-js: SuperCall evaluation order differs (ArgumentsListEvaluation should happen before the IsConstructor check)."
+
+[[expectations]]
+id = "language/expressions/super/prop-expr-getsuperbase-before-topropertykey-getvalue.js"
+status = "xfail"
+reason = "vm-js: super property access evaluation order differs from spec (GetSuperBase/ToPropertyKey ordering)."
+
+[[expectations]]
+id = "language/expressions/super/prop-expr-getsuperbase-before-topropertykey-putvalue.js"
+status = "xfail"
+reason = "vm-js: super property access evaluation order differs from spec (GetSuperBase/ToPropertyKey ordering)."
+
+[[expectations]]
+id = "language/expressions/super/prop-expr-getsuperbase-before-topropertykey-putvalue-increment.js"
+status = "xfail"
+reason = "vm-js: super property access evaluation order differs from spec (GetSuperBase/ToPropertyKey ordering)."
+
+[[expectations]]
+id = "language/expressions/super/prop-expr-getsuperbase-before-topropertykey-putvalue-compound-assign.js"
+status = "xfail"
+reason = "vm-js: super property access evaluation order differs from spec (GetSuperBase/ToPropertyKey ordering)."
+
+[[expectations]]
+glob = "language/expressions/super/**"
+status = "pass"
+
+[[expectations]]
 id = "language/expressions/comma/tco-final.js"
 status = "xfail"
 reason = "vm-js does not yet implement proper tail calls."
@@ -129,6 +281,10 @@ reason = "vm-js does not yet implement proper tail calls."
 # --- Restricted function properties / %ThrowTypeError% (newly green) ---
 [[expectations]]
 id = "language/expressions/arrow-function/ArrowFunction_restricted-properties.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/class/restricted-properties.js"
 status = "pass"
 
 [[expectations]]
@@ -2401,21 +2557,6 @@ status = "pass"
 [[expectations]]
 id = "built-ins/JSON/stringify/value-number-object.js"
 status = "pass"
-
-[[expectations]]
-id = "built-ins/JSON/stringify/replacer-array-string-object.js"
-status = "xfail"
-reason = "vm-js: JSON.stringify handling of String objects differs from spec."
-
-[[expectations]]
-id = "built-ins/JSON/stringify/space-string-object.js"
-status = "xfail"
-reason = "vm-js: JSON.stringify spacing with String objects differs from spec."
-
-[[expectations]]
-id = "built-ins/JSON/stringify/value-string-object.js"
-status = "xfail"
-reason = "vm-js: JSON.stringify handling of String objects differs from spec."
 
 [[expectations]]
 glob = "built-ins/JSON/rawJSON/**"
