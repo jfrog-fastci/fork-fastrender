@@ -138,8 +138,9 @@ impl<Host: 'static, T: Clone + 'static> JsPromise<Host, T> {
 
     self.add_reaction(
       event_loop,
-      box_try_new(
-        move |host: &mut Host, event_loop: &mut EventLoop<Host>, result: PromiseResult<T>| {
+      box_try_new(move |host: &mut Host,
+                        event_loop: &mut EventLoop<Host>,
+                        result: PromiseResult<T>| {
         match result {
           Ok(value) => match on_fulfilled(&mut *host, &mut *event_loop, value)? {
             JsPromiseValue::Value(v) => next_resolver.resolve(&mut *event_loop, v)?,
@@ -166,8 +167,7 @@ impl<Host: 'static, T: Clone + 'static> JsPromise<Host, T> {
           Err(err) => next_resolver.reject(&mut *event_loop, err)?,
         }
         Ok(())
-        },
-      )?,
+      })?,
     )?;
 
     Ok(next)
