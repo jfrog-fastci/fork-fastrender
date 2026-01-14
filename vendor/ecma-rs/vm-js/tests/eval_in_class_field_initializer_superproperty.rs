@@ -1,4 +1,4 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+use vm_js::{CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -13,6 +13,15 @@ fn assert_value_is_bool(value: Value, expected: bool) {
     panic!("expected bool, got {value:?}");
   };
   assert_eq!(actual, expected);
+}
+
+fn exec_compiled(rt: &mut JsRuntime, source: &str) -> Result<Value, VmError> {
+  let script = CompiledScript::compile_script(rt.heap_mut(), "<eval_class_field_eval>", source)?;
+  assert!(
+    !script.requires_ast_fallback,
+    "test script should execute via compiled (HIR) script executor"
+  );
+  rt.exec_compiled_script(script)
 }
 
 #[test]
@@ -242,6 +251,51 @@ fn direct_eval_in_arrow_in_static_public_field_initializer_allows_super_property
     }
     var before = executed;
     var r = C.f.call({ tag: 0 });
+    before === false && executed === true && r === 7;
+    "#,
+  )?;
+
+  assert_value_is_bool(value, true);
+  Ok(())
+}
+
+#[test]
+fn compiled_direct_eval_in_static_public_field_initializer_allows_super_property() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+    var executed = false;
+    class B { static get x() { return this.tag; } }
+    class C extends B {
+      static tag = 7;
+      static y = eval('executed = true; super.x;');
+    }
+    executed && C.y === 7;
+    "#,
+  )?;
+
+  assert_value_is_bool(value, true);
+  Ok(())
+}
+
+#[test]
+fn compiled_direct_eval_in_arrow_in_field_initializer_allows_super_property() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+    var executed = false;
+    class A {
+      constructor() { this.tag = 7; }
+      get x() { return this.tag; }
+    }
+    class C extends A {
+      f = () => eval('executed = true; super.x;');
+    }
+    var c = new C();
+    var before = executed;
+    var r = c.f.call({ tag: 0 });
     before === false && executed === true && r === 7;
     "#,
   )?;
