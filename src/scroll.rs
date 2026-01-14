@@ -3044,6 +3044,7 @@ mod tests {
   mod scroll_anchoring_abspos_candidate_examination_test;
   mod scroll_anchoring_core_test;
   mod scroll_anchoring_depends_on_scroll_offset_test;
+  mod scroll_anchoring_excludes_fixed_test;
   mod scroll_anchoring_missing_anchor_test;
   mod scroll_anchoring_non_finite_test;
   mod scroll_anchoring_scroll_padding_test;
