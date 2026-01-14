@@ -74,12 +74,8 @@ fn handle_client(
   const MAX_DOWNLOAD_CHUNK_BYTES: usize = 64 * 1024;
 
   match req {
-<<<<<<< HEAD
     // Protocol violation: `Hello` must only be sent once at the start of the connection.
     ipc::NetworkRequest::Hello { .. } => Ok(()),
-=======
-    ipc::NetworkRequest::Hello { .. } => {}
->>>>>>> 897b22fe8 (feat(interaction): focus <video controls> in tab navigation)
     ipc::NetworkRequest::Fetch { url } => {
       if url.len() > ipc::MAX_URL_BYTES {
         let _ = conn.send_response(&ipc::NetworkResponse::Error {
