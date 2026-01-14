@@ -50222,7 +50222,12 @@ fn init_window_globals(
 
   let mut event_handler_targets: Vec<GcObject> = vec![event_target_proto, document_obj, global];
   if let Some(platform) = dom_platform.as_ref() {
-    event_handler_targets.push(platform.prototype_for(DomInterface::EventTarget));
+    // When `DomPlatform` is present, `event_target_proto` is already the platform-owned
+    // `EventTarget.prototype`; avoid pushing the same object twice.
+    let platform_event_target_proto = platform.prototype_for(DomInterface::EventTarget);
+    if platform_event_target_proto != event_target_proto {
+      event_handler_targets.push(platform_event_target_proto);
+    }
   }
   for &target in &event_handler_targets {
     scope.push_root(Value::Object(target))?;
