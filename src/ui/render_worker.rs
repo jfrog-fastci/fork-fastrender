@@ -19,7 +19,6 @@ use crate::interaction::{
   InteractionAction, InteractionEngine,
 };
 use crate::js::RunLimits;
-use crate::paint::rasterize::fill_rect;
 use crate::render_control::{
   push_stage_listener, DeadlineGuard, StageHeartbeat, StageListenerGuard,
 };
@@ -28,7 +27,6 @@ use crate::resource::{
 };
 use crate::scroll::anchoring::ScrollAnchoringPriorityCandidate;
 use crate::scroll::ScrollState;
-use crate::style::color::Rgba;
 use crate::style::types::OrientationTransform;
 use crate::text::font_db::FontConfig;
 use crate::tree::box_tree::{BoxNode, BoxType, ImageSelectionContext, ReplacedType};
@@ -36,7 +34,7 @@ use crate::ui::about_pages;
 use crate::ui::browser_limits::BrowserLimits;
 use crate::ui::cancel::{deadline_for, CancelGens, CancelSnapshot};
 use crate::ui::clipboard;
-use crate::ui::find_in_page::{FindIndex, FindMatch, FindOptions};
+use crate::ui::find_in_page::{apply_find_highlight_overlay, FindIndex, FindMatch, FindOptions};
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{
   BrowserMediaPreferences, CursorKind, DatalistOption, DownloadId, DownloadOutcome, MediaCommand,
@@ -220,6 +218,19 @@ pub fn disable_tick_stats_for_test() {
 pub fn reset_scroll_blit_stats_for_test() {
   UI_WORKER_SCROLL_BLIT_USED_COUNT.store(0, Ordering::Relaxed);
   UI_WORKER_SCROLL_BLIT_DISABLED_ANIMATION_TIME_COUNT.store(0, Ordering::Relaxed);
+}
+
+/// Reset scroll-blit fallback reason stats (test hook).
+#[cfg(feature = "browser_ui")]
+pub fn reset_scroll_blit_fallback_reason_for_test() {
+  crate::ui::scroll_blit::reset_scroll_blit_fallback_reason_for_test();
+}
+
+/// Returns the last scroll-blit fallback reason (test hook).
+#[cfg(feature = "browser_ui")]
+pub fn last_scroll_blit_fallback_reason_for_test() -> Option<&'static str> {
+  crate::ui::scroll_blit::last_scroll_blit_fallback_reason_for_test()
+    .map(crate::ui::scroll_blit::ScrollBlitFallbackReason::as_str)
 }
 
 /// Returns the number of scroll paint deadline timeouts observed so far (test hook).
@@ -6674,89 +6685,15 @@ struct BrowserRuntime {
   }
 
   fn apply_find_highlight(tab: &TabState, dpr: f32, pixmap: &mut tiny_skia::Pixmap) {
-    if tab.find.matches.is_empty() {
-      return;
-    }
-
-    let viewport_w = tab.viewport_css.0 as f32;
-    let viewport_h = tab.viewport_css.1 as f32;
-    let viewport_css = Rect::from_xywh(0.0, 0.0, viewport_w, viewport_h);
-    let viewport_page = Rect::from_xywh(
-      tab.scroll_state.viewport.x,
-      tab.scroll_state.viewport.y,
-      viewport_w,
-      viewport_h,
+    apply_find_highlight_overlay(
+      &tab.find.matches,
+      tab.find.active_match_index,
+      &tab.scroll_state,
+      tab.viewport_css,
+      dpr,
+      pixmap,
+      None,
     );
-
-    let highlight = Rgba::new(255, 235, 59, 0.25);
-    let highlight_active = Rgba::new(255, 193, 7, 0.35);
-
-    let active = tab.find.active_match_index;
-
-    for (idx, m) in tab.find.matches.iter().enumerate() {
-      if Some(idx) == active {
-        continue;
-      }
-      if m.rects.is_empty() || m.bounds == Rect::ZERO {
-        continue;
-      }
-      if m.bounds.intersection(viewport_page).is_none() {
-        continue;
-      }
-
-      for rect in &m.rects {
-        let local = Rect::from_xywh(
-          rect.x() - tab.scroll_state.viewport.x,
-          rect.y() - tab.scroll_state.viewport.y,
-          rect.width(),
-          rect.height(),
-        );
-        let Some(visible) = local.intersection(viewport_css) else {
-          continue;
-        };
-        fill_rect(
-          pixmap,
-          visible.x() * dpr,
-          visible.y() * dpr,
-          visible.width() * dpr,
-          visible.height() * dpr,
-          highlight,
-        );
-      }
-    }
-
-    let Some(active) = active else {
-      return;
-    };
-    let Some(m) = tab.find.matches.get(active) else {
-      return;
-    };
-    if m.rects.is_empty() || m.bounds == Rect::ZERO {
-      return;
-    }
-    if m.bounds.intersection(viewport_page).is_none() {
-      return;
-    }
-
-    for rect in &m.rects {
-      let local = Rect::from_xywh(
-        rect.x() - tab.scroll_state.viewport.x,
-        rect.y() - tab.scroll_state.viewport.y,
-        rect.width(),
-        rect.height(),
-      );
-      let Some(visible) = local.intersection(viewport_css) else {
-        continue;
-      };
-      fill_rect(
-        pixmap,
-        visible.x() * dpr,
-        visible.y() * dpr,
-        visible.width() * dpr,
-        visible.height() * dpr,
-        highlight_active,
-      );
-    }
   }
 
   fn maybe_emit_hover_changed(
@@ -14091,6 +14028,23 @@ struct BrowserRuntime {
 
     let painted_tick_time = tab.tick_time;
     let mut force = force;
+
+    // Find-in-page highlights are applied as a post-processing overlay by the UI worker (mutating
+    // the rendered pixmap). When scroll blit reuses the previous frame's pixmap, the overlapping
+    // region would already contain highlight pixels, and reapplying highlights would double-apply
+    // alpha.
+    //
+    // Until the UI worker can apply highlights *incrementally* to only the repainted scroll
+    // stripes, conservatively disable scroll blit whenever find highlighting is active.
+    if is_scroll && !force && !tab.find.query.is_empty() {
+      #[cfg(any(test, feature = "browser_ui"))]
+      {
+        crate::ui::scroll_blit::record_scroll_blit_fallback_reason(
+          crate::ui::scroll_blit::ScrollBlitFallbackReason::FindHighlightActive,
+        );
+      }
+      force = true;
+    }
 
     // Scroll-blit fast paths must be disabled when animation sampling time has advanced since the
     // last painted frame. Otherwise we'd reuse pixels from the previous animation time in the

@@ -7,13 +7,12 @@ use crate::interaction::{
   DateTimeInputKind, FormSubmission, FormSubmissionMethod, InteractionAction, InteractionEngine,
   InteractionState,
 };
-use crate::paint::rasterize::fill_rect;
 use crate::scroll::ScrollState;
 use crate::scroll::anchoring::ScrollAnchoringPriorityCandidate;
 use crate::style::color::Rgba;
 use crate::ui::about_pages;
 use crate::ui::clipboard;
-use crate::ui::find_in_page::{FindIndex, FindMatch, FindOptions};
+use crate::ui::find_in_page::{apply_find_highlight_overlay, FindIndex, FindMatch, FindOptions};
 use crate::ui::messages::{
   DatalistOption, NavigationReason, PointerButton, RenderedFrame, ScrollMetrics, TabId, UiToWorker,
   WorkerToUi,
@@ -2702,85 +2701,15 @@ impl BrowserTabController {
   }
 
   fn apply_find_highlight(&self, pixmap: &mut tiny_skia::Pixmap) {
-    if self.find_matches.is_empty() {
-      return;
-    }
-
-    let viewport_w = self.viewport_css.0 as f32;
-    let viewport_h = self.viewport_css.1 as f32;
-    let viewport_css = Rect::from_xywh(0.0, 0.0, viewport_w, viewport_h);
-    let viewport_page = Rect::from_xywh(
-      self.scroll_state.viewport.x,
-      self.scroll_state.viewport.y,
-      viewport_w,
-      viewport_h,
+    apply_find_highlight_overlay(
+      &self.find_matches,
+      self.find_active_match_index,
+      &self.scroll_state,
+      self.viewport_css,
+      self.dpr,
+      pixmap,
+      None,
     );
-
-    let highlight = Rgba::new(255, 235, 59, 0.25);
-    let highlight_active = Rgba::new(255, 193, 7, 0.35);
-
-    let active = self.find_active_match_index;
-
-    for (idx, m) in self.find_matches.iter().enumerate() {
-      if Some(idx) == active {
-        continue;
-      }
-      if m.rects.is_empty() || m.bounds == Rect::ZERO {
-        continue;
-      }
-      if m.bounds.intersection(viewport_page).is_none() {
-        continue;
-      }
-
-      for rect in &m.rects {
-        let local = Rect::from_xywh(
-          rect.x() - self.scroll_state.viewport.x,
-          rect.y() - self.scroll_state.viewport.y,
-          rect.width(),
-          rect.height(),
-        );
-        let Some(visible) = local.intersection(viewport_css) else {
-          continue;
-        };
-
-        let x = visible.x() * self.dpr;
-        let y = visible.y() * self.dpr;
-        let w = visible.width() * self.dpr;
-        let h = visible.height() * self.dpr;
-        fill_rect(pixmap, x, y, w, h, highlight);
-      }
-    }
-
-    let Some(active) = active else {
-      return;
-    };
-    let Some(m) = self.find_matches.get(active) else {
-      return;
-    };
-    if m.rects.is_empty() || m.bounds == Rect::ZERO {
-      return;
-    }
-    if m.bounds.intersection(viewport_page).is_none() {
-      return;
-    }
-
-    for rect in &m.rects {
-      let local = Rect::from_xywh(
-        rect.x() - self.scroll_state.viewport.x,
-        rect.y() - self.scroll_state.viewport.y,
-        rect.width(),
-        rect.height(),
-      );
-      let Some(visible) = local.intersection(viewport_css) else {
-        continue;
-      };
-
-      let x = visible.x() * self.dpr;
-      let y = visible.y() * self.dpr;
-      let w = visible.width() * self.dpr;
-      let h = visible.height() * self.dpr;
-      fill_rect(pixmap, x, y, w, h, highlight_active);
-    }
   }
 }
 

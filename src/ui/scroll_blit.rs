@@ -37,10 +37,17 @@ pub(crate) enum ScrollBlitFallbackReason {
   LegacyBackend,
   /// Expand-full-page mode is enabled, so the output surface may exceed the viewport.
   FullPageMode,
+  /// Find-in-page highlighting is active.
+  ///
+  /// Find highlights are applied as a post-processing overlay by the UI worker (mutating the
+  /// rendered pixmap). A scroll-blit that reuses the previous pixmap would therefore reuse pixels
+  /// that already contain highlights and would require incremental overlay reapplication to avoid
+  /// double-applying alpha.
+  FindHighlightActive,
 }
 
 impl ScrollBlitFallbackReason {
-  const COUNT: usize = 6;
+  const COUNT: usize = 7;
 
   fn as_index(self) -> usize {
     match self {
@@ -50,6 +57,7 @@ impl ScrollBlitFallbackReason {
       ScrollBlitFallbackReason::ScrollDrivenAnimationsPresent => 3,
       ScrollBlitFallbackReason::LegacyBackend => 4,
       ScrollBlitFallbackReason::FullPageMode => 5,
+      ScrollBlitFallbackReason::FindHighlightActive => 6,
     }
   }
 
@@ -61,6 +69,7 @@ impl ScrollBlitFallbackReason {
       3 => Some(ScrollBlitFallbackReason::ScrollDrivenAnimationsPresent),
       4 => Some(ScrollBlitFallbackReason::LegacyBackend),
       5 => Some(ScrollBlitFallbackReason::FullPageMode),
+      6 => Some(ScrollBlitFallbackReason::FindHighlightActive),
       _ => None,
     }
   }
@@ -75,6 +84,7 @@ impl ScrollBlitFallbackReason {
       ScrollBlitFallbackReason::ScrollDrivenAnimationsPresent => "ScrollDrivenAnimationsPresent",
       ScrollBlitFallbackReason::LegacyBackend => "LegacyBackend",
       ScrollBlitFallbackReason::FullPageMode => "FullPageMode",
+      ScrollBlitFallbackReason::FindHighlightActive => "FindHighlightActive",
     }
   }
 }
@@ -212,6 +222,7 @@ static LAST_SCROLL_BLIT_FALLBACK_REASON: AtomicUsize = AtomicUsize::new(0);
 /// Per-reason fallback counters.
 #[cfg(any(test, feature = "browser_ui"))]
 static SCROLL_BLIT_FALLBACK_COUNTS: [AtomicUsize; ScrollBlitFallbackReason::COUNT] = [
+  AtomicUsize::new(0),
   AtomicUsize::new(0),
   AtomicUsize::new(0),
   AtomicUsize::new(0),

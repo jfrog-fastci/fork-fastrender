@@ -60,6 +60,7 @@ mod file_input_accept_filters_drop_files;
 mod file_input_accept_filters_file_picker_choose;
 mod file_input_label_drop;
 mod file_input_multiple_drop;
+mod find_highlight_scroll_blit;
 mod document;
 mod document2;
 mod console_formatting;

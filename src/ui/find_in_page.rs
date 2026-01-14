@@ -1,4 +1,7 @@
 use crate::geometry::{Point, Rect};
+use crate::paint::rasterize::fill_rect;
+use crate::scroll::ScrollState;
+use crate::style::color::Rgba;
 use crate::text::caret::selection_segments_for_char_range;
 use crate::text::pipeline::ShapedRun;
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
@@ -52,6 +55,122 @@ pub struct FindIndex {
   haystack: String,
   segments: Vec<Segment>,
   fragments: Vec<TextFragment>,
+}
+
+/// Apply find-in-page highlights to an already rendered pixmap.
+///
+/// FastRender applies highlights as a post-processing overlay (mutating the rendered pixmap). When
+/// callers reuse a previous frame's pixmap (e.g. scroll blit + stripe repaint), the reused pixels
+/// already contain highlights and must not be highlighted again (or alpha will be double-applied).
+///
+/// `clip_device_rects` can be used by incremental paint paths to restrict the overlay to only the
+/// regions that were repainted. Rectangles are in **device pixels**.
+pub fn apply_find_highlight_overlay(
+  matches: &[FindMatch],
+  active_match_index: Option<usize>,
+  scroll_state: &ScrollState,
+  viewport_css: (u32, u32),
+  device_pixel_ratio: f32,
+  pixmap: &mut tiny_skia::Pixmap,
+  clip_device_rects: Option<&[Rect]>,
+) {
+  if matches.is_empty() {
+    return;
+  }
+
+  let dpr = if device_pixel_ratio.is_finite() && device_pixel_ratio > 0.0 {
+    device_pixel_ratio
+  } else {
+    1.0
+  };
+
+  let viewport_w = viewport_css.0 as f32;
+  let viewport_h = viewport_css.1 as f32;
+  let viewport_css = Rect::from_xywh(0.0, 0.0, viewport_w, viewport_h);
+  let viewport_page = Rect::from_xywh(
+    scroll_state.viewport.x,
+    scroll_state.viewport.y,
+    viewport_w,
+    viewport_h,
+  );
+
+  let highlight = Rgba::new(255, 235, 59, 0.25);
+  let highlight_active = Rgba::new(255, 193, 7, 0.35);
+
+  let apply_device_rect = |pixmap: &mut tiny_skia::Pixmap,
+                           rect_device: Rect,
+                           color: Rgba,
+                           clip_device_rects: Option<&[Rect]>| {
+    if rect_device.width() <= 0.0 || rect_device.height() <= 0.0 {
+      return;
+    }
+    if let Some(clips) = clip_device_rects {
+      for clip in clips {
+        if let Some(intersection) = rect_device.intersection(*clip) {
+          fill_rect(
+            pixmap,
+            intersection.x(),
+            intersection.y(),
+            intersection.width(),
+            intersection.height(),
+            color,
+          );
+        }
+      }
+    } else {
+      fill_rect(
+        pixmap,
+        rect_device.x(),
+        rect_device.y(),
+        rect_device.width(),
+        rect_device.height(),
+        color,
+      );
+    }
+  };
+
+  let paint_match = |pixmap: &mut tiny_skia::Pixmap, m: &FindMatch, color: Rgba| {
+    if m.rects.is_empty() || m.bounds == Rect::ZERO {
+      return;
+    }
+    if m.bounds.intersection(viewport_page).is_none() {
+      return;
+    }
+
+    for rect in &m.rects {
+      let local = Rect::from_xywh(
+        rect.x() - scroll_state.viewport.x,
+        rect.y() - scroll_state.viewport.y,
+        rect.width(),
+        rect.height(),
+      );
+      let Some(visible) = local.intersection(viewport_css) else {
+        continue;
+      };
+      let device_rect = Rect::from_xywh(
+        visible.x() * dpr,
+        visible.y() * dpr,
+        visible.width() * dpr,
+        visible.height() * dpr,
+      );
+      apply_device_rect(pixmap, device_rect, color, clip_device_rects);
+    }
+  };
+
+  for (idx, m) in matches.iter().enumerate() {
+    if Some(idx) == active_match_index {
+      continue;
+    }
+    paint_match(pixmap, m, highlight);
+  }
+
+  let Some(active) = active_match_index else {
+    return;
+  };
+  let Some(m) = matches.get(active) else {
+    return;
+  };
+  paint_match(pixmap, m, highlight_active);
 }
 
 impl FindIndex {

@@ -3870,8 +3870,22 @@ pub struct ScrollBlitReport {
   pub scroll_blit_used: bool,
   /// Whether partial repaint was used to repaint the exposed strip.
   pub partial_repaint_used: bool,
+  /// Device-pixel rectangles that were repainted after the blit (i.e. regions where previous-frame
+  /// pixels were overwritten).
+  ///
+  /// This is primarily useful for callers that apply post-processing overlays (such as find-in-page
+  /// highlights) to the pixmap: when the scroll-blit path is used, the existing pixels already
+  /// include those overlays, so they must only be re-applied to the regions that were repainted
+  /// after the blit to avoid double-applying alpha.
+  pub repainted_device_rects: Vec<Rect>,
   /// Optional reason the optimization was not used.
   pub fallback_reason: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct RepaintTilesReport {
+  tiles: usize,
+  device_rects: Vec<Rect>,
 }
 
 #[derive(Default)]
@@ -11058,7 +11072,9 @@ impl DisplayListRenderer {
     }
 
     let halo_px = self.tile_halo_px(list)?;
-    let repainted_tiles = self.repaint_tiles_for_damage(list, halo_px, damage_rect)?;
+    let repainted_tiles = self
+      .repaint_tiles_for_damage(list, halo_px, damage_rect)?
+      .tiles;
     Ok(PartialRepaintReport {
       pixmap: self.canvas.into_pixmap(),
       used_partial: true,
@@ -11097,6 +11113,7 @@ impl DisplayListRenderer {
         pixmap,
         scroll_blit_used: false,
         partial_repaint_used: false,
+        repainted_device_rects: Vec::new(),
         fallback_reason: Some(
           "scroll-linked animation timeline present; full repaint".to_string(),
         ),
@@ -11127,6 +11144,7 @@ impl DisplayListRenderer {
         pixmap,
         scroll_blit_used: false,
         partial_repaint_used: false,
+        repainted_device_rects: Vec::new(),
         fallback_reason: Some(
           "animated GIFs / animation_time affects images; full repaint".to_string(),
         ),
@@ -11155,6 +11173,7 @@ impl DisplayListRenderer {
         pixmap,
         scroll_blit_used: false,
         partial_repaint_used: false,
+        repainted_device_rects: Vec::new(),
         fallback_reason: reason,
       });
     }
@@ -11176,6 +11195,7 @@ impl DisplayListRenderer {
         pixmap,
         scroll_blit_used: false,
         partial_repaint_used: false,
+        repainted_device_rects: Vec::new(),
         fallback_reason: Some("scroll delta is non-finite; full repaint".to_string()),
       });
     }
@@ -11212,6 +11232,7 @@ impl DisplayListRenderer {
         pixmap,
         scroll_blit_used: false,
         partial_repaint_used: false,
+        repainted_device_rects: Vec::new(),
         fallback_reason: Some(
           "scroll delta X is not an integer in device pixels; full repaint".to_string(),
         ),
@@ -11234,6 +11255,7 @@ impl DisplayListRenderer {
         pixmap,
         scroll_blit_used: false,
         partial_repaint_used: false,
+        repainted_device_rects: Vec::new(),
         fallback_reason: Some(
           "scroll delta Y is not an integer in device pixels; full repaint".to_string(),
         ),
@@ -11257,6 +11279,7 @@ impl DisplayListRenderer {
         pixmap,
         scroll_blit_used: false,
         partial_repaint_used: false,
+        repainted_device_rects: Vec::new(),
         fallback_reason: Some("scroll delta unsupported; full repaint".to_string()),
       });
     }
@@ -11285,6 +11308,7 @@ impl DisplayListRenderer {
         pixmap,
         scroll_blit_used: false,
         partial_repaint_used: false,
+        repainted_device_rects: Vec::new(),
         fallback_reason: Some("viewport scrollbar-gutter reserved space".to_string()),
       });
     }
@@ -11296,6 +11320,7 @@ impl DisplayListRenderer {
         pixmap: self.canvas.into_pixmap(),
         scroll_blit_used: false,
         partial_repaint_used: false,
+        repainted_device_rects: Vec::new(),
         fallback_reason: Some("empty surface".to_string()),
       });
     }
@@ -11316,6 +11341,7 @@ impl DisplayListRenderer {
         pixmap,
         scroll_blit_used: false,
         partial_repaint_used: false,
+        repainted_device_rects: Vec::new(),
         fallback_reason: Some("scroll delta exceeds viewport; full repaint".to_string()),
       });
     }
@@ -11376,6 +11402,7 @@ impl DisplayListRenderer {
 
     let halo_px = self.tile_halo_px(list)?;
     let mut repainted_tiles = 0usize;
+    let mut repainted_device_rects: Vec<Rect> = Vec::new();
     // Avoid capturing `&self` in this closure; we need to mutably borrow `self` below for partial
     // repaint and Rust considers the closure's borrow live across the whole call.
     let scale = self.scale;
@@ -11394,8 +11421,9 @@ impl DisplayListRenderer {
       } else {
         Rect::from_xywh(0.0, 0.0, width as f32, (-dy) as f32)
       };
-      repainted_tiles = repainted_tiles
-        .saturating_add(self.repaint_tiles_for_damage(list, halo_px, to_css(exposed_device))?);
+      let repainted = self.repaint_tiles_for_damage(list, halo_px, to_css(exposed_device))?;
+      repainted_tiles = repainted_tiles.saturating_add(repainted.tiles);
+      repainted_device_rects.extend(repainted.device_rects);
     }
 
     if dx != 0 {
@@ -11404,14 +11432,31 @@ impl DisplayListRenderer {
       } else {
         Rect::from_xywh(0.0, 0.0, (-dx) as f32, height as f32)
       };
-      repainted_tiles = repainted_tiles
-        .saturating_add(self.repaint_tiles_for_damage(list, halo_px, to_css(exposed_device))?);
+      let repainted = self.repaint_tiles_for_damage(list, halo_px, to_css(exposed_device))?;
+      repainted_tiles = repainted_tiles.saturating_add(repainted.tiles);
+      repainted_device_rects.extend(repainted.device_rects);
+    }
+
+    // Avoid reporting duplicate tiles for diagonal scroll deltas. Callers may apply post-processing
+    // overlays (e.g. find-in-page highlights) by iterating the reported rects; duplicates would
+    // double-apply alpha.
+    if repainted_device_rects.len() > 1 {
+      repainted_device_rects.sort_by_key(|r| {
+        (
+          r.x().round() as i32,
+          r.y().round() as i32,
+          r.width().round() as i32,
+          r.height().round() as i32,
+        )
+      });
+      repainted_device_rects.dedup();
     }
 
     Ok(ScrollBlitReport {
       pixmap: self.canvas.into_pixmap(),
       scroll_blit_used: true,
       partial_repaint_used: repainted_tiles > 0,
+      repainted_device_rects,
       fallback_reason: None,
     })
   }
@@ -12617,7 +12662,7 @@ impl DisplayListRenderer {
     list: &DisplayList,
     halo_px: u32,
     damage_rect: Rect,
-  ) -> Result<usize> {
+  ) -> Result<RepaintTilesReport> {
     if damage_rect.width() <= 0.0
       || damage_rect.height() <= 0.0
       || !damage_rect.x().is_finite()
@@ -12625,13 +12670,19 @@ impl DisplayListRenderer {
       || !damage_rect.width().is_finite()
       || !damage_rect.height().is_finite()
     {
-      return Ok(0);
+      return Ok(RepaintTilesReport {
+        tiles: 0,
+        device_rects: Vec::new(),
+      });
     }
 
     let device_damage = self.ds_rect(damage_rect);
     let tiles = self.build_tiles_for_device_rect(list, halo_px, device_damage)?;
     if tiles.is_empty() {
-      return Ok(0);
+      return Ok(RepaintTilesReport {
+        tiles: 0,
+        device_rects: Vec::new(),
+      });
     }
 
     let font_ctx = self.font_ctx.clone();
@@ -12657,6 +12708,7 @@ impl DisplayListRenderer {
     let shared_backdrop_filter_cache = self.shared_backdrop_filter_cache.clone();
 
     let mut repainted = 0usize;
+    let mut repainted_device_rects: Vec<Rect> = Vec::new();
     let mut tile_stats = GradientStats::default();
     for work in tiles {
       check_active(RenderStage::Paint).map_err(Error::Render)?;
@@ -12696,13 +12748,22 @@ impl DisplayListRenderer {
       tile_stats.merge(&renderer.gradient_stats);
       self.blit_tile(&work, renderer.canvas.pixmap())?;
       repainted = repainted.saturating_add(1);
+      repainted_device_rects.push(Rect::from_xywh(
+        work.tile_x as f32,
+        work.tile_y as f32,
+        work.tile_w as f32,
+        work.tile_h as f32,
+      ));
     }
 
     self.gradient_stats.merge(&tile_stats);
     if repainted > 0 {
       self.mark_current_pixmap_mutated();
     }
-    Ok(repainted)
+    Ok(RepaintTilesReport {
+      tiles: repainted,
+      device_rects: repainted_device_rects,
+    })
   }
 
   fn render_parallel(
