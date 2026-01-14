@@ -1233,18 +1233,25 @@ fn sync_render_dom_from_js_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Worker
   // preorder id.
   let prev_focused_preorder = tab.interaction.focused_node_id();
   let prev_focus_visible = tab.interaction.interaction_state().focus_visible;
-  let prev_focused_dom2_node = prev_focused_preorder.and_then(|focused_preorder| {
-    tab
-      .js_dom_mapping
-      .as_ref()
-      .and_then(|mapping| mapping.node_id_for_preorder(focused_preorder))
-      .or_else(|| {
-        // Fallback: if the focused element has an `id=` attribute, use it as a stable handle.
-        let element_id = dom_node_by_preorder_id(doc.dom(), focused_preorder)
-          .and_then(|node| node.get_attribute_ref("id"));
-        element_id.and_then(|id| dom2.get_element_by_id(id))
-      })
-  });
+  let prev_focused_dom2_node = {
+    let focused_element_id = tab.interaction.focused_element_id();
+    prev_focused_preorder.and_then(|focused_preorder| {
+      tab
+        .js_dom_mapping
+        .as_ref()
+        .and_then(|mapping| mapping.node_id_for_preorder(focused_preorder))
+        .or_else(|| {
+          focused_element_id
+            .and_then(|id| dom2.get_element_by_id(id))
+            .or_else(|| {
+              // Fallback: if the focused element has an `id=` attribute, use it as a stable handle.
+              let element_id = dom_node_by_preorder_id(doc.dom(), focused_preorder)
+                .and_then(|node| node.get_attribute_ref("id"));
+              element_id.and_then(|id| dom2.get_element_by_id(id))
+            })
+        })
+    })
+  };
 
   // Converting the live `dom2` tree into the renderer's DOM snapshot can be expensive and may panic
   // if `to_renderer_dom` hits an internal consistency bug. Keep it isolated so a single bad page

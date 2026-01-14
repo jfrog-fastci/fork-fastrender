@@ -194,6 +194,7 @@ pub struct InteractionEngine {
   /// This is maintained by pointer-move handlers so UI layers can display tooltips without
   /// repeatedly walking the DOM to resolve `title` attributes on each high-frequency pointer move.
   hover_tooltip: Option<String>,
+  focused_element_id: Option<String>,
   pointer_down_target: Option<usize>,
   link_drag: Option<LinkDragState>,
   range_drag: Option<RangeDragState>,
@@ -6423,6 +6424,7 @@ impl InteractionEngine {
     Self {
       state: InteractionState::default(),
       hover_tooltip: None,
+      focused_element_id: None,
       pointer_down_target: None,
       link_drag: None,
       range_drag: None,
@@ -7408,6 +7410,10 @@ impl InteractionEngine {
     self.state.focused
   }
 
+  pub fn focused_element_id(&self) -> Option<&str> {
+    self.focused_element_id.as_deref()
+  }
+
   /// Returns the `<input type="range">` node id currently being dragged by the pointer, if any.
   ///
   /// This is a UI-layer integration hook so external code can keep higher-level state (e.g. JS
@@ -7578,6 +7584,14 @@ impl InteractionEngine {
       self.pending_text_drop_move = None;
       // Focus changes collapse any existing document selection (e.g. a prior Ctrl+A selection).
       self.state.set_document_selection(None);
+    }
+
+    let next_focused_element_id = new_focused
+      .and_then(|id| index.node(id))
+      .and_then(|node| node.get_attribute_ref("id"))
+      .filter(|id| !id.is_empty());
+    if prev_focused != new_focused || self.focused_element_id.as_deref() != next_focused_element_id {
+      self.focused_element_id = next_focused_element_id.map(|id| id.to_string());
     }
 
     self.state.set_focused(new_focused);
