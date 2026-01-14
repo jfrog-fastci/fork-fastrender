@@ -168,12 +168,14 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
   // Tab strip.
   out.push_str("  <div class=\"tab-strip\" id=\"tab-strip\">\n");
   out.push_str("    <div class=\"tab-strip-tabs\" role=\"tablist\" aria-label=\"Tabs\">\n");
-  for tab in &app.tabs {
+  let tab_setsize = app.tabs.len();
+  for (tab_idx, tab) in app.tabs.iter().enumerate() {
     let tab_id = escape_html(&tab.id.0.to_string());
     let title = escape_html(&tab.display_title());
     let favicon_url = ChromeDynamicAssetFetcher::favicon_url(tab.id);
     let is_active = active_tab_id == Some(tab.id);
     let aria_selected = if is_active { "true" } else { "false" };
+    let aria_posinset = tab_idx + 1;
     out.push_str("      <div class=\"tab");
     if is_active {
       out.push_str(" active");
@@ -187,7 +189,11 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     // "Activate tab" link.
     out.push_str("        <a class=\"tab-activate\" role=\"tab\" aria-selected=\"");
     out.push_str(aria_selected);
-    out.push_str("\" href=\"chrome-action:activate-tab?tab=");
+    write!(
+      out,
+      "\" aria-posinset=\"{aria_posinset}\" aria-setsize=\"{tab_setsize}\" href=\"chrome-action:activate-tab?tab=",
+    )
+    .expect("write tab aria posinset/setsize");
     out.push_str(&tab_id);
     out.push_str("\">");
     out.push_str("<img class=\"tab-favicon\" src=\"");
@@ -413,6 +419,12 @@ mod tests {
     assert!(html.contains("class=\"tab-strip-tabs\" role=\"tablist\" aria-label=\"Tabs\""));
     assert_eq!(html.matches("role=\"tab\"").count(), 3);
     assert_eq!(html.matches("role=\"tab\" aria-selected=\"true\"").count(), 1);
+    assert!(
+      html.contains(
+        r#"aria-posinset="2" aria-setsize="3" href="chrome-action:activate-tab?tab=2""#
+      ),
+      "expected tab posinset/setsize attributes"
+    );
 
     // Close buttons should include the tab title so the label is unique and meaningful.
     assert!(html.contains("aria-label=\"Close tab: Rust &amp; &lt;Friends&gt;\""));
