@@ -19,28 +19,29 @@
   "notes": "Fixture is a JavaScript-dependent shell (includes the <noscript> \"some parts … don’t work properly without JavaScript enabled\" warning and empty \"Homes on Airbnb\" sections), not the real populated homepage.\nDiff metrics here are therefore not representative of real Airbnb rendering/content.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 129096,
-    "diff_percent": 13.4475,
-    "perceptual": 0.2263,
+    "diff_pixels": 109726,
+    "diff_percent": 11.4298,
+    "perceptual": 0.0409,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 1142,
-      "y": 5,
+      "x": 0,
+      "y": 3,
       "baseline_rgba": [
-        255,
-        255,
-        255,
+        167,
+        167,
+        167,
         255
       ],
       "rendered_rgba": [
-        249,
-        249,
-        249,
+        255,
+        255,
+        255,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "cbe69ff1e1bb8b51872f4692117518afddba2e99"
+    "computed_at_commit": "163ca006dfa854e20d1922f2eb34b73fa1acae27"
   },
   "hotspot": "cascade",
   "failure_stage": null,

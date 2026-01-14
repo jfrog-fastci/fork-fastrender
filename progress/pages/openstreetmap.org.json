@@ -17,9 +17,10 @@
   "notes": "Fixture is mostly the JS “slippy map” UI; without executing JS/tiles the map area is blank (noscript warning).\nLow diff is expected because we’re comparing a mostly-static shell; remaining mismatch is minor styling/text AA noise.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 13125,
-    "diff_percent": 1.3672,
-    "perceptual": 0.3053,
+    "diff_pixels": 12282,
+    "diff_percent": 1.2794,
+    "perceptual": 0.0243,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 196,
       "y": 10,
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "7f0de99f5592c239faf39227dbc1c5ede86d8121"
+    "computed_at_commit": "163ca006dfa854e20d1922f2eb34b73fa1acae27"
   },
   "hotspot": "paint",
   "failure_stage": null,

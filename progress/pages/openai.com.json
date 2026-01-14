@@ -17,12 +17,13 @@
   "notes": "Cloudflare noscript interstitial. Remaining Chrome diffs are confined to the centered OpenAI SVG logo and the single-line \"Enable JavaScript and cookies to continue\" text; discrepancies appear to be minor raster-level AA/hinting differences (resvg/tiny-skia vs Chrome/Skia) rather than missing layout/cascade/paint primitives.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 2186,
-    "diff_percent": 0.2277,
-    "perceptual": 0.2475,
+    "diff_pixels": 3778,
+    "diff_percent": 0.3935,
+    "perceptual": 0.0033,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 595,
-      "y": 8,
+      "y": 348,
       "baseline_rgba": [
         255,
         255,
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "59f1f9050cfd986dc05b3a15a94d544dcf56994e"
+    "computed_at_commit": "163ca006dfa854e20d1922f2eb34b73fa1acae27"
   },
   "hotspot": "paint",
   "failure_stage": null,

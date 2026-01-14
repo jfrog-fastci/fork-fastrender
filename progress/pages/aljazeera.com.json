@@ -19,12 +19,13 @@
   "notes": "Remaining Chrome diffs are largely raster-level (text hinting/AA + small box-shadow blur falloff). Major visible 1px horizontal border \"stripe swap\" fixed by removing an unconditional 0.5px bias when the border edge is already pixel-aligned.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 79567,
-    "diff_percent": 8.2882,
-    "perceptual": 0.2334,
+    "diff_pixels": 68136,
+    "diff_percent": 7.0975,
+    "perceptual": 0.052,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 0,
-      "y": 137,
+      "x": 1,
+      "y": 136,
       "baseline_rgba": [
         229,
         229,
@@ -40,7 +41,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "87bcbb0e8dc9b9e870d6b813d5a7226bc728de8d"
+    "computed_at_commit": "163ca006dfa854e20d1922f2eb34b73fa1acae27"
   },
   "hotspot": "paint",
   "failure_stage": null,
