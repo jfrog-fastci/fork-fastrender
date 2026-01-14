@@ -10,6 +10,21 @@ use super::{
 use crate::debug::trace::TraceHandle;
 use crate::media::clock::MediaClock;
 
+#[derive(Debug)]
+struct BackendMediaClock {
+  backend: Arc<dyn AudioBackend>,
+}
+
+impl MediaClock for BackendMediaClock {
+  fn now(&self) -> std::time::Duration {
+    self.backend.clock().now()
+  }
+
+  fn is_started(&self) -> bool {
+    self.backend.clock().is_started()
+  }
+}
+
 /// Identifier for a logical group of sinks (e.g. a browser tab).
 ///
 /// Groups have their own volume and mute state that are applied on top of the per-sink volume and
@@ -167,7 +182,12 @@ impl AudioEngine {
   /// This is primarily intended for deterministic unit tests.
   #[must_use]
   pub fn new_with_backend(config: Arc<AudioEngineConfig>, backend: Arc<dyn AudioBackend>) -> Self {
-    let device_clock: Arc<dyn MediaClock> = Arc::new(backend.clock());
+    // Do not snapshot the clock at construction time: some backends (e.g. CPAL) can transition to a
+    // different clocking mode (fallback-to-silence) at runtime if the output device disappears.
+    // Wrap the backend so callers always observe the current clock behavior.
+    let device_clock: Arc<dyn MediaClock> = Arc::new(BackendMediaClock {
+      backend: backend.clone(),
+    });
     Self {
       config,
       backend,
