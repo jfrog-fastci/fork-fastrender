@@ -244,6 +244,7 @@ pub mod dom;
 pub mod dom2;
 pub(crate) mod fallible_vec_writer;
 pub mod html;
+pub mod media;
 pub mod image_compare;
 pub mod image_loader;
 pub mod image_output;
