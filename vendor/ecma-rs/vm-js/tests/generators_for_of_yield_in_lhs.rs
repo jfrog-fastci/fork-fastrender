@@ -316,6 +316,30 @@ fn generator_for_of_yield_in_let_lhs_preserves_per_iteration_env() {
 }
 
 #[test]
+fn generator_for_of_yield_in_const_lhs_preserves_per_iteration_env() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          let fs = [];
+          for (const [a = yield 1] of [[undefined], [2]]) {
+            fs.push(() => a);
+          }
+          return fs[0]() + "," + fs[1]();
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(42);
+        r1.done === false && r1.value === 1 &&
+        r2.done === true && r2.value === "42,2"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_for_of_yield_in_let_object_pattern_default_preserves_per_iteration_env() {
   let mut rt = new_runtime();
   let value = rt
