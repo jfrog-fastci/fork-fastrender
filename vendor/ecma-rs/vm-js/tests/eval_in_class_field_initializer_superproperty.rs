@@ -354,6 +354,46 @@ fn compiled_direct_eval_in_static_public_field_initializer_allows_super_property
 }
 
 #[test]
+fn compiled_direct_eval_in_public_field_initializer_allows_super_property() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+    var executed = false;
+    class A {}
+    class C extends A {
+      x = eval('executed = true; super.x;');
+    }
+    new C();
+    executed;
+    "#,
+  )?;
+
+  assert_value_is_bool(value, true);
+  Ok(())
+}
+
+#[test]
+fn compiled_direct_eval_in_public_field_initializer_allows_super_computed_property() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+    var executed = false;
+    class A {}
+    class C extends A {
+      x = eval('executed = true; super["x"];');
+    }
+    new C();
+    executed;
+    "#,
+  )?;
+
+  assert_value_is_bool(value, true);
+  Ok(())
+}
+
+#[test]
 fn compiled_direct_eval_in_arrow_in_field_initializer_allows_super_property() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = exec_compiled(
@@ -366,6 +406,31 @@ fn compiled_direct_eval_in_arrow_in_field_initializer_allows_super_property() ->
     }
     class C extends A {
       f = () => eval('executed = true; super.x;');
+    }
+    var c = new C();
+    var before = executed;
+    var r = c.f.call({ tag: 0 });
+    before === false && executed === true && r === 7;
+    "#,
+  )?;
+
+  assert_value_is_bool(value, true);
+  Ok(())
+}
+
+#[test]
+fn compiled_direct_eval_in_arrow_in_field_initializer_allows_super_computed_property() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+    var executed = false;
+    class A {
+      constructor() { this.tag = 7; }
+      get x() { return this.tag; }
+    }
+    class C extends A {
+      f = () => eval('executed = true; super["x"];');
     }
     var c = new C();
     var before = executed;
@@ -423,6 +488,77 @@ fn compiled_direct_eval_in_arrow_in_static_public_field_initializer_allows_super
 }
 
 #[test]
+fn compiled_direct_eval_in_arrow_in_static_public_field_initializer_allows_super_computed_property(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+    var executed = false;
+    class B { static get x() { return this.tag; } }
+    class C extends B {
+      static tag = 7;
+      static f = () => eval('executed = true; super["x"];');
+    }
+    var before = executed;
+    var r = C.f.call({ tag: 0 });
+    before === false && executed === true && r === 7;
+    "#,
+  )?;
+
+  assert_value_is_bool(value, true);
+  Ok(())
+}
+
+#[test]
+fn compiled_indirect_eval_in_field_initializer_rejects_super_property_and_skips_side_effects() -> Result<(), VmError>
+{
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+    var executed = false;
+    var ok = false;
+    var indirectEval = eval;
+    class A {}
+    class C extends A {
+      x = indirectEval('executed = true; super.x;');
+    }
+    try { new C(); }
+    catch (e) { ok = e.name === 'SyntaxError'; }
+    ok && !executed;
+    "#,
+  )?;
+
+  assert_value_is_bool(value, true);
+  Ok(())
+}
+
+#[test]
+fn compiled_indirect_eval_in_field_initializer_rejects_super_computed_property_and_skips_side_effects(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+    var executed = false;
+    var ok = false;
+    var indirectEval = eval;
+    class A {}
+    class C extends A {
+      x = indirectEval('executed = true; super["x"];');
+    }
+    try { new C(); }
+    catch (e) { ok = e.name === 'SyntaxError'; }
+    ok && !executed;
+    "#,
+  )?;
+
+  assert_value_is_bool(value, true);
+  Ok(())
+}
+
+#[test]
 fn compiled_indirect_eval_in_static_field_initializer_rejects_super_property_and_skips_side_effects(
 ) -> Result<(), VmError> {
   let mut rt = new_runtime();
@@ -436,6 +572,30 @@ fn compiled_indirect_eval_in_static_field_initializer_rejects_super_property_and
     try {
       class C extends B {
         static y = indirectEval('executed = true; super.x;');
+      }
+    } catch (e) { ok = e.name === 'SyntaxError'; }
+    ok && !executed;
+    "#,
+  )?;
+
+  assert_value_is_bool(value, true);
+  Ok(())
+}
+
+#[test]
+fn compiled_indirect_eval_in_static_field_initializer_rejects_super_computed_property_and_skips_side_effects(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+    var executed = false;
+    var ok = false;
+    var indirectEval = eval;
+    class B {}
+    try {
+      class C extends B {
+        static y = indirectEval('executed = true; super["x"];');
       }
     } catch (e) { ok = e.name === 'SyntaxError'; }
     ok && !executed;
@@ -465,6 +625,59 @@ fn compiled_indirect_eval_in_arrow_in_field_initializer_rejects_super_property_a
     }
     var c = new C();
     try { c.f(); }
+    catch (e) { ok = e.name === 'SyntaxError'; }
+    ok && !executed;
+    "#,
+  )?;
+
+  assert_value_is_bool(value, true);
+  Ok(())
+}
+
+#[test]
+fn compiled_indirect_eval_in_arrow_in_field_initializer_rejects_super_computed_property_and_skips_side_effects(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+    var executed = false;
+    var ok = false;
+    var indirectEval = eval;
+    class A {
+      constructor() { this.tag = 7; }
+      get x() { return this.tag; }
+    }
+    class C extends A {
+      f = () => indirectEval('executed = true; super["x"];');
+    }
+    var c = new C();
+    try { c.f(); }
+    catch (e) { ok = e.name === 'SyntaxError'; }
+    ok && !executed;
+    "#,
+  )?;
+
+  assert_value_is_bool(value, true);
+  Ok(())
+}
+
+#[test]
+fn compiled_indirect_eval_in_arrow_in_static_field_initializer_rejects_super_computed_property_and_skips_side_effects(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+    var executed = false;
+    var ok = false;
+    var indirectEval = eval;
+    class B { static get x() { return this.tag; } }
+    class C extends B {
+      static tag = 7;
+      static f = () => indirectEval('executed = true; super["x"];');
+    }
+    try { C.f(); }
     catch (e) { ok = e.name === 'SyntaxError'; }
     ok && !executed;
     "#,
