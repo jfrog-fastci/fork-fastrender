@@ -4831,12 +4831,12 @@ impl BrowserRuntime {
     let ui_tx = self.ui_tx.clone();
 
     let finish = |outcome: PageExportOutcome| {
-      let _ = ui_tx.send(WorkerToUi::PageExportFinished {
+      let _ = ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::PageExportFinished {
         tab_id,
         kind,
         path: path.clone(),
         outcome,
-      });
+      }));
     };
 
     if path.as_os_str().is_empty() {
@@ -9919,12 +9919,14 @@ impl BrowserRuntime {
                   /* trigger_pos_css */ None,
                   tab.last_pointer_pos_css,
                 );
-                let _ = self.ui_tx.send(WorkerToUi::MediaControlsOpened {
-                  tab_id,
-                  node_id: media_node_id,
-                  kind,
-                  anchor_css,
-                });
+                let _ = self
+                  .ui_tx
+                  .send(WorkerToUiMsg::Single(WorkerToUi::MediaControlsOpened {
+                    tab_id,
+                    node_id: media_node_id,
+                    kind,
+                    anchor_css,
+                  }));
               }
             }
           }
@@ -10703,6 +10705,7 @@ impl BrowserRuntime {
           tab_id,
           snapshot,
           snapshot_kind: SnapshotKind::Prepare,
+          painted_tick_time: None,
           msgs: vec![
             WorkerToUi::NavigationFailed {
               tab_id,
