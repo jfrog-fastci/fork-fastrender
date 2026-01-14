@@ -198,11 +198,11 @@ fn tla_compiled_module_executes_via_hir_without_ast_fallback() -> Result<(), VmE
   let mut graph = ModuleGraph::new();
 
   let result = (|| -> Result<(), VmError> {
-    let source = std::sync::Arc::new(vm_js::SourceText::new_charged(
+    let source = vm_js::SourceText::new_charged_arc(
       &mut heap,
       "m.js",
       "export const value = await Promise.resolve(42);",
-    )?);
+    )?;
     let mut record = SourceTextModuleRecord::compile_source(&mut heap, source)?;
     // Simulate an embedding that discards the `parse-js` AST after compilation.
     record.ast = None;
