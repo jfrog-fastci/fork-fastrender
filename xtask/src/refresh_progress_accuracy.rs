@@ -29,17 +29,9 @@ pub struct RefreshProgressAccuracyArgs {
   #[arg(long, value_name = "DIR", default_value = DEFAULT_OUT_DIR)]
   pub out_dir: PathBuf,
 
-  /// Use Cargo's debug profile for the FastRender/diff steps (skip `--release`).
-  ///
-  /// This mirrors `xtask fixture-chrome-diff --debug` and is useful for keeping `refresh-progress-accuracy`
-  /// iteration loops under the standard 10-minute sandbox timeout.
-  #[arg(long)]
-  pub debug: bool,
-
   /// Skip building renderer binaries and reuse existing binaries under the selected Cargo profile.
   ///
-  /// This mirrors `xtask fixture-chrome-diff --no-build`. When enabled, binaries must already exist under
-  /// `target/debug` (with `--debug`) or `target/release` (default).
+  /// This forwards `--no-build` to `xtask fixture-chrome-diff`.
   #[arg(long)]
   pub no_build: bool,
 
@@ -91,12 +83,6 @@ pub struct RefreshProgressAccuracyArgs {
   /// Per-fixture hard timeout in seconds forwarded to `xtask fixture-chrome-diff --timeout`.
   #[arg(long, default_value_t = DEFAULT_TIMEOUT_SECS, value_name = "SECS")]
   pub timeout: u64,
-
-  /// Skip building renderer binaries and reuse existing binaries under the selected Cargo profile.
-  ///
-  /// This forwards `--no-build` to `xtask fixture-chrome-diff`.
-  #[arg(long)]
-  pub no_build: bool,
 
   /// Continue even if some fixtures fail to render during the FastRender step.
   ///
@@ -230,7 +216,6 @@ fn print_plan(
   }
   println!("  viewport: {DEFAULT_VIEWPORT} (pageset progress baseline)");
   println!("  timeout: {}s", args.timeout);
-  println!("  debug: {}", args.debug);
   println!("  no_build: {}", args.no_build);
   println!(
     "  diff: tolerance={} max_diff_percent={} ignore_alpha={} max_perceptual_distance={}",
@@ -289,9 +274,6 @@ fn build_fixture_chrome_diff_argv(args: &RefreshProgressAccuracyArgs) -> Result<
   // defaults. This avoids duplicating its (large) set of defaults and keeps the wrapper aligned
   // with future changes.
   let mut argv: Vec<OsString> = vec!["xtask".into(), "fixture-chrome-diff".into()];
-  if args.debug {
-    argv.push("--debug".into());
-  }
   if args.no_build {
     argv.push("--no-build".into());
   }
@@ -305,9 +287,6 @@ fn build_fixture_chrome_diff_argv(args: &RefreshProgressAccuracyArgs) -> Result<
 
   argv.push("--viewport".into());
   argv.push(DEFAULT_VIEWPORT.into());
-  if args.no_build {
-    argv.push("--no-build".into());
-  }
   if args.keep_going {
     argv.push("--keep-going".into());
   }
