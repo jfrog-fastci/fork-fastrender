@@ -19597,12 +19597,13 @@ fn image_data_to_scaled_pixmap_with_phase_inner(
   // - quantize bilinear weights to 16 phases (4-bit precision),
   // - and only floor-to-u8 once at the end (no truncation between axes).
   //
-  // tiny-skia (and Skia's minification paths) truncate between axes, which can produce pervasive
-  // ±1 diffs across photo-heavy regions like hero images.
+  // tiny-skia truncates intermediate results between the horizontal and vertical lerps, which can
+  // produce pervasive ±1 diffs across photo-heavy regions.
   //
-  // Use a float bilinear path for pure upscales to match Chrome more closely. We keep the existing
-  // truncating fixed-point path for downscales to preserve Skia-aligned behaviour and mipmap
-  // sampling.
+  // Chrome/Skia appears to keep enough precision for the full 2D bilinear calculation and only
+  // floors once at the end. We therefore:
+  // - use a float bilinear path for pure upscales (different mapping + 16-phase weight quantization),
+  // - and a fixed-point + mipmap-capable path for downscales (but without intermediate truncation).
   if scale_x0 <= 1.0 && scale_y0 <= 1.0 {
     #[derive(Clone, Copy)]
     struct AxisSampleF32 {
@@ -19891,11 +19892,21 @@ fn image_data_to_scaled_pixmap_with_phase_inner(
   };
 
   #[inline]
-  fn lerp_u8_trunc(a: u16, b: u16, w: u16) -> u16 {
-    // `w` is in 0..=255, representing w/256.
-    let inv = 256u32 - w as u32;
-    let out = u32::from(a) * inv + u32::from(b) * u32::from(w);
-    (out >> 8) as u16
+  fn bilerp_u8_trunc(p00: u16, p10: u16, p01: u16, p11: u16, wx: u16, wy: u16) -> u16 {
+    // `wx`/`wy` are in 0..=255, representing w/256.
+    //
+    // IMPORTANT: Do **not** truncate to 8-bit between the horizontal and vertical lerps.
+    // Chrome/Skia appears to keep enough precision for the full 2D bilinear calculation and only
+    // floors once when converting to u8 channels. Truncating the intermediate results introduces
+    // widespread ±1 diffs across downscaled photos (e.g. arstechnica thumbnails).
+    let inv_x = 256u32 - wx as u32;
+    let inv_y = 256u32 - wy as u32;
+
+    // Intermediate values are kept in fixed-point (1/256) until the final shift by 16.
+    let top = u32::from(p00) * inv_x + u32::from(p10) * u32::from(wx);
+    let bot = u32::from(p01) * inv_x + u32::from(p11) * u32::from(wx);
+    let out = top * inv_y + bot * u32::from(wy);
+    (out >> 16) as u16
   }
   let w0 = 1.0 - blend_t;
   let w1 = blend_t;
@@ -19934,20 +19945,10 @@ fn image_data_to_scaled_pixmap_with_phase_inner(
       let (r01, g01, b01, a01) = read_image_pixel_premul_u16(pixels_a, idx01_a, premul_a);
       let (r11, g11, b11, a11) = read_image_pixel_premul_u16(pixels_a, idx11_a, premul_a);
 
-      let top_r_a = lerp_u8_trunc(r00, r10, wx_a);
-      let top_g_a = lerp_u8_trunc(g00, g10, wx_a);
-      let top_b_a = lerp_u8_trunc(b00, b10, wx_a);
-      let top_a_a = lerp_u8_trunc(a00, a10, wx_a);
-
-      let bot_r_a = lerp_u8_trunc(r01, r11, wx_a);
-      let bot_g_a = lerp_u8_trunc(g01, g11, wx_a);
-      let bot_b_a = lerp_u8_trunc(b01, b11, wx_a);
-      let bot_a_a = lerp_u8_trunc(a01, a11, wx_a);
-
-      let r_a = lerp_u8_trunc(top_r_a, bot_r_a, wy_a);
-      let g_a = lerp_u8_trunc(top_g_a, bot_g_a, wy_a);
-      let b_a = lerp_u8_trunc(top_b_a, bot_b_a, wy_a);
-      let a_a = lerp_u8_trunc(top_a_a, bot_a_a, wy_a);
+      let r_a = bilerp_u8_trunc(r00, r10, r01, r11, wx_a, wy_a);
+      let g_a = bilerp_u8_trunc(g00, g10, g01, g11, wx_a, wy_a);
+      let b_a = bilerp_u8_trunc(b00, b10, b01, b11, wx_a, wy_a);
+      let a_a = bilerp_u8_trunc(a00, a10, a01, a11, wx_a, wy_a);
 
       let mut r = r_a as f32;
       let mut g = g_a as f32;
@@ -19970,20 +19971,10 @@ fn image_data_to_scaled_pixmap_with_phase_inner(
         let (r01, g01, b01, a01) = read_image_pixel_premul_u16(pixels_b, idx01_b, premul_b);
         let (r11, g11, b11, a11) = read_image_pixel_premul_u16(pixels_b, idx11_b, premul_b);
 
-        let top_r_b = lerp_u8_trunc(r00, r10, wx_b);
-        let top_g_b = lerp_u8_trunc(g00, g10, wx_b);
-        let top_b_b = lerp_u8_trunc(b00, b10, wx_b);
-        let top_a_b = lerp_u8_trunc(a00, a10, wx_b);
-
-        let bot_r_b = lerp_u8_trunc(r01, r11, wx_b);
-        let bot_g_b = lerp_u8_trunc(g01, g11, wx_b);
-        let bot_b_b = lerp_u8_trunc(b01, b11, wx_b);
-        let bot_a_b = lerp_u8_trunc(a01, a11, wx_b);
-
-        let r_b = lerp_u8_trunc(top_r_b, bot_r_b, wy_b) as f32;
-        let g_b = lerp_u8_trunc(top_g_b, bot_g_b, wy_b) as f32;
-        let b_b = lerp_u8_trunc(top_b_b, bot_b_b, wy_b) as f32;
-        let a_b = lerp_u8_trunc(top_a_b, bot_a_b, wy_b) as f32;
+        let r_b = bilerp_u8_trunc(r00, r10, r01, r11, wx_b, wy_b) as f32;
+        let g_b = bilerp_u8_trunc(g00, g10, g01, g11, wx_b, wy_b) as f32;
+        let b_b = bilerp_u8_trunc(b00, b10, b01, b11, wx_b, wy_b) as f32;
+        let a_b = bilerp_u8_trunc(a00, a10, a01, a11, wx_b, wy_b) as f32;
 
         r = r * w0 + r_b * w1;
         g = g * w0 + g_b * w1;
@@ -27604,10 +27595,10 @@ mod tests {
   }
 
   #[test]
-  fn scaled_image_resampling_truncates_between_axes_like_skia() {
+  fn scaled_image_resampling_does_not_truncate_between_axes_on_downscale() {
     // 2x2 red channel values chosen so that:
     // - a mathematically exact bilinear sample would land on an integer (64),
-    // - but Skia's truncating integer pipeline (truncate after X lerp before Y lerp) yields 63.
+    // - and any truncation between the horizontal/vertical lerps would incorrectly yield 63.
     //
     // Layout (red, alpha=255):
     //   0   255
@@ -27634,12 +27625,12 @@ mod tests {
     .unwrap()
     .unwrap();
     assert_eq!((pixmap.width(), pixmap.height()), (1, 1));
-    assert_eq!(pixel(&pixmap, 0, 0), (63, 0, 0, 255));
+    assert_eq!(pixel(&pixmap, 0, 0), (64, 0, 0, 255));
   }
 
   #[test]
   fn scaled_image_resampling_does_not_truncate_between_axes_on_upscale() {
-    // Same 2x2 layout as `scaled_image_resampling_truncates_between_axes_like_skia`, but rendered
+    // Same 2x2 layout as `scaled_image_resampling_does_not_truncate_between_axes_on_downscale`, but rendered
     // through a magnification path. Chrome's bilinear magnification does not truncate between
     // axes, and rounds down once at the end, yielding 64 (not 63). (Weight quantization to 16
     // phases does not affect this particular sample because the weight is exactly 0.5.)

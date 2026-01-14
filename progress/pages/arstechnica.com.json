@@ -14,12 +14,13 @@
     "layout": 163.04583545080092,
     "paint": 27.007592375286045
   },
-  "notes": "",
+  "notes": "Major diffs vs Chrome were caused by downscaled JPEG thumbnails: our bilinear minification path truncated to 8-bit between the horizontal/vertical lerps, producing widespread ±1 channel errors. Fixed by keeping 1/256 fixed-point precision through the full 2D bilinear calculation and only flooring once at the end (Skia/Chrome-aligned). Remaining diffs are minor raster-level differences.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 225694,
-    "diff_percent": 23.5098,
-    "perceptual": 0.3508,
+    "diff_pixels": 133590,
+    "diff_percent": 13.9156,
+    "perceptual": 0.0527,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 69,
       "y": 297,
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "211684cd9c51358a36c94f5a2064b73ad61c4602"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "layout",
   "failure_stage": null,
