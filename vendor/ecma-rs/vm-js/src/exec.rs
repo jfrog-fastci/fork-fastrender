@@ -9034,12 +9034,12 @@ impl<'a> Evaluator<'a> {
               let slot_base = crate::class_fields::CLASS_CTOR_SLOT_INSTANCE_FIELDS_START
                 .saturating_add(instance_private_method_idx.saturating_mul(2));
               member_scope.heap_mut().set_function_native_slot(
-                class_ctor,
+                func_obj,
                 slot_base,
                 Value::Symbol(sym),
               )?;
               member_scope.heap_mut().set_function_native_slot(
-                class_ctor,
+                func_obj,
                 slot_base.saturating_add(1),
                 Value::Object(method_func_obj),
               )?;
@@ -9573,9 +9573,9 @@ impl<'a> Evaluator<'a> {
                 instance_field_slot_start.saturating_add(instance_field_idx.saturating_mul(2));
               member_scope
                 .heap_mut()
-                .set_function_native_slot(class_ctor, slot_base, key_value)?;
+                .set_function_native_slot(func_obj, slot_base, key_value)?;
               member_scope.heap_mut().set_function_native_slot(
-                class_ctor,
+                func_obj,
                 slot_base.saturating_add(1),
                 init_value,
               )?;

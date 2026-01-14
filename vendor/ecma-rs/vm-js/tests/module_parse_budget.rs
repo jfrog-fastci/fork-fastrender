@@ -151,3 +151,54 @@ fn module_record_top_level_await_scan_skips_class_static_blocks() {
     .expect("module record parse should not traverse static block body");
   assert!(!record.has_tla);
 }
+
+#[test]
+fn module_record_top_level_await_scan_skips_static_import_attributes() {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut vm = Vm::new(VmOptions::default());
+  vm.set_budget(Budget {
+    // Budget small enough that traversing the huge holey array would terminate (see
+    // `module_record_top_level_await_scan_budgets_holey_array_literals`), but HasTLA detection
+    // should not descend into static import attributes at all.
+    fuel: Some(50),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  // Import attributes are validated later during module record extraction; make the attribute
+  // value invalid (non-string) so extraction fails fast without traversing the full array.
+  let mut src = String::from("import x from \"m\" with { type: [");
+  for _ in 0..20_000 {
+    src.push(',');
+  }
+  src.push_str("] };");
+
+  let err = SourceTextModuleRecord::parse_with_vm(&mut heap, &mut vm, &src).unwrap_err();
+  assert!(
+    matches!(err, VmError::Syntax(_)),
+    "expected syntax error for invalid import attributes, got {err:?}"
+  );
+}
+
+#[test]
+fn module_record_top_level_await_scan_skips_static_export_attributes() {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut vm = Vm::new(VmOptions::default());
+  vm.set_budget(Budget {
+    fuel: Some(50),
+    deadline: None,
+    check_time_every: 1,
+  });
+
+  let mut src = String::from("export * from \"m\" with { type: [");
+  for _ in 0..20_000 {
+    src.push(',');
+  }
+  src.push_str("] };");
+
+  let err = SourceTextModuleRecord::parse_with_vm(&mut heap, &mut vm, &src).unwrap_err();
+  assert!(
+    matches!(err, VmError::Syntax(_)),
+    "expected syntax error for invalid export attributes, got {err:?}"
+  );
+}

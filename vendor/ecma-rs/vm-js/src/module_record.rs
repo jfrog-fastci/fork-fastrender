@@ -2127,14 +2127,10 @@ fn stmt_contains_top_level_await(
 
     // Import/export statements.
     Stmt::ExportDefaultExpr(stmt) => expr_contains_top_level_await(&stmt.stx.expression, ctx)?,
-    Stmt::ExportList(stmt) => match stmt.stx.attributes.as_ref() {
-      Some(attributes) => expr_contains_top_level_await(attributes, ctx)?,
-      None => false,
-    },
-    Stmt::Import(stmt) => match stmt.stx.attributes.as_ref() {
-      Some(attributes) => expr_contains_top_level_await(attributes, ctx)?,
-      None => false,
-    },
+    // Static import/export `with { ... }` attributes are not executed (they are extracted into
+    // `ModuleRequest` records), so they cannot contribute to module `[[HasTLA]]`.
+    Stmt::ExportList(_) => false,
+    Stmt::Import(_) => false,
 
     // Declarations.
     Stmt::ClassDecl(stmt) => class_decl_contains_top_level_await(&stmt.stx, ctx)?,
