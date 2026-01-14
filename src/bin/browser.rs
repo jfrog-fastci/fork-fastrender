@@ -7925,6 +7925,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let mut perf_log_closed_input_events: u64 = 0;
   let mut perf_log_closed_idle_frames: u64 = 0;
   let mut perf_log_closed_dropped_frames: u64 = 0;
+
+  if !session_autosave.is_background_thread_running() {
+    if let Some(err) = session_autosave.spawn_error() {
+      eprintln!("failed to start session autosave worker: {err}");
+    } else {
+      eprintln!("session autosave worker is not running; falling back to synchronous session saves");
+    }
+  }
   event_loop.run(move |event, event_loop_target, control_flow| {
     // Keep the session lock alive for the duration of the winit event loop.
     let _ = &session_lock;
@@ -8166,7 +8174,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       );
       session.home_url = home_url;
       session.did_exit_cleanly = false;
-      session_autosave.request_save(session);
+      if session_autosave.is_background_thread_running() {
+        session_autosave.request_save(session);
+      } else if let Err(err) = fastrender::ui::session::save_session_atomic(&session_path, &session)
+      {
+        eprintln!("failed to save session to {}: {err}", session_path.display());
+      }
     };
 
     match event {
