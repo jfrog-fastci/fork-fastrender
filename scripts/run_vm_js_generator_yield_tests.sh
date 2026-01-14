@@ -47,13 +47,5 @@ run_vm_js_test generators_yield_operators
 run_vm_js_test generators_delete_yield
 run_vm_js_test generators_destructuring_assignment_yield
 
-# Some checkouts (or upstream references) use a single `generators_binary_ops_yield` test target.
-# In this repo snapshot, it is split into two crates. Prefer the unified target when present so
-# downstream docs/CI can refer to a stable name.
-if [[ -f vendor/ecma-rs/vm-js/tests/generators_binary_ops_yield.rs ]]; then
-  run_vm_js_test generators_binary_ops_yield
-else
-  run_vm_js_test generators_binary_left_and_both_yield
-  run_vm_js_test generators_binary_misc_ops_yield
-fi
-
+# Keep the test target name stable: CI relies on this exact integration test name.
+run_vm_js_test generators_binary_ops_yield

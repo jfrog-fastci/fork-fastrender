@@ -30,7 +30,7 @@ bash scripts/run_vm_js_generator_yield_tests.sh
 This executes (at minimum):
 - `generators_yield_operators`
 - `generators_delete_yield`
-- `generators_binary_ops_yield` (or the split binary-op suites when the unified target is absent)
+- `generators_binary_ops_yield`
 - `generators_destructuring_assignment_yield`
 
 ### Build speed matters
