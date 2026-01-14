@@ -2649,6 +2649,42 @@ mod tests {
   }
 
   #[test]
+  fn structured_clone_bigint_typed_arrays_use_intrinsics() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = realm.exec_script(
+      "(() => {\
+         const OriginalBigInt64Array = BigInt64Array;\
+         const OriginalBigUint64Array = BigUint64Array;\
+         globalThis.BigInt64Array = function() { throw 1 };\
+         globalThis.BigUint64Array = function() { throw 2 };\
+         const a = new OriginalBigInt64Array(2);\
+         a[0] = 123n;\
+         a[1] = -456n;\
+         const ca = structuredClone(a);\
+         if (!(ca instanceof OriginalBigInt64Array)) return false;\
+         if (Object.getPrototypeOf(ca) !== OriginalBigInt64Array.prototype) return false;\
+         if (Object.prototype.toString.call(ca) !== '[object BigInt64Array]') return false;\
+         if (ca.length !== a.length) return false;\
+         if (ca[0] !== 123n || ca[1] !== -456n) return false;\
+         if (ca.buffer === a.buffer) return false;\
+         const b = new OriginalBigUint64Array(2);\
+         b[0] = 123n;\
+         b[1] = 456n;\
+         const cb = structuredClone(b);\
+         if (!(cb instanceof OriginalBigUint64Array)) return false;\
+         if (Object.getPrototypeOf(cb) !== OriginalBigUint64Array.prototype) return false;\
+         if (Object.prototype.toString.call(cb) !== '[object BigUint64Array]') return false;\
+         if (cb.length !== b.length) return false;\
+         if (cb[0] !== 123n || cb[1] !== 456n) return false;\
+         if (cb.buffer === b.buffer) return false;\
+         return true;\
+       })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn structured_clone_uint8_array_does_not_invoke_shadowed_view_metadata_getters() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
     let ok = realm.exec_script(

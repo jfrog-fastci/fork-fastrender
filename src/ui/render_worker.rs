@@ -779,43 +779,6 @@ struct HitTestFragmentTreeCache {
   scroll_elements: HashMap<usize, Point>,
 }
 
-fn hit_test_fragment_tree_for_scroll(
-  cache: &mut Option<HitTestFragmentTreeCache>,
-  doc: &BrowserDocument,
-  scroll: &ScrollState,
-) -> Option<Arc<crate::FragmentTree>> {
-  // Fast path: when there is no viewport or element scroll, the prepared fragment tree can be
-  // used directly for hit testing without cloning.
-  if scroll.viewport == Point::ZERO && scroll.elements.is_empty() {
-    *cache = None;
-    return None;
-  }
-
-  let Some(prepared) = doc.prepared() else {
-    *cache = None;
-    return None;
-  };
-  let prepared_fragment_tree_ptr = prepared.fragment_tree() as *const crate::FragmentTree;
-
-  if let Some(existing) = cache.as_ref() {
-    if existing.prepared_fragment_tree_ptr == prepared_fragment_tree_ptr
-      && existing.scroll_viewport == scroll.viewport
-      && existing.scroll_elements == scroll.elements
-    {
-      return Some(Arc::clone(&existing.tree));
-    }
-  }
-
-  let tree = Arc::new(prepared.fragment_tree_for_geometry(scroll));
-  *cache = Some(HitTestFragmentTreeCache {
-    tree: Arc::clone(&tree),
-    prepared_fragment_tree_ptr,
-    scroll_viewport: scroll.viewport,
-    scroll_elements: scroll.elements.clone(),
-  });
-  Some(tree)
-}
-
 // -----------------------------------------------------------------------------
 // Media wakeup scheduling
 // -----------------------------------------------------------------------------
@@ -6669,8 +6632,8 @@ impl BrowserRuntime {
         textarea_scroll,
       ) = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
           let fragment_tree_before = hit_tree_before.as_deref().unwrap_or(fragment_tree);
-          let (mut changed, mut hit, mut hover_is_drop_target) = engine
-            .pointer_move_and_hit_and_drop_target(
+          let (mut changed, mut hit, mut hover_is_drop_target) =
+            engine.pointer_move_and_hit_and_drop_target(
               dom,
               box_tree,
               fragment_tree_before,

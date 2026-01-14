@@ -1,5 +1,7 @@
 //! Multiprocess / IPC integration tests.
 
+#![cfg(feature = "direct_websocket")]
+
 mod ipc_fetcher_cache_artifacts;
 mod ipc_fetcher_chunked_response;
 mod ipc_fetcher_http_request;

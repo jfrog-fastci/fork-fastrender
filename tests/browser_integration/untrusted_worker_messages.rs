@@ -186,7 +186,6 @@ fn hovered_url_from_worker_rejects_javascript_scheme() {
     hovered_url: Some("javascript:alert(1)".to_string()),
     tooltip: None,
     cursor: CursorKind::Pointer,
-    tooltip: None,
   });
 
   let tab = app.tab(tab_id).expect("tab state should exist");

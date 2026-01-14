@@ -62170,7 +62170,7 @@ mod tests {
 
     let clock: Arc<dyn Clock> = Arc::new(VirtualClock::new());
     let mut config = WindowRealmConfig::new("https://example.com/");
-    config.clock = Arc::clone(&clock);
+    config.clock = clock.clone();
     let mut realm = new_realm(config)?;
 
     let t0 = exec_script_with_dom_host(

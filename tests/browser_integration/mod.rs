@@ -1,5 +1,7 @@
 //! Browser integration tests consolidated from tests/browser_*.rs
- 
+
+#![cfg(feature = "browser_ui")]
+
 mod author_css_cannot_observe_data_fastr_hover;
 mod browser_cli_gpu_flags;
 mod browser_cli_help;
