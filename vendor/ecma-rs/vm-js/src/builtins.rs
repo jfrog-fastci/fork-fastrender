@@ -26160,6 +26160,71 @@ pub fn boolean_prototype_to_string(
   }
 }
 
+/// `Boolean.prototype[Symbol.toPrimitive]` (ECMA-262).
+pub fn boolean_prototype_to_primitive(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let b = this_boolean_value(
+    scope,
+    this,
+    "Boolean.prototype[Symbol.toPrimitive] called on incompatible receiver",
+  )?;
+
+  let hint = match args.get(0).copied() {
+    Some(Value::String(s)) => s,
+    _ => return Err(VmError::TypeError("Invalid hint")),
+  };
+  let units = scope.heap().get_string(hint)?.as_code_units();
+
+  // Spec: `Boolean.prototype[@@toPrimitive]` returns a String for the `"string"` hint, and a
+  // Boolean for `"number"`/`"default"`.
+  if units
+    == [
+      b's' as u16,
+      b't' as u16,
+      b'r' as u16,
+      b'i' as u16,
+      b'n' as u16,
+      b'g' as u16,
+    ]
+  {
+    if b {
+      Ok(Value::String(scope.alloc_string("true")?))
+    } else {
+      Ok(Value::String(scope.alloc_string("false")?))
+    }
+  } else if units
+    == [
+      b'd' as u16,
+      b'e' as u16,
+      b'f' as u16,
+      b'a' as u16,
+      b'u' as u16,
+      b'l' as u16,
+      b't' as u16,
+    ]
+    || units
+      == [
+        b'n' as u16,
+        b'u' as u16,
+        b'm' as u16,
+        b'b' as u16,
+        b'e' as u16,
+        b'r' as u16,
+      ]
+  {
+    Ok(Value::Bool(b))
+  } else {
+    Err(VmError::TypeError("Invalid hint"))
+  }
+}
+
 /// `Number.isNaN`.
 pub fn number_is_nan(
   _vm: &mut Vm,
