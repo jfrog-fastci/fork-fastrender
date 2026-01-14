@@ -16748,6 +16748,16 @@ enum AsyncEval<T> {
 /// This is an explicit reification of the evaluator call stack needed to resume execution after a
 /// `yield` suspension point.
 #[derive(Debug)]
+pub(crate) enum GenClassStaticInit {
+  Field { key: Value, initializer: Value },
+  PrivateField {
+    sym: GcSymbol,
+    init: Option<*const Node<Expr>>,
+  },
+  Block { stmts: *const [Node<Stmt>] },
+}
+
+#[derive(Debug)]
 pub(crate) enum GenFrame {
   /// Root frame for block-bodied generator functions (`function* f(){...}`).
   RootBlockBody,
@@ -16757,6 +16767,9 @@ pub(crate) enum GenFrame {
   /// propagate optional-chain short-circuits through non-optional chain segments, while ensuring
   /// the sentinel never becomes observable from user code when an expression completes.
   ConvertOptionalChainShortCircuit,
+
+  /// Restores the strict-mode flag after finishing a class definition evaluation.
+  RestoreStrict { saved_strict: bool },
 
   /// Resume statement-list evaluation after a suspended statement completes.
   StmtList {
@@ -17025,6 +17038,36 @@ pub(crate) enum GenFrame {
   /// Continue evaluating a `super[expr]` computed member access after evaluating the member key
   /// expression.
   SuperComputedMemberAfterMember { expr: *const ComputedMemberExpr },
+
+  /// Finish a class declaration statement after class evaluation completes.
+  ///
+  /// This restores the outer lexical environment and initializes the surrounding binding with the
+  /// class constructor object.
+  ClassDecl {
+    decl: *const Node<ClassDecl>,
+    outer: GcEnv,
+  },
+
+  /// Continue class evaluation after evaluating the class heritage (`extends`) expression.
+  ///
+  /// This allows `extends` to suspend on `yield` and resume once the superclass value is available.
+  ClassAfterHeritage {
+    members: *const Vec<Node<ClassMember>>,
+    binding_name: Option<*const str>,
+    func_name: *const str,
+    extends_null: bool,
+  },
+
+  /// Continue class evaluation after evaluating a computed member key.
+  ClassAfterComputedKey {
+    members: *const Vec<Node<ClassMember>>,
+    member_index: usize,
+    func_obj: GcObject,
+    static_inits: Vec<GenClassStaticInit>,
+    instance_private_method_idx: usize,
+    instance_field_idx: usize,
+    instance_field_slot_start: usize,
+  },
 
   /// Continue a conditional expression after evaluating the test.
   CondAfterTest { expr: *const CondExpr },
@@ -17361,7 +17404,8 @@ impl Trace for GenFrame {
       }
       GenFrame::RestoreLexEnv { outer }
       | GenFrame::WithAfterObject { outer, .. }
-      | GenFrame::CatchAfterParamBind { outer, .. } => tracer.trace_env(*outer),
+      | GenFrame::CatchAfterParamBind { outer, .. }
+      | GenFrame::ClassDecl { outer, .. } => tracer.trace_env(*outer),
       GenFrame::WhileAfterTest { v, .. }
       | GenFrame::WhileAfterBody { v, .. }
       | GenFrame::DoWhileAfterBody { v, .. }
@@ -17562,6 +17606,25 @@ impl Trace for GenFrame {
         match key {
           PropertyKey::String(s) => tracer.trace_value(Value::String(*s)),
           PropertyKey::Symbol(s) => tracer.trace_value(Value::Symbol(*s)),
+        }
+      }
+      GenFrame::ClassAfterComputedKey {
+        func_obj,
+        static_inits,
+        ..
+      } => {
+        tracer.trace_value(Value::Object(*func_obj));
+        for init in static_inits {
+          match init {
+            GenClassStaticInit::Field { key, initializer } => {
+              tracer.trace_value(*key);
+              tracer.trace_value(*initializer);
+            }
+            GenClassStaticInit::PrivateField { sym, .. } => {
+              tracer.trace_value(Value::Symbol(*sym));
+            }
+            GenClassStaticInit::Block { .. } => {}
+          }
         }
       }
       GenFrame::ImportAfterOptions { specifier, .. } => tracer.trace_value(*specifier),
@@ -40185,7 +40248,7 @@ fn gen_eval_stmt_labelled(
     | Stmt::Import(_)
     | Stmt::ExportList(_)
     | Stmt::FunctionDecl(_) => Ok(GenEval::Complete(Completion::empty())),
-    Stmt::ClassDecl(_) => Err(VmError::Unimplemented("yield in class declaration")),
+    Stmt::ClassDecl(class_decl) => gen_eval_class_decl(evaluator, scope, class_decl),
     Stmt::Expr(expr_stmt) => gen_eval_expr(evaluator, scope, &expr_stmt.stx.expr),
     Stmt::Return(ret) => {
       let Some(value_expr) = &ret.stx.value else {
@@ -40336,6 +40399,1557 @@ fn gen_eval_throw_stmt(
       Ok(GenEval::Suspend(suspend))
     }
   }
+}
+
+fn gen_eval_class_decl(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  decl: &Node<ClassDecl>,
+) -> Result<GenEval<Completion>, VmError> {
+  let extends_null = match decl.stx.extends.as_ref() {
+    None => false,
+    Some(expr) => matches!(&*expr.stx, Expr::LitNull(_)),
+  };
+  if !decl.stx.decorators.is_empty() {
+    return Err(VmError::Unimplemented("class decorators"));
+  }
+  if decl.stx.type_parameters.is_some() {
+    return Err(VmError::Unimplemented("class type parameters"));
+  }
+  if !decl.stx.implements.is_empty() {
+    return Err(VmError::Unimplemented("class implements"));
+  }
+  if decl.stx.declare || decl.stx.abstract_ {
+    return Err(VmError::Unimplemented("class modifiers"));
+  }
+
+  let binding_name = match decl.stx.name.as_ref() {
+    Some(name) => name.stx.name.as_str(),
+    None => "*default*",
+  };
+  let func_name = match decl.stx.name.as_ref() {
+    Some(name) => name.stx.name.as_str(),
+    None => "default",
+  };
+
+  // Per ECMAScript, class declarations are evaluated within a fresh lexical environment whose
+  // outer is the surrounding lexical environment. When the class has a name, that environment
+  // contains an immutable binding for the class name so class element functions can reference the
+  // class even if the outer binding is later reassigned.
+  let outer = evaluator.env.lexical_env;
+  let class_env = scope.env_create(Some(outer))?;
+  evaluator.env.set_lexical_env(scope.heap_mut(), class_env);
+
+  let inner_binding = match decl.stx.name.as_ref() {
+    Some(name) => ClassBinding::Immutable(name.stx.name.as_str()),
+    None => ClassBinding::None,
+  };
+
+  let result = gen_eval_class(
+    evaluator,
+    scope,
+    inner_binding,
+    func_name,
+    &decl.stx.members,
+    decl.stx.extends.as_ref(),
+    extends_null,
+  );
+
+  match result {
+    Ok(GenEval::Complete(completion)) => {
+      // Restore outer environment regardless of how class evaluation completes.
+      evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+
+      match completion {
+        Completion::Normal(Some(v)) => {
+          let init_res: Result<(), VmError> = (|| {
+            // Root the class constructor object during binding initialization in case it triggers
+            // GC.
+            let mut init_scope = scope.reborrow();
+            init_scope.push_root(v)?;
+
+            if !init_scope.heap().env_has_binding(outer, binding_name)? {
+              // Non-block statement contexts may not have performed lexical hoisting yet.
+              init_scope.env_create_mutable_binding(outer, binding_name)?;
+            }
+            init_scope
+              .heap_mut()
+              .env_initialize_binding(outer, binding_name, v)?;
+            Ok(())
+          })();
+
+          if let Err(err) = init_res {
+            return Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?));
+          }
+
+          Ok(GenEval::Complete(Completion::empty()))
+        }
+        Completion::Normal(None) => Err(VmError::InvariantViolation(
+          "generator class declaration produced empty completion value",
+        )),
+        abrupt => Ok(GenEval::Complete(abrupt)),
+      }
+    }
+    Ok(GenEval::Suspend(mut suspend)) => {
+      // Preserve the class environment across suspension; restore the outer env and initialize the
+      // surrounding binding on completion.
+      if let Err(err) = gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::ClassDecl {
+          decl: decl as *const Node<ClassDecl>,
+          outer,
+        },
+      ) {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+        return Err(err);
+      }
+      Ok(GenEval::Suspend(suspend))
+    }
+    Err(err) => {
+      // Restore outer environment regardless of how class evaluation completes.
+      evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      Err(err)
+    }
+  }
+}
+
+fn gen_eval_class_expr(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &Node<ClassExpr>,
+) -> Result<GenEval<Completion>, VmError> {
+  let extends_null = match expr.stx.extends.as_ref() {
+    None => false,
+    Some(expr) => matches!(&*expr.stx, Expr::LitNull(_)),
+  };
+  if !expr.stx.decorators.is_empty() {
+    return Err(VmError::Unimplemented("class decorators"));
+  }
+  if expr.stx.type_parameters.is_some() {
+    return Err(VmError::Unimplemented("class type parameters"));
+  }
+  if !expr.stx.implements.is_empty() {
+    return Err(VmError::Unimplemented("class implements"));
+  }
+
+  // Named class expressions introduce an inner immutable binding for the class name.
+  let Some(name) = expr.stx.name.as_ref() else {
+    return gen_eval_class(
+      evaluator,
+      scope,
+      ClassBinding::None,
+      "",
+      &expr.stx.members,
+      expr.stx.extends.as_ref(),
+      extends_null,
+    );
+  };
+
+  let outer = evaluator.env.lexical_env;
+  let class_env = scope.env_create(Some(outer))?;
+  evaluator.env.set_lexical_env(scope.heap_mut(), class_env);
+
+  let result = gen_eval_class(
+    evaluator,
+    scope,
+    ClassBinding::Immutable(name.stx.name.as_str()),
+    name.stx.name.as_str(),
+    &expr.stx.members,
+    expr.stx.extends.as_ref(),
+    extends_null,
+  );
+
+  match result {
+    Ok(GenEval::Complete(c)) => {
+      evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      Ok(GenEval::Complete(c))
+    }
+    Ok(GenEval::Suspend(mut suspend)) => {
+      // Preserve the class environment across suspension; restore the outer env on completion.
+      gen_frames_push(&mut suspend.frames, GenFrame::RestoreLexEnv { outer })?;
+      Ok(GenEval::Suspend(suspend))
+    }
+    Err(err) => {
+      evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      Err(err)
+    }
+  }
+}
+
+fn gen_class_heritage_value_to_super_value(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  heritage_value: Value,
+) -> Result<Value, VmError> {
+  match heritage_value {
+    Value::Undefined => Err(throw_type_error(
+      evaluator.vm,
+      scope,
+      "Class extends value is not a constructor",
+    )?),
+    Value::Null => Ok(Value::Null),
+    Value::Object(_) => {
+      if !scope.heap().is_constructor(heritage_value)? {
+        return Err(throw_type_error(
+          evaluator.vm,
+          scope,
+          "Class extends value is not a constructor",
+        )?);
+      }
+      Ok(heritage_value)
+    }
+    _ => Err(throw_type_error(
+      evaluator.vm,
+      scope,
+      "Class extends value is not a constructor",
+    )?),
+  }
+}
+
+fn gen_eval_class(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  binding: ClassBinding<'_>,
+  func_name: &str,
+  members: &Vec<Node<ClassMember>>,
+  extends: Option<&Node<Expr>>,
+  extends_null: bool,
+) -> Result<GenEval<Completion>, VmError> {
+  // Per ECMA-262, class definitions are always strict mode code, regardless of whether they appear
+  // in a sloppy script/function body.
+  //
+  // Mirror `Evaluator::eval_class`: temporarily force strict mode for the entire class definition
+  // evaluation, restoring it afterwards (including across `yield` suspensions).
+  let saved_strict = evaluator.strict;
+  evaluator.strict = true;
+
+  let result = (|| {
+    let class_env = evaluator.env.lexical_env;
+
+    // Ensure the requested class binding exists before creating any class element closures that may
+    // reference it.
+    match binding {
+      ClassBinding::None => {}
+      ClassBinding::Immutable(name) => {
+        if scope.heap().env_has_binding(class_env, name)? {
+          return Err(VmError::InvariantViolation(
+            "class binding already exists in class environment",
+          ));
+        }
+        scope.env_create_immutable_binding(class_env, name)?;
+      }
+    }
+
+    // Create the class's private-name environment.
+    let mut private_names: Vec<String> = Vec::new();
+    let mut private_name_set: HashSet<&str> = HashSet::new();
+    for member in members {
+      if let ClassOrObjKey::Direct(key) = &member.stx.key {
+        if key.stx.tt == TT::PrivateMember {
+          let name = key.stx.key.as_str();
+          if private_name_set.contains(name) {
+            continue;
+          }
+          private_name_set
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          private_name_set.insert(name);
+          private_names
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          private_names.push(try_clone_string(name)?);
+        }
+      }
+    }
+    if !private_names.is_empty() {
+      let mut entries: Vec<crate::env::PrivateNameEntry> = Vec::new();
+      entries
+        .try_reserve_exact(private_names.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      // Keep all allocated symbols rooted until the mapping is installed into the class environment
+      // record, so intermediate allocations cannot collect them.
+      let mut priv_scope = scope.reborrow();
+      for name in private_names {
+        let desc = priv_scope.alloc_string(&name)?;
+        let sym = priv_scope.new_internal_symbol(Some(desc))?;
+        priv_scope.push_root(Value::Symbol(sym))?;
+        entries.push(crate::env::PrivateNameEntry {
+          name: name.into_boxed_str(),
+          sym,
+        });
+      }
+      priv_scope
+        .heap_mut()
+        .env_set_private_names(class_env, entries.into_boxed_slice())?;
+    }
+
+    // Evaluate `extends` (class heritage), if present.
+    let super_value = match extends {
+      None => Value::Undefined,
+      Some(extends_expr) => match gen_eval_expr(evaluator, scope, extends_expr)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(v) => {
+            gen_class_heritage_value_to_super_value(evaluator, scope, v.unwrap_or(Value::Undefined))?
+          }
+          abrupt => return Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          let binding_name = match binding {
+            ClassBinding::None => None,
+            ClassBinding::Immutable(name) => Some(name as *const str),
+          };
+
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::ClassAfterHeritage {
+              members: members as *const Vec<Node<ClassMember>>,
+              binding_name,
+              func_name: func_name as *const str,
+              extends_null,
+            },
+          )?;
+          return Ok(GenEval::Suspend(suspend));
+        }
+      },
+    };
+
+    gen_eval_class_after_super(
+      evaluator,
+      scope,
+      binding,
+      func_name,
+      members,
+      super_value,
+      extends_null,
+    )
+  })();
+
+  match result {
+    Ok(GenEval::Complete(v)) => {
+      evaluator.strict = saved_strict;
+      Ok(GenEval::Complete(v))
+    }
+    Ok(GenEval::Suspend(mut suspend)) => {
+      // Preserve strict-mode semantics across the suspension; restore strictness only after the
+      // class definition evaluation completes.
+      if let Err(err) = gen_frames_push(&mut suspend.frames, GenFrame::RestoreStrict { saved_strict }) {
+        evaluator.strict = saved_strict;
+        return Err(err);
+      }
+      Ok(GenEval::Suspend(suspend))
+    }
+    Err(err) => {
+      evaluator.strict = saved_strict;
+      Err(err)
+    }
+  }
+}
+
+fn gen_eval_class_after_super(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  binding: ClassBinding<'_>,
+  func_name: &str,
+  members: &Vec<Node<ClassMember>>,
+  super_value: Value,
+  extends_null: bool,
+) -> Result<GenEval<Completion>, VmError> {
+  // Keep temporary roots local to this class evaluation so they do not leak into surrounding
+  // statement lists / expression evaluation.
+  let mut class_scope = scope.reborrow();
+  let class_env = evaluator.env.lexical_env;
+
+  // Keep the superclass value alive across subsequent allocations/GC until it becomes reachable
+  // from the class constructor object (via its native `super` slot).
+  class_scope.push_root(super_value)?;
+
+  // Count instance elements stored in the class constructor's native slots so the wrapper can
+  // preallocate its hidden storage.
+  let mut instance_field_count: usize = 0;
+  let mut private_instance_method_count: usize = 0;
+  for member in members {
+    if member.stx.static_ {
+      continue;
+    }
+    match &member.stx.val {
+      ClassOrObjVal::Prop(_) => {
+        instance_field_count = instance_field_count
+          .checked_add(1)
+          .ok_or(VmError::OutOfMemory)?;
+      }
+      ClassOrObjVal::Method(_) => {
+        let is_private_key = matches!(
+          &member.stx.key,
+          ClassOrObjKey::Direct(direct) if direct.stx.tt == TT::PrivateMember
+        );
+        if is_private_key {
+          private_instance_method_count = private_instance_method_count
+            .checked_add(1)
+            .ok_or(VmError::OutOfMemory)?;
+        }
+      }
+      _ => {}
+    }
+  }
+  let instance_slot_pair_count = instance_field_count
+    .checked_add(private_instance_method_count)
+    .ok_or(VmError::OutOfMemory)?;
+
+  // Find an explicit `constructor(...) { ... }` method, if present.
+  let mut ctor_method: Option<(&Node<Func>, u32, parse_js::loc::Loc)> = None;
+  for member in members {
+    evaluator.tick()?;
+
+    if !member.stx.decorators.is_empty() {
+      return Err(VmError::Unimplemented("class member decorators"));
+    }
+    if member.stx.declare || member.stx.abstract_ {
+      return Err(VmError::Unimplemented("class member modifiers"));
+    }
+    if member.stx.readonly
+      || member.stx.accessor
+      || member.stx.optional
+      || member.stx.override_
+      || member.stx.definite_assignment
+    {
+      return Err(VmError::Unimplemented("class member modifiers"));
+    }
+    if member.stx.accessibility.is_some() || member.stx.type_annotation.is_some() {
+      return Err(VmError::Unimplemented("class member type annotations"));
+    }
+
+    if member.stx.static_ {
+      continue;
+    }
+    let ClassOrObjKey::Direct(direct) = &member.stx.key else {
+      continue;
+    };
+    if direct.stx.key != "constructor" {
+      continue;
+    }
+
+    let ClassOrObjVal::Method(method) = &member.stx.val else {
+      continue;
+    };
+
+    if ctor_method.is_some() {
+      return Err(syntax_error(
+        member.loc,
+        "A class may only have one constructor",
+      ));
+    }
+    ctor_method = Some((&method.stx.func, member.loc.start_u32(), member.loc));
+  }
+
+  let mut ctor_length: u32 = 0;
+  let ctor_body_func = if let Some((func_node, member_loc_start, loc)) = ctor_method {
+    if func_node.stx.generator {
+      return Err(syntax_error(
+        loc,
+        "Class constructor may not be a generator",
+      ));
+    }
+
+    ctor_length = evaluator.function_length(&func_node.stx)?;
+
+    let rel_start = member_loc_start.saturating_sub(evaluator.env.prefix_len());
+    let rel_end = func_node
+      .loc
+      .end_u32()
+      .saturating_sub(evaluator.env.prefix_len());
+    let span_start = evaluator.env.base_offset().saturating_add(rel_start);
+    let span_end = evaluator.env.base_offset().saturating_add(rel_end);
+
+    let code = evaluator.vm.register_ecma_function(
+      evaluator.env.source(),
+      span_start,
+      span_end,
+      EcmaFunctionKind::ClassMember,
+    )?;
+
+    // Class constructor bodies are always strict mode.
+    let is_strict = true;
+    let this_mode = if func_node.stx.arrow {
+      ThisMode::Lexical
+    } else {
+      ThisMode::Strict
+    };
+    let closure_env = Some(evaluator.env.lexical_env);
+
+    let mut ctor_scope = class_scope.reborrow();
+    let name_string = ctor_scope.alloc_string("constructor")?;
+    let func_obj = ctor_scope.alloc_ecma_function(
+      code,
+      /* is_constructable */ true,
+      name_string,
+      ctor_length,
+      this_mode,
+      is_strict,
+      closure_env,
+    )?;
+
+    let intr = evaluator
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+    ctor_scope
+      .heap_mut()
+      .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+    ctor_scope
+      .heap_mut()
+      .set_function_realm(func_obj, evaluator.env.global_object())?;
+    if let Some(realm) = evaluator.vm.current_realm() {
+      ctor_scope.heap_mut().set_function_job_realm(func_obj, realm)?;
+    }
+    if let Some(script_or_module) = evaluator.vm.get_active_script_or_module() {
+      let token = evaluator.vm.intern_script_or_module(script_or_module)?;
+      ctor_scope
+        .heap_mut()
+        .set_function_script_or_module_token(func_obj, Some(token))?;
+    }
+    Some(func_obj)
+  } else {
+    None
+  };
+
+  let func_obj = evaluator.create_class_constructor_object(
+    &mut class_scope,
+    func_name,
+    ctor_length,
+    ctor_body_func,
+    super_value,
+    instance_slot_pair_count,
+  )?;
+
+  // Root the class constructor object for the remainder of class evaluation, so it remains alive
+  // even for anonymous class expressions.
+  class_scope.push_root(Value::Object(func_obj))?;
+
+  // If the class has an explicit `constructor(...) { ... }` body, annotate that hidden function
+  // object so `[[Construct]]` can implement class-field initialization and derived `super()`
+  // semantics.
+  if let Some(body_func) = ctor_body_func {
+    class_scope.heap_mut().set_function_data(
+      body_func,
+      FunctionData::ClassConstructorBody {
+        class_constructor: func_obj,
+      },
+    )?;
+  }
+
+  // Initialize the requested binding now that the class constructor object exists.
+  if let Some(binding_name) = match binding {
+    ClassBinding::None => None,
+    ClassBinding::Immutable(name) => Some(name),
+  } {
+    let mut init_scope = class_scope.reborrow();
+    init_scope.push_root(Value::Object(func_obj))?;
+    init_scope.heap_mut().env_initialize_binding(
+      class_env,
+      binding_name,
+      Value::Object(func_obj),
+    )?;
+  }
+
+  // Extract the prototype object created by `make_constructor`.
+  let (prototype_key, prototype_obj) = {
+    let mut proto_scope = class_scope.reborrow();
+    proto_scope.push_root(Value::Object(func_obj))?;
+    let prototype_key_s = proto_scope.alloc_string("prototype")?;
+    proto_scope.push_root(Value::String(prototype_key_s))?;
+    let prototype_key = PropertyKey::from_string(prototype_key_s);
+    let Some(prototype_desc) = proto_scope.heap().get_own_property(func_obj, prototype_key)? else {
+      return Err(VmError::InvariantViolation(
+        "class constructor missing prototype property",
+      ));
+    };
+    let PropertyKind::Data { value, .. } = prototype_desc.kind else {
+      return Err(VmError::InvariantViolation(
+        "class constructor prototype property is not a data property",
+      ));
+    };
+    let Value::Object(prototype_obj) = value else {
+      return Err(VmError::InvariantViolation(
+        "class constructor prototype property is not an object",
+      ));
+    };
+    (prototype_key, prototype_obj)
+  };
+  class_scope.push_root(Value::Object(prototype_obj))?;
+
+  // Class constructor bodies (the hidden function object invoked via `[[Construct]]`) use the
+  // prototype object as their `[[HomeObject]]` so `super.prop` can resolve against
+  // `super.prototype`.
+  if let Some(body_func) = ctor_body_func {
+    class_scope
+      .heap_mut()
+      .set_function_home_object(body_func, Some(prototype_obj))?;
+    let meta_property_context = if matches!(super_value, Value::Undefined) {
+      MetaPropertyContext::METHOD
+    } else {
+      MetaPropertyContext::DERIVED_CONSTRUCTOR
+    };
+    class_scope
+      .heap_mut()
+      .set_function_meta_property_context(body_func, meta_property_context)?;
+  }
+
+  // `extends null` is special-cased by ECMA-262 `ClassDefinitionEvaluation`:
+  // - the class constructor's `[[Prototype]]` is still `%Function.prototype%`
+  // - but the prototype object's `[[Prototype]]` is `null`
+  if extends_null {
+    class_scope.heap_mut().object_set_prototype(prototype_obj, None)?;
+  }
+
+  // Per ECMAScript, class constructors have a non-writable `prototype` property.
+  class_scope.define_property_or_throw(
+    func_obj,
+    prototype_key,
+    PropertyDescriptorPatch {
+      writable: Some(false),
+      ..Default::default()
+    },
+  )?;
+
+  // Wire the instance prototype chain for derived classes.
+  //
+  // - base class: `prototype.[[Prototype]] = %Object.prototype%`
+  // - `extends null`: `prototype.[[Prototype]] = null`
+  // - derived class: `prototype.[[Prototype]] = super.prototype`
+  let intr = evaluator
+    .vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  match super_value {
+    Value::Undefined => {
+      class_scope
+        .heap_mut()
+        .object_set_prototype(prototype_obj, Some(intr.object_prototype()))?;
+    }
+    Value::Null => {
+      class_scope.heap_mut().object_set_prototype(prototype_obj, None)?;
+    }
+    Value::Object(super_ctor) => {
+      let proto_parent = {
+        // `Get(superCtor, "prototype")` (Proxy-aware / accessor-aware).
+        let mut proto_scope = class_scope.reborrow();
+        proto_scope.push_root(Value::Object(super_ctor))?;
+        let proto_key_s = proto_scope.alloc_string("prototype")?;
+        proto_scope.push_root(Value::String(proto_key_s))?;
+        let proto_key = PropertyKey::from_string(proto_key_s);
+        let proto_value = proto_scope.ordinary_get_with_host_and_hooks(
+          evaluator.vm,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          super_ctor,
+          proto_key,
+          Value::Object(super_ctor),
+        )?;
+        match proto_value {
+          Value::Object(o) => Some(o),
+          Value::Null => None,
+          _ => {
+            return Err(throw_type_error(
+              evaluator.vm,
+              &mut proto_scope,
+              "Class extends value does not have a valid prototype property",
+            )?)
+          }
+        }
+      };
+      class_scope
+        .heap_mut()
+        .object_set_prototype(prototype_obj, proto_parent)?;
+    }
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "class constructor super value is not undefined, null, or object",
+      ))
+    }
+  }
+
+  // Count instance fields are stored after private instance methods.
+  let instance_field_slot_start = crate::class_fields::CLASS_CTOR_SLOT_INSTANCE_FIELDS_START
+    .saturating_add(private_instance_method_count.saturating_mul(2));
+
+  // Define prototype and static methods, collecting static initialization elements.
+  gen_eval_class_members_from(
+    evaluator,
+    &mut class_scope,
+    members,
+    /* start_index */ 0,
+    func_obj,
+    prototype_obj,
+    instance_field_slot_start,
+    Vec::new(),
+    /* instance_private_method_idx */ 0,
+    /* instance_field_idx */ 0,
+    /* pending_key */ None,
+  )
+}
+
+fn gen_eval_class_members_from(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  members: &Vec<Node<ClassMember>>,
+  start_index: usize,
+  func_obj: GcObject,
+  prototype_obj: GcObject,
+  instance_field_slot_start: usize,
+  mut static_inits: Vec<GenClassStaticInit>,
+  mut instance_private_method_idx: usize,
+  mut instance_field_idx: usize,
+  mut pending_key: Option<PropertyKey>,
+) -> Result<GenEval<Completion>, VmError> {
+  let class_env = evaluator.env.lexical_env;
+
+  for (idx, member) in members.iter().enumerate().skip(start_index) {
+    evaluator.tick()?;
+
+    if !member.stx.decorators.is_empty() {
+      return Err(VmError::Unimplemented("class member decorators"));
+    }
+    if member.stx.declare || member.stx.abstract_ {
+      return Err(VmError::Unimplemented("class member modifiers"));
+    }
+    if member.stx.readonly
+      || member.stx.accessor
+      || member.stx.optional
+      || member.stx.override_
+      || member.stx.definite_assignment
+    {
+      return Err(VmError::Unimplemented("class member modifiers"));
+    }
+    if member.stx.accessibility.is_some() || member.stx.type_annotation.is_some() {
+      return Err(VmError::Unimplemented("class member type annotations"));
+    }
+
+    // Skip the actual `constructor(...) { ... }` method: it's represented by the class constructor
+    // object itself (and its hidden body function).
+    let is_constructor_method = !member.stx.static_
+      && matches!(&member.stx.key, ClassOrObjKey::Direct(direct) if direct.stx.key == "constructor")
+      && matches!(&member.stx.val, ClassOrObjVal::Method(_));
+    if is_constructor_method {
+      continue;
+    }
+
+    // Static initialization blocks are not properties on the class/prototype. Record them for later
+    // evaluation and continue to the next element.
+    if let ClassOrObjVal::StaticBlock(block) = &member.stx.val {
+      static_inits
+        .try_reserve(1)
+        .map_err(|_| VmError::OutOfMemory)?;
+      static_inits.push(GenClassStaticInit::Block {
+        stmts: block.stx.body.as_slice() as *const [Node<Stmt>],
+      });
+      continue;
+    }
+
+    let target_obj = if member.stx.static_ {
+      func_obj
+    } else {
+      prototype_obj
+    };
+
+    let member_loc_start = member.loc.start_u32();
+    let (key_loc_start, key_is_computed) = match &member.stx.key {
+      ClassOrObjKey::Direct(direct) => (direct.loc.start_u32(), false),
+      ClassOrObjKey::Computed(expr) => (expr.loc.start_u32(), true),
+    };
+
+    let mut member_scope = scope.reborrow();
+    member_scope.push_root(Value::Object(target_obj))?;
+
+    let is_private_key =
+      matches!(&member.stx.key, ClassOrObjKey::Direct(direct) if direct.stx.tt == TT::PrivateMember);
+
+    // Property key evaluation.
+    let key: PropertyKey = if idx == start_index {
+      if let Some(k) = pending_key.take() {
+        // This member's computed key was already evaluated (resuming after a yield).
+        if !matches!(&member.stx.key, ClassOrObjKey::Computed(_)) {
+          return Err(VmError::InvariantViolation(
+            "generator class continuation has pending key for non-computed member",
+          ));
+        }
+        k
+      } else {
+        match &member.stx.key {
+          ClassOrObjKey::Direct(direct) => {
+            if direct.stx.tt == TT::PrivateMember {
+              let sym = member_scope
+                .heap()
+                .resolve_private_name_symbol(class_env, &direct.stx.key)?
+                .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+              PropertyKey::from_symbol(sym)
+            } else {
+              let key_s = if let Some(units) = literal_string_code_units(&direct.assoc) {
+                member_scope.alloc_string_from_code_units(units)?
+              } else if direct.stx.tt == TT::LiteralNumber {
+                let mut tick = || evaluator.tick();
+                let n = crate::ops::parse_ascii_decimal_to_f64_str(&direct.stx.key, &mut tick)?
+                  .ok_or(VmError::Unimplemented(
+                    "numeric literal property name parse",
+                  ))?;
+                member_scope.heap_mut().to_string(Value::Number(n))?
+              } else {
+                member_scope.alloc_string(&direct.stx.key)?
+              };
+              PropertyKey::from_string(key_s)
+            }
+          }
+          ClassOrObjKey::Computed(expr) => {
+            if expr_contains_yield(expr) {
+              match gen_eval_expr(evaluator, &mut member_scope, expr)? {
+                GenEval::Complete(c) => match c {
+                  Completion::Normal(v) => {
+                    let value = v.unwrap_or(Value::Undefined);
+                    member_scope.push_root(value)?;
+                    evaluator.to_property_key_operator(&mut member_scope, value)?
+                  }
+                  abrupt => return Ok(GenEval::Complete(abrupt)),
+                },
+                GenEval::Suspend(mut suspend) => {
+                  gen_frames_push(
+                    &mut suspend.frames,
+                    GenFrame::ClassAfterComputedKey {
+                      members: members as *const Vec<Node<ClassMember>>,
+                      member_index: idx,
+                      func_obj,
+                      static_inits,
+                      instance_private_method_idx,
+                      instance_field_idx,
+                      instance_field_slot_start,
+                    },
+                  )?;
+                  return Ok(GenEval::Suspend(suspend));
+                }
+              }
+            } else {
+              let value = evaluator.eval_expr(&mut member_scope, expr)?;
+              member_scope.push_root(value)?;
+              evaluator.to_property_key_operator(&mut member_scope, value)?
+            }
+          }
+        }
+      }
+    } else {
+      match &member.stx.key {
+        ClassOrObjKey::Direct(direct) => {
+          if direct.stx.tt == TT::PrivateMember {
+            let sym = member_scope
+              .heap()
+              .resolve_private_name_symbol(class_env, &direct.stx.key)?
+              .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+            PropertyKey::from_symbol(sym)
+          } else {
+            let key_s = if let Some(units) = literal_string_code_units(&direct.assoc) {
+              member_scope.alloc_string_from_code_units(units)?
+            } else if direct.stx.tt == TT::LiteralNumber {
+              let mut tick = || evaluator.tick();
+              let n = crate::ops::parse_ascii_decimal_to_f64_str(&direct.stx.key, &mut tick)?
+                .ok_or(VmError::Unimplemented(
+                  "numeric literal property name parse",
+                ))?;
+              member_scope.heap_mut().to_string(Value::Number(n))?
+            } else {
+              member_scope.alloc_string(&direct.stx.key)?
+            };
+            PropertyKey::from_string(key_s)
+          }
+        }
+        ClassOrObjKey::Computed(expr) => {
+          if expr_contains_yield(expr) {
+            match gen_eval_expr(evaluator, &mut member_scope, expr)? {
+              GenEval::Complete(c) => match c {
+                Completion::Normal(v) => {
+                  let value = v.unwrap_or(Value::Undefined);
+                  member_scope.push_root(value)?;
+                  evaluator.to_property_key_operator(&mut member_scope, value)?
+                }
+                abrupt => return Ok(GenEval::Complete(abrupt)),
+              },
+              GenEval::Suspend(mut suspend) => {
+                gen_frames_push(
+                  &mut suspend.frames,
+                  GenFrame::ClassAfterComputedKey {
+                    members: members as *const Vec<Node<ClassMember>>,
+                    member_index: idx,
+                    func_obj,
+                    static_inits,
+                    instance_private_method_idx,
+                    instance_field_idx,
+                    instance_field_slot_start,
+                  },
+                )?;
+                return Ok(GenEval::Suspend(suspend));
+              }
+            }
+          } else {
+            let value = evaluator.eval_expr(&mut member_scope, expr)?;
+            member_scope.push_root(value)?;
+            evaluator.to_property_key_operator(&mut member_scope, value)?
+          }
+        }
+      }
+    };
+
+    match key {
+      PropertyKey::String(s) => member_scope.push_root(Value::String(s))?,
+      PropertyKey::Symbol(s) => member_scope.push_root(Value::Symbol(s))?,
+    };
+
+    match &member.stx.val {
+      ClassOrObjVal::Method(method) => {
+        let func_node = &method.stx.func;
+        let is_async_generator = func_node.stx.generator && func_node.stx.async_;
+        let length = evaluator.function_length(&func_node.stx)?;
+
+        let span_start = evaluator.class_member_span_start(
+          member_loc_start,
+          key_loc_start,
+          key_is_computed,
+          Some(&func_node.stx),
+          None,
+        );
+        let rel_end = func_node
+          .loc
+          .end_u32()
+          .saturating_sub(evaluator.env.prefix_len());
+        let span_end = evaluator.env.base_offset().saturating_add(rel_end);
+
+        let code = evaluator.vm.register_ecma_function(
+          evaluator.env.source(),
+          span_start,
+          span_end,
+          EcmaFunctionKind::ClassMember,
+        )?;
+
+        // Class methods are always strict mode.
+        let is_strict = true;
+        let this_mode = if func_node.stx.arrow {
+          ThisMode::Lexical
+        } else {
+          ThisMode::Strict
+        };
+        let closure_env = Some(evaluator.env.lexical_env);
+
+        let name_string = match key {
+          PropertyKey::String(s) => s,
+          PropertyKey::Symbol(_) => member_scope.alloc_string("")?,
+        };
+
+        let method_func_obj = member_scope.alloc_ecma_function(
+          code,
+          /* is_constructable */ false,
+          name_string,
+          length,
+          this_mode,
+          is_strict,
+          closure_env,
+        )?;
+        member_scope
+          .heap_mut()
+          .set_function_meta_property_context(method_func_obj, MetaPropertyContext::METHOD)?;
+
+        let intr = evaluator
+          .vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+        member_scope.heap_mut().object_set_prototype(
+          method_func_obj,
+          Some(if func_node.stx.generator {
+            if is_async_generator {
+              intr.async_generator_function_prototype()
+            } else {
+              intr.generator_function_prototype()
+            }
+          } else if func_node.stx.async_ {
+            intr.async_function_prototype()
+          } else {
+            intr.function_prototype()
+          }),
+        )?;
+        member_scope
+          .heap_mut()
+          .set_function_realm(method_func_obj, evaluator.env.global_object())?;
+        if let Some(realm) = evaluator.vm.current_realm() {
+          member_scope
+            .heap_mut()
+            .set_function_job_realm(method_func_obj, realm)?;
+        }
+        if let Some(script_or_module) = evaluator.vm.get_active_script_or_module() {
+          let token = evaluator.vm.intern_script_or_module(script_or_module)?;
+          member_scope
+            .heap_mut()
+            .set_function_script_or_module_token(method_func_obj, Some(token))?;
+        }
+        member_scope
+          .heap_mut()
+          .set_function_home_object(method_func_obj, Some(target_obj))?;
+        if func_node.stx.generator {
+          if is_async_generator {
+            crate::function_properties::make_async_generator_function_instance_prototype(
+              &mut member_scope,
+              method_func_obj,
+              intr.async_generator_prototype(),
+            )?;
+          } else {
+            crate::function_properties::make_generator_function_instance_prototype(
+              &mut member_scope,
+              method_func_obj,
+              intr.generator_prototype(),
+            )?;
+          }
+        }
+        member_scope.push_root(Value::Object(method_func_obj))?;
+
+        // Methods use the property key as the function `name` if possible.
+        if !matches!(key, PropertyKey::String(_)) {
+          crate::function_properties::set_function_name(&mut member_scope, method_func_obj, key, None)?;
+        }
+
+        // Private instance methods are initialized per-instance (and therefore must not be defined
+        // on the shared prototype object). Store them alongside instance field metadata in the
+        // class constructor's native slots; `InitializeInstanceElements` will define them as hidden
+        // internal-symbol properties.
+        if is_private_key && !member.stx.static_ {
+          let PropertyKey::Symbol(sym) = key else {
+            return Err(VmError::InvariantViolation(
+              "private method key is not a symbol",
+            ));
+          };
+          let slot_base = crate::class_fields::CLASS_CTOR_SLOT_INSTANCE_FIELDS_START
+            .saturating_add(instance_private_method_idx.saturating_mul(2));
+          member_scope
+            .heap_mut()
+            .set_function_native_slot(func_obj, slot_base, Value::Symbol(sym))?;
+          member_scope.heap_mut().set_function_native_slot(
+            func_obj,
+            slot_base.saturating_add(1),
+            Value::Object(method_func_obj),
+          )?;
+          instance_private_method_idx = instance_private_method_idx
+            .checked_add(1)
+            .ok_or(VmError::OutOfMemory)?;
+        } else {
+          // Ordinary method: define on target object.
+          member_scope.define_property_or_throw(
+            target_obj,
+            key,
+            PropertyDescriptorPatch {
+              value: Some(Value::Object(method_func_obj)),
+              writable: Some(true),
+              enumerable: Some(false),
+              configurable: Some(true),
+              ..Default::default()
+            },
+          )?;
+        }
+      }
+      ClassOrObjVal::Getter(getter) => {
+        let func_node = &getter.stx.func;
+        let length = evaluator.function_length(&func_node.stx)?;
+
+        let span_start = evaluator.class_member_span_start(
+          member_loc_start,
+          key_loc_start,
+          key_is_computed,
+          Some(&func_node.stx),
+          Some(b"get"),
+        );
+        let rel_end = func_node
+          .loc
+          .end_u32()
+          .saturating_sub(evaluator.env.prefix_len());
+        let span_end = evaluator.env.base_offset().saturating_add(rel_end);
+
+        let code = evaluator.vm.register_ecma_function(
+          evaluator.env.source(),
+          span_start,
+          span_end,
+          EcmaFunctionKind::ClassMember,
+        )?;
+
+        // Class accessors are always strict mode.
+        let is_strict = true;
+        let this_mode = if func_node.stx.arrow {
+          ThisMode::Lexical
+        } else {
+          ThisMode::Strict
+        };
+        let closure_env = Some(evaluator.env.lexical_env);
+
+        let name_string = member_scope.alloc_string("")?;
+        let func_obj = member_scope.alloc_ecma_function(
+          code,
+          /* is_constructable */ false,
+          name_string,
+          length,
+          this_mode,
+          is_strict,
+          closure_env,
+        )?;
+        member_scope
+          .heap_mut()
+          .set_function_meta_property_context(func_obj, MetaPropertyContext::METHOD)?;
+
+        let intr = evaluator
+          .vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+        member_scope
+          .heap_mut()
+          .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+        member_scope
+          .heap_mut()
+          .set_function_realm(func_obj, evaluator.env.global_object())?;
+        if let Some(realm) = evaluator.vm.current_realm() {
+          member_scope
+            .heap_mut()
+            .set_function_job_realm(func_obj, realm)?;
+        }
+        if let Some(script_or_module) = evaluator.vm.get_active_script_or_module() {
+          let token = evaluator.vm.intern_script_or_module(script_or_module)?;
+          member_scope
+            .heap_mut()
+            .set_function_script_or_module_token(func_obj, Some(token))?;
+        }
+        member_scope
+          .heap_mut()
+          .set_function_home_object(func_obj, Some(target_obj))?;
+        member_scope.push_root(Value::Object(func_obj))?;
+
+        crate::function_properties::set_function_name(&mut member_scope, func_obj, key, Some("get"))?;
+
+        member_scope.define_property_or_throw(
+          target_obj,
+          key,
+          PropertyDescriptorPatch {
+            get: Some(Value::Object(func_obj)),
+            enumerable: Some(false),
+            configurable: Some(true),
+            ..Default::default()
+          },
+        )?;
+      }
+      ClassOrObjVal::Setter(setter) => {
+        let func_node = &setter.stx.func;
+        let length = evaluator.function_length(&func_node.stx)?;
+
+        let span_start = evaluator.class_member_span_start(
+          member_loc_start,
+          key_loc_start,
+          key_is_computed,
+          Some(&func_node.stx),
+          Some(b"set"),
+        );
+        let rel_end = func_node
+          .loc
+          .end_u32()
+          .saturating_sub(evaluator.env.prefix_len());
+        let span_end = evaluator.env.base_offset().saturating_add(rel_end);
+
+        let code = evaluator.vm.register_ecma_function(
+          evaluator.env.source(),
+          span_start,
+          span_end,
+          EcmaFunctionKind::ClassMember,
+        )?;
+
+        // Class accessors are always strict mode.
+        let is_strict = true;
+        let this_mode = if func_node.stx.arrow {
+          ThisMode::Lexical
+        } else {
+          ThisMode::Strict
+        };
+        let closure_env = Some(evaluator.env.lexical_env);
+
+        let name_string = member_scope.alloc_string("")?;
+        let func_obj = member_scope.alloc_ecma_function(
+          code,
+          /* is_constructable */ false,
+          name_string,
+          length,
+          this_mode,
+          is_strict,
+          closure_env,
+        )?;
+        member_scope
+          .heap_mut()
+          .set_function_meta_property_context(func_obj, MetaPropertyContext::METHOD)?;
+
+        let intr = evaluator
+          .vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+        member_scope
+          .heap_mut()
+          .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+        member_scope
+          .heap_mut()
+          .set_function_realm(func_obj, evaluator.env.global_object())?;
+        if let Some(realm) = evaluator.vm.current_realm() {
+          member_scope
+            .heap_mut()
+            .set_function_job_realm(func_obj, realm)?;
+        }
+        if let Some(script_or_module) = evaluator.vm.get_active_script_or_module() {
+          let token = evaluator.vm.intern_script_or_module(script_or_module)?;
+          member_scope
+            .heap_mut()
+            .set_function_script_or_module_token(func_obj, Some(token))?;
+        }
+        member_scope
+          .heap_mut()
+          .set_function_home_object(func_obj, Some(target_obj))?;
+        member_scope.push_root(Value::Object(func_obj))?;
+
+        crate::function_properties::set_function_name(&mut member_scope, func_obj, key, Some("set"))?;
+
+        member_scope.define_property_or_throw(
+          target_obj,
+          key,
+          PropertyDescriptorPatch {
+            set: Some(Value::Object(func_obj)),
+            enumerable: Some(false),
+            configurable: Some(true),
+            ..Default::default()
+          },
+        )?;
+      }
+      ClassOrObjVal::Prop(initializer_expr) => {
+        // Class fields (public and private).
+        if is_private_key && member.stx.static_ {
+          let PropertyKey::Symbol(sym) = key else {
+            return Err(VmError::InvariantViolation(
+              "private field key is not a symbol",
+            ));
+          };
+          static_inits
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          static_inits.push(GenClassStaticInit::PrivateField {
+            sym,
+            init: initializer_expr.as_ref().map(|n| n as *const Node<Expr>),
+          });
+          continue;
+        }
+
+        let key_value = match key {
+          PropertyKey::String(s) => Value::String(s),
+          PropertyKey::Symbol(s) => Value::Symbol(s),
+        };
+
+        // Create a function object for `= <expr>` initializers so they can be evaluated later with
+        // the correct `this` value.
+        let init_value = match initializer_expr {
+          Some(expr_node) => {
+            // Root the initializer expression node span inputs across registration/allocation.
+            let mut start_u32 = expr_node.loc.start_u32();
+            // `parse-js` expression node spans intentionally exclude parentheses.
+            if let Expr::Call(call) = expr_node.stx.as_ref() {
+              if call.stx.callee.assoc.get::<ParenthesizedExpr>().is_some() {
+                let src = evaluator.env.source();
+                let text = src.text.as_ref();
+                let mut i = (start_u32 as usize).min(text.len());
+                // Skip whitespace between the parenthesis and the callee token.
+                while i > 0 && text.as_bytes()[i.saturating_sub(1)].is_ascii_whitespace() {
+                  i = i.saturating_sub(1);
+                }
+                if i > 0 && text.as_bytes()[i.saturating_sub(1)] == b'(' {
+                  start_u32 = u32::try_from(i.saturating_sub(1)).unwrap_or(start_u32);
+                }
+              }
+            }
+
+            let rel_start = start_u32.saturating_sub(evaluator.env.prefix_len());
+            let rel_end = expr_node
+              .loc
+              .end_u32()
+              .saturating_sub(evaluator.env.prefix_len());
+            let mut span_start = evaluator.env.base_offset().saturating_add(rel_start);
+            let span_end = evaluator.env.base_offset().saturating_add(rel_end);
+
+            if let Expr::Call(call) = &*expr_node.stx {
+              if call.stx.callee.assoc.get::<ParenthesizedExpr>().is_some() {
+                let source = evaluator.env.source();
+                let bytes = source.text.as_bytes();
+
+                let skip_trivia_back = |mut idx: usize| -> usize {
+                  idx = idx.min(bytes.len());
+                  'outer: loop {
+                    let mut saw_newline = false;
+                    while idx > 0 {
+                      match bytes[idx - 1] {
+                        b' ' | b'\t' => idx -= 1,
+                        b'\n' | b'\r' => {
+                          idx -= 1;
+                          saw_newline = true;
+                        }
+                        _ => break,
+                      }
+                    }
+
+                    if idx >= 2 && bytes[idx - 2] == b'*' && bytes[idx - 1] == b'/' {
+                      idx = idx.saturating_sub(2);
+                      while idx >= 2 {
+                        if bytes[idx - 2] == b'/' && bytes[idx - 1] == b'*' {
+                          idx = idx.saturating_sub(2);
+                          continue 'outer;
+                        }
+                        idx -= 1;
+                      }
+                      continue 'outer;
+                    }
+
+                    if saw_newline {
+                      let mut line_start = idx;
+                      while line_start > 0 {
+                        let b = bytes[line_start - 1];
+                        if b == b'\n' || b == b'\r' {
+                          break;
+                        }
+                        line_start -= 1;
+                      }
+
+                      let mut i = line_start;
+                      while i < idx {
+                        match bytes[i] {
+                          b' ' | b'\t' => i += 1,
+                          _ => break,
+                        }
+                      }
+
+                      if i + 1 < idx && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+                        idx = line_start;
+                        continue 'outer;
+                      }
+                    }
+
+                    return idx;
+                  }
+                };
+
+                let args_open: Option<usize> = if let Some(arg0) = call.stx.arguments.first() {
+                  let rel_arg_start = arg0
+                    .loc
+                    .start_u32()
+                    .saturating_sub(evaluator.env.prefix_len());
+                  let arg_start = evaluator.env.base_offset().saturating_add(rel_arg_start) as usize;
+                  let idx = skip_trivia_back(arg_start);
+                  if idx > 0 && bytes.get(idx - 1) == Some(&b'(') {
+                    Some(idx - 1)
+                  } else {
+                    None
+                  }
+                } else {
+                  let end_idx = skip_trivia_back(span_end as usize);
+                  if end_idx == 0 || bytes.get(end_idx - 1) != Some(&b')') {
+                    None
+                  } else {
+                    let close_idx = end_idx - 1;
+                    let idx = skip_trivia_back(close_idx);
+                    if idx > 0 && bytes.get(idx - 1) == Some(&b'(') {
+                      Some(idx - 1)
+                    } else {
+                      None
+                    }
+                  }
+                };
+
+                if let Some(args_open) = args_open {
+                  let rel_callee_end = call
+                    .stx
+                    .callee
+                    .loc
+                    .end_u32()
+                    .saturating_sub(evaluator.env.prefix_len());
+                  let callee_end =
+                    evaluator.env.base_offset().saturating_add(rel_callee_end) as usize;
+                  let callee_end = callee_end.min(bytes.len());
+
+                  let mut close_scan = args_open;
+                  let mut close_count: usize = 0;
+                  while close_scan > callee_end {
+                    close_scan = skip_trivia_back(close_scan);
+                    if close_scan <= callee_end {
+                      break;
+                    }
+                    if bytes.get(close_scan - 1) == Some(&b')') {
+                      close_count = close_count.saturating_add(1);
+                      close_scan -= 1;
+                      continue;
+                    }
+                    break;
+                  }
+
+                  let mut start_scan = span_start as usize;
+                  for _ in 0..close_count {
+                    start_scan = skip_trivia_back(start_scan);
+                    if start_scan == 0 || bytes.get(start_scan - 1) != Some(&b'(') {
+                      break;
+                    }
+                    start_scan -= 1;
+                  }
+                  span_start = u32::try_from(start_scan).unwrap_or(span_start);
+                }
+              }
+            }
+
+            let member_span_start = evaluator
+              .env
+              .base_offset()
+              .saturating_add(member_loc_start.saturating_sub(evaluator.env.prefix_len()));
+            span_start = evaluator.class_field_initializer_span_start_scan(
+              member_span_start,
+              span_start,
+              span_end,
+            );
+
+            let code = evaluator.vm.register_ecma_function(
+              evaluator.env.source(),
+              span_start,
+              span_end,
+              EcmaFunctionKind::ClassFieldInitializer,
+            )?;
+
+            // Field initializer functions are always strict mode and have `length = 0`.
+            let is_strict = true;
+            let this_mode = ThisMode::Strict;
+            let closure_env = Some(evaluator.env.lexical_env);
+
+            let name_string = member_scope.alloc_string("")?;
+            let init_func_obj = member_scope.alloc_ecma_function(
+              code,
+              /* is_constructable */ false,
+              name_string,
+              0,
+              this_mode,
+              is_strict,
+              closure_env,
+            )?;
+            member_scope
+              .heap_mut()
+              .set_function_meta_property_context(init_func_obj, MetaPropertyContext::METHOD)?;
+
+            let intr = evaluator
+              .vm
+              .intrinsics()
+              .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+            member_scope
+              .heap_mut()
+              .object_set_prototype(init_func_obj, Some(intr.function_prototype()))?;
+            member_scope
+              .heap_mut()
+              .set_function_realm(init_func_obj, evaluator.env.global_object())?;
+            if let Some(realm) = evaluator.vm.current_realm() {
+              member_scope
+                .heap_mut()
+                .set_function_job_realm(init_func_obj, realm)?;
+            }
+            if let Some(script_or_module) = evaluator.vm.get_active_script_or_module() {
+              let token = evaluator.vm.intern_script_or_module(script_or_module)?;
+              member_scope
+                .heap_mut()
+                .set_function_script_or_module_token(init_func_obj, Some(token))?;
+            }
+            member_scope
+              .heap_mut()
+              .set_function_home_object(init_func_obj, Some(target_obj))?;
+            Value::Object(init_func_obj)
+          }
+          None => Value::Undefined,
+        };
+
+        if member.stx.static_ {
+          // Static field: defer initialization until after the element definition pass.
+          // Drop `member_scope` early so we can push persistent roots onto the outer scope.
+          drop(member_scope);
+          scope.push_root(key_value)?;
+          scope.push_root(init_value)?;
+          static_inits
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          static_inits.push(GenClassStaticInit::Field {
+            key: key_value,
+            initializer: init_value,
+          });
+        } else {
+          // Instance field: store as `(key, initializer)` in the class constructor's native slots.
+          let slot_base = instance_field_slot_start.saturating_add(instance_field_idx.saturating_mul(2));
+          member_scope
+            .heap_mut()
+            .set_function_native_slot(func_obj, slot_base, key_value)?;
+          member_scope.heap_mut().set_function_native_slot(
+            func_obj,
+            slot_base.saturating_add(1),
+            init_value,
+          )?;
+          instance_field_idx = instance_field_idx
+            .checked_add(1)
+            .ok_or(VmError::OutOfMemory)?;
+        }
+      }
+      ClassOrObjVal::IndexSignature(_) => {
+        return Err(VmError::Unimplemented("class index signature"));
+      }
+      ClassOrObjVal::StaticBlock(_) => {
+        return Err(VmError::InvariantViolation(
+          "class static blocks should be collected before key evaluation",
+        ));
+      }
+    }
+  }
+
+  // Evaluate class static initialization elements (public static fields, private static fields, and
+  // static blocks) in source order.
+  for init in static_inits {
+    match init {
+      GenClassStaticInit::Block { stmts } => {
+        let stmts = unsafe { &*stmts };
+        evaluator.eval_class_static_block(scope, func_obj, stmts)?;
+      }
+      GenClassStaticInit::PrivateField { sym, init } => {
+        let init = unsafe { init.map(|ptr| &*ptr) };
+        evaluator.eval_class_static_private_field(scope, func_obj, sym, init)?;
+      }
+      GenClassStaticInit::Field { key, initializer } => {
+        let key = match key {
+          Value::String(s) => PropertyKey::from_string(s),
+          Value::Symbol(s) => PropertyKey::from_symbol(s),
+          Value::Undefined => {
+            return Err(VmError::InvariantViolation("static field key is undefined"))
+          }
+          _ => {
+            return Err(VmError::InvariantViolation(
+              "static field key is not a string or symbol",
+            ))
+          }
+        };
+        let value = match initializer {
+          Value::Object(func) => evaluator.vm.call_with_host_and_hooks(
+            &mut *evaluator.host,
+            scope,
+            &mut *evaluator.hooks,
+            Value::Object(func),
+            Value::Object(func_obj),
+            &[],
+          )?,
+          Value::Undefined => Value::Undefined,
+          _ => {
+            return Err(VmError::InvariantViolation(
+              "static field initializer is not a function or undefined",
+            ))
+          }
+        };
+        scope.create_data_property_or_throw(func_obj, key, value)?;
+      }
+    }
+  }
+
+  Ok(GenEval::Complete(Completion::normal(Value::Object(func_obj))))
 }
 
 fn gen_eval_chain_base(
@@ -40626,6 +42240,7 @@ fn gen_eval_expr_chain(
     Expr::LitArr(arr) => gen_eval_lit_arr(evaluator, scope, &arr.stx),
     Expr::LitObj(obj) => gen_eval_lit_obj(evaluator, scope, &obj.stx),
     Expr::LitTemplate(tpl) => gen_eval_lit_template(evaluator, scope, &tpl.stx),
+    Expr::Class(class_expr) => gen_eval_class_expr(evaluator, scope, class_expr),
     _ => Err(VmError::Unimplemented("yield in expression type")),
   };
 
@@ -47306,6 +48921,163 @@ fn gen_resume_from_frames(
         abrupt => state = abrupt,
       },
 
+      GenFrame::ClassAfterHeritage {
+        members,
+        binding_name,
+        func_name,
+        extends_null,
+      } => match state {
+        Completion::Normal(v) => {
+          let heritage_value = v.unwrap_or(Value::Undefined);
+          let super_value = match gen_class_heritage_value_to_super_value(evaluator, scope, heritage_value) {
+            Ok(v) => v,
+            Err(err) => {
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+          };
+
+          let members = unsafe { &*members };
+          let binding = match binding_name {
+            None => ClassBinding::None,
+            Some(ptr) => ClassBinding::Immutable(unsafe { &*ptr }),
+          };
+          let func_name = unsafe { &*func_name };
+
+          match gen_eval_class_after_super(
+            evaluator,
+            scope,
+            binding,
+            func_name,
+            members,
+            super_value,
+            extends_null,
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::ClassAfterComputedKey {
+        members,
+        member_index,
+        func_obj,
+        static_inits,
+        instance_private_method_idx,
+        instance_field_idx,
+        instance_field_slot_start,
+      } => match state {
+        Completion::Normal(v) => {
+          // Keep class-evaluation roots local to this continuation step so they do not leak into the
+          // surrounding generator resume call.
+          let mut class_scope = scope.reborrow();
+
+          let members = unsafe { &*members };
+          let member = match members.get(member_index) {
+            Some(m) => m,
+            None => {
+              state = gen_error_to_completion(
+                evaluator,
+                &mut class_scope,
+                VmError::InvariantViolation("generator class continuation out of bounds"),
+              )?;
+              continue;
+            }
+          };
+
+          if !matches!(&member.stx.key, ClassOrObjKey::Computed(_)) {
+            state = gen_error_to_completion(
+              evaluator,
+              &mut class_scope,
+              VmError::InvariantViolation(
+                "generator class computed key frame resumed for non-computed key",
+              ),
+            )?;
+            continue;
+          }
+
+          // Re-extract the prototype object from the class constructor.
+          let prototype_obj: GcObject = match (|| -> Result<GcObject, VmError> {
+            let mut proto_scope = class_scope.reborrow();
+            proto_scope.push_root(Value::Object(func_obj))?;
+            let prototype_key_s = proto_scope.alloc_string("prototype")?;
+            proto_scope.push_root(Value::String(prototype_key_s))?;
+            let prototype_key = PropertyKey::from_string(prototype_key_s);
+            let Some(prototype_desc) = proto_scope.heap().get_own_property(func_obj, prototype_key)?
+            else {
+              return Err(VmError::InvariantViolation(
+                "class constructor missing prototype property",
+              ));
+            };
+            let PropertyKind::Data { value, .. } = prototype_desc.kind else {
+              return Err(VmError::InvariantViolation(
+                "class constructor prototype property is not a data property",
+              ));
+            };
+            let Value::Object(prototype_obj) = value else {
+              return Err(VmError::InvariantViolation(
+                "class constructor prototype property is not an object",
+              ));
+            };
+            Ok(prototype_obj)
+          })() {
+            Ok(v) => v,
+            Err(err) => {
+              state = gen_error_to_completion(evaluator, &mut class_scope, err)?;
+              continue;
+            }
+          };
+
+          let target_obj = if member.stx.static_ {
+            func_obj
+          } else {
+            prototype_obj
+          };
+
+          let key_value = v.unwrap_or(Value::Undefined);
+          let key: PropertyKey = match (|| -> Result<PropertyKey, VmError> {
+            let mut key_scope = class_scope.reborrow();
+            key_scope.push_root(Value::Object(target_obj))?;
+            key_scope.push_root(key_value)?;
+            evaluator.to_property_key_operator(&mut key_scope, key_value)
+          })() {
+            Ok(k) => k,
+            Err(err) => {
+              state = gen_error_to_completion(evaluator, &mut class_scope, err)?;
+              continue;
+            }
+          };
+
+          match gen_eval_class_members_from(
+            evaluator,
+            &mut class_scope,
+            members,
+            member_index,
+            func_obj,
+            prototype_obj,
+            instance_field_slot_start,
+            static_inits,
+            instance_private_method_idx,
+            instance_field_idx,
+            Some(key),
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, &mut class_scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
       GenFrame::CondAfterTest { expr } => match state {
         Completion::Normal(v) => {
           let expr = unsafe { &*expr };
@@ -49190,6 +50962,55 @@ fn gen_resume_from_frames(
         evaluator.env.set_lexical_env(scope.heap_mut(), outer);
       }
 
+      GenFrame::RestoreStrict { saved_strict } => {
+        evaluator.strict = saved_strict;
+      }
+
+      GenFrame::ClassDecl { decl, outer } => {
+        let decl = unsafe { &*decl };
+        // Restore the outer lexical environment regardless of how class evaluation completed.
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+
+        match state {
+          Completion::Normal(Some(v)) => {
+            let binding_name = match decl.stx.name.as_ref() {
+              Some(name) => name.stx.name.as_str(),
+              None => "*default*",
+            };
+
+            let init_res: Result<(), VmError> = (|| {
+              // Root the class constructor object during binding initialization in case it triggers
+              // GC.
+              let mut init_scope = scope.reborrow();
+              init_scope.push_root(v)?;
+
+              if !init_scope.heap().env_has_binding(outer, binding_name)? {
+                // Non-block statement contexts may not have performed lexical hoisting yet.
+                init_scope.env_create_mutable_binding(outer, binding_name)?;
+              }
+              init_scope
+                .heap_mut()
+                .env_initialize_binding(outer, binding_name, v)?;
+              Ok(())
+            })();
+
+            if let Err(err) = init_res {
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+            state = Completion::empty();
+          }
+          Completion::Normal(None) => {
+            state = gen_error_to_completion(
+              evaluator,
+              scope,
+              VmError::InvariantViolation("class declaration continuation missing value"),
+            )?;
+          }
+          abrupt => state = abrupt,
+        }
+      }
+
       GenFrame::Return => match state {
         Completion::Normal(v) => state = Completion::Return(v.unwrap_or(Value::Undefined)),
         abrupt => state = abrupt,
@@ -49970,6 +51791,17 @@ fn gen_root_values_for_continuation(
       GenFrame::LitObjAfterPropValue { .. } => {
         needed = needed.saturating_add(2);
       }
+      GenFrame::ClassAfterComputedKey { static_inits, .. } => {
+        // `func_obj` plus any values stored in the pending static initialization list.
+        needed = needed.saturating_add(1);
+        for init in static_inits.iter() {
+          match init {
+            GenClassStaticInit::Field { .. } => needed = needed.saturating_add(2),
+            GenClassStaticInit::PrivateField { .. } => needed = needed.saturating_add(1),
+            GenClassStaticInit::Block { .. } => {}
+          }
+        }
+      }
       GenFrame::ImportAfterOptions { .. } => {
         needed = needed.saturating_add(1);
       }
@@ -50208,6 +52040,23 @@ fn gen_root_values_for_continuation(
           PropertyKey::String(s) => Value::String(*s),
           PropertyKey::Symbol(s) => Value::Symbol(*s),
         });
+      }
+      GenFrame::ClassAfterComputedKey {
+        func_obj,
+        static_inits,
+        ..
+      } => {
+        values.push(Value::Object(*func_obj));
+        for init in static_inits.iter() {
+          match init {
+            GenClassStaticInit::Field { key, initializer } => {
+              values.push(*key);
+              values.push(*initializer);
+            }
+            GenClassStaticInit::PrivateField { sym, .. } => values.push(Value::Symbol(*sym)),
+            GenClassStaticInit::Block { .. } => {}
+          }
+        }
       }
       GenFrame::ImportAfterOptions { specifier, .. } => values.push(*specifier),
       GenFrame::TaggedTemplateComputedMemberAfterMember { base, .. } => values.push(*base),
