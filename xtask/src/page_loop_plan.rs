@@ -69,10 +69,14 @@ pub fn build_bins_command(repo_root: &Path, debug: bool, bins: &[&str]) -> Comma
   if !debug {
     cmd.arg("--release");
   }
-  // Many real-world fixtures ship AVIF images. Build the renderer binaries with AVIF support so
-  // `xtask page-loop --chrome` diffs reflect renderer/layout differences rather than missing image
-  // decoders.
-  cmd.args(["--features", "avif"]);
+  // Offline fixture workflows should stay lightweight and deterministic. Build FastRender with the
+  // minimal renderer feature set so we don't pull in optional in-process network stacks
+  // (`direct_network`, `direct_websocket`), which otherwise force large HTTP/WebSocket dependency
+  // trees into the build.
+  //
+  // Use `renderer_minimal` (defined in the root `Cargo.toml`) so we keep core rendering features
+  // like AVIF decoding while still excluding network stacks.
+  cmd.args(["--no-default-features", "--features", "renderer_minimal"]);
   for bin in bins {
     cmd.args(["--bin", bin]);
   }
@@ -92,15 +96,19 @@ mod build_bins_tests {
   }
 
   #[test]
-  fn build_bins_command_enables_avif_feature() {
+  fn build_bins_command_builds_renderer_minimal_feature_set() {
     let cmd = build_bins_command(&repo_root(), true, &["render_fixtures"]);
     let args: Vec<String> = cmd
       .get_args()
       .map(|arg| arg.to_string_lossy().into_owned())
       .collect();
     assert!(
-      args.windows(2).any(|w| w == ["--features", "avif"]),
-      "expected build command to enable AVIF feature; got {args:?}"
+      args.iter().any(|arg| arg == "--no-default-features"),
+      "expected build command to disable default features; got {args:?}"
+    );
+    assert!(
+      args.windows(2).any(|w| w == ["--features", "renderer_minimal"]),
+      "expected build command to enable the renderer_minimal feature set; got {args:?}"
     );
   }
 }

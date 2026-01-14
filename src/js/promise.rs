@@ -125,7 +125,11 @@ impl<Host: 'static, T: Clone + 'static> JsPromise<Host, T> {
   pub fn then<U: Clone + 'static>(
     &self,
     event_loop: &mut EventLoop<Host>,
-    on_fulfilled: impl FnOnce(&mut Host, &mut EventLoop<Host>, T) -> Result<JsPromiseValue<Host, U>>
+    on_fulfilled: impl FnOnce(
+        &mut Host,
+        &mut EventLoop<Host>,
+        T,
+      ) -> Result<JsPromiseValue<Host, U>>
       + 'static,
   ) -> Result<JsPromise<Host, U>> {
     let (next, next_resolver) = JsPromise::<Host, U>::new();
@@ -142,15 +146,13 @@ impl<Host: 'static, T: Clone + 'static> JsPromise<Host, T> {
               let next_resolver = next_resolver.clone();
               p.add_reaction(
                 &mut *event_loop,
-                box_try_new(
-                  move |_host: &mut Host, event_loop: &mut EventLoop<Host>, result| {
+                box_try_new(move |_host: &mut Host, event_loop: &mut EventLoop<Host>, result| {
                   match result {
                     Ok(v) => next_resolver.resolve(&mut *event_loop, v)?,
                     Err(err) => next_resolver.reject(&mut *event_loop, err)?,
                   }
                   Ok(())
-                },
-                )?,
+                })?,
               )?;
             }
           },

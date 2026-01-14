@@ -74,9 +74,12 @@ fn task_source_name(source: TaskSource) -> &'static str {
   }
 }
 
-type Runnable<Host> = Box<dyn FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static>;
-type ExternalRunnable<Host> =
-  Box<dyn FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + Send + 'static>;
+type Runnable<Host> = Box<
+  dyn for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + 'static,
+>;
+type ExternalRunnable<Host> = Box<
+  dyn for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + Send + 'static,
+>;
 
 /// Fallible `Box::new` that returns `None` on allocator OOM instead of aborting the process.
 ///
@@ -106,7 +109,7 @@ fn box_try_new<T>(value: T) -> Option<Box<T>> {
 fn try_box_runnable<Host, F>(runnable: F) -> Result<Runnable<Host>>
 where
   Host: 'static,
-  F: FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static,
+  F: for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + 'static,
 {
   let boxed: Box<F> = box_try_new(runnable).ok_or_else(|| Error::Other(String::new()))?;
   Ok(boxed as Runnable<Host>)
@@ -116,7 +119,7 @@ where
 fn try_box_external_runnable<Host, F>(runnable: F) -> Result<ExternalRunnable<Host>>
 where
   Host: 'static,
-  F: FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + Send + 'static,
+  F: for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + Send + 'static,
 {
   let boxed: Box<F> = box_try_new(runnable).ok_or_else(|| Error::Other(String::new()))?;
   Ok(boxed as ExternalRunnable<Host>)
@@ -210,7 +213,7 @@ impl<Host: 'static> ExternalTaskQueueHandle<Host> {
   /// event loop was dropped/reset), this returns an error.
   pub fn queue_task<F>(&self, source: TaskSource, runnable: F) -> Result<()>
   where
-    F: FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + Send + 'static,
+    F: for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + Send + 'static,
   {
     let wake = {
       let mut lock = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -252,7 +255,7 @@ pub struct Task<Host: 'static> {
 impl<Host: 'static> Task<Host> {
   pub fn new<F>(source: TaskSource, runnable: F) -> Self
   where
-    F: FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static,
+    F: for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + 'static,
   {
     Self {
       source,
@@ -413,13 +416,16 @@ pub(crate) struct PromiseRejectionTrackerState {
   pub(crate) outstanding_rejected: HashSet<PromiseHandle>,
 }
 
-type TimerCallback<Host> = Box<dyn FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static>;
+type TimerCallback<Host> =
+  Box<dyn for<'a, 'b> FnMut(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + 'static>;
 
 type AnimationFrameCallback<Host> =
-  Box<dyn FnMut(&mut Host, &mut EventLoop<Host>, f64) -> Result<()> + 'static>;
+  Box<dyn for<'a, 'b> FnMut(&'a mut Host, &'b mut EventLoop<Host>, f64) -> Result<()> + 'static>;
 
 type IdleCallback<Host> =
-  Box<dyn FnMut(&mut Host, &mut EventLoop<Host>, bool, f64) -> Result<()> + 'static>;
+  Box<
+    dyn for<'a, 'b> FnMut(&'a mut Host, &'b mut EventLoop<Host>, bool, f64) -> Result<()> + 'static,
+  >;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TimerKind {
@@ -903,7 +909,7 @@ impl<Host: 'static> EventLoop<Host> {
 
   pub fn queue_task<F>(&mut self, source: TaskSource, runnable: F) -> Result<()>
   where
-    F: FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static,
+    F: for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + 'static,
   {
     // If new work becomes pending, the event loop is no longer in an idle period, so discard any
     // previously computed idle deadline.
@@ -932,7 +938,7 @@ impl<Host: 'static> EventLoop<Host> {
 
   pub fn queue_microtask<F>(&mut self, runnable: F) -> Result<()>
   where
-    F: FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static,
+    F: for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + 'static,
   {
     // Microtasks indicate that the event loop is not idle, so reset any active idle period budget.
     //
@@ -967,7 +973,7 @@ impl<Host: 'static> EventLoop<Host> {
 
   pub fn set_timeout<F>(&mut self, delay: Duration, callback: F) -> Result<TimerId>
   where
-    F: FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static,
+    F: for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + 'static,
   {
     let mut maybe = Some(callback);
     let callback: TimerCallback<Host> =
@@ -983,7 +989,7 @@ impl<Host: 'static> EventLoop<Host> {
 
   pub fn set_interval<F>(&mut self, interval: Duration, callback: F) -> Result<TimerId>
   where
-    F: FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static,
+    F: for<'a, 'b> FnMut(&'a mut Host, &'b mut EventLoop<Host>) -> Result<()> + 'static,
   {
     let callback: TimerCallback<Host> =
       box_try_new(callback).ok_or_else(|| Error::Other(String::new()))?;
@@ -1009,7 +1015,7 @@ impl<Host: 'static> EventLoop<Host> {
     callback: F,
   ) -> Result<IdleCallbackId>
   where
-    F: FnOnce(&mut Host, &mut EventLoop<Host>, bool, f64) -> Result<()> + 'static,
+    F: for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>, bool, f64) -> Result<()> + 'static,
   {
     if self.idle_callbacks.len() >= self.queue_limits.max_pending_idle_callbacks {
       return Err(Error::Other(format!(
@@ -1083,7 +1089,7 @@ impl<Host: 'static> EventLoop<Host> {
 
   pub fn request_animation_frame<F>(&mut self, callback: F) -> Result<AnimationFrameId>
   where
-    F: FnOnce(&mut Host, &mut EventLoop<Host>, f64) -> Result<()> + 'static,
+    F: for<'a, 'b> FnOnce(&'a mut Host, &'b mut EventLoop<Host>, f64) -> Result<()> + 'static,
   {
     self.maybe_compact_animation_frame_queue();
     if self.animation_frame_callbacks.len()

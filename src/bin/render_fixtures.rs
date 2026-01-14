@@ -25,7 +25,7 @@ use fastrender::js::JsExecutionOptions;
 use fastrender::render_control::{
   push_stage_listener, with_deadline, RenderDeadline, StageHeartbeat,
 };
-use fastrender::resource::ResourcePolicy;
+use fastrender::resource::{HttpFetcher, ResourcePolicy};
 use fastrender::text::font_db::FontConfig;
 use fastrender::{snapshot_pipeline, PipelineSnapshot, RenderArtifacts};
 use image::ImageFormat;
@@ -508,10 +508,8 @@ fn build_fixture_render_config(
   compat_profile: fastrender::CompatProfile,
   dom_compat_mode: fastrender::dom::DomCompatibilityMode,
   js_enabled: bool,
+  resource_policy: ResourcePolicy,
 ) -> fastrender::api::FastRenderConfig {
-  let resource_policy = ResourcePolicy::default()
-    .allow_http(false)
-    .allow_https(false);
   fastrender::api::FastRenderConfig::new()
     .with_default_viewport(viewport.0, viewport.1)
     .with_device_pixel_ratio(dpr)
@@ -650,6 +648,17 @@ fn run(cli: Cli) -> io::Result<()> {
     config
   };
 
+  // Fixture renders are offline and deterministic: we deny network access but still allow reading
+  // from the local fixture directory (`file://` and relative URLs).
+  //
+  // Note: even when FastRender is built without `direct_network` (e.g. `--features renderer_minimal`),
+  // `HttpFetcher` still supports file/data URLs. We pass an explicit fetcher here so offline tooling
+  // continues to work without in-process network stacks.
+  let resource_policy = ResourcePolicy::default()
+    .allow_http(false)
+    .allow_https(false);
+  let fetcher = Arc::new(HttpFetcher::new().with_policy(resource_policy.clone()));
+
   let render_config = build_fixture_render_config(
     cli.viewport,
     cli.dpr,
@@ -658,12 +667,14 @@ fn run(cli: Cli) -> io::Result<()> {
     cli.compat.compat_profile(),
     cli.compat.dom_compat_mode(),
     cli.js,
+    resource_policy,
   );
 
   let render_pool = FastRenderPool::with_config(
     FastRenderPoolConfig::new()
       .with_renderer_config(render_config)
-      .with_pool_size(cli.jobs),
+      .with_pool_size(cli.jobs)
+      .with_fetcher(fetcher),
   )
   .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 

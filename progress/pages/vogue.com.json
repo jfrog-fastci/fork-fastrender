@@ -14,12 +14,13 @@
     "layout": 234.217152,
     "paint": 20.01856
   },
-  "notes": "",
+  "notes": "Visually close to Chrome at 1200x800; remaining diff is dominated by text rasterization/anti-aliasing differences (and small rounding noise) rather than major layout bugs (perceptual≈0.03).",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 341104,
-    "diff_percent": 35.5317,
-    "perceptual": 0.1087,
+    "diff_pixels": 170586,
+    "diff_percent": 17.7694,
+    "perceptual": 0.0305,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 411,
       "y": 13,
@@ -30,15 +31,15 @@
         255
       ],
       "rendered_rgba": [
-        192,
-        192,
-        192,
+        127,
+        127,
+        127,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "59f1f9050cfd986dc05b3a15a94d544dcf56994e"
+    "computed_at_commit": "6e9dd3c797da2c7480010300f85955423dd021f6"
   },
   "hotspot": "layout",
   "failure_stage": null,
