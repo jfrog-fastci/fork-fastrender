@@ -6216,23 +6216,55 @@ fn determine_startup_session(
   cli_url: Option<String>,
   restore: RestoreMode,
   session_path: &std::path::Path,
-) -> (fastrender::ui::BrowserSession, StartupSessionSource) {
+) -> (
+  fastrender::ui::BrowserSession,
+  StartupSessionSource,
+  Option<String>,
+) {
   let wants_restore = match restore {
     RestoreMode::Disable => false,
     RestoreMode::Auto => cli_url.is_none(),
     RestoreMode::Force => true,
   };
 
-  let mut loaded_session = match fastrender::ui::session::load_session(session_path) {
-    Ok(session) => session,
+  let mut session_load_toast: Option<String> = None;
+
+  let mut loaded_session_outcome = match fastrender::ui::session::load_session_outcome(session_path)
+  {
+    Ok(outcome) => outcome,
     Err(err) => {
       eprintln!(
         "failed to load session from {}: {err}",
         session_path.display()
       );
+
+      const MAX_TOAST_PATH_BYTES: usize = 240;
+      const MAX_TOAST_ERROR_BYTES: usize = 200;
+      let path = sanitize_path_for_toast(session_path, MAX_TOAST_PATH_BYTES);
+      let err_short = sanitize_toast_detail_single_line(&err, MAX_TOAST_ERROR_BYTES)
+        .unwrap_or_else(|| "unknown error".to_string());
+      session_load_toast = Some(format!(
+        "Failed to load session on startup.\nPath: {path}\nError: {err_short}"
+      ));
+
       None
     }
   };
+
+  if let Some(outcome) = loaded_session_outcome.as_ref() {
+    if outcome.source == fastrender::ui::session::SessionLoadSource::Backup {
+      if let Some(primary_err) = outcome.primary_error.as_deref() {
+        const MAX_TOAST_ERROR_BYTES: usize = 200;
+        let err_short = sanitize_toast_detail_single_line(primary_err, MAX_TOAST_ERROR_BYTES)
+          .unwrap_or_else(|| "unknown error".to_string());
+        session_load_toast = Some(format!(
+          "Session file was unreadable; restored from backup.\nError: {err_short}"
+        ));
+      }
+    }
+  }
+
+  let mut loaded_session = loaded_session_outcome.map(|outcome| outcome.session);
 
   if wants_restore {
     if let Some(session) = loaded_session.take() {
@@ -6249,7 +6281,7 @@ fn determine_startup_session(
           fastrender::ui::about_pages::ABOUT_NEWTAB.to_string(),
           Some(&session),
         );
-        return (safe, StartupSessionSource::SafeMode);
+        return (safe, StartupSessionSource::SafeMode, session_load_toast);
       }
 
       if !session.did_exit_cleanly {
@@ -6258,20 +6290,24 @@ fn determine_startup_session(
           session.unclean_exit_streak
         );
       }
-      return (session.sanitized(), StartupSessionSource::Restored);
+      return (
+        session.sanitized(),
+        StartupSessionSource::Restored,
+        session_load_toast,
+      );
     }
   }
 
   if let Some(url) = cli_url {
     let session = single_tab_session_preserving_config(url, loaded_session.as_ref());
-    return (session, StartupSessionSource::CliUrl);
+    return (session, StartupSessionSource::CliUrl, session_load_toast);
   }
 
   let session = single_tab_session_preserving_config(
     fastrender::ui::about_pages::ABOUT_NEWTAB.to_string(),
     loaded_session.as_ref(),
   );
-  (session, StartupSessionSource::DefaultNewTab)
+  (session, StartupSessionSource::DefaultNewTab, session_load_toast)
 }
 
 #[cfg(feature = "browser_ui")]
@@ -6981,11 +7017,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     const OVERRIDE_ENV: &str = "FASTR_TEST_BROWSER_HEADLESS_SMOKE_SESSION_JSON";
-    let (startup_session, source) = match std::env::var(OVERRIDE_ENV) {
+    let (startup_session, source, _startup_session_toast) = match std::env::var(OVERRIDE_ENV) {
       Ok(raw) if !raw.trim().is_empty() => {
         let session = fastrender::ui::session::parse_session_json(&raw)
           .map_err(|err| format!("{OVERRIDE_ENV}: invalid JSON: {err}"))?;
-        (session, StartupSessionSource::HeadlessOverride)
+        (session, StartupSessionSource::HeadlessOverride, None)
       }
       _ => determine_startup_session(cli_url, restore, &session_path),
     };
@@ -7011,7 +7047,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
   }
 
-  let (startup_session, source) = determine_startup_session(cli_url, restore, &session_path);
+  let (startup_session, source, startup_session_toast) =
+    determine_startup_session(cli_url, restore, &session_path);
   let startup_session = startup_session.sanitized();
   let show_crash_recovery_infobar =
     should_show_crash_recovery_infobar(source, startup_session.did_exit_cleanly);
@@ -7031,6 +7068,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     && std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_CRASH_SMOKE").is_none();
 
   let mut startup_profile_notifications: Vec<String> = Vec::new();
+  if record_startup_profile_notifications {
+    if let Some(msg) = startup_session_toast {
+      startup_profile_notifications.push(msg);
+    }
+  }
   let bookmarks = match fastrender::ui::load_bookmarks(&bookmarks_path) {
     Ok(outcome) => outcome.value,
     Err(err) => {
