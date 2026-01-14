@@ -1072,7 +1072,6 @@ fn guidance_for_prctl_get_seccomp(err: &io::Error) -> String {
       .to_string(),
   }
 }
-
 #[cfg(target_os = "linux")]
 fn guidance_for_prctl_get_no_new_privs(err: &io::Error) -> String {
   let errno = err.raw_os_error().unwrap_or_default();

@@ -15,12 +15,13 @@
     "layout": 55.06882119863015,
     "paint": 33.04129271917809
   },
-  "notes": "",
+  "notes": "Fix paint: phase-aware resampling for `ImageItem::src_rect` (background sprites) used the clipped output size for magnification scaling, making Wikipedia SVG sprite icons/wordmark nearly invisible at fractional positions. Use the full mapped destination size instead + add regression test.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 50551,
-    "diff_percent": 5.2657,
-    "perceptual": 0.3282,
+    "diff_pixels": 51211,
+    "diff_percent": 5.3345,
+    "perceptual": 0.1123,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 516,
       "y": 55,
@@ -39,7 +40,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "a51c11d0aadd6d2e7bea64b6dd92a15d18875c00"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "cascade",
   "failure_stage": null,

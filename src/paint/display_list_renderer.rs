@@ -19614,6 +19614,7 @@ fn image_data_to_scaled_pixmap_with_phase_inner(
     let build_axis = |out_len: u32,
                       out_origin: f32,
                       dest_origin: f32,
+                      dest_size: f32,
                       src_len: u32|
      -> Option<Vec<AxisSampleF32>> {
       if out_len == 0 || src_len == 0 {
@@ -19622,7 +19623,28 @@ fn image_data_to_scaled_pixmap_with_phase_inner(
       // Chrome's magnification path behaves closer to mapping the source image into the integer
       // output pixel grid (rather than using the exact floating destination size). Use `out_len`
       // for the scale so fractional destination sizes (e.g. 782.2222px) match Chrome more closely.
-      let scale = src_len as f32 / out_len as f32;
+      //
+      // However, `image_data_to_scaled_pixmap_with_phase_inner` is also used by the phase-aware
+      // background-image fast path for `src_rect` draws. In that scenario, `dest_device` refers to
+      // the mapping of the *full* image into device space (so we can preserve fractional
+      // `src_rect` offsets), while `out_len` only spans the clipped destination rect. Using
+      // `out_len` as the scale denominator would incorrectly squeeze the entire source image into
+      // the clipped output width/height, making sprite backgrounds extremely faint.
+      //
+      // When `dest_size` is not approximately `out_len`, fall back to using the actual mapped
+      // destination size for the sampling scale.
+      let scale_den = if dest_size.is_finite() && dest_size > 0.0 {
+        let out_len_f = out_len as f32;
+        const DEST_SIZE_MATCH_EPSILON: f32 = 1.0;
+        if (dest_size - out_len_f).abs() <= DEST_SIZE_MATCH_EPSILON {
+          out_len_f
+        } else {
+          dest_size
+        }
+      } else {
+        out_len as f32
+      };
+      let scale = src_len as f32 / scale_den;
       if !scale.is_finite() || !out_origin.is_finite() || !dest_origin.is_finite() {
         return None;
       }
@@ -19653,10 +19675,22 @@ fn image_data_to_scaled_pixmap_with_phase_inner(
       Some(samples)
     };
 
-    let Some(xs) = build_axis(out_width, out_origin_x_device, dest_device.x(), src_w) else {
+    let Some(xs) = build_axis(
+      out_width,
+      out_origin_x_device,
+      dest_device.x(),
+      dest_device.width(),
+      src_w,
+    ) else {
       return Ok(None);
     };
-    let Some(ys) = build_axis(out_height, out_origin_y_device, dest_device.y(), src_h) else {
+    let Some(ys) = build_axis(
+      out_height,
+      out_origin_y_device,
+      dest_device.y(),
+      dest_device.height(),
+      src_h,
+    ) else {
       return Ok(None);
     };
 
@@ -27422,6 +27456,42 @@ mod tests {
     assert_eq!(pixel(&pixmap1, 1, 0), (48, 0, 0, 255));
     assert_eq!(pixel(&pixmap1, 2, 0), (112, 0, 0, 255));
     assert_eq!(pixel(&pixmap1, 3, 0), (176, 0, 0, 255));
+  }
+
+  #[test]
+  fn scaled_image_resampling_from_src_rect_does_not_squeeze_full_image_into_clipped_output() {
+    // Regression for wikipedia.org fixture: sprite backgrounds are painted via `ImageItem::src_rect`
+    // by mapping the full image into device space and then clipping to the destination rect.
+    //
+    // The phase-aware sampling fast-path used the clipped output width/height as the sampling scale
+    // denominator for Chrome-aligned magnification, which effectively squeezed the entire sprite
+    // into the small clipped output and made icons nearly invisible (very light grey).
+
+    // 64x1 row: first 8 pixels are black, the rest are white.
+    let mut pixels = Vec::new();
+    for x in 0..64u8 {
+      if x < 8 {
+        pixels.extend_from_slice(&[0, 0, 0, 255]);
+      } else {
+        pixels.extend_from_slice(&[255, 255, 255, 255]);
+      }
+    }
+    let image = ImageData::new_pixels(64, 1, pixels);
+
+    // `src_rect` selects the black region, mapped 1:1 into an 8px-wide destination rect that is
+    // placed at a fractional X position (matching the fixture's subpixel-aligned sprite draws).
+    let src_rect = Rect::from_xywh(0.0, 0.0, 8.0, 1.0);
+    let dest_device = Rect::from_xywh(0.391, 0.0, 8.0, 1.0);
+
+    let pixmap = super::image_data_to_scaled_pixmap_from_src_rect_with_phase_inner(
+      &image, src_rect, dest_device, 8, 1, 0.0, 0.0,
+    )
+    .unwrap()
+    .unwrap();
+
+    assert_eq!((pixmap.width(), pixmap.height()), (8, 1));
+    assert_eq!(pixel(&pixmap, 0, 0), (0, 0, 0, 255));
+    assert_eq!(pixel(&pixmap, 7, 0), (0, 0, 0, 255));
   }
 
   #[test]
