@@ -2348,16 +2348,18 @@ impl BrowserDocumentDom2 {
       }
     }
 
-    let mut projected_dom2: Option<crate::interaction::state::DocumentSelectionState> = None;
-    let selection_preorder = if let Some(selection) = self.document_selection_dom2.as_ref() {
-      projected_dom2 = Some(selection.project_to_preorder(mapping));
-      projected_dom2.as_ref()
-    } else {
+    // We may need to project the dom2 selection into renderer-preorder space, so keep the owned
+    // projected selection alive for the duration of this call and pass a reference downstream.
+    let projected_dom2 = self
+      .document_selection_dom2
+      .as_ref()
+      .map(|selection| selection.project_to_preorder(mapping));
+    let selection_preorder = projected_dom2.as_ref().or_else(|| {
       self
         .interaction_state
         .as_ref()
         .and_then(|state| state.document_selection.as_ref())
-    };
+    });
 
     let (box_tree, fragment_tree) = (&prepared.box_tree, &mut prepared.fragment_tree);
     crate::interaction::document_selection::apply_document_selection_to_fragment_tree(
