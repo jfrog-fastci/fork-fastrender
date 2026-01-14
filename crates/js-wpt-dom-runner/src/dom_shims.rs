@@ -1337,24 +1337,238 @@ const DOM_SHIM: &str = r##"
     configurable: true,
   });
 
-  Object.defineProperty(TreeWalkerImpl.prototype, "nextNode", {
-    value: function () {
-      var st = treeWalkerStateFromThis(this);
-      var node = st.currentNode;
-      var skipChildren = false;
-      while (true) {
-        node = skipChildren ? treeOrderNextSkippingChildren(st.root, node) : treeOrderNext(st.root, node);
-        if (!node) return null;
+  function treeWalkerTraverseChildren(st, direction) {
+    var start = st.currentNode;
+    if (isInertTemplate(start)) return null;
+    var node = direction === "first" ? start.firstChild : start.lastChild;
+    while (node) {
+      var res = acceptNodeWithWhatToShow(st.whatToShow, st.filter, node);
+      if (res === NodeFilter.FILTER_ACCEPT) {
+        st.currentNode = node;
+        return node;
+      }
+      if (res === NodeFilter.FILTER_SKIP) {
+        if (!isInertTemplate(node)) {
+          var child = direction === "first" ? node.firstChild : node.lastChild;
+          if (child) {
+            node = child;
+            continue;
+          }
+        }
+      }
 
+      while (node) {
+        var sibling = direction === "first" ? node.nextSibling : node.previousSibling;
+        if (sibling) {
+          node = sibling;
+          break;
+        }
+        var parent = node.parentNode;
+        if (!parent || parent === start) return null;
+        node = parent;
+      }
+    }
+    return null;
+  }
+
+  function treeWalkerTraverseSiblings(st, direction) {
+    var root = st.root;
+    var node = st.currentNode;
+    if (node === root) return null;
+
+    var forward = direction === "next";
+    while (node && node !== root) {
+      var sibling = forward ? node.nextSibling : node.previousSibling;
+      while (sibling) {
+        node = sibling;
         var res = acceptNodeWithWhatToShow(st.whatToShow, st.filter, node);
         if (res === NodeFilter.FILTER_ACCEPT) {
           st.currentNode = node;
           return node;
         }
+        if (res === NodeFilter.FILTER_SKIP) {
+          if (!isInertTemplate(node)) {
+            var child = forward ? node.firstChild : node.lastChild;
+            if (child) {
+              sibling = child;
+              continue;
+            }
+          }
+        }
+        sibling = forward ? node.nextSibling : node.previousSibling;
+      }
 
-        // FILTER_SKIP: traverse into children.
-        // FILTER_REJECT: skip this node's subtree.
-        skipChildren = (res === NodeFilter.FILTER_REJECT);
+      node = node.parentNode;
+      if (!node || node === root) return null;
+      var parentRes = acceptNodeWithWhatToShow(st.whatToShow, st.filter, node);
+      if (parentRes === NodeFilter.FILTER_ACCEPT) return null;
+    }
+
+    return null;
+  }
+
+  Object.defineProperty(TreeWalkerImpl.prototype, "parentNode", {
+    value: function () {
+      var st = treeWalkerStateFromThis(this);
+      if (st.active) throw invalidStateError();
+      st.active = true;
+      try {
+        var node = st.currentNode;
+        if (node === st.root) return null;
+        node = node.parentNode;
+        while (node) {
+          var res = acceptNodeWithWhatToShow(st.whatToShow, st.filter, node);
+          if (res === NodeFilter.FILTER_ACCEPT) {
+            st.currentNode = node;
+            return node;
+          }
+          if (node === st.root) return null;
+          node = node.parentNode;
+        }
+        return null;
+      } finally {
+        st.active = false;
+      }
+    },
+    writable: true,
+    configurable: true,
+  });
+
+  Object.defineProperty(TreeWalkerImpl.prototype, "firstChild", {
+    value: function () {
+      var st = treeWalkerStateFromThis(this);
+      if (st.active) throw invalidStateError();
+      st.active = true;
+      try {
+        return treeWalkerTraverseChildren(st, "first");
+      } finally {
+        st.active = false;
+      }
+    },
+    writable: true,
+    configurable: true,
+  });
+
+  Object.defineProperty(TreeWalkerImpl.prototype, "lastChild", {
+    value: function () {
+      var st = treeWalkerStateFromThis(this);
+      if (st.active) throw invalidStateError();
+      st.active = true;
+      try {
+        return treeWalkerTraverseChildren(st, "last");
+      } finally {
+        st.active = false;
+      }
+    },
+    writable: true,
+    configurable: true,
+  });
+
+  Object.defineProperty(TreeWalkerImpl.prototype, "previousSibling", {
+    value: function () {
+      var st = treeWalkerStateFromThis(this);
+      if (st.active) throw invalidStateError();
+      st.active = true;
+      try {
+        return treeWalkerTraverseSiblings(st, "previous");
+      } finally {
+        st.active = false;
+      }
+    },
+    writable: true,
+    configurable: true,
+  });
+
+  Object.defineProperty(TreeWalkerImpl.prototype, "nextSibling", {
+    value: function () {
+      var st = treeWalkerStateFromThis(this);
+      if (st.active) throw invalidStateError();
+      st.active = true;
+      try {
+        return treeWalkerTraverseSiblings(st, "next");
+      } finally {
+        st.active = false;
+      }
+    },
+    writable: true,
+    configurable: true,
+  });
+
+  Object.defineProperty(TreeWalkerImpl.prototype, "nextNode", {
+    value: function () {
+      var st = treeWalkerStateFromThis(this);
+      if (st.active) throw invalidStateError();
+      st.active = true;
+      try {
+        var node = st.currentNode;
+        var skipChildren = false;
+        while (true) {
+          node = skipChildren ? treeOrderNextSkippingChildren(st.root, node) : treeOrderNext(st.root, node);
+          if (!node) return null;
+
+          var res = acceptNodeWithWhatToShow(st.whatToShow, st.filter, node);
+          if (res === NodeFilter.FILTER_ACCEPT) {
+            st.currentNode = node;
+            return node;
+          }
+
+          // FILTER_SKIP: traverse into children.
+          // FILTER_REJECT: skip this node's subtree.
+          skipChildren = (res === NodeFilter.FILTER_REJECT);
+        }
+      } finally {
+        st.active = false;
+      }
+    },
+    writable: true,
+    configurable: true,
+  });
+
+  Object.defineProperty(TreeWalkerImpl.prototype, "previousNode", {
+    value: function () {
+      var st = treeWalkerStateFromThis(this);
+      if (st.active) throw invalidStateError();
+      st.active = true;
+      try {
+        var node = st.currentNode;
+        if (node === st.root) return null;
+        while (node && node !== st.root) {
+          var sibling = node.previousSibling;
+          while (sibling) {
+            node = sibling;
+            var res = acceptNodeWithWhatToShow(st.whatToShow, st.filter, node);
+            while (res !== NodeFilter.FILTER_REJECT && node.lastChild && !isInertTemplate(node)) {
+              node = node.lastChild;
+              res = acceptNodeWithWhatToShow(st.whatToShow, st.filter, node);
+            }
+            if (res === NodeFilter.FILTER_ACCEPT) {
+              st.currentNode = node;
+              return node;
+            }
+            sibling = node.previousSibling;
+          }
+
+          node = node.parentNode;
+          if (!node || node === st.root) break;
+          var parentRes = acceptNodeWithWhatToShow(st.whatToShow, st.filter, node);
+          if (parentRes === NodeFilter.FILTER_ACCEPT) {
+            st.currentNode = node;
+            return node;
+          }
+        }
+
+        // Root is a traversal boundary but may be returned if it is accepted.
+        if (node === st.root) {
+          var rootRes = acceptNodeWithWhatToShow(st.whatToShow, st.filter, node);
+          if (rootRes === NodeFilter.FILTER_ACCEPT) {
+            st.currentNode = node;
+            return node;
+          }
+        }
+
+        return null;
+      } finally {
+        st.active = false;
       }
     },
     writable: true,
@@ -1376,6 +1590,7 @@ const DOM_SHIM: &str = r##"
       currentNode: root,
       whatToShow: w,
       filter: f,
+      active: false,
     });
     return tw;
   };

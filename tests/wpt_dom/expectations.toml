@@ -134,13 +134,8 @@ status = "skip"
 reason = "Deterministic virtual time (Date.now/performance.now) is vm-js-only; QuickJS timers are wall-clock based."
 
 [[expectations]]
-id = "dom/treewalker_navigation.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend uses minimal DOM shims; TreeWalker navigation algorithms are not implemented."
-
-[[expectations]]
 id = "dom/treewalker_methods.window.js"
+backend = ["vmjs", "vmjs-rendered"]
 status = "xfail"
 reason = "TreeWalker traversal/navigation methods are still incomplete (many methods are missing/non-callable)."
 
