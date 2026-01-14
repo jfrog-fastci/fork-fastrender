@@ -18971,34 +18971,7 @@ fn async_generator_handle_execution_result(
             "AwaitResolved suspension must carry a Promise object",
           ));
         }
-        cont.env.teardown(scope.heap_mut());
-        scope
-          .heap_mut()
-          .async_generator_set_continuation(gen_obj, Some(cont))?;
 
-        async_generator_schedule_await(
-          vm,
-          scope,
-          host,
-          hooks,
-          gen_obj,
-          awaited_promise,
-          AsyncGeneratorResumeKind::Await,
-          state,
-        )?;
-        return Ok(false);
-      }
-
-      AsyncBodyResult::Await {
-        kind: AsyncSuspendKind::AwaitResolved,
-        await_value: awaited_promise,
-        frames,
-      } => {
-        state.frames = frames;
-        state.awaited_promise_root = None;
-
-        // The awaited value is already the Promise produced by `PromiseResolve(%Promise%, value)`.
-        // Do not `PromiseResolve` it again: that would observe `promise.constructor` twice.
         cont.env.teardown(scope.heap_mut());
         scope
           .heap_mut()
@@ -51128,7 +51101,7 @@ pub(crate) fn start_module_tla_evaluation(
             "unexpected async generator yield suspension in module TLA",
           )),
           AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
-            "unexpected async generator yield* iterator result suspension in module TLA",
+            "unexpected async generator yield* suspension in module TLA",
           )),
         }
       };
@@ -51706,7 +51679,7 @@ pub(crate) fn run_module_async_start(
             }
             AsyncSuspendKind::YieldIteratorResult => {
               return Err(VmError::InvariantViolation(
-                "unexpected async generator yield* iterator result suspension in module start",
+                "unexpected async generator yield* suspension in module start",
               ))
             }
           };
@@ -51876,7 +51849,7 @@ pub(crate) fn run_module_async_resume(
           }
           AsyncSuspendKind::YieldIteratorResult => {
             return Err(VmError::InvariantViolation(
-              "unexpected async generator yield* iterator result suspension in module resume",
+              "unexpected async generator yield* suspension in module resume",
             ))
           }
         };
