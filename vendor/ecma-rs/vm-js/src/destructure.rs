@@ -1,4 +1,4 @@
-use crate::exec::{eval_expr, ResolvedBinding, RuntimeEnv};
+use crate::exec::{eval_expr, eval_expr_named, ResolvedBinding, RuntimeEnv};
 use crate::function::CallHandler;
 use crate::property::PropertyKey;
 use crate::{Scope, Value, Vm, VmError, VmHost, VmHostHooks};
@@ -251,9 +251,12 @@ fn bind_identifier(
   // `SetFunctionName`-like behaviour: when binding an anonymous function/class to an identifier,
   // infer its `name` from the identifier.
   //
-  // In ECMAScript this applies in a variety of binding/assignment contexts; `vm-js` approximates it
-  // here for identifier targets.
-  maybe_set_anonymous_function_name(scope, value, name)?;
+  // Note: this does **not** apply to ordinary function parameter binding (which binds arbitrary
+  // argument values). Name inference for default parameter initializers is handled at expression
+  // evaluation time.
+  if !matches!(kind, BindingKind::Param) {
+    maybe_set_anonymous_function_name(scope, value, name)?;
+  }
 
   match kind {
     BindingKind::Var => env.set_var(vm, host, hooks, scope, name, value),
@@ -493,7 +496,19 @@ fn bind_object_pattern(
       prop_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, src_value)?;
     if matches!(prop_value, Value::Undefined) {
       if let Some(default_expr) = &prop.stx.default_value {
-        prop_value = eval_expr(vm, host, hooks, env, strict, this, &mut prop_scope, default_expr)?;
+        prop_value = if matches!(kind, BindingKind::Param) {
+          // Default values in parameter destructuring should only infer function names when the
+          // default expression is a syntactic anonymous function/class definition.
+          if let Pat::Id(id) = &*prop.stx.target.stx {
+            let name_s = prop_scope.alloc_string(&id.stx.name)?;
+            let key = PropertyKey::from_string(name_s);
+            eval_expr_named(vm, host, hooks, env, strict, this, &mut prop_scope, default_expr, key)?
+          } else {
+            eval_expr(vm, host, hooks, env, strict, this, &mut prop_scope, default_expr)?
+          }
+        } else {
+          eval_expr(vm, host, hooks, env, strict, this, &mut prop_scope, default_expr)?
+        };
       }
     }
 
@@ -861,10 +876,35 @@ fn bind_array_pattern(
 
     if matches!(item, Value::Undefined) {
       if let Some(default_expr) = &elem.default_value {
-        item = match eval_expr(vm, host, hooks, env, strict, this, &mut elem_scope, default_expr) {
-          Ok(v) => v,
-          Err(err) => {
-            return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err)
+        item = if matches!(kind, BindingKind::Param) {
+          if let Pat::Id(id) = &*elem.target.stx {
+            let name_s = match elem_scope.alloc_string(&id.stx.name) {
+              Ok(s) => s,
+              Err(err) => {
+                return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err)
+              }
+            };
+            let key = PropertyKey::from_string(name_s);
+            match eval_expr_named(vm, host, hooks, env, strict, this, &mut elem_scope, default_expr, key) {
+              Ok(v) => v,
+              Err(err) => {
+                return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err)
+              }
+            }
+          } else {
+            match eval_expr(vm, host, hooks, env, strict, this, &mut elem_scope, default_expr) {
+              Ok(v) => v,
+              Err(err) => {
+                return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err)
+              }
+            }
+          }
+        } else {
+          match eval_expr(vm, host, hooks, env, strict, this, &mut elem_scope, default_expr) {
+            Ok(v) => v,
+            Err(err) => {
+              return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err)
+            }
           }
         };
       }

@@ -241,7 +241,15 @@ fn compute_function_name(
       if is_private_name_symbol {
         desc_len
       } else {
-        desc_len.saturating_add(2) // "[" + desc + "]"
+        // `SetFunctionName`: only symbols with a description participate in the `[...]` wrapping.
+        //
+        // test262 expects anonymous symbols (`Symbol()`, `description === undefined`) to contribute
+        // an empty string instead of `"[]"`.
+        if desc.is_some() {
+          desc_len.saturating_add(2) // "[" + desc + "]"
+        } else {
+          0
+        }
       }
     }
   };
@@ -280,11 +288,11 @@ fn compute_function_name(
           units.extend_from_slice(scope.heap().get_string(desc)?.as_code_units());
         }
       } else {
-        units.push('[' as u16);
         if let Some(desc) = desc {
+          units.push('[' as u16);
           units.extend_from_slice(scope.heap().get_string(desc)?.as_code_units());
+          units.push(']' as u16);
         }
-        units.push(']' as u16);
       }
     }
   }

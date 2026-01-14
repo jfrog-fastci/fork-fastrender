@@ -5363,11 +5363,19 @@ impl<'a> Evaluator<'a> {
         }
         break;
       }
-
+ 
       let mut value = args.get(idx).copied().unwrap_or(Value::Undefined);
       if matches!(value, Value::Undefined) {
         if let Some(default_expr) = &param.stx.default_value {
-          value = self.eval_expr(scope, default_expr)?;
+          // When a default value is evaluated due to a missing argument, use `NamedEvaluation` to
+          // infer the `name` of anonymous function/class definitions from the parameter identifier.
+          if let Pat::Id(id) = &*param.stx.pattern.stx.pat.stx {
+            let name_s = scope.alloc_string(&id.stx.name)?;
+            let key = PropertyKey::from_string(name_s);
+            value = self.eval_expr_named(scope, default_expr, key)?;
+          } else {
+            value = self.eval_expr(scope, default_expr)?;
+          }
         }
       }
 
@@ -13744,17 +13752,10 @@ impl<'a> Evaluator<'a> {
       // code. Those contexts capture the enclosing constructor's `this` as a shared heap object.
       if let Value::Object(state_obj) = self.this {
         if scope.heap().is_derived_constructor_state(state_obj) {
-          let (class_ctor, already_initialized) = {
+          let class_ctor = {
             let state = scope.heap().get_derived_constructor_state(state_obj)?;
-            (state.class_constructor, state.this_value.is_some())
+            state.class_constructor
           };
-          if already_initialized {
-            return Err(throw_reference_error(
-              self.vm,
-              scope,
-              "super() can only be called once in a derived constructor",
-            )?);
-          }
 
           // Resolve the superclass constructor from the class constructor's hidden `extends` slot.
           let super_value = crate::class_fields::class_constructor_super_value(scope, class_ctor)?;
@@ -13871,6 +13872,21 @@ impl<'a> Evaluator<'a> {
             ));
           };
 
+          // `super()` in derived constructors always evaluates arguments and performs `Construct`
+          // first. The ReferenceError for calling `super()` more than once comes from trying to bind
+          // `this` again (after the base constructor has already run).
+          let already_initialized = {
+            let state = call_scope.heap().get_derived_constructor_state(state_obj)?;
+            state.this_value.is_some()
+          };
+          if already_initialized {
+            return Err(throw_reference_error(
+              self.vm,
+              &mut call_scope,
+              "super() can only be called once in a derived constructor",
+            )?);
+          }
+
           // Initialize the enclosing derived constructor's `this` binding exactly once.
           call_scope
             .heap_mut()
@@ -13901,13 +13917,6 @@ impl<'a> Evaluator<'a> {
           self.vm,
           scope,
           "super() is not allowed in base class constructors",
-        )?);
-      }
-      if self.this_initialized {
-        return Err(throw_reference_error(
-          self.vm,
-          scope,
-          "super() can only be called once in a derived constructor",
         )?);
       }
 
@@ -14019,6 +14028,17 @@ impl<'a> Evaluator<'a> {
           "super constructor returned non-object from Construct",
         ));
       };
+
+      // `super()` in derived constructors always evaluates arguments and performs `Construct` first.
+      // The ReferenceError for calling `super()` more than once comes from trying to bind `this`
+      // again (after the base constructor has already run).
+      if self.this_initialized {
+        return Err(throw_reference_error(
+          self.vm,
+          &mut call_scope,
+          "super() can only be called once in a derived constructor",
+        )?);
+      }
 
       // Bind `this` and keep it rooted for the remainder of constructor evaluation.
       let this_root_idx = self.this_root_idx.ok_or(VmError::InvariantViolation(
@@ -49495,6 +49515,34 @@ pub(crate) fn eval_expr(
     this_root_idx: None,
   };
   evaluator.eval_expr(scope, expr)
+}
+
+pub(crate) fn eval_expr_named(
+  vm: &mut Vm,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  env: &mut RuntimeEnv,
+  strict: bool,
+  this: Value,
+  scope: &mut Scope<'_>,
+  expr: &Node<Expr>,
+  name: PropertyKey,
+) -> Result<Value, VmError> {
+  let mut evaluator = Evaluator {
+    vm,
+    host,
+    hooks,
+    env,
+    strict,
+    this,
+    new_target: Value::Undefined,
+    home_object: None,
+    class_constructor: None,
+    derived_constructor: false,
+    this_initialized: true,
+    this_root_idx: None,
+  };
+  evaluator.eval_expr_named(scope, expr, name)
 }
 
 fn is_nullish(value: Value) -> bool {

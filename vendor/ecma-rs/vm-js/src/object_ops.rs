@@ -3189,19 +3189,28 @@ impl<'a> Scope<'a> {
     // must not throw even though %Function.prototype% defines poison-pill accessors.
     if scope.heap().property_key_is_caller(&key) || scope.heap().property_key_is_arguments(&key) {
       if let Ok(func) = scope.heap().get_function(obj) {
-        let intr = vm
-          .intrinsics()
-          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-        let proto = scope.heap().object_prototype(obj)?;
-        let is_ordinary_function = proto == Some(intr.function_prototype());
-        let is_restricted = func.is_strict
-          || func.bound_target.is_some()
-          || func.this_mode == ThisMode::Lexical
-          || !is_ordinary_function;
-        if is_restricted {
-          return Err(VmError::TypeError("Restricted function property"));
+        // If the function defines its own `caller` / `arguments` property (e.g. a class constructor
+        // with a static accessor), it should shadow the poison-pill accessors on
+        // `%Function.prototype%`. Do not preempt the OrdinarySet algorithm in that case.
+        if scope
+          .heap()
+          .object_get_own_property_with_tick(obj, &key, || vm.tick())?
+          .is_none()
+        {
+          let intr = vm
+            .intrinsics()
+            .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+          let proto = scope.heap().object_prototype(obj)?;
+          let is_ordinary_function = proto == Some(intr.function_prototype());
+          let is_restricted = func.is_strict
+            || func.bound_target.is_some()
+            || func.this_mode == ThisMode::Lexical
+            || !is_ordinary_function;
+          if is_restricted {
+            return Err(VmError::TypeError("Restricted function property"));
+          }
+          return Ok(true);
         }
-        return Ok(true);
       }
     }
 
@@ -3630,19 +3639,28 @@ impl<'a> Scope<'a> {
     // must not throw even though %Function.prototype% defines poison-pill accessors.
     if self.heap().property_key_is_caller(&key) || self.heap().property_key_is_arguments(&key) {
       if let Ok(func) = self.heap().get_function(obj) {
-        let intr = vm
-          .intrinsics()
-          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-        let proto = self.heap().object_prototype(obj)?;
-        let is_ordinary_function = proto == Some(intr.function_prototype());
-        let is_restricted = func.is_strict
-          || func.bound_target.is_some()
-          || func.this_mode == ThisMode::Lexical
-          || !is_ordinary_function;
-        if is_restricted {
-          return Err(VmError::TypeError("Restricted function property"));
+        // If the function defines its own `caller` / `arguments` property (e.g. a class constructor
+        // with a static accessor), it should shadow the poison-pill accessors on
+        // `%Function.prototype%`. Do not preempt the OrdinarySet algorithm in that case.
+        if self
+          .heap()
+          .object_get_own_property_with_tick(obj, &key, || vm.tick())?
+          .is_none()
+        {
+          let intr = vm
+            .intrinsics()
+            .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+          let proto = self.heap().object_prototype(obj)?;
+          let is_ordinary_function = proto == Some(intr.function_prototype());
+          let is_restricted = func.is_strict
+            || func.bound_target.is_some()
+            || func.this_mode == ThisMode::Lexical
+            || !is_ordinary_function;
+          if is_restricted {
+            return Err(VmError::TypeError("Restricted function property"));
+          }
+          return Ok(true);
         }
-        return Ok(true);
       }
     }
 

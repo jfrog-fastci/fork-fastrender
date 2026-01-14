@@ -2592,7 +2592,21 @@ impl<'vm> HirEvaluator<'vm> {
         // Default parameters.
         if matches!(arg_value, Value::Undefined) {
           if let Some(default_expr) = param.default {
-            self.eval_expr(scope, body, default_expr)?
+            // When a default parameter initializer is evaluated due to a missing argument, use
+            // `NamedEvaluation` for simple identifier parameters so anonymous function/class
+            // definitions infer their `name` from the parameter identifier.
+            if let hir_js::PatKind::Ident(name_id) = &self.get_pat(body, param.pat)?.kind {
+              let Some(name) = self.hir().names.resolve(*name_id) else {
+                return Err(VmError::InvariantViolation(
+                  "hir param name id missing from interner",
+                ));
+              };
+              let name_s = scope.alloc_string(name)?;
+              let key = PropertyKey::from_string(name_s);
+              self.eval_expr_named(scope, body, default_expr, key)?
+            } else {
+              self.eval_expr(scope, body, default_expr)?
+            }
           } else {
             Value::Undefined
           }
@@ -5262,7 +5276,12 @@ impl<'vm> HirEvaluator<'vm> {
     let name = self.resolve_name(name_id)?;
     // `SetFunctionName`-like behaviour: when binding an anonymous function/class to an identifier,
     // infer its `name` from the identifier.
-    maybe_set_anonymous_function_name(scope, value, name.as_str())?;
+    //
+    // Note: ordinary function parameter binding must not rename arbitrary argument values. Name
+    // inference for default parameter initializers is handled at expression evaluation time.
+    if !matches!(kind, PatBindingKind::Param) {
+      maybe_set_anonymous_function_name(scope, value, name.as_str())?;
+    }
     match kind {
       PatBindingKind::Var => self.env.set_var(
         self.vm,
@@ -5377,7 +5396,24 @@ impl<'vm> HirEvaluator<'vm> {
         default_value,
       } => {
         let v = if matches!(value, Value::Undefined) {
-          self.eval_expr(&mut scope, body, *default_value)?
+          if matches!(kind, PatBindingKind::Param) {
+            // Destructuring defaults in parameter patterns should only infer function names when the
+            // default expression is a syntactic anonymous function/class definition.
+            if let hir_js::PatKind::Ident(name_id) = &self.get_pat(body, *target)?.kind {
+              let Some(name) = self.hir().names.resolve(*name_id) else {
+                return Err(VmError::InvariantViolation(
+                  "hir pat name id missing from interner",
+                ));
+              };
+              let name_s = scope.alloc_string(name)?;
+              let key = PropertyKey::from_string(name_s);
+              self.eval_expr_named(&mut scope, body, *default_value, key)?
+            } else {
+              self.eval_expr(&mut scope, body, *default_value)?
+            }
+          } else {
+            self.eval_expr(&mut scope, body, *default_value)?
+          }
         } else {
           value
         };
@@ -5433,7 +5469,24 @@ impl<'vm> HirEvaluator<'vm> {
         prop_scope.get_with_host_and_hooks(self.vm, &mut *self.host, &mut *self.hooks, obj, key, src_value)?;
       if matches!(prop_value, Value::Undefined) {
         if let Some(default_expr) = prop.default_value {
-          prop_value = self.eval_expr(&mut prop_scope, body, default_expr)?;
+          prop_value = if matches!(kind, PatBindingKind::Param) {
+            // Default values in parameter destructuring should only infer function names when the
+            // default expression is a syntactic anonymous function/class definition.
+            if let hir_js::PatKind::Ident(name_id) = &self.get_pat(body, prop.value)?.kind {
+              let Some(name) = self.hir().names.resolve(*name_id) else {
+                return Err(VmError::InvariantViolation(
+                  "hir pat name id missing from interner",
+                ));
+              };
+              let name_s = prop_scope.alloc_string(name)?;
+              let key = PropertyKey::from_string(name_s);
+              self.eval_expr_named(&mut prop_scope, body, default_expr, key)?
+            } else {
+              self.eval_expr(&mut prop_scope, body, default_expr)?
+            }
+          } else {
+            self.eval_expr(&mut prop_scope, body, default_expr)?
+          };
         }
       }
 
@@ -5522,9 +5575,33 @@ impl<'vm> HirEvaluator<'vm> {
 
       if matches!(item, Value::Undefined) {
         if let Some(default_expr) = elem.default_value {
-          item = match self.eval_expr(&mut elem_scope, body, default_expr) {
-            Ok(v) => v,
-            Err(err) => return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err),
+          item = if matches!(kind, PatBindingKind::Param) {
+            if let hir_js::PatKind::Ident(name_id) = &self.get_pat(body, elem.pat)?.kind {
+              let Some(name) = self.hir().names.resolve(*name_id) else {
+                return Err(VmError::InvariantViolation(
+                  "hir pat name id missing from interner",
+                ));
+              };
+              let name_s = match elem_scope.alloc_string(name) {
+                Ok(s) => s,
+                Err(err) => return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err),
+              };
+              let key = PropertyKey::from_string(name_s);
+              match self.eval_expr_named(&mut elem_scope, body, default_expr, key) {
+                Ok(v) => v,
+                Err(err) => return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err),
+              }
+            } else {
+              match self.eval_expr(&mut elem_scope, body, default_expr) {
+                Ok(v) => v,
+                Err(err) => return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err),
+              }
+            }
+          } else {
+            match self.eval_expr(&mut elem_scope, body, default_expr) {
+              Ok(v) => v,
+              Err(err) => return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err),
+            }
           };
         }
       }
