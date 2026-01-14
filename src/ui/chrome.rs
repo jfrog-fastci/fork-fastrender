@@ -1,6 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use crate::debug::runtime::runtime_toggles;
+use crate::render_control::StageHeartbeat;
 use crate::ui::a11y;
 use crate::ui::address_bar::AddressBarSecurityState;
 use crate::ui::appearance::{DEFAULT_UI_SCALE, MAX_UI_SCALE, MIN_UI_SCALE};
@@ -35,6 +36,60 @@ const ADDRESS_BAR_DISPLAY_MAX_CHARS: usize = 80;
 const COMPACT_MODE_THRESHOLD_PX: f32 = 640.0;
 const BOOKMARKS_BAR_MAX_ITEMS: usize = 12;
 const ENV_BROWSER_SHOW_MENU_BAR: &str = "FASTR_BROWSER_SHOW_MENU_BAR";
+
+#[derive(Debug, Clone, Default)]
+struct TryHttpLabelWidthCache {
+  font_id: Option<egui::FontId>,
+  text_width: f32,
+}
+
+impl TryHttpLabelWidthCache {
+  fn text_width(&mut self, ui: &egui::Ui, font_id: &egui::FontId) -> f32 {
+    if self.font_id.as_ref() == Some(font_id) {
+      return self.text_width;
+    }
+    self.font_id = Some(font_id.clone());
+    self.text_width = ui.fonts(|f| {
+      f.layout_no_wrap(
+        "Try HTTP".to_string(),
+        font_id.clone(),
+        ui.visuals().text_color(),
+      )
+      .size()
+      .x
+    });
+    self.text_width
+  }
+}
+
+#[derive(Debug, Clone, Default)]
+struct LoadingTextWidthCache {
+  font_id: Option<egui::FontId>,
+  stage: Option<StageHeartbeat>,
+  width: f32,
+}
+
+impl LoadingTextWidthCache {
+  fn width(
+    &mut self,
+    ui: &egui::Ui,
+    stage: Option<StageHeartbeat>,
+    font_id: &egui::FontId,
+    text: &str,
+  ) -> f32 {
+    if self.font_id.as_ref() == Some(font_id) && self.stage == stage {
+      return self.width;
+    }
+    self.font_id = Some(font_id.clone());
+    self.stage = stage;
+    self.width = ui.fonts(|f| {
+      f.layout_no_wrap(text.to_owned(), font_id.clone(), ui.visuals().text_color())
+        .size()
+        .x
+    });
+    self.width
+  }
+}
 
 mod tab_strip;
 
@@ -1588,11 +1643,10 @@ pub fn chrome_ui_with_bookmarks(
         let badge_side = icon_side + badge_margin.left + badge_margin.right;
         let try_http_button_width = if show_try_http {
           let font_id = egui::TextStyle::Small.resolve(ui.style());
-          let label = "Try HTTP";
-          let text_width = ui.fonts(|f| {
-            f.layout_no_wrap(label.to_string(), font_id, ui.visuals().text_color())
-              .size()
-              .x
+          let text_width = ctx.data_mut(|d| {
+            let cache_id = address_bar_id.with("try_http_label_width_cache");
+            let cache = d.get_temp_mut_or_default::<TryHttpLabelWidthCache>(cache_id);
+            cache.text_width(ui, &font_id)
           });
           // Account for egui's button padding.
           text_width + ui.spacing().button_padding.x * 2.0
@@ -1611,10 +1665,11 @@ pub fn chrome_ui_with_bookmarks(
         right_len += 1;
         if loading && !is_compact {
           let font_id = egui::TextStyle::Small.resolve(ui.style());
-          let label_width = ui.fonts(|f| {
-            f.layout_no_wrap(loading_text.to_owned(), font_id, ui.visuals().text_color())
-              .size()
-              .x
+          let stage_key = stage.filter(|s| *s != StageHeartbeat::Done);
+          let label_width = ctx.data_mut(|d| {
+            let cache_id = address_bar_id.with("loading_text_width_cache");
+            let cache = d.get_temp_mut_or_default::<LoadingTextWidthCache>(cache_id);
+            cache.width(ui, stage_key, &font_id, loading_text)
           });
           right_sum += label_width;
           right_len += 1;
