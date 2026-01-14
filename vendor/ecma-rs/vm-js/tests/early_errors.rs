@@ -956,6 +956,27 @@ fn for_in_head_duplicate_destructuring_bound_names_is_syntax_error() {
 }
 
 #[test]
+fn for_of_rhs_sequence_expression_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("for (x of [], []) {}").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn for_of_lhs_cannot_start_with_let_dot_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("for (let.a of [1]) {}").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn for_of_lhs_cannot_start_with_async_of_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("for (async of [1]) {}").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn for_of_head_duplicate_destructuring_bound_names_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script("for (let [a, a] of [[1,2]]) {}").unwrap_err();
