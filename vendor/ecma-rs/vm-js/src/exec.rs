@@ -19201,7 +19201,22 @@ fn async_eval_stmt_labelled(
       Err(err) => Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?)),
     },
     Stmt::ExportDefaultExpr(stmt) => {
-      match async_eval_expr(evaluator, scope, &stmt.stx.expression) {
+      // `ExportDefaultDeclaration` performs `SetFunctionName` for anonymous function/class
+      // definitions. For anonymous class expressions, this must happen *during* class construction
+      // (before defining class elements) so a `static name() {}` element or static block can observe
+      // or override the inferred name.
+      //
+      // The synchronous evaluator handles this via `eval_expr_named`; mirror that behaviour for the
+      // async evaluator when the export expression itself can suspend on `await` (e.g. `extends
+      // await ...`).
+      let expr_eval = match stmt.stx.expression.stx.as_ref() {
+        Expr::Class(class_expr) if class_expr.stx.name.is_none() => {
+          async_eval_class_expr_inferred_name(evaluator, scope, class_expr, "default")
+        }
+        _ => async_eval_expr(evaluator, scope, &stmt.stx.expression),
+      };
+
+      match expr_eval {
         Ok(AsyncEval::Complete(v)) => {
           let binding_name = "*default*";
           if !scope
@@ -20512,6 +20527,38 @@ fn async_eval_class_decl(
       Err(err)
     }
   }
+}
+
+fn async_eval_class_expr_inferred_name(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &Node<ClassExpr>,
+  inferred_func_name: &'static str,
+) -> Result<AsyncEval<Value>, VmError> {
+  // Only apply inferred names to *anonymous* class expressions. If the class has an explicit name,
+  // that name must be used both as the constructor name and as the inner binding identifier.
+  if expr.stx.name.is_some() {
+    return async_eval_class_expr(evaluator, scope, expr);
+  }
+
+  if !expr.stx.decorators.is_empty() {
+    return Err(VmError::Unimplemented("class decorators"));
+  }
+  if expr.stx.type_parameters.is_some() {
+    return Err(VmError::Unimplemented("class type parameters"));
+  }
+  if !expr.stx.implements.is_empty() {
+    return Err(VmError::Unimplemented("class implements"));
+  }
+
+  async_eval_class(
+    evaluator,
+    scope,
+    ClassBinding::None,
+    inferred_func_name,
+    &expr.stx.members,
+    expr.stx.extends.as_ref(),
+  )
 }
 
 fn async_eval_class_expr(

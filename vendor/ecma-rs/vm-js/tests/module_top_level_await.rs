@@ -687,6 +687,103 @@ fn export_default_await_initializes_default_binding() -> Result<(), VmError> {
 }
 
 #[test]
+fn export_default_await_anonymous_class_expr_infers_default_name() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = TestHostHooks::new("https://example.invalid/b.js");
+  let mut host = ();
+
+  let mut graph = ModuleGraph::new();
+  graph.add_module_with_specifier(
+    "a.js",
+    SourceTextModuleRecord::parse(
+      &mut heap,
+      r#"
+        export default (class extends (await Promise.resolve(class {})) {
+          static name() {}
+        });
+      "#,
+    )?,
+  )?;
+  let b = graph.add_module_with_specifier(
+    "b.js",
+    SourceTextModuleRecord::parse(
+      &mut heap,
+      r#"
+        import C from "a.js";
+        export const typeofName = typeof C.name;
+        export const nameName = typeof C.name === "function" ? C.name.name : null;
+        export const s = C.toString();
+      "#,
+    )?,
+  )?;
+  graph.link_all_by_specifier();
+
+  let eval_promise = graph.evaluate(
+    &mut vm,
+    &mut heap,
+    realm.global_object(),
+    realm.id(),
+    b,
+    &mut host,
+    &mut hooks,
+  )?;
+  let eval_promise_root = heap.add_root(eval_promise)?;
+
+  let eval_promise_obj = match eval_promise {
+    Value::Object(obj) => obj,
+    _ => return Err(VmError::InvariantViolation("module evaluation must return a promise object")),
+  };
+  assert_eq!(
+    heap.promise_state(eval_promise_obj)?,
+    PromiseState::Pending,
+    "top-level await in class heritage should produce a pending evaluation promise"
+  );
+
+  hooks.perform_microtask_checkpoint(&mut vm, &mut heap)?;
+
+  let mut scope = heap.scope();
+  let eval_promise_value = scope
+    .heap()
+    .get_root(eval_promise_root)
+    .ok_or_else(|| VmError::invalid_handle())?;
+  let Value::Object(eval_promise_obj) = eval_promise_value else {
+    return Err(VmError::InvariantViolation("evaluation promise root must reference an object"));
+  };
+  assert_eq!(scope.heap().promise_state(eval_promise_obj)?, PromiseState::Fulfilled);
+
+  let ns = graph.get_module_namespace(b, &mut vm, &mut scope)?;
+
+  let Value::String(typeof_name) =
+    ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "typeofName")?
+  else {
+    return Err(VmError::InvariantViolation("typeofName should be a string"));
+  };
+  assert_eq!(scope.heap().get_string(typeof_name)?.to_utf8_lossy(), "function");
+
+  let Value::String(name_name) = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "nameName")?
+  else {
+    return Err(VmError::InvariantViolation("nameName should be a string"));
+  };
+  assert_eq!(scope.heap().get_string(name_name)?.to_utf8_lossy(), "name");
+
+  let Value::String(s) = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "s")? else {
+    return Err(VmError::InvariantViolation("s should be a string"));
+  };
+  assert_eq!(
+    scope.heap().get_string(s)?.to_utf8_lossy(),
+    "function default() { [native code] }"
+  );
+
+  drop(scope);
+  heap.remove_root(eval_promise_root);
+  graph.abort_tla_evaluation(&mut vm, &mut heap, b);
+  hooks.teardown_jobs(&mut vm, &mut heap);
+  graph.teardown(&mut vm, &mut heap);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
 fn class_static_block_runs_during_async_module_evaluation() -> Result<(), VmError> {
   let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
   let mut hooks = TestHostHooks::new("https://example.invalid/m.js");
