@@ -196,6 +196,27 @@ fn append_child_sets_parent_and_updates_children() {
 }
 
 #[test]
+fn split_text_uses_utf16_code_unit_offsets() {
+  // 😀 is a single Unicode scalar value but encoded as a surrogate pair in UTF-16.
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let parent = doc.create_element("div", "");
+  doc.append_child(root, parent).unwrap();
+
+  let text = doc.create_text("x😀y");
+  doc.append_child(parent, text).unwrap();
+
+  // "x😀y" has 4 UTF-16 code units: "x" (1) + "😀" (2) + "y" (1).
+  // Splitting at offset 3 should yield "x😀" and "y".
+  let new_text = doc.split_text(text, 3).unwrap();
+  assert_eq!(doc.text_data(text).unwrap(), "x😀");
+  assert_eq!(doc.text_data(new_text).unwrap(), "y");
+  assert_eq!(doc.children(parent).unwrap(), &[text, new_text]);
+  assert_eq!(doc.parent(new_text).unwrap(), Some(parent));
+}
+
+#[test]
 fn mutation_log_append_child_records_inserted_node_id() {
   let mut doc = Document::new(QuirksMode::NoQuirks);
   let root = doc.root();

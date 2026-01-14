@@ -35598,7 +35598,8 @@ fn text_split_text_native(
 
   // WebIDL `unsigned long` argument.
   let offset_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let offset = webidl_to_uint32(vm, scope, host, hooks, offset_value)? as usize;
+  // DOM `Text.splitText(offset)` offsets are measured in UTF-16 code units.
+  let offset_utf16 = webidl_to_uint32(vm, scope, host, hooks, offset_value)? as usize;
 
   let mut dom_ptr = if is_host_document_id(vm, node_key.document_id) {
     dom_ptr_for_event_registry(host).ok_or(VmError::TypeError("Illegal invocation"))?
@@ -35610,7 +35611,7 @@ fn text_split_text_native(
   {
     mutate_dom_for_vm_host(host, |dom| {
       let parent_id = dom.parent_node(node_key.node_id);
-      match dom.split_text(node_key.node_id, offset) {
+      match dom.split_text(node_key.node_id, offset_utf16) {
         Ok(new_text_id) => {
           let maybe_script_parent =
             parent_id.filter(|&parent| is_html_script_element(dom, parent));
@@ -35630,7 +35631,7 @@ fn text_split_text_native(
     // SAFETY: `dom_ptr` is valid for the duration of this native call.
     let dom = unsafe { dom_ptr.as_mut() };
     let parent_id = dom.parent_node(node_key.node_id);
-    let new_text_id = match dom.split_text(node_key.node_id, offset) {
+    let new_text_id = match dom.split_text(node_key.node_id, offset_utf16) {
       Ok(id) => id,
       Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
     };

@@ -4565,7 +4565,8 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let document_id = handle.document_id;
 
         let offset_value = args.get(0).copied().unwrap_or(Value::Undefined);
-        let offset = to_uint32_f64(scope.heap_mut().to_number(offset_value)?) as usize;
+        // DOM `Text.splitText(offset)` measures offsets in UTF-16 code units (WebIDL unsigned long).
+        let offset_utf16 = to_uint32_f64(scope.heap_mut().to_number(offset_value)?) as usize;
 
         let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
           Ok(host.mutate_dom(|dom| {
@@ -4573,7 +4574,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               Ok(v) => v,
               Err(err) => return (Err(err), false),
             };
-            match dom.split_text(node_id, offset) {
+            match dom.split_text(node_id, offset_utf16) {
               Ok(new_id) => (Ok((new_id, parent_id)), parent_id.is_some()),
               Err(err) => (Err(err), false),
             }
