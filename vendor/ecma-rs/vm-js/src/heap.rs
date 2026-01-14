@@ -12772,15 +12772,6 @@ struct JsAsyncGenerator {
   state: AsyncGeneratorState,
   continuation: Option<Box<AsyncGeneratorContinuation>>,
   request_queue: VecDeque<AsyncGeneratorRequest>,
-  /// VM-owned continuation id used for async generator execution state stored outside the GC heap.
-  ///
-  /// Async generator evaluation suspends across Promise jobs, but the async evaluator frame stack
-  /// stores persistent roots (`RootId`) which must be explicitly torn down. vm-js stores that
-  /// execution state in the [`Vm`] (similar to async functions) and links it from the generator via
-  /// this numeric id.
-  ///
-  /// Note: this is *not* part of the spec-visible async generator internal slots.
-  vm_continuation_id: Option<u32>,
 }
 
 impl JsAsyncGenerator {
@@ -12795,7 +12786,6 @@ impl JsAsyncGenerator {
       state,
       continuation,
       request_queue,
-      vm_continuation_id: None,
     }
   }
 
