@@ -3,6 +3,8 @@ use vm_js::{
   RootId, Scope, SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, VmOptions,
 };
 
+mod _async_generator_support;
+
 fn new_vm_heap_realm() -> Result<(Vm, Heap, Realm), VmError> {
   let mut vm = Vm::new(VmOptions::default());
   // Module evaluation/linking tests exercise fairly allocation-heavy paths (parsing, instantiation,
@@ -76,60 +78,17 @@ impl VmJobContext for JobCtx<'_> {
   }
 }
 
-fn is_unimplemented_async_generator_error(rt: &mut JsRuntime, err: &VmError) -> Result<bool, VmError> {
-  match err {
-    VmError::Unimplemented(msg) if msg.contains("async generator functions") => return Ok(true),
-    _ => {}
-  }
-
-  let Some(thrown) = err.thrown_value() else {
-    return Ok(false);
-  };
-  let Value::Object(err_obj) = thrown else {
-    return Ok(false);
-  };
-
-  let intr = rt.realm().intrinsics();
-  let proto = rt.heap().object_prototype(err_obj)?;
-  if proto != Some(intr.error_prototype()) && proto != Some(intr.syntax_error_prototype()) {
-    return Ok(false);
-  }
-
-  let mut scope = rt.heap_mut().scope();
-  scope.push_root(Value::Object(err_obj))?;
-
-  let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
-  let Some(Value::String(message_s)) = scope.heap().object_get_own_data_property_value(err_obj, &message_key)? else {
-    return Ok(false);
-  };
-
-  let message = scope.heap().get_string(message_s)?.to_utf8_lossy();
-  Ok(message.contains("async generator functions"))
-}
-
-fn async_generators_supported() -> Result<bool, VmError> {
-  let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
-  let mut rt = JsRuntime::new(vm, heap)?;
-  match rt.exec_script(
-    r#"
-      async function* __ag_support() { yield 1; }
-      __ag_support().next();
-    "#,
-  ) {
-    Ok(_) => {
-      rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
-      Ok(true)
-    }
-    Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => Ok(false),
-    Err(err) => Err(err),
-  }
-}
-
 #[test]
 fn compiled_modules_fall_back_to_ast_for_async_generators() -> Result<(), VmError> {
-  if !async_generators_supported()? {
-    return Ok(());
+  // Skip cleanly until async generator execution is supported by the interpreter.
+  // (Mirrors other async-generator tests.)
+  {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    if !_async_generator_support::supports_async_generators(&mut rt)? {
+      return Ok(());
+    }
   }
 
   let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
