@@ -126,6 +126,38 @@ fn generator_optional_super_property_call_binds_this_across_yield_star_in_arg() 
 }
 
 #[test]
+fn generator_optional_super_property_call_evaluates_yield_star_in_arg_before_throwing_type_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* inner() { yield 1; return 0; }
+
+        class Base { get m() { return 0; } }
+        class C extends Base {
+          *g() {
+            try {
+              super.m?.(yield* inner());
+              return "no";
+            } catch (e) {
+              return e.name;
+            }
+          }
+        }
+
+        const it = (new C()).g();
+        const r1 = it.next();
+        const r2 = it.next();
+
+        r1.value === 1 && r1.done === false &&
+        r2.value === "TypeError" && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_optional_super_property_computed_call_short_circuits_and_skips_yield_star_in_arg() {
   let mut rt = new_runtime();
   let value = rt
@@ -145,6 +177,41 @@ fn generator_optional_super_property_computed_call_short_circuits_and_skips_yiel
 
         r1.value === "key" && r1.done === false &&
         r2.value === undefined && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_optional_super_property_computed_call_evaluates_yield_star_in_arg_before_throwing_type_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* key() { yield "key"; return "m"; }
+        function* arg() { yield 1; return 0; }
+
+        class Base { get m() { return 0; } }
+        class C extends Base {
+          *g() {
+            try {
+              super[yield* key()]?.(yield* arg());
+              return "no";
+            } catch (e) {
+              return e.name;
+            }
+          }
+        }
+
+        const it = (new C()).g();
+        const r1 = it.next();
+        const r2 = it.next();
+        const r3 = it.next();
+
+        r1.value === "key" && r1.done === false &&
+        r2.value === 1 && r2.done === false &&
+        r3.value === "TypeError" && r3.done === true
       "#,
     )
     .unwrap();
@@ -267,6 +334,45 @@ fn generator_optional_super_property_yield_star_compiled() -> Result<(), VmError
       ok = ok && r6_1.value === "key" && r6_1.done === false &&
         r6_2.value === 0 && r6_2.done === false &&
         r6_3.value === true && r6_3.done === true;
+
+      function* arg7() { yield 1; return 0; }
+      class Base7 { get m() { return 0; } }
+      class C7 extends Base7 {
+        *g() {
+          try {
+            super.m?.(yield* arg7());
+            return "no";
+          } catch (e) {
+            return e.name;
+          }
+        }
+      }
+      const it7 = (new C7()).g();
+      const r7_1 = it7.next();
+      const r7_2 = it7.next();
+      ok = ok && r7_1.value === 1 && r7_1.done === false &&
+        r7_2.value === "TypeError" && r7_2.done === true;
+
+      function* key8() { yield "key"; return "m"; }
+      function* arg8() { yield 1; return 0; }
+      class Base8 { get m() { return 0; } }
+      class C8 extends Base8 {
+        *g() {
+          try {
+            super[yield* key8()]?.(yield* arg8());
+            return "no";
+          } catch (e) {
+            return e.name;
+          }
+        }
+      }
+      const it8 = (new C8()).g();
+      const r8_1 = it8.next();
+      const r8_2 = it8.next();
+      const r8_3 = it8.next();
+      ok = ok && r8_1.value === "key" && r8_1.done === false &&
+        r8_2.value === 1 && r8_2.done === false &&
+        r8_3.value === "TypeError" && r8_3.done === true;
 
       ok
     "#,
