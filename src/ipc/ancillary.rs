@@ -129,9 +129,9 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
   msg.msg_controllen = CONTROL_LEN;
 
   #[cfg(any(target_os = "linux", target_os = "android"))]
-  let flags = libc::MSG_CMSG_CLOEXEC;
+  let mut recv_flags = libc::MSG_CMSG_CLOEXEC;
   #[cfg(not(any(target_os = "linux", target_os = "android")))]
-  let flags = 0;
+  let mut recv_flags = 0;
 
   // SAFETY: `recvmsg` writes into the provided iov/control buffers which are valid for the call.
   let mut need_manual_cloexec = false;
@@ -139,7 +139,7 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
     // `recvmsg` mutates `msg_controllen` on success. Ensure retries start with the full buffer.
     msg.msg_controllen = CONTROL_LEN;
     msg.msg_flags = 0;
-    let rc = unsafe { libc::recvmsg(sock.as_raw_fd(), &mut msg, flags) };
+    let rc = unsafe { libc::recvmsg(sock.as_raw_fd(), &mut msg, recv_flags) };
     if rc >= 0 {
       break 'recvmsg rc as usize;
     }
@@ -149,24 +149,10 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
     }
     // Some older kernels/sandboxed environments reject MSG_CMSG_CLOEXEC with EINVAL. Retry without
     // the flag and set FD_CLOEXEC manually on the received fd.
-    if err.raw_os_error() == Some(libc::EINVAL) && (flags & libc::MSG_CMSG_CLOEXEC) != 0 {
+    if err.raw_os_error() == Some(libc::EINVAL) && (recv_flags & libc::MSG_CMSG_CLOEXEC) != 0 {
       need_manual_cloexec = true;
-      let rc2 = loop {
-        msg.msg_controllen = CONTROL_LEN;
-        msg.msg_flags = 0;
-        let rc2 = unsafe {
-          libc::recvmsg(sock.as_raw_fd(), &mut msg, flags & !libc::MSG_CMSG_CLOEXEC)
-        };
-        if rc2 >= 0 {
-          break rc2;
-        }
-        let err2 = io::Error::last_os_error();
-        if err2.kind() == io::ErrorKind::Interrupted {
-          continue;
-        }
-        return Err(err2);
-      };
-      break rc2 as usize;
+      recv_flags &= !libc::MSG_CMSG_CLOEXEC;
+      continue;
     } else {
       return Err(err);
     }

@@ -112,7 +112,7 @@ pub fn configure_renderer_command(
   #[cfg(all(unix, target_os = "linux"))]
   {
     let Some(config) = apply_linux_env_overrides(config)? else {
-      // Sandbox explicitly disabled (debug escape hatch). Still return a runnable command.
+      // Sandbox disabled via env overrides; spawn the renderer without `pre_exec`.
       return Ok(RendererSpawnCommand::Plain(cmd));
     };
     let cfg = LinuxPreExecConfig::try_from_config(config, extra_keep_fds)?;
