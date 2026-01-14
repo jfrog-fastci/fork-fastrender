@@ -162,6 +162,32 @@ fn direct_eval_with_awaited_argument_is_direct() -> Result<(), VmError> {
 }
 
 #[test]
+fn direct_eval_with_awaited_argument_sees_catch_binding() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = 0;
+      // Global `e` should be shadowed by the catch binding for direct eval.
+      var e = 2;
+      async function f() {
+        try { throw 5; }
+        catch (e) { return eval(await "e"); }
+      }
+      f().then(function (v) { out = v; }, function () { out = -1; });
+      out
+    "#,
+  )?;
+  assert_eq!(value, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value, Value::Number(5.0));
+  Ok(())
+}
+
+#[test]
 fn direct_eval_with_await_in_later_argument_is_direct() -> Result<(), VmError> {
   let mut rt = new_runtime();
 

@@ -36,6 +36,32 @@ fn generator_direct_eval_with_yield_argument_sees_lexical_bindings() {
 }
 
 #[test]
+fn generator_direct_eval_with_yield_argument_sees_catch_binding() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          // Global `e` should be shadowed by the catch binding for direct eval.
+          var e = 2;
+          function* g() {
+            try { throw 5; }
+            catch (e) { return eval(yield 0); }
+          }
+          var it = g();
+          it.next();
+          var r = it.next("e");
+          ok = r.done === true && r.value === 5;
+        } catch (err) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_direct_eval_with_yield_argument_assigns_to_local_var() {
   let mut rt = new_runtime();
   let value = rt
