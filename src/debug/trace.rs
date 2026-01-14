@@ -163,14 +163,28 @@ impl TraceHandle {
 
   pub fn span(&self, name: &'static str, cat: &'static str) -> TraceSpan {
     match &self.inner {
-      Some(state) => TraceSpan::new(state.clone(), Cow::Borrowed(name), cat),
+      Some(state) => {
+        if state.is_full() {
+          state.dropped_events.fetch_add(1, Ordering::Relaxed);
+          TraceSpan::noop()
+        } else {
+          TraceSpan::new(state.clone(), Cow::Borrowed(name), cat)
+        }
+      }
       None => TraceSpan::noop(),
     }
   }
 
   pub fn span_owned(&self, name: String, cat: &'static str) -> TraceSpan {
     match &self.inner {
-      Some(state) => TraceSpan::new(state.clone(), Cow::Owned(name), cat),
+      Some(state) => {
+        if state.is_full() {
+          state.dropped_events.fetch_add(1, Ordering::Relaxed);
+          TraceSpan::noop()
+        } else {
+          TraceSpan::new(state.clone(), Cow::Owned(name), cat)
+        }
+      }
       None => TraceSpan::noop(),
     }
   }
@@ -215,6 +229,7 @@ struct TraceState {
   pid: u32,
   max_events: usize,
   dropped_events: AtomicU64,
+  event_count: AtomicU64,
   events: Mutex<Vec<TraceEvent>>,
 }
 
@@ -232,8 +247,14 @@ impl TraceState {
       pid: std::process::id(),
       max_events,
       dropped_events: AtomicU64::new(0),
+      event_count: AtomicU64::new(0),
       events: Mutex::new(events),
     }
+  }
+
+  #[inline]
+  fn is_full(&self) -> bool {
+    self.event_count.load(Ordering::Relaxed) >= self.max_events as u64
   }
 
   fn push_event(&self, name: Cow<'static, str>, cat: &'static str, start: Instant, end: Instant) {
@@ -275,6 +296,7 @@ impl TraceState {
       tid,
       args,
     });
+    self.event_count.fetch_add(1, Ordering::Relaxed);
   }
 }
 
