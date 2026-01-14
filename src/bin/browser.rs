@@ -16954,7 +16954,7 @@ impl App {
     self.browser_state.chrome.tab_context_menu_rect = None;
     self.browser_state.chrome.clear_tab_drag();
     self.browser_state.chrome.clear_link_drag();
-    self.page_has_focus = false;
+    self.clear_page_focus();
     self.cancel_scrollbar_drag();
     self.window.request_redraw();
   }
@@ -16988,7 +16988,7 @@ impl App {
 
     if was_open && !self.set_home_page_dialog_open {
       // Restore keyboard focus after closing the modal.
-      self.page_has_focus = self.should_restore_page_focus();
+      self.set_page_focus(self.should_restore_page_focus());
       self.window.request_redraw();
     }
 
@@ -24046,10 +24046,8 @@ impl App {
         let Some(pos_points) = pos_points else {
           // Cursor position is unknown. Conservatively treat this as a chrome/non-page click so we
           // don't misroute the next typed character to the page.
-          clear_page_focus_for_unknown_cursor_pos(
-            &mut self.page_has_focus,
-            &mut self.cursor_in_page,
-          );
+          self.clear_page_focus();
+          self.cursor_in_page = false;
           // With unknown cursor position we cannot reliably determine whether the click was inside
           // any open overlays. Conservatively close the media controls overlay so it cannot keep
           // intercepting input.
