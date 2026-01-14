@@ -71,22 +71,25 @@ impl ChromeDocumentContext<'_> {
       preorder_id: usize,
       element_id: Option<&str>,
     ) -> Option<dom2::NodeId> {
-      element_id
-        .and_then(|id| js_tab.dom().get_element_by_id(id))
-        // Prefer mapping renderer preorder ids back into stable dom2 NodeIds using the JS tab's
-        // cached renderer-dom mapping. Renderer preorder ids can shift under DOM mutations, and
-        // `dom2::NodeId` allocation order does not match traversal order, so indexing into the
-        // dom2 node list is unsafe as a primary mapping strategy.
-        .or_else(|| js_tab.dom2_node_for_renderer_preorder(preorder_id))
-        // Last resort: treat preorder ids as a dom2 node allocation index. This can be incorrect
-        // when the document contains non-renderable nodes (doctype/comments) or synthetic renderer
-        // nodes (e.g. `<wbr>` ZWSP), and when DOM mutations shift preorder ids.
-        .or_else(|| {
-          js_tab
-            .dom()
-            .node_id_from_index(preorder_id.saturating_sub(1))
-            .ok()
-        })
+      // Prefer mapping renderer preorder ids back into stable dom2 NodeIds. Renderer preorder ids
+      // can shift under DOM mutations, and `dom2::NodeId` allocation order does not match traversal
+      // order, so indexing into the dom2 node list is unsafe.
+      if let Some(mapped) = js_tab.dom2_node_for_renderer_preorder(preorder_id) {
+        // If the caller also supplies an element id, treat it as a stability check: preorder ids can
+        // become stale across dom2 DOM mutations, but the element's `id=` attribute remains stable.
+        // If the mapped node does not match the expected id, fall back to a fresh `getElementById`
+        // lookup.
+        if let Some(id) = element_id {
+          let dom = js_tab.dom();
+          let mapped_id = dom.get_attribute(mapped, "id").ok().flatten();
+          if mapped_id != Some(id) {
+            return dom.get_element_by_id(id);
+          }
+        }
+        return Some(mapped);
+      }
+
+      element_id.and_then(|id| js_tab.dom().get_element_by_id(id))
     }
 
     let prev_element_id = prev.and_then(|id| element_id_for_node(self.dom, id));
