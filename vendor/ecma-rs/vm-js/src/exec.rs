@@ -60414,13 +60414,12 @@ mod tests {
   }
 
   #[test]
-  fn class_static_block_contains_yield_is_syntax_error() -> Result<(), VmError> {
+  fn class_static_block_yield_is_allowed_inside_generator() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;
-    let err = rt
-      .exec_script(
-        r#"
+    let value = rt.exec_script(
+      r#"
         function *g() {
           class C {
             static {
@@ -60429,12 +60428,9 @@ mod tests {
           }
         }
       "#,
-      )
-      .unwrap_err();
-    match err {
-      VmError::Syntax(_) => Ok(()),
-      other => panic!("expected VmError::Syntax, got {other:?}"),
-    }
+    )?;
+    assert_eq!(value, Value::Undefined);
+    Ok(())
   }
 
   #[test]
@@ -60836,26 +60832,24 @@ mod tests {
   }
 
   #[test]
-  fn async_class_static_block_super_computed_member_with_await_is_syntax_error() -> Result<(), VmError> {
+  fn async_class_static_block_super_computed_member_with_await_is_allowed() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;
 
-    let err = rt
-      .exec_script(
-        r#"
-          async function f() {
-            class Parent {}
-            class C extends Parent {
-              static {
-                super[await "x"];
-              }
-           }
+    let value = rt.exec_script(
+      r#"
+        async function f() {
+          class Parent {}
+          class C extends Parent {
+            static {
+              super[await "x"];
+            }
          }
-        "#,
-      )
-      .unwrap_err();
-    assert!(matches!(err, VmError::Syntax(_)), "got {err:?}");
+       }
+      "#,
+    )?;
+    assert_eq!(value, Value::Undefined);
     Ok(())
   }
 
@@ -60870,8 +60864,9 @@ mod tests {
     // ensuing static block sees the class constructor object as its `[[HomeObject]]` so `super.prop`
     // and `super[expr]` resolve correctly even after resumption.
     //
-    // Note: `await` is an early error inside static blocks, so the suspension points live *around*
-    // the static block rather than within it.
+    // Note: `await` is allowed inside static blocks in async contexts, but this test places its
+    // suspension points *around* the static block (via the awaited heritage) to focus on `super`
+    // home object binding across resumption.
     rt.exec_script(
       r#"
         var out = "";
