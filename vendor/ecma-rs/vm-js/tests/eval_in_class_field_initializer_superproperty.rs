@@ -800,3 +800,133 @@ fn indirect_eval_in_static_field_initializer_rejects_super_computed_property_and
   assert_value_is_bool(value, true);
   Ok(())
 }
+
+#[test]
+fn direct_eval_in_public_field_initializer_allows_super_property_set() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+    var executed = false;
+    class A { set x(v) { this._x = v; } }
+    class C extends A {
+      y = eval('executed = true; super.x = 7;');
+    }
+    var c = new C();
+    executed && c._x === 7;
+    "#,
+  )?;
+
+  assert_value_is_bool(value, true);
+  Ok(())
+}
+
+#[test]
+fn indirect_eval_in_field_initializer_rejects_super_property_set_and_skips_side_effects() -> Result<(), VmError>
+{
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+    var executed = false;
+    var setterExecuted = false;
+    var ok = false;
+    var indirectEval = eval;
+    class A { set x(v) { setterExecuted = true; } }
+    class C extends A {
+      y = indirectEval('executed = true; super.x = 7;');
+    }
+    try { new C(); }
+    catch (e) { ok = e.name === 'SyntaxError'; }
+    ok && !executed && !setterExecuted;
+    "#,
+  )?;
+
+  assert_value_is_bool(value, true);
+  Ok(())
+}
+
+#[test]
+fn direct_eval_in_static_public_field_initializer_allows_super_computed_property_set() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+    var executed = false;
+    class B { static set x(v) { this._x = v; } }
+    class C extends B {
+      static y = eval('executed = true; super["x"] = 7;');
+    }
+    executed && C._x === 7;
+    "#,
+  )?;
+
+  assert_value_is_bool(value, true);
+  Ok(())
+}
+
+#[test]
+fn indirect_eval_in_static_field_initializer_rejects_super_property_set_and_skips_side_effects() -> Result<(), VmError>
+{
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+    var executed = false;
+    var setterExecuted = false;
+    var ok = false;
+    var indirectEval = eval;
+    class B { static set x(v) { setterExecuted = true; } }
+    try {
+      class C extends B {
+        static y = indirectEval('executed = true; super.x = 7;');
+      }
+    } catch (e) { ok = e.name === 'SyntaxError'; }
+    ok && !executed && !setterExecuted;
+    "#,
+  )?;
+
+  assert_value_is_bool(value, true);
+  Ok(())
+}
+
+#[test]
+fn compiled_direct_eval_in_public_field_initializer_allows_super_property_set() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+    var executed = false;
+    class A { set x(v) { this._x = v; } }
+    class C extends A {
+      y = eval('executed = true; super.x = 7;');
+    }
+    var c = new C();
+    executed && c._x === 7;
+    "#,
+  )?;
+
+  assert_value_is_bool(value, true);
+  Ok(())
+}
+
+#[test]
+fn compiled_indirect_eval_in_static_field_initializer_rejects_super_property_set_and_skips_side_effects(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+    var executed = false;
+    var setterExecuted = false;
+    var ok = false;
+    var indirectEval = eval;
+    class B { static set x(v) { setterExecuted = true; } }
+    try {
+      class C extends B {
+        static y = indirectEval('executed = true; super.x = 7;');
+      }
+    } catch (e) { ok = e.name === 'SyntaxError'; }
+    ok && !executed && !setterExecuted;
+    "#,
+  )?;
+
+  assert_value_is_bool(value, true);
+  Ok(())
+}
