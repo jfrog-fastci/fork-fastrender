@@ -58,6 +58,7 @@ pub struct Intrinsics {
   array_iterator_next: GcObject,
   map_iterator_prototype: GcObject,
   set_iterator_prototype: GcObject,
+  regexp_string_iterator_prototype: GcObject,
   string_prototype: GcObject,
   regexp_prototype: GcObject,
   number_prototype: GcObject,
@@ -66,6 +67,7 @@ pub struct Intrinsics {
   date_prototype: GcObject,
   symbol_prototype: GcObject,
   array_buffer_prototype: GcObject,
+  typed_array_prototype: GcObject,
   uint8_array_prototype: GcObject,
   int8_array_prototype: GcObject,
   uint8_clamped_array_prototype: GcObject,
@@ -97,6 +99,7 @@ pub struct Intrinsics {
   date_constructor: GcObject,
   symbol_constructor: GcObject,
   array_buffer: GcObject,
+  typed_array: GcObject,
   uint8_array: GcObject,
   int8_array: GcObject,
   uint8_clamped_array: GcObject,
@@ -697,6 +700,7 @@ impl Intrinsics {
       alloc_rooted_symbol(scope, roots, "vm-js optional chain sentinel")?;
 
     let array_prototype_values_fn: GcObject;
+    let regexp_string_iterator_prototype: GcObject;
 
     // --- Base prototypes ---
     let object_prototype = alloc_rooted_object(scope, roots)?;
@@ -806,60 +810,69 @@ impl Intrinsics {
       .heap_mut()
       .object_set_prototype(array_buffer_prototype, Some(object_prototype))?;
 
+    // `%TypedArray.prototype%`
+    //
+    // This is the common parent of all TypedArray prototypes, and it provides the
+    // `%TypedArray%.prototype[@@toStringTag]` accessor.
+    let typed_array_prototype = alloc_rooted_object(scope, roots)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(typed_array_prototype, Some(object_prototype))?;
+
     let uint8_array_prototype = alloc_rooted_object(scope, roots)?;
     scope
       .heap_mut()
-      .object_set_prototype(uint8_array_prototype, Some(object_prototype))?;
+      .object_set_prototype(uint8_array_prototype, Some(typed_array_prototype))?;
 
     let int8_array_prototype = alloc_rooted_object(scope, roots)?;
     scope
       .heap_mut()
-      .object_set_prototype(int8_array_prototype, Some(object_prototype))?;
+      .object_set_prototype(int8_array_prototype, Some(typed_array_prototype))?;
 
     let uint8_clamped_array_prototype = alloc_rooted_object(scope, roots)?;
     scope
       .heap_mut()
-      .object_set_prototype(uint8_clamped_array_prototype, Some(object_prototype))?;
+      .object_set_prototype(uint8_clamped_array_prototype, Some(typed_array_prototype))?;
 
     let int16_array_prototype = alloc_rooted_object(scope, roots)?;
     scope
       .heap_mut()
-      .object_set_prototype(int16_array_prototype, Some(object_prototype))?;
+      .object_set_prototype(int16_array_prototype, Some(typed_array_prototype))?;
 
     let uint16_array_prototype = alloc_rooted_object(scope, roots)?;
     scope
       .heap_mut()
-      .object_set_prototype(uint16_array_prototype, Some(object_prototype))?;
+      .object_set_prototype(uint16_array_prototype, Some(typed_array_prototype))?;
 
     let int32_array_prototype = alloc_rooted_object(scope, roots)?;
     scope
       .heap_mut()
-      .object_set_prototype(int32_array_prototype, Some(object_prototype))?;
+      .object_set_prototype(int32_array_prototype, Some(typed_array_prototype))?;
 
     let uint32_array_prototype = alloc_rooted_object(scope, roots)?;
     scope
       .heap_mut()
-      .object_set_prototype(uint32_array_prototype, Some(object_prototype))?;
+      .object_set_prototype(uint32_array_prototype, Some(typed_array_prototype))?;
 
     let float32_array_prototype = alloc_rooted_object(scope, roots)?;
     scope
       .heap_mut()
-      .object_set_prototype(float32_array_prototype, Some(object_prototype))?;
+      .object_set_prototype(float32_array_prototype, Some(typed_array_prototype))?;
 
     let float64_array_prototype = alloc_rooted_object(scope, roots)?;
     scope
       .heap_mut()
-      .object_set_prototype(float64_array_prototype, Some(object_prototype))?;
+      .object_set_prototype(float64_array_prototype, Some(typed_array_prototype))?;
 
     let bigint64_array_prototype = alloc_rooted_object(scope, roots)?;
     scope
       .heap_mut()
-      .object_set_prototype(bigint64_array_prototype, Some(object_prototype))?;
+      .object_set_prototype(bigint64_array_prototype, Some(typed_array_prototype))?;
 
     let biguint64_array_prototype = alloc_rooted_object(scope, roots)?;
     scope
       .heap_mut()
-      .object_set_prototype(biguint64_array_prototype, Some(object_prototype))?;
+      .object_set_prototype(biguint64_array_prototype, Some(typed_array_prototype))?;
 
     let data_view_prototype = alloc_rooted_object(scope, roots)?;
     scope
@@ -913,57 +926,6 @@ impl Intrinsics {
       array_buffer_prototype,
       well_known_symbols.to_string_tag,
       "ArrayBuffer",
-    )?;
-    install_to_string_tag(
-      scope,
-      uint8_array_prototype,
-      well_known_symbols.to_string_tag,
-      "Uint8Array",
-    )?;
-    install_to_string_tag(scope, int8_array_prototype, well_known_symbols.to_string_tag, "Int8Array")?;
-    install_to_string_tag(
-      scope,
-      uint8_clamped_array_prototype,
-      well_known_symbols.to_string_tag,
-      "Uint8ClampedArray",
-    )?;
-    install_to_string_tag(scope, int16_array_prototype, well_known_symbols.to_string_tag, "Int16Array")?;
-    install_to_string_tag(
-      scope,
-      uint16_array_prototype,
-      well_known_symbols.to_string_tag,
-      "Uint16Array",
-    )?;
-    install_to_string_tag(scope, int32_array_prototype, well_known_symbols.to_string_tag, "Int32Array")?;
-    install_to_string_tag(
-      scope,
-      uint32_array_prototype,
-      well_known_symbols.to_string_tag,
-      "Uint32Array",
-    )?;
-    install_to_string_tag(
-      scope,
-      float32_array_prototype,
-      well_known_symbols.to_string_tag,
-      "Float32Array",
-    )?;
-    install_to_string_tag(
-      scope,
-      float64_array_prototype,
-      well_known_symbols.to_string_tag,
-      "Float64Array",
-    )?;
-    install_to_string_tag(
-      scope,
-      bigint64_array_prototype,
-      well_known_symbols.to_string_tag,
-      "BigInt64Array",
-    )?;
-    install_to_string_tag(
-      scope,
-      biguint64_array_prototype,
-      well_known_symbols.to_string_tag,
-      "BigUint64Array",
     )?;
     install_to_string_tag(scope, data_view_prototype, well_known_symbols.to_string_tag, "DataView")?;
     install_to_string_tag(scope, map_prototype, well_known_symbols.to_string_tag, "Map")?;
@@ -1189,8 +1151,6 @@ impl Intrinsics {
     let regexp_prototype_symbol_match_all =
       vm.register_native_call(builtins::regexp_prototype_symbol_match_all)?;
     let regexp_string_iterator_next = vm.register_native_call(builtins::regexp_string_iterator_next)?;
-    let iterator_prototype_symbol_iterator =
-      vm.register_native_call(builtins::iterator_prototype_symbol_iterator)?;
     let number_prototype_value_of = vm.register_native_call(builtins::number_prototype_value_of)?;
     let number_prototype_to_string = vm.register_native_call(builtins::number_prototype_to_string)?;
     let number_prototype_to_primitive =
@@ -4335,26 +4295,36 @@ impl Intrinsics {
         .heap_mut()
         .object_set_prototype(next_fn, Some(function_prototype))?;
 
-      // Shared `@@iterator` method that returns `this`.
-      let iter_name = scope.alloc_string("[Symbol.iterator]")?;
-      scope.push_root(Value::String(iter_name))?;
-      let iterator_fn =
-        scope.alloc_native_function(iterator_prototype_symbol_iterator, None, iter_name, 0)?;
-      scope.push_root(Value::Object(iterator_fn))?;
-      scope
-        .heap_mut()
-        .object_set_prototype(iterator_fn, Some(function_prototype))?;
+      // `%RegExpStringIteratorPrototype%`
+      //
+      // This prototype is observable via `Object.getPrototypeOf(/./[Symbol.matchAll](""))` and
+      // carries both the `.next` method and `@@toStringTag`.
+      let regexp_string_iterator_proto = alloc_rooted_object(scope, roots)?;
+      scope.heap_mut().object_set_prototype(
+        regexp_string_iterator_proto,
+        Some(iterator_prototype),
+      )?;
+      scope.define_property(
+        regexp_string_iterator_proto,
+        PropertyKey::from_string(next_name),
+        data_desc(Value::Object(next_fn), true, false, true),
+      )?;
+      install_to_string_tag(
+        scope,
+        regexp_string_iterator_proto,
+        well_known_symbols.to_string_tag,
+        "RegExp String Iterator",
+      )?;
+      regexp_string_iterator_prototype = regexp_string_iterator_proto;
 
       let match_all_name = scope.alloc_string("[Symbol.matchAll]")?;
       scope.push_root(Value::String(match_all_name))?;
       let match_all_slots = [
-        Value::Object(next_fn),
         Value::Symbol(iterating_sym),
         Value::Symbol(iterated_sym),
         Value::Symbol(global_sym),
         Value::Symbol(unicode_sym),
         Value::Symbol(done_sym),
-        Value::Object(iterator_fn),
       ];
       let match_all_fn = scope.alloc_native_function_with_slots(
         regexp_prototype_symbol_match_all,
@@ -5790,6 +5760,61 @@ impl Intrinsics {
         Ok(())
       };
 
+    // `%TypedArray%`
+    //
+    // This intrinsic is not exposed directly on the global object, but it is observable via
+    // `Object.getPrototypeOf(Int8Array)` and is the common `[[Prototype]]` of all TypedArray
+    // constructors.
+    let typed_array_call = vm.register_native_call(builtins::typed_array_constructor_call)?;
+    let typed_array_construct = vm.register_native_construct(builtins::typed_array_constructor_construct)?;
+    let typed_array_name = scope.alloc_string("TypedArray")?;
+    let typed_array = alloc_rooted_native_function(
+      scope,
+      roots,
+      typed_array_call,
+      Some(typed_array_construct),
+      typed_array_name,
+      0,
+    )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(typed_array, Some(function_prototype))?;
+    scope.define_property(
+      typed_array,
+      common.prototype,
+      data_desc(Value::Object(typed_array_prototype), false, false, false),
+    )?;
+    scope.define_property(
+      typed_array_prototype,
+      common.constructor,
+      data_desc(Value::Object(typed_array), true, false, true),
+    )?;
+
+    // `%TypedArray%.prototype[@@toStringTag]`
+    {
+      let get_call =
+        vm.register_native_call(builtins::typed_array_prototype_to_string_tag_get)?;
+      let get_name = scope.alloc_string("get [Symbol.toStringTag]")?;
+      scope.push_root(Value::String(get_name))?;
+      let get = scope.alloc_native_function(get_call, None, get_name, 0)?;
+      scope.push_root(Value::Object(get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get, Some(function_prototype))?;
+      scope.define_property(
+        typed_array_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_string_tag),
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
     // `%Uint8Array%`
     let uint8_array_call = vm.register_native_call(builtins::uint8_array_constructor_call)?;
     let uint8_array_construct =
@@ -5805,7 +5830,7 @@ impl Intrinsics {
     )?;
     scope
       .heap_mut()
-      .object_set_prototype(uint8_array, Some(function_prototype))?;
+      .object_set_prototype(uint8_array, Some(typed_array))?;
     scope.define_property(
       uint8_array,
       common.prototype,
@@ -5851,7 +5876,7 @@ impl Intrinsics {
     )?;
     scope
       .heap_mut()
-      .object_set_prototype(int8_array, Some(function_prototype))?;
+      .object_set_prototype(int8_array, Some(typed_array))?;
     scope.define_property(
       int8_array,
       common.prototype,
@@ -5890,7 +5915,7 @@ impl Intrinsics {
     )?;
     scope
       .heap_mut()
-      .object_set_prototype(uint8_clamped_array, Some(function_prototype))?;
+      .object_set_prototype(uint8_clamped_array, Some(typed_array))?;
     scope.define_property(
       uint8_clamped_array,
       common.prototype,
@@ -5933,7 +5958,7 @@ impl Intrinsics {
     )?;
     scope
       .heap_mut()
-      .object_set_prototype(int16_array, Some(function_prototype))?;
+      .object_set_prototype(int16_array, Some(typed_array))?;
     scope.define_property(
       int16_array,
       common.prototype,
@@ -5971,7 +5996,7 @@ impl Intrinsics {
     )?;
     scope
       .heap_mut()
-      .object_set_prototype(uint16_array, Some(function_prototype))?;
+      .object_set_prototype(uint16_array, Some(typed_array))?;
     scope.define_property(
       uint16_array,
       common.prototype,
@@ -6009,7 +6034,7 @@ impl Intrinsics {
     )?;
     scope
       .heap_mut()
-      .object_set_prototype(int32_array, Some(function_prototype))?;
+      .object_set_prototype(int32_array, Some(typed_array))?;
     scope.define_property(
       int32_array,
       common.prototype,
@@ -6047,7 +6072,7 @@ impl Intrinsics {
     )?;
     scope
       .heap_mut()
-      .object_set_prototype(uint32_array, Some(function_prototype))?;
+      .object_set_prototype(uint32_array, Some(typed_array))?;
     scope.define_property(
       uint32_array,
       common.prototype,
@@ -6085,7 +6110,7 @@ impl Intrinsics {
     )?;
     scope
       .heap_mut()
-      .object_set_prototype(float32_array, Some(function_prototype))?;
+      .object_set_prototype(float32_array, Some(typed_array))?;
     scope.define_property(
       float32_array,
       common.prototype,
@@ -6123,7 +6148,7 @@ impl Intrinsics {
     )?;
     scope
       .heap_mut()
-      .object_set_prototype(float64_array, Some(function_prototype))?;
+      .object_set_prototype(float64_array, Some(typed_array))?;
     scope.define_property(
       float64_array,
       common.prototype,
@@ -6161,7 +6186,7 @@ impl Intrinsics {
     )?;
     scope
       .heap_mut()
-      .object_set_prototype(bigint64_array, Some(function_prototype))?;
+      .object_set_prototype(bigint64_array, Some(typed_array))?;
     scope.define_property(
       bigint64_array,
       common.prototype,
@@ -6199,7 +6224,7 @@ impl Intrinsics {
     )?;
     scope
       .heap_mut()
-      .object_set_prototype(biguint64_array, Some(function_prototype))?;
+      .object_set_prototype(biguint64_array, Some(typed_array))?;
     scope.define_property(
       biguint64_array,
       common.prototype,
@@ -8538,6 +8563,7 @@ impl Intrinsics {
       array_iterator_next,
       map_iterator_prototype,
       set_iterator_prototype,
+      regexp_string_iterator_prototype,
       string_prototype,
       regexp_prototype,
       number_prototype,
@@ -8546,6 +8572,7 @@ impl Intrinsics {
       date_prototype,
       symbol_prototype,
       array_buffer_prototype,
+      typed_array_prototype,
       uint8_array_prototype,
       int8_array_prototype,
       uint8_clamped_array_prototype,
@@ -8577,6 +8604,7 @@ impl Intrinsics {
       date_constructor,
       symbol_constructor,
       array_buffer,
+      typed_array,
       uint8_array,
       int8_array,
       uint8_clamped_array,
@@ -8731,6 +8759,10 @@ impl Intrinsics {
     self.set_iterator_prototype
   }
 
+  pub(crate) fn regexp_string_iterator_prototype(&self) -> GcObject {
+    self.regexp_string_iterator_prototype
+  }
+
   pub fn string_prototype(&self) -> GcObject {
     self.string_prototype
   }
@@ -8761,6 +8793,10 @@ impl Intrinsics {
 
   pub fn array_buffer_prototype(&self) -> GcObject {
     self.array_buffer_prototype
+  }
+
+  pub fn typed_array_prototype(&self) -> GcObject {
+    self.typed_array_prototype
   }
 
   pub fn uint8_array_prototype(&self) -> GcObject {
@@ -8885,6 +8921,10 @@ impl Intrinsics {
 
   pub fn array_buffer(&self) -> GcObject {
     self.array_buffer
+  }
+
+  pub fn typed_array(&self) -> GcObject {
+    self.typed_array
   }
 
   pub fn uint8_array(&self) -> GcObject {

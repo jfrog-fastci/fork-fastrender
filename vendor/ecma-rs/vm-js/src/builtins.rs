@@ -3707,6 +3707,35 @@ pub fn array_buffer_prototype_slice(
   Ok(Value::Object(new_obj))
 }
 
+/// `%TypedArray%` (ECMA-262).
+///
+/// `%TypedArray%` is an intrinsic constructor that is observable via e.g.
+/// `Object.getPrototypeOf(Int8Array)`, but it cannot be invoked directly (both calling and
+/// constructing throw).
+pub fn typed_array_constructor_call(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError("TypedArray cannot be invoked directly"))
+}
+
+pub fn typed_array_constructor_construct(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError("TypedArray cannot be constructed directly"))
+}
+
 pub fn uint8_array_constructor_call(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
@@ -4450,6 +4479,38 @@ typed_array_ctor!(
   biguint64_array_prototype,
   3
 );
+
+/// `get %TypedArray%.prototype[@@toStringTag]` (ECMA-262).
+pub fn typed_array_prototype_to_string_tag_get(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  // 1. Let O be the this value.
+  // 2. If Type(O) is not Object, return undefined.
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
+
+  // Root the receiver in case we allocate the tag string.
+  scope.push_root(Value::Object(obj))?;
+
+  // 3. If O does not have a [[TypedArrayName]] internal slot, return undefined.
+  let Some(name) = scope.heap().typed_array_name(obj) else {
+    return Ok(Value::Undefined);
+  };
+
+  // 4. Let name be the value of O's [[TypedArrayName]] internal slot.
+  // 5. Assert: name is a String value.
+  // 6. Return name.
+  Ok(Value::String(scope.alloc_string(name)?))
+}
 
 pub fn typed_array_prototype_byte_length_get(
   _vm: &mut Vm,
@@ -20023,44 +20084,34 @@ pub fn regexp_prototype_symbol_match_all(
   let intr = require_intrinsics(vm)?;
 
   let slots = scope.heap().get_function_native_slots(callee)?;
-  if slots.len() != 7 {
+  if slots.len() != 5 {
     return Err(VmError::InvariantViolation(
       "RegExp.prototype[@@matchAll] has wrong native slot count",
     ));
   }
-  let Value::Object(next_fn) = slots[0] else {
-    return Err(VmError::InvariantViolation(
-      "RegExp.prototype[@@matchAll] next slot is not an object",
-    ));
-  };
-  let Value::Symbol(iterating_sym) = slots[1] else {
+  let Value::Symbol(iterating_sym) = slots[0] else {
     return Err(VmError::InvariantViolation(
       "RegExp.prototype[@@matchAll] iteratingRegExp slot is not a symbol",
     ));
   };
-  let Value::Symbol(iterated_sym) = slots[2] else {
+  let Value::Symbol(iterated_sym) = slots[1] else {
     return Err(VmError::InvariantViolation(
       "RegExp.prototype[@@matchAll] iteratedString slot is not a symbol",
     ));
   };
-  let Value::Symbol(global_sym) = slots[3] else {
+  let Value::Symbol(global_sym) = slots[2] else {
     return Err(VmError::InvariantViolation(
       "RegExp.prototype[@@matchAll] global slot is not a symbol",
     ));
   };
-  let Value::Symbol(unicode_sym) = slots[4] else {
+  let Value::Symbol(unicode_sym) = slots[3] else {
     return Err(VmError::InvariantViolation(
       "RegExp.prototype[@@matchAll] unicode slot is not a symbol",
     ));
   };
-  let Value::Symbol(done_sym) = slots[5] else {
+  let Value::Symbol(done_sym) = slots[4] else {
     return Err(VmError::InvariantViolation(
       "RegExp.prototype[@@matchAll] done slot is not a symbol",
-    ));
-  };
-  let Value::Object(iterator_fn) = slots[6] else {
-    return Err(VmError::InvariantViolation(
-      "RegExp.prototype[@@matchAll] iterator slot is not an object",
     ));
   };
 
@@ -20142,7 +20193,7 @@ pub fn regexp_prototype_symbol_match_all(
   scope.push_root(Value::Object(iter))?;
   scope
     .heap_mut()
-    .object_set_prototype(iter, Some(intr.object_prototype()))?;
+    .object_set_prototype(iter, Some(intr.regexp_string_iterator_prototype()))?;
 
   scope.define_property(
     iter,
@@ -20168,17 +20219,6 @@ pub fn regexp_prototype_symbol_match_all(
     iter,
     PropertyKey::from_symbol(done_sym),
     data_desc(Value::Bool(false), true, false, false),
-  )?;
-
-  let next_key = string_key(scope, "next")?;
-  scope.define_property(iter, next_key, data_desc(Value::Object(next_fn), true, false, true))?;
-
-  // Ensure the iterator object is iterable: `%RegExpStringIteratorPrototype%[@@iterator]` returns
-  // `this`, but `vm-js` does not yet model `%IteratorPrototype%` so we define an own property.
-  scope.define_property(
-    iter,
-    PropertyKey::from_symbol(intr.well_known_symbols().iterator),
-    data_desc(Value::Object(iterator_fn), true, false, true),
   )?;
 
   Ok(Value::Object(iter))
