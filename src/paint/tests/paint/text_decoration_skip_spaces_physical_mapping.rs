@@ -82,11 +82,7 @@ fn spacer_advance_in_runs(runs: &[ShapedRun], edge: SpacerEdge, inline_vertical:
   }
 }
 
-fn spacer_advance_for_prefix(
-  runs: &[ShapedRun],
-  prefix_len: usize,
-  inline_vertical: bool,
-) -> f32 {
+fn spacer_advance_for_prefix(runs: &[ShapedRun], prefix_len: usize, inline_vertical: bool) -> f32 {
   // Compute spacer advance for the `[0, prefix_len)` byte range in the original text stream,
   // regardless of bidi reordering within the shaped glyph list.
   let mut advance: f32 = 0.0;
@@ -182,6 +178,14 @@ fn underline_segments(item: &crate::paint::display_list::TextDecorationItem) -> 
     .unwrap_or_default()
 }
 
+fn overline_segments(item: &crate::paint::display_list::TextDecorationItem) -> Vec<(f32, f32)> {
+  item
+    .decorations
+    .iter()
+    .find_map(|deco| deco.overline.as_ref().and_then(|s| s.segments.clone()))
+    .unwrap_or_default()
+}
+
 #[test]
 fn text_decoration_skip_spaces_start_maps_to_physical_start_in_vertical_writing() {
   crate::testing::init_rayon_for_tests(2);
@@ -193,7 +197,7 @@ fn text_decoration_skip_spaces_start_maps_to_physical_start_in_vertical_writing(
       font-size: 20px;
       writing-mode: vertical-rl;
       white-space: pre;
-      text-decoration: underline;
+      text-decoration: underline overline;
       text-decoration-skip-ink: none;
       text-decoration-skip-spaces: start;
     }
@@ -253,6 +257,23 @@ fn text_decoration_skip_spaces_start_maps_to_physical_start_in_vertical_writing(
     "expected underline to extend to the physical end when only start is skipped: end={end} line_width={} segments={segments:?}",
     deco_item.line_width
   );
+
+  let segments = overline_segments(deco_item);
+  assert_eq!(
+    segments.len(),
+    1,
+    "expected exactly one overline segment after skip-spaces clipping, got {segments:?}"
+  );
+  let (start, end) = segments[0];
+  assert!(
+    (start - expected_skip_start).abs() < 0.05,
+    "expected overline to skip physical start-side spaces in vertical writing: start={start} expected={expected_skip_start} segments={segments:?}"
+  );
+  assert!(
+    (end - deco_item.line_width).abs() < 0.05,
+    "expected overline to extend to the physical end when only start is skipped: end={end} line_width={} segments={segments:?}",
+    deco_item.line_width
+  );
 }
 
 #[test]
@@ -266,7 +287,7 @@ fn text_decoration_skip_spaces_end_clips_physical_end_after_bidi_reordering() {
       font-size: 20px;
       direction: ltr;
       white-space: pre;
-      text-decoration: underline;
+      text-decoration: underline overline;
       text-decoration-skip-ink: none;
       text-decoration-skip-spaces: end;
     }
@@ -336,7 +357,8 @@ fn text_decoration_skip_spaces_end_clips_physical_end_after_bidi_reordering() {
       _ => None,
     })
     .find(|deco| {
-      (deco.line_start - rtl_rect.x()).abs() < 0.5 && (deco.line_width - rtl_rect.width()).abs() < 0.5
+      (deco.line_start - rtl_rect.x()).abs() < 0.5
+        && (deco.line_width - rtl_rect.width()).abs() < 0.5
     })
     .expect("expected horizontal TextDecorationItem for RTL fragment");
 
@@ -355,6 +377,23 @@ fn text_decoration_skip_spaces_end_clips_physical_end_after_bidi_reordering() {
   assert!(
     (end - expected_end).abs() < 0.05,
     "expected skip-spaces:end to clip physical end-side spaces after bidi reordering: end={end} expected_end={expected_end} line_width={} skip={expected_skip_end} segments={segments:?}",
+    deco_item.line_width
+  );
+
+  let segments = overline_segments(deco_item);
+  assert_eq!(
+    segments.len(),
+    1,
+    "expected exactly one overline segment after skip-spaces clipping, got {segments:?}"
+  );
+  let (start, end) = segments[0];
+  assert!(
+    start.abs() < 0.05,
+    "expected skip-spaces:end not to clip the physical start of overline: start={start} segments={segments:?}"
+  );
+  assert!(
+    (end - expected_end).abs() < 0.05,
+    "expected skip-spaces:end to clip physical end-side spaces for overline after bidi reordering: end={end} expected_end={expected_end} line_width={} skip={expected_skip_end} segments={segments:?}",
     deco_item.line_width
   );
 }
