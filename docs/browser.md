@@ -137,6 +137,10 @@ Startup note:
   - Even when tabs are not restored (CLI URL or `--no-restore`), the browser may still reuse persisted
     **configuration** from the previous session (appearance/UI scale, home page, menu bar visibility,
     and window geometry) when available.
+    - Window geometry persistence is best-effort and avoids common pitfalls:
+      - when a window is maximized, the last *normal* (restored) size is preserved for proper
+        unmaximize behaviour
+      - when a window is minimized, the browser avoids persisting meaningless `0×0` sizes
 - If the primary session file is corrupted/unparseable, the browser can fall back to a retained
   last-known-good backup (same filename with a `.bak` suffix, e.g. `fastrender_session.json.bak`).
   - This backup is updated opportunistically on overwrite when the existing session parses
