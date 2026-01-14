@@ -1,6 +1,7 @@
 use crate::api::{BrowserDocument, FastRender, Pixmap, RenderOptions};
 use crate::error::Result;
 use crate::interaction::{InteractionAction, InteractionEngine, KeyAction};
+use crate::ui::html_escape::escape_html;
 
 /// Built-in "modal dialog" kinds used by browser chrome.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,21 +250,6 @@ fn dialog_html(kind: &DialogKind, message: &str) -> String {
     label = dialog_label,
     inner = inner
   )
-}
-
-fn escape_html(text: &str) -> String {
-  let mut out = String::with_capacity(text.len());
-  for ch in text.chars() {
-    match ch {
-      '&' => out.push_str("&amp;"),
-      '<' => out.push_str("&lt;"),
-      '>' => out.push_str("&gt;"),
-      '"' => out.push_str("&quot;"),
-      '\'' => out.push_str("&#39;"),
-      _ => out.push(ch),
-    }
-  }
-  out
 }
 
 #[cfg(test)]
