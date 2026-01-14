@@ -298,6 +298,11 @@ impl TraceState {
     // Best-effort: if we couldn't pre-reserve the full trace buffer (or memory is tight), avoid
     // aborting on vector growth. Drop the event if we can't allocate space.
     if events.len() == events.capacity() && events.try_reserve(1).is_err() {
+      // Treat this as a "full" trace so we stop hammering the allocator on subsequent events when
+      // the process is under memory pressure.
+      self
+        .event_count
+        .store(self.max_events as u64, Ordering::Relaxed);
       self.dropped_events.fetch_add(1, Ordering::Relaxed);
       return;
     }
