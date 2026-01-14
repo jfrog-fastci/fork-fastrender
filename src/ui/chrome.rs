@@ -2178,7 +2178,7 @@ pub fn chrome_ui_with_bookmarks(
           let label_width = ctx.data_mut(|d| {
             let cache_id = address_bar_id.with("loading_text_width_cache");
             let cache = d.get_temp_mut_or_default::<LoadingTextWidthCache>(cache_id);
-            cache.width(ui, stage_key, &font_id, loading_text)
+            cache.width(ui, stage_key, &font_id, &loading_text)
           });
           right_sum += label_width;
           right_len += 1;
@@ -2488,11 +2488,11 @@ pub fn chrome_ui_with_bookmarks(
                   .wrap(false)
                   .truncate(true),
               );
-              show_tooltip_on_hover_or_focus(ui, &resp, loading_text);
+              show_tooltip_on_hover_or_focus(ui, &resp, &loading_text);
             }
             if loading {
               let resp = spinner(ui, icon_side);
-              show_tooltip_on_hover_or_focus(ui, &resp, loading_text);
+              show_tooltip_on_hover_or_focus(ui, &resp, &loading_text);
               // In compact mode the spinner may be the only visible loading affordance, so expose the
               // full loading text to screen readers (hover text is not sufficient).
               resp.widget_info({

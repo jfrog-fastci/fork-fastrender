@@ -30980,7 +30980,7 @@ fn ensure_page_focus_cleared_for_chrome_click(
   false
 }
 
-#[cfg(feature = "browser_ui")]
+#[cfg(feature = "a11y_accesskit")]
 #[derive(Debug)]
 enum PageAccesskitActionRoute {
   /// An AccessKit action request targeted at a page `NodeId`, but not for the currently active
@@ -30996,7 +30996,7 @@ enum PageAccesskitActionRoute {
   },
 }
 
-#[cfg(feature = "browser_ui")]
+#[cfg(feature = "a11y_accesskit")]
 fn route_page_accesskit_action_request(
   request: &accesskit::ActionRequest,
   active_tab_id: Option<fastrender::ui::TabId>,
@@ -31050,6 +31050,35 @@ fn route_page_accesskit_action_request(
       Some(fastrender::ui::UiToWorker::A11yActivate {
         tab_id,
         node_id: dom_node_id,
+      })
+    }
+    accesskit::Action::SetValue => match request.data.as_ref() {
+      Some(accesskit::ActionData::Value(value)) => {
+        Some(fastrender::ui::UiToWorker::A11ySetTextValue {
+          tab_id,
+          node_id: dom_node_id,
+          value: value.to_string(),
+        })
+      }
+      _ => None,
+    },
+    accesskit::Action::SetTextSelection => {
+      let selection = match request.data.as_ref() {
+        Some(accesskit::ActionData::SetTextSelection(selection)) => selection,
+        _ => return Some(PageAccesskitActionRoute::Current { msg: None }),
+      };
+
+      // Defensive: AccessKit selection ranges should refer to the same text control node. Ignore
+      // malformed requests rather than applying an unexpected selection range.
+      if selection.anchor.node != request.target || selection.focus.node != request.target {
+        return Some(PageAccesskitActionRoute::Current { msg: None });
+      }
+
+      Some(fastrender::ui::UiToWorker::A11ySetTextSelectionRange {
+        tab_id,
+        node_id: dom_node_id,
+        anchor: selection.anchor.character_index,
+        focus: selection.focus.character_index,
       })
     }
     _ => None,
@@ -31562,7 +31591,7 @@ mod page_focus_tests {
   }
 }
 
-#[cfg(all(test, feature = "browser_ui"))]
+#[cfg(all(test, feature = "a11y_accesskit"))]
 mod page_node_accesskit_action_routing_tests {
   use super::{route_page_accesskit_action_request, PageAccesskitActionRoute};
   use fastrender::ui::{encode_page_node_id, TabId, UiToWorker};
@@ -31634,6 +31663,83 @@ mod page_node_accesskit_action_routing_tests {
 
     let route = route_page_accesskit_action_request(&request, Some(tab_id), Some(gen));
     assert!(route.is_none(), "expected non-page target to return None");
+  }
+
+  #[test]
+  fn routes_set_value_action_request_for_current_page_node() {
+    let tab_id = TabId(1);
+    let gen = 2u32;
+    let dom_node_id = 7usize;
+    let target = encode_page_node_id(tab_id, gen, dom_node_id);
+    let request = accesskit::ActionRequest {
+      target,
+      action: accesskit::Action::SetValue,
+      data: Some(accesskit::ActionData::Value("hello".into())),
+    };
+
+    let route = route_page_accesskit_action_request(&request, Some(tab_id), Some(gen))
+      .expect("expected request to be recognized as a page node");
+    let msg = match route {
+      PageAccesskitActionRoute::Current { msg } => msg,
+      other => panic!("expected current route, got {other:?}"),
+    };
+
+    match msg {
+      Some(UiToWorker::A11ySetTextValue {
+        tab_id: got_tab,
+        node_id: got_node,
+        value,
+      }) => {
+        assert_eq!(got_tab, tab_id);
+        assert_eq!(got_node, dom_node_id);
+        assert_eq!(value, "hello");
+      }
+      other => panic!("expected A11ySetTextValue msg, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn routes_set_text_selection_action_request_for_current_page_node() {
+    let tab_id = TabId(1);
+    let gen = 2u32;
+    let dom_node_id = 9usize;
+    let target = encode_page_node_id(tab_id, gen, dom_node_id);
+    let request = accesskit::ActionRequest {
+      target,
+      action: accesskit::Action::SetTextSelection,
+      data: Some(accesskit::ActionData::SetTextSelection(accesskit::TextSelection {
+        anchor: accesskit::TextPosition {
+          node: target,
+          character_index: 1,
+        },
+        focus: accesskit::TextPosition {
+          node: target,
+          character_index: 4,
+        },
+      })),
+    };
+
+    let route = route_page_accesskit_action_request(&request, Some(tab_id), Some(gen))
+      .expect("expected request to be recognized as a page node");
+    let msg = match route {
+      PageAccesskitActionRoute::Current { msg } => msg,
+      other => panic!("expected current route, got {other:?}"),
+    };
+
+    match msg {
+      Some(UiToWorker::A11ySetTextSelectionRange {
+        tab_id: got_tab,
+        node_id: got_node,
+        anchor,
+        focus,
+      }) => {
+        assert_eq!(got_tab, tab_id);
+        assert_eq!(got_node, dom_node_id);
+        assert_eq!(anchor, 1);
+        assert_eq!(focus, 4);
+      }
+      other => panic!("expected A11ySetTextSelectionRange msg, got {other:?}"),
+    }
   }
 }
 
