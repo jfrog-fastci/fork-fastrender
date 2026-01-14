@@ -2172,6 +2172,7 @@ mod tests {
       cur.read_u64(8)
     });
     assert!(matches!(r, Ok(Err(Mp4Error::UnexpectedEof))));
+  }
 
   #[test]
   fn parse_stsz_rejects_excessive_sample_count_without_reading_entries() {
