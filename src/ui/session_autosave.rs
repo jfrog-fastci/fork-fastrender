@@ -3,7 +3,8 @@
 //! The windowed browser UI should never block its UI thread on disk I/O. `SessionAutosave` provides
 //! a small helper that:
 //! - Spawns a background writer thread.
-//! - Debounces `request_save` calls and writes only the latest snapshot.
+//! - Coalesces `request_save` calls and writes only the latest snapshot (with a max write interval
+//!   to avoid trailing-edge debounce starvation).
 //! - Marks the on-disk session as "unclean" on startup (crash marker).
 //! - Marks the on-disk session as "clean" on explicit shutdown (best-effort).
 //!
