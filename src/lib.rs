@@ -252,7 +252,6 @@ pub mod ipc;
 pub mod js;
 pub mod media;
 pub mod memory;
-pub mod media;
 pub mod multiprocess;
 pub mod net;
 pub mod network_process;
