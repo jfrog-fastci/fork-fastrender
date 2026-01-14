@@ -17,9 +17,10 @@
   "notes": "Visually good. Reconfirmed via fixture page-loop: remaining ~9% pixel diffs vs Chrome are dominated by text rasterization/hinting differences (no subpixel AA; high-contrast edges in the Top Stories list) plus minor 1-off per-pixel rounding noise; no structural layout/paint issues identified.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 89296,
-    "diff_percent": 9.3017,
-    "perceptual": 0.0049,
+    "diff_pixels": 86459,
+    "diff_percent": 9.0061,
+    "perceptual": 0.0329,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 65,
       "y": 327,
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "a51c11d0aadd6d2e7bea64b6dd92a15d18875c00"
+    "computed_at_commit": "49fb90ec58aadc11b17c255e928cf5e326eeecad"
   },
   "hotspot": "cascade",
   "failure_stage": null,

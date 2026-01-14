@@ -17,9 +17,10 @@
   "notes": "Fixture is a Reddit network-security / anti-bot block page (\"You’ve been blocked by network security\"), not the real homepage.\nLow diff is expected because we’re comparing an interstitial; remaining mismatch is minor raster/text AA noise.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 13330,
-    "diff_percent": 1.3885,
-    "perceptual": 0.0334,
+    "diff_pixels": 10644,
+    "diff_percent": 1.1087,
+    "perceptual": 0.003,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 451,
       "y": 380,
@@ -30,15 +31,15 @@
         255
       ],
       "rendered_rgba": [
-        165,
-        169,
-        169,
+        195,
+        197,
+        198,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "4cf8b949629b5c2044d5abef3f7f46b9017ee11b"
+    "computed_at_commit": "49fb90ec58aadc11b17c255e928cf5e326eeecad"
   },
   "hotspot": "box_tree",
   "failure_stage": null,

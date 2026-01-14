@@ -17,9 +17,10 @@
   "notes": "Visually good. The high pixel diff at tolerance=0 is dominated by tiny per-channel differences in the large hero image (background-size: cover) from image decode/resampling/color-space rounding vs Chrome; overall perceptual distance remains very low. Remaining diffs outside the hero image are mostly minor text/AA and blur/shadow rounding noise (no missing layout primitives identified).",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 233685,
-    "diff_percent": 24.3422,
-    "perceptual": 0.0131,
+    "diff_pixels": 225050,
+    "diff_percent": 23.4427,
+    "perceptual": 0.0491,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 15,
       "y": 8,
@@ -31,14 +32,14 @@
       ],
       "rendered_rgba": [
         76,
-        48,
-        132,
+        47,
+        131,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "cbe69ff1e1bb8b51872f4692117518afddba2e99"
+    "computed_at_commit": "49fb90ec58aadc11b17c255e928cf5e326eeecad"
   },
   "hotspot": "paint",
   "failure_stage": null,

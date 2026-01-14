@@ -17,28 +17,29 @@
   "notes": "Mostly visually good vs Chrome baseline. Remaining diffs are localized around the top red Fast.com mark and primary text (minor text AA/weight and subtle color/gradient differences).",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 9027,
-    "diff_percent": 0.9403,
-    "perceptual": 0.0215,
+    "diff_pixels": 14200,
+    "diff_percent": 1.4792,
+    "perceptual": 0.0392,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 1060,
       "y": 15,
       "baseline_rgba": [
-        77,
-        74,
-        74,
+        255,
+        255,
+        255,
         255
       ],
       "rendered_rgba": [
-        255,
-        255,
-        255,
+        145,
+        143,
+        143,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "9e24292ca15621df5a653745fb3bfd6a3ae5d053"
+    "computed_at_commit": "49fb90ec58aadc11b17c255e928cf5e326eeecad"
   },
   "hotspot": "paint",
   "failure_stage": null,

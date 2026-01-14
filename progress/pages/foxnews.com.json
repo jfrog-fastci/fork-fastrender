@@ -17,28 +17,29 @@
   "notes": "Visually good. Fixture page-loop (`tests/pages/fixtures/foxnews.com`) shows the real Fox News homepage (not a consent/interstitial page) with correct overall structure. Remaining ~6% pixel diffs vs Chrome (tolerance=0, 1200x800) are dominated by minor text rasterization/hinting differences plus a few 1px border/background snap differences (e.g. the thin gray separator line near the top is shifted by 1px). No missing layout/paint primitives identified.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 57295,
-    "diff_percent": 5.9682,
-    "perceptual": 0.0302,
+    "diff_pixels": 49742,
+    "diff_percent": 5.1815,
+    "perceptual": 0.0371,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 24,
-      "y": 5,
+      "y": 9,
       "baseline_rgba": [
-        0,
-        51,
-        102,
+        24,
+        70,
+        116,
         255
       ],
       "rendered_rgba": [
-        31,
-        75,
-        120,
+        0,
+        51,
+        102,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "910bb27fb383468a77d8b7f118d6ffa72f60cbcb"
+    "computed_at_commit": "49fb90ec58aadc11b17c255e928cf5e326eeecad"
   },
   "hotspot": "layout",
   "failure_stage": null,

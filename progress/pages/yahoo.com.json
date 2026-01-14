@@ -17,9 +17,10 @@
   "notes": "Visually good overall. Remaining diffs vs the patched Chrome baseline are dominated by small text rasterization differences, plus a minor (~8px) header search-button X offset likely from text metric/layout rounding differences in the top nav.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 87328,
-    "diff_percent": 9.0967,
-    "perceptual": 0.023,
+    "diff_pixels": 88918,
+    "diff_percent": 9.2623,
+    "perceptual": 0.0155,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 216,
       "y": 9,
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "b7efc5bf2098edaa669885291d76019f3749209b"
+    "computed_at_commit": "49fb90ec58aadc11b17c255e928cf5e326eeecad"
   },
   "hotspot": "cascade",
   "failure_stage": null,

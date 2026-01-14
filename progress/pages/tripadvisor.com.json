@@ -17,9 +17,10 @@
   "notes": "Fixture is a DataDome bot-protection interstitial (\"Please enable JS and disable any ad blocker\" / geo.captcha-delivery.com), not the real TripAdvisor homepage. Box tree/layout are trivial; remaining diffs vs the patched Chrome baseline are minor text rasterization/AA differences (no missing layout primitives identified).",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 2325,
-    "diff_percent": 0.2422,
-    "perceptual": 0.0236,
+    "diff_pixels": 1760,
+    "diff_percent": 0.1833,
+    "perceptual": 0.0001,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 10,
       "y": 2,
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "cbe69ff1e1bb8b51872f4692117518afddba2e99"
+    "computed_at_commit": "49fb90ec58aadc11b17c255e928cf5e326eeecad"
   },
   "hotspot": "box_tree",
   "failure_stage": null,

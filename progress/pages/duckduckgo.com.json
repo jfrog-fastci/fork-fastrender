@@ -19,28 +19,29 @@
   "notes": "Visually good vs Chrome baseline (very low perceptual diff). Remaining diffs are subtle: slight off-white/background tinting and minor edge AA on text/borders.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 11363,
-    "diff_percent": 1.1836,
-    "perceptual": 0.0255,
+    "diff_pixels": 12451,
+    "diff_percent": 1.297,
+    "perceptual": 0.0012,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 586,
+      "x": 590,
       "y": 192,
       "baseline_rgba": [
-        255,
-        255,
-        255,
+        252,
+        239,
+        235,
         255
       ],
       "rendered_rgba": [
         255,
-        254,
-        254,
+        255,
+        255,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "211684cd9c51358a36c94f5a2064b73ad61c4602"
+    "computed_at_commit": "49fb90ec58aadc11b17c255e928cf5e326eeecad"
   },
   "hotspot": "paint",
   "failure_stage": null,

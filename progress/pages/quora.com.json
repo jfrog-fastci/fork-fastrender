@@ -17,9 +17,10 @@
   "notes": "Visually looks correct (logged-out Quora landing/login page: full-page background image with centered card, Quora logo/tagline, social-login buttons + email/password form). Diff% is high mainly because the page background is a full-viewport raster image (WebP content saved as .png in the fixture); tiny per-pixel decode/scale/rounding differences (often ±1 RGB like the first mismatch) affect a large portion of the viewport. Text AA differences can also contribute, but the low perceptual score suggests the mismatch is mostly subtle.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 252019,
-    "diff_percent": 26.252,
-    "perceptual": 0.0238,
+    "diff_pixels": 248830,
+    "diff_percent": 25.9198,
+    "perceptual": 0.0319,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 1,
       "y": 0,
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "87bcbb0e8dc9b9e870d6b813d5a7226bc728de8d"
+    "computed_at_commit": "49fb90ec58aadc11b17c255e928cf5e326eeecad"
   },
   "hotspot": "box_tree",
   "failure_stage": null,

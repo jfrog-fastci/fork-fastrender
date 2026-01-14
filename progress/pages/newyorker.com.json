@@ -17,9 +17,10 @@
   "notes": "Real homepage content (not a paywall/interstitial). Visually very close; remaining diffs are mostly raster-level (SVG masthead/logo edges + minor text AA/hinting differences, especially in the dense white-on-dark headline section around y~750-900). Runtime is high despite low perceptual distance because layout dominates (~292ms): heavy grid/flex layout with lots of intrinsic/measure calls (~5.9k) plus substantial text shaping (~148k glyphs); cascade (~111ms) and paint (~100ms) are secondary.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 27154,
-    "diff_percent": 2.8285,
-    "perceptual": 0.0215,
+    "diff_pixels": 19319,
+    "diff_percent": 2.0124,
+    "perceptual": 0.0153,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 603,
       "y": 182,
@@ -30,15 +31,15 @@
         255
       ],
       "rendered_rgba": [
-        0,
-        0,
-        0,
+        16,
+        16,
+        16,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "7f0de99f5592c239faf39227dbc1c5ede86d8121"
+    "computed_at_commit": "49fb90ec58aadc11b17c255e928cf5e326eeecad"
   },
   "hotspot": "layout",
   "failure_stage": null,

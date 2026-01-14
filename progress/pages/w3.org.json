@@ -19,9 +19,10 @@
   "notes": "Remaining diffs are dominated by Chromium's native `<video controls>` UI (FastRender paints a simplified deterministic video surface + scrubber track) plus minor text rasterization/anti-aliasing differences.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 72683,
-    "diff_percent": 7.5711,
-    "perceptual": 0.0277,
+    "diff_pixels": 69987,
+    "diff_percent": 7.2903,
+    "perceptual": 0.0279,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 60,
       "y": 13,
@@ -40,7 +41,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "a51c11d0aadd6d2e7bea64b6dd92a15d18875c00"
+    "computed_at_commit": "49fb90ec58aadc11b17c255e928cf5e326eeecad"
   },
   "hotspot": "layout",
   "failure_stage": null,

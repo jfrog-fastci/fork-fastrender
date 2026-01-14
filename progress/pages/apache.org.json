@@ -17,28 +17,29 @@
   "notes": "Visually good. Remaining pixel diffs vs Chrome are overwhelmingly text rasterization/hinting differences (tiny-skia outline fill; no FreeType hinting/subpixel AA) plus minor per-pixel differences from blur/box-shadow and image/gradient sampling; no missing paint primitives identified.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 157550,
-    "diff_percent": 16.4115,
-    "perceptual": 0.0316,
+    "diff_pixels": 183450,
+    "diff_percent": 19.1094,
+    "perceptual": 0.0839,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 489,
-      "y": 18,
+      "y": 17,
       "baseline_rgba": [
-        132,
-        101,
-        202,
+        151,
+        86,
+        152,
         255
       ],
       "rendered_rgba": [
-        157,
-        95,
-        158,
+        124,
+        41,
+        125,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "59f1f9050cfd986dc05b3a15a94d544dcf56994e"
+    "computed_at_commit": "49fb90ec58aadc11b17c255e928cf5e326eeecad"
   },
   "hotspot": "paint",
   "failure_stage": null,
