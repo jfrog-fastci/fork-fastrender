@@ -235,7 +235,7 @@ we cannot store them “as-is” in `accesskit::NodeId` because:
 To avoid collisions (and to make action routing reversible without a global hashmap), FastRender
 reserves the high 16 bits of AccessKit’s 128-bit `NodeId` space:
 
-- bits 127..120: fixed FastRender marker `0xFA`
+- bits 127..120: fixed FastRender marker (currently `0x46`)
 - bits 119..112: namespace byte
 - bits 111..0: payload (namespace-specific)
 
@@ -261,7 +261,7 @@ Currently reserved namespaces:
 
 Layout (u128):
 
-- bits 127..120: `0xFA` marker
+- bits 127..120: marker `0x46`
 - bits 119..112: namespace `0x04`
 - bits 111..64: `TabId` (48 bits, non-zero)
 - bits 63..32: document generation (u32)

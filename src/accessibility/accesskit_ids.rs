@@ -12,7 +12,8 @@ use std::num::NonZeroU128;
 /// FastRender reserves the high 16 bits of the 128-bit space:
 ///
 /// Layout (big-endian, MSB → LSB):
-/// - 8 bits: fixed FastRender marker (`0xFA`) to avoid colliding with non-FastRender producers.
+/// - 8 bits: fixed FastRender marker (`FASTR_ACCESSKIT_MARKER`) to avoid colliding with
+///   non-FastRender producers.
 /// - 8 bits: namespace (`FASTR_ACCESSKIT_NAMESPACE_*`).
 /// - 112 bits: payload (layout depends on namespace).
 ///
@@ -20,7 +21,9 @@ use std::num::NonZeroU128;
 /// - collision-free across independently generated subtrees,
 /// - reversible (namespace + payload can be recovered without a global map),
 /// - stable across updates (callers choose stable payloads).
-const FASTR_ACCESSKIT_MARKER: u8 = 0xFA;
+/// Chosen to have the highest bit clear so it does not overlap with the legacy tag-bit page id
+/// encoding (`ui::page_accesskit_ids` sets bit 127).
+const FASTR_ACCESSKIT_MARKER: u8 = 0x46; // 'F'
 
 /// Namespace for `dom2::NodeId`-backed nodes.
 ///
@@ -45,6 +48,11 @@ const FASTR_ACCESSKIT_NAMESPACE_CHROME_DOM_PREORDER: u8 = 0x03;
 /// - bits 63..32: document generation (32 bits)
 /// - bits 31..0: DOM pre-order node id (u32, non-zero; clamped from `usize`)
 const FASTR_ACCESSKIT_NAMESPACE_PAGE_DOM_PREORDER: u8 = 0x04;
+
+/// Namespace for renderer preorder node ids (used as a fallback when dom2 mapping is unavailable).
+///
+/// Payload: 1-indexed renderer preorder node id.
+const FASTR_ACCESSKIT_NAMESPACE_RENDERER_PREORDER: u8 = 0x05;
 
 const PAYLOAD_BITS: u32 = 112;
 const PAYLOAD_MASK: u128 = (1u128 << PAYLOAD_BITS) - 1;
@@ -197,6 +205,30 @@ pub fn page_dom_preorder_from_accesskit(node: accesskit::NodeId) -> Option<(u64,
   Some((tab_id, generation, dom_node_id as usize))
 }
 
+/// Encode a 1-indexed renderer preorder id in its own namespace.
+pub fn accesskit_id_for_renderer_preorder(preorder_id: usize) -> accesskit::NodeId {
+  debug_assert!(
+    preorder_id != 0,
+    "expected renderer preorder ids to be 1-indexed"
+  );
+  encode_namespaced_id(
+    FASTR_ACCESSKIT_NAMESPACE_RENDERER_PREORDER,
+    preorder_id as u128,
+  )
+}
+
+pub fn renderer_preorder_from_accesskit(node: accesskit::NodeId) -> Option<usize> {
+  let (namespace, payload) = decode_namespaced_id(node)?;
+  if namespace != FASTR_ACCESSKIT_NAMESPACE_RENDERER_PREORDER {
+    return None;
+  }
+  let preorder = usize::try_from(payload).ok()?;
+  if preorder == 0 {
+    return None;
+  }
+  Some(preorder)
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -234,6 +266,19 @@ mod tests {
       assert_eq!(chrome_dom_preorder_from_accesskit(id), None);
       assert_eq!(page_dom_preorder_from_accesskit(id), None);
     }
+  }
+
+  #[test]
+  fn marker_scheme_ids_do_not_set_page_tag_bit() {
+    // The legacy tag-bit encoding uses bit 127; ensure our marker-based scheme keeps that bit clear
+    // so callers can distinguish between the two encodings without ambiguity.
+    const TAG: u128 = 1u128 << 127;
+    let id = accesskit_id_for_page_dom_preorder(1, 1, 1).0.get();
+    assert_eq!(id & TAG, 0);
+    let wrapper = accesskit_id_for_chrome_wrapper(ChromeWrapperNode::Window)
+      .0
+      .get();
+    assert_eq!(wrapper & TAG, 0);
   }
 
   #[test]

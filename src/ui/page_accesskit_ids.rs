@@ -4,9 +4,9 @@
 //! `decode_page_node_id`) that can cheaply distinguish "page/content" nodes from chrome/egui nodes.
 //!
 //! Note: FastRender's current preferred encoding is the marker+namespace scheme in
-//! `crate::accessibility::accesskit_ids` (wrapped by `crate::ui::page_a11y`). That scheme also
-//! uses high bits, so this tag-bit variant is not sufficient to distinguish *page* nodes from
-//! other FastRender-reserved `NodeId`s (e.g. compositor wrapper nodes).
+//! `crate::accessibility::accesskit_ids` (wrapped by `crate::ui::page_a11y`). This tag-bit variant
+//! is kept mainly for compatibility and does **not** include a document generation, so it cannot be
+//! used to filter stale action requests across navigations.
 //!
 //! Note: the windowed browser UI's injected page subtree currently uses the `(tab_id, document
 //! generation, dom_node_id)` encoding in [`crate::ui::page_a11y`] (`encode_page_node_id`) so stale

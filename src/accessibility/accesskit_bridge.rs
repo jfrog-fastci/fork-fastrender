@@ -6,7 +6,7 @@ use rustc_hash::FxHashSet;
 
 use accesskit::{Node, NodeBuilder, NodeClassSet, NodeId, Role, Tree, TreeUpdate};
 
-use super::accesskit_ids::accesskit_id_for_dom2;
+use super::accesskit_ids::{accesskit_id_for_dom2, accesskit_id_for_renderer_preorder};
 
 /// Build an AccessKit [`TreeUpdate`] from a FastRender [`AccessibilityNode`] tree.
 ///
@@ -48,16 +48,15 @@ pub fn tree_update_from_accessibility_tree(
   }
 
   fn fallback_id_for_preorder(preorder: usize) -> NodeId {
-    // Preorder ids are 1-based. Encode them into a separate namespace to avoid colliding with the
-    // dom2-derived ids produced by `accesskit_id_for_dom2`.
-    const MARKER: u128 = 0xFA;
-    const NAMESPACE_PREORDER: u128 = 0x02;
-    let payload = (preorder as u128).saturating_add(1);
-    let raw = (MARKER << 120) | (NAMESPACE_PREORDER << 112) | (payload & ((1u128 << 112) - 1));
-    NodeId(std::num::NonZeroU128::new(raw).expect("preorder-derived AccessKit NodeId must be non-zero")) // fastrender-allow-unwrap
+    // Preorder ids are 1-based. Encode them into a dedicated namespace so they can safely coexist
+    // with dom2-derived ids and with UI-level wrapper/page ids.
+    accesskit_id_for_renderer_preorder(preorder)
   }
 
-  fn accesskit_id_for_node(node: &AccessibilityNode, mapping: Option<&RendererDomMapping>) -> NodeId {
+  fn accesskit_id_for_node(
+    node: &AccessibilityNode,
+    mapping: Option<&RendererDomMapping>,
+  ) -> NodeId {
     if let Some(mapping) = mapping {
       if let Some(dom2_id) = mapping.node_id_for_preorder(node.node_id) {
         // Avoid duplicate AccessKit ids when multiple renderer preorder ids map to the same dom2
@@ -92,7 +91,12 @@ pub fn tree_update_from_accessibility_tree(
 
     let mut builder = NodeBuilder::new(role_for_accessibility(node));
     builder.set_children(child_ids);
-    if let Some(name) = node.name.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    if let Some(name) = node
+      .name
+      .as_ref()
+      .map(|s| s.trim())
+      .filter(|s| !s.is_empty())
+    {
       builder.set_name(name.to_string());
     }
     nodes.push((id, builder.build(classes)));
