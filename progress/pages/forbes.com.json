@@ -14,12 +14,12 @@
     "layout": 633.0204054491081,
     "paint": 23.000741430220355
   },
-  "notes": "",
+  "notes": "Visually close to Chrome; remaining diffs are mostly text rasterization/AA and minor SVG icon differences (header/logo, dense headline lists).",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 51349,
-    "diff_percent": 5.3489,
-    "perceptual": 0.0568,
+    "diff_pixels": 52890,
+    "diff_percent": 5.5094,
+    "perceptual": 0.0586,
     "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 609,
@@ -39,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "526f3c00d90a5b0004ff08317430f37ac4953e6a"
+    "computed_at_commit": "1c6325f2b10a16bf6d0b83a42462fdf71c99bd7c"
   },
   "hotspot": "layout",
   "failure_stage": null,

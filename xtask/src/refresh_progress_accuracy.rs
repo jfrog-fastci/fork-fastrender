@@ -29,6 +29,20 @@ pub struct RefreshProgressAccuracyArgs {
   #[arg(long, value_name = "DIR", default_value = DEFAULT_OUT_DIR)]
   pub out_dir: PathBuf,
 
+  /// Use Cargo's debug profile for the FastRender/diff steps (skip `--release`).
+  ///
+  /// This mirrors `xtask fixture-chrome-diff --debug` and is useful for keeping `refresh-progress-accuracy`
+  /// iteration loops under the standard 10-minute sandbox timeout.
+  #[arg(long)]
+  pub debug: bool,
+
+  /// Skip building renderer binaries and reuse existing binaries under the selected Cargo profile.
+  ///
+  /// This mirrors `xtask fixture-chrome-diff --no-build`. When enabled, binaries must already exist under
+  /// `target/debug` (with `--debug`) or `target/release` (default).
+  #[arg(long)]
+  pub no_build: bool,
+
   /// Only process listed fixture names (comma-separated stems).
   ///
   /// This forwards `--fixtures` to `xtask fixture-chrome-diff`.
@@ -216,6 +230,8 @@ fn print_plan(
   }
   println!("  viewport: {DEFAULT_VIEWPORT} (pageset progress baseline)");
   println!("  timeout: {}s", args.timeout);
+  println!("  debug: {}", args.debug);
+  println!("  no_build: {}", args.no_build);
   println!(
     "  diff: tolerance={} max_diff_percent={} ignore_alpha={} max_perceptual_distance={}",
     args.tolerance,
@@ -273,6 +289,12 @@ fn build_fixture_chrome_diff_argv(args: &RefreshProgressAccuracyArgs) -> Result<
   // defaults. This avoids duplicating its (large) set of defaults and keeps the wrapper aligned
   // with future changes.
   let mut argv: Vec<OsString> = vec!["xtask".into(), "fixture-chrome-diff".into()];
+  if args.debug {
+    argv.push("--debug".into());
+  }
+  if args.no_build {
+    argv.push("--no-build".into());
+  }
   argv.push("--out-dir".into());
   argv.push(args.out_dir.as_os_str().to_os_string());
 

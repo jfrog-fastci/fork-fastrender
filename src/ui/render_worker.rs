@@ -1192,7 +1192,6 @@ fn hit_test_fragment_tree_for_scroll_cached(
     *cache = None;
     return None;
   }
-
   let Some(prepared) = doc.prepared() else {
     *cache = None;
     return None;
