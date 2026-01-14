@@ -511,8 +511,8 @@ fn reject_encrypted_sample_entry(meta: &Mp4SampleEntryMeta) -> MediaResult<()> {
     meta.codec_type,
     mp4parse::CodecType::EncryptedVideo | mp4parse::CodecType::EncryptedAudio
   );
-    || codec_name.contains("encv")
-    || codec_name.contains("enca");
+  let encrypted_codec =
+    encrypted_codec || codec_name.contains("encv") || codec_name.contains("enca");
 
   if !has_sinf && !encrypted_codec {
     return Ok(());
