@@ -421,6 +421,7 @@ The windowed `browser` app uses a background autosave helper (`SessionAutosave` 
   - Crash-loop breaker: after a threshold number of consecutive unclean exits, the browser may skip
     auto-restoring tabs and start with a safe new tab instead (use `--restore` to force restoring
     anyway).
+    - When this triggers in the windowed UI, the active window also shows a “Safe mode: …” toast.
 - **Background autosave:** while the browser is running, it snapshots the current session and
   schedules a debounced background save on “significant” state changes (for example tab navigations,
   tab/window creation/closure, zoom/appearance changes, and window geometry changes).

@@ -267,6 +267,9 @@ and start with a safe `about:newtab` instead (unless `--restore` is used).
 - [ ] Expected results:
   - [ ] The browser **does not** restore the full prior session; it starts with a safe
     `about:newtab` instead (single window).
+  - [ ] A toast appears in the active window indicating safe mode (warning/error), e.g.
+    “Safe mode: session restore skipped after repeated crashes. Use --restore to force restoring
+    anyway.”
   - [ ] A warning is printed to stderr indicating restore was skipped due to repeated crashes.
   - [ ] Running again with `--restore` forces restoring the previous session anyway.
 
