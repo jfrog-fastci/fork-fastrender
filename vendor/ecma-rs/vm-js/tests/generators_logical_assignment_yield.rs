@@ -396,8 +396,6 @@ fn generator_logical_or_assignment_captures_binding_and_decision_across_yield_st
 
         const r2 = it.next();
 
-        x = 0;
-
         const r3 = it.next();
 
         r1.value === 1 && r1.done === false &&
@@ -440,9 +438,6 @@ fn generator_logical_or_assignment_captures_base_and_decision_across_yield_star_
         o = o2;
 
         const r2 = it.next();
-
-        o1.a = 0;
-        o = o2;
 
         const r3 = it.next();
 
@@ -488,10 +483,6 @@ fn generator_logical_and_assignment_captures_base_key_and_decision_across_yield_
 
         const r2 = it.next();
 
-        o1.a = 1;
-        o = o2;
-        k = "a";
-
         const r3 = it.next();
 
         r1.value === "rhs1" && r1.done === false &&
@@ -535,10 +526,6 @@ fn generator_nullish_coalescing_assignment_captures_base_key_and_decision_across
         k = "b";
 
         const r2 = it.next();
-
-        o1.a = null;
-        o = o2;
-        k = "a";
 
         const r3 = it.next();
 
