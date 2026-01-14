@@ -17917,8 +17917,9 @@ impl App {
     }
 
     // Best-effort write to the OS clipboard (bounded). Oversized payloads are dropped entirely.
+    let mut clipboard_write_ok = false;
     let wrote_clipboard = write_clipboard_update_if_within_limit(&clipboard_update, |text| {
-      let _ = os_clipboard::write_text(text);
+      clipboard_write_ok = os_clipboard::write_text(text);
     });
     if !wrote_clipboard && !clipboard_update.truncated {
       // This should be unreachable (the protocol sanitizer should guarantee the limit), but keep a
@@ -17931,6 +17932,28 @@ impl App {
       );
       use std::io::Write;
       let _ = writeln!(std::io::stderr(), "{debug_line}");
+      if self.debug_log_ui_enabled {
+        if self.debug_log.len() >= Self::DEBUG_LOG_MAX_LINES {
+          self.debug_log.pop_front();
+        }
+        self.debug_log.push_back(debug_line);
+      }
+    }
+    if wrote_clipboard && !clipboard_write_ok {
+      use fastrender::ui::ToastKind;
+
+      if self.browser_state.active_tab_id() == Some(clipboard_update.tab_id) {
+        self.show_chrome_toast_kind(ToastKind::Warning, "Failed to copy to clipboard");
+      }
+
+      let debug_line = format!(
+        "[clipboard] failed to write to OS clipboard for tab {}",
+        clipboard_update.tab_id.0
+      );
+      {
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), "{debug_line}");
+      }
       if self.debug_log_ui_enabled {
         if self.debug_log.len() >= Self::DEBUG_LOG_MAX_LINES {
           self.debug_log.pop_front();
