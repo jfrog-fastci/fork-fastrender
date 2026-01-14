@@ -2896,20 +2896,19 @@ impl BrowserDocumentDom2 {
           }
 
           for attr in attributes {
-            if attr.qualified_name_matches("popover", is_html)
-              || attr.qualified_name_matches("data-fastr-open", is_html)
-              || attr.qualified_name_matches("data-fastr-modal", is_html)
+            if attr.local_name.eq_ignore_ascii_case("popover")
+              || attr.local_name.eq_ignore_ascii_case("data-fastr-open")
+              || attr.local_name.eq_ignore_ascii_case("data-fastr-modal")
             {
               return true;
             }
           }
         }
-        crate::dom2::NodeKind::Slot { namespace, attributes, .. } => {
-          let is_html = dom.is_html_case_insensitive_namespace(namespace);
+        crate::dom2::NodeKind::Slot { attributes, .. } => {
           for attr in attributes {
-            if attr.qualified_name_matches("popover", is_html)
-              || attr.qualified_name_matches("data-fastr-open", is_html)
-              || attr.qualified_name_matches("data-fastr-modal", is_html)
+            if attr.local_name.eq_ignore_ascii_case("popover")
+              || attr.local_name.eq_ignore_ascii_case("data-fastr-open")
+              || attr.local_name.eq_ignore_ascii_case("data-fastr-modal")
             {
               return true;
             }
