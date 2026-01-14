@@ -6,12 +6,14 @@ on:
       - "vendor/ecma-rs/**"
       - "scripts/cargo_agent.sh"
       - "scripts/run_limited.sh"
+      - "scripts/run_vm_js_generator_yield_tests.sh"
       - ".github/workflows/ecma_rs_native.yml"
   pull_request:
     paths:
       - "vendor/ecma-rs/**"
       - "scripts/cargo_agent.sh"
       - "scripts/run_limited.sh"
+      - "scripts/run_vm_js_generator_yield_tests.sh"
       - ".github/workflows/ecma_rs_native.yml"
   # Keep the native runtime/reactor continuously validated even when only dependency
   # versions drift (the vendored ecma-rs workspace does not commit Cargo.lock).
