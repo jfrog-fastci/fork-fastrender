@@ -2856,6 +2856,19 @@ mod tests {
   }
 
   #[test]
+  fn about_help_and_settings_link_to_settings_and_processes() {
+    for page in [ABOUT_HELP, ABOUT_SETTINGS] {
+      let html = html_for_about_url(page).unwrap();
+      for target in [ABOUT_SETTINGS, ABOUT_PROCESSES] {
+        assert!(
+          html.contains(&format!("href=\"{target}\"")),
+          "expected {page} HTML to contain a link to {target}, got: {html}"
+        );
+      }
+    }
+  }
+
+  #[test]
   fn about_gpu_falls_back_to_unknown_when_headless() {
     let html = html_for_about_url(ABOUT_GPU).unwrap();
     assert!(html.contains("<title>GPU</title>"));

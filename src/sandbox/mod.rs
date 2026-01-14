@@ -1029,7 +1029,6 @@ pub fn linux_preflight() -> Result<LinuxSandboxPreflight, SandboxError> {
 pub fn linux_preflight() -> Result<LinuxSandboxPreflight, SandboxError> {
   Err(SandboxError::UnsupportedPlatform)
 }
-
 #[cfg(target_os = "linux")]
 fn map_seccomp_action_err(action_name: &'static str, action: u32, err: io::Error) -> SandboxError {
   let errno = err.raw_os_error().unwrap_or_default();
