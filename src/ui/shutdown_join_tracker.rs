@@ -1,4 +1,3 @@
-use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -35,10 +34,12 @@ enum TrackedJoinState {
   /// This avoids spawning an extra join-helper thread (and allows dropping the join handle after the
   /// timeout).
   JoinHandle(Option<JoinHandle<()>>),
-  /// Observe completion of a potentially blocking operation via a detached helper thread.
-  Blocking {
-    rx: mpsc::Receiver<std::thread::Result<()>>,
-  },
+  /// Observe completion of a potentially blocking operation via a helper thread.
+  ///
+  /// We keep the helper thread's join handle so `poll()` can observe completion via
+  /// `JoinHandle::is_finished`. If it does not complete before the timeout, the join handle is
+  /// dropped (detaching the helper thread).
+  Blocking(Option<JoinHandle<std::thread::Result<()>>>),
 }
 
 impl ShutdownJoinTracker {
@@ -83,32 +84,24 @@ impl ShutdownJoinTracker {
     F: FnOnce() -> std::thread::Result<()> + Send + 'static,
   {
     let label = label.into();
-    let (done_tx, done_rx) = mpsc::channel::<std::thread::Result<()>>();
-    // `spawn` takes ownership of the closure even on error, so move a clone into the helper thread
-    // and keep the original `Sender` in this stack frame for error-path cleanup.
-    let done_tx_thread = done_tx.clone();
     let started_at = Instant::now();
     let deadline = started_at + self.detach_timeout;
 
-    // Best-effort. If we can't spawn, drop the `JoinHandle` (detach) and move on.
+    // Best-effort. If we can't spawn, drop the operation and move on.
     match std::thread::Builder::new()
       .name(format!("fastr_shutdown_join_{}", self.joins.len()))
-      .spawn(move || {
-        let _ = done_tx_thread.send(join());
-      }) {
+      .spawn(join)
+    {
       Ok(helper_join) => {
-        // Detach the helper; `poll()` will observe completion via the channel.
-        drop(helper_join);
         self.joins.push(TrackedJoin {
           label,
           started_at,
           deadline,
-          state: TrackedJoinState::Blocking { rx: done_rx },
+          state: TrackedJoinState::Blocking(Some(helper_join)),
         });
       }
       Err(err) => {
         eprintln!("failed to spawn shutdown join helper thread for {label}: {err}");
-        drop(done_rx);
       }
     }
   }
@@ -155,32 +148,43 @@ impl ShutdownJoinTracker {
 
         true
       }
-      TrackedJoinState::Blocking { rx } => match rx.try_recv() {
-        Ok(Ok(())) => false,
-        Ok(Err(_)) => {
-          let elapsed = now.saturating_duration_since(entry.started_at);
-          eprintln!(
-            "shutdown join observed panic: {} (after {:?})",
-            entry.label, elapsed
-          );
-          false
-        }
-        Err(mpsc::TryRecvError::Empty) => {
-          if now >= entry.deadline {
-            eprintln!(
-              "shutdown join timed out after {:?}: {} (detaching)",
-              detach_timeout, entry.label
-            );
-            false
-          } else {
-            true
+      TrackedJoinState::Blocking(join) => {
+        let Some(handle) = join.as_ref() else {
+          return false;
+        };
+
+        if handle.is_finished() {
+          let handle = join.take().expect("checked Some above");
+          match handle.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+              let elapsed = now.saturating_duration_since(entry.started_at);
+              eprintln!(
+                "shutdown join observed panic: {} (after {:?})",
+                entry.label, elapsed
+              );
+            }
+            Err(_) => {
+              let elapsed = now.saturating_duration_since(entry.started_at);
+              eprintln!(
+                "shutdown join helper thread panicked: {} (after {:?})",
+                entry.label, elapsed
+              );
+            }
           }
+          return false;
         }
-        Err(mpsc::TryRecvError::Disconnected) => {
-          eprintln!("shutdown join helper thread disconnected: {}", entry.label);
-          false
+
+        if now >= entry.deadline {
+          eprintln!(
+            "shutdown join timed out after {:?}: {} (detaching)",
+            detach_timeout, entry.label
+          );
+          return false;
         }
-      },
+
+        true
+      }
     });
   }
 
@@ -255,5 +259,76 @@ mod tests {
     std::thread::sleep(Duration::from_millis(1150));
     tracker.poll();
     assert!(!tracker.has_pending());
+  }
+
+  #[test]
+  fn track_blocking_returns_quickly_and_completes_when_unblocked() {
+    let mut tracker = ShutdownJoinTracker::with_detach_timeout(Duration::from_secs(5));
+
+    let (unblock_tx, unblock_rx) = mpsc::channel::<()>();
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+
+    let start = Instant::now();
+    tracker.track_blocking("test-blocking", move || {
+      unblock_rx.recv().expect("expected unblock");
+      done_tx.send(()).expect("done send");
+      Ok(())
+    });
+    assert!(
+      start.elapsed() < Duration::from_millis(100),
+      "tracking a blocking join must be non-blocking"
+    );
+
+    // Still blocked; should remain pending.
+    tracker.poll();
+    assert!(tracker.has_pending());
+
+    unblock_tx.send(()).expect("unblock send");
+    done_rx
+      .recv_timeout(Duration::from_secs(1))
+      .expect("expected helper to finish");
+
+    // The helper should now be joinable; poll until we observe it.
+    for _ in 0..100 {
+      tracker.poll();
+      if !tracker.has_pending() {
+        break;
+      }
+      std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!tracker.has_pending());
+  }
+
+  #[test]
+  fn track_blocking_times_out_and_detaches() {
+    let mut tracker = ShutdownJoinTracker::with_detach_timeout(Duration::from_millis(50));
+
+    let (unblock_tx, unblock_rx) = mpsc::channel::<()>();
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+
+    tracker.track_blocking("test-blocking-timeout", move || {
+      unblock_rx.recv().expect("expected unblock");
+      done_tx.send(()).expect("done send");
+      Ok(())
+    });
+
+    // `poll` should not block even though the helper thread is waiting.
+    let start = Instant::now();
+    tracker.poll();
+    assert!(start.elapsed() < Duration::from_millis(100));
+
+    // Wait past the detach timeout, then poll again; it should stop tracking.
+    std::thread::sleep(Duration::from_millis(80));
+    tracker.poll();
+    assert!(
+      !tracker.has_pending(),
+      "expected blocking join to be detached after timeout"
+    );
+
+    // Allow the helper thread to exit so the test harness doesn't keep extra threads around.
+    unblock_tx.send(()).expect("unblock send");
+    done_rx
+      .recv_timeout(Duration::from_secs(1))
+      .expect("expected helper to exit");
   }
 }
