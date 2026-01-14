@@ -16186,19 +16186,8 @@ impl Trace for GenFrame {
         receiver,
         left,
         ..
-      } => {
-        if let Some(b) = base {
-          tracer.trace_value(*b);
-        }
-        if let Some(k) = key {
-          tracer.trace_value(*k);
-        }
-        if let Some(r) = receiver {
-          tracer.trace_value(*r);
-        }
-        tracer.trace_value(*left);
       }
-      GenFrame::AssignExpAfterRhs {
+      | GenFrame::AssignExpAfterRhs {
         base,
         key,
         receiver,
