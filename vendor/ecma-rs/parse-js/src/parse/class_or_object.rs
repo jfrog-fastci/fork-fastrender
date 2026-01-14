@@ -279,7 +279,8 @@ impl<'a> Parser<'a> {
               //   parsing within a generator), and
               // - `return` statements are never permitted (handled above via `in_function = 0`).
               let is_module = p.is_module();
-              let await_expr_allowed = ctx.rules.await_expr_allowed;
+              let await_expr_allowed =
+                ctx.rules.await_expr_allowed && (prev_in_function > 0 || is_module);
               let block_ctx = ctx.non_top_level().with_rules(ParsePatternRules {
                 await_allowed: false,
                 yield_allowed: if is_module { false } else { ctx.rules.yield_allowed },

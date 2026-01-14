@@ -25794,6 +25794,7 @@ fn async_eval_for_triple(
     };
   }
 
+  // Non-lexical loop initializer.
   match &stmt.init {
     parse_js::ast::stmt::ForTripleStmtInit::None => async_for_triple_after_init(
       evaluator,
@@ -25804,9 +25805,41 @@ fn async_eval_for_triple(
       needs_explicit_iter_tick,
       None,
     ),
-    parse_js::ast::stmt::ForTripleStmtInit::Expr(expr) => {
-      match async_eval_expr(evaluator, scope, expr) {
-        Ok(AsyncEval::Complete(_)) => async_for_triple_after_init(
+    parse_js::ast::stmt::ForTripleStmtInit::Expr(expr) => match async_eval_expr(evaluator, scope, expr) {
+      Ok(AsyncEval::Complete(_)) => async_for_triple_after_init(
+        evaluator,
+        scope,
+        stmt,
+        label_vec,
+        v_root,
+        needs_explicit_iter_tick,
+        None,
+      ),
+      Ok(AsyncEval::Suspend(mut suspend)) => {
+        async_frames_push(
+          &mut suspend.frames,
+          AsyncFrame::ForTripleAfterInit {
+            stmt: stmt as *const ForTripleStmt,
+            label_set: label_vec,
+            v_root,
+            needs_explicit_iter_tick,
+            outer_lex: None,
+          },
+        )?;
+        Ok(AsyncEval::Suspend(suspend))
+      }
+      Err(err) => {
+        scope.heap_mut().remove_root(v_root);
+        Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?))
+      }
+    },
+    parse_js::ast::stmt::ForTripleStmtInit::Decl(decl) => match async_eval_var_decl(evaluator, scope, &decl.stx, 0) {
+      Ok(AsyncEval::Complete(c)) => {
+        if c.is_abrupt() {
+          scope.heap_mut().remove_root(v_root);
+          return Ok(AsyncEval::Complete(c));
+        }
+        async_for_triple_after_init(
           evaluator,
           scope,
           stmt,
@@ -25814,62 +25847,26 @@ fn async_eval_for_triple(
           v_root,
           needs_explicit_iter_tick,
           None,
-        ),
-        Ok(AsyncEval::Suspend(mut suspend)) => {
-          async_frames_push(
-            &mut suspend.frames,
-            AsyncFrame::ForTripleAfterInit {
-              stmt: stmt as *const ForTripleStmt,
-              label_set: label_vec,
-              v_root,
-              needs_explicit_iter_tick,
-              outer_lex: None,
-            },
-          )?;
-          Ok(AsyncEval::Suspend(suspend))
-        }
-        Err(err) => {
-          scope.heap_mut().remove_root(v_root);
-          Ok(AsyncEval::Complete(completion_from_expr_result(Err(err))?))
-        }
+        )
       }
-    }
-    parse_js::ast::stmt::ForTripleStmtInit::Decl(decl) => {
-      match async_eval_var_decl(evaluator, scope, &decl.stx, 0) {
-        Ok(AsyncEval::Complete(c)) => {
-          if c.is_abrupt() {
-            scope.heap_mut().remove_root(v_root);
-            return Ok(AsyncEval::Complete(c));
-          }
-          async_for_triple_after_init(
-            evaluator,
-            scope,
-            stmt,
-            label_vec,
+      Ok(AsyncEval::Suspend(mut suspend)) => {
+        async_frames_push(
+          &mut suspend.frames,
+          AsyncFrame::ForTripleAfterInit {
+            stmt: stmt as *const ForTripleStmt,
+            label_set: label_vec,
             v_root,
             needs_explicit_iter_tick,
-            None,
-          )
-        }
-        Ok(AsyncEval::Suspend(mut suspend)) => {
-          async_frames_push(
-            &mut suspend.frames,
-            AsyncFrame::ForTripleAfterInit {
-              stmt: stmt as *const ForTripleStmt,
-              label_set: label_vec,
-              v_root,
-              needs_explicit_iter_tick,
-              outer_lex: None,
-            },
-          )?;
-          Ok(AsyncEval::Suspend(suspend))
-        }
-        Err(err) => {
-          scope.heap_mut().remove_root(v_root);
-          Err(err)
-        }
+            outer_lex: None,
+          },
+        )?;
+        Ok(AsyncEval::Suspend(suspend))
       }
-    }
+      Err(err) => {
+        scope.heap_mut().remove_root(v_root);
+        Err(err)
+      }
+    },
   }
 }
 
