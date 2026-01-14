@@ -266,3 +266,154 @@ fn async_super_computed_member_update_in_derived_ctor_arrow_uses_get_this_bindin
 
   Ok(())
 }
+
+#[test]
+fn async_super_property_ops_in_async_arrow_capture_derived_ctor_this() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = '';
+      class B {
+        get x() { return this._x; }
+        set x(v) { this._x = v; }
+      }
+      class D extends B {
+        constructor() {
+          super();
+          this._x = 1;
+          this.f = async () => {
+            let a = super[await Promise.resolve("x")]++;
+            let b = ++super[await Promise.resolve("x")];
+            return a + "," + b + "," + this._x;
+          };
+          this.g = async () => {
+            super.x = await Promise.resolve(2);
+            return this._x;
+          };
+        }
+      }
+      async function run() {
+        let d = new D();
+        let r1 = await d.f();
+        let r2 = await d.g();
+        return r1 + ";" + r2;
+      }
+      run().then(v => out = String(v));
+    "#,
+  )?;
+
+  // No microtasks run yet.
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "1,3,3;2");
+
+  Ok(())
+}
+
+#[test]
+fn async_super_ops_in_async_arrow_defined_before_super() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = '';
+      class B {
+        get x() { return this._x; }
+        set x(v) { this._x = v; }
+      }
+      class D extends B {
+        constructor() {
+          // Defining an arrow function that references `this`/`super` before calling `super()` is
+          // allowed; it should observe `this` after initialization.
+          let f = async () => {
+            let a = super[await Promise.resolve("x")]++;
+            return a + "," + this._x;
+          };
+          super();
+          this._x = 1;
+          this.f = f;
+        }
+      }
+      async function run() {
+        let d = new D();
+        return await d.f();
+      }
+      run().then(v => out = String(v));
+    "#,
+  )?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "1,2");
+
+  Ok(())
+}
+
+#[test]
+fn async_super_proxy_receiver_is_this_in_async_arrow_defined_before_super() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = '';
+
+      var recv_get;
+      var recv_set;
+      var target = {
+        get x() { return this._x; },
+        set x(v) { this._x = v; },
+      };
+      var proxy = new Proxy(target, {
+        get(t, p, r) {
+          if (p === "x") recv_get = r;
+          return Reflect.get(t, p, r);
+        },
+        set(t, p, v, r) {
+          if (p === "x") recv_set = r;
+          return Reflect.set(t, p, v, r);
+        },
+      });
+
+      class B {}
+      class D extends B {
+        constructor() {
+          let f = async () => {
+            // Trigger both Proxy get/set traps for `x` via update expression.
+            super[await Promise.resolve("x")]++;
+            return recv_get === this && recv_set === this;
+          };
+          super();
+          this._x = 1;
+          // Make `GetSuperBase()` return the Proxy object.
+          Object.setPrototypeOf(D.prototype, proxy);
+          this.f = f;
+        }
+      }
+      async function run() {
+        let d = new D();
+        let ok = await d.f();
+        return ok && recv_get === d && recv_set === d;
+      }
+      run().then(v => out = String(v));
+    "#,
+  )?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "true");
+
+  Ok(())
+}
