@@ -6564,15 +6564,14 @@ impl BrowserRuntime {
       ) =
         match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
           let fragment_tree_before = hit_tree_before.as_deref().unwrap_or(fragment_tree);
-          let (mut changed, mut hit, mut hover_is_drop_target) =
-            engine.pointer_move_and_hit_and_drop_target(
+          let (mut changed, mut hit, mut hover_is_drop_target) = engine
+            .pointer_move_and_hit_and_drop_target(
               dom,
               box_tree,
               fragment_tree_before,
               &scroll_snapshot,
               viewport_point,
             );
-
           let mut fragment_tree_for_cursor = fragment_tree_before;
           let mut scroll_for_cursor = &scroll_snapshot;
           if let Some(scroll_after) = next_scroll.as_ref() {
@@ -6692,14 +6691,11 @@ impl BrowserRuntime {
 
           (
             changed,
-            (
-              changed,
-              hovered_url,
-              cursor,
-              hovered_dom_node_id,
-              hovered_dom_element_id,
-              textarea_scroll,
-            ),
+            hovered_url,
+            cursor,
+            hovered_dom_node_id,
+            hovered_dom_element_id,
+            textarea_scroll,
           )
         }) {
           Ok(changed) => changed,
@@ -7210,7 +7206,7 @@ impl BrowserRuntime {
            None => (None, None),
          };
 
-         (changed, (changed, target_id, target_element_id))
+         (changed, target_id, target_element_id)
        }) {
         Ok(changed) => changed,
         Err(_) => return,
@@ -7580,18 +7576,15 @@ impl BrowserRuntime {
 
         (
           dom_changed,
-          (
-            dom_changed,
-            action,
-            picker_value,
-            focus_scroll,
-            mouseup_target,
-            mouseup_target_element_id,
-            click_target,
-            click_target_element_id,
-            form_submitter,
-            form_submitter_element_id,
-          ),
+          action,
+          picker_value,
+          focus_scroll,
+          mouseup_target,
+          mouseup_target_element_id,
+          click_target,
+          click_target_element_id,
+          form_submitter,
+          form_submitter_element_id,
         )
       }) {
         Ok(result) => result,
@@ -9149,7 +9142,7 @@ impl BrowserRuntime {
           fragment_tree,
           &scroll_snapshot,
         );
-      (changed, (changed, caret_scroll))
+      (changed, caret_scroll)
     });
     let (changed, caret_scroll) = match result {
       Ok(result) => result,
@@ -9428,7 +9421,7 @@ impl BrowserRuntime {
           fragment_tree,
           &scroll_snapshot,
         );
-      (dom_changed, (dom_changed, caret_scroll))
+      (dom_changed, caret_scroll)
     });
     let (changed, caret_scroll) = match result {
       Ok(result) => result,
@@ -9518,7 +9511,7 @@ impl BrowserRuntime {
           fragment_tree,
           &scroll_snapshot,
         );
-      (dom_changed, (dom_changed, caret_scroll))
+      (dom_changed, caret_scroll)
     });
     let (changed, caret_scroll) = match result {
       Ok(result) => result,
@@ -9615,7 +9608,7 @@ impl BrowserRuntime {
           fragment_tree,
           &scroll_snapshot,
         );
-      (dom_changed, (dom_changed, caret_scroll))
+      (dom_changed, caret_scroll)
     });
     let (changed, caret_scroll) = match result {
       Ok(result) => result,
@@ -9703,7 +9696,7 @@ impl BrowserRuntime {
           fragment_tree,
           &scroll_snapshot,
         );
-      (dom_changed, (dom_changed, caret_scroll))
+      (dom_changed, caret_scroll)
     });
     let (changed, caret_scroll) = match result {
       Ok(result) => result,
@@ -9785,7 +9778,7 @@ impl BrowserRuntime {
         &scroll_snapshot,
         node_id,
       );
-      (dom_changed, (dom_changed, focus_scroll))
+      (dom_changed, focus_scroll)
     }) {
       Ok((changed, scroll)) => (changed, scroll),
       Err(_) => {
