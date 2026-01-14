@@ -81,6 +81,31 @@ fn generator_private_field_assignment_yield_in_base() {
 }
 
 #[test]
+fn generator_private_field_destructuring_assignment_yield_in_base() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      class C {
+        static #x = 0;
+        static getX() { return this.#x; }
+        static *g() {
+          ({ a: (yield this).#x } = { a: 42 });
+          return this.#x;
+        }
+      }
+      var it = C.g();
+      var r1 = it.next();
+      var r2 = it.next(r1.value);
+      r1.done === false && r1.value === C &&
+      r2.done === true && r2.value === 42 && C.getX() === 42
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_private_field_update_yield_in_base() {
   let mut rt = new_runtime();
   let value = rt
