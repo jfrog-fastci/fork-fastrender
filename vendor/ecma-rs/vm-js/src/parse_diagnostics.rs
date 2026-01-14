@@ -24,6 +24,10 @@ fn is_await_disallowed_in_class_static_block_message(message: &str) -> bool {
 
 fn parse_js_error_is_vmjs_early_error(typ: SyntaxErrorType) -> bool {
   match typ {
+    // `parse-js` has started surfacing some ECMA-262 early errors as dedicated error variants
+    // (instead of generic `ExpectedSyntax(..)` parse errors). Preserve engine-level diagnostic
+    // stability by mapping those variants onto VMJS0004 as well.
+    SyntaxErrorType::ArgumentsNotAllowedInClassInit => true,
     SyntaxErrorType::ExpectedSyntax(message)
       if is_arguments_disallowed_in_class_init_message(message)
         || is_await_disallowed_in_class_static_block_message(message) =>
