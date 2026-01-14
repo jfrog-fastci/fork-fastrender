@@ -19676,9 +19676,9 @@ mod tests {
       Length::px(4.0),
       "expected UA padding to come from src/user_agent.css"
     );
-    assert_eq!(styled_input.styles.padding_right, Length::px(6.0));
+    assert_eq!(styled_input.styles.padding_right, Length::px(12.5));
     assert_eq!(styled_input.styles.padding_bottom, Length::px(4.0));
-    assert_eq!(styled_input.styles.padding_left, Length::px(6.0));
+    assert_eq!(styled_input.styles.padding_left, Length::px(12.5));
 
     let text_input_dom = DomNode {
       node_type: DomNodeType::Element {

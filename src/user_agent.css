@@ -453,6 +453,9 @@ input[type="submit"], input[type="button"], input[type="reset"], button {
     border: 1px solid #767676;
     border-radius: 3px;
     text-align: center;
+    /* Chromium UA stylesheet uses `white-space: pre` for buttons so they don't wrap at spaces by
+       default (this affects intrinsic sizing + flex/grid min-content computations). */
+    white-space: pre;
     /* In grid/layout contexts, buttons should default to their intrinsic (content) width rather
        than stretching to fill the grid area. */
     justify-self: start;

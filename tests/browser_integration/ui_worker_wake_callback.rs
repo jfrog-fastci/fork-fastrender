@@ -17,10 +17,10 @@ fn ui_worker_wake_callback_invoked_on_successful_send() {
     })
   };
 
-  let (ui_tx, ui_rx, join) =
+  let (ui_tx, ui_rx_raw, join) =
     spawn_browser_ui_worker("ui-worker-wake-callback-ok", Some(wake))
       .expect("spawn_browser_ui_worker");
-  let ui_rx = WorkerToUiInbox::new(ui_rx);
+  let ui_rx = WorkerToUiInbox::new(ui_rx_raw);
 
   let tab_id = TabId::new();
   ui_tx
@@ -73,11 +73,11 @@ fn ui_worker_wake_callback_not_invoked_after_receiver_drop() {
     })
   };
 
-  let (ui_tx, ui_rx, join) =
+  let (ui_tx, ui_rx_raw, join) =
     spawn_browser_ui_worker("ui-worker-wake-callback-disconnect", Some(wake))
       .expect("spawn_browser_ui_worker");
   calls.store(0, Ordering::Relaxed);
-  drop(ui_rx);
+  drop(ui_rx_raw);
 
   let tab_id = TabId::new();
   ui_tx

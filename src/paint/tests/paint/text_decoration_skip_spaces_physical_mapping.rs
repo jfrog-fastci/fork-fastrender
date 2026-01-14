@@ -36,10 +36,10 @@ fn spacer_advance_in_runs(runs: &[ShapedRun], edge: SpacerEdge, inline_vertical:
         for glyph in &run.glyphs {
           let idx = glyph.cluster as usize;
           let Some(ch) = run.text.get(idx..).and_then(|s| s.chars().next()) else {
-            return advance.max(0.0);
+            return advance.max(0.0_f32);
           };
           if !is_spacer_char(ch) {
-            return advance.max(0.0);
+            return advance.max(0.0_f32);
           }
           advance += if inline_vertical {
             if glyph.y_advance.abs() > f32::EPSILON {
@@ -58,10 +58,10 @@ fn spacer_advance_in_runs(runs: &[ShapedRun], edge: SpacerEdge, inline_vertical:
         for glyph in run.glyphs.iter().rev() {
           let idx = glyph.cluster as usize;
           let Some(ch) = run.text.get(idx..).and_then(|s| s.chars().next()) else {
-            return advance.max(0.0);
+            return advance.max(0.0_f32);
           };
           if !is_spacer_char(ch) {
-            return advance.max(0.0);
+            return advance.max(0.0_f32);
           }
           advance += if inline_vertical {
             if glyph.y_advance.abs() > f32::EPSILON {
@@ -78,7 +78,7 @@ fn spacer_advance_in_runs(runs: &[ShapedRun], edge: SpacerEdge, inline_vertical:
   }
 
   if advance.is_finite() {
-    advance.max(0.0)
+    advance.max(0.0_f32)
   } else {
     0.0
   }
@@ -115,7 +115,7 @@ fn spacer_advance_for_prefix(runs: &[ShapedRun], prefix_len: usize, inline_verti
   }
 
   if advance.is_finite() {
-    advance.max(0.0)
+    advance.max(0.0_f32)
   } else {
     0.0
   }

@@ -14,7 +14,7 @@
     "layout": 80.13263498349836,
     "paint": 33.054711930693074
   },
-  "notes": "Mostly visually good: imagery + overall grid/flex layout match closely; remaining diffs are dominated by minor text AA/subpixel/rounding (over half of differing pixels are ≤1 channel). One notable visible mismatch is in the header: the red “Subscribe” button/sign-in cluster is ~17px horizontally shifted vs Chrome (red bbox x≈738–831 in Chrome vs x≈755–848 in FR at y≈112–150), likely flex + auto-margin spacing. Other remaining diffs are small (sporadic teal link/underline pixels #075e64 in mid-page/bottom).",
+  "notes": "Visually good: overall grid/flex layout and imagery match closely, and the header “Subscribe”/“Sign In” cluster now aligns (button text no longer wraps). Remaining diffs are dominated by minor text AA/subpixel/rounding and tiny color differences (many pixels differ by ≤1 channel); no obvious layout/stacking/clipping issues remain.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 243517,

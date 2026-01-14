@@ -3,7 +3,7 @@ use crate::dom;
 use crate::style::cascade::apply_styles_with_media;
 use crate::style::cascade::StyledNode;
 use crate::style::media::MediaContext;
-use crate::style::types::{BorderStyle, BoxSizing, CursorKeyword, Overflow};
+use crate::style::types::{BorderStyle, BoxSizing, CursorKeyword, Overflow, WhiteSpace};
 use crate::style::values::Length;
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
@@ -25,6 +25,7 @@ fn form_control_defaults_come_from_user_agent_stylesheet() {
       <input id="text" type="text">
       <input id="search" type="search">
       <textarea id="textarea"></textarea>
+      <button id="button">Click</button>
       <select id="select-default"><option>One</option></select>
       <select id="select-size-empty" size><option>One</option></select>
       <select id="select-size-0" size="0"><option>One</option></select>
@@ -71,6 +72,11 @@ fn form_control_defaults_come_from_user_agent_stylesheet() {
   let textarea = find_by_id(&styled, "textarea").expect("textarea node");
   assert_eq!(textarea.styles.box_sizing, BoxSizing::ContentBox);
   assert_eq!(textarea.styles.cursor, CursorKeyword::Text);
+
+  // Chromium's UA stylesheet uses `white-space: pre` for buttons so they do not wrap at spaces by
+  // default (this affects intrinsic sizing and flex/grid min-content computations).
+  let button = find_by_id(&styled, "button").expect("button node");
+  assert_eq!(button.styles.white_space, WhiteSpace::Pre);
 
   let select_default = find_by_id(&styled, "select-default").expect("default select node");
   assert_eq!(select_default.styles.box_sizing, BoxSizing::ContentBox);
