@@ -1,12 +1,12 @@
+use super::string_match::{
+  contains_ascii_case_insensitive, find_ascii_case_insensitive, AsciiCaseInsensitive,
+};
 use crate::ui::about_pages;
 use crate::ui::browser_app::{BrowserTabState, ClosedTabState, RemoteSearchSuggestCache};
 use crate::ui::messages::TabId;
 use crate::ui::url::{resolve_omnibox_input, resolve_omnibox_search_query, OmniboxInputResolution};
 use crate::ui::visited::{VisitedUrlRecord, VisitedUrlStore};
 use crate::ui::{BookmarkNode, BookmarkStore};
-use super::string_match::{
-  contains_ascii_case_insensitive, find_ascii_case_insensitive, AsciiCaseInsensitiveStr,
-};
 use rustc_hash::FxHashSet;
 use smallvec::SmallVec;
 use std::borrow::Cow;
@@ -358,7 +358,7 @@ impl OmniboxProvider for BookmarksProvider {
     }
 
     let mut out = Vec::with_capacity(matches.len());
-    let mut seen_urls: FxHashSet<AsciiCaseInsensitiveStr<'_>> = FxHashSet::default();
+    let mut seen_urls: FxHashSet<AsciiCaseInsensitive<'_>> = FxHashSet::default();
     seen_urls.reserve(matches.len());
 
     for id in matches {
@@ -373,7 +373,7 @@ impl OmniboxProvider for BookmarksProvider {
 
       // Avoid suggesting the same URL multiple times when the bookmark store contains duplicates
       // (possible via import).
-      if !seen_urls.insert(AsciiCaseInsensitiveStr(url)) {
+      if !seen_urls.insert(AsciiCaseInsensitive(url)) {
         continue;
       }
 
@@ -585,27 +585,22 @@ fn build_omnibox_suggestions_with_provider_iter_at_time<'a>(
 
       // De-dupe by primary key (case-insensitive), matching the previous behaviour of using
       // `to_ascii_lowercase` keys.
-      if let Some(existing_idx) = selected.iter().position(|s| {
-        primary_raw.eq_ignore_ascii_case(suggestion_primary_key_raw(&s.suggestion))
-      }) {
+      if let Some(existing_idx) = selected
+        .iter()
+        .position(|s| primary_raw.eq_ignore_ascii_case(suggestion_primary_key_raw(&s.suggestion)))
+      {
         if score < selected[existing_idx].score {
           continue;
         }
 
-        let candidate = ScoredSuggestion {
-          suggestion,
-          score,
-        };
+        let candidate = ScoredSuggestion { suggestion, score };
         if compare_scored_suggestions(&candidate, &selected[existing_idx]) == Ordering::Less {
           selected[existing_idx] = candidate;
         }
         continue;
       }
 
-      let candidate = ScoredSuggestion {
-        suggestion,
-        score,
-      };
+      let candidate = ScoredSuggestion { suggestion, score };
 
       if selected.len() < limit {
         selected.push(candidate);
@@ -662,7 +657,10 @@ fn score_suggestion(
   };
 
   let mut match_total = 0i64;
-  let parsed_url = suggestion.url.as_deref().and_then(parse_http_url_for_scoring);
+  let parsed_url = suggestion
+    .url
+    .as_deref()
+    .and_then(parse_http_url_for_scoring);
 
   for &token_lower in tokens_lower {
     let mut best_token_match = None::<i64>;
@@ -850,7 +848,11 @@ fn is_valid_url_port(port: &str) -> bool {
   true
 }
 
-fn match_score_url(parsed: Option<&OmniboxHttpUrl<'_>>, raw: &str, needle_lower: &str) -> Option<i64> {
+fn match_score_url(
+  parsed: Option<&OmniboxHttpUrl<'_>>,
+  raw: &str,
+  needle_lower: &str,
+) -> Option<i64> {
   let raw_score = match_score(raw, needle_lower);
 
   let Some(url) = parsed else {
@@ -991,7 +993,9 @@ fn suggestion_source_rank(source: OmniboxSuggestionSource) -> i64 {
 
 fn suggestion_primary_key_raw(s: &OmniboxSuggestion) -> &str {
   match &s.action {
-    OmniboxAction::ActivateTab(_) | OmniboxAction::NavigateToUrl => s.url.as_deref().unwrap_or_default(),
+    OmniboxAction::ActivateTab(_) | OmniboxAction::NavigateToUrl => {
+      s.url.as_deref().unwrap_or_default()
+    }
     OmniboxAction::Search(query) => query.as_str(),
   }
 }
@@ -1075,7 +1079,9 @@ mod tests {
 
     let host_score = match_score_http_host(host, needle_lower);
     let path_score = match_score_pathish(url.path(), needle_lower);
-    let query_score = url.query().and_then(|q| match_score_pathish(q, needle_lower));
+    let query_score = url
+      .query()
+      .and_then(|q| match_score_pathish(q, needle_lower));
     let path_query_score = path_score.max(query_score);
 
     raw_score.max(host_score).max(path_query_score)
@@ -1408,9 +1414,9 @@ mod tests {
       about_pages::ABOUT_PROCESSES,
     ] {
       assert!(
-        suggestions
-          .iter()
-          .any(|s| matches!(s.action, OmniboxAction::NavigateToUrl) && s.url.as_deref() == Some(url)),
+        suggestions.iter().any(
+          |s| matches!(s.action, OmniboxAction::NavigateToUrl) && s.url.as_deref() == Some(url)
+        ),
         "expected suggestions for {url}"
       );
     }
@@ -1765,13 +1771,19 @@ mod tests {
       ),
       ("https://example.com", &["example", "com", "/"]),
       ("https://example.com?only_query=1", &["only_query", "/"]),
-      ("https://example.com/%7Euser?foo=bar%2Fbaz", &["%7euser", "bar%2fbaz"]),
+      (
+        "https://example.com/%7Euser?foo=bar%2Fbaz",
+        &["%7euser", "bar%2fbaz"],
+      ),
       // Non-http(s) schemes should fall back to raw scoring.
       ("ftp://example.com/path", &["example", "path"]),
       ("about:help", &["help"]),
       ("file:///Users/alice/test.txt", &["users", "test.txt"]),
       // Invalid ports should behave like the `url::Url::parse` fallback (raw scoring only).
-      ("https://example.com:99999/path", &["example", "path", "99999"]),
+      (
+        "https://example.com:99999/path",
+        &["example", "path", "99999"],
+      ),
       ("https://[::1]bad/path", &["::1", "bad", "path"]),
     ];
 
@@ -2000,10 +2012,18 @@ mod tests {
     let visited = VisitedUrlStore::new();
     let mut bookmarks = BookmarkStore::default();
     bookmarks
-      .add("HTTP://EXAMPLE.COM".to_string(), Some("Upper".to_string()), None)
+      .add(
+        "HTTP://EXAMPLE.COM".to_string(),
+        Some("Upper".to_string()),
+        None,
+      )
       .unwrap();
     bookmarks
-      .add("http://example.com".to_string(), Some("Lower".to_string()), None)
+      .add(
+        "http://example.com".to_string(),
+        Some("Lower".to_string()),
+        None,
+      )
       .unwrap();
     let ctx = OmniboxContext {
       open_tabs: &open_tabs,

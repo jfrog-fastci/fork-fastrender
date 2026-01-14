@@ -139,18 +139,18 @@ pub(crate) fn contains_ascii_case_insensitive(haystack: &str, needle_lower_ascii
 /// - ASCII bytes compare case-insensitively.
 /// - Non-ASCII bytes compare exactly.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct AsciiCaseInsensitiveStr<'a>(pub &'a str);
+pub(crate) struct AsciiCaseInsensitive<'a>(pub &'a str);
 
-impl PartialEq for AsciiCaseInsensitiveStr<'_> {
+impl PartialEq for AsciiCaseInsensitive<'_> {
   #[inline]
   fn eq(&self, other: &Self) -> bool {
     self.0.eq_ignore_ascii_case(other.0)
   }
 }
 
-impl Eq for AsciiCaseInsensitiveStr<'_> {}
+impl Eq for AsciiCaseInsensitive<'_> {}
 
-impl Hash for AsciiCaseInsensitiveStr<'_> {
+impl Hash for AsciiCaseInsensitive<'_> {
   #[inline]
   fn hash<H: Hasher>(&self, state: &mut H) {
     // Ensure hashing is consistent with the `Eq` implementation above: fold ASCII to lowercase and
@@ -274,7 +274,7 @@ mod tests {
   }
 
   #[test]
-  fn ascii_case_insensitive_str_hash_and_eq() {
+  fn ascii_case_insensitive_hash_and_eq() {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::Hasher;
 
@@ -284,12 +284,12 @@ mod tests {
       hasher.finish()
     }
 
-    let a = AsciiCaseInsensitiveStr("HTTP://EXAMPLE.COM");
-    let b = AsciiCaseInsensitiveStr("http://example.com");
+    let a = AsciiCaseInsensitive("HTTP://EXAMPLE.COM");
+    let b = AsciiCaseInsensitive("http://example.com");
     assert_eq!(a, b);
     assert_eq!(hash(&a), hash(&b));
 
     // Non-ASCII bytes must compare exactly (ASCII-only case folding policy).
-    assert_ne!(AsciiCaseInsensitiveStr("café"), AsciiCaseInsensitiveStr("cafÉ"));
+    assert_ne!(AsciiCaseInsensitive("café"), AsciiCaseInsensitive("cafÉ"));
   }
 }

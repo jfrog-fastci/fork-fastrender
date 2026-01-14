@@ -53,4 +53,3 @@ fn bookmarks_provider_url_dedupe_does_not_allocate_per_candidate_lowercase() {
     "expected exactly one allocation of {url_len} bytes (owned URL) in provider output; extra matches likely indicate per-candidate lowercasing allocations"
   );
 }
-
