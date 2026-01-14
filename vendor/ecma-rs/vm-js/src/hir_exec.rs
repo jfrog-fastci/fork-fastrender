@@ -13946,3 +13946,141 @@ mod derived_constructor_eval_super_call_compiled_tests {
     Ok(())
   }
 }
+
+#[cfg(test)]
+mod hir_async_await_try_catch_finally_compiled_tests {
+  use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOptions};
+
+  fn new_runtime() -> Result<JsRuntime, VmError> {
+    let vm = Vm::new(VmOptions::default());
+    // Keep this relatively small to exercise GC paths while leaving headroom for Promise/async
+    // machinery (matching other async-focused unit tests).
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    JsRuntime::new(vm, heap)
+  }
+
+  fn exec_compiled(rt: &mut JsRuntime, source: &str) -> Result<Value, VmError> {
+    let script = CompiledScript::compile_script(&mut rt.heap, "<inline>", source)?;
+    assert!(
+      !script.requires_ast_fallback,
+      "expected test script to execute via compiled (HIR) path",
+    );
+    rt.exec_compiled_script(script)
+  }
+
+  fn assert_promise_fulfills(rt: &mut JsRuntime, promise: Value, expected: ExpectedValue) -> Result<(), VmError> {
+    let promise_root = rt.heap.add_root(promise)?;
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+      panic!("expected async call to return a Promise object");
+    };
+    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+    let result = rt
+      .heap
+      .promise_result(promise_obj)?
+      .expect("expected fulfilled Promise to have [[PromiseResult]]");
+
+    match expected {
+      ExpectedValue::Number(n) => assert_eq!(result, Value::Number(n)),
+      ExpectedValue::String(s) => {
+        let Value::String(actual) = result else {
+          panic!("expected promise to fulfill with a string, got {result:?}");
+        };
+        let actual = rt.heap.get_string(actual)?.to_utf8_lossy();
+        assert_eq!(actual, s);
+      }
+    }
+
+    rt.heap.remove_root(promise_root);
+    Ok(())
+  }
+
+  enum ExpectedValue {
+    Number(f64),
+    String(&'static str),
+  }
+
+  #[test]
+  fn await_in_finally_after_return_compiled() -> Result<(), VmError> {
+    let mut rt = new_runtime()?;
+
+    let promise = exec_compiled(
+      &mut rt,
+      r#"
+        async function f(){
+          let log = '';
+          try {
+            return 1;
+          } finally {
+            await Promise.resolve(0);
+            log = 'finally';
+            globalThis.finallyLog = log;
+          }
+        }
+        f()
+      "#,
+    )?;
+    assert_promise_fulfills(&mut rt, promise, ExpectedValue::Number(1.0))?;
+
+    let finally_ok = exec_compiled(&mut rt, "globalThis.finallyLog === 'finally'")?;
+    assert_eq!(finally_ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn await_in_finally_after_throw_compiled() -> Result<(), VmError> {
+    let mut rt = new_runtime()?;
+
+    let promise = exec_compiled(
+      &mut rt,
+      r#"
+        async function f(){
+          try {
+            try { throw 'x'; }
+            finally { await Promise.resolve(0); }
+          } catch(e) { return e; }
+        }
+        f()
+      "#,
+    )?;
+    assert_promise_fulfills(&mut rt, promise, ExpectedValue::String("x"))?;
+    Ok(())
+  }
+
+  #[test]
+  fn await_in_catch_param_destructuring_default_compiled() -> Result<(), VmError> {
+    let mut rt = new_runtime()?;
+
+    let promise = exec_compiled(
+      &mut rt,
+      r#"
+        async function f(){
+          try { throw {}; }
+          catch ({x = await Promise.resolve(1)}) { return x; }
+        }
+        f()
+      "#,
+    )?;
+    assert_promise_fulfills(&mut rt, promise, ExpectedValue::Number(1.0))?;
+    Ok(())
+  }
+
+  #[test]
+  fn await_in_catch_param_computed_key_compiled() -> Result<(), VmError> {
+    let mut rt = new_runtime()?;
+
+    let promise = exec_compiled(
+      &mut rt,
+      r#"
+        async function f(){
+          try { throw {k: 2}; }
+          catch ({[await Promise.resolve('k')]: x}) { return x; }
+        }
+        f()
+      "#,
+    )?;
+    assert_promise_fulfills(&mut rt, promise, ExpectedValue::Number(2.0))?;
+    Ok(())
+  }
+}
