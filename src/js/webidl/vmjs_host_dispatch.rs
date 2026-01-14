@@ -10785,6 +10785,183 @@ mod element_replace_with_tests {
 }
 
 #[cfg(test)]
+mod cross_document_insertion_tests {
+  use super::*;
+  use crate::js::window_realm::{DomBindingsBackend, WindowRealm, WindowRealmConfig};
+  use crate::js::window_timers::VmJsEventLoopHooks;
+  use crate::js::{DocumentHostState, WindowHostState};
+  use vm_js::Value;
+
+  fn run_and_get_string(script: &str) -> Result<String, VmError> {
+    let dom =
+      crate::dom2::parse_html("<!doctype html><html><body></body></html>").expect("parse_html");
+    let mut doc_host = DocumentHostState::new(dom);
+
+    let mut window = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let global = window.global_object();
+
+    let mut webidl_host = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(global);
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut doc_host,
+      &mut window,
+      Some(&mut webidl_host),
+    );
+
+    let out = window.exec_script_with_host_and_hooks(&mut doc_host, &mut hooks, script)?;
+    match out {
+      Value::String(s) => Ok(window.heap().get_string(s)?.to_utf8_lossy()),
+      _ => Err(VmError::TypeError("expected string")),
+    }
+  }
+
+  #[test]
+  fn node_append_child_adopts_cross_document_subtree_and_preserves_wrapper_identity(
+  ) -> Result<(), VmError> {
+    let out = run_and_get_string(
+      r#"
+      (() => {
+        const doc2 = Object.create(document);
+        const foreign = doc2.createElement('b');
+        const text = doc2.createTextNode('x');
+        if (foreign.ownerDocument !== doc2) return 'foreign_owner_document_before';
+        if (text.ownerDocument !== doc2) return 'text_owner_document_before';
+        foreign.appendChild(text);
+
+        const returned = document.body.appendChild(foreign);
+        if (returned !== foreign) return 'returned_identity';
+        if (foreign.ownerDocument !== document) return 'foreign_owner_document_after';
+        if (text.ownerDocument !== document) return 'text_owner_document_after';
+        if (foreign.firstChild !== text) return 'text_identity';
+        return 'ok';
+      })()
+      "#,
+    )?;
+    assert_eq!(out, "ok");
+    Ok(())
+  }
+
+  #[test]
+  fn node_insert_before_adopts_cross_document_subtree_and_preserves_wrapper_identity(
+  ) -> Result<(), VmError> {
+    let out = run_and_get_string(
+      r#"
+      (() => {
+        const doc2 = Object.create(document);
+        const foreign = doc2.createElement('b');
+        const text = doc2.createTextNode('x');
+        if (foreign.ownerDocument !== doc2) return 'foreign_owner_document_before';
+        if (text.ownerDocument !== doc2) return 'text_owner_document_before';
+        foreign.appendChild(text);
+
+        const ref = document.createElement('i');
+        document.body.appendChild(ref);
+
+        const returned = document.body.insertBefore(foreign, ref);
+        if (returned !== foreign) return 'returned_identity';
+        if (document.body.firstChild !== foreign) return 'inserted_position';
+        if (foreign.ownerDocument !== document) return 'foreign_owner_document_after';
+        if (text.ownerDocument !== document) return 'text_owner_document_after';
+        if (foreign.firstChild !== text) return 'text_identity';
+        return 'ok';
+      })()
+      "#,
+    )?;
+    assert_eq!(out, "ok");
+    Ok(())
+  }
+
+  #[test]
+  fn node_replace_child_adopts_cross_document_subtree_and_preserves_wrapper_identity(
+  ) -> Result<(), VmError> {
+    let out = run_and_get_string(
+      r#"
+      (() => {
+        const doc2 = Object.create(document);
+        const foreign = doc2.createElement('b');
+        const text = doc2.createTextNode('x');
+        foreign.appendChild(text);
+
+        const old = document.createElement('i');
+        document.body.appendChild(old);
+
+        const returned = document.body.replaceChild(foreign, old);
+        if (returned !== old) return 'returned_old_identity';
+        if (document.body.firstChild !== foreign) return 'inserted_position';
+        if (old.parentNode !== null) return 'old_still_has_parent';
+        if (foreign.ownerDocument !== document) return 'foreign_owner_document_after';
+        if (text.ownerDocument !== document) return 'text_owner_document_after';
+        if (foreign.firstChild !== text) return 'text_identity';
+        return 'ok';
+      })()
+      "#,
+    )?;
+    assert_eq!(out, "ok");
+    Ok(())
+  }
+
+  #[test]
+  fn node_append_child_document_fragment_preserves_fragment_identity_and_adopts_children(
+  ) -> Result<(), VmError> {
+    let out = run_and_get_string(
+      r#"
+      (() => {
+        const doc2 = Object.create(document);
+        const frag = doc2.createDocumentFragment();
+        const child = doc2.createElement('b');
+        const text = doc2.createTextNode('x');
+        child.appendChild(text);
+        frag.appendChild(child);
+
+        if (frag.ownerDocument !== doc2) return 'frag_owner_document_before';
+        if (child.ownerDocument !== doc2) return 'child_owner_document_before';
+
+        const returned = document.body.appendChild(frag);
+        if (returned !== frag) return 'returned_fragment_identity';
+        if (frag.ownerDocument !== doc2) return 'frag_owner_document_after';
+        if (frag.firstChild !== null) return 'fragment_not_empty';
+
+        if (document.body.firstChild !== child) return 'child_not_inserted';
+        if (child.ownerDocument !== document) return 'child_owner_document_after';
+        if (text.ownerDocument !== document) return 'text_owner_document_after';
+        if (child.firstChild !== text) return 'text_identity';
+        return 'ok';
+      })()
+      "#,
+    )?;
+    assert_eq!(out, "ok");
+    Ok(())
+  }
+
+  #[test]
+  fn element_insert_adjacent_element_adopts_cross_document_node_and_preserves_wrapper_identity(
+  ) -> Result<(), VmError> {
+    let out = run_and_get_string(
+      r#"
+      (() => {
+        const doc2 = Object.create(document);
+        const el = doc2.createElement('b');
+        const text = doc2.createTextNode('x');
+        el.appendChild(text);
+
+        const inserted = document.body.insertAdjacentElement('beforeend', el);
+        if (inserted !== el) return 'returned_identity';
+        if (document.body.lastChild !== el) return 'not_inserted';
+        if (el.ownerDocument !== document) return 'el_owner_document_after';
+        if (text.ownerDocument !== document) return 'text_owner_document_after';
+        if (el.firstChild !== text) return 'text_identity';
+        return 'ok';
+      })()
+      "#,
+    )?;
+    assert_eq!(out, "ok");
+    Ok(())
+  }
+}
+
+#[cfg(test)]
 mod url_search_params_init_pair_length_tests {
   use super::*;
   use crate::js::window_realm::{DomBindingsBackend, WindowRealm, WindowRealmConfig};
