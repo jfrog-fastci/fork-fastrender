@@ -5090,15 +5090,25 @@ impl<'a> Parser<'a> {
         Ok(Atom::Literal(0x0000))
       }
       x if x == (b'k' as u16) => {
-        // `\k<name>` is a named backreference (not tied to `/u` / `/v`).
+        // `\k<name>` is a named backreference.
+        //
+        // - In UnicodeMode (`/u` or `/v`), `\k` must be followed by `<name>`; otherwise it's a
+        //   syntax error.
+        // - In non-UnicodeMode, `\k` is an identity escape for `k` *unless* it is immediately
+        //   followed by `<name>`, in which case it is parsed as a named backreference and later
+        //   resolves to:
+        //   - a real backreference when `name` is bound, or
+        //   - the literal sequence `k<name>` when `name` is unbound (Annex B).
         if self.eat(b'<' as u16) {
           let name = self.parse_group_name(ctx)?;
           Ok(Atom::NamedBackRef(name))
-        } else {
+        } else if self.flags.has_either_unicode_flag() {
           Err(RegExpSyntaxError {
             message: "Invalid regular expression",
           }
           .into())
+        } else {
+          Ok(Atom::Literal(x as u32))
         }
       }
       x if x == (b'p' as u16) || x == (b'P' as u16) => {

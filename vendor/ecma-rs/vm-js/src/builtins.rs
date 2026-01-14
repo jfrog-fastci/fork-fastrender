@@ -13289,7 +13289,7 @@ pub fn object_prototype_to_string(
   // 1. Special-case `undefined` / `null`.
   // 2. `O = ToObject(this)`.
   // 3. Compute a `builtinTag` (Array / Arguments / Function / Error / primitive wrappers / Date /
-  //    RegExp / Object).
+  //    RegExp / Generator / AsyncGenerator / Object).
   // 4. `tag = Get(O, @@toStringTag)` (prototype chain lookup; host-aware; Proxy-aware).
   // 5. If `tag` is a string, use it; otherwise use `builtinTag`.
   // 6. Return `[object ${tag}]`.
@@ -34138,21 +34138,20 @@ mod object_builtins_regression_tests {
           const okGenNonString = toString.call(gen) === "[object Object]";
           delete genProto[Symbol.toStringTag];
           const okGenRestored = toString.call(gen) === "[object Generator]";
-
           // Instance override should work for builtinTag-derived objects (Array / Function / Date).
-          // For Error/RegExp instances, `@@toStringTag` is a non-writable property on the intrinsic
-          // prototype; define an own property explicitly to override it.
+          // For Error/RegExp instances, `@@toStringTag` is defined on the intrinsic prototype;
+          // define an own property explicitly to override it.
           let a = [];
-          a[Symbol.toStringTag] = "test262";
+          Object.defineProperty(a, Symbol.toStringTag, { value: "test262" });
           const okArrayOverride = toString.call(a) === "[object test262]";
           let f = function () {};
-          f[Symbol.toStringTag] = "test262";
+          Object.defineProperty(f, Symbol.toStringTag, { value: "test262" });
           const okFuncOverride = toString.call(f) === "[object test262]";
           let e = new Error("x");
           Object.defineProperty(e, Symbol.toStringTag, { configurable: true, value: "test262" });
           const okErrorOverride = toString.call(e) === "[object test262]";
           let d = new Date(0);
-          d[Symbol.toStringTag] = "test262";
+          Object.defineProperty(d, Symbol.toStringTag, { value: "test262" });
           const okDateOverride = toString.call(d) === "[object test262]";
           let r = /./;
           Object.defineProperty(r, Symbol.toStringTag, { configurable: true, value: "test262" });

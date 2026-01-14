@@ -189,9 +189,9 @@ pub fn create_list_from_array_like_with_host_and_hooks(
   //
   // This is particularly important for test262's `regExpUtils.js::buildString`, which uses
   // `String.fromCodePoint.apply(null, codePoints)` with 10k-element arrays in tight loops.
-  // Proxies must not take the Array fast path: `CreateListFromArrayLike` is defined in terms of
-  // `Get(obj, key)` and therefore must observe Proxy traps. Even a Proxy that targets an Array must
-  // be treated generically here.
+  // `CreateListFromArrayLike` is defined in terms of `Get(obj, key)` and therefore must observe
+  // Proxy traps, even when the Proxy target is an Array exotic object. The array fast-path reads
+  // indexed elements directly from the dense element table and would bypass `Proxy.[[Get]]`.
   //
   // Note: `Heap::object_is_array` is intentionally not Proxy-aware; calling it on a Proxy would
   // return `VmError::InvalidHandle` because Proxies are stored as a distinct heap allocation kind.

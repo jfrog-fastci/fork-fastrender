@@ -1264,71 +1264,63 @@ impl ModuleGraph {
       exports: Vec::new(),
       external_memory: None,
     });
-    self.torn_down = false;
 
-    // Populate the namespace's `[[Exports]]` list and %Symbol.toStringTag%.
-    let exports_sorted = match self.module_namespace_create(vm, scope, module, namespace_obj, exported_names) {
-      Ok(exports_sorted) => exports_sorted,
+    // From this point on, any error must roll back the placeholder cache so subsequent calls don't
+    // observe an incomplete namespace object.
+    let res = (|| {
+      // Populate the namespace's `[[Exports]]` list and %Symbol.toStringTag%.
+      let exports_sorted =
+        self.module_namespace_create(vm, scope, module, namespace_obj, exported_names)?;
+
+      // Charge external bytes for the cached `[[Exports]]` list. This can be large for modules with
+      // many exports.
+      let exports_vec_bytes = exports_sorted
+        .capacity()
+        .saturating_mul(mem::size_of::<String>());
+      let mut exports_string_bytes = 0usize;
+      for (i, s) in exports_sorted.iter().enumerate() {
+        if i != 0 && (i & (crate::tick::DEFAULT_TICK_EVERY - 1)) == 0 {
+          vm.tick()?;
+        }
+        exports_string_bytes = exports_string_bytes.saturating_add(s.capacity());
+      }
+      let exports_total_bytes = exports_vec_bytes.saturating_add(exports_string_bytes);
+
+      // Root the namespace object while charging: `charge_external` can trigger GC.
+      let token = {
+        let mut tmp = scope.reborrow();
+        let _guard = tmp.push_root(Value::Object(namespace_obj))?;
+        tmp.heap_mut().charge_external(exports_total_bytes)?
+      };
+      let token_arc = arc_try_new_vm(token)?;
+
+      Ok::<_, VmError>((exports_sorted, token_arc))
+    })();
+
+    match res {
+      Ok((exports_sorted, token_arc)) => {
+        // Update the cached export list and keep the external memory charge token alive.
+        let Some(cache) = self.modules[idx].namespace.as_mut() else {
+          return Err(VmError::InvariantViolation(
+            "module namespace placeholder cache was unexpectedly cleared",
+          ));
+        };
+        cache.exports = exports_sorted;
+        cache.external_memory = Some(token_arc);
+
+        // The graph now owns a persistent root + external memory token; it must be torn down if the
+        // heap is reused.
+        self.torn_down = false;
+
+        Ok(namespace_obj)
+      }
       Err(err) => {
-        // Roll back the placeholder cache so subsequent calls don't observe an incomplete namespace.
+        // Avoid leaving the graph in a partially-cached state.
         scope.heap_mut().remove_root(root);
         self.modules[idx].namespace = None;
-        return Err(err);
+        Err(err)
       }
-    };
-
-    // Charge external bytes for the cached `[[Exports]]` list. This can be large for modules with
-    // many exports.
-    let exports_vec_bytes = exports_sorted
-      .capacity()
-      .saturating_mul(mem::size_of::<String>());
-    let mut exports_string_bytes = 0usize;
-    for (i, s) in exports_sorted.iter().enumerate() {
-      if i != 0 && (i & (crate::tick::DEFAULT_TICK_EVERY - 1)) == 0 {
-        vm.tick()?;
-      }
-      exports_string_bytes = exports_string_bytes.saturating_add(s.capacity());
     }
-    let exports_total_bytes = exports_vec_bytes.saturating_add(exports_string_bytes);
-
-    // Root the namespace object while charging: `charge_external` can trigger GC.
-    let token_res = {
-      let mut tmp = scope.reborrow();
-      match tmp.push_root(Value::Object(namespace_obj)) {
-        Ok(_) => tmp.heap_mut().charge_external(exports_total_bytes),
-        Err(err) => Err(err),
-      }
-    };
-    let token = match token_res {
-      Ok(token) => token,
-      Err(err) => {
-        // Avoid leaving the graph in a partially-cached state.
-        scope.heap_mut().remove_root(root);
-        self.modules[idx].namespace = None;
-        return Err(err);
-      }
-    };
-
-    let token_arc = match arc_try_new_vm(token) {
-      Ok(token_arc) => token_arc,
-      Err(err) => {
-        // Avoid leaving the graph in a partially-cached state.
-        scope.heap_mut().remove_root(root);
-        self.modules[idx].namespace = None;
-        return Err(err);
-      }
-    };
-
-    // Update the cached export list and keep the external memory charge token alive.
-    let Some(cache) = self.modules[idx].namespace.as_mut() else {
-      return Err(VmError::InvariantViolation(
-        "module namespace placeholder cache was unexpectedly cleared",
-      ));
-    };
-    cache.exports = exports_sorted;
-    cache.external_memory = Some(token_arc);
-
-    Ok(namespace_obj)
   }
 
   pub(crate) fn get_or_create_import_meta_object(
