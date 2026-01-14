@@ -354,7 +354,8 @@ pub(crate) fn perform_indirect_eval(
 
   // Indirect eval does not inherit strictness from the caller; it is strict only if its source
   // begins with a `"use strict"` directive.
-  let strict = detect_use_strict_directive(source.text.as_ref(), 0, 0, &top.stx.body, || vm.tick())?;
+  let strict =
+    detect_use_strict_directive(source.text.as_ref(), 0, 0, &top.stx.body, || vm.tick())?;
   {
     let mut tick = || vm.tick();
     match crate::early_errors::validate_top_level(
@@ -502,7 +503,11 @@ pub(crate) fn perform_direct_eval_with_host_and_hooks(
   };
   let meta_property_context = env.meta_property_context();
   // Like the Function constructor, `eval("...")` parse/early errors are JS-catchable.
-  let top = match vm.parse_top_level_with_budget_with_meta_property_context(&source.text, opts, meta_property_context) {
+  let top = match vm.parse_top_level_with_budget_with_meta_property_context(
+    &source.text,
+    opts,
+    meta_property_context,
+  ) {
     Ok(top) => top,
     Err(VmError::Syntax(diags)) => {
       let intr = vm
@@ -537,9 +542,7 @@ pub(crate) fn perform_direct_eval_with_host_and_hooks(
               for entry in private_names {
                 let name = entry.name.as_ref();
                 if !names.contains(name) {
-                  names
-                    .try_reserve(1)
-                    .map_err(|_| VmError::OutOfMemory)?;
+                  names.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
                   names.insert(try_clone_string(name)?);
                 }
               }
@@ -551,7 +554,11 @@ pub(crate) fn perform_direct_eval_with_host_and_hooks(
           }
         }
       }
-      if names.is_empty() { None } else { Some(names) }
+      if names.is_empty() {
+        None
+      } else {
+        Some(names)
+      }
     };
 
     let mut tick = || vm.tick();
@@ -774,13 +781,9 @@ pub fn eval_script_with_host_and_hooks(
       Err(err) => return Err(err),
     };
 
-    let strict = detect_use_strict_directive(
-      source.text.as_ref(),
-      0,
-      0,
-      &top.stx.body,
-      || vm_frame.tick(),
-    )?;
+    let strict = detect_use_strict_directive(source.text.as_ref(), 0, 0, &top.stx.body, || {
+      vm_frame.tick()
+    })?;
     {
       let mut tick = || vm_frame.tick();
       match crate::early_errors::validate_top_level(
@@ -863,9 +866,7 @@ pub fn eval_script_with_host_and_hooks(
     // when intrinsics are available.
     match result {
       Err(err) if err.is_throw_completion() => Err(crate::vm::coerce_error_to_throw_with_stack(
-        &*vm_frame,
-        &mut scope,
-        err,
+        &*vm_frame, &mut scope, err,
       )),
       other => other,
     }
@@ -895,7 +896,11 @@ fn throw_type_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmE
 }
 
 #[inline]
-fn check_disposable_resource_value(vm: &Vm, scope: &mut Scope<'_>, value: Value) -> Result<(), VmError> {
+fn check_disposable_resource_value(
+  vm: &Vm,
+  scope: &mut Scope<'_>,
+  value: Value,
+) -> Result<(), VmError> {
   match value {
     Value::Null | Value::Undefined => Ok(()),
     Value::Object(_) => Ok(()),
@@ -1035,6 +1040,45 @@ impl<'a> ResolvedBinding<'a> {
       | ResolvedBinding::Unresolvable { name } => name,
     }
   }
+}
+
+/// A generator-friendly encoding of [`ResolvedBinding`] for destructuring assignment.
+///
+/// Generator destructuring patterns can suspend in default initializers / computed keys, so any
+/// pre-resolved assignment target references must be storable in [`GenFrame`]s (which are
+/// `'static`). We represent identifier names using raw pointers to the parser-owned `String` in the
+/// AST; those strings outlive generator execution because the function AST is held by the generator
+/// continuation.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum GenResolvedBinding {
+  Declarative {
+    env: GcEnv,
+    name: *const String,
+  },
+  Object {
+    binding_object: GcObject,
+    name: *const String,
+  },
+  GlobalProperty {
+    name: *const String,
+  },
+  Unresolvable {
+    name: *const String,
+  },
+}
+
+/// Pre-evaluated assignment targets for generator destructuring *assignment*.
+///
+/// This mirrors the synchronous destructuring binder's target pre-evaluation to preserve the spec's
+/// evaluation order in the presence of `yield`:
+/// - the assignment target is evaluated (including `ResolveBinding` and computed member key
+///   expressions) *before* consuming iterator values, and
+/// - `ToPropertyKey` for computed members is delayed until `PutValue`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum GenAssignTarget {
+  Binding(GenResolvedBinding),
+  Member { base: Value, key: *const String },
+  ComputedMember { base: Value, key_value: Value },
 }
 
 impl RuntimeEnv {
@@ -2181,7 +2225,9 @@ impl JsRuntime {
         }
       }
 
-      let mut ctx = DrainCtx { heap: &mut self.heap };
+      let mut ctx = DrainCtx {
+        heap: &mut self.heap,
+      };
       let mut drain_err: Option<VmError> = None;
       while let Some((realm, job)) = self.vm.microtask_queue_mut().pop_front() {
         if let Err(err) = hooks.host_enqueue_promise_job_fallible(&mut ctx, job, realm) {
@@ -2254,11 +2300,9 @@ impl JsRuntime {
           );
 
           match res {
-            Err(err) if err.is_throw_completion() => Err(crate::vm::coerce_error_to_throw_with_stack(
-              &*vm_frame,
-              &mut scope,
-              err,
-            )),
+            Err(err) if err.is_throw_completion() => Err(
+              crate::vm::coerce_error_to_throw_with_stack(&*vm_frame, &mut scope, err),
+            ),
             other => other,
           }
         })()
@@ -2300,7 +2344,9 @@ impl JsRuntime {
         }
       }
 
-      let mut ctx = DrainCtx { heap: &mut self.heap };
+      let mut ctx = DrainCtx {
+        heap: &mut self.heap,
+      };
       let mut drain_err: Option<VmError> = None;
       while let Some((realm, job)) = vm_ctx.microtask_queue_mut().pop_front() {
         if let Err(err) = hooks.host_enqueue_promise_job_fallible(&mut ctx, job, realm) {
@@ -2395,11 +2441,9 @@ impl JsRuntime {
           );
 
           match res {
-            Err(err) if err.is_throw_completion() => Err(crate::vm::coerce_error_to_throw_with_stack(
-              &*vm_frame,
-              &mut scope,
-              err,
-            )),
+            Err(err) if err.is_throw_completion() => Err(
+              crate::vm::coerce_error_to_throw_with_stack(&*vm_frame, &mut scope, err),
+            ),
             other => other,
           }
         })()
@@ -2455,7 +2499,9 @@ impl JsRuntime {
       }
     }
 
-    let mut ctx = DrainCtx { heap: &mut self.heap };
+    let mut ctx = DrainCtx {
+      heap: &mut self.heap,
+    };
     let mut drain_err: Option<VmError> = None;
     while let Some((realm, job)) = self.vm.microtask_queue_mut().pop_front() {
       if let Err(err) = hooks.host_enqueue_promise_job_fallible(&mut ctx, job, realm) {
@@ -2501,22 +2547,17 @@ impl JsRuntime {
     hooks: &mut dyn VmHostHooks,
     source: &str,
   ) -> Result<Value, VmError> {
-    let source = match SourceText::new_charged(&mut self.heap, "<inline>", source)
-      .and_then(arc_try_new_vm)
-    {
-      Ok(source) => source,
-      Err(err) => {
-        if is_hard_stop_error(&err) {
-          self.vm.teardown_microtasks(&mut self.heap);
+    let source =
+      match SourceText::new_charged(&mut self.heap, "<inline>", source).and_then(arc_try_new_vm) {
+        Ok(source) => source,
+        Err(err) => {
+          if is_hard_stop_error(&err) {
+            self.vm.teardown_microtasks(&mut self.heap);
+          }
+          return Err(err);
         }
-        return Err(err);
-      }
-    };
-    self.exec_script_source_with_host_and_hooks(
-      host,
-      hooks,
-      source,
-    )
+      };
+    self.exec_script_source_with_host_and_hooks(host, hooks, source)
   }
 
   /// Parse and execute a classic script, using a custom host hook implementation.
@@ -2538,17 +2579,16 @@ impl JsRuntime {
     hooks: &mut dyn VmHostHooks,
     source: &str,
   ) -> Result<Value, VmError> {
-    let source = match SourceText::new_charged(&mut self.heap, "<inline>", source)
-      .and_then(arc_try_new_vm)
-    {
-      Ok(source) => source,
-      Err(err) => {
-        if is_hard_stop_error(&err) {
-          self.vm.teardown_microtasks(&mut self.heap);
+    let source =
+      match SourceText::new_charged(&mut self.heap, "<inline>", source).and_then(arc_try_new_vm) {
+        Ok(source) => source,
+        Err(err) => {
+          if is_hard_stop_error(&err) {
+            self.vm.teardown_microtasks(&mut self.heap);
+          }
+          return Err(err);
         }
-        return Err(err);
-      }
-    };
+      };
     self.exec_script_source_with_hooks(hooks, source)
   }
 
@@ -2574,17 +2614,16 @@ impl JsRuntime {
     host: &mut dyn VmHost,
     source: &str,
   ) -> Result<Value, VmError> {
-    let source = match SourceText::new_charged(&mut self.heap, "<inline>", source)
-      .and_then(arc_try_new_vm)
-    {
-      Ok(source) => source,
-      Err(err) => {
-        if is_hard_stop_error(&err) {
-          self.vm.teardown_microtasks(&mut self.heap);
+    let source =
+      match SourceText::new_charged(&mut self.heap, "<inline>", source).and_then(arc_try_new_vm) {
+        Ok(source) => source,
+        Err(err) => {
+          if is_hard_stop_error(&err) {
+            self.vm.teardown_microtasks(&mut self.heap);
+          }
+          return Err(err);
         }
-        return Err(err);
-      }
-    };
+      };
     self.exec_script_source_with_host(host, source)
   }
 
@@ -3795,7 +3834,9 @@ impl JsRuntime {
 
       // Register the module under its source name/specifier so tests and embeddings can easily
       // associate `import` specifiers with graph modules.
-      let module = self.modules.add_module_with_specifier(&source.name, record)?;
+      let module = self
+        .modules
+        .add_module_with_specifier(&source.name, record)?;
 
       // Start loading the static import graph.
       let mut scope = self.heap.scope();
@@ -3989,7 +4030,9 @@ impl JsRuntime {
       }
     }
 
-    let mut ctx = DrainCtx { heap: &mut self.heap };
+    let mut ctx = DrainCtx {
+      heap: &mut self.heap,
+    };
     let mut drain_err: Option<VmError> = None;
     while let Some((realm, job)) = self.vm.microtask_queue_mut().pop_front() {
       if let Err(err) = hooks.host_enqueue_promise_job_fallible(&mut ctx, job, realm) {
@@ -4026,15 +4069,16 @@ impl JsRuntime {
   ) -> Result<Value, VmError> {
     // `Arc::new` aborts the process on allocator OOM; allocate the `Arc<SourceText>` fallibly so
     // hostile module sources can surface `VmError::OutOfMemory` instead of crashing.
-    let source = match SourceText::new_charged(&mut self.heap, name, source).and_then(arc_try_new_vm) {
-      Ok(source) => source,
-      Err(err) => {
-        if is_hard_stop_error(&err) {
-          self.vm.teardown_microtasks(&mut self.heap);
+    let source =
+      match SourceText::new_charged(&mut self.heap, name, source).and_then(arc_try_new_vm) {
+        Ok(source) => source,
+        Err(err) => {
+          if is_hard_stop_error(&err) {
+            self.vm.teardown_microtasks(&mut self.heap);
+          }
+          return Err(err);
         }
-        return Err(err);
-      }
-    };
+      };
     self.exec_module_source_with_host_and_hooks(host, hooks, source)
   }
 
@@ -4069,15 +4113,16 @@ impl JsRuntime {
   ) -> Result<Value, VmError> {
     // `Arc::new` aborts the process on allocator OOM; allocate the `Arc<SourceText>` fallibly so
     // hostile module sources can surface `VmError::OutOfMemory` instead of crashing.
-    let source = match SourceText::new_charged(&mut self.heap, name, source).and_then(arc_try_new_vm) {
-      Ok(source) => source,
-      Err(err) => {
-        if is_hard_stop_error(&err) {
-          self.vm.teardown_microtasks(&mut self.heap);
+    let source =
+      match SourceText::new_charged(&mut self.heap, name, source).and_then(arc_try_new_vm) {
+        Ok(source) => source,
+        Err(err) => {
+          if is_hard_stop_error(&err) {
+            self.vm.teardown_microtasks(&mut self.heap);
+          }
+          return Err(err);
         }
-        return Err(err);
-      }
-    };
+      };
     self.exec_module_source_with_host(host, source)
   }
 
@@ -4134,7 +4179,9 @@ impl JsRuntime {
       }
     }
 
-    let mut ctx = DrainCtx { heap: &mut self.heap };
+    let mut ctx = DrainCtx {
+      heap: &mut self.heap,
+    };
     let mut drain_err: Option<VmError> = None;
     while let Some((realm, job)) = self.vm.microtask_queue_mut().pop_front() {
       if let Err(err) = hooks.host_enqueue_promise_job_fallible(&mut ctx, job, realm) {
@@ -4178,15 +4225,26 @@ struct ExecModuleLoadSlots {
   reject: Value,
 }
 
-fn exec_module_load_slots(scope: &Scope<'_>, callee: GcObject) -> Result<ExecModuleLoadSlots, VmError> {
+fn exec_module_load_slots(
+  scope: &Scope<'_>,
+  callee: GcObject,
+) -> Result<ExecModuleLoadSlots, VmError> {
   let slots = scope.heap().get_function_native_slots(callee)?;
   let module_raw = match slots.get(0).copied().unwrap_or(Value::Undefined) {
     Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u64::MAX as f64 => n as u64,
-    _ => return Err(VmError::InvariantViolation("execModule callback missing module id slot")),
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "execModule callback missing module id slot",
+      ))
+    }
   };
   let realm_raw = match slots.get(1).copied().unwrap_or(Value::Undefined) {
     Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u64::MAX as f64 => n as u64,
-    _ => return Err(VmError::InvariantViolation("execModule callback missing realm id slot")),
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "execModule callback missing realm id slot",
+      ))
+    }
   };
   let global_object = match slots.get(2).copied().unwrap_or(Value::Undefined) {
     Value::Object(obj) => obj,
@@ -6444,14 +6502,12 @@ impl<'a> Evaluator<'a> {
         }
         Ok(())
       }
-      Stmt::Label(stmt) => {
-        self.instantiate_var_scoped_function_decls_in_stmt(
-          scope,
-          &stmt.stx.statement.stx,
-          false,
-          false,
-        )
-      }
+      Stmt::Label(stmt) => self.instantiate_var_scoped_function_decls_in_stmt(
+        scope,
+        &stmt.stx.statement.stx,
+        false,
+        false,
+      ),
       Stmt::Switch(stmt) => {
         const BRANCH_TICK_EVERY: usize = 32;
         for (i, branch) in stmt.stx.branches.iter().enumerate() {
@@ -6894,10 +6950,7 @@ impl<'a> Evaluator<'a> {
                 VarDeclMode::AwaitUsing => "Missing initializer in await using declaration",
                 _ => unreachable!(),
               };
-              return Err(syntax_error(
-                declarator.pattern.loc,
-                message,
-              ));
+              return Err(syntax_error(declarator.pattern.loc, message));
             }
             // Reuse lexical declaration collection logic to detect duplicates across complex patterns.
             let mut tmp = Vec::new();
@@ -6980,7 +7033,10 @@ impl<'a> Evaluator<'a> {
       // In non-strict mode, duplicate block-level *ordinary* function declarations are permitted
       // (Annex B). Later declarations update the existing binding.
       if self.strict || !Self::is_annex_b_eligible_sloppy_function_decl(decl) {
-        return Err(syntax_error(decl.loc, "Identifier has already been declared"));
+        return Err(syntax_error(
+          decl.loc,
+          "Identifier has already been declared",
+        ));
       }
 
       // If the binding exists but is uninitialized, it must have come from a conflicting lexical
@@ -6991,7 +7047,10 @@ impl<'a> Evaluator<'a> {
       {
         Ok(_) => {}
         Err(VmError::Throw(Value::Null)) => {
-          return Err(syntax_error(decl.loc, "Identifier has already been declared"))
+          return Err(syntax_error(
+            decl.loc,
+            "Identifier has already been declared",
+          ))
         }
         Err(err) => return Err(err),
       }
@@ -8335,123 +8394,123 @@ impl<'a> Evaluator<'a> {
         .checked_add(private_instance_method_count)
         .ok_or(VmError::OutOfMemory)?;
 
-    // Find an explicit `constructor(...) { ... }` method, if present.
-    let mut ctor_method: Option<(&Node<Func>, u32, parse_js::loc::Loc)> = None;
-    for member in members {
-      self.tick()?;
-      if !member.stx.decorators.is_empty() {
-        return Err(VmError::Unimplemented("class member decorators"));
-      }
-      if member.stx.declare || member.stx.abstract_ {
-        return Err(VmError::Unimplemented("class member modifiers"));
-      }
-      if member.stx.readonly
-        || member.stx.accessor
-        || member.stx.optional
-        || member.stx.override_
-        || member.stx.definite_assignment
-      {
-        return Err(VmError::Unimplemented("class member modifiers"));
-      }
-      if member.stx.accessibility.is_some() || member.stx.type_annotation.is_some() {
-        return Err(VmError::Unimplemented("class member type annotations"));
-      }
+      // Find an explicit `constructor(...) { ... }` method, if present.
+      let mut ctor_method: Option<(&Node<Func>, u32, parse_js::loc::Loc)> = None;
+      for member in members {
+        self.tick()?;
+        if !member.stx.decorators.is_empty() {
+          return Err(VmError::Unimplemented("class member decorators"));
+        }
+        if member.stx.declare || member.stx.abstract_ {
+          return Err(VmError::Unimplemented("class member modifiers"));
+        }
+        if member.stx.readonly
+          || member.stx.accessor
+          || member.stx.optional
+          || member.stx.override_
+          || member.stx.definite_assignment
+        {
+          return Err(VmError::Unimplemented("class member modifiers"));
+        }
+        if member.stx.accessibility.is_some() || member.stx.type_annotation.is_some() {
+          return Err(VmError::Unimplemented("class member type annotations"));
+        }
 
-      if member.stx.static_ {
-        continue;
-      }
-      let ClassOrObjKey::Direct(direct) = &member.stx.key else {
-        continue;
-      };
-      if direct.stx.key != "constructor" {
-        continue;
-      }
+        if member.stx.static_ {
+          continue;
+        }
+        let ClassOrObjKey::Direct(direct) = &member.stx.key else {
+          continue;
+        };
+        if direct.stx.key != "constructor" {
+          continue;
+        }
 
-      let ClassOrObjVal::Method(method) = &member.stx.val else {
-        continue;
-      };
+        let ClassOrObjVal::Method(method) = &member.stx.val else {
+          continue;
+        };
 
-      if ctor_method.is_some() {
-        return Err(syntax_error(
-          member.loc,
-          "A class may only have one constructor",
-        ));
-      }
-      ctor_method = Some((&method.stx.func, member.loc.start_u32(), member.loc));
-    }
-
-    let mut ctor_length: u32 = 0;
-    let ctor_body_func = if let Some((func_node, member_loc_start, loc)) = ctor_method {
-      if func_node.stx.generator {
-        return Err(syntax_error(
-          loc,
-          "Class constructor may not be a generator",
-        ));
+        if ctor_method.is_some() {
+          return Err(syntax_error(
+            member.loc,
+            "A class may only have one constructor",
+          ));
+        }
+        ctor_method = Some((&method.stx.func, member.loc.start_u32(), member.loc));
       }
 
-      ctor_length = self.function_length(&func_node.stx)?;
+      let mut ctor_length: u32 = 0;
+      let ctor_body_func = if let Some((func_node, member_loc_start, loc)) = ctor_method {
+        if func_node.stx.generator {
+          return Err(syntax_error(
+            loc,
+            "Class constructor may not be a generator",
+          ));
+        }
 
-      let rel_start = member_loc_start.saturating_sub(self.env.prefix_len());
-      let rel_end = func_node
-        .loc
-        .end_u32()
-        .saturating_sub(self.env.prefix_len());
-      let span_start = self.env.base_offset().saturating_add(rel_start);
-      let span_end = self.env.base_offset().saturating_add(rel_end);
+        ctor_length = self.function_length(&func_node.stx)?;
 
-      let code = self.vm.register_ecma_function(
-        self.env.source(),
-        span_start,
-        span_end,
-        EcmaFunctionKind::ClassMember,
-      )?;
+        let rel_start = member_loc_start.saturating_sub(self.env.prefix_len());
+        let rel_end = func_node
+          .loc
+          .end_u32()
+          .saturating_sub(self.env.prefix_len());
+        let span_start = self.env.base_offset().saturating_add(rel_start);
+        let span_end = self.env.base_offset().saturating_add(rel_end);
 
-      // Class constructor bodies are always strict mode.
-      let is_strict = true;
-      let this_mode = if func_node.stx.arrow {
-        ThisMode::Lexical
+        let code = self.vm.register_ecma_function(
+          self.env.source(),
+          span_start,
+          span_end,
+          EcmaFunctionKind::ClassMember,
+        )?;
+
+        // Class constructor bodies are always strict mode.
+        let is_strict = true;
+        let this_mode = if func_node.stx.arrow {
+          ThisMode::Lexical
+        } else {
+          ThisMode::Strict
+        };
+        let closure_env = Some(self.env.lexical_env);
+
+        let mut ctor_scope = scope.reborrow();
+        let name_string = ctor_scope.alloc_string("constructor")?;
+        let func_obj = ctor_scope.alloc_ecma_function(
+          code,
+          /* is_constructable */ true,
+          name_string,
+          ctor_length,
+          this_mode,
+          is_strict,
+          closure_env,
+        )?;
+
+        let intr = self
+          .vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+        ctor_scope
+          .heap_mut()
+          .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+        ctor_scope
+          .heap_mut()
+          .set_function_realm(func_obj, self.env.global_object())?;
+        if let Some(realm) = self.vm.current_realm() {
+          ctor_scope
+            .heap_mut()
+            .set_function_job_realm(func_obj, realm)?;
+        }
+        if let Some(script_or_module) = self.vm.get_active_script_or_module() {
+          let token = self.vm.intern_script_or_module(script_or_module)?;
+          ctor_scope
+            .heap_mut()
+            .set_function_script_or_module_token(func_obj, Some(token))?;
+        }
+        Some(func_obj)
       } else {
-        ThisMode::Strict
+        None
       };
-      let closure_env = Some(self.env.lexical_env);
-
-      let mut ctor_scope = scope.reborrow();
-      let name_string = ctor_scope.alloc_string("constructor")?;
-      let func_obj = ctor_scope.alloc_ecma_function(
-        code,
-        /* is_constructable */ true,
-        name_string,
-        ctor_length,
-        this_mode,
-        is_strict,
-        closure_env,
-      )?;
-
-      let intr = self
-        .vm
-        .intrinsics()
-        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-      ctor_scope
-        .heap_mut()
-        .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
-      ctor_scope
-        .heap_mut()
-        .set_function_realm(func_obj, self.env.global_object())?;
-      if let Some(realm) = self.vm.current_realm() {
-        ctor_scope
-          .heap_mut()
-          .set_function_job_realm(func_obj, realm)?;
-      }
-      if let Some(script_or_module) = self.vm.get_active_script_or_module() {
-        let token = self.vm.intern_script_or_module(script_or_module)?;
-        ctor_scope
-          .heap_mut()
-          .set_function_script_or_module_token(func_obj, Some(token))?;
-      }
-      Some(func_obj)
-    } else {
-      None
-    };
 
       let func_obj = self.create_class_constructor_object(
         scope,
@@ -8876,9 +8935,11 @@ impl<'a> Evaluator<'a> {
               };
               let slot_base = crate::class_fields::CLASS_CTOR_SLOT_INSTANCE_FIELDS_START
                 .saturating_add(instance_private_method_idx.saturating_mul(2));
-              member_scope
-                .heap_mut()
-                .set_function_native_slot(func_obj, slot_base, Value::Symbol(sym))?;
+              member_scope.heap_mut().set_function_native_slot(
+                func_obj,
+                slot_base,
+                Value::Symbol(sym),
+              )?;
               member_scope.heap_mut().set_function_native_slot(
                 func_obj,
                 slot_base.saturating_add(1),
@@ -9263,10 +9324,8 @@ impl<'a> Evaluator<'a> {
 
                     // Find the `(` that opens the call's argument list.
                     let args_open: Option<usize> = if let Some(arg0) = call.stx.arguments.first() {
-                      let rel_arg_start = arg0
-                        .loc
-                        .start_u32()
-                        .saturating_sub(self.env.prefix_len());
+                      let rel_arg_start =
+                        arg0.loc.start_u32().saturating_sub(self.env.prefix_len());
                       let arg_start = self.env.base_offset().saturating_add(rel_arg_start) as usize;
                       let idx = skip_trivia_back(arg_start);
                       if idx > 0 && bytes.get(idx - 1) == Some(&b'(') {
@@ -9412,8 +9471,8 @@ impl<'a> Evaluator<'a> {
               });
             } else {
               // Instance field: store as `(key, initializer)` in the class constructor's native slots.
-              let slot_base = instance_field_slot_start
-                .saturating_add(instance_field_idx.saturating_mul(2));
+              let slot_base =
+                instance_field_slot_start.saturating_add(instance_field_idx.saturating_mul(2));
               member_scope
                 .heap_mut()
                 .set_function_native_slot(func_obj, slot_base, key_value)?;
@@ -9843,7 +9902,11 @@ impl<'a> Evaluator<'a> {
           Completion::Throw(thrown) => (thrown.value, thrown.stack),
           _ => return Err(VmError::Unimplemented("try/catch missing thrown value")),
         };
-        crate::error_object::attach_stack_property_for_throw(&mut try_scope, thrown_value, &thrown_stack);
+        crate::error_object::attach_stack_property_for_throw(
+          &mut try_scope,
+          thrown_value,
+          &thrown_stack,
+        );
         result = self.eval_catch(&mut try_scope, &catch.stx, thrown_value)?;
       }
     }
@@ -9917,10 +9980,7 @@ impl<'a> Evaluator<'a> {
           Stmt::VarDecl(var)
             if matches!(
               var.stx.mode,
-              VarDeclMode::Let
-                | VarDeclMode::Const
-                | VarDeclMode::Using
-                | VarDeclMode::AwaitUsing
+              VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
             ) =>
           {
             true
@@ -11578,14 +11638,7 @@ impl<'a> Evaluator<'a> {
         self.root_reference(&mut get_scope, reference)?;
         let object = self.to_object_operator(&mut get_scope, base)?;
         get_scope.push_root(Value::Object(object))?;
-        get_scope.get_with_host_and_hooks(
-          self.vm,
-          self.host,
-          self.hooks,
-          object,
-          key,
-          receiver,
-        )
+        get_scope.get_with_host_and_hooks(self.vm, self.host, self.hooks, object, key, receiver)
       }
       Reference::Private { base, sym, name } => self.private_get(scope, base, sym, name),
     }
@@ -12116,16 +12169,14 @@ impl<'a> Evaluator<'a> {
       .vm
       .intrinsics()
       .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-    alloc_scope
-      .heap_mut()
-      .object_set_prototype(
-        func_obj,
-        Some(if func.async_ {
-          intr.async_function_prototype()
-        } else {
-          intr.function_prototype()
-        }),
-      )?;
+    alloc_scope.heap_mut().object_set_prototype(
+      func_obj,
+      Some(if func.async_ {
+        intr.async_function_prototype()
+      } else {
+        intr.function_prototype()
+      }),
+    )?;
     alloc_scope
       .heap_mut()
       .set_function_realm(func_obj, self.env.global_object())?;
@@ -12711,15 +12762,13 @@ impl<'a> Evaluator<'a> {
 
               let is_strict = self.strict
                 || match &func_node.stx.body {
-                  Some(FuncBody::Block(stmts)) => {
-                  detect_use_strict_directive(
+                  Some(FuncBody::Block(stmts)) => detect_use_strict_directive(
                     self.env.source().text.as_ref(),
                     self.env.base_offset() as usize,
                     self.env.prefix_len() as usize,
                     stmts,
                     || self.tick(),
-                  )?
-                  }
+                  )?,
                   Some(FuncBody::Expression(_)) => false,
                   None => return Err(VmError::Unimplemented("method without body")),
                 };
@@ -12853,15 +12902,13 @@ impl<'a> Evaluator<'a> {
 
               let is_strict = self.strict
                 || match &func_node.stx.body {
-                  Some(FuncBody::Block(stmts)) => {
-                  detect_use_strict_directive(
+                  Some(FuncBody::Block(stmts)) => detect_use_strict_directive(
                     self.env.source().text.as_ref(),
                     self.env.base_offset() as usize,
                     self.env.prefix_len() as usize,
                     stmts,
                     || self.tick(),
-                  )?
-                  }
+                  )?,
                   Some(FuncBody::Expression(_)) => false,
                   None => return Err(VmError::Unimplemented("getter without body")),
                 };
@@ -12971,15 +13018,13 @@ impl<'a> Evaluator<'a> {
 
               let is_strict = self.strict
                 || match &func_node.stx.body {
-                  Some(FuncBody::Block(stmts)) => {
-                  detect_use_strict_directive(
+                  Some(FuncBody::Block(stmts)) => detect_use_strict_directive(
                     self.env.source().text.as_ref(),
                     self.env.base_offset() as usize,
                     self.env.prefix_len() as usize,
                     stmts,
                     || self.tick(),
-                  )?
-                  }
+                  )?,
                   Some(FuncBody::Expression(_)) => false,
                   None => return Err(VmError::Unimplemented("setter without body")),
                 };
@@ -14253,53 +14298,57 @@ impl<'a> Evaluator<'a> {
           let key = PropertyKey::from_string(key_s);
 
           let base = self.get_super_base(&mut key_scope)?;
-          let reference = Reference::SuperProperty { base, key, receiver };
+          let reference = Reference::SuperProperty {
+            base,
+            key,
+            receiver,
+          };
           let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
           (callee_value, receiver)
         } else {
-        match self.eval_chain_base(scope, &member.stx.left)? {
-          OptionalChainEval::Value(base) => {
-            if is_nullish(base) {
-              return Err(throw_type_error(
-                self.vm,
-                scope,
-                "Cannot convert undefined or null to object",
-              )?);
-            }
+          match self.eval_chain_base(scope, &member.stx.left)? {
+            OptionalChainEval::Value(base) => {
+              if is_nullish(base) {
+                return Err(throw_type_error(
+                  self.vm,
+                  scope,
+                  "Cannot convert undefined or null to object",
+                )?);
+              }
 
-            let mut key_scope = scope.reborrow();
-            key_scope.push_root(base)?;
-            let reference = if member.stx.right.starts_with('#') {
-              let sym = key_scope
-                .heap()
-                .resolve_private_name_symbol(self.env.lexical_env, &member.stx.right)?
-                .ok_or(VmError::InvariantViolation("unresolved private name"))?;
-              Reference::Private {
-                base,
-                sym,
-                name: &member.stx.right,
+              let mut key_scope = scope.reborrow();
+              key_scope.push_root(base)?;
+              let reference = if member.stx.right.starts_with('#') {
+                let sym = key_scope
+                  .heap()
+                  .resolve_private_name_symbol(self.env.lexical_env, &member.stx.right)?
+                  .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+                Reference::Private {
+                  base,
+                  sym,
+                  name: &member.stx.right,
+                }
+              } else {
+                let key_s = key_scope.alloc_string(&member.stx.right)?;
+                Reference::Property {
+                  base,
+                  receiver: base,
+                  key: PropertyKey::from_string(key_s),
+                }
+              };
+              let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
+              (callee_value, base)
+            }
+            OptionalChainEval::ShortCircuit => {
+              if callee_is_parenthesized {
+                // `(a?.b.c)()` is not part of the optional chain: the callee evaluates to `undefined`,
+                // and the call will throw (after evaluating arguments) like any other `undefined()`.
+                (Value::Undefined, Value::Undefined)
+              } else {
+                return Ok(OptionalChainEval::ShortCircuit);
               }
-            } else {
-              let key_s = key_scope.alloc_string(&member.stx.right)?;
-              Reference::Property {
-                base,
-                receiver: base,
-                key: PropertyKey::from_string(key_s),
-              }
-            };
-            let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
-            (callee_value, base)
-          }
-          OptionalChainEval::ShortCircuit => {
-            if callee_is_parenthesized {
-              // `(a?.b.c)()` is not part of the optional chain: the callee evaluates to `undefined`,
-              // and the call will throw (after evaluating arguments) like any other `undefined()`.
-              (Value::Undefined, Value::Undefined)
-            } else {
-              return Ok(OptionalChainEval::ShortCircuit);
             }
           }
-        }
         }
       }
       // Ordinary computed-member call (e.g. `obj[expr]()`), but with optional-chain propagation.
@@ -14334,7 +14383,11 @@ impl<'a> Evaluator<'a> {
           }
 
           let base = self.get_super_base(&mut key_scope)?;
-          let reference = Reference::SuperProperty { base, key, receiver };
+          let reference = Reference::SuperProperty {
+            base,
+            key,
+            receiver,
+          };
           let callee_value = self.get_value_from_reference(&mut key_scope, &reference)?;
           (callee_value, receiver)
         } else {
@@ -14648,7 +14701,11 @@ impl<'a> Evaluator<'a> {
                     OperatorName::AssignmentDivision | OperatorName::AssignmentRemainder
                   )
                 {
-                  return Err(throw_range_error(self.vm, &mut op_scope, "Division by zero")?);
+                  return Err(throw_range_error(
+                    self.vm,
+                    &mut op_scope,
+                    "Division by zero",
+                  )?);
                 }
 
                 match expr.operator {
@@ -14797,7 +14854,10 @@ impl<'a> Evaluator<'a> {
               Ok(value)
             }
             (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
-              if matches!(expr.operator, OperatorName::AssignmentBitwiseUnsignedRightShift) {
+              if matches!(
+                expr.operator,
+                OperatorName::AssignmentBitwiseUnsignedRightShift
+              ) {
                 Err(throw_type_error(
                   self.vm,
                   &mut op_scope,
@@ -14899,7 +14959,11 @@ impl<'a> Evaluator<'a> {
 
           // Root `right` across anonymous function name inference + `PutValue`.
           op_scope.push_root(right)?;
-          self.maybe_set_anonymous_function_name_for_assignment(&mut op_scope, &reference, right)?;
+          self.maybe_set_anonymous_function_name_for_assignment(
+            &mut op_scope,
+            &reference,
+            right,
+          )?;
           self.put_value_to_reference(&mut op_scope, &reference, right)?;
           Ok(right)
         }
@@ -16042,7 +16106,9 @@ pub(crate) enum AsyncFrame {
   /// Root frame for async classic script evaluation (top-level await / `for await...of` in scripts).
   RootScriptBody,
   /// Root frame for compiled (HIR) async execution.
-  HirAsync { state: crate::hir_exec::HirAsyncState },
+  HirAsync {
+    state: crate::hir_exec::HirAsyncState,
+  },
   /// Converts the internal optional-chaining sentinel value to `undefined`.
   ///
   /// This frame is injected by `async_eval_expr` so the async evaluator can propagate optional-chain
@@ -16446,9 +16512,7 @@ pub(crate) enum AsyncFrame {
     left_root: RootId,
   },
   /// Continue a private `#x in <expr>` brand check after evaluating the RHS.
-  PrivateInAfterRight {
-    expr: *const BinaryExpr,
-  },
+  PrivateInAfterRight { expr: *const BinaryExpr },
 
   /// Continue a call expression while evaluating arguments.
   CallAfterCallee { expr: *const CallExpr },
@@ -16630,8 +16694,7 @@ pub(crate) enum AsyncFrame {
   },
 }
 
-#[derive(Debug)]
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AsyncSuspendKind {
   /// A suspension that should be resumed by awaiting `await_value` using the spec's `Await`
   /// semantics (`PromiseResolve(%Promise%, await_value)` + `PerformPromiseThen`).
@@ -17005,18 +17068,70 @@ pub(crate) enum GenFrame {
   BindArrAfterDefault {
     pat: *const ArrPat,
     elem_index: usize,
-    array_index: u32,
-    len: u32,
-    value: Value,
+    iterator_record: iterator::IteratorRecord,
+    assign_target: Option<GenAssignTarget>,
     kind: BindingKind,
   },
   /// Continue array destructuring after binding an element target pattern.
   BindArrContinue {
     pat: *const ArrPat,
     elem_index: usize,
-    array_index: u32,
-    len: u32,
-    value: Value,
+    iterator_record: iterator::IteratorRecord,
+    kind: BindingKind,
+  },
+
+  /// Continue array destructuring assignment after evaluating a member-expression assignment target
+  /// base.
+  BindArrElemAssignMemberAfterBase {
+    pat: *const ArrPat,
+    elem_index: usize,
+    iterator_record: iterator::IteratorRecord,
+    member: *const MemberExpr,
+    kind: BindingKind,
+  },
+  /// Continue array destructuring assignment after evaluating a computed-member assignment target
+  /// base.
+  BindArrElemAssignComputedMemberAfterBase {
+    pat: *const ArrPat,
+    elem_index: usize,
+    iterator_record: iterator::IteratorRecord,
+    member: *const ComputedMemberExpr,
+    kind: BindingKind,
+  },
+  /// Continue array destructuring assignment after evaluating a computed-member assignment target
+  /// key expression.
+  BindArrElemAssignComputedMemberAfterMember {
+    pat: *const ArrPat,
+    elem_index: usize,
+    iterator_record: iterator::IteratorRecord,
+    member: *const ComputedMemberExpr,
+    base: Value,
+    kind: BindingKind,
+  },
+
+  /// Continue array destructuring assignment rest-element binding after evaluating a member
+  /// assignment target base.
+  BindArrRestAssignMemberAfterBase {
+    pat: *const ArrPat,
+    iterator_record: iterator::IteratorRecord,
+    member: *const MemberExpr,
+    kind: BindingKind,
+  },
+  /// Continue array destructuring assignment rest-element binding after evaluating a computed-member
+  /// assignment target base.
+  BindArrRestAssignComputedMemberAfterBase {
+    pat: *const ArrPat,
+    iterator_record: iterator::IteratorRecord,
+    member: *const ComputedMemberExpr,
+    kind: BindingKind,
+  },
+  /// Continue array destructuring assignment rest-element binding after evaluating a computed-member
+  /// assignment target key expression.
+  BindArrRestAssignComputedMemberAfterMember {
+    pat: *const ArrPat,
+    iterator_record: iterator::IteratorRecord,
+    member: *const ComputedMemberExpr,
+    base: Value,
     kind: BindingKind,
   },
 
@@ -17200,6 +17315,31 @@ pub(crate) enum GenFrame {
   },
 }
 
+impl Trace for GenResolvedBinding {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    match self {
+      GenResolvedBinding::Declarative { env, .. } => tracer.trace_env(*env),
+      GenResolvedBinding::Object { binding_object, .. } => {
+        tracer.trace_value(Value::Object(*binding_object))
+      }
+      GenResolvedBinding::GlobalProperty { .. } | GenResolvedBinding::Unresolvable { .. } => {}
+    }
+  }
+}
+
+impl Trace for GenAssignTarget {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    match self {
+      GenAssignTarget::Binding(binding) => binding.trace(tracer),
+      GenAssignTarget::Member { base, .. } => tracer.trace_value(*base),
+      GenAssignTarget::ComputedMember { base, key_value } => {
+        tracer.trace_value(*base);
+        tracer.trace_value(*key_value);
+      }
+    }
+  }
+}
+
 impl Trace for GenFrame {
   fn trace(&self, tracer: &mut Tracer<'_>) {
     match self {
@@ -17336,15 +17476,67 @@ impl Trace for GenFrame {
         }
       }
       GenFrame::AssignPatternAfterBind { result } => tracer.trace_value(*result),
-      GenFrame::BindObjAfterKey { value, excluded, .. }
-      | GenFrame::BindObjAfterDefault { value, excluded, .. }
-      | GenFrame::BindObjContinue { value, excluded, .. } => {
+      GenFrame::BindObjAfterKey {
+        value, excluded, ..
+      }
+      | GenFrame::BindObjAfterDefault {
+        value, excluded, ..
+      }
+      | GenFrame::BindObjContinue {
+        value, excluded, ..
+      } => {
         tracer.trace_value(*value);
         for key in excluded {
           key.trace(tracer);
         }
       }
-      GenFrame::BindArrAfterDefault { value, .. } | GenFrame::BindArrContinue { value, .. } => {
+      GenFrame::BindArrAfterDefault {
+        iterator_record,
+        assign_target,
+        ..
+      } => {
+        tracer.trace_value(iterator_record.iterator);
+        tracer.trace_value(iterator_record.next_method);
+        if let Some(target) = assign_target {
+          target.trace(tracer);
+        }
+      }
+      GenFrame::BindArrContinue {
+        iterator_record, ..
+      }
+      | GenFrame::BindArrElemAssignMemberAfterBase {
+        iterator_record, ..
+      }
+      | GenFrame::BindArrElemAssignComputedMemberAfterBase {
+        iterator_record, ..
+      }
+      | GenFrame::BindArrRestAssignMemberAfterBase {
+        iterator_record, ..
+      }
+      | GenFrame::BindArrRestAssignComputedMemberAfterBase {
+        iterator_record, ..
+      } => {
+        tracer.trace_value(iterator_record.iterator);
+        tracer.trace_value(iterator_record.next_method);
+      }
+      GenFrame::BindArrElemAssignComputedMemberAfterMember {
+        iterator_record,
+        base,
+        ..
+      }
+      | GenFrame::BindArrRestAssignComputedMemberAfterMember {
+        iterator_record,
+        base,
+        ..
+      } => {
+        tracer.trace_value(iterator_record.iterator);
+        tracer.trace_value(iterator_record.next_method);
+        tracer.trace_value(*base);
+      }
+      GenFrame::BindAssignMemberAfterBase { value, .. }
+      | GenFrame::BindAssignComputedMemberAfterBase { value, .. } => tracer.trace_value(*value),
+      GenFrame::BindAssignComputedMemberAfterMember { base, value, .. } => {
+        tracer.trace_value(*base);
         tracer.trace_value(*value);
       }
       GenFrame::BindAssignMemberAfterBase { value, .. }
@@ -17781,7 +17973,6 @@ pub(crate) fn async_teardown_continuation(scope: &mut Scope<'_>, mut cont: Async
     async_teardown_frame(scope.heap_mut(), &mut frame);
   }
 }
-
 
 fn async_handle_body_result(
   vm: &mut Vm,
@@ -18341,7 +18532,11 @@ enum AsyncResumeInput {
   Return(Value),
 }
 
-pub(crate) fn coerce_error_to_throw_for_async(vm: &Vm, scope: &mut Scope<'_>, err: VmError) -> VmError {
+pub(crate) fn coerce_error_to_throw_for_async(
+  vm: &Vm,
+  scope: &mut Scope<'_>,
+  err: VmError,
+) -> VmError {
   match err {
     VmError::Throw(_) | VmError::ThrowWithStack { .. } => err,
     VmError::TypeError(message) => throw_type_error(vm, scope, message).unwrap_or_else(|e| e),
@@ -20028,7 +20223,10 @@ fn finalize_thrown_for_stmt(
   mut thrown: Thrown,
 ) -> Thrown {
   let source = evaluator.env.source();
-  let rel_start = stmt.loc.start_u32().saturating_sub(evaluator.env.prefix_len());
+  let rel_start = stmt
+    .loc
+    .start_u32()
+    .saturating_sub(evaluator.env.prefix_len());
   let abs_offset = evaluator.env.base_offset().saturating_add(rel_start);
   let (line, col) = source.line_col(abs_offset);
 
@@ -20139,9 +20337,9 @@ fn finalize_throw_completion_for_stmt(
   completion: Completion,
 ) -> Completion {
   match completion {
-    Completion::Throw(thrown) => Completion::Throw(finalize_thrown_for_stmt(
-      evaluator, scope, stmt, thrown,
-    )),
+    Completion::Throw(thrown) => {
+      Completion::Throw(finalize_thrown_for_stmt(evaluator, scope, stmt, thrown))
+    }
     other => other,
   }
 }
@@ -20154,7 +20352,10 @@ fn finalize_throw_value_for_expr_best_effort(
   mut stack: Vec<StackFrame>,
 ) -> Value {
   let source = evaluator.env.source();
-  let rel_start = expr.loc.start_u32().saturating_sub(evaluator.env.prefix_len());
+  let rel_start = expr
+    .loc
+    .start_u32()
+    .saturating_sub(evaluator.env.prefix_len());
   let abs_offset = evaluator.env.base_offset().saturating_add(rel_start);
   let (line, col) = source.line_col(abs_offset);
 
@@ -20750,7 +20951,9 @@ fn async_eval_stmt_labelled(
       // Best-effort: stack trace capture must never change execution semantics under OOM.
       let _ = async_frames_push(
         &mut suspend.frames,
-        AsyncFrame::FinalizeThrowAtStmt { stmt: stmt as *const _ },
+        AsyncFrame::FinalizeThrowAtStmt {
+          stmt: stmt as *const _,
+        },
       );
       Ok(AsyncEval::Suspend(suspend))
     }
@@ -20902,8 +21105,8 @@ fn async_eval_var_decl(
     match async_eval_expr(evaluator, scope, init) {
       Ok(AsyncEval::Complete(v)) => {
         match async_bind_var_declarator_value(evaluator, scope, decl, idx, v)? {
-           AsyncEval::Complete(()) => {}
-           AsyncEval::Suspend(mut suspend) => {
+          AsyncEval::Complete(()) => {}
+          AsyncEval::Suspend(mut suspend) => {
             if let Err(err) = async_frames_push(
               &mut suspend.frames,
               AsyncFrame::VarDeclAfterBinding {
@@ -20917,9 +21120,9 @@ fn async_eval_var_decl(
               return Err(err);
             }
             return Ok(AsyncEval::Suspend(suspend));
-           }
-         }
-       }
+          }
+        }
+      }
       Ok(AsyncEval::Suspend(mut suspend)) => {
         async_frames_push(
           &mut suspend.frames,
@@ -21313,14 +21516,14 @@ fn async_bind_object_pattern_from(
             };
             key
           }
-           AsyncEval::Suspend(mut suspend) => {
-             if let Err(_) = suspend.frames.try_reserve(1) {
-               for mut frame in suspend.frames {
-                 async_teardown_frame(scope.heap_mut(), &mut frame);
-               }
-               cleanup(&mut scope, &mut excluded);
-               return Err(VmError::OutOfMemory);
-             }
+          AsyncEval::Suspend(mut suspend) => {
+            if let Err(_) = suspend.frames.try_reserve(1) {
+              for mut frame in suspend.frames {
+                async_teardown_frame(scope.heap_mut(), &mut frame);
+              }
+              cleanup(&mut scope, &mut excluded);
+              return Err(VmError::OutOfMemory);
+            }
             async_frames_push(
               &mut suspend.frames,
               AsyncFrame::BindObjAfterKey {
@@ -21332,10 +21535,10 @@ fn async_bind_object_pattern_from(
               },
             )
             .expect("async_frames_push should not fail after try_reserve");
-             return Ok(AsyncEval::Suspend(suspend));
-           }
-         }
-       }
+            return Ok(AsyncEval::Suspend(suspend));
+          }
+        }
+      }
     };
 
     let rooted_key = match async_root_property_key(&mut scope, key) {
@@ -21377,14 +21580,14 @@ fn async_bind_object_pattern_from(
         };
         match default_eval {
           AsyncEval::Complete(v) => prop_value = v,
-           AsyncEval::Suspend(mut suspend) => {
-             if let Err(_) = suspend.frames.try_reserve(1) {
-               for mut frame in suspend.frames {
-                 async_teardown_frame(scope.heap_mut(), &mut frame);
-               }
-               cleanup(&mut scope, &mut excluded);
-               return Err(VmError::OutOfMemory);
-             }
+          AsyncEval::Suspend(mut suspend) => {
+            if let Err(_) = suspend.frames.try_reserve(1) {
+              for mut frame in suspend.frames {
+                async_teardown_frame(scope.heap_mut(), &mut frame);
+              }
+              cleanup(&mut scope, &mut excluded);
+              return Err(VmError::OutOfMemory);
+            }
             async_frames_push(
               &mut suspend.frames,
               AsyncFrame::BindObjAfterDefault {
@@ -21396,11 +21599,11 @@ fn async_bind_object_pattern_from(
               },
             )
             .expect("async_frames_push should not fail after try_reserve");
-             return Ok(AsyncEval::Suspend(suspend));
-           }
-         }
-       }
+            return Ok(AsyncEval::Suspend(suspend));
+          }
+        }
       }
+    }
 
     let target_bind =
       match async_bind_pattern(evaluator, &mut scope, &prop.target.stx, prop_value, kind) {
@@ -21703,14 +21906,14 @@ fn async_bind_array_pattern_from(
         };
         match default_eval {
           AsyncEval::Complete(v) => item = v,
-           AsyncEval::Suspend(mut suspend) => {
-             if let Err(_) = suspend.frames.try_reserve(1) {
-               for mut frame in suspend.frames {
-                 async_teardown_frame(scope.heap_mut(), &mut frame);
-               }
-               cleanup(scope);
-               return Err(VmError::OutOfMemory);
-             }
+          AsyncEval::Suspend(mut suspend) => {
+            if let Err(_) = suspend.frames.try_reserve(1) {
+              for mut frame in suspend.frames {
+                async_teardown_frame(scope.heap_mut(), &mut frame);
+              }
+              cleanup(scope);
+              return Err(VmError::OutOfMemory);
+            }
             async_frames_push(
               &mut suspend.frames,
               AsyncFrame::BindArrAfterDefault {
@@ -21723,10 +21926,10 @@ fn async_bind_array_pattern_from(
               },
             )
             .expect("async_frames_push should not fail after try_reserve");
-             return Ok(AsyncEval::Suspend(suspend));
-           }
-         }
-       }
+            return Ok(AsyncEval::Suspend(suspend));
+          }
+        }
+      }
     }
 
     let elem_bind = match async_bind_pattern(evaluator, scope, &elem.target.stx, item, kind) {
@@ -22175,7 +22378,10 @@ fn async_eval_class(
     Ok(AsyncEval::Suspend(mut suspend)) => {
       // Preserve strict-mode semantics across the suspension; restore strictness only after the
       // class definition evaluation completes.
-      if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RestoreStrict { saved_strict }) {
+      if let Err(err) = async_frames_push(
+        &mut suspend.frames,
+        AsyncFrame::RestoreStrict { saved_strict },
+      ) {
         // Best-effort cleanup: tear down any rooted frames so we don't leak GC roots on OOM.
         for mut frame in suspend.frames {
           async_teardown_frame(scope.heap_mut(), &mut frame);
@@ -22302,33 +22508,33 @@ fn async_eval_class_after_super(
     let span_start = evaluator.env.base_offset().saturating_add(rel_start);
     let span_end = evaluator.env.base_offset().saturating_add(rel_end);
 
-      let code = evaluator.vm.register_ecma_function(
-        evaluator.env.source(),
-        span_start,
-        span_end,
-        EcmaFunctionKind::ClassMember,
-      )?;
+    let code = evaluator.vm.register_ecma_function(
+      evaluator.env.source(),
+      span_start,
+      span_end,
+      EcmaFunctionKind::ClassMember,
+    )?;
 
-      // Class constructor bodies are always strict mode.
-      let is_strict = true;
-      let this_mode = if func_node.stx.arrow {
-        ThisMode::Lexical
-      } else {
-        ThisMode::Strict
-      };
-      let closure_env = Some(evaluator.env.lexical_env);
+    // Class constructor bodies are always strict mode.
+    let is_strict = true;
+    let this_mode = if func_node.stx.arrow {
+      ThisMode::Lexical
+    } else {
+      ThisMode::Strict
+    };
+    let closure_env = Some(evaluator.env.lexical_env);
 
-      let mut ctor_scope = class_scope.reborrow();
-      let name_string = ctor_scope.alloc_string("constructor")?;
-      let func_obj = ctor_scope.alloc_ecma_function(
-        code,
-        /* is_constructable */ true,
-        name_string,
-        ctor_length,
-        this_mode,
-        is_strict,
-        closure_env,
-      )?;
+    let mut ctor_scope = class_scope.reborrow();
+    let name_string = ctor_scope.alloc_string("constructor")?;
+    let func_obj = ctor_scope.alloc_ecma_function(
+      code,
+      /* is_constructable */ true,
+      name_string,
+      ctor_length,
+      this_mode,
+      is_strict,
+      closure_env,
+    )?;
 
     let intr = evaluator
       .vm
@@ -22341,7 +22547,9 @@ fn async_eval_class_after_super(
       .heap_mut()
       .set_function_realm(func_obj, evaluator.env.global_object())?;
     if let Some(realm) = evaluator.vm.current_realm() {
-      ctor_scope.heap_mut().set_function_job_realm(func_obj, realm)?;
+      ctor_scope
+        .heap_mut()
+        .set_function_job_realm(func_obj, realm)?;
     }
     if let Some(script_or_module) = evaluator.vm.get_active_script_or_module() {
       let token = evaluator.vm.intern_script_or_module(script_or_module)?;
@@ -22393,9 +22601,11 @@ fn async_eval_class_after_super(
     let init_res = (|| -> Result<(), VmError> {
       let mut init_scope = class_scope.reborrow();
       init_scope.push_root(Value::Object(func_obj))?;
-      init_scope
-        .heap_mut()
-        .env_initialize_binding(class_env, binding_name, Value::Object(func_obj))?;
+      init_scope.heap_mut().env_initialize_binding(
+        class_env,
+        binding_name,
+        Value::Object(func_obj),
+      )?;
       Ok(())
     })();
     if let Err(err) = init_res {
@@ -22405,36 +22615,38 @@ fn async_eval_class_after_super(
   }
 
   // Extract the prototype object created by `make_constructor`.
-  let (prototype_key, prototype_obj) =
-    match (|| -> Result<(PropertyKey, GcObject), VmError> {
-      let mut proto_scope = class_scope.reborrow();
-      proto_scope.push_root(Value::Object(func_obj))?;
-      let prototype_key_s = proto_scope.alloc_string("prototype")?;
-      proto_scope.push_root(Value::String(prototype_key_s))?;
-      let prototype_key = PropertyKey::from_string(prototype_key_s);
-      let Some(prototype_desc) = proto_scope.heap().get_own_property(func_obj, prototype_key)? else {
-        return Err(VmError::InvariantViolation(
-          "class constructor missing prototype property",
-        ));
-      };
-      let PropertyKind::Data { value, .. } = prototype_desc.kind else {
-        return Err(VmError::InvariantViolation(
-          "class constructor prototype property is not a data property",
-        ));
-      };
-      let Value::Object(prototype_obj) = value else {
-        return Err(VmError::InvariantViolation(
-          "class constructor prototype property is not an object",
-        ));
-      };
-      Ok((prototype_key, prototype_obj))
-    })() {
-      Ok(v) => v,
-      Err(e) => {
-        class_scope.heap_mut().remove_root(func_root);
-        return Err(e);
-      }
+  let (prototype_key, prototype_obj) = match (|| -> Result<(PropertyKey, GcObject), VmError> {
+    let mut proto_scope = class_scope.reborrow();
+    proto_scope.push_root(Value::Object(func_obj))?;
+    let prototype_key_s = proto_scope.alloc_string("prototype")?;
+    proto_scope.push_root(Value::String(prototype_key_s))?;
+    let prototype_key = PropertyKey::from_string(prototype_key_s);
+    let Some(prototype_desc) = proto_scope
+      .heap()
+      .get_own_property(func_obj, prototype_key)?
+    else {
+      return Err(VmError::InvariantViolation(
+        "class constructor missing prototype property",
+      ));
     };
+    let PropertyKind::Data { value, .. } = prototype_desc.kind else {
+      return Err(VmError::InvariantViolation(
+        "class constructor prototype property is not a data property",
+      ));
+    };
+    let Value::Object(prototype_obj) = value else {
+      return Err(VmError::InvariantViolation(
+        "class constructor prototype property is not an object",
+      ));
+    };
+    Ok((prototype_key, prototype_obj))
+  })() {
+    Ok(v) => v,
+    Err(e) => {
+      class_scope.heap_mut().remove_root(func_root);
+      return Err(e);
+    }
+  };
 
   // Class constructor bodies (the hidden function object invoked via `[[Construct]]`) use the
   // prototype object as their `[[HomeObject]]` so `super.prop` can resolve against
@@ -22489,7 +22701,9 @@ fn async_eval_class_after_super(
       Value::Undefined => class_scope
         .heap_mut()
         .object_set_prototype(prototype_obj, Some(intr.object_prototype())),
-      Value::Null => class_scope.heap_mut().object_set_prototype(prototype_obj, None),
+      Value::Null => class_scope
+        .heap_mut()
+        .object_set_prototype(prototype_obj, None),
       Value::Object(super_ctor) => {
         let proto_parent: Option<GcObject> = {
           let mut proto_scope = class_scope.reborrow();
@@ -26183,9 +26397,12 @@ fn async_eval_expr_chain(
       };
 
       match async_eval_expr(evaluator, scope, &binary.stx.right)? {
-        AsyncEval::Complete(right) => Ok(AsyncEval::Complete(
-          async_apply_private_in_operator(evaluator, scope, private_name, right)?,
-        )),
+        AsyncEval::Complete(right) => Ok(AsyncEval::Complete(async_apply_private_in_operator(
+          evaluator,
+          scope,
+          private_name,
+          right,
+        )?)),
         AsyncEval::Suspend(mut suspend) => {
           async_frames_push(
             &mut suspend.frames,
@@ -27203,7 +27420,9 @@ fn async_eval_assignment_expr(
   match expr.operator {
     OperatorName::Assignment => async_eval_assignment_simple(evaluator, scope, expr),
     OperatorName::AssignmentAddition => async_eval_assignment_addition(evaluator, scope, expr),
-    OperatorName::AssignmentExponentiation => async_eval_assignment_exponentiation(evaluator, scope, expr),
+    OperatorName::AssignmentExponentiation => {
+      async_eval_assignment_exponentiation(evaluator, scope, expr)
+    }
     OperatorName::AssignmentSubtraction
     | OperatorName::AssignmentMultiplication
     | OperatorName::AssignmentDivision
@@ -27215,10 +27434,14 @@ fn async_eval_assignment_expr(
     | OperatorName::AssignmentBitwiseXor => async_eval_assignment_bitwise(evaluator, scope, expr),
     OperatorName::AssignmentBitwiseLeftShift
     | OperatorName::AssignmentBitwiseRightShift
-    | OperatorName::AssignmentBitwiseUnsignedRightShift => async_eval_assignment_shift(evaluator, scope, expr),
+    | OperatorName::AssignmentBitwiseUnsignedRightShift => {
+      async_eval_assignment_shift(evaluator, scope, expr)
+    }
     OperatorName::AssignmentLogicalAnd
     | OperatorName::AssignmentLogicalOr
-    | OperatorName::AssignmentNullishCoalescing => async_eval_assignment_logical(evaluator, scope, expr),
+    | OperatorName::AssignmentNullishCoalescing => {
+      async_eval_assignment_logical(evaluator, scope, expr)
+    }
     _ => Err(VmError::InvariantViolation(
       "async assignment evaluator called for non-assignment operator",
     )),
@@ -27541,7 +27764,11 @@ fn async_eval_assignment_to_member(
     let base = evaluator
       .get_super_base(&mut key_scope)
       .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-    let reference = Reference::SuperProperty { base, key, receiver };
+    let reference = Reference::SuperProperty {
+      base,
+      key,
+      receiver,
+    };
     return async_eval_assignment_apply_reference(evaluator, &mut key_scope, expr, reference);
   }
 
@@ -27788,7 +28015,11 @@ fn async_eval_assignment_apply_reference(
 
               (Some(base_root), Some(key_root), None)
             }
-            Reference::SuperProperty { base, key, receiver } => {
+            Reference::SuperProperty {
+              base,
+              key,
+              receiver,
+            } => {
               let mut root_scope = rhs_scope.reborrow();
               root_scope.push_root(base)?;
               let base_root = root_scope.heap_mut().add_root(base)?;
@@ -27852,7 +28083,9 @@ fn async_eval_assignment_apply_reference(
           let value = match expr.operator {
             OperatorName::AssignmentAddition => evaluator
               .addition_operator(&mut compound_scope, left, right)
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err))?,
+              .map_err(|err| {
+                coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
+              })?,
             OperatorName::AssignmentExponentiation => async_apply_binary_operator(
               evaluator,
               &mut compound_scope,
@@ -27866,10 +28099,14 @@ fn async_eval_assignment_apply_reference(
             | OperatorName::AssignmentRemainder => {
               let left_num = evaluator
                 .to_numeric(&mut compound_scope, left)
-                .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err))?;
+                .map_err(|err| {
+                  coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
+                })?;
               let right_num = evaluator
                 .to_numeric(&mut compound_scope, right)
-                .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err))?;
+                .map_err(|err| {
+                  coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
+                })?;
 
               match (left_num, right_num) {
                 (NumericValue::Number(a), NumericValue::Number(b)) => {
@@ -27897,7 +28134,11 @@ fn async_eval_assignment_apply_reference(
                         OperatorName::AssignmentDivision | OperatorName::AssignmentRemainder
                       )
                     {
-                      return Err(throw_range_error(evaluator.vm, &mut compound_scope, "Division by zero")?);
+                      return Err(throw_range_error(
+                        evaluator.vm,
+                        &mut compound_scope,
+                        "Division by zero",
+                      )?);
                     }
 
                     match expr.operator {
@@ -27940,7 +28181,9 @@ fn async_eval_assignment_apply_reference(
           compound_scope.push_root(value)?;
           evaluator
             .put_value_to_reference(&mut compound_scope, &reference, value)
-            .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err))?;
+            .map_err(|err| {
+              coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
+            })?;
           Ok(AsyncEval::Complete(value))
         }
         AsyncEval::Suspend(mut suspend) => {
@@ -27960,7 +28203,11 @@ fn async_eval_assignment_apply_reference(
 
               (Some(base_root), Some(key_root), None)
             }
-            Reference::SuperProperty { base, key, receiver } => {
+            Reference::SuperProperty {
+              base,
+              key,
+              receiver,
+            } => {
               let mut root_scope = op_scope.reborrow();
               root_scope.push_root(base)?;
               let base_root = root_scope.heap_mut().add_root(base)?;
@@ -28055,7 +28302,11 @@ fn async_eval_assignment_apply_reference(
 
               (Some(base_root), Some(key_root), None)
             }
-            Reference::SuperProperty { base, key, receiver } => {
+            Reference::SuperProperty {
+              base,
+              key,
+              receiver,
+            } => {
               let mut root_scope = op_scope.reborrow();
               root_scope.push_root(base)?;
               let base_root = root_scope.heap_mut().add_root(base)?;
@@ -28155,7 +28406,11 @@ fn async_eval_assignment_apply_reference(
 
               (Some(base_root), Some(key_root), None)
             }
-            Reference::SuperProperty { base, key, receiver } => {
+            Reference::SuperProperty {
+              base,
+              key,
+              receiver,
+            } => {
               let mut root_scope = op_scope.reborrow();
               root_scope.push_root(base)?;
               let base_root = root_scope.heap_mut().add_root(base)?;
@@ -28216,7 +28471,9 @@ fn async_eval_assignment_apply_reference(
           let shift_op = match expr.operator {
             OperatorName::AssignmentBitwiseLeftShift => OperatorName::BitwiseLeftShift,
             OperatorName::AssignmentBitwiseRightShift => OperatorName::BitwiseRightShift,
-            OperatorName::AssignmentBitwiseUnsignedRightShift => OperatorName::BitwiseUnsignedRightShift,
+            OperatorName::AssignmentBitwiseUnsignedRightShift => {
+              OperatorName::BitwiseUnsignedRightShift
+            }
             _ => {
               return Err(VmError::InvariantViolation(
                 "unexpected operator in async bitwise shift compound assignment",
@@ -28224,7 +28481,8 @@ fn async_eval_assignment_apply_reference(
             }
           };
 
-          let value = async_apply_binary_operator(evaluator, &mut shift_scope, shift_op, left, right)?;
+          let value =
+            async_apply_binary_operator(evaluator, &mut shift_scope, shift_op, left, right)?;
           shift_scope.push_root(value)?;
           evaluator
             .put_value_to_reference(&mut shift_scope, &reference, value)
@@ -28248,7 +28506,11 @@ fn async_eval_assignment_apply_reference(
 
               (Some(base_root), Some(key_root), None)
             }
-            Reference::SuperProperty { base, key, receiver } => {
+            Reference::SuperProperty {
+              base,
+              key,
+              receiver,
+            } => {
               let mut root_scope = op_scope.reborrow();
               root_scope.push_root(base)?;
               let base_root = root_scope.heap_mut().add_root(base)?;
@@ -30173,7 +30435,9 @@ fn async_eval_call(
     // `super.prop(...args)`.
     Expr::Member(member) if matches!(&*member.stx.left.stx, Expr::Super(_)) => {
       if member.stx.optional_chaining {
-        return Err(VmError::Unimplemented("optional chaining super member call"));
+        return Err(VmError::Unimplemented(
+          "optional chaining super member call",
+        ));
       }
       if member.stx.right.starts_with('#') {
         return Err(VmError::Unimplemented("super private name"));
@@ -30193,7 +30457,11 @@ fn async_eval_call(
         let base = evaluator
           .get_super_base(&mut key_scope)
           .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-        let reference = Reference::SuperProperty { base, key, receiver };
+        let reference = Reference::SuperProperty {
+          base,
+          key,
+          receiver,
+        };
         evaluator
           .get_value_from_reference(&mut key_scope, &reference)
           .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?
@@ -30203,7 +30471,9 @@ fn async_eval_call(
     // `super[expr](...args)`.
     Expr::ComputedMember(member) if matches!(&*member.stx.object.stx, Expr::Super(_)) => {
       if member.stx.optional_chaining {
-        return Err(VmError::Unimplemented("optional chaining super member call"));
+        return Err(VmError::Unimplemented(
+          "optional chaining super member call",
+        ));
       }
       // `super[expr](...)` requires an initialized `this` binding. In derived constructors before
       // `super()` returns, this must throw before evaluating the computed key expression (and thus
@@ -30925,7 +31195,7 @@ fn async_resume_from_frames(
         "async continuation resumed with empty frame stack",
       ));
     };
- 
+
     match frame {
       AsyncFrame::HirAsync {
         state: mut hir_state,
@@ -31140,21 +31410,23 @@ fn async_resume_from_frames(
       },
 
       AsyncFrame::YieldStarAfterOperand => match state {
-        AsyncState::Expr(Ok(iterable)) => match async_yield_star_begin(evaluator, scope, iterable) {
-          Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
-          Ok(AsyncEval::Suspend(mut suspend)) => {
-            async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
-            return Ok(AsyncBodyResult::Await {
-              kind: suspend.kind,
-              await_value: suspend.await_value,
-              frames: suspend.frames,
-            });
+        AsyncState::Expr(Ok(iterable)) => {
+          match async_yield_star_begin(evaluator, scope, iterable) {
+            Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
+            Ok(AsyncEval::Suspend(mut suspend)) => {
+              async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
+              return Ok(AsyncBodyResult::Await {
+                kind: suspend.kind,
+                await_value: suspend.await_value,
+                frames: suspend.frames,
+              });
+            }
+            Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. } | VmError::Return(_))) => {
+              state = AsyncState::Expr(Err(err))
+            }
+            Err(err) => return Err(err),
           }
-          Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. } | VmError::Return(_))) => {
-            state = AsyncState::Expr(Err(err))
-          }
-          Err(err) => return Err(err),
-        },
+        }
         AsyncState::Expr(Err(err)) => state = AsyncState::Expr(Err(err)),
         AsyncState::Completion(_) => {
           return Err(VmError::InvariantViolation(
@@ -31636,20 +31908,24 @@ fn async_resume_from_frames(
 
           match heritage_res {
             Ok(heritage_value) => {
-              let super_value = match async_class_heritage_value_to_super_value(
+              let super_value =
+                match async_class_heritage_value_to_super_value(evaluator, scope, heritage_value) {
+                  Ok(v) => v,
+                  Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                    state = AsyncState::Expr(Err(err));
+                    continue;
+                  }
+                  Err(err) => return Err(err),
+                };
+
+              match async_eval_class_after_super(
                 evaluator,
                 scope,
-                heritage_value,
+                binding,
+                func_name,
+                members,
+                super_value,
               ) {
-                Ok(v) => v,
-                Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
-                  state = AsyncState::Expr(Err(err));
-                  continue;
-                }
-                Err(err) => return Err(err),
-              };
-
-              match async_eval_class_after_super(evaluator, scope, binding, func_name, members, super_value) {
                 Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
                 Ok(AsyncEval::Suspend(mut suspend)) => {
                   async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
@@ -31747,17 +32023,19 @@ fn async_resume_from_frames(
               .ok_or(VmError::InvariantViolation(
                 "missing class static block saved new.target root",
               ))?;
-          let saved_home_object_value = scope
-            .heap()
-            .get_root(saved_home_object_root)
-            .ok_or(VmError::InvariantViolation(
-              "missing class static block saved home object root",
-            ))?;
+          let saved_home_object_value =
+            scope
+              .heap()
+              .get_root(saved_home_object_root)
+              .ok_or(VmError::InvariantViolation(
+                "missing class static block saved home object root",
+              ))?;
           // Root the restored values for the duration of this resumption segment. The async
           // continuation's `this_root` / `new_target_root` / `home_object_root` will be updated only
           // after `async_resume_from_frames` returns, so ensure GC cannot collect these values while
           // class evaluation continues.
-          if let Err(err) = scope.push_roots(&[saved_this, saved_new_target, saved_home_object_value])
+          if let Err(err) =
+            scope.push_roots(&[saved_this, saved_new_target, saved_home_object_value])
           {
             // Best-effort cleanup: this frame owns persistent roots that won't be torn down by the
             // async frame drop guard after we've popped it.
@@ -31946,22 +32224,24 @@ fn async_resume_from_frames(
           };
 
           match right_res {
-            Ok(right) => match async_apply_private_in_operator(evaluator, scope, private_name, right) {
-              Ok(v) => state = AsyncState::Expr(Ok(v)),
-              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
-                state = AsyncState::Expr(Err(err))
+            Ok(right) => {
+              match async_apply_private_in_operator(evaluator, scope, private_name, right) {
+                Ok(v) => state = AsyncState::Expr(Ok(v)),
+                Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                  state = AsyncState::Expr(Err(err))
+                }
+                Err(err) => return Err(err),
               }
-              Err(err) => return Err(err),
-            },
+            }
             Err(err) => state = AsyncState::Expr(Err(err)),
           }
         }
-      AsyncState::Completion(_) => {
-        return Err(VmError::InvariantViolation(
-          "private-in frame received completion state",
-        ))
-      }
-    },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "private-in frame received completion state",
+          ))
+        }
+      },
 
       AsyncFrame::CallAfterCallee { expr } => match state {
         AsyncState::Expr(Ok(callee_value)) => {
@@ -33369,10 +33649,13 @@ fn async_resume_from_frames(
                       .heap()
                       .get_root(base_root)
                       .ok_or(VmError::InvariantViolation("missing assignment base root"))?;
-                    let receiver = scope
-                      .heap()
-                      .get_root(receiver_root)
-                      .ok_or(VmError::InvariantViolation("missing assignment receiver root"))?;
+                    let receiver =
+                      scope
+                        .heap()
+                        .get_root(receiver_root)
+                        .ok_or(VmError::InvariantViolation(
+                          "missing assignment receiver root",
+                        ))?;
                     let key_value = scope
                       .heap()
                       .get_root(key_root)
@@ -33386,7 +33669,11 @@ fn async_resume_from_frames(
                         ))
                       }
                     };
-                    Reference::SuperProperty { base, key, receiver }
+                    Reference::SuperProperty {
+                      base,
+                      key,
+                      receiver,
+                    }
                   }
                   None => match (base_root, key_root) {
                     (None, None) => match &*expr.left.stx {
@@ -33444,8 +33731,14 @@ fn async_resume_from_frames(
                 let mut put_scope = scope.reborrow();
                 put_scope.push_root(value)?;
                 evaluator
-                  .maybe_set_anonymous_function_name_for_assignment(&mut put_scope, &reference, value)
-                  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut put_scope, err))?;
+                  .maybe_set_anonymous_function_name_for_assignment(
+                    &mut put_scope,
+                    &reference,
+                    value,
+                  )
+                  .map_err(|err| {
+                    coerce_error_to_throw_for_async(evaluator.vm, &mut put_scope, err)
+                  })?;
                 evaluator
                   .put_value_to_reference(&mut put_scope, &reference, value)
                   .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut put_scope, err))
@@ -33526,10 +33819,13 @@ fn async_resume_from_frames(
                       .heap()
                       .get_root(base_root)
                       .ok_or(VmError::InvariantViolation("missing assignment base root"))?;
-                    let receiver = scope
-                      .heap()
-                      .get_root(receiver_root)
-                      .ok_or(VmError::InvariantViolation("missing assignment receiver root"))?;
+                    let receiver =
+                      scope
+                        .heap()
+                        .get_root(receiver_root)
+                        .ok_or(VmError::InvariantViolation(
+                          "missing assignment receiver root",
+                        ))?;
                     let key_value = scope
                       .heap()
                       .get_root(key_root)
@@ -33543,7 +33839,11 @@ fn async_resume_from_frames(
                         ))
                       }
                     };
-                    Reference::SuperProperty { base, key, receiver }
+                    Reference::SuperProperty {
+                      base,
+                      key,
+                      receiver,
+                    }
                   }
                   None => match (base_root, key_root) {
                     (None, None) => match &*expr.left.stx {
@@ -33618,16 +33918,18 @@ fn async_resume_from_frames(
                   | OperatorName::AssignmentMultiplication
                   | OperatorName::AssignmentDivision
                   | OperatorName::AssignmentRemainder => {
-                    let left_num = evaluator
-                      .to_numeric(&mut compound_scope, left)
-                      .map_err(|err| {
-                        coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
-                      })?;
-                    let right_num = evaluator
-                      .to_numeric(&mut compound_scope, right)
-                      .map_err(|err| {
-                        coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
-                      })?;
+                    let left_num =
+                      evaluator
+                        .to_numeric(&mut compound_scope, left)
+                        .map_err(|err| {
+                          coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
+                        })?;
+                    let right_num =
+                      evaluator
+                        .to_numeric(&mut compound_scope, right)
+                        .map_err(|err| {
+                          coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
+                        })?;
 
                     match (left_num, right_num) {
                       (NumericValue::Number(a), NumericValue::Number(b)) => {
@@ -33701,7 +34003,13 @@ fn async_resume_from_frames(
                       OperatorName::AssignmentBitwiseXor => OperatorName::BitwiseXor,
                       _ => unreachable!(),
                     };
-                    async_apply_binary_operator(evaluator, &mut compound_scope, bit_op, left, right)?
+                    async_apply_binary_operator(
+                      evaluator,
+                      &mut compound_scope,
+                      bit_op,
+                      left,
+                      right,
+                    )?
                   }
                   OperatorName::AssignmentBitwiseLeftShift
                   | OperatorName::AssignmentBitwiseRightShift
@@ -33718,7 +34026,13 @@ fn async_resume_from_frames(
                         ));
                       }
                     };
-                    async_apply_binary_operator(evaluator, &mut compound_scope, shift_op, left, right)?
+                    async_apply_binary_operator(
+                      evaluator,
+                      &mut compound_scope,
+                      shift_op,
+                      left,
+                      right,
+                    )?
                   }
                   _ => {
                     return Err(VmError::InvariantViolation(
@@ -34311,7 +34625,7 @@ fn async_resume_from_frames(
                     async_teardown_frame(scope.heap_mut(), &mut frame);
                   }
                   scope.heap_mut().remove_root(value_root);
-                 async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
+                  async_cleanup_rooted_property_keys(scope.heap_mut(), &mut excluded);
                   for mut frame in frames {
                     async_teardown_frame(scope.heap_mut(), &mut frame);
                   }
@@ -35976,7 +36290,11 @@ fn async_resume_from_frames(
                     ) {
                       Ok(AsyncEval::Complete(c)) => state = AsyncState::Completion(c),
                       Ok(AsyncEval::Suspend(mut suspend)) => {
-                        async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
+                        async_frames_try_append(
+                          scope.heap_mut(),
+                          &mut suspend.frames,
+                          &mut frames,
+                        )?;
                         return Ok(AsyncBodyResult::Await {
                           kind: suspend.kind,
                           await_value: suspend.await_value,
@@ -37829,12 +38147,9 @@ fn gen_eval_switch(
 ) -> Result<GenEval<Completion>, VmError> {
   match gen_eval_expr(evaluator, scope, &stmt.test)? {
     GenEval::Complete(c) => match c {
-      Completion::Normal(v) => gen_switch_after_discriminant(
-        evaluator,
-        scope,
-        stmt,
-        v.unwrap_or(Value::Undefined),
-      ),
+      Completion::Normal(v) => {
+        gen_switch_after_discriminant(evaluator, scope, stmt, v.unwrap_or(Value::Undefined))
+      }
       abrupt => Ok(GenEval::Complete(abrupt)),
     },
     GenEval::Suspend(mut suspend) => {
@@ -37875,14 +38190,20 @@ fn gen_switch_after_discriminant(
   for (i, branch) in stmt.branches.iter().enumerate() {
     if i % BRANCH_TICK_EVERY == 0 {
       if let Err(err) = evaluator.tick() {
-        evaluator.env.set_lexical_env(switch_scope.heap_mut(), outer);
+        evaluator
+          .env
+          .set_lexical_env(switch_scope.heap_mut(), outer);
         return Err(err);
       }
     }
-    if let Err(err) =
-      evaluator.instantiate_block_decls_in_stmt_list(&mut switch_scope, switch_env, &branch.stx.body)
-    {
-      evaluator.env.set_lexical_env(switch_scope.heap_mut(), outer);
+    if let Err(err) = evaluator.instantiate_block_decls_in_stmt_list(
+      &mut switch_scope,
+      switch_env,
+      &branch.stx.body,
+    ) {
+      evaluator
+        .env
+        .set_lexical_env(switch_scope.heap_mut(), outer);
       return Err(err);
     }
   }
@@ -37891,7 +38212,9 @@ fn gen_switch_after_discriminant(
   // completion.
   let v_root_idx = switch_scope.heap().root_stack.len();
   if let Err(err) = switch_scope.push_root(Value::Undefined) {
-    evaluator.env.set_lexical_env(switch_scope.heap_mut(), outer);
+    evaluator
+      .env
+      .set_lexical_env(switch_scope.heap_mut(), outer);
     return Err(err);
   }
   let v = Value::Undefined;
@@ -37907,7 +38230,9 @@ fn gen_switch_after_discriminant(
     None,
   ) {
     Ok(GenEval::Complete(c)) => {
-      evaluator.env.set_lexical_env(switch_scope.heap_mut(), outer);
+      evaluator
+        .env
+        .set_lexical_env(switch_scope.heap_mut(), outer);
       Ok(GenEval::Complete(c))
     }
     Ok(GenEval::Suspend(mut suspend)) => {
@@ -37915,7 +38240,9 @@ fn gen_switch_after_discriminant(
       Ok(GenEval::Suspend(suspend))
     }
     Err(err) => {
-      evaluator.env.set_lexical_env(switch_scope.heap_mut(), outer);
+      evaluator
+        .env
+        .set_lexical_env(switch_scope.heap_mut(), outer);
       Err(err)
     }
   }
@@ -38789,7 +39116,8 @@ fn gen_for_of_after_bind(
     if iter_env_created {
       evaluator.env.set_lexical_env(scope.heap_mut(), outer_lex);
     }
-    let completion = evaluator.iterator_close_on_completion(scope, iterator_record, bind_completion)?;
+    let completion =
+      evaluator.iterator_close_on_completion(scope, iterator_record, bind_completion)?;
     return Ok(GenEval::Complete(completion));
   }
 
@@ -38812,7 +39140,8 @@ fn gen_for_of_after_bind(
 
       if !Evaluator::loop_continues(&body_completion, &label_set) {
         let completion = body_completion.update_empty(Some(v));
-        let completion = evaluator.iterator_close_on_completion(scope, iterator_record, completion)?;
+        let completion =
+          evaluator.iterator_close_on_completion(scope, iterator_record, completion)?;
         let result = Evaluator::normalise_iteration_break(completion);
         return Ok(GenEval::Complete(result));
       }
@@ -38835,7 +39164,10 @@ fn gen_for_of_after_bind(
     }
     GenEval::Suspend(mut suspend) => {
       if iter_env_created {
-        gen_frames_push(&mut suspend.frames, GenFrame::RestoreLexEnv { outer: outer_lex })?;
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::RestoreLexEnv { outer: outer_lex },
+        )?;
       }
       gen_frames_push(
         &mut suspend.frames,
@@ -38993,9 +39325,9 @@ fn gen_eval_stmt_labelled(
     GenEval::Suspend(mut suspend) => {
       // Best-effort: stack trace capture must never change execution semantics under OOM.
       if suspend.frames.try_reserve(1).is_ok() {
-        suspend
-          .frames
-          .push_back(GenFrame::FinalizeThrowAtStmt { stmt: stmt as *const _ });
+        suspend.frames.push_back(GenFrame::FinalizeThrowAtStmt {
+          stmt: stmt as *const _,
+        });
       }
       Ok(GenEval::Suspend(suspend))
     }
@@ -39043,7 +39375,9 @@ fn gen_eval_throw_stmt(
 ) -> Result<GenEval<Completion>, VmError> {
   match gen_eval_expr(evaluator, scope, &stmt.stx.value)? {
     GenEval::Complete(c) => Ok(GenEval::Complete(match c {
-      Completion::Normal(v) => gen_throw_completion(evaluator, scope, stmt, v.unwrap_or(Value::Undefined)),
+      Completion::Normal(v) => {
+        gen_throw_completion(evaluator, scope, stmt, v.unwrap_or(Value::Undefined))
+      }
       abrupt => abrupt,
     })),
     GenEval::Suspend(mut suspend) => {
@@ -39237,27 +39571,28 @@ fn gen_eval_expr_chain(
     Expr::ComputedMember(member) if matches!(&*member.stx.object.stx, Expr::Super(_)) => {
       gen_eval_super_computed_member(evaluator, scope, &member.stx)
     }
-    Expr::ComputedMember(member) => match gen_eval_chain_base(evaluator, scope, &member.stx.object)?
-    {
-      GenEval::Complete(c) => match c {
-        Completion::Normal(v) => gen_computed_member_after_base(
-          evaluator,
-          scope,
-          &member.stx,
-          v.unwrap_or(Value::Undefined),
-        ),
-        abrupt => Ok(GenEval::Complete(abrupt)),
-      },
-      GenEval::Suspend(mut suspend) => {
-        gen_frames_push(
-          &mut suspend.frames,
-          GenFrame::ComputedMemberAfterBase {
-            expr: &*member.stx as *const ComputedMemberExpr,
-          },
-        )?;
-        Ok(GenEval::Suspend(suspend))
+    Expr::ComputedMember(member) => {
+      match gen_eval_chain_base(evaluator, scope, &member.stx.object)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(v) => gen_computed_member_after_base(
+            evaluator,
+            scope,
+            &member.stx,
+            v.unwrap_or(Value::Undefined),
+          ),
+          abrupt => Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::ComputedMemberAfterBase {
+              expr: &*member.stx as *const ComputedMemberExpr,
+            },
+          )?;
+          Ok(GenEval::Suspend(suspend))
+        }
       }
-    },
+    }
     Expr::Call(call) => gen_eval_call(evaluator, scope, &call.stx),
     Expr::Import(import) => gen_eval_import_expr(evaluator, scope, &import.stx),
     Expr::TaggedTemplate(tag) => gen_eval_tagged_template(evaluator, scope, tag),
@@ -39425,7 +39760,9 @@ fn gen_eval_lit_arr_from(
                 Ok(())
               })();
               if let Err(err) = create_res {
-                return Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?));
+                return Ok(GenEval::Complete(gen_error_to_completion(
+                  evaluator, scope, err,
+                )?));
               }
             }
             abrupt => return Ok(GenEval::Complete(abrupt)),
@@ -39510,7 +39847,11 @@ fn gen_eval_lit_arr_from(
             })();
             match spread_res {
               Ok(updated_next_index) => next_index = updated_next_index,
-              Err(err) => return Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?)),
+              Err(err) => {
+                return Ok(GenEval::Complete(gen_error_to_completion(
+                  evaluator, scope, err,
+                )?))
+              }
             }
           }
           abrupt => return Ok(GenEval::Complete(abrupt)),
@@ -39547,7 +39888,9 @@ fn gen_eval_lit_arr_from(
     Ok(())
   })();
   if let Err(err) = length_res {
-    return Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?));
+    return Ok(GenEval::Complete(gen_error_to_completion(
+      evaluator, scope, err,
+    )?));
   }
 
   Ok(GenEval::Complete(Completion::normal(Value::Object(arr))))
@@ -39614,7 +39957,11 @@ fn gen_eval_lit_obj_from(
                 match evaluator.to_property_key_operator(&mut key_scope, key_value) {
                   Ok(k) => k,
                   Err(err) => {
-                    return Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut key_scope, err)?))
+                    return Ok(GenEval::Complete(gen_error_to_completion(
+                      evaluator,
+                      &mut key_scope,
+                      err,
+                    )?))
                   }
                 }
               }
@@ -39664,7 +40011,9 @@ fn gen_eval_lit_obj_from(
           Ok(())
         })();
         if let Err(err) = shorthand_res {
-          return Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?));
+          return Ok(GenEval::Complete(gen_error_to_completion(
+            evaluator, scope, err,
+          )?));
         }
       }
       ObjMemberType::Rest { val } => match gen_eval_expr(evaluator, scope, val)? {
@@ -39687,7 +40036,9 @@ fn gen_eval_lit_obj_from(
               Ok(())
             })();
             if let Err(err) = spread_res {
-              return Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?));
+              return Ok(GenEval::Complete(gen_error_to_completion(
+                evaluator, scope, err,
+              )?));
             }
           }
           abrupt => return Ok(GenEval::Complete(abrupt)),
@@ -39775,7 +40126,9 @@ fn gen_eval_lit_obj_apply_valued_member(
 
                 if is_proto_setter {
                   match value {
-                    Value::Object(proto) => member_scope.heap_mut().object_set_prototype(obj, Some(proto))?,
+                    Value::Object(proto) => member_scope
+                      .heap_mut()
+                      .object_set_prototype(obj, Some(proto))?,
                     Value::Null => member_scope.heap_mut().object_set_prototype(obj, None)?,
                     _ => {}
                   }
@@ -39827,7 +40180,11 @@ fn gen_eval_lit_obj_apply_valued_member(
 
         let value = match value_res {
           Ok(v) => v,
-          Err(err) => return Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?)),
+          Err(err) => {
+            return Ok(GenEval::Complete(gen_error_to_completion(
+              evaluator, scope, err,
+            )?))
+          }
         };
 
         let apply_res: Result<(), VmError> = (|| {
@@ -39841,7 +40198,9 @@ fn gen_eval_lit_obj_apply_valued_member(
 
           if is_proto_setter {
             match value {
-              Value::Object(proto) => member_scope.heap_mut().object_set_prototype(obj, Some(proto))?,
+              Value::Object(proto) => member_scope
+                .heap_mut()
+                .object_set_prototype(obj, Some(proto))?,
               Value::Null => member_scope.heap_mut().object_set_prototype(obj, None)?,
               _ => {}
             }
@@ -39851,7 +40210,9 @@ fn gen_eval_lit_obj_apply_valued_member(
           Ok(())
         })();
         if let Err(err) = apply_res {
-          return Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?));
+          return Ok(GenEval::Complete(gen_error_to_completion(
+            evaluator, scope, err,
+          )?));
         }
         Ok(GenEval::Complete(Completion::empty()))
       }
@@ -40468,7 +40829,11 @@ fn gen_new_begin(
     );
     return match res {
       Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
-      Err(err) => Err(coerce_error_to_throw_for_async(evaluator.vm, &mut new_scope, err)),
+      Err(err) => Err(coerce_error_to_throw_for_async(
+        evaluator.vm,
+        &mut new_scope,
+        err,
+      )),
     };
   }
 
@@ -40510,13 +40875,9 @@ fn gen_new_continue_args(
         Completion::Normal(v) => {
           let value = v.unwrap_or(Value::Undefined);
           let args_len_before = args.len();
-          if let Err(err) = gen_call_store_arg_value(
-            evaluator,
-            &mut new_scope,
-            arg.stx.spread,
-            value,
-            &mut args,
-          ) {
+          if let Err(err) =
+            gen_call_store_arg_value(evaluator, &mut new_scope, arg.stx.spread, value, &mut args)
+          {
             let err = coerce_error_to_throw_for_async(evaluator.vm, &mut new_scope, err);
             match err {
               VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
@@ -40569,7 +40930,11 @@ fn gen_new_continue_args(
   );
   match res {
     Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
-    Err(err) => Err(coerce_error_to_throw_for_async(evaluator.vm, &mut new_scope, err)),
+    Err(err) => Err(coerce_error_to_throw_for_async(
+      evaluator.vm,
+      &mut new_scope,
+      err,
+    )),
   }
 }
 
@@ -40625,7 +40990,10 @@ fn gen_eval_delete_expr(
           abrupt => Ok(GenEval::Complete(abrupt)),
         },
         GenEval::Suspend(mut suspend) => {
-          gen_frames_push(&mut suspend.frames, GenFrame::DeleteSuperComputedMemberAfterMember)?;
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::DeleteSuperComputedMemberAfterMember,
+          )?;
           Ok(GenEval::Suspend(suspend))
         }
       }
@@ -40652,27 +41020,28 @@ fn gen_eval_delete_expr(
         Ok(GenEval::Suspend(suspend))
       }
     },
-    Expr::ComputedMember(member) => match gen_eval_chain_base(evaluator, scope, &member.stx.object)?
-    {
-      GenEval::Complete(c) => match c {
-        Completion::Normal(v) => gen_delete_computed_member_after_base(
-          evaluator,
-          scope,
-          &member.stx,
-          v.unwrap_or(Value::Undefined),
-        ),
-        abrupt => Ok(GenEval::Complete(abrupt)),
-      },
-      GenEval::Suspend(mut suspend) => {
-        gen_frames_push(
-          &mut suspend.frames,
-          GenFrame::DeleteComputedMemberAfterBase {
-            expr: &*member.stx as *const ComputedMemberExpr,
-          },
-        )?;
-        Ok(GenEval::Suspend(suspend))
+    Expr::ComputedMember(member) => {
+      match gen_eval_chain_base(evaluator, scope, &member.stx.object)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(v) => gen_delete_computed_member_after_base(
+            evaluator,
+            scope,
+            &member.stx,
+            v.unwrap_or(Value::Undefined),
+          ),
+          abrupt => Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::DeleteComputedMemberAfterBase {
+              expr: &*member.stx as *const ComputedMemberExpr,
+            },
+          )?;
+          Ok(GenEval::Suspend(suspend))
+        }
       }
-    },
+    }
     _ => match gen_eval_expr(evaluator, scope, &expr.argument)? {
       GenEval::Complete(c) => match c {
         Completion::Normal(_) => Ok(GenEval::Complete(Completion::normal(Value::Bool(true)))),
@@ -40768,14 +41137,18 @@ fn gen_eval_update_expression(
       let reference = Reference::Binding(&id.stx.name);
       match gen_apply_update_to_reference(evaluator, scope, &reference, delta, prefix) {
         Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
-        Err(err) => Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?)),
+        Err(err) => Ok(GenEval::Complete(gen_error_to_completion(
+          evaluator, scope, err,
+        )?)),
       }
     }
     Expr::IdPat(id) => {
       let reference = Reference::Binding(&id.stx.name);
       match gen_apply_update_to_reference(evaluator, scope, &reference, delta, prefix) {
         Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
-        Err(err) => Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?)),
+        Err(err) => Ok(GenEval::Complete(gen_error_to_completion(
+          evaluator, scope, err,
+        )?)),
       }
     }
     Expr::Member(member) => {
@@ -40795,7 +41168,9 @@ fn gen_eval_update_expression(
               gen_apply_update_to_reference(evaluator, scope, &reference, delta, prefix)
             })() {
               Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
-              Err(err) => Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?)),
+              Err(err) => Ok(GenEval::Complete(gen_error_to_completion(
+                evaluator, scope, err,
+              )?)),
             }
           }
           abrupt => Ok(GenEval::Complete(abrupt)),
@@ -40886,7 +41261,9 @@ fn gen_eval_update_super_computed_member(
           gen_apply_update_to_reference(evaluator, scope, &reference, delta, prefix)
         })() {
           Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
-          Err(err) => Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?)),
+          Err(err) => Ok(GenEval::Complete(gen_error_to_completion(
+            evaluator, scope, err,
+          )?)),
         }
       }
       abrupt => Ok(GenEval::Complete(abrupt)),
@@ -40972,7 +41349,9 @@ fn gen_update_computed_member_after_base(
           gen_apply_update_to_reference(evaluator, scope, &reference, delta, prefix)
         })() {
           Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
-          Err(err) => Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?)),
+          Err(err) => Ok(GenEval::Complete(gen_error_to_completion(
+            evaluator, scope, err,
+          )?)),
         }
       }
       abrupt => Ok(GenEval::Complete(abrupt)),
@@ -41373,8 +41752,11 @@ fn gen_super_computed_member_after_member(
   member_value: Value,
 ) -> Result<Value, VmError> {
   let mut super_scope = scope.reborrow();
-  let reference =
-    gen_reference_from_super_computed_member_after_member(evaluator, &mut super_scope, member_value)?;
+  let reference = gen_reference_from_super_computed_member_after_member(
+    evaluator,
+    &mut super_scope,
+    member_value,
+  )?;
   evaluator.get_value_from_reference(&mut super_scope, &reference)
 }
 
@@ -41396,8 +41778,11 @@ fn gen_eval_super_computed_member(
 
   match gen_eval_expr(evaluator, scope, &expr.member)? {
     GenEval::Complete(c) => match c {
-      Completion::Normal(v) => match gen_super_computed_member_after_member(evaluator, scope, v.unwrap_or(Value::Undefined))
-      {
+      Completion::Normal(v) => match gen_super_computed_member_after_member(
+        evaluator,
+        scope,
+        v.unwrap_or(Value::Undefined),
+      ) {
         Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
         Err(err) => {
           let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
@@ -41464,10 +41849,12 @@ fn gen_eval_assignment_expr(
                 value,
                 BindingKind::Assignment,
               )? {
-                GenEval::Complete(bind_completion) => Ok(GenEval::Complete(match bind_completion {
-                  Completion::Normal(_) => Completion::normal(value),
-                  abrupt => abrupt,
-                })),
+                GenEval::Complete(bind_completion) => {
+                  Ok(GenEval::Complete(match bind_completion {
+                    Completion::Normal(_) => Completion::normal(value),
+                    abrupt => abrupt,
+                  }))
+                }
                 GenEval::Suspend(mut suspend) => {
                   gen_frames_push(
                     &mut suspend.frames,
@@ -41510,7 +41897,9 @@ fn gen_eval_assignment_expr(
       match &*expr.left.stx {
         Expr::Id(id) => gen_eval_assignment_add_to_binding(evaluator, scope, expr, &id.stx.name),
         Expr::IdPat(id) => gen_eval_assignment_add_to_binding(evaluator, scope, expr, &id.stx.name),
-        Expr::Member(member) => gen_eval_assignment_add_to_member(evaluator, scope, expr, &member.stx),
+        Expr::Member(member) => {
+          gen_eval_assignment_add_to_member(evaluator, scope, expr, &member.stx)
+        }
         Expr::ComputedMember(member) => {
           gen_eval_assignment_add_to_computed_member(evaluator, scope, expr, &member.stx)
         }
@@ -41697,7 +42086,9 @@ fn gen_binary_after_left(
             let right = v.unwrap_or(Value::Undefined);
             match async_apply_binary_operator(evaluator, scope, expr.operator, left, right) {
               Ok(out) => Ok(GenEval::Complete(Completion::normal(out))),
-              Err(err) => Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?)),
+              Err(err) => Ok(GenEval::Complete(gen_error_to_completion(
+                evaluator, scope, err,
+              )?)),
             }
           }
           abrupt => Ok(GenEval::Complete(abrupt)),
@@ -41762,15 +42153,23 @@ fn gen_eval_assignment_to_member(
     // Root the computed super base across RHS evaluation / generator suspension handling.
     super_scope.push_root(base)?;
 
-    let reference = Reference::SuperProperty { base, key, receiver };
+    let reference = Reference::SuperProperty {
+      base,
+      key,
+      receiver,
+    };
     return gen_eval_assignment_apply_reference(evaluator, &mut super_scope, expr, reference);
   }
 
   match gen_eval_expr(evaluator, scope, &member.left)? {
     GenEval::Complete(c) => match c {
-      Completion::Normal(v) => {
-        gen_eval_assignment_to_member_after_base(evaluator, scope, expr, member, v.unwrap_or(Value::Undefined))
-      }
+      Completion::Normal(v) => gen_eval_assignment_to_member_after_base(
+        evaluator,
+        scope,
+        expr,
+        member,
+        v.unwrap_or(Value::Undefined),
+      ),
       abrupt => Ok(GenEval::Complete(abrupt)),
     },
     GenEval::Suspend(mut suspend) => {
@@ -42780,7 +43179,11 @@ fn gen_call_super_member(
     }
   };
 
-  let reference = Reference::SuperProperty { base, key, receiver };
+  let reference = Reference::SuperProperty {
+    base,
+    key,
+    receiver,
+  };
   let callee_value = match evaluator.get_value_from_reference(&mut super_scope, &reference) {
     Ok(v) => v,
     Err(err) => {
@@ -42812,9 +43215,12 @@ fn gen_call_super_computed_member(
 
   match gen_eval_expr(evaluator, scope, &member.member)? {
     GenEval::Complete(c) => match c {
-      Completion::Normal(v) => {
-        gen_call_super_computed_member_after_member(evaluator, scope, call, v.unwrap_or(Value::Undefined))
-      }
+      Completion::Normal(v) => gen_call_super_computed_member_after_member(
+        evaluator,
+        scope,
+        call,
+        v.unwrap_or(Value::Undefined),
+      ),
       abrupt => Ok(GenEval::Complete(abrupt)),
     },
     GenEval::Suspend(mut suspend) => {
@@ -42959,13 +43365,9 @@ fn gen_call_continue_args(
         Completion::Normal(v) => {
           let value = v.unwrap_or(Value::Undefined);
           let args_len_before = args.len();
-          if let Err(err) = gen_call_store_arg_value(
-            evaluator,
-            &mut call_scope,
-            arg.stx.spread,
-            value,
-            &mut args,
-          ) {
+          if let Err(err) =
+            gen_call_store_arg_value(evaluator, &mut call_scope, arg.stx.spread, value, &mut args)
+          {
             let err = coerce_error_to_throw_for_async(evaluator.vm, &mut call_scope, err);
             match err {
               VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
@@ -43607,7 +44009,9 @@ fn gen_bind_pattern(
     );
     return match res {
       Ok(()) => Ok(GenEval::Complete(Completion::empty())),
-      Err(err) => Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?)),
+      Err(err) => Ok(GenEval::Complete(gen_error_to_completion(
+        evaluator, scope, err,
+      )?)),
     };
   }
 
@@ -43642,7 +44046,9 @@ fn gen_bind_pattern(
       );
       match res {
         Ok(()) => Ok(GenEval::Complete(Completion::empty())),
-        Err(err) => Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut scope, err)?)),
+        Err(err) => Ok(GenEval::Complete(gen_error_to_completion(
+          evaluator, &mut scope, err,
+        )?)),
       }
     }
   }
@@ -43655,16 +44061,26 @@ fn gen_bind_assignment_target(
   value: Value,
   kind: BindingKind,
 ) -> Result<GenEval<Completion>, VmError> {
+  if !matches!(kind, BindingKind::Assignment) {
+    return Err(VmError::Unimplemented(
+      "assignment target pattern in binding context",
+    ));
+  }
+
+  // Keep temporary roots local to this binding operation.
+  let mut scope = scope.reborrow();
+  let value = scope.push_root(value)?;
+
   match &*target.stx {
-    Expr::ObjPat(obj) => gen_bind_object_pattern(evaluator, scope, &obj.stx, value, kind),
-    Expr::ArrPat(arr) => gen_bind_array_pattern(evaluator, scope, &arr.stx, value, kind),
+    Expr::ObjPat(obj) => gen_bind_object_pattern(evaluator, &mut scope, &obj.stx, value, kind),
+    Expr::ArrPat(arr) => gen_bind_array_pattern(evaluator, &mut scope, &arr.stx, value, kind),
     Expr::Member(member) => {
       if !matches!(kind, BindingKind::Assignment) {
         return Err(VmError::InvariantViolation(
           "gen_bind_assignment_target called for non-assignment binding kind",
         ));
       }
-      gen_bind_assignment_target_to_member(evaluator, scope, &member.stx, value)
+      gen_bind_assignment_target_to_member(evaluator, &mut scope, &member.stx, value)
     }
     Expr::ComputedMember(member) => {
       if !matches!(kind, BindingKind::Assignment) {
@@ -43672,7 +44088,7 @@ fn gen_bind_assignment_target(
           "gen_bind_assignment_target called for non-assignment binding kind",
         ));
       }
-      gen_bind_assignment_target_to_computed_member(evaluator, scope, &member.stx, value)
+      gen_bind_assignment_target_to_computed_member(evaluator, &mut scope, &member.stx, value)
     }
     _ => Err(VmError::Unimplemented("yield in assignment target")),
   }
@@ -44011,7 +44427,11 @@ fn gen_bind_object_pattern_from(
     src_value,
   ) {
     Ok(obj) => obj,
-    Err(err) => return Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut scope, err)?)),
+    Err(err) => {
+      return Ok(GenEval::Complete(gen_error_to_completion(
+        evaluator, &mut scope, err,
+      )?))
+    }
   };
   scope.push_root(Value::Object(obj))?;
 
@@ -44095,7 +44515,11 @@ fn gen_bind_object_pattern_from(
       receiver,
     ) {
       Ok(v) => v,
-      Err(err) => return Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut scope, err)?)),
+      Err(err) => {
+        return Ok(GenEval::Complete(gen_error_to_completion(
+          evaluator, &mut scope, err,
+        )?))
+      }
     };
 
     if matches!(prop_value, Value::Undefined) {
@@ -44180,7 +44604,13 @@ fn gen_bind_object_pattern_from(
     ) {
       Ok(Some(desc)) => desc,
       Ok(None) => continue,
-      Err(err) => return Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut rest_scope, err)?)),
+      Err(err) => {
+        return Ok(GenEval::Complete(gen_error_to_completion(
+          evaluator,
+          &mut rest_scope,
+          err,
+        )?))
+      }
     };
     if !desc.enumerable {
       continue;
@@ -44195,7 +44625,13 @@ fn gen_bind_object_pattern_from(
       Value::Object(obj),
     ) {
       Ok(v) => v,
-      Err(err) => return Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut rest_scope, err)?)),
+      Err(err) => {
+        return Ok(GenEval::Complete(gen_error_to_completion(
+          evaluator,
+          &mut rest_scope,
+          err,
+        )?))
+      }
     };
     rest_scope.create_data_property(rest_obj, key, v)?;
   }
@@ -44216,54 +44652,126 @@ fn gen_bind_object_pattern_from(
   );
   match res {
     Ok(()) => Ok(GenEval::Complete(Completion::empty())),
-    Err(err) => Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut rest_scope, err)?)),
+    Err(err) => Ok(GenEval::Complete(gen_error_to_completion(
+      evaluator,
+      &mut rest_scope,
+      err,
+    )?)),
   }
 }
 
-fn gen_array_like_length(
+fn gen_assign_target_put_value(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
-  obj: GcObject,
-) -> Result<u32, VmError> {
-  let key_s = scope.alloc_string("length")?;
-  scope.push_root(Value::String(key_s))?;
-  let key = PropertyKey::from_string(key_s);
-  let v = scope
-    .get_with_host_and_hooks(
-      evaluator.vm,
-      &mut *evaluator.host,
-      &mut *evaluator.hooks,
-      obj,
-      key,
-      Value::Object(obj),
-    )
-    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))?;
-  match v {
-    Value::Number(n) if n.is_finite() && n >= 0.0 => Ok(n as u32),
-    Value::Undefined => Ok(0),
-    _ => Err(VmError::Unimplemented("array-like length")),
-  }
-}
+  target: GenAssignTarget,
+  value: Value,
+) -> Result<(), VmError> {
+  match target {
+    GenAssignTarget::Binding(binding) => {
+      let (resolved, name) = match binding {
+        GenResolvedBinding::Declarative { env, name } => {
+          let name = unsafe { &*name };
+          (
+            ResolvedBinding::Declarative {
+              env,
+              name: name.as_str(),
+            },
+            name.as_str(),
+          )
+        }
+        GenResolvedBinding::Object {
+          binding_object,
+          name,
+        } => {
+          let name = unsafe { &*name };
+          (
+            ResolvedBinding::Object {
+              binding_object,
+              name: name.as_str(),
+            },
+            name.as_str(),
+          )
+        }
+        GenResolvedBinding::GlobalProperty { name } => {
+          let name = unsafe { &*name };
+          (
+            ResolvedBinding::GlobalProperty {
+              name: name.as_str(),
+            },
+            name.as_str(),
+          )
+        }
+        GenResolvedBinding::Unresolvable { name } => {
+          let name = unsafe { &*name };
+          (
+            ResolvedBinding::Unresolvable {
+              name: name.as_str(),
+            },
+            name.as_str(),
+          )
+        }
+      };
 
-fn gen_array_like_get(
-  evaluator: &mut Evaluator<'_>,
-  scope: &mut Scope<'_>,
-  obj: GcObject,
-  idx: u32,
-) -> Result<Value, VmError> {
-  let key_s = scope.alloc_u32_index_string(idx)?;
-  scope.push_root(Value::String(key_s))?;
-  let key = PropertyKey::from_string(key_s);
-  scope
-    .get_with_host_and_hooks(
-      evaluator.vm,
-      &mut *evaluator.host,
-      &mut *evaluator.hooks,
-      obj,
-      key,
-      Value::Object(obj),
-    )
-    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))
+      let reference = Reference::Binding(name);
+      let mut assign_scope = scope.reborrow();
+      assign_scope.push_root(value)?;
+      evaluator.maybe_set_anonymous_function_name_for_assignment(
+        &mut assign_scope,
+        &reference,
+        value,
+      )?;
+      evaluator.env.set_resolved_binding(
+        evaluator.vm,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        &mut assign_scope,
+        resolved,
+        value,
+        evaluator.strict,
+      )
+    }
+    GenAssignTarget::Member { base, key } => {
+      let key = unsafe { &*key };
+
+      // Root the RHS + base across property-key allocation and assignment.
+      let mut assign_scope = scope.reborrow();
+      assign_scope.push_roots(&[base, value])?;
+      let key_s = assign_scope.alloc_string(key)?;
+      let reference = Reference::Property {
+        base,
+        receiver: base,
+        key: PropertyKey::from_string(key_s),
+      };
+      evaluator.root_reference(&mut assign_scope, &reference)?;
+      assign_scope.push_root(value)?;
+      evaluator.maybe_set_anonymous_function_name_for_assignment(
+        &mut assign_scope,
+        &reference,
+        value,
+      )?;
+      evaluator.put_value_to_reference(&mut assign_scope, &reference, value)
+    }
+    GenAssignTarget::ComputedMember { base, key_value } => {
+      // Root inputs across `ToPropertyKey` + `PutValue`, both of which can allocate and invoke user
+      // code.
+      let mut assign_scope = scope.reborrow();
+      assign_scope.push_roots(&[base, key_value, value])?;
+      let key = evaluator.to_property_key_operator(&mut assign_scope, key_value)?;
+      let reference = Reference::Property {
+        base,
+        receiver: base,
+        key,
+      };
+      evaluator.root_reference(&mut assign_scope, &reference)?;
+      assign_scope.push_root(value)?;
+      evaluator.maybe_set_anonymous_function_name_for_assignment(
+        &mut assign_scope,
+        &reference,
+        value,
+      )?;
+      evaluator.put_value_to_reference(&mut assign_scope, &reference, value)
+    }
+  }
 }
 
 fn gen_bind_array_pattern(
@@ -44275,64 +44783,392 @@ fn gen_bind_array_pattern(
 ) -> Result<GenEval<Completion>, VmError> {
   let mut scope = scope.reborrow();
   let value = scope.push_root(value)?;
-  let obj = match value {
-    Value::Object(obj) => obj,
-    other => match scope.to_object(evaluator.vm, &mut *evaluator.host, &mut *evaluator.hooks, other) {
-      Ok(obj) => obj,
-      Err(err) => return Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut scope, err)?)),
-    },
-  };
-  let value = Value::Object(obj);
-  scope.push_root(value)?;
 
-  let len = match gen_array_like_length(evaluator, &mut scope, obj) {
-    Ok(len) => len,
-    Err(err) => return Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut scope, err)?)),
+  // RequireObjectCoercible (ECMA-262): array destructuring disallows null/undefined but supports
+  // primitives via iterator protocol.
+  if matches!(value, Value::Undefined | Value::Null) {
+    let err = throw_type_error(
+      evaluator.vm,
+      &mut scope,
+      "array destructuring requires object coercible",
+    )?;
+    return Ok(GenEval::Complete(gen_error_to_completion(
+      evaluator, &mut scope, err,
+    )?));
+  }
+
+  let iterator_record = match iterator::get_iterator(
+    evaluator.vm,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    &mut scope,
+    value,
+  ) {
+    Ok(rec) => rec,
+    Err(err) => {
+      return Ok(GenEval::Complete(gen_error_to_completion(
+        evaluator, &mut scope, err,
+      )?))
+    }
   };
-  gen_bind_array_pattern_from(evaluator, &mut scope, pat, value, kind, 0, 0, len)
+
+  // Root the iterator record while processing the pattern so it survives across allocations.
+  scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+  gen_bind_array_pattern_from(evaluator, &mut scope, pat, iterator_record, kind, 0, None)
 }
 
 fn gen_bind_array_pattern_from(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
   pat: &ArrPat,
-  value: Value,
+  mut iterator_record: iterator::IteratorRecord,
   kind: BindingKind,
   start_elem_index: usize,
-  start_array_index: u32,
-  len: u32,
+  mut pending_assign_target: Option<GenAssignTarget>,
 ) -> Result<GenEval<Completion>, VmError> {
   let mut scope = scope.reborrow();
-  let Value::Object(obj) = value else {
-    let err = throw_type_error(evaluator.vm, &mut scope, "array destructuring requires object")?;
-    return Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut scope, err)?));
-  };
-  scope.push_root(Value::Object(obj))?;
+  // Root the iterator record across allocations; values on the Rust stack are not traced by the GC.
+  scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
 
-  let mut array_index = start_array_index;
   for (elem_index, elem) in pat.elements.iter().enumerate().skip(start_elem_index) {
     evaluator.tick()?;
 
+    // Keep temporary roots local to each element.
+    let mut elem_scope = scope.reborrow();
+
     let Some(elem) = elem else {
-      array_index = array_index.saturating_add(1);
-      continue;
+      // Elision: still advance the iterator but do not read `value`.
+      match iterator::iterator_step(
+        evaluator.vm,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        &mut elem_scope,
+        &mut iterator_record,
+      ) {
+        Ok(_) => continue,
+        Err(err) => {
+          let err = evaluator.iterator_close_on_error(&mut elem_scope, &iterator_record, err);
+          return Ok(GenEval::Complete(gen_error_to_completion(
+            evaluator,
+            &mut elem_scope,
+            err,
+          )?));
+        }
+      }
     };
 
-    let mut item = if array_index < len {
-      match gen_array_like_get(evaluator, &mut scope, obj, array_index) {
-        Ok(v) => v,
-        Err(err) => return Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut scope, err)?)),
+    // --- Assignment target evaluation order (ECMA-262 `IteratorDestructuringAssignmentEvaluation`) ---
+    //
+    // For destructuring *assignment* (not binding), evaluate property-reference targets (base +
+    // computed key expression) before calling `IteratorStep` / `IteratorStepValue`. This ensures
+    // that abrupt completions in the LHS do not advance the iterator.
+    let mut assign_target: Option<GenAssignTarget> = None;
+    if matches!(kind, BindingKind::Assignment) {
+      // Use the pre-evaluated target (when resuming from a suspension inside target evaluation).
+      if pending_assign_target.is_some() {
+        assign_target = pending_assign_target.take();
+      } else {
+        match &*elem.target.stx {
+          Pat::Id(id) => {
+            let name_ptr = &id.stx.name as *const String;
+            let binding = match evaluator.env.resolve_binding_reference(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              &mut elem_scope,
+              &id.stx.name,
+            ) {
+              Ok(b) => b,
+              Err(err) => {
+                let err = evaluator.iterator_close_on_error(&mut elem_scope, &iterator_record, err);
+                return Ok(GenEval::Complete(gen_error_to_completion(
+                  evaluator,
+                  &mut elem_scope,
+                  err,
+                )?));
+              }
+            };
+            let gen_binding = match binding {
+              ResolvedBinding::Declarative { env, .. } => GenResolvedBinding::Declarative {
+                env,
+                name: name_ptr,
+              },
+              ResolvedBinding::Object { binding_object, .. } => GenResolvedBinding::Object {
+                binding_object,
+                name: name_ptr,
+              },
+              ResolvedBinding::GlobalProperty { .. } => {
+                GenResolvedBinding::GlobalProperty { name: name_ptr }
+              }
+              ResolvedBinding::Unresolvable { .. } => {
+                GenResolvedBinding::Unresolvable { name: name_ptr }
+              }
+            };
+            assign_target = Some(GenAssignTarget::Binding(gen_binding));
+          }
+          Pat::AssignTarget(target) => match &*target.stx {
+            Expr::Id(id) => {
+              let name_ptr = &id.stx.name as *const String;
+              let binding = match evaluator.env.resolve_binding_reference(
+                evaluator.vm,
+                &mut *evaluator.host,
+                &mut *evaluator.hooks,
+                &mut elem_scope,
+                &id.stx.name,
+              ) {
+                Ok(b) => b,
+                Err(err) => {
+                  let err =
+                    evaluator.iterator_close_on_error(&mut elem_scope, &iterator_record, err);
+                  return Ok(GenEval::Complete(gen_error_to_completion(
+                    evaluator,
+                    &mut elem_scope,
+                    err,
+                  )?));
+                }
+              };
+              let gen_binding = match binding {
+                ResolvedBinding::Declarative { env, .. } => GenResolvedBinding::Declarative {
+                  env,
+                  name: name_ptr,
+                },
+                ResolvedBinding::Object { binding_object, .. } => GenResolvedBinding::Object {
+                  binding_object,
+                  name: name_ptr,
+                },
+                ResolvedBinding::GlobalProperty { .. } => {
+                  GenResolvedBinding::GlobalProperty { name: name_ptr }
+                }
+                ResolvedBinding::Unresolvable { .. } => {
+                  GenResolvedBinding::Unresolvable { name: name_ptr }
+                }
+              };
+              assign_target = Some(GenAssignTarget::Binding(gen_binding));
+            }
+            Expr::IdPat(id) => {
+              let name_ptr = &id.stx.name as *const String;
+              let binding = match evaluator.env.resolve_binding_reference(
+                evaluator.vm,
+                &mut *evaluator.host,
+                &mut *evaluator.hooks,
+                &mut elem_scope,
+                &id.stx.name,
+              ) {
+                Ok(b) => b,
+                Err(err) => {
+                  let err =
+                    evaluator.iterator_close_on_error(&mut elem_scope, &iterator_record, err);
+                  return Ok(GenEval::Complete(gen_error_to_completion(
+                    evaluator,
+                    &mut elem_scope,
+                    err,
+                  )?));
+                }
+              };
+              let gen_binding = match binding {
+                ResolvedBinding::Declarative { env, .. } => GenResolvedBinding::Declarative {
+                  env,
+                  name: name_ptr,
+                },
+                ResolvedBinding::Object { binding_object, .. } => GenResolvedBinding::Object {
+                  binding_object,
+                  name: name_ptr,
+                },
+                ResolvedBinding::GlobalProperty { .. } => {
+                  GenResolvedBinding::GlobalProperty { name: name_ptr }
+                }
+                ResolvedBinding::Unresolvable { .. } => {
+                  GenResolvedBinding::Unresolvable { name: name_ptr }
+                }
+              };
+              assign_target = Some(GenAssignTarget::Binding(gen_binding));
+            }
+            Expr::Member(member) => {
+              if member.stx.optional_chaining {
+                let err =
+                  VmError::InvariantViolation("optional chaining used in assignment target");
+                let err = evaluator.iterator_close_on_error(&mut elem_scope, &iterator_record, err);
+                return Ok(GenEval::Complete(gen_error_to_completion(
+                  evaluator,
+                  &mut elem_scope,
+                  err,
+                )?));
+              }
+              match gen_eval_expr(evaluator, &mut elem_scope, &member.stx.left)? {
+                GenEval::Complete(c) => match c {
+                  Completion::Normal(v) => {
+                    let base = v.unwrap_or(Value::Undefined);
+                    assign_target = Some(GenAssignTarget::Member {
+                      base,
+                      key: &member.stx.right as *const String,
+                    });
+                  }
+                  abrupt => {
+                    let completion = match evaluator.iterator_close_on_completion(
+                      &mut elem_scope,
+                      &iterator_record,
+                      abrupt,
+                    ) {
+                      Ok(c) => c,
+                      Err(err) => gen_error_to_completion(evaluator, &mut elem_scope, err)?,
+                    };
+                    return Ok(GenEval::Complete(completion));
+                  }
+                },
+                GenEval::Suspend(mut suspend) => {
+                  gen_frames_push(
+                    &mut suspend.frames,
+                    GenFrame::BindArrElemAssignMemberAfterBase {
+                      pat: pat as *const ArrPat,
+                      elem_index,
+                      iterator_record,
+                      member: &*member.stx as *const MemberExpr,
+                      kind,
+                    },
+                  )?;
+                  return Ok(GenEval::Suspend(suspend));
+                }
+              }
+            }
+            Expr::ComputedMember(member) => {
+              if member.stx.optional_chaining {
+                let err =
+                  VmError::InvariantViolation("optional chaining used in assignment target");
+                let err = evaluator.iterator_close_on_error(&mut elem_scope, &iterator_record, err);
+                return Ok(GenEval::Complete(gen_error_to_completion(
+                  evaluator,
+                  &mut elem_scope,
+                  err,
+                )?));
+              }
+
+              let base_eval = gen_eval_expr(evaluator, &mut elem_scope, &member.stx.object)?;
+              match base_eval {
+                GenEval::Complete(c) => match c {
+                  Completion::Normal(v) => {
+                    let base = v.unwrap_or(Value::Undefined);
+                    let member_eval = {
+                      let mut member_scope = elem_scope.reborrow();
+                      member_scope.push_root(base)?;
+                      gen_eval_expr(evaluator, &mut member_scope, &member.stx.member)?
+                    };
+                    match member_eval {
+                      GenEval::Complete(c) => match c {
+                        Completion::Normal(v) => {
+                          let key_value = v.unwrap_or(Value::Undefined);
+                          assign_target = Some(GenAssignTarget::ComputedMember { base, key_value });
+                        }
+                        abrupt => {
+                          let completion = match evaluator.iterator_close_on_completion(
+                            &mut elem_scope,
+                            &iterator_record,
+                            abrupt,
+                          ) {
+                            Ok(c) => c,
+                            Err(err) => gen_error_to_completion(evaluator, &mut elem_scope, err)?,
+                          };
+                          return Ok(GenEval::Complete(completion));
+                        }
+                      },
+                      GenEval::Suspend(mut suspend) => {
+                        gen_frames_push(
+                          &mut suspend.frames,
+                          GenFrame::BindArrElemAssignComputedMemberAfterMember {
+                            pat: pat as *const ArrPat,
+                            elem_index,
+                            iterator_record,
+                            member: &*member.stx as *const ComputedMemberExpr,
+                            base,
+                            kind,
+                          },
+                        )?;
+                        return Ok(GenEval::Suspend(suspend));
+                      }
+                    }
+                  }
+                  abrupt => {
+                    let completion = match evaluator.iterator_close_on_completion(
+                      &mut elem_scope,
+                      &iterator_record,
+                      abrupt,
+                    ) {
+                      Ok(c) => c,
+                      Err(err) => gen_error_to_completion(evaluator, &mut elem_scope, err)?,
+                    };
+                    return Ok(GenEval::Complete(completion));
+                  }
+                },
+                GenEval::Suspend(mut suspend) => {
+                  gen_frames_push(
+                    &mut suspend.frames,
+                    GenFrame::BindArrElemAssignComputedMemberAfterBase {
+                      pat: pat as *const ArrPat,
+                      elem_index,
+                      iterator_record,
+                      member: &*member.stx as *const ComputedMemberExpr,
+                      kind,
+                    },
+                  )?;
+                  return Ok(GenEval::Suspend(suspend));
+                }
+              }
+            }
+            _ => {}
+          },
+          _ => {}
+        }
       }
-    } else {
-      Value::Undefined
+
+      // Root the pre-evaluated assignment target until the element finishes binding/assignment.
+      if let Some(target) = assign_target {
+        match target {
+          GenAssignTarget::Binding(_) => {}
+          GenAssignTarget::Member { base, .. } => {
+            elem_scope.push_root(base)?;
+          }
+          GenAssignTarget::ComputedMember { base, key_value } => {
+            elem_scope.push_roots(&[base, key_value])?;
+          }
+        }
+      }
+    }
+
+    let mut item = match iterator::iterator_step_value(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      &mut elem_scope,
+      &mut iterator_record,
+    ) {
+      Ok(Some(v)) => v,
+      Ok(None) => Value::Undefined,
+      Err(err) => {
+        let err = evaluator.iterator_close_on_error(&mut elem_scope, &iterator_record, err);
+        return Ok(GenEval::Complete(gen_error_to_completion(
+          evaluator,
+          &mut elem_scope,
+          err,
+        )?));
+      }
     };
 
     if matches!(item, Value::Undefined) {
       if let Some(default_expr) = &elem.default_value {
-        match gen_eval_expr(evaluator, &mut scope, default_expr)? {
+        match gen_eval_expr(evaluator, &mut elem_scope, default_expr)? {
           GenEval::Complete(c) => match c {
             Completion::Normal(v) => item = v.unwrap_or(Value::Undefined),
-            abrupt => return Ok(GenEval::Complete(abrupt)),
+            abrupt => {
+              let completion = match evaluator.iterator_close_on_completion(
+                &mut elem_scope,
+                &iterator_record,
+                abrupt,
+              ) {
+                Ok(c) => c,
+                Err(err) => gen_error_to_completion(evaluator, &mut elem_scope, err)?,
+              };
+              return Ok(GenEval::Complete(completion));
+            }
           },
           GenEval::Suspend(mut suspend) => {
             gen_frames_push(
@@ -44340,9 +45176,8 @@ fn gen_bind_array_pattern_from(
               GenFrame::BindArrAfterDefault {
                 pat: pat as *const ArrPat,
                 elem_index,
-                array_index,
-                len,
-                value: Value::Object(obj),
+                iterator_record,
+                assign_target,
                 kind,
               },
             )?;
@@ -44352,78 +45187,433 @@ fn gen_bind_array_pattern_from(
       }
     }
 
-    match gen_bind_pattern(evaluator, &mut scope, &elem.target.stx, item, kind)? {
-      GenEval::Complete(c) => match c {
-        Completion::Normal(_) => {}
-        abrupt => return Ok(GenEval::Complete(abrupt)),
-      },
-      GenEval::Suspend(mut suspend) => {
-        gen_frames_push(
-          &mut suspend.frames,
-          GenFrame::BindArrContinue {
-            pat: pat as *const ArrPat,
-            elem_index: elem_index.saturating_add(1),
-            array_index: array_index.saturating_add(1),
-            len,
-            value: Value::Object(obj),
-            kind,
-          },
-        )?;
-        return Ok(GenEval::Suspend(suspend));
+    if let Some(target) = assign_target {
+      if let Err(err) = gen_assign_target_put_value(evaluator, &mut elem_scope, target, item) {
+        let err = evaluator.iterator_close_on_error(&mut elem_scope, &iterator_record, err);
+        return Ok(GenEval::Complete(gen_error_to_completion(
+          evaluator,
+          &mut elem_scope,
+          err,
+        )?));
+      }
+    } else {
+      match gen_bind_pattern(evaluator, &mut elem_scope, &elem.target.stx, item, kind)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(_) => {}
+          abrupt => {
+            let completion = match evaluator.iterator_close_on_completion(
+              &mut elem_scope,
+              &iterator_record,
+              abrupt,
+            ) {
+              Ok(c) => c,
+              Err(err) => gen_error_to_completion(evaluator, &mut elem_scope, err)?,
+            };
+            return Ok(GenEval::Complete(completion));
+          }
+        },
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::BindArrContinue {
+              pat: pat as *const ArrPat,
+              elem_index: elem_index.saturating_add(1),
+              iterator_record,
+              kind,
+            },
+          )?;
+          return Ok(GenEval::Suspend(suspend));
+        }
       }
     }
-
-    array_index = array_index.saturating_add(1);
   }
 
+  // Rest element.
   let Some(rest_pat) = &pat.rest else {
+    // Iterator binding initialization performs IteratorClose on normal completion when the iterator
+    // is not exhausted.
+    if !iterator_record.done {
+      if let Err(err) = iterator::iterator_close(
+        evaluator.vm,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        &mut scope,
+        &iterator_record,
+        iterator::CloseCompletionKind::NonThrow,
+      ) {
+        return Ok(GenEval::Complete(gen_error_to_completion(
+          evaluator, &mut scope, err,
+        )?));
+      }
+    }
     return Ok(GenEval::Complete(Completion::empty()));
   };
 
-  let rest_arr = scope.alloc_object()?;
-  let mut rest_scope = scope.reborrow();
-  rest_scope.push_root(Value::Object(rest_arr))?;
+  // Rest element assignment (e.g. `[...obj[prop]] = iterable`) must evaluate the LHS reference
+  // *before* consuming the remainder of the iterator. Otherwise, an infinite iterator could hang
+  // the runtime before the (abrupt) LHS evaluation occurs.
+  let mut rest_assign_target: Option<GenAssignTarget> = None;
+  if matches!(kind, BindingKind::Assignment) {
+    match &*rest_pat.stx {
+      Pat::Id(id) => {
+        let name_ptr = &id.stx.name as *const String;
+        let binding = match evaluator.env.resolve_binding_reference(
+          evaluator.vm,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          &mut scope,
+          &id.stx.name,
+        ) {
+          Ok(b) => b,
+          Err(err) => {
+            let err = evaluator.iterator_close_on_error(&mut scope, &iterator_record, err);
+            return Ok(GenEval::Complete(gen_error_to_completion(
+              evaluator, &mut scope, err,
+            )?));
+          }
+        };
+        let gen_binding = match binding {
+          ResolvedBinding::Declarative { env, .. } => GenResolvedBinding::Declarative {
+            env,
+            name: name_ptr,
+          },
+          ResolvedBinding::Object { binding_object, .. } => GenResolvedBinding::Object {
+            binding_object,
+            name: name_ptr,
+          },
+          ResolvedBinding::GlobalProperty { .. } => {
+            GenResolvedBinding::GlobalProperty { name: name_ptr }
+          }
+          ResolvedBinding::Unresolvable { .. } => {
+            GenResolvedBinding::Unresolvable { name: name_ptr }
+          }
+        };
+        rest_assign_target = Some(GenAssignTarget::Binding(gen_binding));
+      }
+      Pat::AssignTarget(target) => match &*target.stx {
+        Expr::Id(id) => {
+          let name_ptr = &id.stx.name as *const String;
+          let binding = match evaluator.env.resolve_binding_reference(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            &mut scope,
+            &id.stx.name,
+          ) {
+            Ok(b) => b,
+            Err(err) => {
+              let err = evaluator.iterator_close_on_error(&mut scope, &iterator_record, err);
+              return Ok(GenEval::Complete(gen_error_to_completion(
+                evaluator, &mut scope, err,
+              )?));
+            }
+          };
+          let gen_binding = match binding {
+            ResolvedBinding::Declarative { env, .. } => GenResolvedBinding::Declarative {
+              env,
+              name: name_ptr,
+            },
+            ResolvedBinding::Object { binding_object, .. } => GenResolvedBinding::Object {
+              binding_object,
+              name: name_ptr,
+            },
+            ResolvedBinding::GlobalProperty { .. } => {
+              GenResolvedBinding::GlobalProperty { name: name_ptr }
+            }
+            ResolvedBinding::Unresolvable { .. } => {
+              GenResolvedBinding::Unresolvable { name: name_ptr }
+            }
+          };
+          rest_assign_target = Some(GenAssignTarget::Binding(gen_binding));
+        }
+        Expr::IdPat(id) => {
+          let name_ptr = &id.stx.name as *const String;
+          let binding = match evaluator.env.resolve_binding_reference(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            &mut scope,
+            &id.stx.name,
+          ) {
+            Ok(b) => b,
+            Err(err) => {
+              let err = evaluator.iterator_close_on_error(&mut scope, &iterator_record, err);
+              return Ok(GenEval::Complete(gen_error_to_completion(
+                evaluator, &mut scope, err,
+              )?));
+            }
+          };
+          let gen_binding = match binding {
+            ResolvedBinding::Declarative { env, .. } => GenResolvedBinding::Declarative {
+              env,
+              name: name_ptr,
+            },
+            ResolvedBinding::Object { binding_object, .. } => GenResolvedBinding::Object {
+              binding_object,
+              name: name_ptr,
+            },
+            ResolvedBinding::GlobalProperty { .. } => {
+              GenResolvedBinding::GlobalProperty { name: name_ptr }
+            }
+            ResolvedBinding::Unresolvable { .. } => {
+              GenResolvedBinding::Unresolvable { name: name_ptr }
+            }
+          };
+          rest_assign_target = Some(GenAssignTarget::Binding(gen_binding));
+        }
+        Expr::Member(member) => {
+          if member.stx.optional_chaining {
+            let err = VmError::InvariantViolation("optional chaining used in assignment target");
+            let err = evaluator.iterator_close_on_error(&mut scope, &iterator_record, err);
+            return Ok(GenEval::Complete(gen_error_to_completion(
+              evaluator, &mut scope, err,
+            )?));
+          }
+          match gen_eval_expr(evaluator, &mut scope, &member.stx.left)? {
+            GenEval::Complete(c) => match c {
+              Completion::Normal(v) => {
+                let base = v.unwrap_or(Value::Undefined);
+                rest_assign_target = Some(GenAssignTarget::Member {
+                  base,
+                  key: &member.stx.right as *const String,
+                });
+              }
+              abrupt => {
+                let completion = match evaluator.iterator_close_on_completion(
+                  &mut scope,
+                  &iterator_record,
+                  abrupt,
+                ) {
+                  Ok(c) => c,
+                  Err(err) => gen_error_to_completion(evaluator, &mut scope, err)?,
+                };
+                return Ok(GenEval::Complete(completion));
+              }
+            },
+            GenEval::Suspend(mut suspend) => {
+              gen_frames_push(
+                &mut suspend.frames,
+                GenFrame::BindArrRestAssignMemberAfterBase {
+                  pat: pat as *const ArrPat,
+                  iterator_record,
+                  member: &*member.stx as *const MemberExpr,
+                  kind,
+                },
+              )?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        Expr::ComputedMember(member) => {
+          if member.stx.optional_chaining {
+            let err = VmError::InvariantViolation("optional chaining used in assignment target");
+            let err = evaluator.iterator_close_on_error(&mut scope, &iterator_record, err);
+            return Ok(GenEval::Complete(gen_error_to_completion(
+              evaluator, &mut scope, err,
+            )?));
+          }
+
+          let base_eval = gen_eval_expr(evaluator, &mut scope, &member.stx.object)?;
+          match base_eval {
+            GenEval::Complete(c) => match c {
+              Completion::Normal(v) => {
+                let base = v.unwrap_or(Value::Undefined);
+                let member_eval = {
+                  let mut member_scope = scope.reborrow();
+                  member_scope.push_root(base)?;
+                  gen_eval_expr(evaluator, &mut member_scope, &member.stx.member)?
+                };
+                match member_eval {
+                  GenEval::Complete(c) => match c {
+                    Completion::Normal(v) => {
+                      let key_value = v.unwrap_or(Value::Undefined);
+                      rest_assign_target =
+                        Some(GenAssignTarget::ComputedMember { base, key_value });
+                    }
+                    abrupt => {
+                      let completion = match evaluator.iterator_close_on_completion(
+                        &mut scope,
+                        &iterator_record,
+                        abrupt,
+                      ) {
+                        Ok(c) => c,
+                        Err(err) => gen_error_to_completion(evaluator, &mut scope, err)?,
+                      };
+                      return Ok(GenEval::Complete(completion));
+                    }
+                  },
+                  GenEval::Suspend(mut suspend) => {
+                    gen_frames_push(
+                      &mut suspend.frames,
+                      GenFrame::BindArrRestAssignComputedMemberAfterMember {
+                        pat: pat as *const ArrPat,
+                        iterator_record,
+                        member: &*member.stx as *const ComputedMemberExpr,
+                        base,
+                        kind,
+                      },
+                    )?;
+                    return Ok(GenEval::Suspend(suspend));
+                  }
+                }
+              }
+              abrupt => {
+                let completion = match evaluator.iterator_close_on_completion(
+                  &mut scope,
+                  &iterator_record,
+                  abrupt,
+                ) {
+                  Ok(c) => c,
+                  Err(err) => gen_error_to_completion(evaluator, &mut scope, err)?,
+                };
+                return Ok(GenEval::Complete(completion));
+              }
+            },
+            GenEval::Suspend(mut suspend) => {
+              gen_frames_push(
+                &mut suspend.frames,
+                GenFrame::BindArrRestAssignComputedMemberAfterBase {
+                  pat: pat as *const ArrPat,
+                  iterator_record,
+                  member: &*member.stx as *const ComputedMemberExpr,
+                  kind,
+                },
+              )?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        _ => {}
+      },
+      _ => {}
+    }
+  }
+
+  gen_bind_array_pattern_rest_after_target(
+    evaluator,
+    &mut scope,
+    pat,
+    iterator_record,
+    kind,
+    rest_assign_target,
+  )
+}
+
+fn gen_bind_array_pattern_rest_after_target(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  pat: &ArrPat,
+  mut iterator_record: iterator::IteratorRecord,
+  kind: BindingKind,
+  rest_assign_target: Option<GenAssignTarget>,
+) -> Result<GenEval<Completion>, VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+  let rest_pat = pat.rest.as_ref().ok_or(VmError::InvariantViolation(
+    "array rest continuation called without rest pattern",
+  ))?;
+
+  let intr = evaluator
+    .vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+  // Rest element must produce a real Array exotic object.
+  let rest_arr = match scope.alloc_array(0) {
+    Ok(arr) => arr,
+    Err(err) => {
+      let err = evaluator.iterator_close_on_error(&mut scope, &iterator_record, err);
+      return Ok(GenEval::Complete(gen_error_to_completion(
+        evaluator, &mut scope, err,
+      )?));
+    }
+  };
+  if let Err(err) = scope.push_root(Value::Object(rest_arr)) {
+    let err = evaluator.iterator_close_on_error(&mut scope, &iterator_record, err);
+    return Ok(GenEval::Complete(gen_error_to_completion(
+      evaluator, &mut scope, err,
+    )?));
+  }
+  if let Err(err) = scope
+    .heap_mut()
+    .object_set_prototype(rest_arr, Some(intr.array_prototype()))
+  {
+    let err = evaluator.iterator_close_on_error(&mut scope, &iterator_record, err);
+    return Ok(GenEval::Complete(gen_error_to_completion(
+      evaluator, &mut scope, err,
+    )?));
+  }
 
   let mut rest_idx: u32 = 0;
-  while array_index < len {
-    evaluator.tick()?;
+  loop {
+    // Budget rest-element copying: `...rest` can iterate many remaining indices.
+    if let Err(err) = evaluator.tick() {
+      let err = evaluator.iterator_close_on_error(&mut scope, &iterator_record, err);
+      return Ok(GenEval::Complete(gen_error_to_completion(
+        evaluator, &mut scope, err,
+      )?));
+    }
 
-    let v = match gen_array_like_get(evaluator, &mut rest_scope, obj, array_index) {
+    let next = match iterator::iterator_step_value(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      &mut scope,
+      &mut iterator_record,
+    ) {
       Ok(v) => v,
-      Err(err) => return Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut rest_scope, err)?)),
+      Err(err) => {
+        let err = evaluator.iterator_close_on_error(&mut scope, &iterator_record, err);
+        return Ok(GenEval::Complete(gen_error_to_completion(
+          evaluator, &mut scope, err,
+        )?));
+      }
     };
-    // Root the element value while allocating the property key and defining the property.
-    let mut elem_scope = rest_scope.reborrow();
-    let v = elem_scope.push_root(v)?;
-    let key_s = elem_scope.alloc_u32_index_string(rest_idx)?;
-    let key = PropertyKey::from_string(key_s);
-    elem_scope.create_data_property(rest_arr, key, v)?;
+    let Some(v) = next else {
+      break;
+    };
 
-    array_index = array_index.saturating_add(1);
+    // Root the element value while allocating the property key and defining the property.
+    let create_res = {
+      let mut elem_scope = scope.reborrow();
+      elem_scope.push_roots(&[Value::Object(rest_arr), v])?;
+      let key_s = elem_scope.alloc_u32_index_string(rest_idx)?;
+      let key = PropertyKey::from_string(key_s);
+      elem_scope.create_data_property_or_throw(rest_arr, key, v)
+    };
+    if let Err(err) = create_res {
+      let err = evaluator.iterator_close_on_error(&mut scope, &iterator_record, err);
+      return Ok(GenEval::Complete(gen_error_to_completion(
+        evaluator, &mut scope, err,
+      )?));
+    }
     rest_idx = rest_idx.saturating_add(1);
   }
 
-  // Define `length` as non-enumerable to match real arrays closely enough for rest patterns.
-  let length_s = rest_scope.alloc_string("length")?;
-  let length_key = PropertyKey::from_string(length_s);
-  let length_desc = PropertyDescriptor {
-    enumerable: false,
-    configurable: true,
-    kind: PropertyKind::Data {
-      value: Value::Number(rest_idx as f64),
-      writable: true,
-    },
-  };
-  rest_scope.define_property(rest_arr, length_key, length_desc)?;
+  if let Some(target) = rest_assign_target {
+    if let Err(err) =
+      gen_assign_target_put_value(evaluator, &mut scope, target, Value::Object(rest_arr))
+    {
+      let err = evaluator.iterator_close_on_error(&mut scope, &iterator_record, err);
+      return Ok(GenEval::Complete(gen_error_to_completion(
+        evaluator, &mut scope, err,
+      )?));
+    }
+    return Ok(GenEval::Complete(Completion::empty()));
+  }
 
   match gen_bind_pattern(
     evaluator,
-    &mut rest_scope,
+    &mut scope,
     &rest_pat.stx,
     Value::Object(rest_arr),
     kind,
   )? {
-    GenEval::Complete(c) => Ok(GenEval::Complete(c)),
+    GenEval::Complete(c) => Ok(GenEval::Complete(match c {
+      Completion::Normal(_) => Completion::empty(),
+      abrupt => abrupt,
+    })),
     GenEval::Suspend(suspend) => Ok(GenEval::Suspend(suspend)),
   }
 }
@@ -44871,7 +46061,8 @@ fn gen_resume_from_frames(
       GenFrame::DeleteMemberAfterBase { expr } => match state {
         Completion::Normal(v) => {
           let expr = unsafe { &*expr };
-          match gen_delete_member_after_base(evaluator, scope, expr, v.unwrap_or(Value::Undefined)) {
+          match gen_delete_member_after_base(evaluator, scope, expr, v.unwrap_or(Value::Undefined))
+          {
             Ok(v) => state = Completion::normal(v),
             Err(err) => {
               let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
@@ -44945,7 +46136,11 @@ fn gen_resume_from_frames(
         abrupt => state = abrupt,
       },
 
-      GenFrame::UpdateMemberAfterBase { expr, delta, prefix } => match state {
+      GenFrame::UpdateMemberAfterBase {
+        expr,
+        delta,
+        prefix,
+      } => match state {
         Completion::Normal(v) => {
           let expr = unsafe { &*expr };
           let base = v.unwrap_or(Value::Undefined);
@@ -44963,7 +46158,11 @@ fn gen_resume_from_frames(
         abrupt => state = abrupt,
       },
 
-      GenFrame::UpdateComputedMemberAfterBase { expr, delta, prefix } => match state {
+      GenFrame::UpdateComputedMemberAfterBase {
+        expr,
+        delta,
+        prefix,
+      } => match state {
         Completion::Normal(v) => {
           let expr = unsafe { &*expr };
           match gen_update_computed_member_after_base(
@@ -45234,13 +46433,22 @@ fn gen_resume_from_frames(
                 continue;
               }
 
-              match gen_bind_assignment_target(evaluator, scope, &expr.left, value, BindingKind::Assignment)? {
+              match gen_bind_assignment_target(
+                evaluator,
+                scope,
+                &expr.left,
+                value,
+                BindingKind::Assignment,
+              )? {
                 GenEval::Complete(bind_completion) => match bind_completion {
                   Completion::Normal(_) => state = Completion::normal(value),
                   abrupt => state = abrupt,
                 },
                 GenEval::Suspend(mut suspend) => {
-                  gen_frames_push(&mut suspend.frames, GenFrame::AssignPatternAfterBind { result: value })?;
+                  gen_frames_push(
+                    &mut suspend.frames,
+                    GenFrame::AssignPatternAfterBind { result: value },
+                  )?;
                   vecdeque_try_append(&mut suspend.frames, &mut frames)?;
                   return Ok(GenEval::Suspend(suspend));
                 }
@@ -45251,7 +46459,7 @@ fn gen_resume_from_frames(
         }
         abrupt => state = abrupt,
       },
-      
+
       GenFrame::AssignPatternAfterBind { result } => match state {
         Completion::Normal(_) => state = Completion::normal(result),
         abrupt => state = abrupt,
@@ -45362,7 +46570,13 @@ fn gen_resume_from_frames(
             }
           }
 
-          match gen_bind_pattern(evaluator, &mut obj_scope, &prop.target.stx, prop_value, kind)? {
+          match gen_bind_pattern(
+            evaluator,
+            &mut obj_scope,
+            &prop.target.stx,
+            prop_value,
+            kind,
+          )? {
             GenEval::Complete(c) => match c {
               Completion::Normal(_) => {}
               abrupt => {
@@ -45494,12 +46708,296 @@ fn gen_resume_from_frames(
         abrupt => state = abrupt,
       },
 
+      GenFrame::BindArrElemAssignMemberAfterBase {
+        pat,
+        elem_index,
+        iterator_record,
+        member,
+        kind,
+      } => match state {
+        Completion::Normal(v) => {
+          let base = v.unwrap_or(Value::Undefined);
+          let member = unsafe { &*member };
+          let target = GenAssignTarget::Member {
+            base,
+            key: &member.right as *const String,
+          };
+          let pat_ref = unsafe { &*pat };
+          match gen_bind_array_pattern_from(
+            evaluator,
+            scope,
+            pat_ref,
+            iterator_record,
+            kind,
+            elem_index,
+            Some(target),
+          )? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => {
+          state = match evaluator.iterator_close_on_completion(scope, &iterator_record, abrupt) {
+            Ok(c) => c,
+            Err(err) => gen_error_to_completion(evaluator, scope, err)?,
+          };
+        }
+      },
+
+      GenFrame::BindArrElemAssignComputedMemberAfterBase {
+        pat,
+        elem_index,
+        iterator_record,
+        member,
+        kind,
+      } => match state {
+        Completion::Normal(v) => {
+          let base = v.unwrap_or(Value::Undefined);
+          let member_ref = unsafe { &*member };
+          let member_eval = {
+            // Root the base across evaluation of the computed key expression, which may allocate and
+            // trigger GC.
+            let mut member_scope = scope.reborrow();
+            member_scope.push_root(base)?;
+            gen_eval_expr(evaluator, &mut member_scope, &member_ref.member)?
+          };
+          match member_eval {
+            GenEval::Complete(c) => match c {
+              Completion::Normal(v) => {
+                let key_value = v.unwrap_or(Value::Undefined);
+                let target = GenAssignTarget::ComputedMember { base, key_value };
+                let pat_ref = unsafe { &*pat };
+                match gen_bind_array_pattern_from(
+                  evaluator,
+                  scope,
+                  pat_ref,
+                  iterator_record,
+                  kind,
+                  elem_index,
+                  Some(target),
+                )? {
+                  GenEval::Complete(c) => state = c,
+                  GenEval::Suspend(mut suspend) => {
+                    vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                    return Ok(GenEval::Suspend(suspend));
+                  }
+                }
+              }
+              abrupt => {
+                state =
+                  match evaluator.iterator_close_on_completion(scope, &iterator_record, abrupt) {
+                    Ok(c) => c,
+                    Err(err) => gen_error_to_completion(evaluator, scope, err)?,
+                  };
+              }
+            },
+            GenEval::Suspend(mut suspend) => {
+              gen_frames_push(
+                &mut suspend.frames,
+                GenFrame::BindArrElemAssignComputedMemberAfterMember {
+                  pat,
+                  elem_index,
+                  iterator_record,
+                  member,
+                  base,
+                  kind,
+                },
+              )?;
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => {
+          state = match evaluator.iterator_close_on_completion(scope, &iterator_record, abrupt) {
+            Ok(c) => c,
+            Err(err) => gen_error_to_completion(evaluator, scope, err)?,
+          };
+        }
+      },
+
+      GenFrame::BindArrElemAssignComputedMemberAfterMember {
+        pat,
+        elem_index,
+        iterator_record,
+        base,
+        kind,
+        ..
+      } => match state {
+        Completion::Normal(v) => {
+          let key_value = v.unwrap_or(Value::Undefined);
+          let target = GenAssignTarget::ComputedMember { base, key_value };
+          let pat_ref = unsafe { &*pat };
+          match gen_bind_array_pattern_from(
+            evaluator,
+            scope,
+            pat_ref,
+            iterator_record,
+            kind,
+            elem_index,
+            Some(target),
+          )? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => {
+          state = match evaluator.iterator_close_on_completion(scope, &iterator_record, abrupt) {
+            Ok(c) => c,
+            Err(err) => gen_error_to_completion(evaluator, scope, err)?,
+          };
+        }
+      },
+
+      GenFrame::BindArrRestAssignMemberAfterBase {
+        pat,
+        iterator_record,
+        member,
+        kind,
+      } => match state {
+        Completion::Normal(v) => {
+          let base = v.unwrap_or(Value::Undefined);
+          let member = unsafe { &*member };
+          let target = GenAssignTarget::Member {
+            base,
+            key: &member.right as *const String,
+          };
+          let pat_ref = unsafe { &*pat };
+          match gen_bind_array_pattern_rest_after_target(
+            evaluator,
+            scope,
+            pat_ref,
+            iterator_record,
+            kind,
+            Some(target),
+          )? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => {
+          state = match evaluator.iterator_close_on_completion(scope, &iterator_record, abrupt) {
+            Ok(c) => c,
+            Err(err) => gen_error_to_completion(evaluator, scope, err)?,
+          };
+        }
+      },
+
+      GenFrame::BindArrRestAssignComputedMemberAfterBase {
+        pat,
+        iterator_record,
+        member,
+        kind,
+      } => match state {
+        Completion::Normal(v) => {
+          let base = v.unwrap_or(Value::Undefined);
+          let member_ref = unsafe { &*member };
+          let member_eval = {
+            let mut member_scope = scope.reborrow();
+            member_scope.push_root(base)?;
+            gen_eval_expr(evaluator, &mut member_scope, &member_ref.member)?
+          };
+          match member_eval {
+            GenEval::Complete(c) => match c {
+              Completion::Normal(v) => {
+                let key_value = v.unwrap_or(Value::Undefined);
+                let target = GenAssignTarget::ComputedMember { base, key_value };
+                let pat_ref = unsafe { &*pat };
+                match gen_bind_array_pattern_rest_after_target(
+                  evaluator,
+                  scope,
+                  pat_ref,
+                  iterator_record,
+                  kind,
+                  Some(target),
+                )? {
+                  GenEval::Complete(c) => state = c,
+                  GenEval::Suspend(mut suspend) => {
+                    vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                    return Ok(GenEval::Suspend(suspend));
+                  }
+                }
+              }
+              abrupt => {
+                state =
+                  match evaluator.iterator_close_on_completion(scope, &iterator_record, abrupt) {
+                    Ok(c) => c,
+                    Err(err) => gen_error_to_completion(evaluator, scope, err)?,
+                  };
+              }
+            },
+            GenEval::Suspend(mut suspend) => {
+              gen_frames_push(
+                &mut suspend.frames,
+                GenFrame::BindArrRestAssignComputedMemberAfterMember {
+                  pat,
+                  iterator_record,
+                  member,
+                  base,
+                  kind,
+                },
+              )?;
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => {
+          state = match evaluator.iterator_close_on_completion(scope, &iterator_record, abrupt) {
+            Ok(c) => c,
+            Err(err) => gen_error_to_completion(evaluator, scope, err)?,
+          };
+        }
+      },
+
+      GenFrame::BindArrRestAssignComputedMemberAfterMember {
+        pat,
+        iterator_record,
+        base,
+        kind,
+        ..
+      } => match state {
+        Completion::Normal(v) => {
+          let key_value = v.unwrap_or(Value::Undefined);
+          let target = GenAssignTarget::ComputedMember { base, key_value };
+          let pat_ref = unsafe { &*pat };
+          match gen_bind_array_pattern_rest_after_target(
+            evaluator,
+            scope,
+            pat_ref,
+            iterator_record,
+            kind,
+            Some(target),
+          )? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => {
+          state = match evaluator.iterator_close_on_completion(scope, &iterator_record, abrupt) {
+            Ok(c) => c,
+            Err(err) => gen_error_to_completion(evaluator, scope, err)?,
+          };
+        }
+      },
+
       GenFrame::BindArrAfterDefault {
         pat,
         elem_index,
-        array_index,
-        len,
-        value,
+        iterator_record,
+        assign_target,
         kind,
       } => match state {
         Completion::Normal(v) => {
@@ -45513,28 +47011,41 @@ fn gen_resume_from_frames(
               "generator array pattern continuation out of bounds",
             ))?;
 
-          match gen_bind_pattern(evaluator, scope, &elem.target.stx, default_value, kind)? {
-            GenEval::Complete(c) => match c {
-              Completion::Normal(_) => {}
-              abrupt => {
-                state = abrupt;
+          if let Some(target) = assign_target {
+            match gen_assign_target_put_value(evaluator, scope, target, default_value) {
+              Ok(()) => {}
+              Err(err) => {
+                let err = evaluator.iterator_close_on_error(scope, &iterator_record, err);
+                state = gen_error_to_completion(evaluator, scope, err)?;
                 continue;
               }
-            },
-            GenEval::Suspend(mut suspend) => {
-              gen_frames_push(
-                &mut suspend.frames,
-                GenFrame::BindArrContinue {
-                  pat,
-                  elem_index: elem_index.saturating_add(1),
-                  array_index: array_index.saturating_add(1),
-                  len,
-                  value,
-                  kind,
-                },
-              )?;
-              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
-              return Ok(GenEval::Suspend(suspend));
+            }
+          } else {
+            match gen_bind_pattern(evaluator, scope, &elem.target.stx, default_value, kind)? {
+              GenEval::Complete(c) => match c {
+                Completion::Normal(_) => {}
+                abrupt => {
+                  state =
+                    match evaluator.iterator_close_on_completion(scope, &iterator_record, abrupt) {
+                      Ok(c) => c,
+                      Err(err) => gen_error_to_completion(evaluator, scope, err)?,
+                    };
+                  continue;
+                }
+              },
+              GenEval::Suspend(mut suspend) => {
+                gen_frames_push(
+                  &mut suspend.frames,
+                  GenFrame::BindArrContinue {
+                    pat,
+                    elem_index: elem_index.saturating_add(1),
+                    iterator_record,
+                    kind,
+                  },
+                )?;
+                vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                return Ok(GenEval::Suspend(suspend));
+              }
             }
           }
 
@@ -45542,11 +47053,10 @@ fn gen_resume_from_frames(
             evaluator,
             scope,
             pat_ref,
-            value,
+            iterator_record,
             kind,
             elem_index.saturating_add(1),
-            array_index.saturating_add(1),
-            len,
+            None,
           )? {
             GenEval::Complete(c) => state = c,
             GenEval::Suspend(mut suspend) => {
@@ -45555,15 +47065,18 @@ fn gen_resume_from_frames(
             }
           }
         }
-        abrupt => state = abrupt,
+        abrupt => {
+          state = match evaluator.iterator_close_on_completion(scope, &iterator_record, abrupt) {
+            Ok(c) => c,
+            Err(err) => gen_error_to_completion(evaluator, scope, err)?,
+          };
+        }
       },
 
       GenFrame::BindArrContinue {
         pat,
         elem_index,
-        array_index,
-        len,
-        value,
+        iterator_record,
         kind,
       } => match state {
         Completion::Normal(_) => {
@@ -45572,17 +47085,87 @@ fn gen_resume_from_frames(
             evaluator,
             scope,
             pat_ref,
-            value,
+            iterator_record,
             kind,
             elem_index,
-            array_index,
-            len,
+            None,
           )? {
             GenEval::Complete(c) => state = c,
             GenEval::Suspend(mut suspend) => {
               vecdeque_try_append(&mut suspend.frames, &mut frames)?;
               return Ok(GenEval::Suspend(suspend));
             }
+          }
+        }
+        abrupt => {
+          state = match evaluator.iterator_close_on_completion(scope, &iterator_record, abrupt) {
+            Ok(c) => c,
+            Err(err) => gen_error_to_completion(evaluator, scope, err)?,
+          };
+        }
+      },
+
+      GenFrame::BindAssignMemberAfterBase { member, value } => match state {
+        Completion::Normal(v) => {
+          let base = v.unwrap_or(Value::Undefined);
+          let member = unsafe { &*member };
+          let target = GenAssignTarget::Member {
+            base,
+            key: &member.right as *const String,
+          };
+          match gen_assign_target_put_value(evaluator, scope, target, value) {
+            Ok(()) => state = Completion::empty(),
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::BindAssignComputedMemberAfterBase { member, value } => match state {
+        Completion::Normal(v) => {
+          let base = v.unwrap_or(Value::Undefined);
+          let member_ref = unsafe { &*member };
+          let member_eval = {
+            let mut member_scope = scope.reborrow();
+            member_scope.push_roots(&[base, value])?;
+            gen_eval_expr(evaluator, &mut member_scope, &member_ref.member)?
+          };
+          match member_eval {
+            GenEval::Complete(c) => match c {
+              Completion::Normal(v) => {
+                let key_value = v.unwrap_or(Value::Undefined);
+                let target = GenAssignTarget::ComputedMember { base, key_value };
+                match gen_assign_target_put_value(evaluator, scope, target, value) {
+                  Ok(()) => state = Completion::empty(),
+                  Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+                }
+              }
+              abrupt => state = abrupt,
+            },
+            GenEval::Suspend(mut suspend) => {
+              gen_frames_push(
+                &mut suspend.frames,
+                GenFrame::BindAssignComputedMemberAfterMember {
+                  member,
+                  base,
+                  value,
+                },
+              )?;
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::BindAssignComputedMemberAfterMember { base, value, .. } => match state {
+        Completion::Normal(v) => {
+          let key_value = v.unwrap_or(Value::Undefined);
+          let target = GenAssignTarget::ComputedMember { base, key_value };
+          match gen_assign_target_put_value(evaluator, scope, target, value) {
+            Ok(()) => state = Completion::empty(),
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
           }
         }
         abrupt => state = abrupt,
@@ -45819,7 +47402,11 @@ fn gen_resume_from_frames(
                     ))
                   }
                 };
-                Reference::SuperProperty { base, key, receiver }
+                Reference::SuperProperty {
+                  base,
+                  key,
+                  receiver,
+                }
               }
               _ => {
                 return Err(VmError::InvariantViolation(
@@ -45829,11 +47416,19 @@ fn gen_resume_from_frames(
             };
 
             evaluator
-              .maybe_set_anonymous_function_name_for_assignment(&mut assign_scope, &reference, value)
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut assign_scope, err))?;
+              .maybe_set_anonymous_function_name_for_assignment(
+                &mut assign_scope,
+                &reference,
+                value,
+              )
+              .map_err(|err| {
+                coerce_error_to_throw_for_async(evaluator.vm, &mut assign_scope, err)
+              })?;
             evaluator
               .put_value_to_reference(&mut assign_scope, &reference, value)
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut assign_scope, err))?;
+              .map_err(|err| {
+                coerce_error_to_throw_for_async(evaluator.vm, &mut assign_scope, err)
+              })?;
             Ok(())
           })();
 
@@ -45898,7 +47493,7 @@ fn gen_resume_from_frames(
                     }
                   }
                 }
-              }
+              },
               (Some(base), Some(key_value), Some(receiver)) => {
                 let key = match key_value {
                   Value::String(s) => PropertyKey::from_string(s),
@@ -46117,7 +47712,13 @@ fn gen_resume_from_frames(
           )? {
             GenEval::Complete(c) => match c {
               Completion::Normal(_) => {
-                match gen_eval_lit_obj_from(evaluator, scope, expr, obj, member_index.saturating_add(1))? {
+                match gen_eval_lit_obj_from(
+                  evaluator,
+                  scope,
+                  expr,
+                  obj,
+                  member_index.saturating_add(1),
+                )? {
                   GenEval::Complete(c) => state = c,
                   GenEval::Suspend(mut suspend) => {
                     vecdeque_try_append(&mut suspend.frames, &mut frames)?;
@@ -46156,7 +47757,9 @@ fn gen_resume_from_frames(
 
             if is_proto_setter {
               match value {
-                Value::Object(proto) => member_scope.heap_mut().object_set_prototype(obj, Some(proto))?,
+                Value::Object(proto) => member_scope
+                  .heap_mut()
+                  .object_set_prototype(obj, Some(proto))?,
                 Value::Null => member_scope.heap_mut().object_set_prototype(obj, None)?,
                 _ => {}
               }
@@ -46679,11 +48282,19 @@ fn gen_resume_from_frames(
               VarDeclMode::Let => BindingKind::Let,
               VarDeclMode::Const => BindingKind::Const,
               VarDeclMode::Using | VarDeclMode::AwaitUsing => {
-                return Err(VmError::Unimplemented("yield in using declaration binding pattern"));
+                return Err(VmError::Unimplemented(
+                  "yield in using declaration binding pattern",
+                ));
               }
             };
 
-            match gen_bind_pattern(evaluator, scope, &declarator.pattern.stx.pat.stx, value, kind)? {
+            match gen_bind_pattern(
+              evaluator,
+              scope,
+              &declarator.pattern.stx.pat.stx,
+              value,
+              kind,
+            )? {
               GenEval::Complete(bind_completion) => match bind_completion {
                 Completion::Normal(_) => {
                   // Continue var-decl evaluation from the next declarator.
@@ -46816,7 +48427,8 @@ fn gen_resume_from_frames(
       GenFrame::SwitchAfterDiscriminant { stmt } => match state {
         Completion::Normal(v) => {
           let stmt = unsafe { &*stmt };
-          match gen_switch_after_discriminant(evaluator, scope, stmt, v.unwrap_or(Value::Undefined)) {
+          match gen_switch_after_discriminant(evaluator, scope, stmt, v.unwrap_or(Value::Undefined))
+          {
             Ok(GenEval::Complete(c)) => state = c,
             Ok(GenEval::Suspend(mut suspend)) => {
               vecdeque_try_append(&mut suspend.frames, &mut frames)?;
@@ -46892,7 +48504,15 @@ fn gen_resume_from_frames(
         let v_root_idx = scope.heap().root_stack.len();
         scope.push_root(v)?;
         let stmt = unsafe { &*stmt };
-        match gen_switch_after_body_completion(evaluator, scope, stmt, v_root_idx, v, next_branch_index, state) {
+        match gen_switch_after_body_completion(
+          evaluator,
+          scope,
+          stmt,
+          v_root_idx,
+          v,
+          next_branch_index,
+          state,
+        ) {
           Ok(GenEval::Complete(c)) => state = c,
           Ok(GenEval::Suspend(mut suspend)) => {
             vecdeque_try_append(&mut suspend.frames, &mut frames)?;
@@ -47356,8 +48976,37 @@ fn gen_root_values_for_continuation(
       | GenFrame::BindObjContinue { excluded, .. } => {
         needed = needed.saturating_add(1).saturating_add(excluded.len());
       }
-      GenFrame::BindArrAfterDefault { .. } | GenFrame::BindArrContinue { .. } => {
-        needed = needed.saturating_add(1);
+      GenFrame::BindArrAfterDefault { assign_target, .. } => {
+        // `iterator_record` (`iterator` + `next_method`) plus any pre-evaluated assignment target
+        // values (member base and/or computed key).
+        needed = needed.saturating_add(2);
+        if let Some(target) = assign_target {
+          match target {
+            GenAssignTarget::Binding(_) => {}
+            GenAssignTarget::Member { .. } => needed = needed.saturating_add(1),
+            GenAssignTarget::ComputedMember { .. } => needed = needed.saturating_add(2),
+          }
+        }
+      }
+      GenFrame::BindArrContinue { .. }
+      | GenFrame::BindArrElemAssignMemberAfterBase { .. }
+      | GenFrame::BindArrElemAssignComputedMemberAfterBase { .. }
+      | GenFrame::BindArrRestAssignMemberAfterBase { .. }
+      | GenFrame::BindArrRestAssignComputedMemberAfterBase { .. } => {
+        // `iterator_record` (`iterator` + `next_method`)
+        needed = needed.saturating_add(2);
+      }
+      GenFrame::BindArrElemAssignComputedMemberAfterMember { .. }
+      | GenFrame::BindArrRestAssignComputedMemberAfterMember { .. } => {
+        // `iterator_record` (`iterator` + `next_method`) + `base`.
+        needed = needed.saturating_add(3);
+      }
+      GenFrame::BindAssignMemberAfterBase { .. }
+      | GenFrame::BindAssignComputedMemberAfterBase { .. } => {
+        needed = needed.saturating_add(1); // `value`
+      }
+      GenFrame::BindAssignComputedMemberAfterMember { .. } => {
+        needed = needed.saturating_add(2); // `base` + `value`
       }
       GenFrame::BindAssignMemberAfterBase { .. }
       | GenFrame::BindAssignComputedMemberAfterBase { .. }
@@ -47523,9 +49172,15 @@ fn gen_root_values_for_continuation(
         values.push(*left);
       }
       GenFrame::AssignPatternAfterBind { result } => values.push(*result),
-      GenFrame::BindObjAfterKey { value, excluded, .. }
-      | GenFrame::BindObjAfterDefault { value, excluded, .. }
-      | GenFrame::BindObjContinue { value, excluded, .. } => {
+      GenFrame::BindObjAfterKey {
+        value, excluded, ..
+      }
+      | GenFrame::BindObjAfterDefault {
+        value, excluded, ..
+      }
+      | GenFrame::BindObjContinue {
+        value, excluded, ..
+      } => {
         values.push(*value);
         for key in excluded.iter() {
           match key {
@@ -47534,7 +49189,60 @@ fn gen_root_values_for_continuation(
           }
         }
       }
-      GenFrame::BindArrAfterDefault { value, .. } | GenFrame::BindArrContinue { value, .. } => {
+      GenFrame::BindArrAfterDefault {
+        iterator_record,
+        assign_target,
+        ..
+      } => {
+        values.push(iterator_record.iterator);
+        values.push(iterator_record.next_method);
+        if let Some(target) = assign_target {
+          match target {
+            GenAssignTarget::Binding(_) => {}
+            GenAssignTarget::Member { base, .. } => values.push(*base),
+            GenAssignTarget::ComputedMember { base, key_value } => {
+              values.push(*base);
+              values.push(*key_value);
+            }
+          }
+        }
+      }
+      GenFrame::BindArrContinue {
+        iterator_record, ..
+      }
+      | GenFrame::BindArrElemAssignMemberAfterBase {
+        iterator_record, ..
+      }
+      | GenFrame::BindArrElemAssignComputedMemberAfterBase {
+        iterator_record, ..
+      }
+      | GenFrame::BindArrRestAssignMemberAfterBase {
+        iterator_record, ..
+      }
+      | GenFrame::BindArrRestAssignComputedMemberAfterBase {
+        iterator_record, ..
+      } => {
+        values.push(iterator_record.iterator);
+        values.push(iterator_record.next_method);
+      }
+      GenFrame::BindArrElemAssignComputedMemberAfterMember {
+        iterator_record,
+        base,
+        ..
+      }
+      | GenFrame::BindArrRestAssignComputedMemberAfterMember {
+        iterator_record,
+        base,
+        ..
+      } => {
+        values.push(iterator_record.iterator);
+        values.push(iterator_record.next_method);
+        values.push(*base);
+      }
+      GenFrame::BindAssignMemberAfterBase { value, .. }
+      | GenFrame::BindAssignComputedMemberAfterBase { value, .. } => values.push(*value),
+      GenFrame::BindAssignComputedMemberAfterMember { base, value, .. } => {
+        values.push(*base);
         values.push(*value);
       }
       GenFrame::BindAssignMemberAfterBase { value, .. }
@@ -48777,7 +50485,8 @@ pub(crate) fn start_module_tla_evaluation(
               &mut *evaluator.hooks,
               await_value,
             );
-            res.map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut promise_scope, err))
+            res
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut promise_scope, err))
           }
           AsyncSuspendKind::AwaitResolved => Ok(await_value),
           AsyncSuspendKind::Yield | AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
@@ -48975,12 +50684,13 @@ pub(crate) fn resume_module_tla_evaluation(
           "module async continuation missing new.target root",
         ))?;
     let home_object = {
-      let value = scope
-        .heap()
-        .get_root(cont.home_object_root)
-        .ok_or(VmError::InvariantViolation(
-          "module async continuation missing home object root",
-        ))?;
+      let value =
+        scope
+          .heap()
+          .get_root(cont.home_object_root)
+          .ok_or(VmError::InvariantViolation(
+            "module async continuation missing home object root",
+          ))?;
       match value {
         Value::Object(o) => Some(o),
         Value::Undefined => None,
@@ -49350,7 +51060,9 @@ pub(crate) fn run_module_async_start(
               hooks,
               await_value,
             )
-            .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut await_scope, err))?,
+            .map_err(|err| {
+              coerce_error_to_throw_for_async(&mut *vm_frame, &mut await_scope, err)
+            })?,
             AsyncSuspendKind::AwaitResolved => await_value,
             AsyncSuspendKind::YieldIteratorResult => {
               return Err(VmError::InvariantViolation(
@@ -50374,7 +52086,8 @@ mod tests {
       let vm = Vm::new(VmOptions::default());
       let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
       let mut rt = JsRuntime::new(vm, heap)?;
-      let script = crate::CompiledScript::compile_script(rt.heap_mut(), "<static_block_super>", source)?;
+      let script =
+        crate::CompiledScript::compile_script(rt.heap_mut(), "<static_block_super>", source)?;
       let value = rt.exec_compiled_script(script)?;
       assert!(matches!(value, Value::Bool(true)), "got {value:?}");
     }
@@ -50740,7 +52453,8 @@ mod tests {
   }
 
   #[test]
-  fn direct_eval_new_target_in_non_arrow_function_observes_caller_new_target() -> Result<(), VmError> {
+  fn direct_eval_new_target_in_non_arrow_function_observes_caller_new_target() -> Result<(), VmError>
+  {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;
@@ -51508,7 +53222,8 @@ mod tests {
   }
 
   #[test]
-  fn generator_direct_eval_after_yield_in_args_reads_local_lexical_binding() -> Result<(), VmError> {
+  fn generator_direct_eval_after_yield_in_args_reads_local_lexical_binding() -> Result<(), VmError>
+  {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;
@@ -51527,7 +53242,8 @@ mod tests {
   }
 
   #[test]
-  fn generator_direct_eval_after_yield_in_args_writes_local_lexical_binding() -> Result<(), VmError> {
+  fn generator_direct_eval_after_yield_in_args_writes_local_lexical_binding() -> Result<(), VmError>
+  {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;
@@ -51906,7 +53622,8 @@ mod tests {
   }
 
   #[test]
-  fn arrow_this_in_derived_constructor_created_before_super_sees_initialized_this() -> Result<(), VmError> {
+  fn arrow_this_in_derived_constructor_created_before_super_sees_initialized_this(
+  ) -> Result<(), VmError> {
     let source = r#"
       class B {}
       class D extends B {
@@ -51925,7 +53642,8 @@ mod tests {
   }
 
   #[test]
-  fn arrow_this_in_derived_constructor_called_before_super_throws_reference_error() -> Result<(), VmError> {
+  fn arrow_this_in_derived_constructor_called_before_super_throws_reference_error(
+  ) -> Result<(), VmError> {
     let source = r#"
       class B {}
       class D extends B {
@@ -51950,7 +53668,8 @@ mod tests {
   }
 
   #[test]
-  fn arrow_this_in_derived_constructor_direct_eval_observes_initialized_this_after_super() -> Result<(), VmError> {
+  fn arrow_this_in_derived_constructor_direct_eval_observes_initialized_this_after_super(
+  ) -> Result<(), VmError> {
     let source = r#"
       class B {}
       class D extends B {
@@ -52512,7 +54231,8 @@ mod tests {
   }
 
   #[test]
-  fn arrow_this_in_derived_constructor_returned_arrow_without_super_throws_on_call() -> Result<(), VmError> {
+  fn arrow_this_in_derived_constructor_returned_arrow_without_super_throws_on_call(
+  ) -> Result<(), VmError> {
     let source = r#"
       let errName;
       let errMsg;
@@ -52758,8 +54478,8 @@ mod tests {
 #[cfg(test)]
 mod oom_arc_tests {
   use super::*;
-  use crate::{HeapLimits, VmOptions};
   use crate::test_alloc::FailNextMatchingAllocGuard;
+  use crate::{HeapLimits, VmOptions};
   use std::sync::atomic::AtomicUsize;
 
   // Mirror the allocation layout used by `arc_try_new_vm` (`AtomicUsize` refcounts followed by the
@@ -52994,8 +54714,7 @@ mod oom_generator_frame_merge_tests {
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap).expect("JsRuntime::new");
 
-    rt
-      .register_global_native_function("oom_on", oom_on, 0)
+    rt.register_global_native_function("oom_on", oom_on, 0)
       .expect("register oom_on");
 
     // Build a large expression context around `yield*` so the continuation frame merge needs to

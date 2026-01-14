@@ -1,5 +1,7 @@
 use crate::property::PropertyKey;
-use crate::{Completion, GcObject, PromiseCapability, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+use crate::{
+  Completion, GcObject, PromiseCapability, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
+};
 
 /// ECMAScript "IteratorRecord" (ECMA-262).
 #[derive(Debug, Clone, Copy)]
@@ -132,11 +134,6 @@ pub fn get_iterator_from_method(
     next_key,
     Value::Object(iterator_obj),
   )?;
-  if !scope.heap().is_callable(next)? {
-    return Err(VmError::TypeError(
-      "GetIteratorFromMethod: iterator.next is not callable",
-    ));
-  }
 
   Ok(IteratorRecord {
     iterator,
@@ -163,7 +160,14 @@ pub fn iterator_next(
     }
   };
 
-  let result = match vm.call_with_host_and_hooks(host, scope, hooks, record.next_method, record.iterator, args) {
+  let result = match vm.call_with_host_and_hooks(
+    host,
+    scope,
+    hooks,
+    record.next_method,
+    record.iterator,
+    args,
+  ) {
     Ok(v) => v,
     Err(err) => {
       record.done = true;
@@ -485,13 +489,17 @@ pub(crate) fn async_from_sync_iterator_unwrap_call(
     .unwrap_or(Value::Undefined)
   {
     Value::Bool(b) => b,
-    _ => return Err(VmError::InvariantViolation("AsyncFromSyncIterator unwrap missing done slot")),
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "AsyncFromSyncIterator unwrap missing done slot",
+      ))
+    }
   };
   let v = args.get(0).copied().unwrap_or(Value::Undefined);
 
-  let intr = vm
-    .intrinsics()
-    .ok_or(VmError::Unimplemented("AsyncFromSyncIterator requires intrinsics"))?;
+  let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+    "AsyncFromSyncIterator requires intrinsics",
+  ))?;
 
   // Root inputs across allocations while constructing the iterator result object.
   let mut scope = scope.reborrow();
@@ -550,7 +558,14 @@ pub(crate) fn async_from_sync_iterator_close_call(
   // when closing on a throw completion. Only the non-object return-result TypeError check is
   // skipped for throw completions (since the incoming throw completion is returned before the
   // return-result type check is performed).
-  iterator_close(vm, host, hooks, &mut scope, &record, CloseCompletionKind::Throw)?;
+  iterator_close(
+    vm,
+    host,
+    hooks,
+    &mut scope,
+    &record,
+    CloseCompletionKind::Throw,
+  )?;
   Err(VmError::Throw(reason))
 }
 
@@ -629,16 +644,24 @@ fn vm_error_to_rejection_reason(
     return Err(err);
   }
 
-  let intr = vm
-    .intrinsics()
-    .ok_or(VmError::Unimplemented("AsyncFromSyncIterator requires intrinsics"))?;
+  let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+    "AsyncFromSyncIterator requires intrinsics",
+  ))?;
 
   match err {
-    VmError::TypeError(message) => crate::error_object::new_type_error_object(scope, &intr, message),
+    VmError::TypeError(message) => {
+      crate::error_object::new_type_error_object(scope, &intr, message)
+    }
     VmError::RangeError(message) => crate::error_object::new_range_error(scope, intr, message),
-    VmError::NotCallable => crate::error_object::new_type_error_object(scope, &intr, "value is not callable"),
-    VmError::NotConstructable => crate::error_object::new_type_error_object(scope, &intr, "value is not a constructor"),
-    VmError::PrototypeCycle => crate::error_object::new_type_error_object(scope, &intr, "prototype cycle"),
+    VmError::NotCallable => {
+      crate::error_object::new_type_error_object(scope, &intr, "value is not callable")
+    }
+    VmError::NotConstructable => {
+      crate::error_object::new_type_error_object(scope, &intr, "value is not a constructor")
+    }
+    VmError::PrototypeCycle => {
+      crate::error_object::new_type_error_object(scope, &intr, "prototype cycle")
+    }
     VmError::PrototypeChainTooDeep => {
       crate::error_object::new_type_error_object(scope, &intr, "prototype chain too deep")
     }
@@ -733,20 +756,20 @@ fn async_from_sync_iterator_continuation(
 
   let done = match iterator_complete(vm, host, hooks, &mut scope, result) {
     Ok(v) => v,
-    Err(err) => return if_abrupt_reject_promise(vm, host, hooks, &mut scope, promise_capability, err),
+    Err(err) => {
+      return if_abrupt_reject_promise(vm, host, hooks, &mut scope, promise_capability, err)
+    }
   };
   let value = match iterator_value(vm, host, hooks, &mut scope, result) {
     Ok(v) => v,
-    Err(err) => return if_abrupt_reject_promise(vm, host, hooks, &mut scope, promise_capability, err),
+    Err(err) => {
+      return if_abrupt_reject_promise(vm, host, hooks, &mut scope, promise_capability, err)
+    }
   };
   scope.push_root(value)?;
 
   let value_wrapper = match crate::promise_ops::promise_resolve_for_await_with_host_and_hooks(
-    vm,
-    &mut scope,
-    host,
-    hooks,
-    value,
+    vm, &mut scope, host, hooks, value,
   ) {
     Ok(p) => p,
     Err(err) => {
@@ -768,9 +791,14 @@ fn async_from_sync_iterator_continuation(
         // `IteratorClose`, throw completions suppress errors thrown while getting/calling
         // `iterator.return` (the original `PromiseResolve` throw is preserved). However, fatal VM
         // failures (OOM/termination/etc) are still propagated.
-        if let Err(close_err) =
-          iterator_close(vm, host, hooks, &mut scope, &record, CloseCompletionKind::Throw)
-        {
+        if let Err(close_err) = iterator_close(
+          vm,
+          host,
+          hooks,
+          &mut scope,
+          &record,
+          CloseCompletionKind::Throw,
+        ) {
           if original_is_throw {
             return if_abrupt_reject_promise(
               vm,
@@ -817,19 +845,20 @@ fn async_from_sync_iterator_continuation(
     Value::Object(close)
   };
 
-  let promise = crate::promise_ops::perform_promise_then_with_result_capability_with_host_and_hooks(
-    vm,
-    &mut scope,
-    host,
-    hooks,
-    value_wrapper,
-    Value::Object(unwrap),
-    on_rejected,
-    Some(promise_capability),
-  )?
-  .ok_or(VmError::InvariantViolation(
-    "PerformPromiseThen with capability returned undefined",
-  ))?;
+  let promise =
+    crate::promise_ops::perform_promise_then_with_result_capability_with_host_and_hooks(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      value_wrapper,
+      Value::Object(unwrap),
+      on_rejected,
+      Some(promise_capability),
+    )?
+    .ok_or(VmError::InvariantViolation(
+      "PerformPromiseThen with capability returned undefined",
+    ))?;
   Ok(promise)
 }
 
@@ -858,33 +887,17 @@ fn create_async_from_sync_iterator(
   let slots = [sync_record.iterator, sync_record.next_method];
 
   let next_name = scope.alloc_string("next")?;
-  let next_fn = scope.alloc_native_function_with_slots(
-    next_call_id,
-    None,
-    next_name,
-    1,
-    &slots,
-  )?;
+  let next_fn = scope.alloc_native_function_with_slots(next_call_id, None, next_name, 1, &slots)?;
   // Root each method function while allocating the rest and while defining properties on the
   // wrapper.
   scope.push_root(Value::Object(next_fn))?;
   let return_name = scope.alloc_string("return")?;
-  let return_fn = scope.alloc_native_function_with_slots(
-    return_call_id,
-    None,
-    return_name,
-    1,
-    &slots,
-  )?;
+  let return_fn =
+    scope.alloc_native_function_with_slots(return_call_id, None, return_name, 1, &slots)?;
   scope.push_root(Value::Object(return_fn))?;
   let throw_name = scope.alloc_string("throw")?;
-  let throw_fn = scope.alloc_native_function_with_slots(
-    throw_call_id,
-    None,
-    throw_name,
-    1,
-    &slots,
-  )?;
+  let throw_fn =
+    scope.alloc_native_function_with_slots(throw_call_id, None, throw_name, 1, &slots)?;
   scope.push_root(Value::Object(throw_fn))?;
 
   let next_key = string_key(&mut scope, "next")?;
@@ -950,7 +963,9 @@ pub fn get_async_iterator(
     PropertyKey::from_symbol(iter_sym),
   )?
   else {
-    return Err(VmError::TypeError("GetAsyncIterator: value is not async iterable"));
+    return Err(VmError::TypeError(
+      "GetAsyncIterator: value is not async iterable",
+    ));
   };
 
   let sync_record = get_iterator_from_method(vm, host, hooks, scope, iterable, sync_method)?;
@@ -987,7 +1002,9 @@ fn get_async_iterator_from_method(
     Value::Object(iterator_obj),
   )?;
   if !scope.heap().is_callable(next)? {
-    return Err(VmError::TypeError("GetAsyncIterator: iterator.next is not callable"));
+    return Err(VmError::TypeError(
+      "GetAsyncIterator: iterator.next is not callable",
+    ));
   }
 
   Ok(AsyncIteratorRecord {
@@ -1045,16 +1062,28 @@ pub(crate) fn async_from_sync_iterator_next_call(
     promise_capability.reject,
   ])?;
 
-  let result = match vm.call_with_host_and_hooks(host, &mut scope, hooks, sync_next, sync_iterator, args_slice) {
+  let result = match vm.call_with_host_and_hooks(
+    host,
+    &mut scope,
+    hooks,
+    sync_next,
+    sync_iterator,
+    args_slice,
+  ) {
     Ok(v) => v,
-    Err(err) => return if_abrupt_reject_promise(vm, host, hooks, &mut scope, promise_capability, err),
+    Err(err) => {
+      return if_abrupt_reject_promise(vm, host, hooks, &mut scope, promise_capability, err)
+    }
   };
   if !matches!(result, Value::Object(_)) {
-    let intr = vm
-      .intrinsics()
-      .ok_or(VmError::Unimplemented("AsyncFromSyncIterator requires intrinsics"))?;
-    let reason =
-      crate::error_object::new_type_error_object(&mut scope, &intr, "IteratorNext returned non-object")?;
+    let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+      "AsyncFromSyncIterator requires intrinsics",
+    ))?;
+    let reason = crate::error_object::new_type_error_object(
+      &mut scope,
+      &intr,
+      "IteratorNext returned non-object",
+    )?;
     return reject_promise_with_capability(vm, host, hooks, &mut scope, promise_capability, reason);
   }
 
@@ -1108,16 +1137,18 @@ pub(crate) fn async_from_sync_iterator_return_call(
     return_key,
   ) {
     Ok(m) => m,
-    Err(err) => return if_abrupt_reject_promise(vm, host, hooks, &mut scope, promise_capability, err),
+    Err(err) => {
+      return if_abrupt_reject_promise(vm, host, hooks, &mut scope, promise_capability, err)
+    }
   };
 
   let value = args.get(0).copied().unwrap_or(Value::Undefined);
   scope.push_root(value)?;
 
   let Some(return_method) = return_method else {
-    let intr = vm
-      .intrinsics()
-      .ok_or(VmError::Unimplemented("AsyncFromSyncIterator requires intrinsics"))?;
+    let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+      "AsyncFromSyncIterator requires intrinsics",
+    ))?;
     let iter_result = {
       let mut obj_scope = scope.reborrow();
       obj_scope.push_root(value)?;
@@ -1129,10 +1160,22 @@ pub(crate) fn async_from_sync_iterator_return_call(
       let value_key = string_key(&mut obj_scope, "value")?;
       let done_key = string_key(&mut obj_scope, "done")?;
       crate::spec_ops::create_data_property_or_throw(&mut obj_scope, out, value_key, value)?;
-      crate::spec_ops::create_data_property_or_throw(&mut obj_scope, out, done_key, Value::Bool(true))?;
+      crate::spec_ops::create_data_property_or_throw(
+        &mut obj_scope,
+        out,
+        done_key,
+        Value::Bool(true),
+      )?;
       Value::Object(out)
     };
-    return resolve_promise_with_capability(vm, host, hooks, &mut scope, promise_capability, iter_result);
+    return resolve_promise_with_capability(
+      vm,
+      host,
+      hooks,
+      &mut scope,
+      promise_capability,
+      iter_result,
+    );
   };
   scope.push_root(return_method)?;
 
@@ -1153,12 +1196,14 @@ pub(crate) fn async_from_sync_iterator_return_call(
     args_slice,
   ) {
     Ok(v) => v,
-    Err(err) => return if_abrupt_reject_promise(vm, host, hooks, &mut scope, promise_capability, err),
+    Err(err) => {
+      return if_abrupt_reject_promise(vm, host, hooks, &mut scope, promise_capability, err)
+    }
   };
   if !matches!(result, Value::Object(_)) {
-    let intr = vm
-      .intrinsics()
-      .ok_or(VmError::Unimplemented("AsyncFromSyncIterator requires intrinsics"))?;
+    let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+      "AsyncFromSyncIterator requires intrinsics",
+    ))?;
     let reason = crate::error_object::new_type_error_object(
       &mut scope,
       &intr,
@@ -1217,7 +1262,9 @@ pub(crate) fn async_from_sync_iterator_throw_call(
     throw_key,
   ) {
     Ok(m) => m,
-    Err(err) => return if_abrupt_reject_promise(vm, host, hooks, &mut scope, promise_capability, err),
+    Err(err) => {
+      return if_abrupt_reject_promise(vm, host, hooks, &mut scope, promise_capability, err)
+    }
   };
 
   let value = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -1230,13 +1277,19 @@ pub(crate) fn async_from_sync_iterator_throw_call(
       next_method: Value::Undefined,
       done: false,
     };
-    if let Err(err) = iterator_close(vm, host, hooks, &mut scope, &record, CloseCompletionKind::Throw)
-    {
+    if let Err(err) = iterator_close(
+      vm,
+      host,
+      hooks,
+      &mut scope,
+      &record,
+      CloseCompletionKind::Throw,
+    ) {
       return if_abrupt_reject_promise(vm, host, hooks, &mut scope, promise_capability, err);
     }
-    let intr = vm
-      .intrinsics()
-      .ok_or(VmError::Unimplemented("AsyncFromSyncIterator requires intrinsics"))?;
+    let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+      "AsyncFromSyncIterator requires intrinsics",
+    ))?;
     let reason = crate::error_object::new_type_error_object(
       &mut scope,
       &intr,
@@ -1263,14 +1316,19 @@ pub(crate) fn async_from_sync_iterator_throw_call(
     args_slice,
   ) {
     Ok(v) => v,
-    Err(err) => return if_abrupt_reject_promise(vm, host, hooks, &mut scope, promise_capability, err),
+    Err(err) => {
+      return if_abrupt_reject_promise(vm, host, hooks, &mut scope, promise_capability, err)
+    }
   };
   if !matches!(result, Value::Object(_)) {
-    let intr = vm
-      .intrinsics()
-      .ok_or(VmError::Unimplemented("AsyncFromSyncIterator requires intrinsics"))?;
-    let reason =
-      crate::error_object::new_type_error_object(&mut scope, &intr, "Iterator throw returned non-object")?;
+    let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+      "AsyncFromSyncIterator requires intrinsics",
+    ))?;
+    let reason = crate::error_object::new_type_error_object(
+      &mut scope,
+      &intr,
+      "Iterator throw returned non-object",
+    )?;
     return reject_promise_with_capability(vm, host, hooks, &mut scope, promise_capability, reason);
   }
 
@@ -1362,22 +1420,17 @@ pub fn async_iterator_close_with_completion_kind(
   };
 
   scope.push_root(return_method)?;
-  let return_result = match vm.call_with_host_and_hooks(
-    host,
-    &mut scope,
-    hooks,
-    return_method,
-    record.iterator,
-    &[],
-  ) {
-    Ok(v) => v,
-    Err(err) => {
-      if suppress_throw && err.is_throw_completion() {
-        return promise_resolve_undefined(vm, host, hooks, &mut scope);
+  let return_result =
+    match vm.call_with_host_and_hooks(host, &mut scope, hooks, return_method, record.iterator, &[])
+    {
+      Ok(v) => v,
+      Err(err) => {
+        if suppress_throw && err.is_throw_completion() {
+          return promise_resolve_undefined(vm, host, hooks, &mut scope);
+        }
+        return reject_promise_from_throw_completion_error(vm, host, hooks, &mut scope, err);
       }
-      return reject_promise_from_throw_completion_error(vm, host, hooks, &mut scope, err);
-    }
-  };
+    };
 
   let awaited = match crate::promise_ops::promise_resolve_for_await_with_host_and_hooks(
     vm,
@@ -1433,19 +1486,20 @@ pub fn async_iterator_close_with_completion_kind(
     promise_capability.reject,
   ])?;
 
-  let promise = crate::promise_ops::perform_promise_then_with_result_capability_with_host_and_hooks(
-    vm,
-    &mut scope,
-    host,
-    hooks,
-    awaited,
-    Value::Object(on_fulfilled),
-    Value::Object(on_rejected),
-    Some(promise_capability),
-  )?
-  .ok_or(VmError::InvariantViolation(
-    "PerformPromiseThen with capability returned undefined",
-  ))?;
+  let promise =
+    crate::promise_ops::perform_promise_then_with_result_capability_with_host_and_hooks(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      awaited,
+      Value::Object(on_fulfilled),
+      Value::Object(on_rejected),
+      Some(promise_capability),
+    )?
+    .ok_or(VmError::InvariantViolation(
+      "PerformPromiseThen with capability returned undefined",
+    ))?;
   Ok(promise)
 }
 
@@ -1458,7 +1512,12 @@ pub(crate) fn async_iterator_close_on_fulfilled_call(
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let check_object = match scope.heap().get_function_native_slots(callee)?.get(0).copied() {
+  let check_object = match scope
+    .heap()
+    .get_function_native_slots(callee)?
+    .get(0)
+    .copied()
+  {
     None => true,
     Some(Value::Bool(b)) => b,
     Some(_) => {
@@ -1490,7 +1549,12 @@ pub(crate) fn async_iterator_close_on_rejected_call(
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let suppress = match scope.heap().get_function_native_slots(callee)?.get(0).copied() {
+  let suppress = match scope
+    .heap()
+    .get_function_native_slots(callee)?
+    .get(0)
+    .copied()
+  {
     None => false,
     Some(Value::Bool(b)) => b,
     Some(_) => {
@@ -1615,7 +1679,8 @@ mod tests {
   }
 
   #[test]
-  fn async_from_sync_iterator_return_does_not_close_on_rejected_value_when_not_done() -> Result<(), VmError> {
+  fn async_from_sync_iterator_return_does_not_close_on_rejected_value_when_not_done(
+  ) -> Result<(), VmError> {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
@@ -1668,7 +1733,12 @@ mod tests {
         .object_set_prototype(sync_iter, Some(intr.object_prototype()))?;
 
       let next_key = super::string_key(&mut scope, "next")?;
-      crate::spec_ops::create_data_property_or_throw(&mut scope, sync_iter, next_key, Value::Object(sync_next))?;
+      crate::spec_ops::create_data_property_or_throw(
+        &mut scope,
+        sync_iter,
+        next_key,
+        Value::Object(sync_next),
+      )?;
       let return_key = super::string_key(&mut scope, "return")?;
       crate::spec_ops::create_data_property_or_throw(
         &mut scope,
@@ -1683,12 +1753,18 @@ mod tests {
         done: false,
       };
 
-      let wrapper_record =
-        super::create_async_from_sync_iterator(&mut vm, &mut host, &mut hooks, &mut scope, sync_record)?;
+      let wrapper_record = super::create_async_from_sync_iterator(
+        &mut vm,
+        &mut host,
+        &mut hooks,
+        &mut scope,
+        sync_record,
+      )?;
       let wrapper = wrapper_record.iterator;
 
-      let wrapper_return =
-        get_wrapper_method(&mut vm, &mut host, &mut hooks, &mut scope, wrapper, "return")?;
+      let wrapper_return = get_wrapper_method(
+        &mut vm, &mut host, &mut hooks, &mut scope, wrapper, "return",
+      )?;
 
       let promise = vm.call(&mut host, &mut scope, wrapper_return, wrapper, &[])?;
       scope.push_root(promise)?;
@@ -1788,11 +1864,22 @@ mod tests {
         done: false,
       };
 
-      let wrapper_record =
-        super::create_async_from_sync_iterator(&mut vm, &mut host, &mut hooks, &mut scope, sync_record)?;
+      let wrapper_record = super::create_async_from_sync_iterator(
+        &mut vm,
+        &mut host,
+        &mut hooks,
+        &mut scope,
+        sync_record,
+      )?;
       let wrapper = wrapper_record.iterator;
 
-      let promise = vm.call(&mut host, &mut scope, wrapper_record.next_method, wrapper, &[])?;
+      let promise = vm.call(
+        &mut host,
+        &mut scope,
+        wrapper_record.next_method,
+        wrapper,
+        &[],
+      )?;
       scope.push_root(promise)?;
       promise_root = Some(scope.heap_mut().add_root(promise)?);
       Ok(())
@@ -1823,7 +1910,8 @@ mod tests {
   }
 
   #[test]
-  fn async_from_sync_iterator_close_on_rejection_respects_promise_resolve_abrupt() -> Result<(), VmError> {
+  fn async_from_sync_iterator_close_on_rejection_respects_promise_resolve_abrupt(
+  ) -> Result<(), VmError> {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
@@ -1853,7 +1941,8 @@ mod tests {
 
       let throw_id = vm.register_native_call(throw_slot0)?;
       let getter_name = scope.alloc_string("")?;
-      let getter_fn = scope.alloc_native_function_with_slots(throw_id, None, getter_name, 0, &[boom])?;
+      let getter_fn =
+        scope.alloc_native_function_with_slots(throw_id, None, getter_name, 0, &[boom])?;
       scope.push_root(Value::Object(getter_fn))?;
 
       let ctor_key_s = scope.alloc_string("constructor")?;
@@ -1921,29 +2010,49 @@ mod tests {
         Value::Object(sync_return),
       )?;
       let throw_key = super::string_key(&mut scope, "throw")?;
-      crate::spec_ops::create_data_property_or_throw(&mut scope, sync_iter, throw_key, Value::Object(sync_throw))?;
+      crate::spec_ops::create_data_property_or_throw(
+        &mut scope,
+        sync_iter,
+        throw_key,
+        Value::Object(sync_throw),
+      )?;
 
       let sync_record = IteratorRecord {
         iterator: Value::Object(sync_iter),
         next_method: Value::Object(sync_next),
         done: false,
       };
-      let wrapper_record =
-        super::create_async_from_sync_iterator(&mut vm, &mut host, &mut hooks, &mut scope, sync_record)?;
+      let wrapper_record = super::create_async_from_sync_iterator(
+        &mut vm,
+        &mut host,
+        &mut hooks,
+        &mut scope,
+        sync_record,
+      )?;
       let wrapper = wrapper_record.iterator;
 
       // `.next` uses closeOnRejection = true.
       host.return_calls = 0;
-      let next_promise = vm.call(&mut host, &mut scope, wrapper_record.next_method, wrapper, &[])?;
+      let next_promise = vm.call(
+        &mut host,
+        &mut scope,
+        wrapper_record.next_method,
+        wrapper,
+        &[],
+      )?;
       let Value::Object(next_promise_obj) = next_promise else {
         return Err(VmError::InvariantViolation("expected Promise object"));
       };
-      assert_eq!(scope.heap().promise_state(next_promise_obj)?, PromiseState::Rejected);
+      assert_eq!(
+        scope.heap().promise_state(next_promise_obj)?,
+        PromiseState::Rejected
+      );
       assert_eq!(host.return_calls, 1);
 
       // `.throw` uses closeOnRejection = true.
       host.return_calls = 0;
-      let wrapper_throw = get_wrapper_method(&mut vm, &mut host, &mut hooks, &mut scope, wrapper, "throw")?;
+      let wrapper_throw =
+        get_wrapper_method(&mut vm, &mut host, &mut hooks, &mut scope, wrapper, "throw")?;
       let throw_promise = vm.call(&mut host, &mut scope, wrapper_throw, wrapper, &[])?;
       let Value::Object(throw_promise_obj) = throw_promise else {
         return Err(VmError::InvariantViolation("expected Promise object"));
@@ -1956,7 +2065,9 @@ mod tests {
 
       // `.return` uses closeOnRejection = false (no IteratorClose on PromiseResolve abrupt).
       host.return_calls = 0;
-      let wrapper_return = get_wrapper_method(&mut vm, &mut host, &mut hooks, &mut scope, wrapper, "return")?;
+      let wrapper_return = get_wrapper_method(
+        &mut vm, &mut host, &mut hooks, &mut scope, wrapper, "return",
+      )?;
       let return_promise = vm.call(&mut host, &mut scope, wrapper_return, wrapper, &[])?;
       let Value::Object(return_promise_obj) = return_promise else {
         return Err(VmError::InvariantViolation("expected Promise object"));
