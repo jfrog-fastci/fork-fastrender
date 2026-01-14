@@ -57,8 +57,12 @@ pub fn union_scrolled_absolute_bounds_for_box_ids(
 ///
 /// - Element scroll offsets and sticky offsets are applied by cloning the prepared document's
 ///   fragment tree via [`crate::api::PreparedDocument::fragment_tree_for_geometry`].
-/// - Viewport scroll (`scroll.viewport`) is then subtracted for all nodes **except** those that are
-///   truly viewport-fixed (`position: fixed` with no fixed containing block ancestor).
+/// - Viewport scroll (`scroll.viewport`) is then subtracted to convert page → viewport coordinates.
+///
+/// Note: [`crate::api::PreparedDocument::fragment_tree_for_geometry`] already applies paint-time
+/// viewport-scroll cancel semantics for viewport-fixed (`position: fixed`) fragments by translating
+/// them into page coordinates. Subtracting `scroll.viewport` therefore keeps those fixed elements
+/// pinned to the viewport while normal content scrolls.
 ///
 /// Nodes that do not produce any non-generated boxes (e.g. `display: none`, `display: contents`,
 /// some text nodes) are **omitted** from the output map.
@@ -76,8 +80,6 @@ pub fn viewport_bounds_for_dom_node_ids(
   // 1) Map styled node ids -> box ids (non-generated only) by walking the box tree once.
   let requested: FxHashSet<usize> = node_ids.iter().copied().collect();
   let mut box_ids_by_node: HashMap<usize, Vec<usize>> = HashMap::new();
-  let mut principal_box_id_by_node: HashMap<usize, usize> = HashMap::new();
-  let mut principal_is_fixed_candidate: HashMap<usize, bool> = HashMap::new();
 
   let mut stack: Vec<&crate::tree::box_tree::BoxNode> = vec![&prepared.box_tree().root];
   while let Some(node) = stack.pop() {
@@ -88,10 +90,6 @@ pub fn viewport_bounds_for_dom_node_ids(
             .entry(styled_node_id)
             .or_default()
             .push(node.id);
-          if !principal_box_id_by_node.contains_key(&styled_node_id) {
-            principal_box_id_by_node.insert(styled_node_id, node.id);
-            principal_is_fixed_candidate.insert(styled_node_id, node.style.position.is_fixed());
-          }
         }
       }
     }
@@ -178,35 +176,7 @@ pub fn viewport_bounds_for_dom_node_ids(
     let Some(mut rect) = bounds else {
       continue;
     };
-
-    // Viewport-fixed nodes are painted without applying the viewport scroll translation.
-    let viewport_fixed = principal_is_fixed_candidate
-      .get(&node_id)
-      .copied()
-      .unwrap_or(false)
-      && principal_box_id_by_node
-        .get(&node_id)
-        .copied()
-        .is_some_and(|principal_box_id| {
-          let Some((root_kind, path)) = find_first_fragment_path_for_box_id(&fragment_tree, principal_box_id)
-          else {
-            return false;
-          };
-          let Some((fragment, _origin, has_fixed_cb_ancestor)) =
-            resolve_fragment_path(&fragment_tree, root_kind, &path)
-          else {
-            return false;
-          };
-          fragment
-            .style
-            .as_deref()
-            .is_some_and(|style| style.position.is_fixed())
-            && !has_fixed_cb_ancestor
-        });
-
-    if !viewport_fixed {
-      rect = rect.translate(viewport_offset);
-    }
+    rect = rect.translate(viewport_offset);
 
     out.insert(node_id, rect);
   }
