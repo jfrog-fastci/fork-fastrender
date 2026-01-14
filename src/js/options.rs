@@ -264,7 +264,10 @@ impl JsExecutionOptions {
   ///   - the per-spin wall-time limit ([`RunLimits::max_wall_time`]), and
   ///   - the renderer-wide root deadline ([`crate::render_control::RenderDeadline`], when set)
   pub(crate) fn vm_js_budget_now(&self) -> VmJsBudget {
-    const DEFAULT_CHECK_TIME_EVERY: u32 = 100;
+    // Checking `Instant::now()` is relatively expensive for interpreter-heavy workloads (such as
+    // WPT's DOM conformance tests). Use a slightly coarser-grained cadence for time checks so the
+    // VM spends more time executing user code and less time polling the clock.
+    const DEFAULT_CHECK_TIME_EVERY: u32 = 1_000;
 
     let fuel = self.max_instruction_count;
 

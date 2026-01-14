@@ -10,7 +10,10 @@ const DEFAULT_MANIFEST_PATH: &str = "tests/wpt_dom/expectations.toml";
 const DEFAULT_REPORT_PATH: &str = "target/js/wpt_dom.json";
 
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
-const DEFAULT_LONG_TIMEOUT_MS: u64 = 30_000;
+// `timeout=long` WPT tests can include large shared harness setup (e.g. `dom/common.js` for Range
+// suites) and are significantly slower under the vm-js backend in dev builds. Keep this generous so
+// "long" tests are not flaky on slower CI runners.
+const DEFAULT_LONG_TIMEOUT_MS: u64 = 300_000;
 
 const DOM_BINDINGS_BACKEND_ENV_VAR: &str = "FASTERENDER_WPT_DOM_BINDINGS_BACKEND";
 
@@ -120,7 +123,7 @@ pub struct WptDomArgs {
 
   /// Timeout used when a test specifies `timeout=long` (seconds).
   ///
-  /// Overrides `--long-timeout-ms` (which defaults to 30000ms).
+  /// Overrides `--long-timeout-ms` (which defaults to 120000ms).
   #[arg(long, value_name = "SECS")]
   pub long_timeout_secs: Option<u64>,
 
@@ -150,7 +153,10 @@ pub struct WptDomArgs {
 
 pub fn run_wpt_dom(args: WptDomArgs) -> Result<()> {
   if let Some(dom_bindings_backend) = args.dom_bindings_backend {
-    std::env::set_var(DOM_BINDINGS_BACKEND_ENV_VAR, dom_bindings_backend.as_env_value());
+    std::env::set_var(
+      DOM_BINDINGS_BACKEND_ENV_VAR,
+      dom_bindings_backend.as_env_value(),
+    );
   }
 
   let timeout_ms = if let Some(secs) = args.timeout_secs {

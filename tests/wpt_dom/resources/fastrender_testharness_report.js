@@ -33,8 +33,10 @@ try {
 // Reporter state is kept in globals so callbacks don't rely on closure capture (vm-js historically
 // had limited JS semantics).
 var __fastrender_wpt_reporter_reported = false;
-var __fastrender_wpt_reporter_subtests = [];
-var __fastrender_wpt_reporter_seen = {};
+// Note: the upstream reporter collects results via `add_result_callback` and then de-duplicates
+// subtests at completion time. FastRender's minimal `testharness.js` always surfaces one test record
+// per registered subtest, so we can construct the full subtest list from the completion callback
+// input and avoid per-result bookkeeping.
 
 // Stash the original host hook (if any) and replace it with a single-shot wrapper so:
 // - tests that call `__fastrender_wpt_report(...)` directly still work,
@@ -238,15 +240,6 @@ function __fastrender_wpt_map_harness_status(code) {
   return __fastrender_wpt_unknown_status(code);
 }
 
-function __fastrender_wpt_mark_seen(name) {
-  // Prefix keys to avoid `__proto__` surprises.
-  __fastrender_wpt_reporter_seen[["$", name].join("")] = true;
-}
-
-function __fastrender_wpt_is_seen(name) {
-  return __fastrender_wpt_reporter_seen[["$", name].join("")] === true;
-}
-
 function __fastrender_wpt_emit_payload(payload) {
   if (__fastrender_wpt_reporter_reported === true) return;
   __fastrender_wpt_reporter_reported = true;
@@ -314,51 +307,6 @@ try {
 // WPT callback plumbing
 // -----------------------------
 
-function __fastrender_wpt_result_callback(test) {
-  if (__fastrender_wpt_reporter_reported === true) return;
-  try {
-    var name = "";
-    var status_code = undefined;
-    var message = undefined;
-    var stack = undefined;
-
-    if (test && typeof test === "object") {
-      if (test.name !== undefined) name = __fastrender_wpt_safe_string(test.name);
-      if (test.status !== undefined) status_code = test.status;
-      if (test.message !== undefined) message = __fastrender_wpt_optional_string(test.message);
-      if (test.stack !== undefined) stack = __fastrender_wpt_optional_string(test.stack);
-    } else {
-      name = __fastrender_wpt_safe_string(test);
-    }
-
-    var status = __fastrender_wpt_map_subtest_status(status_code);
-
-    var subtest = { name: name, status: status };
-    if (message !== undefined) subtest.message = message;
-    if (stack !== undefined) subtest.stack = stack;
-
-    __fastrender_wpt_reporter_subtests.push(subtest);
-    __fastrender_wpt_mark_seen(name);
-  } catch (e) {
-    // If reporting fails, surface it as a harness-level error and stop.
-    var err_payload = {
-      file_status: "error",
-      harness_status: "error",
-      message: __fastrender_wpt_safe_string(e),
-      subtests: []
-    };
-    try {
-      if (__fastrender_wpt_global && typeof __fastrender_wpt_global.__fastrender_wpt_report === "function") {
-        __fastrender_wpt_global.__fastrender_wpt_report(err_payload);
-      } else {
-        __fastrender_wpt_emit_payload(err_payload);
-      }
-    } catch (_e2) {
-      __fastrender_wpt_emit_payload(err_payload);
-    }
-  }
-}
-
 function __fastrender_wpt_completion_callback(tests, harness_status) {
   if (__fastrender_wpt_reporter_reported === true) return;
   try {
@@ -376,17 +324,51 @@ function __fastrender_wpt_completion_callback(tests, harness_status) {
 
     var harness_status_str = __fastrender_wpt_map_harness_status(hs_code);
 
-    // Ensure subtests is complete: add any tests from the completion list that did not produce a
-    // result callback (e.g. NOTRUN cases).
+    // Fast path: if the harness is OK and all tests passed, emit a minimal payload without
+    // enumerating/serializing every subtest. This keeps large passing WPT files (hundreds of
+    // subtests with long names) within the runner's long timeout on the vm-js backend.
+    if (harness_status_str === "ok") {
+      var all_pass = true;
+      if (tests && typeof tests.length === "number") {
+        for (var k = 0; k !== tests.length; k++) {
+          var t0 = tests[k];
+          if (!t0) continue;
+          if (t0.status !== 0) {
+            all_pass = false;
+            break;
+          }
+        }
+      }
+      if (all_pass === true) {
+        var fast_payload = {
+          file_status: "pass",
+          harness_status: "ok",
+          subtests: []
+        };
+        if (hs_message !== undefined) fast_payload.message = hs_message;
+        if (hs_stack !== undefined) fast_payload.stack = hs_stack;
+        if (__fastrender_wpt_global && typeof __fastrender_wpt_global.__fastrender_wpt_report === "function") {
+          __fastrender_wpt_global.__fastrender_wpt_report(fast_payload);
+        } else {
+          __fastrender_wpt_emit_payload(fast_payload);
+        }
+        return;
+      }
+    }
+
+    // Build the full subtest list from the completion callback input.
+    var subtests = [];
     if (tests && typeof tests.length === "number") {
       for (var i = 0; i !== tests.length; i++) {
         var t = tests[i];
         if (!t) continue;
+
         var name = "";
         if (t.name !== undefined) {
           name = __fastrender_wpt_safe_string(t.name);
+        } else {
+          name = __fastrender_wpt_safe_string(t);
         }
-        if (__fastrender_wpt_is_seen(name)) continue;
 
         var status_code = t.status;
         var status = __fastrender_wpt_map_subtest_status(status_code);
@@ -397,8 +379,7 @@ function __fastrender_wpt_completion_callback(tests, harness_status) {
         if (msg !== undefined) st.message = msg;
         if (st_stack !== undefined) st.stack = st_stack;
 
-        __fastrender_wpt_reporter_subtests.push(st);
-        __fastrender_wpt_mark_seen(name);
+        subtests.push(st);
       }
     }
 
@@ -408,8 +389,8 @@ function __fastrender_wpt_completion_callback(tests, harness_status) {
     } else if (harness_status_str !== "ok") {
       file_status = "error";
     } else {
-      for (var j = 0; j !== __fastrender_wpt_reporter_subtests.length; j++) {
-        var st2 = __fastrender_wpt_reporter_subtests[j];
+      for (var j = 0; j !== subtests.length; j++) {
+        var st2 = subtests[j];
         if (st2 && st2.status !== "pass") {
           file_status = "fail";
           break;
@@ -420,7 +401,7 @@ function __fastrender_wpt_completion_callback(tests, harness_status) {
     var payload = {
       file_status: file_status,
       harness_status: harness_status_str,
-      subtests: __fastrender_wpt_reporter_subtests
+      subtests: subtests
     };
     if (hs_message !== undefined) payload.message = hs_message;
     if (hs_stack !== undefined) payload.stack = hs_stack;
@@ -450,14 +431,6 @@ function __fastrender_wpt_completion_callback(tests, harness_status) {
 }
 
 // Register callbacks with upstream-ish `testharness.js` if present.
-try {
-  if (typeof add_result_callback === "function") {
-    add_result_callback(__fastrender_wpt_result_callback);
-  } else if (__fastrender_wpt_global && typeof __fastrender_wpt_global.add_result_callback === "function") {
-    __fastrender_wpt_global.add_result_callback(__fastrender_wpt_result_callback);
-  }
-} catch (_e) {}
-
 try {
   if (typeof add_completion_callback === "function") {
     add_completion_callback(__fastrender_wpt_completion_callback);

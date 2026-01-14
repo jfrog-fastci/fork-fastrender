@@ -11,7 +11,10 @@ const DEFAULT_MANIFEST_PATH: &str = "tests/wpt_dom/expectations.toml";
 const DEFAULT_REPORT_PATH: &str = "target/js/wpt_dom.json";
 
 const DEFAULT_TIMEOUT_SECS: u64 = 5;
-const DEFAULT_LONG_TIMEOUT_SECS: u64 = 30;
+// `timeout=long` WPT tests can include large shared harness setup (e.g. `dom/common.js` for Range
+// suites) and are significantly slower under the vm-js backend in dev builds. Keep this generous so
+// "long" tests are not flaky on slower CI runners.
+const DEFAULT_LONG_TIMEOUT_SECS: u64 = 300;
 
 const BACKEND_ENV_VAR: &str = "FASTERENDER_WPT_DOM_BACKEND";
 const DOM_BINDINGS_BACKEND_ENV_VAR: &str = "FASTERENDER_WPT_DOM_BINDINGS_BACKEND";

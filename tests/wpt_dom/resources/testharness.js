@@ -744,6 +744,131 @@ function assert_unreached(message) {
 }
 //
 // ---------------------------------------------------------------------------
+// WPT helper: generate_tests(fn, cases)
+//
+// Many upstream DOM tests use `generate_tests` to expand a list of parameter tuples into multiple
+// `test(...)` invocations. Keep this implementation compatible with the minimal vm-js backend by
+// avoiding closures: `test(...)` executes synchronously, so we can use a shared wrapper and global
+// argument slots.
+//
+var __generate_tests_func = null;
+var __generate_tests_arg_count = 0;
+var __generate_tests_arg0 = undefined;
+var __generate_tests_arg1 = undefined;
+var __generate_tests_arg2 = undefined;
+var __generate_tests_arg3 = undefined;
+var __generate_tests_arg4 = undefined;
+var __generate_tests_arg5 = undefined;
+var __generate_tests_arg6 = undefined;
+var __generate_tests_arg7 = undefined;
+//
+function __generate_tests_wrapper() {
+  var f = __generate_tests_func;
+  if (typeof f !== "function") {
+    throw Error("generate_tests: test function is not callable");
+  }
+  if (__generate_tests_arg_count === 0) {
+    f();
+    return;
+  }
+  if (__generate_tests_arg_count === 1) {
+    f(__generate_tests_arg0);
+    return;
+  }
+  if (__generate_tests_arg_count === 2) {
+    f(__generate_tests_arg0, __generate_tests_arg1);
+    return;
+  }
+  if (__generate_tests_arg_count === 3) {
+    f(__generate_tests_arg0, __generate_tests_arg1, __generate_tests_arg2);
+    return;
+  }
+  if (__generate_tests_arg_count === 4) {
+    f(
+      __generate_tests_arg0,
+      __generate_tests_arg1,
+      __generate_tests_arg2,
+      __generate_tests_arg3
+    );
+    return;
+  }
+  if (__generate_tests_arg_count === 5) {
+    f(
+      __generate_tests_arg0,
+      __generate_tests_arg1,
+      __generate_tests_arg2,
+      __generate_tests_arg3,
+      __generate_tests_arg4
+    );
+    return;
+  }
+  if (__generate_tests_arg_count === 6) {
+    f(
+      __generate_tests_arg0,
+      __generate_tests_arg1,
+      __generate_tests_arg2,
+      __generate_tests_arg3,
+      __generate_tests_arg4,
+      __generate_tests_arg5
+    );
+    return;
+  }
+  if (__generate_tests_arg_count === 7) {
+    f(
+      __generate_tests_arg0,
+      __generate_tests_arg1,
+      __generate_tests_arg2,
+      __generate_tests_arg3,
+      __generate_tests_arg4,
+      __generate_tests_arg5,
+      __generate_tests_arg6
+    );
+    return;
+  }
+  if (__generate_tests_arg_count === 8) {
+    f(
+      __generate_tests_arg0,
+      __generate_tests_arg1,
+      __generate_tests_arg2,
+      __generate_tests_arg3,
+      __generate_tests_arg4,
+      __generate_tests_arg5,
+      __generate_tests_arg6,
+      __generate_tests_arg7
+    );
+    return;
+  }
+  throw Error("generate_tests: too many arguments");
+}
+//
+function generate_tests(func, cases) {
+  if (typeof func !== "function") {
+    throw Error("generate_tests: test function is not callable");
+  }
+  if (!__is_array_like(cases)) {
+    throw Error("generate_tests: cases must be array-like");
+  }
+  for (var i = 0; i < cases.length; i++) {
+    var entry = cases[i];
+    if (!__is_array_like(entry) || entry.length < 1) {
+      continue;
+    }
+    var name = entry[0];
+    __generate_tests_func = func;
+    __generate_tests_arg_count = entry.length - 1;
+    __generate_tests_arg0 = entry[1];
+    __generate_tests_arg1 = entry[2];
+    __generate_tests_arg2 = entry[3];
+    __generate_tests_arg3 = entry[4];
+    __generate_tests_arg4 = entry[5];
+    __generate_tests_arg5 = entry[6];
+    __generate_tests_arg6 = entry[7];
+    __generate_tests_arg7 = entry[8];
+    test(__generate_tests_wrapper, name);
+  }
+}
+//
+// ---------------------------------------------------------------------------
 // Test entry points.
 //
 function test(fn, name) {

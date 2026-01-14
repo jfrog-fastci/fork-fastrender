@@ -1,64 +1,22 @@
 /*
- * Minimal `testharnessreport.js` subset for FastRender's offline WPT DOM smoke tests.
+ * Minimal `testharnessreport.js` shim for FastRender's offline WPT DOM runner.
  *
- * The real WPT reporter produces a rich HTML report. This file only prints a compact
- * log and exposes results in the DOM for debugging.
+ * The real WPT `testharnessreport.js` builds a rich HTML report. FastRender's runner only needs
+ * `fastrender_testharness_report.js` (injected by the harness) to emit a machine-readable payload.
+ *
+ * Keep this file intentionally cheap: some DOM tests define hundreds of subtests with long names,
+ * and a full HTML report can dominate runtime on the vm-js backend.
  */
 
 (function (global) {
   "use strict";
 
   if (typeof add_completion_callback !== "function") return;
-  if (typeof document === "undefined") return;
 
-  function statusText(status) {
-    switch (status) {
-      case PASS:
-        return "PASS";
-      case FAIL:
-        return "FAIL";
-      case TIMEOUT:
-        return "TIMEOUT";
-      case NOTRUN:
-        return "NOTRUN";
-      default:
-        return String(status);
-    }
+  function __testharnessreport_noop(_tests, _harnessStatus) {
+    // no-op
   }
 
-  function ensureLogElement() {
-    let el = document.getElementById("log");
-    if (el) return el;
-
-    el = document.createElement("pre");
-    el.id = "log";
-
-    if (document.body) {
-      document.body.appendChild(el);
-    } else {
-      document.documentElement.appendChild(el);
-    }
-
-    return el;
-  }
-
-  add_completion_callback((tests, harnessStatus) => {
-    const el = ensureLogElement();
-    const lines = [];
-
-    for (const t of tests) {
-      let line = `${statusText(t.status)}: ${t.name}`;
-      if (t.message) {
-        line += `\n  ${t.message}`;
-      }
-      lines.push(line);
-    }
-
-    if (harnessStatus && harnessStatus.status !== 0) {
-      lines.push(`HARNESS ERROR: ${harnessStatus.message || "unknown"}`);
-    }
-
-    el.textContent = lines.join("\n");
-  });
+  add_completion_callback(__testharnessreport_noop);
 })(typeof globalThis !== "undefined" ? globalThis : this);
 

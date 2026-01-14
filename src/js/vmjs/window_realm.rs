@@ -32792,9 +32792,11 @@ fn dom_implementation_create_html_document_native(
     let head = dom.create_element("head", "");
     append_child_or_throw!(html, head);
 
+    // createHTMLDocument must always create a <title> element in <head>, even when the provided
+    // title is empty (spec: only the text node is conditional).
+    let title_el = dom.create_element("title", "");
+    append_child_or_throw!(head, title_el);
     if !title.is_empty() {
-      let title_el = dom.create_element("title", "");
-      append_child_or_throw!(head, title_el);
       let text = dom.create_text(&title);
       append_child_or_throw!(title_el, text);
     }

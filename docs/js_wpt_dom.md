@@ -41,7 +41,7 @@ Run `bash scripts/cargo_agent.sh xtask js wpt-dom --help` for the full CLI. Comm
 - `--timeout-ms <MS>` / `--timeout-secs <SECS>`
   - Per-test timeout (defaults to 5000ms).
 - `--long-timeout-ms <MS>` / `--long-timeout-secs <SECS>`
-  - Per-test timeout for `timeout=long` tests (defaults to 30000ms).
+  - Per-test timeout for `timeout=long` tests (defaults to 300000ms).
 - `--fail-on <all|new|none>`
   - `new` (default): fail only on **unexpected** mismatches (not covered by the manifest).
   - `all`: fail on any mismatch (including expected/xfail/flaky).

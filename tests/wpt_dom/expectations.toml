@@ -420,14 +420,20 @@ reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up wo
 [[expectations]]
 id = "dom/ranges/Range-cloneRange.html"
 backend = ["vmjs", "vmjs-rendered"]
-status = "xfail"
-reason = "Range HTML tests depend on `dom/common.js` `setupRangeTests` fixture (uses `new Document()`/XML nodes); the harness currently fails to initialize, so the file does not produce a WPT report."
+status = "pass"
+reason = "Range.cloneRange should return a new live Range with identical boundary points."
 
 [[expectations]]
 id = "dom/ranges/Range-collapse.html"
 backend = ["vmjs", "vmjs-rendered"]
-status = "xfail"
-reason = "Range HTML tests depend on `dom/common.js` `setupRangeTests` fixture (uses `new Document()`/XML nodes); the harness currently fails to initialize, so the file does not produce a WPT report."
+status = "pass"
+reason = "Range.collapse should update both boundary points without throwing."
+
+[[expectations]]
+id = "dom/ranges/Range-detach.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "pass"
+reason = "Range.detach is a legacy no-op but must exist and not throw."
 
 [[expectations]]
 id = "dom/ranges/Range-commonAncestorContainer.html"
