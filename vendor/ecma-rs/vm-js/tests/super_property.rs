@@ -392,6 +392,50 @@ fn super_property_getter_setter_use_this_binding_compiled() -> Result<(), VmErro
 }
 
 #[test]
+fn super_static_getter_setter_use_this_binding() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class A {
+          static get x(){ return this._x; }
+          static set x(v){ this._x = v; }
+        }
+        class B extends A {
+          static setX(v){ super.x = v; }
+          static getX(){ return super.x; }
+        }
+        B.setX(42);
+        B.getX() === 42 && B._x === 42 && A._x === undefined
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn super_static_getter_setter_use_this_binding_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class A {
+        static get x(){ return this._x; }
+        static set x(v){ this._x = v; }
+      }
+      class B extends A {
+        static setX(v){ super.x = v; }
+        static getX(){ return super.x; }
+      }
+      B.setX(42);
+      B.getX() === 42 && B._x === 42 && A._x === undefined
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn super_property_assignment_to_non_writable_throws_type_error() {
   let mut rt = new_runtime();
   let value = rt
@@ -688,4 +732,3 @@ fn super_property_assignment_with_null_super_base_throws_type_error_compiled() -
   assert_value_is_utf8(&rt, value, "TypeError");
   Ok(())
 }
-
