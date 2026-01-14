@@ -2,6 +2,7 @@
 //!
 //! Safety: to avoid unbounded memory usage when demuxing corrupted/adversarial files:
 //! - individual encoded samples are capped at [`MAX_MP4_SAMPLE_BYTES`], and
+//! - codec-private ("extradata") blobs are capped at [`MAX_MP4_CODEC_PRIVATE_BYTES`], and
 //! - per-track and total sample table sizes are capped at [`MAX_MP4_SAMPLES_PER_TRACK`] and
 //!   [`MAX_MP4_TOTAL_SAMPLES`].
 use crate::error::RenderStage;
@@ -20,6 +21,8 @@ const MP4PARSE_DEMUX_DEADLINE_STRIDE: usize = 1024;
 /// Hard cap on encoded sample size to avoid unbounded memory usage on corrupted/adversarial MP4
 /// files.
 const MAX_MP4_SAMPLE_BYTES: usize = 64 * 1024 * 1024;
+/// Hard cap on codec-private ("extradata") blobs to avoid attacker-controlled huge allocations.
+const MAX_MP4_CODEC_PRIVATE_BYTES: usize = 1024 * 1024;
 /// Hard cap on per-track sample tables (per-sample `Vec`s) to avoid attacker-controlled huge
 /// allocations.
 const MAX_MP4_SAMPLES_PER_TRACK: usize = 2_000_000;
@@ -35,6 +38,19 @@ fn mp4_sample_too_large_error(track_id: u32, len: usize) -> MediaError {
 fn check_mp4_sample_size(track_id: u32, len: usize) -> MediaResult<()> {
   if len > MAX_MP4_SAMPLE_BYTES {
     return Err(mp4_sample_too_large_error(track_id, len));
+  }
+  Ok(())
+}
+
+fn mp4_codec_private_too_large_error(track_id: u32, len: usize) -> MediaError {
+  MediaError::Demux(format!(
+    "MP4 codec_private too large (track {track_id}, size {len} bytes, cap {MAX_MP4_CODEC_PRIVATE_BYTES} bytes)"
+  ))
+}
+
+fn check_mp4_codec_private_size(track_id: u32, len: usize) -> MediaResult<()> {
+  if len > MAX_MP4_CODEC_PRIVATE_BYTES {
+    return Err(mp4_codec_private_too_large_error(track_id, len));
   }
   Ok(())
 }
@@ -249,7 +265,11 @@ impl<R: Read + Seek> Mp4ParseDemuxer<R> {
       };
       let kind = mp4_track_kind(&track.track_type);
 
-      let (codec, codec_private) = track_codec_and_extradata(track);
+      if !matches!(kind, Mp4TrackKind::Video | Mp4TrackKind::Audio) {
+        continue;
+      }
+
+      let (codec, codec_private) = track_codec_and_extradata(id, track)?;
 
       // Extract a conservative enabled flag. If mp4parse didn't parse tkhd, assume enabled.
       let enabled = track.tkhd.as_ref().map(|t| !t.disabled).unwrap_or(true);
@@ -598,7 +618,10 @@ pub(crate) fn reject_encrypted_tracks(ctx: &mp4parse::MediaContext) -> MediaResu
   Ok(())
 }
 
-fn track_codec_and_extradata(track: &mp4parse::Track) -> (MediaCodec, Vec<u8>) {
+fn track_codec_and_extradata(
+  track_id: u32,
+  track: &mp4parse::Track,
+) -> MediaResult<(MediaCodec, Vec<u8>)> {
   fn codec_type_name(codec: &mp4parse::CodecType) -> String {
     format!("{codec:?}")
   }
@@ -608,7 +631,7 @@ fn track_codec_and_extradata(track: &mp4parse::Track) -> (MediaCodec, Vec<u8>) {
   let mut codec = MediaCodec::Unknown("unknown".to_string());
   let mut codec_private = Vec::new();
   let Some(stsd) = track.stsd.as_ref() else {
-    return (codec, codec_private);
+    return Ok((codec, codec_private));
   };
 
   // MP4 can have multiple sample entries (`stsd`). The active one is selected via the `stsc`
@@ -628,7 +651,7 @@ fn track_codec_and_extradata(track: &mp4parse::Track) -> (MediaCodec, Vec<u8>) {
     .get(desc_index0)
     .or_else(|| stsd.descriptions.get(0))
   else {
-    return (codec, codec_private);
+    return Ok((codec, codec_private));
   };
 
   match entry {
@@ -646,6 +669,7 @@ fn track_codec_and_extradata(track: &mp4parse::Track) -> (MediaCodec, Vec<u8>) {
       if matches!(codec, MediaCodec::Aac) {
         // mp4parse exposes the MP4 ESDS/ASC bytes via `ES_Descriptor.decoder_specific_data`.
         if let mp4parse::AudioCodecSpecific::ES_Descriptor(esds) = &audio.codec_specific {
+          check_mp4_codec_private_size(track_id, esds.decoder_specific_data.len())?;
           codec_private = esds.decoder_specific_data.iter().copied().collect();
         }
       }
@@ -665,19 +689,22 @@ fn track_codec_and_extradata(track: &mp4parse::Track) -> (MediaCodec, Vec<u8>) {
         // mp4parse provides raw avcC bytes (`AVCDecoderConfigurationRecord`) via
         // `VideoCodecSpecific::AVCConfig`.
         if let mp4parse::VideoCodecSpecific::AVCConfig(avcc) = &video.codec_specific {
+          check_mp4_codec_private_size(track_id, avcc.len())?;
           codec_private = avcc.iter().copied().collect();
         }
       } else if matches!(codec, MediaCodec::Vp9) {
         // Mirror the compact vpcC-derived extradata format used by `Mp4PacketDemuxer`.
         if let mp4parse::VideoCodecSpecific::VPxConfig(vpcc) = &video.codec_specific {
-          let codec_init: Vec<u8> = vpcc.codec_init.iter().copied().collect();
-          if codec_init.len() <= u16::MAX as usize {
-            let mut out = Vec::with_capacity(3 + 2 + codec_init.len());
+          let codec_init_len = vpcc.codec_init.len();
+          if codec_init_len <= u16::MAX as usize {
+            let out_len = 3 + 2 + codec_init_len;
+            check_mp4_codec_private_size(track_id, out_len)?;
+            let mut out = Vec::with_capacity(out_len);
             out.push(vpcc.bit_depth);
             out.push(vpcc.colour_primaries);
             out.push(vpcc.chroma_subsampling);
-            out.extend_from_slice(&(codec_init.len() as u16).to_be_bytes());
-            out.extend_from_slice(&codec_init);
+            out.extend_from_slice(&(codec_init_len as u16).to_be_bytes());
+            out.extend(vpcc.codec_init.iter().copied());
             codec_private = out;
           }
         }
@@ -686,7 +713,8 @@ fn track_codec_and_extradata(track: &mp4parse::Track) -> (MediaCodec, Vec<u8>) {
     _ => {}
   }
 
-  (codec, codec_private)
+  check_mp4_codec_private_size(track_id, codec_private.len())?;
+  Ok((codec, codec_private))
 }
 
 fn video_dimensions(track: &mp4parse::Track) -> (Option<u16>, Option<u16>) {
@@ -914,6 +942,31 @@ mod tests {
     );
     assert!(
       msg.contains(&format!("cap {MAX_MP4_SAMPLE_BYTES} bytes")),
+      "expected error mentioning cap, got {msg:?}"
+    );
+  }
+
+  #[test]
+  fn rejects_oversized_mp4_codec_private() {
+    check_mp4_codec_private_size(7, MAX_MP4_CODEC_PRIVATE_BYTES)
+      .expect("cap-sized codec_private should be allowed");
+
+    let len = MAX_MP4_CODEC_PRIVATE_BYTES + 1;
+    let err =
+      check_mp4_codec_private_size(7, len).expect_err("expected codec_private cap error");
+    let MediaError::Demux(msg) = err else {
+      panic!("expected demux error, got {err:?}");
+    };
+    assert!(
+      msg.contains("track 7"),
+      "expected error mentioning track id, got {msg:?}"
+    );
+    assert!(
+      msg.contains(&format!("size {len} bytes")),
+      "expected error mentioning size, got {msg:?}"
+    );
+    assert!(
+      msg.contains(&format!("cap {MAX_MP4_CODEC_PRIVATE_BYTES} bytes")),
       "expected error mentioning cap, got {msg:?}"
     );
   }

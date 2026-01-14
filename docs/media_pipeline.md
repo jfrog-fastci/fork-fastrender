@@ -171,6 +171,8 @@ Current behavior:
     (`MediaData::Owned`).
 - Safety:
   - Rejects oversized per-sample payloads (see `MAX_MP4_SAMPLE_BYTES` in `src/media/demux/mp4parse.rs`).
+  - Rejects oversized codec-private (`codec_private`) blobs (see `MAX_MP4_CODEC_PRIVATE_BYTES` in
+    `src/media/demux/mp4parse.rs`).
   - Rejects MP4s with excessively large per-track/total sample tables (see `MAX_MP4_SAMPLES_PER_TRACK`
     / `MAX_MP4_TOTAL_SAMPLES` in `src/media/demux/mp4parse.rs`).
 
@@ -424,6 +426,8 @@ do **not** yet render decoded video frames or output audio.
   - Fragmented MP4 (`moof`/`mdat`) is not supported by this demuxer.
   - MP4 sample payloads are capped (see `MAX_MP4_SAMPLE_BYTES` in `src/media/demux/mp4parse.rs`) to
     avoid unbounded per-sample allocations on corrupted/adversarial files.
+  - MP4 codec-private (`codec_private`) blobs are capped (see `MAX_MP4_CODEC_PRIVATE_BYTES` in
+    `src/media/demux/mp4parse.rs`).
   - `Mp4ParseDemuxer` builds full per-track sample lists, but enforces caps on sample-list size (see
     `MAX_MP4_SAMPLES_PER_TRACK` / `MAX_MP4_TOTAL_SAMPLES` in `src/media/demux/mp4parse.rs`).
 - MP4 (mp4 crate path, `Mp4PacketDemuxer`):
