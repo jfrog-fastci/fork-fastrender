@@ -52101,6 +52101,98 @@ mod tests {
   }
 
   #[test]
+  fn arrow_this_in_derived_constructor_computed_super_property_logical_and_assign_short_circuit_and_no_pre_super_side_effects(
+  ) -> Result<(), VmError> {
+    let source = r#"
+      let log = [];
+      function key() { log.push('key'); return 'x'; }
+      function rhs() { log.push('rhs'); return 2; }
+
+      class B {
+        constructor() { this._x = 1; }
+        get x() { log.push('get:' + this._x); return this._x; }
+        set x(v) { log.push('set:' + v + ':' + (this instanceof D)); this._x = v; }
+      }
+      class D extends B {
+        constructor() {
+          let f = () => (super[key()] &&= rhs());
+
+          let errName;
+          let errMsg;
+          try { f(); } catch (e) { errName = e.name; errMsg = e.message; }
+
+          super();
+          this.v1 = f(); // assigns (1 is truthy)
+          this.after1 = this._x;
+          this._x = 0;
+          this.v2 = f(); // short-circuits (0 is falsy)
+          this.errName = errName;
+          this.errMsg = errMsg;
+        }
+      }
+
+      let d = new D();
+      d.v1 === 2 &&
+        d.after1 === 2 &&
+        d.v2 === 0 &&
+        d._x === 0 &&
+        d.errName === 'ReferenceError' &&
+        d.errMsg === "Must call super constructor in derived class before accessing 'this'" &&
+        log.join(',') === 'key,get:1,rhs,set:2:true,key,get:0'
+    "#;
+
+    assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
+    assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn arrow_this_in_derived_constructor_computed_super_property_nullish_assign_short_circuit_and_no_pre_super_side_effects(
+  ) -> Result<(), VmError> {
+    let source = r#"
+      let log = [];
+      function key() { log.push('key'); return 'x'; }
+      function rhs() { log.push('rhs'); return 2; }
+
+      class B {
+        constructor() { this._x = 0; }
+        get x() { log.push('get:' + this._x); return this._x; }
+        set x(v) { log.push('set:' + v + ':' + (this instanceof D)); this._x = v; }
+      }
+      class D extends B {
+        constructor() {
+          let f = () => (super[key()] ??= rhs());
+
+          let errName;
+          let errMsg;
+          try { f(); } catch (e) { errName = e.name; errMsg = e.message; }
+
+          super();
+          this.v1 = f(); // short-circuits (0 is not nullish)
+          this.after1 = this._x;
+          this._x = undefined;
+          this.v2 = f(); // assigns (undefined is nullish)
+          this.errName = errName;
+          this.errMsg = errMsg;
+        }
+      }
+
+      let d = new D();
+      d.v1 === 0 &&
+        d.after1 === 0 &&
+        d.v2 === 2 &&
+        d._x === 2 &&
+        d.errName === 'ReferenceError' &&
+        d.errMsg === "Must call super constructor in derived class before accessing 'this'" &&
+        log.join(',') === 'key,get:0,key,get:undefined,rhs,set:2:true'
+    "#;
+
+    assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
+    assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn arrow_this_in_derived_constructor_computed_super_property_call_key_not_evaluated_before_super(
   ) -> Result<(), VmError> {
     let source = r#"
