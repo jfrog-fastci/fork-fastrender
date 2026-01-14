@@ -8,8 +8,8 @@ fn id_attribute(kind: &NodeKind) -> Option<&str> {
   match kind {
     NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes
       .iter()
-      .find(|(k, _)| k.eq_ignore_ascii_case("id"))
-      .map(|(_, v)| v.as_str()),
+      .find(|attr| attr.qualified_name().eq_ignore_ascii_case("id"))
+      .map(|attr| attr.value.as_str()),
     _ => None,
   }
 }
@@ -867,7 +867,9 @@ fn import_html_script_matches_clone_semantics() {
   match &imported_node2.kind {
     NodeKind::Element { attributes, .. } => {
       assert!(
-        attributes.iter().any(|(k, v)| k == "ASYNC" && v.is_empty()),
+        attributes
+          .iter()
+          .any(|attr| attr.qualified_name().as_ref() == "ASYNC" && attr.value.is_empty()),
         "expected attributes to be preserved exactly"
       );
     }

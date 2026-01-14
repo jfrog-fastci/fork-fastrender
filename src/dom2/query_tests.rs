@@ -24,7 +24,7 @@ fn find_node_by_id_attr(doc: &Document, id: &str) -> NodeId {
       };
       attrs
         .iter()
-        .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == id)
+        .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == id)
         .then_some(doc.node_id_from_index(idx).expect("index from enumerate"))
     })
     .unwrap_or_else(|| panic!("node with id={id:?} not found"))
@@ -403,13 +403,13 @@ fn selector_apis_work_for_inert_template_subtrees() {
     };
     if attrs
       .iter()
-      .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == "scope")
+      .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == "scope")
     {
       scope = Some(NodeId(idx));
     }
     if attrs
       .iter()
-      .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == "target")
+      .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == "target")
     {
       target = Some(NodeId(idx));
     }

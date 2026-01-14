@@ -3043,7 +3043,7 @@ mod helper_tests {
         tag_name: "frameset".to_string(),
         namespace: HTML_NAMESPACE.to_string(),
         prefix: None,
-        attributes: vec![("id".to_string(), "fs".to_string())],
+        attributes: vec![Attribute::new_no_namespace("id", "fs")],
       },
       Some(html),
       /* inert_subtree */ false,
@@ -3053,7 +3053,7 @@ mod helper_tests {
         tag_name: "body".to_string(),
         namespace: HTML_NAMESPACE.to_string(),
         prefix: None,
-        attributes: vec![("id".to_string(), "b".to_string())],
+        attributes: vec![Attribute::new_no_namespace("id", "b")],
       },
       Some(html),
       /* inert_subtree */ false,
@@ -3132,7 +3132,7 @@ mod template_inert_tests {
       };
       attrs
         .iter()
-        .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == id)
+        .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == id)
         .then_some(NodeId(idx))
     })
   }
@@ -3247,7 +3247,7 @@ mod template_inert_tests {
       }
       attributes
         .iter()
-        .any(|(name, _)| name.eq_ignore_ascii_case("shadowroot"))
+        .any(|attr| attr.qualified_name().eq_ignore_ascii_case("shadowroot"))
         .then_some(NodeId(idx))
     });
     let inert_template_id = inert_template_id.expect("expected remaining shadowroot template");

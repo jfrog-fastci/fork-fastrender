@@ -5,7 +5,7 @@ use crate::dom::{DomNode, DomNodeType, ShadowRootMode};
 use crate::web::dom::DomException;
 use selectors::context::QuirksMode;
 
-use super::{Document, NodeId, NodeKind, SlotAssignmentMode};
+use super::{Attribute, Document, NodeId, NodeKind, SlotAssignmentMode};
 
 fn attr_value<'a>(doc: &'a Document, node: NodeId, name: &str) -> Option<&'a str> {
   let node = doc.node(node);
@@ -15,8 +15,8 @@ fn attr_value<'a>(doc: &'a Document, node: NodeId, name: &str) -> Option<&'a str
   };
   attrs
     .iter()
-    .find(|(n, _)| n.eq_ignore_ascii_case(name))
-    .map(|(_, v)| v.as_str())
+    .find(|attr| attr.qualified_name().eq_ignore_ascii_case(name))
+    .map(|attr| attr.value.as_str())
 }
 
 fn find_element_by_id(doc: &Document, id: &str) -> NodeId {
@@ -27,7 +27,7 @@ fn find_element_by_id(doc: &Document, id: &str) -> NodeId {
     .find_map(|(idx, node)| match &node.kind {
       NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes
         .iter()
-        .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == id)
+        .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == id)
         .then_some(NodeId(idx)),
       _ => None,
     })
@@ -41,8 +41,9 @@ fn find_inert_descendant_with_class(doc: &Document, class: &str) -> NodeId {
     .enumerate()
     .find_map(|(idx, node)| match &node.kind {
       NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => {
-        let has_class = attributes.iter().any(|(name, value)| {
-          name.eq_ignore_ascii_case("class") && value.split_ascii_whitespace().any(|c| c == class)
+        let has_class = attributes.iter().any(|attr| {
+          attr.qualified_name().eq_ignore_ascii_case("class")
+            && attr.value.split_ascii_whitespace().any(|c| c == class)
         });
         let id = NodeId(idx);
         (has_class && doc.is_descendant_of_inert_template(id)).then_some(id)
@@ -143,7 +144,7 @@ fn query_selector_scope_limits_to_subtree_and_detached_scope_returns_none() {
       tag_name: "div".to_string(),
       namespace: "".to_string(),
       prefix: None,
-      attributes: vec![("class".to_string(), "x".to_string())],
+      attributes: vec![Attribute::new_no_namespace("class", "x")],
     },
     Some(detached),
     /* inert_subtree */ false,

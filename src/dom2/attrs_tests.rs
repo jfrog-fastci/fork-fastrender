@@ -54,8 +54,8 @@ fn html_attribute_names_are_ascii_case_insensitive() {
     _ => panic!("expected element"),
   };
   assert_eq!(attrs.len(), 2);
-  assert!(attrs[0].0.eq_ignore_ascii_case("id"));
-  assert!(attrs[1].0.eq_ignore_ascii_case("class"));
+  assert!(attrs[0].qualified_name_matches("id", /* is_html */ true));
+  assert!(attrs[1].qualified_name_matches("class", /* is_html */ true));
 }
 
 #[test]

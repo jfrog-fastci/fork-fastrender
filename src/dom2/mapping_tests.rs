@@ -4,7 +4,7 @@ use crate::dom::{DomNode, DomNodeType};
 use selectors::context::QuirksMode;
 use std::cmp::Ordering;
 
-use super::{Document, NodeId, NodeKind, SlotAssignmentMode};
+use super::{Attribute, Document, NodeId, NodeKind, SlotAssignmentMode};
 
 fn find_node_id_by_attr_id_anywhere(doc: &Document, id: &str) -> Option<NodeId> {
   for index in 0..doc.nodes_len() {
@@ -16,7 +16,7 @@ fn find_node_id_by_attr_id_anywhere(doc: &Document, id: &str) -> Option<NodeId> 
     };
     if attributes
       .iter()
-      .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == id)
+      .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == id)
     {
       return Some(node_id);
     }
@@ -68,7 +68,10 @@ fn node_kind_from_dom_node_type(node_type: &DomNodeType) -> NodeKind {
       assigned,
     } => NodeKind::Slot {
       namespace: namespace.clone(),
-      attributes: attributes.clone(),
+      attributes: attributes
+        .iter()
+        .map(|(name, value)| Attribute::new_no_namespace(name, value))
+        .collect(),
       assigned: *assigned,
     },
     DomNodeType::Element {
@@ -79,7 +82,10 @@ fn node_kind_from_dom_node_type(node_type: &DomNodeType) -> NodeKind {
       tag_name: tag_name.clone(),
       namespace: namespace.clone(),
       prefix: None,
-      attributes: attributes.clone(),
+      attributes: attributes
+        .iter()
+        .map(|(name, value)| Attribute::new_no_namespace(name, value))
+        .collect(),
     },
     DomNodeType::Text { content } => NodeKind::Text {
       content: content.clone(),

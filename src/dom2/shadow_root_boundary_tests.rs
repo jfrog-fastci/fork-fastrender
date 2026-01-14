@@ -23,13 +23,7 @@ fn find_node_by_id_attribute(doc: &Document, id: &str) -> Option<NodeId> {
     let is_html = namespace.is_empty() || namespace == HTML_NAMESPACE;
     attributes
       .iter()
-      .any(|(name, value)| {
-        (if is_html {
-          name.eq_ignore_ascii_case("id")
-        } else {
-          name == "id"
-        }) && value == id
-      })
+      .any(|attr| attr.qualified_name_matches("id", is_html) && attr.value == id)
       .then_some(NodeId::from_index(idx))
   })
 }
@@ -121,4 +115,3 @@ fn get_element_by_id_from_shadow_root_does_not_pierce_nested_shadow_roots() {
   assert_eq!(doc.get_element_by_id_from(outer_shadow_root, "nested"), None);
   assert_eq!(doc.get_element_by_id_from(nested_shadow_root, "nested"), Some(nested));
 }
-

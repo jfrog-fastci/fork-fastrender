@@ -924,7 +924,9 @@ fn clone_node_shallow_copies_element_kind_and_attributes_but_not_children() {
     } => {
       assert_eq!(tag_name, "div");
       assert_eq!(namespace, "");
-      assert!(attributes.iter().any(|(k, v)| k == "data-x" && v == "1"));
+      assert!(attributes
+        .iter()
+        .any(|attr| attr.qualified_name().as_ref() == "data-x" && attr.value == "1"));
     }
     other => panic!("expected cloned element kind, got {other:?}"),
   }
@@ -1088,7 +1090,7 @@ fn import_node_from_document_clones_clonable_shadow_root_when_deep_false() {
       .find(|&node_id| match &doc.node(node_id).kind {
         NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes
           .iter()
-          .any(|(k, v)| k.eq_ignore_ascii_case("id") && v == id),
+          .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == id),
         _ => false,
       })
   }

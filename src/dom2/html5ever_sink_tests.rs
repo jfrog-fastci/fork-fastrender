@@ -444,7 +444,7 @@ fn find_node_by_id_attribute(doc: &Document, needle: &str) -> Option<NodeId> {
     };
     attrs
       .iter()
-      .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == needle)
+      .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == needle)
       .then_some(NodeId(idx))
   })
 }

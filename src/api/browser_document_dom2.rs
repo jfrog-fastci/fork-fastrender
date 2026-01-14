@@ -2892,7 +2892,8 @@ impl BrowserDocumentDom2 {
             return true;
           }
 
-          for (name, _) in attributes {
+          for attr in attributes {
+            let name = attr.qualified_name();
             if name.eq_ignore_ascii_case("popover")
               || name.eq_ignore_ascii_case("data-fastr-open")
               || name.eq_ignore_ascii_case("data-fastr-modal")
@@ -2902,7 +2903,8 @@ impl BrowserDocumentDom2 {
           }
         }
         crate::dom2::NodeKind::Slot { attributes, .. } => {
-          for (name, _) in attributes {
+          for attr in attributes {
+            let name = attr.qualified_name();
             if name.eq_ignore_ascii_case("popover")
               || name.eq_ignore_ascii_case("data-fastr-open")
               || name.eq_ignore_ascii_case("data-fastr-modal")
@@ -4206,7 +4208,7 @@ mod tests {
           && (namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE)
           && attributes
             .iter()
-            .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == id_value) =>
+            .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == id_value) =>
         {
           Some(crate::dom2::NodeId::from_index(idx))
         }
@@ -7093,8 +7095,8 @@ mod tests {
         assert!(tag_name.eq_ignore_ascii_case("div"));
         let id_attr = attributes
           .iter()
-          .find(|(name, _)| name.eq_ignore_ascii_case("id"))
-          .map(|(_, value)| value.as_str());
+          .find(|attr| attr.qualified_name().eq_ignore_ascii_case("id"))
+          .map(|attr| attr.value.as_str());
         assert_eq!(id_attr, Some("target"));
       }
       other => panic!("expected mapped dom2 node to be an element, got {other:?}"),
@@ -7132,8 +7134,8 @@ mod tests {
         assert!(tag_name.eq_ignore_ascii_case("div"));
         let id_attr = attributes
           .iter()
-          .find(|(name, _)| name.eq_ignore_ascii_case("id"))
-          .map(|(_, value)| value.as_str());
+          .find(|attr| attr.qualified_name().eq_ignore_ascii_case("id"))
+          .map(|attr| attr.value.as_str());
         assert_eq!(id_attr, Some("after"));
       }
       other => panic!("expected mapped dom2 node to be an element, got {other:?}"),

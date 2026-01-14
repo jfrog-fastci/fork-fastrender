@@ -16,7 +16,7 @@ fn find_element_by_id(doc: &Document, id: &str) -> NodeId {
     .find_map(|(idx, node)| match &node.kind {
       NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes
         .iter()
-        .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == id)
+        .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == id)
         .then_some(NodeId(idx)),
       _ => None,
     })
@@ -44,7 +44,7 @@ fn find_descendant_by_id(doc: &Document, root: NodeId, id: &str) -> Option<NodeI
     if let NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } = &node.kind {
       if attributes
         .iter()
-        .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == id)
+        .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == id)
       {
         return Some(node_id);
       }

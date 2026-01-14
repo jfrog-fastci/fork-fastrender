@@ -177,13 +177,7 @@ mod tests {
       let is_html = doc.is_html_case_insensitive_namespace(namespace);
       attributes
         .iter()
-        .any(|(name, value)| {
-          (if is_html {
-            name.eq_ignore_ascii_case("id")
-          } else {
-            name == "id"
-          }) && value == id
-        })
+        .any(|attr| attr.qualified_name_matches("id", is_html) && attr.value == id)
         .then_some(dom2::NodeId::from_index(idx))
     })
   }

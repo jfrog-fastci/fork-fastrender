@@ -1609,13 +1609,13 @@ mod tests {
     assert!(
       attributes
         .iter()
-        .any(|(k, v)| k.eq_ignore_ascii_case("id") && v == "a"),
+        .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == "a"),
       "expected existing id attribute to be preserved"
     );
     assert!(
       attributes
         .iter()
-        .any(|(k, v)| k.eq_ignore_ascii_case("class") && v == "c"),
+        .any(|attr| attr.qualified_name().eq_ignore_ascii_case("class") && attr.value == "c"),
       "expected missing class attribute to be added"
     );
     assert_eq!(
@@ -2462,7 +2462,7 @@ mod live_range_tests {
   #[test]
   fn insert_node_before_updates_live_ranges() {
     let sink = Dom2TreeSink::new(None);
-    let root = sink.get_document();
+    let root = sink.document().root();
 
     let (range, parent) = {
       let mut doc = sink.document_mut();
@@ -2507,7 +2507,7 @@ mod live_range_tests {
   #[test]
   fn append_text_at_merge_updates_live_ranges() {
     let sink = Dom2TreeSink::new(None);
-    let root = sink.get_document();
+    let root = sink.document().root();
 
     let (range, text_id) = {
       let mut doc = sink.document_mut();

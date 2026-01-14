@@ -166,7 +166,7 @@ fn find_node_id_anywhere(doc: &Document, id: &str) -> Option<NodeId> {
     };
     if attributes
       .iter()
-      .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == id)
+      .any(|attr| attr.qualified_name().eq_ignore_ascii_case("id") && attr.value == id)
     {
       return Some(node_id);
     }
@@ -2020,8 +2020,8 @@ fn template_contents_event_path_does_not_include_template_document_or_window() {
     if tag_name.eq_ignore_ascii_case("div") {
       let id_attr = attributes
         .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case("id"))
-        .map(|(_, value)| value.as_str());
+        .find(|attr| attr.qualified_name().eq_ignore_ascii_case("id"))
+        .map(|attr| attr.value.as_str());
       match id_attr {
         Some("in") => in_id = Some(id),
         Some("out") => out_id = Some(id),
@@ -3149,8 +3149,8 @@ fn node_id_attribute(kind: &NodeKind) -> Option<&str> {
   match kind {
     NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes
       .iter()
-      .find(|(k, _)| k.eq_ignore_ascii_case("id"))
-      .map(|(_, v)| v.as_str()),
+      .find(|attr| attr.qualified_name().eq_ignore_ascii_case("id"))
+      .map(|attr| attr.value.as_str()),
     _ => None,
   }
 }
