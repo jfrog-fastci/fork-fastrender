@@ -4612,11 +4612,14 @@ impl Vm {
       // construction (regardless of whether `this` was initialized).
       Value::Object(o) => Ok(Value::Object(o)),
 
-      // `return;` / no explicit return (or `return undefined;`).
-      Value::Undefined => {
+      // `return;` / no explicit return, OR an explicit non-object return value.
+      //
+      // Per ECMA-262, constructors ignore non-object return values and instead yield `this`.
+      // Derived constructors are special only in that they may have an uninitialized `this` binding
+      // if `super()` was never called; in that case, returning a non-object must throw a
+      // ReferenceError.
+      _ => {
         if derived_constructor {
-          // Derived constructors return `this` when they return `undefined`, but the `this` binding
-          // starts uninitialized and is only set by `super()`.
           let this_root_idx = this_root_idx.ok_or(VmError::InvariantViolation(
             "derived constructor missing this root slot",
           ))?;
@@ -4628,8 +4631,6 @@ impl Vm {
             .unwrap_or(Value::Undefined)
           {
             Value::Object(o) => Ok(Value::Object(o)),
-            // A derived constructor that returns `undefined` without calling `super()` must throw a
-            // ReferenceError (mirroring V8 and the AST execution path).
             _ => {
               let intr = self
                 .intrinsics()
@@ -4643,34 +4644,13 @@ impl Vm {
             }
           }
         } else {
-          // Base/ordinary constructors always allocate `this` up-front, and ignore `undefined`
-          // returns.
+          // Base/ordinary constructors always allocate `this` up-front and ignore non-object return
+          // values.
           let this_obj = this_obj.ok_or(VmError::InvariantViolation(
             "base constructor missing allocated this object",
           ))?;
           Ok(Value::Object(this_obj))
         }
-      }
-
-      // Derived constructors may not return primitives/null.
-      _ if derived_constructor => {
-        let intr = self
-          .intrinsics()
-          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-        let err = crate::new_type_error(
-          &mut this_scope,
-          intr,
-          "Derived constructors may only return object or undefined",
-        )?;
-        Err(VmError::Throw(err))
-      }
-
-      // Base/ordinary constructors ignore primitive return values and yield `this`.
-      _ => {
-        let this_obj = this_obj.ok_or(VmError::InvariantViolation(
-          "base constructor missing allocated this object",
-        ))?;
-        Ok(Value::Object(this_obj))
       }
     }
   }
@@ -4766,12 +4746,14 @@ impl Vm {
       // construction (regardless of whether `this` was initialized).
       Value::Object(o) => Ok(Value::Object(o)),
 
-      // `return;` / no explicit return (or `return undefined;`).
-      Value::Undefined => match final_this {
+      // `return;` / no explicit return, OR an explicit non-object return value.
+      //
+      // Per ECMA-262, constructors ignore non-object return values and instead yield `this`.
+      // Derived constructors are special only in that they may have an uninitialized `this` binding
+      // if `super()` was never called; in that case, returning a non-object must throw a
+      // ReferenceError.
+      _ => match final_this {
         Value::Object(o) => Ok(Value::Object(o)),
-        // Derived constructors start with an uninitialized `this` binding. If they return
-        // `undefined` without calling `super()`, `this` is still uninitialized and this must throw
-        // a ReferenceError (mirroring V8 and existing vm-js unit tests).
         _ if is_derived_class_ctor_body => {
           let intr = self
             .intrinsics()
@@ -4784,27 +4766,6 @@ impl Vm {
           Err(VmError::Throw(err))
         }
         // Base/ordinary constructors always allocate `this` up-front.
-        _ => Err(VmError::InvariantViolation(
-          "constructor did not produce an object `this`",
-        )),
-      },
-
-      // Derived constructors may not return primitives/null.
-      _ if is_derived_class_ctor_body => {
-        let intr = self
-          .intrinsics()
-          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-        let err = crate::new_type_error(
-          &mut this_scope,
-          intr,
-          "Derived constructors may only return object or undefined",
-        )?;
-        Err(VmError::Throw(err))
-      }
-
-      // Base/ordinary constructors ignore primitive return values and yield `this`.
-      _ => match final_this {
-        Value::Object(o) => Ok(Value::Object(o)),
         _ => Err(VmError::InvariantViolation(
           "constructor did not produce an object `this`",
         )),
