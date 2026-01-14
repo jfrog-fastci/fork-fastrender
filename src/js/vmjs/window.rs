@@ -7350,16 +7350,10 @@ mod tests {
     let err = host
       .exec_script("function f() { return f(); }\nf();")
       .expect_err("expected recursion to terminate");
-<<<<<<< HEAD
     let msg = err.to_string();
     assert!(
       msg.contains("RangeError"),
       "expected stack overflow RangeError, got {msg}"
-=======
-    assert!(
-      err.to_string().contains("RangeError"),
-      "expected stack overflow RangeError, got {err}"
->>>>>>> 364787456 (feat(media): add Opus decoder backend (bundled libopus))
     );
     Ok(())
   }
