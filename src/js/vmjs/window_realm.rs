@@ -44933,7 +44933,7 @@ fn element_get_attribute_ns_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -44961,12 +44961,11 @@ fn element_get_attribute_ns_native(
   };
 
   let local_name_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let local_name_value = scope.heap_mut().to_string(local_name_value)?;
-  let local_name = scope
-    .heap()
-    .get_string(local_name_value)
-    .map(|s| s.to_utf8_lossy())
-    .unwrap_or_default();
+  let local_name_value = match local_name_value {
+    Value::String(s) => s,
+    other => scope.to_string(vm, host, hooks, other)?,
+  };
+  let local_name = scope.heap().get_string(local_name_value)?.to_utf8_lossy();
 
   let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id).ok_or(VmError::TypeError(
     "Element.getAttributeNS requires a DOM-backed document",
@@ -45027,12 +45026,11 @@ fn element_set_attribute_ns_native(
     };
 
   let value_value = args.get(2).copied().unwrap_or(Value::Undefined);
-  let value_value = scope.heap_mut().to_string(value_value)?;
-  let value = scope
-    .heap()
-    .get_string(value_value)
-    .map(|s| s.to_utf8_lossy())
-    .unwrap_or_default();
+  let value_value = match value_value {
+    Value::String(s) => s,
+    other => scope.to_string(vm, host, hooks, other)?,
+  };
+  let value = scope.heap().get_string(value_value)?.to_utf8_lossy();
 
   let ns_for_dom2 = match namespace.as_deref() {
     Some(ns) if ns == crate::dom::HTML_NAMESPACE => "",
@@ -45163,12 +45161,11 @@ fn element_remove_attribute_ns_native(
   };
 
   let local_name_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let local_name_value = scope.heap_mut().to_string(local_name_value)?;
-  let local_name = scope
-    .heap()
-    .get_string(local_name_value)
-    .map(|s| s.to_utf8_lossy())
-    .unwrap_or_default();
+  let local_name_value = match local_name_value {
+    Value::String(s) => s,
+    other => scope.to_string(vm, host, hooks, other)?,
+  };
+  let local_name = scope.heap().get_string(local_name_value)?.to_utf8_lossy();
 
   let ns_for_dom2 = match namespace.as_deref() {
     Some(ns) if ns == crate::dom::HTML_NAMESPACE => "",
@@ -60596,7 +60593,14 @@ mod tests {
           const attr = el.getAttributeNode({ toString() { return "id"; } });
           if (!attr || attr.value !== "x") return false;
           el.removeAttribute({ toString() { return "id"; } });
-          return el.getAttribute("id") === null;
+          if (el.getAttribute("id") !== null) return false;
+
+          // NS variants: keep `namespace` + `qualifiedName` as strings because those conversions
+          // still go through `value_to_rust_utf16_string` (heap-only ToString).
+          el.setAttributeNS(null, "data-x", { toString() { return "y"; } });
+          if (el.getAttributeNS(null, { toString() { return "data-x"; } }) !== "y") return false;
+          el.removeAttributeNS(null, { toString() { return "data-x"; } });
+          return el.getAttribute("data-x") === null;
         })()
       "#,
     )?;
