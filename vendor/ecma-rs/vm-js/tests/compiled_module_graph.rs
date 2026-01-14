@@ -3697,3 +3697,237 @@ fn compiled_module_supports_anonymous_default_export_async_generator_function_de
 
   result
 }
+
+#[test]
+fn compiled_module_top_level_await_supported_uses_hir_without_parsing_ast() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+  let mut graph = ModuleGraph::new();
+
+  let result = (|| -> Result<(), VmError> {
+    if !supports_compiled_modules(&mut vm, &mut heap, &realm) {
+      return Ok(());
+    }
+
+    let src = r#"
+      globalThis.__tla_log = [];
+      globalThis.__tla_log.push("start");
+
+      // The awaited Promise only resolves after its `.then` callback runs, so the observable order
+      // should be: start -> awaited -> after.
+      await Promise.resolve().then(() => { globalThis.__tla_log.push("awaited"); });
+      globalThis.__tla_log.push("after");
+
+      // Schedule a microtask after resumption to ensure microtask ordering is preserved.
+      Promise.resolve().then(() => {
+        globalThis.__tla_log.push("after_microtask");
+        globalThis.__tla_log_result = globalThis.__tla_log.join(",");
+      });
+
+      export const value = 1;
+    "#;
+
+    let script = CompiledScript::compile_module(&mut heap, "a.js", src)?;
+    assert!(script.contains_top_level_await);
+    assert!(
+      !script.top_level_await_requires_ast_fallback,
+      "expected simple TLA module to be supported by the compiled/HIR async executor"
+    );
+    assert!(
+      !script.requires_ast_fallback,
+      "simple TLA support should not force `requires_ast_fallback`"
+    );
+
+    // Populate the module record with only the compiled payload: ModuleGraph should not need to
+    // parse/retain an AST for supported TLA modules.
+    let mut record = SourceTextModuleRecord::parse_source(&mut heap, script.source.clone())?;
+    record.compiled = Some(script.clone());
+    record.clear_ast();
+    record.source = None;
+
+    let a = graph.add_module_with_specifier("a", record)?;
+    graph.link_all_by_specifier();
+    graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), a)?;
+    assert!(
+      graph.module(a).ast.is_none(),
+      "linking should not parse/retain an AST when compiled HIR is available"
+    );
+
+    let baseline_external = heap.vm_external_bytes();
+
+    let promise = graph.evaluate(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      a,
+      &mut host,
+      &mut hooks,
+    )?;
+
+    // Module evaluation should suspend at the first `await`, so the evaluation promise must start
+    // pending.
+    let Value::Object(promise_obj) = promise else {
+      panic!("ModuleGraph::evaluate should return a Promise object");
+    };
+    {
+      let mut scope = heap.scope();
+      scope.push_root(promise)?;
+      assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Pending);
+    }
+
+    // The supported compiled/HIR TLA path must not parse/retain an AST (which would charge external
+    // memory via `parse_module_ast_for_tla_fallback`).
+    assert_eq!(
+      heap.vm_external_bytes(),
+      baseline_external,
+      "unexpected module AST retention for supported compiled TLA module"
+    );
+
+    run_microtasks(&mut vm, &mut heap, &mut host, &mut hooks)?;
+
+    // Evaluation promise should now be fulfilled.
+    {
+      let mut scope = heap.scope();
+      scope.push_root(promise)?;
+      assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+    }
+
+    let mut scope = heap.scope();
+    let ns_a = graph.get_module_namespace(a, &mut vm, &mut scope)?;
+    assert_eq!(
+      ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_a, "value")?,
+      Value::Number(1.0)
+    );
+
+    let Value::String(result_s) =
+      ns_get(&mut vm, &mut host, &mut hooks, &mut scope, realm.global_object(), "__tla_log_result")?
+    else {
+      panic!("expected globalThis.__tla_log_result to be a string");
+    };
+    assert_eq!(
+      scope.heap().get_string(result_s)?.to_utf8_lossy(),
+      "start,awaited,after,after_microtask"
+    );
+
+    Ok(())
+  })();
+
+  graph.teardown(&mut vm, &mut heap);
+  let mut ctx = MicrotaskCtx {
+    vm: &mut vm,
+    heap: &mut heap,
+    host: &mut host,
+  };
+  hooks.teardown(&mut ctx);
+  realm.teardown(&mut heap);
+  result
+}
+
+#[test]
+fn compiled_module_top_level_await_unsupported_forces_ast_fallback() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+  let mut graph = ModuleGraph::new();
+
+  let result = (|| -> Result<(), VmError> {
+    if !supports_compiled_modules(&mut vm, &mut heap, &realm) {
+      return Ok(());
+    }
+
+    // Nested `await` inside the awaited subexpression is intentionally unsupported by the compiled
+    // async executor, so ModuleGraph must fall back to the async AST evaluator *before executing any
+    // HIR*.
+    let src = r#"
+      globalThis.__tla_fallback_count = (globalThis.__tla_fallback_count || 0) + 1;
+      export const value = await (await Promise.resolve(1));
+    "#;
+
+    let script = CompiledScript::compile_module(&mut heap, "a.js", src)?;
+    assert!(script.contains_top_level_await);
+    assert!(
+      script.top_level_await_requires_ast_fallback,
+      "expected nested await to require AST fallback for top-level await"
+    );
+    assert!(
+      script.requires_ast_fallback,
+      "unsupported top-level await should force `requires_ast_fallback` so ModuleGraph never executes HIR"
+    );
+
+    let mut record = SourceTextModuleRecord::parse_source(&mut heap, script.source.clone())?;
+    record.compiled = Some(script.clone());
+    record.clear_ast();
+    record.source = None;
+
+    let a = graph.add_module_with_specifier("a", record)?;
+    graph.link_all_by_specifier();
+
+    // Because `requires_ast_fallback` is set, linking must parse/retain an AST on demand (so no HIR
+    // instantiation runs before the fallback is chosen).
+    graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), a)?;
+    assert!(
+      graph.module(a).ast.is_some(),
+      "expected unsupported TLA module to retain an AST for fallback evaluation"
+    );
+
+    let promise = graph.evaluate(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      a,
+      &mut host,
+      &mut hooks,
+    )?;
+
+    let Value::Object(promise_obj) = promise else {
+      panic!("ModuleGraph::evaluate should return a Promise object");
+    };
+    {
+      let mut scope = heap.scope();
+      scope.push_root(promise)?;
+      assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Pending);
+    }
+
+    run_microtasks(&mut vm, &mut heap, &mut host, &mut hooks)?;
+
+    {
+      let mut scope = heap.scope();
+      scope.push_root(promise)?;
+      assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+    }
+
+    let mut scope = heap.scope();
+    let ns_a = graph.get_module_namespace(a, &mut vm, &mut scope)?;
+    assert_eq!(
+      ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_a, "value")?,
+      Value::Number(1.0)
+    );
+    assert_eq!(
+      ns_get(
+        &mut vm,
+        &mut host,
+        &mut hooks,
+        &mut scope,
+        realm.global_object(),
+        "__tla_fallback_count"
+      )?,
+      Value::Number(1.0),
+      "expected module body to execute exactly once (no partial HIR execution before AST fallback)"
+    );
+
+    Ok(())
+  })();
+
+  graph.teardown(&mut vm, &mut heap);
+  let mut ctx = MicrotaskCtx {
+    vm: &mut vm,
+    heap: &mut heap,
+    host: &mut host,
+  };
+  hooks.teardown(&mut ctx);
+  realm.teardown(&mut heap);
+  result
+}

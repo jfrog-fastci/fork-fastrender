@@ -383,13 +383,13 @@ fn await_in_class_static_block_preserves_home_object_ast() -> Result<(), VmError
           // Arrow functions created inside static blocks inherit `[[HomeObject]]` from the static
           // block execution context (the class constructor object), even when the static block
           // suspends/resumes via top-level `await`.
-          this.before = () => 1;
-          await Promise.resolve(0);
-          this.after = () => 2;
-        }
-      };
-    "#,
-  )?;
+           this.before = () => 1;
+           await Promise.resolve(0);
+           this.after = () => 2;
+         }
+       };
+     "#,
+   )?;
 
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
@@ -428,10 +428,10 @@ fn await_in_class_static_block_preserves_home_object_module() -> Result<(), VmEr
   let before = assert_is_function(rt.exec_script("before")?);
   let after = assert_is_function(rt.exec_script("after")?);
 
-  assert_eq!(rt.heap().get_function_home_object(before)?, Some(ctor));
-  assert_eq!(rt.heap().get_function_home_object(after)?, Some(ctor));
+   assert_eq!(rt.heap().get_function_home_object(before)?, Some(ctor));
+   assert_eq!(rt.heap().get_function_home_object(after)?, Some(ctor));
 
-  rt.heap.remove_root(eval_promise_root);
+   rt.heap.remove_root(eval_promise_root);
   Ok(())
 }
 

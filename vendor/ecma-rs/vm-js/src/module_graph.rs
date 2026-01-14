@@ -2874,9 +2874,9 @@ impl ModuleGraph {
         //
         // The fallback path uses the async AST evaluator, which supports arbitrary `await` shapes
         // but stores raw pointers into the `parse-js` AST in its continuation frames.
-        let step = if let Some(compiled) = compiled.filter(|c| {
-          !c.requires_ast_fallback && !c.top_level_await_requires_ast_fallback
-        }) {
+        let step = if let Some(compiled) =
+          compiled.filter(|c| !c.requires_ast_fallback && !c.top_level_await_requires_ast_fallback)
+        {
           crate::hir_exec::start_compiled_module_tla_evaluation(
             vm,
             scope,

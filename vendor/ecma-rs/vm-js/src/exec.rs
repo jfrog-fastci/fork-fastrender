@@ -11404,7 +11404,6 @@ impl<'a> Evaluator<'a> {
       key_scope.push_root(super_base)?;
 
       let key = self.to_property_key_operator(&mut key_scope, member_value)?;
-
       // Root the key across `GetValue`/`PutValue` in case those operations allocate/GC.
       match key {
         PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
