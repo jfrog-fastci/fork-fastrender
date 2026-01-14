@@ -1148,8 +1148,10 @@ pub fn apply_scroll_anchoring_between_trees(
       continue;
     };
 
-    let delta = point_sub(new_rel, old_rel);
-    if delta == Point::ZERO || !delta.x.is_finite() || !delta.y.is_finite() {
+    let Some(delta) = checked_point_sub(new_rel, old_rel) else {
+      continue;
+    };
+    if delta == Point::ZERO {
       continue;
     }
 
@@ -1165,11 +1167,17 @@ pub fn apply_scroll_anchoring_between_trees(
 
     match container {
       ScrollAnchorContainer::Viewport => {
-        state.viewport = sanitize_point(point_add(state.viewport, delta));
+        let Some(updated) = checked_point_add(state.viewport, delta) else {
+          continue;
+        };
+        state.viewport = sanitize_point(updated);
       }
       ScrollAnchorContainer::Element(id) => {
         let current = state.elements.get(&id).copied().unwrap_or(Point::ZERO);
-        let updated = sanitize_point(point_add(current, delta));
+        let Some(updated) = checked_point_add(current, delta) else {
+          continue;
+        };
+        let updated = sanitize_point(updated);
         if updated == Point::ZERO {
           state.elements.remove(&id);
         } else {
