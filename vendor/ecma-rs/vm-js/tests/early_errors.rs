@@ -165,6 +165,15 @@ fn await_as_binding_identifier_in_class_static_block_is_syntax_error() {
 }
 
 #[test]
+fn await_expression_in_class_static_block_in_non_async_function_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("function f(){ class C { static { await 0; } } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn yield_expression_in_class_static_block_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
@@ -200,6 +209,38 @@ fn private_name_may_not_be_both_static_and_instance_is_syntax_error() {
 fn private_in_operator_without_decl_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script("#x in {};").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn private_identifier_in_expression_position_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("#x;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn private_member_access_without_decl_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("({}).#x;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn undeclared_private_member_access_in_class_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("class C { #x; m() { this.#y; } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn super_private_member_access_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("class B {} class A extends B { m() { super.#x; } }")
+    .unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
 
