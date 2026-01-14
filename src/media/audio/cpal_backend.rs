@@ -1,28 +1,28 @@
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Once, OnceLock, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use parking_lot::{Mutex, RwLock};
 
+use super::convert::sanitize_sample;
+use super::limits::{MAX_BUFFERED_DURATION, MAX_CHANNELS, MAX_FRAMES_PER_PUSH, MAX_SAMPLE_RATE_HZ};
+use super::mixer_decision::{decide_mixer_callback_action, MixerCallbackAction};
+use super::panic_guard::{guard_output_callback, AudioSample};
+use super::restart::{AudioStreamFactory, ResilientStreamManager, RestartPolicy, RestartState};
 use super::{
   frames_to_duration, next_device_id_for_name, AudioBackend, AudioClock, AudioDeviceInfo,
   AudioEngineConfig, AudioError, AudioOutputInfo, AudioSampleFormat, AudioSink, AudioStreamConfig,
   DeviceSelector,
 };
-use super::convert::sanitize_sample;
 use crate::debug::trace::TraceHandle;
+use crate::media::audio::ring_buffer::{AudioRingBuffer, GainRamp};
+use crate::media::audio_clock::InterpolatedAudioClock;
 use crate::media::audio_engine::{
   AudioBackend as IdleBackend, AudioEngine as IdleEngine, AudioEngineTelemetry,
   AudioStreamHandle as IdleStreamHandle,
 };
-use super::limits::{MAX_BUFFERED_DURATION, MAX_CHANNELS, MAX_FRAMES_PER_PUSH, MAX_SAMPLE_RATE_HZ};
-use super::panic_guard::{guard_output_callback, AudioSample};
-use crate::media::audio::ring_buffer::{AudioRingBuffer, GainRamp};
-use super::mixer_decision::{decide_mixer_callback_action, MixerCallbackAction};
-use crate::media::audio_clock::InterpolatedAudioClock;
-use super::restart::{AudioStreamFactory, ResilientStreamManager, RestartPolicy, RestartState};
 use cpal::traits::{HostTrait, StreamTrait};
 
 fn device_name_best_effort(device: &cpal::Device) -> String {
@@ -54,7 +54,10 @@ pub fn list_output_devices() -> Result<Vec<AudioDeviceInfo>, AudioError> {
   Ok(out)
 }
 
-fn select_output_device(host: &cpal::Host, selector: &DeviceSelector) -> Result<cpal::Device, AudioError> {
+fn select_output_device(
+  host: &cpal::Host,
+  selector: &DeviceSelector,
+) -> Result<cpal::Device, AudioError> {
   use cpal::traits::DeviceTrait;
 
   match selector {
@@ -62,11 +65,12 @@ fn select_output_device(host: &cpal::Host, selector: &DeviceSelector) -> Result<
       .default_output_device()
       .ok_or(AudioError::NoOutputDevice),
     DeviceSelector::Device(target) => {
-      let devices = host
-        .output_devices()
-        .map_err(|err| AudioError::OutputDeviceEnumerationFailed {
-          source: Box::new(err),
-        })?;
+      let devices =
+        host
+          .output_devices()
+          .map_err(|err| AudioError::OutputDeviceEnumerationFailed {
+            source: Box::new(err),
+          })?;
       let mut seen = std::collections::HashMap::<String, u32>::new();
       for device in devices {
         let Ok(name) = device.name() else {
@@ -140,9 +144,9 @@ impl AudioStreamFactory for CpalStreamFactory {
       // If the user-selected device disappears (hotplug), try to keep the browser usable by
       // switching to the host's default output device instead of immediately failing back to
       // silence.
-      Err(AudioError::OutputDeviceNotFound { .. } | AudioError::OutputDeviceEnumerationFailed(_))
-        if matches!(&self.selector, DeviceSelector::Device(_)) =>
-      {
+      Err(
+        AudioError::OutputDeviceNotFound { .. } | AudioError::OutputDeviceEnumerationFailed(_),
+      ) if matches!(&self.selector, DeviceSelector::Device(_)) => {
         let device = host
           .default_output_device()
           .ok_or(AudioError::NoOutputDevice)?;
@@ -153,11 +157,8 @@ impl AudioStreamFactory for CpalStreamFactory {
     };
     let device_name = device_name_best_effort(&device);
 
-    let (stream_config, cpal_sample_format, fixed_frames) = select_output_stream_config_matching(
-      &device,
-      &device_name,
-      self.expected,
-    )?;
+    let (stream_config, cpal_sample_format, fixed_frames) =
+      select_output_stream_config_matching(&device, &device_name, self.expected)?;
     let config = AudioStreamConfig::new(stream_config.sample_rate.0, stream_config.channels);
     let sample_format = AudioSampleFormat::from(cpal_sample_format);
 
@@ -187,12 +188,10 @@ impl AudioStreamFactory for CpalStreamFactory {
       self.diagnostics.clone(),
       self.trace.clone(),
     )?;
-    stream
-      .play()
-      .map_err(|err| AudioError::StreamPlayFailed {
-        device_name: device_name.clone(),
-        source: Box::new(err),
-      })?;
+    stream.play().map_err(|err| AudioError::StreamPlayFailed {
+      device_name: device_name.clone(),
+      source: Box::new(err),
+    })?;
     Ok(stream)
   }
 }
@@ -394,8 +393,14 @@ impl CpalAudioBackend {
 
       let _ = ready_tx.send(Ok(ready.clone()));
 
-      let (config, fixed_callback_frames, last_callback_frames, estimated_latency_nanos, mixer, clock) =
-        ready;
+      let (
+        config,
+        fixed_callback_frames,
+        last_callback_frames,
+        estimated_latency_nanos,
+        mixer,
+        clock,
+      ) = ready;
       let sample_rate_hz = config.sample_rate_hz;
       let clock_for_fallback = clock.clone();
       let last_callback_frames_watchdog = last_callback_frames.clone();
@@ -426,8 +431,7 @@ impl CpalAudioBackend {
       let mut last_progress_at = Instant::now();
       // CPAL can take a little time before the first callback arrives after (re)opening a stream.
       // Use a more conservative stall timeout until we observe callback progress.
-      let mut awaiting_first_callback =
-        last_callback_frames_watchdog.load(Ordering::Relaxed) == 0;
+      let mut awaiting_first_callback = last_callback_frames_watchdog.load(Ordering::Relaxed) == 0;
       let mut consecutive_unhealthy_restarts: usize = 0;
 
       let enter_fallback = |now: Instant| {
@@ -489,7 +493,11 @@ impl CpalAudioBackend {
             // the device selected a different buffer size).
             let callback_frames_hint = {
               let v = last_callback_frames_watchdog.load(Ordering::Relaxed);
-              if v != 0 { Some(v) } else { fixed_callback_frames }
+              if v != 0 {
+                Some(v)
+              } else {
+                fixed_callback_frames
+              }
             };
             let stall_timeout = if awaiting_first_callback {
               STREAM_STALL_TIMEOUT_MAX
@@ -507,8 +515,7 @@ impl CpalAudioBackend {
               stall_timeout
             };
             if now.duration_since(last_progress_at) >= stall_timeout {
-              consecutive_unhealthy_restarts =
-                consecutive_unhealthy_restarts.saturating_add(1);
+              consecutive_unhealthy_restarts = consecutive_unhealthy_restarts.saturating_add(1);
               if consecutive_unhealthy_restarts >= STREAM_RESTART_MAX_ATTEMPTS {
                 let mut span = trace_for_events.span("audio.stream.fallback.unhealthy", "audio");
                 span.arg_u64("restart_count", consecutive_unhealthy_restarts as u64);
@@ -528,8 +535,7 @@ impl CpalAudioBackend {
         if errors.pending.swap(false, Ordering::AcqRel)
           && matches!(manager.state(), RestartState::Running)
         {
-          consecutive_unhealthy_restarts =
-            consecutive_unhealthy_restarts.saturating_add(1);
+          consecutive_unhealthy_restarts = consecutive_unhealthy_restarts.saturating_add(1);
           if consecutive_unhealthy_restarts >= STREAM_RESTART_MAX_ATTEMPTS {
             let mut span = trace_for_events.span("audio.stream.fallback.unhealthy", "audio");
             span.arg_u64("restart_count", consecutive_unhealthy_restarts as u64);
@@ -593,11 +599,11 @@ impl CpalAudioBackend {
         let _ = thread.join();
         return Err(err);
       }
-       Err(_) => {
-         let _ = thread.join();
-         return Err(AudioError::BackendThreadTerminated { backend: "cpal" });
-       }
-     };
+      Err(_) => {
+        let _ = thread.join();
+        return Err(AudioError::BackendThreadTerminated { backend: "cpal" });
+      }
+    };
 
     let idle_backend = CpalStreamControlBackend {
       command_tx: command_tx.clone(),
@@ -750,12 +756,10 @@ impl CpalStreamDiagnostics {
 
   fn set_stream_error(&self, code: u32) {
     // Keep the first error code so we have at least some signal about what happened.
-    let _ = self.stream_error_code.compare_exchange(
-      0,
-      code.max(1),
-      Ordering::Relaxed,
-      Ordering::Relaxed,
-    );
+    let _ =
+      self
+        .stream_error_code
+        .compare_exchange(0, code.max(1), Ordering::Relaxed, Ordering::Relaxed);
   }
 
   fn report_warnings_once(&self) {
@@ -1066,7 +1070,9 @@ impl SinkState {
     // discontinuity occurs while the stream is paused/empty and the mixer would otherwise never
     // call into `mix_into` (silence fast-path).
     if !self.buffer.has_data() {
-      self.discontinuity_state.store(DISC_STATE_WAIT_DATA, Ordering::Relaxed);
+      self
+        .discontinuity_state
+        .store(DISC_STATE_WAIT_DATA, Ordering::Relaxed);
       self.force_ramp_to_zero();
       self.maybe_audible.store(false, Ordering::Relaxed);
     }
@@ -1077,7 +1083,9 @@ impl SinkState {
     let zero_bits = 0.0f32.to_bits();
     self.ramp_target_bits.store(zero_bits, Ordering::Relaxed);
     self.ramp_current_bits.store(zero_bits, Ordering::Relaxed);
-    self.ramp_step_bits.store(0.0f32.to_bits(), Ordering::Relaxed);
+    self
+      .ramp_step_bits
+      .store(0.0f32.to_bits(), Ordering::Relaxed);
     self.ramp_remaining_frames.store(0, Ordering::Relaxed);
   }
 
@@ -1095,7 +1103,9 @@ impl SinkState {
     // If the buffer is empty, ensure the hint is cleared so the callback can fast-path to silence.
     if !self.buffer.has_data() {
       if discontinuity_state == DISC_STATE_FADE_OUT {
-        self.discontinuity_state.store(DISC_STATE_WAIT_DATA, Ordering::Relaxed);
+        self
+          .discontinuity_state
+          .store(DISC_STATE_WAIT_DATA, Ordering::Relaxed);
         self.force_ramp_to_zero();
       }
       self.maybe_audible.store(false, Ordering::Relaxed);
@@ -1113,7 +1123,11 @@ impl SinkState {
 
     let volume_target_bits = self.volume_target_bits.load(Ordering::Relaxed);
     let volume_target = f32::from_bits(volume_target_bits);
-    let volume_target = if volume_target.is_finite() { volume_target } else { 0.0 };
+    let volume_target = if volume_target.is_finite() {
+      volume_target
+    } else {
+      0.0
+    };
 
     let desired_target_bits = if discontinuity_state == DISC_STATE_FADE_OUT {
       0.0f32.to_bits()
@@ -1175,14 +1189,18 @@ impl SinkState {
 
       if fade_complete {
         self.buffer.pop_discard(usize::MAX);
-        self.discontinuity_state.store(DISC_STATE_WAIT_DATA, Ordering::Relaxed);
+        self
+          .discontinuity_state
+          .store(DISC_STATE_WAIT_DATA, Ordering::Relaxed);
         self.force_ramp_to_zero();
         has_data = self.buffer.has_data();
         gain_nonzero = self.gain_nonzero_for_hint(volume_target);
       } else if !has_data {
         // Ran out of buffered audio before the fade completed; ensure the next non-empty push
         // fades in from silence rather than resuming at a partial gain.
-        self.discontinuity_state.store(DISC_STATE_WAIT_DATA, Ordering::Relaxed);
+        self
+          .discontinuity_state
+          .store(DISC_STATE_WAIT_DATA, Ordering::Relaxed);
         self.force_ramp_to_zero();
         has_data = self.buffer.has_data();
         gain_nonzero = self.gain_nonzero_for_hint(volume_target);
@@ -1391,12 +1409,13 @@ fn select_output_stream_config_matching(
   let supported = if let Some((cfg, _)) = best {
     cfg
   } else {
-    let cfg = device
-      .default_output_config()
-      .map_err(|err| AudioError::DefaultOutputConfigFailed {
-        device_name: device_name.to_string(),
-        source: Box::new(err),
-      })?;
+    let cfg =
+      device
+        .default_output_config()
+        .map_err(|err| AudioError::DefaultOutputConfigFailed {
+          device_name: device_name.to_string(),
+          source: Box::new(err),
+        })?;
 
     if cfg.channels() != expected.channels || cfg.sample_rate().0 != expected.sample_rate_hz {
       return Err(AudioError::StreamConfigMismatch {
@@ -1558,7 +1577,11 @@ where
     .build_output_stream(
       config,
       move |output: &mut [T], info| {
-        let frames = if channels == 0 { 0u64 } else { (output.len() / channels) as u64 };
+        let frames = if channels == 0 {
+          0u64
+        } else {
+          (output.len() / channels) as u64
+        };
         let mut clock_updated = false;
 
         let did_panic = guard_output_callback(output, &diagnostics.panic_in_callback, |output| {
@@ -1584,12 +1607,13 @@ where
           }
 
           let mut callback_span = if trace_enabled {
-            let mut span = trace.span("audio.callback", "audio");
-            span.arg_u64("frames", frames);
-            Some(span)
+            trace.try_span("audio.callback", "audio")
           } else {
             None
           };
+          if let Some(span) = callback_span.as_mut() {
+            span.arg_u64("frames", frames);
+          }
 
           if let Some(span) = callback_span.as_mut() {
             let stats = mixer.stats_for_output_len(output.len());
@@ -1628,7 +1652,7 @@ where
               // in the callback; instead, process in bounded chunks using the preallocated mix
               // buffer.
               let mix_span = if trace_enabled {
-                Some(trace.span("audio.mix", "audio"))
+                trace.try_span("audio.mix", "audio")
               } else {
                 None
               };
@@ -1827,10 +1851,7 @@ mod tests {
   use std::time::Duration;
 
   use super::{
-    device_time_at_end_from_playback,
-    f32_to_i16,
-    f32_to_u16,
-    CpalStreamDiagnostics,
+    device_time_at_end_from_playback, f32_to_i16, f32_to_u16, CpalStreamDiagnostics,
     PlaybackOriginUpdate,
   };
   use crate::media::audio::convert::sanitize_sample;

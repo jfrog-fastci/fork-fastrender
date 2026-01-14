@@ -161,32 +161,32 @@ impl TraceHandle {
     self.inner.is_some()
   }
 
-  pub fn span(&self, name: &'static str, cat: &'static str) -> TraceSpan {
-    match &self.inner {
-      Some(state) => {
-        if state.is_full() {
-          state.dropped_events.fetch_add(1, Ordering::Relaxed);
-          TraceSpan::noop()
-        } else {
-          TraceSpan::new(state.clone(), Cow::Borrowed(name), cat)
-        }
-      }
-      None => TraceSpan::noop(),
+  pub fn try_span(&self, name: &'static str, cat: &'static str) -> Option<TraceSpan> {
+    let state = self.inner.as_ref()?;
+    if state.is_full() {
+      state.dropped_events.fetch_add(1, Ordering::Relaxed);
+      return None;
     }
+    Some(TraceSpan::new(state.clone(), Cow::Borrowed(name), cat))
+  }
+
+  pub fn span(&self, name: &'static str, cat: &'static str) -> TraceSpan {
+    self.try_span(name, cat).unwrap_or_else(TraceSpan::noop)
+  }
+
+  pub fn try_span_owned(&self, name: String, cat: &'static str) -> Option<TraceSpan> {
+    let state = self.inner.as_ref()?;
+    if state.is_full() {
+      state.dropped_events.fetch_add(1, Ordering::Relaxed);
+      return None;
+    }
+    Some(TraceSpan::new(state.clone(), Cow::Owned(name), cat))
   }
 
   pub fn span_owned(&self, name: String, cat: &'static str) -> TraceSpan {
-    match &self.inner {
-      Some(state) => {
-        if state.is_full() {
-          state.dropped_events.fetch_add(1, Ordering::Relaxed);
-          TraceSpan::noop()
-        } else {
-          TraceSpan::new(state.clone(), Cow::Owned(name), cat)
-        }
-      }
-      None => TraceSpan::noop(),
-    }
+    self
+      .try_span_owned(name, cat)
+      .unwrap_or_else(TraceSpan::noop)
   }
 
   pub fn write_chrome_trace(&self, path: &Path) -> std::io::Result<()> {
