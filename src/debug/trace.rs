@@ -64,12 +64,18 @@ impl Serialize for TraceValue {
 }
 
 impl TraceArgs {
+  fn with_capacity(capacity: usize) -> Self {
+    let mut entries = Vec::new();
+    // Use a fallible reserve so enabling tracing under memory pressure doesn't abort the process.
+    // If the reservation fails, we still record best-effort events until the vector needs to grow.
+    let _ = entries.try_reserve_exact(capacity);
+    Self { entries }
+  }
+
   fn new() -> Self {
     // Most events only record a handful of args; pre-allocate a small fixed size to avoid repeated
     // growth reallocations in hot paths (including audio callbacks).
-    Self {
-      entries: Vec::with_capacity(8),
-    }
+    Self::with_capacity(8)
   }
 
   #[inline]
@@ -327,6 +333,17 @@ impl TraceSpan {
       start: None,
       args: None,
     }
+  }
+
+  #[inline]
+  pub fn ensure_args_capacity(&mut self, capacity: usize) {
+    let Some(_state) = &self.state else {
+      return;
+    };
+    if self.args.is_some() {
+      return;
+    }
+    self.args = Some(TraceArgs::with_capacity(capacity));
   }
 
   #[inline]

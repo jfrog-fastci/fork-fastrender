@@ -1683,6 +1683,7 @@ where
             None
           };
           if let Some(span) = callback_span.as_mut() {
+            span.ensure_args_capacity(16);
             span.arg_u64("frames", frames);
           }
 
