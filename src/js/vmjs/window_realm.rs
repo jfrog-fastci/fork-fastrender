@@ -69,6 +69,31 @@ use vm_js::{
 use webidl_vm_js::VmJsHostHooksPayload;
 use webidl_vm_js::WebIdlBindingsHost;
 
+/// Fallible `Box::new` that returns `VmError::OutOfMemory` instead of aborting the process.
+///
+/// This is used for runtime-owned structures (like `ModuleGraph`) that are allocated in fallible
+/// code paths (`Result<_, VmError>`). Rust's `Box::new` aborts on allocator OOM, which is not
+/// acceptable when evaluating untrusted JavaScript.
+#[inline]
+fn box_try_new_vm<T>(value: T) -> Result<Box<T>, VmError> {
+  // `Box::new` does not allocate for ZSTs, so it cannot fail with OOM.
+  if std::mem::size_of::<T>() == 0 {
+    return Ok(Box::new(value));
+  }
+
+  let layout = std::alloc::Layout::new::<T>();
+  // SAFETY: `alloc` returns either a suitably aligned block of memory for `T` or null on OOM. We
+  // write `value` into it and transfer ownership to `Box`.
+  unsafe {
+    let ptr = std::alloc::alloc(layout) as *mut T;
+    if ptr.is_null() {
+      return Err(VmError::OutOfMemory);
+    }
+    ptr.write(value);
+    Ok(Box::from_raw(ptr))
+  }
+}
+
 /// Host callback invoked by `console.*` methods.
 ///
 /// The sink receives the raw JS argument list. Embeddings that want browser-like formatting
@@ -911,7 +936,8 @@ impl WindowRealm {
         ));
       };
       if data.module_graph.is_none() {
-        data.module_graph = Some(Box::new(ModuleGraph::new()));
+        // Avoid `Box::new`, which can abort the process on allocator OOM.
+        data.module_graph = Some(box_try_new_vm(ModuleGraph::new())?);
       }
       let Some(graph) = data.module_graph.as_deref_mut() else {
         return Err(VmError::InvariantViolation("window realm missing module graph"));
