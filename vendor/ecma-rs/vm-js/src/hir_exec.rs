@@ -22612,6 +22612,16 @@ enum HirAsyncResumePoint {
     next_stmt_index: usize,
     break_label: Option<hir_js::NameId>,
   },
+  /// Resume a top-level `for (init; test; update)` statement whose head contains `await`.
+  ///
+  /// The continuation stores a `ForTripleAwaitState` state machine that drives the loop across
+  /// suspensions. When the loop completes, evaluation continues from `next_stmt_index`.
+  ///
+  /// `break_label` is reserved for future use.
+  ForTriple {
+    next_stmt_index: usize,
+    break_label: Option<hir_js::NameId>,
+  },
 }
 
 fn await_span_start_for_hir_async_resume_point(
@@ -22621,7 +22631,8 @@ fn await_span_start_for_hir_async_resume_point(
   let stmt_index = match resume {
     HirAsyncResumePoint::ExprStmt { next_stmt_index }
     | HirAsyncResumePoint::Assignment { next_stmt_index }
-    | HirAsyncResumePoint::ForAwaitOf { next_stmt_index, .. } => next_stmt_index.saturating_sub(1),
+    | HirAsyncResumePoint::ForAwaitOf { next_stmt_index, .. }
+    | HirAsyncResumePoint::ForTriple { next_stmt_index, .. } => next_stmt_index.saturating_sub(1),
     HirAsyncResumePoint::VarDecl { stmt_index, .. } => stmt_index,
   };
 
@@ -22691,7 +22702,7 @@ fn await_span_start_for_hir_async_resume_point(
         stmt_offset
       }
     }
-    HirAsyncResumePoint::ForAwaitOf { .. } => stmt_offset,
+    HirAsyncResumePoint::ForAwaitOf { .. } | HirAsyncResumePoint::ForTriple { .. } => stmt_offset,
   };
 
   Ok(await_offset)
@@ -22711,6 +22722,7 @@ pub(crate) struct HirAsyncContinuation {
   awaited_promise_root: Option<RootId>,
   resume: HirAsyncResumePoint,
   for_await_of_state: Option<ForAwaitOfState>,
+  for_triple_state: Option<ForTripleAwaitState>,
   /// Assignment reference captured when suspending on `x = await <expr>;` or `x += await <expr>;`.
   assign_reference: Option<AssignmentReference>,
   /// Assignment operator to apply after resumption (compound assignments only).
@@ -22728,6 +22740,9 @@ pub(crate) struct HirAsyncContinuation {
 
 pub(crate) fn hir_async_teardown_continuation(scope: &mut Scope<'_>, mut cont: HirAsyncContinuation) {
   if let Some(mut state) = cont.for_await_of_state.take() {
+    state.teardown(scope.heap_mut());
+  }
+  if let Some(mut state) = cont.for_triple_state.take() {
     state.teardown(scope.heap_mut());
   }
   cont.env.teardown(scope.heap_mut());
@@ -22762,6 +22777,7 @@ enum HirAsyncEvalResult {
     assign_op: Option<hir_js::AssignOp>,
     assign_left_value: Option<Value>,
     for_await_of_state: Option<ForAwaitOfState>,
+    for_triple_state: Option<ForTripleAwaitState>,
   },
 }
 
@@ -22777,6 +22793,79 @@ fn hir_eval_stmt_list_until_await(
   // Avoid borrowing `evaluator` immutably across `eval_expr` calls: we need mutable access to the
   // evaluator while executing.
   let source = evaluator.script.source.clone();
+
+  fn for_triple_head_has_await<'a>(
+    evaluator: &HirEvaluator<'a>,
+    body: &hir_js::Body,
+    init: &Option<hir_js::ForInit>,
+    test: &Option<hir_js::ExprId>,
+    update: &Option<hir_js::ExprId>,
+  ) -> Result<bool, VmError> {
+    let mut has_await = false;
+    if let Some(init) = init {
+      match init {
+        hir_js::ForInit::Expr(expr_id) => {
+          let expr = evaluator.get_expr(body, *expr_id)?;
+          match &expr.kind {
+            hir_js::ExprKind::Await { .. } => has_await = true,
+            hir_js::ExprKind::Assignment {
+              op: hir_js::AssignOp::Assign,
+              value,
+              ..
+            } => {
+              let rhs = evaluator.get_expr(body, *value)?;
+              if matches!(rhs.kind, hir_js::ExprKind::Await { .. }) {
+                has_await = true;
+              }
+            }
+            _ => {}
+          }
+        }
+        hir_js::ForInit::Var(decl) => {
+          for declarator in &decl.declarators {
+            if let Some(init) = declarator.init {
+              let init_expr = evaluator.get_expr(body, init)?;
+              if matches!(init_expr.kind, hir_js::ExprKind::Await { .. }) {
+                has_await = true;
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if !has_await {
+      if let Some(test) = test {
+        let test_expr = evaluator.get_expr(body, *test)?;
+        if matches!(test_expr.kind, hir_js::ExprKind::Await { .. }) {
+          has_await = true;
+        }
+      }
+    }
+
+    if !has_await {
+      if let Some(update) = update {
+        let update_expr = evaluator.get_expr(body, *update)?;
+        match &update_expr.kind {
+          hir_js::ExprKind::Await { .. } => has_await = true,
+          hir_js::ExprKind::Assignment {
+            op: hir_js::AssignOp::Assign,
+            value,
+            ..
+          } => {
+            let rhs = evaluator.get_expr(body, *value)?;
+            if matches!(rhs.kind, hir_js::ExprKind::Await { .. }) {
+              has_await = true;
+            }
+          }
+          _ => {}
+        }
+      }
+    }
+
+    Ok(has_await)
+  }
 
   for (i, stmt_id) in stmts.iter().enumerate().skip(start_index) {
     // Fast-path top-level `await` expression statements without touching the normal compiled
@@ -22811,6 +22900,7 @@ fn hir_eval_stmt_list_until_await(
           assign_op: None,
           assign_left_value: None,
           for_await_of_state: None,
+          for_triple_state: None,
         });
       }
 
@@ -22877,6 +22967,7 @@ fn hir_eval_stmt_list_until_await(
             assign_op: None,
             assign_left_value: None,
             for_await_of_state: None,
+            for_triple_state: None,
           });
         }
       }
@@ -22976,6 +23067,7 @@ fn hir_eval_stmt_list_until_await(
               assign_op: Some(*op),
               assign_left_value: Some(left),
               for_await_of_state: None,
+              for_triple_state: None,
             });
           }
         }
@@ -23019,6 +23111,7 @@ fn hir_eval_stmt_list_until_await(
               assign_op: None,
               assign_left_value: None,
               for_await_of_state: None,
+              for_triple_state: None,
             });
           }
         }
@@ -23157,6 +23250,7 @@ fn hir_eval_stmt_list_until_await(
               assign_op: None,
               assign_left_value: None,
               for_await_of_state: Some(state),
+              for_triple_state: None,
             });
           }
           Ok(ForAwaitOfPoll::Complete(flow)) => {
@@ -23203,6 +23297,111 @@ fn hir_eval_stmt_list_until_await(
           }
         }
       }
+
+      // Support `label: for (init; test; update) { ... }` loops whose head contains a supported
+      // `await` boundary.
+      if let hir_js::StmtKind::For {
+        init,
+        test,
+        update,
+        body: inner,
+      } = &inner_stmt.kind
+      {
+        if for_triple_head_has_await(evaluator, body, init, test, update)? {
+          // Collect the label set so:
+          // - `continue <label>` targeted at any label in the chain is consumed by the loop
+          // - `break <label>` completions can be consumed by the enclosing label statement(s)
+          let mut label_set: Vec<hir_js::NameId> = Vec::new();
+          label_set
+            .try_reserve_exact(label_count)
+            .map_err(|_| VmError::OutOfMemory)?;
+          label_set.push(*first_label);
+          let mut current_stmt_id = *first_body;
+          loop {
+            let inner_stmt = evaluator.get_stmt(body, current_stmt_id)?;
+            match &inner_stmt.kind {
+              hir_js::StmtKind::Labeled { label, body: inner } => {
+                label_set.push(*label);
+                current_stmt_id = *inner;
+              }
+              _ => break,
+            }
+          }
+
+          // Budget once per label statement; `ForTripleAwaitState` budgets for the loop statement
+          // entry internally.
+          for _ in 0..label_set.len() {
+            evaluator.vm.tick()?;
+          }
+
+          let mut state = ForTripleAwaitState::new(
+            init.clone(),
+            *test,
+            *update,
+            *inner,
+            label_set.as_slice(),
+          )?;
+          match state.poll(evaluator, scope, body, None) {
+            Ok(ForTripleAwaitPoll::Await { kind, await_value }) => {
+              return Ok(HirAsyncEvalResult::Await {
+                kind,
+                await_value,
+                resume: HirAsyncResumePoint::ForTriple {
+                  next_stmt_index: i.saturating_add(1),
+                  break_label: None,
+                },
+                assign_reference: None,
+                assign_op: None,
+                assign_left_value: None,
+                for_await_of_state: None,
+                for_triple_state: Some(state),
+              });
+            }
+            Ok(ForTripleAwaitPoll::Complete(flow)) => {
+              // Defensive cleanup: `poll(Init)` should return `Await`, but keep this robust.
+              state.teardown(scope.heap_mut());
+              let flow = match flow {
+                Flow::Break(Some(target), value) if label_set.iter().any(|l| *l == target) => Flow::Normal(value),
+                other => other,
+              };
+              match flow {
+                Flow::Normal(v) => {
+                  if let Some(v) = v {
+                    *last_value_is_set = true;
+                    scope.heap_mut().set_root(last_value_root, v);
+                  }
+                }
+                Flow::Return(_) => {
+                  return Err(VmError::InvariantViolation(
+                    "script evaluation produced Return flow (early errors should prevent this)",
+                  ))
+                }
+                Flow::Break(..) => {
+                  return Err(VmError::InvariantViolation(
+                    "script evaluation produced Break flow (early errors should prevent this)",
+                  ))
+                }
+                Flow::Continue(..) => {
+                  return Err(VmError::InvariantViolation(
+                    "script evaluation produced Continue flow (early errors should prevent this)",
+                  ))
+                }
+              }
+              continue;
+            }
+            Err(err) => {
+              state.teardown(scope.heap_mut());
+              return Err(finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                scope,
+                source.as_ref(),
+                inner_stmt.span.start,
+                err,
+              ));
+            }
+          }
+        }
+      }
     }
 
     // Top-level `for await..of` evaluation is driven by `ForAwaitOfState` so we can suspend on the
@@ -23232,6 +23431,7 @@ fn hir_eval_stmt_list_until_await(
             assign_op: None,
             assign_left_value: None,
             for_await_of_state: Some(state),
+            for_triple_state: None,
           });
         }
         Ok(ForAwaitOfPoll::Complete(flow)) => {
@@ -23280,6 +23480,88 @@ fn hir_eval_stmt_list_until_await(
         }
       }
       continue;
+    }
+
+    // Top-level `for (init; test; update) { ... }` evaluation with await in the loop head.
+    //
+    // This is driven by `ForTripleAwaitState` so we can suspend/resume while evaluating `init`,
+    // `test`, and/or `update` without requiring full `await` expression support in the synchronous
+    // evaluator.
+    if let hir_js::StmtKind::For {
+      init,
+      test,
+      update,
+      body: inner,
+    } = &stmt.kind
+    {
+      if for_triple_head_has_await(evaluator, body, init, test, update)? {
+        let mut state = ForTripleAwaitState::new(init.clone(), *test, *update, *inner, &[])?;
+        match state.poll(evaluator, scope, body, None) {
+          Ok(ForTripleAwaitPoll::Await { kind, await_value }) => {
+            return Ok(HirAsyncEvalResult::Await {
+              kind,
+              await_value,
+              resume: HirAsyncResumePoint::ForTriple {
+                next_stmt_index: i.saturating_add(1),
+                break_label: None,
+              },
+              assign_reference: None,
+              assign_op: None,
+              assign_left_value: None,
+              for_await_of_state: None,
+              for_triple_state: Some(state),
+            });
+          }
+          Ok(ForTripleAwaitPoll::Complete(flow)) => {
+            // `ForTripleAwaitState::poll` is expected to have cleaned up its persistent roots before
+            // returning `Complete`, but call `teardown` defensively so future changes to the state
+            // machine cannot leak roots.
+            state.teardown(scope.heap_mut());
+            let flow = match flow {
+              Flow::Break(Some(target), value) if state.label_set.iter().any(|l| *l == target) => {
+                Flow::Normal(value)
+              }
+              other => other,
+            };
+            match flow {
+              Flow::Normal(v) => {
+                if let Some(v) = v {
+                  *last_value_is_set = true;
+                  scope.heap_mut().set_root(last_value_root, v);
+                }
+              }
+              Flow::Return(_) => {
+                return Err(VmError::InvariantViolation(
+                  "script evaluation produced Return flow (early errors should prevent this)",
+                ))
+              }
+              Flow::Break(..) => {
+                return Err(VmError::InvariantViolation(
+                  "script evaluation produced Break flow (early errors should prevent this)",
+                ))
+              }
+              Flow::Continue(..) => {
+                return Err(VmError::InvariantViolation(
+                  "script evaluation produced Continue flow (early errors should prevent this)",
+                ))
+              }
+            }
+          }
+          Err(err) => {
+            // Ensure persistent roots held by the for-triple state machine do not leak when
+            // evaluation fails before we store the state in a continuation.
+            state.teardown(scope.heap_mut());
+            return Err(finalize_throw_with_stack_at_source_offset(
+              &*evaluator.vm,
+              scope,
+              source.as_ref(),
+              stmt_offset,
+              err,
+            ));
+          }
+        }
+        continue;
+      }
     }
 
     match evaluator.eval_stmt(scope, body, *stmt_id)? {
@@ -23511,8 +23793,10 @@ fn run_compiled_script_async(
       assign_op,
       assign_left_value,
       for_await_of_state,
+      for_triple_state,
     }) => {
       let mut for_await_of_state = for_await_of_state;
+      let mut for_triple_state = for_triple_state;
       // Root all captured values while we create persistent roots and schedule the resumption.
       let mut root_scope = scope.reborrow();
       let push_res = match (assign_reference.as_ref(), assign_left_value) {
@@ -23603,6 +23887,9 @@ fn run_compiled_script_async(
         if let Some(mut state) = for_await_of_state.take() {
           state.teardown(root_scope.heap_mut());
         }
+        if let Some(mut state) = for_triple_state.take() {
+          state.teardown(root_scope.heap_mut());
+        }
         root_scope.heap_mut().remove_root(last_value_root);
         env.teardown(root_scope.heap_mut());
         return Err(err);
@@ -23652,6 +23939,9 @@ fn run_compiled_script_async(
               if let Some(mut state) = for_await_of_state.take() {
                 state.teardown(root_scope.heap_mut());
               }
+              if let Some(mut state) = for_triple_state.take() {
+                state.teardown(root_scope.heap_mut());
+              }
               root_scope.heap_mut().remove_root(last_value_root);
               env.teardown(root_scope.heap_mut());
               return Err(other);
@@ -23660,6 +23950,9 @@ fn run_compiled_script_async(
           let mut call_scope = root_scope.reborrow();
           if let Err(err) = call_scope.push_roots(&[cap.reject, reason]) {
             if let Some(mut state) = for_await_of_state.take() {
+              state.teardown(call_scope.heap_mut());
+            }
+            if let Some(mut state) = for_triple_state.take() {
               state.teardown(call_scope.heap_mut());
             }
             call_scope.heap_mut().remove_root(last_value_root);
@@ -23671,12 +23964,18 @@ fn run_compiled_script_async(
           if let Some(mut state) = for_await_of_state.take() {
             state.teardown(call_scope.heap_mut());
           }
+          if let Some(mut state) = for_triple_state.take() {
+            state.teardown(call_scope.heap_mut());
+          }
           call_scope.heap_mut().remove_root(last_value_root);
           env.teardown(call_scope.heap_mut());
           return res.map(|_| promise);
         }
         Err(err) => {
           if let Some(mut state) = for_await_of_state.take() {
+            state.teardown(root_scope.heap_mut());
+          }
+          if let Some(mut state) = for_triple_state.take() {
             state.teardown(root_scope.heap_mut());
           }
           root_scope.heap_mut().remove_root(last_value_root);
@@ -23687,6 +23986,9 @@ fn run_compiled_script_async(
 
       if let Err(err) = root_scope.push_root(awaited_promise) {
         if let Some(mut state) = for_await_of_state.take() {
+          state.teardown(root_scope.heap_mut());
+        }
+        if let Some(mut state) = for_triple_state.take() {
           state.teardown(root_scope.heap_mut());
         }
         root_scope.heap_mut().remove_root(last_value_root);
@@ -23717,6 +24019,9 @@ fn run_compiled_script_async(
           if let Some(mut state) = for_await_of_state.take() {
             state.teardown(root_scope.heap_mut());
           }
+          if let Some(mut state) = for_triple_state.take() {
+            state.teardown(root_scope.heap_mut());
+          }
           root_scope.heap_mut().remove_root(last_value_root);
           env.teardown(root_scope.heap_mut());
           return Err(VmError::OutOfMemory);
@@ -23724,6 +24029,9 @@ fn run_compiled_script_async(
       };
       if roots.try_reserve_exact(required_capacity).is_err() {
         if let Some(mut state) = for_await_of_state.take() {
+          state.teardown(root_scope.heap_mut());
+        }
+        if let Some(mut state) = for_triple_state.take() {
           state.teardown(root_scope.heap_mut());
         }
         root_scope.heap_mut().remove_root(last_value_root);
@@ -23738,6 +24046,9 @@ fn run_compiled_script_async(
               root_scope.heap_mut().remove_root(id);
             }
             if let Some(mut state) = for_await_of_state.take() {
+              state.teardown(root_scope.heap_mut());
+            }
+            if let Some(mut state) = for_triple_state.take() {
               state.teardown(root_scope.heap_mut());
             }
             root_scope.heap_mut().remove_root(last_value_root);
@@ -23776,6 +24087,9 @@ fn run_compiled_script_async(
                 if let Some(mut state) = for_await_of_state.take() {
                   state.teardown(root_scope.heap_mut());
                 }
+                if let Some(mut state) = for_triple_state.take() {
+                  state.teardown(root_scope.heap_mut());
+                }
                 root_scope.heap_mut().remove_root(last_value_root);
                 env.teardown(root_scope.heap_mut());
                 return Err(err);
@@ -23789,6 +24103,9 @@ fn run_compiled_script_async(
                   root_scope.heap_mut().remove_root(id);
                 }
                 if let Some(mut state) = for_await_of_state.take() {
+                  state.teardown(root_scope.heap_mut());
+                }
+                if let Some(mut state) = for_triple_state.take() {
                   state.teardown(root_scope.heap_mut());
                 }
                 root_scope.heap_mut().remove_root(last_value_root);
@@ -23813,6 +24130,12 @@ fn run_compiled_script_async(
                 for id in roots.drain(..) {
                   root_scope.heap_mut().remove_root(id);
                 }
+                if let Some(mut state) = for_await_of_state.take() {
+                  state.teardown(root_scope.heap_mut());
+                }
+                if let Some(mut state) = for_triple_state.take() {
+                  state.teardown(root_scope.heap_mut());
+                }
                 root_scope.heap_mut().remove_root(last_value_root);
                 env.teardown(root_scope.heap_mut());
                 return Err(err);
@@ -23824,6 +24147,12 @@ fn run_compiled_script_async(
                 root_scope.heap_mut().remove_root(base_root);
                 for id in roots.drain(..) {
                   root_scope.heap_mut().remove_root(id);
+                }
+                if let Some(mut state) = for_await_of_state.take() {
+                  state.teardown(root_scope.heap_mut());
+                }
+                if let Some(mut state) = for_triple_state.take() {
+                  state.teardown(root_scope.heap_mut());
                 }
                 root_scope.heap_mut().remove_root(last_value_root);
                 env.teardown(root_scope.heap_mut());
@@ -23847,6 +24176,9 @@ fn run_compiled_script_async(
             if let Some(mut state) = for_await_of_state.take() {
               state.teardown(root_scope.heap_mut());
             }
+            if let Some(mut state) = for_triple_state.take() {
+              state.teardown(root_scope.heap_mut());
+            }
             root_scope.heap_mut().remove_root(last_value_root);
             env.teardown(root_scope.heap_mut());
             return Err(err);
@@ -23861,6 +24193,9 @@ fn run_compiled_script_async(
           root_scope.heap_mut().remove_root(id);
         }
         if let Some(mut state) = for_await_of_state.take() {
+          state.teardown(root_scope.heap_mut());
+        }
+        if let Some(mut state) = for_triple_state.take() {
           state.teardown(root_scope.heap_mut());
         }
         root_scope.heap_mut().remove_root(last_value_root);
@@ -23881,6 +24216,7 @@ fn run_compiled_script_async(
         awaited_promise_root: Some(awaited_root),
         resume,
         for_await_of_state,
+        for_triple_state,
         assign_reference,
         assign_op,
         assign_base_root,
@@ -24225,6 +24561,7 @@ pub(crate) fn hir_async_resume_continuation(
                   assign_op: None,
                   assign_left_value: None,
                   for_await_of_state: None,
+                  for_triple_state: None,
                 });
               }
             }
@@ -24460,6 +24797,7 @@ pub(crate) fn hir_async_resume_continuation(
               assign_op: None,
               assign_left_value: None,
               for_await_of_state: Some(state),
+              for_triple_state: None,
             }),
             Ok(ForAwaitOfPoll::Complete(flow)) => {
               let flow = match flow {
@@ -24478,6 +24816,97 @@ pub(crate) fn hir_async_resume_continuation(
                 }
                 other => other,
               };
+              match flow {
+                Flow::Normal(v) => {
+                  if let Some(v) = v {
+                    cont.last_value_is_set = true;
+                    scope.heap_mut().set_root(cont.last_value_root, v);
+                  }
+                }
+                Flow::Return(_) => {
+                  return Err(VmError::InvariantViolation(
+                    "script evaluation produced Return flow (early errors should prevent this)",
+                  ))
+                }
+                Flow::Break(..) => {
+                  return Err(VmError::InvariantViolation(
+                    "script evaluation produced Break flow (early errors should prevent this)",
+                  ))
+                }
+                Flow::Continue(..) => {
+                  return Err(VmError::InvariantViolation(
+                    "script evaluation produced Continue flow (early errors should prevent this)",
+                  ))
+                }
+              }
+
+              hir_eval_stmt_list_until_await(
+                &mut evaluator,
+                scope,
+                body,
+                body.root_stmts.as_slice(),
+                next_stmt_index,
+                cont.last_value_root,
+                &mut cont.last_value_is_set,
+              )
+            }
+            Err(err) => {
+              state.teardown(scope.heap_mut());
+              Err(finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                scope,
+                source.as_ref(),
+                stmt_offset,
+                err,
+              ))
+            }
+          }
+        }
+        HirAsyncResumePoint::ForTriple {
+          next_stmt_index,
+          break_label,
+        } => {
+          // Attach any throw stack to the `for (init; test; update)` statement span.
+          let stmt_index = next_stmt_index.checked_sub(1).ok_or(VmError::InvariantViolation(
+            "hir async for-triple resume missing statement index",
+          ))?;
+          let stmt_id = *body
+            .root_stmts
+            .get(stmt_index)
+            .ok_or(VmError::InvariantViolation(
+              "hir async for-triple resume stmt index out of bounds",
+            ))?;
+          let stmt = evaluator.get_stmt(body, stmt_id)?;
+          let stmt_offset = stmt.span.start;
+
+          let mut state = cont.for_triple_state.take().ok_or(VmError::InvariantViolation(
+            "hir async for-triple resume missing state machine",
+          ))?;
+          match state.poll(&mut evaluator, scope, body, Some(resume_value)) {
+            Ok(ForTripleAwaitPoll::Await { kind, await_value }) => Ok(HirAsyncEvalResult::Await {
+              kind,
+              await_value,
+              resume: HirAsyncResumePoint::ForTriple {
+                next_stmt_index,
+                break_label,
+              },
+              assign_reference: None,
+              assign_op: None,
+              assign_left_value: None,
+              for_await_of_state: None,
+              for_triple_state: Some(state),
+            }),
+            Ok(ForTripleAwaitPoll::Complete(flow)) => {
+              let flow = match flow {
+                Flow::Break(Some(target), value) if state.label_set.iter().any(|l| *l == target) => {
+                  Flow::Normal(value)
+                }
+                other => other,
+              };
+              // `ForTripleAwaitState::poll` is expected to have cleaned up its persistent roots before
+              // returning `Complete`, but call `teardown` defensively so future changes to the state
+              // machine cannot leak roots.
+              state.teardown(scope.heap_mut());
               match flow {
                 Flow::Normal(v) => {
                   if let Some(v) = v {
@@ -24555,6 +24984,7 @@ pub(crate) fn hir_async_resume_continuation(
         assign_op,
         assign_left_value,
         for_await_of_state,
+        for_triple_state,
       }) => {
         cont.resume = resume;
         cont.assign_reference = assign_reference;
@@ -24562,7 +24992,11 @@ pub(crate) fn hir_async_resume_continuation(
         if let Some(mut state) = cont.for_await_of_state.take() {
           state.teardown(scope.heap_mut());
         }
+        if let Some(mut state) = cont.for_triple_state.take() {
+          state.teardown(scope.heap_mut());
+        }
         cont.for_await_of_state = for_await_of_state;
+        cont.for_triple_state = for_triple_state;
 
         // Drop any stale assignment roots before installing new ones.
         if let Some(root) = cont.assign_base_root.take() {

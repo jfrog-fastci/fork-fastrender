@@ -827,12 +827,68 @@ fn stmt_contains_unsupported_await_for_hir_async_scripts(stmt: &Node<Stmt>) -> b
     false
   }
 
+  fn for_triple_head_expr_supported(expr: &Node<Expr>, allow_assignment: bool) -> bool {
+    if !expr_contains_await(expr) {
+      return true;
+    }
+    if expr_is_direct_await_without_nested_await(expr) {
+      return true;
+    }
+    allow_assignment && expr_is_supported_assignment_with_direct_await_rhs_without_nested_await(expr)
+  }
+
+  fn for_triple_contains_unsupported_await_for_hir_async_scripts(for_stmt: &Node<ForTripleStmt>) -> bool {
+    // Loop body must not contain any other `await`.
+    if for_stmt.stx.body.stx.body.iter().any(stmt_contains_await) {
+      return true;
+    }
+
+    // Init position.
+    match &for_stmt.stx.init {
+      ForTripleStmtInit::None => {}
+      ForTripleStmtInit::Expr(expr) => {
+        if !for_triple_head_expr_supported(expr, /* allow_assignment */ true) {
+          return true;
+        }
+      }
+      ForTripleStmtInit::Decl(decl) => {
+        // The compiled evaluator does not support `await` inside loop-initializer declarations
+        // yet.
+        if decl.stx.declarators.iter().any(|d| {
+          pat_contains_await(&d.pattern.stx.pat.stx)
+            || d.initializer.as_ref().is_some_and(expr_contains_await)
+        }) {
+          return true;
+        }
+      }
+    }
+
+    // Test position.
+    if let Some(test) = for_stmt.stx.cond.as_ref() {
+      if !for_triple_head_expr_supported(test, /* allow_assignment */ false) {
+        return true;
+      }
+    }
+
+    // Update position.
+    if let Some(post) = for_stmt.stx.post.as_ref() {
+      if !for_triple_head_expr_supported(post, /* allow_assignment */ true) {
+        return true;
+      }
+    }
+
+    false
+  }
+
   match &*stmt.stx {
     // Supported async classic script forms for the compiled (HIR) executor:
     // - `await <expr>;`
     // - `x = await <expr>;`
     // - `x += await <expr>;` (and other arithmetic/bitwise compound assignment operators)
     // - `const x = await <expr>;` (and `var`/`let`)
+    // - `for (init; test; update) { ... }` loops where the head may contain direct `await` (and
+    //   simple `x = await <expr>` assignments) in the init/test/update positions, and the loop body
+    //   contains no other `await`
     // - `for await (<head> of <rhs>) { ... }` where:
       //   - `<rhs>` is either a normal expression with no `await`, or a direct `await <expr>` with no
       //     nested `await` inside `<expr>`, and
@@ -885,20 +941,26 @@ fn stmt_contains_unsupported_await_for_hir_async_scripts(stmt: &Node<Stmt>) -> b
 
       for_await_of_contains_unsupported_await_for_hir_async_scripts(for_of)
     }
+    Stmt::ForTriple(for_stmt) => for_triple_contains_unsupported_await_for_hir_async_scripts(for_stmt),
     Stmt::Label(label_stmt) => {
-      // Support labelled top-level `for await..of` loops by deferring to the same constraints as an
-      // unlabelled loop.
+      // Support labelled top-level loops by deferring to the same constraints as an unlabelled
+      // loop.
       let mut inner = &label_stmt.stx.statement;
       while let Stmt::Label(nested) = &*inner.stx {
         inner = &nested.stx.statement;
       }
-      let Stmt::ForOf(for_of) = &*inner.stx else {
-        return stmt_contains_await(stmt);
-      };
-      if !for_of.stx.await_ {
-        return stmt_contains_await(stmt);
+      match &*inner.stx {
+        Stmt::ForOf(for_of) => {
+          if !for_of.stx.await_ {
+            return stmt_contains_await(stmt);
+          }
+          for_await_of_contains_unsupported_await_for_hir_async_scripts(for_of)
+        }
+        Stmt::ForTriple(for_stmt) => {
+          for_triple_contains_unsupported_await_for_hir_async_scripts(for_stmt)
+        }
+        _ => stmt_contains_await(stmt),
       }
-      for_await_of_contains_unsupported_await_for_hir_async_scripts(for_of)
     }
     // Other statement kinds must not contain `await` / `for await..of`.
     _ => stmt_contains_await(stmt),
