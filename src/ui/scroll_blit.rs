@@ -125,24 +125,27 @@ fn approx_integer(v: f32) -> Option<i32> {
 }
 
 fn fragment_tree_has_fixed_or_sticky(tree: &FragmentTree) -> bool {
-  fn scan(node: &FragmentNode, has_fixed_cb_ancestor: bool) -> bool {
+  // Avoid recursion to prevent stack overflows on adversarially deep fragment trees.
+  let mut stack: Vec<(&FragmentNode, bool)> = Vec::new();
+  stack.push((&tree.root, false));
+  for root in &tree.additional_fragments {
+    stack.push((root, false));
+  }
+
+  while let Some((node, has_fixed_cb_ancestor)) = stack.pop() {
     match &node.content {
       FragmentContent::RunningAnchor { snapshot, .. }
       | FragmentContent::FootnoteAnchor { snapshot, .. } => {
-        if scan(snapshot, has_fixed_cb_ancestor) {
-          return true;
-        }
+        stack.push((snapshot, has_fixed_cb_ancestor));
       }
       _ => {}
     }
 
     let Some(style) = node.style.as_deref() else {
       for child in node.children.iter() {
-        if scan(child, has_fixed_cb_ancestor) {
-          return true;
-        }
+        stack.push((child, has_fixed_cb_ancestor));
       }
-      return false;
+      continue;
     };
 
     // Sticky positioning is scroll-dependent; always treat as unsupported.
@@ -168,32 +171,25 @@ fn fragment_tree_has_fixed_or_sticky(tree: &FragmentTree) -> bool {
     let establishes_fixed_cb = style.establishes_fixed_containing_block();
     let has_fixed_cb_ancestor_for_children = has_fixed_cb_ancestor || establishes_fixed_cb;
     for child in node.children.iter() {
-      if scan(child, has_fixed_cb_ancestor_for_children) {
-        return true;
-      }
+      stack.push((child, has_fixed_cb_ancestor_for_children));
     }
-    false
   }
 
-  if scan(&tree.root, false) {
-    return true;
-  }
-  for root in &tree.additional_fragments {
-    if scan(root, false) {
-      return true;
-    }
-  }
   false
 }
 
 fn fragment_tree_has_scroll_driven_animations(tree: &FragmentTree) -> bool {
-  fn scan(node: &FragmentNode) -> bool {
+  // Avoid recursion to prevent stack overflows on adversarially deep fragment trees.
+  let mut stack: Vec<&FragmentNode> = Vec::new();
+  stack.push(&tree.root);
+  for root in &tree.additional_fragments {
+    stack.push(root);
+  }
+  while let Some(node) = stack.pop() {
     match &node.content {
       FragmentContent::RunningAnchor { snapshot, .. }
       | FragmentContent::FootnoteAnchor { snapshot, .. } => {
-        if scan(snapshot) {
-          return true;
-        }
+        stack.push(snapshot);
       }
       _ => {}
     }
@@ -209,21 +205,8 @@ fn fragment_tree_has_scroll_driven_animations(tree: &FragmentTree) -> bool {
     {
       return true;
     }
-
     for child in node.children.iter() {
-      if scan(child) {
-        return true;
-      }
-    }
-    false
-  }
-
-  if scan(&tree.root) {
-    return true;
-  }
-  for root in &tree.additional_fragments {
-    if scan(root) {
-      return true;
+      stack.push(child);
     }
   }
   false
