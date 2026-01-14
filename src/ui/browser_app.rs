@@ -1058,28 +1058,10 @@ impl BrowserTabState {
   }
 
   pub fn apply_optimistic_viewport_scroll_delta(&mut self, delta_css: (f32, f32)) -> bool {
-    let sanitize = |v: f32| if v.is_finite() { v } else { 0.0 };
-    let clamp_nonneg = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
-
-    let dx = sanitize(delta_css.0);
-    let dy = sanitize(delta_css.1);
-
     let prev = self.scroll_state.clone();
-    let prev_viewport_x = sanitize(prev.viewport.x);
-    let prev_viewport_y = sanitize(prev.viewport.y);
-
-    let mut next_viewport =
-      crate::geometry::Point::new(prev_viewport_x + dx, prev_viewport_y + dy);
-
-    if let Some(metrics) = self.scroll_metrics.as_ref() {
-      next_viewport = metrics.bounds_css.clamp(next_viewport);
-    } else {
-      next_viewport = crate::geometry::Point::new(
-        clamp_nonneg(next_viewport.x),
-        clamp_nonneg(next_viewport.y),
-      );
-    }
-
+    let bounds_css = self.scroll_metrics.map(|metrics| metrics.bounds_css);
+    let (next_viewport, _applied_delta) =
+      crate::ui::scroll::apply_viewport_delta_css(prev.viewport, delta_css, bounds_css);
     self.scroll_state.viewport = next_viewport;
     self.scroll_state.update_deltas_from(&prev);
 

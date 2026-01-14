@@ -90,6 +90,7 @@ pub mod url_display;
 pub mod security_indicator;
 pub mod site_isolation;
 pub mod worker;
+pub mod scroll;
 pub mod zoom;
 pub mod motion;
 pub mod loading_overlay;

@@ -732,16 +732,33 @@ struct PendingScrollDrag {
 #[cfg(any(test, feature = "browser_ui"))]
 impl PendingScrollDrag {
   fn push(pending: &mut Option<Self>, tab_id: fastrender::ui::TabId, delta_css: (f32, f32)) {
-    if delta_css.0 == 0.0 && delta_css.1 == 0.0 {
+    let dx = if delta_css.0.is_finite() {
+      delta_css.0
+    } else {
+      0.0
+    };
+    let dy = if delta_css.1.is_finite() {
+      delta_css.1
+    } else {
+      0.0
+    };
+    if dx == 0.0 && dy == 0.0 {
       return;
     }
     match pending {
       Some(existing) if existing.tab_id == tab_id => {
-        existing.delta_css.0 += delta_css.0;
-        existing.delta_css.1 += delta_css.1;
+        let add_saturating = |base: f32, delta: f32| {
+          let next = base + delta;
+          if next.is_finite() { next } else { base }
+        };
+        existing.delta_css.0 = add_saturating(existing.delta_css.0, dx);
+        existing.delta_css.1 = add_saturating(existing.delta_css.1, dy);
       }
       _ => {
-        *pending = Some(Self { tab_id, delta_css });
+        *pending = Some(Self {
+          tab_id,
+          delta_css: (dx, dy),
+        });
       }
     }
   }
