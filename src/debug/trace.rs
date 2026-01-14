@@ -88,6 +88,10 @@ impl TraceArgs {
         return;
       }
     }
+    // Best-effort: if allocating space for the arg list fails, drop this arg instead of aborting.
+    if self.entries.len() == self.entries.capacity() && self.entries.try_reserve(1).is_err() {
+      return;
+    }
     self.entries.push(TraceArg { key, value });
   }
 }
@@ -289,6 +293,12 @@ impl TraceState {
       }
     };
     if events.len() >= self.max_events {
+      self.dropped_events.fetch_add(1, Ordering::Relaxed);
+      return;
+    }
+    // Best-effort: if we couldn't pre-reserve the full trace buffer (or memory is tight), avoid
+    // aborting on vector growth. Drop the event if we can't allocate space.
+    if events.len() == events.capacity() && events.try_reserve(1).is_err() {
       self.dropped_events.fetch_add(1, Ordering::Relaxed);
       return;
     }
