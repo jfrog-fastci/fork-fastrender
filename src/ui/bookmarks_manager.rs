@@ -427,7 +427,8 @@ pub fn bookmarks_manager_side_panel(
           );
 
           ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let choose_resp = ui.small_button("Choose file…");
+            let choose_button = egui::Button::new(egui::RichText::new("Choose file…").small());
+            let choose_resp = ui.add_enabled(!state.io_job.is_busy(), choose_button);
             choose_resp.widget_info(|| {
               egui::WidgetInfo::labeled(egui::WidgetType::Button, "Choose export file")
             });
@@ -439,7 +440,8 @@ pub fn bookmarks_manager_side_panel(
 
             ui.add_space(6.0);
 
-            let resp = ui.add(
+            let resp = ui.add_enabled(
+              !state.io_job.is_busy(),
               egui::TextEdit::singleline(&mut state.export_path)
                 .hint_text(profile_path.display().to_string())
                 .desired_width(f32::INFINITY),
@@ -452,7 +454,9 @@ pub fn bookmarks_manager_side_panel(
           });
 
           ui.horizontal_wrapped(|ui| {
-            if ui.button("Use profile path").clicked() {
+            let use_profile =
+              ui.add_enabled(!state.io_job.is_busy(), egui::Button::new("Use profile path"));
+            if use_profile.clicked() {
               state.export_path = profile_path.display().to_string();
             }
 
@@ -515,7 +519,8 @@ pub fn bookmarks_manager_side_panel(
           );
 
           ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let choose_resp = ui.small_button("Choose file…");
+            let choose_button = egui::Button::new(egui::RichText::new("Choose file…").small());
+            let choose_resp = ui.add_enabled(!state.io_job.is_busy(), choose_button);
             choose_resp.widget_info(|| {
               egui::WidgetInfo::labeled(egui::WidgetType::Button, "Choose import file")
             });
@@ -527,7 +532,8 @@ pub fn bookmarks_manager_side_panel(
 
             ui.add_space(6.0);
 
-            let resp = ui.add(
+            let resp = ui.add_enabled(
+              !state.io_job.is_busy(),
               egui::TextEdit::singleline(&mut state.import_path)
                 .hint_text(profile_path.display().to_string())
                 .desired_width(f32::INFINITY),
@@ -540,7 +546,9 @@ pub fn bookmarks_manager_side_panel(
           });
 
           ui.horizontal_wrapped(|ui| {
-            if ui.button("Use profile path").clicked() {
+            let use_profile =
+              ui.add_enabled(!state.io_job.is_busy(), egui::Button::new("Use profile path"));
+            if use_profile.clicked() {
               state.import_path = profile_path.display().to_string();
             }
 
@@ -568,7 +576,8 @@ pub fn bookmarks_manager_side_panel(
 
           ui.add_space(6.0);
 
-          let resp = ui.add(
+          let resp = ui.add_enabled(
+            !state.io_job.is_busy(),
             egui::TextEdit::multiline(&mut state.import_json)
               .code_editor()
               .desired_rows(6)

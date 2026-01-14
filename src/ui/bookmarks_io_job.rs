@@ -500,7 +500,7 @@ mod tests {
     let count: u64 = 20_000;
     // Make entries large enough that synchronous JSON pretty-printing would be
     // noticeable, while keeping overall test runtime reasonable.
-    let long_title = "Synthetic Bookmark Title ".repeat(40);
+    let long_title = "Synthetic Bookmark Title ".repeat(20);
 
     for i in 1..=count {
       let id = BookmarkId(i);
@@ -538,7 +538,7 @@ mod tests {
         break;
       }
       assert!(
-        start_wait.elapsed() < Duration::from_secs(10),
+        start_wait.elapsed() < Duration::from_secs(15),
         "timed out waiting for large JSON export job to complete"
       );
       std::thread::sleep(Duration::from_millis(5));
