@@ -16,18 +16,17 @@ use crate::Heap;
 use crate::VmError;
 use crate::Vm;
 use diagnostics::FileId;
-use derive_visitor::visitor_enter_fn;
-use derive_visitor::Drive;
+use derive_visitor::{Drive, Event, Visitor};
 use parse_js::ast::class_or_object::{ClassOrObjKey, ClassOrObjVal, ObjMemberType};
 use parse_js::ast::expr::lit::{LitArrElem, LitTemplatePart};
-use parse_js::ast::expr::pat::{ArrPat, ObjPat, Pat};
-use parse_js::ast::expr::Expr;
+use parse_js::ast::expr::pat::{ArrPat, IdPat, ObjPat, Pat};
+use parse_js::ast::expr::{Expr, IdExpr, MemberExpr};
 use parse_js::ast::func::Func;
 use parse_js::ast::node::{Node, ParenthesizedExpr};
 use parse_js::ast::stmt::{ForInOfLhs, ForTripleStmtInit, Stmt};
 use parse_js::operator::OperatorName;
+use parse_js::token::TT;
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
-use std::cell::Cell;
 use std::sync::Arc;
 
 /// A compiled JavaScript source file (source text + lowered HIR).
@@ -138,13 +137,20 @@ impl CompiledScript {
     let contains_async_generators = feature_flags.contains_async_generators;
     let contains_generators = feature_flags.contains_generators;
     let contains_async_functions = feature_flags.contains_async_functions;
+    let contains_private_names = feature_flags.contains_private_names;
     // The compiled (HIR) executor does not yet support generator bodies, and it only supports a
     // subset of async classic scripts (top-level await as a direct statement/initializer/assignment).
     //
     // Fall back to the AST interpreter when the script uses unsupported top-level await forms like
     // `for await..of` or `await` nested inside class static blocks.
     let requires_ast_fallback =
-      contains_generators || parsed.stx.body.iter().any(stmt_contains_unsupported_await_for_hir_async_scripts);
+      contains_private_names
+        || contains_generators
+        || parsed
+          .stx
+          .body
+          .iter()
+          .any(stmt_contains_unsupported_await_for_hir_async_scripts);
 
     let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed)
@@ -201,7 +207,8 @@ impl CompiledScript {
     let contains_async_generators = feature_flags.contains_async_generators;
     let contains_generators = feature_flags.contains_generators;
     let contains_async_functions = feature_flags.contains_async_functions;
-    let requires_ast_fallback = contains_generators || contains_top_level_await;
+    let contains_private_names = feature_flags.contains_private_names;
+    let requires_ast_fallback = contains_private_names || contains_generators || contains_top_level_await;
 
     let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed)
@@ -289,8 +296,15 @@ impl CompiledScript {
     let contains_async_generators = feature_flags.contains_async_generators;
     let contains_generators = feature_flags.contains_generators;
     let contains_async_functions = feature_flags.contains_async_functions;
+    let contains_private_names = feature_flags.contains_private_names;
     let requires_ast_fallback =
-      contains_generators || parsed.stx.body.iter().any(stmt_contains_unsupported_await_for_hir_async_scripts);
+      contains_private_names
+        || contains_generators
+        || parsed
+          .stx
+          .body
+          .iter()
+          .any(stmt_contains_unsupported_await_for_hir_async_scripts);
 
     let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
@@ -338,7 +352,8 @@ impl CompiledScript {
     let contains_async_generators = feature_flags.contains_async_generators;
     let contains_generators = feature_flags.contains_generators;
     let contains_async_functions = feature_flags.contains_async_functions;
-    let requires_ast_fallback = contains_generators || contains_top_level_await;
+    let contains_private_names = feature_flags.contains_private_names;
+    let requires_ast_fallback = contains_private_names || contains_generators || contains_top_level_await;
     let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
     let external_memory = heap.charge_external(estimated_hir_bytes)?;
@@ -372,8 +387,9 @@ impl CompiledScript {
     let contains_async_generators = feature_flags.contains_async_generators;
     let contains_generators = feature_flags.contains_generators;
     let contains_async_functions = feature_flags.contains_async_functions;
+    let contains_private_names = feature_flags.contains_private_names;
     let contains_top_level_await = parsed.stx.body.iter().any(stmt_contains_await);
-    let requires_ast_fallback = contains_generators || contains_top_level_await;
+    let requires_ast_fallback = contains_private_names || contains_generators || contains_top_level_await;
     let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, parsed)
     }))
@@ -413,19 +429,60 @@ struct AstFeatureFlags {
   contains_generators: bool,
   contains_async_functions: bool,
   contains_async_generators: bool,
+  contains_private_names: bool,
 }
 
 fn ast_feature_flags<T: Drive>(root: &T) -> AstFeatureFlags {
-  let found = Cell::new(AstFeatureFlags::default());
-  let mut visitor = visitor_enter_fn(|func: &Func| {
-    let mut flags = found.get();
-    flags.contains_generators |= func.generator;
-    flags.contains_async_functions |= func.async_;
-    flags.contains_async_generators |= func.async_ && func.generator;
-    found.set(flags);
-  });
+  struct FeatureVisitor {
+    flags: AstFeatureFlags,
+  }
+  impl Visitor for FeatureVisitor {
+    fn visit(&mut self, item: &dyn std::any::Any, event: Event) {
+      if !matches!(event, Event::Enter) {
+        return;
+      }
+
+      if let Some(func) = item.downcast_ref::<Func>() {
+        self.flags.contains_generators |= func.generator;
+        self.flags.contains_async_functions |= func.async_;
+        self.flags.contains_async_generators |= func.async_ && func.generator;
+      }
+
+      // Private names (`#x`, `#m`, ...) appear in a few AST shapes:
+      // - class body element keys (`class C { #x; }`)
+      // - member expressions (`obj.#x`)
+      // - `#x in obj` private-brand-check operator (`BinaryExpression` LHS parsed as an identifier-like node)
+      //
+      // The compiled (HIR) executor does not yet support these, so compiled scripts containing them
+      // must fall back to the AST interpreter.
+      if let Some(key) = item.downcast_ref::<parse_js::ast::class_or_object::ClassOrObjMemberDirectKey>() {
+        if key.tt == TT::PrivateMember {
+          self.flags.contains_private_names = true;
+        }
+      }
+      if let Some(id) = item.downcast_ref::<IdExpr>() {
+        if id.name.starts_with('#') {
+          self.flags.contains_private_names = true;
+        }
+      }
+      if let Some(id) = item.downcast_ref::<IdPat>() {
+        if id.name.starts_with('#') {
+          self.flags.contains_private_names = true;
+        }
+      }
+      if let Some(mem) = item.downcast_ref::<MemberExpr>() {
+        if mem.right.starts_with('#') {
+          self.flags.contains_private_names = true;
+        }
+      }
+    }
+  }
+
+  let mut visitor = FeatureVisitor {
+    flags: AstFeatureFlags::default(),
+  };
   root.drive(&mut visitor);
-  found.get()
+  visitor.flags
 }
 
 fn detect_use_strict_directive<F>(

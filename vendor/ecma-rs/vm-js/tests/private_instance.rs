@@ -1,4 +1,4 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmOptions};
+use vm_js::{CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -101,4 +101,29 @@ fn private_brand_check_cross_class_isolation() {
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn compiled_script_with_private_names_falls_back_and_executes() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "<inline>",
+    r#"
+      class C {
+        #x = 1;
+        getX() { return this.#x; }
+      }
+      (new C()).getX();
+    "#,
+  )?;
+
+  assert!(
+    script.requires_ast_fallback,
+    "compiled (HIR) executor does not support private names yet; compiled scripts must opt into AST fallback"
+  );
+
+  let value = rt.exec_compiled_script(script)?;
+  assert_eq!(value, Value::Number(1.0));
+  Ok(())
 }
