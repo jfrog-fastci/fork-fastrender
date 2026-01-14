@@ -279,6 +279,10 @@ impl TraceState {
     end: Instant,
     args: Option<TraceArgs>,
   ) {
+    if self.is_full() {
+      self.dropped_events.fetch_add(1, Ordering::Relaxed);
+      return;
+    }
     let ts = start.saturating_duration_since(self.start).as_micros() as u64;
     let dur = end.saturating_duration_since(start).as_micros() as u64;
     let tid = current_thread_numeric_id();
