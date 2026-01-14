@@ -82,8 +82,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 | Metric | Count |
 | --- | ---: |
 | Total cases | 17318 |
-| Matched upstream expected | 16008 (92.44%) |
-| Mismatched upstream expected | 1310 (7.56%) |
+| Matched upstream expected | 16020 (92.50%) |
+| Mismatched upstream expected | 1298 (7.50%) |
 | Timeouts | 0 |
 | Skipped | 40 |
 | Unexpected mismatches | 664 |
@@ -92,8 +92,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 | Outcome | Count |
 | --- | ---: |
-| passed | 15968 |
-| failed | 1310 |
+| passed | 15980 |
+| failed | 1298 |
 | timed_out | 0 |
 | skipped | 40 |
 
@@ -112,8 +112,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 | --- | ---: |
 | PASS | 8182 |
 | FAIL (unexpected) | 664 |
-| XFAIL | 646 |
-| XPASS | 7786 |
+| XFAIL | 634 |
+| XPASS | 7798 |
 | SKIP | 40 |
 
 ## Breakdown by major area
@@ -121,14 +121,14 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 | Area | Total | Matched | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | built-ins | 7185 | 6861 | 324 | 4.51% | 6389 | 0 | 324 | 432 | 40 |
-| language | 10128 | 9142 | 986 | 9.74% | 1788 | 664 | 322 | 7354 | 0 |
+| language | 10128 | 9154 | 974 | 9.62% | 1788 | 664 | 310 | 7366 | 0 |
 | staging | 5 | 5 | 0 | 0.00% | 5 | 0 | 0 | 0 | 0 |
 
 ## Top failing buckets (by mismatched cases)
 
 | Bucket | Total | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `language/statements` | 7161 | 967 | 13.50% | 756 | 664 | 303 | 5438 | 0 |
+| `language/statements` | 7161 | 955 | 13.34% | 756 | 664 | 291 | 5450 | 0 |
 | `built-ins/Set` | 764 | 304 | 39.79% | 390 | 0 | 304 | 70 | 0 |
 | `language/expressions` | 2337 | 19 | 0.81% | 1032 | 0 | 19 | 1286 | 0 |
 | `built-ins/Object` | 1692 | 12 | 0.71% | 1332 | 0 | 12 | 348 | 0 |
@@ -144,8 +144,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 ## Top mismatch reasons (first line of `error`)
 
 Mismatched cases by high-level bucket:
-- exception/other: 838 (63.97%)
-- VmError::Unimplemented: 472 (36.03%)
+- exception/other: 848 (65.33%)
+- VmError::Unimplemented: 450 (34.67%)
 - termination: 0 (0.00%)
 
 ### Top 20
@@ -158,20 +158,20 @@ Mismatched cases by high-level bucket:
 | 4 | exception/other | 72 | `Expected a TypeError to be thrown but no exception was thrown at all` |
 | 5 | exception/other | 66 | `Expected SameValue(«"xCls2"», «"xCls2"») to be false` |
 | 6 | exception/other | 60 | `Expected SameValue(«"xCover"», «"xCover"») to be false` |
-| 7 | VmError::Unimplemented | 48 | `unimplemented: yield in for-of binding pattern` |
-| 8 | exception/other | 42 | `Expected SameValue(«"undefined"», «"function"») to be true` |
-| 9 | exception/other | 36 | `Expected a ReferenceError to be thrown but no exception was thrown at all` |
-| 10 | exception/other | 23 | `Maximum call stack size exceeded` |
+| 7 | exception/other | 42 | `Expected SameValue(«"undefined"», «"function"») to be true` |
+| 8 | exception/other | 36 | `Expected a ReferenceError to be thrown but no exception was thrown at all` |
+| 9 | exception/other | 23 | `Maximum call stack size exceeded` |
+| 10 | VmError::Unimplemented | 18 | `unimplemented: yield in array rest pattern` |
 | 11 | exception/other | 14 | `Built-in objects must be extensible. Expected SameValue(«false», «true») to be true` |
 | 12 | exception/other | 14 | `GetSetRecord coerces size Expected SameValue(«0», «1») to be true` |
 | 13 | exception/other | 14 | `isConstructor invoked with a non-function value` |
 | 14 | exception/other | 12 | `Expected true but got false` |
 | 15 | VmError::Unimplemented | 11 | `unimplemented: yield in expression type` |
 | 16 | exception/other | 10 | `#18: value === undefined. Actual:  value ===value` |
-| 17 | exception/other | 10 | `TypedArray view out of bounds` |
-| 18 | exception/other | 9 | `Expected SameValue(«1», «undefined») to be true` |
-| 19 | exception/other | 8 | `#0: result === "value". Actual:  result ===myObj_value` |
-| 20 | exception/other | 8 | `BigInt64Array is not defined` |
+| 17 | exception/other | 10 | `Expected SameValue(«0», «1») to be true` |
+| 18 | exception/other | 10 | `TypedArray view out of bounds` |
+| 19 | exception/other | 9 | `Expected SameValue(«1», «undefined») to be true` |
+| 20 | VmError::Unimplemented | 8 | `unimplemented: yield in assignment target` |
 
 ## Timed-out tests
 
@@ -184,7 +184,7 @@ At least 50 mismatched cases, grouped by the largest mismatch buckets.
 (If the suite only has a few buckets with mismatches, the largest buckets will show more
 than `--appendix-per-bucket` entries so the appendix still reaches the minimum count.)
 
-### `language/statements` (12 shown / 967 mismatches)
+### `language/statements` (12 shown / 955 mismatches)
 
 - `language/statements/async-function/dflt-params-abrupt.js#non_strict`: `at language/statements/async-function/dflt-params-abrupt.js:207:36`
 - `language/statements/async-function/dflt-params-abrupt.js#strict`: `at language/statements/async-function/dflt-params-abrupt.js:209:36`
