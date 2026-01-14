@@ -161,7 +161,7 @@ fn super_property_derived_constructor_before_super_throws_reference_error_and_do
 }
 
 #[test]
-fn super_property_computed_key_mutation_affects_super_base_lookup() -> Result<(), VmError> {
+fn super_property_computed_key_eval_mutation_affects_super_base_lookup() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = rt.exec_script(
     r#"
@@ -170,12 +170,9 @@ fn super_property_computed_key_mutation_affects_super_base_lookup() -> Result<()
     let newProto = { x: 2 };
     class D extends B {
       getX() {
-        return super[{
-          toString() {
-            Object.setPrototypeOf(D.prototype, newProto);
-            return "x";
-          }
-        }];
+        // `Expression` is evaluated before `GetSuperBase`, so prototype mutation during the key
+        // expression evaluation affects the resolved super base.
+        return super[(Object.setPrototypeOf(D.prototype, newProto), "x")];
       }
     }
     new D().getX()

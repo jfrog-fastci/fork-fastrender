@@ -11390,14 +11390,19 @@ impl<'a> Evaluator<'a> {
       let receiver = self.get_this_binding(&mut key_scope)?;
       key_scope.push_root(receiver)?;
 
-      // Spec: for `super[expr]`, `GetSuperBase` is observed before evaluating the computed key
-      // expression / `ToPropertyKey` (test262: `...getsuperbase-before-topropertykey-...`).
-      let super_base = self.super_base(&mut key_scope)?;
-      // Root the super base across key evaluation / coercion.
-      key_scope.push_root(super_base)?;
-
       let member_value = self.eval_expr(&mut key_scope, &expr.member)?;
       key_scope.push_root(member_value)?;
+
+      // ECMA-262 `SuperProperty : super [ Expression ]`:
+      // - `GetThisBinding` must be observed before any key side effects (handled above),
+      // - the key expression is evaluated to a value before `GetSuperBase`, and
+      // - `GetSuperBase` is observed before `ToPropertyKey` (test262:
+      //   `prop-expr-getsuperbase-before-topropertykey-*`) so prototype mutation during key
+      //   coercion does not affect the resolved super base.
+      let super_base = self.super_base(&mut key_scope)?;
+      // Root the base across key coercion / `GetValue` in case it triggers a GC.
+      key_scope.push_root(super_base)?;
+
       let key = self.to_property_key_operator(&mut key_scope, member_value)?;
 
       // Root the key across `GetValue`/`PutValue` in case those operations allocate/GC.
@@ -11634,14 +11639,18 @@ impl<'a> Evaluator<'a> {
           let receiver = self.get_this_binding(&mut key_scope)?;
           key_scope.push_root(receiver)?;
 
-          // Spec: `GetSuperBase` is observed before evaluating the computed key expression /
-          // `ToPropertyKey` (test262: `prop-expr-getsuperbase-before-topropertykey-*`).
-          let base = self.get_super_base(&mut key_scope)?;
-          // Root the base across key evaluation / coercion.
-          key_scope.push_root(base)?;
-
           let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
           key_scope.push_root(member_value)?;
+
+          // ECMA-262 `SuperProperty : super [ Expression ]`:
+          // - `GetThisBinding` must be observed before any key side effects (handled above),
+          // - the key expression is evaluated to a value before `GetSuperBase`, and
+          // - `GetSuperBase` is observed before `ToPropertyKey` so prototype mutation during key
+          //   coercion does not affect the resolved super base.
+          let base = self.get_super_base(&mut key_scope)?;
+          // Root the base across key coercion / `GetValue` in case it triggers a GC.
+          key_scope.push_root(base)?;
+
           let key = self.to_property_key_operator(&mut key_scope, member_value)?;
 
           // Root the key across `GetValue`/`PutValue` in case those operations allocate/GC.
