@@ -848,6 +848,587 @@ impl<'vm> HirEvaluator<'vm> {
     Ok(false)
   }
 
+  fn hir_body_has_await_suspension(&self, body_id: hir_js::BodyId) -> Result<bool, VmError> {
+    let mut visited: HashSet<hir_js::BodyId> = HashSet::new();
+    self.hir_body_has_await_suspension_inner(body_id, &mut visited)
+  }
+
+  fn hir_body_has_await_suspension_inner(
+    &self,
+    body_id: hir_js::BodyId,
+    visited: &mut HashSet<hir_js::BodyId>,
+  ) -> Result<bool, VmError> {
+    if !visited.insert(body_id) {
+      return Ok(false);
+    }
+
+    let body = self.get_body(body_id)?;
+    match body.kind {
+      hir_js::BodyKind::Function => {
+        let Some(func_meta) = body.function.as_ref() else {
+          return Ok(false);
+        };
+        match &func_meta.body {
+          hir_js::FunctionBody::Expr(expr_id) => self.hir_expr_has_await_suspension(body, *expr_id, visited),
+          hir_js::FunctionBody::Block(stmts) => self.hir_stmt_list_has_await_suspension(body, stmts.as_slice(), visited),
+        }
+      }
+      // In non-function bodies, conservatively scan the root statement list.
+      hir_js::BodyKind::TopLevel | hir_js::BodyKind::Initializer => {
+        self.hir_stmt_list_has_await_suspension(body, body.root_stmts.as_slice(), visited)
+      }
+      hir_js::BodyKind::Class => {
+        if self.hir_stmt_list_has_await_suspension(body, body.root_stmts.as_slice(), visited)? {
+          return Ok(true);
+        }
+
+        let Some(class_meta) = body.class.as_ref() else {
+          return Ok(false);
+        };
+
+        if let Some(extends) = class_meta.extends {
+          if self.hir_expr_has_await_suspension(body, extends, visited)? {
+            return Ok(true);
+          }
+        }
+
+        for member in class_meta.members.iter() {
+          if self.hir_class_member_has_await_suspension(body, member, visited)? {
+            return Ok(true);
+          }
+        }
+
+        Ok(false)
+      }
+      hir_js::BodyKind::Unknown => Ok(false),
+    }
+  }
+
+  fn hir_stmt_list_has_await_suspension(
+    &self,
+    body: &hir_js::Body,
+    stmts: &[hir_js::StmtId],
+    visited: &mut HashSet<hir_js::BodyId>,
+  ) -> Result<bool, VmError> {
+    for stmt_id in stmts.iter() {
+      if self.hir_stmt_has_await_suspension(body, *stmt_id, visited)? {
+        return Ok(true);
+      }
+    }
+    Ok(false)
+  }
+
+  fn hir_stmt_has_await_suspension(
+    &self,
+    body: &hir_js::Body,
+    stmt_id: hir_js::StmtId,
+    visited: &mut HashSet<hir_js::BodyId>,
+  ) -> Result<bool, VmError> {
+    let stmt = self.get_stmt(body, stmt_id)?;
+    match &stmt.kind {
+      hir_js::StmtKind::Expr(expr_id) => self.hir_expr_has_await_suspension(body, *expr_id, visited),
+      hir_js::StmtKind::Decl(def_id) => {
+        let def = self
+          .hir()
+          .def(*def_id)
+          .ok_or(VmError::InvariantViolation("hir def id missing from compiled script"))?;
+        let Some(decl_body_id) = def.body else {
+          return Ok(false);
+        };
+        let decl_body = self.get_body(decl_body_id)?;
+        match decl_body.kind {
+          // Function declarations evaluate to function objects; their bodies are not executed here.
+          hir_js::BodyKind::Function => Ok(false),
+          // Class declarations (and some synthetic declarations like `export default <expr>`) execute
+          // their statement lists when evaluated.
+          hir_js::BodyKind::Class | hir_js::BodyKind::TopLevel | hir_js::BodyKind::Initializer => {
+            self.hir_body_has_await_suspension_inner(decl_body_id, visited)
+          }
+          hir_js::BodyKind::Unknown => Ok(false),
+        }
+      }
+      hir_js::StmtKind::Return(expr) => match expr {
+        Some(expr_id) => self.hir_expr_has_await_suspension(body, *expr_id, visited),
+        None => Ok(false),
+      },
+      hir_js::StmtKind::Block(stmts) => self.hir_stmt_list_has_await_suspension(body, stmts.as_slice(), visited),
+      hir_js::StmtKind::If {
+        test,
+        consequent,
+        alternate,
+      } => {
+        if self.hir_expr_has_await_suspension(body, *test, visited)? {
+          return Ok(true);
+        }
+        if self.hir_stmt_has_await_suspension(body, *consequent, visited)? {
+          return Ok(true);
+        }
+        if let Some(alt) = alternate {
+          if self.hir_stmt_has_await_suspension(body, *alt, visited)? {
+            return Ok(true);
+          }
+        }
+        Ok(false)
+      }
+      hir_js::StmtKind::While { test, body: inner } => {
+        Ok(
+          self.hir_expr_has_await_suspension(body, *test, visited)?
+            || self.hir_stmt_has_await_suspension(body, *inner, visited)?,
+        )
+      }
+      hir_js::StmtKind::DoWhile { test, body: inner } => {
+        Ok(
+          self.hir_stmt_has_await_suspension(body, *inner, visited)?
+            || self.hir_expr_has_await_suspension(body, *test, visited)?,
+        )
+      }
+      hir_js::StmtKind::For {
+        init,
+        test,
+        update,
+        body: inner,
+      } => {
+        if let Some(init) = init {
+          match init {
+            hir_js::ForInit::Expr(expr_id) => {
+              if self.hir_expr_has_await_suspension(body, *expr_id, visited)? {
+                return Ok(true);
+              }
+            }
+            hir_js::ForInit::Var(var_decl) => {
+              if self.hir_var_decl_has_await_suspension(body, var_decl, visited)? {
+                return Ok(true);
+              }
+            }
+          }
+        }
+        if let Some(test) = test {
+          if self.hir_expr_has_await_suspension(body, *test, visited)? {
+            return Ok(true);
+          }
+        }
+        if let Some(update) = update {
+          if self.hir_expr_has_await_suspension(body, *update, visited)? {
+            return Ok(true);
+          }
+        }
+        self.hir_stmt_has_await_suspension(body, *inner, visited)
+      }
+      hir_js::StmtKind::ForIn {
+        left,
+        right,
+        body: inner,
+        await_,
+        ..
+      } => {
+        // `for await (...)` loops always suspend (async iteration).
+        if *await_ {
+          return Ok(true);
+        }
+        if self.hir_for_head_has_await_suspension(body, left, visited)? {
+          return Ok(true);
+        }
+        if self.hir_expr_has_await_suspension(body, *right, visited)? {
+          return Ok(true);
+        }
+        self.hir_stmt_has_await_suspension(body, *inner, visited)
+      }
+      hir_js::StmtKind::Switch { discriminant, cases } => {
+        if self.hir_expr_has_await_suspension(body, *discriminant, visited)? {
+          return Ok(true);
+        }
+        for case in cases {
+          if let Some(test) = case.test {
+            if self.hir_expr_has_await_suspension(body, test, visited)? {
+              return Ok(true);
+            }
+          }
+          if self.hir_stmt_list_has_await_suspension(body, case.consequent.as_slice(), visited)? {
+            return Ok(true);
+          }
+        }
+        Ok(false)
+      }
+      hir_js::StmtKind::Try {
+        block,
+        catch,
+        finally_block,
+      } => {
+        if self.hir_stmt_has_await_suspension(body, *block, visited)? {
+          return Ok(true);
+        }
+        if let Some(catch) = catch {
+          if let Some(param) = catch.param {
+            if self.hir_pat_has_await_suspension(body, param, visited)? {
+              return Ok(true);
+            }
+          }
+          if self.hir_stmt_has_await_suspension(body, catch.body, visited)? {
+            return Ok(true);
+          }
+        }
+        if let Some(finally) = finally_block {
+          if self.hir_stmt_has_await_suspension(body, *finally, visited)? {
+            return Ok(true);
+          }
+        }
+        Ok(false)
+      }
+      hir_js::StmtKind::Throw(expr_id) => self.hir_expr_has_await_suspension(body, *expr_id, visited),
+      hir_js::StmtKind::Var(var_decl) => self.hir_var_decl_has_await_suspension(body, var_decl, visited),
+      hir_js::StmtKind::Labeled { body: inner, .. } => {
+        self.hir_stmt_has_await_suspension(body, *inner, visited)
+      }
+      hir_js::StmtKind::With { object, body: inner } => {
+        Ok(
+          self.hir_expr_has_await_suspension(body, *object, visited)?
+            || self.hir_stmt_has_await_suspension(body, *inner, visited)?,
+        )
+      }
+      hir_js::StmtKind::Break(_)
+      | hir_js::StmtKind::Continue(_)
+      | hir_js::StmtKind::Debugger
+      | hir_js::StmtKind::Empty => Ok(false),
+    }
+  }
+
+  fn hir_for_head_has_await_suspension(
+    &self,
+    body: &hir_js::Body,
+    head: &hir_js::ForHead,
+    visited: &mut HashSet<hir_js::BodyId>,
+  ) -> Result<bool, VmError> {
+    match head {
+      hir_js::ForHead::Pat(pat) => self.hir_pat_has_await_suspension(body, *pat, visited),
+      hir_js::ForHead::Var(var_decl) => self.hir_var_decl_has_await_suspension(body, var_decl, visited),
+    }
+  }
+
+  fn hir_var_decl_has_await_suspension(
+    &self,
+    body: &hir_js::Body,
+    var_decl: &hir_js::VarDecl,
+    visited: &mut HashSet<hir_js::BodyId>,
+  ) -> Result<bool, VmError> {
+    if matches!(var_decl.kind, hir_js::VarDeclKind::AwaitUsing) {
+      return Ok(true);
+    }
+    for decl in var_decl.declarators.iter() {
+      if self.hir_pat_has_await_suspension(body, decl.pat, visited)? {
+        return Ok(true);
+      }
+      if let Some(init) = decl.init {
+        if self.hir_expr_has_await_suspension(body, init, visited)? {
+          return Ok(true);
+        }
+      }
+    }
+    Ok(false)
+  }
+
+  fn hir_pat_has_await_suspension(
+    &self,
+    body: &hir_js::Body,
+    pat_id: hir_js::PatId,
+    visited: &mut HashSet<hir_js::BodyId>,
+  ) -> Result<bool, VmError> {
+    let pat = self.get_pat(body, pat_id)?;
+    match &pat.kind {
+      hir_js::PatKind::Ident(_) => Ok(false),
+      hir_js::PatKind::Array(arr) => {
+        for elem in arr.elements.iter().flatten() {
+          if self.hir_pat_has_await_suspension(body, elem.pat, visited)? {
+            return Ok(true);
+          }
+          if let Some(default_value) = elem.default_value {
+            if self.hir_expr_has_await_suspension(body, default_value, visited)? {
+              return Ok(true);
+            }
+          }
+        }
+        if let Some(rest) = arr.rest {
+          if self.hir_pat_has_await_suspension(body, rest, visited)? {
+            return Ok(true);
+          }
+        }
+        Ok(false)
+      }
+      hir_js::PatKind::Object(obj) => {
+        for prop in obj.props.iter() {
+          if self.hir_object_key_has_await_suspension(body, &prop.key, visited)? {
+            return Ok(true);
+          }
+          if self.hir_pat_has_await_suspension(body, prop.value, visited)? {
+            return Ok(true);
+          }
+          if let Some(default_value) = prop.default_value {
+            if self.hir_expr_has_await_suspension(body, default_value, visited)? {
+              return Ok(true);
+            }
+          }
+        }
+        if let Some(rest) = obj.rest {
+          if self.hir_pat_has_await_suspension(body, rest, visited)? {
+            return Ok(true);
+          }
+        }
+        Ok(false)
+      }
+      hir_js::PatKind::Rest(inner) => self.hir_pat_has_await_suspension(body, **inner, visited),
+      hir_js::PatKind::Assign {
+        target,
+        default_value,
+      } => {
+        Ok(
+          self.hir_pat_has_await_suspension(body, *target, visited)?
+            || self.hir_expr_has_await_suspension(body, *default_value, visited)?,
+        )
+      }
+      hir_js::PatKind::AssignTarget(expr_id) => self.hir_expr_has_await_suspension(body, *expr_id, visited),
+    }
+  }
+
+  fn hir_object_key_has_await_suspension(
+    &self,
+    body: &hir_js::Body,
+    key: &hir_js::ObjectKey,
+    visited: &mut HashSet<hir_js::BodyId>,
+  ) -> Result<bool, VmError> {
+    match key {
+      hir_js::ObjectKey::Computed(expr_id) => self.hir_expr_has_await_suspension(body, *expr_id, visited),
+      _ => Ok(false),
+    }
+  }
+
+  fn hir_class_member_key_has_await_suspension(
+    &self,
+    body: &hir_js::Body,
+    key: &hir_js::ClassMemberKey,
+    visited: &mut HashSet<hir_js::BodyId>,
+  ) -> Result<bool, VmError> {
+    match key {
+      hir_js::ClassMemberKey::Computed(expr_id) => self.hir_expr_has_await_suspension(body, *expr_id, visited),
+      _ => Ok(false),
+    }
+  }
+
+  fn hir_class_member_has_await_suspension(
+    &self,
+    body: &hir_js::Body,
+    member: &hir_js::ClassMember,
+    visited: &mut HashSet<hir_js::BodyId>,
+  ) -> Result<bool, VmError> {
+    match &member.kind {
+      hir_js::ClassMemberKind::Constructor { .. } => Ok(false),
+      hir_js::ClassMemberKind::Method { key, .. } => self.hir_class_member_key_has_await_suspension(body, key, visited),
+      hir_js::ClassMemberKind::Field { key, initializer, .. } => {
+        if self.hir_class_member_key_has_await_suspension(body, key, visited)? {
+          return Ok(true);
+        }
+        if let Some(init_body) = initializer {
+          if self.hir_body_has_await_suspension_inner(*init_body, visited)? {
+            return Ok(true);
+          }
+        }
+        Ok(false)
+      }
+      hir_js::ClassMemberKind::StaticBlock { body: block_body, .. } => {
+        self.hir_body_has_await_suspension_inner(*block_body, visited)
+      }
+    }
+  }
+
+  fn hir_jsx_container_has_await_suspension(
+    &self,
+    body: &hir_js::Body,
+    container: &hir_js::JsxExprContainer,
+    visited: &mut HashSet<hir_js::BodyId>,
+  ) -> Result<bool, VmError> {
+    match container.expr {
+      Some(expr_id) => self.hir_expr_has_await_suspension(body, expr_id, visited),
+      None => Ok(false),
+    }
+  }
+
+  fn hir_expr_has_await_suspension(
+    &self,
+    body: &hir_js::Body,
+    expr_id: hir_js::ExprId,
+    visited: &mut HashSet<hir_js::BodyId>,
+  ) -> Result<bool, VmError> {
+    let expr = self.get_expr(body, expr_id)?;
+    match &expr.kind {
+      hir_js::ExprKind::Await { .. } => Ok(true),
+      hir_js::ExprKind::Unary { op, .. } if matches!(op, hir_js::UnaryOp::Await) => Ok(true),
+
+      hir_js::ExprKind::Unary { expr, .. }
+      | hir_js::ExprKind::Update { expr, .. }
+      | hir_js::ExprKind::Instantiation { expr, .. }
+      | hir_js::ExprKind::TypeAssertion { expr, .. }
+      | hir_js::ExprKind::NonNull { expr, .. }
+      | hir_js::ExprKind::Satisfies { expr, .. } => self.hir_expr_has_await_suspension(body, *expr, visited),
+
+      hir_js::ExprKind::Binary { left, right, .. } => {
+        Ok(
+          self.hir_expr_has_await_suspension(body, *left, visited)?
+            || self.hir_expr_has_await_suspension(body, *right, visited)?,
+        )
+      }
+      hir_js::ExprKind::Assignment { target, value, .. } => {
+        Ok(
+          self.hir_pat_has_await_suspension(body, *target, visited)?
+            || self.hir_expr_has_await_suspension(body, *value, visited)?,
+        )
+      }
+      hir_js::ExprKind::Call(call) => {
+        if self.hir_expr_has_await_suspension(body, call.callee, visited)? {
+          return Ok(true);
+        }
+        for arg in call.args.iter() {
+          if self.hir_expr_has_await_suspension(body, arg.expr, visited)? {
+            return Ok(true);
+          }
+        }
+        Ok(false)
+      }
+      hir_js::ExprKind::Member(member) => {
+        Ok(
+          self.hir_expr_has_await_suspension(body, member.object, visited)?
+            || self.hir_object_key_has_await_suspension(body, &member.property, visited)?,
+        )
+      }
+      hir_js::ExprKind::Conditional {
+        test,
+        consequent,
+        alternate,
+      } => {
+        Ok(
+          self.hir_expr_has_await_suspension(body, *test, visited)?
+            || self.hir_expr_has_await_suspension(body, *consequent, visited)?
+            || self.hir_expr_has_await_suspension(body, *alternate, visited)?,
+        )
+      }
+      hir_js::ExprKind::Array(arr) => {
+        for elem in arr.elements.iter() {
+          let expr_id = match elem {
+            hir_js::ArrayElement::Expr(expr_id) | hir_js::ArrayElement::Spread(expr_id) => *expr_id,
+            hir_js::ArrayElement::Empty => continue,
+          };
+          if self.hir_expr_has_await_suspension(body, expr_id, visited)? {
+            return Ok(true);
+          }
+        }
+        Ok(false)
+      }
+      hir_js::ExprKind::Object(obj) => {
+        for prop in obj.properties.iter() {
+          match prop {
+            hir_js::ObjectProperty::KeyValue { key, value, .. } => {
+              if self.hir_object_key_has_await_suspension(body, key, visited)? {
+                return Ok(true);
+              }
+              if self.hir_expr_has_await_suspension(body, *value, visited)? {
+                return Ok(true);
+              }
+            }
+            hir_js::ObjectProperty::Getter { key, .. } | hir_js::ObjectProperty::Setter { key, .. } => {
+              if self.hir_object_key_has_await_suspension(body, key, visited)? {
+                return Ok(true);
+              }
+            }
+            hir_js::ObjectProperty::Spread(expr_id) => {
+              if self.hir_expr_has_await_suspension(body, *expr_id, visited)? {
+                return Ok(true);
+              }
+            }
+          }
+        }
+        Ok(false)
+      }
+      hir_js::ExprKind::ClassExpr { body: class_body, .. } => {
+        self.hir_body_has_await_suspension_inner(*class_body, visited)
+      }
+      hir_js::ExprKind::Template(tpl) => {
+        for span in tpl.spans.iter() {
+          if self.hir_expr_has_await_suspension(body, span.expr, visited)? {
+            return Ok(true);
+          }
+        }
+        Ok(false)
+      }
+      hir_js::ExprKind::TaggedTemplate { tag, template } => {
+        if self.hir_expr_has_await_suspension(body, *tag, visited)? {
+          return Ok(true);
+        }
+        for span in template.spans.iter() {
+          if self.hir_expr_has_await_suspension(body, span.expr, visited)? {
+            return Ok(true);
+          }
+        }
+        Ok(false)
+      }
+      hir_js::ExprKind::ImportCall { argument, attributes } => {
+        if self.hir_expr_has_await_suspension(body, *argument, visited)? {
+          return Ok(true);
+        }
+        if let Some(attrs) = attributes {
+          if self.hir_expr_has_await_suspension(body, *attrs, visited)? {
+            return Ok(true);
+          }
+        }
+        Ok(false)
+      }
+      hir_js::ExprKind::Jsx(el) => {
+        for attr in el.attributes.iter() {
+          match attr {
+            hir_js::JsxAttr::Named { value, .. } => {
+              if let Some(value) = value {
+                if let hir_js::JsxAttrValue::Expression(container) = value {
+                  if self.hir_jsx_container_has_await_suspension(body, container, visited)? {
+                    return Ok(true);
+                  }
+                }
+              }
+            }
+            hir_js::JsxAttr::Spread { expr, .. } => {
+              if self.hir_expr_has_await_suspension(body, *expr, visited)? {
+                return Ok(true);
+              }
+            }
+          }
+        }
+        for child in el.children.iter() {
+          match child {
+            hir_js::JsxChild::Element(expr) => {
+              if self.hir_expr_has_await_suspension(body, *expr, visited)? {
+                return Ok(true);
+              }
+            }
+            hir_js::JsxChild::Expr(container) => {
+              if self.hir_jsx_container_has_await_suspension(body, container, visited)? {
+                return Ok(true);
+              }
+            }
+            hir_js::JsxChild::Text(_) => {}
+          }
+        }
+        Ok(false)
+      }
+
+      // Expressions that either cannot contain `await`, or whose nested bodies are not evaluated
+      // when the expression is evaluated (nested function bodies, etc.).
+      hir_js::ExprKind::Missing
+      | hir_js::ExprKind::Ident(_)
+      | hir_js::ExprKind::This
+      | hir_js::ExprKind::Super
+      | hir_js::ExprKind::Literal(_)
+      | hir_js::ExprKind::FunctionExpr { .. }
+      | hir_js::ExprKind::Yield { .. }
+      | hir_js::ExprKind::ImportMeta
+      | hir_js::ExprKind::NewTarget => Ok(false),
+    }
+  }
+
   fn eval_for_in_of_rhs_with_tdz_env(
     &mut self,
     scope: &mut Scope<'_>,
@@ -1075,10 +1656,13 @@ impl<'vm> HirEvaluator<'vm> {
         .env_initialize_binding(env, name, Value::Object(func_obj))?;
     }
 
-    // Async functions currently execute via the AST interpreter at call-time. However, we still
-    // allocate them as compiled user functions so surrounding code can execute in the compiled
-    // path and so call sites can observe `CallHandler::User`.
-    if is_async && !is_generator {
+    // Async functions currently execute via the AST interpreter at call-time (see
+    // `Vm::call_user_function`).
+    //
+    // For "trivial" async functions that do not contain any `await`/`for await..of` suspension
+    // points, eagerly tag them as `FunctionData::AsyncEcmaFallback` so calls can dispatch directly
+    // to the interpreter without re-scanning the compiled HIR.
+    if is_async && !is_generator && !self.hir_body_has_await_suspension(body_id)? {
       let code_id = self.vm.register_ecma_function(
         self.env.source(),
         def_span.start,

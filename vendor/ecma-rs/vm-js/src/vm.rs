@@ -4479,6 +4479,88 @@ impl Vm {
       return self.call_ecma_function(scope, host, hooks, code_id, callee, this, args);
     }
 
+    // Compiled async/await evaluation is not complete yet. Async functions that contain suspension
+    // points (and therefore are not tagged as `FunctionData::AsyncEcmaFallback`) still execute via the
+    // AST interpreter at call-time to preserve correct Promise/await semantics.
+    //
+    // This preserves the invariant that compiled scripts can still execute via HIR even when they
+    // contain async functions, while allowing tests to distinguish between "trivial" async
+    // functions (which carry `AsyncEcmaFallback` metadata) and those that contain actual `await`
+    // suspension points.
+    let async_span_kind = (|| -> Result<Option<(u32, u32, EcmaFunctionKind)>, VmError> {
+      let func_body = func
+        .script
+        .hir
+        .body(func.body)
+        .ok_or(VmError::InvariantViolation(
+          "compiled function body missing metadata",
+        ))?;
+      let Some(func_meta) = func_body.function.as_ref() else {
+        return Err(VmError::InvariantViolation(
+          "compiled function body missing metadata",
+        ));
+      };
+      if !func_meta.async_ || func_meta.generator {
+        return Ok(None);
+      }
+
+      // See `hir_exec::alloc_user_function_object` for rationale: use the owning `Def` span (not the
+      // body span) so the snippet includes the full syntactic form (`async function f(){}`,
+      // `async () => {}`, `async m(){}`, ...).
+      let def = func.script.hir.def(func_body.owner);
+      let def_span = def.map(|d| d.span).unwrap_or(func_body.span);
+
+      // Infer the `EcmaFunctionKind` wrapper needed to reparse the snippet.
+      let kind = if func_meta.is_arrow {
+        EcmaFunctionKind::Expr
+      } else if let Some(def) = def {
+        use hir_js::DefKind;
+
+        match def.path.kind {
+          DefKind::Method | DefKind::Getter | DefKind::Setter | DefKind::Constructor => {
+            let is_class_member = def
+              .parent
+              .and_then(|parent| func.script.hir.def(parent))
+              .is_some_and(|parent_def| parent_def.path.kind == DefKind::Class);
+            if is_class_member {
+              EcmaFunctionKind::ClassMember
+            } else {
+              EcmaFunctionKind::ObjectMember
+            }
+          }
+          DefKind::Field => EcmaFunctionKind::ClassFieldInitializer,
+          _ => {
+            // Anonymous default-exported function declarations are still parsed as declarations.
+            if def.is_default_export {
+              EcmaFunctionKind::Decl
+            } else {
+              let name = func
+                .script
+                .hir
+                .names
+                .resolve(def.name)
+                .unwrap_or("<missing>");
+              if name == "<anonymous>" {
+                EcmaFunctionKind::Expr
+              } else {
+                EcmaFunctionKind::Decl
+              }
+            }
+          }
+        }
+      } else {
+        EcmaFunctionKind::Decl
+      };
+
+      Ok(Some((def_span.start, def_span.end, kind)))
+    })()?;
+
+    if let Some((span_start, span_end, kind)) = async_span_kind {
+      let code_id =
+        self.register_ecma_function(func.script.source.clone(), span_start, span_end, kind)?;
+      return self.call_ecma_function(scope, host, hooks, code_id, callee, this, args);
+    }
+
     let this = match this_mode {
       ThisMode::Lexical => bound_this.ok_or(VmError::Unimplemented(
         "arrow function missing captured lexical this",
@@ -4510,19 +4592,6 @@ impl Vm {
     let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
     env.set_meta_property_context(meta_property_context);
 
-    let is_async = func
-      .script
-      .hir
-      .body(func.body)
-      .and_then(|b| b.function.as_ref())
-      // Treat only async non-generator functions as "async" for teardown purposes. HIR generator
-      // support (including async generators) is not implemented, so generator calls must still tear
-      // down eagerly.
-      .map(|m| m.async_ && !m.generator)
-      .ok_or(VmError::InvariantViolation(
-        "compiled function body missing metadata",
-      ))?;
-
     let result = crate::hir_exec::run_compiled_function(
       self,
       scope,
@@ -4541,13 +4610,9 @@ impl Vm {
       /* this_root_idx */ None,
     );
 
-    // Compiled async functions transfer ownership of their environment into an async continuation
-    // when they suspend. In that case, the continuation is responsible for tearing down the env.
-    //
-    // Synchronous compiled functions still tear down eagerly.
-    if !is_async {
-      env.teardown(scope.heap_mut());
-    }
+    // Call-time async function execution is handled via `call_ecma_function` above, so compiled
+    // HIR functions are always synchronous here.
+    env.teardown(scope.heap_mut());
     result
   }
 
