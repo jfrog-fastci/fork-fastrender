@@ -209,6 +209,116 @@ fn for_await_of_array_destructuring_closes_inner_iterator() -> Result<(), VmErro
 }
 
 #[test]
+fn for_await_of_array_destructuring_yield_in_default_closes_on_return_non_object() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  // Regression test for async generator `return` completion propagating through `for await..of`
+  // destructuring binding initialization.
+  //
+  // When the async generator is closed while suspended in a destructuring default initializer,
+  // the inner iterator must be closed via `IteratorClose` with a *non-throw* completion. This means
+  // that a non-object `iterator.return()` result must throw a TypeError and override the return.
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      var closed = false;
+
+      async function* gen() {
+        var iter = {};
+        iter[Symbol.iterator] = function () {
+          return {
+            next() { return { value: undefined, done: false }; },
+            return() { closed = true; return null; },
+          };
+        };
+
+        for await (const [x = yield "Y"] of [iter]) {
+          // Never reached: the generator is closed while suspended at `yield`.
+        }
+      }
+
+      (async function () {
+        var it = gen();
+        var r1 = await it.next();
+        out += "next:" + r1.value + ":" + r1.done;
+
+        try {
+          await it.return("done");
+          out += "|return:ok";
+        } catch (e) {
+          out += "|return:" + (e && e.name);
+        }
+        out += "|closed:" + closed;
+      })();
+
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(
+    value_to_string(&rt, value),
+    "next:Y:false|return:TypeError|closed:true"
+  );
+  Ok(())
+}
+
+#[test]
+fn for_await_of_array_destructuring_assignment_yield_in_target_precedes_iterator_next() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  // Regression test for `IteratorDestructuringAssignmentEvaluation` order in `for await..of`:
+  // when the LHS is a destructuring *assignment* pattern, assignment targets (including computed
+  // member keys) must be evaluated before consuming iterator values.
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+
+      async function* gen() {
+        var log = "";
+        var obj = {};
+        var inner = {};
+        inner[Symbol.iterator] = function () {
+          return {
+            next() { log += "N"; return { value: 1, done: false }; },
+            return() { log += "R"; return {}; },
+          };
+        };
+
+        // Destructuring *assignment* in a `for await..of` LHS.
+        // The computed key contains `yield` so we can observe ordering:
+        // the yielded value is `log` before `inner.next()` runs.
+        for await ([obj[yield log]] of [inner]) {
+          break;
+        }
+
+        yield log + ":" + obj.k;
+      }
+
+      (async function () {
+        var it = gen();
+        var r1 = await it.next(); // yields `log` from the computed key
+        var r2 = await it.next("k");
+        out = r1.value + "|" + r2.value;
+      })();
+
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  // If `inner.next()` ran before evaluating the computed key, the first yield would observe `log = "N"`.
+  assert_eq!(value_to_string(&rt, value), "|NR:1");
+  Ok(())
+}
+
+#[test]
 fn await_in_for_await_of_lhs_destructuring_default_value() -> Result<(), VmError> {
   let mut rt = new_runtime();
 

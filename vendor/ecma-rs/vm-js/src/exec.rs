@@ -1705,6 +1705,24 @@ pub(crate) enum GenAssignTarget {
   },
 }
 
+/// Pre-evaluated assignment targets for async destructuring *assignment*.
+///
+/// Async destructuring patterns can suspend in default initializers / computed keys, so assignment
+/// target references must be storable in [`AsyncFrame`]s (which are not GC-traced). Any values that
+/// must survive across `await`/`yield` suspensions are stored as persistent heap roots.
+#[derive(Clone, Copy, Debug)]
+enum AsyncAssignTarget {
+  Binding(GenResolvedBinding),
+  Member {
+    base_root: RootId,
+    key: *const String,
+  },
+  ComputedMember {
+    base_root: RootId,
+    key_value_root: RootId,
+  },
+}
+
 impl RuntimeEnv {
   fn new(heap: &mut Heap, global_object: GcObject, lexical_env: GcEnv) -> Result<Self, VmError> {
     let mut scope = heap.scope();
@@ -17618,19 +17636,119 @@ pub(crate) enum AsyncFrame {
   BindArrAfterDefault {
     pat: *const ArrPat,
     elem_index: usize,
-    array_index: u32,
-    len: u32,
+    iterator_record: iterator::IteratorRecord,
+    iterator_root: RootId,
+    next_method_root: RootId,
     value_root: RootId,
+    assign_target: Option<AsyncAssignTarget>,
     kind: BindingKind,
   },
   /// Continue an array destructuring pattern after a nested binding suspends.
   BindArrContinue {
     pat: *const ArrPat,
     elem_index: usize,
-    array_index: u32,
-    len: u32,
+    iterator_record: iterator::IteratorRecord,
+    iterator_root: RootId,
+    next_method_root: RootId,
     value_root: RootId,
     kind: BindingKind,
+  },
+
+  /// Continue array destructuring assignment after evaluating a member-expression assignment target
+  /// base.
+  BindArrElemAssignMemberAfterBase {
+    pat: *const ArrPat,
+    elem_index: usize,
+    iterator_record: iterator::IteratorRecord,
+    iterator_root: RootId,
+    next_method_root: RootId,
+    value_root: RootId,
+    member: *const MemberExpr,
+    kind: BindingKind,
+  },
+  /// Continue array destructuring assignment after evaluating a computed-member assignment target
+  /// base.
+  BindArrElemAssignComputedMemberAfterBase {
+    pat: *const ArrPat,
+    elem_index: usize,
+    iterator_record: iterator::IteratorRecord,
+    iterator_root: RootId,
+    next_method_root: RootId,
+    value_root: RootId,
+    member: *const ComputedMemberExpr,
+    kind: BindingKind,
+  },
+  /// Continue array destructuring assignment after evaluating a computed-member assignment target
+  /// key expression.
+  BindArrElemAssignComputedMemberAfterMember {
+    pat: *const ArrPat,
+    elem_index: usize,
+    iterator_record: iterator::IteratorRecord,
+    iterator_root: RootId,
+    next_method_root: RootId,
+    value_root: RootId,
+    member: *const ComputedMemberExpr,
+    base_root: RootId,
+    kind: BindingKind,
+  },
+
+  /// Continue array destructuring assignment rest-element binding after evaluating a member
+  /// assignment target base.
+  BindArrRestAssignMemberAfterBase {
+    pat: *const ArrPat,
+    iterator_record: iterator::IteratorRecord,
+    iterator_root: RootId,
+    next_method_root: RootId,
+    value_root: RootId,
+    member: *const MemberExpr,
+    kind: BindingKind,
+  },
+  /// Continue array destructuring assignment rest-element binding after evaluating a computed-member
+  /// assignment target base.
+  BindArrRestAssignComputedMemberAfterBase {
+    pat: *const ArrPat,
+    iterator_record: iterator::IteratorRecord,
+    iterator_root: RootId,
+    next_method_root: RootId,
+    value_root: RootId,
+    member: *const ComputedMemberExpr,
+    kind: BindingKind,
+  },
+  /// Continue array destructuring assignment rest-element binding after evaluating a computed-member
+  /// assignment target key expression.
+  BindArrRestAssignComputedMemberAfterMember {
+    pat: *const ArrPat,
+    iterator_record: iterator::IteratorRecord,
+    iterator_root: RootId,
+    next_method_root: RootId,
+    value_root: RootId,
+    member: *const ComputedMemberExpr,
+    base_root: RootId,
+    kind: BindingKind,
+  },
+
+  /// Continue binding an assignment target `obj.prop` after evaluating the base expression.
+  BindAssignMemberAfterBase {
+    member: *const MemberExpr,
+    value_root: RootId,
+  },
+  /// Continue binding an assignment target `obj[expr]` after evaluating the base expression.
+  BindAssignComputedMemberAfterBase {
+    member: *const ComputedMemberExpr,
+    value_root: RootId,
+  },
+  /// Continue binding an assignment target `obj[expr]` after evaluating the computed key
+  /// expression.
+  BindAssignComputedMemberAfterMember {
+    member: *const ComputedMemberExpr,
+    base_root: RootId,
+    value_root: RootId,
+  },
+  /// Continue binding an assignment target `super[expr]` after evaluating the computed key
+  /// expression.
+  BindAssignSuperComputedMemberAfterMember {
+    member: *const ComputedMemberExpr,
+    value_root: RootId,
   },
 
   /// Continue an `if` statement after evaluating the test expression.
@@ -19629,9 +19747,95 @@ fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
         heap.remove_root(key.root);
       }
     }
-    AsyncFrame::BindArrAfterDefault { value_root, .. }
-    | AsyncFrame::BindArrContinue { value_root, .. } => {
+    AsyncFrame::BindArrAfterDefault {
+      value_root,
+      iterator_root,
+      next_method_root,
+      assign_target,
+      ..
+    } => {
       heap.remove_root(*value_root);
+      heap.remove_root(*iterator_root);
+      heap.remove_root(*next_method_root);
+      if let Some(target) = assign_target.take() {
+        match target {
+          AsyncAssignTarget::Binding(_) => {}
+          AsyncAssignTarget::Member { base_root, .. } => heap.remove_root(base_root),
+          AsyncAssignTarget::ComputedMember {
+            base_root,
+            key_value_root,
+          } => {
+            heap.remove_root(base_root);
+            heap.remove_root(key_value_root);
+          }
+        }
+      }
+    }
+    AsyncFrame::BindArrContinue {
+      value_root,
+      iterator_root,
+      next_method_root,
+      ..
+    }
+    | AsyncFrame::BindArrElemAssignMemberAfterBase {
+      value_root,
+      iterator_root,
+      next_method_root,
+      ..
+    }
+    | AsyncFrame::BindArrElemAssignComputedMemberAfterBase {
+      value_root,
+      iterator_root,
+      next_method_root,
+      ..
+    }
+    | AsyncFrame::BindArrRestAssignMemberAfterBase {
+      value_root,
+      iterator_root,
+      next_method_root,
+      ..
+    }
+    | AsyncFrame::BindArrRestAssignComputedMemberAfterBase {
+      value_root,
+      iterator_root,
+      next_method_root,
+      ..
+    } => {
+      heap.remove_root(*value_root);
+      heap.remove_root(*iterator_root);
+      heap.remove_root(*next_method_root);
+    }
+    AsyncFrame::BindArrElemAssignComputedMemberAfterMember {
+      value_root,
+      iterator_root,
+      next_method_root,
+      base_root,
+      ..
+    }
+    | AsyncFrame::BindArrRestAssignComputedMemberAfterMember {
+      value_root,
+      iterator_root,
+      next_method_root,
+      base_root,
+      ..
+    } => {
+      heap.remove_root(*value_root);
+      heap.remove_root(*iterator_root);
+      heap.remove_root(*next_method_root);
+      heap.remove_root(*base_root);
+    }
+    AsyncFrame::BindAssignMemberAfterBase { value_root, .. }
+    | AsyncFrame::BindAssignComputedMemberAfterBase { value_root, .. }
+    | AsyncFrame::BindAssignSuperComputedMemberAfterMember { value_root, .. } => {
+      heap.remove_root(*value_root);
+    }
+    AsyncFrame::BindAssignComputedMemberAfterMember {
+      value_root,
+      base_root,
+      ..
+    } => {
+      heap.remove_root(*value_root);
+      heap.remove_root(*base_root);
     }
     AsyncFrame::LitArrAfterSingle { arr_root, .. }
     | AsyncFrame::LitArrAfterSpread { arr_root, .. } => heap.remove_root(*arr_root),
@@ -23335,6 +23539,40 @@ fn async_bind_assignment_target(
   value_root: RootId,
 ) -> Result<AsyncEval<()>, VmError> {
   match &*target.stx {
+    // Identifier assignment targets do not contain `await`, but can appear in patterns that contain
+    // other suspension points. Handle them here so we don't treat them as unimplemented.
+    Expr::Id(_) | Expr::IdPat(_) => {
+      let res = (|| -> Result<(), VmError> {
+        let value = scope
+          .heap()
+          .get_root(value_root)
+          .ok_or(VmError::InvariantViolation("missing destructuring value root"))?;
+        let mut bind_scope = scope.reborrow();
+        bind_scope.push_root(value)?;
+        bind_assignment_target(
+          evaluator.vm,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          &mut bind_scope,
+          evaluator.env,
+          target,
+          value,
+          evaluator.strict,
+          evaluator.this,
+          evaluator.home_object,
+          evaluator.derived_constructor,
+          evaluator.this_initialized,
+        )
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut bind_scope, err))?;
+        Ok(())
+      })();
+
+      scope.heap_mut().remove_root(value_root);
+      match res {
+        Ok(()) => Ok(AsyncEval::Complete(())),
+        Err(err) => Err(err),
+      }
+    }
     Expr::ObjPat(obj) => async_bind_object_pattern(
       evaluator,
       scope,
@@ -23349,6 +23587,289 @@ fn async_bind_assignment_target(
       value_root,
       BindingKind::Assignment,
     ),
+    Expr::Member(member) => {
+      let member = &*member.stx;
+      if member.optional_chaining {
+        scope.heap_mut().remove_root(value_root);
+        return Err(VmError::InvariantViolation(
+          "optional chaining used in assignment target",
+        ));
+      }
+
+      let base_eval = match async_eval_expr(evaluator, scope, &member.left) {
+        Ok(v) => v,
+        Err(err) => {
+          scope.heap_mut().remove_root(value_root);
+          return Err(err);
+        }
+      };
+
+      match base_eval {
+        AsyncEval::Complete(base) => {
+          let res = (|| -> Result<(), VmError> {
+            let value = scope
+              .heap()
+              .get_root(value_root)
+              .ok_or(VmError::InvariantViolation("missing destructuring value root"))?;
+
+            let mut assign_scope = scope.reborrow();
+            // Root the value across any allocations while creating the reference and performing the
+            // assignment.
+            assign_scope.push_root(value)?;
+            let mut reference =
+              async_reference_from_member(evaluator, &mut assign_scope, member, base)?;
+            evaluator.root_reference(&mut assign_scope, &reference)?;
+            assign_scope.push_root(value)?;
+            evaluator
+              .put_value_to_reference(&mut assign_scope, &mut reference, value)
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut assign_scope, err))?;
+            Ok(())
+          })();
+
+          scope.heap_mut().remove_root(value_root);
+          match res {
+            Ok(()) => Ok(AsyncEval::Complete(())),
+            Err(err) => Err(err),
+          }
+        }
+        AsyncEval::Suspend(mut suspend) => {
+          if let Err(err) = async_frames_push(
+            &mut suspend.frames,
+            AsyncFrame::BindAssignMemberAfterBase {
+              member: member as *const MemberExpr,
+              value_root,
+            },
+          ) {
+            for mut frame in suspend.frames {
+              async_teardown_frame(scope.heap_mut(), &mut frame);
+            }
+            scope.heap_mut().remove_root(value_root);
+            return Err(err);
+          }
+          Ok(AsyncEval::Suspend(suspend))
+        }
+      }
+    }
+    Expr::ComputedMember(member) => {
+      let member = &*member.stx;
+      if member.optional_chaining {
+        scope.heap_mut().remove_root(value_root);
+        return Err(VmError::InvariantViolation(
+          "optional chaining used in assignment target",
+        ));
+      }
+
+      // `super[expr]` in assignment target position is a Super Reference.
+      if matches!(&*member.object.stx, Expr::Super(_)) {
+        // Spec: `super[expr]` evaluates `GetThisBinding` before evaluating the computed key
+        // expression. In derived constructors, this must throw before any `await`/side effects in the
+        // key.
+        if let Err(err) = async_get_super_receiver(evaluator, scope) {
+          scope.heap_mut().remove_root(value_root);
+          return Err(err);
+        }
+
+        let mut member_scope = scope.reborrow();
+        // Root the raw `this` binding and home object across `GetThisBinding` and key evaluation,
+        // which can allocate and trigger GC.
+        if let Err(err) = member_scope.push_root(evaluator.this) {
+          member_scope.heap_mut().remove_root(value_root);
+          return Err(err);
+        }
+        if let Some(home) = evaluator.home_object {
+          if let Err(err) = member_scope.push_root(Value::Object(home)) {
+            member_scope.heap_mut().remove_root(value_root);
+            return Err(err);
+          }
+        }
+         if let Err(err) = async_get_super_receiver(evaluator, &mut member_scope) {
+           member_scope.heap_mut().remove_root(value_root);
+           return Err(err);
+         }
+
+        let member_eval = match async_eval_expr(evaluator, &mut member_scope, &member.member) {
+          Ok(v) => v,
+          Err(err) => {
+            member_scope.heap_mut().remove_root(value_root);
+            return Err(err);
+          }
+        };
+
+        match member_eval {
+          AsyncEval::Complete(member_value) => {
+            let res = (|| -> Result<(), VmError> {
+              let value = member_scope
+                .heap()
+                .get_root(value_root)
+                .ok_or(VmError::InvariantViolation("missing destructuring value root"))?;
+
+              let mut key_scope = member_scope.reborrow();
+              key_scope.push_roots(&[member_value, value])?;
+
+              let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
+              key_scope.push_root(receiver)?;
+
+              // Spec: `GetSuperBase` must be observed before `ToPropertyKey` for computed super
+              // properties.
+               let base = evaluator
+                 .get_super_base(&mut key_scope)
+                 .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+               key_scope.push_root(base)?;
+
+              let mut reference = Reference::SuperProperty {
+                base,
+                key: member_value,
+                receiver,
+              };
+              evaluator.root_reference(&mut key_scope, &reference)?;
+              key_scope.push_root(value)?;
+              evaluator
+                .put_value_to_reference(&mut key_scope, &mut reference, value)
+                .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+              Ok(())
+            })();
+
+            member_scope.heap_mut().remove_root(value_root);
+            match res {
+              Ok(()) => Ok(AsyncEval::Complete(())),
+              Err(err) => Err(err),
+            }
+          }
+          AsyncEval::Suspend(mut suspend) => {
+            if let Err(err) = async_frames_push(
+              &mut suspend.frames,
+              AsyncFrame::BindAssignSuperComputedMemberAfterMember {
+                member: member as *const ComputedMemberExpr,
+                value_root,
+              },
+            ) {
+              for mut frame in suspend.frames {
+                async_teardown_frame(member_scope.heap_mut(), &mut frame);
+              }
+              member_scope.heap_mut().remove_root(value_root);
+              return Err(err);
+            }
+            Ok(AsyncEval::Suspend(suspend))
+          }
+        }
+      } else {
+        let base_eval = match async_eval_expr(evaluator, scope, &member.object) {
+          Ok(v) => v,
+          Err(err) => {
+            scope.heap_mut().remove_root(value_root);
+            return Err(err);
+          }
+        };
+
+        match base_eval {
+          AsyncEval::Complete(base) => {
+            let mut member_scope = scope.reborrow();
+            if let Err(err) = member_scope.push_root(base) {
+              member_scope.heap_mut().remove_root(value_root);
+              return Err(err);
+            }
+
+            let member_eval = match async_eval_expr(evaluator, &mut member_scope, &member.member) {
+              Ok(v) => v,
+              Err(err) => {
+                member_scope.heap_mut().remove_root(value_root);
+                return Err(err);
+              }
+            };
+
+            match member_eval {
+              AsyncEval::Complete(member_value) => {
+                let res = (|| -> Result<(), VmError> {
+                  let value = member_scope
+                    .heap()
+                    .get_root(value_root)
+                    .ok_or(VmError::InvariantViolation("missing destructuring value root"))?;
+
+                  let mut key_scope = member_scope.reborrow();
+                  key_scope.push_roots(&[base, member_value, value])?;
+                  let key = evaluator
+                    .to_property_key_operator(&mut key_scope, member_value)
+                    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+
+                  if is_nullish(base) {
+                    return Err(throw_type_error(
+                      evaluator.vm,
+                      &mut key_scope,
+                      "Cannot convert undefined or null to object",
+                    )?);
+                  }
+
+                  let mut reference = Reference::Property {
+                    base,
+                    receiver: base,
+                    key,
+                  };
+                  evaluator.root_reference(&mut key_scope, &reference)?;
+                  key_scope.push_root(value)?;
+                  evaluator
+                    .put_value_to_reference(&mut key_scope, &mut reference, value)
+                    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+                  Ok(())
+                })();
+
+                member_scope.heap_mut().remove_root(value_root);
+                match res {
+                  Ok(()) => Ok(AsyncEval::Complete(())),
+                  Err(err) => Err(err),
+                }
+              }
+              AsyncEval::Suspend(mut suspend) => {
+                let mut root_scope = member_scope.reborrow();
+                root_scope.push_root(base)?;
+                let base_root = match root_scope.heap_mut().add_root(base) {
+                  Ok(id) => id,
+                  Err(err) => {
+                    for mut frame in suspend.frames {
+                      async_teardown_frame(root_scope.heap_mut(), &mut frame);
+                    }
+                    root_scope.heap_mut().remove_root(value_root);
+                    return Err(err);
+                  }
+                };
+                drop(root_scope);
+                if let Err(err) = async_frames_push(
+                  &mut suspend.frames,
+                  AsyncFrame::BindAssignComputedMemberAfterMember {
+                    member: member as *const ComputedMemberExpr,
+                    base_root,
+                    value_root,
+                  },
+                ) {
+                  for mut frame in suspend.frames {
+                    async_teardown_frame(member_scope.heap_mut(), &mut frame);
+                  }
+                  member_scope.heap_mut().remove_root(value_root);
+                  member_scope.heap_mut().remove_root(base_root);
+                  return Err(err);
+                }
+                Ok(AsyncEval::Suspend(suspend))
+              }
+            }
+          }
+          AsyncEval::Suspend(mut suspend) => {
+            if let Err(err) = async_frames_push(
+              &mut suspend.frames,
+              AsyncFrame::BindAssignComputedMemberAfterBase {
+                member: member as *const ComputedMemberExpr,
+                value_root,
+              },
+            ) {
+              for mut frame in suspend.frames {
+                async_teardown_frame(scope.heap_mut(), &mut frame);
+              }
+              scope.heap_mut().remove_root(value_root);
+              return Err(err);
+            }
+            Ok(AsyncEval::Suspend(suspend))
+          }
+        }
+      }
+    }
     _ => {
       // Today we only support suspension points inside destructuring patterns (computed keys,
       // defaults, nested patterns). Other assignment targets that contain `await` remain
@@ -23768,6 +24289,225 @@ fn async_array_like_get(
     .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))
 }
 
+fn async_assign_target_cleanup(heap: &mut Heap, target: AsyncAssignTarget) {
+  match target {
+    AsyncAssignTarget::Binding(_) => {}
+    AsyncAssignTarget::Member { base_root, .. } => heap.remove_root(base_root),
+    AsyncAssignTarget::ComputedMember {
+      base_root,
+      key_value_root,
+    } => {
+      heap.remove_root(base_root);
+      heap.remove_root(key_value_root);
+    }
+  }
+}
+
+fn async_assign_target_put_value(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  target: AsyncAssignTarget,
+  value: Value,
+) -> Result<(), VmError> {
+  match target {
+    AsyncAssignTarget::Binding(binding) => {
+      let resolved = match binding {
+        GenResolvedBinding::Declarative { env, name } => {
+          let name = unsafe { &*name };
+          ResolvedBinding::Declarative {
+            env,
+            name: name.as_str(),
+          }
+        }
+        GenResolvedBinding::Object {
+          binding_object,
+          name,
+        } => {
+          let name = unsafe { &*name };
+          ResolvedBinding::Object {
+            binding_object,
+            name: name.as_str(),
+          }
+        }
+        GenResolvedBinding::GlobalProperty { name } => {
+          let name = unsafe { &*name };
+          ResolvedBinding::GlobalProperty {
+            name: name.as_str(),
+          }
+        }
+        GenResolvedBinding::Unresolvable { name } => {
+          let name = unsafe { &*name };
+          ResolvedBinding::Unresolvable {
+            name: name.as_str(),
+          }
+        }
+      };
+
+      let mut assign_scope = scope.reborrow();
+      assign_scope.push_root(value)?;
+      evaluator
+        .env
+        .set_resolved_binding(
+          evaluator.vm,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          &mut assign_scope,
+          resolved,
+          value,
+          evaluator.strict,
+        )
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut assign_scope, err))
+    }
+    AsyncAssignTarget::Member { base_root, key } => {
+      let base = scope
+        .heap()
+        .get_root(base_root)
+        .ok_or(VmError::InvariantViolation("missing member base root"))?;
+      let key = unsafe { &*key };
+
+      // Root the RHS + base across property-key allocation and assignment.
+      let mut assign_scope = scope.reborrow();
+      assign_scope.push_roots(&[base, value])?;
+
+      if is_nullish(base) {
+        return Err(throw_type_error(
+          evaluator.vm,
+          &mut assign_scope,
+          "Cannot convert undefined or null to object",
+        )?);
+      }
+
+      let mut reference = if key.starts_with('#') {
+        let sym = assign_scope
+          .heap()
+          .resolve_private_name_symbol(evaluator.env.lexical_env, key)?
+          .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+        Reference::Private { base, sym, name: key }
+      } else {
+        let key_s = assign_scope.alloc_string(key)?;
+        Reference::Property {
+          base,
+          receiver: base,
+          key: PropertyKey::from_string(key_s),
+        }
+      };
+
+      evaluator.root_reference(&mut assign_scope, &reference)?;
+      assign_scope.push_root(value)?;
+      evaluator
+        .put_value_to_reference(&mut assign_scope, &mut reference, value)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut assign_scope, err))
+    }
+    AsyncAssignTarget::ComputedMember {
+      base_root,
+      key_value_root,
+    } => {
+      let base = scope
+        .heap()
+        .get_root(base_root)
+        .ok_or(VmError::InvariantViolation("missing computed member base root"))?;
+      let key_value = scope
+        .heap()
+        .get_root(key_value_root)
+        .ok_or(VmError::InvariantViolation("missing computed member key root"))?;
+
+      // Root inputs across `ToPropertyKey` + `PutValue`, both of which can allocate and invoke user
+      // code.
+      let mut assign_scope = scope.reborrow();
+      assign_scope.push_roots(&[base, key_value, value])?;
+      let key = evaluator
+        .to_property_key_operator(&mut assign_scope, key_value)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut assign_scope, err))?;
+
+      if is_nullish(base) {
+        return Err(throw_type_error(
+          evaluator.vm,
+          &mut assign_scope,
+          "Cannot convert undefined or null to object",
+        )?);
+      }
+
+      let mut reference = Reference::Property {
+        base,
+        receiver: base,
+        key,
+      };
+      evaluator.root_reference(&mut assign_scope, &reference)?;
+      assign_scope.push_root(value)?;
+      evaluator
+        .put_value_to_reference(&mut assign_scope, &mut reference, value)
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut assign_scope, err))
+    }
+  }
+}
+
+fn async_iterator_close_on_error_or_return(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  iter: &iterator::IteratorRecord,
+  err: VmError,
+) -> VmError {
+  // `IteratorClose` is only observable for iterator-protocol iterators. Our `IteratorRecord`
+  // fast-path for Array iteration uses `next_method = undefined` and has no concept of `return()`.
+  //
+  // Additionally, if the iterator is already marked done, it should not be closed.
+  if iter.done || matches!(iter.next_method, Value::Undefined) {
+    return err;
+  }
+
+  // Root the completion value across `IteratorClose`, which can allocate and trigger GC.
+  match err {
+    VmError::Return(v) => {
+      if let Err(root_err) = scope.push_root(v) {
+        return root_err;
+      }
+    }
+    _ => {
+      if let Some(thrown) = err.thrown_value() {
+        if let Err(root_err) = scope.push_root(thrown) {
+          return root_err;
+        }
+      }
+    }
+  }
+
+  let completion_kind = if matches!(err, VmError::Return(_)) {
+    iterator::CloseCompletionKind::NonThrow
+  } else {
+    iterator::CloseCompletionKind::Throw
+  };
+
+  let close_res = iterator::iterator_close(
+    evaluator.vm,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    scope,
+    iter,
+    completion_kind,
+  );
+
+  match close_res {
+    Ok(()) => err,
+    Err(close_err) => {
+      let close_err = coerce_error_to_throw_for_async(evaluator.vm, scope, close_err);
+
+      // `IteratorClose` precedence (ECMA-262):
+      // - For throw completions: suppress throw-completion errors from `GetMethod`/`Call`/result
+      //   checks; preserve the incoming throw completion.
+      // - For non-throw completions (including `return`): close-time errors override the incoming
+      //   completion.
+      // - Never suppress fatal VM errors (OOM/termination/etc).
+      if matches!(err, VmError::Return(_)) {
+        close_err
+      } else if err.is_throw_completion() {
+        close_err
+      } else {
+        err
+      }
+    }
+  }
+}
+
 fn async_bind_array_pattern(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -23784,259 +24524,1060 @@ fn async_bind_array_pattern(
       ));
     }
   };
-  let obj = match value {
-    Value::Object(obj) => obj,
-    other => {
-      let obj = match scope.to_object(
+
+  // RequireObjectCoercible (ECMA-262): array destructuring disallows null/undefined but supports
+  // primitives via iterator protocol.
+  if matches!(value, Value::Undefined | Value::Null) {
+    scope.heap_mut().remove_root(value_root);
+    return Err(
+      throw_type_error(
         evaluator.vm,
-        &mut *evaluator.host,
-        &mut *evaluator.hooks,
-        other,
-      ) {
-        Ok(obj) => obj,
-        Err(err) => {
-          scope.heap_mut().remove_root(value_root);
-          return Err(coerce_error_to_throw_for_async(evaluator.vm, scope, err));
-        }
-      };
-      scope.heap_mut().set_root(value_root, Value::Object(obj));
-      obj
-    }
+        scope,
+        "array destructuring requires object coercible",
+      )
+      .unwrap_or_else(|e| e),
+    );
+  }
+
+  let mut iter_scope = scope.reborrow();
+  iter_scope.push_root(value)?;
+
+  let iterator_record = iterator::get_iterator(
+    evaluator.vm,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    &mut iter_scope,
+    value,
+  )
+  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut iter_scope, err))?;
+
+  // Root the iterator + next method across async suspension boundaries (values on the Rust stack
+  // are not traced by the GC).
+  let (iterator_root, next_method_root) = {
+    let mut root_scope = iter_scope.reborrow();
+    root_scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+    let iterator_root = match root_scope.heap_mut().add_root(iterator_record.iterator) {
+      Ok(id) => id,
+      Err(err) => {
+        root_scope.heap_mut().remove_root(value_root);
+        return Err(err);
+      }
+    };
+    let next_method_root = match root_scope.heap_mut().add_root(iterator_record.next_method) {
+      Ok(id) => id,
+      Err(err) => {
+        root_scope.heap_mut().remove_root(iterator_root);
+        root_scope.heap_mut().remove_root(value_root);
+        return Err(err);
+      }
+    };
+    (iterator_root, next_method_root)
   };
 
-  let len = match async_array_like_length(evaluator, scope, obj) {
-    Ok(len) => len,
-    Err(err) => {
-      scope.heap_mut().remove_root(value_root);
-      return Err(err);
-    }
-  };
-  async_bind_array_pattern_from(evaluator, scope, pat, value_root, kind, 0, 0, len)
+  async_bind_array_pattern_from(
+    evaluator,
+    &mut iter_scope,
+    pat,
+    iterator_record,
+    iterator_root,
+    next_method_root,
+    value_root,
+    kind,
+    0,
+    None,
+  )
 }
 
 fn async_bind_array_pattern_from(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
   pat: &ArrPat,
+  mut iterator_record: iterator::IteratorRecord,
+  iterator_root: RootId,
+  next_method_root: RootId,
   value_root: RootId,
   kind: BindingKind,
   start_elem_index: usize,
-  start_array_index: u32,
-  len: u32,
+  mut pending_assign_target: Option<AsyncAssignTarget>,
 ) -> Result<AsyncEval<()>, VmError> {
-  let value = match scope.heap().get_root(value_root) {
-    Some(v) => v,
-    None => {
+  let cleanup = |scope: &mut Scope<'_>| {
+    if scope.heap().get_root(value_root).is_some() {
       scope.heap_mut().remove_root(value_root);
-      return Err(VmError::InvariantViolation(
-        "missing destructuring value root",
-      ));
+    }
+    if scope.heap().get_root(iterator_root).is_some() {
+      scope.heap_mut().remove_root(iterator_root);
+    }
+    if scope.heap().get_root(next_method_root).is_some() {
+      scope.heap_mut().remove_root(next_method_root);
     }
   };
-  let Value::Object(obj) = value else {
-    scope.heap_mut().remove_root(value_root);
-    return Err(
-      throw_type_error(evaluator.vm, scope, "array destructuring requires object")
-        .unwrap_or_else(|e| e),
-    );
-  };
 
-  let cleanup = |scope: &mut Scope<'_>| {
-    scope.heap_mut().remove_root(value_root);
-  };
-
-  let mut array_index = start_array_index;
   for (elem_index, elem) in pat.elements.iter().enumerate().skip(start_elem_index) {
     // Budget array destructuring by pattern size.
     if let Err(err) = evaluator.tick() {
+      let err = async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
       cleanup(scope);
       return Err(err);
     }
 
+    // Keep temporary roots local to each element.
+    let mut elem_scope = scope.reborrow();
+
     let Some(elem) = elem else {
-      array_index = array_index.saturating_add(1);
+      // Elision: still advance the iterator but do not read `value`.
+      //
+      // Spec: `IteratorBindingInitialization` uses `IteratorStep` for elisions, *not*
+      // `IteratorStepValue`. This avoids observable access to the iterator result's `value`
+      // property (e.g. a throwing getter) when the element is skipped.
+      if let Err(err) = iterator::iterator_step(
+        evaluator.vm,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        &mut elem_scope,
+        &mut iterator_record,
+      ) {
+        let err = coerce_error_to_throw_for_async(evaluator.vm, &mut elem_scope, err);
+        let err =
+          async_iterator_close_on_error_or_return(evaluator, &mut elem_scope, &iterator_record, err);
+        cleanup(&mut elem_scope);
+        return Err(err);
+      }
       continue;
     };
 
-    let mut item = if array_index < len {
-      match async_array_like_get(evaluator, scope, obj, array_index) {
-        Ok(v) => v,
-        Err(err) => {
-          cleanup(scope);
-          return Err(err);
+    // --- Assignment target evaluation order (ECMA-262 `IteratorDestructuringAssignmentEvaluation`) ---
+    //
+    // For destructuring *assignment* (not binding), evaluate property-reference targets (base +
+    // computed key expression) before calling `IteratorStep` / `IteratorStepValue`. This ensures
+    // that abrupt completions in the LHS do not advance the iterator.
+    let mut assign_target: Option<AsyncAssignTarget> = None;
+    if matches!(kind, BindingKind::Assignment) {
+      // Use the pre-evaluated target (when resuming from a suspension inside target evaluation).
+      if pending_assign_target.is_some() {
+        assign_target = pending_assign_target.take();
+      } else {
+        match &*elem.target.stx {
+          Pat::Id(id) => {
+            let name_ptr = &id.stx.name as *const String;
+            let binding = match evaluator.env.resolve_binding_reference(
+              evaluator.vm,
+              &mut *evaluator.host,
+              &mut *evaluator.hooks,
+              &mut elem_scope,
+              &id.stx.name,
+            ) {
+              Ok(b) => b,
+              Err(err) => {
+                let err =
+                  async_iterator_close_on_error_or_return(evaluator, &mut elem_scope, &iterator_record, err);
+                cleanup(&mut elem_scope);
+                return Err(err);
+              }
+            };
+            let gen_binding = match binding {
+              ResolvedBinding::Declarative { env, .. } => GenResolvedBinding::Declarative {
+                env,
+                name: name_ptr,
+              },
+              ResolvedBinding::Object { binding_object, .. } => GenResolvedBinding::Object {
+                binding_object,
+                name: name_ptr,
+              },
+              ResolvedBinding::GlobalProperty { .. } => GenResolvedBinding::GlobalProperty {
+                name: name_ptr,
+              },
+              ResolvedBinding::Unresolvable { .. } => GenResolvedBinding::Unresolvable {
+                name: name_ptr,
+              },
+            };
+            assign_target = Some(AsyncAssignTarget::Binding(gen_binding));
+          }
+          Pat::AssignTarget(target) => match &*target.stx {
+            Expr::Id(id) => {
+              let name_ptr = &id.stx.name as *const String;
+              let binding = match evaluator.env.resolve_binding_reference(
+                evaluator.vm,
+                &mut *evaluator.host,
+                &mut *evaluator.hooks,
+                &mut elem_scope,
+                &id.stx.name,
+              ) {
+                Ok(b) => b,
+                Err(err) => {
+                  let err = async_iterator_close_on_error_or_return(
+                    evaluator,
+                    &mut elem_scope,
+                    &iterator_record,
+                    err,
+                  );
+                  cleanup(&mut elem_scope);
+                  return Err(err);
+                }
+              };
+              let gen_binding = match binding {
+                ResolvedBinding::Declarative { env, .. } => GenResolvedBinding::Declarative {
+                  env,
+                  name: name_ptr,
+                },
+                ResolvedBinding::Object { binding_object, .. } => GenResolvedBinding::Object {
+                  binding_object,
+                  name: name_ptr,
+                },
+                ResolvedBinding::GlobalProperty { .. } => GenResolvedBinding::GlobalProperty {
+                  name: name_ptr,
+                },
+                ResolvedBinding::Unresolvable { .. } => GenResolvedBinding::Unresolvable {
+                  name: name_ptr,
+                },
+              };
+              assign_target = Some(AsyncAssignTarget::Binding(gen_binding));
+            }
+            Expr::IdPat(id) => {
+              let name_ptr = &id.stx.name as *const String;
+              let binding = match evaluator.env.resolve_binding_reference(
+                evaluator.vm,
+                &mut *evaluator.host,
+                &mut *evaluator.hooks,
+                &mut elem_scope,
+                &id.stx.name,
+              ) {
+                Ok(b) => b,
+                Err(err) => {
+                  let err = async_iterator_close_on_error_or_return(
+                    evaluator,
+                    &mut elem_scope,
+                    &iterator_record,
+                    err,
+                  );
+                  cleanup(&mut elem_scope);
+                  return Err(err);
+                }
+              };
+              let gen_binding = match binding {
+                ResolvedBinding::Declarative { env, .. } => GenResolvedBinding::Declarative {
+                  env,
+                  name: name_ptr,
+                },
+                ResolvedBinding::Object { binding_object, .. } => GenResolvedBinding::Object {
+                  binding_object,
+                  name: name_ptr,
+                },
+                ResolvedBinding::GlobalProperty { .. } => GenResolvedBinding::GlobalProperty {
+                  name: name_ptr,
+                },
+                ResolvedBinding::Unresolvable { .. } => GenResolvedBinding::Unresolvable {
+                  name: name_ptr,
+                },
+              };
+              assign_target = Some(AsyncAssignTarget::Binding(gen_binding));
+            }
+            Expr::Member(member) => {
+              if member.stx.optional_chaining {
+                let err = VmError::InvariantViolation("optional chaining used in assignment target");
+                let err =
+                  async_iterator_close_on_error_or_return(evaluator, &mut elem_scope, &iterator_record, err);
+                cleanup(&mut elem_scope);
+                return Err(err);
+              }
+
+              let base_eval = match async_eval_expr(evaluator, &mut elem_scope, &member.stx.left) {
+                Ok(v) => v,
+                Err(err) => {
+                  let err = async_iterator_close_on_error_or_return(
+                    evaluator,
+                    &mut elem_scope,
+                    &iterator_record,
+                    err,
+                  );
+                  cleanup(&mut elem_scope);
+                  return Err(err);
+                }
+              };
+
+              match base_eval {
+                AsyncEval::Complete(base) => {
+                  let base_root = match async_root_value(&mut elem_scope, base) {
+                    Ok(id) => id,
+                    Err(err) => {
+                      let err = async_iterator_close_on_error_or_return(
+                        evaluator,
+                        &mut elem_scope,
+                        &iterator_record,
+                        err,
+                      );
+                      cleanup(&mut elem_scope);
+                      return Err(err);
+                    }
+                  };
+                  assign_target = Some(AsyncAssignTarget::Member {
+                    base_root,
+                    key: &member.stx.right as *const String,
+                  });
+                }
+                AsyncEval::Suspend(mut suspend) => {
+                  if let Err(err) = async_frames_push(
+                    &mut suspend.frames,
+                    AsyncFrame::BindArrElemAssignMemberAfterBase {
+                      pat: pat as *const ArrPat,
+                      elem_index,
+                      iterator_record,
+                      iterator_root,
+                      next_method_root,
+                      value_root,
+                      member: &*member.stx as *const MemberExpr,
+                      kind,
+                    },
+                  ) {
+                    for mut frame in suspend.frames {
+                      async_teardown_frame(elem_scope.heap_mut(), &mut frame);
+                    }
+                    cleanup(&mut elem_scope);
+                    return Err(err);
+                  }
+                  return Ok(AsyncEval::Suspend(suspend));
+                }
+              }
+            }
+            Expr::ComputedMember(member) => {
+              if member.stx.optional_chaining {
+                let err = VmError::InvariantViolation("optional chaining used in assignment target");
+                let err =
+                  async_iterator_close_on_error_or_return(evaluator, &mut elem_scope, &iterator_record, err);
+                cleanup(&mut elem_scope);
+                return Err(err);
+              }
+
+              let base_eval =
+                match async_eval_expr(evaluator, &mut elem_scope, &member.stx.object) {
+                  Ok(v) => v,
+                  Err(err) => {
+                    let err = async_iterator_close_on_error_or_return(
+                      evaluator,
+                      &mut elem_scope,
+                      &iterator_record,
+                      err,
+                    );
+                    cleanup(&mut elem_scope);
+                    return Err(err);
+                  }
+                };
+
+              match base_eval {
+                AsyncEval::Complete(base) => {
+                  let mut member_scope = elem_scope.reborrow();
+                  member_scope.push_root(base)?;
+
+                  let member_eval =
+                    match async_eval_expr(evaluator, &mut member_scope, &member.stx.member) {
+                      Ok(v) => v,
+                      Err(err) => {
+                        let err = async_iterator_close_on_error_or_return(
+                          evaluator,
+                          &mut member_scope,
+                          &iterator_record,
+                          err,
+                        );
+                        cleanup(&mut member_scope);
+                        return Err(err);
+                      }
+                    };
+
+                  match member_eval {
+                    AsyncEval::Complete(member_value) => {
+                      let base_root = match async_root_value(&mut member_scope, base) {
+                        Ok(id) => id,
+                        Err(err) => {
+                          let err = async_iterator_close_on_error_or_return(
+                            evaluator,
+                            &mut member_scope,
+                            &iterator_record,
+                            err,
+                          );
+                          cleanup(&mut member_scope);
+                          return Err(err);
+                        }
+                      };
+                      let key_value_root = match async_root_value(&mut member_scope, member_value) {
+                        Ok(id) => id,
+                        Err(err) => {
+                          member_scope.heap_mut().remove_root(base_root);
+                          let err = async_iterator_close_on_error_or_return(
+                            evaluator,
+                            &mut member_scope,
+                            &iterator_record,
+                            err,
+                          );
+                          cleanup(&mut member_scope);
+                          return Err(err);
+                        }
+                      };
+                      assign_target = Some(AsyncAssignTarget::ComputedMember {
+                        base_root,
+                        key_value_root,
+                      });
+                    }
+                    AsyncEval::Suspend(mut suspend) => {
+                      let base_root = match async_root_value(&mut member_scope, base) {
+                        Ok(id) => id,
+                        Err(err) => {
+                          for mut frame in suspend.frames {
+                            async_teardown_frame(member_scope.heap_mut(), &mut frame);
+                          }
+                          let err = async_iterator_close_on_error_or_return(
+                            evaluator,
+                            &mut member_scope,
+                            &iterator_record,
+                            err,
+                          );
+                          cleanup(&mut member_scope);
+                          return Err(err);
+                        }
+                      };
+                      if let Err(err) = async_frames_push(
+                        &mut suspend.frames,
+                        AsyncFrame::BindArrElemAssignComputedMemberAfterMember {
+                          pat: pat as *const ArrPat,
+                          elem_index,
+                          iterator_record,
+                          iterator_root,
+                          next_method_root,
+                          value_root,
+                          member: &*member.stx as *const ComputedMemberExpr,
+                          base_root,
+                          kind,
+                        },
+                      ) {
+                        for mut frame in suspend.frames {
+                          async_teardown_frame(member_scope.heap_mut(), &mut frame);
+                        }
+                        member_scope.heap_mut().remove_root(base_root);
+                        cleanup(&mut member_scope);
+                        return Err(err);
+                      }
+                      return Ok(AsyncEval::Suspend(suspend));
+                    }
+                  }
+                }
+                AsyncEval::Suspend(mut suspend) => {
+                  if let Err(err) = async_frames_push(
+                    &mut suspend.frames,
+                    AsyncFrame::BindArrElemAssignComputedMemberAfterBase {
+                      pat: pat as *const ArrPat,
+                      elem_index,
+                      iterator_record,
+                      iterator_root,
+                      next_method_root,
+                      value_root,
+                      member: &*member.stx as *const ComputedMemberExpr,
+                      kind,
+                    },
+                  ) {
+                    for mut frame in suspend.frames {
+                      async_teardown_frame(elem_scope.heap_mut(), &mut frame);
+                    }
+                    cleanup(&mut elem_scope);
+                    return Err(err);
+                  }
+                  return Ok(AsyncEval::Suspend(suspend));
+                }
+              }
+            }
+            _ => {}
+          },
+          _ => {}
         }
       }
-    } else {
-      Value::Undefined
+    }
+
+    let mut item = match iterator::iterator_step_value(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      &mut elem_scope,
+      &mut iterator_record,
+    ) {
+      Ok(Some(v)) => v,
+      Ok(None) => Value::Undefined,
+      Err(err) => {
+        let err = coerce_error_to_throw_for_async(evaluator.vm, &mut elem_scope, err);
+        let err =
+          async_iterator_close_on_error_or_return(evaluator, &mut elem_scope, &iterator_record, err);
+        if let Some(target) = assign_target {
+          async_assign_target_cleanup(elem_scope.heap_mut(), target);
+        }
+        cleanup(&mut elem_scope);
+        return Err(err);
+      }
     };
 
     if matches!(item, Value::Undefined) {
       if let Some(default_expr) = &elem.default_value {
         let default_eval = match inferred_name_for_destructuring_default(kind, &elem.target) {
-          Some(name) => async_eval_expr_named(evaluator, scope, default_expr, name),
-          None => async_eval_expr(evaluator, scope, default_expr),
+          Some(name) => async_eval_expr_named(evaluator, &mut elem_scope, default_expr, name),
+          None => async_eval_expr(evaluator, &mut elem_scope, default_expr),
         };
         let default_eval = match default_eval {
           Ok(v) => v,
           Err(err) => {
-            cleanup(scope);
+            let err = async_iterator_close_on_error_or_return(
+              evaluator,
+              &mut elem_scope,
+              &iterator_record,
+              err,
+            );
+            if let Some(target) = assign_target {
+              async_assign_target_cleanup(elem_scope.heap_mut(), target);
+            }
+            cleanup(&mut elem_scope);
             return Err(err);
           }
         };
         match default_eval {
           AsyncEval::Complete(v) => item = v,
           AsyncEval::Suspend(mut suspend) => {
-            if let Err(_) = suspend.frames.try_reserve(1) {
-              for mut frame in suspend.frames {
-                async_teardown_frame(scope.heap_mut(), &mut frame);
-              }
-              cleanup(scope);
-              return Err(VmError::OutOfMemory);
-            }
-            async_frames_push(
+            if let Err(err) = async_frames_push(
               &mut suspend.frames,
               AsyncFrame::BindArrAfterDefault {
                 pat: pat as *const ArrPat,
                 elem_index,
-                array_index,
-                len,
+                iterator_record,
+                iterator_root,
+                next_method_root,
                 value_root,
+                assign_target,
                 kind,
               },
-            )
-            .expect("async_frames_push should not fail after try_reserve");
+            ) {
+              for mut frame in suspend.frames {
+                async_teardown_frame(elem_scope.heap_mut(), &mut frame);
+              }
+              if let Some(target) = assign_target {
+                async_assign_target_cleanup(elem_scope.heap_mut(), target);
+              }
+              cleanup(&mut elem_scope);
+              return Err(err);
+            }
             return Ok(AsyncEval::Suspend(suspend));
           }
         }
       }
     }
 
-    let elem_bind = match async_bind_pattern(evaluator, scope, &elem.target.stx, item, kind) {
-      Ok(v) => v,
-      Err(err) => {
+    if let Some(target) = assign_target {
+      if let Err(err) = async_assign_target_put_value(evaluator, &mut elem_scope, target, item) {
+        let err =
+          async_iterator_close_on_error_or_return(evaluator, &mut elem_scope, &iterator_record, err);
+        async_assign_target_cleanup(elem_scope.heap_mut(), target);
+        cleanup(&mut elem_scope);
+        return Err(err);
+      }
+      async_assign_target_cleanup(elem_scope.heap_mut(), target);
+    } else {
+      match async_bind_pattern(evaluator, &mut elem_scope, &elem.target.stx, item, kind) {
+        Ok(AsyncEval::Complete(())) => {}
+        Ok(AsyncEval::Suspend(mut suspend)) => {
+          if let Err(err) = async_frames_push(
+            &mut suspend.frames,
+            AsyncFrame::BindArrContinue {
+              pat: pat as *const ArrPat,
+              elem_index: elem_index.saturating_add(1),
+              iterator_record,
+              iterator_root,
+              next_method_root,
+              value_root,
+              kind,
+            },
+          ) {
+            for mut frame in suspend.frames {
+              async_teardown_frame(elem_scope.heap_mut(), &mut frame);
+            }
+            cleanup(&mut elem_scope);
+            return Err(err);
+          }
+          return Ok(AsyncEval::Suspend(suspend));
+        }
+        Err(err) => {
+          let err =
+            async_iterator_close_on_error_or_return(evaluator, &mut elem_scope, &iterator_record, err);
+          cleanup(&mut elem_scope);
+          return Err(err);
+        }
+      }
+    }
+  }
+
+  // Rest element.
+  let Some(rest_pat) = &pat.rest else {
+    // Iterator binding initialization performs IteratorClose on normal completion when the iterator
+    // is not exhausted.
+    if !iterator_record.done {
+      if let Err(err) = iterator::iterator_close(
+        evaluator.vm,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        scope,
+        &iterator_record,
+        iterator::CloseCompletionKind::NonThrow,
+      ) {
+        let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
         cleanup(scope);
         return Err(err);
       }
-    };
-    match elem_bind {
-      AsyncEval::Complete(()) => {}
-      AsyncEval::Suspend(mut suspend) => {
-        if let Err(_) = suspend.frames.try_reserve(1) {
-          for mut frame in suspend.frames {
-            async_teardown_frame(scope.heap_mut(), &mut frame);
-          }
-          cleanup(scope);
-          return Err(VmError::OutOfMemory);
-        }
-        async_frames_push(
-          &mut suspend.frames,
-          AsyncFrame::BindArrContinue {
-            pat: pat as *const ArrPat,
-            elem_index: elem_index.saturating_add(1),
-            array_index: array_index.saturating_add(1),
-            len,
-            value_root,
-            kind,
-          },
-        )
-        .expect("async_frames_push should not fail after try_reserve");
-        return Ok(AsyncEval::Suspend(suspend));
-      }
     }
-
-    array_index = array_index.saturating_add(1);
-  }
-
-  let Some(rest_pat) = &pat.rest else {
-    scope.heap_mut().remove_root(value_root);
+    cleanup(scope);
     return Ok(AsyncEval::Complete(()));
   };
 
-  let rest_arr = match scope.alloc_object() {
-    Ok(obj) => obj,
+  // Rest element assignment (e.g. `[...obj[prop]] = iterable`) must evaluate the LHS reference
+  // *before* consuming the remainder of the iterator. Otherwise, an infinite iterator could hang
+  // the runtime before the (abrupt) LHS evaluation occurs.
+  let mut rest_assign_target: Option<AsyncAssignTarget> = None;
+  if matches!(kind, BindingKind::Assignment) {
+    match &*rest_pat.stx {
+      Pat::Id(id) => {
+        let name_ptr = &id.stx.name as *const String;
+        let binding = match evaluator.env.resolve_binding_reference(
+          evaluator.vm,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          scope,
+          &id.stx.name,
+        ) {
+          Ok(b) => b,
+          Err(err) => {
+            let err =
+              async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+            cleanup(scope);
+            return Err(err);
+          }
+        };
+        let gen_binding = match binding {
+          ResolvedBinding::Declarative { env, .. } => GenResolvedBinding::Declarative {
+            env,
+            name: name_ptr,
+          },
+          ResolvedBinding::Object { binding_object, .. } => GenResolvedBinding::Object {
+            binding_object,
+            name: name_ptr,
+          },
+          ResolvedBinding::GlobalProperty { .. } => GenResolvedBinding::GlobalProperty {
+            name: name_ptr,
+          },
+          ResolvedBinding::Unresolvable { .. } => GenResolvedBinding::Unresolvable {
+            name: name_ptr,
+          },
+        };
+        rest_assign_target = Some(AsyncAssignTarget::Binding(gen_binding));
+      }
+      Pat::AssignTarget(target) => match &*target.stx {
+        Expr::Id(id) => {
+          let name_ptr = &id.stx.name as *const String;
+          let binding = match evaluator.env.resolve_binding_reference(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            scope,
+            &id.stx.name,
+          ) {
+            Ok(b) => b,
+            Err(err) => {
+              let err =
+                async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+              cleanup(scope);
+              return Err(err);
+            }
+          };
+          let gen_binding = match binding {
+            ResolvedBinding::Declarative { env, .. } => GenResolvedBinding::Declarative {
+              env,
+              name: name_ptr,
+            },
+            ResolvedBinding::Object { binding_object, .. } => GenResolvedBinding::Object {
+              binding_object,
+              name: name_ptr,
+            },
+            ResolvedBinding::GlobalProperty { .. } => GenResolvedBinding::GlobalProperty {
+              name: name_ptr,
+            },
+            ResolvedBinding::Unresolvable { .. } => GenResolvedBinding::Unresolvable {
+              name: name_ptr,
+            },
+          };
+          rest_assign_target = Some(AsyncAssignTarget::Binding(gen_binding));
+        }
+        Expr::IdPat(id) => {
+          let name_ptr = &id.stx.name as *const String;
+          let binding = match evaluator.env.resolve_binding_reference(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            scope,
+            &id.stx.name,
+          ) {
+            Ok(b) => b,
+            Err(err) => {
+              let err =
+                async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+              cleanup(scope);
+              return Err(err);
+            }
+          };
+          let gen_binding = match binding {
+            ResolvedBinding::Declarative { env, .. } => GenResolvedBinding::Declarative {
+              env,
+              name: name_ptr,
+            },
+            ResolvedBinding::Object { binding_object, .. } => GenResolvedBinding::Object {
+              binding_object,
+              name: name_ptr,
+            },
+            ResolvedBinding::GlobalProperty { .. } => GenResolvedBinding::GlobalProperty {
+              name: name_ptr,
+            },
+            ResolvedBinding::Unresolvable { .. } => GenResolvedBinding::Unresolvable {
+              name: name_ptr,
+            },
+          };
+          rest_assign_target = Some(AsyncAssignTarget::Binding(gen_binding));
+        }
+        Expr::Member(member) => {
+          if member.stx.optional_chaining {
+            let err = VmError::InvariantViolation("optional chaining used in assignment target");
+            let err =
+              async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+            cleanup(scope);
+            return Err(err);
+          }
+
+          let base_eval = match async_eval_expr(evaluator, scope, &member.stx.left) {
+            Ok(v) => v,
+            Err(err) => {
+              let err =
+                async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+              cleanup(scope);
+              return Err(err);
+            }
+          };
+
+          match base_eval {
+            AsyncEval::Complete(base) => {
+              let base_root = match async_root_value(scope, base) {
+                Ok(id) => id,
+                Err(err) => {
+                  let err =
+                    async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+                  cleanup(scope);
+                  return Err(err);
+                }
+              };
+              rest_assign_target = Some(AsyncAssignTarget::Member {
+                base_root,
+                key: &member.stx.right as *const String,
+              });
+            }
+            AsyncEval::Suspend(mut suspend) => {
+              if let Err(err) = async_frames_push(
+                &mut suspend.frames,
+                AsyncFrame::BindArrRestAssignMemberAfterBase {
+                  pat: pat as *const ArrPat,
+                  iterator_record,
+                  iterator_root,
+                  next_method_root,
+                  value_root,
+                  member: &*member.stx as *const MemberExpr,
+                  kind,
+                },
+              ) {
+                for mut frame in suspend.frames {
+                  async_teardown_frame(scope.heap_mut(), &mut frame);
+                }
+                cleanup(scope);
+                return Err(err);
+              }
+              return Ok(AsyncEval::Suspend(suspend));
+            }
+          }
+        }
+        Expr::ComputedMember(member) => {
+          if member.stx.optional_chaining {
+            let err = VmError::InvariantViolation("optional chaining used in assignment target");
+            let err =
+              async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+            cleanup(scope);
+            return Err(err);
+          }
+
+          let base_eval = match async_eval_expr(evaluator, scope, &member.stx.object) {
+            Ok(v) => v,
+            Err(err) => {
+              let err =
+                async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+              cleanup(scope);
+              return Err(err);
+            }
+          };
+
+          match base_eval {
+            AsyncEval::Complete(base) => {
+              let mut member_scope = scope.reborrow();
+              member_scope.push_root(base)?;
+              let member_eval =
+                match async_eval_expr(evaluator, &mut member_scope, &member.stx.member) {
+                  Ok(v) => v,
+                  Err(err) => {
+                    let err = async_iterator_close_on_error_or_return(
+                      evaluator,
+                      &mut member_scope,
+                      &iterator_record,
+                      err,
+                    );
+                    cleanup(&mut member_scope);
+                    return Err(err);
+                  }
+                };
+              match member_eval {
+                AsyncEval::Complete(member_value) => {
+                  let base_root = match async_root_value(&mut member_scope, base) {
+                    Ok(id) => id,
+                    Err(err) => {
+                      let err = async_iterator_close_on_error_or_return(
+                        evaluator,
+                        &mut member_scope,
+                        &iterator_record,
+                        err,
+                      );
+                      cleanup(&mut member_scope);
+                      return Err(err);
+                    }
+                  };
+                  let key_value_root = match async_root_value(&mut member_scope, member_value) {
+                    Ok(id) => id,
+                    Err(err) => {
+                      member_scope.heap_mut().remove_root(base_root);
+                      let err = async_iterator_close_on_error_or_return(
+                        evaluator,
+                        &mut member_scope,
+                        &iterator_record,
+                        err,
+                      );
+                      cleanup(&mut member_scope);
+                      return Err(err);
+                    }
+                  };
+                  rest_assign_target = Some(AsyncAssignTarget::ComputedMember {
+                    base_root,
+                    key_value_root,
+                  });
+                }
+                AsyncEval::Suspend(mut suspend) => {
+                  let base_root = match async_root_value(&mut member_scope, base) {
+                    Ok(id) => id,
+                    Err(err) => {
+                      for mut frame in suspend.frames {
+                        async_teardown_frame(member_scope.heap_mut(), &mut frame);
+                      }
+                      let err = async_iterator_close_on_error_or_return(
+                        evaluator,
+                        &mut member_scope,
+                        &iterator_record,
+                        err,
+                      );
+                      cleanup(&mut member_scope);
+                      return Err(err);
+                    }
+                  };
+                  if let Err(err) = async_frames_push(
+                    &mut suspend.frames,
+                    AsyncFrame::BindArrRestAssignComputedMemberAfterMember {
+                      pat: pat as *const ArrPat,
+                      iterator_record,
+                      iterator_root,
+                      next_method_root,
+                      value_root,
+                      member: &*member.stx as *const ComputedMemberExpr,
+                      base_root,
+                      kind,
+                    },
+                  ) {
+                    for mut frame in suspend.frames {
+                      async_teardown_frame(member_scope.heap_mut(), &mut frame);
+                    }
+                    member_scope.heap_mut().remove_root(base_root);
+                    cleanup(&mut member_scope);
+                    return Err(err);
+                  }
+                  return Ok(AsyncEval::Suspend(suspend));
+                }
+              }
+            }
+            AsyncEval::Suspend(mut suspend) => {
+              if let Err(err) = async_frames_push(
+                &mut suspend.frames,
+                AsyncFrame::BindArrRestAssignComputedMemberAfterBase {
+                  pat: pat as *const ArrPat,
+                  iterator_record,
+                  iterator_root,
+                  next_method_root,
+                  value_root,
+                  member: &*member.stx as *const ComputedMemberExpr,
+                  kind,
+                },
+              ) {
+                for mut frame in suspend.frames {
+                  async_teardown_frame(scope.heap_mut(), &mut frame);
+                }
+                cleanup(scope);
+                return Err(err);
+              }
+              return Ok(AsyncEval::Suspend(suspend));
+            }
+          }
+        }
+        _ => {}
+      },
+      _ => {}
+    }
+  }
+
+  async_bind_array_pattern_rest_after_target(
+    evaluator,
+    scope,
+    pat,
+    iterator_record,
+    iterator_root,
+    next_method_root,
+    value_root,
+    kind,
+    rest_assign_target,
+  )
+}
+
+fn async_bind_array_pattern_rest_after_target(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  pat: &ArrPat,
+  mut iterator_record: iterator::IteratorRecord,
+  iterator_root: RootId,
+  next_method_root: RootId,
+  value_root: RootId,
+  kind: BindingKind,
+  rest_assign_target: Option<AsyncAssignTarget>,
+) -> Result<AsyncEval<()>, VmError> {
+  let cleanup = |scope: &mut Scope<'_>, rest_assign_target: Option<AsyncAssignTarget>| {
+    if let Some(target) = rest_assign_target {
+      async_assign_target_cleanup(scope.heap_mut(), target);
+    }
+    if scope.heap().get_root(value_root).is_some() {
+      scope.heap_mut().remove_root(value_root);
+    }
+    if scope.heap().get_root(iterator_root).is_some() {
+      scope.heap_mut().remove_root(iterator_root);
+    }
+    if scope.heap().get_root(next_method_root).is_some() {
+      scope.heap_mut().remove_root(next_method_root);
+    }
+  };
+
+  let Some(rest_pat) = &pat.rest else {
+    cleanup(scope, rest_assign_target);
+    return Err(VmError::InvariantViolation(
+      "rest-after-target called without rest pattern",
+    ));
+  };
+
+  let intr = evaluator
+    .vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+  // Rest element must produce a real Array exotic object.
+  let rest_arr = match scope.alloc_array(0) {
+    Ok(arr) => arr,
     Err(err) => {
-      cleanup(scope);
+      let err = async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+      cleanup(scope, rest_assign_target);
       return Err(err);
     }
   };
-  let mut rest_scope = scope.reborrow();
-  if let Err(err) = rest_scope.push_root(Value::Object(rest_arr)) {
-    cleanup(&mut rest_scope);
+  scope.push_root(Value::Object(rest_arr))?;
+  if let Err(err) = scope
+    .heap_mut()
+    .object_set_prototype(rest_arr, Some(intr.array_prototype()))
+  {
+    let err = async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+    cleanup(scope, rest_assign_target);
     return Err(err);
   }
 
   let mut rest_idx: u32 = 0;
-  while array_index < len {
-    // Budget rest-element copying.
+  loop {
+    // Budget rest-element copying: `...rest` can iterate many remaining indices.
     if let Err(err) = evaluator.tick() {
-      cleanup(&mut rest_scope);
+      let err = async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+      cleanup(scope, rest_assign_target);
       return Err(err);
     }
 
-    let v = match async_array_like_get(evaluator, &mut rest_scope, obj, array_index) {
+    let next = match iterator::iterator_step_value(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      scope,
+      &mut iterator_record,
+    ) {
       Ok(v) => v,
       Err(err) => {
-        cleanup(&mut rest_scope);
+        let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+        let err = async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+        cleanup(scope, rest_assign_target);
         return Err(err);
       }
     };
-    // Root the element value while allocating the property key and defining the property.
-    let res = {
-      let mut elem_scope = rest_scope.reborrow();
-      (|| -> Result<(), VmError> {
-        let v = elem_scope.push_root(v)?;
-        let key_s = elem_scope.alloc_u32_index_string(rest_idx)?;
-        let key = PropertyKey::from_string(key_s);
-        let _ = elem_scope
-          .create_data_property(rest_arr, key, v)
-          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut elem_scope, err))?;
-        Ok(())
-      })()
+    let Some(v) = next else {
+      break;
     };
-    if let Err(err) = res {
-      cleanup(&mut rest_scope);
+
+    // Root the element value while allocating the property key and defining the property: the
+    // iterator's `next` method may return newly-allocated objects that are not reachable from any
+    // heap object other than this local binding.
+    let create_res = {
+      let mut elem_scope = scope.reborrow();
+      elem_scope.push_roots(&[Value::Object(rest_arr), v])?;
+      let key_s = elem_scope.alloc_u32_index_string(rest_idx)?;
+      let key = PropertyKey::from_string(key_s);
+      elem_scope.create_data_property_or_throw(rest_arr, key, v)
+    };
+    if let Err(err) = create_res.map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))
+    {
+      let err = async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+      cleanup(scope, rest_assign_target);
       return Err(err);
     }
-
-    array_index = array_index.saturating_add(1);
     rest_idx = rest_idx.saturating_add(1);
   }
 
-  // Define `length` as non-enumerable to match real arrays closely enough for rest patterns.
-  let length_s = match rest_scope.alloc_string("length") {
-    Ok(s) => s,
-    Err(err) => {
-      cleanup(&mut rest_scope);
-      return Err(err);
-    }
-  };
-  let length_key = PropertyKey::from_string(length_s);
-  let length_desc = PropertyDescriptor {
-    enumerable: false,
-    configurable: true,
-    kind: PropertyKind::Data {
-      value: Value::Number(rest_idx as f64),
-      writable: true,
-    },
-  };
-  if let Err(err) = rest_scope
-    .define_property(rest_arr, length_key, length_desc)
-    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut rest_scope, err))
-  {
-    cleanup(&mut rest_scope);
-    return Err(err);
+  // We have fully consumed the iterator, so the outer destructuring roots can be dropped before
+  // binding/assignment of the rest element (which may suspend).
+  if scope.heap().get_root(value_root).is_some() {
+    scope.heap_mut().remove_root(value_root);
+  }
+  if scope.heap().get_root(iterator_root).is_some() {
+    scope.heap_mut().remove_root(iterator_root);
+  }
+  if scope.heap().get_root(next_method_root).is_some() {
+    scope.heap_mut().remove_root(next_method_root);
   }
 
-  // We no longer need the base array once the rest array has been created.
-  rest_scope.heap_mut().remove_root(value_root);
+  if let Some(target) = rest_assign_target {
+    let res = async_assign_target_put_value(evaluator, scope, target, Value::Object(rest_arr));
+    async_assign_target_cleanup(scope.heap_mut(), target);
+    return match res {
+      Ok(()) => Ok(AsyncEval::Complete(())),
+      Err(err) => Err(err),
+    };
+  }
 
-  async_bind_pattern(
-    evaluator,
-    &mut rest_scope,
-    &rest_pat.stx,
-    Value::Object(rest_arr),
-    kind,
-  )
+  async_bind_pattern(evaluator, scope, &rest_pat.stx, Value::Object(rest_arr), kind)
 }
 
 fn async_eval_class_decl(
@@ -38923,9 +40464,11 @@ fn async_resume_from_frames(
       AsyncFrame::BindArrAfterDefault {
         pat,
         elem_index,
-        array_index,
-        len,
+        iterator_record,
+        iterator_root,
+        next_method_root,
         value_root,
+        assign_target,
         kind,
       } => match state {
         AsyncState::Expr(default_res) => match default_res {
@@ -38939,38 +40482,77 @@ fn async_resume_from_frames(
                 "async array pattern continuation out of bounds",
               ))?;
 
-            match async_bind_pattern(evaluator, scope, &elem.target.stx, default_value, kind) {
-              Ok(AsyncEval::Complete(())) => {}
-              Ok(AsyncEval::Suspend(mut suspend)) => {
-                if let Err(_) = suspend.frames.try_reserve(1) {
-                  for mut frame in suspend.frames {
-                    async_teardown_frame(scope.heap_mut(), &mut frame);
-                  }
+            if let Some(target) = assign_target {
+              let assign_res = async_assign_target_put_value(evaluator, scope, target, default_value);
+              async_assign_target_cleanup(scope.heap_mut(), target);
+              if let Err(err) = assign_res {
+                let err =
+                  async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+                if scope.heap().get_root(value_root).is_some() {
                   scope.heap_mut().remove_root(value_root);
-                  for mut frame in frames.drain(..) {
-                    async_teardown_frame(scope.heap_mut(), &mut frame);
-                  }
-                  return Err(VmError::OutOfMemory);
                 }
-                suspend.frames.push_back(AsyncFrame::BindArrContinue {
-                  pat,
-                  elem_index: elem_index.saturating_add(1),
-                  array_index: array_index.saturating_add(1),
-                  len,
-                  value_root,
-                  kind,
-                });
-                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
-                return Ok(AsyncBodyResult::Await {
-                  kind: suspend.kind,
-                  await_value: suspend.await_value,
-                  frames: suspend.frames,
-                });
-              }
-              Err(err) => {
-                scope.heap_mut().remove_root(value_root);
+                if scope.heap().get_root(iterator_root).is_some() {
+                  scope.heap_mut().remove_root(iterator_root);
+                }
+                if scope.heap().get_root(next_method_root).is_some() {
+                  scope.heap_mut().remove_root(next_method_root);
+                }
                 state = AsyncState::Expr(Err(err));
                 continue;
+              }
+            } else {
+              match async_bind_pattern(evaluator, scope, &elem.target.stx, default_value, kind) {
+                Ok(AsyncEval::Complete(())) => {}
+                Ok(AsyncEval::Suspend(mut suspend)) => {
+                  if let Err(_) = suspend.frames.try_reserve(1) {
+                    for mut frame in suspend.frames {
+                      async_teardown_frame(scope.heap_mut(), &mut frame);
+                    }
+                    if scope.heap().get_root(value_root).is_some() {
+                      scope.heap_mut().remove_root(value_root);
+                    }
+                    if scope.heap().get_root(iterator_root).is_some() {
+                      scope.heap_mut().remove_root(iterator_root);
+                    }
+                    if scope.heap().get_root(next_method_root).is_some() {
+                      scope.heap_mut().remove_root(next_method_root);
+                    }
+                    for mut frame in frames {
+                      async_teardown_frame(scope.heap_mut(), &mut frame);
+                    }
+                    return Err(VmError::OutOfMemory);
+                  }
+                  suspend.frames.push_back(AsyncFrame::BindArrContinue {
+                    pat,
+                    elem_index: elem_index.saturating_add(1),
+                    iterator_record,
+                    iterator_root,
+                    next_method_root,
+                    value_root,
+                    kind,
+                  });
+                  async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
+                  return Ok(AsyncBodyResult::Await {
+                    kind: suspend.kind,
+                    await_value: suspend.await_value,
+                    frames: suspend.frames,
+                  });
+                }
+                Err(err) => {
+                  let err =
+                    async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+                  if scope.heap().get_root(value_root).is_some() {
+                    scope.heap_mut().remove_root(value_root);
+                  }
+                  if scope.heap().get_root(iterator_root).is_some() {
+                    scope.heap_mut().remove_root(iterator_root);
+                  }
+                  if scope.heap().get_root(next_method_root).is_some() {
+                    scope.heap_mut().remove_root(next_method_root);
+                  }
+                  state = AsyncState::Expr(Err(err));
+                  continue;
+                }
               }
             }
 
@@ -38978,11 +40560,13 @@ fn async_resume_from_frames(
               evaluator,
               scope,
               pat_ref,
+              iterator_record,
+              iterator_root,
+              next_method_root,
               value_root,
               kind,
               elem_index.saturating_add(1),
-              array_index.saturating_add(1),
-              len,
+              None,
             ) {
               Ok(AsyncEval::Complete(())) => state = AsyncState::Expr(Ok(Value::Undefined)),
               Ok(AsyncEval::Suspend(mut suspend)) => {
@@ -38993,14 +40577,26 @@ fn async_resume_from_frames(
                   frames: suspend.frames,
                 });
               }
-              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. } | VmError::Return(_))) => {
                 state = AsyncState::Expr(Err(err))
               }
               Err(err) => return Err(err),
             }
           }
           Err(err) => {
-            scope.heap_mut().remove_root(value_root);
+            let err = async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+            if let Some(target) = assign_target {
+              async_assign_target_cleanup(scope.heap_mut(), target);
+            }
+            if scope.heap().get_root(value_root).is_some() {
+              scope.heap_mut().remove_root(value_root);
+            }
+            if scope.heap().get_root(iterator_root).is_some() {
+              scope.heap_mut().remove_root(iterator_root);
+            }
+            if scope.heap().get_root(next_method_root).is_some() {
+              scope.heap_mut().remove_root(next_method_root);
+            }
             state = AsyncState::Expr(Err(err));
           }
         },
@@ -39014,8 +40610,9 @@ fn async_resume_from_frames(
       AsyncFrame::BindArrContinue {
         pat,
         elem_index,
-        array_index,
-        len,
+        iterator_record,
+        iterator_root,
+        next_method_root,
         value_root,
         kind,
       } => match state {
@@ -39026,11 +40623,13 @@ fn async_resume_from_frames(
               evaluator,
               scope,
               pat_ref,
+              iterator_record,
+              iterator_root,
+              next_method_root,
               value_root,
               kind,
               elem_index,
-              array_index,
-              len,
+              None,
             ) {
               Ok(AsyncEval::Complete(())) => state = AsyncState::Expr(Ok(Value::Undefined)),
               Ok(AsyncEval::Suspend(mut suspend)) => {
@@ -39041,10 +40640,855 @@ fn async_resume_from_frames(
                   frames: suspend.frames,
                 });
               }
-              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. } | VmError::Return(_))) => {
                 state = AsyncState::Expr(Err(err))
               }
               Err(err) => return Err(err),
+            }
+          }
+          Err(err) => {
+            let err = async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+            if scope.heap().get_root(value_root).is_some() {
+              scope.heap_mut().remove_root(value_root);
+            }
+            if scope.heap().get_root(iterator_root).is_some() {
+              scope.heap_mut().remove_root(iterator_root);
+            }
+            if scope.heap().get_root(next_method_root).is_some() {
+              scope.heap_mut().remove_root(next_method_root);
+            }
+            state = AsyncState::Expr(Err(err));
+          }
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "bind arr continue frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::BindArrElemAssignMemberAfterBase {
+        pat,
+        elem_index,
+        iterator_record,
+        iterator_root,
+        next_method_root,
+        value_root,
+        member,
+        kind,
+      } => match state {
+        AsyncState::Expr(base_res) => match base_res {
+          Ok(base) => {
+            let pat_ref = unsafe { &*pat };
+            let member = unsafe { &*member };
+
+            let base_root = match async_root_value(scope, base) {
+              Ok(id) => id,
+              Err(err) => {
+                let err =
+                  async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+                if scope.heap().get_root(value_root).is_some() {
+                  scope.heap_mut().remove_root(value_root);
+                }
+                if scope.heap().get_root(iterator_root).is_some() {
+                  scope.heap_mut().remove_root(iterator_root);
+                }
+                if scope.heap().get_root(next_method_root).is_some() {
+                  scope.heap_mut().remove_root(next_method_root);
+                }
+                state = AsyncState::Expr(Err(err));
+                continue;
+              }
+            };
+
+            let assign_target = AsyncAssignTarget::Member {
+              base_root,
+              key: &member.right as *const String,
+            };
+
+            match async_bind_array_pattern_from(
+              evaluator,
+              scope,
+              pat_ref,
+              iterator_record,
+              iterator_root,
+              next_method_root,
+              value_root,
+              kind,
+              elem_index,
+              Some(assign_target),
+            ) {
+              Ok(AsyncEval::Complete(())) => state = AsyncState::Expr(Ok(Value::Undefined)),
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
+                return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. } | VmError::Return(_))) => {
+                state = AsyncState::Expr(Err(err))
+              }
+              Err(err) => return Err(err),
+            }
+          }
+          Err(err) => {
+            let err = async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+            if scope.heap().get_root(value_root).is_some() {
+              scope.heap_mut().remove_root(value_root);
+            }
+            if scope.heap().get_root(iterator_root).is_some() {
+              scope.heap_mut().remove_root(iterator_root);
+            }
+            if scope.heap().get_root(next_method_root).is_some() {
+              scope.heap_mut().remove_root(next_method_root);
+            }
+            state = AsyncState::Expr(Err(err));
+          }
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "bind arr elem member target base frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::BindArrElemAssignComputedMemberAfterBase {
+        pat,
+        elem_index,
+        iterator_record,
+        iterator_root,
+        next_method_root,
+        value_root,
+        member,
+        kind,
+      } => match state {
+        AsyncState::Expr(base_res) => match base_res {
+          Ok(base) => {
+            let pat_ref = unsafe { &*pat };
+            let member_ref = unsafe { &*member };
+            let mut member_scope = scope.reborrow();
+            if let Err(err) = member_scope.push_root(base) {
+              let err = async_iterator_close_on_error_or_return(
+                evaluator,
+                &mut member_scope,
+                &iterator_record,
+                err,
+              );
+              if member_scope.heap().get_root(value_root).is_some() {
+                member_scope.heap_mut().remove_root(value_root);
+              }
+              if member_scope.heap().get_root(iterator_root).is_some() {
+                member_scope.heap_mut().remove_root(iterator_root);
+              }
+              if member_scope.heap().get_root(next_method_root).is_some() {
+                member_scope.heap_mut().remove_root(next_method_root);
+              }
+              state = AsyncState::Expr(Err(err));
+              continue;
+            }
+
+            let member_eval = match async_eval_expr(evaluator, &mut member_scope, &member_ref.member) {
+              Ok(v) => v,
+              Err(err) => {
+                let err = async_iterator_close_on_error_or_return(
+                  evaluator,
+                  &mut member_scope,
+                  &iterator_record,
+                  err,
+                );
+                if member_scope.heap().get_root(value_root).is_some() {
+                  member_scope.heap_mut().remove_root(value_root);
+                }
+                if member_scope.heap().get_root(iterator_root).is_some() {
+                  member_scope.heap_mut().remove_root(iterator_root);
+                }
+                if member_scope.heap().get_root(next_method_root).is_some() {
+                  member_scope.heap_mut().remove_root(next_method_root);
+                }
+                state = AsyncState::Expr(Err(err));
+                continue;
+              }
+            };
+
+            match member_eval {
+              AsyncEval::Complete(member_value) => {
+                let base_root = match async_root_value(&mut member_scope, base) {
+                  Ok(id) => id,
+                  Err(err) => {
+                    let err = async_iterator_close_on_error_or_return(
+                      evaluator,
+                      &mut member_scope,
+                      &iterator_record,
+                      err,
+                    );
+                    if member_scope.heap().get_root(value_root).is_some() {
+                      member_scope.heap_mut().remove_root(value_root);
+                    }
+                    if member_scope.heap().get_root(iterator_root).is_some() {
+                      member_scope.heap_mut().remove_root(iterator_root);
+                    }
+                    if member_scope.heap().get_root(next_method_root).is_some() {
+                      member_scope.heap_mut().remove_root(next_method_root);
+                    }
+                    state = AsyncState::Expr(Err(err));
+                    continue;
+                  }
+                };
+                let key_value_root = match async_root_value(&mut member_scope, member_value) {
+                  Ok(id) => id,
+                  Err(err) => {
+                    member_scope.heap_mut().remove_root(base_root);
+                    let err = async_iterator_close_on_error_or_return(
+                      evaluator,
+                      &mut member_scope,
+                      &iterator_record,
+                      err,
+                    );
+                    if member_scope.heap().get_root(value_root).is_some() {
+                      member_scope.heap_mut().remove_root(value_root);
+                    }
+                    if member_scope.heap().get_root(iterator_root).is_some() {
+                      member_scope.heap_mut().remove_root(iterator_root);
+                    }
+                    if member_scope.heap().get_root(next_method_root).is_some() {
+                      member_scope.heap_mut().remove_root(next_method_root);
+                    }
+                    state = AsyncState::Expr(Err(err));
+                    continue;
+                  }
+                };
+
+                let assign_target = AsyncAssignTarget::ComputedMember {
+                  base_root,
+                  key_value_root,
+                };
+
+                match async_bind_array_pattern_from(
+                  evaluator,
+                  &mut member_scope,
+                  pat_ref,
+                  iterator_record,
+                  iterator_root,
+                  next_method_root,
+                  value_root,
+                  kind,
+                  elem_index,
+                  Some(assign_target),
+                ) {
+                  Ok(AsyncEval::Complete(())) => state = AsyncState::Expr(Ok(Value::Undefined)),
+                  Ok(AsyncEval::Suspend(mut suspend)) => {
+                    async_frames_try_append(member_scope.heap_mut(), &mut suspend.frames, &mut frames)?;
+                    return Ok(AsyncBodyResult::Await {
+                      kind: suspend.kind,
+                      await_value: suspend.await_value,
+                      frames: suspend.frames,
+                    });
+                  }
+                  Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. } | VmError::Return(_))) => {
+                    state = AsyncState::Expr(Err(err))
+                  }
+                  Err(err) => return Err(err),
+                }
+              }
+
+              AsyncEval::Suspend(mut suspend) => {
+                let base_root = match async_root_value(&mut member_scope, base) {
+                  Ok(id) => id,
+                  Err(err) => {
+                    for mut frame in suspend.frames {
+                      async_teardown_frame(member_scope.heap_mut(), &mut frame);
+                    }
+                    let err = async_iterator_close_on_error_or_return(
+                      evaluator,
+                      &mut member_scope,
+                      &iterator_record,
+                      err,
+                    );
+                    if member_scope.heap().get_root(value_root).is_some() {
+                      member_scope.heap_mut().remove_root(value_root);
+                    }
+                    if member_scope.heap().get_root(iterator_root).is_some() {
+                      member_scope.heap_mut().remove_root(iterator_root);
+                    }
+                    if member_scope.heap().get_root(next_method_root).is_some() {
+                      member_scope.heap_mut().remove_root(next_method_root);
+                    }
+                    state = AsyncState::Expr(Err(err));
+                    continue;
+                  }
+                };
+                if let Err(err) = async_frames_push(
+                  &mut suspend.frames,
+                  AsyncFrame::BindArrElemAssignComputedMemberAfterMember {
+                    pat,
+                    elem_index,
+                    iterator_record,
+                    iterator_root,
+                    next_method_root,
+                    value_root,
+                    member,
+                    base_root,
+                    kind,
+                  },
+                ) {
+                  for mut frame in suspend.frames {
+                    async_teardown_frame(member_scope.heap_mut(), &mut frame);
+                  }
+                  member_scope.heap_mut().remove_root(base_root);
+                  if member_scope.heap().get_root(value_root).is_some() {
+                    member_scope.heap_mut().remove_root(value_root);
+                  }
+                  if member_scope.heap().get_root(iterator_root).is_some() {
+                    member_scope.heap_mut().remove_root(iterator_root);
+                  }
+                  if member_scope.heap().get_root(next_method_root).is_some() {
+                    member_scope.heap_mut().remove_root(next_method_root);
+                  }
+                  for mut frame in frames {
+                    async_teardown_frame(member_scope.heap_mut(), &mut frame);
+                  }
+                  return Err(err);
+                }
+                async_frames_try_append(member_scope.heap_mut(), &mut suspend.frames, &mut frames)?;
+                return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+            }
+          }
+          Err(err) => {
+            let err = async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+            if scope.heap().get_root(value_root).is_some() {
+              scope.heap_mut().remove_root(value_root);
+            }
+            if scope.heap().get_root(iterator_root).is_some() {
+              scope.heap_mut().remove_root(iterator_root);
+            }
+            if scope.heap().get_root(next_method_root).is_some() {
+              scope.heap_mut().remove_root(next_method_root);
+            }
+            state = AsyncState::Expr(Err(err));
+          }
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "bind arr elem computed member base frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::BindArrElemAssignComputedMemberAfterMember {
+        pat,
+        elem_index,
+        iterator_record,
+        iterator_root,
+        next_method_root,
+        value_root,
+        member: _,
+        base_root,
+        kind,
+      } => match state {
+        AsyncState::Expr(member_res) => match member_res {
+          Ok(member_value) => {
+            let pat_ref = unsafe { &*pat };
+            // Root computed key so it survives until `PutValue`.
+            let key_value_root = match async_root_value(scope, member_value) {
+              Ok(id) => id,
+              Err(err) => {
+                let err =
+                  async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+                scope.heap_mut().remove_root(base_root);
+                if scope.heap().get_root(value_root).is_some() {
+                  scope.heap_mut().remove_root(value_root);
+                }
+                if scope.heap().get_root(iterator_root).is_some() {
+                  scope.heap_mut().remove_root(iterator_root);
+                }
+                if scope.heap().get_root(next_method_root).is_some() {
+                  scope.heap_mut().remove_root(next_method_root);
+                }
+                state = AsyncState::Expr(Err(err));
+                continue;
+              }
+            };
+
+            let assign_target = AsyncAssignTarget::ComputedMember {
+              base_root,
+              key_value_root,
+            };
+
+            match async_bind_array_pattern_from(
+              evaluator,
+              scope,
+              pat_ref,
+              iterator_record,
+              iterator_root,
+              next_method_root,
+              value_root,
+              kind,
+              elem_index,
+              Some(assign_target),
+            ) {
+              Ok(AsyncEval::Complete(())) => state = AsyncState::Expr(Ok(Value::Undefined)),
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
+                return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. } | VmError::Return(_))) => {
+                state = AsyncState::Expr(Err(err))
+              }
+              Err(err) => return Err(err),
+            }
+          }
+          Err(err) => {
+            scope.heap_mut().remove_root(base_root);
+            let err = async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+            if scope.heap().get_root(value_root).is_some() {
+              scope.heap_mut().remove_root(value_root);
+            }
+            if scope.heap().get_root(iterator_root).is_some() {
+              scope.heap_mut().remove_root(iterator_root);
+            }
+            if scope.heap().get_root(next_method_root).is_some() {
+              scope.heap_mut().remove_root(next_method_root);
+            }
+            state = AsyncState::Expr(Err(err));
+          }
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "bind arr elem computed member key frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::BindArrRestAssignMemberAfterBase {
+        pat,
+        iterator_record,
+        iterator_root,
+        next_method_root,
+        value_root,
+        member,
+        kind,
+      } => match state {
+        AsyncState::Expr(base_res) => match base_res {
+          Ok(base) => {
+            let pat_ref = unsafe { &*pat };
+            let member = unsafe { &*member };
+
+            let base_root = match async_root_value(scope, base) {
+              Ok(id) => id,
+              Err(err) => {
+                let err =
+                  async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+                if scope.heap().get_root(value_root).is_some() {
+                  scope.heap_mut().remove_root(value_root);
+                }
+                if scope.heap().get_root(iterator_root).is_some() {
+                  scope.heap_mut().remove_root(iterator_root);
+                }
+                if scope.heap().get_root(next_method_root).is_some() {
+                  scope.heap_mut().remove_root(next_method_root);
+                }
+                state = AsyncState::Expr(Err(err));
+                continue;
+              }
+            };
+
+            let rest_assign_target = Some(AsyncAssignTarget::Member {
+              base_root,
+              key: &member.right as *const String,
+            });
+
+            match async_bind_array_pattern_rest_after_target(
+              evaluator,
+              scope,
+              pat_ref,
+              iterator_record,
+              iterator_root,
+              next_method_root,
+              value_root,
+              kind,
+              rest_assign_target,
+            ) {
+              Ok(AsyncEval::Complete(())) => state = AsyncState::Expr(Ok(Value::Undefined)),
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
+                return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. } | VmError::Return(_))) => {
+                state = AsyncState::Expr(Err(err))
+              }
+              Err(err) => return Err(err),
+            }
+          }
+          Err(err) => {
+            let err = async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+            if scope.heap().get_root(value_root).is_some() {
+              scope.heap_mut().remove_root(value_root);
+            }
+            if scope.heap().get_root(iterator_root).is_some() {
+              scope.heap_mut().remove_root(iterator_root);
+            }
+            if scope.heap().get_root(next_method_root).is_some() {
+              scope.heap_mut().remove_root(next_method_root);
+            }
+            state = AsyncState::Expr(Err(err));
+          }
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "bind arr rest member target base frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::BindArrRestAssignComputedMemberAfterBase {
+        pat,
+        iterator_record,
+        iterator_root,
+        next_method_root,
+        value_root,
+        member,
+        kind,
+      } => match state {
+        AsyncState::Expr(base_res) => match base_res {
+          Ok(base) => {
+            let pat_ref = unsafe { &*pat };
+            let member_ref = unsafe { &*member };
+            let mut member_scope = scope.reborrow();
+            if let Err(err) = member_scope.push_root(base) {
+              let err = async_iterator_close_on_error_or_return(
+                evaluator,
+                &mut member_scope,
+                &iterator_record,
+                err,
+              );
+              if member_scope.heap().get_root(value_root).is_some() {
+                member_scope.heap_mut().remove_root(value_root);
+              }
+              if member_scope.heap().get_root(iterator_root).is_some() {
+                member_scope.heap_mut().remove_root(iterator_root);
+              }
+              if member_scope.heap().get_root(next_method_root).is_some() {
+                member_scope.heap_mut().remove_root(next_method_root);
+              }
+              state = AsyncState::Expr(Err(err));
+              continue;
+            }
+
+            let member_eval = match async_eval_expr(evaluator, &mut member_scope, &member_ref.member) {
+              Ok(v) => v,
+              Err(err) => {
+                let err = async_iterator_close_on_error_or_return(
+                  evaluator,
+                  &mut member_scope,
+                  &iterator_record,
+                  err,
+                );
+                if member_scope.heap().get_root(value_root).is_some() {
+                  member_scope.heap_mut().remove_root(value_root);
+                }
+                if member_scope.heap().get_root(iterator_root).is_some() {
+                  member_scope.heap_mut().remove_root(iterator_root);
+                }
+                if member_scope.heap().get_root(next_method_root).is_some() {
+                  member_scope.heap_mut().remove_root(next_method_root);
+                }
+                state = AsyncState::Expr(Err(err));
+                continue;
+              }
+            };
+
+            match member_eval {
+              AsyncEval::Complete(member_value) => {
+                let base_root = match async_root_value(&mut member_scope, base) {
+                  Ok(id) => id,
+                  Err(err) => {
+                    let err = async_iterator_close_on_error_or_return(
+                      evaluator,
+                      &mut member_scope,
+                      &iterator_record,
+                      err,
+                    );
+                    if member_scope.heap().get_root(value_root).is_some() {
+                      member_scope.heap_mut().remove_root(value_root);
+                    }
+                    if member_scope.heap().get_root(iterator_root).is_some() {
+                      member_scope.heap_mut().remove_root(iterator_root);
+                    }
+                    if member_scope.heap().get_root(next_method_root).is_some() {
+                      member_scope.heap_mut().remove_root(next_method_root);
+                    }
+                    state = AsyncState::Expr(Err(err));
+                    continue;
+                  }
+                };
+                let key_value_root = match async_root_value(&mut member_scope, member_value) {
+                  Ok(id) => id,
+                  Err(err) => {
+                    member_scope.heap_mut().remove_root(base_root);
+                    let err = async_iterator_close_on_error_or_return(
+                      evaluator,
+                      &mut member_scope,
+                      &iterator_record,
+                      err,
+                    );
+                    if member_scope.heap().get_root(value_root).is_some() {
+                      member_scope.heap_mut().remove_root(value_root);
+                    }
+                    if member_scope.heap().get_root(iterator_root).is_some() {
+                      member_scope.heap_mut().remove_root(iterator_root);
+                    }
+                    if member_scope.heap().get_root(next_method_root).is_some() {
+                      member_scope.heap_mut().remove_root(next_method_root);
+                    }
+                    state = AsyncState::Expr(Err(err));
+                    continue;
+                  }
+                };
+
+                let rest_assign_target = Some(AsyncAssignTarget::ComputedMember {
+                  base_root,
+                  key_value_root,
+                });
+
+                match async_bind_array_pattern_rest_after_target(
+                  evaluator,
+                  &mut member_scope,
+                  pat_ref,
+                  iterator_record,
+                  iterator_root,
+                  next_method_root,
+                  value_root,
+                  kind,
+                  rest_assign_target,
+                ) {
+                  Ok(AsyncEval::Complete(())) => state = AsyncState::Expr(Ok(Value::Undefined)),
+                  Ok(AsyncEval::Suspend(mut suspend)) => {
+                    async_frames_try_append(member_scope.heap_mut(), &mut suspend.frames, &mut frames)?;
+                    return Ok(AsyncBodyResult::Await {
+                      kind: suspend.kind,
+                      await_value: suspend.await_value,
+                      frames: suspend.frames,
+                    });
+                  }
+                  Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. } | VmError::Return(_))) => {
+                    state = AsyncState::Expr(Err(err))
+                  }
+                  Err(err) => return Err(err),
+                }
+              }
+
+              AsyncEval::Suspend(mut suspend) => {
+                let base_root = match async_root_value(&mut member_scope, base) {
+                  Ok(id) => id,
+                  Err(err) => {
+                    for mut frame in suspend.frames {
+                      async_teardown_frame(member_scope.heap_mut(), &mut frame);
+                    }
+                    let err = async_iterator_close_on_error_or_return(
+                      evaluator,
+                      &mut member_scope,
+                      &iterator_record,
+                      err,
+                    );
+                    if member_scope.heap().get_root(value_root).is_some() {
+                      member_scope.heap_mut().remove_root(value_root);
+                    }
+                    if member_scope.heap().get_root(iterator_root).is_some() {
+                      member_scope.heap_mut().remove_root(iterator_root);
+                    }
+                    if member_scope.heap().get_root(next_method_root).is_some() {
+                      member_scope.heap_mut().remove_root(next_method_root);
+                    }
+                    state = AsyncState::Expr(Err(err));
+                    continue;
+                  }
+                };
+                if let Err(err) = async_frames_push(
+                  &mut suspend.frames,
+                  AsyncFrame::BindArrRestAssignComputedMemberAfterMember {
+                    pat,
+                    iterator_record,
+                    iterator_root,
+                    next_method_root,
+                    value_root,
+                    member,
+                    base_root,
+                    kind,
+                  },
+                ) {
+                  for mut frame in suspend.frames {
+                    async_teardown_frame(member_scope.heap_mut(), &mut frame);
+                  }
+                  member_scope.heap_mut().remove_root(base_root);
+                  if member_scope.heap().get_root(value_root).is_some() {
+                    member_scope.heap_mut().remove_root(value_root);
+                  }
+                  if member_scope.heap().get_root(iterator_root).is_some() {
+                    member_scope.heap_mut().remove_root(iterator_root);
+                  }
+                  if member_scope.heap().get_root(next_method_root).is_some() {
+                    member_scope.heap_mut().remove_root(next_method_root);
+                  }
+                  for mut frame in frames {
+                    async_teardown_frame(member_scope.heap_mut(), &mut frame);
+                  }
+                  return Err(err);
+                }
+                async_frames_try_append(member_scope.heap_mut(), &mut suspend.frames, &mut frames)?;
+                return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+            }
+          }
+          Err(err) => {
+            let err = async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+            if scope.heap().get_root(value_root).is_some() {
+              scope.heap_mut().remove_root(value_root);
+            }
+            if scope.heap().get_root(iterator_root).is_some() {
+              scope.heap_mut().remove_root(iterator_root);
+            }
+            if scope.heap().get_root(next_method_root).is_some() {
+              scope.heap_mut().remove_root(next_method_root);
+            }
+            state = AsyncState::Expr(Err(err));
+          }
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "bind arr rest computed member base frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::BindArrRestAssignComputedMemberAfterMember {
+        pat,
+        iterator_record,
+        iterator_root,
+        next_method_root,
+        value_root,
+        member: _,
+        base_root,
+        kind,
+      } => match state {
+        AsyncState::Expr(member_res) => match member_res {
+          Ok(member_value) => {
+            let pat_ref = unsafe { &*pat };
+            let key_value_root = match async_root_value(scope, member_value) {
+              Ok(id) => id,
+              Err(err) => {
+                let err =
+                  async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+                scope.heap_mut().remove_root(base_root);
+                if scope.heap().get_root(value_root).is_some() {
+                  scope.heap_mut().remove_root(value_root);
+                }
+                if scope.heap().get_root(iterator_root).is_some() {
+                  scope.heap_mut().remove_root(iterator_root);
+                }
+                if scope.heap().get_root(next_method_root).is_some() {
+                  scope.heap_mut().remove_root(next_method_root);
+                }
+                state = AsyncState::Expr(Err(err));
+                continue;
+              }
+            };
+
+            let rest_assign_target = Some(AsyncAssignTarget::ComputedMember {
+              base_root,
+              key_value_root,
+            });
+
+            match async_bind_array_pattern_rest_after_target(
+              evaluator,
+              scope,
+              pat_ref,
+              iterator_record,
+              iterator_root,
+              next_method_root,
+              value_root,
+              kind,
+              rest_assign_target,
+            ) {
+              Ok(AsyncEval::Complete(())) => state = AsyncState::Expr(Ok(Value::Undefined)),
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                async_frames_try_append(scope.heap_mut(), &mut suspend.frames, &mut frames)?;
+                return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. } | VmError::Return(_))) => {
+                state = AsyncState::Expr(Err(err))
+              }
+              Err(err) => return Err(err),
+            }
+          }
+          Err(err) => {
+            scope.heap_mut().remove_root(base_root);
+            let err = async_iterator_close_on_error_or_return(evaluator, scope, &iterator_record, err);
+            if scope.heap().get_root(value_root).is_some() {
+              scope.heap_mut().remove_root(value_root);
+            }
+            if scope.heap().get_root(iterator_root).is_some() {
+              scope.heap_mut().remove_root(iterator_root);
+            }
+            if scope.heap().get_root(next_method_root).is_some() {
+              scope.heap_mut().remove_root(next_method_root);
+            }
+            state = AsyncState::Expr(Err(err));
+          }
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "bind arr rest computed member key frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::BindAssignMemberAfterBase { member, value_root } => match state {
+        AsyncState::Expr(base_res) => match base_res {
+          Ok(base) => {
+            let member = unsafe { &*member };
+            let assign_res = (|| -> Result<(), VmError> {
+              let value = scope
+                .heap()
+                .get_root(value_root)
+                .ok_or(VmError::InvariantViolation("missing destructuring value root"))?;
+              let mut assign_scope = scope.reborrow();
+              assign_scope.push_root(value)?;
+              let mut reference = async_reference_from_member(evaluator, &mut assign_scope, member, base)?;
+              evaluator.root_reference(&mut assign_scope, &reference)?;
+              assign_scope.push_root(value)?;
+              evaluator
+                .put_value_to_reference(&mut assign_scope, &mut reference, value)
+                .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut assign_scope, err))?;
+              Ok(())
+            })();
+
+            scope.heap_mut().remove_root(value_root);
+            match assign_res {
+              Ok(()) => state = AsyncState::Expr(Ok(Value::Undefined)),
+              Err(err) => state = AsyncState::Expr(Err(err)),
             }
           }
           Err(err) => {
@@ -39054,7 +41498,241 @@ fn async_resume_from_frames(
         },
         AsyncState::Completion(_) => {
           return Err(VmError::InvariantViolation(
-            "bind arr continue frame received completion state",
+            "bind assign member base frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::BindAssignComputedMemberAfterBase { member, value_root } => match state {
+        AsyncState::Expr(base_res) => match base_res {
+          Ok(base) => {
+            let member_ref = unsafe { &*member };
+            let mut member_scope = scope.reborrow();
+            if let Err(err) = member_scope.push_root(base) {
+              member_scope.heap_mut().remove_root(value_root);
+              state = AsyncState::Expr(Err(err));
+              continue;
+            }
+
+            let member_eval = match async_eval_expr(evaluator, &mut member_scope, &member_ref.member) {
+              Ok(v) => v,
+              Err(err) => {
+                member_scope.heap_mut().remove_root(value_root);
+                state = AsyncState::Expr(Err(err));
+                continue;
+              }
+            };
+
+            match member_eval {
+              AsyncEval::Complete(member_value) => {
+                let assign_res = (|| -> Result<(), VmError> {
+                  let value = member_scope
+                    .heap()
+                    .get_root(value_root)
+                    .ok_or(VmError::InvariantViolation("missing destructuring value root"))?;
+
+                  let mut key_scope = member_scope.reborrow();
+                  key_scope.push_roots(&[base, member_value, value])?;
+                  let key = evaluator
+                    .to_property_key_operator(&mut key_scope, member_value)
+                    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+
+                  if is_nullish(base) {
+                    return Err(throw_type_error(
+                      evaluator.vm,
+                      &mut key_scope,
+                      "Cannot convert undefined or null to object",
+                    )?);
+                  }
+
+                  let mut reference = Reference::Property {
+                    base,
+                    receiver: base,
+                    key,
+                  };
+                  evaluator.root_reference(&mut key_scope, &reference)?;
+                  key_scope.push_root(value)?;
+                  evaluator
+                    .put_value_to_reference(&mut key_scope, &mut reference, value)
+                    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+                  Ok(())
+                })();
+
+                member_scope.heap_mut().remove_root(value_root);
+                match assign_res {
+                  Ok(()) => state = AsyncState::Expr(Ok(Value::Undefined)),
+                  Err(err) => state = AsyncState::Expr(Err(err)),
+                }
+              }
+
+              AsyncEval::Suspend(mut suspend) => {
+                let base_root = match async_root_value(&mut member_scope, base) {
+                  Ok(id) => id,
+                  Err(err) => {
+                    for mut frame in suspend.frames {
+                      async_teardown_frame(member_scope.heap_mut(), &mut frame);
+                    }
+                    member_scope.heap_mut().remove_root(value_root);
+                    state = AsyncState::Expr(Err(err));
+                    continue;
+                  }
+                };
+                if let Err(err) = async_frames_push(
+                  &mut suspend.frames,
+                  AsyncFrame::BindAssignComputedMemberAfterMember {
+                    member,
+                    base_root,
+                    value_root,
+                  },
+                ) {
+                  for mut frame in suspend.frames {
+                    async_teardown_frame(member_scope.heap_mut(), &mut frame);
+                  }
+                  member_scope.heap_mut().remove_root(value_root);
+                  member_scope.heap_mut().remove_root(base_root);
+                  for mut frame in frames {
+                    async_teardown_frame(member_scope.heap_mut(), &mut frame);
+                  }
+                  return Err(err);
+                }
+                async_frames_try_append(member_scope.heap_mut(), &mut suspend.frames, &mut frames)?;
+                return Ok(AsyncBodyResult::Await {
+                  kind: suspend.kind,
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+            }
+          }
+          Err(err) => {
+            scope.heap_mut().remove_root(value_root);
+            state = AsyncState::Expr(Err(err));
+          }
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "bind assign computed member base frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::BindAssignComputedMemberAfterMember {
+        member: _,
+        base_root,
+        value_root,
+      } => match state {
+        AsyncState::Expr(member_res) => {
+          let base = scope
+            .heap()
+            .get_root(base_root)
+            .ok_or(VmError::InvariantViolation(
+              "missing bind assign computed member base root",
+            ))?;
+          scope.heap_mut().remove_root(base_root);
+
+          match member_res {
+            Ok(member_value) => {
+              let assign_res = (|| -> Result<(), VmError> {
+                let value = scope
+                  .heap()
+                  .get_root(value_root)
+                  .ok_or(VmError::InvariantViolation("missing destructuring value root"))?;
+
+                let mut key_scope = scope.reborrow();
+                key_scope.push_roots(&[base, member_value, value])?;
+                let key = evaluator
+                  .to_property_key_operator(&mut key_scope, member_value)
+                  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+
+                if is_nullish(base) {
+                  return Err(throw_type_error(
+                    evaluator.vm,
+                    &mut key_scope,
+                    "Cannot convert undefined or null to object",
+                  )?);
+                }
+
+                let mut reference = Reference::Property {
+                  base,
+                  receiver: base,
+                  key,
+                };
+                evaluator.root_reference(&mut key_scope, &reference)?;
+                key_scope.push_root(value)?;
+                evaluator
+                  .put_value_to_reference(&mut key_scope, &mut reference, value)
+                  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+                Ok(())
+              })();
+
+              scope.heap_mut().remove_root(value_root);
+              match assign_res {
+                Ok(()) => state = AsyncState::Expr(Ok(Value::Undefined)),
+                Err(err) => state = AsyncState::Expr(Err(err)),
+              }
+            }
+            Err(err) => {
+              scope.heap_mut().remove_root(value_root);
+              state = AsyncState::Expr(Err(err));
+            }
+          }
+        }
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "bind assign computed member key frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::BindAssignSuperComputedMemberAfterMember { member: _, value_root } => match state {
+        AsyncState::Expr(member_res) => match member_res {
+          Ok(member_value) => {
+            let assign_res = (|| -> Result<(), VmError> {
+              let value = scope
+                .heap()
+                .get_root(value_root)
+                .ok_or(VmError::InvariantViolation("missing destructuring value root"))?;
+
+              let mut key_scope = scope.reborrow();
+              key_scope.push_roots(&[member_value, value])?;
+
+              let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
+              key_scope.push_root(receiver)?;
+
+              // Spec: `GetSuperBase` must be observed before `ToPropertyKey` for computed super
+              // properties.
+              let base = evaluator
+                .get_super_base(&mut key_scope)
+                .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+              key_scope.push_root(base)?;
+
+              let mut reference = Reference::SuperProperty {
+                base,
+                key: member_value,
+                receiver,
+              };
+              evaluator.root_reference(&mut key_scope, &reference)?;
+              key_scope.push_root(value)?;
+              evaluator
+                .put_value_to_reference(&mut key_scope, &mut reference, value)
+                .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+              Ok(())
+            })();
+
+            scope.heap_mut().remove_root(value_root);
+            match assign_res {
+              Ok(()) => state = AsyncState::Expr(Ok(Value::Undefined)),
+              Err(err) => state = AsyncState::Expr(Err(err)),
+            }
+          }
+          Err(err) => {
+            scope.heap_mut().remove_root(value_root);
+            state = AsyncState::Expr(Err(err));
+          }
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "bind assign super computed member key frame received completion state",
           ))
         }
       },
