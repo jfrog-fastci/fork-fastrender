@@ -6,6 +6,15 @@ fn new_runtime() -> JsRuntime {
   JsRuntime::new(vm, heap).unwrap()
 }
 
+fn new_gc_stress_runtime() -> JsRuntime {
+  let vm = Vm::new(VmOptions::default());
+  // Use a small heap and a conservative GC threshold so generator resume paths hit
+  // allocation-triggered GC reliably, without forcing a GC on *every* allocation (which makes the
+  // test extremely slow).
+  let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 512 * 1024));
+  JsRuntime::new(vm, heap).unwrap()
+}
+
 #[test]
 fn generator_compound_assignment_property_captures_old_value_before_yield() {
   let mut rt = new_runtime();
@@ -143,6 +152,38 @@ fn generator_compound_assignment_evaluates_base_key_and_old_value_once_across_yi
         o2.a === 100;
 
       ok1 && ok2
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_assignment_property_keeps_captured_base_alive_across_gc_on_resume() {
+  let mut rt = new_gc_stress_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function makeGarbage() {
+        // Allocate enough ephemeral objects to force GC while resuming from `yield`.
+        //
+        // Prefer fewer, larger allocations so we trigger GC without growing the heap's slot table
+        // to a huge size (which makes the test very slow).
+        for (let i = 0; i < 16; i++) {
+          new ArrayBuffer(64 * 1024);
+        }
+      }
+
+      function* g() {
+        // The LHS base object is only reachable from the generator continuation frame when the RHS
+        // yields.
+        return ({}).a = (yield 1, makeGarbage(), 42);
+      }
+
+      const it = g();
+      it.next();
+      const r = it.next(0);
+      r.done === true && r.value === 42
     "#,
     )
     .unwrap();

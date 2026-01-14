@@ -4712,6 +4712,242 @@ impl<'a> Evaluator<'a> {
     best
   }
 
+  fn class_field_initializer_span_start_scan(
+    &self,
+    member_span_start: u32,
+    expr_span_start: u32,
+    expr_span_end: u32,
+  ) -> u32 {
+    // `parse-js` expression `Loc` values intentionally exclude parentheses, instead storing them via
+    // the `ParenthesizedExpr` association marker.
+    //
+    // For class field initializers, we lazily reparse the initializer expression by slicing its
+    // source span and wrapping it in a synthetic class method:
+    //
+    //   (class extends null {m(){return <expr>;}})
+    //
+    // If the initializer begins with a parenthesized subexpression whose closing `)` appears
+    // *inside* the initializer (e.g. `(() => super.m())()` or `(x) + y`), the initializer's `Loc`
+    // start will point at the inner expression token, causing the slice to lose the opening `(` but
+    // keep the closing `)`. That results in an invalid snippet when reparsed.
+    //
+    // Detect the number of missing opening parentheses by computing the parenthesis balance of the
+    // snippet (ignoring those in strings/comments/template raw text), then scan backwards in the
+    // original source to include the required `(` token(s).
+    let source = self.env.source();
+    let text = source.text.as_bytes();
+    let member_start = (member_span_start as usize).min(text.len());
+    let start = (expr_span_start as usize).min(text.len());
+    let end = (expr_span_end as usize).min(text.len());
+    if start >= end || member_start >= start {
+      return expr_span_start;
+    }
+
+    // If the expression start is not preceded by an opening parenthesis (ignoring whitespace and
+    // block comments), its `Loc` is not missing a leading `(` so there is nothing to fix.
+    let mut probe = start;
+    loop {
+      while probe > member_start && text[probe - 1].is_ascii_whitespace() {
+        probe -= 1;
+      }
+
+      // Skip a block comment (`/* ... */`) directly before the current position.
+      if probe >= member_start + 2 && &text[probe - 2..probe] == b"*/" {
+        probe = probe.saturating_sub(2);
+        while probe >= member_start + 2 {
+          if &text[probe - 2..probe] == b"/*" {
+            probe = probe.saturating_sub(2);
+            break;
+          }
+          probe = probe.saturating_sub(1);
+        }
+        continue;
+      }
+      break;
+    }
+    if probe <= member_start || text[probe - 1] != b'(' {
+      return expr_span_start;
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum ScanState {
+      Normal,
+      SingleQuote,
+      DoubleQuote,
+      LineComment,
+      BlockComment,
+      TemplateRaw,
+      TemplateExpr { brace_depth: u32 },
+    }
+
+    let mut balance: i32 = 0;
+    let mut stack: Vec<ScanState> = Vec::new();
+    stack.push(ScanState::Normal);
+
+    let mut i = start;
+    while i < end {
+      let b = text[i];
+      match stack.last_mut().unwrap() {
+        ScanState::Normal => match b {
+          b'\'' => {
+            stack.push(ScanState::SingleQuote);
+            i += 1;
+          }
+          b'"' => {
+            stack.push(ScanState::DoubleQuote);
+            i += 1;
+          }
+          b'`' => {
+            stack.push(ScanState::TemplateRaw);
+            i += 1;
+          }
+          b'/' if i + 1 < end && text[i + 1] == b'/' => {
+            stack.push(ScanState::LineComment);
+            i += 2;
+          }
+          b'/' if i + 1 < end && text[i + 1] == b'*' => {
+            stack.push(ScanState::BlockComment);
+            i += 2;
+          }
+          b'(' => {
+            balance = balance.saturating_add(1);
+            i += 1;
+          }
+          b')' => {
+            balance = balance.saturating_sub(1);
+            i += 1;
+          }
+          _ => i += 1,
+        },
+        ScanState::TemplateExpr { brace_depth } => match b {
+          b'\'' => {
+            stack.push(ScanState::SingleQuote);
+            i += 1;
+          }
+          b'"' => {
+            stack.push(ScanState::DoubleQuote);
+            i += 1;
+          }
+          b'`' => {
+            stack.push(ScanState::TemplateRaw);
+            i += 1;
+          }
+          b'/' if i + 1 < end && text[i + 1] == b'/' => {
+            stack.push(ScanState::LineComment);
+            i += 2;
+          }
+          b'/' if i + 1 < end && text[i + 1] == b'*' => {
+            stack.push(ScanState::BlockComment);
+            i += 2;
+          }
+          b'{' => {
+            *brace_depth = brace_depth.saturating_add(1);
+            i += 1;
+          }
+          b'}' => {
+            if *brace_depth == 0 {
+              stack.pop();
+            } else {
+              *brace_depth = brace_depth.saturating_sub(1);
+            }
+            i += 1;
+          }
+          b'(' => {
+            balance = balance.saturating_add(1);
+            i += 1;
+          }
+          b')' => {
+            balance = balance.saturating_sub(1);
+            i += 1;
+          }
+          _ => i += 1,
+        },
+        ScanState::SingleQuote => match b {
+          b'\\' => i = (i + 2).min(end),
+          b'\'' => {
+            stack.pop();
+            i += 1;
+          }
+          _ => i += 1,
+        },
+        ScanState::DoubleQuote => match b {
+          b'\\' => i = (i + 2).min(end),
+          b'"' => {
+            stack.pop();
+            i += 1;
+          }
+          _ => i += 1,
+        },
+        ScanState::LineComment => match b {
+          b'\n' | b'\r' => {
+            stack.pop();
+            i += 1;
+          }
+          _ => i += 1,
+        },
+        ScanState::BlockComment => {
+          if b == b'*' && i + 1 < end && text[i + 1] == b'/' {
+            stack.pop();
+            i += 2;
+          } else {
+            i += 1;
+          }
+        }
+        ScanState::TemplateRaw => match b {
+          b'\\' => i = (i + 2).min(end),
+          b'`' => {
+            stack.pop();
+            i += 1;
+          }
+          b'$' if i + 1 < end && text[i + 1] == b'{' => {
+            stack.push(ScanState::TemplateExpr { brace_depth: 0 });
+            i += 2;
+          }
+          _ => i += 1,
+        },
+      }
+    }
+
+    if balance >= 0 {
+      return expr_span_start;
+    }
+    let mut missing = (-balance) as usize;
+
+    let mut best = start;
+    while missing > 0 {
+      // Skip whitespace before each parenthesis.
+      while best > member_start && text[best - 1].is_ascii_whitespace() {
+        best -= 1;
+      }
+
+      // Skip a block comment (`/* ... */`) directly before the current position.
+      if best >= member_start + 2 && &text[best - 2..best] == b"*/" {
+        best = best.saturating_sub(2);
+        while best >= member_start + 2 {
+          if &text[best - 2..best] == b"/*" {
+            best = best.saturating_sub(2);
+            break;
+          }
+          best = best.saturating_sub(1);
+        }
+        continue;
+      }
+
+      if best > member_start && text[best - 1] == b'(' {
+        best -= 1;
+        missing -= 1;
+      } else {
+        break;
+      }
+    }
+
+    if missing == 0 {
+      best as u32
+    } else {
+      expr_span_start
+    }
+  }
+
   fn instantiate_script(
     &mut self,
     scope: &mut Scope<'_>,
@@ -8847,6 +9083,16 @@ impl<'a> Evaluator<'a> {
                     }
                   }
                 }
+
+                let member_span_start = self
+                  .env
+                  .base_offset()
+                  .saturating_add(member_loc_start.saturating_sub(self.env.prefix_len()));
+                span_start = self.class_field_initializer_span_start_scan(
+                  member_span_start,
+                  span_start,
+                  span_end,
+                );
 
                 let code = self.vm.register_ecma_function(
                   self.env.source(),
