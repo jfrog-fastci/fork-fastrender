@@ -48,8 +48,8 @@ pub fn tree_update_from_accessibility_tree(
   }
 
   fn fallback_id_for_preorder(preorder: usize) -> NodeId {
-    // Preorder ids are 1-based. Encode them into a dedicated namespace so they can safely coexist
-    // with dom2-derived ids and with UI-level wrapper/page ids.
+    // Preorder ids are 1-based. Encode them into a dedicated namespace (renderer-preorder) so they
+    // can safely coexist with dom2-derived ids and with UI-level wrapper/page ids.
     accesskit_id_for_renderer_preorder(preorder)
   }
 

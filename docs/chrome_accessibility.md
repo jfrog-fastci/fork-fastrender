@@ -235,7 +235,8 @@ we cannot store them “as-is” in `accesskit::NodeId` because:
 To avoid collisions (and to make action routing reversible without a global hashmap), FastRender
 reserves the high 16 bits of AccessKit’s 128-bit `NodeId` space:
 
-- bits 127..120: fixed FastRender marker (currently `0x46`)
+- bits 127..120: fixed FastRender marker (currently `0x46`; chosen with bit 127 clear so it does not
+  overlap with the legacy tag-bit page-id encoding)
 - bits 119..112: namespace byte
 - bits 111..0: payload (namespace-specific)
 
@@ -256,6 +257,8 @@ Currently reserved namespaces:
 - `0x02`: compositor/chrome wrapper nodes (`ChromeWrapperNode`: Window/Chrome/Page)
 - `0x03`: chrome document DOM pre-order ids (renderer-chrome; future)
 - `0x04`: page/content DOM pre-order ids (tab + generation + dom id)
+- `0x05`: renderer preorder ids (fallback used by `accessibility::accesskit_bridge` when a stable
+  dom2 mapping is unavailable)
 
 #### Encoding (page/content nodes, namespace `0x04`)
 

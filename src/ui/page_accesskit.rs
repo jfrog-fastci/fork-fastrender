@@ -14,8 +14,9 @@
 use crate::ui::{decode_page_node_id, page_accesskit_ids, TabId, UiToWorker};
 
 fn decode_page_target_node_id(target: accesskit::NodeId) -> Option<(TabId, usize)> {
-  // Prefer the legacy tag-bit encoding first so we don't accidentally treat it as the canonical
-  // `(tab_id, generation, dom_node_id)` encoding (which would yield a bogus tab id).
+  // Prefer the legacy tag-bit encoding first for compatibility (some older tests/tools may still
+  // mint it). Canonical page node ids are marker+namespace encoded and will not be misinterpreted
+  // as tag-bit ids.
   if page_accesskit_ids::is_page_node_id(target) {
     return page_accesskit_ids::decode_page_node_id(target);
   }
