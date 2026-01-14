@@ -15,11 +15,11 @@
     "layout": 208.95735416119825,
     "paint": 32.99326644650499
   },
-  "notes": "Mostly correct, but noticeable layout/text differences: page background shade shifts (#fff vs ~#efefef) and some text metrics/wrapping differ (nav + post list), suggesting font-metric/line-height rounding issues.",
+  "notes": "Mostly correct. Layout matches Chrome overall (centered header containers, responsive top nav, and posts table widths/alignment), but remaining diffs include a slight background shade mismatch (white vs near-white) and some text metrics/wrapping differences (likely font AA/hinting/line-height rounding), plus minor SVG/logo rasterization differences.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 61877,
-    "diff_percent": 6.4455,
+    "diff_pixels": 61843,
+    "diff_percent": 6.442,
     "perceptual": 0.1716,
     "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
@@ -40,7 +40,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "163ca006dfa854e20d1922f2eb34b73fa1acae27"
+    "computed_at_commit": "b878cefc7ef849453d5de993358346b51fdce690"
   },
   "hotspot": "layout",
   "failure_stage": null,

@@ -563,25 +563,29 @@ mod tests {
     save_history_atomic(&history_path, &history).unwrap();
 
     let mut downloads = DownloadsState::default();
+    let path = PathBuf::from("/tmp/file.zip");
+    let path_display = path.display().to_string();
     downloads.downloads.push(DownloadEntry {
       download_id: DownloadId(1),
       tab_id: TabId(1),
       url: "https://example.com/file.zip".to_string(),
       file_name: "file.zip".to_string(),
-      path: PathBuf::from("/tmp/file.zip"),
-      path_display: "/tmp/file.zip".to_string(),
+      path,
+      path_display,
       status: DownloadStatus::Completed,
       started_at_ms: Some(1),
       finished_at_ms: Some(2),
     });
     // In-progress downloads should not be persisted.
+    let path = PathBuf::from("/tmp/inprogress.bin");
+    let path_display = path.display().to_string();
     downloads.downloads.push(DownloadEntry {
       download_id: DownloadId(2),
       tab_id: TabId(2),
       url: "https://example.com/inprogress".to_string(),
       file_name: "inprogress.bin".to_string(),
-      path: PathBuf::from("/tmp/inprogress.bin"),
-      path_display: "/tmp/inprogress.bin".to_string(),
+      path,
+      path_display,
       status: DownloadStatus::InProgress {
         received_bytes: 5,
         total_bytes: Some(10),

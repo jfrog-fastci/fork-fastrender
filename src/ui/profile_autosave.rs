@@ -531,25 +531,29 @@ mod tests {
       .unwrap();
 
     let mut downloads_a = DownloadsState::default();
+    let path = PathBuf::from("/tmp/a");
+    let path_display = path.display().to_string();
     downloads_a.downloads.push(crate::ui::browser_app::DownloadEntry {
       download_id: DownloadId(1),
       tab_id: TabId(1),
       url: "https://a.example/file".to_string(),
       file_name: "file".to_string(),
-      path: PathBuf::from("/tmp/a"),
-      path_display: "/tmp/a".to_string(),
+      path,
+      path_display,
       status: crate::ui::browser_app::DownloadStatus::Completed,
       started_at_ms: Some(1),
       finished_at_ms: Some(2),
     });
     let mut downloads_b = DownloadsState::default();
+    let path = PathBuf::from("/tmp/b");
+    let path_display = path.display().to_string();
     downloads_b.downloads.push(crate::ui::browser_app::DownloadEntry {
       download_id: DownloadId(2),
       tab_id: TabId(2),
       url: "https://b.example/file".to_string(),
       file_name: "file".to_string(),
-      path: PathBuf::from("/tmp/b"),
-      path_display: "/tmp/b".to_string(),
+      path,
+      path_display,
       status: crate::ui::browser_app::DownloadStatus::Cancelled,
       started_at_ms: Some(3),
       finished_at_ms: Some(4),
