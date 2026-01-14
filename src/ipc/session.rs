@@ -159,15 +159,6 @@ impl RendererSession {
         }))
       }
 
-      BrowserToRenderer::FrameAck { frame_seq } => {
-        if self.state != RendererSessionState::Running {
-          return Err(IpcError::InvalidParameters {
-            msg: format!("FrameAck sent in state {:?}", self.state),
-          });
-        }
-        Ok(Some(BrowserToRenderer::FrameAck { frame_seq }))
-      }
-
       BrowserToRenderer::Shutdown { .. } => unreachable!("handled above"), // fastrender-allow-panic
     }
   }
