@@ -1865,6 +1865,7 @@ dependencies = [
  "aes",
  "aes-gcm",
  "arboard",
+ "audiopus_sys",
  "avif-decode",
  "avif-parse",
  "base64",
