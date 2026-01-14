@@ -85,14 +85,14 @@ fn generator_dynamic_import_specifier_can_yield() -> Result<(), VmError> {
     &mut hooks,
     r#"
       function* g() {
-        return import(yield 0);
+        return import(yield 'x');
       }
 
       var it = g();
       var first = it.next();
       var second = it.next("./m.js");
 
-      first.value === 0 &&
+      first.value === 'x' &&
         first.done === false &&
         second.done === true &&
         second.value &&

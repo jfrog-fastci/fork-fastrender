@@ -16792,7 +16792,7 @@ pub(crate) enum GenFrame {
     args: Vec<Value>,
     arg_index: usize,
   },
- 
+
   /// Continue evaluating an array literal after a single element expression completes.
   LitArrAfterSingle {
     expr: *const LitArrExpr,
@@ -44764,7 +44764,6 @@ fn gen_resume_from_frames(
         }
         abrupt => state = abrupt,
       },
-
       GenFrame::ImportAfterSpecifier { expr } => match state {
         Completion::Normal(v) => {
           let expr = unsafe { &*expr };
