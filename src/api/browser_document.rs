@@ -1627,6 +1627,8 @@ impl BrowserDocument {
     self.options.scroll_x = effective_viewport.x;
     self.options.scroll_y = effective_viewport.y;
     self.options.element_scroll_offsets = frame.scroll_state.elements.clone();
+    self.options.scroll_delta = frame.scroll_state.viewport_delta;
+    self.options.element_scroll_deltas = frame.scroll_state.elements_delta.clone();
 
     // A successful paint always satisfies any outstanding paint invalidation, but must not clear
     // pending style/layout dirtiness.
@@ -2767,9 +2769,101 @@ mod tests {
     );
     let expected_delta_y = state.viewport.y - requested_y;
     assert!(
-      (state.viewport_delta.y - expected_delta_y).abs() < 0.5 && state.viewport_delta.y.abs() > 0.1,
+      (state.viewport_delta.y - expected_delta_y).abs() < 0.5
+        && state.viewport_delta.y.abs() > 0.1,
       "expected viewport_delta.y to reflect paint-time snap adjustment (~{expected_delta_y}), got {}",
       state.viewport_delta.y
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn relayout_clamping_updates_viewport_scroll_delta() -> Result<()> {
+    fn set_height(dom: &mut DomNode, id_value: &str, height_px: u32) -> bool {
+      let style_value = format!("height: {height_px}px;");
+      let mut stack = vec![dom];
+      while let Some(node) = stack.pop() {
+        if let DomNodeType::Element { attributes, .. } = &mut node.node_type {
+          let id_matches = attributes.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("id") && value.as_str() == id_value
+          });
+          if id_matches {
+            if let Some((_, value)) = attributes
+              .iter_mut()
+              .find(|(name, _)| name.eq_ignore_ascii_case("style"))
+            {
+              let changed = *value != style_value;
+              *value = style_value;
+              return changed;
+            } else {
+              attributes.push(("style".to_string(), style_value));
+              return true;
+            }
+          }
+        }
+        for child in node.children.iter_mut() {
+          stack.push(child);
+        }
+      }
+      false
+    }
+
+    let html = r#"<!doctype html>
+<html>
+  <head>
+    <style>
+      html, body { margin: 0; padding: 0; }
+    </style>
+  </head>
+  <body>
+    <div id="spacer" style="height: 2000px;"></div>
+  </body>
+</html>"#;
+    let mut document = BrowserDocument::new(
+      renderer_for_tests(),
+      html,
+      RenderOptions::default().with_viewport(100, 100),
+    )?;
+    document.render_frame()?;
+
+    // Jump to the bottom with a zero delta so any subsequent scroll delta comes from relayout
+    // clamping/anchoring logic rather than programmatic scroll input.
+    document.set_scroll_state(ScrollState::from_parts_with_deltas(
+      Point::new(0.0, 1900.0),
+      std::collections::HashMap::new(),
+      Point::ZERO,
+      std::collections::HashMap::new(),
+    ));
+    let initial = document.paint_from_cache_frame_with_deadline(None)?;
+    let before_scroll_y = initial.scroll_state.viewport.y;
+
+    // Shrink the content height so the existing scroll offset becomes out of range and must be
+    // clamped during the next layout+paint.
+    assert!(
+      document.mutate_dom(|dom| set_height(dom, "spacer", 1000)),
+      "expected DOM mutation to update spacer height"
+    );
+    let after = document.render_frame_with_scroll_state()?;
+    let after_scroll_y = after.scroll_state.viewport.y;
+
+    assert!(
+      after_scroll_y < before_scroll_y,
+      "expected relayout to clamp scroll_y; before={before_scroll_y}, after={after_scroll_y}"
+    );
+    let expected_delta_y = after_scroll_y - before_scroll_y;
+    assert!(
+      expected_delta_y.abs() > 0.5,
+      "expected relayout clamping to change scroll_y; got delta={expected_delta_y}"
+    );
+    assert!(
+      (after.scroll_state.viewport_delta.y - expected_delta_y).abs() < 0.5,
+      "expected viewport_delta.y to match scroll adjustment ({expected_delta_y}), got {}",
+      after.scroll_state.viewport_delta.y
+    );
+    let stored_delta_y = document.scroll_state().viewport_delta.y;
+    assert!(
+      (stored_delta_y - expected_delta_y).abs() < 0.5,
+      "expected BrowserDocument scroll_delta.y to sync to {expected_delta_y}, got {stored_delta_y}"
     );
     Ok(())
   }
@@ -2814,10 +2908,17 @@ mod tests {
       .next()
       .expect("expected element scroll state");
 
-    // Force the element scroll offset far beyond the scrollable range and ensure paint clamps it.
-    let mut next = initial.clone();
-    next.elements.insert(box_id, Point::new(0.0, 50000.0));
-    document.set_scroll_state(next);
+    // Force the element scroll offset far beyond the scrollable range and ensure paint clamps it,
+    // emitting a corresponding scroll delta.
+    let requested_y = 50000.0;
+    let mut elements = std::collections::HashMap::new();
+    elements.insert(box_id, Point::new(0.0, requested_y));
+    document.set_scroll_state(ScrollState::from_parts_with_deltas(
+      initial.viewport,
+      elements,
+      Point::ZERO,
+      std::collections::HashMap::new(),
+    ));
 
     let frame = document.paint_from_cache_frame_with_deadline(None)?;
     let expected_max_y = 2000.0 - 100.0;
@@ -2831,12 +2932,24 @@ mod tests {
       (stored_y - expected_max_y).abs() < 0.5,
       "expected BrowserDocument element scroll to sync to {expected_max_y}, got {stored_y}"
     );
+    let expected_delta_y = painted_y - requested_y;
+    let actual_delta_y = frame.scroll_state.element_delta(box_id).y;
+    assert!(
+      (actual_delta_y - expected_delta_y).abs() < 0.5 && actual_delta_y.abs() > 0.1,
+      "expected element_delta.y to match paint-time clamp adjustment ({expected_delta_y}), got {actual_delta_y}"
+    );
+    let stored_delta_y = document.scroll_state().element_delta(box_id).y;
+    assert!(
+      (stored_delta_y - expected_delta_y).abs() < 0.5,
+      "expected BrowserDocument element_scroll_deltas to sync to {expected_delta_y}, got {stored_delta_y}"
+    );
     Ok(())
   }
 
   #[test]
   fn scroll_anchoring_nested_scroll_containers_adjust_innermost_only() -> Result<()> {
     fn set_style_height(dom: &mut DomNode, id: &str, height_px: u32) -> bool {
+      let style_value = format!("height: {height_px}px;");
       let mut stack = vec![dom];
       while let Some(node) = stack.pop() {
         if let DomNodeType::Element { attributes, .. } = &mut node.node_type {
@@ -2844,15 +2957,15 @@ mod tests {
             name.eq_ignore_ascii_case("id") && value.eq_ignore_ascii_case(id)
           });
           if matches_id {
-            let style_value = format!("height: {height_px}px;");
             if let Some((_, value)) = attributes
               .iter_mut()
               .find(|(name, _)| name.eq_ignore_ascii_case("style"))
             {
+              let changed = *value != style_value;
               *value = style_value;
-            } else {
-              attributes.push(("style".to_string(), style_value));
+              return changed;
             }
+            attributes.push(("style".to_string(), style_value));
             return true;
           }
         }
@@ -2941,6 +3054,31 @@ mod tests {
       "expected inner scroll_y to be {expected_inner}, got {inner_after}"
     );
 
+    // Scroll anchoring adjustments should be surfaced as deltas so downstream systems can treat them
+    // like scroll events.
+    let expected_delta_y = inner_after - inner_before;
+    assert!(
+      frame.scroll_state.viewport_delta.y.abs() < 0.5,
+      "expected viewport_delta.y to remain ~0, got {}",
+      frame.scroll_state.viewport_delta.y
+    );
+    let actual_delta_y = frame.scroll_state.element_delta(scroller_box_id).y;
+    assert!(
+      (actual_delta_y - expected_delta_y).abs() < 0.5 && actual_delta_y.abs() > 0.1,
+      "expected element_delta.y to match scroll anchoring adjustment ({expected_delta_y}), got {actual_delta_y}"
+    );
+
+    let stored = document.scroll_state();
+    assert!(
+      stored.viewport_delta.y.abs() < 0.5,
+      "expected BrowserDocument viewport_delta.y to remain ~0, got {}",
+      stored.viewport_delta.y
+    );
+    let stored_delta_y = stored.element_delta(scroller_box_id).y;
+    assert!(
+      (stored_delta_y - expected_delta_y).abs() < 0.5,
+      "expected BrowserDocument element_scroll_deltas to sync to {expected_delta_y}, got {stored_delta_y}"
+    );
     Ok(())
   }
 

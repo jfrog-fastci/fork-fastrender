@@ -6721,6 +6721,23 @@ fn prepare_fragment_tree_paint_state(
   // area).
   fragment_tree.set_viewport_size(paint_viewport);
 
+  fn sanitize_scroll_point(point: Point) -> Point {
+    Point::new(
+      if point.x.is_finite() { point.x } else { 0.0 },
+      if point.y.is_finite() { point.y } else { 0.0 },
+    )
+  }
+
+  // The paint pipeline may adjust scroll offsets (scroll snapping, clamping, textarea caret
+  // scrolling, etc). Capture the pre-adjustment state so we can emit scroll deltas that reflect
+  // those adjustments and downstream systems can treat them like scroll events.
+  let pre_viewport_scroll = sanitize_scroll_point(scroll_state.viewport);
+  let pre_element_scrolls: HashMap<usize, Point> = scroll_state
+    .elements
+    .iter()
+    .map(|(&id, &offset)| (id, sanitize_scroll_point(offset)))
+    .collect();
+
   scroll_state = crate::scroll::resolve_effective_scroll_state_for_paint_mut(
     &mut fragment_tree,
     scroll_state,
@@ -7411,6 +7428,44 @@ fn prepare_fragment_tree_paint_state(
   scroll_state
     .elements
     .retain(|_, offset| *offset != Point::ZERO);
+
+  // Update scroll deltas based on any snap/clamp adjustments applied during paint.
+  let post_viewport_scroll = scroll_state.viewport;
+  let viewport_adjustment = Point::new(
+    post_viewport_scroll.x - pre_viewport_scroll.x,
+    post_viewport_scroll.y - pre_viewport_scroll.y,
+  );
+  if viewport_adjustment != Point::ZERO {
+    scroll_state.viewport_delta = sanitize_scroll_point(scroll_state.viewport_delta);
+    scroll_state.viewport_delta = Point::new(
+      scroll_state.viewport_delta.x + viewport_adjustment.x,
+      scroll_state.viewport_delta.y + viewport_adjustment.y,
+    );
+  } else {
+    // Still sanitize so non-finite caller input can't leak into container query fingerprints.
+    scroll_state.viewport_delta = sanitize_scroll_point(scroll_state.viewport_delta);
+  }
+
+  for delta in scroll_state.elements_delta.values_mut() {
+    *delta = sanitize_scroll_point(*delta);
+  }
+  let mut element_ids: Vec<usize> = pre_element_scrolls
+    .keys()
+    .chain(scroll_state.elements.keys())
+    .copied()
+    .collect();
+  element_ids.sort_unstable();
+  element_ids.dedup();
+  for id in element_ids {
+    let pre = pre_element_scrolls.get(&id).copied().unwrap_or(Point::ZERO);
+    let post = scroll_state.elements.get(&id).copied().unwrap_or(Point::ZERO);
+    let adjustment = Point::new(post.x - pre.x, post.y - pre.y);
+    if adjustment != Point::ZERO {
+      let entry = scroll_state.elements_delta.entry(id).or_insert(Point::ZERO);
+      *entry = Point::new(entry.x + adjustment.x, entry.y + adjustment.y);
+    }
+  }
+  scroll_state.elements_delta.retain(|_, delta| *delta != Point::ZERO);
   let scroll = scroll_state.viewport;
 
   // Sticky positioning affects the geometry used by view timelines. Apply sticky offsets before
