@@ -5,6 +5,11 @@ target_pages/
 /tests/ref/fixtures/**/failures/
 .cargo_home_local/
 .cargo_home_agent/
+.cargo_home/
+.cargo_check.log
+.wpt_dom.log
+.target_agent*/
+.target_check*/
 .venv/
 __pycache__/
 *.py[cod]
