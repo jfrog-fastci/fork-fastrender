@@ -3630,14 +3630,13 @@ const NODE_LIST_ITERATOR_KIND_ENTRIES: u8 = 2;
 // This is used by `document.createNodeIterator` to wire up the correct prototype without walking
 // `globalThis`, and is copied onto realm-owned documents so their iterators behave consistently.
 const NODE_ITERATOR_PROTOTYPE_KEY: &str = "__fastrender_node_iterator_prototype";
-const NODE_ITERATOR_ID_KEY: &str = "__fastrender_node_iterator_id";
 const NODE_ITERATOR_DOCUMENT_KEY: &str = "__fastrender_node_iterator_document";
 const NODE_ITERATOR_ROOT_KEY: &str = "__fastrender_node_iterator_root";
 const NODE_ITERATOR_REFERENCE_KEY: &str = "__fastrender_node_iterator_reference";
 const NODE_ITERATOR_WHAT_TO_SHOW_KEY: &str = "__fastrender_node_iterator_what_to_show";
 const NODE_ITERATOR_FILTER_KEY: &str = "__fastrender_node_iterator_filter";
 const NODE_ITERATOR_ACTIVE_KEY: &str = "__fastrender_node_iterator_active";
-const NODE_ITERATOR_PROTOTYPE_KEY: &str = "__fastrender_node_iterator_prototype";
+const NODE_ITERATOR_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMNIT"); // NodeIterator
 
 const INTERSECTION_OBSERVER_ID_KEY: &str = "__fastrender_intersection_observer_id";
 const INTERSECTION_OBSERVER_CALLBACK_KEY: &str = "__fastrender_intersection_observer_callback";
@@ -3665,7 +3664,7 @@ const RESIZE_OBSERVER_NOTIFY_DOCUMENT_SLOT: usize = 0;
 //
 // Spec: https://dom.spec.whatwg.org/#traversal
 const TRAVERSAL_IS_ACTIVE_KEY: &str = "__fastrender_traversal_is_active";
-const TREE_WALKER_BRAND_KEY: &str = "__fastrender_tree_walker";
+const TREE_WALKER_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMTRW"); // TreeWalker
 const TREE_WALKER_ROOT_KEY: &str = "__fastrender_tree_walker_root";
 const TREE_WALKER_CURRENT_NODE_KEY: &str = "__fastrender_tree_walker_current_node";
 const TREE_WALKER_WHAT_TO_SHOW_KEY: &str = "__fastrender_tree_walker_what_to_show";
@@ -16021,16 +16020,20 @@ fn to_uint16_wrapping(n: f64) -> u16 {
 
 fn tree_walker_require_this(scope: &mut Scope<'_>, this: Value) -> Result<GcObject, VmError> {
   let Value::Object(obj) = this else {
-    return Err(VmError::TypeError("Illegal invocation"));
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
   };
-  let brand_key = alloc_key(scope, TREE_WALKER_BRAND_KEY)?;
-  match scope
-    .heap()
-    .object_get_own_data_property_value(obj, &brand_key)?
-  {
-    Some(Value::Bool(true)) => Ok(obj),
-    _ => Err(VmError::TypeError("Illegal invocation")),
+
+  // `Heap::object_host_slots` only supports ordinary objects/functions. When `this` is another kind
+  // (like a Proxy), treat it as unbranded.
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
+  if !matches!(slots, Some(HostSlots { b, .. }) if b == TREE_WALKER_HOST_TAG) {
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
   }
+  Ok(obj)
 }
 
 fn tree_walker_internal_data_value(
@@ -16227,12 +16230,13 @@ fn document_create_tree_walker_native(
     .heap_mut()
     .object_set_prototype(walker_obj, Some(proto_obj))?;
 
-  // Internal branding + slots.
-  let brand_key = alloc_key(scope, TREE_WALKER_BRAND_KEY)?;
-  scope.define_property(
+  // Internal branding (WebIDL brand checks).
+  scope.heap_mut().object_set_host_slots(
     walker_obj,
-    brand_key,
-    non_configurable_read_only_data_desc(Value::Bool(true)),
+    HostSlots {
+      a: 0,
+      b: TREE_WALKER_HOST_TAG,
+    },
   )?;
 
   let root_key = alloc_key(scope, TREE_WALKER_ROOT_KEY)?;
@@ -22382,6 +22386,31 @@ fn node_list_iterator_next_native(
   Ok(Value::Object(result_obj))
 }
 
+fn node_iterator_require_this(
+  scope: &mut Scope<'_>,
+  this: Value,
+) -> Result<(GcObject, dom2::NodeIteratorId), VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+  };
+
+  // `Heap::object_host_slots` only supports ordinary objects/functions. When `this` is another kind
+  // (like a Proxy), treat it as unbranded.
+  let slots = match scope.heap().object_host_slots(obj) {
+    Ok(slots) => slots,
+    Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+    Err(err) => return Err(err),
+  };
+  let Some(slots) = slots else {
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+  };
+  if slots.b != NODE_ITERATOR_HOST_TAG {
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
+  }
+
+  Ok((obj, dom2::NodeIteratorId::from_u64(slots.a)))
+}
+
 fn node_iterator_root_get_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -22391,9 +22420,7 @@ fn node_iterator_root_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(iter_obj) = this else {
-    return Err(VmError::TypeError("Illegal invocation"));
-  };
+  let (iter_obj, _) = node_iterator_require_this(scope, this)?;
   scope.push_root(Value::Object(iter_obj))?;
   let key = alloc_key(scope, NODE_ITERATOR_ROOT_KEY)?;
   Ok(
@@ -22413,9 +22440,7 @@ fn node_iterator_what_to_show_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(iter_obj) = this else {
-    return Err(VmError::TypeError("Illegal invocation"));
-  };
+  let (iter_obj, _) = node_iterator_require_this(scope, this)?;
   scope.push_root(Value::Object(iter_obj))?;
   let key = alloc_key(scope, NODE_ITERATOR_WHAT_TO_SHOW_KEY)?;
   Ok(
@@ -22435,9 +22460,7 @@ fn node_iterator_filter_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(iter_obj) = this else {
-    return Err(VmError::TypeError("Illegal invocation"));
-  };
+  let (iter_obj, _) = node_iterator_require_this(scope, this)?;
   scope.push_root(Value::Object(iter_obj))?;
   let key = alloc_key(scope, NODE_ITERATOR_FILTER_KEY)?;
   Ok(
@@ -22457,9 +22480,7 @@ fn node_iterator_reference_node_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(iter_obj) = this else {
-    return Err(VmError::TypeError("Illegal invocation"));
-  };
+  let (iter_obj, iter_id) = node_iterator_require_this(scope, this)?;
   scope.push_root(Value::Object(iter_obj))?;
 
   let doc_key = alloc_key(scope, NODE_ITERATOR_DOCUMENT_KEY)?;
@@ -22468,26 +22489,16 @@ fn node_iterator_reference_node_get_native(
     .object_get_own_data_property_value(iter_obj, &doc_key)?
   {
     Some(Value::Object(obj)) => obj,
-    _ => return Err(VmError::TypeError("Illegal invocation")),
+    _ => return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR)),
   };
   scope.push_root(Value::Object(document_obj))?;
 
-  let id_key = alloc_key(scope, NODE_ITERATOR_ID_KEY)?;
-  let iter_id_u64 = match scope
-    .heap()
-    .object_get_own_data_property_value(iter_obj, &id_key)?
-  {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as u64,
-    _ => return Err(VmError::TypeError("Illegal invocation")),
-  };
-  let iter_id = dom2::NodeIteratorId::from_u64(iter_id_u64);
-
   let document_id = dom_platform_mut(vm)
-    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?
     .require_document_handle(scope.heap(), Value::Object(document_obj))?
     .document_id;
   let dom_ptr = dom_ptr_for_document_id_read(vm, host, document_id)
-    .ok_or(VmError::TypeError("Illegal invocation"))?;
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let dom = unsafe { dom_ptr.as_ref() };
 
@@ -22515,9 +22526,7 @@ fn node_iterator_pointer_before_reference_node_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(iter_obj) = this else {
-    return Err(VmError::TypeError("Illegal invocation"));
-  };
+  let (iter_obj, iter_id) = node_iterator_require_this(scope, this)?;
   scope.push_root(Value::Object(iter_obj))?;
 
   let doc_key = alloc_key(scope, NODE_ITERATOR_DOCUMENT_KEY)?;
@@ -22526,26 +22535,16 @@ fn node_iterator_pointer_before_reference_node_get_native(
     .object_get_own_data_property_value(iter_obj, &doc_key)?
   {
     Some(Value::Object(obj)) => obj,
-    _ => return Err(VmError::TypeError("Illegal invocation")),
+    _ => return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR)),
   };
   let document_id = dom_platform_mut(vm)
-    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?
     .require_document_handle(scope.heap(), Value::Object(document_obj))?
     .document_id;
   let dom_ptr = dom_ptr_for_document_id_read(vm, host, document_id)
-    .ok_or(VmError::TypeError("Illegal invocation"))?;
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let dom = unsafe { dom_ptr.as_ref() };
-
-  let id_key = alloc_key(scope, NODE_ITERATOR_ID_KEY)?;
-  let iter_id_u64 = match scope
-    .heap()
-    .object_get_own_data_property_value(iter_obj, &id_key)?
-  {
-    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as u64,
-    _ => return Err(VmError::TypeError("Illegal invocation")),
-  };
-  let iter_id = dom2::NodeIteratorId::from_u64(iter_id_u64);
 
   let before = dom
     .node_iterator_pointer_before_reference(iter_id)
@@ -22562,9 +22561,7 @@ fn node_iterator_next_node_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(iter_obj) = this else {
-    return Err(VmError::TypeError("Illegal invocation"));
-  };
+  let (iter_obj, iter_id) = node_iterator_require_this(scope, this)?;
   scope.push_root(Value::Object(iter_obj))?;
 
   let doc_key = alloc_key(scope, NODE_ITERATOR_DOCUMENT_KEY)?;
@@ -22573,11 +22570,11 @@ fn node_iterator_next_node_native(
     .object_get_own_data_property_value(iter_obj, &doc_key)?
   {
     Some(Value::Object(obj)) => obj,
-    _ => return Err(VmError::TypeError("Illegal invocation")),
+    _ => return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR)),
   };
   scope.push_root(Value::Object(document_obj))?;
 
-  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
   let document_id = platform
     .require_document_handle(scope.heap(), Value::Object(document_obj))?
     .document_id;
@@ -22602,16 +22599,6 @@ fn node_iterator_next_node_native(
     .object_set_existing_data_property_value(iter_obj, &active_key, Value::Bool(true));
 
   let result = (|| -> Result<Value, VmError> {
-    let id_key = alloc_key(scope, NODE_ITERATOR_ID_KEY)?;
-    let iter_id_u64 = match scope
-      .heap()
-      .object_get_own_data_property_value(iter_obj, &id_key)?
-    {
-      Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as u64,
-      _ => return Err(VmError::TypeError("Illegal invocation")),
-    };
-    let iter_id = dom2::NodeIteratorId::from_u64(iter_id_u64);
-
     let what_key = alloc_key(scope, NODE_ITERATOR_WHAT_TO_SHOW_KEY)?;
     let what_to_show = match scope
       .heap()
@@ -22628,7 +22615,7 @@ fn node_iterator_next_node_native(
       .unwrap_or(Value::Null);
 
     let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, document_id) else {
-      return Err(VmError::TypeError("Illegal invocation"));
+      return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
     };
     // SAFETY: we have exclusive access for the duration of this native call.
     let dom = unsafe { dom_ptr.as_mut() };
@@ -22695,9 +22682,7 @@ fn node_iterator_previous_node_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(iter_obj) = this else {
-    return Err(VmError::TypeError("Illegal invocation"));
-  };
+  let (iter_obj, iter_id) = node_iterator_require_this(scope, this)?;
   scope.push_root(Value::Object(iter_obj))?;
 
   let doc_key = alloc_key(scope, NODE_ITERATOR_DOCUMENT_KEY)?;
@@ -22706,11 +22691,11 @@ fn node_iterator_previous_node_native(
     .object_get_own_data_property_value(iter_obj, &doc_key)?
   {
     Some(Value::Object(obj)) => obj,
-    _ => return Err(VmError::TypeError("Illegal invocation")),
+    _ => return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR)),
   };
   scope.push_root(Value::Object(document_obj))?;
 
-  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
   let document_id = platform
     .require_document_handle(scope.heap(), Value::Object(document_obj))?
     .document_id;
@@ -22735,16 +22720,6 @@ fn node_iterator_previous_node_native(
     .object_set_existing_data_property_value(iter_obj, &active_key, Value::Bool(true));
 
   let result = (|| -> Result<Value, VmError> {
-    let id_key = alloc_key(scope, NODE_ITERATOR_ID_KEY)?;
-    let iter_id_u64 = match scope
-      .heap()
-      .object_get_own_data_property_value(iter_obj, &id_key)?
-    {
-      Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as u64,
-      _ => return Err(VmError::TypeError("Illegal invocation")),
-    };
-    let iter_id = dom2::NodeIteratorId::from_u64(iter_id_u64);
-
     let what_key = alloc_key(scope, NODE_ITERATOR_WHAT_TO_SHOW_KEY)?;
     let what_to_show = match scope
       .heap()
@@ -22761,7 +22736,7 @@ fn node_iterator_previous_node_native(
       .unwrap_or(Value::Null);
 
     let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, document_id) else {
-      return Err(VmError::TypeError("Illegal invocation"));
+      return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
     };
     // SAFETY: we have exclusive access for the duration of this native call.
     let dom = unsafe { dom_ptr.as_mut() };
@@ -22815,6 +22790,20 @@ fn node_iterator_previous_node_native(
     .heap_mut()
     .object_set_existing_data_property_value(iter_obj, &active_key, Value::Bool(false));
   result
+}
+
+fn node_iterator_detach_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let _ = node_iterator_require_this(scope, this)?;
+  // Legacy DOM API: NodeIterator.prototype.detach() is specified as a no-op.
+  Ok(Value::Undefined)
 }
 
 fn document_create_node_iterator_native(
@@ -22890,12 +22879,17 @@ fn document_create_node_iterator_native(
   let id = dom.create_node_iterator(root_handle.node_id);
   dom.register_node_iterator_wrapper(scope.heap(), id, iter_obj);
 
-  let id_key = alloc_key(scope, NODE_ITERATOR_ID_KEY)?;
-  scope.define_property(
+  // Internal branding + stable dom2 iterator id.
+  //
+  // The id itself must not be visible to JS; store it in host slots.
+  scope.heap_mut().object_set_host_slots(
     iter_obj,
-    id_key,
-    non_configurable_read_only_data_desc(Value::Number(id.as_u64() as f64)),
+    HostSlots {
+      a: id.as_u64(),
+      b: NODE_ITERATOR_HOST_TAG,
+    },
   )?;
+
   let doc_key = alloc_key(scope, NODE_ITERATOR_DOCUMENT_KEY)?;
   scope.define_property(
     iter_obj,
@@ -52525,6 +52519,21 @@ fn init_window_globals(
     )?;
     scope.push_root(Value::Object(node_iterator_previous_node_func))?;
 
+    let node_iterator_detach_call_id = vm.register_native_call(node_iterator_detach_native)?;
+    let node_iterator_detach_name = scope.alloc_string("detach")?;
+    scope.push_root(Value::String(node_iterator_detach_name))?;
+    let node_iterator_detach_func = scope.alloc_native_function(
+      node_iterator_detach_call_id,
+      None,
+      node_iterator_detach_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      node_iterator_detach_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(node_iterator_detach_func))?;
+
     // NodeIterator.prototype.root (readonly)
     let node_iterator_root_key = alloc_key(&mut scope, "root")?;
     scope.define_property(
@@ -52579,6 +52588,14 @@ fn init_window_globals(
       node_iterator_proto,
       node_iterator_previous_node_key,
       data_desc(Value::Object(node_iterator_previous_node_func)),
+    )?;
+
+    // NodeIterator.prototype.detach()
+    let node_iterator_detach_key = alloc_key(&mut scope, "detach")?;
+    scope.define_property(
+      node_iterator_proto,
+      node_iterator_detach_key,
+      data_desc(Value::Object(node_iterator_detach_func)),
     )?;
 
     let node_iterator_ctor = make_illegal_ctor(&mut scope, "NodeIterator")?;
@@ -59176,6 +59193,48 @@ mod tests {
       })()"#,
     )?;
     assert_eq!(get_string(realm.heap(), result), "ok");
+    Ok(())
+  }
+
+  #[test]
+  fn node_iterator_methods_enforce_brand_checks() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const next = NodeIterator.prototype.nextNode;\n\
+        let threw = false;\n\
+        try { next.call({}); } catch (e) {\n\
+          threw = (e instanceof TypeError) && String(e.message) === 'Illegal invocation';\n\
+        }\n\
+        return threw;\n\
+      })()",
+    )?;
+    assert_eq!(result, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn tree_walker_methods_enforce_brand_checks() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const next = TreeWalker.prototype.nextNode;\n\
+        let threw = false;\n\
+        try { next.call({}); } catch (e) {\n\
+          threw = (e instanceof TypeError) && String(e.message) === 'Illegal invocation';\n\
+        }\n\
+        return threw;\n\
+      })()",
+    )?;
+    assert_eq!(result, Value::Bool(true));
     Ok(())
   }
 
@@ -66126,10 +66185,9 @@ mod tests {
     let iterator_id = {
       let mut scope = realm.heap_mut().scope();
       scope.push_root(Value::Object(it_obj))?;
-      let key = alloc_key(&mut scope, NODE_ITERATOR_ID_KEY)?;
-      match scope.heap().object_get_own_data_property_value(it_obj, &key)? {
-        Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => dom2::NodeIteratorId::from_u64(n as u64),
-        other => panic!("expected {NODE_ITERATOR_ID_KEY} number, got {other:?}"),
+      match scope.heap().object_host_slots(it_obj)? {
+        Some(HostSlots { a, b }) if b == NODE_ITERATOR_HOST_TAG => dom2::NodeIteratorId::from_u64(a),
+        other => panic!("expected NodeIterator host slots, got {other:?}"),
       }
     };
 
