@@ -681,7 +681,11 @@ impl dyn AudioBackend {
       }
     }
 
-    Box::new(NullAudioBackend::new_with_defaults(cfg.default_sample_rate_hz, cfg.default_channels))
+    Box::new(NullAudioBackend::new_with_defaults_and_trace(
+      cfg.default_sample_rate_hz,
+      cfg.default_channels,
+      _trace,
+    ))
   }
 }
 impl PcmF32QueueProducer {

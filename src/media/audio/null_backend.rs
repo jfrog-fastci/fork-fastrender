@@ -7,6 +7,7 @@ use parking_lot::Mutex;
 
 use super::{AudioBackend, AudioClock, AudioOutputInfo, AudioSink, AudioStreamConfig};
 use super::limits::{MAX_CHANNELS, MAX_FRAMES_PER_PUSH, MAX_SAMPLE_RATE_HZ};
+use crate::debug::trace::TraceHandle;
 use crate::js::clock::{Clock, RealClock};
 use crate::media::audio_clock::InterpolatedAudioClock;
 
@@ -23,6 +24,7 @@ pub struct NullAudioBackend {
   dropped_samples: Arc<AtomicU64>,
   underrun_samples: Arc<AtomicU64>,
   state: Mutex<BackendState>,
+  trace: TraceHandle,
 }
 
 impl std::fmt::Debug for NullAudioBackend {
@@ -59,14 +61,27 @@ impl NullAudioBackend {
     Self::new_with_defaults(48_000, 2)
   }
 
+  /// Creates a default `48kHz stereo` null backend driven by real time, with tracing enabled.
+  #[must_use]
+  pub fn new_with_trace(trace: TraceHandle) -> Self {
+    Self::new_with_defaults_and_trace(48_000, 2, trace)
+  }
+
   /// Creates a null backend driven by real time with the provided stream configuration.
   #[must_use]
   pub fn new_with_defaults(sample_rate_hz: u32, channels: u16) -> Self {
+    Self::new_with_defaults_and_trace(sample_rate_hz, channels, TraceHandle::default())
+  }
+
+  /// Like [`Self::new_with_defaults`], but installs a [`TraceHandle`] used for profiling spans.
+  #[must_use]
+  pub fn new_with_defaults_and_trace(sample_rate_hz: u32, channels: u16, trace: TraceHandle) -> Self {
     let sample_rate_hz = sample_rate_hz.clamp(1, MAX_SAMPLE_RATE_HZ);
     let channels = channels.clamp(1, MAX_CHANNELS);
-    Self::new_with_clock(
+    Self::new_with_clock_and_trace(
       Arc::new(RealClock::default()),
       AudioStreamConfig::new(sample_rate_hz, channels),
+      trace,
     )
   }
 
@@ -76,6 +91,16 @@ impl NullAudioBackend {
   /// [`crate::js::clock::VirtualClock`]).
   #[must_use]
   pub fn new_with_clock(clock: Arc<dyn Clock>, config: AudioStreamConfig) -> Self {
+    Self::new_with_clock_and_trace(clock, config, TraceHandle::default())
+  }
+
+  /// Like [`Self::new_with_clock`], but installs a [`TraceHandle`] used for profiling spans.
+  #[must_use]
+  pub fn new_with_clock_and_trace(
+    clock: Arc<dyn Clock>,
+    config: AudioStreamConfig,
+    trace: TraceHandle,
+  ) -> Self {
     let config = AudioStreamConfig::new(
       config.sample_rate_hz.clamp(1, MAX_SAMPLE_RATE_HZ),
       config.channels.clamp(1, MAX_CHANNELS),
@@ -92,6 +117,7 @@ impl NullAudioBackend {
         last_clock_now: now,
         sinks: Vec::new(),
       }),
+      trace,
     }
   }
 
@@ -180,7 +206,18 @@ impl NullAudioBackend {
 
     let frames_u64 = u64::try_from(frames).unwrap_or(u64::MAX);
     let mut state = self.state.lock();
-    self.consume_frames_locked(&mut state, frames_u64, Some(out));
+
+    if self.trace.is_enabled() {
+      let mut callback_span = self.trace.span("audio.callback", "audio");
+      callback_span.arg_u64("frames", frames_u64);
+      let _mix_span = self.trace.span("audio.mix", "audio");
+      self.consume_frames_locked(&mut state, frames_u64, Some(out));
+      drop(_mix_span);
+      drop(callback_span);
+    } else {
+      self.consume_frames_locked(&mut state, frames_u64, Some(out));
+    }
+
     self.output_clock.advance_frames(frames_u64);
     state.last_clock_now = state
       .last_clock_now
@@ -470,6 +507,7 @@ fn frames_to_duration_floor(frames: u64, sample_rate_hz: u32) -> Duration {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::debug::trace::TraceHandle;
   use crate::js::clock::VirtualClock;
 
   #[test]
@@ -514,5 +552,61 @@ mod tests {
     let out1 = backend.render(1);
     assert_eq!(out1, vec![0.0]);
     assert_eq!(backend.clock().frames(), 6);
+  }
+
+  #[test]
+  fn trace_null_audio_backend_mix_records_events_and_respects_cap() {
+    let max_events = 12;
+    let trace = TraceHandle::enabled_with_max_events(max_events);
+
+    let clock = Arc::new(VirtualClock::new());
+    let backend = NullAudioBackend::new_with_clock_and_trace(
+      clock,
+      AudioStreamConfig::new(48_000, 2),
+      trace.clone(),
+    );
+
+    let sink = backend.create_sink();
+    // Queue some audio so the mix path has work to do.
+    let samples = vec![1.0f32; 48_000 * 2];
+    assert_eq!(sink.push_interleaved_f32(&samples), samples.len());
+
+    let callbacks = 32usize;
+    for _ in 0..callbacks {
+      let _ = backend.render(240);
+    }
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("trace.json");
+    trace.write_chrome_trace(&path).expect("write trace");
+
+    let json = std::fs::read_to_string(&path).expect("read trace");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("parse trace json");
+
+    let trace_events = value["traceEvents"]
+      .as_array()
+      .expect("traceEvents array");
+    assert_eq!(trace_events.len(), max_events);
+
+    let names: Vec<&str> = trace_events
+      .iter()
+      .filter_map(|event| event["name"].as_str())
+      .collect();
+    assert!(
+      names.iter().any(|name| *name == "audio.callback"),
+      "expected audio.callback span in trace"
+    );
+    assert!(
+      names.iter().any(|name| *name == "audio.mix"),
+      "expected audio.mix span in trace"
+    );
+
+    let generated_events = callbacks * 2;
+    assert_eq!(
+      value["fastrenderTraceDroppedEvents"]
+        .as_u64()
+        .expect("dropped events metadata"),
+      (generated_events - max_events) as u64
+    );
   }
 }
