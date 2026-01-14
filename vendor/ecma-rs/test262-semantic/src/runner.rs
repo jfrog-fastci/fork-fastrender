@@ -219,6 +219,7 @@ fn auto_skip_reason(case: &TestCase) -> Option<String> {
     "Temporal",
     // Proposals / staged features not implemented yet.
     "ShadowRealm",
+    "import-defer",
     "source-phase-imports",
   ];
   const UNSUPPORTED_FEATURE_PREFIXES: &[&str] = &[
