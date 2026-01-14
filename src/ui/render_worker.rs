@@ -6671,14 +6671,17 @@ impl BrowserRuntime {
 
           (
             changed,
-            hovered_url,
-            cursor,
-            hovered_dom_node_id,
-            hovered_dom_element_id,
-            textarea_scroll,
+            (
+              changed,
+              hovered_url,
+              cursor,
+              hovered_dom_node_id,
+              hovered_dom_element_id,
+              textarea_scroll,
+            ),
           )
         }) {
-          Ok(changed) => changed,
+          Ok(result) => result,
           Err(_) => return,
         };
 
@@ -7165,30 +7168,33 @@ impl BrowserRuntime {
       match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
         let fragment_tree = hit_tree.as_deref().unwrap_or(fragment_tree);
 
-         let (changed, hit) = if matches!(button, PointerButton::Primary | PointerButton::Middle) {
-            engine.pointer_down_with_click_count_and_hit(
-              dom,
-             box_tree,
-             fragment_tree,
-             &scroll,
-              viewport_point,
-              button,
-              modifiers,
-              click_count,
-            )
-         } else {
-           let page_point = viewport_point.translate(scroll.viewport);
-            (false, hit_test_dom(dom, box_tree, fragment_tree, page_point))
-          };
+        let (changed, hit) = if matches!(button, PointerButton::Primary | PointerButton::Middle) {
+          engine.pointer_down_with_click_count_and_hit(
+            dom,
+            box_tree,
+            fragment_tree,
+            &scroll,
+            viewport_point,
+            button,
+            modifiers,
+            click_count,
+          )
+        } else {
+          let page_point = viewport_point.translate(scroll.viewport);
+          (false, hit_test_dom(dom, box_tree, fragment_tree, page_point))
+        };
 
-         let (target_id, target_element_id) = match hit {
-           Some(hit) => (Some(hit.dom_node_id), hit.element_id),
-           None => (None, None),
-         };
+        let (target_id, target_element_id) = match hit {
+          Some(hit) => (Some(hit.dom_node_id), hit.element_id),
+          None => (None, None),
+        };
 
-         (changed, target_id, target_element_id)
-       }) {
-        Ok(changed) => changed,
+        (
+          changed,
+          (changed, target_id, target_element_id),
+        )
+      }) {
+        Ok(result) => result,
         Err(_) => return,
       };
 
@@ -7556,15 +7562,18 @@ impl BrowserRuntime {
 
         (
           dom_changed,
-          action,
-          picker_value,
-          focus_scroll,
-          mouseup_target,
-          mouseup_target_element_id,
-          click_target,
-          click_target_element_id,
-          form_submitter,
-          form_submitter_element_id,
+          (
+            dom_changed,
+            action,
+            picker_value,
+            focus_scroll,
+            mouseup_target,
+            mouseup_target_element_id,
+            click_target,
+            click_target_element_id,
+            form_submitter,
+            form_submitter_element_id,
+          ),
         )
       }) {
         Ok(result) => result,
@@ -9122,7 +9131,7 @@ impl BrowserRuntime {
           fragment_tree,
           &scroll_snapshot,
         );
-      (changed, caret_scroll)
+      (changed, (changed, caret_scroll))
     });
     let (changed, caret_scroll) = match result {
       Ok(result) => result,
@@ -9401,7 +9410,7 @@ impl BrowserRuntime {
           fragment_tree,
           &scroll_snapshot,
         );
-      (dom_changed, caret_scroll)
+      (dom_changed, (dom_changed, caret_scroll))
     });
     let (changed, caret_scroll) = match result {
       Ok(result) => result,
@@ -9491,7 +9500,7 @@ impl BrowserRuntime {
           fragment_tree,
           &scroll_snapshot,
         );
-      (dom_changed, caret_scroll)
+      (dom_changed, (dom_changed, caret_scroll))
     });
     let (changed, caret_scroll) = match result {
       Ok(result) => result,
@@ -9588,7 +9597,7 @@ impl BrowserRuntime {
           fragment_tree,
           &scroll_snapshot,
         );
-      (dom_changed, caret_scroll)
+      (dom_changed, (dom_changed, caret_scroll))
     });
     let (changed, caret_scroll) = match result {
       Ok(result) => result,
@@ -9676,7 +9685,7 @@ impl BrowserRuntime {
           fragment_tree,
           &scroll_snapshot,
         );
-      (dom_changed, caret_scroll)
+      (dom_changed, (dom_changed, caret_scroll))
     });
     let (changed, caret_scroll) = match result {
       Ok(result) => result,
@@ -9758,7 +9767,7 @@ impl BrowserRuntime {
         &scroll_snapshot,
         node_id,
       );
-      (dom_changed, focus_scroll)
+      (dom_changed, (dom_changed, focus_scroll))
     }) {
       Ok((changed, scroll)) => (changed, scroll),
       Err(_) => {

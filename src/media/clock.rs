@@ -335,6 +335,12 @@ pub enum PlaybackState {
   Paused,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackState {
+  Playing,
+  Paused,
+}
+
 pub struct PlaybackClock {
   master_clock: Arc<dyn MediaClock>,
 
