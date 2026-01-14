@@ -60569,12 +60569,13 @@ mod tests {
   }
 
   #[test]
-  fn class_static_block_yield_is_allowed_inside_generator() -> Result<(), VmError> {
+  fn class_static_block_contains_yield_is_syntax_error() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;
-    let value = rt.exec_script(
-      r#"
+    let err = rt
+      .exec_script(
+        r#"
         function *g() {
           class C {
             static {
@@ -60583,9 +60584,12 @@ mod tests {
           }
         }
       "#,
-    )?;
-    assert_eq!(value, Value::Undefined);
-    Ok(())
+      )
+      .unwrap_err();
+    match err {
+      VmError::Syntax(_) => Ok(()),
+      other => panic!("expected VmError::Syntax, got {other:?}"),
+    }
   }
 
   #[test]
