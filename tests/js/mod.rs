@@ -3,6 +3,7 @@ mod js_html_integration;
 mod observers_scheduling;
 mod range_shadow_root_offsets;
 mod script_fetch_semantics;
+mod media_playback_autoplay_muted;
 mod streams_queuing_strategies;
 mod streams_tee_text_decoder_stream;
 mod trace_spans;

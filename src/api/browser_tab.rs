@@ -738,6 +738,7 @@ pub struct BrowserTabHost {
   #[cfg(test)]
   dynamic_script_full_scan_count: u64,
   last_image_load_discovery_generation: Option<u64>,
+  last_media_load_discovery_generation: Option<u64>,
   /// Whether we are currently running a streaming HTML parse (even if the parser state is
   /// temporarily moved out of `streaming_parse` by `parse_until_blocked`).
   streaming_parse_active: bool,
@@ -824,6 +825,7 @@ impl BrowserTabHost {
       #[cfg(test)]
       dynamic_script_full_scan_count: 0,
       last_image_load_discovery_generation: None,
+      last_media_load_discovery_generation: None,
       streaming_parse_active: false,
       streaming_parse_in_progress: false,
       streaming_parse: None,
@@ -1308,6 +1310,7 @@ impl BrowserTabHost {
       self.dynamic_script_full_scan_count = 0;
     }
     self.last_image_load_discovery_generation = None;
+    self.last_media_load_discovery_generation = None;
     self.document_write_state.reset_for_navigation();
     self
       .document_write_state
@@ -2530,6 +2533,7 @@ impl BrowserTabHost {
     // After DOMContentLoaded, images should behave like load blockers: trigger their fetches in the
     // background and delay `window.load` until they complete.
     self.discover_and_start_image_loads(event_loop)?;
+    self.discover_and_start_media_loads(event_loop)?;
 
     Ok(())
   }
@@ -2775,6 +2779,269 @@ impl BrowserTabHost {
       self.start_image_load(node_id, url, cors_mode, referrer_policy, event_loop)?;
     }
 
+    Ok(())
+  }
+
+  fn discover_and_start_media_loads(&mut self, event_loop: &mut EventLoop<Self>) -> Result<()> {
+    // Media loads/autoplay should behave asynchronously relative to parsing (matching browser
+    // behavior). Trigger discovery only once DOMContentLoaded has fired so inline scripts have had a
+    // chance to install event listeners on their `<video>/<audio>` elements.
+    if !self.lifecycle.dom_content_loaded_fired() {
+      return Ok(());
+    }
+
+    let generation = self.document.dom_mutation_generation();
+    if self
+      .last_media_load_discovery_generation
+      .is_some_and(|last| last == generation)
+    {
+      return Ok(());
+    }
+    self.last_media_load_discovery_generation = Some(generation);
+
+    fn is_html_namespace(namespace: &str) -> bool {
+      namespace.is_empty() || namespace == HTML_NAMESPACE
+    }
+
+    let base_url = self.base_url.clone();
+    let discovered: Vec<(NodeId, String)> = {
+      let dom = self.document.dom();
+      let mut out = Vec::new();
+      for node_id in dom.dom_connected_preorder() {
+        let node = dom.node(node_id);
+        let NodeKind::Element {
+          tag_name,
+          namespace,
+          ..
+        } = &node.kind
+        else {
+          continue;
+        };
+        if !is_html_namespace(namespace) {
+          continue;
+        }
+        if !tag_name.eq_ignore_ascii_case("video") && !tag_name.eq_ignore_ascii_case("audio") {
+          continue;
+        }
+
+        let Some(src) = dom.get_attribute(node_id, "src").ok().flatten() else {
+          continue;
+        };
+        let src = super::trim_ascii_whitespace(src);
+        if src.is_empty() {
+          continue;
+        };
+        let Some(url) = resolve_href_with_base(base_url.as_deref(), src) else {
+          continue;
+        };
+
+        out.push((node_id, url));
+      }
+      out
+    };
+
+    for (node_id, url) in discovered {
+      self.start_media_load(node_id, url, event_loop)?;
+    }
+
+    Ok(())
+  }
+
+  fn start_media_load(
+    &mut self,
+    node_id: NodeId,
+    url: String,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<()> {
+    use crate::js::dom_platform::DomNodeKey;
+    use crate::js::window_media::{
+      HAVE_CURRENT_DATA, HAVE_ENOUGH_DATA, HAVE_FUTURE_DATA, HAVE_METADATA, HAVE_NOTHING,
+      NETWORK_EMPTY, NETWORK_IDLE, NETWORK_LOADING,
+    };
+    use crate::js::window_realm::WindowRealmUserData;
+
+    let queued = event_loop.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
+      // Ensure the element still exists/is connected and the src hasn't been mutated since we queued
+      // this task.
+      let (autoplay, muted, still_current) = {
+        let dom = host.document.dom();
+        if !dom.is_connected_for_scripting(node_id) {
+          return Ok(());
+        }
+        let Some(src) = dom.get_attribute(node_id, "src").ok().flatten() else {
+          return Ok(());
+        };
+        let src = super::trim_ascii_whitespace(src);
+        if src.is_empty() {
+          return Ok(());
+        }
+        let Some(resolved) = resolve_href_with_base(host.base_url.as_deref(), src) else {
+          return Ok(());
+        };
+        let autoplay = dom.has_attribute(node_id, "autoplay").unwrap_or(false);
+        let muted = dom.has_attribute(node_id, "muted").unwrap_or(false);
+        (autoplay, muted, resolved == url)
+      };
+      if !still_current {
+        return Ok(());
+      }
+
+      // Compute the DomPlatform document id (WeakGcObject identity encoding).
+      let (document_id, should_load, should_autoplay) = {
+        // Media element state lives on the vm-js host side (`WindowRealmUserData`).
+        let Some(realm) = host.executor.window_realm_mut() else {
+          return Ok(());
+        };
+        let vm = realm.vm_mut();
+        let data = vm
+          .user_data_mut::<WindowRealmUserData>()
+          .ok_or_else(|| Error::Other("missing WindowRealmUserData".to_string()))?;
+        let Some(document_obj) = data.document_obj() else {
+          return Ok(());
+        };
+        let document_id = (document_obj.index() as u64) | ((document_obj.generation() as u64) << 32);
+
+        let key = DomNodeKey::new(document_id, node_id);
+        let state = data.media_element_state_mut(key);
+
+        let src_changed = state.src_url.as_deref() != Some(url.as_str());
+        if src_changed {
+          state.src_url = Some(url.clone());
+          state.network_state = NETWORK_EMPTY;
+          state.ready_state = HAVE_NOTHING;
+          state.seeking = false;
+          state.duration = f64::NAN;
+          state.error_code = None;
+          // Reset playback position + pause when the resource changes.
+          state.pause();
+          state.seek(Duration::ZERO);
+          // Re-attempt autoplay for new `src`.
+          state.autoplay_attempted = false;
+        } else if state.src_url.is_none() {
+          state.src_url = Some(url.clone());
+        }
+
+        let should_load = src_changed || state.ready_state < HAVE_ENOUGH_DATA;
+        let should_autoplay = autoplay && muted && state.paused() && !state.autoplay_attempted;
+        if autoplay && !state.autoplay_attempted {
+          state.autoplay_attempted = true;
+        }
+        (document_id, should_load, should_autoplay)
+      };
+
+      let key = DomNodeKey::new(document_id, node_id);
+
+      let mut dispatch = |host: &mut BrowserTabHost,
+                          event_loop: &mut EventLoop<BrowserTabHost>,
+                          type_: &'static str|
+       -> Result<()> {
+        let mut event = Event::new(
+          type_,
+          EventInit {
+            bubbles: false,
+            cancelable: false,
+            composed: false,
+          },
+        );
+        event.is_trusted = true;
+        let _default_not_prevented = host.dispatch_dom_event_in_event_loop(
+          EventTargetId::Node(node_id).normalize(),
+          event,
+          event_loop,
+        )?;
+        Ok(())
+      };
+
+      // Simulate load readiness events (no actual decode yet).
+      if should_load {
+        // loadedmetadata
+        {
+          let Some(realm) = host.executor.window_realm_mut() else {
+            return Ok(());
+          };
+          let vm = realm.vm_mut();
+          let data = vm
+            .user_data_mut::<WindowRealmUserData>()
+            .ok_or_else(|| Error::Other("missing WindowRealmUserData".to_string()))?;
+          let state = data.media_element_state_mut(key);
+          state.network_state = NETWORK_LOADING;
+          state.ready_state = HAVE_METADATA;
+          if !state.duration.is_finite() {
+            state.duration = 1.0;
+          }
+        }
+        dispatch(host, event_loop, "loadedmetadata")?;
+
+        // loadeddata
+        {
+          let Some(realm) = host.executor.window_realm_mut() else {
+            return Ok(());
+          };
+          let vm = realm.vm_mut();
+          let data = vm
+            .user_data_mut::<WindowRealmUserData>()
+            .ok_or_else(|| Error::Other("missing WindowRealmUserData".to_string()))?;
+          data.media_element_state_mut(key).ready_state = HAVE_CURRENT_DATA;
+        }
+        dispatch(host, event_loop, "loadeddata")?;
+
+        // canplay
+        {
+          let Some(realm) = host.executor.window_realm_mut() else {
+            return Ok(());
+          };
+          let vm = realm.vm_mut();
+          let data = vm
+            .user_data_mut::<WindowRealmUserData>()
+            .ok_or_else(|| Error::Other("missing WindowRealmUserData".to_string()))?;
+          data.media_element_state_mut(key).ready_state = HAVE_FUTURE_DATA;
+        }
+        dispatch(host, event_loop, "canplay")?;
+
+        // canplaythrough
+        {
+          let Some(realm) = host.executor.window_realm_mut() else {
+            return Ok(());
+          };
+          let vm = realm.vm_mut();
+          let data = vm
+            .user_data_mut::<WindowRealmUserData>()
+            .ok_or_else(|| Error::Other("missing WindowRealmUserData".to_string()))?;
+          let state = data.media_element_state_mut(key);
+          state.ready_state = HAVE_ENOUGH_DATA;
+          state.network_state = NETWORK_IDLE;
+        }
+        dispatch(host, event_loop, "canplaythrough")?;
+      }
+
+      if should_autoplay {
+        // Start playback before firing events so handlers observe correct state.
+        {
+          let Some(realm) = host.executor.window_realm_mut() else {
+            return Ok(());
+          };
+          let vm = realm.vm_mut();
+          let data = vm
+            .user_data_mut::<WindowRealmUserData>()
+            .ok_or_else(|| Error::Other("missing WindowRealmUserData".to_string()))?;
+          data.media_element_state_mut(key).play();
+        }
+
+        dispatch(host, event_loop, "play")?;
+        dispatch(host, event_loop, "playing")?;
+
+        // Deliver at least one timeupdate so scripts that key off it (instead of `playing`) observe
+        // autoplay progress deterministically.
+        dispatch(host, event_loop, "timeupdate")?;
+      }
+
+      Ok(())
+    });
+
+    if queued.is_err() {
+      // Best-effort: failing to queue media tasks should not abort the document.
+      return Ok(());
+    }
     Ok(())
   }
 
@@ -4729,6 +4996,7 @@ impl DocumentLifecycleHost for BrowserTabHost {
     // behavior), while still ensuring `load` waits on these resources via `LoadBlockerKind::Other`.
     if target == EventTargetId::Document && event.type_ == "DOMContentLoaded" {
       self.discover_and_start_image_loads(event_loop)?;
+      self.discover_and_start_media_loads(event_loop)?;
     }
 
     Ok(())

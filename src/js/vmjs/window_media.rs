@@ -16,6 +16,18 @@ use std::sync::Arc;
 use std::time::Duration;
 use vm_js::Heap;
 
+// HTMLMediaElement state constants (mirroring the web-exposed IDL constants).
+pub(crate) const NETWORK_EMPTY: u16 = 0;
+pub(crate) const NETWORK_IDLE: u16 = 1;
+pub(crate) const NETWORK_LOADING: u16 = 2;
+pub(crate) const NETWORK_NO_SOURCE: u16 = 3;
+
+pub(crate) const HAVE_NOTHING: u16 = 0;
+pub(crate) const HAVE_METADATA: u16 = 1;
+pub(crate) const HAVE_CURRENT_DATA: u16 = 2;
+pub(crate) const HAVE_FUTURE_DATA: u16 = 3;
+pub(crate) const HAVE_ENOUGH_DATA: u16 = 4;
+
 /// Minimal backing state for an `HTMLMediaElement` (`<audio>` / `<video>`).
 ///
 /// This intentionally does **not** store any GC-managed `Value`/`GcObject` handles; the state should
@@ -25,6 +37,19 @@ pub(crate) struct MediaElementState {
   clock: PlaybackClock,
   muted: bool,
   volume: f64,
+  /// The last resolved media URL for this element's current `src` attribute.
+  ///
+  /// This is used by embedder-driven media discovery (`BrowserTabHost::discover_and_start_media_loads`)
+  /// to avoid re-firing load events when the DOM mutation generation changes but the `src` remains
+  /// stable.
+  pub(crate) src_url: Option<String>,
+  pub(crate) network_state: u16,
+  pub(crate) ready_state: u16,
+  pub(crate) seeking: bool,
+  pub(crate) duration: f64,
+  pub(crate) autoplay_attempted: bool,
+  /// `HTMLMediaElement.error?.code` when set.
+  pub(crate) error_code: Option<u16>,
 }
 
 impl MediaElementState {
@@ -36,6 +61,15 @@ impl MediaElementState {
       clock,
       muted: false,
       volume: 1.0,
+      muted: false,
+      volume: 1.0,
+      src_url: None,
+      network_state: NETWORK_EMPTY,
+      ready_state: HAVE_NOTHING,
+      seeking: false,
+      duration: f64::NAN,
+      autoplay_attempted: false,
+      error_code: None,
     }
   }
 
