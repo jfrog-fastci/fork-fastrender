@@ -470,6 +470,24 @@ fn popover_top_layer(node: &DomNode) -> Option<TopLayerKind> {
   }
 }
 
+fn fullscreen_top_layer(
+  node: &DomNode,
+  node_id: usize,
+  interaction_state: Option<&InteractionState>,
+) -> Option<TopLayerKind> {
+  // Fullscreen semantics are defined by HTML/Fullscreen API and only apply to elements in the HTML
+  // namespace (including FastRender's `""` representation of the HTML namespace).
+  if !matches!(node.namespace(), Some(ns) if ns.is_empty() || ns == HTML_NAMESPACE) {
+    return None;
+  }
+  let state = interaction_state?;
+  if state.fullscreen_element == Some(node_id) {
+    Some(TopLayerKind::Fullscreen)
+  } else {
+    None
+  }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum QueryResult {
   True,
@@ -4689,8 +4707,14 @@ fn reset_container_query_memo() {
   CONTAINER_QUERY_MEMO.with(|memo| memo.borrow_mut().clear());
 }
 
-fn top_layer_kind(node: &DomNode) -> Option<TopLayerKind> {
-  dialog_top_layer(node).or_else(|| popover_top_layer(node))
+fn top_layer_kind(
+  node: &DomNode,
+  node_id: usize,
+  interaction_state: Option<&InteractionState>,
+) -> Option<TopLayerKind> {
+  fullscreen_top_layer(node, node_id, interaction_state)
+    .or_else(|| dialog_top_layer(node))
+    .or_else(|| popover_top_layer(node))
 }
 
 fn explicit_inert(node: &DomNode) -> bool {
@@ -17273,7 +17297,7 @@ fn compute_base_styles<'a>(
   if styles.inert {
     styles.pointer_events = PointerEvents::None;
   }
-  styles.top_layer = top_layer_kind(node);
+  styles.top_layer = top_layer_kind(node, node_id, interaction_state);
   let is_html_namespace =
     matches!(node.namespace(), Some(ns) if ns.is_empty() || ns == crate::dom::HTML_NAMESPACE);
   if is_html_namespace

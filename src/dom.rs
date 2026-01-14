@@ -8650,7 +8650,8 @@ impl<'a> Element for ElementRef<'a> {
         let Some(node_id) = self.resolved_node_id(_context) else {
           return false;
         };
-        state.is_fullscreen(node_id)
+        // Fullscreen elements participate in HTML's top-layer model; do not apply to SVG elements.
+        state.is_fullscreen(node_id) && node_is_html_element(self.node)
       }
       PseudoClass::Open => {
         // https://html.spec.whatwg.org/multipage/semantics-other.html#selector-open

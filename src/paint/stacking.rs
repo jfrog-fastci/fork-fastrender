@@ -1790,8 +1790,17 @@ where
         };
 
         let mut context = StackingContext::with_reason(z_index, reason, current_order);
-        context.clip_chain = clip_stack.clone();
-        context.backface_visibility_depth = *backface_depth;
+        let is_top_layer = style
+          .as_deref()
+          .is_some_and(|style| style.top_layer.is_some());
+        // Top layer elements must not be clipped by ancestor overflow/clip contexts: they are
+        // painted in a separate top layer above the normal document flow.
+        context.clip_chain = if is_top_layer {
+          Vec::new()
+        } else {
+          clip_stack.clone()
+        };
+        context.backface_visibility_depth = if is_top_layer { 0 } else { *backface_depth };
         context.offset_from_parent_context = if needs_viewport_scroll_cancel {
           Point::new(
             offset_from_parent_context.x + viewport_scroll.x,

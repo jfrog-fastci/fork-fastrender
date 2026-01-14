@@ -314,6 +314,7 @@ pub enum LogicalAxis {
 pub enum TopLayerKind {
   Dialog { modal: bool },
   Popover,
+  Fullscreen,
 }
 
 impl TopLayerKind {

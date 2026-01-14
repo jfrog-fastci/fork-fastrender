@@ -636,6 +636,11 @@ pub struct InteractionState {
   pub focused: Option<usize>,
   /// Whether the focused element should match `:focus-visible`.
   pub focus_visible: bool,
+  /// Current fullscreen element node id (pre-order id from `crate::dom::enumerate_dom_ids`).
+  ///
+  /// When set, the element matches `:fullscreen` and is promoted to the top layer so `::backdrop`
+  /// can be generated and it paints above normal document content.
+  pub fullscreen_element: Option<usize>,
   /// The focused element and its element ancestors (used for `:focus-within` matching).
   focus_chain: Vec<usize>,
   focus_chain_membership: FxHashSet<usize>,
@@ -760,6 +765,19 @@ impl InteractionState {
   #[inline]
   pub fn active_chain(&self) -> &[usize] {
     &self.active_chain
+  }
+
+  #[inline]
+  pub fn is_fullscreen(&self, node_id: usize) -> bool {
+    self.fullscreen_element == Some(node_id)
+  }
+
+  pub fn set_fullscreen_element(&mut self, node_id: Option<usize>) {
+    if self.fullscreen_element == node_id {
+      return;
+    }
+    self.fullscreen_element = node_id;
+    self.mark_css_hash_dirty();
   }
 
   pub fn set_focus_chain(&mut self, chain: Vec<usize>) {
@@ -1214,6 +1232,7 @@ impl Default for InteractionState {
     Self {
       focused: None,
       focus_visible: false,
+      fullscreen_element: None,
       focus_chain: Vec::new(),
       focus_chain_membership: FxHashSet::default(),
       hover_chain: Vec::new(),
@@ -1240,6 +1259,7 @@ impl Clone for InteractionState {
     Self {
       focused: self.focused,
       focus_visible: self.focus_visible,
+      fullscreen_element: self.fullscreen_element,
       focus_chain: self.focus_chain.clone(),
       focus_chain_membership: self.focus_chain_membership.clone(),
       hover_chain: self.hover_chain.clone(),
@@ -1511,6 +1531,8 @@ pub struct InteractionStateDom2 {
   pub focused: Option<NodeId>,
   /// Whether the focused element should match `:focus-visible`.
   pub focus_visible: bool,
+  /// Current fullscreen element `NodeId`.
+  pub fullscreen_element: Option<NodeId>,
   /// The focused element and its element ancestors (used for `:focus-within` matching).
   pub focus_chain: Vec<NodeId>,
   /// The element under the pointer and its element ancestors (used for `:hover` matching).
@@ -1580,6 +1602,13 @@ impl InteractionStateDom2 {
           self.text_edit = None;
         }
       }
+    }
+
+    if self
+      .fullscreen_element
+      .is_some_and(|id| !is_connected(id))
+    {
+      self.fullscreen_element = None;
     }
 
     fn prune_hit_chain(chain: &mut Vec<NodeId>, dom: &crate::dom2::Document) {
@@ -1663,6 +1692,13 @@ impl InteractionStateDom2 {
     prune_hit_chain(&mut self.hover_chain, mapping);
     prune_hit_chain(&mut self.active_chain, mapping);
 
+    if self
+      .fullscreen_element
+      .is_some_and(|id| !is_connected(id))
+    {
+      self.fullscreen_element = None;
+    }
+
     // Conservative: drop detached nodes from these per-element sets to avoid retaining stale ids.
     self.visited_links.retain(|&id| is_connected(id));
     self.user_validity.retain(|&id| is_connected(id));
@@ -1691,6 +1727,10 @@ impl InteractionStateDom2 {
 
     let focused_preorder = self
       .focused
+      .and_then(|node_id| mapping.preorder_for_node_id(node_id));
+
+    let fullscreen_preorder = self
+      .fullscreen_element
       .and_then(|node_id| mapping.preorder_for_node_id(node_id));
 
     let focus_chain = if focused_preorder.is_some() {
@@ -1763,6 +1803,7 @@ impl InteractionStateDom2 {
     let mut projected = InteractionState::default();
     projected.focused = focused_preorder;
     projected.focus_visible = self.focus_visible && focused_preorder.is_some();
+    projected.set_fullscreen_element(fullscreen_preorder);
     projected.set_focus_chain(focus_chain);
     projected.set_hover_chain(hover_chain);
     projected.set_active_chain(active_chain);

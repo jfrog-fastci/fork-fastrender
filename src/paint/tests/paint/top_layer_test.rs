@@ -302,3 +302,66 @@ fn dialog_backdrop_respects_author_styles() {
     "custom ::backdrop should blend with background (expected~{expected_r},{expected_g},{expected_b}; got {r},{g},{b})"
   );
 }
+
+#[test]
+fn fullscreen_element_paints_above_overflow_clips_and_backdrop() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r#"
+    <style>
+      body { margin: 0; }
+      .base { position: fixed; inset: 0; background: rgb(0, 255, 0); }
+      #clip { position: relative; width: 30px; height: 30px; overflow: hidden; }
+      #fs { position: absolute; top: 0; left: 0; width: 60px; height: 60px; background: rgb(255, 0, 0); }
+      :fullscreen::backdrop { background: rgba(0, 0, 0, 0.5); }
+    </style>
+    <div class="base"></div>
+    <div id="clip"><div id="fs"></div></div>
+  "#;
+
+  let baseline_pixmap = renderer.render_html(html, 120, 120).expect("paint baseline");
+  let (base_r, base_g, base_b, _) = pixel_rgba(&baseline_pixmap, 90, 90);
+  assert!(
+    base_g > base_r + 80 && base_g > base_b + 80 && base_g > 80,
+    "baseline should be green (r={base_r}, g={base_g}, b={base_b})"
+  );
+  let (clip_r, clip_g, clip_b, _) = pixel_rgba(&baseline_pixmap, 40, 10);
+  assert!(
+    clip_g > clip_r + 80 && clip_g > clip_b + 80 && clip_g > 80,
+    "baseline should be clipped to green outside overflow area (r={clip_r}, g={clip_g}, b={clip_b})"
+  );
+
+  let renderer = FastRender::new().expect("renderer");
+  let mut doc = BrowserDocument::new(renderer, html, RenderOptions::new().with_viewport(120, 120))
+    .expect("doc");
+  let ids = enumerate_dom_ids(doc.dom());
+  let fs = find_dom_by_id(doc.dom(), "fs").expect("fullscreen element");
+  let fs_id = *ids.get(&(fs as *const DomNode)).expect("node id");
+  let mut interaction_state = InteractionState::default();
+  interaction_state.set_fullscreen_element(Some(fs_id));
+
+  let pixmap = doc
+    .render_frame_with_scroll_state_and_interaction_state(Some(&interaction_state))
+    .expect("paint fullscreen")
+    .pixmap;
+
+  // The fullscreen element should not be clipped by its overflow:hidden ancestor.
+  let (fr, fg, fb, _) = pixel_rgba(&pixmap, 40, 10);
+  assert!(
+    fr > 200 && fg < 80 && fb < 80,
+    "fullscreen element should paint outside overflow clip (r={fr}, g={fg}, b={fb})"
+  );
+
+  // Outside the element, the fullscreen ::backdrop should dim the base.
+  let (r, g, b, _) = pixel_rgba(&pixmap, 90, 90);
+  assert!(
+    g + 20 < base_g,
+    "fullscreen ::backdrop should dim underlying content (baseline_g={base_g}, r={r}, g={g}, b={b})"
+  );
+
+  // Inside the element, it should paint above the ::backdrop.
+  let (er, eg, eb, _) = pixel_rgba(&pixmap, 10, 10);
+  assert!(
+    er > 200 && eg < 80 && eb < 80,
+    "fullscreen element should paint above ::backdrop (r={er}, g={eg}, b={eb})"
+  );
+}
