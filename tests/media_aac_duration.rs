@@ -10,7 +10,7 @@ use symphonia_format_isomp4::IsoMp4Reader;
 #[test]
 fn aac_packet_duration_matches_decoded_samples() {
   let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-    .join("tests/fixtures/media/aac_stereo_48000.mp4");
+    .join("tests/fixtures/media/test_h264_aac.mp4");
   let mp4_bytes = std::fs::read(fixture_path).expect("read mp4 fixture");
 
   let cursor = std::io::Cursor::new(mp4_bytes);

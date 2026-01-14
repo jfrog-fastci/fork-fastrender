@@ -834,7 +834,7 @@ mod tests {
     // timeout regardless of host speed/caching.
     let _guard = TestRenderDelayGuard::set(Some(50));
 
-    let bytes = webm_fixture_bytes("vp9_opus.webm");
+    let bytes = webm_fixture_bytes("test_vp9_opus.webm");
     let mut demuxer = WebmDemuxer::open(Cursor::new(bytes.as_slice())).expect("open webm");
 
     let deadline =
@@ -872,7 +872,7 @@ mod tests {
 
   #[test]
   fn demuxes_vp9_opus_and_seeks() {
-    let bytes = webm_fixture_bytes("vp9_opus.webm");
+    let bytes = webm_fixture_bytes("test_vp9_opus.webm");
     let mut demuxer = WebmDemuxer::open(Cursor::new(bytes.as_slice())).expect("open webm");
 
     let video_track = demuxer
@@ -974,7 +974,7 @@ mod tests {
 
   #[test]
   fn seek_emits_preroll_packets_when_seek_preroll_present() {
-    let bytes = webm_fixture_bytes("vp9_opus.webm");
+    let bytes = webm_fixture_bytes("test_vp9_opus.webm");
     let mut demuxer = WebmDemuxer::open(Cursor::new(bytes.as_slice())).expect("open webm");
 
     let seek_target_ns = 500_000_000_u64;
@@ -1019,7 +1019,7 @@ mod tests {
 
   #[test]
   fn next_packet_pts_are_non_decreasing_across_tracks() {
-    let bytes = webm_fixture_bytes("vp9_opus.webm");
+    let bytes = webm_fixture_bytes("test_vp9_opus.webm");
     let mut demuxer = WebmDemuxer::open_with_options(
       Cursor::new(bytes.as_slice()),
       WebmDemuxerOptions {
