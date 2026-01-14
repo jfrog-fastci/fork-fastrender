@@ -1,5 +1,5 @@
 use crate::{
-  CompiledScript, Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOptions,
+  CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions,
 };
 
 fn new_runtime() -> Result<JsRuntime, VmError> {
@@ -378,49 +378,20 @@ fn class_static_initialization_sets_home_object_ast() -> Result<(), VmError> {
 fn await_in_class_static_block_is_syntax_error_ast() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
-  let promise = rt.exec_script(
-    r#"
-      class A {
-        static {
-          // Arrow functions created inside static blocks inherit `[[HomeObject]]` from the static
-          // block execution context (the class constructor object), even when the static block
-          // suspends/resumes via top-level `await`.
-          this.before = () => 1;
-          await Promise.resolve(0);
-          this.after = () => 2;
-        }
-      };
+  let err = rt
+    .exec_script(
+      r#"
+        class A {
+          static {
+            this.before = () => 1;
+            await Promise.resolve(0);
+            this.after = () => 2;
+          }
+        };
       "#,
-  )?;
-
-  let promise_root = rt.heap.add_root(promise)?;
-  let Value::Object(promise_obj) = promise else {
-    panic!("expected Promise object, got {promise:?}");
-  };
-  assert!(rt.heap.is_promise_object(promise_obj));
-
-  // Drive microtasks until the async classic-script promise settles.
-  for _ in 0..8 {
-    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
-    if rt.heap.promise_state(promise_obj)? != PromiseState::Pending {
-      break;
-    }
-  }
-  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
-  assert_eq!(
-    rt.heap.promise_result(promise_obj)?,
-    Some(Value::Undefined),
-    "async classic-script completion should resolve to undefined for a statement-only script"
-  );
-
-  let ctor = assert_is_function(rt.exec_script("A")?);
-  let before = assert_is_function(rt.exec_script("A.before")?);
-  let after = assert_is_function(rt.exec_script("A.after")?);
-
-  assert_eq!(rt.heap().get_function_home_object(before)?, Some(ctor));
-  assert_eq!(rt.heap().get_function_home_object(after)?, Some(ctor));
-
-  rt.heap.remove_root(promise_root);
+    )
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
   Ok(())
 }
 
@@ -428,44 +399,22 @@ fn await_in_class_static_block_is_syntax_error_ast() -> Result<(), VmError> {
 fn await_in_class_static_block_is_syntax_error_module() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
-  let eval_promise = rt.exec_module(
-    "main.js",
-    r#"
-      class A {
-        static {
-          globalThis.before = () => 1;
-          await Promise.resolve(0);
-          globalThis.after = () => 2;
+  let err = rt
+    .exec_module(
+      "main.js",
+      r#"
+        class A {
+          static {
+            globalThis.before = () => 1;
+            await Promise.resolve(0);
+            globalThis.after = () => 2;
+          }
         }
-      }
-      globalThis.ctor = A;
-    "#,
-  )?;
-  let eval_promise_root = rt.heap.add_root(eval_promise)?;
-
-  let Value::Object(promise_obj) = eval_promise else {
-    panic!("expected Promise object, got {eval_promise:?}");
-  };
-  assert!(rt.heap.is_promise_object(promise_obj));
-
-  // Module evaluation is async when `await` appears in a static block; the evaluation promise should
-  // settle after microtasks run.
-  for _ in 0..8 {
-    if rt.heap.promise_state(promise_obj)? != PromiseState::Pending {
-      break;
-    }
-    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
-  }
-  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
-
-  let ctor = assert_is_function(rt.exec_script("ctor")?);
-  let before = assert_is_function(rt.exec_script("before")?);
-  let after = assert_is_function(rt.exec_script("after")?);
-
-  assert_eq!(rt.heap().get_function_home_object(before)?, Some(ctor));
-  assert_eq!(rt.heap().get_function_home_object(after)?, Some(ctor));
-
-  rt.heap.remove_root(eval_promise_root);
+        globalThis.ctor = A;
+      "#,
+    )
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
   Ok(())
 }
 

@@ -85,7 +85,8 @@ fn arrow_this_in_async_class_static_block_uses_class_constructor_ast() -> Result
     r#"
       var ok = false;
       async function f() {
-        class C {
+        class B {}
+        class C extends (await Promise.resolve(B)) {
           static {
             this.f = () => this;
           }
@@ -136,7 +137,12 @@ fn arrow_this_in_async_class_static_block_uses_class_constructor_hir() -> Result
   assert_compiled_async_fn(&rt, f, "f")?;
 
   assert_eq!(rt.exec_script("ok")?, Value::Bool(false));
-  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  for _ in 0..8 {
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+    if rt.exec_script("ok")? == Value::Bool(true) {
+      break;
+    }
+  }
   assert_eq!(rt.exec_script("ok")?, Value::Bool(true));
   Ok(())
 }
