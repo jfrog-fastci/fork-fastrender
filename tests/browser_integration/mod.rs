@@ -6,6 +6,7 @@ mod author_css_cannot_observe_data_fastr_hover;
 mod browser_cli_gpu_flags;
 mod browser_cli_help;
 mod browser_cli_js_exit_immediately;
+mod browser_cli_trace_out_exit_immediately;
 mod browser_cli_session_path;
 mod browser_cli_start_url_scheme;
 mod browser_cli_search_fallback;

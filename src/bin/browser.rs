@@ -2847,6 +2847,34 @@ fn trace_out_from_cli_or_env(
   Some(std::path::PathBuf::from(raw))
 }
 
+#[cfg(any(test, feature = "browser_ui"))]
+struct TraceOutOnDrop {
+  trace: fastrender::debug::trace::TraceHandle,
+  out_path: Option<std::path::PathBuf>,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+impl TraceOutOnDrop {
+  fn new(
+    trace: fastrender::debug::trace::TraceHandle,
+    out_path: Option<std::path::PathBuf>,
+  ) -> Self {
+    Self { trace, out_path }
+  }
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+impl Drop for TraceOutOnDrop {
+  fn drop(&mut self) {
+    let Some(path) = self.out_path.as_ref() else {
+      return;
+    };
+    if let Err(err) = self.trace.write_chrome_trace(path) {
+      eprintln!("failed to write browser trace to {}: {err}", path.display());
+    }
+  }
+}
+
 #[cfg(feature = "browser_ui")]
 fn parse_browser_show_menu_bar_env(raw: Option<&str>) -> Result<Option<bool>, String> {
   let Some(raw) = raw else {
@@ -3278,6 +3306,25 @@ mod browser_cli_flag_tests {
       )
       .as_deref(),
       Some(std::path::Path::new("target/cli.json"))
+    );
+  }
+
+  #[test]
+  fn trace_out_on_drop_writes_file() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let out = dir.path().join("trace.json");
+
+    let trace = fastrender::debug::trace::TraceHandle::enabled_with_max_events(16);
+    {
+      let _guard = TraceOutOnDrop::new(trace.clone(), Some(out.clone()));
+      let _span = trace.span("test_span", "test");
+    }
+
+    let raw = std::fs::read_to_string(&out).expect("trace file should be written");
+    let parsed: serde_json::Value = serde_json::from_str(&raw).expect("trace JSON should parse");
+    assert!(
+      parsed.get("traceEvents").is_some(),
+      "expected traceEvents key, got: {parsed}"
     );
   }
 
@@ -6619,6 +6666,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   } else {
     fastrender::debug::trace::TraceHandle::disabled()
   };
+  // Ensure traces are written on exit for headless/early-return modes. The windowed winit loop
+  // never returns, so teardown code there is responsible for the steady-state UI trace flush.
+  let _trace_out_on_drop = TraceOutOnDrop::new(browser_trace.clone(), browser_trace_out.clone());
 
   #[cfg(feature = "audio_cpal")]
   maybe_play_startup_test_tone(browser_trace.clone());
