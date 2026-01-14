@@ -6,11 +6,14 @@ use std::time::{Duration, Instant};
 ///
 /// Pattern:
 /// - The UI thread drops the channels/senders that tell a worker thread to exit.
-/// - It then hands the `JoinHandle` to `ShutdownJoinTracker::track_join`, which spawns a tiny
-///   join-helper thread and returns immediately.
+/// - It then hands join handles / blocking joins to `ShutdownJoinTracker`, which must return
+///   immediately (non-blocking).
 /// - The event loop periodically calls `poll()` to observe completion and log failures/timeouts.
-/// - If the join does not complete within `detach_timeout`, the tracker stops tracking it (the
-///   join-helper thread remains detached and will finish whenever the worker does).
+/// - If a join does not complete within `detach_timeout`, the tracker stops tracking it so the UI
+///   thread never blocks indefinitely.
+///   - For `track_join` this also drops (detaches) the original `JoinHandle`.
+///   - For `track_blocking` the detached helper thread may continue running; the tracker just stops
+///     waiting/logging.
 #[derive(Debug)]
 pub struct ShutdownJoinTracker {
   detach_timeout: Duration,
@@ -22,7 +25,20 @@ struct TrackedJoin {
   label: String,
   started_at: Instant,
   deadline: Instant,
-  rx: mpsc::Receiver<std::thread::Result<()>>,
+  state: TrackedJoinState,
+}
+
+#[derive(Debug)]
+enum TrackedJoinState {
+  /// Join a real `JoinHandle` by polling `is_finished` from the UI thread.
+  ///
+  /// This avoids spawning an extra join-helper thread (and allows dropping the join handle after the
+  /// timeout).
+  JoinHandle(Option<JoinHandle<()>>),
+  /// Observe completion of a potentially blocking operation via a detached helper thread.
+  Blocking {
+    rx: mpsc::Receiver<std::thread::Result<()>>,
+  },
 }
 
 impl ShutdownJoinTracker {
@@ -43,11 +59,19 @@ impl ShutdownJoinTracker {
     }
   }
 
-  /// Spawns a detached join-helper thread and begins tracking completion for logging/cleanup.
+  /// Track a thread join without blocking the UI thread.
   ///
-  /// This method must be *non-blocking*; it should be safe to call on the UI/event-loop thread.
+  /// The join handle is stored and polled via `JoinHandle::is_finished` inside `poll()`. When the
+  /// thread completes, `poll()` joins it to surface panics.
   pub fn track_join(&mut self, label: impl Into<String>, join: JoinHandle<()>) {
-    self.track_blocking(label, move || join.join());
+    let started_at = Instant::now();
+    let deadline = started_at + self.detach_timeout;
+    self.joins.push(TrackedJoin {
+      label: label.into(),
+      started_at,
+      deadline,
+      state: TrackedJoinState::JoinHandle(Some(join)),
+    });
   }
 
   /// Track a potentially blocking shutdown operation (e.g. joining a worker hidden behind an
@@ -79,7 +103,7 @@ impl ShutdownJoinTracker {
           label,
           started_at,
           deadline,
-          rx: done_rx,
+          state: TrackedJoinState::Blocking { rx: done_rx },
         });
       }
       Err(err) => {
@@ -96,32 +120,65 @@ impl ShutdownJoinTracker {
     }
 
     let now = Instant::now();
-    let mut remaining: Vec<TrackedJoin> = Vec::with_capacity(self.joins.len());
+    let detach_timeout = self.detach_timeout;
+    self.joins.retain_mut(|entry| match &mut entry.state {
+      TrackedJoinState::JoinHandle(join) => {
+        let Some(handle) = join.as_ref() else {
+          return false;
+        };
 
-    for entry in self.joins.drain(..) {
-      match entry.rx.try_recv() {
-        Ok(Ok(())) => {}
+        if handle.is_finished() {
+          let handle = join.take().expect("checked Some above");
+          match handle.join() {
+            Ok(()) => {}
+            Err(_) => {
+              let elapsed = now.saturating_duration_since(entry.started_at);
+              eprintln!(
+                "shutdown join observed panic: {} (after {:?})",
+                entry.label, elapsed
+              );
+            }
+          }
+          return false;
+        }
+
+        if now >= entry.deadline {
+          eprintln!(
+            "shutdown join timed out after {:?}: {} (detaching)",
+            detach_timeout, entry.label
+          );
+          return false;
+        }
+
+        true
+      }
+      TrackedJoinState::Blocking { rx } => match rx.try_recv() {
+        Ok(Ok(())) => false,
         Ok(Err(_)) => {
           let elapsed = now.saturating_duration_since(entry.started_at);
-          eprintln!("shutdown join observed panic: {} (after {:?})", entry.label, elapsed);
+          eprintln!(
+            "shutdown join observed panic: {} (after {:?})",
+            entry.label, elapsed
+          );
+          false
         }
         Err(mpsc::TryRecvError::Empty) => {
           if now >= entry.deadline {
             eprintln!(
               "shutdown join timed out after {:?}: {} (detaching)",
-              self.detach_timeout, entry.label
+              detach_timeout, entry.label
             );
+            false
           } else {
-            remaining.push(entry);
+            true
           }
         }
         Err(mpsc::TryRecvError::Disconnected) => {
           eprintln!("shutdown join helper thread disconnected: {}", entry.label);
+          false
         }
-      }
-    }
-
-    self.joins = remaining;
+      },
+    });
   }
 
   pub fn has_pending(&self) -> bool {
@@ -162,7 +219,10 @@ mod tests {
     // Wait past the detach timeout, then poll again; it should stop tracking.
     std::thread::sleep(Duration::from_millis(80));
     tracker.poll();
-    assert!(!tracker.has_pending(), "expected join to be detached after timeout");
+    assert!(
+      !tracker.has_pending(),
+      "expected join to be detached after timeout"
+    );
   }
 
   #[test]
