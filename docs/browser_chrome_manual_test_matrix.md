@@ -346,9 +346,10 @@ available). This should surface a user-visible error and must not crash the brow
   - [ ] Run with `browser --download-dir <path>` (or `FASTR_BROWSER_DOWNLOAD_DIR=<path>`).
   - [ ] Start a new download and verify the file lands in the configured directory.
 
-### Clear completed downloads (if implemented)
+### Clear completed downloads
 
-- [ ] If the UI exposes a “Clear” / “Clear completed” action:
+- [ ] Use **Clear completed** in the downloads panel header:
+  - [ ] The button is disabled until at least one download reaches “Completed”.
   - [ ] Completed entries are removed from the list.
   - [ ] In-progress downloads remain visible (not cleared).
 

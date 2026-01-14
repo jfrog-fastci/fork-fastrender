@@ -506,6 +506,7 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
 - For completed downloads:
   - **Open** launches the file using the OS default application.
   - **Show in Folder** reveals the file in your OS file manager.
+- Use **Clear completed** (panel header) to remove completed entries from the list.
 - **Show downloads folder** opens the currently configured download directory (as resolved from
   `--download-dir` / `FASTR_BROWSER_DOWNLOAD_DIR` / OS Downloads / working directory).
 

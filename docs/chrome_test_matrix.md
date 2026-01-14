@@ -79,7 +79,7 @@ browser shortcut mapping intentionally ignores Ctrl+Alt+… combinations to avoi
 | Reveal completed | Click Show in Folder | Same | Reveals in OS file manager (Explorer/Finder/xdg-open). |
 | Open downloads folder | Click “Show downloads folder” (panel header) | Same | Opens the current download directory in the OS file manager. |
 | Change downloads folder | CLI/env | CLI/env | Use `browser --download-dir <path>` or `FASTR_BROWSER_DOWNLOAD_DIR=<path>` and verify downloads land there. |
-| Clear completed downloads | (If implemented) | (If implemented) | Removes completed entries without affecting in-progress downloads. |
+| Clear completed downloads | Click “Clear completed” (panel header) | Same | Removes completed entries without affecting in-progress downloads (button is disabled until at least one download completes). |
 
 ## History + bookmarks panels
 
