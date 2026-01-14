@@ -8472,7 +8472,7 @@ impl<'a> Evaluator<'a> {
         heap: heap_ptr,
         len: super_root_len,
       };
-  
+
       // Count instance elements stored in the class constructor's native slots so the wrapper can
       // preallocate its hidden storage.
       //
