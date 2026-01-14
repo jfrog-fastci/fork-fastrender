@@ -251,7 +251,6 @@ pub mod ipc;
 #[cfg(test)]
 pub(crate) mod testing;
 pub mod js;
-pub mod media;
 pub mod memory;
 pub mod media;
 pub mod perf_log;
