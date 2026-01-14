@@ -329,34 +329,55 @@ fn track_codec_and_extradata(track: &mp4parse::Track) -> (MediaCodec, Vec<u8>) {
   // into our decode pipeline.
   let mut codec = MediaCodec::Unknown("unknown".to_string());
 
-  if let Some(stsd) = track.stsd.as_ref() {
-    if let Some(entry) = stsd.descriptions.get(0) {
-      match entry {
-        mp4parse::SampleEntry::Audio(audio) => {
-          let name = format!("{:?}", audio.codec_type);
-          let lower = name.to_ascii_lowercase();
-          codec = if lower.contains("mp4a") || lower.contains("aac") {
-            MediaCodec::Aac
-          } else if lower.contains("opus") {
-            MediaCodec::Opus
-          } else {
-            MediaCodec::Unknown(name)
-          };
-        }
-        mp4parse::SampleEntry::Video(video) => {
-          let name = format!("{:?}", video.codec_type);
-          let lower = name.to_ascii_lowercase();
-          codec = if lower.contains("avc1") || lower.contains("avc3") || lower.contains("h264") {
-            MediaCodec::H264
-          } else if lower.contains("vp09") || lower.contains("vp9") {
-            MediaCodec::Vp9
-          } else {
-            MediaCodec::Unknown(name)
-          };
-        }
-        _ => {}
+  let Some(stsd) = track.stsd.as_ref() else {
+    return (codec, Vec::new());
+  };
+
+  // MP4 can have multiple sample entries (`stsd`). The active one is selected via the `stsc`
+  // (sample-to-chunk) table. Use the first `stsc` entry's description index when available,
+  // falling back to the first `stsd` entry.
+  let mut desc_index0: usize = 0;
+  if let Some(stsc) = track.stsc.as_ref() {
+    if let Some(first) = stsc.samples.first() {
+      let idx1 = first.sample_description_index;
+      if idx1 > 0 {
+        desc_index0 = (idx1 - 1) as usize;
       }
     }
+  }
+
+  let Some(entry) = stsd
+    .descriptions
+    .get(desc_index0)
+    .or_else(|| stsd.descriptions.get(0))
+  else {
+    return (codec, Vec::new());
+  };
+
+  match entry {
+    mp4parse::SampleEntry::Audio(audio) => {
+      let name = format!("{:?}", audio.codec_type);
+      let lower = name.to_ascii_lowercase();
+      codec = if lower.contains("mp4a") || lower.contains("aac") {
+        MediaCodec::Aac
+      } else if lower.contains("opus") {
+        MediaCodec::Opus
+      } else {
+        MediaCodec::Unknown(name)
+      };
+    }
+    mp4parse::SampleEntry::Video(video) => {
+      let name = format!("{:?}", video.codec_type);
+      let lower = name.to_ascii_lowercase();
+      codec = if lower.contains("avc1") || lower.contains("avc3") || lower.contains("h264") {
+        MediaCodec::H264
+      } else if lower.contains("vp09") || lower.contains("vp9") {
+        MediaCodec::Vp9
+      } else {
+        MediaCodec::Unknown(name)
+      };
+    }
+    _ => {}
   }
 
   (codec, Vec::new())
