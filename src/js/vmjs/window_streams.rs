@@ -55,6 +55,30 @@ const COUNT_QUEUING_STRATEGY_HOST_TAG: u64 = 0x434E_5451_5354_5259; // "CNTQSTRY
 const ITER_READER_KEY: &str = "__fastrender_readable_stream_iter_reader";
 const ITER_PREVENT_CANCEL_KEY: &str = "__fastrender_readable_stream_iter_prevent_cancel";
 
+/// Fallible `Box::new` that returns `VmError::OutOfMemory` instead of aborting the process.
+///
+/// Stream constructors are reachable from untrusted JS and are fallible (`Result<_, VmError>`). Rust
+/// `Box::new` aborts on allocator OOM, so use a manual allocation.
+#[inline]
+fn box_try_new_vm<T>(value: T) -> Result<Box<T>, VmError> {
+  // `Box::new` does not allocate for ZSTs, so it cannot fail with OOM.
+  if std::mem::size_of::<T>() == 0 {
+    return Ok(Box::new(value));
+  }
+
+  let layout = std::alloc::Layout::new::<T>();
+  // SAFETY: `alloc` returns either a suitably aligned block of memory for `T` or null on OOM. We
+  // write `value` into it and transfer ownership to `Box`.
+  unsafe {
+    let ptr = std::alloc::alloc(layout) as *mut T;
+    if ptr.is_null() {
+      return Err(VmError::OutOfMemory);
+    }
+    ptr.write(value);
+    Ok(Box::from_raw(ptr))
+  }
+}
+
 /// Maximum bytes returned by a single `reader.read()` call.
 ///
 /// This is an internal chunking detail; it bounds per-read allocation while still being reasonably
@@ -5652,7 +5676,11 @@ pub(crate) fn create_readable_byte_stream_lazy(
   with_realm_state_mut(vm, scope, callee, |state, _heap| {
     state.streams.insert(
       WeakGcObject::from(obj),
-      StreamState::new_lazy(Box::new(init), DEFAULT_READABLE_STREAM_HIGH_WATER_MARK),
+      // Avoid `Box::new`, which can abort the process on allocator OOM.
+      StreamState::new_lazy(
+        box_try_new_vm(init)?,
+        DEFAULT_READABLE_STREAM_HIGH_WATER_MARK,
+      ),
     );
     Ok(())
   })?;

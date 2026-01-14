@@ -645,7 +645,8 @@ impl WindowRealm {
       loader
     }));
 
-    let mut runtime = Box::new(VmJsRuntime::new(vm, heap)?);
+    // Avoid `Box::new`, which can abort the process on allocator OOM.
+    let mut runtime = box_try_new_vm(VmJsRuntime::new(vm, heap)?)?;
     runtime.vm.set_user_data(WindowRealmUserData::new(
       config.document_url.clone(),
       Rc::clone(&module_loader),
@@ -17313,7 +17314,8 @@ fn dom_parser_parse_from_string_native(
   data
     .owned_dom2_documents
     .borrow_mut()
-    .insert(document_id, Box::new(dom));
+    // Avoid `Box::new`, which can abort the process on allocator OOM.
+    .insert(document_id, box_try_new_vm(dom)?);
 
   Ok(Value::Object(document_obj))
 }
@@ -32361,7 +32363,8 @@ fn dom_implementation_create_document_native(
     data
       .owned_dom2_documents
       .borrow_mut()
-      .insert(document_id, Box::new(dom));
+      // Avoid `Box::new`, which can abort the process on allocator OOM.
+      .insert(document_id, box_try_new_vm(dom)?);
   }
 
   Ok(Value::Object(document_obj))
@@ -32596,7 +32599,8 @@ fn dom_implementation_create_html_document_native(
     data
       .owned_dom2_documents
       .borrow_mut()
-      .insert(document_id, Box::new(dom));
+      // Avoid `Box::new`, which can abort the process on allocator OOM.
+      .insert(document_id, box_try_new_vm(dom)?);
   }
 
   if let Some(platform) = dom_platform_mut(vm) {

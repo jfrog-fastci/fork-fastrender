@@ -44,6 +44,30 @@ use vm_js::{
 const WORKER_MAX_QUEUED_MESSAGES: usize = 1_000;
 const WORKER_MAX_QUEUED_BYTES: usize = 16 * 1024 * 1024;
 
+/// Fallible `Box::new` that returns `VmError::OutOfMemory` instead of aborting the process.
+///
+/// Worker startup runs in fallible code paths (`Result<_, Error>`). Rust's `Box::new` aborts on
+/// allocator OOM, which is not acceptable for untrusted JavaScript.
+#[inline]
+fn box_try_new_vm<T>(value: T) -> Result<Box<T>, VmError> {
+  // `Box::new` does not allocate for ZSTs, so it cannot fail with OOM.
+  if std::mem::size_of::<T>() == 0 {
+    return Ok(Box::new(value));
+  }
+
+  let layout = std::alloc::Layout::new::<T>();
+  // SAFETY: `alloc` returns either a suitably aligned block of memory for `T` or null on OOM. We
+  // write `value` into it and transfer ownership to `Box`.
+  unsafe {
+    let ptr = std::alloc::alloc(layout) as *mut T;
+    if ptr.is_null() {
+      return Err(VmError::OutOfMemory);
+    }
+    ptr.write(value);
+    Ok(Box::from_raw(ptr))
+  }
+}
+
 #[derive(Debug, Clone)]
 struct WorkerQueueError(String);
 
@@ -588,9 +612,10 @@ fn ensure_worker_runtime_started(
   vm_options.external_interrupt_flag = Some(crate::render_control::interrupt_flag());
   let vm = Vm::new(vm_options);
   let heap = Heap::new(vm_limits::heap_limits_from_js_options(&host.js_execution_options()));
-  let mut runtime = Box::new(
-    VmJsRuntime::new(vm, heap).map_err(|err| Error::Other(err.to_string()))?,
-  );
+  // Avoid `Box::new`, which can abort the process on allocator OOM.
+  let runtime = VmJsRuntime::new(vm, heap).map_err(|err| Error::Other(err.to_string()))?;
+  let mut runtime =
+    box_try_new_vm(runtime).map_err(|err| Error::Other(err.to_string()))?;
 
   let weak = Rc::downgrade(worker);
   runtime

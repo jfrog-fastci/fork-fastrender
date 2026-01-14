@@ -280,8 +280,9 @@ fn normalize_supports_condition_for_js(cond: SupportsCondition) -> SupportsCondi
       supported: supports_selector_is_valid_no_namespaces(&raw),
       raw,
     },
-    SupportsCondition::Not(inner) => {
-      SupportsCondition::Not(Box::new(normalize_supports_condition_for_js(*inner)))
+    SupportsCondition::Not(mut inner) => {
+      *inner = normalize_supports_condition_for_js(*inner);
+      SupportsCondition::Not(inner)
     }
     SupportsCondition::And(conds) => SupportsCondition::And(
       conds
