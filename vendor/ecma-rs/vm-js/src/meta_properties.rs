@@ -30,14 +30,6 @@ impl MetaPropertyContext {
     self.0 & Self::ALLOW_SUPER_CALL != 0
   }
 
-  pub(crate) const fn with_new_target(self, allow: bool) -> Self {
-    if allow {
-      Self(self.0 | Self::ALLOW_NEW_TARGET)
-    } else {
-      Self(self.0 & !Self::ALLOW_NEW_TARGET)
-    }
-  }
-
   /// Meta-property context for an arrow function created in `enclosing`.
   ///
   /// Arrow functions do **not** introduce new `new.target`/`super` bindings; they inherit them
