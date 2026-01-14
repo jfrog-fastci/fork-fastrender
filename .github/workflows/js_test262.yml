@@ -116,6 +116,12 @@ jobs:
           summary = data.get("summary", {})
           assert summary.get("total", 0) >= 1, summary
           assert summary.get("timed_out", 0) == 0, summary
+          results = data.get("results", [])
+          assert results, "expected at least one result entry"
+          outcome = results[0].get("outcome")
+          if outcome != "passed":
+            err = (results[0].get("error") or "").lower()
+            assert ("call stack" in err) or ("stack overflow" in err), results[0].get("error")
           PY
 
       - name: Run curated test262 semantics suite
