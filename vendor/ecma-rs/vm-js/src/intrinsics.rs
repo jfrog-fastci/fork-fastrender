@@ -180,6 +180,8 @@ pub struct Intrinsics {
   iterator_take_helper_return_call: NativeFunctionId,
   iterator_map_helper_next_call: NativeFunctionId,
   iterator_map_helper_return_call: NativeFunctionId,
+  iterator_filter_helper_next_call: NativeFunctionId,
+  iterator_filter_helper_return_call: NativeFunctionId,
 
   // Revocation function created by `Proxy.revocable`.
   proxy_revoker_call: NativeFunctionId,
@@ -1103,6 +1105,7 @@ impl Intrinsics {
     let iterator_prototype_drop_call = vm.register_native_call(builtins::iterator_prototype_drop)?;
     let iterator_prototype_take_call = vm.register_native_call(builtins::iterator_prototype_take)?;
     let iterator_prototype_map_call = vm.register_native_call(builtins::iterator_prototype_map)?;
+    let iterator_prototype_filter_call = vm.register_native_call(builtins::iterator_prototype_filter)?;
     let iterator_from_call = vm.register_native_call(builtins::iterator_from)?;
     let iterator_drop_helper_next_call = vm.register_native_call(builtins::iterator_drop_helper_next)?;
     let iterator_drop_helper_return_call =
@@ -1113,6 +1116,10 @@ impl Intrinsics {
     let iterator_map_helper_next_call = vm.register_native_call(builtins::iterator_map_helper_next)?;
     let iterator_map_helper_return_call =
       vm.register_native_call(builtins::iterator_map_helper_return)?;
+    let iterator_filter_helper_next_call =
+      vm.register_native_call(builtins::iterator_filter_helper_next)?;
+    let iterator_filter_helper_return_call =
+      vm.register_native_call(builtins::iterator_filter_helper_return)?;
     let wrap_for_valid_iterator_next_call =
       vm.register_native_call(builtins::wrap_for_valid_iterator_next)?;
     let wrap_for_valid_iterator_return_call =
@@ -1501,6 +1508,23 @@ impl Intrinsics {
         iterator_prototype,
         PropertyKey::from_string(map_name),
         data_desc(Value::Object(map_fn), true, false, true),
+      )?;
+    }
+
+    // `%IteratorPrototype%.filter` (iterator helpers proposal).
+    {
+      let filter_name = scope.alloc_string("filter")?;
+      scope.push_root(Value::String(filter_name))?;
+      let filter_fn =
+        scope.alloc_native_function(iterator_prototype_filter_call, None, filter_name, 1)?;
+      scope.push_root(Value::Object(filter_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(filter_fn, Some(function_prototype))?;
+      scope.define_property(
+        iterator_prototype,
+        PropertyKey::from_string(filter_name),
+        data_desc(Value::Object(filter_fn), true, false, true),
       )?;
     }
 
@@ -9002,6 +9026,8 @@ impl Intrinsics {
       iterator_take_helper_return_call,
       iterator_map_helper_next_call,
       iterator_map_helper_return_call,
+      iterator_filter_helper_next_call,
+      iterator_filter_helper_return_call,
       proxy_revoker_call,
 
       class_constructor_call,
@@ -9554,6 +9580,14 @@ impl Intrinsics {
 
   pub(crate) fn iterator_map_helper_return_call(&self) -> NativeFunctionId {
     self.iterator_map_helper_return_call
+  }
+
+  pub(crate) fn iterator_filter_helper_next_call(&self) -> NativeFunctionId {
+    self.iterator_filter_helper_next_call
+  }
+
+  pub(crate) fn iterator_filter_helper_return_call(&self) -> NativeFunctionId {
+    self.iterator_filter_helper_return_call
   }
 
   pub(crate) fn class_constructor_call(&self) -> NativeFunctionId {
