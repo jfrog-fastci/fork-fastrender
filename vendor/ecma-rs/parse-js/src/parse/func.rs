@@ -211,14 +211,7 @@ impl<'a> Parser<'a> {
       Ok(parameters)
     }
 
-    // Class field initializers / static blocks disallow `arguments` (early error
-    // `ContainsArguments`), but nested non-arrow functions introduce their own `arguments`
-    // binding and therefore lift that restriction for their parameters.
-    let res = if introduces_new_target {
-      self.with_arguments_bound_in_class_init(|p| parse_params_inner(p, ctx))
-    } else {
-      parse_params_inner(self, ctx)
-    };
+    let res = parse_params_inner(self, ctx);
     self.new_target_allowed = prev_new_target_allowed;
     res
   }
