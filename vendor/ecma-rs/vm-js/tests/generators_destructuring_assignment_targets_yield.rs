@@ -312,6 +312,162 @@ fn generator_array_destructuring_rest_target_super_computed_is_evaluated_before_
 }
 
 #[test]
+fn generator_object_destructuring_assignment_target_super_computed_to_property_key_is_delayed_until_putvalue(
+) {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var log = [];
+          var keyObj = { toString() { log.push("toString"); return "k"; } };
+          class Base {
+            set k(v) { log.push("set"); this._k = v; }
+          }
+          class Derived extends Base {
+            *g(src) {
+              ({a: super[(yield 0)]} = src);
+              return log.join("|");
+            }
+          }
+          var src = { get a() { log.push("get"); return 7; } };
+          var it = (new Derived()).g(src);
+          var r0 = it.next();
+          if (r0.done !== false || r0.value !== 0) return false;
+          if (log.length !== 0) return false;
+          var r1 = it.next(keyObj);
+          return r1.done === true && r1.value === "get|toString|set";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_object_destructuring_rest_target_super_computed_to_property_key_is_delayed_until_putvalue(
+) {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var log = [];
+          var keyObj = { toString() { log.push("toString"); return "k"; } };
+          class Base {
+            set k(v) { log.push("set"); this._k = v; }
+          }
+          class Derived extends Base {
+            *g(src) {
+              ({...super[(yield 0)]} = src);
+              return log.join("|");
+            }
+          }
+          var src = { get a() { log.push("get"); return 1; } };
+          var it = (new Derived()).g(src);
+          var r0 = it.next();
+          if (r0.done !== false || r0.value !== 0) return false;
+          if (log.length !== 0) return false;
+          var r1 = it.next(keyObj);
+          return r1.done === true && r1.value === "get|toString|set";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_array_destructuring_assignment_target_super_computed_to_property_key_is_delayed_until_putvalue(
+) {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var log = [];
+          var keyObj = { toString() { log.push("toString"); return "k"; } };
+          class Base {
+            set k(v) { log.push("set"); this._k = v; }
+          }
+          class Derived extends Base {
+            *g(iterable) {
+              [super[(yield 0)]] = iterable;
+              return log.join("|");
+            }
+          }
+          var iterable = {
+            [Symbol.iterator]() {
+              var done = false;
+              return {
+                next() {
+                  log.push("next");
+                  if (done) return { value: undefined, done: true };
+                  done = true;
+                  return { value: 7, done: false };
+                }
+              };
+            }
+          };
+          var it = (new Derived()).g(iterable);
+          var r0 = it.next();
+          if (r0.done !== false || r0.value !== 0) return false;
+          if (log.length !== 0) return false;
+          var r1 = it.next(keyObj);
+          return r1.done === true && r1.value === "next|toString|set";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_array_destructuring_rest_target_super_computed_to_property_key_is_delayed_until_putvalue(
+) {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var log = [];
+          var keyObj = { toString() { log.push("toString"); return "k"; } };
+          class Base {
+            set k(v) { log.push("set"); this._k = v; }
+          }
+          class Derived extends Base {
+            *g(iterable) {
+              [...super[(yield 0)]] = iterable;
+              return log.join("|");
+            }
+          }
+          var iterable = {
+            [Symbol.iterator]() {
+              var done = false;
+              return {
+                next() {
+                  log.push("next");
+                  if (done) return { value: undefined, done: true };
+                  done = true;
+                  return { value: 1, done: false };
+                }
+              };
+            }
+          };
+          var it = (new Derived()).g(iterable);
+          var r0 = it.next();
+          if (r0.done !== false || r0.value !== 0) return false;
+          if (log.length !== 0) return false;
+          var r1 = it.next(keyObj);
+          return r1.done === true && r1.value === "next|next|toString|set";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_object_destructuring_assignment_target_super_computed_throw_aborts_before_getv() {
   let mut rt = new_runtime();
   let value = rt
