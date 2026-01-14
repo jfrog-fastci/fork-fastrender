@@ -165,6 +165,34 @@ fn generator_private_field_prefix_decrement_yield_in_base() {
 }
 
 #[test]
+fn generator_private_field_update_yield_in_base_to_numeric_error_is_throw_completion() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      class C {
+        static #x = Symbol("s");
+        static *g() {
+          try {
+            (yield this).#x++;
+            return false;
+          } catch (e) {
+            return e instanceof TypeError;
+          }
+        }
+      }
+      var it = C.g();
+      var r1 = it.next();
+      var r2 = it.next(r1.value);
+      r1.done === false && r1.value === C &&
+      r2.done === true && r2.value === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_private_field_assignment_to_proxy_throws() {
   let mut rt = new_runtime();
   let value = rt
