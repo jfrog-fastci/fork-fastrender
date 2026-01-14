@@ -10,6 +10,7 @@ use url::Url;
 
 mod analyze_lazy_loading;
 mod capability_map;
+mod check_lib_builds;
 mod chrome_baseline_fixtures;
 mod cmd;
 mod fixture_chrome_diff;
@@ -39,6 +40,10 @@ fn main() -> Result<()> {
 
   match cli.command {
     Commands::Test(args) => run_tests(args),
+    Commands::CheckLibBuilds(args) => {
+      let repo_root = repo_root();
+      check_lib_builds::run_check_lib_builds(&repo_root, args)
+    }
     Commands::UpdateGoldens(args) => run_update_goldens(args),
     Commands::Js(args) => js::run_js(args),
     Commands::RenderPage(args) => run_render_page(args),
@@ -124,6 +129,8 @@ struct Cli {
 enum Commands {
   /// Run common test subsets (core/style/fixtures/WPT)
   Test(TestArgs),
+  /// Compile-check core library build configurations (default + renderer_minimal).
+  CheckLibBuilds(check_lib_builds::CheckLibBuildsArgs),
   /// Refresh checked-in render goldens (fixtures, reference images, WPT, pages regression)
   UpdateGoldens(UpdateGoldensArgs),
   /// JavaScript workflows (conformance, harnesses, etc.)
