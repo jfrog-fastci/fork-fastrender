@@ -441,6 +441,83 @@ fn optional_chaining_private_method_call_after_optional_chain_short_circuits_on_
 }
 
 #[test]
+fn optional_chaining_private_field_with_two_optional_segments_short_circuits_on_nullish_intermediate() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      class C {
+        #f = 'ok';
+        method(o) { return o?.c?.#f; }
+      }
+
+      const c = new C();
+
+      let ok = true;
+      ok = ok && c.method({ c }) === 'ok';
+      ok = ok && c.method(null) === undefined;
+      ok = ok && c.method(undefined) === undefined;
+      ok = ok && c.method({ c: null }) === undefined;
+      ok = ok && c.method({ c: undefined }) === undefined;
+
+      let threw = false;
+      try { c.method({ c: {} }); } catch (e) { threw = e instanceof TypeError; }
+
+      let threwPrim = false;
+      try { c.method({ c: 1 }); } catch (e) { threwPrim = e instanceof TypeError; }
+
+      let threwProxy = false;
+      try { c.method({ c: new Proxy(c, {}) }); } catch (e) { threwProxy = e instanceof TypeError; }
+
+      ok && threw && threwPrim && threwProxy
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn optional_chaining_private_method_call_with_two_optional_segments_short_circuits_and_skips_args() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      let side = 0;
+
+      class C {
+        #x;
+        constructor(v) { this.#x = v; }
+        #m(n) { return this.#x + n; }
+        method(o) { return o?.c?.#m(++side); }
+      }
+
+      const a = new C('a');
+      const b = new C('b');
+
+      let ok = true;
+      ok = ok && a.method({ c: b }) === 'b1' && side === 1;
+      ok = ok && a.method(null) === undefined && side === 1;
+      ok = ok && a.method(undefined) === undefined && side === 1;
+      ok = ok && a.method({ c: null }) === undefined && side === 1;
+      ok = ok && a.method({ c: undefined }) === undefined && side === 1;
+
+      let threw = false;
+      try { a.method({ c: {} }); } catch (e) { threw = e instanceof TypeError; }
+
+      let threwPrim = false;
+      try { a.method({ c: 1 }); } catch (e) { threwPrim = e instanceof TypeError; }
+
+      let threwProxy = false;
+      try { a.method({ c: new Proxy(b, {}) }); } catch (e) { threwProxy = e instanceof TypeError; }
+
+      ok && threw && threwPrim && threwProxy && side === 1
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn compiled_script_with_private_optional_chain_field_falls_back_and_executes() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let script = CompiledScript::compile_script(
