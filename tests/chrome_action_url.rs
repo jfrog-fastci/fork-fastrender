@@ -259,6 +259,78 @@ fn rejects_hierarchical_form() {
   assert!(ChromeActionUrl::parse("chrome-action://navigate?url=about%3Ablank").is_err());
 }
 
+#[test]
+fn rejects_fragments() {
+  let err = ChromeActionUrl::parse("chrome-action:back#frag").unwrap_err();
+  assert!(
+    err.to_ascii_lowercase().contains("fragment"),
+    "unexpected error: {err}"
+  );
+}
+
+#[test]
+fn rejects_unknown_action() {
+  let err = ChromeActionUrl::parse("chrome-action:not-a-real-action").unwrap_err();
+  assert!(
+    err.to_ascii_lowercase().contains("unknown"),
+    "unexpected error: {err}"
+  );
+}
+
+#[test]
+fn rejects_missing_required_params() {
+  let err = ChromeActionUrl::parse("chrome-action:close-tab").unwrap_err();
+  assert!(
+    err.to_ascii_lowercase().contains("missing") && err.contains("tab"),
+    "unexpected error: {err}"
+  );
+
+  let err = ChromeActionUrl::parse("chrome-action:navigate").unwrap_err();
+  assert!(
+    err.to_ascii_lowercase().contains("missing") && err.contains("url"),
+    "unexpected error: {err}"
+  );
+}
+
+#[test]
+fn rejects_duplicate_or_conflicting_params() {
+  let err = ChromeActionUrl::parse("chrome-action:close-tab?tab=1&tab=2").unwrap_err();
+  assert!(
+    err.to_ascii_lowercase().contains("duplicate"),
+    "unexpected error: {err}"
+  );
+
+  let err = ChromeActionUrl::parse("chrome-action:close-tab?tab=1&tab_id=2").unwrap_err();
+  assert!(
+    err.to_ascii_lowercase().contains("conflicting"),
+    "unexpected error: {err}"
+  );
+
+  let err = ChromeActionUrl::parse("chrome-action:navigate?url=about%3Ablank&url=about%3Ablank").unwrap_err();
+  assert!(
+    err.to_ascii_lowercase().contains("duplicate"),
+    "unexpected error: {err}"
+  );
+}
+
+#[test]
+fn accepts_legacy_param_names() {
+  assert_eq!(
+    ChromeActionUrl::parse("chrome-action:close-tab?tab_id=1").unwrap(),
+    ChromeActionUrl::CloseTab { tab_id: TabId(1) }
+  );
+  assert_eq!(
+    ChromeActionUrl::parse("chrome-action:navigate?input=about%3Ablank").unwrap(),
+    ChromeActionUrl::Navigate {
+      url: "about:blank".to_string()
+    }
+  );
+  assert_eq!(
+    ChromeActionUrl::parse("chrome-action:address-bar-focus-changed?focused=1").unwrap(),
+    ChromeActionUrl::AddressBarFocusChanged { has_focus: true }
+  );
+}
+
 mod mapping_tests {
   use super::*;
   use fastrender::ui::ChromeAction;
