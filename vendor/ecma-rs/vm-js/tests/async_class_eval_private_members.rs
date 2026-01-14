@@ -72,3 +72,57 @@ fn async_class_evaluation_supports_private_accessors() -> Result<(), VmError> {
   Ok(())
 }
 
+#[test]
+fn async_class_evaluation_supports_private_methods_when_heritage_suspends() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = 0;
+      async function f() {
+        class B {}
+        class C extends (await Promise.resolve(B)) {
+          static #m() { return 3; }
+          static call() { return this.#m(); }
+        }
+        return C.call();
+      }
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  assert_eq!(value_to_number(rt.exec_script("out")?), 0.0);
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(value_to_number(rt.exec_script("out")?), 3.0);
+  Ok(())
+}
+
+#[test]
+fn async_class_evaluation_supports_private_methods_in_static_blocks_that_await() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = 0;
+      class C {
+        static #m() { return 1; }
+        static {
+          out = out * 10 + this.#m();
+          await Promise.resolve(0);
+          out = out * 10 + this.#m();
+        }
+      }
+    "#,
+  )?;
+
+  // The static block should have run up to the first `await`.
+  assert_eq!(value_to_number(rt.exec_script("out")?), 1.0);
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  // After resuming, the block should complete and be able to resolve the private name again.
+  assert_eq!(value_to_number(rt.exec_script("out")?), 11.0);
+  Ok(())
+}
