@@ -1,4 +1,4 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmOptions};
+use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -100,4 +100,21 @@ fn generator_class_eval_is_strict_across_yield() {
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn yield_in_class_static_block_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(
+      r#"
+      function* g() {
+        class C {
+          static { yield 0; }
+        }
+      }
+    "#,
+    )
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
 }
