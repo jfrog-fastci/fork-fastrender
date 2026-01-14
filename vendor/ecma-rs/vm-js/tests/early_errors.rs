@@ -315,14 +315,14 @@ fn await_expression_in_class_static_block_in_async_function_is_syntax_error() {
 }
 
 #[test]
-fn await_expression_in_class_static_block_in_module_is_allowed_and_sets_has_tla() {
+fn await_expression_in_class_static_block_in_module_is_syntax_error() {
   let mut rt = new_runtime();
-  let record = SourceTextModuleRecord::parse(
+  let err = SourceTextModuleRecord::parse(
     &mut rt.heap,
     "class C { static { await 0; } } export {};",
   )
-  .unwrap();
-  assert!(record.has_tla);
+  .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
 }
 
 #[test]
@@ -344,14 +344,14 @@ fn for_await_of_in_class_static_block_in_async_function_is_syntax_error() {
 }
 
 #[test]
-fn for_await_of_in_class_static_block_in_module_is_allowed_and_sets_has_tla() {
+fn for_await_of_in_class_static_block_in_module_is_syntax_error() {
   let mut rt = new_runtime();
-  let record = SourceTextModuleRecord::parse(
+  let err = SourceTextModuleRecord::parse(
     &mut rt.heap,
     "class C { static { for await (const x of []) {} } } export {};",
   )
-  .unwrap();
-  assert!(record.has_tla);
+  .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
 }
 
 #[test]
