@@ -25976,6 +25976,7 @@ impl App {
           if self.browser_state.tab(tab_id).is_none() {
             continue;
           }
+          let prev_active = self.browser_state.active_tab_id();
 
           // Capture the detached tab's serializable state before we mutate the window.
           //
@@ -26069,6 +26070,12 @@ impl App {
             self.tab_cancel.insert(replacement_id, cancel.clone());
             self.browser_state.push_tab(tab_state, true);
             self.browser_state.chrome.address_bar_text = initial_url.clone();
+            if let (Some(prev), Some(tracker)) = (prev_active, self.tab_switch_latency.as_mut()) {
+              if prev == tab_id {
+                let had_cached_texture = self.tab_textures.contains_key(&replacement_id);
+                tracker.start(prev, replacement_id, had_cached_texture);
+              }
+            }
 
             self.viewport_cache_tab = None;
             self.pointer_captured = false;
@@ -26124,6 +26131,12 @@ impl App {
           }
 
           if let Some(created_tab) = close_result.created_tab {
+            if was_active {
+              if let Some(tracker) = self.tab_switch_latency.as_mut() {
+                let had_cached_texture = self.tab_textures.contains_key(&created_tab);
+                tracker.start(tab_id, created_tab, had_cached_texture);
+              }
+            }
             let initial_url = "about:newtab".to_string();
             let cancel = self
               .browser_state
@@ -26150,6 +26163,12 @@ impl App {
             self.focus_address_bar_select_all();
             self.window.request_redraw();
           } else if let Some(new_active) = close_result.new_active {
+            if was_active {
+              if let Some(tracker) = self.tab_switch_latency.as_mut() {
+                let had_cached_texture = self.tab_textures.contains_key(&new_active);
+                tracker.start(tab_id, new_active, had_cached_texture);
+              }
+            }
             let _ = self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_active });
             self.viewport_cache_tab = None;
             self.hover_sync_pending = true;
