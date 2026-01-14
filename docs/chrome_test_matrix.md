@@ -34,6 +34,7 @@ browser shortcut mapping intentionally ignores Ctrl+Alt+… combinations to avoi
 | Test | Win/Linux shortcut | macOS shortcut | Expected / parity notes |
 |---|---|---|---|
 | Focus address bar (select all) | Ctrl+L / Ctrl+K / F6 / Alt+D (or click) | Cmd+L / Cmd+K / F6 (or click) | Focus moves to address bar and current text is selected. Typing replaces selection. |
+| Focus then type immediately | Ctrl+L then type | Cmd+L then type | First typed character is not dropped and is not forwarded into the page. |
 | Navigate | Enter | Enter | Navigates to URL (or search). Address bar updates after commit. |
 | Cancel suggestion dropdown | Esc | Esc | If dropdown open (or a suggestion is selected), Esc closes it and restores original input. |
 | Cancel editing / blur | Esc (when dropdown already closed) | Esc (when dropdown already closed) | Exits editing and restores the active tab URL. |
@@ -66,6 +67,7 @@ browser shortcut mapping intentionally ignores Ctrl+Alt+… combinations to avoi
 | Test | Win/Linux shortcut | macOS shortcut | Expected / parity notes |
 |---|---|---|---|
 | Open find bar | Ctrl+F | Cmd+F | Find UI opens and is focused; typing updates match count. |
+| Find then type immediately | Ctrl+F then type | Cmd+F then type | First typed character is not dropped and goes into the find input. |
 | Next / previous match | Enter / Shift+Enter (in find bar) | Enter / Shift+Enter (in find bar) | Advances active match and wraps at ends. |
 | Close find bar | Esc | Esc | Find UI closes; highlights are cleared; focus returns sensibly. |
 
