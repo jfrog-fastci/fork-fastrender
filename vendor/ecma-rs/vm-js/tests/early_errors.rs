@@ -754,6 +754,13 @@ fn await_in_async_function_params_is_syntax_error() {
 }
 
 #[test]
+fn await_in_async_arrow_function_params_in_module_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = SourceTextModuleRecord::parse(&mut rt.heap, "(async (a = await 1) => {});").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn yield_in_generator_function_params_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script("function* g(a = yield 1) {}").unwrap_err();
