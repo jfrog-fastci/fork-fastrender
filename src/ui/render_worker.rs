@@ -6828,7 +6828,7 @@ impl BrowserRuntime {
         next.update_deltas_from(&prev_scroll);
         doc.set_scroll_state(next.clone());
         tab.scroll_state = next;
-        tab.sync_js_scroll_state();
+        TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
         tab.history.update_scroll_state(&tab.scroll_state);
         Self::emit_scroll_state_updated(
           &self.ui_tx,
@@ -11163,7 +11163,7 @@ impl BrowserRuntime {
                         next.update_deltas_from(&current_scroll);
                         doc.set_scroll_state(next.clone());
                         tab.scroll_state = next;
-                        tab.sync_js_scroll_state();
+                        TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
                         scroll_changed = true;
                         tab.scroll_coalesce = true;
                         tab.next_paint_is_scroll = true;

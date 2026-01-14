@@ -22,6 +22,10 @@ fn no_merge_conflict_markers_present() {
     repo_root.join("tests"),
     repo_root.join("benches"),
     repo_root.join("fuzz"),
+    // Vendored Rust workspaces are built as part of fastrender. A previous repo breakage was caused
+    // by unresolved conflict markers in `vendor/ecma-rs/vm-js/src/exec.rs`, which this guard did
+    // not catch because it only scanned in-tree sources.
+    repo_root.join("vendor").join("ecma-rs").join("vm-js").join("src"),
   ];
 
   let mut offenders = Vec::new();

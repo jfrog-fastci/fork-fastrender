@@ -127,9 +127,9 @@ impl<Host: 'static, T: Clone + 'static> JsPromise<Host, T> {
   pub fn then<U: Clone + 'static>(
     &self,
     event_loop: &mut EventLoop<Host>,
-    on_fulfilled: impl for<'a> FnOnce(
+    on_fulfilled: impl for<'a, 'b> FnOnce(
         &'a mut Host,
-        &'a mut EventLoop<Host>,
+        &'b mut EventLoop<Host>,
         T,
       ) -> Result<JsPromiseValue<Host, U>>
       + 'static,
