@@ -7,3 +7,9 @@ target_pages/
 .venv/
 __pycache__/
 *.py[cod]
+
+# `specs/tc39-ecma262/` is intentionally vendored as a minimal set of HTML tables used by the JS
+# parser/runtime. Ignore any full upstream spec repo checkout in this directory.
+/specs/tc39-ecma262/*
+!/specs/tc39-ecma262/table-binary-unicode-properties.html
+!/specs/tc39-ecma262/table-binary-unicode-properties-of-strings.html
