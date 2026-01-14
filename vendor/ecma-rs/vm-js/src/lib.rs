@@ -292,6 +292,14 @@ mod generators_binary_misc_ops_yield_tests;
 mod class_inheritance_and_super_tests;
 
 #[cfg(test)]
+#[path = "../tests/class_inheritance.rs"]
+mod class_inheritance_tests;
+
+#[cfg(test)]
+#[path = "../tests/super_property.rs"]
+mod super_property_tests;
+
+#[cfg(test)]
 #[path = "../tests/unit/object_literal_super.rs"]
 mod object_literal_super_tests;
 
