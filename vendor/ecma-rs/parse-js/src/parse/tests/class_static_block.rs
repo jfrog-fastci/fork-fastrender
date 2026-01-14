@@ -79,7 +79,7 @@ fn yield_in_static_block_is_syntax_error_even_inside_generator() {
 }
 
 #[test]
-fn await_expression_parses_in_static_block() {
+fn await_expression_is_syntax_error_in_static_block() {
   let src = r#"
     class C {
       static {
@@ -93,11 +93,11 @@ fn await_expression_parses_in_static_block() {
   };
   let mut parser = Parser::new(Lexer::new(src), opts);
   let res = parser.parse_top_level();
-  assert!(res.is_ok(), "parse failed: {res:?}");
+  assert!(res.is_err(), "parse unexpectedly succeeded: {res:?}");
 }
 
 #[test]
-fn arguments_identifier_reference_parses_in_static_block() {
+fn arguments_identifier_reference_is_syntax_error_in_static_block() {
   let src = r#"
     class C {
       static {
@@ -111,7 +111,7 @@ fn arguments_identifier_reference_parses_in_static_block() {
   };
   let mut parser = Parser::new(Lexer::new(src), opts);
   let res = parser.parse_top_level();
-  assert!(res.is_ok(), "parse failed: {res:?}");
+  assert!(res.is_err(), "parse unexpectedly succeeded: {res:?}");
 }
 
 #[test]

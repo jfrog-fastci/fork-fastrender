@@ -271,25 +271,20 @@ impl<'a> Parser<'a> {
               p.new_target_allowed += 1;
               p.super_prop_allowed += 1;
               p.super_call_allowed = 0;
-              // Static blocks are parsed as:
-              // `StatementList[~Yield, +Await, ~Return]opt`
+              // Static blocks reserve `await` like modules (it cannot be used as an identifier)
+              // but do not allow `await` expressions (ContainsAwait early error).
               //
-              // This means:
-              // - `await` is treated as a keyword (it can begin an AwaitExpression) but is not
-              //   permitted as an identifier in the static block statement list.
-              // - `yield` is not treated as a keyword from an enclosing generator.
-              // - `return` is not permitted (handled above via `in_function = 0`).
+              // They also do not inherit an enclosing generator's `yield` context, and they are
+              // not function bodies (so `return` is always a syntax error; handled above).
               let is_module = p.is_module();
               let block_ctx = ctx.non_top_level().with_rules(ParsePatternRules {
                 await_allowed: false,
                 yield_allowed: !is_module,
-                // Static blocks use the `+Await` grammar parameter: parse `await` expressions and
-                // reserve the `await` identifier. Semantic validity (e.g. whether the static block
-                // is nested within an async context) is enforced by vm-js early errors.
-                await_expr_allowed: true,
+                await_expr_allowed: false,
                 yield_expr_allowed: false,
               });
-              let body = p.stmts(block_ctx, TT::BraceClose);
+              let body =
+                p.with_disallow_arguments_in_class_init(|p| p.stmts(block_ctx, TT::BraceClose));
               p.in_iteration = prev_in_iteration;
               p.in_switch = prev_in_switch;
               p.in_function = prev_in_function;
