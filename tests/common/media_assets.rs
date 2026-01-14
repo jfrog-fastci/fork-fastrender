@@ -66,6 +66,10 @@ mod tests {
   const PAGE_H264_AAC_MP4: &[u8] = include_bytes!("../pages/fixtures/media_mp4_basic/test_h264_aac.mp4");
   const PAGE_VP9_OPUS_WEBM: &[u8] =
     include_bytes!("../pages/fixtures/media_webm_basic/test_vp9_opus.webm");
+  const PLAYBACK_H264_AAC_MP4: &[u8] =
+    include_bytes!("../pages/fixtures/media_playback/assets/test_h264_aac.mp4");
+  const PLAYBACK_VP9_OPUS_WEBM: &[u8] =
+    include_bytes!("../pages/fixtures/media_playback/assets/test_vp9_opus.webm");
 
   #[test]
   fn page_fixtures_match_shared_media_fixtures() {
@@ -76,6 +80,14 @@ mod tests {
     assert_eq!(
       TEST_VP9_OPUS_WEBM, PAGE_VP9_OPUS_WEBM,
       "media_webm_basic fixture should match tests/fixtures/media/test_vp9_opus.webm"
+    );
+    assert_eq!(
+      TEST_H264_AAC_MP4, PLAYBACK_H264_AAC_MP4,
+      "media_playback/assets fixture should match tests/fixtures/media/test_h264_aac.mp4"
+    );
+    assert_eq!(
+      TEST_VP9_OPUS_WEBM, PLAYBACK_VP9_OPUS_WEBM,
+      "media_playback/assets fixture should match tests/fixtures/media/test_vp9_opus.webm"
     );
   }
 }
