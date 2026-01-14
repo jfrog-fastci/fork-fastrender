@@ -359,3 +359,190 @@ fn generator_array_destructuring_assignment_rhs_and_pattern_yield_are_gc_safe() 
   let assigned = rt.exec_script("assigned").unwrap();
   assert_eq!(assigned, Value::Object(rhs_arr));
 }
+
+#[test]
+fn generator_object_destructuring_assignment_rhs_and_computed_key_yield_with_rest_are_gc_safe() {
+  let mut rt = new_runtime();
+
+  let rhs_obj = {
+    let (_vm, realm, heap) = rt.vm_realm_and_heap_mut();
+    let global = realm.global_object();
+    let mut scope = heap.scope();
+
+    let rhs = scope.alloc_object().unwrap();
+    scope.push_root(Value::Object(rhs)).unwrap();
+
+    let key_x = scope.alloc_string("x").unwrap();
+    let key_y = scope.alloc_string("y").unwrap();
+    let key_z = scope.alloc_string("z").unwrap();
+
+    scope
+      .define_property(rhs, PropertyKey::from_string(key_x), data_desc(Value::Number(1.0)))
+      .unwrap();
+    scope
+      .define_property(rhs, PropertyKey::from_string(key_y), data_desc(Value::Number(2.0)))
+      .unwrap();
+    scope
+      .define_property(rhs, PropertyKey::from_string(key_z), data_desc(Value::Number(3.0)))
+      .unwrap();
+
+    let key_rhs = scope.alloc_string("rhsObjRest").unwrap();
+    scope
+      .define_property(
+        global,
+        PropertyKey::from_string(key_rhs),
+        data_desc(Value::Object(rhs)),
+      )
+      .unwrap();
+    rhs
+  };
+
+  rt
+    .exec_script(
+      r#"
+        var assigned;
+        var rest;
+        function* g() {
+          var a = 0;
+          var b = 0;
+          assigned = ({x: b, [(yield 1)]: a, ...rest} = yield 0);
+          return a === 2
+            && b === 1
+            && rest.z === 3
+            && !Object.prototype.hasOwnProperty.call(rest, "x")
+            && !Object.prototype.hasOwnProperty.call(rest, "y");
+        }
+        var it = g();
+        var r1 = it.next();
+      "#,
+    )
+    .unwrap();
+
+  let v = rt.exec_script("r1.done === false && r1.value === 0").unwrap();
+  assert_eq!(v, Value::Bool(true));
+
+  rt
+    .exec_script(
+      r#"
+        var r2 = it.next(globalThis.rhsObjRest);
+        delete globalThis.rhsObjRest;
+      "#,
+    )
+    .unwrap();
+
+  let v = rt
+    .exec_script("r2.done === false && r2.value === 1 && typeof assigned === \"undefined\"")
+    .unwrap();
+  assert_eq!(v, Value::Bool(true));
+
+  rt.heap.collect_garbage();
+  assert!(
+    rt.heap.is_valid_object(rhs_obj),
+    "RHS object should be kept alive by generator continuation frames"
+  );
+
+  let v = rt
+    .exec_script(
+      r#"
+        var r3 = it.next("y");
+        r3.done === true && r3.value === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(v, Value::Bool(true));
+
+  let assigned = rt.exec_script("assigned").unwrap();
+  assert_eq!(assigned, Value::Object(rhs_obj));
+}
+
+#[test]
+fn generator_array_destructuring_assignment_rhs_and_default_yield_with_rest_are_gc_safe() {
+  let mut rt = new_runtime();
+
+  let rhs_arr = {
+    let (_vm, realm, heap) = rt.vm_realm_and_heap_mut();
+    let global = realm.global_object();
+    let intr = realm.intrinsics();
+    let mut scope = heap.scope();
+
+    // Create a sparse array of length 3 where index 0 is a hole (=> undefined) and indices 1/2
+    // are present.
+    let rhs = scope.alloc_array(3).unwrap();
+    scope
+      .heap_mut()
+      .object_set_prototype(rhs, Some(intr.array_prototype()))
+      .unwrap();
+    scope.push_root(Value::Object(rhs)).unwrap();
+
+    let key_1 = scope.alloc_array_index_key(1).unwrap();
+    let key_2 = scope.alloc_array_index_key(2).unwrap();
+    scope
+      .define_property(rhs, key_1, data_desc(Value::Number(2.0)))
+      .unwrap();
+    scope
+      .define_property(rhs, key_2, data_desc(Value::Number(3.0)))
+      .unwrap();
+
+    let key_rhs = scope.alloc_string("rhsArrRest").unwrap();
+    scope
+      .define_property(
+        global,
+        PropertyKey::from_string(key_rhs),
+        data_desc(Value::Object(rhs)),
+      )
+      .unwrap();
+    rhs
+  };
+
+  rt
+    .exec_script(
+      r#"
+        var assigned;
+        var rest;
+        function* g() {
+          var a = 0;
+          assigned = ([a = yield 1, ...rest] = yield 0);
+          return a === 7 && rest.length === 2 && rest[0] === 2 && rest[1] === 3;
+        }
+        var it = g();
+        var r1 = it.next();
+      "#,
+    )
+    .unwrap();
+
+  let v = rt.exec_script("r1.done === false && r1.value === 0").unwrap();
+  assert_eq!(v, Value::Bool(true));
+
+  rt
+    .exec_script(
+      r#"
+        var r2 = it.next(globalThis.rhsArrRest);
+        delete globalThis.rhsArrRest;
+      "#,
+    )
+    .unwrap();
+
+  let v = rt
+    .exec_script("r2.done === false && r2.value === 1 && typeof assigned === \"undefined\"")
+    .unwrap();
+  assert_eq!(v, Value::Bool(true));
+
+  rt.heap.collect_garbage();
+  assert!(
+    rt.heap.is_valid_object(rhs_arr),
+    "RHS array should be kept alive by generator continuation frames"
+  );
+
+  let v = rt
+    .exec_script(
+      r#"
+        var r3 = it.next(7);
+        r3.done === true && r3.value === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(v, Value::Bool(true));
+
+  let assigned = rt.exec_script("assigned").unwrap();
+  assert_eq!(assigned, Value::Object(rhs_arr));
+}
