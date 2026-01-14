@@ -359,6 +359,40 @@ fn direct_eval_with_await_spread_argument_is_direct() -> Result<(), VmError> {
 }
 
 #[test]
+fn direct_eval_with_await_spread_argument_is_direct_even_if_eval_is_overwritten_while_suspended() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = 0;
+      var outside = 0;
+      var x = 2;
+      async function f() {
+        let x = 1;
+        // Queue a microtask before suspending so it runs before the await resumption job.
+        Promise.resolve().then(function () {
+          globalThis.eval = function(_) { return 123; };
+          outside = eval("0");
+        });
+        return eval(...(await ["x"]));
+      }
+      f().then(function (v) { out = v; }, function () { out = -1; });
+      out
+    "#,
+  )?;
+  assert_eq!(value, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("outside")?;
+  assert_eq!(value, Value::Number(123.0));
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
 fn direct_eval_with_awaited_argument_inherits_strictness() -> Result<(), VmError> {
   let mut rt = new_runtime();
 

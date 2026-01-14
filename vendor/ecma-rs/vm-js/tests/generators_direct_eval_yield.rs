@@ -317,6 +317,36 @@ fn generator_direct_eval_with_yield_spread_argument_is_direct() {
 }
 
 #[test]
+fn generator_direct_eval_with_yield_spread_argument_is_direct_even_if_eval_is_overwritten_while_suspended() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          var x = 2;
+          function* g(){ let x = 1; return eval(...(yield 0)); }
+          var it = g();
+          var r1 = it.next();
+
+          // Overwrite the global `eval` binding while suspended in argument evaluation; the call
+          // must keep using the callee value that was evaluated before yielding.
+          globalThis.eval = function(_) { return 123; };
+          var outside = eval("0");
+
+          var r2 = it.next(["x"]);
+          ok = r1.done === false && r1.value === 0 &&
+               outside === 123 &&
+               r2.done === true && r2.value === 1;
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_direct_eval_with_yield_argument_inherits_strictness() {
   let mut rt = new_runtime();
   let value = rt
