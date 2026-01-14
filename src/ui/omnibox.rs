@@ -1,5 +1,6 @@
 use super::string_match::{
-  contains_ascii_case_insensitive, find_ascii_case_insensitive, AsciiCaseInsensitiveStr,
+  contains_ascii_case_insensitive, find_ascii_case_insensitive, AsciiCaseInsensitive,
+  AsciiCaseInsensitiveStr,
 };
 use crate::ui::about_pages;
 use crate::ui::browser_app::{BrowserTabState, ClosedTabState, RemoteSearchSuggestCache};
@@ -380,7 +381,7 @@ impl OmniboxProvider for BookmarksProvider {
 
       // Avoid suggesting the same URL multiple times when the bookmark store contains duplicates
       // (possible via import).
-      if !seen_urls.insert(AsciiCaseInsensitiveStr(url)) {
+      if !seen_urls.insert(AsciiCaseInsensitive(url)) {
         continue;
       }
 
