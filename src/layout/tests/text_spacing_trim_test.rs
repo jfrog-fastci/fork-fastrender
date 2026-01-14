@@ -356,6 +356,90 @@ fn text_spacing_trim_normal_does_not_collapse_adjacent_punctuation_across_paddin
 }
 
 #[test]
+fn text_spacing_trim_normal_collapses_adjacent_punctuation_across_zero_width_inline_box() {
+  // Adjacent-pairs collapsing should ignore zero-width inline boxes (e.g. spans that exist only
+  // to establish containing blocks for absolutely positioned children).
+  let html =
+    "<span>」</span><span style=\"position: relative\"><span style=\"position: absolute\"></span></span><span>「</span><span>H</span>";
+  let space_all = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: space-all;",
+    html,
+  );
+  let normal = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: normal;",
+    html,
+  );
+
+  let space_open_x = text_x_in_line(&space_all[0], "「").expect("x for opening punct (space-all)");
+  let normal_open_x = text_x_in_line(&normal[0], "「").expect("x for opening punct (normal)");
+
+  assert!(
+    normal_open_x < space_open_x - 0.1,
+    "expected normal to collapse across a zero-width inline box (space-all x={space_open_x:.3} normal x={normal_open_x:.3})"
+  );
+}
+
+#[test]
+fn text_spacing_trim_trim_start_ignores_zero_width_inline_box_at_start() {
+  let html = "<span><span style=\"position: relative\"><span style=\"position: absolute\"></span></span>「H</span>";
+  let space_all = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: space-all;",
+    html,
+  );
+  let trim_start = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: trim-start;",
+    html,
+  );
+
+  let space_open_x = text_x_in_line(&space_all[0], "「").expect("x for opening punct (space-all)");
+  let trim_open_x =
+    text_x_in_line(&trim_start[0], "「").expect("x for opening punct (trim-start)");
+
+  assert!(
+    space_open_x >= -0.01,
+    "expected space-all to keep the punctuation in-flow (x={space_open_x:.3})"
+  );
+  assert!(
+    trim_open_x < -0.1,
+    "expected trim-start to still hang the punctuation even when preceded by a zero-width inline box (x={trim_open_x:.3})"
+  );
+}
+
+#[test]
+fn text_spacing_trim_trim_both_ignores_zero_width_inline_box_at_end() {
+  let html = "<span>H」<span style=\"position: relative\"><span style=\"position: absolute\"></span></span></span>";
+  let space_all = layout_lines_with_box_style(
+    "width: 200px; white-space: nowrap; text-align: right; text-spacing-trim: space-all;",
+    html,
+  );
+  let trim_both = layout_lines_with_box_style(
+    "width: 200px; white-space: nowrap; text-align: right; text-spacing-trim: trim-both;",
+    html,
+  );
+
+  let space_line = &space_all[0];
+  let trim_line = &trim_both[0];
+  let space_end = space_line.bounds.max_x();
+  let trim_end = trim_line.bounds.max_x();
+
+  let space_bbox = space_line.bounding_box();
+  let trim_bbox = trim_line.bounding_box();
+
+  assert!(
+    space_bbox.max_x() <= space_end + 0.05,
+    "expected space-all to keep punctuation within the line bounds (bbox_end={:.3}, line_end={:.3})",
+    space_bbox.max_x(),
+    space_end
+  );
+  assert!(
+    trim_bbox.max_x() > trim_end + 0.05,
+    "expected trim-both to hang punctuation past the line end even when followed by a zero-width inline box (bbox_end={:.3}, line_end={:.3})",
+    trim_bbox.max_x(),
+    trim_end
+  );
+}
+
+#[test]
 fn text_spacing_trim_normal_adjacent_pairs_respects_font_size_for_opening_after_closing() {
   // CSS Text 4: an opening punctuation following a closing punctuation should only be trimmed when
   // the closing punctuation is an equivalent or larger font size.

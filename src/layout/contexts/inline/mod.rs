@@ -8140,6 +8140,30 @@ impl InlineFormattingContext {
         }
       }
 
+      fn is_ignorable_trim_item(item: &InlineItem) -> bool {
+        match item {
+          InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_) => true,
+          InlineItem::Text(t) => t.is_marker && t.advance_for_layout.abs() <= f32::EPSILON,
+          InlineItem::Replaced(r) => r.is_marker && r.total_width().abs() <= f32::EPSILON,
+          InlineItem::InlineBox(b) => {
+            if b.margin_left.abs() > f32::EPSILON
+              || b.margin_right.abs() > f32::EPSILON
+              || b.start_edge.abs() > f32::EPSILON
+              || b.end_edge.abs() > f32::EPSILON
+              || b.line_padding_start.abs() > f32::EPSILON
+              || b.line_padding_end.abs() > f32::EPSILON
+            {
+              return false;
+            }
+            if b.children.is_empty() {
+              return true;
+            }
+            b.children.iter().all(is_ignorable_trim_item)
+          }
+          _ => false,
+        }
+      }
+
       fn start_hang_in_item(
         item: &InlineItem,
         is_first_formatted_line: bool,
@@ -8168,13 +8192,10 @@ impl InlineFormattingContext {
           }
           InlineItem::InlineBox(b) => {
             for child in &b.children {
-              match child {
-                InlineItem::StaticPositionAnchor(_) => continue,
-                InlineItem::Floating(_) => continue,
-                other => {
-                  return start_hang_in_item(other, is_first_formatted_line, starts_after_forced_break);
-                }
+              if is_ignorable_trim_item(child) {
+                continue;
               }
+              return start_hang_in_item(child, is_first_formatted_line, starts_after_forced_break);
             }
             None
           }
@@ -8226,19 +8247,16 @@ impl InlineFormattingContext {
           }
           InlineItem::InlineBox(b) => {
             for child in &mut b.children {
-              match child {
-                InlineItem::StaticPositionAnchor(_) => continue,
-                InlineItem::Floating(_) => continue,
-                other => {
-                  return apply_start_hang(
-                    other,
-                    hang,
-                    rtl,
-                    is_first_formatted_line,
-                    starts_after_forced_break,
-                  );
-                }
+              if is_ignorable_trim_item(child) {
+                continue;
               }
+              return apply_start_hang(
+                child,
+                hang,
+                rtl,
+                is_first_formatted_line,
+                starts_after_forced_break,
+              );
             }
             false
           }
@@ -8261,14 +8279,16 @@ impl InlineFormattingContext {
               || b.start_edge.abs() > f32::EPSILON
               || b.line_padding_start.abs() > f32::EPSILON;
             for child in &b.children {
-              match child {
-                InlineItem::StaticPositionAnchor(_) => continue,
-                InlineItem::Floating(_) => continue,
-                other => {
-                  let (ch, trim, font_size, child_gap) = first_char_and_trim(other)?;
-                  return Some((ch, trim, font_size, has_leading_gap || child_gap));
-                }
+              if is_ignorable_trim_item(child) {
+                continue;
               }
+              let Some((ch, trim, font_size, child_gap)) = first_char_and_trim(child) else {
+                // This inline box begins with a non-text, non-ignorable child (replaced element,
+                // ruby, etc). Treat the boundary as non-character so adjacent-pairs trimming does
+                // not cross it.
+                return None;
+              };
+              return Some((ch, trim, font_size, has_leading_gap || child_gap));
             }
             None
           }
@@ -8291,14 +8311,13 @@ impl InlineFormattingContext {
               || b.end_edge.abs() > f32::EPSILON
               || b.line_padding_end.abs() > f32::EPSILON;
             for child in b.children.iter().rev() {
-              match child {
-                InlineItem::StaticPositionAnchor(_) => continue,
-                InlineItem::Floating(_) => continue,
-                other => {
-                  let (ch, trim, font_size, child_gap) = last_char_and_trim(other)?;
-                  return Some((ch, trim, font_size, has_trailing_gap || child_gap));
-                }
+              if is_ignorable_trim_item(child) {
+                continue;
               }
+              let Some((ch, trim, font_size, child_gap)) = last_char_and_trim(child) else {
+                return None;
+              };
+              return Some((ch, trim, font_size, has_trailing_gap || child_gap));
             }
             None
           }
@@ -8325,11 +8344,10 @@ impl InlineFormattingContext {
           }
           InlineItem::InlineBox(b) => {
             for child in &b.children {
-              match child {
-                InlineItem::StaticPositionAnchor(_) => continue,
-                InlineItem::Floating(_) => continue,
-                other => return opening_punct_hang_and_trim(other),
+              if is_ignorable_trim_item(child) {
+                continue;
               }
+              return opening_punct_hang_and_trim(child);
             }
             None
           }
@@ -8356,11 +8374,10 @@ impl InlineFormattingContext {
           }
           InlineItem::InlineBox(b) => {
             for child in b.children.iter().rev() {
-              match child {
-                InlineItem::StaticPositionAnchor(_) => continue,
-                InlineItem::Floating(_) => continue,
-                other => return closing_punct_hang_and_trim(other),
+              if is_ignorable_trim_item(child) {
+                continue;
               }
+              return closing_punct_hang_and_trim(child);
             }
             None
           }
@@ -8413,11 +8430,10 @@ impl InlineFormattingContext {
           }
           InlineItem::InlineBox(b) => {
             for child in &mut b.children {
-              match child {
-                InlineItem::StaticPositionAnchor(_) => continue,
-                InlineItem::Floating(_) => continue,
-                other => return apply_opening_punct_hang(other, hang, rtl),
+              if is_ignorable_trim_item(child) {
+                continue;
               }
+              return apply_opening_punct_hang(child, hang, rtl);
             }
             false
           }
@@ -8474,11 +8490,10 @@ impl InlineFormattingContext {
           }
           InlineItem::InlineBox(b) => {
             for child in b.children.iter_mut().rev() {
-              match child {
-                InlineItem::StaticPositionAnchor(_) => continue,
-                InlineItem::Floating(_) => continue,
-                other => return apply_closing_punct_hang(other, hang),
+              if is_ignorable_trim_item(child) {
+                continue;
               }
+              return apply_closing_punct_hang(child, hang);
             }
             false
           }
@@ -8568,7 +8583,7 @@ impl InlineFormattingContext {
         // boundaries (does not split text runs to detect interior characters).
         let mut prev_idx_opt: Option<usize> = None;
         for idx in 0..items.len() {
-          if matches!(items[idx].item, InlineItem::StaticPositionAnchor(_)) {
+          if is_ignorable_trim_item(&items[idx].item) {
             continue;
           }
           let Some(prev_idx) = prev_idx_opt else {
@@ -8669,10 +8684,7 @@ impl InlineFormattingContext {
           // Adjacent-pairs collapsing within this inline box.
           let mut prev_idx_opt: Option<usize> = None;
           for idx in 0..children.len() {
-            if matches!(
-              children[idx],
-              InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_)
-            ) {
+            if is_ignorable_trim_item(&children[idx]) {
               continue;
             }
             let Some(prev_idx) = prev_idx_opt else {
@@ -8768,11 +8780,10 @@ impl InlineFormattingContext {
           }
           InlineItem::InlineBox(b) => {
             for child in b.children.iter().rev() {
-              match child {
-                InlineItem::StaticPositionAnchor(_) => continue,
-                InlineItem::Floating(_) => continue,
-                other => return end_hang_in_item(other, end_overflow),
+              if is_ignorable_trim_item(child) {
+                continue;
               }
+              return end_hang_in_item(child, end_overflow);
             }
             None
           }
@@ -8808,11 +8819,10 @@ impl InlineFormattingContext {
           }
           InlineItem::InlineBox(b) => {
             for child in b.children.iter_mut().rev() {
-              match child {
-                InlineItem::StaticPositionAnchor(_) => continue,
-                InlineItem::Floating(_) => continue,
-                other => return apply_end_hang(other, hang, rtl, end_overflow),
+              if is_ignorable_trim_item(child) {
+                continue;
               }
+              return apply_end_hang(child, hang, rtl, end_overflow);
             }
             false
           }
