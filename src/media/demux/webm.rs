@@ -18,11 +18,15 @@ const WEBM_DEMUX_IO_DEADLINE_STRIDE: usize = 8192;
 /// files.
 const MAX_WEBM_PACKET_BYTES: usize = 64 * 1024 * 1024;
 
+fn webm_packet_too_large_error(track_id: u64, len: usize) -> MediaError {
+  MediaError::Demux(format!(
+    "WebM packet too large (track {track_id}, size {len} bytes, cap {MAX_WEBM_PACKET_BYTES} bytes)"
+  ))
+}
+
 fn check_webm_packet_size(track_id: u64, len: usize) -> MediaResult<()> {
   if len > MAX_WEBM_PACKET_BYTES {
-    return Err(MediaError::Demux(format!(
-      "WebM packet too large (track {track_id}, size {len} bytes, cap {MAX_WEBM_PACKET_BYTES} bytes)"
-    )));
+    return Err(webm_packet_too_large_error(track_id, len));
   }
   Ok(())
 }
@@ -416,13 +420,16 @@ impl<R: Read + Seek> WebmDemuxer<R> {
         return Ok(None);
       }
 
-      // Apply the encoded packet size cap immediately so:
-      // - oversized/corrupt blocks error deterministically (instead of flowing into downstream
-      //   buffering/decoding), and
-      // - the large allocation is promptly freed (even if we would otherwise skip this track due to
-      //   track selection/filtering or unsupported codecs).
-      let data = std::mem::take(&mut self.frame.data);
-      check_webm_packet_size(self.frame.track, data.len())?;
+      // Apply the encoded packet size cap before any track filtering/buffering so oversized/corrupt
+      // blocks error deterministically.
+      //
+      // Note: in the oversize case, explicitly `take()` the vec so the large allocation is freed
+      // even if the caller retains the demuxer after observing the error.
+      let frame_len = self.frame.data.len();
+      if frame_len > MAX_WEBM_PACKET_BYTES {
+        let _ = std::mem::take(&mut self.frame.data);
+        return Err(webm_packet_too_large_error(self.frame.track, frame_len));
+      }
 
       let codec_delay_ns = match self.codec_delay_ns.get(&self.frame.track) {
         Some(delay) => *delay,
@@ -444,6 +451,8 @@ impl<R: Read + Seek> WebmDemuxer<R> {
         })
         .unwrap_or(0);
 
+      let data = std::mem::take(&mut self.frame.data);
+      check_webm_packet_size(self.frame.track, data.len())?;
       let is_keyframe = match self.frame.is_keyframe {
         Some(is_keyframe) => is_keyframe,
         None => {
