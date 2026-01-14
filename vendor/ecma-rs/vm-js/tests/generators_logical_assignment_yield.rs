@@ -776,3 +776,60 @@ fn generator_logical_or_assignment_with_yield_in_base_and_computed_key_and_rhs_c
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_logical_or_assignment_with_yield_in_base_and_computed_key_and_rhs_yield_star_captures_base_key_and_decision_across_yield_star(
+) {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var o1 = { a: 0, b: 0 };
+        var o2 = { a: 0, b: 0 };
+        var o = o1;
+        var k = "a";
+
+        function* rhs() {
+          yield "rhs1";
+          yield "rhs2";
+          return 5;
+        }
+
+        function* g() {
+          const r = ((yield "base", o)[(yield "key", k)] ||= (yield* rhs()));
+          return r === 5 && o1.a === 0 && o1.b === 0 && o2.a === 0 && o2.b === 5;
+        }
+
+        const it = g();
+        const r1 = it.next();
+
+        // Base is evaluated *after* resuming from the base-yield.
+        o = o2;
+        const r2 = it.next();
+
+        // Key is evaluated *after* resuming from the key-yield.
+        k = "b";
+        // Mutating the base binding here must not affect the already-chosen base object.
+        o = o1;
+        const r3 = it.next();
+
+        // Mutate after the first RHS yield but before resuming. The decision to assign was made
+        // before yielding from the delegated generator, so the assignment must still happen to the
+        // original base + key.
+        o2.b = 1;
+        k = "a";
+        o = o1;
+
+        const r4 = it.next();
+        const r5 = it.next();
+
+        r1.value === "base" && r1.done === false &&
+        r2.value === "key" && r2.done === false &&
+        r3.value === "rhs1" && r3.done === false &&
+        r4.value === "rhs2" && r4.done === false &&
+        r5.value === true && r5.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

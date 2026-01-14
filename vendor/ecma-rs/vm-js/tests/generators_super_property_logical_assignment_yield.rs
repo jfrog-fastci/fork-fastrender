@@ -407,6 +407,72 @@ fn generator_super_logical_or_assignment_with_yield_in_computed_key_and_rhs_capt
 }
 
 #[test]
+fn generator_super_logical_or_assignment_with_yield_in_computed_key_and_rhs_yield_star_captures_key_super_base_and_decision_across_yield_star(
+) {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        const log = [];
+        var k = "x";
+
+        function* rhs() {
+          yield "rhs1";
+          yield "rhs2";
+          return 5;
+        }
+
+        class B1 {
+          get x(){ log.push("get1x"); return this._x; }
+          set x(v){ log.push("set1x:" + v); this._x = v; }
+          get y(){ log.push("get1y"); return this._y; }
+          set y(v){ log.push("set1y:" + v); this._y = v; }
+        }
+
+        class B2 {
+          get x(){ log.push("get2x"); return this._x; }
+          set x(v){ log.push("set2x:" + v); this._x = v; }
+          get y(){ log.push("get2y"); return this._y; }
+          set y(v){ log.push("set2y:" + v); this._y = v; }
+        }
+
+        class D extends B1 {
+          constructor(){ super(); this._x = 0; this._y = 0; }
+          *gen() {
+            const r = (super[(yield "key", k)] ||= (yield* rhs()));
+            return r === 5 && this._x === 0 && this._y === 5 && log.join(",") === "get1y,set1y:5";
+          }
+        }
+
+        const d = new D();
+        const it = d.gen();
+        const r1 = it.next();
+
+        // Key is evaluated after resuming from the key-yield.
+        k = "y";
+        const r2 = it.next();
+
+        // Mutate the super base, key, and LHS value after the first delegated yield but before
+        // resuming. The assignment must still happen to the original super base + key and must not
+        // re-check the decision after intermediate yields.
+        d._y = 1;
+        k = "x";
+        Object.setPrototypeOf(D.prototype, B2.prototype);
+
+        const r3 = it.next();
+        const r4 = it.next();
+
+        r1.value === "key" && r1.done === false &&
+        r2.value === "rhs1" && r2.done === false &&
+        r3.value === "rhs2" && r3.done === false &&
+        r4.value === true && r4.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_super_logical_or_assignment_captures_super_base_and_decision_across_yield_star() {
   let mut rt = new_runtime();
   let value = rt
