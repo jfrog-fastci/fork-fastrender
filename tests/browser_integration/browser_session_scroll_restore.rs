@@ -173,3 +173,99 @@ fn browser_session_restores_scroll_position_via_scroll_to() {
   drop(rx);
   join.join().expect("worker join");
 }
+
+#[test]
+fn browser_session_restores_scroll_when_scroll_to_sent_before_navigation() {
+  let _lock = super::stage_listener_test_lock();
+
+  const VIEWPORT_CSS: (u32, u32) = (240, 120);
+  const DPR: f32 = 1.0;
+
+  let worker = fastrender::ui::spawn_browser_worker().expect("spawn browser worker");
+  let fastrender::ui::BrowserWorkerHandle { tx, rx, join } = worker;
+
+  // First tab: create a realistic scroll offset for `about:test-scroll`.
+  let tab_id = TabId::new();
+  tx.send(support::create_tab_msg(
+    tab_id,
+    Some("about:test-scroll".to_string()),
+  ))
+  .expect("CreateTab");
+  tx.send(UiToWorker::SetActiveTab { tab_id })
+    .expect("SetActiveTab");
+  tx.send(support::viewport_changed_msg(tab_id, VIEWPORT_CSS, DPR))
+    .expect("ViewportChanged");
+
+  // Wait for any initial frame so we know the document is ready.
+  let msg = support::recv_for_tab(&rx, tab_id, TIMEOUT, |msg| {
+    matches!(
+      msg,
+      WorkerToUi::FrameReady { .. } | WorkerToUi::NavigationFailed { .. }
+    )
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for initial FrameReady for tab {tab_id:?}"));
+  if let WorkerToUi::NavigationFailed { url, error, .. } = msg {
+    panic!("navigation failed for {url}: {error}");
+  }
+
+  let requested_scroll_css = (0.0, 240.0);
+  tx.send(support::scroll_to_msg(tab_id, requested_scroll_css))
+    .expect("ScrollTo");
+  tx.send(support::request_repaint(
+    tab_id,
+    fastrender::ui::RepaintReason::Scroll,
+  ))
+  .expect("RequestRepaint");
+
+  let scrolled_frame = recv_frame_matching_scroll(&rx, tab_id, requested_scroll_css);
+  let saved_scroll_css = (
+    scrolled_frame.scroll_state.viewport.x,
+    scrolled_frame.scroll_state.viewport.y,
+  );
+  assert!(
+    saved_scroll_css.1 > 0.0,
+    "expected scroll_y to be non-zero after scrolling, got {saved_scroll_css:?}"
+  );
+
+  // Second tab: mimic lazy session restore where scroll is restored before navigation begins.
+  let restored_tab_id = TabId::new();
+  tx.send(support::create_tab_msg(restored_tab_id, None))
+    .expect("CreateTab (restored)");
+  tx.send(UiToWorker::SetActiveTab {
+    tab_id: restored_tab_id,
+  })
+  .expect("SetActiveTab (restored)");
+  tx.send(support::viewport_changed_msg(
+    restored_tab_id,
+    VIEWPORT_CSS,
+    DPR,
+  ))
+  .expect("ViewportChanged (restored)");
+
+  tx.send(support::scroll_to_msg(restored_tab_id, saved_scroll_css))
+    .expect("ScrollTo (restored)");
+  tx.send(support::request_repaint(
+    restored_tab_id,
+    fastrender::ui::RepaintReason::Scroll,
+  ))
+  .expect("RequestRepaint (restored)");
+
+  tx.send(support::navigate_msg(
+    restored_tab_id,
+    "about:test-scroll".to_string(),
+    fastrender::ui::NavigationReason::TypedUrl,
+  ))
+  .expect("Navigate (restored)");
+
+  let restored_frame = recv_frame_matching_scroll(&rx, restored_tab_id, saved_scroll_css);
+  assert!(
+    (restored_frame.scroll_state.viewport.y - saved_scroll_css.1).abs() < 2.0,
+    "expected restored scroll_y ~= {} (got {:?})",
+    saved_scroll_css.1,
+    restored_frame.scroll_state.viewport
+  );
+
+  drop(tx);
+  drop(rx);
+  join.join().expect("worker join");
+}

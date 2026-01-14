@@ -5636,13 +5636,14 @@ impl BrowserRuntime {
       ),
     });
     if push_history {
+      let history_was_empty = tab.history.current().is_none();
       if !had_pending_navigation {
          // Persist the current scroll position before pushing a new history entry. This is required
-         // for correct scroll restoration when a scroll message arrives and the subsequent paint is
-         // pre-empted by a navigation job.
-         tab
-           .history
-           .update_scroll_state(&tab.scroll_state);
+          // for correct scroll restoration when a scroll message arrives and the subsequent paint is
+          // pre-empted by a navigation job.
+          tab
+            .history
+            .update_scroll_state(&tab.scroll_state);
        }
        if had_pending_history_entry {
         // If we already pushed a provisional history entry for an in-flight navigation, normally
@@ -5662,6 +5663,16 @@ impl BrowserRuntime {
         }
       } else {
         tab.history.push(url.clone());
+      }
+
+      if history_was_empty {
+        // Session restore can deliver a `ScrollTo` before the first navigation begins (for example
+        // when a restored background tab defers navigation until activation). When that happens,
+        // the scroll state is stored on the tab, but there is not yet a history entry for
+        // `run_navigation` to read its `initial_scroll` from. Seed the newly pushed history entry
+        // with the existing scroll state so the first committed document paints at the restored
+        // offset.
+        tab.history.update_scroll_state(&tab.scroll_state);
       }
     }
     tab.pending_history_entry = push_history;
