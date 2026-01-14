@@ -293,4 +293,20 @@ mod tests {
     assert_eq!(node_get_attr(&doc, node, "data-test"), Some("ok"));
     assert_eq!(node_get_attr(&doc, node, "Data-Test"), Some("ok"));
   }
+
+  #[test]
+  fn node_attr_helpers_match_xml_case_sensitively() {
+    let mut doc = Document::new_xml();
+    let el = doc.create_element("div", "");
+    doc.append_child(doc.root(), el).unwrap();
+    doc.set_attribute(el, "DATA-TEST", "ok").unwrap();
+
+    let node = doc.node(el);
+    assert!(node_has_attr(&doc, node, "DATA-TEST"));
+    assert!(!node_has_attr(&doc, node, "data-test"));
+    assert!(!node_has_attr(&doc, node, "Data-Test"));
+    assert_eq!(node_get_attr(&doc, node, "DATA-TEST"), Some("ok"));
+    assert_eq!(node_get_attr(&doc, node, "data-test"), None);
+    assert_eq!(node_get_attr(&doc, node, "Data-Test"), None);
+  }
 }
