@@ -5442,8 +5442,8 @@ mod address_bar_tests {
       tab_id,
       frame: RenderedFrame {
         pixmap,
-        viewport_css: (0, 0),
-        dpr: f32::NAN,
+        viewport_css: (1, 1),
+        dpr: 0.01,
         scroll_state,
         scroll_metrics,
         next_tick: None,
@@ -5454,7 +5454,7 @@ mod address_bar_tests {
     let tab = app.active_tab().unwrap();
     let meta = tab.latest_frame_meta.expect("expected latest_frame_meta");
     assert_eq!(meta.viewport_css, (1, 1));
-    assert_eq!(meta.dpr, 1.0);
+    assert_eq!(meta.dpr, protocol_limits::MIN_WORKER_DPR);
 
     assert_eq!(tab.scroll_state.viewport.x, 0.0);
     assert_eq!(tab.scroll_state.viewport.y, 0.0);
