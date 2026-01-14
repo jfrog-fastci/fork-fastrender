@@ -15442,6 +15442,105 @@ impl HirAsyncState {
       .body(self.body_id)
       .ok_or(VmError::InvariantViolation("hir body id missing from compiled script"))?;
 
+    fn for_triple_head_has_await<'a>(
+      evaluator: &HirEvaluator<'a>,
+      body: &hir_js::Body,
+      init: &Option<hir_js::ForInit>,
+      test: &Option<hir_js::ExprId>,
+      update: &Option<hir_js::ExprId>,
+    ) -> Result<bool, VmError> {
+      let mut has_await = false;
+      if let Some(init) = init {
+        match init {
+          hir_js::ForInit::Expr(expr_id) => {
+            let expr = evaluator.get_expr(body, *expr_id)?;
+            match &expr.kind {
+              hir_js::ExprKind::Await { .. } => has_await = true,
+              hir_js::ExprKind::Assignment {
+                op: hir_js::AssignOp::Assign,
+                value,
+                ..
+              } => {
+                let rhs = evaluator.get_expr(body, *value)?;
+                if matches!(rhs.kind, hir_js::ExprKind::Await { .. }) {
+                  has_await = true;
+                }
+              }
+              _ => {}
+            }
+          }
+          hir_js::ForInit::Var(decl) => {
+            for declarator in &decl.declarators {
+              if let Some(init) = declarator.init {
+                let init_expr = evaluator.get_expr(body, init)?;
+                if matches!(init_expr.kind, hir_js::ExprKind::Await { .. }) {
+                  has_await = true;
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if !has_await {
+        if let Some(test) = test {
+          let test_expr = evaluator.get_expr(body, *test)?;
+          if matches!(test_expr.kind, hir_js::ExprKind::Await { .. }) {
+            has_await = true;
+          }
+        }
+      }
+
+      if !has_await {
+        if let Some(update) = update {
+          let update_expr = evaluator.get_expr(body, *update)?;
+          match &update_expr.kind {
+            hir_js::ExprKind::Await { .. } => has_await = true,
+            hir_js::ExprKind::Assignment {
+              op: hir_js::AssignOp::Assign,
+              value,
+              ..
+            } => {
+              let rhs = evaluator.get_expr(body, *value)?;
+              if matches!(rhs.kind, hir_js::ExprKind::Await { .. }) {
+                has_await = true;
+              }
+            }
+            _ => {}
+          }
+        }
+      }
+
+      Ok(has_await)
+    }
+
+    fn collect_label_set<'a>(
+      evaluator: &HirEvaluator<'a>,
+      body: &hir_js::Body,
+      first_label: hir_js::NameId,
+      first_body: hir_js::StmtId,
+      label_count: usize,
+    ) -> Result<Vec<hir_js::NameId>, VmError> {
+      let mut label_set: Vec<hir_js::NameId> = Vec::new();
+      label_set
+        .try_reserve_exact(label_count)
+        .map_err(|_| VmError::OutOfMemory)?;
+      label_set.push(first_label);
+      let mut current_stmt_id = first_body;
+      loop {
+        let inner_stmt = evaluator.get_stmt(body, current_stmt_id)?;
+        match &inner_stmt.kind {
+          hir_js::StmtKind::Labeled { label, body: inner } => {
+            label_set.push(*label);
+            current_stmt_id = *inner;
+          }
+          _ => break,
+        }
+      }
+      Ok(label_set)
+    }
+
     loop {
       if let Some(active) = &mut self.active {
         match active {
@@ -15527,6 +15626,16 @@ impl HirAsyncState {
                 return Ok(HirAsyncResult::Await { kind, await_value });
               }
               Ok(ForTripleAwaitPoll::Complete(flow)) => {
+                // `ForTripleAwaitState::poll` is expected to have cleaned up its persistent roots
+                // before returning `Complete`, but call `teardown` defensively so future changes to
+                // the state machine cannot leak roots.
+                state.teardown(scope.heap_mut());
+                let flow = match flow {
+                  Flow::Break(Some(target), value) if state.label_set.iter().any(|l| *l == target) => {
+                    Flow::Normal(value)
+                  }
+                  other => other,
+                };
                 self.active = None;
                 match flow {
                   Flow::Normal(_) => {
@@ -15542,6 +15651,7 @@ impl HirAsyncState {
                 }
               }
               Err(err) => {
+                state.teardown(scope.heap_mut());
                 self.active = None;
                 let stmt_offset = match &self.body_kind {
                   HirAsyncBodyKind::Block { stmts } => stmts
@@ -16196,14 +16306,17 @@ impl HirAsyncState {
       let stmt = evaluator.get_stmt(body, stmt_id)?;
       let stmt_offset = stmt.span.start;
 
-      // Fast-path top-level label chains whose body is a `for await..of` loop.
+      // Fast-path top-level label chains whose body is a `for await..of` loop or a `for (...)` loop
+      // with `await` in the loop head.
       //
       // This supports patterns like:
       //   `outer: for await (const x of iterable) { break outer; }`
       //   `a: b: for await (const x of iterable) { break a; }`
+      //   `outer: for (i = await p; i < 10; i++) { break outer; }`
       //
       // This is intentionally narrow: the compiled async evaluator only supports `for await..of`
-      // loops at the top statement-list level (not nested under other statement kinds).
+      // loops (and `for` loops with await in the head) at the top statement-list level (not nested
+      // under other statement kinds).
       if let hir_js::StmtKind::Labeled {
         label: first_label,
         body: first_body,
@@ -16239,22 +16352,7 @@ impl HirAsyncState {
           // Collect the label set so:
           // - `continue <label>` targeted at any label in the chain is consumed by the loop
           // - `break <label>` completions can be consumed by the enclosing label statement(s)
-          let mut label_set: Vec<hir_js::NameId> = Vec::new();
-          label_set
-            .try_reserve_exact(label_count)
-            .map_err(|_| VmError::OutOfMemory)?;
-          label_set.push(*first_label);
-          let mut current_stmt_id = *first_body;
-          loop {
-            let inner_stmt = evaluator.get_stmt(body, current_stmt_id)?;
-            match &inner_stmt.kind {
-              hir_js::StmtKind::Labeled { label, body: inner } => {
-                label_set.push(*label);
-                current_stmt_id = *inner;
-              }
-              _ => break,
-            }
-          }
+          let label_set = collect_label_set(evaluator, body, *first_label, *first_body, label_count)?;
 
           // Budget once per label statement and once for the loop statement itself, matching the
           // synchronous evaluator's statement-entry ticks.
@@ -16270,6 +16368,34 @@ impl HirAsyncState {
             label_set.as_slice(),
           )?));
           continue;
+        }
+
+        if let hir_js::StmtKind::For {
+          init,
+          test,
+          update,
+          body: inner,
+        } = &inner_stmt.kind
+        {
+          if for_triple_head_has_await(evaluator, body, init, test, update)? {
+            let label_set =
+              collect_label_set(evaluator, body, *first_label, *first_body, label_count)?;
+
+            // Budget once per label statement; `ForTripleAwaitState` budgets for the loop statement
+            // entry internally (in its `Init` stage).
+            for _ in 0..label_set.len() {
+              evaluator.vm.tick()?;
+            }
+
+            self.active = Some(HirAsyncActive::ForTriple(ForTripleAwaitState::new(
+              init.clone(),
+              *test,
+              *update,
+              *inner,
+              label_set.as_slice(),
+            )?));
+            continue;
+          }
         }
       }
 
@@ -16298,67 +16424,7 @@ impl HirAsyncState {
         body: inner,
       } = &stmt.kind
       {
-        let mut has_await = false;
-        if let Some(init) = init {
-          match init {
-            hir_js::ForInit::Expr(expr_id) => {
-              let expr = evaluator.get_expr(body, *expr_id)?;
-              match &expr.kind {
-                hir_js::ExprKind::Await { .. } => has_await = true,
-                hir_js::ExprKind::Assignment {
-                  op: hir_js::AssignOp::Assign,
-                  value,
-                  ..
-                } => {
-                  let rhs = evaluator.get_expr(body, *value)?;
-                  if matches!(rhs.kind, hir_js::ExprKind::Await { .. }) {
-                    has_await = true;
-                  }
-                }
-                _ => {}
-              }
-            }
-            hir_js::ForInit::Var(decl) => {
-              for declarator in &decl.declarators {
-                if let Some(init) = declarator.init {
-                  let init_expr = evaluator.get_expr(body, init)?;
-                  if matches!(init_expr.kind, hir_js::ExprKind::Await { .. }) {
-                    has_await = true;
-                    break;
-                  }
-                }
-              }
-            }
-          }
-        }
-        if !has_await {
-          if let Some(test) = test {
-            let test_expr = evaluator.get_expr(body, *test)?;
-            if matches!(test_expr.kind, hir_js::ExprKind::Await { .. }) {
-              has_await = true;
-            }
-          }
-        }
-        if !has_await {
-          if let Some(update) = update {
-            let update_expr = evaluator.get_expr(body, *update)?;
-            match &update_expr.kind {
-              hir_js::ExprKind::Await { .. } => has_await = true,
-              hir_js::ExprKind::Assignment {
-                op: hir_js::AssignOp::Assign,
-                value,
-                ..
-              } => {
-                let rhs = evaluator.get_expr(body, *value)?;
-                if matches!(rhs.kind, hir_js::ExprKind::Await { .. }) {
-                  has_await = true;
-                }
-              }
-              _ => {}
-            }
-          }
-        }
-        if has_await {
+        if for_triple_head_has_await(evaluator, body, init, test, update)? {
           self.active = Some(HirAsyncActive::ForTriple(ForTripleAwaitState::new(
             init.clone(),
             *test,

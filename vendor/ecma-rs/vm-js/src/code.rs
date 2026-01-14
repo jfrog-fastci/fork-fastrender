@@ -24,7 +24,7 @@ use parse_js::ast::expr::{Expr, IdExpr, MemberExpr};
 use parse_js::ast::func::Func;
 use parse_js::ast::node::{Node, ParenthesizedExpr};
 use parse_js::ast::stmt::decl::VarDeclMode;
-use parse_js::ast::stmt::{ForInOfLhs, ForOfStmt, ForTripleStmtInit, Stmt};
+use parse_js::ast::stmt::{ForInOfLhs, ForOfStmt, ForTripleStmt, ForTripleStmtInit, Stmt};
 use parse_js::operator::OperatorName;
 use parse_js::token::TT;
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
@@ -1063,6 +1063,40 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
     allow_assignment && expr_is_assignment_with_direct_await_rhs_without_nested_await(expr)
   }
 
+  fn for_triple_stmt_supported(for_stmt: &Node<ForTripleStmt>) -> bool {
+    // Loop body must not contain any other `await`.
+    if for_stmt.stx.body.stx.body.iter().any(stmt_contains_await) {
+      return false;
+    }
+
+    let init_supported = match &for_stmt.stx.init {
+      ForTripleStmtInit::None => true,
+      ForTripleStmtInit::Expr(expr) => for_triple_head_expr_supported(expr, /* allow_assignment */ true),
+      ForTripleStmtInit::Decl(decl) => decl.stx.declarators.iter().all(|d| {
+        !pat_contains_await(&d.pattern.stx.pat.stx)
+          && d.initializer.as_ref().is_none_or(|init| !expr_contains_await(init))
+      }),
+    };
+    if !init_supported {
+      return false;
+    }
+
+    let test_supported = for_stmt
+      .stx
+      .cond
+      .as_ref()
+      .is_none_or(|test| for_triple_head_expr_supported(test, /* allow_assignment */ false));
+    if !test_supported {
+      return false;
+    }
+
+    for_stmt
+      .stx
+      .post
+      .as_ref()
+      .is_none_or(|post| for_triple_head_expr_supported(post, /* allow_assignment */ true))
+  }
+
   for stmt in stmts {
     if !stmt_contains_await(stmt) {
       continue;
@@ -1119,37 +1153,7 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
       // simple `x = await <expr>` assignments) in the loop head, but does not yet support `await`
       // inside the loop body or within initializer declarations.
       Stmt::ForTriple(for_stmt) => {
-        // Loop body must not contain any other `await`.
-        if for_stmt.stx.body.stx.body.iter().any(stmt_contains_await) {
-          false
-        } else {
-          let init_supported = match &for_stmt.stx.init {
-            ForTripleStmtInit::None => true,
-            ForTripleStmtInit::Expr(expr) => for_triple_head_expr_supported(expr, /* allow_assignment */ true),
-            ForTripleStmtInit::Decl(decl) => decl.stx.declarators.iter().all(|d| {
-              !pat_contains_await(&d.pattern.stx.pat.stx)
-                && d.initializer.as_ref().is_none_or(|init| !expr_contains_await(init))
-            }),
-          };
-          if !init_supported {
-            false
-          } else {
-            let test_supported = for_stmt
-              .stx
-              .cond
-              .as_ref()
-              .is_none_or(|test| for_triple_head_expr_supported(test, /* allow_assignment */ false));
-            if !test_supported {
-              false
-            } else {
-              for_stmt
-                .stx
-                .post
-                .as_ref()
-                .is_none_or(|post| for_triple_head_expr_supported(post, /* allow_assignment */ true))
-            }
-          }
-        }
+        for_triple_stmt_supported(for_stmt)
       },
 
       // `for await (<lhs> of <rhs>) { ... }` at top-level.
@@ -1173,13 +1177,14 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
 
       // Support `label: for await (...) { ... }` (including nested label chains like
       // `a: b: for await (...) { ... }`) as long as the labelled statement ultimately labels a
-      // supported top-level `for await..of` loop.
+      // supported top-level `for await..of` loop or a supported `for (init; test; update)` loop.
       Stmt::Label(label) => {
         let mut inner = &label.stx.statement;
         while let Stmt::Label(label) = &*inner.stx {
           inner = &label.stx.statement;
         }
         match &*inner.stx {
+          Stmt::ForTriple(for_stmt) => for_triple_stmt_supported(for_stmt),
           Stmt::ForOf(for_of) if for_of.stx.await_ => {
             if for_in_of_lhs_contains_await(&for_of.stx.lhs) {
               false
