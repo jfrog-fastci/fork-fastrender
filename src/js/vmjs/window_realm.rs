@@ -37498,8 +37498,6 @@ fn range_end_offset_get_native(
   Ok(Value::Number(offset as f64))
 }
 
-// NOTE: Merge fallout: this native binding was previously defined twice in this file. Keep each
-// native function defined exactly once to avoid duplicate-definition compilation failures.
 fn range_common_ancestor_container_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
