@@ -314,6 +314,39 @@ fn p0_external_classic_script_empty_src_fires_error_and_ignores_inline_fallback(
 }
 
 #[test]
+fn p0_external_classic_script_invalid_src_fires_error_and_ignores_inline_fallback() -> Result<()> {
+  let js_options = JsExecutionOptions::default();
+  let mut h = Harness::new("https://example.invalid/p0_invalid_src.html", js_options)?;
+
+  // Even if `src` is invalid, the presence of the `src` attribute means the inline script contents
+  // must be ignored (HTML "external script" path). The element should fire an `error` event.
+  h.register_html_source(
+    r#"<!doctype html><body>
+      <script src="http://" onerror="console.log('error')">console.log('inline-fallback');</script>
+      <script>console.log('after');</script>
+    </body>"#,
+  );
+
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  let logs = console_logs(&h.tab);
+  assert!(
+    logs.contains(&"error".to_string()),
+    "expected invalid-src <script> to fire an error event, got: {logs:?}"
+  );
+  assert!(
+    logs.contains(&"after".to_string()),
+    "expected parsing to continue past invalid-src <script>, got: {logs:?}"
+  );
+  assert!(
+    !logs.contains(&"inline-fallback".to_string()),
+    "expected inline script text to be ignored when src attribute is present, got: {logs:?}"
+  );
+  Ok(())
+}
+
+#[test]
 fn p0_event_loop_microtasks_and_timers_run_in_expected_order() -> Result<()> {
   let js_options = JsExecutionOptions::default();
   let mut h = Harness::new("https://example.invalid/p0_event_loop.html", js_options)?;
