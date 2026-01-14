@@ -565,6 +565,10 @@ impl Runner {
     js_execution_options.event_loop_run_limits.max_wall_time = Some(timeout);
     js_execution_options.event_loop_run_limits.max_tasks = self.config.max_tasks;
     js_execution_options.event_loop_run_limits.max_microtasks = self.config.max_microtasks;
+    // The curated HTML corpus includes `<script type="module">` and import maps. FastRender defaults
+    // `supports_module_scripts=false` for hostile-input safety; enable it explicitly for the offline
+    // WPT runner.
+    js_execution_options.supports_module_scripts = true;
 
     let mut tab = match BrowserTab::from_html_with_vmjs_and_document_url_and_fetcher_and_js_execution_options(
       &patched_html,
