@@ -46,10 +46,10 @@ impl PageAccessKitTree {
   /// This does **not** create/update the page subtree nodes themselves; those are typically
   /// generated elsewhere (e.g. by the render worker) and merged into egui's AccessKit update.
   ///
-  /// When the root changes *within the same tab* (which usually implies a navigation / new document
-  /// generation), this emits a best-effort prune update for the previous root by clearing its
-  /// children list. This helps AccessKit adapters drop unreachable nodes when node ids include a
-  /// per-document generation.
+  /// When the root changes *within the same tab* (which usually implies a navigation or a page
+  /// accessibility-tree generation bump), this emits a best-effort prune update for the previous
+  /// root by clearing its children list. This helps AccessKit adapters drop unreachable nodes when
+  /// page node ids include a tree generation.
   pub fn set_document_root(&mut self, root: Option<(NodeId, Role)>) -> PageAccessKitUpdate {
     let next = root.map(|(id, role)| CurrentRoot {
       id,
