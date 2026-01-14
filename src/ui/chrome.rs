@@ -396,16 +396,10 @@ fn omnibox_suggestion_a11y_label(suggestion: &OmniboxSuggestion) -> String {
 }
 
 fn ascii_starts_with_case_insensitive(haystack: &str, prefix: &str) -> bool {
-  let haystack = haystack.as_bytes();
-  let prefix = prefix.as_bytes();
-  if prefix.len() > haystack.len() {
-    return false;
-  }
   haystack
-    .iter()
-    .take(prefix.len())
-    .zip(prefix)
-    .all(|(a, b)| a.to_ascii_lowercase() == b.to_ascii_lowercase())
+    .as_bytes()
+    .get(..prefix.len())
+    .is_some_and(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
 }
 
 fn tab_search_input_id() -> egui::Id {
