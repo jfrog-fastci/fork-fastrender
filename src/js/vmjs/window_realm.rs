@@ -50236,6 +50236,11 @@ fn init_window_globals(
     ("onwaiting", "waiting"),
     ("onloadstart", "loadstart"),
     ("onprogress", "progress"),
+    // Encrypted Media Extensions / Picture-in-Picture (best-effort; may not be fired yet).
+    ("onencrypted", "encrypted"),
+    ("onwaitingforkey", "waitingforkey"),
+    ("onenterpictureinpicture", "enterpictureinpicture"),
+    ("onleavepictureinpicture", "leavepictureinpicture"),
   ] {
     let type_s = scope.alloc_string(type_)?;
     scope.push_root(Value::String(type_s))?;
