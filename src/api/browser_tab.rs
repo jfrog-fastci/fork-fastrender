@@ -11933,7 +11933,7 @@ mod tests {
     let mut tab = BrowserTab::from_html_with_event_loop_and_js_execution_options(
       "",
       RenderOptions::default(),
-      VmJsBrowserTabExecutor::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
       event_loop,
       JsExecutionOptions::default(),
     )?;
@@ -12044,7 +12044,7 @@ mod tests {
     let mut tab = BrowserTab::from_html_with_event_loop_and_js_execution_options(
       "",
       RenderOptions::default(),
-      VmJsBrowserTabExecutor::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
       event_loop,
       JsExecutionOptions::default(),
     )?;

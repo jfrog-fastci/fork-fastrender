@@ -726,9 +726,19 @@ impl BrowserTabState {
 
   #[cfg(any(test, feature = "browser_ui"))]
   pub(crate) fn tab_close_accessible_label(&mut self, title: &str) -> std::sync::Arc<str> {
+    let close_label: &str = {
+      #[cfg(feature = "browser_ui")]
+      {
+        crate::ui::BrowserIcon::CloseTab.a11y_label()
+      }
+      #[cfg(not(feature = "browser_ui"))]
+      {
+        "Close tab"
+      }
+    };
     self
       .tab_close_a11y_label_cache
-      .get_or_update(crate::ui::BrowserIcon::CloseTab.a11y_label(), title)
+      .get_or_update(close_label, title)
   }
 
   /// Returns a deterministic monotonic progress fraction for a chrome loading indicator.
@@ -4197,7 +4207,7 @@ mod browser_tab_tests {
     let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
     let tab_id = app.active_tab_id().unwrap();
 
-    let scroll = ScrollState::with_viewport(Point::new(0.0, 10.0));
+    let scroll = ScrollState::with_viewport(crate::Point::new(0.0, 10.0));
 
     let first = app.apply_worker_msg(WorkerToUi::ScrollStateUpdated {
       tab_id,
@@ -5347,7 +5357,7 @@ mod tab_group_tests {
     );
 
     // ScrollStateUpdated scroll viewport change should bump session revision.
-    let scroll2 = ScrollState::with_viewport(Point::new(0.0, 20.0));
+    let scroll2 = ScrollState::with_viewport(crate::Point::new(0.0, 20.0));
     app.apply_worker_msg(WorkerToUi::ScrollStateUpdated {
       tab_id,
       scroll: scroll2.clone(),
