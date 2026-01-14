@@ -93,6 +93,27 @@ fn labelled_async_function_decl_is_syntax_error() {
 }
 
 #[test]
+fn let_newline_bracket_in_statement_position_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("if (false) let\n[a] = 0;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn using_declaration_in_statement_position_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("if (false) using x = null;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn await_using_declaration_in_statement_position_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("if (false) await using x = null;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn break_label_does_not_cross_function_boundary_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
