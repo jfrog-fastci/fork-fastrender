@@ -48239,38 +48239,25 @@ mod tests {
   #[test]
   fn async_class_static_block_super_computed_member_with_await_is_syntax_error() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
-    // Async class evaluation allocates more than sync scripts; use a slightly larger heap.
-    let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;
 
-    let err = rt.exec_script(
-      r#"
-      var out;
-      async function f() {
-        class Parent {}
-        Object.defineProperty(Parent, "x", {
-          get() { return this; }
-        });
-
-        class C extends Parent {
-          static {
-            out = (super[await "x"] === C);
+    let err = rt
+      .exec_script(
+        r#"
+          async function f() {
+            class Parent {}
+            class C extends Parent {
+              static {
+                super[await "x"];
+              }
+            }
           }
-        }
-
-        return out;
-      }
-
-      f().then(function (v) { out = v; });
-      out
-    "#,
-    )
-    .unwrap_err();
-
-    match err {
-      VmError::Syntax(_) => Ok(()),
-      other => panic!("expected VmError::Syntax, got {other:?}"),
-    }
+        "#,
+      )
+      .unwrap_err();
+    assert!(matches!(err, VmError::Syntax(_)));
+    Ok(())
   }
 
   #[test]

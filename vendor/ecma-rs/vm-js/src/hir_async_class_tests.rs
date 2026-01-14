@@ -66,15 +66,15 @@ fn call_and_await_promise(rt: &mut JsRuntime, func_obj: GcObject) -> Result<Valu
 fn hir_async_class_static_block_await_is_syntax_error() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
+  // `await` is not permitted in class static initialization blocks, even inside async functions.
   let err = CompiledScript::compile_script(
     &mut rt.heap,
     "<inline>",
     r#"
-      class C {
-        static {
-          await 0;
-        }
+      async function f(){
+        class C { static { await Promise.resolve(0); } }
       }
+      f
     "#,
   )
   .unwrap_err();

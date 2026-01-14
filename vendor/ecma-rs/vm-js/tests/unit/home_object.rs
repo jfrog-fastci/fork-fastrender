@@ -369,7 +369,7 @@ fn class_static_initialization_sets_home_object_ast() -> Result<(), VmError> {
 }
 
 #[test]
-fn async_class_static_block_restores_home_object() -> Result<(), VmError> {
+fn await_in_class_static_block_is_syntax_error() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
   // `await` expressions are syntax errors inside class static blocks.
@@ -384,10 +384,9 @@ fn async_class_static_block_restores_home_object() -> Result<(), VmError> {
       "#,
     )
     .unwrap_err();
-  match err {
-    VmError::Syntax(_) => Ok(()),
-    other => Err(other),
-  }
+  assert!(matches!(err, VmError::Syntax(_)));
+
+  Ok(())
 }
 
 #[test]

@@ -2087,23 +2087,15 @@ impl Intrinsics {
 
     // `%GeneratorPrototype%`
     let generator_prototype = alloc_rooted_object(scope, roots)?;
-    // Store the intrinsic `@@toStringTag` on a dedicated object so user overrides on
-    // `%GeneratorPrototype%[@@toStringTag]` can be deleted to reveal the intrinsic "Generator"
-    // tag again (and so the generator prototype chain can still inherit the `%IteratorPrototype%`
-    // "Iterator" tag).
-    let generator_tag_prototype = alloc_rooted_object(scope, roots)?;
     scope
       .heap_mut()
-      .object_set_prototype(generator_tag_prototype, Some(iterator_prototype))?;
+      .object_set_prototype(generator_prototype, Some(iterator_prototype))?;
     install_to_string_tag(
       scope,
-      generator_tag_prototype,
+      generator_prototype,
       well_known_symbols.to_string_tag,
       "Generator",
     )?;
-    scope
-      .heap_mut()
-      .object_set_prototype(generator_prototype, Some(generator_tag_prototype))?;
 
     // `%GeneratorFunction%`
     let generator_function_name = scope.alloc_string("GeneratorFunction")?;
@@ -2204,7 +2196,7 @@ impl Intrinsics {
         data_desc(Value::Object(func), true, false, true),
       )?;
     }
-    // GeneratorPrototype[@@toStringTag] is installed on `generator_tag_prototype` above.
+    // GeneratorPrototype[@@toStringTag] is installed above.
 
     // `%Array%`
     let array_call = vm.register_native_call(builtins::array_constructor_call)?;

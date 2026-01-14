@@ -2004,19 +2004,16 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   ) -> Result<(), VmError> {
     // Static initialization blocks introduce early-error boundaries:
     // - `return` is always invalid (they are not function bodies),
-    // - `await` validity follows the enclosing context (module top-level / async classic script /
-    //   async function bodies), but `await` is always reserved as an identifier,
+    // - `await` is always invalid (class static blocks are not async contexts),
     // - `yield` is always invalid (even inside generator functions),
     // - `break`/`continue` target resolution must not cross static-block boundaries.
-    let saved_yield_is_reserved = ctx.yield_is_reserved;
-    let await_allowed = ctx.await_allowed;
     let saved = self.save_and_enter_function(
       ctx,
       /* strict */ true,
-      /* await_allowed */ await_allowed,
+      /* await_allowed */ false,
       /* yield_allowed */ false,
       /* await_is_reserved */ true,
-      /* yield_is_reserved */ saved_yield_is_reserved,
+      /* yield_is_reserved */ ctx.yield_is_reserved,
       /* super_call_allowed */ false,
       /* super_property_allowed */ true,
       /* arguments_allowed */ false,
