@@ -108,6 +108,12 @@ include = [
   "language/statements/class/elements/derived-cls-direct-eval-err-contains-supercall.js",
   "language/statements/class/elements/arrow-body-derived-cls-direct-eval-err-contains-supercall.js",
   "language/statements/class/elements/privatefieldget-typeerror-4.js",
+  # Private member access/brand checks must bypass Proxy traps, but still work on Proxy *instances*
+  # (i.e. when `super()` returns a Proxy that is then initialized with private elements).
+  "language/statements/class/elements/privatefield-on-proxy.js",
+  "language/statements/class/elements/privatemethods-on-proxy.js",
+  "language/statements/class/elements/privategetter-on-proxy.js",
+  "language/statements/class/elements/static-private-fields-proxy-default-handler-throws.js",
   "language/statements/class/elements/private-methods/prod-private-method.js",
   "language/statements/class/elements/private-methods/prod-private-method-initialize-order.js",
   # `#x in obj` private-brand-check operator.
