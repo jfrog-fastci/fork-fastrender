@@ -230,3 +230,40 @@ fn derived_constructor_async_arrow_super_property_ops_use_initialized_this() -> 
   )?;
   Ok(())
 }
+
+#[test]
+fn derived_constructor_async_arrow_super_calls_use_initialized_this() -> Result<(), VmError> {
+  assert_async_out_in_ast_and_compiled(
+    r#"
+      var out = '';
+      class B {
+        m(v) {
+          this._x = (this._x || 0) + v;
+          return this._x;
+        }
+      }
+      class C extends B {
+        constructor() {
+          super();
+          this._x = 0;
+          this.f = async () => {
+            // `super.m(await ...)` exercises async call evaluation where the Super Reference receiver
+            // must survive suspension during argument evaluation.
+            let a = super.m(await Promise.resolve(1));
+            // `super[await ...](await ...)` exercises computed super member calls that can suspend
+            // both in the key and in the argument list.
+            let b = super[await Promise.resolve("m")](await Promise.resolve(2));
+            return String(a) + ":" + String(b) + ":" + String(this._x) + ":" + String(this instanceof C);
+          };
+        }
+      }
+      async function run() {
+        let o = new C();
+        return await o.f();
+      }
+      run().then(v => out = String(v));
+    "#,
+    "1:3:3:true",
+  )?;
+  Ok(())
+}
