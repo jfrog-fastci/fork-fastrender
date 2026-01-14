@@ -10890,7 +10890,36 @@ impl HirAsyncState {
         let HirAsyncBodyKind::Expr { expr } = &self.body_kind else {
           return Err(VmError::InvariantViolation("missing compiled async body kind"));
         };
-        let expr_span_start = evaluator.get_expr(body, *expr)?.span.start;
+        let expr_node = evaluator.get_expr(body, *expr)?;
+        let expr_span_start = expr_node.span.start;
+
+        // Fast-path expression-bodied async arrow functions whose body is an AwaitExpression
+        // (`async () => await <expr>`). This form is equivalent to `return await <expr>;`.
+        if let hir_js::ExprKind::Await { expr: awaited_expr } = &expr_node.kind {
+          // Budget once for evaluating the `await` expression itself; the awaited subexpression is
+          // budgeted by `eval_expr`.
+          evaluator.vm.tick()?;
+          let await_value = match evaluator.eval_expr(scope, body, *awaited_expr) {
+            Ok(v) => v,
+            Err(err) => {
+              let err = finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                scope,
+                evaluator.script.source.as_ref(),
+                expr_span_start,
+                err,
+              );
+              return match err {
+                VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                  Ok(HirAsyncResult::CompleteThrow(value))
+                }
+                other => Err(other),
+              };
+            }
+          };
+          self.active = Some(HirAsyncActive::AwaitReturn);
+          return Ok(HirAsyncResult::Await { await_value });
+        }
 
         let expr_res = evaluator.eval_expr(scope, body, *expr);
         return match expr_res {

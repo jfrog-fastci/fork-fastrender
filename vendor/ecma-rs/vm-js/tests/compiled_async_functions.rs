@@ -297,3 +297,101 @@ fn compiled_async_var_decl_await() -> Result<(), VmError> {
   );
   Ok(())
 }
+
+fn find_async_arrow_expr_body_await(script: &Arc<CompiledScript>) -> hir_js::BodyId {
+  let hir = script.hir.as_ref();
+  for def in hir.defs.iter() {
+    let Some(body_id) = def.body else {
+      continue;
+    };
+    let Some(body) = hir.body(body_id) else {
+      continue;
+    };
+    if body.kind != hir_js::BodyKind::Function {
+      continue;
+    }
+    let Some(func_meta) = body.function.as_ref() else {
+      continue;
+    };
+    if !func_meta.async_ || func_meta.generator || !func_meta.is_arrow {
+      continue;
+    }
+    let hir_js::FunctionBody::Expr(expr_id) = &func_meta.body else {
+      continue;
+    };
+    let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
+      continue;
+    };
+    if matches!(expr.kind, hir_js::ExprKind::Await { .. }) {
+      return body_id;
+    }
+  }
+  panic!("async arrow function body not found");
+}
+
+#[test]
+fn compiled_async_arrow_expr_body_await() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // Ensure there is exactly one async arrow with an AwaitExpression body.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "compiled_async_arrow_expr_body_await.js",
+    r#"
+      const f = async () => await Promise.resolve(1);
+    "#,
+  )?;
+  let f_body = find_async_arrow_expr_body_await(&script);
+
+  // Install the compiled function object onto the realm global so we can invoke it from JS.
+  {
+    let global = rt.realm().global_object();
+    let mut scope = rt.heap_mut().scope();
+    scope.push_root(Value::Object(global))?;
+
+    let name_s = scope.alloc_string("f")?;
+    scope.push_root(Value::String(name_s))?;
+
+    let f_obj = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script,
+        body: f_body,
+      },
+      name_s,
+      0,
+    )?;
+    scope.push_root(Value::Object(f_obj))?;
+
+    let key_s = scope.alloc_string("f")?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    scope.define_property(
+      global,
+      key,
+      vm_js::PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: vm_js::PropertyKind::Data {
+          value: Value::Object(f_obj),
+          writable: true,
+        },
+      },
+    )?;
+  }
+
+  let baseline_env_roots = rt.heap.persistent_env_root_count();
+
+  rt.exec_script("var out = 0; f().then(v => { out = v; });")?;
+  assert_eq!(rt.exec_script("out")?, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  assert_eq!(rt.exec_script("out")?, Value::Number(1.0));
+  assert_eq!(
+    rt.heap.persistent_env_root_count(),
+    baseline_env_roots,
+    "async compiled arrow expr-body await call should not leak persistent env roots"
+  );
+  Ok(())
+}
