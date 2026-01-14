@@ -507,7 +507,6 @@ impl<'a> Parser<'a> {
     self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
     res
   }
-
   /// Validate an *assignable reference* (simple assignment target), as required by update
   /// expressions (`++x`, `x--`, etc.).
   ///
