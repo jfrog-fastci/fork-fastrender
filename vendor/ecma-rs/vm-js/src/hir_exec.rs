@@ -10152,6 +10152,12 @@ impl<'vm> HirEvaluator<'vm> {
       Some(closure_env),
     )?;
     init_scope.push_root(Value::Object(func_obj))?;
+    // Field initializer functions are parsed/evaluated as class *methods* so they have a lexical
+    // `super` binding (for `super.prop`, not `super()`), and so direct eval inherits the enclosing
+    // meta-property context.
+    init_scope
+      .heap_mut()
+      .set_function_meta_property_context(func_obj, MetaPropertyContext::METHOD)?;
 
     // Best-effort `[[Prototype]]` / `[[Realm]]` metadata.
     if let Some(intr) = self.vm.intrinsics() {
