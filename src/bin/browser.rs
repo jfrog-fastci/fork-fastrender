@@ -16995,6 +16995,11 @@ impl App {
           }
           NativeSaveDialogOutcome::Cancelled => {}
           NativeSaveDialogOutcome::FallbackToInApp => {
+            let _ = proxy.send_event(UserEvent::ShowChromeToast {
+              window_id,
+              kind: fastrender::ui::ToastKind::Error,
+              text: "Failed to open native file dialog".to_string(),
+            });
             let _ = proxy.send_event(UserEvent::PageExportNativeDialogFallback {
               window_id,
               tab_id,
@@ -17008,6 +17013,10 @@ impl App {
 
     if let Err(err) = spawn_result {
       eprintln!("failed to spawn native save dialog thread: {err}");
+      self.show_chrome_toast_kind(
+        fastrender::ui::ToastKind::Error,
+        "Failed to open native file dialog",
+      );
       // Fallback immediately if the thread couldn't be spawned.
       self.open_page_export_in_app_dialog(kind, tab_id, &suggested_name, &default_dir);
       self.window.request_redraw();
