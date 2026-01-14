@@ -19125,7 +19125,6 @@ fn async_generator_handle_execution_result(
         frames,
       } => {
         state.frames = frames;
-        state.awaited_promise_root = None;
 
         // `AwaitResolved` means the internal `PromiseResolve` step of `Await` has already happened
         // (e.g. `AsyncIteratorClose` during `for await..of`), so we must not call `PromiseResolve`
