@@ -223,9 +223,9 @@ fn nested_subgrid_auto_span_defaults_to_all_parent_tracks_when_line_name_list_om
   let first = &inner_fragment.children[0];
   let second = &inner_fragment.children[1];
 
-  // The nested subgrids use a vertical writing-mode, so grid columns map to the physical Y axis.
-  // When auto-span is synthesized correctly, the second item should land in the second inherited
-  // column track (y=28px + 5px gap).
-  assert_approx(first.bounds.y(), 0.0, "first column y");
-  assert_approx(second.bounds.y(), 33.0, "second column y (gap + first track)");
+  // WPT expects nested subgrids to keep the ancestor grid's axis mapping even when the subgrid
+  // overrides `writing-mode` (`subgrid-nested-writing-mode-001`). The leaf items should therefore
+  // land in the second inherited column on the physical X axis.
+  assert_approx(first.bounds.x(), 0.0, "first column x");
+  assert_approx(second.bounds.x(), 33.0, "second column x (gap + first track)");
 }

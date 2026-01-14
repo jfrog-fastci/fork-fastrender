@@ -1078,14 +1078,14 @@ fn subgrid_autospan_uses_parent_track_count_when_no_line_names() {
   let first = &inner_fragment.children[0];
   let second = &inner_fragment.children[1];
   assert_approx(
-    first.bounds.y(),
+    first.bounds.x(),
     0.0,
-    "first inherited column starts at origin",
+    "first inherited column starts at origin on the physical X axis",
   );
   assert_approx(
-    second.bounds.y(),
+    second.bounds.x(),
     33.0,
-    "second inherited column offset includes the parent gap",
+    "second inherited column offset includes the parent gap on the physical X axis",
   );
 }
 
@@ -2296,14 +2296,14 @@ fn nested_column_subgrid_respects_inherited_axes_overrides() {
   let first = &inner_fragment.children[0];
   let second = &inner_fragment.children[1];
   assert_approx(
-    first.bounds.y(),
+    first.bounds.x(),
     0.0,
-    "first inherited column starts at origin",
+    "first inherited column starts at origin on the physical X axis",
   );
   assert_approx(
-    second.bounds.y(),
+    second.bounds.x(),
     33.0,
-    "gap and first track size carry through nested subgrid",
+    "gap and first track size carry through nested subgrid on the physical X axis",
   );
 }
 
@@ -2393,14 +2393,14 @@ fn nested_subgrid_autoplacement_inherits_parent_tracks_for_descendants() {
   let first = &inner_fragment.children[0];
   let second = &inner_fragment.children[1];
   assert_approx(
-    first.bounds.y(),
+    first.bounds.x(),
     0.0,
-    "first inherited column starts at origin",
+    "first inherited column starts at origin on the physical X axis",
   );
   assert_approx(
-    second.bounds.y(),
+    second.bounds.x(),
     33.0,
-    "gap and first track size carry through nested subgrid",
+    "gap and first track size carry through nested subgrid on the physical X axis",
   );
 }
 
@@ -4622,9 +4622,12 @@ fn nested_subgrids_with_writing_mode_inherit_parent_tracks_for_auto_span() {
   let a_fragment = &inner_fragment.children[0];
   let b_fragment = &inner_fragment.children[1];
 
-  assert_approx(a_fragment.bounds.y(), 0.0, "first item starts in column 1");
+  // Even though `outer`/`inner` set `writing-mode: vertical-rl`, nested subgrids should keep the
+  // containing grid's axis mapping for their track inheritance. (See WPT
+  // `css/subgrid/subgrid-nested-writing-mode-001`.)
+  assert_approx(a_fragment.bounds.x(), 0.0, "first item starts in column 1");
   assert_approx(
-    b_fragment.bounds.y(),
+    b_fragment.bounds.x(),
     33.0,
     "second item starts in column 2 (+ gap)",
   );
