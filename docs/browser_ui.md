@@ -252,9 +252,9 @@ Note: startup/session restore:
 - When run **with** a URL, it opens that URL and does not restore tabs unless `--restore` is
   provided.
 - `--no-restore` disables tab/session restore even when no URL is provided.
-- Even when tabs are not restored (CLI URL or `--no-restore`), the browser may still reuse persisted
-  **configuration** from the previous session (appearance/UI scale, home page, menu bar visibility,
-  and window geometry) when available.
+- Even when tabs are not restored (CLI URL, `--no-restore`, or safe mode after a restore crash
+  loop), the browser may still reuse persisted **configuration** from the previous session
+  (appearance/UI scale, home page, menu bar visibility, and window geometry) when available.
 
 If no session file exists yet, it falls back to `about:newtab`, which acts as a basic start page
 (showing bookmarks + recently visited pages when available).
@@ -366,8 +366,9 @@ This file acts as both:
 - **Session restore** (tabs/windows), and
 - **Persisted configuration** (appearance/UI scale, menu bar visibility, home page, window geometry).
 
-Even when the browser starts with *fresh* tabs (for example because you launched with a CLI URL or
-`--no-restore`), it may still reuse these persisted configuration fields from the last session.
+Even when the browser starts with *fresh* tabs (for example because you launched with a CLI URL,
+`--no-restore`, or safe mode skipped restoring after a crash loop), it may still reuse these
+persisted configuration fields from the last session.
 
 - Default location: a per-user config directory (via `directories`), e.g.
   `~/.config/fastrender/fastrender_session.json` on Linux.

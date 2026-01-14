@@ -134,9 +134,9 @@ Startup note:
   - If repeated unclean exits are detected (crash loop), the browser may skip auto-restoring tabs and
     start with a “safe” `about:newtab` instead. Use `--restore` to force restoring anyway.
 - When run **with** a URL, it opens that URL and does not restore tabs unless `--restore` is provided.
-  - Even when tabs are not restored (CLI URL or `--no-restore`), the browser may still reuse persisted
-    **configuration** from the previous session (appearance/UI scale, home page, menu bar visibility,
-    and window geometry) when available.
+  - Even when tabs are not restored (CLI URL, `--no-restore`, or safe mode after a restore crash
+    loop), the browser may still reuse persisted **configuration** from the previous session
+    (appearance/UI scale, home page, menu bar visibility, and window geometry) when available.
     - Window geometry persistence is best-effort and avoids common pitfalls:
       - when a window is maximized, the last *normal* (restored) size is preserved for proper
         unmaximize behaviour
