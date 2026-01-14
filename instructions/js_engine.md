@@ -20,7 +20,8 @@ If a command times out, that's a bug to investigate — not a limit to raise.
 
 ### vm-js generator/yield integration smoke tests
 
-CI runs a focused subset of vm-js integration tests that stress generator + `yield` correctness.
+CI runs a focused subset of vm-js integration tests that stress generator + `yield` correctness
+(including on scheduled runs to catch dependency drift).
 Run the same suite locally with:
 
 ```bash

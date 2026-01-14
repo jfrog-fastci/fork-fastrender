@@ -108,6 +108,67 @@ jobs:
           # outer wall-clock timeout so a wrapper/harness hang can't burn the entire job.
           timeout -k 10 1800 bash scripts/run_vm_js_generator_yield_tests.sh
 
+  ecma-rs-vm-js-generator-yield-smoke-schedule:
+    name: ecma-rs vm-js generator/yield smoke (scheduled, Rust 1.92.0)
+    runs-on: ubuntu-latest
+    # The main `ecma-rs-vm-js-check` job is intentionally skipped on schedule because it runs
+    # heavier `test262-semantic` unit tests. Keep a *tiny* scheduled smoke suite so we still
+    # exercise generator/yield correctness under dependency drift.
+    if: github.event_name == 'schedule'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Init ecma-rs checkout (vendored/submodule compatibility)
+        run: bash scripts/ci_init_ecma_rs_submodule.sh
+
+      - name: "CI guardrails: no merge conflict markers (Rust sources)"
+        run: |
+          bash scripts/check_no_conflict_markers.sh
+          bash scripts/ci_check_no_merge_conflicts.sh
+
+      - name: Install Rust toolchain (vendor/ecma-rs)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92.0"
+
+      - name: Cache cargo registry (ecma-rs vm-js check)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          # Share cache keys with the PR job so scheduled runs reuse warmed artifacts.
+          key: ${{ runner.os }}-ecma-rs-vm-js-cargo-registry-${{ hashFiles('vendor/ecma-rs/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-ecma-rs-vm-js-cargo-registry-
+
+      - name: Cache cargo git (ecma-rs vm-js check)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-ecma-rs-vm-js-cargo-git-${{ hashFiles('vendor/ecma-rs/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-ecma-rs-vm-js-cargo-git-
+
+      - name: Cache target dir (vendor/ecma-rs)
+        uses: actions/cache@v4
+        with:
+          path: vendor/ecma-rs/target
+          key: ${{ runner.os }}-ecma-rs-vm-js-target-1.92.0-${{ hashFiles('vendor/ecma-rs/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-ecma-rs-vm-js-target-1.92.0-
+
+      - name: vm-js generator/yield integration smoke tests (scheduled)
+        env:
+          FASTR_CARGO_LOCK_DIR: target/.cargo_agent_locks
+        run: |
+          set -euo pipefail
+          timeout -k 10 1800 bash scripts/run_vm_js_generator_yield_tests.sh
+
   ecma-rs-native:
     name: ecma-rs native (Rust 1.92.0)
     runs-on: ubuntu-latest
