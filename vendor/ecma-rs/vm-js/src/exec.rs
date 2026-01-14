@@ -12714,7 +12714,6 @@ impl<'a> Evaluator<'a> {
 
       let member_value = self.eval_expr(&mut key_scope, &expr.member)?;
       key_scope.push_root(member_value)?;
-
       // ECMA-262 `SuperProperty : super [ Expression ]`:
       // - `GetThisBinding` (handled above) must run before any key side effects,
       // - the key expression is evaluated to a value before `GetSuperBase`, and
@@ -12724,7 +12723,6 @@ impl<'a> Evaluator<'a> {
       let super_base = self.super_base(&mut key_scope)?;
       // Root the base across key coercion / `GetValue` in case they allocate/GC.
       key_scope.push_root(super_base)?;
-
       let key = self.to_property_key_operator(&mut key_scope, member_value)?;
       // Root the key across `GetValue` in case it allocates/GCs.
       match key {
