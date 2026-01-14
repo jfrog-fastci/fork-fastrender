@@ -189,6 +189,27 @@ fn generator_for_in_yield_in_object_pattern_rest_assignment_target_computed_memb
 }
 
 #[test]
+fn generator_for_in_yield_in_object_pattern_prop_assignment_target_computed_member() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          var obj = {};
+          for ({1: obj[yield "k"]} in {abc: 0}) { return obj.k; }
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next("k");
+        r1.done === false && r1.value === "k" &&
+        r2.done === true && r2.value === "b"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_for_in_yield_in_array_pattern_rest_assignment_target_computed_member() {
   let mut rt = new_runtime();
   let value = rt
@@ -294,6 +315,33 @@ fn generator_for_in_yield_in_let_lhs_preserves_per_iteration_env() {
         var r2 = it.next(42);
         r1.done === false && r1.value === 1 &&
         r2.done === true && r2.value === "42,x"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_in_yield_in_object_pattern_prop_assignment_target_computed_member_multiple_iterations() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          var obj = {};
+          var out = [];
+          for ({length: obj[yield 1]} in {a: 0, bb: 0}) {
+            out.push(obj.k);
+          }
+          return out.join(",");
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next("k");
+        var r3 = it.next("k");
+        r1.done === false && r1.value === 1 &&
+        r2.done === false && r2.value === 1 &&
+        r3.done === true && r3.value === "1,2"
       "#,
     )
     .unwrap();

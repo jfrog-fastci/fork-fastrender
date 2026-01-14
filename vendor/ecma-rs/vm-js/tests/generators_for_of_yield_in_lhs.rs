@@ -485,6 +485,54 @@ fn generator_for_of_yield_in_array_pattern_rest_assignment_target_computed_membe
 }
 
 #[test]
+fn generator_for_of_yield_in_object_pattern_prop_assignment_target_computed_member() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          var obj = {};
+          for ({a: obj[yield "k"]} of [{a: 3}]) { return obj.k; }
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next("k");
+        r1.done === false && r1.value === "k" &&
+        r2.done === true && r2.value === 3
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_yield_in_object_pattern_prop_assignment_target_computed_member_multiple_iterations() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          var obj = {};
+          var out = [];
+          for ({a: obj[yield 1]} of [{a: 1}, {a: 2}]) {
+            out.push(obj.k);
+          }
+          return out.join(",");
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next("k");
+        var r3 = it.next("k");
+        r1.done === false && r1.value === 1 &&
+        r2.done === false && r2.value === 1 &&
+        r3.done === true && r3.value === "1,2"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_for_of_yield_in_object_pattern_rest_assignment_target_computed_member() {
   let mut rt = new_runtime();
   let value = rt
