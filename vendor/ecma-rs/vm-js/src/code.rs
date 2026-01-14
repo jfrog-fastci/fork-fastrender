@@ -856,6 +856,7 @@ fn stmt_contains_unsupported_await_for_hir_async_scripts(stmt: &Node<Stmt>) -> b
     // - `x = await <expr>;`
     // - `x += await <expr>;` (and other arithmetic/bitwise compound assignment operators)
     // - `x ||= await <expr>;` / `x &&= await <expr>;` / `x ??= await <expr>;`
+    // - `throw await <expr>;`
     // - `const x = await <expr>;` (and `var`/`let`)
     // - `for (init; test; update) { ... }` loops where the head may contain direct `await` (and
     //   assignments with direct `await <expr>` RHS) in the init/test/update positions, and the loop
@@ -890,6 +891,19 @@ fn stmt_contains_unsupported_await_for_hir_async_scripts(stmt: &Node<Stmt>) -> b
       }
 
       expr_contains_await(expr)
+    }
+    Stmt::Throw(throw_stmt) => {
+      let expr = &throw_stmt.stx.value;
+      if !expr_contains_await(expr) {
+        return false;
+      }
+      match &*expr.stx {
+        Expr::Unary(unary) if unary.stx.operator == OperatorName::Await => {
+          // The compiled evaluator does not yet support nested `await` inside the awaited operand.
+          expr_contains_await(&unary.stx.argument)
+        }
+        _ => true,
+      }
     }
     Stmt::VarDecl(decl) => decl.stx.declarators.iter().any(|d| {
       if pat_contains_await(&d.pattern.stx.pat.stx) {

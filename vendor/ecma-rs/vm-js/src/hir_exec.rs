@@ -25356,6 +25356,8 @@ enum HirAsyncResumePoint {
   /// Resume an assignment expression statement whose RHS was a direct `await` expression
   /// (`x = await <expr>;` / `x += await <expr>;`).
   Assignment { next_stmt_index: usize },
+  /// Resume a top-level `throw await <expr>;` statement.
+  Throw { stmt_index: usize },
   /// Resume a top-level `for await..of` statement.
   ///
   /// The continuation stores a `ForAwaitOfState` state machine that drives the loop across
@@ -25391,6 +25393,7 @@ fn await_span_start_for_hir_async_resume_point(
     | HirAsyncResumePoint::ForAwaitOf { next_stmt_index, .. }
     | HirAsyncResumePoint::ForTriple { next_stmt_index, .. } => next_stmt_index.saturating_sub(1),
     HirAsyncResumePoint::VarDecl { stmt_index, .. } => stmt_index,
+    HirAsyncResumePoint::Throw { stmt_index } => stmt_index,
   };
 
   let stmt_id = *body
@@ -25455,6 +25458,19 @@ fn await_span_start_for_hir_async_resume_point(
       };
       if matches!(&value_expr.kind, hir_js::ExprKind::Await { .. }) {
         value_expr.span.start
+      } else {
+        stmt_offset
+      }
+    }
+    HirAsyncResumePoint::Throw { .. } => {
+      let hir_js::StmtKind::Throw(expr_id) = stmt.kind else {
+        return Ok(stmt_offset);
+      };
+      let Some(expr) = body.exprs.get(expr_id.0 as usize) else {
+        return Ok(stmt_offset);
+      };
+      if matches!(&expr.kind, hir_js::ExprKind::Await { .. }) {
+        expr.span.start
       } else {
         stmt_offset
       }
@@ -25987,6 +26003,39 @@ fn hir_eval_stmt_list_until_await(
             });
           }
         }
+      }
+    }
+
+    // Fast-path top-level `throw` statements whose argument is a direct `await` expression
+    // (e.g. `throw await foo();`).
+    if let hir_js::StmtKind::Throw(expr_id) = stmt.kind {
+      let expr = evaluator.get_expr(body, expr_id)?;
+      if let hir_js::ExprKind::Await { expr: awaited_expr } = expr.kind {
+        // Budget once for the statement and once for the await expression itself.
+        evaluator.vm.tick()?;
+        evaluator.vm.tick()?;
+        let await_value = match evaluator.eval_expr(scope, body, awaited_expr) {
+          Ok(v) => v,
+          Err(err) => {
+            return Err(finalize_throw_with_stack_at_source_offset(
+              &*evaluator.vm,
+              scope,
+              source.as_ref(),
+              stmt_offset,
+              err,
+            ))
+          }
+        };
+        return Ok(HirAsyncEvalResult::Await {
+          kind: crate::exec::AsyncSuspendKind::Await,
+          await_value,
+          resume: HirAsyncResumePoint::Throw { stmt_index: i },
+          assign_reference: None,
+          assign_op: None,
+          assign_left_value: None,
+          for_await_of_state: None,
+          for_triple_state: None,
+        });
       }
     }
 
@@ -27696,6 +27745,25 @@ pub(crate) fn hir_async_resume_continuation(
             cont.last_value_root,
             &mut cont.last_value_is_set,
           )
+        }
+        HirAsyncResumePoint::Throw { stmt_index } => {
+          let resumed = resume_value?;
+          // Complete the suspended `throw await <expr>;` statement by throwing the resumed value.
+          let stmt_id = *body
+            .root_stmts
+            .get(stmt_index)
+            .ok_or(VmError::InvariantViolation(
+              "hir async throw resume stmt index out of bounds",
+            ))?;
+          let stmt = evaluator.get_stmt(body, stmt_id)?;
+          let stmt_offset = stmt.span.start;
+          Err(finalize_throw_with_stack_at_source_offset(
+            &*evaluator.vm,
+            scope,
+            source.as_ref(),
+            stmt_offset,
+            VmError::Throw(resumed),
+          ))
         }
         HirAsyncResumePoint::ForAwaitOf {
           next_stmt_index,

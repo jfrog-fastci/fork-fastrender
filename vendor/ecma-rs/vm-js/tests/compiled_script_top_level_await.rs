@@ -574,6 +574,58 @@ fn compiled_script_top_level_await_logical_assignment_short_circuits_without_awa
 }
 
 #[test]
+fn compiled_script_top_level_await_throw_await_rejects_after_resumption() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var log = [];
+      Promise.resolve().then(() => { log.push("mt"); });
+      throw await Promise.resolve((log.push("rhs"), "x"));
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await in a throw statement should be supported by the HIR async classic-script executor"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let result_root = rt.heap_mut().add_root(result)?;
+
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(
+    rt.heap().is_promise_object(promise_obj),
+    "expected Promise return value from async classic script"
+  );
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
+
+  // The await operand should have executed before suspension, but the microtask callback and the
+  // throw itself should not have run yet.
+  let before_log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, before_log), "rhs");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Rejected);
+  let reason = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("rejected promise should have a reason");
+  assert_eq!(value_to_utf8(&rt, reason), "x");
+
+  let after_log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, after_log), "rhs,mt");
+
+  rt.heap_mut().remove_root(result_root);
+  Ok(())
+}
+
+#[test]
 fn compiled_script_top_level_await_assignment_roots_lhs_reference_across_gc() -> Result<(), VmError> {
   let mut rt = new_runtime();
 

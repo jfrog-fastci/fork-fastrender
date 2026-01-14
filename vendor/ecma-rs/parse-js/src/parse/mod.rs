@@ -354,7 +354,6 @@ impl<'a> Parser<'a> {
       None,
     ))
   }
-
   pub fn options(&self) -> ParseOptions {
     self.options
   }
