@@ -754,6 +754,11 @@ struct MixerState {
 
 #[derive(Debug, Clone, Copy, Default)]
 struct MixStats {
+  /// Total number of registered sinks (including muted/inactive ones).
+  streams_total: u64,
+  /// Number of sinks that are currently contributing (or expected to contribute) to the mix:
+  /// - not fully muted
+  /// - has buffered audio (`maybe_audible`)
   streams: u64,
   buffered_frames: u64,
   buffered_frames_max: u64,
@@ -898,6 +903,7 @@ impl MixerState {
   fn stats_for_output_len(&self, output_samples_len: usize) -> MixStats {
     let channels = self.channels_usize();
     let mut stats = MixStats {
+      streams_total: 0,
       streams: 0,
       buffered_frames: u64::MAX,
       buffered_frames_max: 0,
@@ -911,8 +917,19 @@ impl MixerState {
       let Some(sink) = weak.upgrade() else {
         continue;
       };
-      stats.streams = stats.streams.saturating_add(1);
+      stats.streams_total = stats.streams_total.saturating_add(1);
 
+      stats.dropped_samples_total = stats
+        .dropped_samples_total
+        .saturating_add(sink.dropped_samples.load(Ordering::Relaxed));
+
+      // Only consider non-muted sinks that currently have buffered audio for underrun + buffer stats.
+      // This keeps the trace signal meaningful when many sinks exist but are idle/paused/muted.
+      if sink.is_fully_muted() || !sink.maybe_audible.load(Ordering::Relaxed) {
+        continue;
+      }
+
+      stats.streams = stats.streams.saturating_add(1);
       let available_samples = sink.buffer.buffered_samples();
       let buffered_frames = (available_samples / channels) as u64;
       stats.buffered_frames = stats.buffered_frames.min(buffered_frames);
@@ -921,9 +938,6 @@ impl MixerState {
       if available_samples < output_samples_len {
         stats.underruns = stats.underruns.saturating_add(1);
       }
-      stats.dropped_samples_total = stats
-        .dropped_samples_total
-        .saturating_add(sink.dropped_samples.load(Ordering::Relaxed));
     }
 
     if stats.streams == 0 || stats.buffered_frames == u64::MAX {
@@ -1555,6 +1569,7 @@ where
           if let Some(span) = callback_span.as_mut() {
             let stats = mixer.stats_for_output_len(output.len());
             span.arg_u64("streams", stats.streams);
+            span.arg_u64("streams_total", stats.streams_total);
             span.arg_u64("underruns", stats.underruns);
             span.arg_u64("buffered_frames", stats.buffered_frames);
             span.arg_u64("buffered_frames_max", stats.buffered_frames_max);
