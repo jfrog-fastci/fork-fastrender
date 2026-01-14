@@ -20,9 +20,12 @@ fn mp4_h264_aac_decodes_first_video_and_audio() -> MediaResult<()> {
 
     match item {
       DecodedItem::Video(frame) => {
-        assert!(frame.width > 0);
-        assert!(frame.height > 0);
+        assert_eq!((frame.width, frame.height), (64, 64));
         assert_eq!(frame.rgba.len(), (frame.width * frame.height * 4) as usize);
+        assert!(
+          frame.rgba.iter().any(|&b| b != 0),
+          "expected decoded H264 frame to contain non-zero pixel data"
+        );
         got_video = true;
       }
       DecodedItem::Audio(chunk) => {
@@ -82,9 +85,12 @@ fn webm_vp9_opus_decodes_first_video_and_audio() -> MediaResult<()> {
 
     match item {
       DecodedItem::Video(frame) => {
-        assert!(frame.width > 0);
-        assert!(frame.height > 0);
+        assert_eq!((frame.width, frame.height), (64, 64));
         assert_eq!(frame.rgba.len(), (frame.width * frame.height * 4) as usize);
+        assert!(
+          frame.rgba.iter().any(|&b| b != 0),
+          "expected decoded VP9 frame to contain non-zero pixel data"
+        );
         got_video = true;
       }
       DecodedItem::Audio(chunk) => {
@@ -103,6 +109,34 @@ fn webm_vp9_opus_decodes_first_video_and_audio() -> MediaResult<()> {
   Err(MediaError::Decode(format!(
     "did not decode both video ({got_video}) and audio ({got_audio}) within limit"
   )))
+}
+
+#[test]
+fn mp4_vp9_decodes_first_video() -> MediaResult<()> {
+  let demuxer = Mp4PacketDemuxer::open("tests/fixtures/media/vp9_in_mp4.mp4")?;
+  let mut pipeline = MediaDecodePipeline::new(Box::new(demuxer))?;
+
+  for _ in 0..128 {
+    let Some(item) = pipeline.next_decoded()? else {
+      break;
+    };
+
+    let DecodedItem::Video(frame) = item else {
+      continue;
+    };
+
+    assert_eq!((frame.width, frame.height), (16, 16));
+    assert_eq!(frame.rgba.len(), (frame.width * frame.height * 4) as usize);
+    assert!(
+      frame.rgba.iter().any(|&b| b != 0),
+      "expected decoded VP9-in-MP4 frame to contain non-zero pixel data"
+    );
+    return Ok(());
+  }
+
+  Err(MediaError::Decode(
+    "did not decode a VP9 video frame within limit".into(),
+  ))
 }
 
 #[cfg(feature = "media_ffmpeg_cli")]

@@ -32,10 +32,8 @@ pub fn create_video_decoder(track: &MediaTrackInfo) -> MediaResult<Box<dyn Video
     MediaCodec::Vp9 => {
       #[cfg(feature = "codec_vp9_libvpx")]
       {
-        let info = track
-          .video
-          .ok_or(MediaError::Unsupported("VP9 track missing video info"))?;
-        Ok(Box::new(Vp9Decoder::new(info.width, info.height)))
+        let threads = vp9_decode_threads_from_env();
+        Ok(Box::new(super::codecs::vp9::Vp9Decoder::new(threads)?))
       }
       #[cfg(not(feature = "codec_vp9_libvpx"))]
       {
@@ -46,6 +44,24 @@ pub fn create_video_decoder(track: &MediaTrackInfo) -> MediaResult<Box<dyn Video
     }
     _ => Err(MediaError::Unsupported("unsupported video codec")),
   }
+}
+
+#[cfg(feature = "codec_vp9_libvpx")]
+fn vp9_decode_threads_from_env() -> u32 {
+  if let Ok(raw) = std::env::var("FASTR_VP9_DECODE_THREADS") {
+    if let Ok(v) = raw.trim().parse::<u32>() {
+      return v.max(1);
+    }
+  }
+
+  // Match `MediaPlayerOptions`:
+  // - use available CPU parallelism as a baseline
+  // - cap threads to keep behavior predictable (libvpx has diminishing returns)
+  std::thread::available_parallelism()
+    .map(|n| n.get() as u32)
+    .unwrap_or(1)
+    .min(4)
+    .max(1)
 }
 
 pub fn create_audio_decoder(track: &MediaTrackInfo) -> MediaResult<Box<dyn AudioDecoder>> {
@@ -79,6 +95,24 @@ impl AudioDecoder for super::codecs::opus::OpusDecoder {
   fn decode(&mut self, packet: &MediaPacket) -> MediaResult<Vec<DecodedAudioChunk>> {
     let decoded = super::codecs::opus::OpusDecoder::decode(self, packet)?;
     Ok(decoded.into_iter().collect())
+  }
+}
+
+#[cfg(feature = "codec_vp9_libvpx")]
+impl VideoDecoder for super::codecs::vp9::Vp9Decoder {
+  fn decode(&mut self, packet: &MediaPacket) -> MediaResult<Vec<DecodedVideoFrame>> {
+    let decoded = super::codecs::vp9::Vp9Decoder::decode(self, packet)?;
+    Ok(
+      decoded
+        .into_iter()
+        .map(|f| DecodedVideoFrame {
+          pts_ns: f.pts_ns,
+          width: f.width,
+          height: f.height,
+          rgba: f.rgba8,
+        })
+        .collect(),
+    )
   }
 }
 
@@ -255,42 +289,4 @@ fn parse_h264_codec_private(data: &[u8]) -> MediaResult<H264CodecConfig> {
     sps,
     pps,
   })
-}
-
-// ============================================================================
-// VP9 (placeholder)
-// ============================================================================
-
-/// Minimal VP9 decoder placeholder.
-///
-/// For now this yields a black frame with the correct dimensions. This is enough to exercise the
-/// demux→decode plumbing; the actual VP9 bitstream decode can be implemented behind this trait
-/// later.
-#[cfg(feature = "codec_vp9_libvpx")]
-pub struct Vp9Decoder {
-  width: u32,
-  height: u32,
-}
-
-#[cfg(feature = "codec_vp9_libvpx")]
-impl Vp9Decoder {
-  pub fn new(width: u32, height: u32) -> Self {
-    Self { width, height }
-  }
-}
-
-#[cfg(feature = "codec_vp9_libvpx")]
-impl VideoDecoder for Vp9Decoder {
-  fn decode(&mut self, packet: &MediaPacket) -> MediaResult<Vec<DecodedVideoFrame>> {
-    let rgba_len = self
-      .width
-      .saturating_mul(self.height)
-      .saturating_mul(4) as usize;
-    Ok(vec![DecodedVideoFrame {
-      pts_ns: packet.pts_ns,
-      width: self.width,
-      height: self.height,
-      rgba: vec![0u8; rgba_len],
-    }])
-  }
 }

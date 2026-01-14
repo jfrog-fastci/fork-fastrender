@@ -15,6 +15,11 @@ pub struct Vp9Decoder {
   inner: libvpx_sys_bundled::Vp9Decoder,
 }
 
+// SAFETY: The underlying libvpx decoder context does not contain any Rust references and can be
+// safely moved to another thread as long as it is not accessed concurrently. We only expose decode
+// through `&mut self`, so callers cannot use it from multiple threads at once.
+unsafe impl Send for Vp9Decoder {}
+
 impl Vp9Decoder {
   /// Create a new VP9 decoder instance.
   pub fn new(threads: u32) -> MediaResult<Self> {

@@ -378,17 +378,33 @@ mod tests {
       "expected VP9 vpcC-derived extradata"
     );
 
-    let pkt = demuxer
-      .next_packet()
-      .expect("demux should succeed")
-      .expect("expected at least one packet");
-    assert_eq!(pkt.track_id, track.id);
-    assert!(!pkt.as_slice().is_empty());
-
     let mut decoder = create_video_decoder(track).expect("vp9 decoder should be constructible");
-    let frames = decoder.decode(&pkt).expect("vp9 decode should succeed");
-    assert!(!frames.is_empty());
-    assert_eq!((frames[0].width, frames[0].height), (16, 16));
+
+    // Decode packets until libvpx yields a frame (some streams may delay output).
+    let mut first = None;
+    for _ in 0..64 {
+      let Some(pkt) = demuxer.next_packet().expect("demux should succeed") else {
+        break;
+      };
+      if pkt.track_id != track.id {
+        continue;
+      }
+      assert!(!pkt.as_slice().is_empty());
+
+      let frames = decoder.decode(&pkt).expect("vp9 decode should succeed");
+      if let Some(f) = frames.into_iter().next() {
+        first = Some(f);
+        break;
+      }
+    }
+
+    let first = first.expect("expected at least one decoded VP9 frame");
+    assert_eq!((first.width, first.height), (16, 16));
+    assert_eq!(first.rgba.len(), (first.width * first.height * 4) as usize);
+    assert!(
+      first.rgba.iter().any(|&b| b != 0),
+      "expected decoded VP9 frame to contain non-zero pixel data"
+    );
   }
 }
 
