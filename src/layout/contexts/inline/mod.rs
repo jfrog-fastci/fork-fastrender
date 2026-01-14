@@ -7984,8 +7984,17 @@ impl InlineFormattingContext {
           || is_fullwidth_closing_punctuation(ch)
           || is_fullwidth_middle_dot_punctuation(ch)
         {
+          // If the glyph advance is already narrow/proportional, treat it as both fullwidth and
+          // halfwidth and do not split (preserves shaping/kerning across the boundary).
+          let end = off.saturating_add(ch.len_utf8());
+          let start_adv = item.advance_at_offset(off);
+          let end_adv = item.advance_at_offset(end);
+          let adv = (end_adv - start_adv).max(0.0);
+          if !is_trimmable_fullwidth_punctuation_advance(adv, item.style.font_size) {
+            continue;
+          }
           split_points.push(off);
-          split_points.push(off + ch.len_utf8());
+          split_points.push(end);
         }
       }
       split_points.sort_unstable();

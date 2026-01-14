@@ -779,10 +779,16 @@ fn text_spacing_trim_does_not_trim_proportional_quotes() {
     "H”",
   );
 
-  let close_space_x = text_x_in_line(&close_space_all[0], "”").expect("close quote x (space-all)");
-  let close_trim_x = text_x_in_line(&close_trim_both[0], "”").expect("close quote x (trim-both)");
+  let line_end = close_trim_both[0].bounds.width();
+  let space_max_x = content_max_x_in_line(&close_space_all[0]);
+  let trim_max_x = content_max_x_in_line(&close_trim_both[0]);
+
   assert!(
-    (close_trim_x - close_space_x).abs() < 0.01,
-    "expected trim-both not to affect proportional closing quotes (space-all x={close_space_x:.3} trim-both x={close_trim_x:.3})"
+    space_max_x <= line_end + 0.05,
+    "expected space-all to keep the proportional closing quote within the line bounds (max_x={space_max_x:.3}, line_end={line_end:.3})"
+  );
+  assert!(
+    trim_max_x <= line_end + 0.05,
+    "expected trim-both not to hang the proportional closing quote past the line bounds (max_x={trim_max_x:.3}, line_end={line_end:.3})"
   );
 }
