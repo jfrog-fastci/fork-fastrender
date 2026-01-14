@@ -14,7 +14,8 @@ use crate::geometry::{Point, Rect, Size};
 use crate::html::{find_document_favicon_url, find_document_title};
 use crate::interaction::anchor_scroll::scroll_offset_for_fragment_target;
 use crate::interaction::{
-  cursor_kind_for_hit, hit_test_dom, FormSubmission, FormSubmissionMethod, HitTestKind,
+  cursor_kind_for_hit, hit_test_dom, styled_node_anchor_css, FormSubmission, FormSubmissionMethod,
+  HitTestKind,
   InteractionAction, InteractionEngine,
 };
 use crate::js::RunLimits;
@@ -2454,51 +2455,6 @@ fn apply_original_fragment_to_final_url(original_url: &str, final_url: &str) -> 
   format!("{final_url}#{fragment}")
 }
 
-fn styled_node_anchor_css(
-  box_tree: &crate::BoxTree,
-  geom_tree: &crate::FragmentTree,
-  scroll_state: &ScrollState,
-  styled_node_id: usize,
-) -> Option<Rect> {
-  // BoxTree: find the first box produced by the element.
-  let box_id = {
-    let mut stack: Vec<&crate::BoxNode> = vec![&box_tree.root];
-    let mut found = None;
-    while let Some(node) = stack.pop() {
-      if node.styled_node_id == Some(styled_node_id) {
-        found = Some(node.id);
-        break;
-      }
-      if let Some(body) = node.footnote_body.as_deref() {
-        stack.push(body);
-      }
-      for child in node.children.iter().rev() {
-        stack.push(child);
-      }
-    }
-    found?
-  };
-
-  // FragmentTree: compute absolute page-space bounds for the box using a geometry tree that mirrors
-  // paint-time transforms (element scroll offsets + sticky positioning).
-  let page_rect = crate::interaction::absolute_bounds_for_box_id(geom_tree, box_id)?;
-
-  // Convert page-space bounds to viewport-local coords for UI positioning.
-  Some(page_rect.translate(Point::new(
-    -scroll_state.viewport.x,
-    -scroll_state.viewport.y,
-  )))
-}
-
-fn select_anchor_css(
-  box_tree: &crate::BoxTree,
-  geom_tree: &crate::FragmentTree,
-  scroll_state: &ScrollState,
-  select_node_id: usize,
-) -> Option<Rect> {
-  styled_node_anchor_css(box_tree, geom_tree, scroll_state, select_node_id)
-}
-
 fn media_controls_anchor_css(
   preferred_anchor_css: Option<Rect>,
   trigger_pos_css: Option<(f32, f32)>,
@@ -2656,7 +2612,6 @@ fn compute_page_accessibility_snapshot(
 
   Some((tree, bounds_css))
 }
-
 #[derive(Debug, Clone, Copy)]
 enum SelectRow {
   OptGroupLabel,
@@ -7977,7 +7932,7 @@ impl BrowserRuntime {
           .and_then(|doc| doc.prepared())
           .and_then(|prepared| {
             let geom_tree = prepared.fragment_tree_for_geometry(&scroll_snapshot);
-            select_anchor_css(
+            styled_node_anchor_css(
               prepared.box_tree(),
               &geom_tree,
               &scroll_snapshot,
@@ -10286,7 +10241,7 @@ impl BrowserRuntime {
             .and_then(|doc| {
               doc.prepared().and_then(|prepared| {
                 let tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
-                select_anchor_css(prepared.box_tree(), &tree, &tab.scroll_state, select_node_id)
+                styled_node_anchor_css(prepared.box_tree(), &tree, &tab.scroll_state, select_node_id)
               })
             })
             .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)

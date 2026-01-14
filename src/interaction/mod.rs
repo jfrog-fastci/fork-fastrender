@@ -1,4 +1,5 @@
 pub mod anchor_scroll;
+pub mod anchor_geometry;
 pub mod autofocus;
 pub mod autofocus_dom2;
 pub mod cursor;
@@ -31,6 +32,7 @@ pub mod url;
 mod state_dom2_tests;
 
 pub use anchor_scroll::scroll_offset_for_fragment_target;
+pub use anchor_geometry::styled_node_anchor_css;
 pub use cursor::cursor_kind_for_hit;
 pub use engine::{
   DateTimeInputKind, DragDropKind, InputModality, InteractionAction, InteractionEngine, KeyAction,

@@ -70,18 +70,17 @@ Coordinate conventions that matter when extending bounds/a11y:
 
 How bounds are computed today (used for positioning UI popups like `<select>` dropdowns):
 
-1. Find the first `BoxNode` produced by a given styled DOM node (`styled_node_id`).
-2. Compute absolute **page-space** fragment bounds for that box id by walking the fragment tree and
-   unioning matching fragments:
-   - `crate::interaction::absolute_bounds_for_box_id` in
+1. Compute absolute **page-space** fragment bounds for a `styled_node_id` by walking the fragment
+   tree and unioning all fragments produced for any box associated with that styled node:
+   - `crate::interaction::absolute_bounds_by_styled_node_id` in
      [`src/interaction/fragment_geometry.rs`](../src/interaction/fragment_geometry.rs).
-3. Apply scroll offsets to the fragment tree (so element scroll containers are accounted for):
+2. Apply scroll offsets to the fragment tree (so element scroll containers are accounted for):
    - `crate::scroll::apply_scroll_offsets` (called from the UI worker helper).
-4. Convert page-space → viewport-local by subtracting `scroll_state.viewport`.
+3. Convert page-space → viewport-local by subtracting `scroll_state.viewport`.
 
-The UI worker’s helper that implements this end-to-end is:
+The shared helper that implements this end-to-end (used by the UI worker and other runtime code) is:
 
-- `styled_node_anchor_css` in [`src/ui/render_worker.rs`](../src/ui/render_worker.rs)
+- `styled_node_anchor_css` in [`src/interaction/anchor_geometry.rs`](../src/interaction/anchor_geometry.rs)
   (returns a `Rect` in **viewport-local CSS pixels**).
 
 The UI then maps viewport-local CSS rects into egui/window coordinates via:
@@ -272,7 +271,7 @@ If you need bounds today and the flag is not available:
 - `dump_a11y` builds semantics from the **styled DOM only** (no box generation / layout), so it does
   not have geometry available to report.
 - Use the layout/interaction helpers described in “Bounds / geometry” above (especially
-  `absolute_bounds_for_box_id` + `styled_node_anchor_css`), or
+  `absolute_bounds_by_styled_node_id` + `styled_node_anchor_css`), or
 - Add a new tool flag and ensure it is covered by unit tests in the geometry modules.
 
 If you just need to **inspect layout rectangles** for a particular node, `inspect_frag` is usually
