@@ -502,6 +502,7 @@ impl<'a> Parser<'a> {
     self.with_loc(|p| {
       let label_tok = p.peek();
       let label_name = p.id_name(ctx)?;
+      p.validate_arguments_not_disallowed_in_class_init(label_tok.loc, &label_name)?;
       if p.is_strict_ecmascript() && p.labels.iter().any(|l| l.name == label_name) {
         return Err(label_tok.error(SyntaxErrorType::ExpectedSyntax("unique label")));
       }
