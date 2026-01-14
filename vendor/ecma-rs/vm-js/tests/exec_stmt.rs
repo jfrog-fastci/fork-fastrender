@@ -548,7 +548,7 @@ fn assignment_expression_sets_function_name_for_anonymous_functions() {
 }
 
 #[test]
-fn assignment_expression_sets_function_name_for_property_assignments() {
+fn assignment_expression_does_not_set_function_name_for_property_assignments() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
@@ -557,7 +557,7 @@ fn assignment_expression_sets_function_name_for_property_assignments() {
       o.f = function() {};
       o.c = class {};
       o.a = () => {};
-      o.f.name === "f" && o.c.name === "c" && o.a.name === "a"
+      o.f.name === "" && o.c.name === "" && o.a.name === ""
       "#,
     )
     .unwrap();

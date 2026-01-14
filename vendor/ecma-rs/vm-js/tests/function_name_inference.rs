@@ -97,7 +97,7 @@ fn assignment_does_not_infer_name_for_parenthesized_identifier_lhs() {
 }
 
 #[test]
-fn assignment_infers_name_for_member_expression_lhs() {
+fn assignment_does_not_infer_name_for_member_expression_lhs() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
@@ -105,7 +105,7 @@ fn assignment_infers_name_for_member_expression_lhs() {
         var o = {};
         o.attr = function() {};
         var desc = Object.getOwnPropertyDescriptor(o.attr, 'name');
-        desc.value === 'attr' && desc.writable === false && desc.enumerable === false && desc.configurable === true
+        desc.value === '' && desc.writable === false && desc.enumerable === false && desc.configurable === true
       "#,
     )
     .unwrap();
@@ -129,7 +129,7 @@ fn destructuring_assignment_does_not_infer_name_for_parenthesized_identifier_tar
 }
 
 #[test]
-fn destructuring_assignment_infers_name_for_member_expression_target() {
+fn destructuring_assignment_does_not_infer_name_for_member_expression_target() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
@@ -137,7 +137,7 @@ fn destructuring_assignment_infers_name_for_member_expression_target() {
         var o = {};
         ({ x: o.attr = function() {} } = {});
         var desc = Object.getOwnPropertyDescriptor(o.attr, 'name');
-        desc.value === 'attr' && desc.writable === false && desc.enumerable === false && desc.configurable === true
+        desc.value === '' && desc.writable === false && desc.enumerable === false && desc.configurable === true
       "#,
     )
     .unwrap();

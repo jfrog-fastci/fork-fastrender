@@ -2492,7 +2492,7 @@ fn compiled_assignment_expression_sets_function_names() -> Result<(), VmError> {
 
   let mut scope = rt.heap.scope();
   scope.push_root(result)?;
-  let expected = scope.alloc_string("f|f|c|a")?;
+  let expected = scope.alloc_string("f|||")?;
   assert!(result.same_value(Value::String(expected), scope.heap()));
   Ok(())
 }
@@ -2526,7 +2526,7 @@ fn compiled_logical_assignment_sets_function_names() -> Result<(), VmError> {
 
   let mut scope = rt.heap.scope();
   scope.push_root(result)?;
-  let expected = scope.alloc_string("f|g|h|p|q|r")?;
+  let expected = scope.alloc_string("f|g|h|||")?;
   assert!(result.same_value(Value::String(expected), scope.heap()));
   Ok(())
 }
@@ -3285,7 +3285,7 @@ fn compiled_assignment_sets_anonymous_function_name_for_binding() -> Result<(), 
 }
 
 #[test]
-fn compiled_assignment_sets_anonymous_function_name_for_property() -> Result<(), VmError> {
+fn compiled_assignment_does_not_set_anonymous_function_name_for_property() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
   let mut rt = JsRuntime::new(vm, heap)?;
@@ -3306,7 +3306,7 @@ fn compiled_assignment_sets_anonymous_function_name_for_property() -> Result<(),
 
   let mut scope = rt.heap.scope();
   scope.push_root(result)?;
-  let expected = scope.alloc_string("h")?;
+  let expected = scope.alloc_string("")?;
   assert!(result.same_value(Value::String(expected), scope.heap()));
   Ok(())
 }
@@ -9257,7 +9257,7 @@ fn compiled_logical_assignment_infers_function_names() -> Result<(), VmError> {
 
   let mut scope = rt.heap.scope();
   scope.push_root(result)?;
-  let expected = scope.alloc_string("f|a|c|g|x|y|z|w")?;
+  let expected = scope.alloc_string("||||x|y|z|w")?;
   assert!(result.same_value(Value::String(expected), scope.heap()));
   Ok(())
 }
