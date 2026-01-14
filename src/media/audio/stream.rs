@@ -15,6 +15,7 @@
 
 use super::resample::resample_interleaved_f32_linear_with_playback_rate;
 use super::{AudioSink, AudioStreamConfig};
+use crate::debug::trace::TraceHandle;
 use crate::media::clock::{AudioDeviceClock, AudioStreamClock, MediaClock};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -53,6 +54,7 @@ struct AudioStreamInner {
   sink: Arc<dyn AudioSink>,
   playback_rate_bits: AtomicU64,
   clock: AudioStreamClock,
+  trace: TraceHandle,
 }
 
 impl AudioStreamHandle {
@@ -65,6 +67,23 @@ impl AudioStreamHandle {
     sink: Arc<dyn AudioSink>,
     device_clock: Arc<AudioDeviceClock>,
     start_media_time: Duration,
+  ) -> Result<Self, AudioStreamError> {
+    Self::new_with_trace(
+      decoded_config,
+      sink,
+      device_clock,
+      start_media_time,
+      TraceHandle::default(),
+    )
+  }
+
+  /// Like [`Self::new`], but installs a [`TraceHandle`] used to profile resampling work.
+  pub fn new_with_trace(
+    decoded_config: AudioStreamConfig,
+    sink: Arc<dyn AudioSink>,
+    device_clock: Arc<AudioDeviceClock>,
+    start_media_time: Duration,
+    trace: TraceHandle,
   ) -> Result<Self, AudioStreamError> {
     if decoded_config.sample_rate_hz == 0 {
       return Err(AudioStreamError::InvalidDecodedSampleRate);
@@ -86,6 +105,7 @@ impl AudioStreamHandle {
         sink,
         playback_rate_bits: AtomicU64::new(1.0_f64.to_bits()),
         clock,
+        trace,
       }),
     })
   }
@@ -167,6 +187,24 @@ impl AudioStreamHandle {
       (((input_frames - 1) as f64) / step).floor().max(0.0) as usize + 1
     };
 
+    let trace_enabled = self.inner.trace.is_enabled();
+    let mut resample_span = if trace_enabled {
+      let mut span = self.inner.trace.span("audio.resample", "audio");
+      span.arg_u64("input_frames", input_frames as u64);
+      span.arg_u64("output_frames", output_frames as u64);
+      span.arg_u64("channels", channels as u64);
+      span.arg_u64("input_rate_hz", in_rate_hz as u64);
+      span.arg_u64("output_rate_hz", out_rate_hz as u64);
+      // Avoid float args; encode the playback rate as milli-units for easy inspection.
+      let rate_milli = (rate * 1000.0).round();
+      if rate_milli.is_finite() && rate_milli >= 0.0 {
+        span.arg_u64("playback_rate_milli", rate_milli as u64);
+      }
+      Some(span)
+    } else {
+      None
+    };
+
     let out = resample_interleaved_f32_linear_with_playback_rate(
       decoded_samples,
       channels,
@@ -175,6 +213,8 @@ impl AudioStreamHandle {
       rate,
       output_frames,
     );
+
+    drop(resample_span);
 
     Ok(self.inner.sink.push_interleaved_f32(&out))
   }
@@ -270,5 +310,54 @@ mod tests {
     // Device played 1 second (48k frames); media time should report 2 seconds at rate 2.
     assert_eq!(stream.current_time(), Duration::from_secs(2));
   }
-}
 
+  #[test]
+  fn resample_emits_audio_resample_trace_event() {
+    let trace = TraceHandle::enabled_with_max_events(16);
+
+    let frames_played = Arc::new(AtomicU64::new(0));
+    let sink = Arc::new(FakeSink {
+      config: AudioStreamConfig::new(48_000, 1),
+      samples: Mutex::new(Vec::new()),
+      frames_played: frames_played.clone(),
+    });
+    let sink_dyn: Arc<dyn AudioSink> = sink.clone();
+
+    let device_clock: Arc<AudioDeviceClock> = Arc::new(FramesDeviceClock {
+      frames_played: frames_played.clone(),
+      sample_rate_hz: 48_000,
+    });
+
+    // Force resampling by using a different decoded sample rate than the sink.
+    let decoded_cfg = AudioStreamConfig::new(44_100, 1);
+    let stream = AudioStreamHandle::new_with_trace(
+      decoded_cfg,
+      sink_dyn,
+      device_clock,
+      Duration::ZERO,
+      trace.clone(),
+    )
+    .unwrap();
+
+    let decoded: Vec<f32> = (0..44_100).map(|i| i as f32).collect();
+    stream.push_interleaved_f32(&decoded).unwrap();
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("trace.json");
+    trace.write_chrome_trace(&path).expect("write trace");
+    let json = std::fs::read_to_string(&path).expect("read trace");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("parse trace json");
+
+    let trace_events = value["traceEvents"]
+      .as_array()
+      .expect("traceEvents array");
+    let names: Vec<&str> = trace_events
+      .iter()
+      .filter_map(|event| event["name"].as_str())
+      .collect();
+    assert!(
+      names.iter().any(|name| *name == "audio.resample"),
+      "expected audio.resample span in trace"
+    );
+  }
+}

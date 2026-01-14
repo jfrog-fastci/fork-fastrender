@@ -114,13 +114,20 @@ impl TraceHandle {
 
     let dropped_events = state.dropped_events.load(Ordering::Relaxed);
     let max_events = state.max_events as u64;
-    let mut file = std::fs::File::create(path)?;
-    let events = match state.events.lock() {
-      Ok(events) => events,
-      Err(err) => err.into_inner(),
+
+    // Avoid holding the event mutex while serializing potentially large trace JSON. This lets hot
+    // paths (including audio callbacks) keep recording events without blocking on file IO.
+    let events_snapshot = {
+      let events = match state.events.lock() {
+        Ok(events) => events,
+        Err(err) => err.into_inner(),
+      };
+      events.clone()
     };
+
+    let mut file = std::fs::File::create(path)?;
     let trace_file = TraceFile {
-      trace_events: events.as_slice(),
+      trace_events: &events_snapshot,
       fastrender_trace_max_events: max_events,
       fastrender_trace_dropped_events: dropped_events,
     };
@@ -168,9 +175,15 @@ impl TraceState {
     let ts = start.saturating_duration_since(self.start).as_micros() as u64;
     let dur = end.saturating_duration_since(start).as_micros() as u64;
     let tid = current_thread_numeric_id();
-    let mut events = match self.events.lock() {
+    // This is called from `TraceSpan::drop`, which can run in hot paths (including audio
+    // callbacks). Never block on a contended lock; drop the event instead.
+    let mut events = match self.events.try_lock() {
       Ok(events) => events,
-      Err(err) => err.into_inner(),
+      Err(std::sync::TryLockError::Poisoned(err)) => err.into_inner(),
+      Err(std::sync::TryLockError::WouldBlock) => {
+        self.dropped_events.fetch_add(1, Ordering::Relaxed);
+        return;
+      }
     };
     if events.len() >= self.max_events {
       self.dropped_events.fetch_add(1, Ordering::Relaxed);
