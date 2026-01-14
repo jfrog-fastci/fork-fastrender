@@ -69,11 +69,13 @@ pub struct CompiledScript {
   /// - expression statements of the form `await <expr>;`
   /// - expression statements of the form `x = await <expr>;` (for supported assignment targets)
   /// - `var`/`let`/`const` declarator initializers of the form `= await <expr>`
+  /// - simple top-level `for await (<lhs> of <expr>) { ... }` loops, as long as the loop head,
+  ///   RHS, and body contain no other `await`
   ///
-  /// Any other top-level await usage (e.g. `for await..of`, `await` inside nested blocks like
-  /// `class static {}`, or nested `await` inside the awaited subexpression) must be executed via
-  /// the AST interpreter to avoid partially executing compiled HIR before discovering an
-  /// unsupported construct.
+  /// Any other top-level await usage (e.g. `await` inside nested blocks like `class static {}`, or
+  /// nested `await` inside the awaited subexpression, or additional `await` inside a `for
+  /// await..of` loop body) must be executed via the AST interpreter to avoid partially executing
+  /// compiled HIR before discovering an unsupported construct.
   pub top_level_await_requires_ast_fallback: bool,
   #[allow(dead_code)]
   source_type: SourceType,
