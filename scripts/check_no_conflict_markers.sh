@@ -232,3 +232,38 @@ if [[ -f "${parse_js_parser_mod}" ]]; then
   check_unique_inherent_method "with_disallow_arguments_in_class_init"
   check_unique_inherent_method "validate_arguments_not_disallowed_in_class_init"
 fi
+
+# Guardrail: prevent merge drift from duplicating top-level native binding helpers in the generated
+# vmjs window realm, breaking compilation with `E0428: the name ... is defined multiple times`.
+vmjs_window_realm_rs="src/js/vmjs/window_realm.rs"
+if [[ -f "${vmjs_window_realm_rs}" ]]; then
+  # Extract function names from top-level `fn` definitions only (column 0) so we don't trip on
+  # methods inside `impl` blocks.
+  duplicate_toplevel_fns="$(
+    awk '
+      /^(pub|fn)/ && $0 ~ /(^|[[:space:]])fn[[:space:]]/ {
+        for (i = 1; i <= NF; i++) {
+          if ($i == "fn" && (i + 1) <= NF) {
+            name = $(i + 1)
+            sub(/[^A-Za-z0-9_].*/, "", name)
+            if (name ~ /^[A-Za-z_][A-Za-z0-9_]*$/) {
+              print name
+            }
+            break
+          }
+        }
+      }
+    ' "${vmjs_window_realm_rs}" | sort | uniq -d
+  )"
+
+  if [[ -n "${duplicate_toplevel_fns}" ]]; then
+    echo "error: duplicate top-level function definitions in ${vmjs_window_realm_rs}:" >&2
+    while IFS= read -r fn_name; do
+      [[ -z "${fn_name}" ]] && continue
+      echo "duplicate function: ${fn_name}" >&2
+      grep -nE "^(pub|fn).*\\bfn[[:space:]]+${fn_name}\\b" "${vmjs_window_realm_rs}" >&2 || true
+      echo >&2
+    done <<< "${duplicate_toplevel_fns}"
+    exit 1
+  fi
+fi
