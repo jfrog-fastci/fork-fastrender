@@ -15,6 +15,42 @@ pub trait AudioDecoder: Send {
   fn decode(&mut self, packet: &MediaPacket) -> MediaResult<Vec<DecodedAudioChunk>>;
 }
 
+#[cfg(any(feature = "codec_h264_openh264", test))]
+fn validate_decoded_rgba_frame_size(
+  codec: &'static str,
+  width: usize,
+  height: usize,
+) -> MediaResult<usize> {
+  if width == 0 || height == 0 {
+    return Err(MediaError::Decode(format!(
+      "{codec}: decoded frame has invalid dimensions: {width}x{height}"
+    )));
+  }
+
+  let max_dim = super::video_limits::MAX_VIDEO_DIMENSION as usize;
+  if width > max_dim || height > max_dim {
+    return Err(MediaError::Decode(format!(
+      "{codec}: decoded frame dimensions {width}x{height} exceed hard cap {}x{}",
+      super::video_limits::MAX_VIDEO_DIMENSION,
+      super::video_limits::MAX_VIDEO_DIMENSION
+    )));
+  }
+
+  let rgba_len = width
+    .checked_mul(height)
+    .and_then(|v| v.checked_mul(4))
+    .ok_or_else(|| MediaError::Decode(format!("{codec}: decoded frame buffer size overflow")))?;
+
+  if rgba_len > super::video_limits::MAX_VIDEO_FRAME_BYTES {
+    return Err(MediaError::Decode(format!(
+      "{codec}: decoded frame size {width}x{height} ({rgba_len} bytes) exceeds hard cap ({} bytes)",
+      super::video_limits::MAX_VIDEO_FRAME_BYTES
+    )));
+  }
+
+  Ok(rgba_len)
+}
+
 pub fn create_video_decoder(track: &MediaTrackInfo) -> MediaResult<Box<dyn VideoDecoder>> {
   match &track.codec {
     MediaCodec::H264 => {
@@ -214,7 +250,8 @@ impl VideoDecoder for H264Decoder {
     };
 
     let (w, h) = yuv.dimensions();
-    let mut rgba = vec![0u8; w * h * 4];
+    let rgba_len = validate_decoded_rgba_frame_size("h264", w, h)?;
+    let mut rgba = vec![0u8; rgba_len];
     yuv.write_rgba8(&mut rgba);
 
     Ok(vec![DecodedVideoFrame {
@@ -289,4 +326,37 @@ fn parse_h264_codec_private(data: &[u8]) -> MediaResult<H264CodecConfig> {
     sps,
     pps,
   })
+}
+
+#[cfg(test)]
+mod tests {
+  use super::validate_decoded_rgba_frame_size;
+
+  #[test]
+  fn decoded_rgba_frame_size_allows_small_frames() {
+    assert_eq!(validate_decoded_rgba_frame_size("test", 1, 1).unwrap(), 4);
+  }
+
+  #[test]
+  fn decoded_rgba_frame_size_rejects_zero_dimensions() {
+    assert!(validate_decoded_rgba_frame_size("test", 0, 1).is_err());
+    assert!(validate_decoded_rgba_frame_size("test", 1, 0).is_err());
+  }
+
+  #[test]
+  fn decoded_rgba_frame_size_rejects_dimension_cap() {
+    let max = super::super::video_limits::MAX_VIDEO_DIMENSION as usize;
+    let err = validate_decoded_rgba_frame_size("test", max + 1, 1).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("exceed"), "unexpected error: {msg}");
+  }
+
+  #[test]
+  fn decoded_rgba_frame_size_rejects_byte_cap() {
+    // Square frame at the dimension cap should exceed the byte cap.
+    let max = super::super::video_limits::MAX_VIDEO_DIMENSION as usize;
+    let err = validate_decoded_rgba_frame_size("test", max, max).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("exceed"), "unexpected error: {msg}");
+  }
 }

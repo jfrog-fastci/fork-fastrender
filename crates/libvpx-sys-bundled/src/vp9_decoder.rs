@@ -2,6 +2,15 @@ use std::ffi::CStr;
 use std::fmt;
 use std::ptr;
 
+/// Hard maximum width/height accepted from untrusted VP9 bitstreams.
+///
+/// This is a defense-in-depth cap to prevent adversarial/corrupted media from causing unbounded
+/// allocations.
+const MAX_VIDEO_DIMENSION: u32 = 8192;
+
+/// Hard maximum bytes accepted for a single decoded RGBA8 frame.
+const MAX_VIDEO_FRAME_BYTES: usize = 128 * 1024 * 1024;
+
 /// Errors emitted by media decoders.
 ///
 /// This type intentionally lives in the codec layer (as opposed to using `std::io::Error`) so we
@@ -200,6 +209,26 @@ impl Vp9Decoder {
       )));
     }
 
+    // Treat decoded dimensions as untrusted: reject absurdly large frames before touching any plane
+    // pointers or allocating output buffers.
+    let max_dim = MAX_VIDEO_DIMENSION as usize;
+    if width > max_dim || height > max_dim {
+      return Err(MediaError::Unsupported(format!(
+        "vp9 frame dimensions {width}x{height} exceed hard cap {}x{}",
+        MAX_VIDEO_DIMENSION, MAX_VIDEO_DIMENSION
+      )));
+    }
+
+    let rgba_len = width
+      .checked_mul(height)
+      .and_then(|v| v.checked_mul(4))
+      .ok_or_else(|| MediaError::Decode("vp9 frame buffer size overflow".to_string()))?;
+    if rgba_len > MAX_VIDEO_FRAME_BYTES {
+      return Err(MediaError::Unsupported(format!(
+        "vp9 frame size {width}x{height} ({rgba_len} bytes) exceeds hard cap ({MAX_VIDEO_FRAME_BYTES} bytes)"
+      )));
+    }
+
     let y_plane = img.planes[0];
     // `VPX_IMG_FMT_YV12` is YVU (V and U swapped compared to I420). libvpx uses the format tag to
     // signal this plane ordering.
@@ -254,10 +283,6 @@ impl Vp9Decoder {
     let full_range = img.range == crate::VPX_CR_FULL_RANGE;
     let cs = img.cs;
 
-    let rgba_len = width
-      .checked_mul(height)
-      .and_then(|v| v.checked_mul(4))
-      .ok_or_else(|| MediaError::Decode("vp9 frame buffer size overflow".to_string()))?;
     let mut rgba8 = vec![0u8; rgba_len];
 
     let chroma_width = (width + (1usize << x_shift) - 1) >> x_shift;
@@ -493,6 +518,33 @@ fn codec_error_string(
       "unknown libvpx error".to_string()
     } else {
       parts.join(": ")
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn rgba_from_image_rejects_large_dimensions_before_plane_validation() {
+    let mut img = crate::vpx_image_t::default();
+    img.fmt = crate::VPX_IMG_FMT_I420;
+    img.bit_depth = 8;
+    img.d_w = MAX_VIDEO_DIMENSION.saturating_add(1);
+    img.d_h = 1;
+
+    // Planes are null in the default image. The dimension cap check must fire before we validate
+    // plane pointers so this test stays deterministic without allocating backing buffers.
+    let err = Vp9Decoder::rgba_from_image(&img).unwrap_err();
+    match err {
+      MediaError::Unsupported(msg) => {
+        assert!(
+          msg.contains("dimensions") && msg.contains(&format!("{}", MAX_VIDEO_DIMENSION)),
+          "unexpected message: {msg}"
+        );
+      }
+      other => panic!("expected Unsupported due to cap, got {other:?}"),
     }
   }
 }

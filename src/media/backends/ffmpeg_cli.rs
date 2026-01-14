@@ -15,6 +15,7 @@ use crate::media::{
   DecodedAudioChunk, DecodedItem, DecodedVideoFrame, MediaAudioInfo, MediaBackend, MediaError,
   MediaResult, MediaSession, MediaVideoInfo,
 };
+use crate::media::video_limits;
 use crate::render_control;
 use serde::Deserialize;
 use std::io::{self, Read};
@@ -26,7 +27,6 @@ use std::time::Duration;
 
 const STDERR_MAX_BYTES: usize = 64 * 1024;
 const FFPROBE_JSON_MAX_BYTES: usize = 2 * 1024 * 1024;
-const MAX_VIDEO_FRAME_BYTES: usize = 128 * 1024 * 1024;
 const MAX_AUDIO_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 
 pub fn ffmpeg_available() -> bool {
@@ -196,10 +196,11 @@ impl DecoderProcess {
       return Ok(Some(Vec::new()));
     }
 
-    if self.kind == "ffmpeg(video)" && bytes > MAX_VIDEO_FRAME_BYTES {
+    if self.kind == "ffmpeg(video)" && bytes > video_limits::MAX_VIDEO_FRAME_BYTES {
       self.kill();
       return Err(MediaError::Decode(format!(
-        "video frame size ({bytes} bytes) exceeds hard cap ({MAX_VIDEO_FRAME_BYTES} bytes)"
+        "video frame size ({bytes} bytes) exceeds hard cap ({} bytes)",
+        video_limits::MAX_VIDEO_FRAME_BYTES
       )));
     }
     if self.kind == "ffmpeg(audio)" && bytes > MAX_AUDIO_CHUNK_BYTES {
@@ -576,9 +577,10 @@ impl FfmpegCliSession {
         .checked_mul(vmeta.info.height as usize)
         .and_then(|v| v.checked_mul(4))
         .ok_or_else(|| MediaError::Decode("video dimensions too large".to_string()))?;
-      if frame_bytes > MAX_VIDEO_FRAME_BYTES {
+      if frame_bytes > video_limits::MAX_VIDEO_FRAME_BYTES {
         return Err(MediaError::Decode(format!(
-          "video frame size ({frame_bytes} bytes) exceeds hard cap ({MAX_VIDEO_FRAME_BYTES} bytes)"
+          "video frame size ({frame_bytes} bytes) exceeds hard cap ({} bytes)",
+          video_limits::MAX_VIDEO_FRAME_BYTES
         )));
       }
 

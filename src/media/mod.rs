@@ -33,6 +33,7 @@ pub mod player;
 pub mod frame_provider;
 pub mod track_selection;
 pub mod master_clock;
+pub mod video_limits;
 #[cfg(feature = "media_mp4")]
 pub mod mp4;
 
