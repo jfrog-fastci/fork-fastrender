@@ -150,6 +150,32 @@ fn generator_binary_subtraction_yield_on_both_sides() {
 }
 
 #[test]
+fn generator_binary_subtraction_to_numeric_happens_after_rhs_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log = [];
+      var lhs = { valueOf() { log.push("lhs"); return 10; } };
+      var rhs = { valueOf() { log.push("rhs"); return 1; } };
+      function* g(){ return (yield lhs) - (yield rhs); }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(lhs);
+      // Must not coerce the left operand before yielding RHS.
+      var ok_mid = log.length === 0 && r2.value === rhs && r2.done === false;
+      var r3 = it.next(rhs);
+      ok_mid &&
+      r1.value === lhs && r1.done === false &&
+      r3.done === true && r3.value === 9 &&
+      log.length === 2 && log[0] === "lhs" && log[1] === "rhs"
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_binary_division_yield_on_both_sides() {
   let mut rt = new_runtime();
   let value = rt
@@ -433,6 +459,33 @@ fn generator_binary_relational_greater_yield_on_both_sides() {
       r1.value === 1 && r1.done === false &&
       r2.value === 2 && r2.done === false &&
       r3.done === true && r3.value === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_binary_relational_greater_preserves_to_primitive_order_under_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var log = [];
+      var lhs = { valueOf() { log.push("lhs"); return 10; } };
+      var rhs = { valueOf() { log.push("rhs"); return 5; } };
+      function* g(){ return (yield lhs) > (yield rhs); }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(lhs);
+      // `>` is specified via AbstractRelationalComparison with swapped args; conversion order must
+      // still be left-to-right and must not happen before the RHS yield.
+      var ok_mid = log.length === 0 && r2.value === rhs && r2.done === false;
+      var r3 = it.next(rhs);
+      ok_mid &&
+      r1.value === lhs && r1.done === false &&
+      r3.done === true && r3.value === true &&
+      log.length === 2 && log[0] === "lhs" && log[1] === "rhs"
     "#,
     )
     .unwrap();
