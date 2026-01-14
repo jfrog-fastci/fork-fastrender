@@ -1503,12 +1503,10 @@ fn render_bookmark_row(
 }
 
 fn folder_options(store: &BookmarkStore) -> Vec<(Option<BookmarkId>, String)> {
-  let mut out = Vec::new();
+  let folders = store.folders_in_display_order_joined();
+  let mut out = Vec::with_capacity(folders.len().saturating_add(1));
   out.push((None, "Root".to_string()));
-
-  for (id, path) in store.folders_in_display_order_joined() {
-    out.push((Some(id), path));
-  }
+  out.extend(folders.into_iter().map(|(id, path)| (Some(id), path)));
   out
 }
 
