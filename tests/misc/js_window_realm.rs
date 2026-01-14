@@ -1981,6 +1981,127 @@ fn shadow_root_works_in_webidl_dom_backend() -> Result<()> {
 }
 
 #[test]
+fn dom2_dom_error_throws_domexception_with_spec_names_in_both_dom_backends() -> Result<()> {
+  let renderer_dom = fastrender::dom::parse_html(
+    "<!doctype html><html><body>\n\
+      <div id=\"host\"><span id=\"s\">abc</span></div>\n\
+    </body></html>",
+  )?;
+
+  let script = r#"(() => {
+    function nameOf(thunk) {
+      try {
+        thunk();
+        return "NO_ERROR";
+      } catch (e) {
+        return e && e.name;
+      }
+    }
+
+    const host = document.getElementById("host");
+    const span = document.getElementById("s");
+
+    const out = {};
+
+    // IndexSizeError: offset > node length (element child count).
+    const rIndex = document.createRange();
+    out.indexSize = nameOf(() => rIndex.setStart(host, 2));
+
+    // InvalidNodeTypeError: Doctype nodes are invalid range boundary point containers.
+    const rType = document.createRange();
+    out.invalidNodeType = nameOf(() => rType.setStart(document.doctype, 0));
+
+    // NotSupportedError: compareBoundaryPoints how must be 0..=3.
+    const rA = document.createRange();
+    const rB = document.createRange();
+    out.notSupported = nameOf(() => rA.compareBoundaryPoints(99, rB));
+
+    // WrongDocumentError: compareBoundaryPoints across different range tree roots.
+    host.attachShadow({ mode: "open" });
+    const shadow = host.shadowRoot;
+    const rShadow = document.createRange();
+    rShadow.setStart(shadow, 0);
+    rShadow.setEnd(shadow, 0);
+    const rDoc = document.createRange();
+    out.wrongDocument = nameOf(() => rDoc.compareBoundaryPoints(Range.START_TO_START, rShadow));
+
+    // HierarchyRequestError: inserting into a comment boundary point is not allowed.
+    const rInsert = document.createRange();
+    const comment = document.createComment("x");
+    rInsert.setStart(comment, 0);
+    rInsert.setEnd(comment, 0);
+    out.hierarchyRequest = nameOf(() => rInsert.insertNode(document.createElement("b")));
+
+    // InvalidStateError: surroundContents rejects non-text partially-contained nodes.
+    const rSurround = document.createRange();
+    const text = span.firstChild;
+    rSurround.setStart(host, 0);
+    rSurround.setEnd(text, 1);
+    out.invalidState = nameOf(() => rSurround.surroundContents(document.createElement("i")));
+
+    // NotFoundError: removeChild requires the node to be a child of the parent.
+    out.notFound = nameOf(() => host.removeChild(document.createElement("p")));
+
+    return JSON.stringify(out);
+  })()"#;
+
+  for backend in [DomBindingsBackend::Handwritten, DomBindingsBackend::WebIdl] {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock.clone());
+    let mut host = WindowHostState::new_with_fetcher_and_clock_and_options_and_dom_backend(
+      Dom2Document::from_renderer_dom(&renderer_dom),
+      "https://example.com/",
+      Arc::new(InMemoryFetcher::default()),
+      clock,
+      js_opts_for_test(),
+      backend,
+    )?;
+
+    let value = host.exec_script_in_event_loop(&mut event_loop, script)?;
+    let out_s = get_string(host.window_mut().heap(), value);
+    let out: serde_json::Value = serde_json::from_str(&out_s).map_err(|e| Error::Other(e.to_string()))?;
+
+    assert_eq!(
+      out["indexSize"].as_str(),
+      Some("IndexSizeError"),
+      "wrong IndexSizeError mapping for backend {backend:?}"
+    );
+    assert_eq!(
+      out["invalidNodeType"].as_str(),
+      Some("InvalidNodeTypeError"),
+      "wrong InvalidNodeTypeError mapping for backend {backend:?}"
+    );
+    assert_eq!(
+      out["notSupported"].as_str(),
+      Some("NotSupportedError"),
+      "wrong NotSupportedError mapping for backend {backend:?}"
+    );
+    assert_eq!(
+      out["wrongDocument"].as_str(),
+      Some("WrongDocumentError"),
+      "wrong WrongDocumentError mapping for backend {backend:?}"
+    );
+    assert_eq!(
+      out["hierarchyRequest"].as_str(),
+      Some("HierarchyRequestError"),
+      "wrong HierarchyRequestError mapping for backend {backend:?}"
+    );
+    assert_eq!(
+      out["invalidState"].as_str(),
+      Some("InvalidStateError"),
+      "wrong InvalidStateError mapping for backend {backend:?}"
+    );
+    assert_eq!(
+      out["notFound"].as_str(),
+      Some("NotFoundError"),
+      "wrong NotFoundError mapping for backend {backend:?}"
+    );
+  }
+
+  Ok(())
+}
+
+#[test]
 fn strict_script_top_level_this_is_window() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
   let mut host = make_host(dom, "https://example.com/")?;

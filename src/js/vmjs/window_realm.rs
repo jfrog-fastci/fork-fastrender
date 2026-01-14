@@ -38362,6 +38362,63 @@ fn range_surround_contents_native(
     .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
     .ok_or(VmError::TypeError("Illegal invocation"))?;
 
+  // Spec step 1: throw if any partially contained node is not a Text node.
+  //
+  // The WebIDL backend calls into `dom2::Document::range_surround_contents`, which performs this
+  // check. Keep the handwritten backend consistent so WPT `assert_throws_dom("InvalidStateError")`
+  // can rely on the same exception behavior.
+  {
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_ref() };
+    let start = match dom.range_start(handle.range_id) {
+      Ok(v) => v,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, &mut scope, err.code(), "")?)),
+    };
+    let end = match dom.range_end(handle.range_id) {
+      Ok(v) => v,
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, &mut scope, err.code(), "")?)),
+    };
+
+    if start.node != end.node {
+      let common_ancestor = match dom.range_common_ancestor_container(handle.range_id) {
+        Ok(v) => v,
+        Err(err) => return Err(VmError::Throw(make_dom_exception(vm, &mut scope, err.code(), "")?)),
+      };
+
+      let mut n = start.node;
+      let mut remaining = dom.nodes_len().saturating_add(1);
+      while n != common_ancestor && remaining > 0 {
+        remaining -= 1;
+        let Some(node) = dom.nodes().get(n.index()) else {
+          break;
+        };
+        if !matches!(&node.kind, NodeKind::Text { .. }) {
+          return Err(VmError::Throw(make_dom_exception(vm, &mut scope, "InvalidStateError", "")?));
+        }
+        if matches!(&node.kind, NodeKind::ShadowRoot { .. }) {
+          break;
+        }
+        n = node.parent.unwrap_or(common_ancestor);
+      }
+
+      let mut n = end.node;
+      let mut remaining = dom.nodes_len().saturating_add(1);
+      while n != common_ancestor && remaining > 0 {
+        remaining -= 1;
+        let Some(node) = dom.nodes().get(n.index()) else {
+          break;
+        };
+        if !matches!(&node.kind, NodeKind::Text { .. }) {
+          return Err(VmError::Throw(make_dom_exception(vm, &mut scope, "InvalidStateError", "")?));
+        }
+        if matches!(&node.kind, NodeKind::ShadowRoot { .. }) {
+          break;
+        }
+        n = node.parent.unwrap_or(common_ancestor);
+      }
+    }
+  }
+
   // Reject invalid newParent node types (Document/DocumentType/DocumentFragment/ShadowRoot) using
   // its current document before adoption.
   {
@@ -49075,25 +49132,22 @@ fn init_window_globals(
     data_desc(Value::Object(elements_from_point_func)),
   )?;
 
-  if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
-    // document.createRange
-    let create_range_key = alloc_key(&mut scope, "createRange")?;
-    let create_range_call_id = vm.register_native_call(document_create_range_native)?;
-    let create_range_name = scope.alloc_string("createRange")?;
-    scope.push_root(Value::String(create_range_name))?;
-    let create_range_func =
-      scope.alloc_native_function(create_range_call_id, None, create_range_name, 0)?;
-    scope.heap_mut().object_set_prototype(
-      create_range_func,
-      Some(realm.intrinsics().function_prototype()),
-    )?;
-    scope.push_root(Value::Object(create_range_func))?;
-    scope.define_property(
-      document_obj,
-      create_range_key,
-      data_desc(Value::Object(create_range_func)),
-    )?;
-  }
+  // document.createRange
+  let create_range_key = alloc_key(&mut scope, "createRange")?;
+  let create_range_call_id = vm.register_native_call(document_create_range_native)?;
+  let create_range_name = scope.alloc_string("createRange")?;
+  scope.push_root(Value::String(create_range_name))?;
+  let create_range_func = scope.alloc_native_function(create_range_call_id, None, create_range_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    create_range_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(create_range_func))?;
+  scope.define_property(
+    document_obj,
+    create_range_key,
+    data_desc(Value::Object(create_range_func)),
+  )?;
 
   // document.createElement
   let create_element_key = alloc_key(&mut scope, "createElement")?;
@@ -54029,45 +54083,24 @@ fn init_window_globals(
     )?;
 
     // Range prototype + constructor.
-    if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
-      // AbstractRange prototype + constructor.
-      //
-      // `AbstractRange` is the base interface for `Range` (and `StaticRange`). It is not directly
-      // constructible, but the interface object must exist so `range instanceof AbstractRange`
-      // behaves like browsers/WPT.
-      let abstract_range_proto = scope.alloc_object()?;
-      scope.push_root(Value::Object(abstract_range_proto))?;
-      scope.heap_mut().object_set_prototype(
-        abstract_range_proto,
-        Some(realm.intrinsics().object_prototype()),
-      )?;
-
-      let abstract_range_ctor = make_illegal_ctor(&mut scope, "AbstractRange")?;
-      scope.push_root(Value::Object(abstract_range_ctor))?;
-      scope.define_property(
-        abstract_range_ctor,
-        prototype_key,
-        ctor_link_desc(Value::Object(abstract_range_proto)),
-      )?;
-      scope.define_property(
-        abstract_range_proto,
-        constructor_key,
-        ctor_link_desc(Value::Object(abstract_range_ctor)),
-      )?;
-      let abstract_range_key = alloc_key(&mut scope, "AbstractRange")?;
-      scope.define_property(
-        global,
-        abstract_range_key,
-        data_desc(Value::Object(abstract_range_ctor)),
-      )?;
-
+    //
+    // NOTE: WebIDL-generated bindings do not currently install Range/Document.createRange. Install
+    // the handwritten Range surface for both DOM binding backends so Range algorithms (and their
+    // DOMException name mapping) are exercised consistently.
+    let range_global_key = alloc_key(&mut scope, "Range")?;
+    if scope
+      .heap()
+      .object_get_own_property(global, &range_global_key)?
+      .is_none()
+    {
       let range_proto = scope.alloc_object()?;
       scope.push_root(Value::Object(range_proto))?;
       // Link `Range.prototype` into `AbstractRange.prototype` so `range instanceof AbstractRange`
       // is true (WHATWG DOM / WPT).
+      let range_parent_proto = abstract_range_proto.unwrap_or(realm.intrinsics().object_prototype());
       scope
         .heap_mut()
-        .object_set_prototype(range_proto, Some(abstract_range_proto))?;
+        .object_set_prototype(range_proto, Some(range_parent_proto))?;
 
       // Range.prototype.startContainer
       let start_container_call_id = vm.register_native_call(range_start_container_get_native)?;
@@ -54164,8 +54197,7 @@ fn init_window_globals(
       let collapsed_call_id = vm.register_native_call(range_collapsed_get_native)?;
       let collapsed_name = scope.alloc_string("get collapsed")?;
       scope.push_root(Value::String(collapsed_name))?;
-      let collapsed_func =
-        scope.alloc_native_function(collapsed_call_id, None, collapsed_name, 0)?;
+      let collapsed_func = scope.alloc_native_function(collapsed_call_id, None, collapsed_name, 0)?;
       scope.heap_mut().object_set_prototype(
         collapsed_func,
         Some(realm.intrinsics().function_prototype()),
@@ -54205,8 +54237,7 @@ fn init_window_globals(
       let set_start_call_id = vm.register_native_call(range_set_start_native)?;
       let set_start_name = scope.alloc_string("setStart")?;
       scope.push_root(Value::String(set_start_name))?;
-      let set_start_func =
-        scope.alloc_native_function(set_start_call_id, None, set_start_name, 2)?;
+      let set_start_func = scope.alloc_native_function(set_start_call_id, None, set_start_name, 2)?;
       scope.heap_mut().object_set_prototype(
         set_start_func,
         Some(realm.intrinsics().function_prototype()),
@@ -54441,8 +54472,7 @@ fn init_window_globals(
 
       // Range constructor.
       let range_ctor_call_id = vm.register_native_call(illegal_dom_constructor_native)?;
-      let range_ctor_construct_id =
-        vm.register_native_construct(range_constructor_construct_native)?;
+      let range_ctor_construct_id = vm.register_native_construct(range_constructor_construct_native)?;
       let range_ctor_name = scope.alloc_string("Range")?;
       scope.push_root(Value::String(range_ctor_name))?;
       let range_ctor_func = scope.alloc_native_function_with_slots(
@@ -54467,8 +54497,7 @@ fn init_window_globals(
         constructor_key,
         ctor_link_desc(Value::Object(range_ctor_func)),
       )?;
-      let range_key = alloc_key(&mut scope, "Range")?;
-      scope.define_property(global, range_key, data_desc(Value::Object(range_ctor_func)))?;
+      scope.define_property(global, range_global_key, data_desc(Value::Object(range_ctor_func)))?;
 
       // Range boundary point comparison constants.
       for (name, value) in [
@@ -54498,6 +54527,38 @@ fn init_window_globals(
           },
         },
       )?;
+    } else {
+      // Range already exists (e.g. future WebIDL-generated bindings). Ensure `document.createRange()`
+      // can still find the Range prototype to stamp onto new Range objects.
+      let range_proto_key = alloc_key(&mut scope, RANGE_PROTOTYPE_KEY)?;
+      if scope
+        .heap()
+        .object_get_own_property(document_obj, &range_proto_key)?
+        .is_none()
+      {
+        if let Some(Value::Object(range_ctor)) =
+          scope.heap().object_get_own_data_property_value(global, &range_global_key)?
+        {
+          scope.push_root(Value::Object(range_ctor))?;
+          if let Some(Value::Object(range_proto)) =
+            scope.heap().object_get_own_data_property_value(range_ctor, &prototype_key)?
+          {
+            scope.push_root(Value::Object(range_proto))?;
+            scope.define_property(
+              document_obj,
+              range_proto_key,
+              PropertyDescriptor {
+                enumerable: false,
+                configurable: false,
+                kind: PropertyKind::Data {
+                  value: Value::Object(range_proto),
+                  writable: false,
+                },
+              },
+            )?;
+          }
+        }
+      }
     }
 
     // Node prototype accessors and methods used by WPT DOM tests.
