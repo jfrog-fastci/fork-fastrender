@@ -57512,6 +57512,98 @@ mod tests {
   }
 
   #[test]
+  fn arrow_this_in_derived_constructor_arrow_using_super_method_call_created_before_super_observes_this_initialization(
+  ) -> Result<(), VmError> {
+    let source = r#"
+      let log = [];
+      function arg() { log.push('arg'); return 1; }
+      class B {
+        m(v) { log.push('m:' + v + ':' + (this instanceof D)); return v; }
+      }
+      class D extends B {
+        constructor() {
+          let f = () => super.m(arg());
+          let errName;
+          let errMsg;
+          try { f(); } catch (e) { errName = e.name; errMsg = e.message; }
+
+          super();
+          this.v = f();
+          this.errName = errName;
+          this.errMsg = errMsg;
+        }
+      }
+      let d = new D();
+      d.v === 1 &&
+        d.errName === 'ReferenceError' &&
+        d.errMsg === "Must call super constructor in derived class before accessing 'this'" &&
+        log.join(',') === 'arg,m:1:true'
+    "#;
+
+    assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
+    assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn arrow_this_in_derived_constructor_delete_super_property_throws_and_preserves_uninitialized_this_error(
+  ) -> Result<(), VmError> {
+    let source = r#"
+      let log = [];
+      function key() {
+        log.push('key');
+        return { toString() { log.push('toString'); return 'x'; } };
+      }
+      class B {}
+      class D extends B {
+        constructor() {
+          let delDirect = () => { delete super.x; };
+          let delComputed = () => { delete super[key()]; };
+
+          let preName1, preMsg1;
+          try { delDirect(); } catch (e) { preName1 = e.name; preMsg1 = e.message; }
+
+          let preName2, preMsg2;
+          try { delComputed(); } catch (e) { preName2 = e.name; preMsg2 = e.message; }
+
+          super();
+
+          let postName1, postMsg1;
+          try { delDirect(); } catch (e) { postName1 = e.name; postMsg1 = e.message; }
+
+          let postName2, postMsg2;
+          try { delComputed(); } catch (e) { postName2 = e.name; postMsg2 = e.message; }
+
+          this.preName1 = preName1;
+          this.preMsg1 = preMsg1;
+          this.preName2 = preName2;
+          this.preMsg2 = preMsg2;
+          this.postName1 = postName1;
+          this.postMsg1 = postMsg1;
+          this.postName2 = postName2;
+          this.postMsg2 = postMsg2;
+          this.log = log.join(',');
+        }
+      }
+
+      let d = new D();
+      d.preName1 === 'ReferenceError' &&
+        d.preMsg1 === "Must call super constructor in derived class before accessing 'this'" &&
+        d.preName2 === 'ReferenceError' &&
+        d.preMsg2 === "Must call super constructor in derived class before accessing 'this'" &&
+        d.postName1 === 'ReferenceError' &&
+        d.postMsg1 === 'Cannot delete a super property' &&
+        d.postName2 === 'ReferenceError' &&
+        d.postMsg2 === 'Cannot delete a super property' &&
+        d.log === 'key,toString'
+    "#;
+
+    assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
+    assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn arrow_this_in_derived_constructor_super_returns_object_arrow_observes_that_object() -> Result<(), VmError> {
     let source = r#"
       let returned;
