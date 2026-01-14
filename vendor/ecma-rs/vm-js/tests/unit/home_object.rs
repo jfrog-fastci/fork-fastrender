@@ -369,27 +369,36 @@ fn class_static_initialization_sets_home_object_ast() -> Result<(), VmError> {
 }
 
 #[test]
-fn await_in_class_static_block_runs_as_async_script() -> Result<(), VmError> {
+fn await_in_class_static_block_is_syntax_error() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
-  rt.exec_script(
-    r#"
-      var out = 0;
-      class A {
-        static {
-          out = 1;
-          await Promise.resolve(0);
-          out = 2;
+  // `await` expressions are syntax errors inside class static blocks.
+  for err in [
+    rt.exec_script(
+      r#"
+        class A {
+          static {
+            await 0;
+          }
         }
-      }
-    "#,
-  )?;
+      "#,
+    )
+    .unwrap_err(),
+    rt.exec_module(
+      "main.js",
+      r#"
+        class A {
+          static {
+            await 0;
+          }
+        }
+      "#,
+    )
+    .unwrap_err(),
+  ] {
+    assert!(matches!(err, VmError::Syntax(_)));
+  }
 
-  assert_eq!(rt.exec_script("out")?, Value::Number(1.0));
-
-  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
-
-  assert_eq!(rt.exec_script("out")?, Value::Number(2.0));
   Ok(())
 }
 
