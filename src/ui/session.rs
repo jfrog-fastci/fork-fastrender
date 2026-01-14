@@ -2986,6 +2986,8 @@ mod tests {
     let backup_path = session_backup_path(&session_path);
 
     std::fs::write(&session_path, "{not valid json").expect("write corrupted primary session");
+    let expected_primary_error =
+      parse_session_json("{not valid json").expect_err("expected primary JSON to be invalid");
 
     let backup_json = r#"{
       "version": 2,
@@ -3002,10 +3004,28 @@ mod tests {
     std::fs::write(&backup_path, backup_json).expect("write backup session");
 
     let expected = parse_session_json(backup_json).expect("parse expected backup session JSON");
-    let loaded = load_session(&session_path)
+    let loaded = load_session_outcome(&session_path)
       .expect("load session")
       .expect("expected session");
-    assert_eq!(loaded, expected);
+    assert_eq!(loaded.source, SessionLoadSource::Backup);
+    assert_eq!(loaded.primary_error, Some(expected_primary_error));
+    assert_eq!(loaded.session, expected);
+  }
+
+  #[test]
+  fn load_session_outcome_reports_primary_when_primary_is_valid() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let session_path = dir.path().join("session.json");
+
+    let session = BrowserSession::single("about:newtab".to_string());
+    save_session_atomic(&session_path, &session).expect("save session");
+
+    let loaded = load_session_outcome(&session_path)
+      .expect("load session")
+      .expect("expected session");
+    assert_eq!(loaded.source, SessionLoadSource::Primary);
+    assert_eq!(loaded.primary_error, None);
+    assert_eq!(loaded.session, session);
   }
 }
 
@@ -3080,11 +3100,24 @@ fn read_session_file_bounded(path: &Path) -> Result<Option<String>, String> {
     .map_err(|err| format!("failed to decode {} as UTF-8: {err}", path.display()))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionLoadSource {
+  Primary,
+  Backup,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionLoadOutcome {
+  pub session: BrowserSession,
+  pub source: SessionLoadSource,
+  /// The error encountered when attempting to load the primary session file, if the backup was used.
+  pub primary_error: Option<String>,
+}
 /// Attempt to read + parse a session file. Missing file is not an error.
 ///
-/// If the primary session file is missing, unreadable, corrupt, or too large, we will attempt to
-/// fall back to a `.bak` backup session file in the same directory.
-pub fn load_session(path: &Path) -> Result<Option<BrowserSession>, String> {
+/// If the primary session file is unreadable, corrupt, or too large, we will attempt to fall back
+/// to a `.bak` backup session file in the same directory.
+pub fn load_session_outcome(path: &Path) -> Result<Option<SessionLoadOutcome>, String> {
   let data = match read_session_file_bounded(path) {
     Ok(Some(data)) => data,
     Ok(None) => return Ok(None),
@@ -3103,7 +3136,11 @@ pub fn load_session(path: &Path) -> Result<Option<BrowserSession>, String> {
             path.display(),
             backup.display()
           );
-          return Ok(Some(session));
+          return Ok(Some(SessionLoadOutcome {
+            session,
+            source: SessionLoadSource::Backup,
+            primary_error: Some(err),
+          }));
         }
         Ok(None) => return Err(err),
         Err(backup_err) => {
@@ -3117,7 +3154,11 @@ pub fn load_session(path: &Path) -> Result<Option<BrowserSession>, String> {
   };
 
   match parse_session_json(&data) {
-    Ok(session) => Ok(Some(session)),
+    Ok(session) => Ok(Some(SessionLoadOutcome {
+      session,
+      source: SessionLoadSource::Primary,
+      primary_error: None,
+    })),
     Err(primary_err) => {
       let backup_path = session_backup_path(path);
       let backup_data = match read_session_file_bounded(&backup_path) {
@@ -3139,7 +3180,11 @@ pub fn load_session(path: &Path) -> Result<Option<BrowserSession>, String> {
             path.display(),
             backup_path.display()
           );
-          Ok(Some(session))
+          Ok(Some(SessionLoadOutcome {
+            session,
+            source: SessionLoadSource::Backup,
+            primary_error: Some(primary_err),
+          }))
         }
         Err(backup_err) => Err(format!(
           "failed to parse {}: {primary_err}; also failed to parse backup {}: {backup_err}",
@@ -3149,6 +3194,14 @@ pub fn load_session(path: &Path) -> Result<Option<BrowserSession>, String> {
       }
     }
   }
+}
+
+/// Attempt to read + parse a session file. Missing file is not an error.
+///
+/// If the primary session file is missing, unreadable, corrupt, or too large, we will attempt to
+/// fall back to a `.bak` backup session file in the same directory.
+pub fn load_session(path: &Path) -> Result<Option<BrowserSession>, String> {
+  Ok(load_session_outcome(path)?.map(|outcome| outcome.session))
 }
 
 /// Write the session file atomically (write temp file + rename).
