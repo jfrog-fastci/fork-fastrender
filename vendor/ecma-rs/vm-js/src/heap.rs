@@ -2029,6 +2029,154 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     Ok(())
   }
 
+  /// Gets an engine-private own property descriptor from a Proxy object.
+  ///
+  /// This only consults the Proxy's internal property table (used for internal-symbol keys such as
+  /// class-private names). It does **not** consult Proxy traps or forward to the Proxy target.
+  pub(crate) fn proxy_internal_get_own_property(
+    &self,
+    proxy: GcObject,
+    key: &PropertyKey,
+  ) -> Result<Option<PropertyDescriptor>, VmError> {
+    let proxy = self.get_proxy(proxy)?;
+    // Linear scan: internal property tables are expected to be very small (private names, etc).
+    for entry in proxy.internal_properties.iter() {
+      if self.property_key_eq(&entry.key, key) {
+        return Ok(Some(entry.desc));
+      }
+    }
+    Ok(None)
+  }
+
+  /// Defines (adds or replaces) an engine-private own property on a Proxy object.
+  ///
+  /// This updates the Proxy's internal property table and does **not** invoke Proxy traps or touch
+  /// the target object.
+  ///
+  /// The caller is responsible for ensuring `key` and any GC-managed values in `desc` are rooted
+  /// across this operation.
+  pub(crate) fn proxy_internal_define_own_property(
+    &mut self,
+    proxy: GcObject,
+    key: PropertyKey,
+    desc: PropertyDescriptor,
+  ) -> Result<(), VmError> {
+    let slot_idx = self
+      .validate(proxy.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
+
+    // Two-phase borrow so we can compare property keys without holding a mutable borrow of the
+    // Proxy allocation (string comparisons may call back into `&self`).
+    let (existing_idx, property_count, old_bytes) = {
+      let slot = &self.slots[slot_idx];
+      let Some(HeapObject::Proxy(p)) = slot.value.as_ref() else {
+        return Err(VmError::invalid_handle());
+      };
+      (
+        p.internal_properties
+          .iter()
+          .position(|entry| self.property_key_eq(&entry.key, &key)),
+        p.internal_properties.len(),
+        slot.bytes,
+      )
+    };
+
+    if let Some(i) = existing_idx {
+      // In-place replacement: does not change the internal table size or heap accounting.
+      let Some(HeapObject::Proxy(p)) = self.slots[slot_idx].value.as_mut() else {
+        return Err(VmError::invalid_handle());
+      };
+      if let Some(entry) = p.internal_properties.get_mut(i) {
+        *entry = PropertyEntry { key, desc };
+        return Ok(());
+      }
+      return Err(VmError::InvariantViolation(
+        "proxy internal property index out of bounds",
+      ));
+    }
+
+    let new_property_count = property_count.checked_add(1).ok_or(VmError::OutOfMemory)?;
+    let new_bytes = JsProxy::heap_size_bytes_for_internal_property_count(new_property_count);
+
+    // Enforce heap limits based on net growth of this Proxy's internal property table.
+    let grow_by = new_bytes.saturating_sub(old_bytes);
+    self.ensure_can_allocate(grow_by)?;
+
+    // Allocate the new property table fallibly so hostile inputs can't abort the host on allocator
+    // OOM.
+    let mut buf: Vec<PropertyEntry> = Vec::new();
+    buf
+      .try_reserve_exact(new_property_count)
+      .map_err(|_| VmError::OutOfMemory)?;
+    {
+      let slot = &self.slots[slot_idx];
+      let Some(HeapObject::Proxy(p)) = slot.value.as_ref() else {
+        return Err(VmError::invalid_handle());
+      };
+      buf.extend_from_slice(&p.internal_properties);
+    }
+    buf.push(PropertyEntry { key, desc });
+    let properties = buf.into_boxed_slice();
+
+    let Some(HeapObject::Proxy(p)) = self.slots[slot_idx].value.as_mut() else {
+      return Err(VmError::invalid_handle());
+    };
+    p.internal_properties = properties;
+
+    self.update_slot_bytes(slot_idx, new_bytes);
+
+    #[cfg(debug_assertions)]
+    self.debug_assert_used_bytes_is_correct();
+
+    Ok(())
+  }
+
+  /// Updates the `[[Value]]` of an existing **data** property in a Proxy's internal property table.
+  ///
+  /// This is used by private-field assignment and does not invoke Proxy traps.
+  pub(crate) fn proxy_internal_set_existing_data_property_value(
+    &mut self,
+    proxy: GcObject,
+    key: &PropertyKey,
+    value: Value,
+  ) -> Result<(), VmError> {
+    let slot_idx = self
+      .validate(proxy.0)
+      .ok_or_else(|| VmError::invalid_handle())?;
+
+    let idx = {
+      let slot = &self.slots[slot_idx];
+      let Some(HeapObject::Proxy(p)) = slot.value.as_ref() else {
+        return Err(VmError::invalid_handle());
+      };
+      p.internal_properties
+        .iter()
+        .position(|entry| self.property_key_eq(&entry.key, key))
+    };
+
+    let Some(i) = idx else {
+      return Err(VmError::InvariantViolation(
+        "missing proxy internal data property",
+      ));
+    };
+
+    let Some(HeapObject::Proxy(p)) = self.slots[slot_idx].value.as_mut() else {
+      return Err(VmError::invalid_handle());
+    };
+    let Some(entry) = p.internal_properties.get_mut(i) else {
+      return Err(VmError::InvariantViolation(
+        "proxy internal property index out of bounds",
+      ));
+    };
+    let PropertyKind::Data { value: slot, .. } = &mut entry.desc.kind else {
+      return Err(VmError::InvariantViolation(
+        "proxy internal property is not a data descriptor",
+      ));
+    };
+    *slot = value;
+    Ok(())
+  }
+
   /// Returns `true` if `obj` currently points to a live Promise object allocation.
   ///
   /// This is the spec-shaped "brand check" used by `IsPromise`: an object is a Promise if it has
@@ -9820,14 +9968,16 @@ impl<'a> Scope<'a> {
     let mut scope = self.reborrow();
     scope.push_roots(&roots[..root_count])?;
 
-    // Proxies have no heap-owned payload allocations today; they store only GC handles inline.
-    let new_bytes = 0usize;
+    // Proxy objects can hold engine-private internal-symbol properties (e.g. class-private names)
+    // in a dedicated table. Start with no internal properties.
+    let new_bytes = JsProxy::heap_size_bytes_for_internal_property_count(0);
     scope.heap.ensure_can_allocate(new_bytes)?;
     let obj = HeapObject::Proxy(JsProxy {
       target,
       handler,
       callable,
       constructable,
+      internal_properties: Box::default(),
     });
     Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
   }
@@ -11164,6 +11314,20 @@ struct JsProxy {
   ///
   /// Like `callable`, this is fixed at creation time and preserved across revocation.
   constructable: bool,
+  /// Engine-private own properties keyed by **internal symbols** (e.g. class-private names).
+  ///
+  /// Proxy exotic objects have no ordinary property storage: all ECMAScript `[[Get]]`/`[[Set]]`/
+  /// `[[DefineOwnProperty]]` operations are handled by the Proxy internal methods, which forward to
+  /// the target and/or invoke traps.
+  ///
+  /// However, some engine-internal state is modeled as hidden symbol-keyed properties (see
+  /// `InternalSymbols` and class-private-name handling). Those internal properties:
+  /// - must not be observable via Proxy traps, and
+  /// - must be associated with the Proxy object itself (not forwarded to the target), so that
+  ///   private-brand checks behave correctly.
+  ///
+  /// We store such properties in a dedicated table, accessed only by VM internals.
+  internal_properties: Box<[PropertyEntry]>,
 }
 
 impl Trace for JsProxy {
@@ -11174,6 +11338,15 @@ impl Trace for JsProxy {
     if let Some(handler) = self.handler {
       tracer.trace_value(Value::Object(handler));
     }
+    for prop in self.internal_properties.iter() {
+      prop.trace(tracer);
+    }
+  }
+}
+
+impl JsProxy {
+  fn heap_size_bytes_for_internal_property_count(count: usize) -> usize {
+    ObjectBase::properties_heap_size_bytes_for_count(count)
   }
 }
 

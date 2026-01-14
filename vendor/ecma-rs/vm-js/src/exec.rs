@@ -10889,17 +10889,14 @@ impl<'a> Evaluator<'a> {
         "Cannot read private member from non-object",
       )?);
     };
-    // Private fields are not accessible through Proxy objects.
-    if scope.heap().is_proxy_object(obj) {
-      return Err(throw_type_error(
-        self.vm,
-        scope,
-        "Cannot read private member from Proxy object",
-      )?);
-    }
 
     let key = PropertyKey::from_symbol(sym);
-    let Some(desc) = scope.heap().get_own_property(obj, key)? else {
+    let desc = if scope.heap().is_proxy_object(obj) {
+      scope.heap().proxy_internal_get_own_property(obj, &key)?
+    } else {
+      scope.heap().get_own_property(obj, key)?
+    };
+    let Some(desc) = desc else {
       // Brand check failure.
       let msg =
         crate::fallible_format::try_format_error_message("Cannot read private member ", name, "")?;
@@ -10934,16 +10931,14 @@ impl<'a> Evaluator<'a> {
         "Cannot write private member to non-object",
       )?);
     };
-    if scope.heap().is_proxy_object(obj) {
-      return Err(throw_type_error(
-        self.vm,
-        scope,
-        "Cannot write private member to Proxy object",
-      )?);
-    }
 
     let key = PropertyKey::from_symbol(sym);
-    let Some(desc) = scope.heap().get_own_property(obj, key)? else {
+    let desc = if scope.heap().is_proxy_object(obj) {
+      scope.heap().proxy_internal_get_own_property(obj, &key)?
+    } else {
+      scope.heap().get_own_property(obj, key)?
+    };
+    let Some(desc) = desc else {
       let msg =
         crate::fallible_format::try_format_error_message("Cannot write private member ", name, "")?;
       return Err(throw_type_error(self.vm, scope, &msg)?);
@@ -10962,9 +10957,15 @@ impl<'a> Evaluator<'a> {
         // property table.
         let mut set_scope = scope.reborrow();
         set_scope.push_root(value)?;
-        set_scope
-          .heap_mut()
-          .object_set_existing_data_property_value(obj, &key, value)?;
+        if set_scope.heap().is_proxy_object(obj) {
+          set_scope
+            .heap_mut()
+            .proxy_internal_set_existing_data_property_value(obj, &key, value)?;
+        } else {
+          set_scope
+            .heap_mut()
+            .object_set_existing_data_property_value(obj, &key, value)?;
+        }
         Ok(())
       }
       PropertyKind::Accessor { set, .. } => {
@@ -14173,15 +14174,22 @@ impl<'a> Evaluator<'a> {
             .resolve_private_name_symbol(self.env.lexical_env, private_name)?
             .ok_or(VmError::InvariantViolation("unresolved private name"))?;
 
-          // Private elements are not accessible through Proxy objects; `#x in proxy` always fails
-          // the brand check without consulting any traps.
-          if rhs_scope.heap().is_proxy_object(obj) {
-            return Ok(Value::Bool(false));
-          }
-
           rhs_scope.push_root(Value::Symbol(sym))?;
           let key = PropertyKey::from_symbol(sym);
-          let has = rhs_scope.heap().get_own_property(obj, key)?.is_some();
+          // Private brand checks:
+          // - do not consult the prototype chain, and
+          // - do not dispatch to Proxy traps (they are not observable).
+          //
+          // A Proxy can still pass the check if it is itself "branded" (e.g. returned from a class
+          // constructor and then initialized with private elements).
+          let has = if rhs_scope.heap().is_proxy_object(obj) {
+            rhs_scope
+              .heap()
+              .proxy_internal_get_own_property(obj, &key)?
+              .is_some()
+          } else {
+            rhs_scope.heap().get_own_property(obj, key)?.is_some()
+          };
           return Ok(Value::Bool(has));
         }
 
@@ -27482,14 +27490,21 @@ fn async_apply_private_in_operator(
     .resolve_private_name_symbol(evaluator.env.lexical_env, private_name)?
     .ok_or(VmError::InvariantViolation("unresolved private name"))?;
 
-  // Private brand checks are not observable through Proxy objects.
-  if rhs_scope.heap().is_proxy_object(obj) {
-    return Ok(Value::Bool(false));
-  }
-
   rhs_scope.push_root(Value::Symbol(sym))?;
   let key = PropertyKey::from_symbol(sym);
-  let has = rhs_scope.heap().get_own_property(obj, key)?.is_some();
+  // Private brand checks:
+  // - do not consult the prototype chain, and
+  // - do not dispatch to Proxy traps.
+  //
+  // Proxies can still pass the check if they have been initialized with the private name.
+  let has = if rhs_scope.heap().is_proxy_object(obj) {
+    rhs_scope
+      .heap()
+      .proxy_internal_get_own_property(obj, &key)?
+      .is_some()
+  } else {
+    rhs_scope.heap().get_own_property(obj, key)?.is_some()
+  };
   Ok(Value::Bool(has))
 }
 

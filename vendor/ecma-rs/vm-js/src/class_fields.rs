@@ -1,5 +1,79 @@
 use crate::{function::CallHandler, GcObject, PropertyKey, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 
+fn define_internal_symbol_property_or_throw(
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  key: PropertyKey,
+  desc: crate::PropertyDescriptorPatch,
+) -> Result<(), VmError> {
+  // This helper is only for hidden/internal symbol keys (class-private names, internal slots, ...).
+  let PropertyKey::Symbol(sym) = key else {
+    return Err(VmError::InvariantViolation(
+      "internal symbol property definition with non-symbol key",
+    ));
+  };
+  if !scope.heap().is_internal_symbol(sym) {
+    return Err(VmError::InvariantViolation(
+      "internal symbol property definition with non-internal symbol key",
+    ));
+  }
+
+  // Private-name and internal-slot definitions are not observable and must not invoke Proxy traps.
+  if !scope.heap().is_proxy_object(obj) {
+    return scope.define_property_or_throw(obj, key, desc);
+  }
+
+  // Root `obj`, `key`, and any descriptor values for the duration of the operation.
+  let mut scope = scope.reborrow();
+  let mut roots = [Value::Undefined; 5];
+  let mut root_count = 0usize;
+  roots[root_count] = Value::Object(obj);
+  root_count += 1;
+  roots[root_count] = Value::Symbol(sym);
+  root_count += 1;
+  if let Some(v) = desc.value {
+    roots[root_count] = v;
+    root_count += 1;
+  }
+  if let Some(v) = desc.get {
+    roots[root_count] = v;
+    root_count += 1;
+  }
+  if let Some(v) = desc.set {
+    roots[root_count] = v;
+    root_count += 1;
+  }
+  scope.push_roots(&roots[..root_count])?;
+
+  desc.validate()?;
+  let enumerable = desc.enumerable.unwrap_or(false);
+  let configurable = desc.configurable.unwrap_or(false);
+  let desc = if desc.is_accessor_descriptor() {
+    crate::PropertyDescriptor {
+      enumerable,
+      configurable,
+      kind: crate::PropertyKind::Accessor {
+        get: desc.get.unwrap_or(Value::Undefined),
+        set: desc.set.unwrap_or(Value::Undefined),
+      },
+    }
+  } else {
+    crate::PropertyDescriptor {
+      enumerable,
+      configurable,
+      kind: crate::PropertyKind::Data {
+        value: desc.value.unwrap_or(Value::Undefined),
+        writable: desc.writable.unwrap_or(false),
+      },
+    }
+  };
+
+  scope
+    .heap_mut()
+    .proxy_internal_define_own_property(obj, key, desc)?;
+  Ok(())
+}
+
 /// Native slot index for a class constructor's hidden user-defined constructor body function.
 pub(crate) const CLASS_CTOR_SLOT_BODY: usize = 0;
 /// Native slot index for a class constructor's `extends` value.
@@ -142,7 +216,7 @@ pub(crate) fn initialize_instance_fields_with_host_and_hooks(
       },
     };
 
-    init_scope.define_property_or_throw(receiver, key, patch)?;
+    define_internal_symbol_property_or_throw(&mut init_scope, receiver, key, patch)?;
   }
 
   // Copy the native-slot slice into an owned Vec so we can mutably borrow `init_scope` while
@@ -197,12 +271,20 @@ pub(crate) fn initialize_instance_fields_with_host_and_hooks(
     }
 
     let key = PropertyKey::from_symbol(sym);
-    if init_scope.heap().get_own_property(receiver, key)?.is_some() {
+    let already_defined = if init_scope.heap().is_proxy_object(receiver) {
+      init_scope
+        .heap()
+        .proxy_internal_get_own_property(receiver, &key)?
+        .is_some()
+    } else {
+      init_scope.heap().get_own_property(receiver, key)?.is_some()
+    };
+    if already_defined {
       continue;
     }
 
-    init_scope.push_root(Value::Object(func))?;
-    init_scope.define_property_or_throw(
+    define_internal_symbol_property_or_throw(
+      &mut init_scope,
       receiver,
       key,
       crate::PropertyDescriptorPatch {
@@ -289,7 +371,8 @@ pub(crate) fn initialize_instance_fields_with_host_and_hooks(
     // - Both are non-enumerable and non-configurable.
     if is_private {
       let writable = is_field_initializer;
-      init_scope.define_property_or_throw(
+      define_internal_symbol_property_or_throw(
+        &mut init_scope,
         receiver,
         key,
         crate::PropertyDescriptorPatch {
@@ -301,7 +384,15 @@ pub(crate) fn initialize_instance_fields_with_host_and_hooks(
         },
       )?;
     } else {
-      init_scope.create_data_property_or_throw(receiver, key, value)?;
+      crate::spec_ops::create_data_property_or_throw_with_host_and_hooks(
+        vm,
+        &mut init_scope,
+        host,
+        hooks,
+        receiver,
+        key,
+        value,
+      )?;
     }
   }
 

@@ -228,6 +228,10 @@ mod typed_array_dataview_rooting_gc_tests;
 mod private_in_tests;
 
 #[cfg(test)]
+#[path = "../tests/unit/private_methods_on_proxy.rs"]
+mod private_methods_on_proxy_tests;
+
+#[cfg(test)]
 #[path = "../tests/unit/home_object.rs"]
 mod home_object_tests;
 
