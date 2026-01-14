@@ -854,3 +854,27 @@ fn derived_ctor_arrow_super_computed_exponentiation_assignment_before_super_does
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn derived_ctor_param_arrow_super_call_initializes_this_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var ok_init = false;
+      var ok_second = false;
+      class B { constructor() { this.fromB = 1; } }
+      class D extends B {
+        constructor(f = () => super()) {
+          f();
+          ok_init = this.fromB === 1 && this instanceof D;
+          try { f(); } catch (e) { ok_second = e instanceof ReferenceError; }
+        }
+      }
+      new D();
+      ok_init && ok_second
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
