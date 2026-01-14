@@ -77,7 +77,12 @@ impl WavAudioBackend {
     config: AudioStreamConfig,
     max_buffered_duration: Duration,
   ) -> io::Result<Self> {
-    Self::new_with_output_config_and_trace(path, config, max_buffered_duration, TraceHandle::default())
+    Self::new_with_output_config_and_trace(
+      path,
+      config,
+      max_buffered_duration,
+      TraceHandle::default(),
+    )
   }
 
   /// Like [`Self::new_with_output_config`], but wires up tracing spans into the provided handle.

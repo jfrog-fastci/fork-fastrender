@@ -19835,7 +19835,6 @@ fn async_handle_body_result(
         async_teardown_continuation(&mut await_scope, cont);
         return Err(err);
       }
-
       let awaited_promise_res: Result<Value, VmError> = match kind {
         AsyncSuspendKind::Await => {
           // `await` must not trigger Promise species side effects. In particular, coercing a Promise
