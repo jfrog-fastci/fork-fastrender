@@ -3165,8 +3165,6 @@ impl ModuleGraph {
     stack
       .try_reserve_exact(module_count)
       .map_err(|_| VmError::OutOfMemory)?;
-    stack.push(module);
-
     let mut visited: Vec<bool> = Vec::new();
     visited
       .try_reserve_exact(module_count)
@@ -3177,15 +3175,22 @@ impl ModuleGraph {
     const EDGE_TICK_EVERY: usize = 32;
     let mut visited_modules: usize = 0;
 
+    // Treat `visited` as a "seen" set (pushed or processed) rather than a "processed" set so we
+    // never push the same module more than once. This bounds stack growth to `module_count`,
+    // ensuring `stack.push` cannot trigger an infallible reallocation under attacker-controlled
+    // `[[LoadedModules]]` graphs.
+    let start_idx = module_index(module);
+    if start_idx >= module_count {
+      return Err(VmError::invalid_handle());
+    }
+    visited[start_idx] = true;
+    stack.push(module);
+
     while let Some(current) = stack.pop() {
       let idx = module_index(current);
       if idx >= module_count {
         return Err(VmError::invalid_handle());
       }
-      if visited[idx] {
-        continue;
-      }
-      visited[idx] = true;
 
       visited_modules = visited_modules.wrapping_add(1);
       if visited_modules % MODULE_TICK_EVERY == 0 || visited_modules == 1 {
@@ -3207,6 +3212,7 @@ impl ModuleGraph {
           return Err(VmError::invalid_handle());
         }
         if !visited[imported_idx] {
+          visited[imported_idx] = true;
           stack.push(imported);
         }
       }
