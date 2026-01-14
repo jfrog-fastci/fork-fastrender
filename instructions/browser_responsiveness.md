@@ -110,8 +110,15 @@ Window resize must not drop frames.
 
 **Root causes to investigate**:
 - Layout recalculation on every resize event
-- Texture reallocation
+- Texture reallocation (especially the page pixmap → `wgpu::Texture` upload path)
 - Synchronous repaint blocking resize
+
+Practical mitigation for page-frame uploads:
+- Allocate page textures in **buckets/capacity** (e.g. round up to 64px) and **UV-crop** to the
+  active content region so intermediate resize pixmap sizes don't recreate GPU textures each frame.
+  See `src/ui/wgpu_pixmap_texture.rs` (`WgpuPixmapTexture::new_page` + `uv_rect`).
+- Bucket size can be tuned via `FASTR_BROWSER_PAGE_TEXTURE_BUCKET_PX` (default 64). Larger buckets
+  reduce reallocations but may increase memory use.
 
 **Targets**:
 - Resize frame time <16ms (60fps)
