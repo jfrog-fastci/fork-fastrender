@@ -24,11 +24,7 @@ macro_rules! impl_audio_sample_equilibrium {
   ($($t:ty),* $(,)?) => {
     $(
       impl AudioSample for $t {
-        // Use the mid-point of the representable range for "equilibrium" (silence).
-        //
-        // Note: For even-sized unsigned types (e.g. u16), the exact midpoint is X.5; we use floor,
-        // matching the existing float->unsigned conversion path (`value * 0.5 + 0.5`).
-        const SILENCE: Self = <$t>::MAX / 2;
+        const SILENCE: Self = (1 as $t) << (<$t>::BITS - 1);
       }
     )*
   };
@@ -98,6 +94,21 @@ mod tests {
     assert!(!did_panic);
     assert!(!callback_panicked.load(Ordering::Relaxed));
     assert_eq!(out, [0.25, 0.5, 0.75, 1.0]);
+  }
+
+  #[test]
+  fn panicking_callback_outputs_equilibrium_for_unsigned() {
+    let callback_panicked = AtomicBool::new(false);
+    let mut out = [1_u16, 2, 3, 4];
+
+    let did_panic = guard_output_callback(&mut out, &callback_panicked, |_out| {
+      panic!("boom");
+    });
+
+    assert!(did_panic);
+    assert!(callback_panicked.load(Ordering::Relaxed));
+    assert_eq!(<u16 as AudioSample>::SILENCE, 1 << 15);
+    assert_eq!(out, [<u16 as AudioSample>::SILENCE; 4]);
   }
 
   #[test]
