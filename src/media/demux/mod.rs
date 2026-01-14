@@ -20,13 +20,13 @@ pub mod mp4 {
   impl Mp4Demuxer {
     pub fn open(_reader: impl Read + Seek) -> MediaResult<Self> {
       Err(MediaError::Unsupported(
-        "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)",
+        "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)".into(),
       ))
     }
 
     pub fn from_bytes(_bytes: Vec<u8>) -> MediaResult<Self> {
       Err(MediaError::Unsupported(
-        "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)",
+        "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)".into(),
       ))
     }
 
@@ -36,13 +36,13 @@ pub mod mp4 {
 
     pub fn next_packet(&mut self) -> MediaResult<Option<MediaPacket>> {
       Err(MediaError::Unsupported(
-        "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)",
+        "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)".into(),
       ))
     }
 
     pub fn seek(&mut self, _time_ns: u64) -> MediaResult<()> {
       Err(MediaError::Unsupported(
-        "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)",
+        "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)".into(),
       ))
     }
   }
@@ -81,13 +81,13 @@ pub mod mp4parse {
   impl<R: Read + Seek> Mp4ParseDemuxer<R> {
     pub fn open(_reader: R) -> MediaResult<Self> {
       Err(MediaError::Unsupported(
-        "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)",
+        "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)".into(),
       ))
     }
 
     pub fn open_with_options(_reader: R, _options: Mp4ParseDemuxerOptions) -> MediaResult<Self> {
       Err(MediaError::Unsupported(
-        "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)",
+        "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)".into(),
       ))
     }
 
@@ -97,13 +97,13 @@ pub mod mp4parse {
 
     pub fn next_packet(&mut self) -> MediaResult<Option<MediaPacket>> {
       Err(MediaError::Unsupported(
-        "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)",
+        "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)".into(),
       ))
     }
 
     pub fn seek(&mut self, _time_ns: u64) -> MediaResult<()> {
       Err(MediaError::Unsupported(
-        "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)",
+        "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)".into(),
       ))
     }
   }
@@ -140,13 +140,13 @@ pub mod webm {
   impl<R: Read + Seek> WebmDemuxer<R> {
     pub fn open(_reader: R) -> MediaResult<Self> {
       Err(MediaError::Unsupported(
-        "`media_webm` feature disabled (enable Cargo feature `media_webm` or `media`)",
+        "`media_webm` feature disabled (enable Cargo feature `media_webm` or `media`)".into(),
       ))
     }
 
     pub fn open_with_options(_reader: R, _options: WebmDemuxerOptions) -> MediaResult<Self> {
       Err(MediaError::Unsupported(
-        "`media_webm` feature disabled (enable Cargo feature `media_webm` or `media`)",
+        "`media_webm` feature disabled (enable Cargo feature `media_webm` or `media`)".into(),
       ))
     }
 
@@ -156,13 +156,13 @@ pub mod webm {
 
     pub fn next_packet(&mut self) -> MediaResult<Option<MediaPacket>> {
       Err(MediaError::Unsupported(
-        "`media_webm` feature disabled (enable Cargo feature `media_webm` or `media`)",
+        "`media_webm` feature disabled (enable Cargo feature `media_webm` or `media`)".into(),
       ))
     }
 
     pub fn seek(&mut self, _time_ns: u64) -> MediaResult<()> {
       Err(MediaError::Unsupported(
-        "`media_webm` feature disabled (enable Cargo feature `media_webm` or `media`)",
+        "`media_webm` feature disabled (enable Cargo feature `media_webm` or `media`)".into(),
       ))
     }
   }

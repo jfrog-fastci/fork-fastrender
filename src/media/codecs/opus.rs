@@ -49,21 +49,21 @@ impl OpusHead {
     let channel_mapping_family = codec_private[18];
 
     if version != 1 {
-      return Err(MediaError::Unsupported("unsupported OpusHead version"));
+      return Err(MediaError::Unsupported("unsupported OpusHead version".into()));
     }
 
     // WebM only supports mapping family 0 (mono/stereo) today.
     // We implement only that subset for now.
     if channel_mapping_family != 0 {
       return Err(MediaError::Unsupported(
-        "unsupported Opus channel mapping family",
+        "unsupported Opus channel mapping family".into(),
       ));
     }
 
     // Mapping family 0 is defined for mono/stereo only.
     if !(channel_count == 1 || channel_count == 2) {
       return Err(MediaError::Unsupported(
-        "unsupported Opus channel count for mapping family 0",
+        "unsupported Opus channel count for mapping family 0".into(),
       ));
     }
 
@@ -90,7 +90,7 @@ impl OpusDecoder {
     let channels = match head.channel_count {
       1 => opus::Channels::Mono,
       2 => opus::Channels::Stereo,
-      _ => return Err(MediaError::Unsupported("unsupported Opus channel count")),
+      _ => return Err(MediaError::Unsupported("unsupported Opus channel count".into())),
     };
 
     let decoder = opus::Decoder::new(OPUS_SAMPLE_RATE_HZ, channels)

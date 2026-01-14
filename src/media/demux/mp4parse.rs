@@ -127,6 +127,7 @@ impl<R: Read + Seek> Mp4ParseDemuxer<R> {
 
   pub fn open_with_options(mut reader: R, options: Mp4ParseDemuxerOptions) -> MediaResult<Self> {
     let ctx = read_mp4_context(&mut reader)?;
+    reject_encrypted_tracks(&ctx)?;
 
     let mut selection_infos = Vec::new();
     let mut tracks = Vec::new();
@@ -314,6 +315,92 @@ fn read_mp4_context<R: Read + Seek>(reader: &mut R) -> MediaResult<mp4parse::Med
   reader.seek(SeekFrom::Start(0)).map_err(MediaError::Io)?;
 
   mp4parse::read_mp4(reader).map_err(|e| MediaError::Demux(format!("mp4parse failed: {e}")))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Mp4ProtectionInfo {
+  scheme_type: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Mp4SampleEntryMeta {
+  codec_type: mp4parse::CodecType,
+  protection_info: Vec<Mp4ProtectionInfo>,
+}
+
+impl Mp4SampleEntryMeta {
+  fn from_mp4parse(sample_entry: &mp4parse::SampleEntry) -> Option<Self> {
+    match sample_entry {
+      mp4parse::SampleEntry::Video(entry) => Some(Self {
+        codec_type: entry.codec_type,
+        protection_info: entry
+          .protection_info
+          .iter()
+          .map(|info| Mp4ProtectionInfo {
+            scheme_type: info.scheme_type.as_ref().map(|scheme| scheme.scheme_type.to_string()),
+          })
+          .collect(),
+      }),
+      mp4parse::SampleEntry::Audio(entry) => Some(Self {
+        codec_type: entry.codec_type,
+        protection_info: entry
+          .protection_info
+          .iter()
+          .map(|info| Mp4ProtectionInfo {
+            scheme_type: info.scheme_type.as_ref().map(|scheme| scheme.scheme_type.to_string()),
+          })
+          .collect(),
+      }),
+      _ => None,
+    }
+  }
+}
+
+fn reject_encrypted_sample_entry(meta: &Mp4SampleEntryMeta) -> MediaResult<()> {
+  let has_sinf = !meta.protection_info.is_empty();
+  let encrypted_codec = matches!(
+    meta.codec_type,
+    mp4parse::CodecType::EncryptedVideo | mp4parse::CodecType::EncryptedAudio
+  ) || matches!(meta.codec_type.as_str(), "encv" | "enca");
+
+  if !has_sinf && !encrypted_codec {
+    return Ok(());
+  }
+
+  let mut schemes: Vec<String> = meta
+    .protection_info
+    .iter()
+    .filter_map(|info| info.scheme_type.clone())
+    .filter(|s| !s.is_empty())
+    .collect();
+  schemes.sort();
+  schemes.dedup();
+
+  let msg = if schemes.is_empty() {
+    "encrypted".to_string()
+  } else if schemes.len() == 1 {
+    format!("encrypted (scheme={})", schemes[0])
+  } else {
+    format!("encrypted (schemes={})", schemes.join("+"))
+  };
+
+  Err(MediaError::Unsupported(msg.into()))
+}
+
+/// Reject encrypted/protected tracks in an already-parsed `mp4parse::MediaContext`.
+pub(crate) fn reject_encrypted_tracks(ctx: &mp4parse::MediaContext) -> MediaResult<()> {
+  for track in &ctx.tracks {
+    let Some(stsd) = track.stsd.as_ref() else {
+      continue;
+    };
+    for sample_entry in &stsd.descriptions {
+      let Some(meta) = Mp4SampleEntryMeta::from_mp4parse(sample_entry) else {
+        continue;
+      };
+      reject_encrypted_sample_entry(&meta)?;
+    }
+  }
+  Ok(())
 }
 
 fn track_codec_and_extradata(track: &mp4parse::Track) -> (MediaCodec, Vec<u8>) {
@@ -633,6 +720,58 @@ mod tests {
     assert_eq!(samples.len(), 2);
     assert_eq!(samples[0].pts_ns, 0);
     assert_eq!(samples[1].pts_ns, 1_000_000_000);
+
+  #[test]
+  fn rejects_sample_entry_with_protection_info_and_scheme() {
+    let meta = Mp4SampleEntryMeta {
+      codec_type: mp4parse::CodecType::H264,
+      protection_info: vec![Mp4ProtectionInfo {
+        scheme_type: Some("cenc".to_string()),
+      }],
+    };
+
+    let err = reject_encrypted_sample_entry(&meta).expect_err("expected unsupported error");
+    let MediaError::Unsupported(msg) = err else {
+      panic!("expected MediaError::Unsupported, got {err:?}");
+    };
+    assert!(
+      msg.contains("encrypted"),
+      "expected error message to mention encryption, got {msg}"
+    );
+    assert!(
+      msg.contains("cenc"),
+      "expected error message to include scheme, got {msg}"
+    );
+  }
+
+  #[test]
+  fn rejects_sample_entry_with_encrypted_codec_type() {
+    let meta = Mp4SampleEntryMeta {
+      codec_type: mp4parse::CodecType::EncryptedVideo,
+      protection_info: Vec::new(),
+    };
+    let err = reject_encrypted_sample_entry(&meta).expect_err("expected unsupported error");
+    let MediaError::Unsupported(msg) = err else {
+      panic!("expected MediaError::Unsupported, got {err:?}");
+    };
+    assert!(msg.contains("encrypted"));
+  }
+
+  #[test]
+  fn accepts_unencrypted_sample_entry() {
+    let meta = Mp4SampleEntryMeta {
+      codec_type: mp4parse::CodecType::H264,
+      protection_info: Vec::new(),
+    };
+    reject_encrypted_sample_entry(&meta).expect("should be accepted");
+  }
+
+  #[test]
+  fn mp4_fixture_is_not_rejected() {
+    let bytes = include_bytes!("../../../tests/fixtures/media/test_h264_aac.mp4");
+    let mut cursor = std::io::Cursor::new(bytes.as_slice());
+    let ctx = mp4parse::read_mp4(&mut cursor).expect("fixture should parse");
+    reject_encrypted_tracks(&ctx).expect("fixture should not be treated as encrypted");
   }
 
   #[test]

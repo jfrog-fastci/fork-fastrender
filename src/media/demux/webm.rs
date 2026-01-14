@@ -8,7 +8,7 @@ use crate::media::{
   MediaVideoInfo,
 };
 use crate::render_control::{check_root, check_root_periodic};
-use matroska_demuxer::{DemuxError, Frame, MatroskaFile, TrackType};
+use matroska_demuxer::{ContentEncodingValue, DemuxError, Frame, MatroskaFile, TrackType};
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Seek, SeekFrom};
 
@@ -50,6 +50,67 @@ impl<R: Seek> Seek for DeadlineReader<R> {
     self.check_deadline()?;
     self.inner.seek(pos)
   }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebmContentEncodingKind {
+  Unknown,
+  Compression,
+  Encryption,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct WebmTrackEncodingMeta {
+  content_encodings: Vec<WebmContentEncodingKind>,
+}
+
+impl WebmTrackEncodingMeta {
+  fn from_track(track: &matroska_demuxer::TrackEntry) -> Self {
+    let Some(encodings) = track.content_encodings() else {
+      return Self::default();
+    };
+    let content_encodings = encodings
+      .iter()
+      .map(|encoding| match encoding.encoding() {
+        ContentEncodingValue::Encryption(_) => WebmContentEncodingKind::Encryption,
+        ContentEncodingValue::Compression(_) => WebmContentEncodingKind::Compression,
+        ContentEncodingValue::Unknown => WebmContentEncodingKind::Unknown,
+      })
+      .collect();
+    Self { content_encodings }
+  }
+}
+
+fn reject_unsupported_track_encodings(meta: &WebmTrackEncodingMeta) -> MediaResult<()> {
+  if meta.content_encodings.is_empty() {
+    return Ok(());
+  }
+
+  // Matroska `ContentEncodings` can describe encryption and/or compression. We don't support either
+  // at the moment (no DRM/EME; no Matroska content compression codecs).
+  //
+  // Fail fast with an explicit Unsupported error so callers don't see opaque decode errors later
+  // in the pipeline.
+  let mut kinds: Vec<&'static str> = meta
+    .content_encodings
+    .iter()
+    .map(|kind| match kind {
+      WebmContentEncodingKind::Encryption => "encryption",
+      WebmContentEncodingKind::Compression => "compression",
+      WebmContentEncodingKind::Unknown => "unknown",
+    })
+    .collect();
+  kinds.sort_unstable();
+  kinds.dedup();
+  let detail = if kinds.is_empty() {
+    String::new()
+  } else {
+    format!(": {}", kinds.join("+"))
+  };
+
+  Err(MediaError::Unsupported(
+    format!("encrypted (Matroska ContentEncodings{detail})").into(),
+  ))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -162,7 +223,7 @@ impl<R: Read + Seek> WebmDemuxer<R> {
 
     if options.per_track_queue_capacity == 0 {
       return Err(MediaError::Unsupported(
-        "invalid WebM demuxer queue capacity (must be >= 1)",
+        "invalid WebM demuxer queue capacity (must be >= 1)".into(),
       ));
     }
 
@@ -174,6 +235,9 @@ impl<R: Read + Seek> WebmDemuxer<R> {
     let mut tracks = Vec::new();
 
     for track in mkv.tracks() {
+      let encoding_meta = WebmTrackEncodingMeta::from_track(track);
+      reject_unsupported_track_encodings(&encoding_meta)?;
+
       let id = track.track_number().get();
       let codec_private = track.codec_private().unwrap_or(&[]).to_vec();
       let codec_delay = track.codec_delay().unwrap_or(0);
@@ -440,7 +504,7 @@ impl<R: Read + Seek> WebmDemuxer<R> {
     check_root(RenderStage::Paint).map_err(MediaError::from)?;
 
     if self.timestamp_scale_ns == 0 {
-      return Err(MediaError::Unsupported("invalid Matroska timestamp scale"));
+      return Err(MediaError::Unsupported("invalid Matroska timestamp scale".into()));
     }
 
     // `codec_delay` must be subtracted from timestamps to get the actual PTS (see Matroska spec).
@@ -462,7 +526,7 @@ impl<R: Read + Seek> WebmDemuxer<R> {
     self.mkv.seek(seek_timestamp).map_err(|err| match err {
       // When seeking in damaged/unindexed files, the demuxer may not be able to locate clusters.
       DemuxError::CantFindCluster => {
-        MediaError::Unsupported("Matroska seek unsupported (no cluster index)")
+        MediaError::Unsupported("Matroska seek unsupported (no cluster index)".into())
       }
       other => map_demux_error(other),
     })
@@ -705,6 +769,21 @@ mod tests {
       crate::error::Error::Render(RenderError::Timeout { .. }) => {}
       other => panic!("expected top-level render timeout, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn rejects_tracks_with_content_encodings() {
+    let meta = WebmTrackEncodingMeta {
+      content_encodings: vec![WebmContentEncodingKind::Encryption],
+    };
+    let err = reject_unsupported_track_encodings(&meta).expect_err("expected unsupported error");
+    let MediaError::Unsupported(msg) = err else {
+      panic!("expected MediaError::Unsupported, got {err:?}");
+    };
+    assert!(
+      msg.contains("encrypted"),
+      "expected error message to mention encryption, got {msg}"
+    );
   }
 
   #[test]

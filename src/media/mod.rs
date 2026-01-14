@@ -13,6 +13,7 @@
 use crate::geometry::Size;
 use crate::error::RenderError;
 use crate::paint::display_list::ImageData;
+use std::borrow::Cow;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -299,7 +300,7 @@ pub enum MediaError {
   Render(#[from] RenderError),
 
   #[error("unsupported: {0}")]
-  Unsupported(&'static str),
+  Unsupported(Cow<'static, str>),
 
   #[error("demux error: {0}")]
   Demux(String),

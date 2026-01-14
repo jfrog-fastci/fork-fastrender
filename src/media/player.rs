@@ -113,7 +113,9 @@ impl MediaPlayer {
       .iter()
       .find(|t| t.codec == MediaCodec::Vp9)
       .map(|t| t.id)
-      .ok_or(MediaError::Unsupported("WebM file does not contain a VP9 video track"))?;
+      .ok_or(MediaError::Unsupported(
+        "WebM file does not contain a VP9 video track".into(),
+      ))?;
 
     let decode_threads = options.decode_threads.max(1);
     let vp9 = Vp9Decoder::new(decode_threads)?;

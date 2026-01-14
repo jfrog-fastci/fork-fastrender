@@ -24,7 +24,7 @@ fn try_open_mp4(bytes: Arc<[u8]>) -> MediaResult<MediaDecodePipeline> {
 #[cfg(not(feature = "media_mp4"))]
 fn try_open_mp4(_bytes: Arc<[u8]>) -> MediaResult<MediaDecodePipeline> {
   Err(MediaError::Unsupported(
-    "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)",
+    "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)".into(),
   ))
 }
 
@@ -63,7 +63,7 @@ impl MediaBackend for NativeBackend {
 
     match (&mp4_err, &webm_err) {
       (MediaError::Unsupported(_), MediaError::Unsupported(_)) => Err(MediaError::Unsupported(
-        "no media container backends enabled (enable Cargo feature `media_mp4`/`media_webm` or `media`)",
+        "no media container backends enabled (enable Cargo feature `media_mp4`/`media_webm` or `media`)".into(),
       )),
       _ => Err(MediaError::Demux(format!(
         "failed to open media: mp4={mp4_err}; webm={webm_err}"

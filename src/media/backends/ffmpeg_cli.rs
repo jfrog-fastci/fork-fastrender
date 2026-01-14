@@ -147,7 +147,7 @@ impl DecoderProcess {
     cmd.stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|err| {
       if err.kind() == io::ErrorKind::NotFound {
-        MediaError::Unsupported("ffmpeg not available")
+        MediaError::Unsupported("ffmpeg not available".into())
       } else {
         MediaError::Io(err)
       }
@@ -368,7 +368,7 @@ struct FfprobeStream {
 
 fn run_ffprobe_json(path: &Path) -> MediaResult<Vec<u8>> {
   if !ffprobe_available() {
-    return Err(MediaError::Unsupported("ffprobe not available"));
+    return Err(MediaError::Unsupported("ffprobe not available".into()));
   }
 
   let mut cmd = Command::new("ffprobe");
@@ -379,7 +379,7 @@ fn run_ffprobe_json(path: &Path) -> MediaResult<Vec<u8>> {
   cmd.stderr(Stdio::piped());
   let mut child = cmd.spawn().map_err(|err| {
     if err.kind() == io::ErrorKind::NotFound {
-      MediaError::Unsupported("ffprobe not available")
+      MediaError::Unsupported("ffprobe not available".into())
     } else {
       MediaError::Io(err)
     }
@@ -540,10 +540,10 @@ pub struct FfmpegCliSession {
 impl FfmpegCliSession {
   pub fn new(bytes: Arc<[u8]>) -> MediaResult<Self> {
     if !ffmpeg_available() {
-      return Err(MediaError::Unsupported("ffmpeg not available"));
+      return Err(MediaError::Unsupported("ffmpeg not available".into()));
     }
     if !ffprobe_available() {
-      return Err(MediaError::Unsupported("ffprobe not available"));
+      return Err(MediaError::Unsupported("ffprobe not available".into()));
     }
 
     let dir = tempfile::tempdir()?;
@@ -796,4 +796,3 @@ impl MediaSession for FfmpegCliSession {
     Ok(())
   }
 }
-

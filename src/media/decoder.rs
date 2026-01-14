@@ -25,7 +25,7 @@ pub fn create_video_decoder(track: &MediaTrackInfo) -> MediaResult<Box<dyn Video
       #[cfg(not(feature = "codec_h264_openh264"))]
       {
         Err(MediaError::Unsupported(
-          "`codec_h264_openh264` feature disabled (enable Cargo feature `codec_h264_openh264` or `media`)",
+          "`codec_h264_openh264` feature disabled (enable Cargo feature `codec_h264_openh264` or `media`)".into(),
         ))
       }
     }
@@ -38,11 +38,11 @@ pub fn create_video_decoder(track: &MediaTrackInfo) -> MediaResult<Box<dyn Video
       #[cfg(not(feature = "codec_vp9_libvpx"))]
       {
         Err(MediaError::Unsupported(
-          "`codec_vp9_libvpx` feature disabled (enable Cargo feature `codec_vp9_libvpx` or `media`)",
+          "`codec_vp9_libvpx` feature disabled (enable Cargo feature `codec_vp9_libvpx` or `media`)".into(),
         ))
       }
     }
-    _ => Err(MediaError::Unsupported("unsupported video codec")),
+    _ => Err(MediaError::Unsupported("unsupported video codec".into())),
   }
 }
 
@@ -69,7 +69,7 @@ pub fn create_audio_decoder(track: &MediaTrackInfo) -> MediaResult<Box<dyn Audio
     MediaCodec::Aac => {
       let info = track
         .audio
-        .ok_or(MediaError::Unsupported("AAC track missing audio info"))?;
+        .ok_or(MediaError::Unsupported("AAC track missing audio info".into()))?;
       let decoder = super::codecs::aac::AacDecoder::new(
         &track.codec_private,
         info.sample_rate,
@@ -80,7 +80,7 @@ pub fn create_audio_decoder(track: &MediaTrackInfo) -> MediaResult<Box<dyn Audio
     MediaCodec::Opus => Ok(Box::new(
       super::codecs::opus::OpusDecoder::from_codec_private(&track.codec_private)?,
     )),
-    _ => Err(MediaError::Unsupported("unsupported audio codec")),
+    _ => Err(MediaError::Unsupported("unsupported audio codec".into())),
   }
 }
 

@@ -15,13 +15,13 @@ pub mod aac {
       _channels: u16,
     ) -> MediaResult<Self> {
       Err(MediaError::Unsupported(
-        "`codec_aac` feature disabled (enable Cargo feature `codec_aac` or `media`)",
+        "`codec_aac` feature disabled (enable Cargo feature `codec_aac` or `media`)".into(),
       ))
     }
 
     pub fn decode(&mut self, _packet: &MediaPacket) -> MediaResult<Option<DecodedAudioChunk>> {
       Err(MediaError::Unsupported(
-        "`codec_aac` feature disabled (enable Cargo feature `codec_aac` or `media`)",
+        "`codec_aac` feature disabled (enable Cargo feature `codec_aac` or `media`)".into(),
       ))
     }
   }
@@ -60,13 +60,13 @@ pub mod opus {
 
     pub fn from_codec_private(_codec_private: &[u8]) -> MediaResult<Self> {
       Err(MediaError::Unsupported(
-        "`codec_opus` feature disabled (enable Cargo feature `codec_opus` or `media`)",
+        "`codec_opus` feature disabled (enable Cargo feature `codec_opus` or `media`)".into(),
       ))
     }
 
     pub fn decode(&mut self, _packet: &MediaPacket) -> MediaResult<Option<DecodedAudioChunk>> {
       Err(MediaError::Unsupported(
-        "`codec_opus` feature disabled (enable Cargo feature `codec_opus` or `media`)",
+        "`codec_opus` feature disabled (enable Cargo feature `codec_opus` or `media`)".into(),
       ))
     }
   }
@@ -94,13 +94,13 @@ pub mod vp9 {
   impl Vp9Decoder {
     pub fn new(_threads: u32) -> MediaResult<Self> {
       Err(MediaError::Unsupported(
-        "`codec_vp9_libvpx` feature disabled (enable Cargo feature `codec_vp9_libvpx` or `media`)",
+        "`codec_vp9_libvpx` feature disabled (enable Cargo feature `codec_vp9_libvpx` or `media`)".into(),
       ))
     }
 
     pub fn decode(&mut self, _packet: &MediaPacket) -> MediaResult<Vec<DecodedVp9Frame>> {
       Err(MediaError::Unsupported(
-        "`codec_vp9_libvpx` feature disabled (enable Cargo feature `codec_vp9_libvpx` or `media`)",
+        "`codec_vp9_libvpx` feature disabled (enable Cargo feature `codec_vp9_libvpx` or `media`)".into(),
       ))
     }
   }

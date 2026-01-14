@@ -67,7 +67,14 @@ impl Mp4PacketDemuxer<BufReader<File>> {
 
     let mp4parse_meta = {
       file.rewind()?;
-      let meta = mp4parse_read_meta(&mut file).unwrap_or_default();
+      let meta = match mp4parse_read_meta(&mut file) {
+        Ok(meta) => meta,
+        // Fail fast for DRM/CENC tracks so we don't proceed to an opaque decode failure later.
+        Err(err @ MediaError::Unsupported(_)) => return Err(err),
+        // `mp4parse` is used here as a best-effort metadata supplement. If it fails to parse this
+        // MP4, we can still proceed using the `mp4` crate (just with less codec introspection).
+        Err(_) => Mp4ParseMeta::default(),
+      };
       file.rewind()?;
       meta
     };
@@ -85,7 +92,11 @@ impl Mp4PacketDemuxer<BufReader<File>> {
 impl Mp4PacketDemuxer<std::io::Cursor<std::sync::Arc<[u8]>>> {
   pub fn from_bytes(bytes: std::sync::Arc<[u8]>) -> MediaResult<Self> {
     let mut cursor = std::io::Cursor::new(std::sync::Arc::clone(&bytes));
-    let mp4parse_meta = mp4parse_read_meta(&mut cursor).unwrap_or_default();
+    let mp4parse_meta = match mp4parse_read_meta(&mut cursor) {
+      Ok(meta) => meta,
+      Err(err @ MediaError::Unsupported(_)) => return Err(err),
+      Err(_) => Mp4ParseMeta::default(),
+    };
     cursor.set_position(0);
 
     let len = cursor.get_ref().len() as u64;
@@ -377,6 +388,7 @@ fn mp4parse_read_meta<R: Read + Seek>(reader: &mut R) -> MediaResult<Mp4ParseMet
   reader.seek(SeekFrom::Start(0))?;
   let ctx =
     mp4parse::read_mp4(reader).map_err(|e| MediaError::Demux(format!("mp4parse: {e:?}")))?;
+  super::demux::mp4parse::reject_encrypted_tracks(&ctx)?;
 
   let vp9_tracks = mp4parse_vp9_tracks_from_ctx(&ctx).unwrap_or_default();
   let sample_tables = mp4parse_build_sample_tables(&ctx).unwrap_or_default();
@@ -1074,7 +1086,7 @@ pub struct Mp4PacketDemuxer<R: Read + Seek + Send> {
 impl Mp4PacketDemuxer<std::io::BufReader<std::fs::File>> {
   pub fn open(_path: impl AsRef<std::path::Path>) -> MediaResult<Self> {
     Err(MediaError::Unsupported(
-      "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)",
+      "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)".into(),
     ))
   }
 }
@@ -1087,13 +1099,13 @@ impl<R: Read + Seek + Send> MediaDemuxer for Mp4PacketDemuxer<R> {
 
   fn next_packet(&mut self) -> MediaResult<Option<MediaPacket>> {
     Err(MediaError::Unsupported(
-      "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)",
+      "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)".into(),
     ))
   }
 
   fn seek(&mut self, _time_ns: u64) -> MediaResult<()> {
     Err(MediaError::Unsupported(
-      "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)",
+      "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)".into(),
     ))
   }
 }

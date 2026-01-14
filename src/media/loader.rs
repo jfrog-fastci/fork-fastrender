@@ -163,7 +163,7 @@ pub fn open_mp4_demuxer(
 ) -> MediaResult<Mp4Demuxer> {
   ensure_media_mime_sane(url, content_type)?;
   Err(MediaError::Unsupported(
-    "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)",
+    "`media_mp4` feature disabled (enable Cargo feature `media_mp4` or `media`)".into(),
   ))
 }
 
