@@ -154,3 +154,53 @@ fn generator_optional_chain_nullish_base_skips_yield_in_computed_key_and_args() 
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_parenthesized_optional_chain_does_not_propagate_into_following_member_access() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        try {
+          return ((yield null)?.x).y;
+        } catch (e) {
+          return e.name;
+        }
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(null);
+      r1.value === null && r1.done === false &&
+      r2.value === "TypeError" && r2.done === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_parenthesized_optional_chain_does_not_propagate_into_following_computed_member_access_and_yield_in_key_runs() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        try {
+          return ((yield null)?.x)[(yield "key")];
+        } catch (e) {
+          return e.name;
+        }
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(null);
+      var r3 = it.next("x");
+      r1.value === null && r1.done === false &&
+      r2.value === "key" && r2.done === false &&
+      r3.value === "TypeError" && r3.done === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
