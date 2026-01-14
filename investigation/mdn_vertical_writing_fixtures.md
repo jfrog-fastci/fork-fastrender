@@ -307,6 +307,34 @@ These runs produce artifacts under:
 
 * `target/page_loop_mdn_vertical_samples/<stem>/...`
 
+Repro sketch (create local “fixture dirs” by copying the iframe HTML into `index.html`):
+
+```bash
+tmp_fixtures=target/tmp_mdn_vertical_samples
+rm -rf "$tmp_fixtures" && mkdir -p "$tmp_fixtures"
+
+mkdir -p "$tmp_fixtures/mdn_writing_mode_multiple"
+cp tests/pages/fixtures/developer.mozilla.org_en-US_docs_Web_CSS_writing-mode/assets/6cb36740d41f266bc9b10239b3566fce.html \
+  "$tmp_fixtures/mdn_writing_mode_multiple/index.html"
+
+mkdir -p "$tmp_fixtures/mdn_writing_mode_transforms"
+cp tests/pages/fixtures/developer.mozilla.org_en-US_docs_Web_CSS_writing-mode/assets/25d003c583ed8f42996d3c0fd953a75a.html \
+  "$tmp_fixtures/mdn_writing_mode_transforms/index.html"
+
+mkdir -p "$tmp_fixtures/mdn_text_orientation_upright"
+cp tests/pages/fixtures/developer.mozilla.org_en-US_docs_Web_CSS_text-orientation/assets/bbdc8f8a42d1b5971ca198c5d62428f0.html \
+  "$tmp_fixtures/mdn_text_orientation_upright/index.html"
+
+mkdir -p "$tmp_fixtures/mdn_text_combine_upright"
+cp tests/pages/fixtures/developer.mozilla.org_en-US_docs_Web_CSS_text-combine-upright/assets/489b0c9653c1ac283ee32072caaf5ec2.html \
+  "$tmp_fixtures/mdn_text_combine_upright/index.html"
+
+# Then run the same render_fixtures + chrome-baseline-fixtures + diff_renders pipeline
+# as in the main “Repro” section, but set:
+#   fixtures_dir="$tmp_fixtures"
+#   out="target/page_loop_mdn_vertical_samples/$stem"
+```
+
 ### Demo: writing-mode — “Using multiple writing modes”
 
 * Source HTML:
@@ -379,6 +407,9 @@ These runs produce artifacts under:
 * Diff metrics:
   * `diff_percentage`: **0.21%** (`pixel_diff=2,718` / `1,289,600`)
 * Key observation: diff clusters appear as *two vertical strips*, one near the left edge and one near the right edge.
+  * Cluster bboxes (coarse 20×20px tiling):
+    * left strip: `(x=0,y=20)-(x=60,y=240)`
+    * right strip: `(x=980,y=0)-(x=1020,y=240)`
   * This pattern is consistent with the vertical text column being positioned on the **wrong side** (Chrome has ink where FastRender has background, and vice-versa).
 * Inspect evidence (FastRender):
   * The `<html>` block box ends up with a **physical width of only ~53.8px** (`inspect/fragment_tree.json`), instead of filling the `1040px` viewport.
