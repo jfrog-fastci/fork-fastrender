@@ -291,6 +291,7 @@ pub(super) fn resolve_item_track_indexes(
   row_counts: TrackCounts,
 ) {
   for item in items {
+    check_layout_abort();
     item.column_indexes = item
       .column
       .map(|line| line.into_track_vec_index(column_counts) as u16);
@@ -333,6 +334,7 @@ pub(super) fn determine_if_item_crosses_flexible_or_intrinsic_tracks(
       percentage: percentage_count,
     });
     for track in tracks {
+      check_layout_abort();
       if track.is_flexible() {
         flexible_count += 1;
       }
@@ -364,6 +366,7 @@ pub(super) fn determine_if_item_crosses_flexible_or_intrinsic_tracks(
   let row_prefix = build_prefix_counts(rows);
 
   for item in items {
+    check_layout_abort();
     let col_range = item.track_range_excluding_lines(AbstractAxis::Inline);
     let col_start = column_prefix[col_range.start];
     let col_end = column_prefix[col_range.end];
