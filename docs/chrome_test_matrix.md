@@ -75,9 +75,9 @@ browser shortcut mapping intentionally ignores Ctrl+Alt+… combinations to avoi
 | Toggle downloads panel | Ctrl+J (or toolbar icon) | Cmd+Shift+J (or toolbar icon) | Panel opens/closes; focus does not get “stuck”. |
 | Start download + progress | (Use direct file URL / “Download link/image”) | Same | Entry appears; progress updates. |
 | Cancel + retry | Click Cancel / Retry | Same | Cancel stops; Retry restarts. |
-| Open completed | Click Open | Same | Opens with OS default application. |
-| Reveal completed | Click Show in Folder | Same | Reveals in OS file manager (Explorer/Finder/xdg-open). |
-| Open downloads folder | Click “Show downloads folder” (panel header) | Same | Opens the current download directory in the OS file manager. |
+| Open completed | Click Open | Same | Opens with OS default application (or fails gracefully without crashing if no handler is available). |
+| Reveal completed | Click Show in Folder | Same | Reveals in OS file manager (Explorer/Finder/xdg-open); failures should be user-visible and must not crash. |
+| Open downloads folder | Click “Show downloads folder” (panel header) | Same | Opens the current download directory in the OS file manager; failures should be user-visible and must not crash. |
 | Change downloads folder | CLI/env | CLI/env | Use `browser --download-dir <path>` or `FASTR_BROWSER_DOWNLOAD_DIR=<path>` and verify downloads land there. |
 | Clear completed downloads | Click “Clear completed” (panel header) | Same | Removes completed entries without affecting in-progress downloads (button is disabled until at least one download completes). |
 
