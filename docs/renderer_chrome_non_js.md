@@ -163,7 +163,7 @@ Omnibox suggestions are a mix of:
 | Feature | Proposed HTML | `chrome-action:` | Notes |
 |---|---|---|---|
 | Toggle History panel | Toolbar button | `chrome-action:toggle-history-panel` | ✅ Uses `ChromeState.history_panel_open`. |
-| Toggle Downloads panel | Toolbar button | `chrome-action:toggle-downloads-panel` | ✅ In the current egui UI, this open/closed state lives in the windowed front-end (`src/bin/browser.rs`), not `BrowserAppState`; renderer-chrome should surface an equivalent boolean to the HTML template. |
+| Toggle Downloads panel | Toolbar button | `chrome-action:toggle-downloads-panel` | ✅ Uses `ChromeState.downloads_panel_open`. |
 | History entry click → navigate | `<a href="chrome-action:navigate?url=…">` | `chrome-action:navigate?url=…` | ✅ |
 | Clear history range | `<form action="chrome-action:clear-history" method=post>…</form>` | `chrome-action:clear-history` | ⚠️ Requires POST form submission plumbing and a defined payload shape. |
 | Download item cancel/retry | Buttons per item | `chrome-action:cancel-download?id=…` / `chrome-action:retry-download?id=…` | ⚠️ Requires defining IDs and wiring to the download manager. |
