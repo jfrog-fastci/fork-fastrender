@@ -45,8 +45,8 @@ browser shortcut mapping intentionally ignores Ctrl+Alt+… combinations to avoi
 |---|---|---|---|
 | Back / Forward buttons | Click toolbar buttons | Click toolbar buttons | Enabled/disabled state matches history availability. |
 | Back / Forward shortcuts | Alt+Left / Alt+Right | Cmd+[ / Cmd+] | Matches toolbar buttons. |
-| Back / Forward mouse buttons | Mouse buttons 4/5 (if present) | Mouse buttons 4/5 (if present) | Navigates back/forward like the toolbar buttons (platform button numbering can vary). |
-| Reload | Click reload button, or Ctrl+R / F5 | Click reload button, or Cmd+R (F5 optional) | Reloads current URL. |
+| Back / Forward mouse buttons | Mouse back/forward buttons (if present) | Mouse back/forward buttons (if present) | Navigates back/forward like the toolbar buttons (button numbering varies: typically 4/5 on Windows/macOS, 8/9 on X11). |
+| Reload | Click reload button, or Ctrl+R / F5 | Click reload button, or Cmd+R / F5 | Reloads current URL. |
 | Stop loading | Click stop button (while loading), or Esc | Click stop button (while loading), or Esc | Cancels in-flight navigation/load. |
 | Home | Click home button, or Alt+Home | Click home button, or Cmd+Shift+H | Navigates to configured home page. |
 
