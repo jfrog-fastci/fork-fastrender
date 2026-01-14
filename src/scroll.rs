@@ -2490,7 +2490,13 @@ pub fn apply_scroll_chain(
   delta: Point,
   options: ScrollOptions,
 ) -> ScrollChainResult {
-  let mut overscroll = Vec::with_capacity(states.len());
+  // `ScrollChainResult::overscroll` is only used when a caller explicitly requests overscroll
+  // simulation. Avoid an allocation for the common case (`simulate_overscroll=false`).
+  let mut overscroll = if options.simulate_overscroll {
+    Vec::with_capacity(states.len())
+  } else {
+    Vec::new()
+  };
   let mut remaining = delta;
 
   for state in states.iter_mut() {
@@ -2513,7 +2519,9 @@ pub fn apply_scroll_chain(
     }
 
     state.scroll = state.bounds.clamp(state.scroll);
-    overscroll.push(over);
+    if options.simulate_overscroll {
+      overscroll.push(over);
+    }
   }
 
   ScrollChainResult {
