@@ -895,7 +895,6 @@ impl BookmarkStore {
 
     // Keep the URL index in sync with the new URL (including when multiple bookmarks share the
     // same URL).
-    let new_url_for_index = new_url.clone();
     let node = self.nodes.get_mut(&id).ok_or(BookmarkError::NotFound(id))?;
     let old_url = match node {
       BookmarkNode::Bookmark(entry) => {
@@ -905,6 +904,17 @@ impl BookmarkStore {
       }
       BookmarkNode::Folder(_) => unreachable!("validated above"),
     };
+    let new_url_for_index = self
+      .nodes
+      .get(&id)
+      .and_then(|node| match node {
+        BookmarkNode::Bookmark(entry) => Some(entry.url.as_str()),
+        BookmarkNode::Folder(_) => None,
+      })
+      .ok_or_else(|| {
+        BookmarkError::InvalidStore("update: bookmark disappeared after mutation".to_string())
+      })?;
+
     if old_url != new_url_for_index {
       self.url_index_dec(&old_url);
       self.url_index_inc(new_url_for_index);
@@ -1390,18 +1400,22 @@ impl BookmarkStore {
       }
     }
 
-    // Capture the bookmark URL (if any) before moving `node` into `self.nodes`.
+    // Capture cheap metadata about the node before moving `node` into `self.nodes`.
     let is_folder = matches!(&node, BookmarkNode::Folder(_));
-    let bookmark_url = match &node {
-      BookmarkNode::Bookmark(entry) => Some(entry.url.clone()),
-      BookmarkNode::Folder(_) => None,
-    };
+    let is_bookmark = !is_folder;
 
     self.nodes.insert(id, node);
     match self.attach_to_parent_list(id, parent) {
       Ok(()) => {
-        if let Some(url) = bookmark_url {
-          self.url_index_inc(url);
+        if is_bookmark {
+          let BookmarkNode::Bookmark(entry) = self
+            .nodes
+            .get(&id)
+            .expect("node inserted above") // fastrender-allow-unwrap
+          else {
+            unreachable!("inserted bookmark node should remain a bookmark");
+          };
+          self.url_index_inc(entry.url.as_str());
         }
         if is_folder {
           self.touch_folders();
@@ -1812,11 +1826,11 @@ impl BookmarkStore {
     }
   }
 
-  fn url_index_inc(&mut self, url: String) {
-    if let Some(count) = self.url_index.get_mut(url.as_str()) {
+  fn url_index_inc(&mut self, url: &str) {
+    if let Some(count) = self.url_index.get_mut(url) {
       *count += 1;
     } else {
-      self.url_index.insert(url, 1);
+      self.url_index.insert(url.to_string(), 1);
     }
   }
 
