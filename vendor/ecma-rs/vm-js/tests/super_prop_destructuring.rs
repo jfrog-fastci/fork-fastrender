@@ -118,3 +118,52 @@ fn destructuring_assignment_to_super_computed_does_not_evaluate_key_before_super
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn destructuring_assignment_to_super_computed_in_arrow_uses_initialized_this_and_does_not_evaluate_key_before_super(
+) {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          let log = [];
+          let side = 0;
+
+          class Base {
+            set m(v) {
+              log.push('set:' + v + ':' + (this instanceof Derived));
+              this._m = v;
+            }
+            get m() { return this._m; }
+          }
+
+          class Derived extends Base {
+            constructor() {
+              // Arrow captures the derived-constructor `this` state cell.
+              let f = (v) => { [super[(side += 1, 'm')]] = [v]; return super.m; };
+
+              let errName;
+              let errMsg;
+              try { f(1); } catch (e) { errName = e.name; errMsg = e.message; }
+
+              super();
+              this.v = f(2);
+              this.side = side;
+              this.errName = errName;
+              this.errMsg = errMsg;
+            }
+          }
+
+          let d = new Derived();
+          return d.v === 2 &&
+            d.side === 1 &&
+            d.errName === 'ReferenceError' &&
+            d.errMsg === "Must call super constructor in derived class before accessing 'this'" &&
+            log.join(',') === 'set:2:true'
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

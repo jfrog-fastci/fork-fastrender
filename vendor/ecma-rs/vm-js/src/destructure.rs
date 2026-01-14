@@ -38,6 +38,47 @@ fn throw_reference_error(
   Ok(VmError::Throw(value))
 }
 
+fn get_super_receiver(
+  vm: &Vm,
+  scope: &mut Scope<'_>,
+  this: Value,
+  derived_constructor: bool,
+  this_initialized: bool,
+) -> Result<Value, VmError> {
+  // Derived class constructors have an uninitialized `this` binding until `super()` returns.
+  //
+  // `vm-js` represents that state either:
+  // - via `derived_constructor && !this_initialized` for ordinary evaluation contexts, or
+  // - via a heap-owned `DerivedConstructorState` cell captured by arrow functions and direct eval.
+  //
+  // This helper mirrors `Evaluator::get_this_binding` so `super` property assignment targets in
+  // destructuring (`[super.x] = ...`, `{ x: super[y] } = ...`) observe the same initialization
+  // ordering as ordinary `super` references.
+  if let Value::Object(obj) = this {
+    if scope.heap().is_derived_constructor_state(obj) {
+      let state = scope.heap().get_derived_constructor_state(obj)?;
+      if let Some(this_obj) = state.this_value {
+        return Ok(Value::Object(this_obj));
+      }
+      return Err(throw_reference_error(
+        vm,
+        scope,
+        "Must call super constructor in derived class before accessing 'this'",
+      )?);
+    }
+  }
+
+  if derived_constructor && !this_initialized {
+    return Err(throw_reference_error(
+      vm,
+      scope,
+      "Must call super constructor in derived class before accessing 'this'",
+    )?);
+  }
+
+  Ok(this)
+}
+
 fn iterator_close_on_err(
   vm: &mut Vm,
   host: &mut dyn VmHost,
@@ -492,13 +533,15 @@ fn bind_object_pattern(
                 }
 
                 if matches!(&*member.stx.left.stx, Expr::Super(_)) {
-                  if derived_constructor && !this_initialized {
-                    return Err(throw_reference_error(
-                      vm,
-                      &mut prop_scope,
-                      "Must call super constructor in derived class before accessing 'this'",
-                    )?);
-                  }
+                  // `GetThisBinding` (and derived-constructor initialization checks) must happen
+                  // before evaluating the source property (`GetV`).
+                  let _ = get_super_receiver(
+                    vm,
+                    &mut prop_scope,
+                    this,
+                    derived_constructor,
+                    this_initialized,
+                  )?;
                   let Some(home) = home_object else {
                     return Err(VmError::InvariantViolation(
                       "super property assignment missing [[HomeObject]]",
@@ -541,13 +584,27 @@ fn bind_object_pattern(
                 }
 
                 if matches!(&*member.stx.object.stx, Expr::Super(_)) {
-                  if derived_constructor && !this_initialized {
-                    return Err(throw_reference_error(
-                      vm,
-                      &mut prop_scope,
-                      "Must call super constructor in derived class before accessing 'this'",
-                    )?);
+                  // `GetThisBinding` must happen before evaluating the computed key expression so
+                  // derived constructors throw before observing key side effects.
+                  let _ = get_super_receiver(
+                    vm,
+                    &mut prop_scope,
+                    this,
+                    derived_constructor,
+                    this_initialized,
+                  )?;
+                  let Some(home) = home_object else {
+                    return Err(VmError::InvariantViolation(
+                      "super property assignment missing [[HomeObject]]",
+                    ));
+                  };
+                  let super_base = prop_scope.heap().object_prototype(home)?;
+                  if let Some(base_obj) = super_base {
+                    prop_scope.push_root(Value::Object(base_obj))?;
                   }
+                  // `GetSuperBase` is observed before evaluating the key expression (and before the
+                  // deferred `ToPropertyKey` conversion), matching the interpreter's ordering for
+                  // `super[expr]` references.
                   let key_value = eval_expr(
                     vm,
                     host,
@@ -562,17 +619,6 @@ fn bind_object_pattern(
                     &member.stx.member,
                   )?;
                   let key_value = prop_scope.push_root(key_value)?;
-                  let Some(home) = home_object else {
-                    return Err(VmError::InvariantViolation(
-                      "super property assignment missing [[HomeObject]]",
-                    ));
-                  };
-                  // `GetSuperBase` happens after key evaluation but before `ToPropertyKey`, matching
-                  // the evaluator's ordering for `super[expr]`.
-                  let super_base = prop_scope.heap().object_prototype(home)?;
-                  if let Some(base_obj) = super_base {
-                    prop_scope.push_root(Value::Object(base_obj))?;
-                  }
                   return Ok(Some(PropertyAssignmentTarget::SuperComputedMember {
                     super_base,
                     key_value,
@@ -720,6 +766,8 @@ fn bind_object_pattern(
           prop_value,
           strict,
           this,
+          derived_constructor,
+          this_initialized,
         ),
         PropertyAssignmentTarget::SuperComputedMember {
           super_base,
@@ -734,6 +782,8 @@ fn bind_object_pattern(
           prop_value,
           strict,
           this,
+          derived_constructor,
+          this_initialized,
         ),
       };
       res?;
@@ -803,13 +853,9 @@ fn bind_object_pattern(
               }
 
               if matches!(&*member.stx.left.stx, Expr::Super(_)) {
-                if derived_constructor && !this_initialized {
-                  return Err(throw_reference_error(
-                    vm,
-                    scope,
-                    "Must call super constructor in derived class before accessing 'this'",
-                  )?);
-                }
+                // `GetThisBinding` (and derived-constructor initialization checks) must happen
+                // before copying the rest properties (`CopyDataProperties`).
+                let _ = get_super_receiver(vm, scope, this, derived_constructor, this_initialized)?;
                 let Some(home) = home_object else {
                   return Err(VmError::InvariantViolation(
                     "super property assignment missing [[HomeObject]]",
@@ -850,13 +896,21 @@ fn bind_object_pattern(
               }
 
               if matches!(&*member.stx.object.stx, Expr::Super(_)) {
-                if derived_constructor && !this_initialized {
-                  return Err(throw_reference_error(
-                    vm,
-                    scope,
-                    "Must call super constructor in derived class before accessing 'this'",
-                  )?);
+                // `GetThisBinding` must happen before evaluating the computed key expression so
+                // derived constructors throw before observing key side effects.
+                let _ = get_super_receiver(vm, scope, this, derived_constructor, this_initialized)?;
+                let Some(home) = home_object else {
+                  return Err(VmError::InvariantViolation(
+                    "super property assignment missing [[HomeObject]]",
+                  ));
+                };
+                let super_base = scope.heap().object_prototype(home)?;
+                if let Some(base_obj) = super_base {
+                  scope.push_root(Value::Object(base_obj))?;
                 }
+                // `GetSuperBase` is observed before evaluating the key expression (and before the
+                // deferred `ToPropertyKey` conversion), matching the interpreter's ordering for
+                // `super[expr]` references.
                 let key_value = eval_expr(
                   vm,
                   host,
@@ -871,17 +925,6 @@ fn bind_object_pattern(
                   &member.stx.member,
                 )?;
                 let key_value = scope.push_root(key_value)?;
-                let Some(home) = home_object else {
-                  return Err(VmError::InvariantViolation(
-                    "super property assignment missing [[HomeObject]]",
-                  ));
-                };
-                // `GetSuperBase` happens after key evaluation but before `ToPropertyKey`, matching
-                // the evaluator's ordering for `super[expr]`.
-                let super_base = scope.heap().object_prototype(home)?;
-                if let Some(base_obj) = super_base {
-                  scope.push_root(Value::Object(base_obj))?;
-                }
                 return Ok(Some(RestAssignmentTarget::SuperComputedMember {
                   super_base,
                   key_value,
@@ -980,6 +1023,8 @@ fn bind_object_pattern(
         Value::Object(rest_obj),
         strict,
         this,
+        derived_constructor,
+        this_initialized,
       ),
       RestAssignmentTarget::SuperComputedMember {
         super_base,
@@ -994,6 +1039,8 @@ fn bind_object_pattern(
         Value::Object(rest_obj),
         strict,
         this,
+        derived_constructor,
+        this_initialized,
       ),
     }
   } else {
@@ -1132,13 +1179,15 @@ fn bind_array_pattern(
                 }
 
                 if matches!(&*member.stx.left.stx, Expr::Super(_)) {
-                  if derived_constructor && !this_initialized {
-                    return Err(throw_reference_error(
-                      vm,
-                      &mut elem_scope,
-                      "Must call super constructor in derived class before accessing 'this'",
-                    )?);
-                  }
+                  // `GetThisBinding` (and derived-constructor initialization checks) must happen
+                  // before advancing the iterator.
+                  let _ = get_super_receiver(
+                    vm,
+                    &mut elem_scope,
+                    this,
+                    derived_constructor,
+                    this_initialized,
+                  )?;
                   let Some(home) = home_object else {
                     return Err(VmError::InvariantViolation(
                       "super property assignment missing [[HomeObject]]",
@@ -1181,13 +1230,27 @@ fn bind_array_pattern(
                 }
 
                 if matches!(&*member.stx.object.stx, Expr::Super(_)) {
-                  if derived_constructor && !this_initialized {
-                    return Err(throw_reference_error(
-                      vm,
-                      &mut elem_scope,
-                      "Must call super constructor in derived class before accessing 'this'",
-                    )?);
+                  // `GetThisBinding` must happen before evaluating the computed key expression so
+                  // derived constructors throw before observing key side effects.
+                  let _ = get_super_receiver(
+                    vm,
+                    &mut elem_scope,
+                    this,
+                    derived_constructor,
+                    this_initialized,
+                  )?;
+                  let Some(home) = home_object else {
+                    return Err(VmError::InvariantViolation(
+                      "super property assignment missing [[HomeObject]]",
+                    ));
+                  };
+                  let super_base = elem_scope.heap().object_prototype(home)?;
+                  if let Some(base_obj) = super_base {
+                    elem_scope.push_root(Value::Object(base_obj))?;
                   }
+                  // `GetSuperBase` is observed before evaluating the key expression (and before the
+                  // deferred `ToPropertyKey` conversion), matching the interpreter's ordering for
+                  // `super[expr]` references.
                   let key_value = eval_expr(
                     vm,
                     host,
@@ -1202,17 +1265,6 @@ fn bind_array_pattern(
                     &member.stx.member,
                   )?;
                   let key_value = elem_scope.push_root(key_value)?;
-                  let Some(home) = home_object else {
-                    return Err(VmError::InvariantViolation(
-                      "super property assignment missing [[HomeObject]]",
-                    ));
-                  };
-                  // `GetSuperBase` happens after key evaluation but before `ToPropertyKey`, matching
-                  // the evaluator's ordering for `super[expr]`.
-                  let super_base = elem_scope.heap().object_prototype(home)?;
-                  if let Some(base_obj) = super_base {
-                    elem_scope.push_root(Value::Object(base_obj))?;
-                  }
                   return Ok(Some(ElementAssignmentTarget::SuperComputedMember {
                     super_base,
                     key_value,
@@ -1417,7 +1469,19 @@ fn bind_array_pattern(
           assign_to_property_key(vm, host, hooks, &mut elem_scope, base, key, item, strict)
         }
         ElementAssignmentTarget::SuperMember { super_base, key } => {
-          assign_to_super_member(vm, host, hooks, &mut elem_scope, super_base, key, item, strict, this)
+          assign_to_super_member(
+            vm,
+            host,
+            hooks,
+            &mut elem_scope,
+            super_base,
+            key,
+            item,
+            strict,
+            this,
+            derived_constructor,
+            this_initialized,
+          )
         }
         ElementAssignmentTarget::SuperComputedMember {
           super_base,
@@ -1432,6 +1496,8 @@ fn bind_array_pattern(
           item,
           strict,
           this,
+          derived_constructor,
+          this_initialized,
         ),
       };
       if let Err(err) = res {
@@ -1521,13 +1587,9 @@ fn bind_array_pattern(
               }
 
               if matches!(&*member.stx.left.stx, Expr::Super(_)) {
-                if derived_constructor && !this_initialized {
-                  return Err(throw_reference_error(
-                    vm,
-                    scope,
-                    "Must call super constructor in derived class before accessing 'this'",
-                  )?);
-                }
+                // `GetThisBinding` (and derived-constructor initialization checks) must happen
+                // before consuming the rest of the iterator.
+                let _ = get_super_receiver(vm, scope, this, derived_constructor, this_initialized)?;
                 let Some(home) = home_object else {
                   return Err(VmError::InvariantViolation(
                     "super property assignment missing [[HomeObject]]",
@@ -1570,13 +1632,21 @@ fn bind_array_pattern(
               }
 
               if matches!(&*member.stx.object.stx, Expr::Super(_)) {
-                if derived_constructor && !this_initialized {
-                  return Err(throw_reference_error(
-                    vm,
-                    scope,
-                    "Must call super constructor in derived class before accessing 'this'",
-                  )?);
+                // `GetThisBinding` must happen before evaluating the computed key expression so
+                // derived constructors throw before observing key side effects.
+                let _ = get_super_receiver(vm, scope, this, derived_constructor, this_initialized)?;
+                let Some(home) = home_object else {
+                  return Err(VmError::InvariantViolation(
+                    "super property assignment missing [[HomeObject]]",
+                  ));
+                };
+                let super_base = scope.heap().object_prototype(home)?;
+                if let Some(base_obj) = super_base {
+                  scope.push_root(Value::Object(base_obj))?;
                 }
+                // `GetSuperBase` is observed before evaluating the key expression (and before the
+                // deferred `ToPropertyKey` conversion), matching the interpreter's ordering for
+                // `super[expr]` references.
                 let key_value = eval_expr(
                   vm,
                   host,
@@ -1591,17 +1661,6 @@ fn bind_array_pattern(
                   &member.stx.member,
                 )?;
                 let key_value = scope.push_root(key_value)?;
-                let Some(home) = home_object else {
-                  return Err(VmError::InvariantViolation(
-                    "super property assignment missing [[HomeObject]]",
-                  ));
-                };
-                // `GetSuperBase` happens after key evaluation but before `ToPropertyKey`, matching
-                // the evaluator's ordering for `super[expr]`.
-                let super_base = scope.heap().object_prototype(home)?;
-                if let Some(base_obj) = super_base {
-                  scope.push_root(Value::Object(base_obj))?;
-                }
                 return Ok(Some(RestAssignmentTarget::SuperComputedMember {
                   super_base,
                   key_value,
@@ -1747,6 +1806,8 @@ fn bind_array_pattern(
         Value::Object(rest_arr),
         strict,
         this,
+        derived_constructor,
+        this_initialized,
       ),
       RestAssignmentTarget::SuperComputedMember {
         super_base,
@@ -1761,6 +1822,8 @@ fn bind_array_pattern(
         Value::Object(rest_arr),
         strict,
         this,
+        derived_constructor,
+        this_initialized,
       ),
     };
     return match res {
@@ -1903,6 +1966,8 @@ fn assign_to_super_member(
   value: Value,
   strict: bool,
   this: Value,
+  derived_constructor: bool,
+  this_initialized: bool,
 ) -> Result<(), VmError> {
   // Root receiver/value/super base across key allocation and `[[Set]]`.
   let mut set_scope = scope.reborrow();
@@ -1910,6 +1975,9 @@ fn assign_to_super_member(
   if let Some(base_obj) = super_base {
     set_scope.push_root(Value::Object(base_obj))?;
   }
+
+  let receiver = get_super_receiver(vm, &mut set_scope, this, derived_constructor, this_initialized)?;
+  set_scope.push_root(receiver)?;
 
   let key_s = set_scope.alloc_string(key)?;
   set_scope.push_root(Value::String(key_s))?;
@@ -1933,7 +2001,7 @@ fn assign_to_super_member(
     base_obj,
     key,
     value,
-    this,
+    receiver,
   )?;
   if ok {
     Ok(())
@@ -1954,6 +2022,8 @@ fn assign_to_super_computed_member(
   value: Value,
   strict: bool,
   this: Value,
+  derived_constructor: bool,
+  this_initialized: bool,
 ) -> Result<(), VmError> {
   // Root receiver/value/key_value/super base across `ToPropertyKey`/`[[Set]]`.
   let mut set_scope = scope.reborrow();
@@ -1961,6 +2031,9 @@ fn assign_to_super_computed_member(
   if let Some(base_obj) = super_base {
     set_scope.push_root(Value::Object(base_obj))?;
   }
+
+  let receiver = get_super_receiver(vm, &mut set_scope, this, derived_constructor, this_initialized)?;
+  set_scope.push_root(receiver)?;
 
   let key = match set_scope.to_property_key(vm, host, hooks, key_value) {
     Ok(key) => key,
@@ -1987,7 +2060,7 @@ fn assign_to_super_computed_member(
     base_obj,
     key,
     value,
-    this,
+    receiver,
   )?;
   if ok {
     Ok(())
@@ -2019,13 +2092,9 @@ fn assign_to_member(
   }
 
   if matches!(&*member.left.stx, Expr::Super(_)) {
-    if derived_constructor && !this_initialized {
-      return Err(throw_reference_error(
-        vm,
-        scope,
-        "Must call super constructor in derived class before accessing 'this'",
-      )?);
-    }
+    // `GetThisBinding` must happen before evaluating the property set (derived constructors throw
+    // before any observable side effects).
+    let _ = get_super_receiver(vm, scope, this, derived_constructor, this_initialized)?;
     let Some(home) = home_object else {
       return Err(VmError::InvariantViolation(
         "super property assignment missing [[HomeObject]]",
@@ -2045,6 +2114,8 @@ fn assign_to_member(
       value,
       strict,
       this,
+      derived_constructor,
+      this_initialized,
     );
   }
 
@@ -2097,12 +2168,26 @@ fn assign_to_computed_member(
     let mut key_scope = scope.reborrow();
     key_scope.push_roots(&[this, value])?;
 
-    if derived_constructor && !this_initialized {
-      return Err(throw_reference_error(
-        vm,
-        &mut key_scope,
-        "Must call super constructor in derived class before accessing 'this'",
-      )?);
+    // `GetThisBinding` must happen before evaluating the computed key expression so derived
+    // constructors throw before observing key side effects.
+    let _ = get_super_receiver(
+      vm,
+      &mut key_scope,
+      this,
+      derived_constructor,
+      this_initialized,
+    )?;
+
+    let Some(home) = home_object else {
+      return Err(VmError::InvariantViolation(
+        "super property assignment missing [[HomeObject]]",
+      ));
+    };
+    // `GetSuperBase` before evaluating the key expression (and before the deferred
+    // `ToPropertyKey` conversion), matching the interpreter ordering for `super[expr]`.
+    let super_base = key_scope.heap().object_prototype(home)?;
+    if let Some(base_obj) = super_base {
+      key_scope.push_root(Value::Object(base_obj))?;
     }
 
     let key_value = eval_expr(
@@ -2120,17 +2205,6 @@ fn assign_to_computed_member(
     )?;
     let key_value = key_scope.push_root(key_value)?;
 
-    let Some(home) = home_object else {
-      return Err(VmError::InvariantViolation(
-        "super property assignment missing [[HomeObject]]",
-      ));
-    };
-    // `GetSuperBase` before `ToPropertyKey` (matches evaluator ordering).
-    let super_base = key_scope.heap().object_prototype(home)?;
-    if let Some(base_obj) = super_base {
-      key_scope.push_root(Value::Object(base_obj))?;
-    }
-
     return assign_to_super_computed_member(
       vm,
       host,
@@ -2141,6 +2215,8 @@ fn assign_to_computed_member(
       value,
       strict,
       this,
+      derived_constructor,
+      this_initialized,
     );
   }
 
