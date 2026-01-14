@@ -215,7 +215,11 @@ impl<'a> Parser<'a> {
         Ok(parameters)
     }
 
-    let res = parse_params_inner(self, ctx);
+    let res = if introduces_new_target {
+      self.with_arguments_bound_in_class_init(|p| parse_params_inner(p, ctx))
+    } else {
+      parse_params_inner(self, ctx)
+    };
     self.new_target_allowed = prev_new_target_allowed;
     self.arguments_allowed = prev_arguments_allowed;
     res
@@ -250,6 +254,7 @@ impl<'a> Parser<'a> {
     let prev_arguments_allowed = self.arguments_allowed;
     let prev_super_prop_allowed = self.super_prop_allowed;
     let prev_super_call_allowed = self.super_call_allowed;
+    let prev_disallow_arguments_in_class_init = self.disallow_arguments_in_class_init;
     self.new_target_allowed += 1;
     self.arguments_allowed += 1;
     // Regular functions do not have a `super` binding.
@@ -260,6 +265,7 @@ impl<'a> Parser<'a> {
     self.arguments_allowed = prev_arguments_allowed;
     self.super_prop_allowed = prev_super_prop_allowed;
     self.super_call_allowed = prev_super_call_allowed;
+    self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
     res
   }
 
@@ -272,6 +278,7 @@ impl<'a> Parser<'a> {
     let prev_arguments_allowed = self.arguments_allowed;
     let prev_super_prop_allowed = self.super_prop_allowed;
     let prev_super_call_allowed = self.super_call_allowed;
+    let prev_disallow_arguments_in_class_init = self.disallow_arguments_in_class_init;
     self.new_target_allowed += 1;
     self.arguments_allowed += 1;
     self.super_prop_allowed += 1;
@@ -288,6 +295,7 @@ impl<'a> Parser<'a> {
     self.arguments_allowed = prev_arguments_allowed;
     self.super_prop_allowed = prev_super_prop_allowed;
     self.super_call_allowed = prev_super_call_allowed;
+    self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
     res
   }
 
