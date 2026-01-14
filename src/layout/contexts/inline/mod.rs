@@ -6537,6 +6537,18 @@ impl InlineFormattingContext {
   }
 
   fn space_advance(&self, style: &ComputedStyle) -> Result<f32, LayoutError> {
+    if style.letter_spacing == 0.0 && style.word_spacing == 0.0 {
+      if let Ok(runs) = self.pipeline.shape_with_context_arc(
+        " ",
+        style,
+        &self.font_context,
+        pipeline_direction(style.direction),
+        None,
+      ) {
+        return Ok(runs.iter().map(|r| r.advance).sum());
+      }
+    }
+
     let mut runs = self.shape_with_fallback(" ", style, style.direction, None)?;
     TextItem::apply_spacing_to_runs(&mut runs, " ", style.letter_spacing, style.word_spacing);
     Ok(runs.iter().map(|r| r.advance).sum())
