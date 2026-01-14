@@ -991,3 +991,42 @@ fn super_property_compound_assignment_compiled() -> Result<(), VmError> {
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn super_property_update_expression_data_property_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class A {}
+      A.prototype.x = 1;
+      class B extends A {
+        inc() { return super.x++; }
+      }
+      const b = new B();
+      const r = b.inc();
+      r === 1 && b.x === 2 && A.prototype.x === 1
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn super_property_compound_assignment_data_property_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class A {}
+      A.prototype.x = 1;
+      class B extends A {
+        add() { super.x += 5; return this.x; }
+      }
+      const b = new B();
+      b.add() === 6 && b.x === 6 && A.prototype.x === 1
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
