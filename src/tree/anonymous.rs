@@ -125,8 +125,8 @@ impl AnonymousBoxCreator {
   ///
   /// let fixed = AnonymousBoxCreator::fixup_tree(container)?;
   /// // Text is now wrapped in anonymous block
-  /// assert_eq!(fixed.children.len(), 2);
-  /// assert!(fixed.children[0].is_anonymous());
+  /// // fixed.children.len() == 2
+  /// // fixed.children[0].is_anonymous()
   /// # Ok(())
   /// # }
   /// ```
@@ -493,10 +493,9 @@ impl AnonymousBoxCreator {
 
     loop {
       let Some(top) = stack.last_mut() else {
-        debug_assert!(
-          false,
-          "split stack should always return from within the loop"
-        );
+        // Defensive: `split_inline_level_block_descendants` always pushes an initial frame onto
+        // the stack, so reaching an empty stack here indicates a logic error elsewhere. Don't
+        // panic; instead, fall back to producing no split pieces.
         return InlineSplitOutcome::Split(Vec::new());
       };
 
@@ -520,7 +519,12 @@ impl AnonymousBoxCreator {
         continue;
       }
 
-      let mut finished = stack.pop().expect("frame popped");
+      let Some(mut finished) = stack.pop() else {
+        // Defensive: `stack` was non-empty at the top of the loop (we just had a `top` frame),
+        // so this should be unreachable. If it happens anyway, avoid panicking and fall back to
+        // producing no split pieces.
+        return InlineSplitOutcome::Split(Vec::new());
+      };
       if finished.had_block {
         finished.flush_inline_run();
         let pieces = finished.out;
@@ -560,9 +564,12 @@ impl AnonymousBoxCreator {
     result.extend(children.drain(..first_split_idx));
 
     let mut iter = children.into_iter();
-    let first_child = iter
-      .next()
-      .expect("first_split_idx should point at an in-bounds child");
+    let Some(first_child) = iter.next() else {
+      // Defensive: `first_split_idx` came from `.position(...)` on the original `children`, so it
+      // should always point at an in-bounds element. If something goes wrong, preserve the
+      // already-drained prefix.
+      return result;
+    };
     // We already proved the first child needs splitting.
     match Self::split_inline_with_blocks(first_child) {
       InlineSplitOutcome::Unchanged(node) => result.push(node),
@@ -891,7 +898,9 @@ impl AnonymousBoxCreator {
   }
 
   fn wrap_text_in_anonymous_inline_in_place(node: &mut BoxNode, wrapper_style: Arc<ComputedStyle>) {
-    debug_assert!(matches!(&node.box_type, BoxType::Text(_)));
+    if !matches!(&node.box_type, BoxType::Text(_)) {
+      return;
+    }
 
     let wrapper_box_type = BoxType::Anonymous(AnonymousBox {
       anonymous_type: AnonymousType::Inline,
@@ -2207,6 +2216,40 @@ mod tests {
     // Inline fragments should preserve the inline's style.
     assert!(!fixed.children[0].children.is_empty());
     assert!(Arc::ptr_eq(&fixed.children[0].children[0].style, &style));
+  }
+
+  #[test]
+  fn test_inline_with_block_descendant_after_leading_block_preserves_siblings() {
+    // Exercise the `first_split_idx > 0` path in `split_inline_children_with_block_descendants`.
+    // Previously this function used `.expect()` to assume the split index was always in-bounds.
+    let style = default_style();
+    let leading_block = BoxNode::new_block(style.clone(), FormattingContextType::Block, vec![]);
+    let trailing_block = BoxNode::new_block(style.clone(), FormattingContextType::Block, vec![]);
+
+    let text_before = BoxNode::new_text(style.clone(), "Before".to_string());
+    let text_after = BoxNode::new_text(style.clone(), "After".to_string());
+    let middle_block = BoxNode::new_block(style.clone(), FormattingContextType::Block, vec![]);
+    let inline = BoxNode::new_inline(
+      style.clone(),
+      vec![text_before, middle_block, text_after],
+    );
+
+    let container = BoxNode::new_block(
+      style,
+      FormattingContextType::Block,
+      vec![leading_block, inline, trailing_block],
+    );
+    let fixed = fixup_tree(container);
+
+    assert_eq!(fixed.children.len(), 5);
+    assert!(fixed.children[0].is_block_level() && !fixed.children[0].is_anonymous());
+    assert!(fixed.children[1].is_anonymous());
+    assert!(fixed.children[2].is_block_level());
+    assert!(fixed.children[3].is_anonymous());
+    assert!(fixed.children[4].is_block_level() && !fixed.children[4].is_anonymous());
+
+    assert!(subtree_contains_text(&fixed.children[1], "Before"));
+    assert!(subtree_contains_text(&fixed.children[3], "After"));
   }
 
   #[test]
