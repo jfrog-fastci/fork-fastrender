@@ -2,13 +2,22 @@ use vm_js::{CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmO
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // Some of the tests in this file use Promises/async-await; give them a slightly larger heap to
+  // avoid spurious OOMs.
+  let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
 }
 
 fn exec_compiled(rt: &mut JsRuntime, source: &str) -> Result<Value, VmError> {
   let script = CompiledScript::compile_script(rt.heap_mut(), "<method_definition_super_property>", source)?;
   rt.exec_compiled_script(script)
+}
+
+fn value_to_string(rt: &JsRuntime, value: Value) -> String {
+  let Value::String(s) = value else {
+    panic!("expected string, got {value:?}");
+  };
+  rt.heap.get_string(s).unwrap().to_utf8_lossy()
 }
 
 // Mirrors test262:
@@ -101,3 +110,179 @@ fn class_body_method_definition_super_property_compiled() -> Result<(), VmError>
   Ok(())
 }
 
+// Mirrors test262 `language/expressions/object/concise-generator.js`.
+const OBJECT_LITERAL_CONCISE_GENERATOR_SUPER_CALL: &str = r#"
+  var proto = {
+    method() { return 42; }
+  };
+
+  var object = {
+    *g() {
+      yield super.method();
+    }
+  };
+
+  Object.setPrototypeOf(object, proto);
+
+  object.g().next().value === 42;
+"#;
+
+#[test]
+fn object_literal_concise_generator_super_call_ast() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(OBJECT_LITERAL_CONCISE_GENERATOR_SUPER_CALL)?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn object_literal_concise_generator_super_call_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(&mut rt, OBJECT_LITERAL_CONCISE_GENERATOR_SUPER_CALL)?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn object_literal_async_method_super_call_in_default_param() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  // Mirrors test262 `language/expressions/object/method-definition/async-super-call-param.js`.
+  rt.exec_script(
+    r#"
+      var out = "";
+
+      var sup = {
+        method() { return "sup"; }
+      };
+
+      var child = {
+        async method(x = super.method()) {
+          return await x;
+        }
+      };
+
+      Object.setPrototypeOf(child, sup);
+
+      child.method().then(v => out = String(v), e => out = "err:" + e.name);
+    "#,
+  )?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "sup");
+
+  Ok(())
+}
+
+#[test]
+fn object_literal_async_method_super_call_in_default_param_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  exec_compiled(
+    &mut rt,
+    r#"
+      var out = "";
+
+      var sup = {
+        method() { return "sup"; }
+      };
+
+      var child = {
+        async method(x = super.method()) {
+          return await x;
+        }
+      };
+
+      Object.setPrototypeOf(child, sup);
+
+      child.method().then(v => out = String(v), e => out = "err:" + e.name);
+    "#,
+  )?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "sup");
+
+  Ok(())
+}
+
+#[test]
+fn object_literal_async_method_super_call_in_body() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  // Mirrors test262 `language/expressions/object/method-definition/async-super-call-body.js`.
+  rt.exec_script(
+    r#"
+      var out = "";
+
+      var sup = {
+        method() { return "sup"; }
+      };
+
+      var child = {
+        async method() {
+          return await super.method();
+        }
+      };
+
+      Object.setPrototypeOf(child, sup);
+
+      child.method().then(v => out = String(v), e => out = "err:" + e.name);
+    "#,
+  )?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "sup");
+
+  Ok(())
+}
+
+#[test]
+fn object_literal_async_method_super_call_in_body_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  exec_compiled(
+    &mut rt,
+    r#"
+      var out = "";
+
+      var sup = {
+        method() { return "sup"; }
+      };
+
+      var child = {
+        async method() {
+          return await super.method();
+        }
+      };
+
+      Object.setPrototypeOf(child, sup);
+
+      child.method().then(v => out = String(v), e => out = "err:" + e.name);
+    "#,
+  )?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "sup");
+
+  Ok(())
+}
