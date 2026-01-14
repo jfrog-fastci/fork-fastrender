@@ -1455,6 +1455,12 @@ mod worker_message_validation_tests {
 #[derive(Debug)]
 pub struct ChromeAddressBarCache {
   active_url: String,
+  /// Monotonic generation counter incremented whenever `update_active_url` recomputes the cached
+  /// display parts.
+  ///
+  /// This is used by egui chrome widgets to cache higher-level UI artifacts (e.g. text layout)
+  /// without cloning the full URL each frame.
+  active_url_generation: u64,
   formatted_url: AddressBarDisplayParts,
   security_indicator: SecurityIndicator,
   // Cache the displayed (middle-ellipsis) path/query/fragment string so we don't re-truncate every
@@ -1484,6 +1490,7 @@ impl Default for ChromeAddressBarCache {
       address_bar_indicator_from_security_state(formatted_url.security_state);
     Self {
       active_url: String::new(),
+      active_url_generation: 0,
       formatted_url,
       security_indicator,
       display_max_chars: 0,
@@ -1510,6 +1517,7 @@ impl ChromeAddressBarCache {
     }
     self.active_url.clear();
     self.active_url.push_str(url);
+    self.active_url_generation = self.active_url_generation.wrapping_add(1);
     self.formatted_url = format_address_bar_url(url);
     self.security_indicator =
       address_bar_indicator_from_security_state(self.formatted_url.security_state);
@@ -1531,6 +1539,10 @@ impl ChromeAddressBarCache {
 
   pub fn formatted_url(&self) -> &AddressBarDisplayParts {
     &self.formatted_url
+  }
+
+  pub fn active_url_generation(&self) -> u64 {
+    self.active_url_generation
   }
 
   pub fn security_indicator(&self) -> SecurityIndicator {
@@ -1629,23 +1641,28 @@ mod chrome_address_bar_cache_tests {
 
     cache.update_active_url("https://example.com/a", 80);
     assert_eq!(cache.security_indicator(), SecurityIndicator::Secure);
+    assert_eq!(cache.active_url_generation(), 1);
     assert_eq!(cache.formatted_url_recompute_count, 1);
 
     // Same URL: no recompute (steady state).
     cache.update_active_url("https://example.com/a", 80);
+    assert_eq!(cache.active_url_generation(), 1);
     assert_eq!(cache.formatted_url_recompute_count, 1);
 
     // Tab switch (different URL).
     cache.update_active_url("http://other.example/b", 80);
     assert_eq!(cache.security_indicator(), SecurityIndicator::Insecure);
+    assert_eq!(cache.active_url_generation(), 2);
     assert_eq!(cache.formatted_url_recompute_count, 2);
 
     // Switching back to the original tab should recompute (active URL changed again).
     cache.update_active_url("https://example.com/a", 80);
+    assert_eq!(cache.active_url_generation(), 3);
     assert_eq!(cache.formatted_url_recompute_count, 3);
 
     // Changing the display max chars should trigger recompute so truncation stays correct.
     cache.update_active_url("https://example.com/a", 40);
+    assert_eq!(cache.active_url_generation(), 4);
     assert_eq!(cache.formatted_url_recompute_count, 4);
   }
 

@@ -95,12 +95,8 @@ impl LoadingTextWidthCache {
 
 #[derive(Debug, Clone, Default)]
 struct AddressBarDisplayGalleyCache {
-  // Key: the displayed URL parts (so we can cheaply detect when the label needs rebuild).
-  security_state: AddressBarSecurityState,
-  display_host_prefix: String,
-  display_host_domain: String,
-  display_host_suffix: String,
-  display_path_query_fragment: Option<String>,
+  // Key: the active URL generation counter from `ChromeAddressBarCache`.
+  url_generation: u64,
   // Style keys: changes here should invalidate the cached galley.
   font_id: Option<egui::FontId>,
   text_color: egui::Color32,
@@ -119,28 +115,17 @@ impl AddressBarDisplayGalleyCache {
     formatted_url: &crate::ui::address_bar::AddressBarDisplayParts,
     display_path_query_fragment: Option<&str>,
     max_width: f32,
+    url_generation: u64,
   ) {
     let font_id = egui::TextStyle::Body.resolve(ui.style());
     let text_color = ui.visuals().text_color();
     let weak_text_color = ui.visuals().weak_text_color();
     let warn_text_color = ui.visuals().warn_fg_color;
 
-    let path_changed = match (
-      self.display_path_query_fragment.as_deref(),
-      display_path_query_fragment,
-    ) {
-      (None, None) => false,
-      (Some(a), Some(b)) => a != b,
-      _ => true,
-    };
     let max_width_bits = max_width.to_bits();
 
     let needs_rebuild = self.galley.is_none()
-      || self.security_state != formatted_url.security_state
-      || self.display_host_prefix != formatted_url.display_host_prefix
-      || self.display_host_domain != formatted_url.display_host_domain
-      || self.display_host_suffix != formatted_url.display_host_suffix
-      || path_changed
+      || self.url_generation != url_generation
       || self.font_id.as_ref() != Some(&font_id)
       || self.text_color != text_color
       || self.weak_text_color != weak_text_color
@@ -151,18 +136,7 @@ impl AddressBarDisplayGalleyCache {
       return;
     }
 
-    self.security_state = formatted_url.security_state;
-    self
-      .display_host_prefix
-      .clone_from(&formatted_url.display_host_prefix);
-    self
-      .display_host_domain
-      .clone_from(&formatted_url.display_host_domain);
-    self
-      .display_host_suffix
-      .clone_from(&formatted_url.display_host_suffix);
-    self.display_path_query_fragment = display_path_query_fragment.map(|s| s.to_string());
-
+    self.url_generation = url_generation;
     self.font_id = Some(font_id.clone());
     self.text_color = text_color;
     self.weak_text_color = weak_text_color;
@@ -1714,6 +1688,7 @@ pub fn chrome_ui_with_bookmarks(
 
       let (
         formatted_url,
+        url_generation,
         indicator,
         display_path_query_fragment,
         active_url_is_bookmarked,
@@ -1721,6 +1696,7 @@ pub fn chrome_ui_with_bookmarks(
       ) = {
         let cache = &mut app.chrome.address_bar_cache;
         cache.update_active_url(active_url, ADDRESS_BAR_DISPLAY_MAX_CHARS);
+        let url_generation = cache.active_url_generation();
         let active_url_is_bookmarked = cache.is_url_bookmarked(active_url_trim, omnibox_bookmarks);
         let indicator = cache.security_indicator();
         let loading_text = cache.loading_text(stage);
@@ -1728,6 +1704,7 @@ pub fn chrome_ui_with_bookmarks(
         let display_path_query_fragment = cache.display_path_query_fragment();
         (
           formatted_url,
+          url_generation,
           indicator,
           display_path_query_fragment,
           active_url_is_bookmarked,
@@ -2030,7 +2007,13 @@ pub fn chrome_ui_with_bookmarks(
               let galley = ctx.data_mut(|d| {
                 let cache_id = address_bar_id.with("display_galley_cache");
                 let cache = d.get_temp_mut_or_default::<AddressBarDisplayGalleyCache>(cache_id);
-                cache.update(ui, formatted_url, display_path_query_fragment, max_width);
+                cache.update(
+                  ui,
+                  formatted_url,
+                  display_path_query_fragment,
+                  max_width,
+                  url_generation,
+                );
                 cache.galley()
               });
               ui.add(egui::Label::new(galley));
