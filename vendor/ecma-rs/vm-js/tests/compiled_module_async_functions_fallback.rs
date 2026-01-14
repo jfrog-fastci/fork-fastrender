@@ -133,14 +133,14 @@ fn compiled_module_does_not_fall_back_for_async_function_defs() -> Result<(), Vm
       "a.js",
       r#"
         export async function f() {
-          return 1;
+          return this === undefined ? 1 : -100;
         }
 
         export const g = async function () {
-          return 2;
+          return this === undefined ? 2 : -100;
         };
 
-        export const h = async () => 3;
+        export const h = async () => (this === undefined ? 3 : -100);
 
         export const obj = {
           async m() { return this === obj ? 4 : -100; }
@@ -256,4 +256,3 @@ fn compiled_module_does_not_fall_back_for_async_function_defs() -> Result<(), Vm
 
   result
 }
-

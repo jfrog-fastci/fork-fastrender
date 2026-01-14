@@ -19,14 +19,14 @@ fn compiled_script_does_not_fall_back_for_async_function_defs() -> Result<(), Vm
       var result = 0;
 
       async function f() {
-        return 1;
+        return this === globalThis ? 1 : -100;
       }
 
       const g = async function () {
-        return 2;
+        return this === globalThis ? 2 : -100;
       };
 
-      const h = async () => 3;
+      const h = async () => (this === globalThis ? 3 : -100);
 
       const obj = {
         async m() { return this === obj ? 4 : -100; }
