@@ -110,6 +110,8 @@ fn compiled_module_requires_ast_fallback_parses_ast_before_linking_and_evaluates
       &mut heap,
       "a.js",
       r#"
+        globalThis.__compiled_module_requires_ast_fallback_count =
+          (globalThis.__compiled_module_requires_ast_fallback_count || 0) + 1;
         class C {
           #x = 1;
           getX() { return this.#x; }
@@ -138,6 +140,7 @@ fn compiled_module_requires_ast_fallback_parses_ast_before_linking_and_evaluates
         &mut heap,
         r#"
           import { f } from "a.js";
+          export const c = globalThis.__compiled_module_requires_ast_fallback_count;
           export let r = 0;
           f().then(v => { r = v; });
         "#,
@@ -159,7 +162,7 @@ fn compiled_module_requires_ast_fallback_parses_ast_before_linking_and_evaluates
     );
 
     // Evaluate the importer. Module execution should succeed (no `VmError::Unimplemented` from the
-    // HIR executor), and the async function call should settle via microtasks.
+    // HIR executor).
     let promise = graph.evaluate(
       &mut vm,
       &mut heap,
@@ -182,6 +185,11 @@ fn compiled_module_requires_ast_fallback_parses_ast_before_linking_and_evaluates
 
     let mut scope = heap.scope();
     let ns_b = graph.get_module_namespace(b, &mut vm, &mut scope)?;
+    assert_eq!(
+      ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "c")?,
+      Value::Number(1.0),
+      "module should not be evaluated twice (no partial HIR execution before AST fallback)"
+    );
     assert_eq!(
       ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "r")?,
       Value::Number(1.0)
