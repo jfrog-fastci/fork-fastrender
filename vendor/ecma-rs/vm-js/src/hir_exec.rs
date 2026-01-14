@@ -17672,8 +17672,11 @@ pub(crate) fn run_compiled_module(
           }
         });
 
-      // Avoid double-executing the default-export expression if `hir-js` has already lowered it into
-      // the module statement list as a synthetic `Decl` with a top-level body.
+      // Avoid double-executing the default-export expression if `hir-js` has already lowered it
+      // into the module statement list.
+      //
+      // Historically this was represented as a synthetic `Decl` with a top-level body. Newer HIR
+      // uses an explicit `StmtKind::ExportDefaultExpr`.
       if default_export_expr.is_some() {
         let mut has_synthetic_default_export_expr_stmt = false;
         for (i, stmt_id) in body.root_stmts.iter().copied().enumerate() {
@@ -17684,9 +17687,12 @@ pub(crate) fn run_compiled_module(
             .stmts
             .get(stmt_id.0 as usize)
             .ok_or(VmError::InvariantViolation("hir stmt id out of bounds"))?;
-          let hir_js::StmtKind::Decl(def_id) = &stmt.kind else {
-            continue;
-          };
+          match &stmt.kind {
+            hir_js::StmtKind::ExportDefaultExpr(_) => {
+              has_synthetic_default_export_expr_stmt = true;
+              break;
+            }
+            hir_js::StmtKind::Decl(def_id) => {
           let def = hir
             .def(*def_id)
             .ok_or(VmError::InvariantViolation("hir def id missing from compiled script"))?;
@@ -17702,6 +17708,9 @@ pub(crate) fn run_compiled_module(
           if decl_body.kind == hir_js::BodyKind::TopLevel {
             has_synthetic_default_export_expr_stmt = true;
             break;
+          }
+            }
+            _ => continue,
           }
         }
         if has_synthetic_default_export_expr_stmt {
