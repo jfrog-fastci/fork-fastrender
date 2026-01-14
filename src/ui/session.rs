@@ -2506,6 +2506,22 @@ mod tests {
   }
 
   #[test]
+  fn session_backup_path_appends_bak_suffix() {
+    let dir = tempfile::tempdir().unwrap();
+    let session_path = dir.path().join("session.json");
+    assert_eq!(
+      session_backup_path(&session_path),
+      dir.path().join("session.json.bak")
+    );
+
+    let session_path_no_ext = dir.path().join("session");
+    assert_eq!(
+      session_backup_path(&session_path_no_ext),
+      dir.path().join("session.bak")
+    );
+  }
+
+  #[test]
   fn load_session_recovers_from_backup_when_primary_is_corrupt() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("session.json");
@@ -2835,6 +2851,7 @@ fn read_session_file_bounded(path: &Path) -> Result<Option<String>, String> {
     .map(Some)
     .map_err(|err| format!("failed to decode {} as UTF-8: {err}", path.display()))
 }
+
 /// Attempt to read + parse a session file. Missing file is not an error.
 ///
 /// If the primary session file is missing, unreadable, corrupt, or too large, we will attempt to
