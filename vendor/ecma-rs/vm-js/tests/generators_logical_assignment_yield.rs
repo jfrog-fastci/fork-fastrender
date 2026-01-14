@@ -70,6 +70,96 @@ fn generator_nullish_coalescing_assignment_short_circuits_without_yield() {
 }
 
 #[test]
+fn generator_logical_or_assignment_captures_binding_and_decision_across_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var x = 0;
+
+        function* g() {
+          const r = (x ||= (yield 0));
+          return r === 5 && x === 5;
+        }
+
+        const it = g();
+        const r1 = it.next();
+
+        // Mutate after the yield but before resuming. The decision to assign was made before the
+        // yield (because x was falsy), so the assignment must still happen.
+        x = 1;
+
+        const r2 = it.next(5);
+
+        r1.value === 0 && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_logical_and_assignment_captures_binding_and_decision_across_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var x = 1;
+
+        function* g() {
+          const r = (x &&= (yield 0));
+          return r === 5 && x === 5;
+        }
+
+        const it = g();
+        const r1 = it.next();
+
+        // Mutate after the yield but before resuming. The decision to assign was made before the
+        // yield (because x was truthy), so the assignment must still happen.
+        x = 0;
+
+        const r2 = it.next(5);
+
+        r1.value === 0 && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_nullish_coalescing_assignment_captures_binding_and_decision_across_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var x = null;
+
+        function* g() {
+          const r = (x ??= (yield 0));
+          return r === 5 && x === 5;
+        }
+
+        const it = g();
+        const r1 = it.next();
+
+        // Mutate after the yield but before resuming. The decision to assign was made before the
+        // yield (because x was nullish), so the assignment must still happen.
+        x = 0;
+
+        const r2 = it.next(5);
+
+        r1.value === 0 && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_logical_and_assignment_captures_base_key_and_decision_across_yield() {
   let mut rt = new_runtime();
   let value = rt
