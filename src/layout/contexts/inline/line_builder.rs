@@ -1779,26 +1779,50 @@ impl TextItem {
       }
     }
 
-    // Apply spacing to the last glyph of each cluster (except the final cluster).
-    for cluster in clusters.iter().take(clusters.len().saturating_sub(1)) {
-      let extra = letter_spacing + if cluster.is_space { word_spacing } else { 0.0 };
+    // Apply spacing at each logical cluster boundary.
+    //
+    // We compute the extra spacing based on the **logical** cluster that precedes the boundary
+    // (so `word-spacing` attaches to the space-like cluster), then apply it to whichever of the
+    // two adjacent clusters is **visually earlier** in the shaped output order.
+    //
+    // This is important for RTL runs: HarfBuzz emits RTL glyph buffers in visual order with
+    // descending cluster values, meaning consecutive logical clusters appear in reverse order. In
+    // that case, applying spacing to the logical "previous" cluster would only grow the run's
+    // trailing advance and would not shift glyph positions. Applying the extra to the visually
+    // earlier cluster ensures the next glyph(s) move and the gap actually appears between
+    // clusters.
+    for idx in 0..clusters.len().saturating_sub(1) {
+      let prev = &clusters[idx];
+      let next = &clusters[idx + 1];
+      let extra = letter_spacing + if prev.is_space { word_spacing } else { 0.0 };
       if extra == 0.0 {
         continue;
       }
 
-      let run_idx = cluster.run_idx;
-      let Some(run) = runs.get_mut(run_idx) else {
+      // Determine which cluster is visually earlier (leftmost) so adding to its advance increases
+      // the separation between it and the visually later (right) cluster.
+      let (target_run_idx, target_glyph_end) = {
+        let prev_key = (prev.run_idx, prev.glyph_end);
+        let next_key = (next.run_idx, next.glyph_end);
+        if prev_key <= next_key {
+          (prev.run_idx, prev.glyph_end)
+        } else {
+          (next.run_idx, next.glyph_end)
+        }
+      };
+
+      let Some(run) = runs.get_mut(target_run_idx) else {
         continue;
       };
       if run.glyphs.is_empty() {
         continue;
       }
       let axis = run_inline_axis(run);
-      // `cluster.glyph_end` is derived from shaping output; clamp defensively so out-of-range
-      // cluster indices (e.g. after glyph compaction) still apply spacing to the last glyph.
-      debug_assert!(cluster.glyph_end > 0);
-      let glyph_idx = cluster
-        .glyph_end
+
+      // `glyph_end` is derived from shaping output; clamp defensively so out-of-range indices
+      // (e.g. after glyph compaction) still apply spacing to the last glyph.
+      debug_assert!(target_glyph_end > 0);
+      let glyph_idx = target_glyph_end
         .saturating_sub(1)
         .min(run.glyphs.len().saturating_sub(1));
       let Some(glyph) = run.glyphs.get_mut(glyph_idx) else {
@@ -11369,6 +11393,40 @@ mod tests {
   fn letter_spacing_does_not_shift_glyph_offsets() {
     let text = "abc";
     let mut runs = vec![make_synthetic_run(text, 10.0)];
+    let base_positions = glyph_x_positions(&runs);
+
+    TextItem::apply_spacing_to_runs(&mut runs, text, 2.0, 0.0);
+    let spaced_positions = glyph_x_positions(&runs);
+
+    assert_eq!(base_positions.len(), 3);
+    assert_eq!(spaced_positions.len(), 3);
+    assert_eq!(spaced_positions[0], base_positions[0]);
+    assert!(
+      (spaced_positions[1] - base_positions[1] - 2.0).abs() < f32::EPSILON,
+      "expected second glyph shift to equal letter-spacing"
+    );
+    assert!(
+      (spaced_positions[2] - base_positions[2] - 4.0).abs() < f32::EPSILON,
+      "expected third glyph shift to equal 2 * letter-spacing"
+    );
+
+    assert!(
+      runs[0].glyphs.iter().all(|g| g.x_offset == 0.0),
+      "spacing should not rewrite glyph offsets; only advances should change"
+    );
+  }
+
+  #[test]
+  fn letter_spacing_shifts_rtl_glyph_positions() {
+    // Regresses: RTL HarfBuzz output uses visual glyph order with descending cluster values.
+    // Spacing must still shift later glyph positions (create gaps) rather than only inflating the
+    // run's trailing advance.
+    let text = "אבג";
+    let mut run =
+      make_synthetic_run_with_byte_clusters(text, 0, 10.0, PipelineDirection::RightToLeft);
+    // Simulate HarfBuzz output: glyphs in visual order with cluster values descending.
+    run.glyphs.reverse();
+    let mut runs = vec![run];
     let base_positions = glyph_x_positions(&runs);
 
     TextItem::apply_spacing_to_runs(&mut runs, text, 2.0, 0.0);

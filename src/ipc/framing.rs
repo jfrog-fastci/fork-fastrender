@@ -4,7 +4,7 @@ use bincode::Options;
 use serde::{de::DeserializeOwned, Serialize};
 
 use super::error::IpcError;
-use super::limits::MAX_IPC_MESSAGE_BYTES;
+pub use super::limits::MAX_IPC_MESSAGE_BYTES;
 
 /// Number of bytes in the length prefix header.
 pub const IPC_LENGTH_PREFIX_BYTES: usize = 4;
