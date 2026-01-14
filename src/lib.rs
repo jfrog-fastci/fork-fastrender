@@ -213,7 +213,6 @@ pub mod accesskit_integration;
 pub mod interaction;
 pub mod layout;
 pub mod math;
-pub mod media;
 pub mod paint;
 pub mod render_control;
 pub mod scroll;

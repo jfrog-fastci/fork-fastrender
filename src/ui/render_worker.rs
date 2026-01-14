@@ -4177,13 +4177,13 @@ impl BrowserRuntime {
                   Point::new(pointer_css.0, pointer_css.1),
                   delta_y,
                 );
-                let changed = step_result.unwrap_or(false);
-                (changed, step_result)
-              })
-            {
-              scroll_handled = true;
-              changed |= step_result;
-            }
+	                let changed = step_result.unwrap_or(false);
+	                (changed, step_result)
+	              })
+	            {
+	              scroll_handled = true;
+	              changed |= step_result;
+	            }
 
             if scroll_handled {
               // Numeric stepping does not update scroll state.
@@ -10137,7 +10137,7 @@ impl BrowserRuntime {
           let engine = &mut tab.interaction;
           let changed = doc.mutate_dom(|dom| {
             let (dom_changed, next_action) =
-              engine.key_activate(dom, key, &document_url, &base_url);
+              engine.key_activate(dom, key, document_url.as_str(), base_url.as_str());
             action = next_action;
             (submitter, submitter_element_id) =
               engine.take_last_form_submitter_with_element_id();
