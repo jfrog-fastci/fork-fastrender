@@ -203,3 +203,125 @@ fn nested_class_private_access_throws_type_error_on_wrong_receiver() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn optional_chaining_private_instance_field_short_circuits_on_nullish_base() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      class C {
+        #m = 'test262';
+        static access(obj) { return obj?.#m; }
+      }
+
+      let ok = true;
+      ok = ok && C.access(new C()) === 'test262';
+      ok = ok && C.access(null) === undefined;
+      ok = ok && C.access(undefined) === undefined;
+
+      let threw = false;
+      try { C.access({}); } catch (e) { threw = e instanceof TypeError; }
+
+      ok && threw
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn optional_chaining_private_instance_method_call_short_circuits_on_nullish_base() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      class C {
+        #x = 'ok';
+        #m() { return this.#x; }
+        static call(obj) { return obj?.#m(); }
+      }
+
+      let ok = true;
+      ok = ok && C.call(new C()) === 'ok';
+      ok = ok && C.call(null) === undefined;
+      ok = ok && C.call(undefined) === undefined;
+
+      let threw = false;
+      try { C.call({}); } catch (e) { threw = e instanceof TypeError; }
+
+      ok && threw
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn compiled_script_with_private_optional_chain_field_falls_back_and_executes() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "<inline>",
+    r#"
+      class C {
+        #m = 'test262';
+        static access(obj) { return obj?.#m; }
+      }
+
+      let ok = true;
+      ok = ok && C.access(new C()) === 'test262';
+      ok = ok && C.access(null) === undefined;
+      ok = ok && C.access(undefined) === undefined;
+
+      let threw = false;
+      try { C.access({}); } catch (e) { threw = e instanceof TypeError; }
+
+      ok && threw
+    "#,
+  )?;
+
+  assert!(
+    script.requires_ast_fallback,
+    "compiled (HIR) executor does not support private names yet; compiled scripts must opt into AST fallback"
+  );
+
+  let value = rt.exec_compiled_script(script)?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_script_with_private_optional_chain_method_call_falls_back_and_executes() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "<inline>",
+    r#"
+      class C {
+        #x = 'ok';
+        #m() { return this.#x; }
+        static call(obj) { return obj?.#m(); }
+      }
+
+      let ok = true;
+      ok = ok && C.call(new C()) === 'ok';
+      ok = ok && C.call(null) === undefined;
+      ok = ok && C.call(undefined) === undefined;
+
+      let threw = false;
+      try { C.call({}); } catch (e) { threw = e instanceof TypeError; }
+
+      ok && threw
+    "#,
+  )?;
+
+  assert!(
+    script.requires_ast_fallback,
+    "compiled (HIR) executor does not support private names yet; compiled scripts must opt into AST fallback"
+  );
+
+  let value = rt.exec_compiled_script(script)?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
