@@ -7,7 +7,7 @@ use crate::report::{
 };
 use anyhow::{anyhow, bail, Context, Result};
 use conformance_harness::{
-  AppliedExpectation, ExpectationKind, Expectations, Shard, TimeoutManager,
+  AppliedExpectation, Expectation, ExpectationKind, Expectations, Shard, TimeoutManager,
 };
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use regex::Regex;
@@ -176,7 +176,19 @@ pub fn run_cases(
   cases
     .iter()
     .map(|case| {
-      let expectation = expectations.lookup(&case.id);
+      let mut expectation = expectations.lookup(&case.id);
+      if expectation.expectation.kind != ExpectationKind::Skip {
+        if let Some(reason) = auto_skip_reason(case) {
+          expectation = AppliedExpectation {
+            expectation: Expectation {
+              kind: ExpectationKind::Skip,
+              reason: Some(reason),
+              tracking_issue: None,
+            },
+            from_manifest: false,
+          };
+        }
+      }
       run_single_case(
         test262_dir,
         harness_mode,
@@ -189,6 +201,52 @@ pub fn run_cases(
       )
     })
     .collect()
+}
+
+/// Return a deterministic skip reason when `case` requires test262 features that `vm-js` does not
+/// implement yet.
+///
+/// `test262-semantic` is primarily used to track `vm-js` progress. When a test declares required
+/// features via YAML frontmatter (`features: [...]`), it's expected that harnesses will *skip* the
+/// test when the engine does not implement those features, rather than running the test and
+/// reporting a `ReferenceError` for missing built-ins.
+fn auto_skip_reason(case: &TestCase) -> Option<String> {
+  const UNSUPPORTED_FEATURES: &[&str] = &[
+    // Atomics + SharedArrayBuffer are part of ECMA-262, but `vm-js` doesn't implement them yet.
+    "Atomics",
+    "SharedArrayBuffer",
+    // Proposals / staged features not implemented yet.
+    "ShadowRealm",
+    "source-phase-imports",
+  ];
+  const UNSUPPORTED_FEATURE_PREFIXES: &[&str] = &[
+    // `vm-js` does not implement ECMA-402 Internationalization APIs yet.
+    "Intl.",
+  ];
+
+  if case.metadata.features.is_empty() {
+    return None;
+  }
+
+  let mut unsupported: Vec<&str> = Vec::new();
+  for feature in &case.metadata.features {
+    if UNSUPPORTED_FEATURES.contains(&feature.as_str())
+      || UNSUPPORTED_FEATURE_PREFIXES
+        .iter()
+        .any(|prefix| feature.starts_with(prefix))
+    {
+      unsupported.push(feature);
+    }
+  }
+
+  if unsupported.is_empty() {
+    None
+  } else {
+    Some(format!(
+      "unsupported test262 feature(s): {}",
+      unsupported.join(", ")
+    ))
+  }
 }
 
 fn run_single_case(
@@ -611,6 +669,25 @@ status = "skip"
     fs::write(temp.path().join("harness/assert.js"), "").unwrap();
     fs::write(temp.path().join("harness/sta.js"), "").unwrap();
     temp
+  }
+
+  #[test]
+  fn auto_skip_reason_skips_unsupported_features() {
+    let case = TestCase {
+      id: "built-ins/Atomics/Symbol.toStringTag.js".to_string(),
+      path: PathBuf::from("test/built-ins/Atomics/Symbol.toStringTag.js"),
+      variant: Variant::NonStrict,
+      expected: ExpectedOutcome::Pass,
+      metadata: Frontmatter {
+        features: vec!["Atomics".to_string(), "Symbol".to_string()],
+        ..Frontmatter::default()
+      },
+      body: String::new(),
+    };
+    assert_eq!(
+      auto_skip_reason(&case),
+      Some("unsupported test262 feature(s): Atomics".to_string())
+    );
   }
 
   fn run_negative_case(js_error: JsError, expected_phase: &str, expected_type: &str) -> TestResult {
