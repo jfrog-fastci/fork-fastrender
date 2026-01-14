@@ -294,7 +294,7 @@ Most `browser` output is written to stdout/stderr (run it from a terminal). The 
 the optional file outputs:
 
 - `browser --perf-log-out /path/to/log.jsonl` (or `FASTR_PERF_LOG_OUT=...` + `FASTR_PERF_LOG=1`)
-- `browser --trace-out /path/to/trace.json` (or `FASTR_BROWSER_TRACE_OUT=...`; Perfetto/Chrome trace; written on exit)
+- `browser --trace-out /path/to/trace.json` (or `FASTR_BROWSER_TRACE_OUT=...`; legacy alias: `FASTR_PERF_TRACE_OUT`; Perfetto/Chrome trace; written on exit; cap retention with `FASTR_TRACE_MAX_EVENTS=<N>`)
 
 If the window opens but nothing renders, check for:
 
