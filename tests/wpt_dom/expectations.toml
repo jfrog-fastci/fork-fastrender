@@ -44,12 +44,6 @@ status = "xfail"
 reason = "Intentional infinite loop; runner should terminate it deterministically as a timeout."
 
 [[expectations]]
-id = "dom/domimplementation_create_document_type.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "DOMImplementation.createDocumentType is not implemented in the QuickJS WebIDL runtime yet (vm-js shim supports it)."
-
-[[expectations]]
 id = "dom/shadow_dom_manual_slot_assignment.window.js"
 backend = "vmjs"
 status = "xfail"

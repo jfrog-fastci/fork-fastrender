@@ -235,6 +235,7 @@ const DOM_SHIM: &str = r##"
 
   function Node() { illegal(); }
   function Document() { illegal(); }
+  function DocumentType() { illegal(); }
   function DocumentFragment() { illegal(); }
   function ShadowRoot() { illegal(); }
   function Element() { illegal(); }
@@ -294,6 +295,7 @@ const DOM_SHIM: &str = r##"
 
   Object.setPrototypeOf(Node.prototype, EventTarget.prototype);
   Object.setPrototypeOf(Document.prototype, Node.prototype);
+  Object.setPrototypeOf(DocumentType.prototype, Node.prototype);
   Object.setPrototypeOf(DocumentFragment.prototype, Node.prototype);
   Object.setPrototypeOf(ShadowRoot.prototype, DocumentFragment.prototype);
   Object.setPrototypeOf(Element.prototype, Node.prototype);
@@ -373,6 +375,7 @@ const DOM_SHIM: &str = r##"
   g.document.parentNode = null;
   g.document.childNodes = makeChildNodeList();
   NODE_CACHE.set(0, g.document);
+  var NEXT_DETACHED_NODE_ID = -1;
 
   function makeChildNodeList() {
     var target = Object.create(NodeList.prototype);
@@ -1141,6 +1144,22 @@ const DOM_SHIM: &str = r##"
     doc.documentElement.appendChild(doc.head);
     doc.documentElement.appendChild(doc.body);
     return doc;
+  };
+
+  DOM_IMPLEMENTATION.createDocumentType = function (qualifiedName, publicId, systemId) {
+    // Minimal stub: create a detached DocumentType node with the requested identifiers.
+    //
+    // Note: This shim does not currently support inserting DocumentType nodes into Documents (they
+    // are not backed by the Rust DOM), but the offline WPT corpus only asserts the properties.
+    var dt = Object.create(DocumentType.prototype);
+    dt[NODE_ID] = NEXT_DETACHED_NODE_ID--;
+    dt.parentNode = null;
+    dt.childNodes = makeChildNodeList();
+    dt.name = String(qualifiedName);
+    dt.publicId = String(publicId);
+    dt.systemId = String(systemId);
+    setOwnerDocumentForNode(dt, g.document);
+    return dt;
   };
 
   Object.defineProperty(Document.prototype, "implementation", {
@@ -3091,6 +3110,7 @@ const DOM_SHIM: &str = r##"
     get: function () {
       nodeIdFromThis(this);
       if (this === g.document) return Node.DOCUMENT_NODE;
+      if (this instanceof DocumentType) return Node.DOCUMENT_TYPE_NODE;
       if (this instanceof DocumentFragment) return Node.DOCUMENT_FRAGMENT_NODE;
       if (this instanceof Element) return Node.ELEMENT_NODE;
       if (this instanceof Text) return Node.TEXT_NODE;
@@ -3107,6 +3127,7 @@ const DOM_SHIM: &str = r##"
       if (t === Node.TEXT_NODE) return "#text";
       if (t === Node.COMMENT_NODE) return "#comment";
       if (t === Node.DOCUMENT_NODE) return "#document";
+      if (t === Node.DOCUMENT_TYPE_NODE) return this.name;
       if (t === Node.DOCUMENT_FRAGMENT_NODE) return "#document-fragment";
       return "";
     },
@@ -3274,6 +3295,7 @@ const DOM_SHIM: &str = r##"
   Object.defineProperty(g, "TreeWalker", { value: TreeWalkerImpl, configurable: true, writable: true });
   Object.defineProperty(g, "Range", { value: Range, configurable: true, writable: true });
   Object.defineProperty(g, "Document", { value: Document, configurable: true, writable: true });
+  Object.defineProperty(g, "DocumentType", { value: DocumentType, configurable: true, writable: true });
   Object.defineProperty(g, "DocumentFragment", { value: DocumentFragment, configurable: true, writable: true });
   Object.defineProperty(g, "ShadowRoot", { value: ShadowRoot, configurable: true, writable: true });
   Object.defineProperty(g, "Element", { value: Element, configurable: true, writable: true });
