@@ -17158,6 +17158,13 @@ pub(crate) enum GenFrame {
     members: *const Vec<Node<ClassMember>>,
     member_index: usize,
     func_obj: GcObject,
+    /// The original prototype object created during `ClassDefinitionEvaluation`.
+    ///
+    /// This must be preserved across yields: while the generator is suspended, user code can
+    /// observe the partially-constructed class constructor (via the inner class binding) and mutate
+    /// its `prototype` property. Per ECMA-262, subsequent instance element definitions must still be
+    /// applied to the original prototype object, not a replacement assigned to `F.prototype`.
+    prototype_obj: GcObject,
     static_inits: Vec<GenClassStaticInit>,
     instance_private_method_idx: usize,
     instance_field_idx: usize,
@@ -17705,10 +17712,12 @@ impl Trace for GenFrame {
       }
       GenFrame::ClassAfterComputedKey {
         func_obj,
+        prototype_obj,
         static_inits,
         ..
       } => {
         tracer.trace_value(Value::Object(*func_obj));
+        tracer.trace_value(Value::Object(*prototype_obj));
         for init in static_inits {
           match init {
             GenClassStaticInit::Field { key, initializer } => {
@@ -41356,6 +41365,7 @@ fn gen_eval_class_members_from(
                       members: members as *const Vec<Node<ClassMember>>,
                       member_index: idx,
                       func_obj,
+                      prototype_obj,
                       static_inits,
                       instance_private_method_idx,
                       instance_field_idx,
@@ -41416,6 +41426,7 @@ fn gen_eval_class_members_from(
                     members: members as *const Vec<Node<ClassMember>>,
                     member_index: idx,
                     func_obj,
+                    prototype_obj,
                     static_inits,
                     instance_private_method_idx,
                     instance_field_idx,
@@ -49111,6 +49122,7 @@ fn gen_resume_from_frames(
         members,
         member_index,
         func_obj,
+        prototype_obj,
         static_inits,
         instance_private_method_idx,
         instance_field_idx,
@@ -49144,38 +49156,6 @@ fn gen_resume_from_frames(
             )?;
             continue;
           }
-
-          // Re-extract the prototype object from the class constructor.
-          let prototype_obj: GcObject = match (|| -> Result<GcObject, VmError> {
-            let mut proto_scope = class_scope.reborrow();
-            proto_scope.push_root(Value::Object(func_obj))?;
-            let prototype_key_s = proto_scope.alloc_string("prototype")?;
-            proto_scope.push_root(Value::String(prototype_key_s))?;
-            let prototype_key = PropertyKey::from_string(prototype_key_s);
-            let Some(prototype_desc) = proto_scope.heap().get_own_property(func_obj, prototype_key)?
-            else {
-              return Err(VmError::InvariantViolation(
-                "class constructor missing prototype property",
-              ));
-            };
-            let PropertyKind::Data { value, .. } = prototype_desc.kind else {
-              return Err(VmError::InvariantViolation(
-                "class constructor prototype property is not a data property",
-              ));
-            };
-            let Value::Object(prototype_obj) = value else {
-              return Err(VmError::InvariantViolation(
-                "class constructor prototype property is not an object",
-              ));
-            };
-            Ok(prototype_obj)
-          })() {
-            Ok(v) => v,
-            Err(err) => {
-              state = gen_error_to_completion(evaluator, &mut class_scope, err)?;
-              continue;
-            }
-          };
 
           let target_obj = if member.stx.static_ {
             func_obj
@@ -51928,8 +51908,8 @@ fn gen_root_values_for_continuation(
         needed = needed.saturating_add(2);
       }
       GenFrame::ClassAfterComputedKey { static_inits, .. } => {
-        // `func_obj` plus any values stored in the pending static initialization list.
-        needed = needed.saturating_add(1);
+        // `func_obj` + `prototype_obj` plus any values stored in the pending static initialization list.
+        needed = needed.saturating_add(2);
         for init in static_inits.iter() {
           match init {
             GenClassStaticInit::Field { .. } => needed = needed.saturating_add(2),
@@ -52179,10 +52159,12 @@ fn gen_root_values_for_continuation(
       }
       GenFrame::ClassAfterComputedKey {
         func_obj,
+        prototype_obj,
         static_inits,
         ..
       } => {
         values.push(Value::Object(*func_obj));
+        values.push(Value::Object(*prototype_obj));
         for init in static_inits.iter() {
           match init {
             GenClassStaticInit::Field { key, initializer } => {
