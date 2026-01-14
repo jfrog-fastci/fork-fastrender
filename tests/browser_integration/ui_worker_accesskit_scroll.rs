@@ -1,7 +1,6 @@
 #![cfg(feature = "browser_ui")]
 
 use fastrender::dom::{enumerate_dom_ids, parse_html_with_options, DomNode, DomParseOptions};
-use fastrender::ui::encode_page_node_id;
 use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
@@ -28,30 +27,6 @@ fn wait_for_frame(
     if let WorkerToUi::FrameReady { tab_id: got, frame } = msg {
       if got == tab_id {
         return frame;
-      }
-    }
-  }
-}
-
-fn wait_for_page_generation(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Duration) -> u32 {
-  let deadline = Instant::now() + timeout;
-  loop {
-    let remaining = deadline
-      .checked_duration_since(Instant::now())
-      .unwrap_or(Duration::from_secs(0));
-    assert!(
-      remaining > Duration::ZERO,
-      "timed out waiting for PageAccessibility"
-    );
-    let msg = rx.recv_timeout(remaining).expect("worker msg");
-    if let WorkerToUi::PageAccessibility {
-      tab_id: got,
-      document_generation,
-      ..
-    } = msg
-    {
-      if got == tab_id {
-        return document_generation;
       }
     }
   }
@@ -128,17 +103,12 @@ fn a11y_scroll_into_view_scrolls_viewport_to_reveal_target_node() {
     "expected initial scroll position to be at top"
   );
 
-  let document_generation = wait_for_page_generation(&ui_rx, tab_id, DEFAULT_TIMEOUT);
-
-  let request = accesskit::ActionRequest {
-    action: accesskit::Action::ScrollIntoView,
-    target: encode_page_node_id(tab_id, document_generation, target_node_id),
-    data: None,
-  };
-
   ui_tx
-    .send(UiToWorker::AccessKitActionRequest { tab_id, request })
-    .expect("AccessKitAction");
+    .send(UiToWorker::A11yScrollIntoView {
+      tab_id,
+      node_id: target_node_id,
+    })
+    .expect("A11yScrollIntoView");
 
   // The target element is at 1500px; a scroll-into-view request should scroll the viewport down so
   // it becomes visible.

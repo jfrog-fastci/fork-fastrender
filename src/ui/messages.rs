@@ -534,16 +534,6 @@ pub enum UiToWorker {
     tab_id: TabId,
     pos_css: (f32, f32),
   },
-  /// Forward an AccessKit [`accesskit::ActionRequest`] targeting the page content.
-  ///
-  /// This is used by the windowed browser UI (feature = `browser_ui`) to allow assistive
-  /// technologies to request operations (for example scrolling a node into view) without going
-  /// through the normal pointer/keyboard focus pipeline.
-  #[cfg(feature = "browser_ui")]
-  AccessKitActionRequest {
-    tab_id: TabId,
-    request: accesskit::ActionRequest,
-  },
   PointerMove {
     tab_id: TabId,
     /// Pointer position in **viewport-local CSS pixels** (0,0 at the top-left of the rendered

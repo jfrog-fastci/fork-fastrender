@@ -14973,7 +14973,6 @@ impl App {
       &msg,
       UiToWorker::Scroll { .. }
         | UiToWorker::ScrollTo { .. }
-        | UiToWorker::AccessKitActionRequest { .. }
         | UiToWorker::A11yScrollIntoView { .. }
     ) {
       self
@@ -15012,7 +15011,6 @@ impl App {
       | UiToWorker::ViewportChanged { tab_id, .. }
       | UiToWorker::Scroll { tab_id, .. }
       | UiToWorker::ScrollTo { tab_id, .. }
-      | UiToWorker::AccessKitActionRequest { tab_id, .. }
       | UiToWorker::PointerMove { tab_id, .. }
       | UiToWorker::PointerDown { tab_id, .. }
       | UiToWorker::PointerUp { tab_id, .. }
@@ -15151,7 +15149,6 @@ impl App {
           | UiToWorker::ViewportChanged { .. }
           | UiToWorker::Scroll { .. }
           | UiToWorker::ScrollTo { .. }
-          | UiToWorker::AccessKitActionRequest { .. }
           | UiToWorker::A11ySetFocus { .. }
           | UiToWorker::A11yActivate { .. }
           | UiToWorker::A11yScrollIntoView { .. }
@@ -25260,7 +25257,7 @@ impl App {
     // Page (document) node actions: verify the request targets the active document generation
     // before forwarding to the worker. This prevents stale screen-reader requests (targeting nodes
     // from a previous navigation) from affecting the newly loaded page.
-    if let Some((tab_id, generation, _dom_node_id)) =
+    if let Some((tab_id, generation, dom_node_id)) =
       fastrender::ui::decode_page_node_id(request.target)
     {
       let Some(active_tab) = self.browser_state.active_tab_id() else {
@@ -25277,8 +25274,34 @@ impl App {
       if current_generation != Some(generation) {
         return;
       }
-      let _ = self
-        .send_worker_msg(fastrender::ui::UiToWorker::AccessKitActionRequest { tab_id, request });
+
+      // Translate OS AccessKit requests into our backend-agnostic UI↔worker protocol messages.
+      let msg = match request.action {
+        accesskit::Action::ScrollIntoView | accesskit::Action::ScrollToPoint => {
+          Some(fastrender::ui::UiToWorker::A11yScrollIntoView {
+            tab_id,
+            node_id: dom_node_id,
+          })
+        }
+        accesskit::Action::ShowContextMenu => Some(fastrender::ui::UiToWorker::A11yShowContextMenu {
+          tab_id,
+          node_id: Some(dom_node_id),
+        }),
+        accesskit::Action::Focus => Some(fastrender::ui::UiToWorker::A11ySetFocus {
+          tab_id,
+          node_id: dom_node_id,
+        }),
+        accesskit::Action::Click | accesskit::Action::Default => {
+          Some(fastrender::ui::UiToWorker::A11yActivate {
+            tab_id,
+            node_id: dom_node_id,
+          })
+        }
+        _ => None,
+      };
+      if let Some(msg) = msg {
+        let _ = self.send_worker_msg(msg);
+      }
       return;
     }
 
