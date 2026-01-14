@@ -98,9 +98,10 @@ When enabled, you should expect events covering at least:
 
 - **Run metadata**: `event=run_start` is emitted once at startup (before any `frame`/`input` events)
   and records build + config metadata (crate version, debug/release, target, HUD/perf-log/trace
-  flags, resource/network policy snapshot, etc). `event=run_end` is emitted once on graceful
-  shutdown (best-effort) and records totals like frames presented, idle frames, input events,
-  dropped/coalesced frames, elapsed wall time, CPU time, and RSS (when available).
+  flags, resource/network policy snapshot, etc) plus a best-effort RSS snapshot (`rss_bytes`,
+  Linux-only; nullable elsewhere). `event=run_end` is emitted once on graceful shutdown
+  (best-effort) and records totals like frames presented, idle frames, input events,
+  dropped/coalesced frames, elapsed wall time, CPU time, and a final RSS snapshot (when available).
 - **TTFP** (“time to first paint”): navigation start → first presented frame for that tab.
 - **Worker stage heartbeats**: `event=stage` is emitted when the windowed UI processes
   `WorkerToUi::Stage` messages. These include `tab_id`, `stage` (e.g. `layout`, `paint_build`), and
