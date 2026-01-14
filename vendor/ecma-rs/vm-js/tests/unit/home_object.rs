@@ -398,6 +398,7 @@ fn await_in_class_static_block_is_syntax_error() -> Result<(), VmError> {
             await 0;
           }
         }
+        export {};
       "#,
     )
     .unwrap_err(),

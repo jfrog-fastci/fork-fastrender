@@ -32,6 +32,7 @@ fn module_graph_link_respects_fuel_budget_even_for_empty_modules() -> Result<(),
     .unwrap_err();
   assert_termination_reason(err, TerminationReason::OutOfFuel);
 
+  graph.teardown(&mut vm, &mut heap);
   realm.teardown(&mut heap);
   Ok(())
 }
@@ -62,6 +63,7 @@ fn module_graph_namespace_creation_respects_fuel_budget() -> Result<(), VmError>
     assert_termination_reason(err, TerminationReason::OutOfFuel);
   }
 
+  graph.teardown(&mut vm, &mut heap);
   realm.teardown(&mut heap);
   Ok(())
 }
