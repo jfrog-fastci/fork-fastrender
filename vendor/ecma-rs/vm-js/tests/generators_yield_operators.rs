@@ -553,7 +553,18 @@ fn generators_yield_in_template_literals() {
           i1.value === 1 && i1.done === false &&
           i2.value === 99 && i2.done === true;
 
-        ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 && ok10
+        // Optional chaining short-circuit sentinel must not leak through the template frame.
+        // If it did, ToString would observe a Symbol and throw.
+        function* tpl_opt_chain() { return `a${(yield 1)?.x}b`; }
+        const it11 = tpl_opt_chain();
+        const j1 = it11.next();
+        churn();
+        const j2 = it11.next(null);
+        const ok11 =
+          j1.value === 1 && j1.done === false &&
+          j2.value === "aundefinedb" && j2.done === true;
+
+        ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 && ok10 && ok11
       "#,
     )
     .unwrap();
