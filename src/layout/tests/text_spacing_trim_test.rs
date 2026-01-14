@@ -422,6 +422,28 @@ fn text_spacing_trim_trim_all_trims_mid_line_punctuation_within_text_run() {
 }
 
 #[test]
+fn text_spacing_trim_trim_all_trims_middle_dot_punctuation() {
+  // `trim-all` should also trim fullwidth middle-dot punctuation.
+  // Compare against `trim-both`, which does not trim punctuation in the middle of the line.
+  let trim_both = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: trim-both;",
+    "A・B",
+  );
+  let trim_all = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: trim-all;",
+    "A・B",
+  );
+
+  let both_b_x = text_x_in_line(&trim_both[0], "B").expect("x for B (trim-both)");
+  let all_b_x = text_x_in_line(&trim_all[0], "B").expect("x for B (trim-all)");
+
+  assert!(
+    all_b_x < both_b_x - 0.1,
+    "expected trim-all to trim middle-dot punctuation (trim-both x={both_b_x:.3} trim-all x={all_b_x:.3})"
+  );
+}
+
+#[test]
 fn text_spacing_trim_normal_collapses_adjacent_punctuation_within_span() {
   let space_all = layout_lines_with_box_style(
     "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: space-all;",

@@ -7941,8 +7941,9 @@ impl InlineFormattingContext {
     }
 
     // Split text items so fullwidth punctuation characters become their own items. This enables the
-    // adjacent-pairs collapsing logic to apply within a single text run (common in real documents
-    // and WPT cases) without needing to inspect/modify interior clusters of a shaped item.
+    // adjacent-pairs collapsing logic (and `trim-all`) to apply within a single text run (common in
+    // real documents and WPT cases) without needing to inspect/modify interior clusters of a shaped
+    // item.
     //
     // Like the rest of this MVP implementation, this runs during fragment construction rather than
     // line building, so it affects alignment/justification and glyph positioning but does not
@@ -7960,7 +7961,10 @@ impl InlineFormattingContext {
 
       let mut split_points: Vec<usize> = Vec::new();
       for (off, ch) in item.text.char_indices() {
-        if is_fullwidth_opening_punctuation(ch) || is_fullwidth_closing_punctuation(ch) {
+        if is_fullwidth_opening_punctuation(ch)
+          || is_fullwidth_closing_punctuation(ch)
+          || is_fullwidth_middle_dot_punctuation(ch)
+        {
           split_points.push(off);
           split_points.push(off + ch.len_utf8());
         }
@@ -8346,6 +8350,26 @@ impl InlineFormattingContext {
         }
       }
 
+      fn middle_dot_hang_and_trim(item: &InlineItem) -> Option<(f32, TextSpacingTrim)> {
+        match item {
+          InlineItem::Text(t) => {
+            if t.is_marker {
+              return None;
+            }
+            let ch = t.text.chars().next()?;
+            if !is_fullwidth_middle_dot_punctuation(ch) {
+              return None;
+            }
+            let adv = first_cluster_advance(t)?;
+            if adv <= 0.0 {
+              return None;
+            }
+            Some((adv * 0.5, t.style.text_spacing_trim))
+          }
+          _ => None,
+        }
+      }
+
       fn apply_opening_punct_hang(item: &mut InlineItem, hang: f32, rtl: bool) -> bool {
         match item {
           InlineItem::Text(t) => {
@@ -8379,6 +8403,29 @@ impl InlineFormattingContext {
             false
           }
           InlineItem::Ruby(_) => false,
+          _ => false,
+        }
+      }
+
+      fn apply_middle_dot_hang(item: &mut InlineItem, hang: f32) -> bool {
+        match item {
+          InlineItem::Text(t) => {
+            if t.is_marker
+              || !t
+                .text
+                .chars()
+                .next()
+                .is_some_and(is_fullwidth_middle_dot_punctuation)
+            {
+              return false;
+            }
+            let target = (t.advance - hang).max(0.0);
+            let applied_hang = (t.advance_for_layout - target).max(0.0);
+            if applied_hang > 0.0 {
+              t.advance_for_layout = (t.advance_for_layout - applied_hang).max(0.0);
+            }
+            true
+          }
           _ => false,
         }
       }
@@ -8508,7 +8555,7 @@ impl InlineFormattingContext {
         }
 
         // `trim-all` collapses punctuation spacing regardless of context. Model this by trimming
-        // opening/closing punctuation at inline-item edges throughout the line.
+        // opening/closing/middle-dot punctuation at inline-item edges throughout the line.
         let last_non_anchor_idx = items
           .iter()
           .rposition(|p| !matches!(p.item, InlineItem::StaticPositionAnchor(_)));
@@ -8523,6 +8570,14 @@ impl InlineFormattingContext {
                 if let Some(positioned) = items.get_mut(idx) {
                   apply_opening_punct_hang(&mut positioned.item, hang, rtl);
                 }
+              }
+            }
+          }
+
+          if let Some((hang, trim)) = middle_dot_hang_and_trim(&items[idx].item) {
+            if matches!(trim, TextSpacingTrim::TrimAll) {
+              if let Some(positioned) = items.get_mut(idx) {
+                apply_middle_dot_hang(&mut positioned.item, hang);
               }
             }
           }
@@ -8602,6 +8657,11 @@ impl InlineFormattingContext {
             if let Some((hang, trim)) = opening_punct_hang_and_trim(&children[idx]) {
               if matches!(trim, TextSpacingTrim::TrimAll) {
                 apply_opening_punct_hang(&mut children[idx], hang, rtl);
+              }
+            }
+            if let Some((hang, trim)) = middle_dot_hang_and_trim(&children[idx]) {
+              if matches!(trim, TextSpacingTrim::TrimAll) {
+                apply_middle_dot_hang(&mut children[idx], hang);
               }
             }
             if let Some((hang, trim)) = closing_punct_hang_and_trim(&children[idx]) {
