@@ -273,13 +273,24 @@ impl AudioEngine {
   /// Create a new group (e.g. a browser tab).
   #[must_use]
   pub fn create_group(&self) -> AudioGroupId {
-    let id = AudioGroupId(self.grouping.next_group_id.fetch_add(1, Ordering::Relaxed));
-    self
-      .grouping
-      .groups
-      .lock()
-      .insert(id, Arc::new(AudioGroupState::new()));
-    id
+    // `fetch_add` returns the previous value.
+    //
+    // `0` is reserved for the engine's internal default group. In the astronomically unlikely event
+    // we wrap around `u64::MAX` (requiring ~1.8e19 allocations in a single process), skip over 0 and
+    // keep going rather than clobbering the default group.
+    loop {
+      let raw = self.grouping.next_group_id.fetch_add(1, Ordering::Relaxed);
+      let id = AudioGroupId(raw);
+      if id == DEFAULT_GROUP {
+        continue;
+      }
+      self
+        .grouping
+        .groups
+        .lock()
+        .insert(id, Arc::new(AudioGroupState::new()));
+      return id;
+    }
   }
 
   /// Create a new sink in the default group.
@@ -536,6 +547,17 @@ mod tests {
 
     let out = backend.render(frames);
     assert!(all_near(&out, 0.125));
+  }
+
+  #[test]
+  fn audio_groups_create_group_never_returns_default_group_id() {
+    let backend = Arc::new(NullAudioBackend::new_deterministic());
+    let engine = AudioEngine::new_with_backend(audio_engine_config(), backend);
+
+    // Simulate the post-wrap state: the next `fetch_add` would yield 0.
+    engine.grouping.next_group_id.store(0, Ordering::Relaxed);
+    let group = engine.create_group();
+    assert_ne!(group, DEFAULT_GROUP);
   }
 
   #[test]
