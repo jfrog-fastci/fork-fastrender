@@ -126,7 +126,7 @@ fn req(specifier: &str) -> ModuleRequest {
 fn req_with_attr(specifier: &str, key: &str, value: &str) -> ModuleRequest {
   ModuleRequest::new(
     JsString::from_str(specifier).unwrap(),
-    vec![ImportAttribute::new(key, value)],
+    vec![ImportAttribute::try_new(key, value).unwrap()],
   )
 }
 

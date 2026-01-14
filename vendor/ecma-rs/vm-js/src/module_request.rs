@@ -10,7 +10,7 @@
 
 use std::cmp::Ordering;
 
-use crate::JsString;
+use crate::{JsString, VmError};
 
 /// Compare two strings by lexicographic order of UTF-16 code units (ECMA-262 string ordering).
 ///
@@ -37,23 +37,28 @@ pub fn cmp_utf16(a: &str, b: &str) -> Ordering {
 /// Spec: <https://tc39.es/ecma262/#importattribute-record>
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ImportAttribute {
-  pub key: String,
-  pub value: String,
+  pub key: JsString,
+  pub value: JsString,
 }
 
 impl ImportAttribute {
   #[inline]
-  pub fn new(key: impl Into<String>, value: impl Into<String>) -> Self {
-    Self {
-      key: key.into(),
-      value: value.into(),
-    }
+  pub fn new(key: JsString, value: JsString) -> Self {
+    Self { key, value }
+  }
+
+  #[inline]
+  pub fn try_new(key: &str, value: &str) -> Result<Self, VmError> {
+    Ok(Self {
+      key: JsString::from_str(key)?,
+      value: JsString::from_str(value)?,
+    })
   }
 }
 
 fn cmp_import_attribute(a: &ImportAttribute, b: &ImportAttribute) -> Ordering {
-  match cmp_utf16(&a.key, &b.key) {
-    Ordering::Equal => cmp_utf16(&a.value, &b.value),
+  match a.key.cmp(&b.key) {
+    Ordering::Equal => a.value.cmp(&b.value),
     non_eq => non_eq,
   }
 }
@@ -109,10 +114,18 @@ impl ModuleRequest {
 
   /// Builder helper: append an import attribute and re-canonicalize.
   #[inline]
-  pub fn with_import_attribute(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+  pub fn with_import_attribute(mut self, key: JsString, value: JsString) -> Self {
     self.attributes.push(ImportAttribute::new(key, value));
     self.canonicalize();
     self
+  }
+
+  /// Builder helper: append a string import attribute and re-canonicalize.
+  #[inline]
+  pub fn try_with_import_attribute(mut self, key: &str, value: &str) -> Result<Self, VmError> {
+    self.attributes.push(ImportAttribute::try_new(key, value)?);
+    self.canonicalize();
+    Ok(self)
   }
 
   /// Implements `ModuleRequestsEqual(left, right)` from ECMA-262.

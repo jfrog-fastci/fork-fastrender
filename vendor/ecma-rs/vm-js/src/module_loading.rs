@@ -917,13 +917,6 @@ pub(crate) enum ModuleLoadPayloadKind {
 /// represented by [`VmError`].
 pub type ModuleCompletion = Result<ModuleId, VmError>;
 
-fn try_clone_string(value: &str) -> Result<String, VmError> {
-  let mut out = String::new();
-  out.try_reserve_exact(value.len()).map_err(|_| VmError::OutOfMemory)?;
-  out.push_str(value);
-  Ok(out)
-}
-
 fn try_clone_js_string(vm: &mut Vm, value: &JsString) -> Result<JsString, VmError> {
   vm.tick()?;
   let units = value.as_code_units();
@@ -950,10 +943,10 @@ fn try_clone_js_string(vm: &mut Vm, value: &JsString) -> Result<JsString, VmErro
   JsString::from_u16_vec(buf)
 }
 
-fn try_clone_import_attribute(value: &ImportAttribute) -> Result<ImportAttribute, VmError> {
+fn try_clone_import_attribute(vm: &mut Vm, value: &ImportAttribute) -> Result<ImportAttribute, VmError> {
   Ok(ImportAttribute {
-    key: try_clone_string(&value.key)?,
-    value: try_clone_string(&value.value)?,
+    key: try_clone_js_string(vm, &value.key)?,
+    value: try_clone_js_string(vm, &value.value)?,
   })
 }
 
@@ -968,7 +961,7 @@ fn try_clone_module_request(vm: &mut Vm, value: &ModuleRequest) -> Result<Module
     if i % ATTR_TICK_EVERY == 0 && i != 0 {
       vm.tick()?;
     }
-    attributes.push(try_clone_import_attribute(attr)?);
+    attributes.push(try_clone_import_attribute(vm, attr)?);
   }
   Ok(ModuleRequest::new(
     try_clone_js_string(vm, &value.specifier)?,
@@ -1098,10 +1091,13 @@ pub fn inner_module_loading_with_host_and_hooks(
       if let Some(unsupported_key) = unsupported_key {
         // Per ECMA-262, unsupported import attributes are a thrown SyntaxError.
         if let Some(intrinsics) = vm.intrinsics() {
-          let message = crate::fallible_format::try_format_identifier_error(
-            "Unsupported import attribute: ",
-            unsupported_key,
+          let (key, _) = crate::string::utf16_to_utf8_lossy_bounded_with_tick(
+            unsupported_key.as_code_units(),
+            crate::fallible_format::MAX_ERROR_MESSAGE_BYTES,
+            || vm.tick(),
           )?;
+          let message =
+            crate::fallible_format::try_format_identifier_error("Unsupported import attribute: ", &key)?;
 
           let err_value = crate::new_error(
             scope,
@@ -1488,45 +1484,19 @@ pub enum ImportCallTypeError {
   OptionsNotObject,
   AttributesNotObject,
   AttributeValueNotString,
-  UnsupportedImportAttribute { key: String },
+  UnsupportedImportAttribute { key: JsString },
 }
 
 const MAX_IMPORT_ATTRIBUTE_STRING_CODE_UNITS: usize = 1024;
 
-fn clone_heap_string_to_string(heap: &crate::Heap, s: GcString) -> Result<String, VmError> {
+fn clone_heap_string_to_js_string_bounded(heap: &crate::Heap, s: GcString) -> Result<JsString, VmError> {
   let js = heap.get_string(s)?;
   if js.len_code_units() > MAX_IMPORT_ATTRIBUTE_STRING_CODE_UNITS {
     return Err(VmError::LimitExceeded(
       "import attribute keys/values are limited to 1024 UTF-16 code units",
     ));
   }
-
-  // `String::from_utf16_lossy` is infallible and aborts the process on allocator OOM.
-  // Convert into a pre-reserved buffer so we can surface OOM as `VmError::OutOfMemory` instead.
-  let mut out = String::new();
-
-  let units = js.as_code_units();
-  let max_utf8_len = units
-    .len()
-    // Maximum UTF-8 bytes per UTF-16 code unit is 3:
-    // - non-BMP characters are 4 bytes but take *two* code units,
-    // - invalid surrogate halves become U+FFFD (3 bytes).
-    .checked_mul(3)
-    .ok_or(VmError::LimitExceeded(
-      "import attribute keys/values are too large to convert to UTF-8",
-    ))?;
-  out
-    .try_reserve_exact(max_utf8_len)
-    .map_err(|_| VmError::OutOfMemory)?;
-
-  for r in std::char::decode_utf16(units.iter().copied()) {
-    match r {
-      Ok(ch) => out.push(ch),
-      Err(_) => out.push('\u{FFFD}'),
-    }
-  }
-
-  Ok(out)
+  JsString::from_code_units(js.as_code_units())
 }
 
 fn clone_heap_string_to_js_string_unbounded_with_ticks(
@@ -1567,28 +1537,6 @@ fn make_key_string(scope: &mut Scope<'_>, s: &str) -> Result<GcString, VmError> 
   let key = scope.alloc_string(s)?;
   scope.push_root(Value::String(key))?;
   Ok(key)
-}
-
-/// Compare strings by lexicographic order of UTF-16 code units.
-///
-/// ECMA-262 module loading algorithms (e.g. `EvaluateImportCall`) define ordering of import
-/// attribute keys in terms of UTF-16 code units, not Rust's default UTF-8 byte ordering.
-fn cmp_utf16_code_units(a: &str, b: &str) -> std::cmp::Ordering {
-  use std::cmp::Ordering;
-
-  let mut a_units = a.encode_utf16();
-  let mut b_units = b.encode_utf16();
-  loop {
-    match (a_units.next(), b_units.next()) {
-      (Some(a_u), Some(b_u)) => match a_u.cmp(&b_u) {
-        Ordering::Equal => {}
-        non_eq => return non_eq,
-      },
-      (None, Some(_)) => return Ordering::Less,
-      (Some(_), None) => return Ordering::Greater,
-      (None, None) => return Ordering::Equal,
-    }
-  }
 }
 
 /// Extract and validate import attributes from the `options` argument of a dynamic `import()` call.
@@ -1707,31 +1655,36 @@ pub fn import_attributes_from_options_with_host_and_hooks(
       ));
     };
 
-    let key = clone_heap_string_to_string(scope.heap(), key_string).map_err(ImportCallError::Vm)?;
+    let key =
+      clone_heap_string_to_js_string_bounded(scope.heap(), key_string).map_err(ImportCallError::Vm)?;
     let value =
-      clone_heap_string_to_string(scope.heap(), value_string).map_err(ImportCallError::Vm)?;
+      clone_heap_string_to_js_string_bounded(scope.heap(), value_string).map_err(ImportCallError::Vm)?;
 
     attributes.push(ImportAttribute { key, value });
   }
 
   // `AllImportAttributesSupported`.
-  for attribute in &attributes {
+  for i in 0..attributes.len() {
     vm.tick().map_err(ImportCallError::Vm)?;
-    if !supported_keys
-      .iter()
-      .any(|supported| *supported == attribute.key.as_str())
-    {
+    if !supported_keys.iter().any(|supported| {
+      attributes[i]
+        .key
+        .as_code_units()
+        .iter()
+        .copied()
+        .eq(supported.encode_utf16())
+    }) {
+      // Avoid cloning the key (which would allocate infallibly via `JsString`'s derived `Clone`).
+      let key = attributes.swap_remove(i).key;
       return Err(ImportCallError::TypeError(
-        ImportCallTypeError::UnsupportedImportAttribute {
-          key: attribute.key.clone(),
-        },
+        ImportCallTypeError::UnsupportedImportAttribute { key },
       ));
     }
   }
 
   // Sort by key (and value for determinism) by UTF-16 code unit order.
-  attributes.sort_by(|a, b| match cmp_utf16_code_units(&a.key, &b.key) {
-    std::cmp::Ordering::Equal => cmp_utf16_code_units(&a.value, &b.value),
+  attributes.sort_unstable_by(|a, b| match a.key.cmp(&b.key) {
+    std::cmp::Ordering::Equal => a.value.cmp(&b.value),
     non_eq => non_eq,
   });
   Ok(attributes)
@@ -1741,14 +1694,23 @@ pub fn import_attributes_from_options_with_host_and_hooks(
 pub fn all_import_attributes_supported(supported_keys: &[&str], attributes: &[ImportAttribute]) -> bool {
   attributes
     .iter()
-    .all(|attr| supported_keys.iter().any(|k| *k == attr.key.as_str()))
+    .all(|attr| {
+      supported_keys.iter().any(|k| {
+        attr
+          .key
+          .as_code_units()
+          .iter()
+          .copied()
+          .eq(k.encode_utf16())
+      })
+    })
 }
 
 fn first_unsupported_import_attribute_key<'a>(
   vm: &mut Vm,
   supported_keys: &[&str],
   attributes: &'a [ImportAttribute],
-) -> Result<Option<&'a str>, VmError> {
+) -> Result<Option<&'a JsString>, VmError> {
   // Attribute lists are user-controlled (bounded by source size / host objects), and the module
   // loading algorithms may scan them even when the graph contains a single request. Budget the scan
   // so a large list cannot do unbounded work within a single `vm.tick()` interval.
@@ -1757,8 +1719,15 @@ fn first_unsupported_import_attribute_key<'a>(
     if i % TICK_EVERY == 0 && i != 0 {
       vm.tick()?;
     }
-    if !supported_keys.iter().any(|k| *k == attr.key.as_str()) {
-      return Ok(Some(attr.key.as_str()));
+    if !supported_keys.iter().any(|k| {
+      attr
+        .key
+        .as_code_units()
+        .iter()
+        .copied()
+        .eq(k.encode_utf16())
+    }) {
+      return Ok(Some(&attr.key));
     }
   }
   Ok(None)
@@ -1911,10 +1880,13 @@ pub fn start_dynamic_import_with_host_and_hooks(
         ImportCallTypeError::AttributeValueNotString => "import() attribute values must be strings",
         ImportCallTypeError::UnsupportedImportAttribute { key } => {
           return {
-            let msg = crate::fallible_format::try_format_identifier_error(
-              "Unsupported import attribute: ",
-              &key,
+            let (key_utf8, _) = crate::string::utf16_to_utf8_lossy_bounded_with_tick(
+              key.as_code_units(),
+              crate::fallible_format::MAX_ERROR_MESSAGE_BYTES,
+              || vm.tick(),
             )?;
+            let msg =
+              crate::fallible_format::try_format_identifier_error("Unsupported import attribute: ", &key_utf8)?;
             let err_value = crate::new_error(
               &mut import_scope,
               intr.type_error_prototype(),
@@ -2174,8 +2146,8 @@ mod tests {
       import_attributes_from_options(&mut vm, &mut scope, Value::Object(options), &supported)
         .unwrap();
 
-    let keys: Vec<&str> = attrs.iter().map(|a| a.key.as_str()).collect();
-    assert_eq!(keys, vec!["a", "type"]);
+    let keys: Vec<String> = attrs.iter().map(|a| a.key.to_utf8_lossy()).collect();
+    assert_eq!(keys, vec![String::from("a"), String::from("type")]);
   }
 
   #[test]
@@ -2256,7 +2228,7 @@ mod tests {
     let supported = ["type"];
     let mut attrs = Vec::<ImportAttribute>::new();
     for _ in 0..5000 {
-      attrs.push(ImportAttribute::new("type", "json"));
+      attrs.push(ImportAttribute::try_new("type", "json").unwrap());
     }
 
     let err = first_unsupported_import_attribute_key(&mut vm, &supported, &attrs).unwrap_err();

@@ -27,8 +27,8 @@ fn req(specifier: &str, attributes: Vec<ImportAttribute>) -> ModuleRequest {
 
 #[test]
 fn module_requests_equal_ignores_attribute_order() {
-  let a_type = ImportAttribute::new("type", "json");
-  let a_mode = ImportAttribute::new("mode", "strict");
+  let a_type = ImportAttribute::try_new("type", "json").unwrap();
+  let a_mode = ImportAttribute::try_new("mode", "strict").unwrap();
 
   let left = req("./foo.mjs", vec![a_type.clone(), a_mode.clone()]);
   let right = req("./foo.mjs", vec![a_mode, a_type]);
@@ -38,8 +38,8 @@ fn module_requests_equal_ignores_attribute_order() {
 
 #[test]
 fn module_requests_equal_checks_specifier_and_attributes() {
-  let a_type_json = ImportAttribute::new("type", "json");
-  let a_type_css = ImportAttribute::new("type", "css");
+  let a_type_json = ImportAttribute::try_new("type", "json").unwrap();
+  let a_type_css = ImportAttribute::try_new("type", "css").unwrap();
 
   let left = req("./foo.mjs", vec![a_type_json.clone()]);
 
@@ -53,7 +53,7 @@ fn module_requests_equal_checks_specifier_and_attributes() {
 
   // Different attribute count => not equal.
   let extra_attr =
-    req("./foo.mjs", vec![a_type_json, ImportAttribute::new("mode", "strict")]);
+    req("./foo.mjs", vec![a_type_json, ImportAttribute::try_new("mode", "strict").unwrap()]);
   assert!(!module_requests_equal(&left, &extra_attr));
 }
 
@@ -111,6 +111,12 @@ fn import_attributes_from_options_sorts_by_utf16_code_unit_order() {
     import_attributes_from_options(&mut vm, &mut scope, Value::Object(options), &supported)
       .unwrap();
 
-  let keys: Vec<&str> = attrs.iter().map(|a| a.key.as_str()).collect();
-  assert_eq!(keys, vec!["😀", "\u{E000}"]);
+  let keys: Vec<Vec<u16>> = attrs.iter().map(|a| a.key.as_code_units().to_vec()).collect();
+  assert_eq!(
+    keys,
+    vec![
+      "😀".encode_utf16().collect::<Vec<_>>(),
+      "\u{E000}".encode_utf16().collect::<Vec<_>>(),
+    ]
+  );
 }

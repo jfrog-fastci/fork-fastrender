@@ -2508,12 +2508,8 @@ fn with_clause_to_attributes(
     ));
   };
 
-  let mut seen = HashSet::<&str>::new();
   let mut out = Vec::<ImportAttribute>::new();
 
-  seen
-    .try_reserve(obj.stx.members.len())
-    .map_err(|_| VmError::OutOfMemory)?;
   out
     .try_reserve(obj.stx.members.len())
     .map_err(|_| VmError::OutOfMemory)?;
@@ -2521,7 +2517,7 @@ fn with_clause_to_attributes(
   for member in &obj.stx.members {
     ctx.budget_tick()?;
 
-    let (key_str, key_loc, value_expr) = match &member.stx.typ {
+    let (key_node, key_loc, value_expr) = match &member.stx.typ {
       ObjMemberType::Valued { key, val } => {
         let key_node = match key {
           ClassOrObjKey::Direct(direct) => direct,
@@ -2553,7 +2549,7 @@ fn with_clause_to_attributes(
           }
         };
 
-        (key_node.stx.key.as_str(), key_node.loc, value_expr)
+        (key_node, key_node.loc, value_expr)
       }
       ObjMemberType::Shorthand { .. } => {
         return Err(syntax_error(
@@ -2569,13 +2565,31 @@ fn with_clause_to_attributes(
       }
     };
 
-    if !seen.insert(key_str) {
-      return Err(syntax_error(key_loc, "duplicate import attribute key"));
+    let key = if key_node.stx.tt == TT::LiteralString {
+      match literal_string_code_units(&key_node.assoc) {
+        Some(units) => crate::JsString::from_code_units(units)?,
+        None => crate::JsString::from_str(key_node.stx.key.as_str())?,
+      }
+    } else {
+      crate::JsString::from_str(key_node.stx.key.as_str())?
+    };
+
+    // Detect duplicate keys by code-unit equality.
+    //
+    // Avoid a `HashSet<JsString>` here: we don't want to clone keys using `JsString`'s infallible
+    // derived `Clone` impl (it can abort the process on allocator OOM).
+    for existing in &out {
+      ctx.budget_tick()?;
+      if existing.key == key {
+        return Err(syntax_error(key_loc, "duplicate import attribute key"));
+      }
     }
 
-    let key = try_string_from_str(key_str)?;
     let value = match &*value_expr.stx {
-      Expr::LitStr(str_lit) => try_string_from_str(&str_lit.stx.value)?,
+      Expr::LitStr(str_lit) => match literal_string_code_units(&str_lit.assoc) {
+        Some(units) => crate::JsString::from_code_units(units)?,
+        None => crate::JsString::from_str(&str_lit.stx.value)?,
+      },
       _ => {
         return Err(syntax_error(
           value_expr.loc,
@@ -2730,8 +2744,8 @@ fn clone_module_request(
   for attr in &req.attributes {
     ctx.budget_tick()?;
     attrs.push(ImportAttribute {
-      key: try_string_from_str(&attr.key)?,
-      value: try_string_from_str(&attr.value)?,
+      key: crate::JsString::from_code_units(attr.key.as_code_units())?,
+      value: crate::JsString::from_code_units(attr.value.as_code_units())?,
     });
   }
 

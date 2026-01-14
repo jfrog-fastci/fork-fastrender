@@ -11,8 +11,8 @@ fn req(specifier: &str, attrs: Vec<ImportAttribute>) -> ModuleRequest {
 
 #[test]
 fn module_request_canonicalizes_attribute_order() {
-  let a_type = ImportAttribute::new("type", "json");
-  let a_mode = ImportAttribute::new("mode", "strict");
+  let a_type = ImportAttribute::try_new("type", "json").unwrap();
+  let a_mode = ImportAttribute::try_new("mode", "strict").unwrap();
 
   let left = req("./foo.mjs", vec![a_type.clone(), a_mode.clone()]);
   let right = req("./foo.mjs", vec![a_mode, a_type]);
@@ -25,8 +25,8 @@ fn module_request_canonicalizes_attribute_order() {
 
 #[test]
 fn module_request_not_equal_with_different_attribute_count() {
-  let a_type = ImportAttribute::new("type", "json");
-  let a_mode = ImportAttribute::new("mode", "strict");
+  let a_type = ImportAttribute::try_new("type", "json").unwrap();
+  let a_mode = ImportAttribute::try_new("mode", "strict").unwrap();
 
   let left = req("./foo.mjs", vec![a_type.clone()]);
   let right = req("./foo.mjs", vec![a_type, a_mode]);
