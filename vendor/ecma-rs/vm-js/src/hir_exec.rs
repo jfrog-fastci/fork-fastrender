@@ -14875,7 +14875,13 @@ mod compiled_hir_async_await_semantics_tests {
       "expected script completion value to equal global __p promise"
     );
  
-    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+    let state = rt.heap.promise_state(promise_obj)?;
+    assert_eq!(
+      state,
+      PromiseState::Fulfilled,
+      "expected Promise to be fulfilled, got {state:?} with result {:?}",
+      rt.heap.promise_result(promise_obj)?
+    );
     let resolved = rt
       .heap
       .promise_result(promise_obj)?
@@ -15582,6 +15588,170 @@ mod hir_async_await_in_pattern_binding_regression_tests {
         f;
       "#,
       ExpectedValue::String("11"),
+    )
+  }
+}
+
+#[cfg(test)]
+mod hir_async_await_control_flow_regression_tests {
+  use crate::function::{CallHandler, FunctionData};
+  use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOptions};
+
+  #[derive(Clone, Copy, Debug)]
+  enum ExpectedValue {
+    Bool(bool),
+    String(&'static str),
+  }
+
+  fn run_compiled_async_fn_case(script_src: &str, expected: ExpectedValue) -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let script = CompiledScript::compile_script(&mut rt.heap, "<inline>", script_src)?;
+    assert!(
+      !script.requires_ast_fallback,
+      "async/await regression tests must execute in the compiled (HIR) script path"
+    );
+
+    let func_value = rt.exec_compiled_script(script)?;
+    let Value::Object(func_obj) = func_value else {
+      panic!("expected script to evaluate to a function object, got {func_value:?}");
+    };
+
+    let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+    assert!(
+      matches!(call_handler, CallHandler::User(_)),
+      "expected async function to be a compiled user function, got {call_handler:?}"
+    );
+
+    // Async functions may still be tagged for call-time AST fallback; clear that marker so this test
+    // exercises the compiled async/await evaluator.
+    //
+    // When compiled async function execution is enabled by default, this becomes a no-op.
+    if matches!(
+      rt.heap.get_function_data(func_obj)?,
+      FunctionData::EcmaFallback { .. }
+    ) {
+      rt.heap.set_function_data(func_obj, FunctionData::None)?;
+    }
+
+    // Calling the async function should execute via the HIR async evaluator and produce a Promise.
+    let promise = {
+      let mut scope = rt.heap.scope();
+      rt.vm
+        .call_without_host(&mut scope, Value::Object(func_obj), Value::Undefined, &[])?
+    };
+    let promise_root = rt.heap.add_root(promise)?;
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+      panic!("expected async function call to return a Promise object");
+    };
+    let state = rt.heap.promise_state(promise_obj)?;
+    assert_eq!(
+      state,
+      PromiseState::Fulfilled,
+      "expected Promise to be fulfilled, got {state:?} with result {:?}",
+      rt.heap.promise_result(promise_obj)?
+    );
+    let resolved = rt
+      .heap
+      .promise_result(promise_obj)?
+      .expect("fulfilled Promise missing [[PromiseResult]]");
+
+    match expected {
+      ExpectedValue::Bool(b) => {
+        assert!(
+          matches!(resolved, Value::Bool(m) if m == b),
+          "expected Promise to fulfill with {b}, got {resolved:?}"
+        );
+      }
+      ExpectedValue::String(s) => {
+        let Value::String(str_obj) = resolved else {
+          panic!("expected Promise to fulfill with a String, got {resolved:?}");
+        };
+        assert_eq!(rt.heap.get_string(str_obj)?.to_utf8_lossy(), s);
+      }
+    }
+
+    rt.heap.remove_root(promise_root);
+    Ok(())
+  }
+
+  #[test]
+  fn with_statement_await_restores_lexical_env() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f(){
+          delete globalThis.a;
+          let obj = {a: 1};
+          let inside;
+          with (obj) {
+            inside = await Promise.resolve(a); // should read obj.a
+          }
+          return inside === 1 && typeof a === 'undefined';
+        }
+        f;
+      "#,
+      ExpectedValue::Bool(true),
+    )
+  }
+
+  #[test]
+  fn switch_with_await_in_discriminant_and_case_selector() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f(){
+          let v = '';
+          switch (await Promise.resolve(2)) {
+            case await Promise.resolve(1): v = 'one'; break;
+            case await Promise.resolve(2): v = 'two'; break;
+            default: v = 'other';
+          }
+          return v;
+        }
+        f;
+      "#,
+      ExpectedValue::String("two"),
+    )
+  }
+
+  #[test]
+  fn labelled_continue_across_await() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f(){
+          let out = '';
+          outer: for (let i=0;i<2;i++) {
+            for (let j=0;j<2;j++) {
+              await Promise.resolve(0);
+              if (i===0 && j===0) continue outer;
+              out += ''+i+j;
+            }
+          }
+          return out;
+        }
+        f;
+      "#,
+      ExpectedValue::String("1011"),
+    )
+  }
+
+  #[test]
+  fn optional_chaining_short_circuits_awaited_computed_key() -> Result<(), VmError> {
+    run_compiled_async_fn_case(
+      r#"
+        async function f(){
+          let side = false;
+          let obj = null;
+          let v = obj?.[await (side = true, Promise.resolve('x'))];
+          return v === undefined && side === false;
+        }
+        f;
+      "#,
+      ExpectedValue::Bool(true),
     )
   }
 }
