@@ -1,7 +1,6 @@
-use super::{
-  MediaAudioInfo, MediaCodec, MediaError, MediaPacket, MediaResult, MediaTrackInfo, MediaTrackType,
-  MediaVideoInfo,
-};
+use super::{MediaPacket, MediaResult, MediaTrackInfo};
+#[cfg(feature = "media_mp4")]
+use super::{MediaAudioInfo, MediaCodec, MediaError, MediaTrackType, MediaVideoInfo};
 #[cfg(feature = "media_mp4")]
 use std::collections::HashMap;
 #[cfg(feature = "media_mp4")]

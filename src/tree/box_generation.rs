@@ -63,7 +63,6 @@ use crate::tree::box_tree::CrossOriginAttribute;
 use crate::tree::box_tree::ForeignObjectInfo;
 use crate::tree::box_tree::FormControl;
 use crate::tree::box_tree::FormControlKind;
-use crate::tree::box_tree::ImePreeditPaintState;
 use crate::tree::box_tree::GeneratedPseudoElement;
 use crate::tree::box_tree::ImageDecodingAttribute;
 use crate::tree::box_tree::ImageLoadingAttribute;
