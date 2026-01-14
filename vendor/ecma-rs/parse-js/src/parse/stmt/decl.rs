@@ -77,7 +77,25 @@ impl<'a> Parser<'a> {
   ) -> SyntaxResult<Node<VarDecl>> {
     self.with_loc(|p| {
       let export = p.consume_if(TT::KeywordExport).is_match();
+      let mode_tok = p.peek();
       let mode = p.var_decl_mode()?;
+      if p.is_strict_ecmascript() && matches!(mode, VarDeclMode::AwaitUsing) {
+        // `await using` is only allowed when `await` is a reserved word *and* `await` expressions
+        // are permitted (ECMA-262 grammar parameters `Await` / `AwaitExpression`), i.e. in modules
+        // (top-level await) and inside async functions.
+        //
+        // Note: `vm-js` also supports "async classic scripts" by retrying parse with top-level
+        // `await` enabled; that mode does *not* reserve `await` as an identifier. We keep
+        // `await using` disallowed there to match spec Script grammar and `vm-js` early-error
+        // expectations.
+        let await_using_allowed = ctx.rules.await_expr_allowed && !ctx.rules.await_allowed;
+        if !await_using_allowed {
+          return Err(mode_tok.loc.error(
+            SyntaxErrorType::ExpectedSyntax("`await using` is only valid in modules or async functions"),
+            Some(TT::KeywordAwait),
+          ));
+        }
+      }
       let mut declarators = Vec::new();
       loop {
         // Explicit Resource Management declarations (`using` / `await using`) only allow a
