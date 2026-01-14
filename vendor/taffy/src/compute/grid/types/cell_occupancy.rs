@@ -82,12 +82,16 @@ impl CellOccupancyMatrix {
     primary_range: Range<i16>,
     secondary_range: Range<i16>,
   ) -> bool {
-    if primary_range.start < 0 || primary_range.end > self.track_counts(primary_axis).len() as i16 {
+    let primary_len = self.track_counts(primary_axis).len().min(i32::MAX as usize) as i32;
+    let secondary_len = self
+      .track_counts(primary_axis.other_axis())
+      .len()
+      .min(i32::MAX as usize) as i32;
+
+    if primary_range.start < 0 || (primary_range.end as i32) > primary_len {
       return false;
     }
-    if secondary_range.start < 0
-      || secondary_range.end > self.track_counts(primary_axis.other_axis()).len() as i16
-    {
+    if secondary_range.start < 0 || (secondary_range.end as i32) > secondary_len {
       return false;
     }
     true
@@ -96,15 +100,25 @@ impl CellOccupancyMatrix {
   /// Expands the grid (potentially in all 4 directions) in order to ensure that the specified range fits within the allocated space
   fn expand_to_fit_range(&mut self, row_range: Range<i16>, col_range: Range<i16>) {
     // Calculate number of rows and columns missing to accommodate ranges (if any)
-    let req_negative_rows = max(-row_range.start, 0);
-    let req_positive_rows = max(row_range.end - self.rows.len() as i16, 0);
-    let req_negative_cols = max(-col_range.start, 0);
-    let req_positive_cols = max(col_range.end - self.columns.len() as i16, 0);
+    let req_negative_rows =
+      max(-(row_range.start as i32), 0).min(u16::MAX as i32) as u16;
+    let req_positive_rows = max(
+      (row_range.end as i32) - (self.rows.len().min(i32::MAX as usize) as i32),
+      0,
+    )
+    .min(u16::MAX as i32) as u16;
+    let req_negative_cols =
+      max(-(col_range.start as i32), 0).min(u16::MAX as i32) as u16;
+    let req_positive_cols = max(
+      (col_range.end as i32) - (self.columns.len().min(i32::MAX as usize) as i32),
+      0,
+    )
+    .min(u16::MAX as i32) as u16;
 
     let old_row_count = self.rows.len();
     let old_col_count = self.columns.len();
-    let new_row_count = old_row_count + (req_negative_rows + req_positive_rows) as usize;
-    let new_col_count = old_col_count + (req_negative_cols + req_positive_cols) as usize;
+    let new_row_count = old_row_count + (req_negative_rows as usize) + (req_positive_rows as usize);
+    let new_col_count = old_col_count + (req_negative_cols as usize) + (req_positive_cols as usize);
 
     let mut data = Vec::with_capacity(new_row_count * new_col_count);
 
@@ -143,10 +157,16 @@ impl CellOccupancyMatrix {
 
     // Update self with new data
     self.inner = Grid::from_vec(data, new_col_count);
-    self.rows.negative_implicit += req_negative_rows as u16;
-    self.rows.positive_implicit += req_positive_rows as u16;
-    self.columns.negative_implicit += req_negative_cols as u16;
-    self.columns.positive_implicit += req_positive_cols as u16;
+    self.rows.negative_implicit = self.rows.negative_implicit.saturating_add(req_negative_rows);
+    self.rows.positive_implicit = self.rows.positive_implicit.saturating_add(req_positive_rows);
+    self.columns.negative_implicit = self
+      .columns
+      .negative_implicit
+      .saturating_add(req_negative_cols);
+    self.columns.positive_implicit = self
+      .columns
+      .positive_implicit
+      .saturating_add(req_positive_cols);
   }
 
   /// Mark an area of the matrix as occupied, expanding the allocated space as necessary to accommodate the passed area.
@@ -269,11 +289,15 @@ impl CellOccupancyMatrix {
     start_at: OriginZeroLine,
     kind: CellOccupancyState,
   ) -> Option<OriginZeroLine> {
-    let track_counts = self.track_counts(track_type.other_axis());
-    let track_computed_index = track_counts.oz_line_to_next_track(start_at);
+    let other_track_counts = self.track_counts(track_type.other_axis());
+    let track_computed_index = other_track_counts.oz_line_to_next_track(start_at);
 
-    // Index out of boudnds: no track to search
-    if track_computed_index < 0 || track_computed_index >= self.inner.rows() as i16 {
+    let limit = match track_type {
+      AbsoluteAxis::Horizontal => self.inner.rows(),
+      AbsoluteAxis::Vertical => self.inner.cols(),
+    };
+    // Index out of bounds: no track to search
+    if track_computed_index < 0 || (track_computed_index as usize) >= limit {
       return None;
     }
 
@@ -288,6 +312,102 @@ impl CellOccupancyMatrix {
         .rposition(|item| *item == kind),
     };
 
-    maybe_index.map(|idx| track_counts.track_to_prev_oz_line(idx as u16))
+    let primary_track_counts = self.track_counts(track_type);
+    maybe_index.map(|idx| {
+      let idx_u16 = idx.min(u16::MAX as usize) as u16;
+      primary_track_counts.track_to_prev_oz_line(idx_u16)
+    })
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn is_area_in_range_does_not_wrap_when_track_counts_exceed_i16_max() {
+    // Regression: casting `len()` to i16 can wrap negative for large explicit grids, causing the
+    // occupancy matrix to incorrectly think small ranges are out-of-bounds (and expand massively).
+    let columns = TrackCounts::from_raw(0, 40_000, 0);
+    let rows = TrackCounts::from_raw(0, 1, 0);
+    let mut matrix = CellOccupancyMatrix::with_track_counts(columns, rows);
+
+    assert!(matrix.is_area_in_range(AbsoluteAxis::Horizontal, 0..1, 0..1));
+
+    matrix.mark_area_as(
+      AbsoluteAxis::Horizontal,
+      Line {
+        start: OriginZeroLine(0),
+        end: OriginZeroLine(1),
+      },
+      Line {
+        start: OriginZeroLine(0),
+        end: OriginZeroLine(1),
+      },
+      CellOccupancyState::AutoPlaced,
+    );
+
+    assert_eq!(matrix.columns.positive_implicit, 0);
+    assert_eq!(matrix.columns.negative_implicit, 0);
+  }
+
+  #[test]
+  fn last_of_type_converts_result_using_primary_axis_track_counts() {
+    // Regression: last_of_type previously converted the found cell index using the *other* axis'
+    // TrackCounts, which produces wrong OriginZero lines when the two axes have different negative
+    // implicit offsets.
+    let columns = TrackCounts::from_raw(0, 4, 0);
+    let rows = TrackCounts::from_raw(1, 2, 0);
+    let mut matrix = CellOccupancyMatrix::with_track_counts(columns, rows);
+
+    // Mark the cell at (row line 0, col line 2) as occupied.
+    matrix.mark_area_as(
+      AbsoluteAxis::Horizontal,
+      Line {
+        start: OriginZeroLine(2),
+        end: OriginZeroLine(3),
+      },
+      Line {
+        start: OriginZeroLine(0),
+        end: OriginZeroLine(1),
+      },
+      CellOccupancyState::AutoPlaced,
+    );
+
+    let out = matrix.last_of_type(
+      AbsoluteAxis::Horizontal,
+      OriginZeroLine(0),
+      CellOccupancyState::AutoPlaced,
+    );
+    assert_eq!(out, Some(OriginZeroLine(2)));
+  }
+
+  #[test]
+  fn last_of_type_uses_correct_matrix_dimension_for_bounds_check() {
+    // Regression: last_of_type previously compared a column index against the matrix row count,
+    // incorrectly returning None for non-square matrices.
+    let columns = TrackCounts::from_raw(0, 5, 0);
+    let rows = TrackCounts::from_raw(0, 2, 0);
+    let mut matrix = CellOccupancyMatrix::with_track_counts(columns, rows);
+
+    matrix.mark_area_as(
+      AbsoluteAxis::Horizontal,
+      Line {
+        start: OriginZeroLine(4),
+        end: OriginZeroLine(5),
+      },
+      Line {
+        start: OriginZeroLine(0),
+        end: OriginZeroLine(1),
+      },
+      CellOccupancyState::AutoPlaced,
+    );
+
+    let out = matrix.last_of_type(
+      AbsoluteAxis::Vertical,
+      OriginZeroLine(4),
+      CellOccupancyState::AutoPlaced,
+    );
+    assert_eq!(out, Some(OriginZeroLine(0)));
   }
 }
