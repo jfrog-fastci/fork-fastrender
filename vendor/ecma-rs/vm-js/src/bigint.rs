@@ -969,6 +969,111 @@ impl JsBigInt {
     Self::from_twos_complement(out, width)
   }
 
+  /// Converts this BigInt to an IEEE-754 binary64 (`f64`) using round-to-nearest, ties-to-even.
+  ///
+  /// This matches ECMAScript `BigInt::toNumber` semantics used by `Number(x)` / `new Number(x)`.
+  ///
+  /// Spec: <https://tc39.es/ecma262/#sec-bigint::tonumber>
+  pub(crate) fn to_f64_round_ties_to_even(&self) -> f64 {
+    if self.is_zero() {
+      // BigInt has no -0; `-0n` canonicalizes to `0n`.
+      return 0.0;
+    }
+
+    let negative = self.is_negative();
+    let mag = &self.limbs;
+
+    // `bit_len` is the minimal k such that 2^(k-1) <= |x| < 2^k.
+    let bit_len = self.bit_len();
+
+    // Any BigInt with |x| >= 2^1024 overflows the finite range of f64 and converts to Infinity.
+    if bit_len > 1024 {
+      return if negative { f64::NEG_INFINITY } else { f64::INFINITY };
+    }
+
+    // Integers up to 53 bits are exactly representable in binary64.
+    if bit_len <= 53 {
+      let mut v: u64 = 0;
+      for (i, limb) in mag.iter().enumerate() {
+        v |= (*limb as u64) << (i * 32);
+      }
+      let out = v as f64;
+      return if negative { -out } else { out };
+    }
+
+    // Extract the top 53 bits (the implicit leading 1 + 52-bit mantissa payload).
+    let shift = bit_len - 53;
+    debug_assert!(shift >= 1);
+    let word_shift = (shift / 32) as usize;
+    let bit_shift = (shift % 32) as u32;
+
+    // Read enough limbs to cover the shifted window (up to 53 bits).
+    let mut chunk: u128 = 0;
+    for i in 0..3usize {
+      if let Some(&limb) = mag.get(word_shift + i) {
+        chunk |= (limb as u128) << (i * 32);
+      }
+    }
+    let mut mantissa: u64 = if bit_shift == 0 {
+      chunk as u64
+    } else {
+      (chunk >> bit_shift) as u64
+    };
+
+    // Determine the rounding direction using the "guard + sticky" technique.
+    //
+    // - guard: the most significant discarded bit.
+    // - sticky: OR of all less significant discarded bits.
+    let guard = Self::get_bit_mag(mag, shift - 1);
+    let mut sticky = false;
+    if shift > 1 {
+      let sticky_bits = shift - 1;
+      let full_limbs = (sticky_bits / 32) as usize;
+      let rem_bits = (sticky_bits % 32) as u32;
+
+      // Any non-zero limb below the partial limb makes the remainder non-zero.
+      for &limb in mag.iter().take(full_limbs) {
+        if limb != 0 {
+          sticky = true;
+          break;
+        }
+      }
+
+      if !sticky && rem_bits != 0 {
+        if let Some(&limb) = mag.get(full_limbs) {
+          let mask = (1u32 << rem_bits) - 1;
+          if (limb & mask) != 0 {
+            sticky = true;
+          }
+        }
+      }
+    }
+
+    // Round to nearest, ties to even.
+    if guard && (sticky || (mantissa & 1) == 1) {
+      mantissa = mantissa.wrapping_add(1);
+    }
+
+    // Normalize if rounding overflowed the 53-bit mantissa window.
+    let mut exponent = bit_len - 1;
+    if mantissa == (1u64 << 53) {
+      mantissa >>= 1;
+      exponent += 1;
+      // Exponent overflow produces Infinity.
+      if exponent > 1023 {
+        return if negative { f64::NEG_INFINITY } else { f64::INFINITY };
+      }
+    }
+
+    debug_assert!((1u64 << 52) <= mantissa && mantissa < (1u64 << 53));
+    debug_assert!(exponent <= 1023);
+
+    let sign_bit = if negative { 1u64 << 63 } else { 0 };
+    let exp_bits = (exponent + 1023) << 52;
+    let frac_bits = mantissa & ((1u64 << 52) - 1);
+    f64::from_bits(sign_bit | exp_bits | frac_bits)
+  }
+
   pub fn from_f64_exact(n: f64) -> Result<Option<Self>, VmError> {
     if !n.is_finite() {
       return Ok(None);

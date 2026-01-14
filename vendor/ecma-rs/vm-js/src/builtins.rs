@@ -22620,6 +22620,46 @@ pub fn string_iterator_next(
   Ok(Value::Object(result))
 }
 
+/// Shared argument conversion for `Number(value)` / `new Number(value)`.
+fn to_number_for_number_constructor(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<f64, VmError> {
+  // `Number` is specified in terms of `ToNumeric`, followed by a BigInt->Number conversion:
+  // - Unary `+` still uses `ToNumber` and must throw on BigInt.
+  // - `Number(x)` / `new Number(x)` accept BigInt and round to nearest-even.
+  match value {
+    Value::Number(n) => Ok(n),
+    Value::BigInt(b) => Ok(scope.heap().get_bigint(b)?.to_f64_round_ties_to_even()),
+    _ => {
+      // Root the input across `ToPrimitive`/`ToNumber`, which can allocate, GC, and/or invoke JS.
+      let mut scope = scope.reborrow();
+      scope.push_root(value)?;
+
+      let prim = match value {
+        Value::Object(_) => scope.to_primitive(
+          vm,
+          host,
+          hooks,
+          value,
+          crate::conversion_ops::ToPrimitiveHint::Number,
+        )?,
+        other => other,
+      };
+      scope.push_root(prim)?;
+      debug_assert!(!matches!(prim, Value::Object(_)), "ToPrimitive returned object");
+
+      match prim {
+        Value::BigInt(b) => Ok(scope.heap().get_bigint(b)?.to_f64_round_ties_to_even()),
+        other => scope.heap_mut().to_number_with_tick(other, || vm.tick()),
+      }
+    }
+  }
+}
+
 /// `Number` constructor called as a function.
 pub fn number_constructor_call(
   vm: &mut Vm,
@@ -22632,7 +22672,7 @@ pub fn number_constructor_call(
 ) -> Result<Value, VmError> {
   let n = match args.first().copied() {
     None => 0.0,
-    Some(v) => scope.to_number(vm, host, hooks, v)?,
+    Some(v) => to_number_for_number_constructor(vm, scope, host, hooks, v)?,
   };
   Ok(Value::Number(n))
 }
@@ -22648,9 +22688,10 @@ pub fn number_constructor_construct(
   new_target: Value,
 ) -> Result<Value, VmError> {
   let intr = require_intrinsics(vm)?;
+  // `new Number(x)` shares the same BigInt conversion semantics as `Number(x)`.
   let prim = match args.first().copied() {
     None => 0.0,
-    Some(v) => scope.to_number(vm, host, hooks, v)?,
+    Some(v) => to_number_for_number_constructor(vm, scope, host, hooks, v)?,
   };
 
   let proto = crate::spec_ops::get_prototype_from_constructor_with_host_and_hooks(
@@ -34552,6 +34593,78 @@ mod dynamic_function_constructor_body_empty_tests {
           if (fU.toString() !== "function anonymous(\n) {\nundefined\n}") return false;
 
           return true;
+        })()
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod number_bigint_conversion_tests {
+  use crate::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+
+  fn new_runtime() -> JsRuntime {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    JsRuntime::new(vm, heap).unwrap()
+  }
+
+  #[test]
+  fn number_constructor_accepts_bigint() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    assert_eq!(rt.exec_script("Number(0n)")?, Value::Number(0.0));
+    assert_eq!(rt.exec_script("Number(1n)")?, Value::Number(1.0));
+    assert_eq!(rt.exec_script("new Number(1n).valueOf()")?, Value::Number(1.0));
+    assert_eq!(
+      rt.exec_script("Number({ valueOf() { return 2n; } })")?,
+      Value::Number(2.0)
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn number_constructor_bigint_rounding_matches_spec() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        (function() {
+          const two53 = 2n ** 53n;
+          return (
+            Number(two53 - 1n) === 9007199254740991 &&
+            Number(two53) === 9007199254740992 &&
+            // Tie rounds to even (2^53 is even).
+            Number(two53 + 1n) === 9007199254740992 &&
+            Number(two53 + 2n) === 9007199254740994 &&
+            // Tie rounds away from 2^53+2 because the truncated mantissa is odd.
+            Number(two53 + 3n) === 9007199254740996 &&
+
+            Number(-(two53 + 1n)) === -9007199254740992 &&
+
+            // Large BigInt conversions match Number exponentiation for powers of two.
+            Number(2n ** 1023n) === 2 ** 1023 &&
+            Number(2n ** 1024n) === Infinity &&
+
+            // Boundary cases near MAX_VALUE.
+            Number((2n ** 1024n) - (2n ** 971n)) === Number.MAX_VALUE &&
+            Number((2n ** 1024n) - (2n ** 970n)) === Infinity
+          );
+        })()
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn unary_plus_bigint_still_throws() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        (function () {
+          try { +0n; } catch (e) { return e instanceof TypeError; }
+          return false;
         })()
       "#,
     )?;
