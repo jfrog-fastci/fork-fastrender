@@ -5272,8 +5272,20 @@ fn map_page_key_action(
         KeyAction::ArrowDown
       }
     }
-    VirtualKeyCode::PageUp => KeyAction::PageUp,
-    VirtualKeyCode::PageDown => KeyAction::PageDown,
+    VirtualKeyCode::PageUp => {
+      if modifiers.shift() {
+        KeyAction::ShiftPageUp
+      } else {
+        KeyAction::PageUp
+      }
+    }
+    VirtualKeyCode::PageDown => {
+      if modifiers.shift() {
+        KeyAction::ShiftPageDown
+      } else {
+        KeyAction::PageDown
+      }
+    }
     VirtualKeyCode::Home => {
       if modifiers.shift() {
         KeyAction::ShiftHome
