@@ -9076,6 +9076,44 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           return Ok(Value::Undefined);
         }
 
+        // Determine old parents for any Node arguments so we can keep cached `childNodes` NodeLists
+        // live when nodes are moved across parents (e.g. `a.append(b)` moves `b` out of its old
+        // parent).
+        //
+        // Also track fragment-like nodes: inserting a DocumentFragment empties it, so cached
+        // `childNodes` NodeLists on that fragment must be updated too.
+        let (old_parents, fragment_nodes): (Vec<NodeId>, Vec<NodeId>) = self.with_dom_host(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            let mut old_parents: Vec<NodeId> = Vec::new();
+            let mut fragment_nodes: Vec<NodeId> = Vec::new();
+            for item in &nodes {
+              let NodeOrDomString::Node(id) = item else {
+                continue;
+              };
+              if id.index() >= dom.nodes_len() {
+                continue;
+              }
+              if let Some(parent) = dom.parent_node(*id) {
+                old_parents.push(parent);
+              }
+              if matches!(
+                &dom.node(*id).kind,
+                NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. }
+              ) {
+                fragment_nodes.push(*id);
+              }
+            }
+
+            // Avoid redundant sync work.
+            old_parents.sort_by_key(|id| id.index());
+            old_parents.dedup_by_key(|id| id.index());
+            fragment_nodes.sort_by_key(|id| id.index());
+            fragment_nodes.dedup_by_key(|id| id.index());
+
+            (old_parents, fragment_nodes)
+          }))
+        })?;
+
         let result: Result<(), DomError> = self.with_dom_host(vm, |host| {
           Ok(host.mutate_dom(|dom| {
             // Minimal WHATWG "convert nodes into a node" algorithm:
@@ -9152,6 +9190,29 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           Ok(()) => {
             self.sync_cached_child_nodes_for_wrapper(vm, scope, wrapper_obj, parent_id, document_id)?;
             self.sync_cached_children_for_wrapper(vm, scope, wrapper_obj, parent_id, document_id)?;
+            // Sync old parents for moved nodes (if wrappers exist / had `childNodes` cached).
+            for old_parent in old_parents {
+              if old_parent == parent_id {
+                continue;
+              }
+              let wrapper = {
+                require_dom_platform_mut(vm)?
+                  .get_existing_wrapper_for_document_id(scope.heap(), document_id, old_parent)
+              };
+              if let Some(wrapper) = wrapper {
+                self.sync_cached_child_nodes_for_wrapper(vm, scope, wrapper, old_parent, document_id)?;
+              }
+            }
+            // Sync fragment nodes that were emptied by insertion.
+            for fragment_id in fragment_nodes {
+              let wrapper = {
+                require_dom_platform_mut(vm)?
+                  .get_existing_wrapper_for_document_id(scope.heap(), document_id, fragment_id)
+              };
+              if let Some(wrapper) = wrapper {
+                self.sync_cached_child_nodes_for_wrapper(vm, scope, wrapper, fragment_id, document_id)?;
+              }
+            }
             self.sync_live_html_collections(vm, scope)?;
             Ok(Value::Undefined)
           }
@@ -9975,6 +10036,19 @@ mod window_document_tests {
           if (kids[0].id !== 'x') return false;
           if (nodes.length !== 2) return false;
           if (nodes.item(1).id !== 'x') return false;
+
+          // Element.append / ParentNode.append can also move nodes across parents; ensure cached
+          // `childNodes` NodeLists on the *old* parent are kept live.
+          const p1 = document.createElement('div');
+          const p2 = document.createElement('div');
+          const x = document.createElement('x');
+          p1.appendChild(x);
+          const p1Nodes = p1.childNodes;
+          const p2Nodes = p2.childNodes;
+          p2.append(x);
+          if (p1Nodes.length !== 0) return false;
+          if (p2Nodes.length !== 1) return false;
+          if (p2Nodes[0] !== x) return false;
 
           return true;
         } catch (e) {
