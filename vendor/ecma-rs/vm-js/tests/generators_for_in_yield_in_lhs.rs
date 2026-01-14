@@ -57,3 +57,59 @@ fn generator_for_in_yield_in_const_object_pattern_default_value() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_for_in_yield_in_const_object_pattern_computed_key_multiple_iterations() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          function* g() {
+            let out = [];
+            for (const {[(yield 1)]: x} in {a: 0, bb: 0}) {
+              out.push(x);
+            }
+            return out.join(",");
+          }
+          var it = g();
+          var r1 = it.next();
+          if (r1.done !== false || r1.value !== 1) return false;
+          var r2 = it.next("length");
+          if (r2.done !== false || r2.value !== 1) return false;
+          var r3 = it.next("length");
+          return r3.done === true && r3.value === "1,2";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_in_yield_in_const_object_pattern_default_value_multiple_iterations() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          function* g() {
+            let out = [];
+            for (const {a: x = yield 1} in {a: 0, b: 0}) {
+              out.push(x);
+            }
+            return out.join(",");
+          }
+          var it = g();
+          var r1 = it.next();
+          if (r1.done !== false || r1.value !== 1) return false;
+          var r2 = it.next(10);
+          if (r2.done !== false || r2.value !== 1) return false;
+          var r3 = it.next(20);
+          return r3.done === true && r3.value === "10,20";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
