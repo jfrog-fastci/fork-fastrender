@@ -2694,6 +2694,46 @@ fn policy_error(reason: impl Into<String>) -> Error {
   Error::Other(format!("fetch blocked by policy: {}", reason.into()))
 }
 
+fn capped_range_end(start: u64, end: u64, max_bytes: usize) -> u64 {
+  if max_bytes == 0 {
+    // Avoid underflow in `start + max_bytes - 1`. We still form a syntactically valid range and
+    // callers clear the response body at the end.
+    start
+  } else {
+    let cap_end = start.saturating_add((max_bytes as u64).saturating_sub(1));
+    end.min(cap_end)
+  }
+}
+
+fn capped_range_len(start: u64, capped_end: u64, max_bytes: usize) -> usize {
+  if max_bytes == 0 {
+    return 0;
+  }
+  let len_u64 = capped_end.saturating_sub(start).saturating_add(1);
+  usize::try_from(len_u64).unwrap_or(max_bytes)
+}
+
+fn enforce_range_request_size_limit(
+  policy: Option<&ResourcePolicy>,
+  start: u64,
+  end: u64,
+  max_bytes: usize,
+) -> Result<(u64, usize)> {
+  let capped_end = capped_range_end(start, end, max_bytes);
+  let requested_len = capped_range_len(start, capped_end, max_bytes);
+
+  if let Some(policy) = policy {
+    let limit = policy.allowed_response_limit()?;
+    if requested_len > limit {
+      return Err(policy_error(format!(
+        "byte range request exceeds max_response_bytes limit ({requested_len} bytes > {limit} bytes)"
+      )));
+    }
+  }
+
+  Ok((capped_end, requested_len))
+}
+
 /// Strip a leading "User-Agent:" prefix so logs don't double-prefix when callers
 /// pass a full header value. Case-insensitive and trims HTTP OWS (SP/HTAB) after the prefix.
 pub fn normalize_user_agent_for_log(ua: &str) -> &str {
@@ -4008,6 +4048,9 @@ pub trait ResourceFetcher: Send + Sync {
   /// Semantics:
   /// - The returned `bytes` are always capped to `max_bytes` (even if the requested range is
   ///   larger, or the origin ignores the `Range` header).
+  /// - When a [`ResourcePolicy`] is enforced, the requested range length (after applying the
+  ///   `max_bytes` cap) must not exceed the policy's per-response limit. Implementations should
+  ///   reject oversized ranges instead of silently truncating them.
   /// - For HTTP(S) URLs, this issues a `GET` with a `Range: bytes=start-end` header via
   ///   [`ResourceFetcher::fetch_http_request`] so implementations can keep their existing header
   ///   construction, caching, and CORS logic.
@@ -4777,15 +4820,8 @@ impl ResourceFetcher for HttpFetcher {
         "direct network is disabled (built without `direct_network`); inject a ResourceFetcher that proxies over IPC",
       ))),
       ResourceScheme::File | ResourceScheme::Relative => {
-        let limit = self.policy.allowed_response_limit()?;
-        let max_bytes = max_bytes.min(limit);
-
-        let capped_end = if max_bytes == 0 {
-          start
-        } else {
-          let cap_end = start.saturating_add((max_bytes as u64).saturating_sub(1));
-          end.min(cap_end)
-        };
+        let (capped_end, target_len) =
+          enforce_range_request_size_limit(Some(&self.policy), start, end, max_bytes)?;
 
         let url_owned;
         let file_url = match classify_scheme(url) {
@@ -4802,21 +4838,14 @@ impl ResourceFetcher for HttpFetcher {
           file_url,
           start,
           capped_end,
-          max_bytes,
+          target_len,
         )
       }
       ResourceScheme::Data => {
-        let limit = self.policy.allowed_response_limit()?;
-        let max_bytes = max_bytes.min(limit);
+        let (capped_end, target_len) =
+          enforce_range_request_size_limit(Some(&self.policy), start, end, max_bytes)?;
 
-        let capped_end = if max_bytes == 0 {
-          start
-        } else {
-          let cap_end = start.saturating_add((max_bytes as u64).saturating_sub(1));
-          end.min(cap_end)
-        };
-
-        if max_bytes == 0 {
+        if target_len == 0 {
           return Ok(FetchedResource::new(Vec::new(), None));
         }
 
@@ -4854,8 +4883,8 @@ impl ResourceFetcher for HttpFetcher {
         let available_end = res.bytes.len().saturating_sub(1);
         let end_idx = end_idx.min(available_end);
         res.bytes = res.bytes[start_idx..=end_idx].to_vec();
-        if res.bytes.len() > max_bytes {
-          res.bytes.truncate(max_bytes);
+        if res.bytes.len() > target_len {
+          res.bytes.truncate(target_len);
         }
         self.policy.reserve_budget(res.bytes.len())?;
         Ok(res)
@@ -10291,18 +10320,8 @@ impl ResourceFetcher for HttpFetcher {
     render_control::check_root(render_stage_hint_for_context(kind, url)).map_err(Error::Render)?;
 
     let scheme = self.policy.ensure_url_allowed(url)?;
-    let limit = self.policy.allowed_response_limit()?;
-    let max_bytes = max_bytes.min(limit);
-
-    // Clamp the requested end so we never return more than `max_bytes`.
-    let capped_end = if max_bytes == 0 {
-      // Avoid underflow in `start + max_bytes - 1`. We still form a syntactically valid range and
-      // then clear the body at the end.
-      start
-    } else {
-      let cap_end = start.saturating_add((max_bytes as u64).saturating_sub(1));
-      end.min(cap_end)
-    };
+    let (capped_end, max_bytes) =
+      enforce_range_request_size_limit(Some(&self.policy), start, end, max_bytes)?;
 
     match scheme {
       ResourceScheme::Http | ResourceScheme::Https => {
@@ -13360,6 +13379,9 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
       policy.ensure_url_allowed(url)?;
     }
 
+    let (capped_end, max_bytes) =
+      enforce_range_request_size_limit(self.policy.as_ref(), start, end, max_bytes)?;
+
     // Use the same cache partitioning as `fetch_with_request` so range fetches can reuse cached
     // full responses, while remaining isolated across origins/credentials.
     let key = CacheKey::new_with_origin(
@@ -13373,12 +13395,6 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
       if max_bytes == 0 {
         return Ok(clone_fetched_resource_with_bytes(cached, Vec::new()));
       }
-
-      // Clamp the requested end so we never return more than `max_bytes`.
-      let capped_end = {
-        let cap_end = start.saturating_add((max_bytes as u64).saturating_sub(1));
-        end.min(cap_end)
-      };
 
       // Range semantics when serving from cached full responses:
       // - Clamp end to the last available byte
@@ -13424,7 +13440,13 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
     // Range fetches intentionally bypass the single-flight map: `InFlightKey` does not encode the
     // requested byte range, so de-duplicating could return the wrong bytes or collide with full
     // fetches.
-    let res = self.inner.fetch_range_with_request(req, range, max_bytes)?;
+    let mut res = self.inner.fetch_range_with_request(req, range, max_bytes)?;
+    // Do not trust downstream implementations to always respect `max_bytes`.
+    if max_bytes == 0 {
+      res.bytes.clear();
+    } else if res.bytes.len() > max_bytes {
+      res.bytes.truncate(max_bytes);
+    }
     reserve_policy_bytes(&self.policy, &res)?;
     Ok(res)
   }
@@ -25399,6 +25421,125 @@ mod tests {
       full_calls.load(Ordering::SeqCst),
       1,
       "expected cached range fetch to avoid calling the inner fetcher"
+    );
+  }
+
+  #[test]
+  fn caching_fetcher_fetch_range_with_request_rejects_ranges_exceeding_policy_limit() {
+    #[derive(Clone)]
+    struct StubFetcher {
+      bytes: Vec<u8>,
+      fetch_calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for StubFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected CachingFetcher to call fetch_with_request");
+      }
+
+      fn fetch_with_request(&self, _req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.fetch_calls.fetch_add(1, Ordering::SeqCst);
+        let mut res =
+          FetchedResource::new(self.bytes.clone(), Some("application/octet-stream".to_string()));
+        res.status = Some(200);
+        Ok(res)
+      }
+
+      fn fetch_range_with_request(
+        &self,
+        _req: FetchRequest<'_>,
+        _range: std::ops::RangeInclusive<u64>,
+        _max_bytes: usize,
+      ) -> Result<FetchedResource> {
+        panic!("expected range request to be rejected by policy before reaching inner fetcher");
+      }
+    }
+
+    let policy = ResourcePolicy::new().with_max_response_bytes(16);
+    let url = "http://example.com/asset.bin";
+    let req = FetchRequest::new(url, FetchDestination::Fetch);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fetcher = CachingFetcher::new(StubFetcher {
+      bytes: vec![0u8; 32],
+      fetch_calls: Arc::clone(&calls),
+    })
+    .with_policy(policy);
+
+    // Seed cache with a full response larger than the policy limit.
+    fetcher.fetch_with_request(req).expect("seed cache");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    let err = fetcher
+      .fetch_range_with_request(req, 0..=31, 32)
+      .expect_err("expected range request to be rejected by policy");
+    let msg = err.to_string();
+    assert!(
+      msg.contains("max_response_bytes") && msg.contains("16"),
+      "unexpected error: {msg}"
+    );
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      1,
+      "expected range rejection to occur before any additional inner fetch"
+    );
+  }
+
+  #[test]
+  fn caching_fetcher_fetch_range_with_request_rejects_open_ended_ranges_exceeding_policy_limit() {
+    #[derive(Clone)]
+    struct StubFetcher {
+      bytes: Vec<u8>,
+      fetch_calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for StubFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected CachingFetcher to call fetch_with_request");
+      }
+
+      fn fetch_with_request(&self, _req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.fetch_calls.fetch_add(1, Ordering::SeqCst);
+        let mut res =
+          FetchedResource::new(self.bytes.clone(), Some("application/octet-stream".to_string()));
+        res.status = Some(200);
+        Ok(res)
+      }
+
+      fn fetch_range_with_request(
+        &self,
+        _req: FetchRequest<'_>,
+        _range: std::ops::RangeInclusive<u64>,
+        _max_bytes: usize,
+      ) -> Result<FetchedResource> {
+        panic!("expected range request to be rejected by policy before reaching inner fetcher");
+      }
+    }
+
+    let policy = ResourcePolicy::new().with_max_response_bytes(16);
+    let url = "http://example.com/asset.bin";
+    let req = FetchRequest::new(url, FetchDestination::Fetch);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fetcher = CachingFetcher::new(StubFetcher {
+      bytes: vec![0u8; 32],
+      fetch_calls: Arc::clone(&calls),
+    })
+    .with_policy(policy);
+
+    fetcher.fetch_with_request(req).expect("seed cache");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    let err = fetcher
+      .fetch_range_with_request(req, 0..=u64::MAX, 32)
+      .expect_err("expected open-ended range request to be rejected by policy");
+    let msg = err.to_string();
+    assert!(
+      msg.contains("max_response_bytes") && msg.contains("16"),
+      "unexpected error: {msg}"
+    );
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      1,
+      "expected range rejection to occur before any additional inner fetch"
     );
   }
 

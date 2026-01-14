@@ -4,7 +4,7 @@ use crate::error::{Error, ResourceError, Result};
 use crate::fallible_vec_writer::FallibleVecWriter;
 use crate::resource::{
   origin_from_url, DocumentOrigin, FetchContextKind, FetchCredentialsMode, FetchRequest,
-  FetchedResource, HttpRequest, ReferrerPolicy, ResourceFetcher,
+  FetchedResource, HttpRequest, ReferrerPolicy, ResourceFetcher, ResourcePolicy,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -825,6 +825,7 @@ fn validate_relative_path(path: &str) -> Result<PathBuf> {
 #[derive(Clone)]
 pub struct BundledFetcher {
   bundle: Arc<Bundle>,
+  policy: Option<ResourcePolicy>,
 }
 
 impl BundledFetcher {
@@ -832,7 +833,15 @@ impl BundledFetcher {
   pub fn new(bundle: Bundle) -> Self {
     Self {
       bundle: Arc::new(bundle),
+      policy: None,
     }
+  }
+
+  /// Apply a [`ResourcePolicy`] to bound per-response memory usage for helper APIs like
+  /// [`ResourceFetcher::fetch_range_with_request`].
+  pub fn with_policy(mut self, policy: ResourcePolicy) -> Self {
+    self.policy = Some(policy);
+    self
   }
 }
 
@@ -1489,12 +1498,8 @@ impl ResourceFetcher for BundledFetcher {
       )));
     }
 
-    let capped_end = if max_bytes == 0 {
-      start
-    } else {
-      let cap_end = start.saturating_add((max_bytes as u64).saturating_sub(1));
-      end.min(cap_end)
-    };
+    let (capped_end, max_bytes) =
+      super::enforce_range_request_size_limit(self.policy.as_ref(), start, end, max_bytes)?;
 
     let lookup_is_request_partitioned = bundle_key_is_request_partitioned(req.url);
     let doc_matches = req.url == self.bundle.manifest.original_url
@@ -1538,6 +1543,7 @@ impl ResourceFetcher for BundledFetcher {
           )));
         }
       }
+      super::reserve_policy_bytes(&self.policy, &res)?;
       return Ok(res);
     }
 
@@ -1562,13 +1568,17 @@ impl ResourceFetcher for BundledFetcher {
         request_partitioned_resource_key_v3(kind, req.url, partition_key, req.credentials_mode);
       if let Some(resource) = self.bundle.resource_for_url(&key) {
         validate_vary(resource.info.vary.as_deref())?;
-        return resource.as_fetched_range(req.url, start, capped_end, max_bytes);
+        let res = resource.as_fetched_range(req.url, start, capped_end, max_bytes)?;
+        super::reserve_policy_bytes(&self.policy, &res)?;
+        return Ok(res);
       }
 
       let key = request_partitioned_resource_key_v2(kind, req.url, partition_key);
       if let Some(resource) = self.bundle.resource_for_url(&key) {
         validate_vary(resource.info.vary.as_deref())?;
-        return resource.as_fetched_range(req.url, start, capped_end, max_bytes);
+        let res = resource.as_fetched_range(req.url, start, capped_end, max_bytes)?;
+        super::reserve_policy_bytes(&self.policy, &res)?;
+        return Ok(res);
       }
 
       let origin_from_referrer = req.referrer_url.and_then(origin_from_url);
@@ -1586,14 +1596,18 @@ impl ResourceFetcher for BundledFetcher {
         );
         if let Some(resource) = self.bundle.resource_for_url(&key) {
           validate_vary(resource.info.vary.as_deref())?;
-          return resource.as_fetched_range(req.url, start, capped_end, max_bytes);
+          let res = resource.as_fetched_range(req.url, start, capped_end, max_bytes)?;
+          super::reserve_policy_bytes(&self.policy, &res)?;
+          return Ok(res);
         }
 
         if req.credentials_mode != FetchCredentialsMode::Omit {
           let key = request_partitioned_resource_key(kind, req.url, origin);
           if let Some(resource) = self.bundle.resource_for_url(&key) {
             validate_vary(resource.info.vary.as_deref())?;
-            return resource.as_fetched_range(req.url, start, capped_end, max_bytes);
+            let res = resource.as_fetched_range(req.url, start, capped_end, max_bytes)?;
+            super::reserve_policy_bytes(&self.policy, &res)?;
+            return Ok(res);
           }
         }
       }
@@ -1623,20 +1637,26 @@ impl ResourceFetcher for BundledFetcher {
         )));
       };
       if let Some(resource) = bucket.variants.get(&vary_key) {
-        return resource.as_fetched_range(req.url, start, capped_end, max_bytes);
+        let res = resource.as_fetched_range(req.url, start, capped_end, max_bytes)?;
+        super::reserve_policy_bytes(&self.policy, &res)?;
+        return Ok(res);
       }
       if let Some(legacy_key) =
         super::compute_vary_key_for_request_legacy(self, canonical, bucket.vary.as_deref())
       {
         if legacy_key != vary_key {
           if let Some(resource) = bucket.variants.get(&legacy_key) {
-            return resource.as_fetched_range(req.url, start, capped_end, max_bytes);
+            let res = resource.as_fetched_range(req.url, start, capped_end, max_bytes)?;
+            super::reserve_policy_bytes(&self.policy, &res)?;
+            return Ok(res);
           }
         }
       }
       if bucket.vary.is_none() && bucket.variants.len() == 1 {
         if let Some(resource) = bucket.variants.values().next() {
-          return resource.as_fetched_range(req.url, start, capped_end, max_bytes);
+          let res = resource.as_fetched_range(req.url, start, capped_end, max_bytes)?;
+          super::reserve_policy_bytes(&self.policy, &res)?;
+          return Ok(res);
         }
       }
       return Err(Error::Other(format!(
@@ -1692,6 +1712,7 @@ impl ResourceFetcher for BundledFetcher {
           )));
         }
       }
+      super::reserve_policy_bytes(&self.policy, &res)?;
       return Ok(res);
     }
 
@@ -1702,7 +1723,9 @@ impl ResourceFetcher for BundledFetcher {
       .unwrap_or(false)
     {
       if max_bytes == 0 {
-        return super::data_url::decode_data_url_prefix(req.url, 0);
+        let res = super::data_url::decode_data_url_prefix(req.url, 0)?;
+        super::reserve_policy_bytes(&self.policy, &res)?;
+        return Ok(res);
       }
 
       let decode_len: usize = capped_end
@@ -1742,6 +1765,7 @@ impl ResourceFetcher for BundledFetcher {
       if res.bytes.len() > max_bytes {
         res.bytes.truncate(max_bytes);
       }
+      super::reserve_policy_bytes(&self.policy, &res)?;
       return Ok(res);
     }
 

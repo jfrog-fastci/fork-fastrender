@@ -4541,12 +4541,8 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       )));
     }
 
-    let target_len_u64 = if max_bytes == 0 {
-      0
-    } else {
-      end.saturating_sub(start).saturating_add(1).min(max_bytes as u64)
-    };
-    let target_len = usize::try_from(target_len_u64).unwrap_or(max_bytes);
+    let (_capped_end, target_len) =
+      super::enforce_range_request_size_limit(self.policy.as_ref(), start, end, max_bytes)?;
 
     let origin_key = super::cors_cache_partition_key(&req);
     let key = CacheKey::new_with_origin(
@@ -4584,12 +4580,14 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       url,
       req,
       range.clone(),
-      max_bytes,
+      target_len,
       key.origin_key.as_deref(),
       key.credentials_partition,
     )? {
-      if res.bytes.len() > max_bytes {
-        res.bytes.truncate(max_bytes);
+      if target_len == 0 {
+        res.bytes.clear();
+      } else if res.bytes.len() > target_len {
+        res.bytes.truncate(target_len);
       }
       super::record_cache_fresh_hit();
       super::record_resource_cache_bytes(res.bytes.len());
@@ -4600,12 +4598,13 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
     let mut res = self
       .memory
       .inner
-      .fetch_range_with_request(req, range, max_bytes)?;
-    // Do not trust downstream implementations to always respect `max_bytes`.
-    if max_bytes == 0 {
+      .fetch_range_with_request(req, range, target_len)?;
+    // Do not trust downstream implementations to always respect `max_bytes` or the requested
+    // range length.
+    if target_len == 0 {
       res.bytes.clear();
-    } else if res.bytes.len() > max_bytes {
-      res.bytes.truncate(max_bytes);
+    } else if res.bytes.len() > target_len {
+      res.bytes.truncate(target_len);
     }
     super::reserve_policy_bytes(&self.policy, &res)?;
     Ok(res)
