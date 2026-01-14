@@ -682,7 +682,9 @@ fn mp4parse_extract_aac_asc(ctx: &mp4parse::MediaContext) -> MediaResult<HashMap
     };
 
     let asc = match &audio.codec_specific {
-      mp4parse::AudioCodecSpecific::ES_Descriptor(esds) => esds.decoder_specific_data.clone(),
+      mp4parse::AudioCodecSpecific::ES_Descriptor(esds) => {
+        esds.decoder_specific_data.iter().copied().collect()
+      }
       _ => Vec::new(),
     };
 
