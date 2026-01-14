@@ -15713,9 +15713,6 @@ pub(crate) enum AsyncFrame {
     expr: *const ComputedMemberExpr,
     base_root: RootId,
   },
-  /// Continue evaluating a `super[expr]` computed member access after evaluating the member key
-  /// expression.
-  SuperComputedMemberAfterMember { expr: *const ComputedMemberExpr },
 
   /// Continue class evaluation after evaluating the class heritage (`extends`) expression.
   ///
@@ -15778,10 +15775,6 @@ pub(crate) enum AsyncFrame {
     expr: *const CallExpr,
     member: *const ComputedMemberExpr,
     base_root: RootId,
-  },
-  CallSuperComputedMemberAfterMember {
-    expr: *const CallExpr,
-    member: *const ComputedMemberExpr,
   },
   CallArgs {
     expr: *const CallExpr,
@@ -23743,55 +23736,20 @@ fn async_eval_expr_chain(
       // `super` is not an ordinary expression and is not evaluated as the computed-member base.
       async_computed_member_after_base(evaluator, scope, &member.stx, Value::Undefined)
     }
-    Expr::ComputedMember(member) => {
-      // `super[expr]` computed member access is not a normal property reference: it resolves
-      // against `[[HomeObject]].[[Prototype]]` and uses the current `this` binding as the receiver.
-      if matches!(&*member.stx.object.stx, Expr::Super(_)) {
-        if member.stx.optional_chaining {
-          return Err(VmError::Unimplemented(
-            "optional chaining super computed member access",
-          ));
-        }
-
-        // Evaluating a super property reference requires an initialized `this` binding. In derived
-        // constructors before `super()`, this check happens before evaluating the computed key
-        // expression.
-        let _ = evaluator
-          .get_this_binding(scope)
-          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))?;
-
-        match async_eval_expr(evaluator, scope, &member.stx.member)? {
-          AsyncEval::Complete(member_value) => {
-            let value = async_super_computed_member_after_member(evaluator, scope, member_value)?;
-            Ok(AsyncEval::Complete(value))
-          }
-          AsyncEval::Suspend(mut suspend) => {
-            async_frames_push(
-              &mut suspend.frames,
-              AsyncFrame::SuperComputedMemberAfterMember {
-                expr: &*member.stx as *const ComputedMemberExpr,
-              },
-            )?;
-            Ok(AsyncEval::Suspend(suspend))
-          }
-        }
-      } else {
-        match async_eval_chain_base(evaluator, scope, &member.stx.object)? {
-          AsyncEval::Complete(base) => {
-            async_computed_member_after_base(evaluator, scope, &member.stx, base)
-          }
-          AsyncEval::Suspend(mut suspend) => {
-            async_frames_push(
-              &mut suspend.frames,
-              AsyncFrame::ComputedMemberAfterBase {
-                expr: &*member.stx as *const ComputedMemberExpr,
-              },
-            )?;
-            Ok(AsyncEval::Suspend(suspend))
-          }
-        }
+    Expr::ComputedMember(member) => match async_eval_chain_base(evaluator, scope, &member.stx.object)? {
+      AsyncEval::Complete(base) => {
+        async_computed_member_after_base(evaluator, scope, &member.stx, base)
       }
-    }
+      AsyncEval::Suspend(mut suspend) => {
+        async_frames_push(
+          &mut suspend.frames,
+          AsyncFrame::ComputedMemberAfterBase {
+            expr: &*member.stx as *const ComputedMemberExpr,
+          },
+        )?;
+        Ok(AsyncEval::Suspend(suspend))
+      }
+    },
     Expr::Call(call) => async_eval_call(evaluator, scope, &call.stx),
     Expr::Import(import) => async_eval_import_expr(evaluator, scope, &import.stx),
     Expr::Cond(cond) => match async_eval_expr(evaluator, scope, &cond.stx.test)? {
@@ -27180,76 +27138,6 @@ fn async_computed_member_after_member(
   }
 }
 
-fn async_super_get(
-  evaluator: &mut Evaluator<'_>,
-  scope: &mut Scope<'_>,
-  key: PropertyKey,
-) -> Result<Value, VmError> {
-  let receiver = evaluator
-    .get_this_binding(scope)
-    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))?;
-
-  let home_object = evaluator.home_object.ok_or(VmError::InvariantViolation(
-    "super property reference is missing [[HomeObject]]",
-  ))?;
-
-  let mut super_scope = scope.reborrow();
-  let key_value = match key {
-    PropertyKey::String(s) => Value::String(s),
-    PropertyKey::Symbol(sym) => Value::Symbol(sym),
-  };
-  // Root everything used across `GetPrototypeOf` (Proxy traps can allocate + trigger GC).
-  super_scope.push_roots(&[Value::Object(home_object), receiver, evaluator.this, key_value])?;
-
-  // Super property references resolve against `[[HomeObject]].[[Prototype]]` and use the current
-  // `this` value as the receiver.
-  let super_base = super_scope
-    .get_prototype_of_with_host_and_hooks(
-      evaluator.vm,
-      &mut *evaluator.host,
-      &mut *evaluator.hooks,
-      home_object,
-    )
-    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut super_scope, err))?;
-  let Some(super_base) = super_base else {
-    // `super` base is `null`.
-    return Err(throw_type_error(
-      evaluator.vm,
-      &mut super_scope,
-      "Cannot convert undefined or null to object",
-    )?);
-  };
-  super_scope.push_root(Value::Object(super_base))?;
-
-  super_scope
-    .get_with_host_and_hooks(
-      evaluator.vm,
-      &mut *evaluator.host,
-      &mut *evaluator.hooks,
-      super_base,
-      key,
-      receiver,
-    )
-    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut super_scope, err))
-}
-
-fn async_super_computed_member_after_member(
-  evaluator: &mut Evaluator<'_>,
-  scope: &mut Scope<'_>,
-  member_value: Value,
-) -> Result<Value, VmError> {
-  let mut key_scope = scope.reborrow();
-  key_scope.push_root(member_value)?;
-  let key = evaluator
-    .to_property_key_operator(&mut key_scope, member_value)
-    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
-
-  // Drop `key_scope` before calling `async_super_get` (which reborrows `scope`).
-  drop(key_scope);
-
-  async_super_get(evaluator, scope, key)
-}
-
 fn async_binary_after_left(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -29177,25 +29065,6 @@ fn async_resume_from_frames(
         }
       },
 
-      AsyncFrame::SuperComputedMemberAfterMember { expr: _ } => match state {
-        AsyncState::Expr(member_res) => match member_res {
-          Ok(member_value) => match async_super_computed_member_after_member(evaluator, scope, member_value)
-          {
-            Ok(v) => state = AsyncState::Expr(Ok(v)),
-            Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
-              state = AsyncState::Expr(Err(err))
-            }
-            Err(err) => return Err(err),
-          },
-          Err(err) => state = AsyncState::Expr(Err(err)),
-        },
-        AsyncState::Completion(_) => {
-          return Err(VmError::InvariantViolation(
-            "super computed member after member frame received completion state",
-          ))
-        }
-      },
-
       AsyncFrame::ClassAfterHeritage {
         members,
         binding_name,
@@ -29662,61 +29531,6 @@ fn async_resume_from_frames(
         AsyncState::Completion(_) => {
           return Err(VmError::InvariantViolation(
             "call computed member after member frame received completion state",
-          ))
-        }
-      },
-
-      AsyncFrame::CallSuperComputedMemberAfterMember { expr, member } => match state {
-        AsyncState::Expr(member_res) => {
-          let expr = unsafe { &*expr };
-          let _member = unsafe { &*member };
-
-          match member_res {
-            Ok(member_value) => {
-              let callee_value =
-                match async_super_computed_member_after_member(evaluator, scope, member_value) {
-                  Ok(v) => v,
-                  Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
-                    state = AsyncState::Expr(Err(err));
-                    continue;
-                  }
-                  Err(err) => return Err(err),
-                };
-
-              let receiver = match evaluator
-                .get_this_binding(scope)
-                .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))
-              {
-                Ok(v) => v,
-                Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
-                  state = AsyncState::Expr(Err(err));
-                  continue;
-                }
-                Err(err) => return Err(err),
-              };
-
-              match async_call_begin(evaluator, scope, expr, callee_value, receiver) {
-                Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
-                Ok(AsyncEval::Suspend(mut suspend)) => {
-                  vecdeque_try_append(&mut suspend.frames, &mut frames)?;
-                  return Ok(AsyncBodyResult::Await {
-                    kind: suspend.kind,
-                    await_value: suspend.await_value,
-                    frames: suspend.frames,
-                  });
-                }
-                Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
-                  state = AsyncState::Expr(Err(err))
-                }
-                Err(err) => return Err(err),
-              }
-            }
-            Err(err) => state = AsyncState::Expr(Err(err)),
-          }
-        }
-        AsyncState::Completion(_) => {
-          return Err(VmError::InvariantViolation(
-            "call super computed member after member frame received completion state",
           ))
         }
       },
