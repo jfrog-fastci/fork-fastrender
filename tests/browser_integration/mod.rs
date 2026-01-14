@@ -262,7 +262,6 @@ mod ui_worker_download_cancel_cleans_up;
 mod ui_worker_page_export_atomic;
 mod ui_worker_download_filename_collision_suffix;
 mod ui_worker_find_query_coalescing;
-mod ui_worker_find_in_page;
 mod ui_worker_link_download;
 mod ui_tick_coalescing;
 mod ui_worker_unsupported_scheme;
