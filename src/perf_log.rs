@@ -50,16 +50,37 @@ pub struct BuildInfo {
   pub crate_version: String,
   /// True when built with `debug_assertions`.
   pub debug: bool,
-  /// Best-effort target identifier.
+  /// Best-effort target triple (when available) or target identifier.
   pub target: Option<String>,
 }
 
 impl BuildInfo {
   #[must_use]
   pub fn current() -> Self {
-    let arch = std::env::consts::ARCH;
-    let os = std::env::consts::OS;
-    let target = Some(format!("{arch}-{os}"));
+    // Prefer the full target triple when Cargo exposes it at compile time.
+    // If it is not available, fall back to the `CARGO_CFG_TARGET_*` components, and finally
+    // `std::env::consts` as a best-effort runtime approximation.
+    let target = option_env!("TARGET")
+      .map(str::to_string)
+      .filter(|value| !value.trim().is_empty())
+      .or_else(|| {
+        let arch = option_env!("CARGO_CFG_TARGET_ARCH")?;
+        let os = option_env!("CARGO_CFG_TARGET_OS")?;
+        let vendor = option_env!("CARGO_CFG_TARGET_VENDOR").unwrap_or("unknown");
+        let env = option_env!("CARGO_CFG_TARGET_ENV").filter(|value| !value.trim().is_empty());
+
+        let mut triple = format!("{arch}-{vendor}-{os}");
+        if let Some(env) = env {
+          triple.push('-');
+          triple.push_str(env);
+        }
+        Some(triple)
+      })
+      .or_else(|| {
+        let arch = std::env::consts::ARCH;
+        let os = std::env::consts::OS;
+        Some(format!("{arch}-{os}"))
+      });
 
     Self {
       crate_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -76,6 +97,7 @@ pub struct ResourcePolicySnapshot {
   pub allow_https: bool,
   pub allow_file: bool,
   pub allow_data: bool,
+  pub allow_bare_file_paths: bool,
 }
 
 impl ResourcePolicySnapshot {
@@ -86,6 +108,7 @@ impl ResourcePolicySnapshot {
       allow_https: policy.allowed_schemes.https,
       allow_file: policy.allowed_schemes.file,
       allow_data: policy.allowed_schemes.data,
+      allow_bare_file_paths: policy.allow_bare_file_paths,
     }
   }
 }
@@ -591,6 +614,7 @@ mod tests {
           allow_https: true,
           allow_file: false,
           allow_data: true,
+          allow_bare_file_paths: false,
         }),
         perf_log_out: Some("target/perf.jsonl".to_string()),
       },
