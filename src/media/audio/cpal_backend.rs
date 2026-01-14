@@ -851,6 +851,32 @@ impl MixerState {
     }
   }
 
+  /// Discard buffered audio from all sinks.
+  ///
+  /// This is intended for situations where the output callback must output silence but still needs
+  /// to keep internal sink buffers from building up backpressure (e.g. after a callback panic).
+  fn drain_all_sinks(&self, output_samples: usize) {
+    let channels = self.channels_usize().max(1);
+    let to_drain = output_samples - (output_samples % channels);
+    if to_drain == 0 {
+      return;
+    }
+
+    let sinks = self.sinks.read();
+    for weak in sinks.iter() {
+      let Some(sink) = weak.upgrade() else {
+        continue;
+      };
+
+      sink.buffer.pop_discard(to_drain);
+      sink.maybe_audible.store(false, Ordering::Relaxed);
+      if sink.buffer.is_empty() {
+        // Best-effort: if the engine is already torn down, ignore.
+        let _ = sink.activity.set_active(false);
+      }
+    }
+  }
+
   fn stats_for_output_len(&self, output_samples_len: usize) -> MixStats {
     let channels = self.channels_usize();
     let mut stats = MixStats {
@@ -1463,6 +1489,7 @@ where
           // stall completely.
           if diagnostics.panic_in_callback.load(Ordering::Relaxed) {
             output.fill(T::SILENCE);
+            mixer.drain_all_sinks(output.len());
             if channels != 0 {
               let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
               last_callback_frames.store(frames_u32, Ordering::Relaxed);
