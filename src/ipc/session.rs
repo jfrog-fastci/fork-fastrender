@@ -277,6 +277,77 @@ mod tests {
   }
 
   #[test]
+  fn frame_ack_rejected_before_running() {
+    let mut session = RendererSession::new();
+
+    let err = session
+      .handle_browser_to_renderer(BrowserToRenderer::FrameAck { frame_seq: 1 })
+      .expect_err("frame ack in Init should be rejected");
+    assert!(matches!(err, IpcError::InvalidParameters { .. }));
+
+    session
+      .handle_browser_to_renderer(BrowserToRenderer::Hello {
+        protocol_version: IPC_PROTOCOL_VERSION,
+      })
+      .unwrap()
+      .expect("hello should be sent");
+    assert_eq!(session.state(), RendererSessionState::AwaitHelloAck);
+
+    let err = session
+      .handle_browser_to_renderer(BrowserToRenderer::FrameAck { frame_seq: 2 })
+      .expect_err("frame ack during handshake should be rejected");
+    assert!(matches!(err, IpcError::InvalidParameters { .. }));
+
+    session
+      .handle_renderer_to_browser(RendererToBrowser::HelloAck {
+        protocol_version: IPC_PROTOCOL_VERSION,
+      })
+      .unwrap()
+      .expect("hello ack should be accepted");
+    assert_eq!(session.state(), RendererSessionState::AwaitFrameBuffers);
+
+    let err = session
+      .handle_browser_to_renderer(BrowserToRenderer::FrameAck { frame_seq: 3 })
+      .expect_err("frame ack before buffers installed should be rejected");
+    assert!(matches!(err, IpcError::InvalidParameters { .. }));
+  }
+
+  #[test]
+  fn frame_ack_allowed_in_running_and_ignored_when_closing_or_closed() {
+    let mut session = mk_running_session();
+
+    let msg = BrowserToRenderer::FrameAck { frame_seq: 123 };
+    let sent = session
+      .handle_browser_to_renderer(msg.clone())
+      .unwrap()
+      .expect("frame ack should be sent");
+    assert_eq!(sent, msg);
+    assert_eq!(session.state(), RendererSessionState::Running);
+
+    session
+      .handle_browser_to_renderer(BrowserToRenderer::Shutdown { reason: None })
+      .unwrap()
+      .expect("shutdown should be sent");
+    assert_eq!(session.state(), RendererSessionState::Closing);
+
+    let ignored = session
+      .handle_browser_to_renderer(BrowserToRenderer::FrameAck { frame_seq: 124 })
+      .unwrap();
+    assert!(ignored.is_none());
+
+    let ack = session
+      .handle_renderer_to_browser(RendererToBrowser::ShutdownAck)
+      .unwrap();
+    assert!(matches!(ack, Some(RendererToBrowser::ShutdownAck)));
+    assert_eq!(session.state(), RendererSessionState::Closed);
+
+    let ignored = session
+      .handle_browser_to_renderer(BrowserToRenderer::FrameAck { frame_seq: 125 })
+      .unwrap();
+    assert!(ignored.is_none());
+  }
+
+  #[test]
   fn shutdown_before_buffers_installed() {
     let mut session = RendererSession::new();
 
