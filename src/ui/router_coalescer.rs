@@ -603,6 +603,28 @@ mod tests {
   }
 
   #[test]
+  fn coalesces_tick_clamps_to_max_delta() {
+    let mut c = UiToWorkerRouterCoalescer::new();
+    assert!(c
+      .push(UiToWorker::Tick {
+        tab_id: TabId(1),
+        delta: Duration::from_millis(800),
+      })
+      .is_empty());
+    assert!(c
+      .push(UiToWorker::Tick {
+        tab_id: TabId(1),
+        delta: Duration::from_millis(800),
+      })
+      .is_empty());
+    let out = c.flush();
+    assert_eq!(out.len(), 1);
+    assert!(
+      matches!(out[0], UiToWorker::Tick { tab_id: TabId(1), delta } if delta == MAX_COALESCED_TICK_DELTA)
+    );
+  }
+
+  #[test]
   fn concatenates_text_input() {
     let mut c = UiToWorkerRouterCoalescer::new();
     assert!(c
