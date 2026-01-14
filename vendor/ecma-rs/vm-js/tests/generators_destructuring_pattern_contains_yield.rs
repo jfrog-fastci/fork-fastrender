@@ -528,6 +528,87 @@ fn generator_return_from_yield_in_object_destructuring_computed_key_aborts_witho
 }
 
 #[test]
+fn generator_throw_into_yield_in_array_destructuring_default_aborts_before_next_element() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      (() => {
+        var steps = [];
+        var rhs = new Proxy([undefined, 2], {
+          get: function(t, k, r) {
+            steps.push(String(k));
+            return Reflect.get(t, k, r);
+          },
+        });
+
+        function* g() {
+          let a = 0;
+          let b = 0;
+          try {
+            ([a = (steps.push("default"), (yield 1)), b] = rhs);
+            return false;
+          } catch (e) {
+            return e === "boom" && steps.indexOf("1") === -1;
+          }
+        }
+
+        var it = g();
+        var r1 = it.next();
+        if (r1.done !== false || r1.value !== 1) return false;
+        if (steps.indexOf("1") !== -1) return false;
+
+        var r2 = it.throw("boom");
+        return r2.done === true && r2.value === true && steps.indexOf("1") === -1;
+      })()
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_return_from_yield_in_array_destructuring_default_aborts_before_next_element() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      (() => {
+        var steps = [];
+        var rhs = new Proxy([undefined, 2], {
+          get: function(t, k, r) {
+            steps.push(String(k));
+            return Reflect.get(t, k, r);
+          },
+        });
+
+        function* g() {
+          let a = 0;
+          let b = 0;
+          ([a = (steps.push("default"), (yield 1)), b] = rhs);
+          steps.push("after");
+        }
+
+        var it = g();
+        var r1 = it.next();
+        if (r1.done !== false || r1.value !== 1) return false;
+        if (steps.indexOf("1") !== -1) return false;
+
+        var r2 = it.return("done");
+        return (
+          r2.done === true &&
+          r2.value === "done" &&
+          steps.indexOf("1") === -1 &&
+          steps.indexOf("after") === -1
+        );
+      })()
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_yield_in_object_destructuring_computed_key_then_default_evaluation_order() {
   let mut rt = new_runtime();
   let value = rt
