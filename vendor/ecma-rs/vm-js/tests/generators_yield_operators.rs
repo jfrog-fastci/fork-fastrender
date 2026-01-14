@@ -498,7 +498,36 @@ fn generators_yield_in_template_literals() {
           e1.value === void 0 && e1.done === false &&
           e2.value === "aXb" && e2.done === true;
 
-        ok1 && ok2 && ok3 && ok4 && ok5 && ok6
+        // Template string parts use *cooked* values (escape sequences are interpreted).
+        function* tpl_cooked() { return `a\n${yield 1}b`; }
+        const it7 = tpl_cooked();
+        const f1 = it7.next();
+        churn();
+        const f2 = it7.next("X");
+        const ok7 =
+          f1.value === 1 && f1.done === false &&
+          f2.value === "a\nXb" && f2.done === true;
+
+        // `yield*` inside a substitution may suspend multiple times while the already-appended
+        // prefix and substitution index are preserved across resumption.
+        function* inner() {
+          const a = yield 1;
+          const b = yield 2;
+          return a + b;
+        }
+        function* tpl_yield_star() { return `a${yield* inner()}b`; }
+        const it8 = tpl_yield_star();
+        const g1 = it8.next();
+        churn();
+        const g2 = it8.next(10);
+        churn();
+        const g3 = it8.next(20);
+        const ok8 =
+          g1.value === 1 && g1.done === false &&
+          g2.value === 2 && g2.done === false &&
+          g3.value === "a30b" && g3.done === true;
+
+        ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8
       "#,
     )
     .unwrap();
