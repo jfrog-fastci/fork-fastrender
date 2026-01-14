@@ -23878,21 +23878,25 @@ fn async_define_class_member(
           let this_mode = ThisMode::Strict;
           let closure_env = Some(evaluator.env.lexical_env);
 
-          let name_string = member_scope.alloc_string("")?;
-          let init_func_obj = member_scope.alloc_ecma_function(
-            code,
-            /* is_constructable */ false,
-            name_string,
-            0,
-            this_mode,
-            is_strict,
-            closure_env,
-          )?;
+           let name_string = member_scope.alloc_string("")?;
+           let init_func_obj = member_scope.alloc_ecma_function(
+             code,
+             /* is_constructable */ false,
+             name_string,
+             0,
+             this_mode,
+             is_strict,
+             closure_env,
+           )?;
+           member_scope.heap_mut().set_function_meta_property_context(
+             init_func_obj,
+             MetaPropertyContext::METHOD,
+           )?;
 
-          let intr = evaluator
-            .vm
-            .intrinsics()
-            .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+           let intr = evaluator
+             .vm
+             .intrinsics()
+             .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
           member_scope
             .heap_mut()
             .object_set_prototype(init_func_obj, Some(intr.function_prototype()))?;

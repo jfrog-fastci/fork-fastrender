@@ -51,3 +51,35 @@ fn async_class_super_in_field_initializers_repairs_snippet_spans() -> Result<(),
   Ok(())
 }
 
+#[test]
+fn async_class_field_initializer_eval_can_access_super_property() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        class B { m() { return 1; } }
+        class D extends (await Promise.resolve(B)) {
+          x = eval("super.m()");
+        }
+        try {
+          return String((new D()).x === 1);
+        } catch (e) {
+          return e.name;
+        }
+      }
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "true");
+
+  Ok(())
+}
