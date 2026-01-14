@@ -42859,7 +42859,7 @@ fn gen_resume_from_frames(
           match gen_eval_lit_arr_from(evaluator, scope, expr, arr, next_elem_index, next_index)? {
             GenEval::Complete(c) => state = c,
             GenEval::Suspend(mut suspend) => {
-              suspend.frames.append(&mut frames);
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
               return Ok(GenEval::Suspend(suspend));
             }
           }
@@ -42921,7 +42921,7 @@ fn gen_resume_from_frames(
           match gen_eval_lit_arr_from(evaluator, scope, expr, arr, next_elem_index, next_index)? {
             GenEval::Complete(c) => state = c,
             GenEval::Suspend(mut suspend) => {
-              suspend.frames.append(&mut frames);
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
               return Ok(GenEval::Suspend(suspend));
             }
           }
@@ -42975,7 +42975,7 @@ fn gen_resume_from_frames(
                 match gen_eval_lit_obj_from(evaluator, scope, expr, obj, member_index.saturating_add(1))? {
                   GenEval::Complete(c) => state = c,
                   GenEval::Suspend(mut suspend) => {
-                    suspend.frames.append(&mut frames);
+                    vecdeque_try_append(&mut suspend.frames, &mut frames)?;
                     return Ok(GenEval::Suspend(suspend));
                   }
                 }
@@ -42983,7 +42983,7 @@ fn gen_resume_from_frames(
               abrupt => state = abrupt,
             },
             GenEval::Suspend(mut suspend) => {
-              suspend.frames.append(&mut frames);
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
               return Ok(GenEval::Suspend(suspend));
             }
           }
@@ -43029,7 +43029,7 @@ fn gen_resume_from_frames(
           match gen_eval_lit_obj_from(evaluator, scope, expr, obj, next_member_index)? {
             GenEval::Complete(c) => state = c,
             GenEval::Suspend(mut suspend) => {
-              suspend.frames.append(&mut frames);
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
               return Ok(GenEval::Suspend(suspend));
             }
           }
@@ -43068,7 +43068,7 @@ fn gen_resume_from_frames(
           match gen_eval_lit_obj_from(evaluator, scope, expr, obj, next_member_index)? {
             GenEval::Complete(c) => state = c,
             GenEval::Suspend(mut suspend) => {
-              suspend.frames.append(&mut frames);
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
               return Ok(GenEval::Suspend(suspend));
             }
           }
