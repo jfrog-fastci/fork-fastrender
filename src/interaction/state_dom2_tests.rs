@@ -469,6 +469,43 @@ fn interaction_state_dom2_prunes_detached_focus_hover_active_and_text_state() {
 }
 
 #[test]
+fn interaction_state_dom2_projection_projects_fullscreen_and_prunes_detached_fullscreen() {
+  let html = "<!doctype html><html><body><div id=fs>fullscreen</div></body></html>";
+  let mut doc = crate::dom2::parse_html(html).expect("parse html");
+  let fs = doc.get_element_by_id("fs").expect("missing fullscreen element");
+
+  let mut state_dom2 = InteractionStateDom2::default();
+  state_dom2.fullscreen_element = Some(fs);
+
+  let snapshot1 = doc.to_renderer_dom_with_mapping();
+  let fs_preorder = snapshot1
+    .mapping
+    .preorder_for_node_id(fs)
+    .expect("fullscreen element should be connected");
+
+  let projected1 = state_dom2.project_to_preorder(&snapshot1.mapping);
+  assert_eq!(projected1.fullscreen_element, Some(fs_preorder));
+  assert!(projected1.is_fullscreen(fs_preorder));
+  assert_eq!(
+    state_dom2.fullscreen_element,
+    Some(fs),
+    "projecting should not clear a connected fullscreen element"
+  );
+
+  // Detach the fullscreen element so it becomes unmappable in the next renderer snapshot.
+  let body = doc.body().expect("missing body");
+  assert!(doc.remove_child(body, fs).unwrap());
+
+  let snapshot2 = doc.to_renderer_dom_with_mapping();
+  let projected2 = state_dom2.project_to_preorder(&snapshot2.mapping);
+  assert_eq!(projected2.fullscreen_element, None);
+  assert!(
+    state_dom2.fullscreen_element.is_none(),
+    "detached fullscreen element should be pruned from stable state"
+  );
+}
+
+#[test]
 fn form_state_dom2_projection_maps_file_inputs_and_select_selected() {
   let html = concat!(
     "<!doctype html>",
