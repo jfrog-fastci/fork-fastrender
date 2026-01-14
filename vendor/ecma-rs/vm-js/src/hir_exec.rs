@@ -14760,7 +14760,7 @@ mod compiled_hir_async_await_semantics_tests {
       rt.heap.is_promise_object(returned_promise),
       "expected script to evaluate to a Promise object, got {result:?}"
     );
- 
+
     // Ensure the async function was allocated as a compiled user function by the HIR script path.
     //
     // Note: async functions may still execute via the call-time AST fallback
@@ -14776,7 +14776,6 @@ mod compiled_hir_async_await_semantics_tests {
       matches!(call_handler, CallHandler::User(_)),
       "expected __f to be a compiled user function, got {call_handler:?}"
     );
-
     let func_data = rt.heap.get_function_data(func_obj)?;
     assert!(
       matches!(func_data, FunctionData::None | FunctionData::AsyncEcmaFallback { .. }),
@@ -15396,7 +15395,7 @@ mod hir_async_await_in_pattern_binding_regression_tests {
     );
 
     // Async function bodies may still execute via the AST interpreter at call-time
-    // (`FunctionData::EcmaFallback`). Once compiled async/await execution is enabled, this test will
+    // (`FunctionData::AsyncEcmaFallback`). Once compiled async/await execution is enabled, this test will
     // automatically exercise the compiled async evaluator instead.
     let _func_data = rt.heap.get_function_data(func_obj)?;
 
