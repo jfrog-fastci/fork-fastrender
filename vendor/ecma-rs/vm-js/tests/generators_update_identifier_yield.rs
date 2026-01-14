@@ -116,3 +116,25 @@ fn generator_yield_in_bigint_update_expression_computed_key_postfix() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_yield_in_bigint_decrement_update_expression_computed_key_postfix() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          const obj = { a: 2n };
+          const r = obj[(yield 0)]--;
+          return r === 2n && obj.a === 1n;
+        }
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next("a");
+        r1.value === 0 && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

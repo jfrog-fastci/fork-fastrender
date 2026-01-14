@@ -290,6 +290,56 @@ fn generator_yield_in_update_expression_computed_key_captures_base_before_yield(
 }
 
 #[test]
+fn generator_yield_in_update_expression_computed_key_prefix_decrement() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          var obj = { a: 2 };
+          var r = --obj[(yield 0)];
+          return r === 1 && obj.a === 1;
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next("a");
+        r1.value === 0 && r1.done === false &&
+        r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_yield_in_update_expression_base_and_key_both_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          var obj = { a: 1 };
+          // Two yield points inside the update expression: base then computed key.
+          var out = (yield obj)[(yield 0)]++;
+          return out === 1 && obj.a === 2;
+        }
+        var it = g();
+        var r1 = it.next();
+        var a1 = r1.value.a;
+        // Resume the base expression; next we should yield from the computed key expression.
+        var r2 = it.next(r1.value);
+        var r3 = it.next("a");
+        r1.done === false && a1 === 1 &&
+        r2.value === 0 && r2.done === false &&
+        r3.value === true && r3.done === true &&
+        r1.value.a === 2
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_yield_in_new_expression_arguments() {
   let mut rt = new_runtime();
   let value = rt

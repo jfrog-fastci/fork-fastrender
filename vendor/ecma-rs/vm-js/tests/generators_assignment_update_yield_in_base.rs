@@ -94,6 +94,26 @@ fn generator_update_expression_yield_in_base() -> Result<(), VmError> {
 }
 
 #[test]
+fn generator_postfix_decrement_update_expression_yield_in_base() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      function* g(){
+        var obj = {a: 2};
+        var old = (yield obj).a--;
+        return old === 2 && obj.a === 1;
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(r1.value);
+      r2.done === true && r2.value === true
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn generator_prefix_update_expression_yield_in_base() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = rt.exec_script(
