@@ -859,8 +859,17 @@ impl<'a> Parser<'a> {
         self.super_prop_allowed += 1;
         self.super_call_allowed = 0;
         let mut asi = Asi::can();
+        // Class field initializers do not inherit `await`/`yield` expression parsing contexts
+        // from enclosing modules or functions.
+        let is_module = self.is_module();
+        let init_ctx = ctx.with_rules(ParsePatternRules {
+          await_allowed: !is_module,
+          yield_allowed: !is_module,
+          await_expr_allowed: false,
+          yield_expr_allowed: false,
+        });
         let initializer = self.with_disallow_arguments_in_class_init(|p| {
-          p.expr_with_asi(ctx, [TT::Semicolon, TT::BraceClose], &mut asi)
+          p.expr_with_asi(init_ctx, [TT::Semicolon, TT::BraceClose], &mut asi)
         });
         self.new_target_allowed = prev_new_target_allowed;
         self.super_prop_allowed = prev_super_prop_allowed;
@@ -1417,9 +1426,18 @@ impl<'a> Parser<'a> {
           self.new_target_allowed += 1;
           self.super_prop_allowed += 1;
           self.super_call_allowed = 0;
+          // Class field initializers do not inherit `await`/`yield` expression parsing contexts
+          // from enclosing modules or functions.
+          let is_module = self.is_module();
+          let init_ctx = ctx.with_rules(ParsePatternRules {
+            await_allowed: !is_module,
+            yield_allowed: !is_module,
+            await_expr_allowed: false,
+            yield_expr_allowed: false,
+          });
           let expr = self.with_disallow_arguments_in_class_init(|p| {
             p.expr_with_asi(
-              ctx,
+              init_ctx,
               [statement_delimiter, TT::BraceClose],
               property_initialiser_asi,
             )
@@ -1630,9 +1648,18 @@ impl<'a> Parser<'a> {
             self.new_target_allowed += 1;
             self.super_prop_allowed += 1;
             self.super_call_allowed = 0;
+            // Class field initializers do not inherit `await`/`yield` expression parsing contexts
+            // from enclosing modules or functions.
+            let is_module = self.is_module();
+            let init_ctx = ctx.with_rules(ParsePatternRules {
+              await_allowed: !is_module,
+              yield_allowed: !is_module,
+              await_expr_allowed: false,
+              yield_expr_allowed: false,
+            });
             let expr = self.with_disallow_arguments_in_class_init(|p| {
               p.expr_with_asi(
-                ctx,
+                init_ctx,
                 [statement_delimiter, TT::BraceClose],
                 property_initialiser_asi,
               )

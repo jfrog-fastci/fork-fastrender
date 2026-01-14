@@ -50,3 +50,19 @@ fn await_in_object_literal_computed_key_parses_in_module() {
   let res = parser.parse_top_level();
   assert!(res.is_ok(), "parse failed: {res:?}");
 }
+
+#[test]
+fn await_in_class_decl_computed_key_parses_in_module() {
+  let src = r#"
+    class C {
+      [await 1]() {}
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Module,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let res = parser.parse_top_level();
+  assert!(res.is_ok(), "parse failed: {res:?}");
+}
