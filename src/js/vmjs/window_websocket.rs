@@ -98,8 +98,8 @@ const MAX_WEBSOCKET_PENDING_EVENT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_WEBSOCKET_PENDING_EVENT_BYTES: usize = 512 * 1024;
 const MAX_QUEUED_WEBSOCKET_SEND_COMMANDS: usize = 1_024;
 
-// IPC-layer limits are expressed as `u32` (they cross process boundaries) but most of the
-// JS bindings operate on `usize` lengths. Keep a local `usize` view to avoid repetitive casts.
+// IPC-layer limits are expressed as `u32` (they cross process boundaries) but most of the JS
+// bindings operate on `usize` lengths. Keep a local `usize` view to avoid repetitive casts.
 const MAX_WEBSOCKET_URL_BYTES_USIZE: usize = MAX_WEBSOCKET_URL_BYTES as usize;
 const MAX_WEBSOCKET_PROTOCOL_BYTES_USIZE: usize = MAX_WEBSOCKET_PROTOCOL_BYTES as usize;
 const MAX_WEBSOCKET_PROTOCOLS_USIZE: usize = MAX_WEBSOCKET_PROTOCOLS as usize;

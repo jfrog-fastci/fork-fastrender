@@ -1,5 +1,13 @@
-use std::io::{self, Read};
+use std::io::{self, Read, Seek};
 use std::path::Path;
+
+/// Trait object helper for a file handle that supports streaming reads and seeks.
+///
+/// Rust trait objects can only have a single non-auto "principal" trait, so we bundle `Read + Seek`
+/// into a named trait and add `Send` as a supertrait.
+pub trait FileRead: Read + Seek + Send {}
+
+impl<T: Read + Seek + Send> FileRead for T {}
 
 /// Backend interface for fetching `file://` resources.
 ///
@@ -13,7 +21,7 @@ pub trait FileBackend: Send + Sync {
   fn metadata_len(&self, path: &Path) -> io::Result<Option<u64>>;
 
   /// Open a file for reading.
-  fn open(&self, path: &Path) -> io::Result<Box<dyn Read + Send>>;
+  fn open(&self, path: &Path) -> io::Result<Box<dyn FileRead>>;
 }
 
 /// Default file backend that reads from the local filesystem via `std::fs`.
@@ -25,7 +33,7 @@ impl FileBackend for StdFsFileBackend {
     Ok(Some(std::fs::metadata(path)?.len()))
   }
 
-  fn open(&self, path: &Path) -> io::Result<Box<dyn Read + Send>> {
+  fn open(&self, path: &Path) -> io::Result<Box<dyn FileRead>> {
     let file = std::fs::File::open(path)?;
     Ok(Box::new(file))
   }
@@ -46,8 +54,7 @@ impl FileBackend for NoFileBackend {
     Err(Self::denied())
   }
 
-  fn open(&self, _path: &Path) -> io::Result<Box<dyn Read + Send>> {
+  fn open(&self, _path: &Path) -> io::Result<Box<dyn FileRead>> {
     Err(Self::denied())
   }
 }
-

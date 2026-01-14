@@ -730,16 +730,16 @@ impl BrowserTabController {
               .map(|prepared| prepared.fragment_tree_for_geometry(&scroll_snapshot))
           })
           .flatten();
-      if let Ok(step_result) =
-        self
-          .document
-          .mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-            let hit_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
-            let step_result = engine.wheel_step_number_input(
-              dom,
-              box_tree,
-              hit_tree,
-              &scroll_snapshot,
+          if let Ok(step_result) =
+            self
+              .document
+              .mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+                let hit_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
+                let step_result = engine.wheel_step_number_input(
+                  dom,
+                  box_tree,
+                  hit_tree,
+                  &scroll_snapshot,
               Point::new(pointer_css.0, pointer_css.1),
               delta_y,
             );
