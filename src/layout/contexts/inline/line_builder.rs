@@ -1741,9 +1741,6 @@ impl TextItem {
       }
     }
 
-    // `check_run` holds borrows into `runs`; drop it before we potentially mutate glyph advances.
-    drop(check_run);
-
     if !needs_sort {
       #[cfg(test)]
       APPLY_SPACING_CLUSTER_COUNT.with(|count| {
