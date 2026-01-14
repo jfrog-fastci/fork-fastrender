@@ -770,7 +770,7 @@ the chrome widget nodes and the page region/subtree structure.
   - Renders a date/time picker popup for `<input type=date|time|datetime-local|month|week>`.
     - Workers request this via `WorkerToUi::{DateTimePickerOpened,DateTimePickerClosed}`; the UI
       responds with `UiToWorker::{DateTimePickerChoose,DateTimePickerCancel}`.
-  - Renders a file picker popup for `<input type=file>`.
+  - Opens a native file picker dialog for `<input type=file>` (via `rfd`).
     - Workers request this via `WorkerToUi::{FilePickerOpened,FilePickerClosed}`; the UI responds
       with `UiToWorker::{FilePickerChoose,FilePickerCancel}`.
   - Includes a test-only headless smoke mode (see `FASTR_TEST_BROWSER_HEADLESS_SMOKE` in
@@ -903,7 +903,7 @@ Current message types live in [`src/ui/messages.rs`](../src/ui/messages.rs):
 - `DateTimePickerChoose { tab_id, input_node_id, value }` / `DateTimePickerCancel { tab_id }` —
   user interaction with a date/time picker popup for `<input type=date|time|datetime-local|month|week>`.
 - `FilePickerChoose { tab_id, input_node_id, paths }` / `FilePickerCancel { tab_id }` — user
-  interaction with a file picker popup for `<input type=file>`.
+  interaction with a file picker dialog for `<input type=file>` (native in the windowed UI).
 - Downloads: `SetDownloadDirectory`, `StartDownload`, `CancelDownload`
 
 Coordinate convention: `pos_css` / `pointer_css` fields are **viewport-relative CSS pixels** (origin
@@ -932,7 +932,8 @@ add `scroll_state.viewport` when converting to page coordinates for hit-testing.
 - `DateTimePickerOpened { tab_id, input_node_id, kind, value, anchor_css }` /
   `DateTimePickerClosed { tab_id }` — open/close a date/time picker popup for an `<input>` control.
 - `FilePickerOpened { tab_id, input_node_id, multiple, accept, anchor_css }` /
-  `FilePickerClosed { tab_id }` — open/close a file picker popup for an `<input type=file>` control.
+  `FilePickerClosed { tab_id }` — open/close a file picker dialog for an `<input type=file>` control
+  (native in the windowed UI).
 - `ContextMenu { ... }` — response to `UiToWorker::ContextMenuRequest` (link/image under cursor +
   copy/cut/paste/select-all affordances + whether the page prevented the default menu).
 - `NavigationStarted/Committed/Failed { ... }` — URL/title/back-forward state updates
@@ -1187,11 +1188,9 @@ details and metric mapping.
   - `<select>` support is basic (listbox clicks + dropdown popup selection; keyboard navigation and
     simple typeahead are supported; no multi-select yet)
   - `<input type=file>`:
-    - Clicking the control opens a basic **in-app file picker** popup (enter a path; for `multiple`
-      inputs separate paths with `;`).
+    - Clicking the control opens a native OS file chooser dialog (via `rfd`).
     - OS drag-and-drop onto the control is supported (multi-file drops are coalesced to support
       `multiple`).
-    - Native OS file chooser dialogs are not wired up yet.
   - many controls are not yet supported (`contenteditable`, etc.)
 - No persistent browser profile (cookies/storage/devtools/extensions/etc.).
 
