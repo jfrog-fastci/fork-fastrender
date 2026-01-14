@@ -28,3 +28,4 @@ libc = { workspace = true }
 # This is intended for fuzzing and production-like reproductions where debug builds are too slow.
 # By default, these checks run only when `debug_assertions` are enabled.
 gc_validate = []
+semantic-ops = ["hir-js/semantic-ops"]
