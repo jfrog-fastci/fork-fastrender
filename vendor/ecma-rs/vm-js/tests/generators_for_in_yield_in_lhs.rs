@@ -1383,3 +1383,77 @@ fn generator_for_in_array_destructuring_iterator_is_closed_on_throw_while_suspen
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_for_in_return_while_suspended_in_object_pattern_prop_super_computed_member_key_aborts_before_getv()
+{
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var gets = 0;
+          Object.defineProperty(String.prototype, "missing", {
+            configurable: true,
+            get() { gets++; return 3; },
+          });
+
+          class Base { set k(v) { this._k = v; } }
+          class Derived extends Base {
+            *g() {
+              for ({missing: super[yield 1]} in {abc: 0}) { /* unreachable */ }
+            }
+          }
+
+          var inst = new Derived();
+          var it = inst.g();
+          var r1 = it.next();
+          if (r1.done !== false || r1.value !== 1 || gets !== 0) return false;
+          var r2 = it.return("done");
+          return (
+            r2.done === true &&
+            r2.value === "done" &&
+            gets === 0 &&
+            inst._k === undefined
+          );
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_in_throw_while_suspended_in_object_pattern_prop_super_computed_member_key_aborts_before_getv()
+{
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var gets = 0;
+          Object.defineProperty(String.prototype, "missing", {
+            configurable: true,
+            get() { gets++; return 3; },
+          });
+
+          class Base { set k(v) { this._k = v; } }
+          class Derived extends Base {
+            *g() {
+              for ({missing: super[yield 1]} in {abc: 0}) { /* unreachable */ }
+            }
+          }
+
+          var inst = new Derived();
+          var it = inst.g();
+          var r1 = it.next();
+          if (r1.done !== false || r1.value !== 1 || gets !== 0) return false;
+          var threw = false;
+          try { it.throw("boom"); } catch (e) { threw = (e === "boom"); }
+          return threw === true && gets === 0 && inst._k === undefined;
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
