@@ -6841,7 +6841,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     active_window_id: Option<WindowId>,
     failure: ProfileAutosaveFlushFailure,
   ) {
-    use fastrender::ui::{ToastKind, TOAST_DEFAULT_TTL};
+    use fastrender::ui::ToastKind;
     let (kind, text) = match failure {
       ProfileAutosaveFlushFailure::Timeout => (
         ToastKind::Warning,
@@ -6861,10 +6861,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     if let Some(win) = windows.get_mut(&target_id) {
-      win
-        .app
-        .chrome_toast
-        .show(kind, text.to_string(), std::time::Instant::now(), TOAST_DEFAULT_TTL);
+      win.app.show_chrome_toast_kind(kind, text);
       win.app.window.request_redraw();
     }
   }
@@ -7253,7 +7250,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
       } else if let Some(toast_text) = profile_autosave_failure_toast.as_deref() {
         app.chrome_toast.show(
-          fastrender::ui::ToastKind::Warning,
+          fastrender::ui::ToastKind::Error,
           toast_text.to_string(),
           now,
           std::time::Duration::from_secs(8),
