@@ -141,9 +141,6 @@ pub(crate) fn contains_ascii_case_insensitive(haystack: &str, needle_lower_ascii
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AsciiCaseInsensitive<'a>(pub &'a str);
 
-/// Backwards-compatible alias for [`AsciiCaseInsensitive`].
-pub(crate) use AsciiCaseInsensitive as AsciiCaseInsensitiveStr;
-
 impl PartialEq for AsciiCaseInsensitive<'_> {
   #[inline]
   fn eq(&self, other: &Self) -> bool {
