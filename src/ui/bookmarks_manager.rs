@@ -1520,8 +1520,14 @@ fn render_bookmark_row(
         });
       });
     });
-  })
-  .on_hover_text(entry.url.as_str());
+  });
+  if row_resp.hovered() || row_resp.has_focus() {
+    egui::show_tooltip_text(
+      ui.ctx(),
+      ui.make_persistent_id(("bookmark_row_tooltip", entry.id.0)),
+      entry.url.as_str(),
+    );
+  }
 
   row_resp.widget_info(move || {
     let mut label = String::with_capacity(
