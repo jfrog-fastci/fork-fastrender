@@ -333,6 +333,29 @@ fn text_spacing_trim_normal_collapses_adjacent_punctuation_opening_after_closing
 }
 
 #[test]
+fn text_spacing_trim_normal_does_not_collapse_adjacent_punctuation_across_padding() {
+  // Adjacent-pairs collapsing should only apply when the punctuation characters are directly
+  // adjacent in the inline formatting context (no intervening non-zero margin/border/padding).
+  let html = "<span style=\"padding-right: 10px\">」</span><span>「</span><span>H</span>";
+  let space_all = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: space-all;",
+    html,
+  );
+  let normal = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: normal;",
+    html,
+  );
+
+  let space_open_x = text_x_in_line(&space_all[0], "「").expect("x for opening punct (space-all)");
+  let normal_open_x = text_x_in_line(&normal[0], "「").expect("x for opening punct (normal)");
+
+  assert!(
+    (normal_open_x - space_open_x).abs() < 0.01,
+    "expected padding to prevent adjacent-pairs trimming (space-all x={space_open_x:.3} normal x={normal_open_x:.3})"
+  );
+}
+
+#[test]
 fn text_spacing_trim_normal_adjacent_pairs_respects_font_size_for_opening_after_closing() {
   // CSS Text 4: an opening punctuation following a closing punctuation should only be trimmed when
   // the closing punctuation is an equivalent or larger font size.

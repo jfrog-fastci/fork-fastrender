@@ -8244,21 +8244,27 @@ impl InlineFormattingContext {
         }
       }
 
-      fn first_char_and_trim(item: &InlineItem) -> Option<(char, TextSpacingTrim, f32)> {
+      fn first_char_and_trim(item: &InlineItem) -> Option<(char, TextSpacingTrim, f32, bool)> {
         match item {
           InlineItem::Text(t) => {
             if t.is_marker {
               return None;
             }
             let ch = t.text.chars().next()?;
-            Some((ch, t.style.text_spacing_trim, t.style.font_size))
+            Some((ch, t.style.text_spacing_trim, t.style.font_size, false))
           }
           InlineItem::InlineBox(b) => {
+            let has_leading_gap = b.margin_left.abs() > f32::EPSILON
+              || b.start_edge.abs() > f32::EPSILON
+              || b.line_padding_start.abs() > f32::EPSILON;
             for child in &b.children {
               match child {
                 InlineItem::StaticPositionAnchor(_) => continue,
                 InlineItem::Floating(_) => continue,
-                other => return first_char_and_trim(other),
+                other => {
+                  let (ch, trim, font_size, child_gap) = first_char_and_trim(other)?;
+                  return Some((ch, trim, font_size, has_leading_gap || child_gap));
+                }
               }
             }
             None
@@ -8268,21 +8274,27 @@ impl InlineFormattingContext {
         }
       }
 
-      fn last_char_and_trim(item: &InlineItem) -> Option<(char, TextSpacingTrim, f32)> {
+      fn last_char_and_trim(item: &InlineItem) -> Option<(char, TextSpacingTrim, f32, bool)> {
         match item {
           InlineItem::Text(t) => {
             if t.is_marker {
               return None;
             }
             let ch = t.text.chars().next_back()?;
-            Some((ch, t.style.text_spacing_trim, t.style.font_size))
+            Some((ch, t.style.text_spacing_trim, t.style.font_size, false))
           }
           InlineItem::InlineBox(b) => {
+            let has_trailing_gap = b.margin_right.abs() > f32::EPSILON
+              || b.end_edge.abs() > f32::EPSILON
+              || b.line_padding_end.abs() > f32::EPSILON;
             for child in b.children.iter().rev() {
               match child {
                 InlineItem::StaticPositionAnchor(_) => continue,
                 InlineItem::Floating(_) => continue,
-                other => return last_char_and_trim(other),
+                other => {
+                  let (ch, trim, font_size, child_gap) = last_char_and_trim(other)?;
+                  return Some((ch, trim, font_size, has_trailing_gap || child_gap));
+                }
               }
             }
             None
@@ -8560,13 +8572,15 @@ impl InlineFormattingContext {
           let prev_info = last_char_and_trim(&items[prev_idx].item);
           let curr_info = first_char_and_trim(&items[idx].item);
           if let (
-            Some((prev_ch, prev_trim, prev_font_size)),
-            Some((curr_ch, curr_trim, curr_font_size)),
+            Some((prev_ch, prev_trim, prev_font_size, prev_gap)),
+            Some((curr_ch, curr_trim, curr_font_size, curr_gap)),
           ) = (prev_info, curr_info)
           {
             if is_fullwidth_opening_punctuation(curr_ch)
               && allows_adjacent_pairs(curr_trim)
               && prev_allows_opening_trim(prev_ch, prev_font_size, curr_font_size)
+              && !prev_gap
+              && !curr_gap
             {
               if let Some((hang, _)) = opening_punct_hang_and_trim(&items[idx].item) {
                 if let Some(positioned) = items.get_mut(idx) {
@@ -8578,6 +8592,8 @@ impl InlineFormattingContext {
             if is_fullwidth_closing_punctuation(prev_ch)
               && allows_adjacent_pairs(prev_trim)
               && next_allows_closing_trim(curr_ch, prev_font_size, curr_font_size)
+              && !prev_gap
+              && !curr_gap
             {
               if let Some((hang, _)) = closing_punct_hang_and_trim(&items[prev_idx].item) {
                 if let Some(positioned) = items.get_mut(prev_idx) {
@@ -8660,13 +8676,15 @@ impl InlineFormattingContext {
             let prev_info = last_char_and_trim(&children[prev_idx]);
             let curr_info = first_char_and_trim(&children[idx]);
             if let (
-              Some((prev_ch, prev_trim, prev_font_size)),
-              Some((curr_ch, curr_trim, curr_font_size)),
+              Some((prev_ch, prev_trim, prev_font_size, prev_gap)),
+              Some((curr_ch, curr_trim, curr_font_size, curr_gap)),
             ) = (prev_info, curr_info)
             {
               if is_fullwidth_opening_punctuation(curr_ch)
                 && allows_adjacent_pairs(curr_trim)
                 && prev_allows_opening_trim(prev_ch, prev_font_size, curr_font_size)
+                && !prev_gap
+                && !curr_gap
               {
                 if let Some((hang, _)) = opening_punct_hang_and_trim(&children[idx]) {
                   apply_opening_punct_hang(&mut children[idx], hang, rtl);
@@ -8676,6 +8694,8 @@ impl InlineFormattingContext {
               if is_fullwidth_closing_punctuation(prev_ch)
                 && allows_adjacent_pairs(prev_trim)
                 && next_allows_closing_trim(curr_ch, prev_font_size, curr_font_size)
+                && !prev_gap
+                && !curr_gap
               {
                 if let Some((hang, _)) = closing_punct_hang_and_trim(&children[prev_idx]) {
                   apply_closing_punct_hang(&mut children[prev_idx], hang);
