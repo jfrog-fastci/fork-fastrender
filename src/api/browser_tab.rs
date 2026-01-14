@@ -3244,13 +3244,13 @@ impl BrowserTabHost {
         // Note: HTML uses the *presence* of the `src` attribute to suppress inline execution, even
         // if the value is empty/invalid. Mirror the scheduler's `src_attr_present` semantics here.
         if !spec.src_attr_present {
-          if !csp.allows_inline_script(nonce_attr, &spec.inline_text) {
-            let mut span = self.trace.span("js.script.csp_block", "js");
-            span.arg_u64("node_id", node_id.index() as u64);
-            span.arg_str("kind", "inline");
-            if let Some(nonce) = nonce_attr {
-              span.arg_str("nonce", nonce);
-            }
+            if !csp.allows_inline_script(nonce_attr, &spec.inline_text) {
+              let mut span = self.trace.span("js.script.csp_block", "js");
+              span.arg_u64("node_id", node_id.index() as u64);
+              span.arg_static_str("kind", "inline");
+              if let Some(nonce) = nonce_attr {
+                span.arg_str("nonce", nonce);
+              }
             // Suppress execution by forcing the "external src attribute present but invalid" path.
             spec.src_attr_present = true;
             spec.src = None;
@@ -3261,7 +3261,7 @@ impl BrowserTabHost {
               if !csp.allows_script_url(document_origin, nonce_attr, &url) {
                 let mut span = self.trace.span("js.script.csp_block", "js");
                 span.arg_u64("node_id", node_id.index() as u64);
-                span.arg_str("kind", "external");
+                span.arg_static_str("kind", "external");
                 span.arg_str("url", src);
                 if let Some(nonce) = nonce_attr {
                   span.arg_str("nonce", nonce);
@@ -3273,9 +3273,9 @@ impl BrowserTabHost {
               // Conservatively block unparseable URLs when a CSP policy is present.
               let mut span = self.trace.span("js.script.csp_block", "js");
               span.arg_u64("node_id", node_id.index() as u64);
-              span.arg_str("kind", "external");
+              span.arg_static_str("kind", "external");
               span.arg_str("url", src);
-              span.arg_str("reason", "invalid_url");
+              span.arg_static_str("reason", "invalid_url");
               if let Some(nonce) = nonce_attr {
                 span.arg_str("nonce", nonce);
               }
@@ -3549,7 +3549,7 @@ impl BrowserTabHost {
               if !csp.allows_inline_script(nonce_attr.as_deref(), &source_text) {
                 let mut span = self.trace.span("js.script.csp_block", "js");
                 span.arg_u64("node_id", node_id.index() as u64);
-                span.arg_str("kind", "inline");
+                span.arg_static_str("kind", "inline");
                 if let Some(nonce) = nonce_attr.as_deref() {
                   span.arg_str("nonce", nonce);
                 }
@@ -3740,7 +3740,7 @@ impl BrowserTabHost {
               if !csp.allows_inline_script(nonce_attr.as_deref(), &source_text) {
                 let mut span = self.trace.span("js.script.csp_block", "js");
                 span.arg_u64("node_id", node_id.index() as u64);
-                span.arg_str("kind", "inline");
+                span.arg_static_str("kind", "inline");
                 if let Some(nonce) = nonce_attr.as_deref() {
                   span.arg_str("nonce", nonce);
                 }
