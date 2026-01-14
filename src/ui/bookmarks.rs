@@ -14,10 +14,10 @@
 //! of them; otherwise it adds a new bookmark to the root.
 
 use serde::{Deserialize, Serialize};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::string_match::contains_ascii_case_insensitive;
 use crate::ui::url::validate_user_navigation_url_scheme;
@@ -552,8 +552,8 @@ impl BookmarkStore {
       return Err(BookmarkError::InvalidReorder);
     }
 
-    let expected: HashSet<BookmarkId> = self.roots.iter().copied().collect();
-    let got: HashSet<BookmarkId> = ids_in_new_order.iter().copied().collect();
+    let expected: FxHashSet<BookmarkId> = self.roots.iter().copied().collect();
+    let got: FxHashSet<BookmarkId> = ids_in_new_order.iter().copied().collect();
     if expected != got || got.len() != ids_in_new_order.len() {
       return Err(BookmarkError::InvalidReorder);
     }
@@ -985,8 +985,8 @@ impl BookmarkStore {
     if ids_in_new_order.len() != self.roots.len() {
       return Err(BookmarkError::InvalidReorder);
     }
-    let expected: HashSet<BookmarkId> = self.roots.iter().copied().collect();
-    let got: HashSet<BookmarkId> = ids_in_new_order.iter().copied().collect();
+    let expected: FxHashSet<BookmarkId> = self.roots.iter().copied().collect();
+    let got: FxHashSet<BookmarkId> = ids_in_new_order.iter().copied().collect();
     if expected != got || got.len() != ids_in_new_order.len() {
       return Err(BookmarkError::InvalidReorder);
     }
@@ -1676,7 +1676,7 @@ impl BookmarkStore {
     }
 
     // Roots must exist and have parent=None.
-    let root_set: HashSet<BookmarkId> = self.roots.iter().copied().collect();
+    let root_set: FxHashSet<BookmarkId> = self.roots.iter().copied().collect();
     if root_set.len() != self.roots.len() {
       return Err("duplicate bookmark ids in roots list".to_string());
     }
@@ -1727,7 +1727,7 @@ impl BookmarkStore {
     // Folder children must exist and have parent pointers.
     for node in self.nodes.values() {
       if let BookmarkNode::Folder(folder) = node {
-        let child_set: HashSet<BookmarkId> = folder.children.iter().copied().collect();
+        let child_set: FxHashSet<BookmarkId> = folder.children.iter().copied().collect();
         if child_set.len() != folder.children.len() {
           return Err(format!(
             "folder {:?} contains duplicate child ids",
@@ -1754,7 +1754,7 @@ impl BookmarkStore {
     }
 
     // Every node must be reachable from roots (either directly or via folder children).
-    let mut reachable = HashSet::new();
+    let mut reachable = FxHashSet::default();
     let mut stack: Vec<BookmarkId> = self.roots.clone();
     while let Some(id) = stack.pop() {
       if !reachable.insert(id) {
@@ -1764,7 +1764,7 @@ impl BookmarkStore {
         stack.extend(folder.children.iter().copied());
       }
     }
-    let all: HashSet<BookmarkId> = self.nodes.keys().copied().collect();
+    let all: FxHashSet<BookmarkId> = self.nodes.keys().copied().collect();
     if reachable != all {
       let mut missing: Vec<_> = all.difference(&reachable).copied().collect();
       missing.sort();
