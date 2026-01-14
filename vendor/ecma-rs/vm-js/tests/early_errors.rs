@@ -353,12 +353,11 @@ fn for_await_of_in_class_static_block_in_module_is_allowed() {
 }
 
 #[test]
-fn yield_expression_in_class_static_block_is_syntax_error() {
+fn yield_expression_in_class_static_block_inside_generator_is_allowed() {
   let mut rt = new_runtime();
-  let err = rt
+  rt
     .exec_script("function* g(){ class C { static { yield 0; } } }")
-    .unwrap_err();
-  assert!(matches!(err, VmError::Syntax(_)));
+    .unwrap();
 }
 
 #[test]
