@@ -881,7 +881,14 @@ fn arr_pat_contains_await(pat: &ArrPat) -> bool {
 
 fn for_in_of_lhs_contains_await(lhs: &ForInOfLhs) -> bool {
   match lhs {
-    ForInOfLhs::Decl((_, pat_decl)) => pat_contains_await(&pat_decl.stx.pat.stx),
+    ForInOfLhs::Decl((mode, pat_decl)) => {
+      // `await using` declarations require `await`-permitted (async) evaluation even when the
+      // initializer expression itself contains no `AwaitExpression`.
+      //
+      // Treat them as containing top-level `await` so classic-script compilation enables async
+      // evaluation and early errors can validate the `await` context correctly.
+      matches!(*mode, VarDeclMode::AwaitUsing) || pat_contains_await(&pat_decl.stx.pat.stx)
+    }
     ForInOfLhs::Assign(pat) => pat_contains_await(&pat.stx),
   }
 }
@@ -915,14 +922,16 @@ fn stmt_contains_await(stmt: &Node<Stmt>) -> bool {
     Stmt::Expr(expr_stmt) => expr_contains_await(&expr_stmt.stx.expr),
     Stmt::Return(ret) => ret.stx.value.as_ref().is_some_and(expr_contains_await),
     Stmt::Throw(throw_stmt) => expr_contains_await(&throw_stmt.stx.value),
-    Stmt::VarDecl(decl) => decl
-      .stx
-      .declarators
-      .iter()
-      .any(|d| {
+    Stmt::VarDecl(decl) => {
+      // `await using` requires async evaluation even when the initializer has no `await`.
+      if decl.stx.mode == VarDeclMode::AwaitUsing {
+        return true;
+      }
+      decl.stx.declarators.iter().any(|d| {
         d.initializer.as_ref().is_some_and(expr_contains_await)
           || pat_contains_await(&d.pattern.stx.pat.stx)
-      }),
+      })
+    }
     Stmt::Block(block) => block.stx.body.iter().any(stmt_contains_await),
     Stmt::If(if_stmt) => {
       expr_contains_await(&if_stmt.stx.test)
@@ -959,14 +968,16 @@ fn stmt_contains_await(stmt: &Node<Stmt>) -> bool {
       let init_has_await = match &for_stmt.stx.init {
         ForTripleStmtInit::None => false,
         ForTripleStmtInit::Expr(expr) => expr_contains_await(expr),
-        ForTripleStmtInit::Decl(decl) => decl
-          .stx
-          .declarators
-          .iter()
-          .any(|d| {
-            d.initializer.as_ref().is_some_and(expr_contains_await)
-              || pat_contains_await(&d.pattern.stx.pat.stx)
-          }),
+        ForTripleStmtInit::Decl(decl) => {
+          if decl.stx.mode == VarDeclMode::AwaitUsing {
+            true
+          } else {
+            decl.stx.declarators.iter().any(|d| {
+              d.initializer.as_ref().is_some_and(expr_contains_await)
+                || pat_contains_await(&d.pattern.stx.pat.stx)
+            })
+          }
+        }
       };
 
       init_has_await

@@ -13129,6 +13129,32 @@ impl HirAsyncState {
               }
             }
 
+            // Explicit Resource Management: `using` and `await using` initializers must be objects,
+            // `null`, or `undefined` (mirror `HirEvaluator::eval_var_decl`).
+            if matches!(
+              var_decl.kind,
+              hir_js::VarDeclKind::Using | hir_js::VarDeclKind::AwaitUsing
+            ) {
+              match resumed_value {
+                Value::Null | Value::Undefined | Value::Object(_) => {}
+                _ => {
+                  let err = finalize_throw_with_stack_at_source_offset(
+                    &*evaluator.vm,
+                    scope,
+                    evaluator.script.source.as_ref(),
+                    stmt_offset,
+                    VmError::TypeError("Using declaration initializer must be an object"),
+                  );
+                  match err {
+                    VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                      return Ok(HirAsyncResult::CompleteThrow(value))
+                    }
+                    other => return Err(other),
+                  }
+                }
+              }
+            }
+
             // Continue evaluating subsequent declarators in the same declaration.
             for (j, declarator) in var_decl
               .declarators
@@ -13216,6 +13242,32 @@ impl HirAsyncState {
                     return Ok(HirAsyncResult::CompleteThrow(value))
                   }
                   other => return Err(other),
+                }
+              }
+
+              // Explicit Resource Management: `using` and `await using` initializers must be objects,
+              // `null`, or `undefined` (mirror `HirEvaluator::eval_var_decl`).
+              if matches!(
+                var_decl.kind,
+                hir_js::VarDeclKind::Using | hir_js::VarDeclKind::AwaitUsing
+              ) {
+                match value {
+                  Value::Null | Value::Undefined | Value::Object(_) => {}
+                  _ => {
+                    let err = finalize_throw_with_stack_at_source_offset(
+                      &*evaluator.vm,
+                      scope,
+                      evaluator.script.source.as_ref(),
+                      stmt_offset,
+                      VmError::TypeError("Using declaration initializer must be an object"),
+                    );
+                    match err {
+                      VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                        return Ok(HirAsyncResult::CompleteThrow(value))
+                      }
+                      other => return Err(other),
+                    }
+                  }
                 }
               }
             }
@@ -13590,6 +13642,32 @@ impl HirAsyncState {
               }
               other => Err(other),
             };
+          }
+
+          // Explicit Resource Management: `using` and `await using` initializers must be objects,
+          // `null`, or `undefined` (mirror `HirEvaluator::eval_var_decl`).
+          if matches!(
+            var_decl.kind,
+            hir_js::VarDeclKind::Using | hir_js::VarDeclKind::AwaitUsing
+          ) {
+            match value {
+              Value::Null | Value::Undefined | Value::Object(_) => {}
+              _ => {
+                let err = finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  evaluator.script.source.as_ref(),
+                  stmt_offset,
+                  VmError::TypeError("Using declaration initializer must be an object"),
+                );
+                return match err {
+                  VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                    Ok(HirAsyncResult::CompleteThrow(value))
+                  }
+                  other => Err(other),
+                };
+              }
+            }
           }
         }
 
@@ -16742,6 +16820,26 @@ fn hir_eval_stmt_list_until_await(
             err,
           ));
         }
+
+        // Explicit Resource Management: `using` and `await using` initializers must be objects,
+        // `null`, or `undefined` (mirror `HirEvaluator::eval_var_decl`).
+        if matches!(
+          var_decl.kind,
+          hir_js::VarDeclKind::Using | hir_js::VarDeclKind::AwaitUsing
+        ) {
+          match value {
+            Value::Null | Value::Undefined | Value::Object(_) => {}
+            _ => {
+              return Err(finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                scope,
+                source.as_ref(),
+                stmt_offset,
+                VmError::TypeError("Using declaration initializer must be an object"),
+              ))
+            }
+          }
+        }
       }
       continue;
     }
@@ -17823,6 +17921,26 @@ pub(crate) fn hir_async_resume_continuation(
             ));
           }
 
+          // Explicit Resource Management: `using` and `await using` initializers must be objects,
+          // `null`, or `undefined` (mirror `HirEvaluator::eval_var_decl`).
+          if matches!(
+            var_decl.kind,
+            hir_js::VarDeclKind::Using | hir_js::VarDeclKind::AwaitUsing
+          ) {
+            match resumed {
+              Value::Null | Value::Undefined | Value::Object(_) => {}
+              _ => {
+                return Err(finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  source.as_ref(),
+                  stmt_offset,
+                  VmError::TypeError("Using declaration initializer must be an object"),
+                ))
+              }
+            }
+          }
+
           // Continue evaluating subsequent declarators in the same declaration.
           for (j, declarator) in var_decl
             .declarators
@@ -17892,6 +18010,26 @@ pub(crate) fn hir_async_resume_continuation(
                 stmt_offset,
                 err,
               ));
+            }
+
+            // Explicit Resource Management: `using` and `await using` initializers must be objects,
+            // `null`, or `undefined` (mirror `HirEvaluator::eval_var_decl`).
+            if matches!(
+              var_decl.kind,
+              hir_js::VarDeclKind::Using | hir_js::VarDeclKind::AwaitUsing
+            ) {
+              match value {
+                Value::Null | Value::Undefined | Value::Object(_) => {}
+                _ => {
+                  return Err(finalize_throw_with_stack_at_source_offset(
+                    &*evaluator.vm,
+                    scope,
+                    source.as_ref(),
+                    stmt_offset,
+                    VmError::TypeError("Using declaration initializer must be an object"),
+                  ))
+                }
+              }
             }
           }
 

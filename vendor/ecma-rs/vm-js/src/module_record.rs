@@ -2151,6 +2151,11 @@ fn var_decl_contains_top_level_await(
 ) -> Result<bool, VmError> {
   ctx.budget_tick()?;
 
+  // `await using` requires async evaluation even when its initializer contains no `AwaitExpression`.
+  if decl.mode == VarDeclMode::AwaitUsing {
+    return Ok(true);
+  }
+
   for d in &decl.declarators {
     if pat_contains_top_level_await(&d.pattern.stx.pat, ctx)? {
       return Ok(true);
@@ -2172,7 +2177,13 @@ fn for_in_of_lhs_contains_top_level_await(
 
   match lhs {
     ForInOfLhs::Assign(pat) => pat_contains_top_level_await(pat, ctx),
-    ForInOfLhs::Decl((_mode, pat_decl)) => pat_contains_top_level_await(&pat_decl.stx.pat, ctx),
+    ForInOfLhs::Decl((mode, pat_decl)) => {
+      if *mode == VarDeclMode::AwaitUsing {
+        Ok(true)
+      } else {
+        pat_contains_top_level_await(&pat_decl.stx.pat, ctx)
+      }
+    }
   }
 }
 
