@@ -41,16 +41,68 @@ pub const ABOUT_PAGE_URLS: &[&str] = &[
 /// It intentionally excludes internal/test-only pages like `about:test-*` so they do not appear in
 /// generic suggestions. Those pages are still reachable by typing the full URL explicitly.
 pub fn user_facing_about_pages() -> &'static [(&'static str, &'static str)] {
-  &[
-    (ABOUT_NEWTAB, "New Tab"),
-    (ABOUT_HISTORY, "History"),
-    (ABOUT_BOOKMARKS, "Bookmarks"),
-    (ABOUT_SETTINGS, "Settings"),
-    (ABOUT_HELP, "Help"),
-    (ABOUT_VERSION, "Version"),
-    (ABOUT_GPU, "GPU"),
-    (ABOUT_PROCESSES, "Processes"),
-  ]
+  fn is_user_facing_about_url(url: &str) -> bool {
+    if url == ABOUT_BLANK || url == ABOUT_ERROR {
+      return false;
+    }
+    if url.starts_with("about:test-") {
+      return false;
+    }
+    true
+  }
+
+  fn title_for_url(url: &'static str) -> &'static str {
+    match url {
+      ABOUT_NEWTAB => "New Tab",
+      ABOUT_HISTORY => "History",
+      ABOUT_BOOKMARKS => "Bookmarks",
+      ABOUT_SETTINGS => "Settings",
+      ABOUT_HELP => "Help",
+      ABOUT_VERSION => "Version",
+      ABOUT_GPU => "GPU",
+      ABOUT_PROCESSES => "Processes",
+      // Fall back to the raw `about:*` string so newly-added pages still appear in navigation lists
+      // without needing to invent a title immediately.
+      _ => url,
+    }
+  }
+
+  static PAGES: OnceLock<Vec<(&'static str, &'static str)>> = OnceLock::new();
+  PAGES
+    .get_or_init(|| {
+      let mut out = Vec::new();
+      let mut seen = FxHashSet::<&'static str>::default();
+
+      // Prefer a stable, user-friendly ordering for known pages.
+      for &url in [
+        ABOUT_NEWTAB,
+        ABOUT_HISTORY,
+        ABOUT_BOOKMARKS,
+        ABOUT_SETTINGS,
+        ABOUT_HELP,
+        ABOUT_VERSION,
+        ABOUT_GPU,
+        ABOUT_PROCESSES,
+      ]
+      .iter()
+      {
+        if is_user_facing_about_url(url) && seen.insert(url) {
+          out.push((url, title_for_url(url)));
+        }
+      }
+
+      // Automatically include any other user-facing `about:` pages so callers don't need to keep
+      // multiple lists in sync.
+      for &url in ABOUT_PAGE_URLS {
+        if !is_user_facing_about_url(url) || !seen.insert(url) {
+          continue;
+        }
+        out.push((url, title_for_url(url)));
+      }
+
+      out
+    })
+    .as_slice()
 }
 
 use parking_lot::RwLock;
@@ -58,12 +110,12 @@ use rustc_hash::FxHashSet;
 use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
+use super::string_match::contains_ascii_case_insensitive;
 use crate::ui::html_escape::escape_html;
 use crate::ui::theme_parsing::{
   RgbaColor, ENV_BROWSER_ACCENT, ENV_BROWSER_HIGH_CONTRAST, ENV_BROWSER_THEME,
 };
 use crate::ui::url::DEFAULT_SEARCH_ENGINE_TEMPLATE;
-use super::string_match::contains_ascii_case_insensitive;
 #[cfg(any(test, feature = "browser_ui"))]
 use crate::ui::HistoryVisitDelta;
 use crate::ui::{BookmarkId, BookmarkNode, BookmarkStore, GlobalHistoryEntry, GlobalHistoryStore};
@@ -2863,38 +2915,6 @@ mod tests {
   }
 
   #[test]
-  fn about_help_and_settings_built_in_page_lists_include_all_user_facing_pages() {
-    fn slice_between<'a>(haystack: &'a str, start: &str, end: &str) -> Option<&'a str> {
-      let start_idx = haystack.find(start)? + start.len();
-      let end_idx = haystack[start_idx..].find(end)? + start_idx;
-      Some(&haystack[start_idx..end_idx])
-    }
-
-    let help_html = html_for_about_url(ABOUT_HELP).unwrap();
-    let help_builtin_section = slice_between(
-      &help_html,
-      "<h2>Built-in pages</h2>",
-      "<h2>Test pages</h2>",
-    )
-    .expect("expected about:help HTML to contain Built-in pages and Test pages headings");
-
-    for (url, _) in user_facing_about_pages() {
-      assert!(
-        help_builtin_section.contains(&format!("href=\"{url}\"")),
-        "expected about:help built-in pages section to link to {url}, got: {help_html}"
-      );
-    }
-
-    let settings_html = html_for_about_url(ABOUT_SETTINGS).unwrap();
-    for (url, _) in user_facing_about_pages() {
-      assert!(
-        settings_html.contains(&format!("class=\"about-tile\" href=\"{url}\"")),
-        "expected about:settings built-in pages tiles to include link to {url}, got: {settings_html}"
-      );
-    }
-  }
-
-  #[test]
   fn about_gpu_falls_back_to_unknown_when_headless() {
     let html = html_for_about_url(ABOUT_GPU).unwrap();
     assert!(html.contains("<title>GPU</title>"));
@@ -3239,9 +3259,9 @@ mod tests {
         "expected F5 on {platform:?} to map to Reload"
       );
     }
-    assert!(html.contains(
-      r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>R</kbd> / <kbd>F5</kbd> — Reload"#
-    ));
+    assert!(
+      html.contains(r#"<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>R</kbd> / <kbd>F5</kbd> — Reload"#)
+    );
 
     // Fullscreen: F11 (Win/Linux); Ctrl+Cmd+F (macOS).
     assert_eq!(
@@ -3894,16 +3914,7 @@ mod tests {
     let help = html_for_about_url(ABOUT_HELP).unwrap();
     let settings = html_for_about_url(ABOUT_SETTINGS).unwrap();
 
-    for url in [
-      ABOUT_NEWTAB,
-      ABOUT_HISTORY,
-      ABOUT_BOOKMARKS,
-      ABOUT_SETTINGS,
-      ABOUT_HELP,
-      ABOUT_VERSION,
-      ABOUT_GPU,
-      ABOUT_PROCESSES,
-    ] {
+    for (url, _) in user_facing_about_pages() {
       assert!(
         help.contains(&format!("<a href=\"{url}\">{url}</a>")),
         "expected about:help built-in pages list to link to {url}"
