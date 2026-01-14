@@ -322,6 +322,24 @@ fn looks_like_file_path(input: &str) -> bool {
     || looks_like_windows_unc_path(input)
 }
 
+#[inline]
+fn port_str_is_u16(port_str: &str) -> bool {
+  if port_str.is_empty() {
+    return false;
+  }
+  let mut value: u32 = 0;
+  for b in port_str.as_bytes() {
+    if !b.is_ascii_digit() {
+      return false;
+    }
+    value = value * 10 + (*b - b'0') as u32;
+    if value > 65_535 {
+      return false;
+    }
+  }
+  true
+}
+
 fn looks_like_host_port_without_scheme(input: &str) -> bool {
   if input.contains("://") || input.as_bytes().iter().any(|b| b.is_ascii_whitespace()) {
     return false;
@@ -360,7 +378,7 @@ fn looks_like_host_port_without_scheme(input: &str) -> bool {
     idx += 1;
   }
   let port_str = rest.get(..idx).unwrap_or("");
-  if port_str.parse::<u16>().is_err() {
+  if !port_str_is_u16(port_str) {
     return false;
   }
   match bytes.get(idx) {
