@@ -2465,10 +2465,8 @@ fn module_request_from_specifier(
     Some(units) => crate::JsString::from_code_units(units)?,
     None => crate::JsString::from_str(specifier)?,
   };
-  Ok(ModuleRequest::new(
-    specifier,
-    with_clause_to_attributes(attributes, ctx)?,
-  ))
+  let attrs = with_clause_to_attributes(attributes, ctx)?;
+  ModuleRequest::try_new(specifier, attrs, || ctx.cancel_now())
 }
 
 fn push_requested_module(
@@ -2478,9 +2476,9 @@ fn push_requested_module(
 ) -> Result<(), VmError> {
   for existing in out.iter() {
     ctx.budget_tick()?;
-    // All `ModuleRequest`s we create here are canonicalized via `ModuleRequest::new` (attribute list
-    // sorting), so a direct equality check is equivalent to `ModuleRequestsEqual` while being much
-    // cheaper than the spec-shaped order-insensitive comparison.
+    // All `ModuleRequest`s we create here are canonicalized (attribute list sorting), so a direct
+    // equality check is equivalent to `ModuleRequestsEqual` while being much cheaper than the
+    // spec-shaped order-insensitive comparison.
     if existing == &request {
       return Ok(());
     }

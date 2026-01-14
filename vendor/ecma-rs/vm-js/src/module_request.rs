@@ -106,6 +106,34 @@ impl ModuleRequest {
     }
   }
 
+  /// Fallible variant of [`ModuleRequest::new`] that canonicalizes attributes with periodic ticks.
+  ///
+  /// This is intended for contexts where the attribute list may be attacker-controlled and must be
+  /// cooperatively interruptible (fuel/deadline/interrupt budgets).
+  pub fn try_new(
+    specifier: JsString,
+    mut attributes: Vec<ImportAttribute>,
+    tick: impl FnMut() -> Result<(), VmError>,
+  ) -> Result<Self, VmError> {
+    crate::tick::sort_unstable_by_with_ticks(&mut attributes, cmp_import_attribute, tick)?;
+    Ok(Self {
+      specifier,
+      attributes,
+    })
+  }
+
+  /// Construct a new module request from an already-canonicalized attribute list.
+  ///
+  /// Callers must ensure `attributes` are sorted by `(key,value)` using UTF-16 code unit ordering
+  /// (equivalent to [`ModuleRequest::new`]'s canonicalization).
+  #[inline]
+  pub fn new_with_canonicalized_attributes(specifier: JsString, attributes: Vec<ImportAttribute>) -> Self {
+    Self {
+      specifier,
+      attributes,
+    }
+  }
+
   /// Canonicalize this request's attribute list in-place.
   #[inline]
   pub fn canonicalize(&mut self) {

@@ -1683,10 +1683,15 @@ pub fn import_attributes_from_options_with_host_and_hooks(
   }
 
   // Sort by key (and value for determinism) by UTF-16 code unit order.
-  attributes.sort_unstable_by(|a, b| match a.key.cmp(&b.key) {
-    std::cmp::Ordering::Equal => a.value.cmp(&b.value),
-    non_eq => non_eq,
-  });
+  crate::tick::sort_unstable_by_with_ticks(
+    &mut attributes,
+    |a, b| match a.key.cmp(&b.key) {
+      std::cmp::Ordering::Equal => a.value.cmp(&b.value),
+      non_eq => non_eq,
+    },
+    || vm.tick(),
+  )
+  .map_err(ImportCallError::Vm)?;
   Ok(attributes)
 }
 
@@ -1934,7 +1939,9 @@ pub fn start_dynamic_import_with_host_and_hooks(
     }
   };
 
-  let module_request = ModuleRequest::new(specifier_string, attributes);
+  // `import_attributes_from_options_with_host_and_hooks` already canonicalizes the attribute list.
+  // Avoid a second (potentially large) canonicalization sort in `ModuleRequest::new`.
+  let module_request = ModuleRequest::new_with_canonicalized_attributes(specifier_string, attributes);
 
   // 4. Let referrer be GetActiveScriptOrModule(). If null, use the current Realm.
   let referrer = match active_script_or_module {

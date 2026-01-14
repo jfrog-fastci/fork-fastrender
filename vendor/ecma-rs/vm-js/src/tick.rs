@@ -9,6 +9,63 @@ use std::cmp::Ordering;
 /// `tick` closure to ensure fuel/deadline/interrupt budgets are observed.
 pub(crate) const DEFAULT_TICK_EVERY: usize = 1024;
 
+/// Unstable sorting with periodic ticks.
+///
+/// Rust's slice sorting APIs are infallible, but module loading paths sometimes need to sort
+/// attacker-controlled lists (import attributes, module namespace exports, etc). Those sorts can do
+/// `O(n log n)` comparisons; without periodically calling `tick()`, they can bypass fuel/deadline/
+/// interrupt budgets.
+///
+/// This helper makes `sort_unstable_by` *cooperatively interruptible* by:
+/// - counting comparator invocations, and
+/// - calling the supplied `tick` closure every [`DEFAULT_TICK_EVERY`] comparisons.
+///
+/// If `tick` returns an error (e.g. out-of-fuel), sorting is aborted and the error is returned.
+///
+/// # Panic safety
+///
+/// This routine uses a sentinel panic + `catch_unwind` internally to escape Rust's infallible sort
+/// implementation. All panics are caught and surfaced as a `VmError` (either the tick error or an
+/// `InvariantViolation`), so no panics escape to callers.
+pub(crate) fn sort_unstable_by_with_ticks<T>(
+  slice: &mut [T],
+  mut compare: impl FnMut(&T, &T) -> Ordering,
+  mut tick: impl FnMut() -> Result<(), VmError>,
+) -> Result<(), VmError> {
+  // Use a sentinel to abort `sort_unstable_by` early when `tick()` fails.
+  struct TickAbort;
+
+  let mut comparisons: usize = 0;
+  let mut tick_err: Option<VmError> = None;
+
+  let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    slice.sort_unstable_by(|a, b| {
+      comparisons = comparisons.wrapping_add(1);
+      // Avoid ticking on the first comparison so small sorts don't effectively double-charge fuel
+      // (most call sites tick once before entering this helper).
+      if (comparisons & (DEFAULT_TICK_EVERY - 1)) == 0 {
+        if let Err(err) = tick() {
+          tick_err = Some(err);
+          std::panic::panic_any(TickAbort);
+        }
+      }
+      compare(a, b)
+    });
+  }));
+
+  match res {
+    Ok(()) => Ok(()),
+    Err(panic) => {
+      if panic.is::<TickAbort>() {
+        return Err(tick_err.unwrap_or(VmError::InvariantViolation(
+          "sort aborted without a captured tick error",
+        )));
+      }
+      Err(VmError::InvariantViolation("sort panicked"))
+    }
+  }
+}
+
 /// Call `tick()` every `every` iterations (including iteration 0).
 ///
 /// `every` should be a power-of-two so the check can be compiled down to a fast bitmask.

@@ -1388,7 +1388,7 @@ impl ModuleGraph {
     // Avoid cloning attacker-controlled strings: infallible `String::clone` can abort the process
     // under allocator OOM. Also use `sort_unstable_by` to avoid allocations from the stable sort
     // implementation (sorting does not require stability because export names are unique).
-    exports.sort_unstable_by(|a, b| cmp_utf16(a, b));
+    crate::tick::sort_unstable_by_with_ticks(&mut exports, |a, b| cmp_utf16(a, b), || vm.tick())?;
 
     let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
       "module namespaces require intrinsics",
