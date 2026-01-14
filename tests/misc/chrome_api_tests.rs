@@ -94,7 +94,7 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for Hooks<Host> {
   fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<vm_js::RealmId>) {}
 
   fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
-    VmHostHooks::as_any_mut(&mut self.inner)
+    vm_js::VmHostHooks::as_any_mut(&mut self.inner)
   }
 }
 

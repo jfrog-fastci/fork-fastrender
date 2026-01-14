@@ -620,12 +620,11 @@ impl DomPlatform {
     scope
       .heap_mut()
       .object_set_prototype(proto_html_media_element, Some(proto_html_element))?;
-    scope
-      .heap_mut()
-      .object_set_prototype(proto_html_video_element, Some(proto_html_media_element))?;
-    scope
-      .heap_mut()
-      .object_set_prototype(proto_html_audio_element, Some(proto_html_media_element))?;
+    for proto in [proto_html_video_element, proto_html_audio_element] {
+      scope
+        .heap_mut()
+        .object_set_prototype(proto, Some(proto_html_media_element))?;
+    }
     for proto in [
       proto_html_input_element,
       proto_html_select_element,
@@ -2909,6 +2908,7 @@ mod tests {
 
     assert!(DomInterface::HTMLAudioElement.implements(DomInterface::HTMLMediaElement));
     assert!(DomInterface::HTMLAudioElement.implements(DomInterface::HTMLElement));
+    assert!(DomInterface::HTMLAudioElement.implements(DomInterface::Element));
 
     assert!(DomInterface::HTMLInputElement.implements(DomInterface::HTMLElement));
     assert!(DomInterface::HTMLInputElement.implements(DomInterface::Element));
@@ -2975,6 +2975,28 @@ mod tests {
     assert_eq!(
       DomInterface::primary_for_node_kind(&kind),
       DomInterface::HTMLSelectElement
+    );
+
+    let kind = NodeKind::Element {
+      tag_name: "video".into(),
+      namespace: "".into(),
+      prefix: None,
+      attributes: vec![],
+    };
+    assert_eq!(
+      DomInterface::primary_for_node_kind(&kind),
+      DomInterface::HTMLVideoElement
+    );
+
+    let kind = NodeKind::Element {
+      tag_name: "audio".into(),
+      namespace: "".into(),
+      prefix: None,
+      attributes: vec![],
+    };
+    assert_eq!(
+      DomInterface::primary_for_node_kind(&kind),
+      DomInterface::HTMLAudioElement
     );
 
     let kind = NodeKind::Element {

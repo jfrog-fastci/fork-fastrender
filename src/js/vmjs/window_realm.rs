@@ -39139,6 +39139,104 @@ fn html_element_click_native(
   Ok(Value::Undefined)
 }
 
+fn html_media_element_handle_from_this(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  this: Value,
+) -> Result<(ElementHandle, NonNull<dom2::Document>), VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let handle = element_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let iface = DomInterface::primary_for_node_kind(&dom.node(handle.node_id).kind);
+  if !iface.implements(DomInterface::HTMLMediaElement) {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
+  Ok((handle, dom_ptr))
+}
+
+fn html_media_element_reflected_bool_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let attr = native_slot_string(scope, callee)?;
+  let (handle, dom_ptr) = html_media_element_handle_from_this(vm, scope, host, this)?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  Ok(Value::Bool(
+    dom.has_attribute(handle.node_id, &attr).unwrap_or(false),
+  ))
+}
+
+fn html_media_element_reflected_bool_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let attr = native_slot_string(scope, callee)?;
+  let (handle, _) = html_media_element_handle_from_this(vm, scope, host, this)?;
+
+  let present_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let present = scope.heap().to_boolean(present_value)?;
+
+  if is_host_document_id(vm, handle.document_id) {
+    let needs_microtask = mutate_dom_for_vm_host(host, |dom| {
+      match dom.set_bool_attribute(handle.node_id, &attr, present) {
+        Ok(changed) => {
+          let needs = dom.take_mutation_observer_microtask_needed();
+          (Ok(needs), changed)
+        }
+        Err(err) => {
+          let exc = match make_dom_exception(vm, scope, err.code(), "") {
+            Ok(v) => VmError::Throw(v),
+            Err(e) => e,
+          };
+          (Err(exc), false)
+        }
+      }
+    })
+    .ok_or(VmError::TypeError("Illegal invocation"))??;
+
+    maybe_queue_mutation_observer_microtask(
+      vm,
+      scope,
+      host,
+      hooks,
+      handle.document_obj,
+      needs_microtask,
+    )?;
+    return Ok(Value::Undefined);
+  }
+
+  let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
+    return Ok(Value::Undefined);
+  };
+  // SAFETY: `dom_ptr` points at the `dom2::Document` backing this element, and we have exclusive
+  // access for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_mut() };
+
+  if let Err(err) = dom.set_bool_attribute(handle.node_id, &attr, present) {
+    return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
+  }
+  // Owned documents: skip MutationObserver microtask scheduling.
+  let _ = dom.take_mutation_observer_microtask_needed();
+  Ok(Value::Undefined)
+}
+
 fn html_element_title_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -52513,7 +52611,6 @@ fn init_window_globals(
     let html_media_element_proto = platform.prototype_for(DomInterface::HTMLMediaElement);
     let html_video_element_proto = platform.prototype_for(DomInterface::HTMLVideoElement);
     let html_audio_element_proto = platform.prototype_for(DomInterface::HTMLAudioElement);
-
     let html_input_element_proto = platform.prototype_for(DomInterface::HTMLInputElement);
     let html_select_element_proto = platform.prototype_for(DomInterface::HTMLSelectElement);
     let html_text_area_element_proto = platform.prototype_for(DomInterface::HTMLTextAreaElement);
@@ -53416,6 +53513,11 @@ fn init_window_globals(
       scope
         .heap_mut()
         .object_set_prototype(ctor, Some(html_element_ctor))?;
+    }
+    for ctor in [html_video_element_ctor, html_audio_element_ctor] {
+      scope
+        .heap_mut()
+        .object_set_prototype(ctor, Some(html_media_element_ctor))?;
     }
 
     // HTMLMediaElement.prototype.preload
@@ -58990,6 +59092,56 @@ fn init_window_globals(
         html_element_proto,
         click_key,
         data_desc(Value::Object(click_func)),
+      )?;
+    }
+  }
+
+  // HTMLMediaElement boolean reflected attributes (`controls`/`loop`/`autoplay`) should live on
+  // `HTMLMediaElement.prototype` and enforce strict brand checks (real-world scripts frequently
+  // probe these via IDL properties).
+  let html_media_element_proto = dom_platform
+    .as_ref()
+    .map(|platform| platform.prototype_for(DomInterface::HTMLMediaElement));
+  if let Some(html_media_element_proto) = html_media_element_proto {
+    let reflected_bool_get_call_id = vm.register_native_call(html_media_element_reflected_bool_get_native)?;
+    let reflected_bool_set_call_id = vm.register_native_call(html_media_element_reflected_bool_set_native)?;
+    for (prop, attr) in [("controls", "controls"), ("loop", "loop"), ("autoplay", "autoplay")] {
+      let attr_s = scope.alloc_string(attr)?;
+      scope.push_root(Value::String(attr_s))?;
+
+      let get_name = scope.alloc_string(&format!("get {prop}"))?;
+      scope.push_root(Value::String(get_name))?;
+      let get_func = scope.alloc_native_function_with_slots(
+        reflected_bool_get_call_id,
+        None,
+        get_name,
+        0,
+        &[Value::String(attr_s)],
+      )?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get_func, Some(realm.intrinsics().function_prototype()))?;
+      scope.push_root(Value::Object(get_func))?;
+
+      let set_name = scope.alloc_string(&format!("set {prop}"))?;
+      scope.push_root(Value::String(set_name))?;
+      let set_func = scope.alloc_native_function_with_slots(
+        reflected_bool_set_call_id,
+        None,
+        set_name,
+        1,
+        &[Value::String(attr_s)],
+      )?;
+      scope
+        .heap_mut()
+        .object_set_prototype(set_func, Some(realm.intrinsics().function_prototype()))?;
+      scope.push_root(Value::Object(set_func))?;
+
+      let key = alloc_key(&mut scope, prop)?;
+      scope.define_property(
+        html_media_element_proto,
+        key,
+        idl_attribute_desc(Value::Object(get_func), Value::Object(set_func)),
       )?;
     }
   }
@@ -70670,6 +70822,29 @@ mod tests {
   }
 
   #[test]
+  fn html_media_element_controls_reflects_attribute_presence() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const video = document.createElement('video');\n\
+        video.controls = true;\n\
+        if (video.getAttribute('controls') === null) return false;\n\
+        video.controls = false;\n\
+        if (video.getAttribute('controls') !== null) return false;\n\
+        return true;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn html_script_element_async_reflects_force_async_slot() -> Result<(), VmError> {
     let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
     let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
@@ -72993,20 +73168,20 @@ mod tests {
     let ok = realm.exec_script(
       "(() => {\n\
         if (Object.getPrototypeOf(Node) !== EventTarget) return 'Node';\n\
-        if (Object.getPrototypeOf(Element) !== Node) return 'Element';\n\
-        if (Object.getPrototypeOf(Document) !== Node) return 'Document';\n\
-        if (Object.getPrototypeOf(DocumentFragment) !== Node) return 'DocumentFragment';\n\
-        if (Object.getPrototypeOf(Text) !== Node) return 'Text';\n\
+         if (Object.getPrototypeOf(Element) !== Node) return 'Element';\n\
+         if (Object.getPrototypeOf(Document) !== Node) return 'Document';\n\
+         if (Object.getPrototypeOf(DocumentFragment) !== Node) return 'DocumentFragment';\n\
+         if (Object.getPrototypeOf(Text) !== Node) return 'Text';\n\
 \n\
-        if (Object.getPrototypeOf(HTMLElement) !== Element) return 'HTMLElement';\n\
-        if (Object.getPrototypeOf(HTMLMediaElement) !== HTMLElement) return 'HTMLMediaElement';\n\
-        if (Object.getPrototypeOf(HTMLVideoElement) !== HTMLMediaElement) return 'HTMLVideoElement';\n\
-        if (Object.getPrototypeOf(HTMLAudioElement) !== HTMLMediaElement) return 'HTMLAudioElement';\n\
-        if (Object.getPrototypeOf(HTMLInputElement) !== HTMLElement) return 'HTMLInputElement';\n\
-        if (Object.getPrototypeOf(HTMLSelectElement) !== HTMLElement) return 'HTMLSelectElement';\n\
-        if (Object.getPrototypeOf(HTMLTextAreaElement) !== HTMLElement) return 'HTMLTextAreaElement';\n\
-        if (Object.getPrototypeOf(HTMLOptionElement) !== HTMLElement) return 'HTMLOptionElement';\n\
-        if (Object.getPrototypeOf(HTMLFormElement) !== HTMLElement) return 'HTMLFormElement';\n\
+         if (Object.getPrototypeOf(HTMLElement) !== Element) return 'HTMLElement';\n\
+         if (Object.getPrototypeOf(HTMLMediaElement) !== HTMLElement) return 'HTMLMediaElement';\n\
+         if (Object.getPrototypeOf(HTMLVideoElement) !== HTMLMediaElement) return 'HTMLVideoElement';\n\
+         if (Object.getPrototypeOf(HTMLAudioElement) !== HTMLMediaElement) return 'HTMLAudioElement';\n\
+         if (Object.getPrototypeOf(HTMLInputElement) !== HTMLElement) return 'HTMLInputElement';\n\
+         if (Object.getPrototypeOf(HTMLSelectElement) !== HTMLElement) return 'HTMLSelectElement';\n\
+         if (Object.getPrototypeOf(HTMLTextAreaElement) !== HTMLElement) return 'HTMLTextAreaElement';\n\
+         if (Object.getPrototypeOf(HTMLOptionElement) !== HTMLElement) return 'HTMLOptionElement';\n\
+         if (Object.getPrototypeOf(HTMLFormElement) !== HTMLElement) return 'HTMLFormElement';\n\
 \n\
         // Spot-check inherited static constants via the interface object prototype chain.\n\
         if (Element.ELEMENT_NODE !== 1) return 'Element.ELEMENT_NODE';\n\
