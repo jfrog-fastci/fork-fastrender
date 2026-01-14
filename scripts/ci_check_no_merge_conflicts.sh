@@ -69,6 +69,7 @@ fi
 
 set +e
 use_git=0
+scan_backend=""
 if [[ "${scan_root}" == "." ]] && command -v git >/dev/null 2>&1; then
   if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     use_git=1
@@ -76,6 +77,7 @@ if [[ "${scan_root}" == "." ]] && command -v git >/dev/null 2>&1; then
 fi
 
 if [[ "${use_git}" -eq 1 ]]; then
+  scan_backend="git"
   pathspecs=(
     "${scan_root}"
     ':!vendor/ecma-rs/parse-js/tests/TypeScript/**'
@@ -100,6 +102,7 @@ if [[ "${use_git}" -eq 1 ]]; then
   )"
   status=$?
 elif [[ "${have_rg}" -eq 1 ]]; then
+  scan_backend="rg"
   matches="$(
     rg -n --hidden --no-messages \
       -e '^<<<<<<< ' \
@@ -121,6 +124,7 @@ elif [[ "${have_rg}" -eq 1 ]]; then
   )"
   status=$?
 else
+  scan_backend="python"
   if ! command -v python3 >/dev/null 2>&1 && ! command -v python >/dev/null 2>&1; then
     echo "error: neither ripgrep (rg) nor python is available; cannot scan for merge-conflict markers" >&2
     exit 2
@@ -133,60 +137,62 @@ else
 
   matches="$(
     "${py}" - <<'PY' "${scan_root}" "${repo_root}"
- import os
- import re
- import sys
- from pathlib import Path
- 
- root = Path(sys.argv[1]).resolve()
- repo_root = Path(sys.argv[2]).resolve()
- 
- marker_re = re.compile(r"^(<<<<<<<\s|\|\|\|\|\|\|\|\s|=======\s*$|>>>>>>>\s)")
- 
- # Note: when scanning `--path <dir>`, we still want to apply the same exclusions as the main
- # repo-wide scan (spec submodules, large WPT/test262 corpora, etc). Use absolute paths so the
- # exclusions remain correct regardless of `--path` root.
- excluded_dirs = [
-     repo_root / ".git",
-     repo_root / "target",
-     repo_root / "target_pages",
-     repo_root / "fetches",
-     repo_root / "tmp",
-     repo_root / "vendor/ecma-rs/parse-js/tests/TypeScript",
-     repo_root / "specs",
-     repo_root / "tests/wpt/_import_testdata",
-     repo_root / "tests/wpt/_offline_validator_testdata",
-     repo_root / "tests/wpt/expected",
-     repo_root / "tests/wpt/tests",
-     repo_root / "tests/wpt_dom/resources",
-     repo_root / "tests/wpt_dom/tests",
-     repo_root / "vendor/ecma-rs/test262/data",
-     repo_root / "vendor/ecma-rs/test262-semantic/data",
- ]
- excluded_dirs = [p.resolve() for p in excluded_dirs]
- 
- def should_skip_abs(path: Path) -> bool:
-     path = path.resolve()
-     for ex in excluded_dirs:
-         try:
-             path.relative_to(ex)
-             return True
-         except ValueError:
-             pass
-     return False
- 
- # If the scan root itself is an excluded directory, skip the scan entirely.
- if should_skip_abs(root):
-     sys.exit(0)
- 
- for dirpath, dirnames, filenames in os.walk(root):
-     # Prune excluded directories.
-     for d in list(dirnames):
-         if should_skip_abs(Path(dirpath) / d):
-             dirnames.remove(d)
- 
-     for name in filenames:
-         path = Path(dirpath) / name
+import os
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve()
+repo_root = Path(sys.argv[2]).resolve()
+
+marker_re = re.compile(r"^(<<<<<<<\s|\|\|\|\|\|\|\|\s|=======\s*$|>>>>>>>\s)")
+
+# Note: when scanning `--path <dir>`, we still want to apply the same exclusions as the main
+# repo-wide scan (spec submodules, large WPT/test262 corpora, etc). Use absolute paths so the
+# exclusions remain correct regardless of `--path` root.
+excluded_dirs = [
+    repo_root / ".git",
+    repo_root / "target",
+    repo_root / "target_pages",
+    repo_root / "fetches",
+    repo_root / "tmp",
+    repo_root / "vendor/ecma-rs/parse-js/tests/TypeScript",
+    repo_root / "specs",
+    repo_root / "tests/wpt/_import_testdata",
+    repo_root / "tests/wpt/_offline_validator_testdata",
+    repo_root / "tests/wpt/expected",
+    repo_root / "tests/wpt/tests",
+    repo_root / "tests/wpt_dom/resources",
+    repo_root / "tests/wpt_dom/tests",
+    repo_root / "vendor/ecma-rs/test262/data",
+    repo_root / "vendor/ecma-rs/test262-semantic/data",
+]
+excluded_dirs = [p.resolve() for p in excluded_dirs]
+
+
+def should_skip_abs(path: Path) -> bool:
+    path = path.resolve()
+    for ex in excluded_dirs:
+        try:
+            path.relative_to(ex)
+            return True
+        except ValueError:
+            pass
+    return False
+
+
+# If the scan root itself is an excluded directory, skip the scan entirely.
+if should_skip_abs(root):
+    sys.exit(0)
+
+for dirpath, dirnames, filenames in os.walk(root):
+    # Prune excluded directories.
+    for d in list(dirnames):
+        if should_skip_abs(Path(dirpath) / d):
+            dirnames.remove(d)
+
+    for name in filenames:
+        path = Path(dirpath) / name
         try:
             with path.open("rb") as f:
                 data = f.read()
@@ -204,8 +210,8 @@ else
 
         for idx, line in enumerate(text.splitlines(), start=1):
             if marker_re.match(line):
-                rel_path = path.resolve().as_posix()
-                print(f"{rel_path}:{idx}:{line}")
+                abs_path = path.resolve().as_posix()
+                print(f"{abs_path}:{idx}:{line}")
 PY
   )"
   status=$?
@@ -220,7 +226,12 @@ if [[ "${status}" -eq 0 && -n "${matches}" ]]; then
   exit 1
 fi
 
-if [[ "${status}" -ne 0 && "${status}" -ne 1 ]]; then
+if [[ "${scan_backend}" == "python" && "${status}" -ne 0 ]]; then
+  echo "error: python scan failed while scanning for merge-conflict markers (exit ${status})" >&2
+  exit "${status}"
+fi
+
+if [[ "${scan_backend}" != "python" && "${status}" -ne 0 && "${status}" -ne 1 ]]; then
   echo "error: failed to scan repository for merge-conflict markers (exit ${status})" >&2
   exit "${status}"
 fi
