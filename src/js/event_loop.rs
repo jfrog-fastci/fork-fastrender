@@ -1007,15 +1007,14 @@ impl<Host: 'static> EventLoop<Host> {
     // This keeps the callback non-virtual (no `dyn FnOnce`) and avoids lifetime-generalisation
     // issues when coercing the wrapper closure into a `dyn FnMut` trait object.
     let mut maybe = Some(callback);
-    let callback: TimerCallback<Host> = box_try_new(
-      move |host: &mut Host, event_loop: &mut EventLoop<Host>| {
+    let callback: TimerCallback<Host> =
+      box_try_new(move |host: &mut Host, event_loop: &mut EventLoop<Host>| {
         let runnable = maybe
           .take()
           .ok_or_else(|| Error::Other("setTimeout callback invoked more than once".to_string()))?;
         runnable(host, event_loop)
-      },
-    )
-    .ok_or_else(|| Error::Other(String::new()))?;
+      })
+      .ok_or_else(|| Error::Other(String::new()))?;
     Ok(self.add_timer(TimerKind::Timeout, delay, None, callback)?)
   }
 
