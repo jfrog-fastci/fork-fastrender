@@ -3120,7 +3120,7 @@ struct BrowserRuntime {
   request_repaint_viewport_snapshot_for_test: HashMap<TabId, ((u32, u32), f32)>,
 }
 
-impl BrowserRuntime {
+  impl BrowserRuntime {
   // Intentionally a helper (no `&self`) so it can be called while holding `tab: &mut TabState`
   // borrowed from `self.tabs` without triggering borrow-checker errors (E0502).
   fn emit_scroll_state_updated(

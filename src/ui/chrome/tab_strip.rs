@@ -1656,16 +1656,7 @@ fn tab_ui(
 
   let (_, tab_rect) = ui.allocate_space(Vec2::new(tab_width.max(0.0), TAB_HEIGHT));
   let tab_id = tab_strip_tab_widget_id(tab.id);
-  let title = if let Some(title) = tab
-    .title
-    .as_deref()
-    .map(str::trim)
-    .filter(|t| !t.is_empty())
-  {
-    title
-  } else {
-    tab.current_url.as_deref().unwrap_or("New Tab")
-  };
+  let title = tab.display_title();
   let mut response = ui.interact(
     tab_rect,
     tab_id,
@@ -1695,16 +1686,7 @@ fn tab_ui(
     }
     (has_error, has_warning)
   };
-  let tab_loading = tab.loading;
-  let tab_pinned = tab.pinned;
-  let a11y_label = tab.tab_a11y_label_cache.get_or_update(
-    title,
-    is_active,
-    tab_pinned,
-    tab_loading,
-    has_error,
-    has_warning,
-  );
+  let a11y_label = tab.tab_accessible_label(title, is_active, has_error, has_warning);
   // Note: `egui::WidgetInfo::labeled` takes `impl ToString` and therefore allocates a `String` when
   // the closure is executed. Keep the captured label as `Arc<str>` so registering the closure is
   // allocation-free on the steady-state hot path (the closure only runs when egui requests widget
@@ -1905,7 +1887,7 @@ fn tab_ui(
       store_test_close_id(ui.ctx(), tab.id, close_resp.id);
       store_test_close_rect(ui.ctx(), tab.id, close_rect);
     }
-    let close_a11y_label = tab.tab_close_accessible_label(&title);
+    let close_a11y_label = tab.tab_close_accessible_label(title);
     close_resp.widget_info({
       let close_a11y_label = close_a11y_label;
       move || egui::WidgetInfo::labeled(egui::WidgetType::Button, close_a11y_label.as_ref())
@@ -2095,16 +2077,7 @@ fn pinned_tab_ui(
 
   let (_, tab_rect) = ui.allocate_space(Vec2::new(tab_width.max(0.0), TAB_HEIGHT));
   let tab_id = tab_strip_tab_widget_id(tab.id);
-  let title = if let Some(title) = tab
-    .title
-    .as_deref()
-    .map(str::trim)
-    .filter(|t| !t.is_empty())
-  {
-    title
-  } else {
-    tab.current_url.as_deref().unwrap_or("New Tab")
-  };
+  let title = tab.display_title();
   let mut response = ui.interact(
     tab_rect,
     tab_id,
@@ -2133,16 +2106,7 @@ fn pinned_tab_ui(
     }
     (has_error, has_warning)
   };
-  let tab_loading = tab.loading;
-  let tab_pinned = tab.pinned;
-  let a11y_label = tab.tab_a11y_label_cache.get_or_update(
-    title,
-    is_active,
-    tab_pinned,
-    tab_loading,
-    has_error,
-    has_warning,
-  );
+  let a11y_label = tab.tab_accessible_label(title, is_active, has_error, has_warning);
   // See note in `tab_ui`: constructing `WidgetInfo` allocates when the closure is executed.
   response.widget_info({
     let a11y_label = a11y_label;

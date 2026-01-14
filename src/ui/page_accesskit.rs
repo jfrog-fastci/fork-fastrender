@@ -156,6 +156,7 @@ mod tests {
     ));
   }
 
+  #[test]
   fn action_request_to_ui_message_show_context_menu_maps_to_message() {
     let tab_id = TabId(10);
     let target = crate::ui::encode_page_node_id(tab_id, 1, 123);
