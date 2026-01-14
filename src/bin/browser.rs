@@ -7180,7 +7180,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       download_dir: &std::path::PathBuf,
       worker_wake_coalescer: Arc<fastrender::ui::WorkerWakeCoalescer>,
     ) {
-      use fastrender::ui::UiToWorker;
+      use fastrender::ui::{ToastKind, UiToWorker};
 
       // Best-effort: ask the old worker to shut down (may fail if it's deadlocked).
       self.app.renderer_backend.shutdown();
@@ -7200,6 +7200,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           Ok(v) => v,
           Err(err) => {
             eprintln!("failed to restart worker {worker_name:?}: {err}");
+            let detail = format_new_window_error_detail(&err.to_string());
+            let text = if detail.is_empty() {
+              "Failed to restart renderer".to_string()
+            } else {
+              format!("Failed to restart renderer\n{detail}")
+            };
+            self.app.show_chrome_toast_kind(ToastKind::Error, text);
+            self.app.window.request_redraw();
             return;
           }
         };
@@ -7243,6 +7251,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Err(err) => {
           eprintln!("failed to spawn restarted worker bridge thread: {err}");
+          let detail = format_new_window_error_detail(&err.to_string());
+          let text = if detail.is_empty() {
+            "Failed to restart renderer bridge".to_string()
+          } else {
+            format!("Failed to restart renderer bridge\n{detail}")
+          };
+          self.app.show_chrome_toast_kind(ToastKind::Error, text);
+          self.app.window.request_redraw();
           self.bridge_join = None;
         }
       }
