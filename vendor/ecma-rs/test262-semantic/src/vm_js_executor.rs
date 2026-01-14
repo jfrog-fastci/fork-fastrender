@@ -1721,11 +1721,22 @@ fn map_vm_error_with_phase(
   phase: ExecPhase,
   err: VmError,
 ) -> ExecError {
-  if cancel.load(Ordering::Relaxed) {
-    return ExecError::Cancelled;
-  }
-
   match err {
+    // Stack overflow should never be reported as a timeout/cancellation, even if the cancel flag is
+    // set (e.g. due to a race with the cooperative timeout).
+    VmError::Termination(term) if matches!(term.reason, TerminationReason::StackOverflow) => {
+      ExecError::Js(JsError {
+        phase,
+        typ: Some("RangeError".to_string()),
+        message: term.to_string(),
+        stack: stack_from_frames(term.stack),
+      })
+    }
+
+    // Treat cancellation/timeout as higher priority than other failures so the runner can surface
+    // a `timed_out` outcome deterministically.
+    _ if cancel.load(Ordering::Relaxed) => ExecError::Cancelled,
+
     VmError::Throw(thrown) => {
       let (typ, message, stack) = describe_thrown_value_with_stack(runtime, thrown);
       ExecError::Js(JsError {
@@ -1766,11 +1777,22 @@ fn map_vm_error(
   runtime: &mut vm_js::JsRuntime,
   err: VmError,
 ) -> ExecError {
-  if cancel.load(Ordering::Relaxed) {
-    return ExecError::Cancelled;
-  }
-
   match err {
+    // Stack overflow should never be reported as a timeout/cancellation, even if the cancel flag is
+    // set (e.g. due to a race with the cooperative timeout).
+    VmError::Termination(term) if matches!(term.reason, TerminationReason::StackOverflow) => {
+      ExecError::Js(JsError {
+        phase: ExecPhase::Runtime,
+        typ: Some("RangeError".to_string()),
+        message: term.to_string(),
+        stack: stack_from_frames(term.stack),
+      })
+    }
+
+    // Treat cancellation/timeout as higher priority than other failures so the runner can surface
+    // a `timed_out` outcome deterministically.
+    _ if cancel.load(Ordering::Relaxed) => ExecError::Cancelled,
+
     VmError::Syntax(mut diags) => {
       let file_name = if case.id.is_empty() {
         "<test262>"
@@ -1820,11 +1842,9 @@ fn map_vm_error(
       // `VmOptions::max_stack_depth`. However, older versions (or unexpected internal paths) may
       // still report a hard termination with `TerminationReason::StackOverflow`.
       //
-      // Map it to a JS-level `RangeError` (and avoid treating it as `ExecError::Cancelled`, which
-      // would be reported as a timeout) so test262 sees the expected exception shape.
-      //
-      // Preserve the termination message (`execution terminated: stack overflow`) so failures still
-      // clearly indicate the root cause in JSON reports.
+      // This match arm is a fallback for completeness. The main stack overflow handling happens
+      // before the cancellation short-circuit above so stack overflow is never misclassified as a
+      // timeout.
       TerminationReason::StackOverflow => ExecError::Js(JsError {
         phase: ExecPhase::Runtime,
         typ: Some("RangeError".to_string()),
@@ -2127,28 +2147,33 @@ f(2000);
 
   #[test]
   fn termination_stack_overflow_maps_to_rangeerror_not_cancelled() {
-    let cancel = Arc::new(AtomicBool::new(false));
     let case = test_case("termination_stack_overflow.js");
 
-    let vm = Vm::new(VmOptions::default());
-    let heap = Heap::new(HeapLimits::new(
-      DEFAULT_HEAP_MAX_BYTES,
-      DEFAULT_HEAP_GC_THRESHOLD_BYTES,
-    ));
-    let mut runtime = vm_js::JsRuntime::new(vm, heap).expect("init runtime");
+    // Even if the cancellation flag is set, stack overflow should still map to a JS-visible
+    // RangeError (not `ExecError::Cancelled`, which the runner reports as a timeout).
+    for cancelled in [false, true] {
+      let cancel = Arc::new(AtomicBool::new(cancelled));
 
-    let term = vm_js::Termination::new(TerminationReason::StackOverflow, Vec::new());
-    let err = map_vm_error(&case, "", &cancel, &mut runtime, VmError::Termination(term));
-    let ExecError::Js(js) = err else {
-      panic!("expected JS error, got {err:?}");
-    };
-    assert_eq!(js.phase, ExecPhase::Runtime);
-    assert_eq!(js.typ.as_deref(), Some("RangeError"));
-    assert!(
-      js.message.to_ascii_lowercase().contains("stack overflow"),
-      "expected stack overflow message, got: {}",
-      js.message
-    );
+      let vm = Vm::new(VmOptions::default());
+      let heap = Heap::new(HeapLimits::new(
+        DEFAULT_HEAP_MAX_BYTES,
+        DEFAULT_HEAP_GC_THRESHOLD_BYTES,
+      ));
+      let mut runtime = vm_js::JsRuntime::new(vm, heap).expect("init runtime");
+
+      let term = vm_js::Termination::new(TerminationReason::StackOverflow, Vec::new());
+      let err = map_vm_error(&case, "", &cancel, &mut runtime, VmError::Termination(term));
+      let ExecError::Js(js) = err else {
+        panic!("expected JS error, got {err:?} (cancelled={cancelled})");
+      };
+      assert_eq!(js.phase, ExecPhase::Runtime);
+      assert_eq!(js.typ.as_deref(), Some("RangeError"));
+      assert!(
+        js.message.to_ascii_lowercase().contains("stack overflow"),
+        "expected stack overflow message, got: {}",
+        js.message
+      );
+    }
   }
 
   #[test]
