@@ -326,6 +326,130 @@ fn module_evaluate_supports_anonymous_default_export_function_decls() -> Result<
 }
 
 #[test]
+fn module_evaluate_supports_compiled_modules_with_function_decls() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+
+  let mut graph = ModuleGraph::new();
+  graph.add_module_with_specifier(
+    "a.js",
+    SourceTextModuleRecord::parse_compiled(
+      &mut heap,
+      "a.js",
+      r#"
+        function f(){ return 1; }
+        export const x = f();
+      "#,
+    )?,
+  )?;
+  let b = graph.add_module_with_specifier(
+    "b.js",
+    SourceTextModuleRecord::parse_compiled(
+      &mut heap,
+      "b.js",
+      r#"
+        import { x } from "a.js";
+        export const y = x;
+      "#,
+    )?,
+  )?;
+  graph.link_all_by_specifier();
+
+  let promise = graph.evaluate(
+    &mut vm,
+    &mut heap,
+    realm.global_object(),
+    realm.id(),
+    b,
+    &mut host,
+    &mut hooks,
+  )?;
+
+  let mut scope = heap.scope();
+  scope.push_root(promise)?;
+  let Value::Object(promise_obj) = promise else {
+    panic!("ModuleGraph::evaluate should return a Promise object");
+  };
+  assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+  let ns_b = graph.get_module_namespace(b, &mut vm, &mut scope)?;
+  assert_eq!(
+    ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "y")?,
+    Value::Number(1.0)
+  );
+
+  drop(scope);
+  graph.teardown(&mut vm, &mut heap);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
+fn module_evaluate_supports_compiled_default_export_named_function_decl() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+
+  let mut graph = ModuleGraph::new();
+  graph.add_module_with_specifier(
+    "a.js",
+    SourceTextModuleRecord::parse_compiled(
+      &mut heap,
+      "a.js",
+      r#"
+        export default function foo(){ return 1; }
+      "#,
+    )?,
+  )?;
+  let b = graph.add_module_with_specifier(
+    "b.js",
+    SourceTextModuleRecord::parse_compiled(
+      &mut heap,
+      "b.js",
+      r#"
+        import foo from "a.js";
+        export const r = foo();
+        export const n = foo.name;
+      "#,
+    )?,
+  )?;
+  graph.link_all_by_specifier();
+
+  let promise = graph.evaluate(
+    &mut vm,
+    &mut heap,
+    realm.global_object(),
+    realm.id(),
+    b,
+    &mut host,
+    &mut hooks,
+  )?;
+
+  let mut scope = heap.scope();
+  scope.push_root(promise)?;
+  let Value::Object(promise_obj) = promise else {
+    panic!("ModuleGraph::evaluate should return a Promise object");
+  };
+  assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+  let ns_b = graph.get_module_namespace(b, &mut vm, &mut scope)?;
+  assert_eq!(
+    ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "r")?,
+    Value::Number(1.0)
+  );
+  let Value::String(name) = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "n")? else {
+    panic!("expected b.n to be a string");
+  };
+  assert_eq!(scope.heap().get_string(name)?.to_utf8_lossy(), "foo");
+
+  drop(scope);
+  graph.teardown(&mut vm, &mut heap);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
 fn module_evaluate_supports_reexports_and_export_star_as_namespace() -> Result<(), VmError> {
   let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
   let mut hooks = MicrotaskQueue::new();

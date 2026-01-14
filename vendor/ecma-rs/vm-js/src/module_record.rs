@@ -411,6 +411,21 @@ impl SourceTextModuleRecord {
     Self::parse_source(source)
   }
 
+  /// Parse a module and additionally compile it to HIR so `ModuleGraph` can execute it via the
+  /// compiled (HIR) execution engine.
+  pub fn parse_compiled<'a>(
+    heap: &mut Heap,
+    name: impl Into<crate::SourceTextInput<'a>>,
+    text: impl Into<crate::SourceTextInput<'a>>,
+  ) -> Result<Self, VmError> {
+    let script = CompiledScript::compile_module(heap, name, text)?;
+    // Parse the module record fields from the same `SourceText` so error spans and `import.meta`
+    // use consistent source metadata.
+    let mut record = Self::parse_source(script.source.clone())?;
+    record.compiled = Some(script);
+    Ok(record)
+  }
+
   /// Parse a module and capture its [`SourceText`] + parsed AST for later evaluation.
   pub fn parse_source(source: Arc<SourceText>) -> Result<Self, VmError> {
     let opts = ParseOptions {
