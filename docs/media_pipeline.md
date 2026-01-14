@@ -176,10 +176,10 @@ Codec-private (`MediaTrackInfo.codec_private`) formats produced today:
 
 Seeking:
 
-- `seek(time_ns)` is PTS-based per track: it moves each track to the first sample with
-  `pts_ns >= time_ns`.
-- For non-monotonic PTS tracks (B-frames), it uses a sorted PTS index to pick a decode-order sample
-  that can reach the target PTS (best-effort).
+- `seek(time_ns)` is PTS-based per track:
+  - For monotonic-PTS tracks, it seeks to the first sample with `pts_ns >= time_ns`.
+  - For non-monotonic PTS tracks (B-frames), it uses a sorted PTS index to pick a decode-order
+    sample that can reach the target PTS (best-effort).
 
 Known limitations / gaps (current):
 
@@ -292,8 +292,8 @@ is still nanoseconds.
 
 - **WebM**: `WebmDemuxer::seek(time_ns)` seeks to the first frame at/after the target (after
   compensating for codec delay).
-- **MP4**: `Mp4ParseDemuxer::seek(time_ns)` seeks each track to the first sample with
-  `pts_ns >= time_ns` (not currently keyframe-aware).
+- **MP4**: `Mp4ParseDemuxer::seek(time_ns)` is PTS-based per track (see above) and is not currently
+  keyframe-aware.
 
 ## How to manually test (fixtures)
 
