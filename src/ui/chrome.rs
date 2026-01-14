@@ -2825,13 +2825,16 @@ pub fn chrome_ui_with_bookmarks(
               close_menu = true;
             }
 
-            let bookmarks_mgr_a11y_label = if app.chrome.bookmarks_manager_open {
+            let mut show_bookmarks_manager = app.chrome.bookmarks_manager_open;
+            let bookmarks_mgr = ui.checkbox(&mut show_bookmarks_manager, "Bookmarks manager");
+            // Note: `egui::Checkbox` mutates the bound boolean on click. Use the post-interaction
+            // value (`show_bookmarks_manager`) so the a11y label stays consistent with the exposed
+            // checked state for the current frame.
+            let bookmarks_mgr_a11y_label = if show_bookmarks_manager {
               "Hide bookmarks manager"
             } else {
               "Show bookmarks manager"
             };
-            let mut show_bookmarks_manager = app.chrome.bookmarks_manager_open;
-            let bookmarks_mgr = ui.checkbox(&mut show_bookmarks_manager, "Bookmarks manager");
             popup_focus_ids.push(bookmarks_mgr.id);
             bookmarks_mgr.widget_info(move || {
               egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, bookmarks_mgr_a11y_label)
@@ -2855,13 +2858,14 @@ pub fn chrome_ui_with_bookmarks(
             ui.separator();
 
             ui.label(egui::RichText::new("History").strong());
-            let history_a11y_label = if app.chrome.history_panel_open {
+            let mut show_history_panel = app.chrome.history_panel_open;
+            let history = ui.checkbox(&mut show_history_panel, "History panel");
+            // Keep the a11y label consistent with the checkbox state for the current frame.
+            let history_a11y_label = if show_history_panel {
               "Hide history panel"
             } else {
               "Show history panel"
             };
-            let mut show_history_panel = app.chrome.history_panel_open;
-            let history = ui.checkbox(&mut show_history_panel, "History panel");
             popup_focus_ids.push(history.id);
             history.widget_info(move || {
               egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, history_a11y_label)
