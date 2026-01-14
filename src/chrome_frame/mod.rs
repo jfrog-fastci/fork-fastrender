@@ -2,13 +2,16 @@ use crate::api::BrowserDocument;
 use crate::dom::{DomNode, DomNodeType};
 use crate::geometry::Point;
 use crate::interaction::dom_index::DomIndex;
-use crate::interaction::{fragment_tree_with_scroll, InteractionEngine, InteractionState};
+use crate::interaction::{
+  cursor_kind_for_hit, fragment_tree_with_scroll, resolve_url, InteractionEngine, InteractionState,
+};
 use crate::ui::omnibox_nav::{apply_omnibox_nav_key, OmniboxNavKey};
 use crate::ui::{
   BrowserAppState, ChromeAction, ChromeActionUrl, ChromeDynamicAssetFetcher, OmniboxAction,
   OmniboxSearchSource, OmniboxSuggestionSource, OmniboxUrlSource, PointerButton,
   PointerModifiers,
 };
+use crate::ui::messages::CursorKind;
 use crate::{Error, FastRender, Pixmap, RenderOptions, Result};
 
 pub mod dom_mutation;
@@ -47,6 +50,15 @@ pub struct ChromeFrameClickOutcome {
   pub events: Vec<ChromeFrameEvent>,
   /// Parsed `chrome-action:` navigation, when the click triggered one.
   pub action: Option<ChromeAction>,
+}
+
+/// Hover/cursor state derived from the most recent pointer position over the chrome frame.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ChromeHoverState {
+  /// Desired platform cursor kind.
+  pub cursor: CursorKind,
+  /// Resolved URL/action under the cursor, when hovering a link (including `chrome-action:`).
+  pub hovered_url: Option<String>,
 }
 
 /// Read the current `<input>` value for the element with the given `id=` attribute.
@@ -122,6 +134,7 @@ pub struct ChromeFrameDocument {
   last_address_bar_value: String,
   /// Cached address bar focus state for change detection.
   last_address_bar_focused: bool,
+  hover_state: ChromeHoverState,
   /// True when chrome UI state (DOM mutations, scroll offsets, interaction state) has changed since
   /// the last successful render.
   dirty: bool,
@@ -190,6 +203,7 @@ impl ChromeFrameDocument {
       address_bar_node_id,
       last_address_bar_value: address_bar_value.unwrap_or_default(),
       last_address_bar_focused: false,
+      hover_state: ChromeHoverState::default(),
       dirty: true,
     })
   }
@@ -282,6 +296,11 @@ impl ChromeFrameDocument {
 
   pub fn interaction_state(&self) -> &InteractionState {
     self.interaction.interaction_state()
+  }
+
+  /// Returns the most recently computed hover/cursor state.
+  pub fn hover_state(&self) -> ChromeHoverState {
+    self.hover_state.clone()
   }
 
   pub fn address_bar_value(&mut self) -> String {
@@ -428,15 +447,34 @@ impl ChromeFrameDocument {
     }
 
     let scroll = self.document.scroll_state();
+    let document_url = self
+      .document
+      .document_url()
+      .unwrap_or("chrome://chrome-frame/")
+      .to_string();
+    let base_url = self
+      .document
+      .base_url()
+      .unwrap_or(document_url.as_str())
+      .to_string();
     let viewport_point = Point::new(pos_css.0, pos_css.1);
     let (document, interaction) = (&mut self.document, &mut self.interaction);
-    let changed = document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+    let (changed, hit) = document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
       let scrolled =
         (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, &scroll));
       let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
-      let changed = interaction.pointer_move(dom, box_tree, fragment_tree, &scroll, viewport_point);
-      (changed, changed)
+      let (changed, hit) =
+        interaction.pointer_move_and_hit(dom, box_tree, fragment_tree, &scroll, viewport_point);
+      (changed, (changed, hit))
     })?;
+
+    self.hover_state = ChromeHoverState {
+      cursor: cursor_kind_for_hit(hit.as_ref()),
+      hovered_url: hit
+        .as_ref()
+        .and_then(|hit| hit.href.as_deref())
+        .and_then(|href| resolve_url(&base_url, href)),
+    };
 
     self.dirty |= changed;
     Ok(changed)
@@ -450,6 +488,7 @@ impl ChromeFrameDocument {
   /// Returns `true` when the interaction state changed (i.e. a rerender is required to clear
   /// hover/active styling).
   pub fn pointer_leave(&mut self) -> bool {
+    self.hover_state = ChromeHoverState::default();
     let state = self.interaction.interaction_state();
     let had_hover = !state.hover_chain().is_empty();
     let had_active = !state.active_chain().is_empty();
@@ -971,17 +1010,35 @@ impl ChromeFrameDocument {
       // Scrolling moves content under a stationary pointer, so refresh hover state using the
       // updated scroll offsets and the cached layout artifacts.
       let scroll = self.document.scroll_state();
+      let document_url = self
+        .document
+        .document_url()
+        .unwrap_or("chrome://chrome-frame/")
+        .to_string();
+      let base_url = self
+        .document
+        .base_url()
+        .unwrap_or(document_url.as_str())
+        .to_string();
       let interaction = &mut self.interaction;
-      self.document.mutate_dom_with_layout_artifacts(
+      let (_changed, hit) = self.document.mutate_dom_with_layout_artifacts(
         |dom: &mut DomNode, box_tree, fragment_tree| {
           let scrolled_tree =
             (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, &scroll));
           let hit_tree = scrolled_tree.as_ref().unwrap_or(fragment_tree);
-          let dom_changed =
-            interaction.pointer_move(dom, box_tree, hit_tree, &scroll, viewport_point);
-          (dom_changed, ())
+          let (changed, hit) =
+            interaction.pointer_move_and_hit(dom, box_tree, hit_tree, &scroll, viewport_point);
+          (changed, (changed, hit))
         },
       )?;
+
+      self.hover_state = ChromeHoverState {
+        cursor: cursor_kind_for_hit(hit.as_ref()),
+        hovered_url: hit
+          .as_ref()
+          .and_then(|hit| hit.href.as_deref())
+          .and_then(|href| resolve_url(&base_url, href)),
+      };
 
       // Any scroll change requires repaint; hover-state DOM mutations (rare) should also keep this
       // marked dirty.
@@ -1177,6 +1234,7 @@ pub fn sync_browser_state_to_chrome_frame(app: &mut BrowserAppState, chrome: &mu
 mod tests {
   use super::*;
   use crate::text::font_db::FontConfig;
+  use crate::ui::messages::CursorKind;
   use crate::ui::{BrowserTabState, OmniboxAction, OmniboxSuggestionSource, OmniboxUrlSource, TabId};
   use std::collections::hash_map::DefaultHasher;
   use std::hash::{Hash, Hasher};
@@ -1327,6 +1385,59 @@ mod tests {
       </div>
     </body>
   </html>"#;
+
+  const HOVER_SNIPPET: &str = r#"<!doctype html>
+  <html>
+    <head>
+      <meta charset="utf-8" />
+      <style>
+        html, body { margin: 0; padding: 0; background: white; }
+        #link {
+          position: absolute;
+          left: 0;
+          top: 0;
+          width: 120px;
+          height: 24px;
+          display: block;
+        }
+        #input {
+          position: absolute;
+          left: 0;
+          top: 40px;
+          width: 120px;
+          height: 24px;
+          display: block;
+        }
+      </style>
+    </head>
+    <body>
+      <a id="link" href="chrome-action:test">Link</a>
+      <input id="input" type="text" value="" />
+    </body>
+  </html>"#;
+
+  #[test]
+  fn chrome_frame_pointer_move_reports_hovered_url_and_cursor_kind() -> Result<()> {
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()?;
+    let options = RenderOptions::new().with_viewport(160, 80);
+    let mut chrome = ChromeFrameDocument::new(renderer, options.clone())?;
+    chrome
+      .document_mut()
+      .reset_with_html(HOVER_SNIPPET, options.clone())?;
+
+    chrome.pointer_move((10.0, 10.0))?;
+    let hover = chrome.hover_state();
+    assert_eq!(hover.cursor, CursorKind::Pointer);
+    assert_eq!(hover.hovered_url.as_deref(), Some("chrome-action:test"));
+
+    chrome.pointer_move((10.0, 50.0))?;
+    let hover = chrome.hover_state();
+    assert_eq!(hover.cursor, CursorKind::Text);
+    assert_eq!(hover.hovered_url, None);
+    Ok(())
+  }
 
   #[test]
   fn chrome_frame_wheel_scroll_updates_scroll_state_and_rerenders() -> Result<()> {

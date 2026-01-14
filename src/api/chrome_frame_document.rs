@@ -9,8 +9,9 @@
 //! (re-exported as [`crate::ui::ChromeFrameDocument`]).
 
 use crate::geometry::Point;
-use crate::interaction::{InteractionEngine, InteractionState};
+use crate::interaction::{cursor_kind_for_hit, resolve_url, InteractionEngine, InteractionState};
 use crate::scroll::ScrollState;
+use crate::chrome_frame::ChromeHoverState;
 use crate::Result;
 
 use super::{BrowserDocument, FastRender, Pixmap, RenderOptions};
@@ -22,6 +23,7 @@ use super::{BrowserDocument, FastRender, Pixmap, RenderOptions};
 pub struct ChromeFrameDocument {
   document: BrowserDocument,
   interaction: InteractionEngine,
+  hover_state: ChromeHoverState,
 }
 
 impl ChromeFrameDocument {
@@ -36,6 +38,7 @@ impl ChromeFrameDocument {
     Ok(Self {
       document: BrowserDocument::new(renderer, html, options)?,
       interaction: InteractionEngine::new(),
+      hover_state: ChromeHoverState::default(),
     })
   }
 
@@ -49,6 +52,11 @@ impl ChromeFrameDocument {
 
   pub fn interaction_state(&self) -> &InteractionState {
     self.interaction.interaction_state()
+  }
+
+  /// Returns the most recently computed hover/cursor state.
+  pub fn hover_state(&self) -> ChromeHoverState {
+    self.hover_state.clone()
   }
 
   /// Render a new frame if the document or interaction state has changed.
@@ -126,20 +134,36 @@ impl ChromeFrameDocument {
     let ChromeFrameDocument {
       document,
       interaction,
+      hover_state,
     } = self;
 
     let scroll: ScrollState = document.scroll_state();
+    let document_url = document
+      .document_url()
+      .unwrap_or("chrome://chrome-frame/")
+      .to_string();
+    let base_url = document.base_url().unwrap_or(document_url.as_str()).to_string();
     let viewport_point = Point::new(pos_css.0, pos_css.1);
 
     let hit_tree =
       (scroll.viewport != Point::ZERO || !scroll.elements.is_empty())
         .then(|| document.prepared().map(|prepared| prepared.fragment_tree_for_geometry(&scroll)))
         .flatten();
-    document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+    let (changed, hit) = document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
       let fragment_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
-      let changed = interaction.pointer_move(dom, box_tree, fragment_tree, &scroll, viewport_point);
-      (changed, changed)
-    })
+      let (changed, hit) =
+        interaction.pointer_move_and_hit(dom, box_tree, fragment_tree, &scroll, viewport_point);
+      (changed, (changed, hit))
+    })?;
+
+    *hover_state = ChromeHoverState {
+      cursor: cursor_kind_for_hit(hit.as_ref()),
+      hovered_url: hit
+        .as_ref()
+        .and_then(|hit| hit.href.as_deref())
+        .and_then(|href| resolve_url(&base_url, href)),
+    };
+    Ok(changed)
   }
 
   /// Clear hover/active pointer state (equivalent to a `pointerleave` event).
@@ -150,6 +174,7 @@ impl ChromeFrameDocument {
   /// Returns `true` when the interaction state changed (i.e. a rerender is required to clear
   /// hover/active styling).
   pub fn pointer_leave(&mut self) -> bool {
+    self.hover_state = ChromeHoverState::default();
     let state = self.interaction.interaction_state();
     let had_hover = !state.hover_chain().is_empty();
     let had_active = !state.active_chain().is_empty();

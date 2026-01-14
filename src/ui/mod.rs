@@ -350,7 +350,7 @@ pub use chrome_frame::chrome_frame_html_from_state;
 pub use chrome::{chrome_ui, chrome_ui_with_bookmarks};
 pub use crate::chrome_frame::{
   apply_chrome_frame_event, dom_input_value_by_element_id, sync_browser_state_to_chrome_frame,
-  ChromeFrameClickOutcome, ChromeFrameDocument, ChromeFrameEvent, CHROME_ADDRESS_BAR_ID,
+  ChromeFrameClickOutcome, ChromeFrameDocument, ChromeFrameEvent, ChromeHoverState, CHROME_ADDRESS_BAR_ID,
   CHROME_ADDRESS_FORM_ID,
 };
 #[cfg(feature = "browser_ui")]
