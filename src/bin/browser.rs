@@ -15308,12 +15308,22 @@ impl App {
     if self.animation_tick_tab != Some(tab_id) || self.animation_tick_interval != Some(interval) {
       self.animation_tick_tab = Some(tab_id);
       self.animation_tick_interval = Some(interval);
-      self.last_animation_tick = Some(now);
-      self.next_animation_tick = Some(now + interval);
+      // A new tick schedule begins with no "last sent tick" baseline: the first emitted tick should
+      // advance by `interval` (and a `Duration::ZERO` tick should be delivered immediately).
+      self.last_animation_tick = None;
+
+      let plan = fastrender::ui::repaint_scheduler::plan_next_tick(now, Some(interval), None);
+      self.next_animation_tick = if plan.wake_now { Some(now) } else { plan.next_deadline };
       return;
     }
 
-    let deadline = self.next_animation_tick.unwrap_or(now);
+    let Some(deadline) = self.next_animation_tick else {
+      // Defensive: if the schedule somehow became unprimed, replan using the latest hint.
+      let plan =
+        fastrender::ui::repaint_scheduler::plan_next_tick(now, Some(interval), self.last_animation_tick);
+      self.next_animation_tick = if plan.wake_now { Some(now) } else { plan.next_deadline };
+      return;
+    };
     if now >= deadline {
       let delta = self
         .last_animation_tick
@@ -15321,7 +15331,10 @@ impl App {
         .unwrap_or(interval);
       let _ = self.send_worker_msg(fastrender::ui::UiToWorker::Tick { tab_id, delta });
       self.last_animation_tick = Some(now);
-      self.next_animation_tick = Some(now + interval);
+
+      let plan =
+        fastrender::ui::repaint_scheduler::plan_next_tick(now, Some(interval), self.last_animation_tick);
+      self.next_animation_tick = if plan.wake_now { Some(now) } else { plan.next_deadline };
     }
   }
 

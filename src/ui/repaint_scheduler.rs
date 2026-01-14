@@ -213,6 +213,36 @@ pub fn plan_worker_wake_after(now: Instant, after: Duration, last_wake: Option<I
   plan_worker_wake_after_with_min_interval(now, after, last_wake, MIN_WORKER_WAKE_INTERVAL)
 }
 
+/// Plan the next [`crate::ui::UiToWorker::Tick`] delivery for a tab based on a worker-provided
+/// `next_tick` hint.
+///
+/// - `next_tick == None` means "no tick needed".
+/// - `next_tick == Some(Duration::ZERO)` means "as soon as possible".
+///
+/// The returned plan is rate-limited by `min_interval` relative to the last time we delivered a
+/// tick (`last_tick`) to prevent busy-loop tick scheduling when `next_tick == Some(Duration::ZERO)`
+/// repeatedly.
+pub fn plan_next_tick_with_min_interval(
+  now: Instant,
+  next_tick: Option<Duration>,
+  last_tick: Option<Instant>,
+  min_interval: Duration,
+) -> WakeSchedule {
+  match next_tick {
+    Some(after) => plan_worker_wake_after_with_min_interval(now, after, last_tick, min_interval),
+    None => WakeSchedule {
+      wake_now: false,
+      next_deadline: None,
+    },
+  }
+}
+
+/// Like [`plan_next_tick_with_min_interval`], using [`MIN_WORKER_WAKE_INTERVAL`] as the default
+/// minimum interval.
+pub fn plan_next_tick(now: Instant, next_tick: Option<Duration>, last_tick: Option<Instant>) -> WakeSchedule {
+  plan_next_tick_with_min_interval(now, next_tick, last_tick, MIN_WORKER_WAKE_INTERVAL)
+}
+
 pub fn earliest_deadline(a: Option<Instant>, b: Option<Instant>) -> Option<Instant> {
   match (a, b) {
     (Some(a), Some(b)) => Some(a.min(b)),
@@ -320,6 +350,42 @@ mod tests {
     let plan = plan_worker_wake_after_with_min_interval(now, Duration::MAX, None, Duration::from_millis(4));
     assert!(!plan.wake_now);
     assert_eq!(plan.next_deadline, None);
+  }
+
+  #[test]
+  fn next_tick_none_means_no_wake() {
+    let now = Instant::now();
+    let min = Duration::from_millis(4);
+    let plan = plan_next_tick_with_min_interval(now, None, None, min);
+    assert!(!plan.wake_now);
+    assert_eq!(plan.next_deadline, None);
+  }
+
+  #[test]
+  fn next_tick_zero_wakes_immediately_when_not_rate_limited() {
+    let now = Instant::now();
+    let min = Duration::from_millis(4);
+    let plan = plan_next_tick_with_min_interval(now, Some(Duration::ZERO), None, min);
+    assert!(plan.wake_now);
+    assert_eq!(plan.next_deadline, None);
+  }
+
+  #[test]
+  fn next_tick_zero_is_rate_limited_when_too_soon() {
+    let now = Instant::now();
+    let min = Duration::from_millis(4);
+    let plan = plan_next_tick_with_min_interval(now, Some(Duration::ZERO), Some(now), min);
+    assert!(!plan.wake_now);
+    assert_eq!(plan.next_deadline, Some(now + min));
+  }
+
+  #[test]
+  fn next_tick_respects_min_interval_even_when_delay_is_smaller() {
+    let now = Instant::now();
+    let min = Duration::from_millis(4);
+    let plan = plan_next_tick_with_min_interval(now, Some(Duration::from_millis(1)), Some(now), min);
+    assert!(!plan.wake_now);
+    assert_eq!(plan.next_deadline, Some(now + min));
   }
 
   #[test]
