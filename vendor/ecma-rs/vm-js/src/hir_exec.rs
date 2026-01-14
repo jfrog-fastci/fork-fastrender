@@ -2128,6 +2128,7 @@ impl<'vm> HirEvaluator<'vm> {
       // When new expression kinds are introduced, treating them as *potentially* suspending avoids
       // incorrectly classifying an async body as "trivial" and helps compiled-script execution fall
       // back to the AST interpreter rather than risking missed suspension.
+      #[allow(unreachable_patterns)]
       _ => Ok(true),
     }
   }
