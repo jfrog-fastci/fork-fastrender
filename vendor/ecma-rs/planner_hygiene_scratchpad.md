@@ -44,7 +44,22 @@ Last checked: 2026-01-14
 - Fix `vm-js --test early_errors` failure:
   - `await_using_declaration_in_script_block_is_syntax_error` (`vm-js/tests/early_errors.rs:1556:57` — `unwrap_err` called on `Ok`)
 
-- Fix `vm-js --lib` failures (see failing tests list above).
+- Fix `vm-js --lib` failures:
+  - Compiled module tests:
+    - `compiled_module_execution_context_tests::compiled_module_import_meta_uses_callee_module_and_is_cached` (`Rejected` vs `Fulfilled`)
+    - `compiled_module_execution_context_tests::compiled_module_dynamic_import_referrer_uses_callee_module` (`Unimplemented("unbound identifier")`)
+    - `compiled_module_decl_execution_context_tests::compiled_module_decl_functions_capture_realm_and_module_for_host_calls` (`Rejected` vs `Fulfilled`)
+    - `compiled_module_graph_tests::compiled_module_graph_dynamic_import_from_compiled_module_resolves` (`ThrowWithStack`)
+    - `compiled_module_graph_tests::compiled_module_graph_import_meta_is_cached_within_compiled_module` (`ThrowWithStack`)
+    - `compiled_module_graph_tests::compiled_module_hoists_top_level_function_decls_into_module_env` (`Rejected` vs `Fulfilled`)
+    - `compiled_module_graph_tests::compiled_module_supports_named_default_export_function_decls` (`Rejected` vs `Fulfilled`)
+  - Async/await control flow regression:
+    - `hir_exec::hir_async_await_control_flow_regression_tests::labelled_continue_across_await`
+      - `InvariantViolation("PromiseReactionJob handler threw while capability is undefined")`
+  - GC rooting/debug assertion panics (`vm-js/src/heap.rs:9376:7`):
+    - `typed_array_dataview_rooting_gc_tests::function_bind_roots_bound_args_across_gc_in_length_get_trap`
+    - `typed_array_dataview_rooting_gc_tests::array_pop_roots_result_across_gc_in_length_set_trap`
+    - `typed_array_dataview_rooting_gc_tests::reflect_apply_roots_target_across_gc_in_create_list_from_array_like`
 
 ## Completed
 
