@@ -2877,6 +2877,11 @@ impl ModuleGraph {
               .try_reserve(1)
               .map_err(|_| VmError::OutOfMemory)?;
             async_continuation_ids.push(continuation_id);
+            let mut async_continuation_ids_set = HashSet::<u32>::new();
+            async_continuation_ids_set
+              .try_reserve(1)
+              .map_err(|_| VmError::OutOfMemory)?;
+            async_continuation_ids_set.insert(continuation_id);
 
             self.tla_states[idx] = Some(TlaEvaluationState {
               continuation_id,
@@ -2884,6 +2889,7 @@ impl ModuleGraph {
               realm_id: state.realm_id,
               ast: None,
               async_continuation_ids,
+              async_continuation_ids_set,
               tla_fallback_ast,
               tla_fallback_ast_memory,
             });
@@ -3720,6 +3726,12 @@ struct TlaEvaluationState {
   /// When an embedding aborts async module evaluation, these continuations must be torn down so
   /// their persistent roots do not leak.
   async_continuation_ids: Vec<u32>,
+  /// Acceleration structure for [`TlaEvaluationState::async_continuation_ids`].
+  ///
+  /// In normal operation `continuation_id` should remain stable across await/resume steps, so this
+  /// set typically contains just one element. However, keeping a set avoids a potential quadratic
+  /// `Vec::contains` pattern if continuation ids ever change across many suspensions.
+  async_continuation_ids_set: HashSet<u32>,
   /// Parsed AST retained for compiled-module top-level await fallback.
   ///
   /// Async continuation frames store raw pointers into the `parse-js` AST. Source-text modules
@@ -3740,6 +3752,7 @@ impl TlaEvaluationState {
     for id in self.async_continuation_ids.drain(..) {
       vm.abort_async_continuation(heap, id);
     }
+    self.async_continuation_ids_set.clear();
   }
 }
 
@@ -3750,7 +3763,7 @@ impl Drop for TlaEvaluationState {
       return;
     }
     debug_assert!(
-      self.async_continuation_ids.is_empty(),
+      self.async_continuation_ids.is_empty() && self.async_continuation_ids_set.is_empty(),
       "TlaEvaluationState dropped with leaked persistent roots; ensure the module evaluation promise is settled or aborted"
     );
   }
@@ -3929,12 +3942,17 @@ fn module_tla_resume_inner(
       // Track the updated continuation id (should remain stable, but preserve the value returned by
       // the evaluator).
       state.continuation_id = continuation_id;
-      if !state.async_continuation_ids.contains(&continuation_id) {
+      if !state.async_continuation_ids_set.contains(&continuation_id) {
         state
           .async_continuation_ids
           .try_reserve(1)
           .map_err(|_| VmError::OutOfMemory)?;
+        state
+          .async_continuation_ids_set
+          .try_reserve(1)
+          .map_err(|_| VmError::OutOfMemory)?;
         state.async_continuation_ids.push(continuation_id);
+        state.async_continuation_ids_set.insert(continuation_id);
       }
       graph.tla_states[idx] = Some(state);
 
