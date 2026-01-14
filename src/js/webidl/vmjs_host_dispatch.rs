@@ -67,7 +67,6 @@ const STATIC_RANGE_END_CONTAINER_KEY: &str = "__fastrender_static_range_end_cont
 const STATIC_RANGE_END_OFFSET_KEY: &str = "__fastrender_static_range_end_offset";
 const NODE_ITERATOR_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMNIT");
 const TREE_WALKER_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMTWK");
-const RANGE_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMRNG");
 const DOM_HOST_NOT_AVAILABLE_ERROR: &str = "DOM host not available";
 const CSS_STYLE_DECL_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMCSS");
 // Must match `window_realm::NODE_LIST_ROOT_KEY`.
