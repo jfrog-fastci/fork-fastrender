@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>HTML integration: ErrorEvent preventDefault suppresses default exception reporting</title>
+
+<script src="/resources/testharness.js"></script>
+<script src="/resources/fastrender_testharness_report.js"></script>
+
+<script>
+  async_test((t) => {
+    let error_event_ran = false;
+    let saw_default_prevented = false;
+
+    window.addEventListener(
+      "error",
+      t.step_func((e) => {
+        error_event_ran = true;
+
+        assert_true(
+          e instanceof ErrorEvent,
+          "uncaught exception should dispatch an ErrorEvent at window"
+        );
+        assert_true(e.cancelable, "ErrorEvent should be cancelable");
+        assert_true(
+          String(e && e.message).includes("boom"),
+          "ErrorEvent.message should mention the thrown error"
+        );
+
+        // Cancel default exception reporting.
+        e.preventDefault();
+        saw_default_prevented = e.defaultPrevented === true;
+
+        // Defer completion one task to ensure any buggy default-reporting path has a chance to run.
+        t.step_timeout(() => {
+          assert_true(error_event_ran, "expected error event handler to run");
+          assert_true(
+            saw_default_prevented,
+            "preventDefault() should mark the ErrorEvent as defaultPrevented"
+          );
+          t.done();
+        }, 0);
+      }),
+      { once: true }
+    );
+
+    setTimeout(() => {
+      throw new Error("boom");
+    }, 0);
+  }, "ErrorEvent.preventDefault() suppresses default reporting for an uncaught timer exception");
+</script>
+

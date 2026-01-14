@@ -27,6 +27,7 @@ tests = [
   "html_integration/script_src_empty_suppresses_inline_and_fires_error.html",
   "html_integration/importmap_with_src_is_rejected_and_fires_error.html",
   "html_integration/dynamic_classic_script_error_event_fires.html",
+  "html_integration/error_event_prevent_default_suppresses_reporting.html",
   "html_integration/dynamic_module_script_load_and_error_events.html",
 
   # Lifecycle: event constructors + visibilitychange handler semantics.
