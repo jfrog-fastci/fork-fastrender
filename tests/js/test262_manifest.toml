@@ -1681,11 +1681,6 @@ id = "built-ins/String/prototype/match/regexp-prototype-match-v-u-flag.js"
 status = "pass"
 
 [[expectations]]
-id = "built-ins/String/prototype/matchAll/regexp-prototype-matchAll-v-u-flag.js"
-status = "xfail"
-reason = "parse-js: RegExp Unicode property escapes (\\p{...}) are not yet supported."
-
-[[expectations]]
 id = "built-ins/String/prototype/search/regexp-prototype-search-v-flag.js"
 status = "pass"
 
@@ -1712,11 +1707,6 @@ status = "pass"
 [[expectations]]
 id = "built-ins/String/prototype/replace/regexp-capture-by-index.js"
 status = "pass"
-
-[[expectations]]
-id = "built-ins/String/prototype/replace/regexp-prototype-replace-v-u-flag.js"
-status = "xfail"
-reason = "parse-js: RegExp Unicode property escapes (\\p{...}) are not yet supported."
 
 [[expectations]]
 id = "built-ins/String/prototype/replace/replaceValue-evaluation-order-regexp-object.js"
@@ -1765,16 +1755,6 @@ status = "pass"
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/searchValue-isRegExp-abrupt.js"
 status = "pass"
-
-[[expectations]]
-id = "built-ins/String/prototype/replaceAll/searchValue-replacer-RegExp-call-fn.js"
-status = "xfail"
-reason = "vm-js does not yet implement class inheritance (`extends`)."
-
-[[expectations]]
-id = "built-ins/String/prototype/replaceAll/searchValue-replacer-RegExp-call.js"
-status = "xfail"
-reason = "vm-js does not yet implement class inheritance (`extends`)."
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/searchValue-replacer-before-tostring.js"
