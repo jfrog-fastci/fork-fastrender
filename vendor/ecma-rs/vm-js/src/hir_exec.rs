@@ -7215,7 +7215,11 @@ impl<'vm> HirEvaluator<'vm> {
         }
       }
       other => Err(match other {
-        hir_js::ExprKind::Yield { .. } => VmError::Unimplemented("yield (hir-js compiled path)"),
+        // Generator bodies are evaluated via the AST interpreter (see `exec.rs`) rather than the
+        // compiled HIR executor, so a `Yield` expression should be unreachable here.
+        hir_js::ExprKind::Yield { .. } => VmError::InvariantViolation(
+          "yield expression should be unreachable in hir-js compiled executor",
+        ),
         // Standalone `super` is a syntax error in ECMAScript. The compiled executor should only see
         // `ExprKind::Super` as part of `super.prop`, `super[expr]`, or `super()` evaluation (all of
         // which are handled in context).

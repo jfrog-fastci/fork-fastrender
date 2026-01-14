@@ -43234,8 +43234,12 @@ fn gen_eval_stmt_labelled(
     Stmt::ForIn(for_in) => gen_eval_for_in(evaluator, scope, &for_in.stx, label_set),
     Stmt::Switch(switch_stmt) => gen_eval_switch(evaluator, scope, &switch_stmt.stx),
     Stmt::ForOf(for_of) => gen_eval_for_of(evaluator, scope, &for_of.stx, label_set),
-    // Conservatively punt on other statement forms for now.
-    _ => Err(VmError::Unimplemented("yield in statement type")),
+    // `stmt_contains_yield` should conservatively return `false` for statement kinds that are not
+    // handled by the generator evaluator, so reaching this arm indicates a bug in the yield
+    // detection logic (or a newly-added statement kind missing a generator implementation).
+    _ => Err(VmError::InvariantViolation(
+      "stmt_contains_yield returned true for an unsupported statement kind",
+    )),
   };
 
   // Generator evaluation does not go through `Evaluator::eval_stmt_labelled`, so we must ensure
@@ -45342,7 +45346,23 @@ fn gen_eval_expr_chain(
     Expr::LitObj(obj) => gen_eval_lit_obj(evaluator, scope, &obj.stx),
     Expr::LitTemplate(tpl) => gen_eval_lit_template(evaluator, scope, &tpl.stx),
     Expr::Class(class_expr) => gen_eval_class_expr(evaluator, scope, class_expr),
-    _ => Err(VmError::Unimplemented("yield in expression type")),
+    // TypeScript-only wrapper nodes: only the wrapped expression is evaluated at runtime.
+    Expr::Instantiation(inst) => gen_eval_expr(evaluator, scope, &inst.stx.expression),
+    Expr::TypeAssertion(expr) => gen_eval_expr(evaluator, scope, &expr.stx.expression),
+    Expr::NonNullAssertion(expr) => gen_eval_expr(evaluator, scope, &expr.stx.expression),
+    Expr::SatisfiesExpr(expr) => gen_eval_expr(evaluator, scope, &expr.stx.expression),
+
+    // Destructuring patterns are not valid expression values; they are only evaluated in assignment
+    // target positions (handled by the assignment/destructuring evaluators).
+    Expr::ArrPat(_) | Expr::ObjPat(_) | Expr::IdPat(_) => Err(VmError::InvariantViolation(
+      "destructuring pattern evaluated as an expression in generator mode",
+    )),
+
+    // Any other expression kind should have `expr_contains_yield == false`, so reaching this arm
+    // indicates a bug in yield detection or a missing generator evaluator match arm.
+    _ => Err(VmError::InvariantViolation(
+      "expr_contains_yield returned true for an unsupported expression kind",
+    )),
   };
 
   // Similar to `async_eval_expr`, generator expression evaluation should treat JS errors as
@@ -46812,7 +46832,12 @@ fn gen_apply_unary_operator(
       Ok(Value::String(s))
     }
     OperatorName::Void => Ok(Value::Undefined),
-    _ => Err(VmError::Unimplemented("yield in unary operator")),
+    // `gen_eval_expr_chain` handles the other unary operator kinds explicitly (yield/new/delete/update).
+    // If we reach this arm, either `parse-js` introduced a new unary operator variant or the
+    // generator evaluator's match arms are out of sync.
+    _ => Err(VmError::InvariantViolation(
+      "unsupported unary operator in generator evaluator",
+    )),
   }
 }
 
@@ -47601,7 +47626,9 @@ fn gen_eval_assignment_expr(
       Expr::ComputedMember(member) => {
         gen_eval_assignment_to_computed_member(evaluator, scope, expr, &member.stx)
       }
-      _ => Err(VmError::Unimplemented("yield in assignment target")),
+      _ => Err(VmError::InvariantViolation(
+        "generator assignment evaluator called for non-assignment target expression",
+      )),
     },
 
     OperatorName::AssignmentAddition => {
@@ -47704,9 +47731,10 @@ fn gen_eval_assignment_to_binding(
   expr: &BinaryExpr,
   name: &String,
 ) -> Result<GenEval<Completion>, VmError> {
-  if expr_contains_yield(&expr.left) {
-    return Err(VmError::Unimplemented("yield in assignment target"));
-  }
+  debug_assert!(
+    !expr_contains_yield(&expr.left),
+    "assignment-to-binding target should not contain yield"
+  );
 
   // Generator-mode `NamedEvaluation` for anonymous class RHS expressions that can `yield`.
   //
@@ -47850,7 +47878,12 @@ fn gen_binary_after_left(
         }
       }
     }
-    _ => Err(VmError::Unimplemented("yield in binary operator")),
+    // `gen_eval_expr_chain` routes assignment operators to `gen_eval_assignment_expr`, and the
+    // remaining binary operators should be covered by the match arms above. Reaching this arm
+    // indicates a mismatch between `parse-js` operator variants and the generator evaluator.
+    _ => Err(VmError::InvariantViolation(
+      "unsupported binary operator in generator evaluator",
+    )),
   }
 }
 
@@ -49994,6 +50027,28 @@ fn gen_bind_assignment_target(
   match &*target.stx {
     Expr::ObjPat(obj) => gen_bind_object_pattern(evaluator, &mut scope, &obj.stx, value, kind),
     Expr::ArrPat(arr) => gen_bind_array_pattern(evaluator, &mut scope, &arr.stx, value, kind),
+    Expr::Id(id) => {
+      let reference = Reference::Binding(id.stx.name.as_str());
+      match evaluator.put_value_to_reference(&mut scope, &reference, value) {
+        Ok(()) => Ok(GenEval::Complete(Completion::empty())),
+        Err(err) => Ok(GenEval::Complete(gen_error_to_completion(
+          evaluator,
+          &mut scope,
+          err,
+        )?)),
+      }
+    }
+    Expr::IdPat(id) => {
+      let reference = Reference::Binding(id.stx.name.as_str());
+      match evaluator.put_value_to_reference(&mut scope, &reference, value) {
+        Ok(()) => Ok(GenEval::Complete(Completion::empty())),
+        Err(err) => Ok(GenEval::Complete(gen_error_to_completion(
+          evaluator,
+          &mut scope,
+          err,
+        )?)),
+      }
+    }
     Expr::Member(member) => {
       if !matches!(kind, BindingKind::Assignment) {
         return Err(VmError::InvariantViolation(
@@ -50010,7 +50065,22 @@ fn gen_bind_assignment_target(
       }
       gen_bind_assignment_target_to_computed_member(evaluator, &mut scope, &member.stx, value)
     }
-    _ => Err(VmError::Unimplemented("yield in assignment target")),
+    // TypeScript-only wrapper nodes: only the wrapped expression is evaluated at runtime.
+    Expr::Instantiation(inst) => {
+      gen_bind_assignment_target(evaluator, &mut scope, &inst.stx.expression, value, kind)
+    }
+    Expr::TypeAssertion(expr) => {
+      gen_bind_assignment_target(evaluator, &mut scope, &expr.stx.expression, value, kind)
+    }
+    Expr::NonNullAssertion(expr) => {
+      gen_bind_assignment_target(evaluator, &mut scope, &expr.stx.expression, value, kind)
+    }
+    Expr::SatisfiesExpr(expr) => {
+      gen_bind_assignment_target(evaluator, &mut scope, &expr.stx.expression, value, kind)
+    }
+    _ => Err(VmError::InvariantViolation(
+      "unsupported assignment target kind in generator destructuring binder",
+    )),
   }
 }
 
@@ -53857,7 +53927,11 @@ fn gen_resume_from_frames(
                 }
               }
             }
-            _ => return Err(VmError::Unimplemented("yield in assignment target")),
+            _ => {
+              return Err(VmError::InvariantViolation(
+                "AssignAfterRhsPattern continuation used with non-pattern LHS",
+              ))
+            }
           }
         }
         abrupt => state = abrupt,
