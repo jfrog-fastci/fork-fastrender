@@ -63188,20 +63188,20 @@ mod tests {
         // Property refs.
         const o = {};
         o.p ||= function () {};
-        if (o.p.name !== "") return false;
+        if (o.p.name !== "p") return false;
 
         o.q = 1;
         o.q &&= function () {};
-        if (o.q.name !== "") return false;
+        if (o.q.name !== "q") return false;
 
         o.r = null;
         o.r ??= function () {};
-        if (o.r.name !== "") return false;
+        if (o.r.name !== "r") return false;
 
         // Computed refs.
         const prop = "comp";
         o[prop] ||= function () {};
-        if (o[prop].name !== "") return false;
+        if (o[prop].name !== "comp") return false;
 
         // Private refs: assignment works, but private fields do not participate in name inference.
         //
