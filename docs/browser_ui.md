@@ -345,9 +345,8 @@ there is dedicated tooling beyond the renderer’s `FASTR_RENDER_TIMINGS` / trac
     to) open a real window/GPU-backed swapchain.
 - `browser_perf_log_summary` summarizes a captured perf log into p50/p95/max numbers.
 - `scripts/capture_browser_perf_log.sh` wraps an interactive windowed run (under `run_limited`) and
-  writes the JSONL perf log to a file via `FASTR_PERF_LOG_OUT`. It also captures the browser’s stdout
-  and appends any JSON lines containing an `"event"` field after the browser exits. Pass `--summary`
-  to run `browser_perf_log_summary` automatically (human summary to stderr; JSON output suppressed).
+  tees the stdout JSONL stream to a file. Pass `--summary` to run `browser_perf_log_summary`
+  automatically (human summary to stderr; JSON output suppressed so stdout stays JSONL-only).
 - `scripts/profile_browser_samply.sh` records an interactive Linux CPU profile (Samply) for the
   windowed browser UI.
 
@@ -1129,8 +1128,7 @@ For machine-readable UI responsiveness metrics (frame times during scroll/resize
 navigation TTFP), enable JSONL perf logging:
 
 ```bash
-# Convenience wrapper: runs under run_limited, sets FASTR_PERF_LOG=1 + FASTR_PERF_LOG_OUT, and writes
-# the JSONL perf log to a file.
+# Convenience wrapper: runs under run_limited, passes `browser --perf-log`, and tees stdout JSONL to a file.
 timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --url about:test-layout-stress --out target/browser_perf.jsonl
 
 # Capture + summarize (runs `browser_perf_log_summary` after the browser exits):
