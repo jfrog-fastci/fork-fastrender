@@ -89,6 +89,25 @@ fn update_goldens_help_lists_pages_suite() {
 }
 
 #[test]
+fn ui_perf_smoke_help_mentions_rayon_threads_flag() {
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .args(["ui-perf-smoke", "--help"])
+    .output()
+    .expect("run xtask ui-perf-smoke --help");
+
+  assert!(
+    output.status.success(),
+    "ui-perf-smoke help should exit successfully"
+  );
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  assert!(
+    stdout.contains("--rayon-threads"),
+    "ui-perf-smoke help should mention --rayon-threads; got:\n{stdout}"
+  );
+}
+
+#[test]
 fn js_help_lists_subcommands() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["js", "--help"])

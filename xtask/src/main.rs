@@ -922,6 +922,10 @@ struct UiPerfSmokeArgs {
   #[arg(long)]
   output: Option<PathBuf>,
 
+  /// Number of Rayon worker threads to use (forwarded to `ui_perf_smoke --rayon-threads`).
+  #[arg(long)]
+  rayon_threads: Option<usize>,
+
   /// Baseline JSON path for regression detection
   #[arg(long)]
   baseline: Option<PathBuf>,
@@ -2414,6 +2418,9 @@ fn run_ui_perf_smoke(args: UiPerfSmokeArgs) -> Result<()> {
   cmd.arg("--release");
   cmd.args(["--bin", "ui_perf_smoke", "--"]);
 
+  if let Some(n) = args.rayon_threads {
+    cmd.arg("--rayon-threads").arg(n.to_string());
+  }
   if let Some(output) = &args.output {
     cmd.arg("--output").arg(output);
   }
