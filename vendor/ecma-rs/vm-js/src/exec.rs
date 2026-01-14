@@ -1104,6 +1104,25 @@ pub(crate) enum GenAssignTarget {
   Binding(GenResolvedBinding),
   Member { base: Value, key: *const String },
   ComputedMember { base: Value, key_value: Value },
+  /// A `super.prop` assignment target.
+  ///
+  /// This is a Super Reference, which must preserve the `receiver` (`this` binding) across yield
+  /// boundaries.
+  SuperMember {
+    base: Value,
+    receiver: Value,
+    key: *const String,
+  },
+  /// A `super[expr]` assignment target.
+  ///
+  /// `ToPropertyKey` conversion is delayed until `PutValue` (like ordinary computed members), but
+  /// `GetThisBinding` and `GetSuperBase` must happen during target pre-evaluation so generator
+  /// destructuring preserves the spec evaluation order in the presence of `yield`.
+  SuperComputedMember {
+    base: Value,
+    receiver: Value,
+    key_value: Value,
+  },
 }
 
 impl RuntimeEnv {
@@ -17535,6 +17554,16 @@ pub(crate) enum GenFrame {
     base: Value,
     kind: BindingKind,
   },
+  /// Continue object destructuring assignment after evaluating a `super[expr]` assignment target key
+  /// expression.
+  BindObjPropAssignSuperComputedMemberAfterMember {
+    pat: *const ObjPat,
+    prop_index: usize,
+    value: Value,
+    excluded: Vec<PropertyKey>,
+    receiver: Value,
+    kind: BindingKind,
+  },
 
   /// Continue object destructuring assignment rest-property binding after evaluating a member
   /// assignment target base.
@@ -17562,6 +17591,15 @@ pub(crate) enum GenFrame {
     excluded: Vec<PropertyKey>,
     member: *const ComputedMemberExpr,
     base: Value,
+    kind: BindingKind,
+  },
+  /// Continue object destructuring assignment rest-property binding after evaluating a `super[expr]`
+  /// assignment target key expression.
+  BindObjRestAssignSuperComputedMemberAfterMember {
+    pat: *const ObjPat,
+    value: Value,
+    excluded: Vec<PropertyKey>,
+    receiver: Value,
     kind: BindingKind,
   },
 
@@ -17609,6 +17647,15 @@ pub(crate) enum GenFrame {
     base: Value,
     kind: BindingKind,
   },
+  /// Continue array destructuring assignment after evaluating a `super[expr]` assignment target key
+  /// expression.
+  BindArrElemAssignSuperComputedMemberAfterMember {
+    pat: *const ArrPat,
+    elem_index: usize,
+    iterator_record: iterator::IteratorRecord,
+    receiver: Value,
+    kind: BindingKind,
+  },
 
   /// Continue array destructuring assignment rest-element binding after evaluating a member
   /// assignment target base.
@@ -17633,6 +17680,14 @@ pub(crate) enum GenFrame {
     iterator_record: iterator::IteratorRecord,
     member: *const ComputedMemberExpr,
     base: Value,
+    kind: BindingKind,
+  },
+  /// Continue array destructuring assignment rest-element binding after evaluating a `super[expr]`
+  /// assignment target key expression.
+  BindArrRestAssignSuperComputedMemberAfterMember {
+    pat: *const ArrPat,
+    iterator_record: iterator::IteratorRecord,
+    receiver: Value,
     kind: BindingKind,
   },
 
@@ -17837,6 +17892,23 @@ impl Trace for GenAssignTarget {
         tracer.trace_value(*base);
         tracer.trace_value(*key_value);
       }
+      GenAssignTarget::SuperMember {
+        base,
+        receiver,
+        ..
+      } => {
+        tracer.trace_value(*base);
+        tracer.trace_value(*receiver);
+      }
+      GenAssignTarget::SuperComputedMember {
+        base,
+        receiver,
+        key_value,
+      } => {
+        tracer.trace_value(*base);
+        tracer.trace_value(*receiver);
+        tracer.trace_value(*key_value);
+      }
     }
   }
 }
@@ -18030,6 +18102,24 @@ impl Trace for GenFrame {
           key.trace(tracer);
         }
       }
+      GenFrame::BindObjPropAssignSuperComputedMemberAfterMember {
+        value,
+        excluded,
+        receiver,
+        ..
+      }
+      | GenFrame::BindObjRestAssignSuperComputedMemberAfterMember {
+        value,
+        excluded,
+        receiver,
+        ..
+      } => {
+        tracer.trace_value(*value);
+        tracer.trace_value(*receiver);
+        for key in excluded {
+          key.trace(tracer);
+        }
+      }
       GenFrame::BindArrAfterDefault {
         iterator_record,
         assign_target,
@@ -18072,6 +18162,20 @@ impl Trace for GenFrame {
         tracer.trace_value(iterator_record.iterator);
         tracer.trace_value(iterator_record.next_method);
         tracer.trace_value(*base);
+      }
+      GenFrame::BindArrElemAssignSuperComputedMemberAfterMember {
+        iterator_record,
+        receiver,
+        ..
+      }
+      | GenFrame::BindArrRestAssignSuperComputedMemberAfterMember {
+        iterator_record,
+        receiver,
+        ..
+      } => {
+        tracer.trace_value(iterator_record.iterator);
+        tracer.trace_value(iterator_record.next_method);
+        tracer.trace_value(*receiver);
       }
       GenFrame::BindAssignMemberAfterBase { value, .. }
       | GenFrame::BindAssignComputedMemberAfterBase { value, .. }
@@ -48153,9 +48257,42 @@ fn gen_bind_object_pattern_from(
                 "optional chaining used in assignment target",
               ));
             }
-            // `super.prop` is a Super Reference, not a normal property reference, and cannot be
-            // represented as a `GenAssignTarget` today. Fall back to the generic binder for now.
-            if !matches!(&*member.stx.left.stx, Expr::Super(_)) {
+            if matches!(&*member.stx.left.stx, Expr::Super(_)) {
+              if member.stx.right.starts_with('#') {
+                return Err(VmError::InvariantViolation(
+                  "super private member access is not valid (early errors should prevent this)",
+                ));
+              }
+
+              let receiver = match evaluator.get_this_binding(&mut prop_scope) {
+                Ok(v) => v,
+                Err(err) => {
+                  return Ok(GenEval::Complete(gen_error_to_completion(
+                    evaluator,
+                    &mut prop_scope,
+                    err,
+                  )?))
+                }
+              };
+              // Root the receiver across `GetSuperBase`, which may allocate.
+              prop_scope.push_root(receiver)?;
+              let base = match evaluator.get_super_base(&mut prop_scope) {
+                Ok(v) => v,
+                Err(err) => {
+                  return Ok(GenEval::Complete(gen_error_to_completion(
+                    evaluator,
+                    &mut prop_scope,
+                    err,
+                  )?))
+                }
+              };
+
+              assign_target = Some(GenAssignTarget::SuperMember {
+                base,
+                receiver,
+                key: &member.stx.right as *const String,
+              });
+            } else {
               match gen_eval_expr(evaluator, &mut prop_scope, &member.stx.left)? {
                 GenEval::Complete(c) => match c {
                   Completion::Normal(v) => {
@@ -48191,8 +48328,67 @@ fn gen_bind_object_pattern_from(
               ));
             }
 
-            // `super[expr]` is a Super Reference; defer to the generic binder for now.
-            if !matches!(&*member.stx.object.stx, Expr::Super(_)) {
+            if matches!(&*member.stx.object.stx, Expr::Super(_)) {
+              // Spec ordering: derived constructors throw before evaluating the computed key
+              // expression (and any yield within it).
+              let receiver = match evaluator.get_this_binding(&mut prop_scope) {
+                Ok(v) => v,
+                Err(err) => {
+                  return Ok(GenEval::Complete(gen_error_to_completion(
+                    evaluator,
+                    &mut prop_scope,
+                    err,
+                  )?))
+                }
+              };
+
+              let member_eval = {
+                let mut member_scope = prop_scope.reborrow();
+                member_scope.push_root(receiver)?;
+                gen_eval_expr(evaluator, &mut member_scope, &member.stx.member)?
+              };
+              match member_eval {
+                GenEval::Complete(c) => match c {
+                  Completion::Normal(v) => {
+                    let key_value = v.unwrap_or(Value::Undefined);
+                    let mut super_scope = prop_scope.reborrow();
+                    super_scope.push_roots(&[receiver, key_value])?;
+                    let base = match evaluator.get_super_base(&mut super_scope) {
+                      Ok(v) => v,
+                      Err(err) => {
+                        return Ok(GenEval::Complete(gen_error_to_completion(
+                          evaluator,
+                          &mut super_scope,
+                          err,
+                        )?))
+                      }
+                    };
+                    assign_target = Some(GenAssignTarget::SuperComputedMember {
+                      base,
+                      receiver,
+                      key_value,
+                    });
+                  }
+                  abrupt => return Ok(GenEval::Complete(abrupt)),
+                },
+                GenEval::Suspend(mut suspend) => {
+                  // Root the receiver value so it survives until the next yield boundary.
+                  prop_scope.push_root(receiver)?;
+                  gen_frames_push(
+                    &mut suspend.frames,
+                    GenFrame::BindObjPropAssignSuperComputedMemberAfterMember {
+                      pat: pat as *const ObjPat,
+                      prop_index: idx,
+                      value: src_value,
+                      excluded,
+                      receiver,
+                      kind,
+                    },
+                  )?;
+                  return Ok(GenEval::Suspend(suspend));
+                }
+              }
+            } else {
               let base_eval = gen_eval_expr(evaluator, &mut prop_scope, &member.stx.object)?;
               match base_eval {
                 GenEval::Complete(c) => match c {
@@ -48265,6 +48461,16 @@ fn gen_bind_object_pattern_from(
         }
         GenAssignTarget::ComputedMember { base, key_value } => {
           prop_scope.push_roots(&[base, key_value])?;
+        }
+        GenAssignTarget::SuperMember { base, receiver, .. } => {
+          prop_scope.push_roots(&[base, receiver])?;
+        }
+        GenAssignTarget::SuperComputedMember {
+          base,
+          receiver,
+          key_value,
+        } => {
+          prop_scope.push_roots(&[base, receiver, key_value])?;
         }
       }
     }
@@ -48455,8 +48661,36 @@ fn gen_bind_object_pattern_from(
               "optional chaining used in assignment target",
             ));
           }
-          // `super.prop` is a Super Reference and cannot be represented as a `GenAssignTarget`.
-          if !matches!(&*member.stx.left.stx, Expr::Super(_)) {
+          if matches!(&*member.stx.left.stx, Expr::Super(_)) {
+            if member.stx.right.starts_with('#') {
+              return Err(VmError::InvariantViolation(
+                "super private member access is not valid (early errors should prevent this)",
+              ));
+            }
+
+            let receiver = match evaluator.get_this_binding(&mut scope) {
+              Ok(v) => v,
+              Err(err) => {
+                return Ok(GenEval::Complete(gen_error_to_completion(
+                  evaluator, &mut scope, err,
+                )?))
+              }
+            };
+            scope.push_root(receiver)?;
+            let base = match evaluator.get_super_base(&mut scope) {
+              Ok(v) => v,
+              Err(err) => {
+                return Ok(GenEval::Complete(gen_error_to_completion(
+                  evaluator, &mut scope, err,
+                )?))
+              }
+            };
+            rest_assign_target = Some(GenAssignTarget::SuperMember {
+              base,
+              receiver,
+              key: &member.stx.right as *const String,
+            });
+          } else {
             match gen_eval_expr(evaluator, &mut scope, &member.stx.left)? {
               GenEval::Complete(c) => match c {
                 Completion::Normal(v) => {
@@ -48491,8 +48725,64 @@ fn gen_bind_object_pattern_from(
             ));
           }
 
-          // `super[expr]` is a Super Reference and cannot be represented as a `GenAssignTarget`.
-          if !matches!(&*member.stx.object.stx, Expr::Super(_)) {
+          if matches!(&*member.stx.object.stx, Expr::Super(_)) {
+            // Spec ordering: derived constructors throw before evaluating the computed key expression
+            // (and any yield within it).
+            let receiver = match evaluator.get_this_binding(&mut scope) {
+              Ok(v) => v,
+              Err(err) => {
+                return Ok(GenEval::Complete(gen_error_to_completion(
+                  evaluator, &mut scope, err,
+                )?))
+              }
+            };
+
+            let member_eval = {
+              let mut member_scope = scope.reborrow();
+              member_scope.push_root(receiver)?;
+              gen_eval_expr(evaluator, &mut member_scope, &member.stx.member)?
+            };
+            match member_eval {
+              GenEval::Complete(c) => match c {
+                Completion::Normal(v) => {
+                  let key_value = v.unwrap_or(Value::Undefined);
+                  let mut super_scope = scope.reborrow();
+                  super_scope.push_roots(&[receiver, key_value])?;
+                  let base = match evaluator.get_super_base(&mut super_scope) {
+                    Ok(v) => v,
+                    Err(err) => {
+                      return Ok(GenEval::Complete(gen_error_to_completion(
+                        evaluator,
+                        &mut super_scope,
+                        err,
+                      )?))
+                    }
+                  };
+                  rest_assign_target = Some(GenAssignTarget::SuperComputedMember {
+                    base,
+                    receiver,
+                    key_value,
+                  });
+                }
+                abrupt => return Ok(GenEval::Complete(abrupt)),
+              },
+              GenEval::Suspend(mut suspend) => {
+                // Root the receiver value so it survives until the next yield boundary.
+                scope.push_root(receiver)?;
+                gen_frames_push(
+                  &mut suspend.frames,
+                  GenFrame::BindObjRestAssignSuperComputedMemberAfterMember {
+                    pat: pat as *const ObjPat,
+                    value: src_value,
+                    excluded,
+                    receiver,
+                    kind,
+                  },
+                )?;
+                return Ok(GenEval::Suspend(suspend));
+              }
+            }
+          } else {
             let base_eval = gen_eval_expr(evaluator, &mut scope, &member.stx.object)?;
             match base_eval {
               GenEval::Complete(c) => match c {
@@ -48596,6 +48886,16 @@ fn gen_bind_object_pattern_prop_after_assign_target(
     }
     GenAssignTarget::ComputedMember { base, key_value } => {
       scope.push_roots(&[base, key_value])?;
+    }
+    GenAssignTarget::SuperMember { base, receiver, .. } => {
+      scope.push_roots(&[base, receiver])?;
+    }
+    GenAssignTarget::SuperComputedMember {
+      base,
+      receiver,
+      key_value,
+    } => {
+      scope.push_roots(&[base, receiver, key_value])?;
     }
   }
 
@@ -48705,6 +49005,16 @@ fn gen_bind_object_pattern_rest_after_target_with_boxing(
       GenAssignTarget::ComputedMember { base, key_value } => {
         scope.push_roots(&[base, key_value])?;
       }
+      GenAssignTarget::SuperMember { base, receiver, .. } => {
+        scope.push_roots(&[base, receiver])?;
+      }
+      GenAssignTarget::SuperComputedMember {
+        base,
+        receiver,
+        key_value,
+      } => {
+        scope.push_roots(&[base, receiver, key_value])?;
+      }
     }
   }
 
@@ -48758,6 +49068,16 @@ fn gen_bind_object_pattern_rest_after_target(
       }
       GenAssignTarget::ComputedMember { base, key_value } => {
         scope.push_roots(&[base, key_value])?;
+      }
+      GenAssignTarget::SuperMember { base, receiver, .. } => {
+        scope.push_roots(&[base, receiver])?;
+      }
+      GenAssignTarget::SuperComputedMember {
+        base,
+        receiver,
+        key_value,
+      } => {
+        scope.push_roots(&[base, receiver, key_value])?;
       }
     }
   }
@@ -48969,6 +49289,57 @@ fn gen_assign_target_put_value(
         receiver: base,
         key,
       };
+      evaluator.root_reference(&mut assign_scope, &reference)?;
+      assign_scope.push_root(value)?;
+      evaluator.maybe_set_anonymous_function_name_for_assignment(
+        &mut assign_scope,
+        &reference,
+        value,
+      )?;
+      evaluator.put_value_to_reference(&mut assign_scope, &reference, value)
+    }
+    GenAssignTarget::SuperMember {
+      base,
+      receiver,
+      key,
+    } => {
+      let key = unsafe { &*key };
+      if key.starts_with('#') {
+        return Err(VmError::InvariantViolation(
+          "super private member access is not valid (early errors should prevent this)",
+        ));
+      }
+
+      // Root the RHS + Super Reference components across property-key allocation and assignment.
+      let mut assign_scope = scope.reborrow();
+      assign_scope.push_roots(&[base, receiver, value])?;
+
+      let key_s = assign_scope.alloc_string(key)?;
+      let reference = Reference::SuperProperty {
+        base,
+        key: PropertyKey::from_string(key_s),
+        receiver,
+      };
+      evaluator.root_reference(&mut assign_scope, &reference)?;
+      assign_scope.push_root(value)?;
+      evaluator.maybe_set_anonymous_function_name_for_assignment(
+        &mut assign_scope,
+        &reference,
+        value,
+      )?;
+      evaluator.put_value_to_reference(&mut assign_scope, &reference, value)
+    }
+    GenAssignTarget::SuperComputedMember {
+      base,
+      receiver,
+      key_value,
+    } => {
+      // Root inputs across `ToPropertyKey` + `PutValue`, both of which can allocate and invoke user
+      // code.
+      let mut assign_scope = scope.reborrow();
+      assign_scope.push_roots(&[base, receiver, key_value, value])?;
+      let key = evaluator.to_property_key_operator(&mut assign_scope, key_value)?;
+      let reference = Reference::SuperProperty { base, key, receiver };
       evaluator.root_reference(&mut assign_scope, &reference)?;
       assign_scope.push_root(value)?;
       evaluator.maybe_set_anonymous_function_name_for_assignment(
@@ -49202,39 +49573,85 @@ fn gen_bind_array_pattern_from(
                   err,
                 )?));
               }
-              match gen_eval_expr(evaluator, &mut elem_scope, &member.stx.left)? {
-                GenEval::Complete(c) => match c {
-                  Completion::Normal(v) => {
-                    let base = v.unwrap_or(Value::Undefined);
-                    assign_target = Some(GenAssignTarget::Member {
-                      base,
-                      key: &member.stx.right as *const String,
-                    });
-                  }
-                  abrupt => {
-                    let completion = match evaluator.iterator_close_on_completion(
+              if matches!(&*member.stx.left.stx, Expr::Super(_)) {
+                if member.stx.right.starts_with('#') {
+                  let err = VmError::InvariantViolation(
+                    "super private member access is not valid (early errors should prevent this)",
+                  );
+                  let err =
+                    evaluator.iterator_close_on_error(&mut elem_scope, &iterator_record, err);
+                  return Ok(GenEval::Complete(gen_error_to_completion(
+                    evaluator,
+                    &mut elem_scope,
+                    err,
+                  )?));
+                }
+
+                let receiver = match evaluator.get_this_binding(&mut elem_scope) {
+                  Ok(v) => v,
+                  Err(err) => {
+                    let err =
+                      evaluator.iterator_close_on_error(&mut elem_scope, &iterator_record, err);
+                    return Ok(GenEval::Complete(gen_error_to_completion(
+                      evaluator,
                       &mut elem_scope,
-                      &iterator_record,
-                      abrupt,
-                    ) {
-                      Ok(c) => c,
-                      Err(err) => gen_error_to_completion(evaluator, &mut elem_scope, err)?,
-                    };
-                    return Ok(GenEval::Complete(completion));
+                      err,
+                    )?));
                   }
-                },
-                GenEval::Suspend(mut suspend) => {
-                  gen_frames_push(
-                    &mut suspend.frames,
-                    GenFrame::BindArrElemAssignMemberAfterBase {
-                      pat: pat as *const ArrPat,
-                      elem_index,
-                      iterator_record,
-                      member: &*member.stx as *const MemberExpr,
-                      kind,
-                    },
-                  )?;
-                  return Ok(GenEval::Suspend(suspend));
+                };
+                elem_scope.push_root(receiver)?;
+                let base = match evaluator.get_super_base(&mut elem_scope) {
+                  Ok(v) => v,
+                  Err(err) => {
+                    let err =
+                      evaluator.iterator_close_on_error(&mut elem_scope, &iterator_record, err);
+                    return Ok(GenEval::Complete(gen_error_to_completion(
+                      evaluator,
+                      &mut elem_scope,
+                      err,
+                    )?));
+                  }
+                };
+                assign_target = Some(GenAssignTarget::SuperMember {
+                  base,
+                  receiver,
+                  key: &member.stx.right as *const String,
+                });
+              } else {
+                match gen_eval_expr(evaluator, &mut elem_scope, &member.stx.left)? {
+                  GenEval::Complete(c) => match c {
+                    Completion::Normal(v) => {
+                      let base = v.unwrap_or(Value::Undefined);
+                      assign_target = Some(GenAssignTarget::Member {
+                        base,
+                        key: &member.stx.right as *const String,
+                      });
+                    }
+                    abrupt => {
+                      let completion = match evaluator.iterator_close_on_completion(
+                        &mut elem_scope,
+                        &iterator_record,
+                        abrupt,
+                      ) {
+                        Ok(c) => c,
+                        Err(err) => gen_error_to_completion(evaluator, &mut elem_scope, err)?,
+                      };
+                      return Ok(GenEval::Complete(completion));
+                    }
+                  },
+                  GenEval::Suspend(mut suspend) => {
+                    gen_frames_push(
+                      &mut suspend.frames,
+                      GenFrame::BindArrElemAssignMemberAfterBase {
+                        pat: pat as *const ArrPat,
+                        elem_index,
+                        iterator_record,
+                        member: &*member.stx as *const MemberExpr,
+                        kind,
+                      },
+                    )?;
+                    return Ok(GenEval::Suspend(suspend));
+                  }
                 }
               }
             }
@@ -49250,74 +49667,155 @@ fn gen_bind_array_pattern_from(
                 )?));
               }
 
-              let base_eval = gen_eval_expr(evaluator, &mut elem_scope, &member.stx.object)?;
-              match base_eval {
-                GenEval::Complete(c) => match c {
-                  Completion::Normal(v) => {
-                    let base = v.unwrap_or(Value::Undefined);
-                    let member_eval = {
-                      let mut member_scope = elem_scope.reborrow();
-                      member_scope.push_root(base)?;
-                      gen_eval_expr(evaluator, &mut member_scope, &member.stx.member)?
-                    };
-                    match member_eval {
-                      GenEval::Complete(c) => match c {
-                        Completion::Normal(v) => {
-                          let key_value = v.unwrap_or(Value::Undefined);
-                          assign_target = Some(GenAssignTarget::ComputedMember { base, key_value });
-                        }
-                        abrupt => {
-                          let completion = match evaluator.iterator_close_on_completion(
-                            &mut elem_scope,
+              if matches!(&*member.stx.object.stx, Expr::Super(_)) {
+                // Spec ordering: derived constructors throw before evaluating the computed key
+                // expression (and any yield within it).
+                let receiver = match evaluator.get_this_binding(&mut elem_scope) {
+                  Ok(v) => v,
+                  Err(err) => {
+                    let err =
+                      evaluator.iterator_close_on_error(&mut elem_scope, &iterator_record, err);
+                    return Ok(GenEval::Complete(gen_error_to_completion(
+                      evaluator,
+                      &mut elem_scope,
+                      err,
+                    )?));
+                  }
+                };
+
+                let member_eval = {
+                  let mut member_scope = elem_scope.reborrow();
+                  member_scope.push_root(receiver)?;
+                  gen_eval_expr(evaluator, &mut member_scope, &member.stx.member)?
+                };
+                match member_eval {
+                  GenEval::Complete(c) => match c {
+                    Completion::Normal(v) => {
+                      let key_value = v.unwrap_or(Value::Undefined);
+                      let mut super_scope = elem_scope.reborrow();
+                      super_scope.push_roots(&[receiver, key_value])?;
+                      let base = match evaluator.get_super_base(&mut super_scope) {
+                        Ok(v) => v,
+                        Err(err) => {
+                          let err = evaluator.iterator_close_on_error(
+                            &mut super_scope,
                             &iterator_record,
-                            abrupt,
-                          ) {
-                            Ok(c) => c,
-                            Err(err) => gen_error_to_completion(evaluator, &mut elem_scope, err)?,
-                          };
-                          return Ok(GenEval::Complete(completion));
+                            err,
+                          );
+                          return Ok(GenEval::Complete(gen_error_to_completion(
+                            evaluator,
+                            &mut super_scope,
+                            err,
+                          )?));
                         }
+                      };
+                      assign_target = Some(GenAssignTarget::SuperComputedMember {
+                        base,
+                        receiver,
+                        key_value,
+                      });
+                    }
+                    abrupt => {
+                      let completion = match evaluator.iterator_close_on_completion(
+                        &mut elem_scope,
+                        &iterator_record,
+                        abrupt,
+                      ) {
+                        Ok(c) => c,
+                        Err(err) => gen_error_to_completion(evaluator, &mut elem_scope, err)?,
+                      };
+                      return Ok(GenEval::Complete(completion));
+                    }
+                  },
+                  GenEval::Suspend(mut suspend) => {
+                    // Root the receiver value so it survives until the next yield boundary.
+                    elem_scope.push_root(receiver)?;
+                    gen_frames_push(
+                      &mut suspend.frames,
+                      GenFrame::BindArrElemAssignSuperComputedMemberAfterMember {
+                        pat: pat as *const ArrPat,
+                        elem_index,
+                        iterator_record,
+                        receiver,
+                        kind,
                       },
-                      GenEval::Suspend(mut suspend) => {
-                        gen_frames_push(
-                          &mut suspend.frames,
-                          GenFrame::BindArrElemAssignComputedMemberAfterMember {
-                            pat: pat as *const ArrPat,
-                            elem_index,
-                            iterator_record,
-                            member: &*member.stx as *const ComputedMemberExpr,
-                            base,
-                            kind,
-                          },
-                        )?;
-                        return Ok(GenEval::Suspend(suspend));
+                    )?;
+                    return Ok(GenEval::Suspend(suspend));
+                  }
+                }
+              } else {
+                let base_eval = gen_eval_expr(evaluator, &mut elem_scope, &member.stx.object)?;
+                match base_eval {
+                  GenEval::Complete(c) => match c {
+                    Completion::Normal(v) => {
+                      let base = v.unwrap_or(Value::Undefined);
+                      let member_eval = {
+                        let mut member_scope = elem_scope.reborrow();
+                        member_scope.push_root(base)?;
+                        gen_eval_expr(evaluator, &mut member_scope, &member.stx.member)?
+                      };
+                      match member_eval {
+                        GenEval::Complete(c) => match c {
+                          Completion::Normal(v) => {
+                            let key_value = v.unwrap_or(Value::Undefined);
+                            assign_target =
+                              Some(GenAssignTarget::ComputedMember { base, key_value });
+                          }
+                          abrupt => {
+                            let completion = match evaluator.iterator_close_on_completion(
+                              &mut elem_scope,
+                              &iterator_record,
+                              abrupt,
+                            ) {
+                              Ok(c) => c,
+                              Err(err) => {
+                                gen_error_to_completion(evaluator, &mut elem_scope, err)?
+                              }
+                            };
+                            return Ok(GenEval::Complete(completion));
+                          }
+                        },
+                        GenEval::Suspend(mut suspend) => {
+                          gen_frames_push(
+                            &mut suspend.frames,
+                            GenFrame::BindArrElemAssignComputedMemberAfterMember {
+                              pat: pat as *const ArrPat,
+                              elem_index,
+                              iterator_record,
+                              member: &*member.stx as *const ComputedMemberExpr,
+                              base,
+                              kind,
+                            },
+                          )?;
+                          return Ok(GenEval::Suspend(suspend));
+                        }
                       }
                     }
+                    abrupt => {
+                      let completion = match evaluator.iterator_close_on_completion(
+                        &mut elem_scope,
+                        &iterator_record,
+                        abrupt,
+                      ) {
+                        Ok(c) => c,
+                        Err(err) => gen_error_to_completion(evaluator, &mut elem_scope, err)?,
+                      };
+                      return Ok(GenEval::Complete(completion));
+                    }
+                  },
+                  GenEval::Suspend(mut suspend) => {
+                    gen_frames_push(
+                      &mut suspend.frames,
+                      GenFrame::BindArrElemAssignComputedMemberAfterBase {
+                        pat: pat as *const ArrPat,
+                        elem_index,
+                        iterator_record,
+                        member: &*member.stx as *const ComputedMemberExpr,
+                        kind,
+                      },
+                    )?;
+                    return Ok(GenEval::Suspend(suspend));
                   }
-                  abrupt => {
-                    let completion = match evaluator.iterator_close_on_completion(
-                      &mut elem_scope,
-                      &iterator_record,
-                      abrupt,
-                    ) {
-                      Ok(c) => c,
-                      Err(err) => gen_error_to_completion(evaluator, &mut elem_scope, err)?,
-                    };
-                    return Ok(GenEval::Complete(completion));
-                  }
-                },
-                GenEval::Suspend(mut suspend) => {
-                  gen_frames_push(
-                    &mut suspend.frames,
-                    GenFrame::BindArrElemAssignComputedMemberAfterBase {
-                      pat: pat as *const ArrPat,
-                      elem_index,
-                      iterator_record,
-                      member: &*member.stx as *const ComputedMemberExpr,
-                      kind,
-                    },
-                  )?;
-                  return Ok(GenEval::Suspend(suspend));
                 }
               }
             }
@@ -49336,6 +49834,16 @@ fn gen_bind_array_pattern_from(
           }
           GenAssignTarget::ComputedMember { base, key_value } => {
             elem_scope.push_roots(&[base, key_value])?;
+          }
+          GenAssignTarget::SuperMember { base, receiver, .. } => {
+            elem_scope.push_roots(&[base, receiver])?;
+          }
+          GenAssignTarget::SuperComputedMember {
+            base,
+            receiver,
+            key_value,
+          } => {
+            elem_scope.push_roots(&[base, receiver, key_value])?;
           }
         }
       }
@@ -49576,38 +50084,75 @@ fn gen_bind_array_pattern_from(
               evaluator, &mut scope, err,
             )?));
           }
-          match gen_eval_expr(evaluator, &mut scope, &member.stx.left)? {
-            GenEval::Complete(c) => match c {
-              Completion::Normal(v) => {
-                let base = v.unwrap_or(Value::Undefined);
-                rest_assign_target = Some(GenAssignTarget::Member {
-                  base,
-                  key: &member.stx.right as *const String,
-                });
+          if matches!(&*member.stx.left.stx, Expr::Super(_)) {
+            if member.stx.right.starts_with('#') {
+              let err = VmError::InvariantViolation(
+                "super private member access is not valid (early errors should prevent this)",
+              );
+              let err = evaluator.iterator_close_on_error(&mut scope, &iterator_record, err);
+              return Ok(GenEval::Complete(gen_error_to_completion(
+                evaluator, &mut scope, err,
+              )?));
+            }
+
+            let receiver = match evaluator.get_this_binding(&mut scope) {
+              Ok(v) => v,
+              Err(err) => {
+                let err = evaluator.iterator_close_on_error(&mut scope, &iterator_record, err);
+                return Ok(GenEval::Complete(gen_error_to_completion(
+                  evaluator, &mut scope, err,
+                )?));
               }
-              abrupt => {
-                let completion = match evaluator.iterator_close_on_completion(
-                  &mut scope,
-                  &iterator_record,
-                  abrupt,
-                ) {
-                  Ok(c) => c,
-                  Err(err) => gen_error_to_completion(evaluator, &mut scope, err)?,
-                };
-                return Ok(GenEval::Complete(completion));
+            };
+            scope.push_root(receiver)?;
+            let base = match evaluator.get_super_base(&mut scope) {
+              Ok(v) => v,
+              Err(err) => {
+                let err = evaluator.iterator_close_on_error(&mut scope, &iterator_record, err);
+                return Ok(GenEval::Complete(gen_error_to_completion(
+                  evaluator, &mut scope, err,
+                )?));
               }
-            },
-            GenEval::Suspend(mut suspend) => {
-              gen_frames_push(
-                &mut suspend.frames,
-                GenFrame::BindArrRestAssignMemberAfterBase {
-                  pat: pat as *const ArrPat,
-                  iterator_record,
-                  member: &*member.stx as *const MemberExpr,
-                  kind,
-                },
-              )?;
-              return Ok(GenEval::Suspend(suspend));
+            };
+            rest_assign_target = Some(GenAssignTarget::SuperMember {
+              base,
+              receiver,
+              key: &member.stx.right as *const String,
+            });
+          } else {
+            match gen_eval_expr(evaluator, &mut scope, &member.stx.left)? {
+              GenEval::Complete(c) => match c {
+                Completion::Normal(v) => {
+                  let base = v.unwrap_or(Value::Undefined);
+                  rest_assign_target = Some(GenAssignTarget::Member {
+                    base,
+                    key: &member.stx.right as *const String,
+                  });
+                }
+                abrupt => {
+                  let completion = match evaluator.iterator_close_on_completion(
+                    &mut scope,
+                    &iterator_record,
+                    abrupt,
+                  ) {
+                    Ok(c) => c,
+                    Err(err) => gen_error_to_completion(evaluator, &mut scope, err)?,
+                  };
+                  return Ok(GenEval::Complete(completion));
+                }
+              },
+              GenEval::Suspend(mut suspend) => {
+                gen_frames_push(
+                  &mut suspend.frames,
+                  GenFrame::BindArrRestAssignMemberAfterBase {
+                    pat: pat as *const ArrPat,
+                    iterator_record,
+                    member: &*member.stx as *const MemberExpr,
+                    kind,
+                  },
+                )?;
+                return Ok(GenEval::Suspend(suspend));
+              }
             }
           }
         }
@@ -49620,73 +50165,145 @@ fn gen_bind_array_pattern_from(
             )?));
           }
 
-          let base_eval = gen_eval_expr(evaluator, &mut scope, &member.stx.object)?;
-          match base_eval {
-            GenEval::Complete(c) => match c {
-              Completion::Normal(v) => {
-                let base = v.unwrap_or(Value::Undefined);
-                let member_eval = {
-                  let mut member_scope = scope.reborrow();
-                  member_scope.push_root(base)?;
-                  gen_eval_expr(evaluator, &mut member_scope, &member.stx.member)?
-                };
-                match member_eval {
-                  GenEval::Complete(c) => match c {
-                    Completion::Normal(v) => {
-                      let key_value = v.unwrap_or(Value::Undefined);
-                      rest_assign_target =
-                        Some(GenAssignTarget::ComputedMember { base, key_value });
-                    }
-                    abrupt => {
-                      let completion = match evaluator.iterator_close_on_completion(
-                        &mut scope,
+          if matches!(&*member.stx.object.stx, Expr::Super(_)) {
+            // Spec ordering: derived constructors throw before evaluating the computed key
+            // expression (and any yield within it).
+            let receiver = match evaluator.get_this_binding(&mut scope) {
+              Ok(v) => v,
+              Err(err) => {
+                let err = evaluator.iterator_close_on_error(&mut scope, &iterator_record, err);
+                return Ok(GenEval::Complete(gen_error_to_completion(
+                  evaluator, &mut scope, err,
+                )?));
+              }
+            };
+
+            let member_eval = {
+              let mut member_scope = scope.reborrow();
+              member_scope.push_root(receiver)?;
+              gen_eval_expr(evaluator, &mut member_scope, &member.stx.member)?
+            };
+            match member_eval {
+              GenEval::Complete(c) => match c {
+                Completion::Normal(v) => {
+                  let key_value = v.unwrap_or(Value::Undefined);
+                  let mut super_scope = scope.reborrow();
+                  super_scope.push_roots(&[receiver, key_value])?;
+                  let base = match evaluator.get_super_base(&mut super_scope) {
+                    Ok(v) => v,
+                    Err(err) => {
+                      let err = evaluator.iterator_close_on_error(
+                        &mut super_scope,
                         &iterator_record,
-                        abrupt,
-                      ) {
-                        Ok(c) => c,
-                        Err(err) => gen_error_to_completion(evaluator, &mut scope, err)?,
-                      };
-                      return Ok(GenEval::Complete(completion));
+                        err,
+                      );
+                      return Ok(GenEval::Complete(gen_error_to_completion(
+                        evaluator,
+                        &mut super_scope,
+                        err,
+                      )?));
                     }
+                  };
+                  rest_assign_target = Some(GenAssignTarget::SuperComputedMember {
+                    base,
+                    receiver,
+                    key_value,
+                  });
+                }
+                abrupt => {
+                  let completion =
+                    match evaluator.iterator_close_on_completion(&mut scope, &iterator_record, abrupt)
+                    {
+                      Ok(c) => c,
+                      Err(err) => gen_error_to_completion(evaluator, &mut scope, err)?,
+                    };
+                  return Ok(GenEval::Complete(completion));
+                }
+              },
+              GenEval::Suspend(mut suspend) => {
+                // Root the receiver value so it survives until the next yield boundary.
+                scope.push_root(receiver)?;
+                gen_frames_push(
+                  &mut suspend.frames,
+                  GenFrame::BindArrRestAssignSuperComputedMemberAfterMember {
+                    pat: pat as *const ArrPat,
+                    iterator_record,
+                    receiver,
+                    kind,
                   },
-                  GenEval::Suspend(mut suspend) => {
-                    gen_frames_push(
-                      &mut suspend.frames,
-                      GenFrame::BindArrRestAssignComputedMemberAfterMember {
-                        pat: pat as *const ArrPat,
-                        iterator_record,
-                        member: &*member.stx as *const ComputedMemberExpr,
-                        base,
-                        kind,
-                      },
-                    )?;
-                    return Ok(GenEval::Suspend(suspend));
+                )?;
+                return Ok(GenEval::Suspend(suspend));
+              }
+            }
+          } else {
+            let base_eval = gen_eval_expr(evaluator, &mut scope, &member.stx.object)?;
+            match base_eval {
+              GenEval::Complete(c) => match c {
+                Completion::Normal(v) => {
+                  let base = v.unwrap_or(Value::Undefined);
+                  let member_eval = {
+                    let mut member_scope = scope.reborrow();
+                    member_scope.push_root(base)?;
+                    gen_eval_expr(evaluator, &mut member_scope, &member.stx.member)?
+                  };
+                  match member_eval {
+                    GenEval::Complete(c) => match c {
+                      Completion::Normal(v) => {
+                        let key_value = v.unwrap_or(Value::Undefined);
+                        rest_assign_target =
+                          Some(GenAssignTarget::ComputedMember { base, key_value });
+                      }
+                      abrupt => {
+                        let completion = match evaluator.iterator_close_on_completion(
+                          &mut scope,
+                          &iterator_record,
+                          abrupt,
+                        ) {
+                          Ok(c) => c,
+                          Err(err) => gen_error_to_completion(evaluator, &mut scope, err)?,
+                        };
+                        return Ok(GenEval::Complete(completion));
+                      }
+                    },
+                    GenEval::Suspend(mut suspend) => {
+                      gen_frames_push(
+                        &mut suspend.frames,
+                        GenFrame::BindArrRestAssignComputedMemberAfterMember {
+                          pat: pat as *const ArrPat,
+                          iterator_record,
+                          member: &*member.stx as *const ComputedMemberExpr,
+                          base,
+                          kind,
+                        },
+                      )?;
+                      return Ok(GenEval::Suspend(suspend));
+                    }
                   }
                 }
+                abrupt => {
+                  let completion = match evaluator.iterator_close_on_completion(
+                    &mut scope,
+                    &iterator_record,
+                    abrupt,
+                  ) {
+                    Ok(c) => c,
+                    Err(err) => gen_error_to_completion(evaluator, &mut scope, err)?,
+                  };
+                  return Ok(GenEval::Complete(completion));
+                }
+              },
+              GenEval::Suspend(mut suspend) => {
+                gen_frames_push(
+                  &mut suspend.frames,
+                  GenFrame::BindArrRestAssignComputedMemberAfterBase {
+                    pat: pat as *const ArrPat,
+                    iterator_record,
+                    member: &*member.stx as *const ComputedMemberExpr,
+                    kind,
+                  },
+                )?;
+                return Ok(GenEval::Suspend(suspend));
               }
-              abrupt => {
-                let completion = match evaluator.iterator_close_on_completion(
-                  &mut scope,
-                  &iterator_record,
-                  abrupt,
-                ) {
-                  Ok(c) => c,
-                  Err(err) => gen_error_to_completion(evaluator, &mut scope, err)?,
-                };
-                return Ok(GenEval::Complete(completion));
-              }
-            },
-            GenEval::Suspend(mut suspend) => {
-              gen_frames_push(
-                &mut suspend.frames,
-                GenFrame::BindArrRestAssignComputedMemberAfterBase {
-                  pat: pat as *const ArrPat,
-                  iterator_record,
-                  member: &*member.stx as *const ComputedMemberExpr,
-                  kind,
-                },
-              )?;
-              return Ok(GenEval::Suspend(suspend));
             }
           }
         }
@@ -49716,6 +50333,30 @@ fn gen_bind_array_pattern_rest_after_target(
 ) -> Result<GenEval<Completion>, VmError> {
   let mut scope = scope.reborrow();
   scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+  // Root the pre-evaluated assignment target across rest array construction and iterator
+  // consumption, which can allocate and trigger GC.
+  if let Some(target) = rest_assign_target {
+    match target {
+      GenAssignTarget::Binding(_) => {}
+      GenAssignTarget::Member { base, .. } => {
+        scope.push_root(base)?;
+      }
+      GenAssignTarget::ComputedMember { base, key_value } => {
+        scope.push_roots(&[base, key_value])?;
+      }
+      GenAssignTarget::SuperMember { base, receiver, .. } => {
+        scope.push_roots(&[base, receiver])?;
+      }
+      GenAssignTarget::SuperComputedMember {
+        base,
+        receiver,
+        key_value,
+      } => {
+        scope.push_roots(&[base, receiver, key_value])?;
+      }
+    }
+  }
 
   let rest_pat = pat.rest.as_ref().ok_or(VmError::InvariantViolation(
     "array rest continuation called without rest pattern",
@@ -50963,9 +51604,34 @@ fn gen_resume_from_frames(
                       "optional chaining used in assignment target",
                     ));
                   }
-                  // `super.prop` is a Super Reference and cannot be represented as a
-                  // `GenAssignTarget` today.
-                  if !matches!(&*member.stx.left.stx, Expr::Super(_)) {
+                  if matches!(&*member.stx.left.stx, Expr::Super(_)) {
+                    if member.stx.right.starts_with('#') {
+                      return Err(VmError::InvariantViolation(
+                        "super private member access is not valid (early errors should prevent this)",
+                      ));
+                    }
+
+                    let receiver = match evaluator.get_this_binding(&mut obj_scope) {
+                      Ok(v) => v,
+                      Err(err) => {
+                        state = gen_error_to_completion(evaluator, &mut obj_scope, err)?;
+                        continue;
+                      }
+                    };
+                    obj_scope.push_root(receiver)?;
+                    let base = match evaluator.get_super_base(&mut obj_scope) {
+                      Ok(v) => v,
+                      Err(err) => {
+                        state = gen_error_to_completion(evaluator, &mut obj_scope, err)?;
+                        continue;
+                      }
+                    };
+                    assign_target = Some(GenAssignTarget::SuperMember {
+                      base,
+                      receiver,
+                      key: &member.stx.right as *const String,
+                    });
+                  } else {
                     match gen_eval_expr(evaluator, &mut obj_scope, &member.stx.left)? {
                       GenEval::Complete(c) => match c {
                         Completion::Normal(v) => {
@@ -51005,9 +51671,65 @@ fn gen_resume_from_frames(
                     ));
                   }
 
-                  // `super[expr]` is a Super Reference and cannot be represented as a
-                  // `GenAssignTarget` today.
-                  if !matches!(&*member.stx.object.stx, Expr::Super(_)) {
+                  if matches!(&*member.stx.object.stx, Expr::Super(_)) {
+                    // Spec ordering: derived constructors throw before evaluating the computed key
+                    // expression (and any yield within it).
+                    let receiver = match evaluator.get_this_binding(&mut obj_scope) {
+                      Ok(v) => v,
+                      Err(err) => {
+                        state = gen_error_to_completion(evaluator, &mut obj_scope, err)?;
+                        continue;
+                      }
+                    };
+
+                    let member_eval = {
+                      let mut member_scope = obj_scope.reborrow();
+                      member_scope.push_root(receiver)?;
+                      gen_eval_expr(evaluator, &mut member_scope, &member.stx.member)?
+                    };
+                    match member_eval {
+                      GenEval::Complete(c) => match c {
+                        Completion::Normal(v) => {
+                          let key_value = v.unwrap_or(Value::Undefined);
+                          let mut super_scope = obj_scope.reborrow();
+                          super_scope.push_roots(&[receiver, key_value])?;
+                          let base = match evaluator.get_super_base(&mut super_scope) {
+                            Ok(v) => v,
+                            Err(err) => {
+                              state = gen_error_to_completion(evaluator, &mut super_scope, err)?;
+                              continue;
+                            }
+                          };
+                          assign_target = Some(GenAssignTarget::SuperComputedMember {
+                            base,
+                            receiver,
+                            key_value,
+                          });
+                        }
+                        abrupt => {
+                          state = abrupt;
+                          continue;
+                        }
+                      },
+                      GenEval::Suspend(mut suspend) => {
+                        // Root the receiver value so it survives until the next yield boundary.
+                        obj_scope.push_root(receiver)?;
+                        gen_frames_push(
+                          &mut suspend.frames,
+                          GenFrame::BindObjPropAssignSuperComputedMemberAfterMember {
+                            pat,
+                            prop_index,
+                            value,
+                            excluded,
+                            receiver,
+                            kind,
+                          },
+                        )?;
+                        vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+                        return Ok(GenEval::Suspend(suspend));
+                      }
+                    }
+                  } else {
                     let base_eval = gen_eval_expr(evaluator, &mut obj_scope, &member.stx.object)?;
                     match base_eval {
                       GenEval::Complete(c) => match c {
@@ -51088,6 +51810,16 @@ fn gen_resume_from_frames(
               }
               GenAssignTarget::ComputedMember { base, key_value } => {
                 obj_scope.push_roots(&[base, key_value])?;
+              }
+              GenAssignTarget::SuperMember { base, receiver, .. } => {
+                obj_scope.push_roots(&[base, receiver])?;
+              }
+              GenAssignTarget::SuperComputedMember {
+                base,
+                receiver,
+                key_value,
+              } => {
+                obj_scope.push_roots(&[base, receiver, key_value])?;
               }
             }
           }
@@ -51437,6 +52169,53 @@ fn gen_resume_from_frames(
         abrupt => state = abrupt,
       },
 
+      GenFrame::BindObjPropAssignSuperComputedMemberAfterMember {
+        pat,
+        prop_index,
+        value,
+        excluded,
+        receiver,
+        kind,
+      } => match state {
+        Completion::Normal(v) => {
+          let key_value = v.unwrap_or(Value::Undefined);
+          let base = {
+            let mut super_scope = scope.reborrow();
+            super_scope.push_roots(&[receiver, key_value])?;
+            match evaluator.get_super_base(&mut super_scope) {
+              Ok(v) => v,
+              Err(err) => {
+                state = gen_error_to_completion(evaluator, &mut super_scope, err)?;
+                continue;
+              }
+            }
+          };
+          let target = GenAssignTarget::SuperComputedMember {
+            base,
+            receiver,
+            key_value,
+          };
+          let pat_ref = unsafe { &*pat };
+          match gen_bind_object_pattern_prop_after_assign_target(
+            evaluator,
+            scope,
+            pat_ref,
+            prop_index,
+            value,
+            excluded,
+            kind,
+            target,
+          )? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
       GenFrame::BindObjRestAssignMemberAfterBase {
         pat,
         value,
@@ -51541,6 +52320,51 @@ fn gen_resume_from_frames(
         Completion::Normal(v) => {
           let key_value = v.unwrap_or(Value::Undefined);
           let target = GenAssignTarget::ComputedMember { base, key_value };
+          let pat_ref = unsafe { &*pat };
+          match gen_bind_object_pattern_rest_after_target_with_boxing(
+            evaluator,
+            scope,
+            pat_ref,
+            value,
+            excluded,
+            kind,
+            Some(target),
+          )? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::BindObjRestAssignSuperComputedMemberAfterMember {
+        pat,
+        value,
+        excluded,
+        receiver,
+        kind,
+      } => match state {
+        Completion::Normal(v) => {
+          let key_value = v.unwrap_or(Value::Undefined);
+          let base = {
+            let mut super_scope = scope.reborrow();
+            super_scope.push_roots(&[receiver, key_value])?;
+            match evaluator.get_super_base(&mut super_scope) {
+              Ok(v) => v,
+              Err(err) => {
+                state = gen_error_to_completion(evaluator, &mut super_scope, err)?;
+                continue;
+              }
+            }
+          };
+          let target = GenAssignTarget::SuperComputedMember {
+            base,
+            receiver,
+            key_value,
+          };
           let pat_ref = unsafe { &*pat };
           match gen_bind_object_pattern_rest_after_target_with_boxing(
             evaluator,
@@ -51708,6 +52532,58 @@ fn gen_resume_from_frames(
         }
       },
 
+      GenFrame::BindArrElemAssignSuperComputedMemberAfterMember {
+        pat,
+        elem_index,
+        iterator_record,
+        receiver,
+        kind,
+      } => match state {
+        Completion::Normal(v) => {
+          let key_value = v.unwrap_or(Value::Undefined);
+          let base = {
+            let mut super_scope = scope.reborrow();
+            super_scope.push_roots(&[receiver, key_value])?;
+            match evaluator.get_super_base(&mut super_scope) {
+              Ok(v) => v,
+              Err(err) => {
+                let err =
+                  evaluator.iterator_close_on_error(&mut super_scope, &iterator_record, err);
+                state = gen_error_to_completion(evaluator, &mut super_scope, err)?;
+                continue;
+              }
+            }
+          };
+          let target = GenAssignTarget::SuperComputedMember {
+            base,
+            receiver,
+            key_value,
+          };
+          let pat_ref = unsafe { &*pat };
+          match gen_bind_array_pattern_from(
+            evaluator,
+            scope,
+            pat_ref,
+            iterator_record,
+            kind,
+            elem_index,
+            Some(target),
+          )? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => {
+          state = match evaluator.iterator_close_on_completion(scope, &iterator_record, abrupt) {
+            Ok(c) => c,
+            Err(err) => gen_error_to_completion(evaluator, scope, err)?,
+          };
+        }
+      },
+
       GenFrame::BindArrRestAssignMemberAfterBase {
         pat,
         iterator_record,
@@ -51822,6 +52698,56 @@ fn gen_resume_from_frames(
         Completion::Normal(v) => {
           let key_value = v.unwrap_or(Value::Undefined);
           let target = GenAssignTarget::ComputedMember { base, key_value };
+          let pat_ref = unsafe { &*pat };
+          match gen_bind_array_pattern_rest_after_target(
+            evaluator,
+            scope,
+            pat_ref,
+            iterator_record,
+            kind,
+            Some(target),
+          )? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              vecdeque_try_append(&mut suspend.frames, &mut frames)?;
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => {
+          state = match evaluator.iterator_close_on_completion(scope, &iterator_record, abrupt) {
+            Ok(c) => c,
+            Err(err) => gen_error_to_completion(evaluator, scope, err)?,
+          };
+        }
+      },
+
+      GenFrame::BindArrRestAssignSuperComputedMemberAfterMember {
+        pat,
+        iterator_record,
+        receiver,
+        kind,
+      } => match state {
+        Completion::Normal(v) => {
+          let key_value = v.unwrap_or(Value::Undefined);
+          let base = {
+            let mut super_scope = scope.reborrow();
+            super_scope.push_roots(&[receiver, key_value])?;
+            match evaluator.get_super_base(&mut super_scope) {
+              Ok(v) => v,
+              Err(err) => {
+                let err =
+                  evaluator.iterator_close_on_error(&mut super_scope, &iterator_record, err);
+                state = gen_error_to_completion(evaluator, &mut super_scope, err)?;
+                continue;
+              }
+            }
+          };
+          let target = GenAssignTarget::SuperComputedMember {
+            base,
+            receiver,
+            key_value,
+          };
           let pat_ref = unsafe { &*pat };
           match gen_bind_array_pattern_rest_after_target(
             evaluator,
@@ -53821,6 +54747,8 @@ fn gen_root_values_for_continuation(
             GenAssignTarget::Binding(_) => {}
             GenAssignTarget::Member { .. } => needed = needed.saturating_add(1),
             GenAssignTarget::ComputedMember { .. } => needed = needed.saturating_add(2),
+            GenAssignTarget::SuperMember { .. } => needed = needed.saturating_add(2),
+            GenAssignTarget::SuperComputedMember { .. } => needed = needed.saturating_add(3),
           }
         }
       }
@@ -53831,7 +54759,9 @@ fn gen_root_values_for_continuation(
         needed = needed.saturating_add(1).saturating_add(excluded.len());
       }
       GenFrame::BindObjPropAssignComputedMemberAfterMember { excluded, .. }
-      | GenFrame::BindObjRestAssignComputedMemberAfterMember { excluded, .. } => {
+      | GenFrame::BindObjRestAssignComputedMemberAfterMember { excluded, .. }
+      | GenFrame::BindObjPropAssignSuperComputedMemberAfterMember { excluded, .. }
+      | GenFrame::BindObjRestAssignSuperComputedMemberAfterMember { excluded, .. } => {
         needed = needed.saturating_add(2).saturating_add(excluded.len());
       }
       GenFrame::BindArrAfterDefault { assign_target, .. } => {
@@ -53843,6 +54773,8 @@ fn gen_root_values_for_continuation(
             GenAssignTarget::Binding(_) => {}
             GenAssignTarget::Member { .. } => needed = needed.saturating_add(1),
             GenAssignTarget::ComputedMember { .. } => needed = needed.saturating_add(2),
+            GenAssignTarget::SuperMember { .. } => needed = needed.saturating_add(2),
+            GenAssignTarget::SuperComputedMember { .. } => needed = needed.saturating_add(3),
           }
         }
       }
@@ -53855,7 +54787,9 @@ fn gen_root_values_for_continuation(
         needed = needed.saturating_add(2);
       }
       GenFrame::BindArrElemAssignComputedMemberAfterMember { .. }
-      | GenFrame::BindArrRestAssignComputedMemberAfterMember { .. } => {
+      | GenFrame::BindArrRestAssignComputedMemberAfterMember { .. }
+      | GenFrame::BindArrElemAssignSuperComputedMemberAfterMember { .. }
+      | GenFrame::BindArrRestAssignSuperComputedMemberAfterMember { .. } => {
         // `iterator_record` (`iterator` + `next_method`) + `base`.
         needed = needed.saturating_add(3);
       }
@@ -54073,6 +55007,19 @@ fn gen_root_values_for_continuation(
               values.push(*base);
               values.push(*key_value);
             }
+            GenAssignTarget::SuperMember { base, receiver, .. } => {
+              values.push(*base);
+              values.push(*receiver);
+            }
+            GenAssignTarget::SuperComputedMember {
+              base,
+              receiver,
+              key_value,
+            } => {
+              values.push(*base);
+              values.push(*receiver);
+              values.push(*key_value);
+            }
           }
         }
       }
@@ -54117,6 +55064,27 @@ fn gen_root_values_for_continuation(
           }
         }
       }
+      GenFrame::BindObjPropAssignSuperComputedMemberAfterMember {
+        value,
+        excluded,
+        receiver,
+        ..
+      }
+      | GenFrame::BindObjRestAssignSuperComputedMemberAfterMember {
+        value,
+        excluded,
+        receiver,
+        ..
+      } => {
+        values.push(*value);
+        values.push(*receiver);
+        for key in excluded.iter() {
+          match key {
+            PropertyKey::String(s) => values.push(Value::String(*s)),
+            PropertyKey::Symbol(sym) => values.push(Value::Symbol(*sym)),
+          }
+        }
+      }
       GenFrame::BindArrAfterDefault {
         iterator_record,
         assign_target,
@@ -54130,6 +55098,19 @@ fn gen_root_values_for_continuation(
             GenAssignTarget::Member { base, .. } => values.push(*base),
             GenAssignTarget::ComputedMember { base, key_value } => {
               values.push(*base);
+              values.push(*key_value);
+            }
+            GenAssignTarget::SuperMember { base, receiver, .. } => {
+              values.push(*base);
+              values.push(*receiver);
+            }
+            GenAssignTarget::SuperComputedMember {
+              base,
+              receiver,
+              key_value,
+            } => {
+              values.push(*base);
+              values.push(*receiver);
               values.push(*key_value);
             }
           }
@@ -54166,6 +55147,20 @@ fn gen_root_values_for_continuation(
         values.push(iterator_record.iterator);
         values.push(iterator_record.next_method);
         values.push(*base);
+      }
+      GenFrame::BindArrElemAssignSuperComputedMemberAfterMember {
+        iterator_record,
+        receiver,
+        ..
+      }
+      | GenFrame::BindArrRestAssignSuperComputedMemberAfterMember {
+        iterator_record,
+        receiver,
+        ..
+      } => {
+        values.push(iterator_record.iterator);
+        values.push(iterator_record.next_method);
+        values.push(*receiver);
       }
       GenFrame::BindAssignMemberAfterBase { value, .. }
       | GenFrame::BindAssignComputedMemberAfterBase { value, .. }

@@ -158,3 +158,108 @@ fn generator_object_destructuring_rest_target_is_evaluated_before_copy_data_prop
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_object_destructuring_assignment_target_super_computed_is_evaluated_before_getv() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var log = [];
+          class Base {
+            set k(v) { log.push("set"); this._k = v; }
+          }
+          class Derived extends Base {
+            *g() {
+              var src = { get a() { log.push("get"); return 7; } };
+              ({a: super[(yield (log.push("yield"), 1))]} = src);
+              return this._k === 7;
+            }
+          }
+          var it = (new Derived()).g();
+          var r1 = it.next();
+          if (r1.done !== false || r1.value !== 1) return false;
+          if (log.join("|") !== "yield") return false;
+          var r2 = it.next("k");
+          return r2.done === true && r2.value === true && log.join("|") === "yield|get|set";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_object_destructuring_rest_target_super_computed_is_evaluated_before_copy_data_properties() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var log = [];
+          class Base {
+            set k(v) { log.push("set"); this._k = v; }
+          }
+          class Derived extends Base {
+            *g() {
+              var src = { get a() { log.push("get"); return 1; } };
+              ({...super[(yield (log.push("yield"), 1))]} = src);
+              return this._k.a === 1;
+            }
+          }
+          var it = (new Derived()).g();
+          var r1 = it.next();
+          if (r1.done !== false || r1.value !== 1) return false;
+          if (log.join("|") !== "yield") return false;
+          var r2 = it.next("k");
+          return r2.done === true && r2.value === true && log.join("|") === "yield|get|set";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_array_destructuring_assignment_target_super_computed_is_evaluated_before_iterator_step() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          var log = [];
+          class Base {
+            set k(v) { log.push("set"); this._k = v; }
+          }
+          class Derived extends Base {
+            *g(iterable) {
+              [super[(yield (log.push("yield"), 1))]] = iterable;
+              return this._k === 7;
+            }
+          }
+          var iterable = {
+            [Symbol.iterator]() {
+              var done = false;
+              return {
+                next() {
+                  log.push("next");
+                  if (done) return { value: undefined, done: true };
+                  done = true;
+                  return { value: 7, done: false };
+                }
+              };
+            }
+          };
+          var it = (new Derived()).g(iterable);
+          var r1 = it.next();
+          if (r1.done !== false || r1.value !== 1) return false;
+          if (log.join("|") !== "yield") return false;
+          var r2 = it.next("k");
+          return r2.done === true && r2.value === true && log.join("|") === "yield|next|set";
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
