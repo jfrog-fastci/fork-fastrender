@@ -408,15 +408,14 @@ impl TraceSpan {
 
 impl Drop for TraceSpan {
   fn drop(&mut self) {
-    if let (Some(state), Some(start)) = (&self.state, self.start) {
-      state.push_event_with_args(
-        self.name.clone(),
-        self.cat,
-        start,
-        Instant::now(),
-        self.args.take(),
-      );
-    }
+    let Some(state) = self.state.as_ref() else {
+      return;
+    };
+    let Some(start) = self.start.take() else {
+      return;
+    };
+    let name = std::mem::replace(&mut self.name, Cow::Borrowed(""));
+    state.push_event_with_args(name, self.cat, start, Instant::now(), self.args.take());
   }
 }
 
