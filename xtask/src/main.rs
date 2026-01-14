@@ -733,6 +733,8 @@ struct BrowserArgs {
   /// Write a Chrome trace of the browser UI event loop to this path (passes
   /// `browser --trace-out <path>`).
   ///
+  /// Note: the trace file is written when the browser process exits.
+  ///
   /// Note: relative paths are resolved relative to the repo root (where the browser runs), not the
   /// caller's current directory.
   #[arg(long, value_name = "PATH")]
