@@ -2340,28 +2340,32 @@ fn document_constructor_construct_native(
   _new_target: Value,
 ) -> Result<Value, VmError> {
   // Implement `new Document()` by delegating to the realm's existing
-  // `document.implementation.createDocument(null, "", null)` machinery so the created document:
+  // `document.implementation.createDocument(null, null, null)` machinery so the created document:
   // - is backed by a realm-owned `dom2::Document`,
   // - inherits the same Document surface as the host document, and
   // - behaves like an XML document (needed by curated WPT helpers).
   let document_obj = vm
-    .user_data_mut::<WindowRealmUserData>()
-    .and_then(|data| data.document_obj)
+    .user_data::<WindowRealmUserData>()
+    .and_then(|data| data.document_obj())
     .ok_or(VmError::TypeError(
       "Document constructor requires a host-backed WindowRealm",
     ))?;
 
   let mut scope = scope.reborrow();
   scope.push_root(Value::Object(document_obj))?;
-  let implementation_key = alloc_key(&mut scope, "implementation")?;
-  let impl_value = scope
-    .heap()
-    .object_get_own_data_property_value(document_obj, &implementation_key)?
-    .unwrap_or(Value::Undefined);
-  let Value::Object(impl_obj) = impl_value else {
-    return Err(VmError::TypeError(
-      "Document constructor requires document.implementation",
-    ));
+
+  let impl_obj = {
+    let implementation_key = alloc_key(&mut scope, "implementation")?;
+    let impl_value = object_get_data_property_value(scope.heap(), document_obj, &implementation_key)?
+      .unwrap_or(Value::Undefined);
+    match impl_value {
+      Value::Object(obj) => obj,
+      _ => {
+        return Err(VmError::TypeError(
+          "Document constructor requires document.implementation",
+        ))
+      }
+    }
   };
 
   let args = [Value::Null, Value::Null, Value::Null];
