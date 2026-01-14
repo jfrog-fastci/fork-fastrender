@@ -140,18 +140,40 @@ impl AudioDecoder for super::codecs::opus::OpusDecoder {
 impl VideoDecoder for super::codecs::vp9::Vp9Decoder {
   fn decode(&mut self, packet: &MediaPacket) -> MediaResult<Vec<DecodedVideoFrame>> {
     let decoded = super::codecs::vp9::Vp9Decoder::decode(self, packet)?;
-    Ok(
-      decoded
-        .into_iter()
-        .map(|f| DecodedVideoFrame {
-          pts_ns: f.pts_ns,
-          duration_ns: packet.duration_ns,
-          width: f.width,
-          height: f.height,
-          rgba: f.rgba8,
-        })
-        .collect(),
-    )
+    if decoded.is_empty() {
+      return Ok(Vec::new());
+    }
+
+    // A single VP9 packet may yield multiple decoded frames (superframes). When the container
+    // provides a per-packet duration, distribute it across the decoded frames by using the
+    // monotonic PTS values produced by the codec layer.
+    //
+    // For the last output frame, prefer the packet's end timestamp (`packet.pts_ns + duration`) so
+    // the total duration matches container timing (including any remainder from integer division in
+    // the codec's `step_ns`).
+    let pts: Vec<u64> = decoded.iter().map(|f| f.pts_ns).collect();
+    let packet_end_pts_ns = packet.pts_ns.saturating_add(packet.duration_ns);
+
+    let mut out = Vec::with_capacity(decoded.len());
+    for (idx, f) in decoded.into_iter().enumerate() {
+      let duration_ns = if idx + 1 < pts.len() {
+        pts[idx + 1].saturating_sub(pts[idx])
+      } else if packet.duration_ns != 0 {
+        packet_end_pts_ns.saturating_sub(pts[idx])
+      } else {
+        0
+      };
+
+      out.push(DecodedVideoFrame {
+        pts_ns: f.pts_ns,
+        duration_ns,
+        width: f.width,
+        height: f.height,
+        rgba: f.rgba8,
+      });
+    }
+
+    Ok(out)
   }
 }
 // ============================================================================
