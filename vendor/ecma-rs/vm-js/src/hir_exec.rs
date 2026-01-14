@@ -537,57 +537,6 @@ fn concat_strings(
   scope.alloc_string_from_u16_vec(units)
 }
 
-fn maybe_set_anonymous_function_name(
-  scope: &mut Scope<'_>,
-  value: Value,
-  name: &str,
-) -> Result<(), VmError> {
-  let Value::Object(func_obj) = value else {
-    return Ok(());
-  };
-
-  // `SetFunctionName` only applies to actual Function objects. Callable Proxies are callable, but
-  // they are not function objects and should not have their `name` mutated.
-  let (current_name, is_native_non_constructable) = match scope.heap().get_function(func_obj) {
-    Ok(f) => (
-      f.name,
-      matches!(f.call, crate::function::CallHandler::Native(_)) && f.construct.is_none(),
-    ),
-    Err(VmError::NotCallable) => return Ok(()),
-    Err(err) => return Err(err),
-  };
-
-  // Name inference only applies to "anonymous function definitions" (ECMA-262) which excludes
-  // anonymous built-in/native functions like Promise combinator element callbacks.
-  //
-  // `vm-js` represents user-defined class constructors as native functions (so they can throw when
-  // called without `new`), so keep name inference enabled for constructable native functions.
-  if is_native_non_constructable {
-    return Ok(());
-  }
-  if !scope
-    .heap()
-    .get_string(current_name)?
-    .as_code_units()
-    .is_empty()
-  {
-    return Ok(());
-  }
-
-  // Root the function object while allocating the new name string and redefining `name`.
-  let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(func_obj))?;
-
-  let name_s = scope.alloc_string(name)?;
-  crate::function_properties::set_function_name(
-    &mut scope,
-    func_obj,
-    PropertyKey::String(name_s),
-    None,
-  )?;
-  Ok(())
-}
-
 #[derive(Clone, Copy, Debug)]
 enum PatBindingKind {
   Var,
@@ -6372,7 +6321,16 @@ impl<'vm> HirEvaluator<'vm> {
       self.vm.tick()?;
       let init_missing = declarator.init.is_none();
       let value = match declarator.init {
-        Some(init) => self.eval_expr(scope, body, init)?,
+        Some(init) => {
+          let pat = self.get_pat(body, declarator.pat)?;
+          match pat.kind {
+            hir_js::PatKind::Ident(name_id) => {
+              let name = self.resolve_name(name_id)?;
+              self.eval_expr_named_from_string(scope, body, init, name.as_str())?
+            }
+            _ => self.eval_expr(scope, body, init)?,
+          }
+        }
         None => Value::Undefined,
       };
       self.bind_var_decl_pat(scope, body, declarator.pat, decl.kind, init_missing, value)?;
@@ -6492,14 +6450,6 @@ impl<'vm> HirEvaluator<'vm> {
     kind: PatBindingKind,
   ) -> Result<(), VmError> {
     let name = self.resolve_name(name_id)?;
-    // `SetFunctionName`-like behaviour: when binding an anonymous function/class to an identifier,
-    // infer its `name` from the identifier.
-    //
-    // Note: ordinary function parameter binding must not rename arbitrary argument values. Name
-    // inference for default parameter initializers is handled at expression evaluation time.
-    if !matches!(kind, PatBindingKind::Param) {
-      maybe_set_anonymous_function_name(scope, value, name.as_str())?;
-    }
     match kind {
       PatBindingKind::Var => self.env.set_var(
         self.vm,
@@ -6614,21 +6564,12 @@ impl<'vm> HirEvaluator<'vm> {
         default_value,
       } => {
         let v = if matches!(value, Value::Undefined) {
-          if matches!(kind, PatBindingKind::Param) {
-            // Destructuring defaults in parameter patterns should only infer function names when the
-            // default expression is a syntactic anonymous function/class definition.
-            if let hir_js::PatKind::Ident(name_id) = &self.get_pat(body, *target)?.kind {
-              let Some(name) = self.hir().names.resolve(*name_id) else {
-                return Err(VmError::InvariantViolation(
-                  "hir pat name id missing from interner",
-                ));
-              };
-              let name_s = scope.alloc_string(name)?;
-              let key = PropertyKey::from_string(name_s);
-              self.eval_expr_named(&mut scope, body, *default_value, key)?
-            } else {
-              self.eval_expr(&mut scope, body, *default_value)?
-            }
+          let inferred_name: Option<String> = match self.get_pat(body, *target)?.kind {
+            hir_js::PatKind::Ident(name_id) => Some(self.resolve_name(name_id)?),
+            _ => None,
+          };
+          if let Some(name) = inferred_name {
+            self.eval_expr_named_from_string(&mut scope, body, *default_value, name.as_str())?
           } else {
             self.eval_expr(&mut scope, body, *default_value)?
           }
@@ -6687,21 +6628,12 @@ impl<'vm> HirEvaluator<'vm> {
         prop_scope.get_with_host_and_hooks(self.vm, &mut *self.host, &mut *self.hooks, obj, key, src_value)?;
       if matches!(prop_value, Value::Undefined) {
         if let Some(default_expr) = prop.default_value {
-          prop_value = if matches!(kind, PatBindingKind::Param) {
-            // Default values in parameter destructuring should only infer function names when the
-            // default expression is a syntactic anonymous function/class definition.
-            if let hir_js::PatKind::Ident(name_id) = &self.get_pat(body, prop.value)?.kind {
-              let Some(name) = self.hir().names.resolve(*name_id) else {
-                return Err(VmError::InvariantViolation(
-                  "hir pat name id missing from interner",
-                ));
-              };
-              let name_s = prop_scope.alloc_string(name)?;
-              let key = PropertyKey::from_string(name_s);
-              self.eval_expr_named(&mut prop_scope, body, default_expr, key)?
-            } else {
-              self.eval_expr(&mut prop_scope, body, default_expr)?
-            }
+          let inferred_name: Option<String> = match self.get_pat(body, prop.value)?.kind {
+            hir_js::PatKind::Ident(name_id) => Some(self.resolve_name(name_id)?),
+            _ => None,
+          };
+          prop_value = if let Some(name) = inferred_name {
+            self.eval_expr_named_from_string(&mut prop_scope, body, default_expr, name.as_str())?
           } else {
             self.eval_expr(&mut prop_scope, body, default_expr)?
           };
@@ -6793,27 +6725,20 @@ impl<'vm> HirEvaluator<'vm> {
 
       if matches!(item, Value::Undefined) {
         if let Some(default_expr) = elem.default_value {
-          item = if matches!(kind, PatBindingKind::Param) {
-            if let hir_js::PatKind::Ident(name_id) = &self.get_pat(body, elem.pat)?.kind {
-              let Some(name) = self.hir().names.resolve(*name_id) else {
-                return Err(VmError::InvariantViolation(
-                  "hir pat name id missing from interner",
-                ));
-              };
-              let name_s = match elem_scope.alloc_string(name) {
-                Ok(s) => s,
+          let inferred_name = match self.get_pat(body, elem.pat) {
+            Ok(pat) => match pat.kind {
+              hir_js::PatKind::Ident(name_id) => match self.resolve_name(name_id) {
+                Ok(name) => Some(name),
                 Err(err) => return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err),
-              };
-              let key = PropertyKey::from_string(name_s);
-              match self.eval_expr_named(&mut elem_scope, body, default_expr, key) {
-                Ok(v) => v,
-                Err(err) => return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err),
-              }
-            } else {
-              match self.eval_expr(&mut elem_scope, body, default_expr) {
-                Ok(v) => v,
-                Err(err) => return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err),
-              }
+              },
+              _ => None,
+            },
+            Err(err) => return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err),
+          };
+          item = if let Some(name) = inferred_name {
+            match self.eval_expr_named_from_string(&mut elem_scope, body, default_expr, name.as_str()) {
+              Ok(v) => v,
+              Err(err) => return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err),
             }
           } else {
             match self.eval_expr(&mut elem_scope, body, default_expr) {
@@ -9003,9 +8928,13 @@ impl<'vm> HirEvaluator<'vm> {
             let mut scope = scope.reborrow();
             self.root_assignment_reference(&mut scope, &reference)?;
 
-            let v = self.eval_expr(&mut scope, body, value)?;
+            let v = match &reference {
+              AssignmentReference::Binding(binding) => {
+                self.eval_expr_named_from_string(&mut scope, body, value, binding.name())?
+              }
+              _ => self.eval_expr(&mut scope, body, value)?,
+            };
             scope.push_root(v)?;
-            self.maybe_set_anonymous_function_name_for_assignment(&mut scope, &reference, v)?;
             self.put_value_to_assignment_reference(&mut scope, &reference, v)?;
             Ok(v)
           }
@@ -9060,8 +8989,12 @@ impl<'vm> HirEvaluator<'vm> {
                   scope.push_root(v)?;
 
                   // `ToPropertyKey` occurs during `PutValue` (after RHS), per spec.
-                  let key =
-                    scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, key_value)?;
+                  let key = scope.to_property_key(
+                    self.vm,
+                    &mut *self.host,
+                    &mut *self.hooks,
+                    key_value,
+                  )?;
                   root_property_key(&mut scope, key)?;
 
                   let reference = AssignmentReference::SuperProperty {
@@ -9069,7 +9002,6 @@ impl<'vm> HirEvaluator<'vm> {
                     receiver,
                     key,
                   };
-                  self.maybe_set_anonymous_function_name_for_assignment(&mut scope, &reference, v)?;
                   self.put_value_to_assignment_reference(&mut scope, &reference, v)?;
                   return Ok(v);
                 }
@@ -9084,7 +9016,6 @@ impl<'vm> HirEvaluator<'vm> {
 
             let v = self.eval_expr(&mut scope, body, value)?;
             scope.push_root(v)?;
-            self.maybe_set_anonymous_function_name_for_assignment(&mut scope, &reference, v)?;
             self.put_value_to_assignment_reference(&mut scope, &reference, v)?;
             Ok(v)
           }
@@ -9438,61 +9369,6 @@ impl<'vm> HirEvaluator<'vm> {
     }
   }
 
-  fn maybe_set_anonymous_function_name_for_assignment(
-    &mut self,
-    scope: &mut Scope<'_>,
-    reference: &AssignmentReference,
-    value: Value,
-  ) -> Result<(), VmError> {
-    let Value::Object(func_obj) = value else {
-      return Ok(());
-    };
-
-    // `SetFunctionName` only applies to actual Function objects. Callable Proxies are callable, but
-    // are not function objects and should not have their `name` mutated.
-    let (current_name, is_native_non_constructable) = match scope.heap().get_function(func_obj) {
-      Ok(f) => (
-        f.name,
-        matches!(f.call, crate::function::CallHandler::Native(_)) && f.construct.is_none(),
-      ),
-      Err(VmError::NotCallable) => return Ok(()),
-      Err(err) => return Err(err),
-    };
-
-    // Name inference only applies to "anonymous function definitions" (ECMA-262), which excludes
-    // anonymous built-in/native functions such as Promise combinator element callbacks.
-    //
-    // `vm-js` represents user-defined class constructors as native functions (so they can throw
-    // when called without `new`), so keep name inference enabled for constructable native
-    // functions.
-    if is_native_non_constructable {
-      return Ok(());
-    }
-    if !scope
-      .heap()
-      .get_string(current_name)?
-      .as_code_units()
-      .is_empty()
-    {
-      return Ok(());
-    }
-
-    let key = match reference {
-      AssignmentReference::Binding(name_ref) => {
-        // Root the allocated key string: `set_function_name` may allocate and trigger GC while
-        // pushing its own roots.
-        let name_s = scope.alloc_string(name_ref.name())?;
-        scope.push_root(Value::String(name_s))?;
-        PropertyKey::String(name_s)
-      }
-      AssignmentReference::Property { key, .. }
-      | AssignmentReference::SuperProperty { key, .. } => *key,
-    };
-
-    crate::function_properties::set_function_name(scope, func_obj, key, None)?;
-    Ok(())
-  }
-
   fn eval_compound_assignment(
     &mut self,
     scope: &mut Scope<'_>,
@@ -9791,9 +9667,8 @@ impl<'vm> HirEvaluator<'vm> {
 
         // Root `left` across RHS evaluation and the subsequent assignment.
         scope.push_root(left)?;
-        let right = self.eval_expr(&mut scope, body, value)?;
+        let right = self.eval_expr_named_from_string(&mut scope, body, value, name.as_str())?;
         scope.push_root(right)?;
-        maybe_set_anonymous_function_name(&mut scope, right, name.as_str())?;
         self.env.set_resolved_binding(
           self.vm,
           &mut *self.host,
@@ -9826,9 +9701,10 @@ impl<'vm> HirEvaluator<'vm> {
             }
 
             scope.push_root(left)?;
+            // Parenthesized identifier assignment targets are lowered as `PatKind::AssignTarget`.
+            // Those are not IdentifierReferences for name inference, so skip `NamedEvaluation`.
             let right = self.eval_expr(&mut scope, body, value)?;
             scope.push_root(right)?;
-            maybe_set_anonymous_function_name(&mut scope, right, name.as_str())?;
             self.env.set_resolved_binding(
               self.vm,
               &mut *self.host,
@@ -9938,12 +9814,6 @@ impl<'vm> HirEvaluator<'vm> {
               scope.push_root(left)?;
               let right = self.eval_expr(&mut scope, body, value)?;
               scope.push_root(right)?;
-              let reference = AssignmentReference::SuperProperty {
-                super_base: Some(super_base_obj),
-                receiver,
-                key,
-              };
-              self.maybe_set_anonymous_function_name_for_assignment(&mut scope, &reference, right)?;
 
               let ok = crate::spec_ops::internal_set_with_host_and_hooks(
                 self.vm,
@@ -9988,8 +9858,6 @@ impl<'vm> HirEvaluator<'vm> {
             scope.push_root(left)?;
             let right = self.eval_expr(&mut scope, body, value)?;
             scope.push_root(right)?;
-            let reference = AssignmentReference::Property { base, key };
-            self.maybe_set_anonymous_function_name_for_assignment(&mut scope, &reference, right)?;
 
             let ok = crate::spec_ops::internal_set_with_host_and_hooks(
               self.vm,
@@ -10415,7 +10283,6 @@ impl<'vm> HirEvaluator<'vm> {
     match pat.kind {
       hir_js::PatKind::Ident(name_id) => {
         let name = self.resolve_name(name_id)?;
-        maybe_set_anonymous_function_name(scope, value, name.as_str())?;
         self.env.set(
           self.vm,
           &mut *self.host,
@@ -10431,7 +10298,6 @@ impl<'vm> HirEvaluator<'vm> {
         match &target_expr.kind {
           hir_js::ExprKind::Ident(name_id) => {
             let name = self.resolve_name(*name_id)?;
-            maybe_set_anonymous_function_name(scope, value, name.as_str())?;
             self.env.set(
               self.vm,
               &mut *self.host,
@@ -10468,10 +10334,6 @@ impl<'vm> HirEvaluator<'vm> {
       PropertyKey::Symbol(s) => Value::Symbol(s),
     };
     set_scope.push_roots(&[base, key_root, value])?;
-
-    // Destructuring assignment member targets participate in anonymous function name inference when
-    // assigning a function value with a default empty `"name"` property.
-    crate::destructure::maybe_set_anonymous_function_name_for_property_key(&mut set_scope, value, key)?;
 
     // Spec: `PutValue` uses `ToObject` and then calls `[[Set]]` with the *original* base value as
     // the receiver.
@@ -10518,7 +10380,22 @@ impl<'vm> HirEvaluator<'vm> {
         default_value,
       } => {
         let v = if matches!(value, Value::Undefined) {
-          self.eval_expr(&mut scope, body, *default_value)?
+          let inferred_name: Option<String> = match self.get_pat(body, *target)?.kind {
+            hir_js::PatKind::Ident(name_id) => Some(self.resolve_name(name_id)?),
+            hir_js::PatKind::AssignTarget(expr_id) => {
+              let target_expr = self.get_expr(body, expr_id)?;
+              match &target_expr.kind {
+                hir_js::ExprKind::Ident(name_id) => Some(self.resolve_name(*name_id)?),
+                _ => None,
+              }
+            }
+            _ => None,
+          };
+          if let Some(name) = inferred_name {
+            self.eval_expr_named_from_string(&mut scope, body, *default_value, name.as_str())?
+          } else {
+            self.eval_expr(&mut scope, body, *default_value)?
+          }
         } else {
           value
         };
@@ -10589,6 +10466,12 @@ impl<'vm> HirEvaluator<'vm> {
         Pat(hir_js::PatId),
       }
       let mut target = PropTarget::Pat(prop.value);
+      // For destructuring *assignment* defaults, name inference is gated by `IsIdentifierRef`.
+      //
+      // We model this by inferring names only for `PatKind::Ident` (an unparenthesized identifier
+      // assignment target). Parenthesized identifiers lower to `PatKind::AssignTarget(Ident)`, which
+      // must not infer names (e.g. `({ a: (x) = class {} } = ...)`).
+      let mut inferred_name: Option<&str> = None;
       {
         let value_pat = self.get_pat(body, prop.value)?;
         match value_pat.kind {
@@ -10606,6 +10489,7 @@ impl<'vm> HirEvaluator<'vm> {
               name,
             )?;
             target = PropTarget::Binding(binding);
+            inferred_name = Some(binding.name());
           }
           hir_js::PatKind::AssignTarget(expr_id) => {
             let target_expr = self.get_expr(body, expr_id)?;
@@ -10710,7 +10594,11 @@ impl<'vm> HirEvaluator<'vm> {
         prop_scope.get_with_host_and_hooks(self.vm, &mut *self.host, &mut *self.hooks, obj, key, src_value)?;
       if matches!(prop_value, Value::Undefined) {
         if let Some(default_expr) = prop.default_value {
-          prop_value = self.eval_expr(&mut prop_scope, body, default_expr)?;
+          prop_value = if let Some(name) = inferred_name {
+            self.eval_expr_named_from_string(&mut prop_scope, body, default_expr, name)?
+          } else {
+            self.eval_expr(&mut prop_scope, body, default_expr)?
+          };
         }
       }
 
@@ -10721,7 +10609,6 @@ impl<'vm> HirEvaluator<'vm> {
 
       match target {
         PropTarget::Binding(binding) => {
-          maybe_set_anonymous_function_name(&mut prop_scope, prop_value, binding.name())?;
           self.env.set_resolved_binding(
             self.vm,
             &mut *self.host,
@@ -10930,7 +10817,6 @@ impl<'vm> HirEvaluator<'vm> {
     match rest_target {
       RestTarget::Binding(binding) => {
         let rest_value = Value::Object(rest_obj);
-        maybe_set_anonymous_function_name(scope, rest_value, binding.name())?;
         self.env.set_resolved_binding(
           self.vm,
           &mut *self.host,
@@ -11040,6 +10926,9 @@ impl<'vm> HirEvaluator<'vm> {
         Pat(hir_js::PatId),
       }
       let mut target = ElemTarget::Pat(elem.pat);
+      // For destructuring *assignment* defaults, name inference is gated by `IsIdentifierRef`.
+      // See the analogous logic in `assign_object_pattern`.
+      let mut inferred_name: Option<&str> = None;
       {
         let elem_pat = self.get_pat(body, elem.pat)?;
         match elem_pat.kind {
@@ -11057,6 +10946,7 @@ impl<'vm> HirEvaluator<'vm> {
               name,
             )?;
             target = ElemTarget::Binding(binding);
+            inferred_name = Some(binding.name());
           }
           hir_js::PatKind::AssignTarget(expr_id) => {
             let target_expr = self.get_expr(body, expr_id)?;
@@ -11171,9 +11061,16 @@ impl<'vm> HirEvaluator<'vm> {
 
       if matches!(item, Value::Undefined) {
         if let Some(default_expr) = elem.default_value {
-          item = match self.eval_expr(&mut elem_scope, body, default_expr) {
-            Ok(v) => v,
-            Err(err) => return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err),
+          item = if let Some(name) = inferred_name {
+            match self.eval_expr_named_from_string(&mut elem_scope, body, default_expr, name) {
+              Ok(v) => v,
+              Err(err) => return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err),
+            }
+          } else {
+            match self.eval_expr(&mut elem_scope, body, default_expr) {
+              Ok(v) => v,
+              Err(err) => return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err),
+            }
           };
         }
       }
@@ -11187,7 +11084,6 @@ impl<'vm> HirEvaluator<'vm> {
 
       let res = match target {
         ElemTarget::Binding(binding) => {
-          maybe_set_anonymous_function_name(&mut elem_scope, item, binding.name())?;
           self.env.set_resolved_binding(
             self.vm,
             &mut *self.host,
@@ -11452,7 +11348,6 @@ impl<'vm> HirEvaluator<'vm> {
     let assign_res = match rest_target {
       RestTarget::Binding(binding) => {
         let rest_value = Value::Object(rest_arr);
-        maybe_set_anonymous_function_name(scope, rest_value, binding.name())?;
         self.env.set_resolved_binding(
           self.vm,
           &mut *self.host,
@@ -11898,6 +11793,33 @@ impl<'vm> HirEvaluator<'vm> {
         scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, v)
       }
     }
+  }
+
+  fn eval_expr_named_from_string(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    expr_id: hir_js::ExprId,
+    name: &str,
+  ) -> Result<Value, VmError> {
+    // Avoid allocating a `PropertyKey` (and therefore a new string) for expressions that cannot
+    // participate in `NamedEvaluation`.
+    let is_anonymous_function_def = {
+      let expr = self.get_expr(body, expr_id)?;
+      match &expr.kind {
+        hir_js::ExprKind::FunctionExpr { name, is_arrow, .. } => *is_arrow || name.is_none(),
+        hir_js::ExprKind::ClassExpr { name, .. } => name.is_none(),
+        _ => false,
+      }
+    };
+    if !is_anonymous_function_def {
+      return self.eval_expr(scope, body, expr_id);
+    }
+
+    let mut name_scope = scope.reborrow();
+    let name_s = name_scope.alloc_string(name)?;
+    let key = PropertyKey::from_string(name_s);
+    self.eval_expr_named(&mut name_scope, body, expr_id, key)
   }
 
   /// ECMA-262-ish `NamedEvaluation` helper used by object literal property evaluation.
@@ -19181,11 +19103,6 @@ impl ForTripleAwaitState {
                 evaluator.put_value_to_assignment_reference(&mut assign_scope, &pending.reference, out)?;
               } else {
                 assign_scope.push_root(resumed_value)?;
-                evaluator.maybe_set_anonymous_function_name_for_assignment(
-                  &mut assign_scope,
-                  &pending.reference,
-                  resumed_value,
-                )?;
                 evaluator.put_value_to_assignment_reference(
                   &mut assign_scope,
                   &pending.reference,
@@ -19632,11 +19549,6 @@ impl ForTripleAwaitState {
                 evaluator.put_value_to_assignment_reference(&mut assign_scope, &pending.reference, out)?;
               } else {
                 assign_scope.push_root(resumed_value)?;
-                evaluator.maybe_set_anonymous_function_name_for_assignment(
-                  &mut assign_scope,
-                  &pending.reference,
-                  resumed_value,
-                )?;
                 evaluator.put_value_to_assignment_reference(
                   &mut assign_scope,
                   &pending.reference,
@@ -19855,7 +19767,6 @@ impl AsyncDestructuringAssignState {
           // Root the pending assignment reference components across `PutValue`.
           evaluator.root_assignment_reference(&mut assign_scope, &target)?;
           assign_scope.push_root(resumed)?;
-          evaluator.maybe_set_anonymous_function_name_for_assignment(&mut assign_scope, &target, resumed)?;
           evaluator.put_value_to_assignment_reference(&mut assign_scope, &target, resumed)?;
           if let Some(root) = self.pending_base_root.take() {
             assign_scope.heap_mut().remove_root(root);
@@ -20049,7 +19960,6 @@ impl AsyncDestructuringAssignState {
 
     // Assign the extracted value to the pre-resolved reference.
     scope.push_root(prop_value)?;
-    evaluator.maybe_set_anonymous_function_name_for_assignment(scope, &reference, prop_value)?;
     evaluator.put_value_to_assignment_reference(scope, &reference, prop_value)?;
     Ok(AsyncDestructuringAssignPoll::Complete)
   }
@@ -22218,11 +22128,6 @@ impl HirAsyncState {
                 evaluator.put_value_to_assignment_reference(&mut assign_scope, &pending.reference, out)?;
               } else {
                 assign_scope.push_root(resumed_value)?;
-                evaluator.maybe_set_anonymous_function_name_for_assignment(
-                  &mut assign_scope,
-                  &pending.reference,
-                  resumed_value,
-                )?;
                 evaluator.put_value_to_assignment_reference(
                   &mut assign_scope,
                   &pending.reference,
@@ -31633,19 +31538,8 @@ pub(crate) fn hir_async_resume_continuation(
             // Simple assignment: assign the resumed value directly.
             {
               let mut assign_scope = scope.reborrow();
-              // Root the resumed value across anonymous function naming + PutValue operations.
+              // Root the resumed value across `PutValue`, which can allocate and invoke user code.
               assign_scope.push_root(resumed)?;
-              if let Err(err) =
-                evaluator.maybe_set_anonymous_function_name_for_assignment(&mut assign_scope, &reference, resumed)
-              {
-                return Err(finalize_throw_with_stack_at_source_offset(
-                  &*evaluator.vm,
-                  &mut assign_scope,
-                  source.as_ref(),
-                  stmt_offset,
-                  err,
-                ));
-              }
               if let Err(err) = evaluator.put_value_to_assignment_reference(&mut assign_scope, &reference, resumed) {
                 return Err(finalize_throw_with_stack_at_source_offset(
                   &*evaluator.vm,

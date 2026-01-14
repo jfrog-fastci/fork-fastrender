@@ -1,10 +1,6 @@
 use crate::bigint::JsBigInt;
 use crate::async_generator::{AsyncYieldStar, YieldStarStep};
-use crate::destructure::{
-  bind_assignment_target, bind_pattern, is_anonymous_function_definition,
-  maybe_set_anonymous_function_name, maybe_set_anonymous_function_name_for_property_key,
-  BindingKind,
-};
+use crate::destructure::{bind_assignment_target, bind_pattern, BindingKind};
 use crate::error_object::new_error;
 use crate::fallible_alloc::{arc_try_new_vm, box_try_new_vm};
 use crate::for_in::ForInEnumerator;
@@ -84,7 +80,13 @@ fn inferred_name_for_destructuring_default<'a>(
 ) -> Option<&'a str> {
   if matches!(kind, BindingKind::Assignment) {
     match &*target.stx {
-      Pat::Id(id) => Some(id.stx.name.as_str()),
+      Pat::Id(id) => {
+        if id.assoc.get::<ParenthesizedExpr>().is_some() {
+          None
+        } else {
+          Some(id.stx.name.as_str())
+        }
+      }
       Pat::AssignTarget(target) => {
         if is_identifier_ref(target) {
           match &*target.stx {
@@ -104,27 +106,6 @@ fn inferred_name_for_destructuring_default<'a>(
       _ => None,
     }
   }
-}
-
-fn maybe_set_name_for_destructuring_default(
-  scope: &mut Scope<'_>,
-  kind: BindingKind,
-  target: &Node<Pat>,
-  default_expr: &Node<Expr>,
-  value: Value,
-) -> Result<(), VmError> {
-  // Name inference only applies when the initializer expression is *syntactically* an anonymous
-  // function definition (not based on the runtime value).
-  if !is_anonymous_function_definition(default_expr) {
-    return Ok(());
-  }
-
-  let inferred_name = inferred_name_for_destructuring_default(kind, target);
-
-  if let Some(inferred_name) = inferred_name {
-    maybe_set_anonymous_function_name(scope, value, inferred_name)?;
-  }
-  Ok(())
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -245,27 +226,10 @@ fn gen_eval_destructuring_default_expr(
   target: &Node<Pat>,
   default_expr: &Node<Expr>,
 ) -> Result<GenEval<Completion>, VmError> {
-  // Generator-mode `NamedEvaluation` for anonymous class defaults that can `yield`.
-  //
-  // When a destructuring default expression is an anonymous `class` and can suspend (e.g.
-  // `extends (yield ...)`), the inferred name must be applied *during* class construction so that
-  // static blocks observe it (`static { this.name }`).
-  if let Expr::Class(class_expr) = default_expr.stx.as_ref() {
-    if class_expr.stx.name.is_none() && expr_contains_yield(default_expr) {
-      if let Some(inferred_name) = inferred_name_for_destructuring_default(kind, target) {
-        // Root the inferred name string across class evaluation. If evaluation suspends, the name
-        // will also be captured in continuation frames, which are traced by the GC.
-        let name_s = scope.alloc_string(inferred_name)?;
-        scope.push_root(Value::String(name_s))?;
-
-        // `gen_eval_expr` charges one tick at expression entry. Preserve that behaviour since we
-        // bypass it for class `NamedEvaluation`.
-        evaluator.tick()?;
-        return gen_eval_class_expr_named(evaluator, scope, class_expr, PropertyKey::String(name_s));
-      }
-    }
+  match inferred_name_for_destructuring_default(kind, target) {
+    Some(name) => gen_eval_expr_named(evaluator, scope, default_expr, name),
+    None => gen_eval_expr(evaluator, scope, default_expr),
   }
-  gen_eval_expr(evaluator, scope, default_expr)
 }
 
 /// A `throw` completion value paired with a captured stack trace.
@@ -9371,12 +9335,14 @@ impl<'a> Evaluator<'a> {
             }
             continue;
           };
-          let value = self.eval_expr(scope, init)?;
-          if let Pat::Id(id) = &*declarator.pattern.stx.pat.stx {
-            if is_anonymous_function_definition(init) {
-              maybe_set_anonymous_function_name(scope, value, id.stx.name.as_str())?;
+          let value = match &*declarator.pattern.stx.pat.stx {
+            Pat::Id(id) => {
+              let name_s = scope.alloc_string(&id.stx.name)?;
+              let key = PropertyKey::from_string(name_s);
+              self.eval_expr_named(scope, init, key)?
             }
-          }
+            _ => self.eval_expr(scope, init)?,
+          };
           bind_pattern(
             self.vm,
             &mut *self.host,
@@ -9398,15 +9364,14 @@ impl<'a> Evaluator<'a> {
       VarDeclMode::Let => {
         for declarator in &decl.declarators {
           let value = match &declarator.initializer {
-            Some(init) => {
-              let value = self.eval_expr(scope, init)?;
-              if let Pat::Id(id) = &*declarator.pattern.stx.pat.stx {
-                if is_anonymous_function_definition(init) {
-                  maybe_set_anonymous_function_name(scope, value, id.stx.name.as_str())?;
-                }
+            Some(init) => match &*declarator.pattern.stx.pat.stx {
+              Pat::Id(id) => {
+                let name_s = scope.alloc_string(&id.stx.name)?;
+                let key = PropertyKey::from_string(name_s);
+                self.eval_expr_named(scope, init, key)?
               }
-              value
-            }
+              _ => self.eval_expr(scope, init)?,
+            },
             None => {
               self.tick()?;
               // Destructuring declarations require an initializer (early error in real JS).
@@ -9445,12 +9410,14 @@ impl<'a> Evaluator<'a> {
               "Missing initializer in const declaration",
             ));
           };
-          let value = self.eval_expr(scope, init)?;
-          if let Pat::Id(id) = &*declarator.pattern.stx.pat.stx {
-            if is_anonymous_function_definition(init) {
-              maybe_set_anonymous_function_name(scope, value, id.stx.name.as_str())?;
+          let value = match &*declarator.pattern.stx.pat.stx {
+            Pat::Id(id) => {
+              let name_s = scope.alloc_string(&id.stx.name)?;
+              let key = PropertyKey::from_string(name_s);
+              self.eval_expr_named(scope, init, key)?
             }
-          }
+            _ => self.eval_expr(scope, init)?,
+          };
 
           bind_pattern(
             self.vm,
@@ -9481,12 +9448,14 @@ impl<'a> Evaluator<'a> {
             };
             return Err(syntax_error(declarator.pattern.loc, message));
           };
-          let value = self.eval_expr(scope, init)?;
-          if let Pat::Id(id) = &*declarator.pattern.stx.pat.stx {
-            if is_anonymous_function_definition(init) {
-              maybe_set_anonymous_function_name(scope, value, id.stx.name.as_str())?;
+          let value = match &*declarator.pattern.stx.pat.stx {
+            Pat::Id(id) => {
+              let name_s = scope.alloc_string(&id.stx.name)?;
+              let key = PropertyKey::from_string(name_s);
+              self.eval_expr_named(scope, init, key)?
             }
-          }
+            _ => self.eval_expr(scope, init)?,
+          };
 
           bind_pattern(
             self.vm,
@@ -13314,43 +13283,6 @@ impl<'a> Evaluator<'a> {
     }
   }
 
-  fn maybe_set_anonymous_function_name_for_assignment(
-    &mut self,
-    scope: &mut Scope<'_>,
-    left: &Node<Expr>,
-    right: &Node<Expr>,
-    reference: &Reference<'_>,
-    value: Value,
-  ) -> Result<(), VmError> {
-    // Name inference for assignment and logical assignment operators.
-    //
-    // This is based on the *assignment target reference* (binding name / property key), not on the
-    // RHS expression syntax. This allows assignments like:
-    //   `x &&= await Promise.resolve(function() {})`
-    // to infer `"x"` after the await completes.
-    //
-    // For binding references, `parse-js` preserves parentheses, and name inference must not apply
-    // to parenthesized identifier targets like `(x) = ...` (ECMA-262 `IsIdentifierRef`).
-    //
-    // Private references do not participate in name inference.
-    let inferred_key = match *reference {
-      Reference::Binding(name) => {
-        if !is_identifier_ref(left) {
-          return Ok(());
-        }
-        let name_s = scope.alloc_string(name)?;
-        PropertyKey::from_string(name_s)
-      }
-      Reference::Property { key, .. } | Reference::SuperProperty { key, .. } => key,
-      Reference::Private { .. } => return Ok(()),
-    };
-
-    // Root `right` so the signature stays stable with older call sites; the value-based inference
-    // implemented here does not consult the RHS syntax.
-    let _ = right;
-    maybe_set_anonymous_function_name_for_property_key(scope, value, inferred_key)
-  }
-
   fn eval_func_expr(
     &mut self,
     scope: &mut Scope<'_>,
@@ -16047,15 +15979,15 @@ impl<'a> Evaluator<'a> {
             let reference = self.eval_reference(scope, &expr.left)?;
             let mut rhs_scope = scope.reborrow();
             self.root_reference(&mut rhs_scope, &reference)?;
-            let value = self.eval_expr(&mut rhs_scope, &expr.right)?;
+            let value = match reference {
+              Reference::Binding(name) if is_identifier_ref(&expr.left) => {
+                let name_s = rhs_scope.alloc_string(name)?;
+                let key = PropertyKey::from_string(name_s);
+                self.eval_expr_named(&mut rhs_scope, &expr.right, key)?
+              }
+              _ => self.eval_expr(&mut rhs_scope, &expr.right)?,
+            };
             rhs_scope.push_root(value)?;
-            self.maybe_set_anonymous_function_name_for_assignment(
-              &mut rhs_scope,
-              &expr.left,
-              &expr.right,
-              &reference,
-              value,
-            )?;
             self.put_value_to_reference(&mut rhs_scope, &reference, value)?;
             Ok(value)
           }
@@ -16408,23 +16340,17 @@ impl<'a> Evaluator<'a> {
 
           // Root `left` across evaluation of the RHS in case it allocates and triggers GC.
           op_scope.push_root(left)?;
-          let right = self.eval_expr(&mut op_scope, &expr.right)?;
+          let right = match reference {
+            Reference::Binding(name) if is_identifier_ref(&expr.left) => {
+              let name_s = op_scope.alloc_string(name)?;
+              let key = PropertyKey::from_string(name_s);
+              self.eval_expr_named(&mut op_scope, &expr.right, key)?
+            }
+            _ => self.eval_expr(&mut op_scope, &expr.right)?,
+          };
 
-          // Root `right` across anonymous function name inference + `PutValue`.
+          // Root `right` across `PutValue`.
           op_scope.push_root(right)?;
-          // Logical assignment operators (`&&=`, `||=`, `??=`) only participate in anonymous
-          // function name inference for identifier references (binding targets), not property
-          // references. This matches the spec's `IsIdentifierRef` gating and avoids attributing
-          // names like `o.p ||= function () {}` => `"p"`.
-          if matches!(reference, Reference::Binding(_)) {
-            self.maybe_set_anonymous_function_name_for_assignment(
-              &mut op_scope,
-              &expr.left,
-              &expr.right,
-              &reference,
-              right,
-            )?;
-          }
           self.put_value_to_reference(&mut op_scope, &reference, right)?;
           Ok(right)
         }
@@ -23028,14 +22954,12 @@ fn async_eval_var_decl(
       }
     };
 
-    match async_eval_expr(evaluator, scope, init) {
+    let init_eval = match &*declarator.pattern.stx.pat.stx {
+      Pat::Id(id) => async_eval_expr_named(evaluator, scope, init, id.stx.name.as_str()),
+      _ => async_eval_expr(evaluator, scope, init),
+    };
+    match init_eval {
       Ok(AsyncEval::Complete(v)) => {
-        if let Pat::Id(id) = &*declarator.pattern.stx.pat.stx {
-          if is_anonymous_function_definition(init) {
-            maybe_set_anonymous_function_name(scope, v, id.stx.name.as_str())
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))?;
-          }
-        }
         match async_bind_var_declarator_value(evaluator, scope, decl, idx, v)? {
           AsyncEval::Complete(()) => {}
           AsyncEval::Suspend(mut suspend) => {
@@ -23509,7 +23433,11 @@ fn async_bind_object_pattern_from(
 
     if matches!(prop_value, Value::Undefined) {
       if let Some(default_expr) = &prop.default_value {
-        let default_eval = match async_eval_expr(evaluator, &mut scope, default_expr) {
+        let default_eval = match inferred_name_for_destructuring_default(kind, &prop.target) {
+          Some(name) => async_eval_expr_named(evaluator, &mut scope, default_expr, name),
+          None => async_eval_expr(evaluator, &mut scope, default_expr),
+        };
+        let default_eval = match default_eval {
           Ok(v) => v,
           Err(err) => {
             cleanup(&mut scope, &mut excluded);
@@ -23835,7 +23763,11 @@ fn async_bind_array_pattern_from(
 
     if matches!(item, Value::Undefined) {
       if let Some(default_expr) = &elem.default_value {
-        let default_eval = match async_eval_expr(evaluator, scope, default_expr) {
+        let default_eval = match inferred_name_for_destructuring_default(kind, &elem.target) {
+          Some(name) => async_eval_expr_named(evaluator, scope, default_expr, name),
+          None => async_eval_expr(evaluator, scope, default_expr),
+        };
+        let default_eval = match default_eval {
           Ok(v) => v,
           Err(err) => {
             cleanup(scope);
@@ -24157,6 +24089,52 @@ fn async_eval_class_expr_named(
     &expr.stx.members,
     expr.stx.extends.as_ref(),
   )
+}
+
+fn async_eval_expr_named(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &Node<Expr>,
+  name: &str,
+) -> Result<AsyncEval<Value>, VmError> {
+  // This is intentionally syntactic (based on the expression kind), not dynamic (based on the
+  // runtime value), so e.g. `x = someFunc` does not rename `someFunc` even if its current `.name`
+  // is empty.
+  let is_anonymous_function_def = match &*expr.stx {
+    Expr::Func(func) => func.stx.name.is_none(),
+    Expr::ArrowFunc(_) => true,
+    Expr::Class(class) => class.stx.name.is_none(),
+    _ => false,
+  };
+  if !is_anonymous_function_def {
+    return async_eval_expr(evaluator, scope, expr);
+  }
+
+  // If the expression can suspend on `await`, we must use the async evaluator so anonymous *class*
+  // expressions receive their inferred name during class construction.
+  if let Expr::Class(class_expr) = &*expr.stx {
+    if class_expr.stx.name.is_none() && expr_contains_await(expr) {
+      // `async_eval_expr` would have charged one tick at expression entry; preserve that budget
+      // behaviour when we bypass it for class `NamedEvaluation`.
+      evaluator.tick()?;
+      let name_s = scope.alloc_string(name)?;
+      return async_eval_class_expr_named(
+        evaluator,
+        scope,
+        class_expr,
+        PropertyKey::from_string(name_s),
+      );
+    }
+  }
+
+  // No `await` in the expression: use the synchronous `NamedEvaluation` helper.
+  let mut name_scope = scope.reborrow();
+  let name_s = name_scope.alloc_string(name)?;
+  let key = PropertyKey::from_string(name_s);
+  match evaluator.eval_expr_named(&mut name_scope, expr, key) {
+    Ok(v) => Ok(AsyncEval::Complete(v)),
+    Err(err) => Err(coerce_error_to_throw_for_async(evaluator.vm, &mut name_scope, err)),
+  }
 }
 
 fn async_eval_class_expr(
@@ -30648,18 +30626,15 @@ fn async_eval_assignment_to_binding(
   let reference = Reference::Binding(name);
   let mut rhs_scope = scope.reborrow();
 
-  match async_eval_expr(evaluator, &mut rhs_scope, &expr.right)? {
+  let rhs_eval = if is_identifier_ref(&expr.left) {
+    async_eval_expr_named(evaluator, &mut rhs_scope, &expr.right, name)
+  } else {
+    async_eval_expr(evaluator, &mut rhs_scope, &expr.right)
+  };
+
+  match rhs_eval? {
     AsyncEval::Complete(value) => {
       rhs_scope.push_root(value)?;
-      evaluator
-        .maybe_set_anonymous_function_name_for_assignment(
-          &mut rhs_scope,
-          &expr.left,
-          &expr.right,
-          &reference,
-          value,
-        )
-        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut rhs_scope, err))?;
       evaluator
         .put_value_to_reference(&mut rhs_scope, &reference, value)
         .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut rhs_scope, err))?;
@@ -30942,18 +30917,16 @@ fn async_eval_assignment_apply_reference(
       let mut rhs_scope = scope.reborrow();
       evaluator.root_reference(&mut rhs_scope, &reference)?;
 
-      match async_eval_expr(evaluator, &mut rhs_scope, &expr.right)? {
+      let rhs_eval = match reference {
+        Reference::Binding(name) if is_identifier_ref(&expr.left) => {
+          async_eval_expr_named(evaluator, &mut rhs_scope, &expr.right, name)
+        }
+        _ => async_eval_expr(evaluator, &mut rhs_scope, &expr.right),
+      };
+
+      match rhs_eval? {
         AsyncEval::Complete(value) => {
           rhs_scope.push_root(value)?;
-          evaluator
-            .maybe_set_anonymous_function_name_for_assignment(
-              &mut rhs_scope,
-              &expr.left,
-              &expr.right,
-              &reference,
-              value,
-            )
-            .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut rhs_scope, err))?;
           evaluator
             .put_value_to_reference(&mut rhs_scope, &reference, value)
             .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut rhs_scope, err))?;
@@ -31338,19 +31311,16 @@ fn async_eval_assignment_apply_reference(
       // Root `left` across evaluation of the RHS in case it allocates and triggers GC.
       op_scope.push_root(left)?;
 
-      match async_eval_expr(evaluator, &mut op_scope, &expr.right)? {
+      let rhs_eval = match reference {
+        Reference::Binding(name) if is_identifier_ref(&expr.left) => {
+          async_eval_expr_named(evaluator, &mut op_scope, &expr.right, name)
+        }
+        _ => async_eval_expr(evaluator, &mut op_scope, &expr.right),
+      };
+      match rhs_eval? {
         AsyncEval::Complete(value) => {
-          // Root `value` across anonymous function name inference + `PutValue`.
+          // Root `value` across `PutValue`.
           op_scope.push_root(value)?;
-          evaluator
-            .maybe_set_anonymous_function_name_for_assignment(
-              &mut op_scope,
-              &expr.left,
-              &expr.right,
-              &reference,
-              value,
-            )
-            .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
           evaluator
             .put_value_to_reference(&mut op_scope, &reference, value)
             .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
@@ -37399,15 +37369,6 @@ fn async_resume_from_frames(
                 let mut put_scope = scope.reborrow();
                 put_scope.push_root(value)?;
                 evaluator
-                  .maybe_set_anonymous_function_name_for_assignment(
-                    &mut put_scope,
-                    &expr.left,
-                    &expr.right,
-                    &reference,
-                    value,
-                  )
-                  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut put_scope, err))?;
-                evaluator
                   .put_value_to_reference(&mut put_scope, &reference, value)
                   .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut put_scope, err))
               })();
@@ -38064,15 +38025,6 @@ fn async_resume_from_frames(
               .ok_or(VmError::InvariantViolation(
                 "async var decl continuation out of bounds",
               ))?;
-            let init = declarator.initializer.as_ref().ok_or(VmError::InvariantViolation(
-              "async var decl continuation missing initializer",
-            ))?;
-            if let Pat::Id(id) = &*declarator.pattern.stx.pat.stx {
-              if is_anonymous_function_definition(init) {
-                maybe_set_anonymous_function_name(scope, v, id.stx.name.as_str())
-                  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))?;
-              }
-            }
             match async_bind_var_declarator_value(evaluator, scope, decl, next_declarator_index, v)
             {
               Ok(AsyncEval::Complete(())) => {}
@@ -38273,7 +38225,12 @@ fn async_resume_from_frames(
 
             if matches!(prop_value, Value::Undefined) {
               if let Some(default_expr) = &prop.default_value {
-                match async_eval_expr(evaluator, &mut scope, default_expr) {
+                let default_eval =
+                  match inferred_name_for_destructuring_default(kind, &prop.target) {
+                    Some(name) => async_eval_expr_named(evaluator, &mut scope, default_expr, name),
+                    None => async_eval_expr(evaluator, &mut scope, default_expr),
+                  };
+                match default_eval {
                   Ok(AsyncEval::Complete(v)) => prop_value = v,
                   Ok(AsyncEval::Suspend(mut suspend)) => {
                     if let Err(_) = suspend.frames.try_reserve(1) {
@@ -41251,37 +41208,9 @@ fn gen_eval_var_decl(
       }
     };
 
-    // Generator-mode `NamedEvaluation` for anonymous class initializers that can `yield`.
-    //
-    // When the initializer is an anonymous `class` expression and can suspend (e.g. `extends (yield
-    // ...)` or computed member keys containing `yield`), the inferred name must be applied *during*
-    // class construction so that:
-    // - `static { ...this.name... }` sees the inferred name, and
-    // - `static name() {}` can override the constructor's initial `"name"` property.
-    //
-    // For expressions that do not contain `yield`, the generator evaluator can use the synchronous
-    // `eval_expr_named` helper, so this special-casing is only needed for yield-capable class
-    // initializers.
-    let init_eval = if expr_contains_yield(init) {
-      match &*declarator.pattern.stx.pat.stx {
-        Pat::Id(id) => match init.stx.as_ref() {
-          Expr::Class(class_expr) if class_expr.stx.name.is_none() => {
-            // Root the inferred binding-name key *before* class evaluation so it survives any
-            // allocations (and potential GC) performed while unwinding generator suspension.
-            let name_s = scope.alloc_string(id.stx.name.as_str())?;
-            scope.push_root(Value::String(name_s))?;
-
-            // `gen_eval_expr` would have charged one tick at expression entry; preserve that budget
-            // behaviour when we bypass it for class `NamedEvaluation`.
-            evaluator.tick()?;
-            gen_eval_class_expr_named(evaluator, scope, class_expr, PropertyKey::String(name_s))?
-          }
-          _ => gen_eval_expr(evaluator, scope, init)?,
-        },
-        _ => gen_eval_expr(evaluator, scope, init)?,
-      }
-    } else {
-      gen_eval_expr(evaluator, scope, init)?
+    let init_eval = match &*declarator.pattern.stx.pat.stx {
+      Pat::Id(id) => gen_eval_expr_named(evaluator, scope, init, id.stx.name.as_str())?,
+      _ => gen_eval_expr(evaluator, scope, init)?,
     };
 
     match init_eval {
@@ -45144,6 +45073,81 @@ fn gen_eval_chain_base(
   gen_eval_expr_chain(evaluator, scope, expr)
 }
 
+fn gen_eval_expr_named(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &Node<Expr>,
+  name: &str,
+) -> Result<GenEval<Completion>, VmError> {
+  // This is intentionally syntactic (based on the expression kind), not dynamic (based on the
+  // runtime value), so e.g. `x = someFunc` does not rename `someFunc` even if its current `.name`
+  // is empty.
+  let is_anonymous_function_def = match &*expr.stx {
+    Expr::Func(func) => func.stx.name.is_none(),
+    Expr::ArrowFunc(_) => true,
+    Expr::Class(class) => class.stx.name.is_none(),
+    _ => false,
+  };
+  if !is_anonymous_function_def {
+    return gen_eval_expr(evaluator, scope, expr);
+  }
+
+  // If the expression can suspend on `yield`, we must use the generator evaluator so anonymous
+  // *class* expressions receive their inferred name during class construction.
+  if let Expr::Class(class_expr) = &*expr.stx {
+    if class_expr.stx.name.is_none() && expr_contains_yield(expr) {
+      // Root the inferred binding-name key *before* class evaluation so it survives any allocations
+      // (and potential GC) performed while unwinding generator suspension.
+      let mut name_scope = scope.reborrow();
+      let name_s = name_scope.alloc_string(name)?;
+      name_scope.push_root(Value::String(name_s))?;
+
+      // `gen_eval_expr` would have charged one tick at expression entry; preserve that budget
+      // behaviour when we bypass it for class `NamedEvaluation`.
+      evaluator.tick()?;
+      let res =
+        gen_eval_class_expr_named(evaluator, &mut name_scope, class_expr, PropertyKey::String(name_s));
+
+      return match res {
+        Ok(GenEval::Complete(c)) => Ok(GenEval::Complete(c)),
+        Ok(GenEval::Suspend(suspend)) => {
+          // Keep `name_s` alive until this suspension is stored in the generator object; GC does not
+          // trace Rust locals during unwinding.
+          drop(name_scope);
+          scope.push_root(Value::String(name_s))?;
+          Ok(GenEval::Suspend(suspend))
+        }
+        Err(err) => {
+          let err = coerce_error_to_throw_for_async(evaluator.vm, &mut name_scope, err);
+          match err {
+            VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
+              Ok(GenEval::Complete(completion_from_expr_result(Err(err))?))
+            }
+            other => Err(other),
+          }
+        }
+      };
+    }
+  }
+
+  // No `yield` in the expression: use the synchronous `NamedEvaluation` helper.
+  let mut name_scope = scope.reborrow();
+  let name_s = name_scope.alloc_string(name)?;
+  let key = PropertyKey::from_string(name_s);
+  match evaluator.eval_expr_named(&mut name_scope, expr, key) {
+    Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
+    Err(err) => {
+      let err = coerce_error_to_throw_for_async(evaluator.vm, &mut name_scope, err);
+      match err {
+        VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
+          Ok(GenEval::Complete(completion_from_expr_result(Err(err))?))
+        }
+        other => Err(other),
+      }
+    }
+  }
+}
+
 fn gen_eval_expr(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -47810,25 +47814,9 @@ fn gen_eval_assignment_to_binding(
     "assignment-to-binding target should not contain yield"
   );
 
-  // Generator-mode `NamedEvaluation` for anonymous class RHS expressions that can `yield`.
-  //
-  // See the comment in `gen_eval_var_decl` for why anonymous class expressions require special
-  // handling (static blocks and `static name() {}` override behaviour).
-  let rhs_eval = if expr_contains_yield(&expr.right) {
-    match expr.right.stx.as_ref() {
-      Expr::Class(class_expr) if class_expr.stx.name.is_none() => {
-        // Root the inferred binding-name key *before* class evaluation so it survives any
-        // allocations (and potential GC) performed while unwinding generator suspension.
-        let name_s = scope.alloc_string(name.as_str())?;
-        scope.push_root(Value::String(name_s))?;
-
-        // `gen_eval_expr` would have charged one tick at expression entry; preserve that budget
-        // behaviour when we bypass it for class `NamedEvaluation`.
-        evaluator.tick()?;
-        gen_eval_class_expr_named(evaluator, scope, class_expr, PropertyKey::String(name_s))?
-      }
-      _ => gen_eval_expr(evaluator, scope, &expr.right)?,
-    }
+  // Parenthesized IdentifierReferences are not eligible for name inference.
+  let rhs_eval = if is_identifier_ref(&expr.left) {
+    gen_eval_expr_named(evaluator, scope, &expr.right, name.as_str())?
   } else {
     gen_eval_expr(evaluator, scope, &expr.right)?
   };
@@ -47841,13 +47829,6 @@ fn gen_eval_assignment_to_binding(
 
         let mut rhs_scope = scope.reborrow();
         rhs_scope.push_root(value)?;
-        evaluator.maybe_set_anonymous_function_name_for_assignment(
-          &mut rhs_scope,
-          &expr.left,
-          &expr.right,
-          &reference,
-          value,
-        )?;
         evaluator.put_value_to_reference(&mut rhs_scope, &reference, value)?;
         Completion::normal(value)
       }
@@ -48250,69 +48231,21 @@ fn gen_eval_assignment_apply_reference(
 ) -> Result<GenEval<Completion>, VmError> {
   match expr.operator {
     OperatorName::Assignment => {
-      // Pre-root the inferred assignment name for anonymous class evaluation.
-      //
-      // This is intentionally done on `scope` (not a nested `rhs_scope`) so it survives `rhs_scope`
-      // being dropped during suspension unwinding.
-      let mut inferred_key: Option<PropertyKey> = None;
-      if expr_contains_yield(&expr.right) {
-        if let Expr::Class(class_expr) = expr.right.stx.as_ref() {
-          if class_expr.stx.name.is_none() {
-            inferred_key = match reference {
-              Reference::Binding(name) => {
-                let name_s = scope.alloc_string(name)?;
-                scope.push_root(Value::String(name_s))?;
-                Some(PropertyKey::String(name_s))
-              }
-              Reference::Property { key, .. } => Some(key),
-              Reference::SuperProperty { key, .. } => Some(key),
-              Reference::Private { .. } => None,
-            };
-          }
-        }
-      }
-
       let mut rhs_scope = scope.reborrow();
       evaluator.root_reference(&mut rhs_scope, &reference)?;
 
-      // Generator-mode `NamedEvaluation` for anonymous class RHS expressions that can `yield`.
-      //
-      // In assignment expressions, the inferred name comes from the assignment target reference
-      // (binding name or property key). For anonymous classes, the inferred name must be applied
-      // during class construction, so if the RHS can suspend we must bypass `gen_eval_expr` and
-      // evaluate the class with the inferred name.
-      let rhs_eval = if expr_contains_yield(&expr.right) {
-        match expr.right.stx.as_ref() {
-          Expr::Class(class_expr) if class_expr.stx.name.is_none() => {
-            if let Some(name_key) = inferred_key {
-              // `gen_eval_expr` would have charged one tick at expression entry; preserve that
-              // budget behaviour when we bypass it for class `NamedEvaluation`.
-              evaluator.tick()?;
-              gen_eval_class_expr_named(evaluator, &mut rhs_scope, class_expr, name_key)?
-            } else {
-              gen_eval_expr(evaluator, &mut rhs_scope, &expr.right)?
-            }
-          }
-          _ => gen_eval_expr(evaluator, &mut rhs_scope, &expr.right)?,
+      let rhs_eval = match reference {
+        Reference::Binding(name) if is_identifier_ref(&expr.left) => {
+          gen_eval_expr_named(evaluator, &mut rhs_scope, &expr.right, name)?
         }
-      } else {
-        gen_eval_expr(evaluator, &mut rhs_scope, &expr.right)?
+        _ => gen_eval_expr(evaluator, &mut rhs_scope, &expr.right)?,
       };
- 
+  
       match rhs_eval {
         GenEval::Complete(c) => match c {
           Completion::Normal(v) => {
             let value = v.unwrap_or(Value::Undefined);
             rhs_scope.push_root(value)?;
-            evaluator
-              .maybe_set_anonymous_function_name_for_assignment(
-                &mut rhs_scope,
-                &expr.left,
-                &expr.right,
-                &reference,
-                value,
-              )
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut rhs_scope, err))?;
             evaluator
               .put_value_to_reference(&mut rhs_scope, &reference, value)
               .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut rhs_scope, err))?;
@@ -48519,46 +48452,14 @@ fn gen_eval_assignment_apply_reference(
       // an unrooted GC handle across any subsequent allocations.
       let _ = left;
 
-      // Pre-root the inferred assignment name for anonymous class evaluation.
-      //
-      // For binding references, we allocate the inferred-name key on `scope` so it survives any
-      // nested rooting scopes being dropped during suspension unwinding.
-      let mut inferred_key: Option<PropertyKey> = None;
-      if expr_contains_yield(&expr.right) {
-        if let Expr::Class(class_expr) = expr.right.stx.as_ref() {
-          if class_expr.stx.name.is_none() {
-            inferred_key = match reference {
-              Reference::Binding(name) => {
-                let name_s = scope.alloc_string(name)?;
-                scope.push_root(Value::String(name_s))?;
-                Some(PropertyKey::String(name_s))
-              }
-              Reference::Property { key, .. } => Some(key),
-              Reference::SuperProperty { key, .. } => Some(key),
-              Reference::Private { .. } => None,
-            };
-          }
-        }
-      }
-
       let mut op_scope = scope.reborrow();
       evaluator.root_reference(&mut op_scope, &reference)?;
 
-      // Generator-mode `NamedEvaluation` for anonymous class RHS expressions that can `yield`.
-      let rhs_eval = if expr_contains_yield(&expr.right) {
-        match expr.right.stx.as_ref() {
-          Expr::Class(class_expr) if class_expr.stx.name.is_none() => {
-            if let Some(name_key) = inferred_key {
-              evaluator.tick()?;
-              gen_eval_class_expr_named(evaluator, &mut op_scope, class_expr, name_key)?
-            } else {
-              gen_eval_expr(evaluator, &mut op_scope, &expr.right)?
-            }
-          }
-          _ => gen_eval_expr(evaluator, &mut op_scope, &expr.right)?,
+      let rhs_eval = match reference {
+        Reference::Binding(name) if is_identifier_ref(&expr.left) => {
+          gen_eval_expr_named(evaluator, &mut op_scope, &expr.right, name)?
         }
-      } else {
-        gen_eval_expr(evaluator, &mut op_scope, &expr.right)?
+        _ => gen_eval_expr(evaluator, &mut op_scope, &expr.right)?,
       };
 
       match rhs_eval {
@@ -48566,15 +48467,6 @@ fn gen_eval_assignment_apply_reference(
           Completion::Normal(v) => {
             let value = v.unwrap_or(Value::Undefined);
             op_scope.push_root(value)?;
-            evaluator
-              .maybe_set_anonymous_function_name_for_assignment(
-                &mut op_scope,
-                &expr.left,
-                &expr.right,
-                &reference,
-                value,
-              )
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
             evaluator
               .put_value_to_reference(&mut op_scope, &reference, value)
               .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
@@ -50960,19 +50852,6 @@ fn gen_bind_object_pattern_from(
           GenEval::Complete(c) => match c {
             Completion::Normal(v) => {
               prop_value = v.unwrap_or(Value::Undefined);
-              if let Err(err) = maybe_set_name_for_destructuring_default(
-                &mut prop_scope,
-                kind,
-                &prop.target,
-                default_expr,
-                prop_value,
-              ) {
-                return Ok(GenEval::Complete(gen_error_to_completion(
-                  evaluator,
-                  &mut prop_scope,
-                  err,
-                )?));
-              }
             }
             abrupt => return Ok(GenEval::Complete(abrupt)),
           },
@@ -51428,17 +51307,6 @@ fn gen_bind_object_pattern_prop_after_assign_target(
         GenEval::Complete(c) => match c {
           Completion::Normal(v) => {
             prop_value = v.unwrap_or(Value::Undefined);
-            if let Err(err) = maybe_set_name_for_destructuring_default(
-              &mut scope,
-              kind,
-              &prop.target,
-              default_expr,
-              prop_value,
-            ) {
-              return Ok(GenEval::Complete(gen_error_to_completion(
-                evaluator, &mut scope, err,
-              )?));
-            }
           }
           abrupt => return Ok(GenEval::Complete(abrupt)),
         },
@@ -52349,20 +52217,6 @@ fn gen_bind_array_pattern_from(
           GenEval::Complete(c) => match c {
             Completion::Normal(v) => {
               item = v.unwrap_or(Value::Undefined);
-              if let Err(err) = maybe_set_name_for_destructuring_default(
-                &mut elem_scope,
-                kind,
-                &elem.target,
-                default_expr,
-                item,
-              ) {
-                let err = evaluator.iterator_close_on_error(&mut elem_scope, &iterator_record, err);
-                return Ok(GenEval::Complete(gen_error_to_completion(
-                  evaluator,
-                  &mut elem_scope,
-                  err,
-                )?));
-              }
             }
             abrupt => {
               let completion = match evaluator.iterator_close_on_completion(
@@ -53927,16 +53781,7 @@ fn gen_resume_from_frames(
           let assign_result = {
             let mut rhs_scope = scope.reborrow();
             rhs_scope.push_root(value)?;
-            match evaluator.maybe_set_anonymous_function_name_for_assignment(
-              &mut rhs_scope,
-              &expr.left,
-              &expr.right,
-              &reference,
-              value,
-            ) {
-              Ok(()) => evaluator.put_value_to_reference(&mut rhs_scope, &reference, value),
-              Err(err) => Err(err),
-            }
+            evaluator.put_value_to_reference(&mut rhs_scope, &reference, value)
           };
 
           match assign_result {
@@ -54439,16 +54284,6 @@ fn gen_resume_from_frames(
                 GenEval::Complete(c) => match c {
                   Completion::Normal(v) => {
                     prop_value = v.unwrap_or(Value::Undefined);
-                    if let Err(err) = maybe_set_name_for_destructuring_default(
-                      &mut obj_scope,
-                      kind,
-                      &prop.target,
-                      default_expr,
-                      prop_value,
-                    ) {
-                      state = gen_error_to_completion(evaluator, &mut obj_scope, err)?;
-                      continue;
-                    }
                   }
                   abrupt => {
                     state = abrupt;
@@ -54549,19 +54384,6 @@ fn gen_resume_from_frames(
               "generator object pattern continuation out of bounds",
             ))?;
           let prop = &prop.stx;
-
-          if let Some(default_expr) = &prop.default_value {
-            if let Err(err) = maybe_set_name_for_destructuring_default(
-              scope,
-              kind,
-              &prop.target,
-              default_expr,
-              default_value,
-            ) {
-              state = gen_error_to_completion(evaluator, scope, err)?;
-              continue;
-            }
-          }
 
           if let Some(target) = assign_target {
             if let Err(err) = gen_assign_target_put_value(evaluator, scope, target, default_value) {
@@ -55393,20 +55215,6 @@ fn gen_resume_from_frames(
               "generator array pattern continuation out of bounds",
             ))?;
 
-          if let Some(default_expr) = &elem.default_value {
-            if let Err(err) = maybe_set_name_for_destructuring_default(
-              scope,
-              kind,
-              &elem.target,
-              default_expr,
-              default_value,
-            ) {
-              let err = evaluator.iterator_close_on_error(scope, &iterator_record, err);
-              state = gen_error_to_completion(evaluator, scope, err)?;
-              continue;
-            }
-          }
-
           if let Some(target) = assign_target {
             match gen_assign_target_put_value(evaluator, scope, target, default_value) {
               Ok(()) => {}
@@ -55745,15 +55553,6 @@ fn gen_resume_from_frames(
               }
             };
 
-            evaluator
-              .maybe_set_anonymous_function_name_for_assignment(
-                &mut assign_scope,
-                &expr.left,
-                &expr.right,
-                &reference,
-                value,
-              )
-              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut assign_scope, err))?;
             evaluator
               .put_value_to_reference(&mut assign_scope, &reference, value)
               .map_err(|err| {

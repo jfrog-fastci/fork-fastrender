@@ -2701,12 +2701,30 @@ fn lower_assignment_pat(
     AstExpr::Id(id) => {
       let span = ctx.to_range(expr.loc);
       let name_id = builder.intern_name(&id.stx.name);
-      builder.alloc_pat(span, PatKind::Ident(name_id))
+      let is_parenthesized =
+        expr.assoc.get::<ParenthesizedExpr>().is_some() || id.assoc.get::<ParenthesizedExpr>().is_some();
+      if is_parenthesized {
+        // Preserve parentheses so the compiled executor can implement `IsIdentifierRef` gating for
+        // anonymous-function/class name inference. `(x) = function(){}` must *not* infer `"x"`.
+        let expr_id = builder.alloc_expr(span, ExprKind::Ident(name_id));
+        builder.alloc_pat(span, PatKind::AssignTarget(expr_id))
+      } else {
+        builder.alloc_pat(span, PatKind::Ident(name_id))
+      }
     }
     AstExpr::IdPat(id) => {
       let span = ctx.to_range(expr.loc);
       let name_id = builder.intern_name(&id.stx.name);
-      builder.alloc_pat(span, PatKind::Ident(name_id))
+      let is_parenthesized =
+        expr.assoc.get::<ParenthesizedExpr>().is_some() || id.assoc.get::<ParenthesizedExpr>().is_some();
+      if is_parenthesized {
+        // `parse-js` may rewrite identifier assignment targets into `Expr::IdPat` while moving the
+        // `ParenthesizedExpr` marker onto the inner `IdPat` node.
+        let expr_id = builder.alloc_expr(span, ExprKind::Ident(name_id));
+        builder.alloc_pat(span, PatKind::AssignTarget(expr_id))
+      } else {
+        builder.alloc_pat(span, PatKind::Ident(name_id))
+      }
     }
     AstExpr::ArrPat(arr) => {
       let pat_kind = lower_arr_pat(arr, builder, ctx);
@@ -3116,12 +3134,47 @@ fn lower_pat(
 ) -> PatId {
   let span = ctx.to_range(pat.loc);
   let kind = match &*pat.stx {
-    AstPat::Id(id) => PatKind::Ident(builder.intern_name(&id.stx.name)),
+    AstPat::Id(id) => {
+      let name_id = builder.intern_name(&id.stx.name);
+      let is_parenthesized =
+        pat.assoc.get::<ParenthesizedExpr>().is_some() || id.assoc.get::<ParenthesizedExpr>().is_some();
+      if is_parenthesized {
+        // Parenthesized identifier targets (e.g. `(x)` in destructuring assignment) are not
+        // IdentifierReferences for name inference, so keep them as assignment targets.
+        let expr_id = builder.alloc_expr(span, ExprKind::Ident(name_id));
+        PatKind::AssignTarget(expr_id)
+      } else {
+        PatKind::Ident(name_id)
+      }
+    }
     AstPat::Arr(arr) => lower_arr_pat(arr, builder, ctx),
     AstPat::Obj(obj) => lower_obj_pat(obj, builder, ctx),
     AstPat::AssignTarget(expr) => {
-      let expr_id = lower_expr(expr, builder, ctx);
-      PatKind::AssignTarget(expr_id)
+      let is_parenthesized = pat.assoc.get::<ParenthesizedExpr>().is_some()
+        || expr.assoc.get::<ParenthesizedExpr>().is_some()
+        || match &*expr.stx {
+          AstExpr::Id(id) => id.assoc.get::<ParenthesizedExpr>().is_some(),
+          AstExpr::IdPat(id) => id.assoc.get::<ParenthesizedExpr>().is_some(),
+          _ => false,
+        };
+      match &*expr.stx {
+        AstExpr::Id(id) if !is_parenthesized => PatKind::Ident(builder.intern_name(&id.stx.name)),
+        AstExpr::IdPat(id) if !is_parenthesized => PatKind::Ident(builder.intern_name(&id.stx.name)),
+        AstExpr::Id(id) => {
+          let name_id = builder.intern_name(&id.stx.name);
+          let expr_id = builder.alloc_expr(span, ExprKind::Ident(name_id));
+          PatKind::AssignTarget(expr_id)
+        }
+        AstExpr::IdPat(id) => {
+          let name_id = builder.intern_name(&id.stx.name);
+          let expr_id = builder.alloc_expr(span, ExprKind::Ident(name_id));
+          PatKind::AssignTarget(expr_id)
+        }
+        _ => {
+          let expr_id = lower_expr(expr, builder, ctx);
+          PatKind::AssignTarget(expr_id)
+        }
+      }
     }
   };
   builder.alloc_pat(span, kind)
