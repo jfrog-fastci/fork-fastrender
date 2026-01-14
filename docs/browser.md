@@ -126,7 +126,7 @@ end-to-end:
 Startup note:
 
 - When run **without** a URL, the windowed `browser` app tries to restore the previous session
-  (windows + tabs + per-tab zoom + best-effort scroll restoration).
+  (windows + tabs + per-tab zoom + best-effort scroll restoration + recently closed tabs).
 - If the previous run ended unexpectedly (unclean exit) **and the session is restored**, the UI shows
   a crash-recovery infobar/toast on startup.
   - It includes **Keep** (dismiss) and **Start new session** (discard restored tabs across all
