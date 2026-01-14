@@ -8754,36 +8754,6 @@ impl ImageCache {
       Ok(())
     };
 
-    fn contains_ascii_case_insensitive_url_open_paren(value: &str) -> bool {
-      let bytes = value.as_bytes();
-      if bytes.len() < 4 {
-        return false;
-      }
-      let mut i = 0usize;
-      while i + 3 < bytes.len() {
-        let b0 = bytes[i];
-        if b0 != b'u' && b0 != b'U' {
-          i += 1;
-          continue;
-        }
-        let b1 = bytes[i + 1];
-        if b1 != b'r' && b1 != b'R' {
-          i += 1;
-          continue;
-        }
-        let b2 = bytes[i + 2];
-        if b2 != b'l' && b2 != b'L' {
-          i += 1;
-          continue;
-        }
-        if bytes[i + 3] == b'(' {
-          return true;
-        }
-        i += 1;
-      }
-      false
-    }
-
     fn scan_css_urls<F: FnMut(&str, ResourceKind) -> Result<()>>(
       css: &str,
       include_imports: bool,
@@ -9054,7 +9024,7 @@ impl ImageCache {
           // Only scan other attributes when they plausibly contain `url(...)` references. Some SVG
           // attributes (notably <path d="...">) can be extremely large but are not CSS, and
           // scanning them unconditionally can exhaust our embedded-CSS scan budget.
-          if !contains_ascii_case_insensitive_url_open_paren(value) {
+          if !crate::string_match::contains_ascii_case_insensitive(value, "url(") {
             continue;
           }
 
