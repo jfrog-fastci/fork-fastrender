@@ -9080,6 +9080,7 @@ impl<'vm> HirEvaluator<'vm> {
       if callee_value == Value::Object(intr.eval()) {
         // Direct eval: execute in the caller's lexical environment (with strictness propagation).
         let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
+        let allow_new_target = self.env.meta_property_context().allow_new_target();
         let out = match arg0 {
           Value::String(s) => perform_direct_eval_with_host_and_hooks(
             self.vm,
@@ -9091,7 +9092,7 @@ impl<'vm> HirEvaluator<'vm> {
             self.this,
             self.new_target,
             self.home_object,
-            self.allow_new_target_in_eval,
+            allow_new_target,
             s,
           )?,
           other => other,

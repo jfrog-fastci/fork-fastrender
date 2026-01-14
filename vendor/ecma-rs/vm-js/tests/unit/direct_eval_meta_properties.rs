@@ -1,4 +1,4 @@
-use crate::{Heap, HeapLimits, JsRuntime, Value, Vm, VmOptions};
+use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -88,5 +88,49 @@ fn direct_eval_new_target_is_context_aware() {
       "#,
     )
     .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn direct_eval_new_target_in_arrow_nested_in_function_is_allowed() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var newTarget = null;
+        function C() {
+          newTarget = (() => eval('new.target'))();
+        }
+        C();
+        var ok_plain = (newTarget === undefined);
+
+        new C();
+        var ok_ctor = (newTarget === C);
+
+        ok_plain && ok_ctor
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn direct_eval_new_target_in_arrow_nested_in_function_is_allowed_compiled() {
+  let mut rt = new_runtime();
+  let source = r#"
+    var newTarget = null;
+    function C() {
+      newTarget = (() => eval('new.target'))();
+    }
+    C();
+    var ok_plain = (newTarget === undefined);
+
+    new C();
+    var ok_ctor = (newTarget === C);
+
+    ok_plain && ok_ctor
+  "#;
+  let script = CompiledScript::compile_script(&mut rt.heap, "<inline>", source).unwrap();
+  let value = rt.exec_compiled_script(script).unwrap();
   assert_eq!(value, Value::Bool(true));
 }

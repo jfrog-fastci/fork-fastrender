@@ -14207,6 +14207,10 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     source_string: GcString,
   ) -> Result<Value, VmError> {
+    // `new.target` in direct eval is only syntactically valid when the direct eval call is
+    // (lexically) contained within a non-arrow function, which is equivalent to the current
+    // meta-property context allowing `new.target`.
+    let allow_new_target = self.env.meta_property_context().allow_new_target();
     perform_direct_eval_with_host_and_hooks(
       self.vm,
       scope,
@@ -14217,7 +14221,7 @@ impl<'a> Evaluator<'a> {
       self.this,
       self.new_target,
       self.home_object,
-      self.allow_new_target_in_eval,
+      allow_new_target,
       source_string,
     )
   }
