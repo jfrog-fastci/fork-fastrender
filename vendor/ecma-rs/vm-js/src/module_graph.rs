@@ -3963,6 +3963,12 @@ fn try_vec_into_boxed_slice<T>(mut v: Vec<T>) -> Result<Box<[T]>, VmError> {
   use std::alloc::{alloc, Layout};
   use std::ptr;
 
+  // Zero-sized types do not require any backing allocation, and `Vec` uses a special
+  // representation where `capacity` is not meaningful for allocation.
+  if core::mem::size_of::<T>() == 0 {
+    return Ok(v.into_boxed_slice());
+  }
+
   let len = v.len();
   let cap = v.capacity();
 
@@ -4473,6 +4479,23 @@ mod tests {
     let _guard = FailAllocsGuard::new();
     let err = try_vec_into_boxed_slice(v).expect_err("expected OOM");
     assert!(matches!(err, VmError::OutOfMemory));
+    Ok(())
+  }
+
+  #[test]
+  fn try_vec_into_boxed_slice_zst_does_not_allocate() -> Result<(), VmError> {
+    #[derive(Clone, Copy)]
+    struct Zst;
+
+    let mut v: Vec<Zst> = Vec::new();
+    v.push(Zst);
+    v.push(Zst);
+
+    // Boxing a zero-sized type should not allocate and therefore must succeed even when the test
+    // allocator is set to fail all allocations.
+    let _guard = FailAllocsGuard::new();
+    let boxed = try_vec_into_boxed_slice(v)?;
+    assert_eq!(boxed.len(), 2);
     Ok(())
   }
 
