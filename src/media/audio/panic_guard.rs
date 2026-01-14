@@ -24,7 +24,11 @@ macro_rules! impl_audio_sample_equilibrium {
   ($($t:ty),* $(,)?) => {
     $(
       impl AudioSample for $t {
-        const SILENCE: Self = (1 as $t) << (<$t>::BITS - 1);
+        // Use the mid-point of the representable range for "equilibrium" (silence).
+        //
+        // Note: For even-sized unsigned types (e.g. u16), the exact midpoint is X.5; we use floor,
+        // matching the existing float->unsigned conversion path (`value * 0.5 + 0.5`).
+        const SILENCE: Self = <$t>::MAX / 2;
       }
     )*
   };
@@ -111,4 +115,3 @@ mod tests {
     assert_eq!(*guard, 123);
   }
 }
-
