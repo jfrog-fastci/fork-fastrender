@@ -703,6 +703,24 @@ fn expr_is_assignment_with_direct_await_rhs_without_nested_await(expr: &Node<Exp
   !expr_contains_await(&binary.stx.left) && !expr_contains_await(arg)
 }
 
+fn expr_is_supported_assignment_with_direct_await_rhs_without_nested_await(expr: &Node<Expr>) -> bool {
+  let Expr::Binary(binary) = &*expr.stx else {
+    return false;
+  };
+  if !operator_is_supported_assignment_for_hir_async_scripts(binary.stx.operator) {
+    return false;
+  }
+  let Some(arg) = expr_direct_await_arg(&binary.stx.right) else {
+    return false;
+  };
+  if !expr_is_supported_assignment_target_for_hir_async_scripts(&binary.stx.left) {
+    return false;
+  }
+  // The compiled evaluator does not support nested `await` within the assignment target (including
+  // computed member keys) or within the awaited operand.
+  !expr_contains_await(&binary.stx.left) && !expr_contains_await(arg)
+}
+
 fn expr_is_supported_assignment_target_for_hir_async_scripts(expr: &Node<Expr>) -> bool {
   match &*expr.stx {
     // Note: `parse-js` represents identifier assignment targets using the `IdPat` AST node (because
@@ -1055,11 +1073,12 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
       //
       // Supported shapes:
       // - `await <expr>;`
-      // - `x = await <expr>;` (for supported assignment targets)
+      // - `x = await <expr>;`
+      // - `x += await <expr>;` (and other arithmetic/bitwise compound assignment operators)
       Stmt::Expr(expr_stmt) => {
         let expr = &expr_stmt.stx.expr;
         expr_is_direct_await_without_nested_await(expr)
-          || expr_is_assignment_with_direct_await_rhs_without_nested_await(expr)
+          || expr_is_supported_assignment_with_direct_await_rhs_without_nested_await(expr)
       }
 
       // `throw await <expr>;` as a standalone statement item.

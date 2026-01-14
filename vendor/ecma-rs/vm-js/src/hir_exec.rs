@@ -14198,8 +14198,14 @@ enum ForTripleAwaitStage {
 #[derive(Debug)]
 struct PendingAssignment {
   reference: AssignmentReference,
+  /// Compound assignment operator to apply after the awaited RHS resolves.
+  ///
+  /// `None` indicates a plain `=` assignment.
+  assign_op: Option<hir_js::AssignOp>,
   base_root: Option<RootId>,
   key_root: Option<RootId>,
+  /// Persistent root for the pre-await LHS value for compound assignments.
+  left_root: Option<RootId>,
 }
 
 impl PendingAssignment {
@@ -14210,6 +14216,11 @@ impl PendingAssignment {
       }
     }
     if let Some(id) = self.key_root.take() {
+      if heap.get_root(id).is_some() {
+        heap.remove_root(id);
+      }
+    }
+    if let Some(id) = self.left_root.take() {
       if heap.get_root(id).is_some() {
         heap.remove_root(id);
       }
@@ -14461,8 +14472,10 @@ impl ForTripleAwaitState {
 
                         self.pending_assign = Some(PendingAssignment {
                           reference,
+                          assign_op: None,
                           base_root,
                           key_root,
+                          left_root: None,
                         });
                         self.stage = ForTripleAwaitStage::AwaitInitAssign;
                         return Ok(ForTripleAwaitPoll::Await {
@@ -14767,8 +14780,10 @@ impl ForTripleAwaitState {
 
                     self.pending_assign = Some(PendingAssignment {
                       reference,
+                      assign_op: None,
                       base_root,
                       key_root,
+                      left_root: None,
                     });
                     self.stage = ForTripleAwaitStage::AwaitUpdateAssign;
                     return Ok(ForTripleAwaitPoll::Await {
@@ -15186,8 +15201,8 @@ enum HirAsyncActive {
   DestructuringAssign(AsyncDestructuringAssignState),
   /// Suspended at a direct `await <expr>;` expression statement.
   AwaitExprStmt { next_stmt_index: usize },
-  /// Suspended at an assignment expression statement whose RHS is a direct `await <expr>`
-  /// (`x = await <expr>;`).
+  /// Suspended at an assignment expression statement whose RHS was a direct `await <expr>`
+  /// (`x = await <expr>;` / `x += await <expr>;`).
   AwaitAssignmentStmt {
     next_stmt_index: usize,
     pending_assign: Option<PendingAssignment>,
@@ -15667,48 +15682,11 @@ impl HirAsyncState {
               HirAsyncBodyKind::Expr { .. } => 0,
             };
 
-            match resume {
-              Ok(v) => {
-                let mut assign_scope = scope.reborrow();
-                if let Err(err) = evaluator.root_assignment_reference(&mut assign_scope, &pending.reference) {
-                  pending.teardown(assign_scope.heap_mut());
-                  return Err(err);
-                }
-                if let Err(err) = assign_scope.push_root(v) {
-                  pending.teardown(assign_scope.heap_mut());
-                  return Err(err);
-                }
-                if let Err(err) = evaluator.maybe_set_anonymous_function_name_for_assignment(
-                  &mut assign_scope,
-                  &pending.reference,
-                  v,
-                ) {
-                  pending.teardown(assign_scope.heap_mut());
-                  return Err(err);
-                }
-                if let Err(err) =
-                  evaluator.put_value_to_assignment_reference(&mut assign_scope, &pending.reference, v)
-                {
-                  let err = finalize_throw_with_stack_at_source_offset(
-                    &*evaluator.vm,
-                    &mut assign_scope,
-                    evaluator.script.source.as_ref(),
-                    stmt_offset,
-                    err,
-                  );
-                  pending.teardown(assign_scope.heap_mut());
-                  match err {
-                    VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
-                      return Ok(HirAsyncResult::CompleteThrow(value))
-                    }
-                    other => return Err(other),
-                  }
-                }
-                pending.teardown(assign_scope.heap_mut());
-                self.next_stmt_index = next_stmt_index;
-                continue;
-              }
+            // Promise rejection becomes a throw at the await site.
+            let resumed_value = match resume {
+              Ok(v) => v,
               Err(err) => {
+                pending.teardown(scope.heap_mut());
                 let err = finalize_throw_with_stack_at_source_offset(
                   &*evaluator.vm,
                   scope,
@@ -15716,7 +15694,67 @@ impl HirAsyncState {
                   stmt_offset,
                   err,
                 );
+                match err {
+                  VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                    return Ok(HirAsyncResult::CompleteThrow(value))
+                  }
+                  other => return Err(other),
+                }
+              }
+            };
+
+            let assign_res: Result<(), VmError> = (|| {
+              let mut assign_scope = scope.reborrow();
+              evaluator.root_assignment_reference(&mut assign_scope, &pending.reference)?;
+
+              if let Some(op) = pending.assign_op {
+                let left_root = pending.left_root.ok_or(VmError::InvariantViolation(
+                  "hir async compound assignment missing left value root",
+                ))?;
+                let left = assign_scope
+                  .heap()
+                  .get_root(left_root)
+                  .ok_or(VmError::InvariantViolation(
+                    "hir async compound assignment missing left value root value",
+                  ))?;
+
+                assign_scope.push_roots(&[left, resumed_value])?;
+                let out =
+                  evaluator.apply_compound_assignment_op(&mut assign_scope, op, left, resumed_value)?;
+                assign_scope.push_root(out)?;
+                evaluator.put_value_to_assignment_reference(&mut assign_scope, &pending.reference, out)?;
+              } else {
+                assign_scope.push_root(resumed_value)?;
+                evaluator.maybe_set_anonymous_function_name_for_assignment(
+                  &mut assign_scope,
+                  &pending.reference,
+                  resumed_value,
+                )?;
+                evaluator.put_value_to_assignment_reference(
+                  &mut assign_scope,
+                  &pending.reference,
+                  resumed_value,
+                )?;
+              }
+
+              Ok(())
+            })();
+
+            match assign_res {
+              Ok(()) => {
                 pending.teardown(scope.heap_mut());
+                self.next_stmt_index = next_stmt_index;
+                continue;
+              }
+              Err(err) => {
+                pending.teardown(scope.heap_mut());
+                let err = finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  evaluator.script.source.as_ref(),
+                  stmt_offset,
+                  err,
+                );
                 match err {
                   VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
                     return Ok(HirAsyncResult::CompleteThrow(value))
@@ -16464,45 +16502,52 @@ impl HirAsyncState {
           });
         }
 
-        // `x = await <expr>;`
-        if let hir_js::ExprKind::Assignment {
-          op: hir_js::AssignOp::Assign,
-          target,
-          value,
-        } = &expr.kind
-        {
-          let rhs = evaluator.get_expr(body, *value)?;
-          if let hir_js::ExprKind::Await { expr: awaited_expr } = &rhs.kind {
-            // Budget once for the statement and once for the await expression itself.
-            evaluator.vm.tick()?;
-            evaluator.vm.tick()?;
+        // Fast-path assignments where the RHS is a direct await expression (e.g.
+        // `x = await foo();` / `x += await foo();`).
+        if let hir_js::ExprKind::Assignment { op, target, value } = &expr.kind {
+          let compound_op = matches!(
+            op,
+            hir_js::AssignOp::AddAssign
+              | hir_js::AssignOp::SubAssign
+              | hir_js::AssignOp::MulAssign
+              | hir_js::AssignOp::DivAssign
+              | hir_js::AssignOp::RemAssign
+              | hir_js::AssignOp::ExponentAssign
+              | hir_js::AssignOp::ShiftLeftAssign
+              | hir_js::AssignOp::ShiftRightAssign
+              | hir_js::AssignOp::ShiftRightUnsignedAssign
+              | hir_js::AssignOp::BitOrAssign
+              | hir_js::AssignOp::BitAndAssign
+              | hir_js::AssignOp::BitXorAssign
+          );
+          if *op == hir_js::AssignOp::Assign || compound_op {
+            let rhs = evaluator.get_expr(body, *value)?;
+            if let hir_js::ExprKind::Await { expr: awaited_expr } = &rhs.kind {
+              // Budget once for the statement and once for the await expression itself.
+              evaluator.vm.tick()?;
+              evaluator.vm.tick()?;
 
-            let reference = match evaluator.eval_assignment_reference(scope, body, *target) {
-              Ok(r) => r,
-              Err(err) => {
-                let err = finalize_throw_with_stack_at_source_offset(
-                  &*evaluator.vm,
-                  scope,
-                  evaluator.script.source.as_ref(),
-                  stmt_offset,
-                  err,
-                );
-                return match err {
-                  VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
-                    Ok(HirAsyncResult::CompleteThrow(value))
-                  }
-                  other => Err(other),
-                };
-              }
-            };
+              let reference = match evaluator.eval_assignment_reference(scope, body, *target) {
+                Ok(r) => r,
+                Err(err) => {
+                  let err = finalize_throw_with_stack_at_source_offset(
+                    &*evaluator.vm,
+                    scope,
+                    evaluator.script.source.as_ref(),
+                    stmt_offset,
+                    err,
+                  );
+                  return match err {
+                    VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                      Ok(HirAsyncResult::CompleteThrow(value))
+                    }
+                    other => Err(other),
+                  };
+                }
+              };
 
-            let mut await_scope = scope.reborrow();
-            if let Err(err) = evaluator.root_assignment_reference(&mut await_scope, &reference) {
-              return Err(err);
-            }
-            let await_value = match evaluator.eval_expr(&mut await_scope, body, *awaited_expr) {
-              Ok(v) => v,
-              Err(err) => {
+              let mut await_scope = scope.reborrow();
+              if let Err(err) = evaluator.root_assignment_reference(&mut await_scope, &reference) {
                 let err = finalize_throw_with_stack_at_source_offset(
                   &*evaluator.vm,
                   &mut await_scope,
@@ -16517,66 +16562,123 @@ impl HirAsyncState {
                   other => Err(other),
                 };
               }
-            };
 
-            // Root the awaited value across adding persistent roots.
-            await_scope.push_root(await_value)?;
-
-            let mut base_root = None;
-            let mut key_root = None;
-            match &reference {
-              AssignmentReference::Binding(_) => {}
-              AssignmentReference::Property { base, key } => {
-                let key_value = match key {
-                  PropertyKey::String(s) => Value::String(*s),
-                  PropertyKey::Symbol(s) => Value::Symbol(*s),
-                };
-                // Root base+key across root registration.
-                await_scope.push_roots(&[*base, key_value])?;
-                let base_id = await_scope.heap_mut().add_root(*base)?;
-                let key_id = match await_scope.heap_mut().add_root(key_value) {
-                  Ok(id) => id,
+              let mut left_root: Option<RootId> = None;
+              if compound_op {
+                let left = match evaluator.get_value_from_assignment_reference(&mut await_scope, &reference) {
+                  Ok(v) => v,
                   Err(err) => {
-                    await_scope.heap_mut().remove_root(base_id);
-                    return Err(err);
+                    let err = finalize_throw_with_stack_at_source_offset(
+                      &*evaluator.vm,
+                      &mut await_scope,
+                      evaluator.script.source.as_ref(),
+                      stmt_offset,
+                      err,
+                    );
+                    return match err {
+                      VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                        Ok(HirAsyncResult::CompleteThrow(value))
+                      }
+                      other => Err(other),
+                    };
                   }
                 };
-                base_root = Some(base_id);
-                key_root = Some(key_id);
+                await_scope.push_root(left)?;
+                left_root = Some(await_scope.heap_mut().add_root(left)?);
               }
-              AssignmentReference::SuperProperty { super_base, key, .. } => {
-                let key_value = match key {
-                  PropertyKey::String(s) => Value::String(*s),
-                  PropertyKey::Symbol(s) => Value::Symbol(*s),
-                };
-                let base_value = (*super_base).map(Value::Object).unwrap_or(Value::Null);
-                await_scope.push_roots(&[base_value, key_value])?;
-                let base_id = await_scope.heap_mut().add_root(base_value)?;
-                let key_id = match await_scope.heap_mut().add_root(key_value) {
-                  Ok(id) => id,
-                  Err(err) => {
-                    await_scope.heap_mut().remove_root(base_id);
-                    return Err(err);
-                  }
-                };
-                base_root = Some(base_id);
-                key_root = Some(key_id);
-              }
-            }
 
-            self.active = Some(HirAsyncActive::AwaitAssignmentStmt {
-              next_stmt_index: self.next_stmt_index.saturating_add(1),
-              pending_assign: Some(PendingAssignment {
+              let await_value = match evaluator.eval_expr(&mut await_scope, body, *awaited_expr) {
+                Ok(v) => v,
+                Err(err) => {
+                  let err = finalize_throw_with_stack_at_source_offset(
+                    &*evaluator.vm,
+                    &mut await_scope,
+                    evaluator.script.source.as_ref(),
+                    stmt_offset,
+                    err,
+                  );
+                  // Remove any compound-assignment LHS root before propagating.
+                  if let Some(id) = left_root.take() {
+                    await_scope.heap_mut().remove_root(id);
+                  }
+                  return match err {
+                    VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                      Ok(HirAsyncResult::CompleteThrow(value))
+                    }
+                    other => Err(other),
+                  };
+                }
+              };
+              // Root the await argument value across persistent root creation.
+              await_scope.push_root(await_value)?;
+
+              // Create persistent roots for the assignment reference base/key so we can resume after
+              // the await boundary.
+              let mut base_root: Option<RootId> = None;
+              let mut key_root: Option<RootId> = None;
+              let assign_root_res: Result<(), VmError> = (|| {
+                match &reference {
+                  AssignmentReference::Binding(_) => {}
+                  AssignmentReference::Property { base, key } => {
+                    let key_value = match key {
+                      PropertyKey::String(s) => Value::String(*s),
+                      PropertyKey::Symbol(s) => Value::Symbol(*s),
+                    };
+                    let b = await_scope.heap_mut().add_root(*base)?;
+                    base_root = Some(b);
+                    match await_scope.heap_mut().add_root(key_value) {
+                      Ok(id) => key_root = Some(id),
+                      Err(err) => {
+                        await_scope.heap_mut().remove_root(b);
+                        base_root = None;
+                        return Err(err);
+                      }
+                    }
+                  }
+                  AssignmentReference::SuperProperty { super_base, key, .. } => {
+                    let key_value = match key {
+                      PropertyKey::String(s) => Value::String(*s),
+                      PropertyKey::Symbol(s) => Value::Symbol(*s),
+                    };
+                    let base_value = (*super_base).map(Value::Object).unwrap_or(Value::Null);
+                    let b = await_scope.heap_mut().add_root(base_value)?;
+                    base_root = Some(b);
+                    match await_scope.heap_mut().add_root(key_value) {
+                      Ok(id) => key_root = Some(id),
+                      Err(err) => {
+                        await_scope.heap_mut().remove_root(b);
+                        base_root = None;
+                        return Err(err);
+                      }
+                    }
+                  }
+                }
+                Ok(())
+              })();
+              if let Err(err) = assign_root_res {
+                if let Some(id) = left_root.take() {
+                  await_scope.heap_mut().remove_root(id);
+                }
+                return Err(err);
+              }
+
+              let pending = PendingAssignment {
                 reference,
+                assign_op: compound_op.then_some(*op),
                 base_root,
                 key_root,
-              }),
-            });
-            self.await_stmt_offset = stmt_offset;
-            return Ok(HirAsyncResult::Await {
-              kind: crate::exec::AsyncSuspendKind::Await,
-              await_value,
-            });
+                left_root,
+              };
+              self.active = Some(HirAsyncActive::AwaitAssignmentStmt {
+                next_stmt_index: self.next_stmt_index.saturating_add(1),
+                pending_assign: Some(pending),
+              });
+              self.await_stmt_offset = stmt_offset;
+              return Ok(HirAsyncResult::Await {
+                kind: crate::exec::AsyncSuspendKind::Await,
+                await_value,
+              });
+            }
           }
         }
       }

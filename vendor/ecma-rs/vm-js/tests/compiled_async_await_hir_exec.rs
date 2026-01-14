@@ -196,3 +196,94 @@ fn compiled_async_return_resolves_promise() -> Result<(), VmError> {
   assert_eq!(value_to_string(&rt, out), "ok");
   Ok(())
 }
+
+#[test]
+fn compiled_async_assignment_await_suspends_and_resumes() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  exec_compiled(
+    &mut rt,
+    r#"
+      var x = "";
+      var out = "";
+    "#,
+  )?;
+
+  let f_script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "<inline>",
+    r#"
+      async function f() {
+        x = await Promise.resolve("ok");
+        return x;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&f_script, "f");
+  install_compiled_function(
+    &mut rt,
+    CompiledFunctionRef {
+      script: f_script,
+      body: f_body,
+    },
+    "f",
+  )?;
+
+  exec_compiled(&mut rt, "f().then(v => out = v);")?;
+  let x = exec_compiled(&mut rt, "x")?;
+  assert_eq!(value_to_string(&rt, x), "");
+  let out = exec_compiled(&mut rt, "out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let x = exec_compiled(&mut rt, "x")?;
+  assert_eq!(value_to_string(&rt, x), "ok");
+  let out = exec_compiled(&mut rt, "out")?;
+  assert_eq!(value_to_string(&rt, out), "ok");
+  Ok(())
+}
+
+#[test]
+fn compiled_async_compound_assignment_reads_lhs_before_await() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  exec_compiled(
+    &mut rt,
+    r#"
+      var x = 1;
+      var out = 0;
+      var p = Promise.resolve().then(() => { x = 100; return 2; });
+    "#,
+  )?;
+
+  let f_script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "<inline>",
+    r#"
+      async function f() {
+        x += await p;
+        return x;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&f_script, "f");
+  install_compiled_function(
+    &mut rt,
+    CompiledFunctionRef {
+      script: f_script,
+      body: f_body,
+    },
+    "f",
+  )?;
+
+  exec_compiled(&mut rt, "f().then(v => out = v);")?;
+  assert_eq!(exec_compiled(&mut rt, "x")?, Value::Number(1.0));
+  assert_eq!(exec_compiled(&mut rt, "out")?, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(exec_compiled(&mut rt, "x")?, Value::Number(3.0));
+  assert_eq!(exec_compiled(&mut rt, "out")?, Value::Number(3.0));
+  Ok(())
+}
