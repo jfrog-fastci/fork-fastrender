@@ -109,3 +109,4 @@ browser shortcut mapping intentionally ignores Ctrl+Alt+… combinations to avoi
 |---|---|---|---|
 | Focus order | Tab/Shift+Tab through chrome controls | Same | Focus order matches visual order; focus indicator is visible. |
 | Screen reader labels | Narrator/Orca can traverse chrome | VoiceOver can traverse chrome | Controls announce meaningful labels (“Back”, “Address bar”, “Downloads”, etc). |
+| Context menu keyboard access | Shift+F10 (or Menu key) | Shift+F10 | Opens a context menu for the focused surface (page vs tab group chip, etc); menu items have labels and Esc dismisses. |
