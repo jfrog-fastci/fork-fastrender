@@ -2583,11 +2583,7 @@ mod tests {
     let options = RenderOptions::default()
       .with_viewport(32, 32)
       .with_runtime_toggles(toggles);
-    let mut document = BrowserDocument::new(
-      renderer_for_tests(),
-      "<div>hi</div>",
-      options,
-    )?;
+    let mut document = BrowserDocument::new(renderer_for_tests(), "<div>hi</div>", options)?;
     document.render_frame()?;
 
     let (hits_before, misses_before) = document
@@ -2795,9 +2791,9 @@ mod tests {
       let mut stack = vec![dom];
       while let Some(node) = stack.pop() {
         if let DomNodeType::Element { attributes, .. } = &mut node.node_type {
-          let id_matches = attributes.iter().any(|(name, value)| {
-            name.eq_ignore_ascii_case("id") && value.as_str() == id_value
-          });
+          let id_matches = attributes
+            .iter()
+            .any(|(name, value)| name.eq_ignore_ascii_case("id") && value.as_str() == id_value);
           if id_matches {
             if let Some((_, value)) = attributes
               .iter_mut()
@@ -2964,9 +2960,9 @@ mod tests {
       let mut stack = vec![dom];
       while let Some(node) = stack.pop() {
         if let DomNodeType::Element { attributes, .. } = &mut node.node_type {
-          let matches_id = attributes.iter().any(|(name, value)| {
-            name.eq_ignore_ascii_case("id") && value.eq_ignore_ascii_case(id)
-          });
+          let matches_id = attributes
+            .iter()
+            .any(|(name, value)| name.eq_ignore_ascii_case("id") && value.eq_ignore_ascii_case(id));
           if matches_id {
             if let Some((_, value)) = attributes
               .iter_mut()
