@@ -61,8 +61,8 @@ fn return_in_static_block_is_syntax_error_even_inside_function() {
 #[test]
 fn yield_in_static_block_is_syntax_error_even_inside_generator() {
   let src = r#"
-    function *g() {
-      class C {
+     function *g() {
+       class C {
         static {
           yield;
         }
@@ -78,3 +78,58 @@ fn yield_in_static_block_is_syntax_error_even_inside_generator() {
   assert!(res.is_err(), "parse unexpectedly succeeded: {res:?}");
 }
 
+#[test]
+fn await_expression_is_syntax_error_in_static_block() {
+  let src = r#"
+    class C {
+      static {
+        await 1;
+      }
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let res = parser.parse_top_level();
+  assert!(res.is_err(), "parse unexpectedly succeeded: {res:?}");
+}
+
+#[test]
+fn arguments_identifier_reference_is_syntax_error_in_static_block() {
+  let src = r#"
+    class C {
+      static {
+        arguments;
+      }
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let res = parser.parse_top_level();
+  assert!(res.is_err(), "parse unexpectedly succeeded: {res:?}");
+}
+
+#[test]
+fn arguments_identifier_reference_is_allowed_in_function_in_static_block() {
+  let src = r#"
+    class C {
+      static {
+        (function({x = arguments}) {
+          arguments;
+        });
+      }
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let res = parser.parse_top_level();
+  assert!(res.is_ok(), "parse failed: {res:?}");
+}

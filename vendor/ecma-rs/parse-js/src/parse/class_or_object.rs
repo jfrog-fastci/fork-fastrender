@@ -280,20 +280,20 @@ impl<'a> Parser<'a> {
               // - `yield` is not treated as a keyword from an enclosing generator.
               // - `return` is not permitted (handled above via `in_function = 0`).
               let is_module = p.is_module();
-              let block_ctx = ctx.non_top_level().with_rules(ParsePatternRules {
-                await_allowed: false,
-                yield_allowed: !is_module,
-                await_expr_allowed: true,
-                yield_expr_allowed: false,
-              });
-              let body = p.stmts(block_ctx, TT::BraceClose);
-              p.in_iteration = prev_in_iteration;
-              p.in_switch = prev_in_switch;
-              p.in_function = prev_in_function;
-              p.new_target_allowed = prev_new_target_allowed;
-              p.super_prop_allowed = prev_super_prop_allowed;
-              p.super_call_allowed = prev_super_call_allowed;
-              p.labels = prev_labels;
+               let block_ctx = ctx.non_top_level().with_rules(ParsePatternRules {
+                 await_allowed: false,
+                 yield_allowed: !is_module,
+                 await_expr_allowed: false,
+                 yield_expr_allowed: false,
+               });
+               let body = p.with_disallow_arguments_in_class_init(|p| p.stmts(block_ctx, TT::BraceClose));
+               p.in_iteration = prev_in_iteration;
+               p.in_switch = prev_in_switch;
+               p.in_function = prev_in_function;
+               p.new_target_allowed = prev_new_target_allowed;
+               p.super_prop_allowed = prev_super_prop_allowed;
+               p.super_call_allowed = prev_super_call_allowed;
+               p.labels = prev_labels;
               let body = body?;
               p.require(TT::BraceClose)?;
               Ok(crate::ast::class_or_object::ClassStaticBlock { body })
@@ -855,7 +855,10 @@ impl<'a> Parser<'a> {
         self.new_target_allowed += 1;
         self.super_prop_allowed += 1;
         self.super_call_allowed = 0;
-        let initializer = self.expr_with_asi(ctx, [TT::Semicolon, TT::BraceClose], &mut Asi::can());
+        let mut asi = Asi::can();
+        let initializer = self.with_disallow_arguments_in_class_init(|p| {
+          p.expr_with_asi(ctx, [TT::Semicolon, TT::BraceClose], &mut asi)
+        });
         self.new_target_allowed = prev_new_target_allowed;
         self.super_prop_allowed = prev_super_prop_allowed;
         self.super_call_allowed = prev_super_call_allowed;
@@ -1212,7 +1215,7 @@ impl<'a> Parser<'a> {
       p.new_target_allowed += 1;
       p.super_prop_allowed += 1;
       p.super_call_allowed = 0;
-      let res = (|| {
+      let res = p.with_arguments_bound_in_class_init(|p| {
         p.require(TT::ParenthesisOpen)?;
         // Setters are not generators or async, so yield/await can be used as identifiers
         let is_module = p.is_module();
@@ -1365,7 +1368,7 @@ impl<'a> Parser<'a> {
           return_type: None,
           body,
         })
-      })();
+      });
       p.new_target_allowed = prev_new_target_allowed;
       p.super_prop_allowed = prev_super_prop_allowed;
       p.super_call_allowed = prev_super_call_allowed;
@@ -1411,11 +1414,13 @@ impl<'a> Parser<'a> {
           self.new_target_allowed += 1;
           self.super_prop_allowed += 1;
           self.super_call_allowed = 0;
-          let expr = self.expr_with_asi(
-            ctx,
-            [statement_delimiter, TT::BraceClose],
-            property_initialiser_asi,
-          );
+          let expr = self.with_disallow_arguments_in_class_init(|p| {
+            p.expr_with_asi(
+              ctx,
+              [statement_delimiter, TT::BraceClose],
+              property_initialiser_asi,
+            )
+          });
           self.new_target_allowed = prev_new_target_allowed;
           self.super_prop_allowed = prev_super_prop_allowed;
           self.super_call_allowed = prev_super_call_allowed;
@@ -1622,11 +1627,13 @@ impl<'a> Parser<'a> {
             self.new_target_allowed += 1;
             self.super_prop_allowed += 1;
             self.super_call_allowed = 0;
-            let expr = self.expr_with_asi(
-              ctx,
-              [statement_delimiter, TT::BraceClose],
-              property_initialiser_asi,
-            );
+            let expr = self.with_disallow_arguments_in_class_init(|p| {
+              p.expr_with_asi(
+                ctx,
+                [statement_delimiter, TT::BraceClose],
+                property_initialiser_asi,
+              )
+            });
             self.new_target_allowed = prev_new_target_allowed;
             self.super_prop_allowed = prev_super_prop_allowed;
             self.super_call_allowed = prev_super_call_allowed;

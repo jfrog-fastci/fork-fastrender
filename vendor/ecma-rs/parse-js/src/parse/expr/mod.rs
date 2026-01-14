@@ -852,10 +852,12 @@ impl<'a> Parser<'a> {
   }
 
   pub fn id_expr(&mut self, ctx: ParseCtx) -> SyntaxResult<Node<IdExpr>> {
-    self.with_loc(|p| {
+    let expr = self.with_loc(|p| {
       let name = p.id_name(ctx)?;
       Ok(IdExpr { name })
-    })
+    })?;
+    self.validate_arguments_not_disallowed_in_class_init(expr.loc, &expr.stx.name)?;
+    Ok(expr)
   }
 
   /// Parses a raw valid identifier name as a string. To parse an IdExpr, use `id_expr`.
