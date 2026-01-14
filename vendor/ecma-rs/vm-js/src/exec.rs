@@ -11385,10 +11385,9 @@ impl<'a> Evaluator<'a> {
       key_scope.push_root(receiver)?;
 
       // Spec: for `super[expr]`, `GetSuperBase` is observed before evaluating the computed key
-      // expression / `ToPropertyKey` so prototype mutation during key conversion does not affect the
-      // resolved super base.
+      // expression / `ToPropertyKey` (test262: `...getsuperbase-before-topropertykey-...`).
       let super_base = self.super_base(&mut key_scope)?;
-      // Root the base across key evaluation / coercion.
+      // Root the super base across key evaluation / coercion.
       key_scope.push_root(super_base)?;
 
       let member_value = self.eval_expr(&mut key_scope, &expr.member)?;
