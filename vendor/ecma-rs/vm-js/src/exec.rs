@@ -25422,7 +25422,6 @@ fn async_eval_assignment_to_computed_member(
     // Evaluating a super property reference requires an initialized `this` binding. In derived
     // constructors before `super()`, this check happens before evaluating the computed key
     // expression.
-    // Spec ordering: evaluate `GetThisBinding` (above) before evaluating the key expression.
     let receiver = async_get_super_receiver(evaluator, scope)?;
     let mut member_scope = scope.reborrow();
     member_scope.push_root(receiver)?;
@@ -26185,7 +26184,6 @@ fn async_eval_update_expression(
         // Evaluating a super property reference requires an initialized `this` binding. In derived
         // constructors before `super()`, this check must happen **before** evaluating the computed
         // key expression.
-        // Spec ordering: evaluate `GetThisBinding` (above) before evaluating the key expression.
         let receiver = async_get_super_receiver(evaluator, scope)?;
         let mut member_scope = scope.reborrow();
         member_scope.push_root(receiver)?;
