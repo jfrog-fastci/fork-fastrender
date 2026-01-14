@@ -246,6 +246,10 @@ To capture machine-readable browser responsiveness metrics:
 ```bash
 timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --url about:test-layout-stress --out target/browser_perf.jsonl
 
+# Capture perf JSONL + a browser UI trace (Perfetto/Chrome trace written on exit):
+timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --url about:test-layout-stress --out target/browser_perf.jsonl \
+  --trace-out target/browser_trace.json
+
 # Wrapper-friendly helper (runs under repo guardrails and forwards browser CLI flags):
 timeout -k 10 600 bash scripts/cargo_agent.sh xtask browser --release --hud \
   --perf-log --perf-log-out target/browser_perf.jsonl \
