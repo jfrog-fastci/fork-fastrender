@@ -542,10 +542,16 @@ pub fn menu_bar_ui(
             ui.close_menu();
           }
 
+          let downloads_toggle_a11y_label = if app.chrome.downloads_panel_open {
+            "Hide downloads"
+          } else {
+            "Show downloads"
+          };
           let downloads_resp =
             ui.add(egui::Button::new("Show Downloads…").shortcut_text(SHORTCUT_DOWNLOADS));
-          downloads_resp
-            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Show downloads"));
+          downloads_resp.widget_info(move || {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, downloads_toggle_a11y_label)
+          });
           if downloads_resp.clicked() {
             commands.push(MenuCommand::ToggleDownloadsPanel);
             ui.close_menu();
@@ -1109,6 +1115,35 @@ mod tests {
         .iter()
         .any(|n| n.role == "CheckBox" && n.name == "Show debug log"),
       "expected \"Show debug log\" to appear as a CheckBox in AccessKit output.\n\nsnapshot:\n{snapshot}"
+    );
+  }
+
+  #[test]
+  fn window_menu_accesskit_downloads_label_reflects_panel_open_state() {
+    // Closed.
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    let mut app = BrowserAppState::new();
+    app.chrome.downloads_panel_open = false;
+    let output = open_menu_for_accesskit(&ctx, &app, "Window");
+    let names = a11y_test_util::accesskit_names_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_pretty_json_from_full_output(&output);
+    assert!(
+      names.iter().any(|n| n == "Show downloads"),
+      "expected Window menu downloads item to expose \"Show downloads\" when closed.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
+    );
+
+    // Open.
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    let mut app = BrowserAppState::new();
+    app.chrome.downloads_panel_open = true;
+    let output = open_menu_for_accesskit(&ctx, &app, "Window");
+    let names = a11y_test_util::accesskit_names_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_pretty_json_from_full_output(&output);
+    assert!(
+      names.iter().any(|n| n == "Hide downloads"),
+      "expected Window menu downloads item to expose \"Hide downloads\" when open.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
     );
   }
 
