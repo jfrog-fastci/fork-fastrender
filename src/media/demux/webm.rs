@@ -416,6 +416,14 @@ impl<R: Read + Seek> WebmDemuxer<R> {
         return Ok(None);
       }
 
+      // Apply the encoded packet size cap immediately so:
+      // - oversized/corrupt blocks error deterministically (instead of flowing into downstream
+      //   buffering/decoding), and
+      // - the large allocation is promptly freed (even if we would otherwise skip this track due to
+      //   track selection/filtering or unsupported codecs).
+      let data = std::mem::take(&mut self.frame.data);
+      check_webm_packet_size(self.frame.track, data.len())?;
+
       let codec_delay_ns = match self.codec_delay_ns.get(&self.frame.track) {
         Some(delay) => *delay,
         None => continue,
@@ -436,8 +444,6 @@ impl<R: Read + Seek> WebmDemuxer<R> {
         })
         .unwrap_or(0);
 
-      let data = std::mem::take(&mut self.frame.data);
-      check_webm_packet_size(self.frame.track, data.len())?;
       let is_keyframe = match self.frame.is_keyframe {
         Some(is_keyframe) => is_keyframe,
         None => {
