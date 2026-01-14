@@ -312,6 +312,42 @@ fn generator_resume_roots_computed_member_assignment_base_before_key_yield() {
 }
 
 #[test]
+fn generator_resume_roots_update_computed_member_base_before_key_yield() {
+  let mut rt = new_runtime_gc();
+  rt
+    .exec_script(&format!(
+      r#"
+        function* g() {{
+          return ({{ x: 1 }})[(yield 1)]++;
+        }}
+        {init_args}
+        var it = g.apply(null, args);
+        var r1 = it.next();
+      "#,
+      init_args = init_args_script(),
+    ))
+    .unwrap();
+
+  let gc_before = rt.heap.gc_runs();
+  let value = rt
+    .exec_script(
+      r#"
+        var r2 = it.next("x");
+        r1.value === 1 && r1.done === false &&
+        r2.value === 1 && r2.done === true
+      "#,
+    )
+    .unwrap();
+  let gc_after = rt.heap.gc_runs();
+
+  assert_eq!(value, Value::Bool(true));
+  assert!(
+    gc_after > gc_before,
+    "expected generator resumption to trigger at least one GC cycle"
+  );
+}
+
+#[test]
 fn generator_resume_roots_array_literal_after_single_element_yield() {
   let mut rt = new_runtime_gc();
   rt
