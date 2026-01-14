@@ -13654,9 +13654,21 @@ impl AsyncObjectPatternBindingState {
 
     // Object destructuring follows `GetV` semantics: property lookup uses `ToObject(value)`, but
     // accessors observe `this = value` (the original RHS value).
-    let obj = root_scope.to_object(evaluator.vm, &mut *evaluator.host, &mut *evaluator.hooks, value)?;
+    let obj = match root_scope.to_object(evaluator.vm, &mut *evaluator.host, &mut *evaluator.hooks, value) {
+      Ok(obj) => obj,
+      Err(err) => {
+        root_scope.heap_mut().remove_root(src_value_root);
+        return Err(err);
+      }
+    };
     root_scope.push_root(Value::Object(obj))?;
-    let obj_root = root_scope.heap_mut().add_root(Value::Object(obj))?;
+    let obj_root = match root_scope.heap_mut().add_root(Value::Object(obj)) {
+      Ok(id) => id,
+      Err(err) => {
+        root_scope.heap_mut().remove_root(src_value_root);
+        return Err(err);
+      }
+    };
 
     Ok(Self {
       pat_id,
@@ -13936,9 +13948,24 @@ impl ForAwaitOfState {
     let (v_root, iterator_root, next_method_root) = {
       let mut root_scope = iter_scope.reborrow();
       root_scope.push_roots(&[iterator_value, next_method_value])?;
-      let v_root = root_scope.heap_mut().add_root(Value::Undefined)?;
-      let iterator_root = root_scope.heap_mut().add_root(iterator_value)?;
-      let next_method_root = root_scope.heap_mut().add_root(next_method_value)?;
+      let heap = root_scope.heap_mut();
+
+      let v_root = heap.add_root(Value::Undefined)?;
+      let iterator_root = match heap.add_root(iterator_value) {
+        Ok(id) => id,
+        Err(err) => {
+          heap.remove_root(v_root);
+          return Err(err);
+        }
+      };
+      let next_method_root = match heap.add_root(next_method_value) {
+        Ok(id) => id,
+        Err(err) => {
+          heap.remove_root(iterator_root);
+          heap.remove_root(v_root);
+          return Err(err);
+        }
+      };
       (v_root, iterator_root, next_method_root)
     };
 
@@ -14919,9 +14946,23 @@ impl ForOfState {
           let (v_root, iterator_root, next_method_root) = {
             let mut root_scope = iter_scope.reborrow();
             root_scope.push_roots(&[iterator_value, next_method_value])?;
-            let v_root = root_scope.heap_mut().add_root(Value::Undefined)?;
-            let iterator_root = root_scope.heap_mut().add_root(iterator_value)?;
-            let next_method_root = root_scope.heap_mut().add_root(next_method_value)?;
+            let heap = root_scope.heap_mut();
+            let v_root = heap.add_root(Value::Undefined)?;
+            let iterator_root = match heap.add_root(iterator_value) {
+              Ok(id) => id,
+              Err(err) => {
+                heap.remove_root(v_root);
+                return Err(err);
+              }
+            };
+            let next_method_root = match heap.add_root(next_method_value) {
+              Ok(id) => id,
+              Err(err) => {
+                heap.remove_root(iterator_root);
+                heap.remove_root(v_root);
+                return Err(err);
+              }
+            };
             (v_root, iterator_root, next_method_root)
           };
 
@@ -16720,9 +16761,21 @@ impl AsyncDestructuringAssignState {
     let mut root_scope = scope.reborrow();
     root_scope.push_root(value)?;
     let src_value_root = root_scope.heap_mut().add_root(value)?;
-    let obj = root_scope.to_object(evaluator.vm, &mut *evaluator.host, &mut *evaluator.hooks, value)?;
+    let obj = match root_scope.to_object(evaluator.vm, &mut *evaluator.host, &mut *evaluator.hooks, value) {
+      Ok(obj) => obj,
+      Err(err) => {
+        root_scope.heap_mut().remove_root(src_value_root);
+        return Err(err);
+      }
+    };
     root_scope.push_root(Value::Object(obj))?;
-    let obj_root = root_scope.heap_mut().add_root(Value::Object(obj))?;
+    let obj_root = match root_scope.heap_mut().add_root(Value::Object(obj)) {
+      Ok(id) => id,
+      Err(err) => {
+        root_scope.heap_mut().remove_root(src_value_root);
+        return Err(err);
+      }
+    };
     Ok(Self {
       pat_id,
       src_value_root: Some(src_value_root),
@@ -16932,34 +16985,46 @@ impl AsyncDestructuringAssignState {
           let await_value = evaluator.eval_expr(scope, body, awaited_expr)?;
 
           // Persistently root the assignment reference components if needed (member assignments).
-          match &reference {
-            AssignmentReference::Binding(_) => {}
-            AssignmentReference::Property { base, key } => {
-              let base_root = scope.heap_mut().add_root(*base)?;
-              let key_value = match key {
-                PropertyKey::String(s) => Value::String(*s),
-                PropertyKey::Symbol(s) => Value::Symbol(*s),
-              };
-              let key_root = scope.heap_mut().add_root(key_value)?;
-              self.pending_base_root = Some(base_root);
-              self.pending_key_root = Some(key_root);
-            }
-            AssignmentReference::SuperProperty {
-              super_base,
-              receiver,
-              key,
-            } => {
-              let receiver_root = scope.heap_mut().add_root(*receiver)?;
-              let key_value = match key {
-                PropertyKey::String(s) => Value::String(*s),
-                PropertyKey::Symbol(s) => Value::Symbol(*s),
-              };
-              let key_root = scope.heap_mut().add_root(key_value)?;
-              self.pending_base_root = Some(receiver_root);
-              self.pending_key_root = Some(key_root);
-              if let Some(super_base) = super_base {
-                let super_base_root = scope.heap_mut().add_root(Value::Object(*super_base))?;
-                self.pending_super_base_root = Some(super_base_root);
+            match &reference {
+              AssignmentReference::Binding(_) => {}
+              AssignmentReference::Property { base, key } => {
+                let base_root = scope.heap_mut().add_root(*base)?;
+                let key_value = match key {
+                  PropertyKey::String(s) => Value::String(*s),
+                  PropertyKey::Symbol(s) => Value::Symbol(*s),
+                };
+                let key_root = match scope.heap_mut().add_root(key_value) {
+                  Ok(id) => id,
+                  Err(err) => {
+                    scope.heap_mut().remove_root(base_root);
+                    return Err(err);
+                  }
+                };
+                self.pending_base_root = Some(base_root);
+                self.pending_key_root = Some(key_root);
+              }
+              AssignmentReference::SuperProperty {
+                super_base,
+                receiver,
+                key,
+              } => {
+                let receiver_root = scope.heap_mut().add_root(*receiver)?;
+                let key_value = match key {
+                  PropertyKey::String(s) => Value::String(*s),
+                  PropertyKey::Symbol(s) => Value::Symbol(*s),
+                };
+                let key_root = match scope.heap_mut().add_root(key_value) {
+                  Ok(id) => id,
+                  Err(err) => {
+                    scope.heap_mut().remove_root(receiver_root);
+                    return Err(err);
+                  }
+                };
+                self.pending_base_root = Some(receiver_root);
+                self.pending_key_root = Some(key_root);
+                if let Some(super_base) = super_base {
+                  let super_base_root = scope.heap_mut().add_root(Value::Object(*super_base))?;
+                  self.pending_super_base_root = Some(super_base_root);
               }
             }
           }
