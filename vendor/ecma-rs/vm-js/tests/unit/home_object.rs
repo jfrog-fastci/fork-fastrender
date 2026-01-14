@@ -436,6 +436,60 @@ fn await_in_class_static_block_preserves_home_object_module() -> Result<(), VmEr
 }
 
 #[test]
+fn async_class_static_block_restores_home_object() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  // Force async class evaluation (via an `await` in the heritage expression). After the static
+  // block runs, any subsequently-created arrow functions must see the *restored* outer
+  // `[[HomeObject]]` (which is `None` at top level), not the class constructor used during the
+  // static block.
+  rt.exec_script(
+    r#"
+      var before = () => 1;
+      var inner, after, Aref;
+      var resolveHeritage;
+      var done;
+
+      async function run() {
+        class Base {}
+        const heritage = new Promise((r) => { resolveHeritage = () => r(Base); });
+
+        class A extends (await heritage) {
+          static {
+            this.inner = () => 2;
+          }
+        }
+
+        Aref = A;
+        inner = A.inner;
+        after = () => 3;
+        return true;
+      }
+
+      run().then((v) => { done = v; }, (e) => { done = e; });
+    "#,
+  )?;
+
+  // Before resuming, only the prefix statements have executed.
+  let before = assert_is_function(rt.exec_script("before")?);
+  assert_eq!(rt.heap().get_function_home_object(before)?, None);
+
+  // Resume and complete the suspended class definition.
+  rt.exec_script("resolveHeritage()")?;
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let ctor = assert_is_function(rt.exec_script("Aref")?);
+  let inner = assert_is_function(rt.exec_script("inner")?);
+  let after = assert_is_function(rt.exec_script("after")?);
+
+  assert_eq!(rt.heap().get_function_home_object(inner)?, Some(ctor));
+  assert_eq!(rt.heap().get_function_home_object(after)?, None);
+  assert_eq!(rt.exec_script("done")?, Value::Bool(true));
+
+  Ok(())
+}
+
+#[test]
 fn function_home_object_is_traced_by_gc() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 

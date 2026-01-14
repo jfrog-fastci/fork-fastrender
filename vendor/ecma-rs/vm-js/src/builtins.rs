@@ -33971,6 +33971,7 @@ mod object_builtins_regression_tests {
       r#"
         (function () {
           const toString = Object.prototype.toString;
+          const failures = [];
 
           // Iterator fallback: `%IteratorPrototype%[@@toStringTag] === "Iterator"` (iterator-helpers).
           const arrIter = [][Symbol.iterator]();
@@ -34015,24 +34016,30 @@ mod object_builtins_regression_tests {
            const okAsyncFn = toString.call(af) === "[object AsyncFunction]";
           const okAsyncProxy = toString.call(new Proxy(af, {})) === "[object AsyncFunction]";
 
-          return (
-            okArrIterDefault &&
-            okArrIterNull &&
-            okArrIterFallback &&
-            okGenNonString &&
-            okGenRestored &&
-            okArrayOverride &&
-            okFuncOverride &&
-            okErrorOverride &&
-            okDateOverride &&
-            okRegExpOverride &&
-            okAsyncFn &&
-            okAsyncProxy
-          );
+          if (!okArrIterDefault) failures.push("okArrIterDefault");
+          if (!okArrIterNull) failures.push("okArrIterNull");
+          if (!okArrIterFallback) failures.push("okArrIterFallback");
+          if (!okGenNonString) failures.push("okGenNonString");
+          if (!okGenRestored) failures.push("okGenRestored");
+          if (!okArrayOverride) failures.push("okArrayOverride");
+          if (!okFuncOverride) failures.push("okFuncOverride");
+          if (!okErrorOverride) failures.push("okErrorOverride");
+          if (!okDateOverride) failures.push("okDateOverride");
+          if (!okRegExpOverride) failures.push("okRegExpOverride");
+          if (!okAsyncFn) failures.push("okAsyncFn");
+          if (!okAsyncProxy) failures.push("okAsyncProxy");
+          return failures.join(",");
         })()
       "#,
     )?;
-    assert_eq!(v, Value::Bool(true));
+    let Value::String(s) = v else {
+      panic!("expected string, got {v:?}");
+    };
+    let failures = rt.heap().get_string(s)?.to_utf8_lossy();
+    assert!(
+      failures.is_empty(),
+      "Object.prototype.toString tag regressions: {failures}"
+    );
     Ok(())
   }
 

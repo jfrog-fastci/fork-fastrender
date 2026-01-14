@@ -415,7 +415,6 @@ impl<'a> Parser<'a> {
     // ES strict mode: `eval` and `arguments` are not valid assignment targets.
     Self::is_strict_mode_restricted_binding_identifier(name)
   }
-
   pub(crate) fn validate_strict_binding_identifier_name(
     &self,
     loc: Loc,

@@ -212,7 +212,7 @@ impl<'a> Parser<'a> {
         is_first = false;
       }
 
-      Ok(parameters)
+        Ok(parameters)
     }
 
     let res = parse_params_inner(self, ctx);
@@ -279,7 +279,7 @@ impl<'a> Parser<'a> {
       self.super_call_allowed += 1;
     } else {
       // `super()` is only valid in derived constructors (and arrow functions nested
-      // within them); it is never valid in methods/fields/static blocks.
+       // within them); it is never valid in methods/fields/static blocks.
       self.super_call_allowed = 0;
     }
     // Methods are non-arrow functions and have their own `arguments` binding.

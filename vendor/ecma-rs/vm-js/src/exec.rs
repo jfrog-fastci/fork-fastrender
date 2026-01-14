@@ -36990,11 +36990,17 @@ fn async_resume_from_frames(
                 if scope.heap().get_root(v_root).is_some() {
                   scope.heap_mut().remove_root(v_root);
                 }
+                if let Some(outer) = outer_lex {
+                  evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+                }
                 state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
               }
               Err(err) => {
                 if scope.heap().get_root(v_root).is_some() {
                   scope.heap_mut().remove_root(v_root);
+                }
+                if let Some(outer) = outer_lex {
+                  evaluator.env.set_lexical_env(scope.heap_mut(), outer);
                 }
                 return Err(err);
               }
@@ -37004,6 +37010,9 @@ fn async_resume_from_frames(
             if scope.heap().get_root(v_root).is_some() {
               scope.heap_mut().remove_root(v_root);
             }
+            if let Some(outer) = outer_lex {
+              evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+            }
             state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
           }
         },
@@ -37011,6 +37020,9 @@ fn async_resume_from_frames(
           if init_completion.is_abrupt() {
             if scope.heap().get_root(v_root).is_some() {
               scope.heap_mut().remove_root(v_root);
+            }
+            if let Some(outer) = outer_lex {
+              evaluator.env.set_lexical_env(scope.heap_mut(), outer);
             }
             state = AsyncState::Completion(init_completion);
             continue;
@@ -37039,11 +37051,17 @@ fn async_resume_from_frames(
               if scope.heap().get_root(v_root).is_some() {
                 scope.heap_mut().remove_root(v_root);
               }
+              if let Some(outer) = outer_lex {
+                evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+              }
               state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
             }
             Err(err) => {
               if scope.heap().get_root(v_root).is_some() {
                 scope.heap_mut().remove_root(v_root);
+              }
+              if let Some(outer) = outer_lex {
+                evaluator.env.set_lexical_env(scope.heap_mut(), outer);
               }
               return Err(err);
             }
@@ -37084,11 +37102,17 @@ fn async_resume_from_frames(
                 if scope.heap().get_root(v_root).is_some() {
                   scope.heap_mut().remove_root(v_root);
                 }
+                if let Some(outer) = outer_lex {
+                  evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+                }
                 state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
               }
               Err(err) => {
                 if scope.heap().get_root(v_root).is_some() {
                   scope.heap_mut().remove_root(v_root);
+                }
+                if let Some(outer) = outer_lex {
+                  evaluator.env.set_lexical_env(scope.heap_mut(), outer);
                 }
                 return Err(err);
               }
@@ -37097,6 +37121,9 @@ fn async_resume_from_frames(
           Err(err) => {
             if scope.heap().get_root(v_root).is_some() {
               scope.heap_mut().remove_root(v_root);
+            }
+            if let Some(outer) = outer_lex {
+              evaluator.env.set_lexical_env(scope.heap_mut(), outer);
             }
             state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
           }
@@ -37140,11 +37167,17 @@ fn async_resume_from_frames(
               if scope.heap().get_root(v_root).is_some() {
                 scope.heap_mut().remove_root(v_root);
               }
+              if let Some(outer) = outer_lex {
+                evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+              }
               state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
             }
             Err(err) => {
               if scope.heap().get_root(v_root).is_some() {
                 scope.heap_mut().remove_root(v_root);
+              }
+              if let Some(outer) = outer_lex {
+                evaluator.env.set_lexical_env(scope.heap_mut(), outer);
               }
               return Err(err);
             }
@@ -37189,11 +37222,17 @@ fn async_resume_from_frames(
                 if scope.heap().get_root(v_root).is_some() {
                   scope.heap_mut().remove_root(v_root);
                 }
+                if let Some(outer) = outer_lex {
+                  evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+                }
                 state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
               }
               Err(err) => {
                 if scope.heap().get_root(v_root).is_some() {
                   scope.heap_mut().remove_root(v_root);
+                }
+                if let Some(outer) = outer_lex {
+                  evaluator.env.set_lexical_env(scope.heap_mut(), outer);
                 }
                 return Err(err);
               }
@@ -37202,6 +37241,9 @@ fn async_resume_from_frames(
           Err(err) => {
             if scope.heap().get_root(v_root).is_some() {
               scope.heap_mut().remove_root(v_root);
+            }
+            if let Some(outer) = outer_lex {
+              evaluator.env.set_lexical_env(scope.heap_mut(), outer);
             }
             state = AsyncState::Completion(completion_from_expr_result(Err(err))?)
           }
@@ -56967,6 +57009,87 @@ mod tests {
       }
       Err(err) => return Err(err),
     }
+    Ok(())
+  }
+
+  #[test]
+  fn async_eval_static_block_super_property_uses_class_constructor_home_object_across_await(
+  ) -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    // Drive an *async* class definition (via an `await` in the heritage expression) and ensure the
+    // ensuing static block sees the class constructor object as its `[[HomeObject]]` so `super.prop`
+    // and `super[expr]` resolve correctly even after resumption.
+    //
+    // Note: `await` is an early error inside static blocks, so the suspension points live *around*
+    // the static block rather than within it.
+    rt.exec_script(
+      r#"
+        var out = "";
+        var receiver1, receiver2, receiver3;
+        var arrow;
+        var arrowFn;
+        var Dref;
+        var resolveHeritage;
+        var resolveGate;
+        var done;
+
+        async function run() {
+          class B {
+            static get __x() { receiver1 = this; return this.__tag; }
+            static get __y() { receiver2 = this; return this.__tag; }
+            static get __z() { receiver3 = this; return this.__tag; }
+          }
+
+          const heritage = new Promise((r) => { resolveHeritage = () => r(B); });
+          const gate = new Promise((r) => { resolveGate = r; });
+
+          class D extends (await heritage) {
+            static {
+              Dref = this;
+              this.__tag = 1;
+              out += super.__x;
+              arrowFn = () => super.__z;
+              this.__tag = 2;
+              out += super["__y"];
+            }
+          }
+
+          await gate;
+          arrow = arrowFn();
+          return true;
+        }
+
+        run().then((v) => { done = v; }, (e) => { done = e; });
+      "#,
+    )?;
+
+    // Before resolving the heritage promise, the class definition hasn't completed and the static
+    // block hasn't executed.
+    let value = rt.exec_script(
+      "out === '' && typeof arrowFn === 'undefined' && typeof arrow === 'undefined' && typeof Dref === 'undefined' && typeof resolveHeritage === 'function' && typeof resolveGate === 'function' && typeof done === 'undefined'",
+    )?;
+    assert_eq!(value, Value::Bool(true));
+
+    // Resume class evaluation so the static block executes.
+    rt.exec_script("resolveHeritage()")?;
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let value = rt.exec_script(
+      "out === '12' && typeof arrowFn === 'function' && typeof arrow === 'undefined' && receiver1 === Dref && receiver2 === Dref && typeof receiver3 === 'undefined' && typeof done === 'undefined'",
+    )?;
+    assert_eq!(value, Value::Bool(true));
+
+    // Resume after the external gate: the arrow closure should still resolve `super` against the
+    // class constructor `[[HomeObject]]` captured in the static block.
+    rt.exec_script("resolveGate(0)")?;
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let value =
+      rt.exec_script("out === '12' && arrow === 2 && receiver1 === Dref && receiver2 === Dref && receiver3 === Dref && done === true")?;
+    assert_eq!(value, Value::Bool(true));
     Ok(())
   }
 

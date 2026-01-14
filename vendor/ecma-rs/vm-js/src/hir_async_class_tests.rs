@@ -20,7 +20,7 @@ fn compile_and_get_function(rt: &mut JsRuntime, source: &str) -> Result<GcObject
   Ok(func_obj)
 }
 
-fn assert_compiled_hir_async_function(rt: &JsRuntime, func_obj: GcObject) -> Result<(), VmError> {
+fn assert_compiled_hir_async_function(rt: &mut JsRuntime, func_obj: GcObject) -> Result<(), VmError> {
   let call_handler = rt.heap.get_function_call_handler(func_obj)?;
   assert!(
     matches!(call_handler, CallHandler::User(_)),
@@ -90,7 +90,7 @@ fn hir_async_class_static_block_can_await() -> Result<(), VmError> {
     }
     Err(err) => return Err(err),
   };
-  assert_compiled_hir_async_function(&rt, func_obj)?;
+  assert_compiled_hir_async_function(&mut rt, func_obj)?;
 
   let result = call_and_await_promise(&mut rt, func_obj)?;
   assert_eq!(result, Value::Number(2.0));
@@ -112,7 +112,7 @@ fn hir_async_class_extends_expression_can_await() -> Result<(), VmError> {
       f
     "#,
   )?;
-  assert_compiled_hir_async_function(&rt, func_obj)?;
+  assert_compiled_hir_async_function(&mut rt, func_obj)?;
 
   let result = call_and_await_promise(&mut rt, func_obj)?;
   assert_eq!(result, Value::Bool(true));
@@ -133,7 +133,7 @@ fn hir_async_class_computed_method_name_can_await() -> Result<(), VmError> {
       f
     "#,
   )?;
-  assert_compiled_hir_async_function(&rt, func_obj)?;
+  assert_compiled_hir_async_function(&mut rt, func_obj)?;
 
   let result = call_and_await_promise(&mut rt, func_obj)?;
   assert_eq!(result, Value::Number(1.0));

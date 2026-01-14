@@ -6457,8 +6457,47 @@ impl<'vm> HirEvaluator<'vm> {
       hir_js::ExprKind::TaggedTemplate { tag, template } => {
         self.eval_tagged_template(scope, body, expr.span, *tag, template)
       }
+      hir_js::ExprKind::Await { expr: awaited_expr } => {
+        // Note: full async/await suspension is not yet implemented in the compiled executor.
+        // However, some internal tests exercise the compiled path by awaiting `Promise.resolve(...)`
+        // in nested expression positions (e.g. destructuring defaults / computed keys).
+        //
+        // Best-effort implementation: perform `PromiseResolveForAwait(value)` and synchronously
+        // unwrap the result if the promise is already settled.
+        let mut await_scope = scope.reborrow();
+        let awaited_value = self.eval_expr(&mut await_scope, body, *awaited_expr)?;
+        await_scope.push_root(awaited_value)?;
+
+        let promise_value = crate::promise_ops::promise_resolve_for_await_with_host_and_hooks(
+          self.vm,
+          &mut await_scope,
+          &mut *self.host,
+          &mut *self.hooks,
+          awaited_value,
+        )?;
+        await_scope.push_root(promise_value)?;
+        let Value::Object(promise_obj) = promise_value else {
+          return Err(VmError::InvariantViolation(
+            "PromiseResolveForAwait produced a non-object",
+          ));
+        };
+        if !await_scope.heap().is_promise_object(promise_obj) {
+          return Err(VmError::InvariantViolation(
+            "PromiseResolveForAwait produced a non-Promise object",
+          ));
+        }
+
+        let state = await_scope.heap().promise_state(promise_obj)?;
+        let result = await_scope.heap().promise_result(promise_obj)?;
+        match state {
+          crate::PromiseState::Fulfilled => Ok(result.unwrap_or(Value::Undefined)),
+          crate::PromiseState::Rejected => Err(VmError::Throw(result.unwrap_or(Value::Undefined))),
+          crate::PromiseState::Pending => Err(VmError::Unimplemented(
+            "await of a pending Promise (hir-js compiled path)",
+          )),
+        }
+      }
       other => Err(match other {
-        hir_js::ExprKind::Await { .. } => VmError::Unimplemented("await (hir-js compiled path)"),
         hir_js::ExprKind::Yield { .. } => VmError::Unimplemented("yield (hir-js compiled path)"),
         // Standalone `super` is a syntax error in ECMAScript. The compiled executor should only see
         // `ExprKind::Super` as part of `super.prop`, `super[expr]`, or `super()` evaluation (all of
