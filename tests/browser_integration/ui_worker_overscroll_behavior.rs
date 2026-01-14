@@ -39,16 +39,14 @@ fn next_frame_ready(rx: &impl support::RecvTimeout<WorkerToUi>, tab_id: TabId) -
   }
 }
 
-fn next_frame_and_scroll_state(
+fn next_scroll_state_from_frame_ready(
   rx: &impl support::RecvTimeout<WorkerToUi>,
   tab_id: TabId,
-) -> (RenderedFrame, ScrollState) {
-  let (frame, scroll) = support::wait_for_frame_and_scroll_state_updated(rx, tab_id, TIMEOUT);
-  assert_eq!(
-    frame.scroll_state, scroll,
-    "FrameReady.scroll_state should match ScrollStateUpdated"
-  );
-  (frame, scroll)
+) -> ScrollState {
+  // `WorkerToUi::ScrollStateUpdated` may be emitted *before* the corresponding `FrameReady` (early
+  // scroll acknowledgement), or not at all (e.g. explicit repaint after a no-op scroll). The scroll
+  // state embedded in `RenderedFrame` is authoritative for what was actually painted.
+  next_frame_ready(rx, tab_id).scroll_state
 }
 
 #[test]
@@ -117,8 +115,7 @@ fn overscroll_behavior_contain_prevents_scroll_chaining_to_viewport() {
 
   // The worker does not guarantee an initial `ScrollStateUpdated` during navigation. Use the first
   // painted frame as our baseline scroll state.
-  let initial_frame = next_frame_ready(&ui_rx, tab_id);
-  let baseline_viewport_y = initial_frame.scroll_state.viewport.y;
+  let baseline_viewport_y = next_scroll_state_from_frame_ready(&ui_rx, tab_id).viewport.y;
   assert!(
     baseline_viewport_y.abs() < 1e-3,
     "expected initial viewport scroll y≈0, got {baseline_viewport_y}"
@@ -137,7 +134,7 @@ fn overscroll_behavior_contain_prevents_scroll_chaining_to_viewport() {
       Some(contain_pointer),
     ))
     .expect("Scroll contain scroller to max");
-  let (_frame, contain_scrolled) = next_frame_and_scroll_state(&ui_rx, tab_id);
+  let contain_scrolled = next_scroll_state_from_frame_ready(&ui_rx, tab_id);
 
   assert!(
     (contain_scrolled.viewport.y - baseline_viewport_y).abs() < 1.0,
@@ -165,9 +162,11 @@ fn overscroll_behavior_contain_prevents_scroll_chaining_to_viewport() {
 
   // Overscroll while already at max: containment should prevent chaining to the viewport.
   //
-  // `UiToWorker::Scroll` only triggers a repaint when it changes scroll state. When containment
-  // works, overscrolling a maxed-out element is a no-op (no element scroll + no viewport scroll),
-  // so explicitly request a repaint to observe the resulting state.
+  // When containment works, overscrolling a maxed-out element is a no-op (no element scroll + no
+  // viewport scroll), so the worker may not produce a new `FrameReady` on the `UiToWorker::Scroll`
+  // alone. Request an explicit repaint so the test can observe the resulting state via the
+  // authoritative `RenderedFrame.scroll_state` (a `ScrollStateUpdated` may arrive early or be
+  // absent entirely).
   ui_tx
     .send(support::scroll_msg(
       tab_id,
@@ -178,9 +177,7 @@ fn overscroll_behavior_contain_prevents_scroll_chaining_to_viewport() {
   ui_tx
     .send(support::request_repaint(tab_id, RepaintReason::Explicit))
     .expect("RequestRepaint after overscroll contain");
-  // Overscrolling a maxed-out contained scroller is a no-op, so we may only get a `FrameReady` from
-  // the explicit repaint request (no accompanying `ScrollStateUpdated`).
-  let contain_scrolled_again = next_frame_ready(&ui_rx, tab_id).scroll_state;
+  let contain_scrolled_again = next_scroll_state_from_frame_ready(&ui_rx, tab_id);
   let contain_offset_again = contain_scrolled_again
     .elements
     .get(&contain_box_id)
@@ -216,7 +213,7 @@ fn overscroll_behavior_contain_prevents_scroll_chaining_to_viewport() {
       Some(auto_pointer),
     ))
     .expect("Scroll auto scroller to max");
-  let (_frame, auto_scrolled) = next_frame_and_scroll_state(&ui_rx, tab_id);
+  let auto_scrolled = next_scroll_state_from_frame_ready(&ui_rx, tab_id);
   let viewport_after_auto_to_max = auto_scrolled.viewport.y;
   assert!(
     (viewport_after_auto_to_max - baseline_viewport_y).abs() < 1.0,
@@ -257,7 +254,7 @@ fn overscroll_behavior_contain_prevents_scroll_chaining_to_viewport() {
       Some(auto_pointer),
     ))
     .expect("Scroll auto scroller beyond max (should chain)");
-  let (_frame, auto_overscrolled) = next_frame_and_scroll_state(&ui_rx, tab_id);
+  let auto_overscrolled = next_scroll_state_from_frame_ready(&ui_rx, tab_id);
   assert!(
     auto_overscrolled.viewport.y > viewport_after_auto_to_max + 10.0,
     "expected scroll chaining to increase viewport scroll when overscrolling auto scroller; viewport y was {} then {}",
