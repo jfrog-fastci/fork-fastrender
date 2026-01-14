@@ -1569,11 +1569,28 @@ fn sanitize_path_for_toast(path: &std::path::Path, max_bytes: usize) -> String {
   let keep_bytes = max_bytes - ellipsis_bytes;
 
   let raw = path.to_string_lossy();
+  let mut raw = raw.as_ref();
+
+  // Avoid scanning arbitrarily huge strings in full: keep only the tail portion for sanitization.
+  // This keeps worst-case work bounded when the persisted path is corrupt or attacker-controlled
+  // (e.g. from a malformed session file).
+  const ABSURD_PATH_BYTES_MULTIPLIER: usize = 64;
+  let absurd_limit = max_bytes.saturating_mul(ABSURD_PATH_BYTES_MULTIPLIER);
 
   // We only need the full string when it fits within the byte limit. Otherwise, keep just the
   // tail (bounded) to avoid allocating based on attacker-controlled path lengths.
   let mut full = String::with_capacity(max_bytes.min(128));
   let mut overflowed = false;
+  if raw.len() > absurd_limit {
+    let start = raw.len().saturating_sub(absurd_limit);
+    let mut start = start.min(raw.len());
+    while start < raw.len() && !raw.is_char_boundary(start) {
+      start += 1;
+    }
+    raw = raw.get(start..).unwrap_or(raw);
+    // The displayed output will necessarily be truncated vs the original string.
+    overflowed = true;
+  }
 
   use std::collections::VecDeque;
   let mut tail: VecDeque<char> = VecDeque::new();
