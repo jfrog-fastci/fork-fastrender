@@ -3,7 +3,7 @@
 //! This module is intentionally small: it is a single-stream (video-only) player that:
 //! - demuxes VP9 packets from WebM (`WebmDemuxer`)
 //! - decodes VP9 into RGBA8 frames (`codecs::vp9`)
-//! - schedules presentation using `av_sync::decide`
+//! - schedules presentation using `av_sync::decide` + `av_sync::suggest_wake_after`
 //! - exposes the most recently presented frame via a non-blocking `current_frame()` API.
 
 use crate::media::av_sync::{decide, suggest_wake_after, AvSyncConfig, VideoSyncAction};
@@ -225,14 +225,18 @@ impl MediaPlayer {
       let mut processed_frames = 0usize;
 
       loop {
-        if processed_frames >= MAX_VIDEO_FRAMES_PER_TICK || demux_packets >= MAX_DEMUX_PACKETS_PER_TICK {
+        if processed_frames >= MAX_VIDEO_FRAMES_PER_TICK
+          || demux_packets >= MAX_DEMUX_PACKETS_PER_TICK
+        {
           // Avoid spinning forever on malformed streams.
           wake_after = Some(Duration::ZERO);
           break;
         }
 
         // Ensure we have at least one decoded video frame to consider.
-        while state.video_queue.is_empty() && !state.reached_eof && demux_packets < MAX_DEMUX_PACKETS_PER_TICK
+        while state.video_queue.is_empty()
+          && !state.reached_eof
+          && demux_packets < MAX_DEMUX_PACKETS_PER_TICK
         {
           demux_packets += 1;
           let Some(pkt) = state.demuxer.next_packet()? else {
@@ -247,7 +251,11 @@ impl MediaPlayer {
 
           let decoded = state.vp9.decode(&pkt)?;
           for frame in decoded {
-            let image = Arc::new(ImageData::new_pixels(frame.width, frame.height, frame.rgba8));
+            let image = Arc::new(ImageData::new_pixels(
+              frame.width,
+              frame.height,
+              frame.rgba8,
+            ));
             state.video_queue.push_back(QueuedVideoFrame {
               pts: Duration::from_nanos(frame.pts_ns),
               image,
@@ -294,7 +302,8 @@ mod tests {
   use std::io::Cursor;
 
   fn fixture_bytes() -> Vec<u8> {
-    let path = crate::testing::fixture_path("pages/fixtures/media_playback/assets/test_vp9_opus.webm");
+    let path =
+      crate::testing::fixture_path("pages/fixtures/media_playback/assets/test_vp9_opus.webm");
     std::fs::read(&path).unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()))
   }
 

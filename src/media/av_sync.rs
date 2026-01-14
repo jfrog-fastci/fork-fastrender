@@ -96,7 +96,11 @@ pub enum AvSyncDecision {
 
 /// Backwards-compatible helper to decide how to handle a video frame with presentation timestamp
 /// `pts` at the current master/timeline time `timeline_now`.
-pub fn decide_video_frame(pts: Duration, timeline_now: Duration, cfg: &AvSyncConfig) -> AvSyncDecision {
+pub fn decide_video_frame(
+  pts: Duration,
+  timeline_now: Duration,
+  cfg: &AvSyncConfig,
+) -> AvSyncDecision {
   match decide(timeline_now, pts, cfg) {
     VideoSyncAction::PresentNow => AvSyncDecision::Present,
     VideoSyncAction::Drop => AvSyncDecision::Drop,
@@ -236,10 +240,7 @@ mod tests {
   #[test]
   fn av_sync_config_from_env_parses_overrides_and_allows_underscores() {
     let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([
-      (
-        ENV_AV_SYNC_TOLERANCE_MS.to_string(),
-        "1_234".to_string(),
-      ),
+      (ENV_AV_SYNC_TOLERANCE_MS.to_string(), "1_234".to_string()),
       (ENV_AV_SYNC_MAX_LATE_MS.to_string(), "50".to_string()),
       (ENV_AV_SYNC_MAX_EARLY_MS.to_string(), "60".to_string()),
     ])));
@@ -263,8 +264,7 @@ mod tests {
 
     // Extremely early frame (e.g. due to discontinuity/buffering). The wake suggestion should be
     // capped so we still wake periodically and can observe state changes.
-    let wake =
-      suggest_wake_after(now, Some(ms(5_000)), &cfg).expect("expected wake suggestion");
+    let wake = suggest_wake_after(now, Some(ms(5_000)), &cfg).expect("expected wake suggestion");
     assert_eq!(wake, AV_SYNC_WAKE_AFTER_MAX);
   }
 
@@ -335,7 +335,11 @@ mod tests {
 
     // Just outside tolerance, but below max_early: present.
     assert_eq!(
-      decide(master, master + cfg.tolerance + Duration::from_nanos(1), &cfg),
+      decide(
+        master,
+        master + cfg.tolerance + Duration::from_nanos(1),
+        &cfg
+      ),
       VideoSyncAction::PresentNow
     );
 
@@ -347,7 +351,11 @@ mod tests {
 
     // Beyond max_early: hold until the target PTS.
     assert_eq!(
-      decide(master, master + cfg.max_early + Duration::from_nanos(1), &cfg),
+      decide(
+        master,
+        master + cfg.max_early + Duration::from_nanos(1),
+        &cfg
+      ),
       VideoSyncAction::WaitUntil(cfg.max_early + Duration::from_nanos(1))
     );
   }
@@ -364,10 +372,7 @@ mod tests {
 
     // Early beyond tolerance, but not "very early".
     let pts = master + Duration::from_millis(10);
-    assert_eq!(
-      decide(master, pts, &cfg),
-      VideoSyncAction::PresentNow
-    );
+    assert_eq!(decide(master, pts, &cfg), VideoSyncAction::PresentNow);
 
     // Beyond max_early also waits (same WaitUntil value).
     let pts = master + cfg.max_early + Duration::from_nanos(1);
