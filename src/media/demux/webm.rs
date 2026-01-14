@@ -14,6 +14,18 @@ use std::io::{self, Read, Seek, SeekFrom};
 
 const WEBM_DEMUX_DEADLINE_STRIDE: usize = 1024;
 const WEBM_DEMUX_IO_DEADLINE_STRIDE: usize = 8192;
+/// Hard cap on encoded packet size to avoid unbounded memory usage on corrupted/adversarial WebM
+/// files.
+const MAX_WEBM_PACKET_BYTES: usize = 64 * 1024 * 1024;
+
+fn check_webm_packet_size(track_id: u64, len: usize) -> MediaResult<()> {
+  if len > MAX_WEBM_PACKET_BYTES {
+    return Err(MediaError::Demux(format!(
+      "WebM packet too large (track {track_id}, size {len} bytes, cap {MAX_WEBM_PACKET_BYTES} bytes)"
+    )));
+  }
+  Ok(())
+}
 
 struct DeadlineReader<R> {
   inner: R,
@@ -407,6 +419,7 @@ impl<R: Read + Seek> WebmDemuxer<R> {
         .unwrap_or(0);
 
       let data = std::mem::take(&mut self.frame.data);
+      check_webm_packet_size(self.frame.track, data.len())?;
       let is_keyframe = match self.frame.is_keyframe {
         Some(is_keyframe) => is_keyframe,
         None => {
@@ -937,6 +950,19 @@ mod tests {
     assert!(
       msg.contains("reserved"),
       "expected error mentioning reserved bit, got {msg:?}"
+    );
+  }
+
+  #[test]
+  fn rejects_oversized_webm_packet() {
+    let err =
+      check_webm_packet_size(7, MAX_WEBM_PACKET_BYTES + 1).expect_err("expected size cap error");
+    let MediaError::Demux(msg) = err else {
+      panic!("expected demux error, got {err:?}");
+    };
+    assert!(
+      msg.contains(&MAX_WEBM_PACKET_BYTES.to_string()),
+      "expected error mentioning cap, got {msg:?}"
     );
   }
 }

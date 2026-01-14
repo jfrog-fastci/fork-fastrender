@@ -108,6 +108,9 @@ Current behavior:
 - Emits `MediaPacket` **only** for:
   - VP9 (`codec_id = "V_VP9"`)
   - Opus (`codec_id = "A_OPUS"`)
+- Safety: individual encoded packets are rejected if they exceed a hard cap (currently **64 MiB**;
+  see `MAX_WEBM_PACKET_BYTES` in `src/media/demux/webm.rs`) to avoid unbounded memory usage on
+  corrupted/adversarial files.
 - Track selection/filtering:
   - Track metadata is used to pick “primary” audio/video tracks (see
     [`src/media/track_selection.rs`](../src/media/track_selection.rs)).
@@ -177,6 +180,10 @@ Known limitations / gaps:
   `MAX_TOTAL_SAMPLES` in `src/media/demuxer.rs`) so corrupted files can’t force unbounded allocations.
   When caps are hit, the demuxer falls back to the mp4-crate timestamp path (reduced timestamp/seek
   fidelity).
+- **Large sample allocations**: the `mp4` crate returns sample bytes as owned buffers; it may
+  allocate attacker-controlled sample sizes before we can enforce a hard cap. Fixing this likely
+  requires a zero-copy demux path and/or pre-size checks (tracked as part of broader MP4 correctness
+  work).
 - Fragmented MP4 (`moof`/`mdat`) is not supported by this demuxer.
 
 ## Codec decode backends
@@ -370,4 +377,3 @@ The codebase provides a small “narrow waist”:
 When adding new pieces, keep them deterministic and avoid introducing hard system dependencies into
 the default build; prefer optional feature gates when platform libs or external binaries are
 required.
-
