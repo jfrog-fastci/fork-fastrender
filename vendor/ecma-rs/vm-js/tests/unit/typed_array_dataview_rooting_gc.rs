@@ -1875,3 +1875,322 @@ fn reflect_apply_roots_target_across_gc_in_create_list_from_array_like() -> Resu
 
   Ok(())
 }
+
+#[test]
+fn global_parse_int_roots_radix_across_gc_in_input_tostring() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const input = { toString() { ({});
+        return "10";
+      }};
+      const radix = { valueOf() { return 10; } };
+      return [input, radix, undefined];
+    })()"#,
+  )?;
+
+  let [input_val, radix_val, _] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.eval(); // any object; global_parse_int ignores callee
+  let args = [input_val, radix_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::global_parse_int(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Undefined,
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected parseInt to trigger GC under tiny heap limits"
+  );
+  assert_eq!(out, Value::Number(10.0));
+
+  Ok(())
+}
+
+#[test]
+fn math_max_roots_later_args_across_gc_in_to_number() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const a = { valueOf() { ({});
+        return 1;
+      }};
+      const b = { valueOf() { return 2; } };
+      return [a, b, undefined];
+    })()"#,
+  )?;
+
+  let [a_val, b_val, _] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.eval(); // unused by Math.max
+  let args = [a_val, b_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::math_max(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Undefined,
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected Math.max to trigger GC under tiny heap limits"
+  );
+  assert_eq!(out, Value::Number(2.0));
+
+  Ok(())
+}
+
+#[test]
+fn array_constructor_roots_later_args_across_gc_in_root_stack_growth() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const a = { id: 1 };
+      const b = { id: 2 };
+      return [a, b, undefined];
+    })()"#,
+  )?;
+
+  let [a_val, b_val, _] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.array_constructor();
+  let args = [a_val, b_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::array_constructor_call(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Undefined,
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected Array(...) to trigger GC under tiny heap limits"
+  );
+
+  // Validate array contents (`{id:1}`, `{id:2}`) to ensure later args survived GC during element
+  // definition.
+  scope.push_root(out)?;
+  let Value::Object(arr_obj) = out else {
+    return Err(VmError::InvariantViolation("Array constructor returned non-object"));
+  };
+  assert_eq!(scope.heap().array_length(arr_obj)?, 2);
+
+  let id_s = scope.alloc_string("id")?;
+  scope.push_root(Value::String(id_s))?;
+  let id_key = PropertyKey::from_string(id_s);
+
+  let e0 = scope
+    .heap()
+    .array_fast_own_data_element_value(arr_obj, 0)?
+    .ok_or(VmError::InvariantViolation("missing array[0]"))?;
+  let e1 = scope
+    .heap()
+    .array_fast_own_data_element_value(arr_obj, 1)?
+    .ok_or(VmError::InvariantViolation("missing array[1]"))?;
+
+  let Value::Object(o0) = e0 else {
+    return Err(VmError::InvariantViolation("expected array[0] to be object"));
+  };
+  let Value::Object(o1) = e1 else {
+    return Err(VmError::InvariantViolation("expected array[1] to be object"));
+  };
+
+  assert_eq!(
+    scope.heap().object_get_own_data_property_value(o0, &id_key)?,
+    Some(Value::Number(1.0))
+  );
+  assert_eq!(
+    scope.heap().object_get_own_data_property_value(o1, &id_key)?,
+    Some(Value::Number(2.0))
+  );
+
+  Ok(())
+}
+
+#[test]
+fn function_bind_roots_bound_args_across_gc_in_length_get_trap() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const target = new Proxy(function (a, b) { return [a, b]; }, {
+        get(t, p, r) {
+          if (p === "length") { ({});
+            return 2;
+          }
+          if (p === "name") return "f";
+          return Reflect.get(t, p, r);
+        }
+      });
+      const boundThis = undefined;
+      const a = { id: 1 };
+      const b = { id: 2 };
+      return [target, boundThis, a, b];
+    })()"#,
+  )?;
+
+  let [target_val, bound_this_val, a_val, b_val] = extract_fast_array_elems4(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.function_constructor(); // unused
+  let args = [bound_this_val, a_val, b_val];
+
+  let mut scope = heap.scope();
+  let bound = builtins::function_prototype_bind(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    target_val,
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected Function.prototype.bind to trigger GC under tiny heap limits"
+  );
+
+  // Call the bound function and ensure it returns the bound args.
+  scope.push_root(bound)?;
+  let out = vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, bound, Value::Undefined, &[])?;
+
+  scope.push_root(out)?;
+  let Value::Object(arr_obj) = out else {
+    return Err(VmError::InvariantViolation("expected bound call result to be array object"));
+  };
+
+  let e0 = scope
+    .heap()
+    .array_fast_own_data_element_value(arr_obj, 0)?
+    .ok_or(VmError::InvariantViolation("missing result[0]"))?;
+  let e1 = scope
+    .heap()
+    .array_fast_own_data_element_value(arr_obj, 1)?
+    .ok_or(VmError::InvariantViolation("missing result[1]"))?;
+
+  // Root the elements before allocating the `"id"` key string.
+  scope.push_roots(&[e0, e1])?;
+
+  let id_s = scope.alloc_string("id")?;
+  scope.push_root(Value::String(id_s))?;
+  let id_key = PropertyKey::from_string(id_s);
+
+  let Value::Object(o0) = e0 else {
+    return Err(VmError::InvariantViolation("expected bound result[0] to be object"));
+  };
+  let Value::Object(o1) = e1 else {
+    return Err(VmError::InvariantViolation("expected bound result[1] to be object"));
+  };
+
+  assert_eq!(
+    scope.heap().object_get_own_data_property_value(o0, &id_key)?,
+    Some(Value::Number(1.0))
+  );
+  assert_eq!(
+    scope.heap().object_get_own_data_property_value(o1, &id_key)?,
+    Some(Value::Number(2.0))
+  );
+
+  Ok(())
+}
+
+#[test]
+fn string_from_char_code_roots_later_args_across_gc_in_first_tonumber() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const a = { valueOf() { ({});
+        return 65;
+      }};
+      const b = { valueOf() { return 66; } };
+      return [a, b, undefined];
+    })()"#,
+  )?;
+
+  let [a_val, b_val, _] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.string_constructor(); // unused
+  let args = [a_val, b_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::string_from_char_code(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Undefined,
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected String.fromCharCode to trigger GC under tiny heap limits"
+  );
+
+  let Value::String(out_s) = out else {
+    return Err(VmError::InvariantViolation(
+      "String.fromCharCode returned non-string",
+    ));
+  };
+  let out_utf8 = scope.heap().get_string(out_s)?.to_utf8_lossy();
+  assert_eq!(out_utf8, "AB");
+
+  Ok(())
+}

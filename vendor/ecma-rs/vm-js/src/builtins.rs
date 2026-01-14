@@ -2606,8 +2606,13 @@ fn array_constructor_impl(
   scope: &mut Scope<'_>,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  // Root all args for host-call safety: creating the array and populating its elements can allocate
+  // and trigger GC, and unrooted later arguments would otherwise be collected.
+  let mut scope = scope.reborrow();
+  scope.push_roots(args)?;
+
   match args {
-    [] => Ok(Value::Object(create_array_object(vm, scope, 0)?)),
+    [] => Ok(Value::Object(create_array_object(vm, &mut scope, 0)?)),
     [Value::Number(n)] => {
       // https://tc39.es/ecma262/#sec-array-constructor
       //
@@ -2617,15 +2622,15 @@ fn array_constructor_impl(
       // This accepts +0/-0 and integer lengths in the inclusive range [0, 2^32-1].
       if !n.is_finite() || n.fract() != 0.0 || *n < 0.0 || *n > (u32::MAX as f64) {
         let intr = require_intrinsics(vm)?;
-        let err = crate::error_object::new_range_error(scope, intr, "Invalid array length")?;
+        let err = crate::error_object::new_range_error(&mut scope, intr, "Invalid array length")?;
         return Err(VmError::Throw(err));
       }
-      Ok(Value::Object(create_array_object(vm, scope, *n as u32)?))
+      Ok(Value::Object(create_array_object(vm, &mut scope, *n as u32)?))
     }
     _ => {
       // Treat arguments as elements.
       let len = u32::try_from(args.len()).map_err(|_| VmError::OutOfMemory)?;
-      let array = create_array_object(vm, scope, len)?;
+      let array = create_array_object(vm, &mut scope, len)?;
 
       for (i, el) in args.iter().copied().enumerate() {
         if i % 1024 == 0 {
@@ -2940,6 +2945,9 @@ pub fn array_constructor_of(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Root all items up-front so GC during construction/element definition cannot invalidate later
+  // arguments under host calls.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
 
   // `C` is the `this` value (generic factory method).
   let c = this;
@@ -11890,9 +11898,10 @@ pub fn function_prototype_bind(
   let bound_args = args.get(1..).unwrap_or(&[]);
 
   let mut scope = scope.reborrow();
-  // Root target/bound_this across `Get` and metadata coercions (which can invoke user code).
+  // Root `args` + `target` across `Get` and metadata coercions (which can invoke user code) so a GC
+  // cannot collect bound arguments when this builtin is invoked directly from the host.
+  scope.push_roots_with_extra_roots(args, &[Value::Object(target)], &[])?;
   scope.push_root(Value::Object(target))?;
-  scope.push_root(bound_this)?;
 
   // Spec: https://tc39.es/ecma262/#sec-function.prototype.bind
   // `targetLen = ToLength(Get(target, "length"))` where `Get` is Proxy-trap-observable.
@@ -19822,6 +19831,11 @@ pub fn string_from_char_code(
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  // Root all inputs before pre-checking heap limits / coercing each argument, since both can
+  // allocate/GC and this builtin can be invoked directly from the host.
+  scope.push_roots(args)?;
+
   // ToUint16(ToNumber(arg)) for each argument, then construct a string from the resulting UTF-16
   // code units.
   //
@@ -19868,6 +19882,11 @@ pub fn string_from_code_point(
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  // Root all args up-front so GC during `ToNumber` coercion cannot invalidate later code points
+  // when invoked from the host.
+  scope.push_roots(args)?;
+
   // Spec: https://tc39.es/ecma262/#sec-string.fromcodepoint
   //
   // Validate each argument as a code point in [0, 0x10FFFF], then UTF-16 encode.
@@ -19883,7 +19902,7 @@ pub fn string_from_code_point(
     // `String.fromCodePoint(undefined)` must throw because `ToNumber(undefined) === NaN`.
     if !next.is_finite() || next.trunc() != next || next < 0.0 || next > 0x10FFFF as f64 {
       let intr = require_intrinsics(vm)?;
-      let err = crate::new_range_error(scope, intr, "Invalid code point")?;
+      let err = crate::new_range_error(&mut scope, intr, "Invalid code point")?;
       return Err(VmError::Throw(err));
     }
 
@@ -19921,6 +19940,7 @@ pub fn string_raw(
 ) -> Result<Value, VmError> {
   // Spec: https://tc39.es/ecma262/#sec-string.raw
   let mut scope = scope.reborrow();
+  scope.push_roots(args)?;
 
   let call_site = args.get(0).copied().unwrap_or(Value::Undefined);
   let template = scope.to_object(vm, host, hooks, call_site)?;
@@ -24383,6 +24403,9 @@ pub fn global_parse_int(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
+  // Root all args before `ToString`/`ToNumber` coercions, which can allocate/GC and must not
+  // invalidate later arguments when this builtin is invoked directly from the host.
+  scope.push_roots(args)?;
 
   let input = args.get(0).copied().unwrap_or(Value::Undefined);
   let radix_arg = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -25198,6 +25221,10 @@ fn math_binary_number_op(
 ) -> Result<Value, VmError> {
   let a = args.get(0).copied().unwrap_or(Value::Undefined);
   let b = args.get(1).copied().unwrap_or(Value::Undefined);
+  // Root both inputs before coercion: `ToNumber(a)` can allocate/GC and must not invalidate `b`
+  // under host calls.
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[a, b])?;
   let x = scope.to_number(vm, host, hooks, a)?;
   let y = scope.to_number(vm, host, hooks, b)?;
   Ok(Value::Number(f(x, y)))
@@ -25757,6 +25784,9 @@ pub fn math_hypot(
     return Ok(Value::Number(0.0));
   }
 
+  let mut scope = scope.reborrow();
+  scope.push_roots(args)?;
+
   let mut coerced: Vec<f64> = Vec::new();
   coerced
     .try_reserve_exact(args.len())
@@ -25819,6 +25849,10 @@ pub fn math_imul(
 ) -> Result<Value, VmError> {
   let a = args.get(0).copied().unwrap_or(Value::Undefined);
   let b = args.get(1).copied().unwrap_or(Value::Undefined);
+  // Root both args before coercion: `ToNumber(a)` can allocate/GC and must not invalidate `b` under
+  // host calls.
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[a, b])?;
   let x = scope.to_number(vm, host, hooks, a)?;
   let y = scope.to_number(vm, host, hooks, b)?;
   let ax = to_uint32(x);
@@ -26041,6 +26075,9 @@ pub fn math_max(
     return Ok(Value::Number(f64::NEG_INFINITY));
   }
 
+  let mut scope = scope.reborrow();
+  scope.push_roots(args)?;
+
   // Spec: https://tc39.es/ecma262/#sec-math.max
   // Coerce all arguments before inspecting them.
   let mut coerced: Vec<f64> = Vec::new();
@@ -26089,6 +26126,9 @@ pub fn math_min(
     return Ok(Value::Number(f64::INFINITY));
   }
 
+  let mut scope = scope.reborrow();
+  scope.push_roots(args)?;
+
   // Spec: https://tc39.es/ecma262/#sec-math.min
   // Coerce all arguments before inspecting them.
   let mut coerced: Vec<f64> = Vec::new();
@@ -26135,6 +26175,10 @@ pub fn math_pow(
 ) -> Result<Value, VmError> {
   let base = args.get(0).copied().unwrap_or(Value::Undefined);
   let exp = args.get(1).copied().unwrap_or(Value::Undefined);
+  // Root both args before coercion: `ToNumber(base)` can allocate/GC and must not invalidate `exp`
+  // under host calls.
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[base, exp])?;
   let x = scope.to_number(vm, host, hooks, base)?;
   let y = scope.to_number(vm, host, hooks, exp)?;
   Ok(Value::Number(crate::ops::number_exponentiate(x, y)))
