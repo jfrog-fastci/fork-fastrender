@@ -88,10 +88,13 @@ jobs:
           timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh check -p vm-js
           timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh check -p parse-js
           # Run the `test262-semantic` unit tests (including stack overflow regression coverage).
-          timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p test262-semantic --lib --tests
+          # Note: `test262-semantic` depends on the large `vm-js` crate; cold builds can take
+          # >10 minutes on GitHub-hosted runners. Use a more generous timeout so this stays stable
+          # in CI (while still preventing infinite hangs).
+          timeout -k 10 1800 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p test262-semantic --lib --tests
           # Also run in release mode so the stack overflow mapping remains consistent with the
           # `js_test262` workflow (which executes `test262-semantic` via `cargo run --release`).
-          timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p test262-semantic --release --lib --tests
+          timeout -k 10 1800 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p test262-semantic --release --lib --tests
 
   ecma-rs-native:
     name: ecma-rs native (Rust 1.92.0)
