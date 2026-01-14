@@ -1769,8 +1769,9 @@ fn tab_ui(
       .on_hover_text("Close tab (Ctrl/Cmd+W)");
     #[cfg(test)]
     store_test_close_id(ui.ctx(), tab.id, close_resp.id);
+    let close_a11y_label = tab.tab_close_accessible_label(title);
     close_resp.widget_info({
-      let label = format!("{}: {}", BrowserIcon::CloseTab.a11y_label(), title);
+      let label = close_a11y_label.clone();
       move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
     });
     super::show_tooltip_on_focus(ui, &close_resp, "Close tab (Ctrl/Cmd+W)");

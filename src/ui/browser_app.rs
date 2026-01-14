@@ -628,6 +628,8 @@ pub struct BrowserTabState {
   debug_log: VecDeque<String>,
   #[cfg(any(test, feature = "browser_ui"))]
   tab_a11y_label_cache: crate::ui::tab_accessible_label::TabAccessibleLabelCache,
+  #[cfg(any(test, feature = "browser_ui"))]
+  tab_close_a11y_label_cache: crate::ui::tab_accessible_label::TitlePrefixedLabelCache,
 }
 
 impl BrowserTabState {
@@ -681,6 +683,9 @@ impl BrowserTabState {
       debug_log: VecDeque::new(),
       #[cfg(any(test, feature = "browser_ui"))]
       tab_a11y_label_cache: crate::ui::tab_accessible_label::TabAccessibleLabelCache::default(),
+      #[cfg(any(test, feature = "browser_ui"))]
+      tab_close_a11y_label_cache:
+        crate::ui::tab_accessible_label::TitlePrefixedLabelCache::default(),
     }
   }
 
@@ -717,6 +722,13 @@ impl BrowserTabState {
       has_error,
       has_warning,
     )
+  }
+
+  #[cfg(any(test, feature = "browser_ui"))]
+  pub(crate) fn tab_close_accessible_label(&mut self, title: &str) -> std::sync::Arc<str> {
+    self
+      .tab_close_a11y_label_cache
+      .get_or_update(crate::ui::BrowserIcon::CloseTab.a11y_label(), title)
   }
 
   /// Returns a deterministic monotonic progress fraction for a chrome loading indicator.

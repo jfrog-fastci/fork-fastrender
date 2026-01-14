@@ -139,6 +139,46 @@ impl TabAccessibleLabelCache {
   }
 }
 
+pub(crate) fn format_title_prefixed_accessible_label(prefix: &str, title: &str) -> String {
+  // Common case: both strings are non-empty.
+  let mut out = String::with_capacity(prefix.len() + 2 + title.len());
+  out.push_str(prefix);
+  out.push_str(": ");
+  out.push_str(title);
+  out
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TitlePrefixedLabelCache {
+  entry: Option<TitlePrefixedLabelCacheEntry>,
+}
+
+#[derive(Debug, Clone)]
+struct TitlePrefixedLabelCacheEntry {
+  prefix: &'static str,
+  title: Arc<str>,
+  label: Arc<str>,
+}
+
+impl TitlePrefixedLabelCache {
+  pub fn get_or_update(&mut self, prefix: &'static str, title: &str) -> Arc<str> {
+    if let Some(entry) = &self.entry {
+      if entry.prefix == prefix && entry.title.as_ref() == title {
+        return Arc::clone(&entry.label);
+      }
+    }
+
+    let title_arc: Arc<str> = Arc::from(title);
+    let label_arc: Arc<str> = Arc::from(format_title_prefixed_accessible_label(prefix, title));
+    self.entry = Some(TitlePrefixedLabelCacheEntry {
+      prefix,
+      title: title_arc,
+      label: Arc::clone(&label_arc),
+    });
+    label_arc
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -301,5 +341,25 @@ mod tests {
 
     let f = cache.get_or_update("Example 2", true, true, true, true, true);
     assert!(Arc::ptr_eq(&e, &f), "expected cache hit after recompute");
+  }
+
+  #[test]
+  fn title_prefixed_label_cache_reuses_allocation_until_inputs_change() {
+    let mut cache = TitlePrefixedLabelCache::default();
+    let a = cache.get_or_update("Close tab", "Example");
+    let b = cache.get_or_update("Close tab", "Example");
+    assert!(Arc::ptr_eq(&a, &b), "expected cache hit");
+    assert_eq!(a.as_ref(), "Close tab: Example");
+
+    let c = cache.get_or_update("Close tab", "Other");
+    assert!(!Arc::ptr_eq(&b, &c), "expected cache miss when title changes");
+    assert_eq!(c.as_ref(), "Close tab: Other");
+
+    let d = cache.get_or_update("New tab", "Other");
+    assert!(
+      !Arc::ptr_eq(&c, &d),
+      "expected cache miss when prefix changes"
+    );
+    assert_eq!(d.as_ref(), "New tab: Other");
   }
 }
