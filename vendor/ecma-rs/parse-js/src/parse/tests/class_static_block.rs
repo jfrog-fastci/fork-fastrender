@@ -229,6 +229,25 @@ fn await_expression_is_allowed_in_static_block_in_module() {
 }
 
 #[test]
+fn await_expression_is_allowed_in_static_block_in_async_script() {
+  let src = r#"
+    class C {
+      static {
+        await 0;
+      }
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  parser.set_allow_top_level_await_in_script(true);
+  let res = parser.parse_top_level();
+  assert!(res.is_ok(), "parse failed: {res:?}");
+}
+
+#[test]
 fn arguments_identifier_reference_is_syntax_error_in_static_block() {
   let src = r#"
     class C {
@@ -694,6 +713,25 @@ fn for_await_of_is_allowed_in_static_block_in_module() {
     source_type: SourceType::Module,
   };
   let mut parser = Parser::new(Lexer::new(src), opts);
+  let res = parser.parse_top_level();
+  assert!(res.is_ok(), "parse failed: {res:?}");
+}
+
+#[test]
+fn for_await_of_is_allowed_in_static_block_in_async_script() {
+  let src = r#"
+     class C {
+      static {
+        for await (const x of []) {}
+      }
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  parser.set_allow_top_level_await_in_script(true);
   let res = parser.parse_top_level();
   assert!(res.is_ok(), "parse failed: {res:?}");
 }
