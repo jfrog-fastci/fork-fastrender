@@ -267,3 +267,54 @@ fn derived_constructor_async_arrow_super_calls_use_initialized_this() -> Result<
   )?;
   Ok(())
 }
+
+#[test]
+fn derived_constructor_async_arrow_super_proxy_receiver_is_instance_across_await() -> Result<(), VmError> {
+  assert_async_out_in_ast_and_compiled(
+    r#"
+      var out = '';
+
+      var recv_get;
+      var recv_set;
+      var target = { x: 1 };
+      var proxy = new Proxy(target, {
+        get(t, p, r) {
+          if (p === "x") recv_get = r;
+          return Reflect.get(t, p, r);
+        },
+        set(t, p, v, r) {
+          if (p === "x") recv_set = r;
+          return Reflect.set(t, p, v, r);
+        },
+      });
+
+      class B {}
+      class C extends B {
+        constructor() {
+          // Defining an async arrow that uses `super` before calling `super()` is allowed. The arrow
+          // captures the derived constructor `this` binding via a shared internal state cell, and
+          // `super` operations must use the initialized `this` value as the Proxy receiver.
+          let f = async () => {
+            // `+=` performs a `get` (before the await) and a `set` (after resumption) on the same
+            // Super Reference.
+            super.x += await Promise.resolve(1);
+            return recv_get === this && recv_set === this;
+          };
+          super();
+          // Make `GetSuperBase()` return the Proxy object.
+          Object.setPrototypeOf(C.prototype, proxy);
+          this.f = f;
+        }
+      }
+
+      async function run() {
+        let o = new C();
+        let ok = await o.f();
+        return ok && recv_get === o && recv_set === o;
+      }
+      run().then(v => out = String(v));
+    "#,
+    "true",
+  )?;
+  Ok(())
+}
