@@ -47977,14 +47977,13 @@ mod tests {
   }
 
   #[test]
-  fn async_class_static_block_super_computed_member_with_await_uses_class_constructor_receiver(
-  ) -> Result<(), VmError> {
+  fn async_class_static_block_super_computed_member_with_await_is_syntax_error() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     // Async class evaluation allocates more than sync scripts; use a slightly larger heap.
     let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;
 
-    let value = rt.exec_script(
+    let err = rt.exec_script(
       r#"
       var out;
       async function f() {
@@ -48005,14 +48004,13 @@ mod tests {
       f().then(function (v) { out = v; });
       out
     "#,
-    )?;
-    assert_eq!(value, Value::Undefined);
+    )
+    .unwrap_err();
 
-    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
-
-    let value = rt.exec_script("out")?;
-    assert_eq!(value, Value::Bool(true));
-    Ok(())
+    match err {
+      VmError::Syntax(_) => Ok(()),
+      other => panic!("expected VmError::Syntax, got {other:?}"),
+    }
   }
 
   #[test]

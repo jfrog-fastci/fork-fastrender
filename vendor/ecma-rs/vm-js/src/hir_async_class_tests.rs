@@ -11,7 +11,7 @@ fn compile_and_get_function(rt: &mut JsRuntime, source: &str) -> Result<GcObject
   let script = CompiledScript::compile_script(&mut rt.heap, "<inline>", source)?;
   assert!(
     !script.requires_ast_fallback,
-    "expected script to run via compiled HIR path (requires_ast_fallback=true)"
+    "expected script to run via compiled HIR path (requires_ast_fallback=false)"
   );
   let value = rt.exec_compiled_script(script)?;
   let Value::Object(func_obj) = value else {
@@ -63,26 +63,22 @@ fn call_and_await_promise(rt: &mut JsRuntime, func_obj: GcObject) -> Result<Valu
 }
 
 #[test]
-fn hir_async_class_static_block_await_restores_state() -> Result<(), VmError> {
+fn hir_async_class_static_block_await_is_syntax_error() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
-  let func_obj = compile_and_get_function(
-    &mut rt,
+  let err = CompiledScript::compile_script(
+    &mut rt.heap,
+    "<inline>",
     r#"
-      async function f(){
-        let before = this;
-        class C { static { await Promise.resolve(0); this.k = 1; } }
-        let after = this;
-        x = 1;
-        return before === after && after === globalThis && C.k === 1 && globalThis.x === 1;
+      class C {
+        static {
+          await 0;
+        }
       }
-      f
     "#,
-  )?;
-  assert_compiled_hir_async_function(&rt, func_obj)?;
-
-  let result = call_and_await_promise(&mut rt, func_obj)?;
-  assert_eq!(result, Value::Bool(true));
+  )
+  .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
   Ok(())
 }
 

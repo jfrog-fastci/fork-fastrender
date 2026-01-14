@@ -372,40 +372,22 @@ fn class_static_initialization_sets_home_object_ast() -> Result<(), VmError> {
 fn async_class_static_block_restores_home_object() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
-  // The `await` in the static block forces a suspension. After resumption, any subsequently-created
-  // arrow functions must see the *restored* outer `[[HomeObject]]` (which is `None` at top level),
-  // not the class constructor used during the static block.
-  rt.exec_script(
-    r#"
-      var before = () => 1;
-
-      class A {
-        static {
-          this.inner = () => 2;
-          await 0;
+  // `await` expressions are syntax errors inside class static blocks.
+  let err = rt
+    .exec_script(
+      r#"
+        class A {
+          static {
+            await 0;
+          }
         }
-      }
-
-      var inner = A.inner;
-      var after = () => 3;
-    "#,
-  )?;
-
-  // Before resuming, only the prefix statements have executed.
-  let before = assert_is_function(rt.exec_script("before")?);
-  assert_eq!(rt.heap().get_function_home_object(before)?, None);
-
-  // Drain the microtask queue to resume and complete the suspended static block.
-  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
-
-  let ctor = assert_is_function(rt.exec_script("A")?);
-  let inner = assert_is_function(rt.exec_script("inner")?);
-  let after = assert_is_function(rt.exec_script("after")?);
-
-  assert_eq!(rt.heap().get_function_home_object(inner)?, Some(ctor));
-  assert_eq!(rt.heap().get_function_home_object(after)?, None);
-
-  Ok(())
+      "#,
+    )
+    .unwrap_err();
+  match err {
+    VmError::Syntax(_) => Ok(()),
+    other => Err(other),
+  }
 }
 
 #[test]

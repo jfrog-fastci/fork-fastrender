@@ -10002,7 +10002,6 @@ impl<'vm> HirEvaluator<'vm> {
           if let Some(home) = self.home_object {
             scope.push_root(Value::Object(home))?;
           }
-
           // Resolve the `this` binding before evaluating the computed key expression. In derived
           // constructors before `super()`, `GetThisBinding` throws a ReferenceError and must happen
           // before any side effects from evaluating the key expression.
