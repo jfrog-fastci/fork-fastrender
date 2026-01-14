@@ -8,6 +8,161 @@ const ABOUT_CSS: &str =
   include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/chrome/about.css"));
 const CHROME_JS: &str =
   include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/chrome/chrome.js"));
+const SVG_MIME: &str = "image/svg+xml";
+
+fn chrome_icon_bytes(path: &str) -> Option<&'static [u8]> {
+  Some(match path {
+    "/appearance.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/appearance.svg"
+    )),
+    "/arrow_down.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/arrow_down.svg"
+    )),
+    "/arrow_up.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/arrow_up.svg"
+    )),
+    "/back.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/back.svg"
+    )),
+    "/bookmark_filled.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/bookmark_filled.svg"
+    )),
+    "/bookmark_outline.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/bookmark_outline.svg"
+    )),
+    "/check.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/check.svg"
+    )),
+    "/close_tab.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/close_tab.svg"
+    )),
+    "/copy.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/copy.svg"
+    )),
+    "/download.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/download.svg"
+    )),
+    "/edit.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/edit.svg"
+    )),
+    "/error.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/error.svg"
+    )),
+    "/folder.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/folder.svg"
+    )),
+    "/forward.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/forward.svg"
+    )),
+    "/fullscreen.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/fullscreen.svg"
+    )),
+    "/fullscreen_exit.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/fullscreen_exit.svg"
+    )),
+    "/history.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/history.svg"
+    )),
+    "/home.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/home.svg"
+    )),
+    "/info.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/info.svg"
+    )),
+    "/lock_secure.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/lock_secure.svg"
+    )),
+    "/menu.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/menu.svg"
+    )),
+    "/mute.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/mute.svg"
+    )),
+    "/new_tab.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/new_tab.svg"
+    )),
+    "/open_in_new_tab.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/open_in_new_tab.svg"
+    )),
+    "/pause.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/pause.svg"
+    )),
+    "/play.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/play.svg"
+    )),
+    "/plus.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/plus.svg"
+    )),
+    "/reload.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/reload.svg"
+    )),
+    "/search.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/search.svg"
+    )),
+    "/spinner.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/spinner.svg"
+    )),
+    "/stop_loading.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/stop_loading.svg"
+    )),
+    "/tab.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/tab.svg"
+    )),
+    "/trash.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/trash.svg"
+    )),
+    "/volume.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/volume.svg"
+    )),
+    "/warning_insecure.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/warning_insecure.svg"
+    )),
+    "/zoom_in.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/zoom_in.svg"
+    )),
+    "/zoom_out.svg" => include_bytes!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/assets/browser_icons/zoom_out.svg"
+    )),
+    _ => return None,
+  })
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ChromeAssetsFetcher;
@@ -134,6 +289,19 @@ impl ResourceFetcher for ChromeAssetsFetcher {
         Some("text/css".to_string()),
         Some(url.to_string()),
       )),
+      ("icons", path) => {
+        let Some(bytes) = chrome_icon_bytes(path) else {
+          return Err(Error::Resource(ResourceError::new(
+            url,
+            format!("unknown chrome:// icon: chrome://icons{path}"),
+          )));
+        };
+        Ok(FetchedResource::with_final_url(
+          bytes.to_vec(),
+          Some(SVG_MIME.to_string()),
+          Some(url.to_string()),
+        ))
+      }
       ("scripts", "/chrome.js") => Ok(FetchedResource::with_final_url(
         CHROME_JS.as_bytes().to_vec(),
         Some("text/javascript".to_string()),
@@ -141,7 +309,7 @@ impl ResourceFetcher for ChromeAssetsFetcher {
       )),
       _ => Err(Error::Resource(ResourceError::new(
         url,
-        "unknown chrome:// asset (allowed: chrome://styles/chrome.css, chrome://styles/about.css, chrome://scripts/chrome.js)",
+        "unknown chrome:// asset (allowed: chrome://styles/chrome.css, chrome://styles/about.css, chrome://scripts/chrome.js, chrome://icons/<name>.svg)",
       ))),
     }
   }
@@ -149,7 +317,7 @@ impl ResourceFetcher for ChromeAssetsFetcher {
 
 #[cfg(test)]
 mod tests {
-  use super::ChromeAssetsFetcher;
+  use super::{ChromeAssetsFetcher, SVG_MIME};
   use crate::resource::ResourceFetcher;
 
   #[test]
@@ -214,6 +382,45 @@ mod tests {
     assert!(
       msg.contains("path traversal"),
       "unexpected error message: {msg}"
+    );
+  }
+
+  #[test]
+  fn fetch_allowlisted_chrome_icon() {
+    let fetcher = ChromeAssetsFetcher::new();
+    let url = "chrome://icons/back.svg";
+    let res = fetcher.fetch(url).expect("fetch chrome icon");
+    assert!(
+      !res.bytes.is_empty(),
+      "chrome icon bytes should not be empty (embedded test asset)"
+    );
+    assert_eq!(res.content_type.as_deref(), Some(SVG_MIME));
+    assert_eq!(res.final_url.as_deref(), Some(url));
+  }
+
+  #[test]
+  fn reject_unknown_chrome_icon() {
+    let fetcher = ChromeAssetsFetcher::new();
+    let err = fetcher
+      .fetch("chrome://icons/does_not_exist.svg")
+      .expect_err("unknown chrome icon should error");
+    let msg = err.to_string();
+    assert!(
+      msg.contains("unknown chrome:// icon"),
+      "unexpected error message: {msg}"
+    );
+  }
+
+  #[test]
+  fn reject_icon_path_traversal_attempt() {
+    let fetcher = ChromeAssetsFetcher::new();
+    assert!(
+      fetcher.fetch("chrome://icons/../back.svg").is_err(),
+      "expected dot-segment traversal to error"
+    );
+    assert!(
+      fetcher.fetch("chrome://icons/%2e%2e/back.svg").is_err(),
+      "expected percent-encoded dot-segment traversal to error"
     );
   }
 
