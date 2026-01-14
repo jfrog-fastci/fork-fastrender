@@ -23461,10 +23461,8 @@ fn async_define_class_member(
     PropertyKey::Symbol(s) => member_scope.push_root(Value::Symbol(s))?,
   };
 
-  let is_private_key = matches!(
-    &member.stx.key,
-    ClassOrObjKey::Direct(direct) if direct.stx.tt == TT::PrivateMember
-  );
+  let is_private_key =
+    matches!(&member.stx.key, ClassOrObjKey::Direct(direct) if direct.stx.tt == TT::PrivateMember);
 
   // Compute the zero-based index of this instance element within the stored `(key, init)` pair list
   // on the class constructor, by counting all prior instance elements in source order.
@@ -47510,11 +47508,19 @@ fn gen_assign_target_put_value(
       // Root the RHS + base across property-key allocation and assignment.
       let mut assign_scope = scope.reborrow();
       assign_scope.push_roots(&[base, value])?;
-      let key_s = assign_scope.alloc_string(key)?;
-      let reference = Reference::Property {
-        base,
-        receiver: base,
-        key: PropertyKey::from_string(key_s),
+      let reference = if key.starts_with('#') {
+        let sym = assign_scope
+          .heap()
+          .resolve_private_name_symbol(evaluator.env.lexical_env, key)?
+          .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+        Reference::Private { base, sym, name: key }
+      } else {
+        let key_s = assign_scope.alloc_string(key)?;
+        Reference::Property {
+          base,
+          receiver: base,
+          key: PropertyKey::from_string(key_s),
+        }
       };
       evaluator.root_reference(&mut assign_scope, &reference)?;
       assign_scope.push_root(value)?;
