@@ -48,7 +48,10 @@ fn assert_compiled_hir_async_function(rt: &mut JsRuntime, func_obj: GcObject) ->
   Ok(())
 }
 
-fn call_and_await_promise(rt: &mut JsRuntime, func_obj: GcObject) -> Result<Value, VmError> {
+fn call_and_await_promise(
+  rt: &mut JsRuntime,
+  func_obj: GcObject,
+) -> Result<(PromiseState, Value), VmError> {
   let promise = {
     let mut scope = rt.heap.scope();
     rt.vm
@@ -60,22 +63,27 @@ fn call_and_await_promise(rt: &mut JsRuntime, func_obj: GcObject) -> Result<Valu
     panic!("expected async function call to return a Promise object");
   };
 
+  // Await should always suspend and resume via microtasks (even for already-settled Promises), so
+  // the returned Promise must not have settled yet.
+  let initial_state = rt.heap.promise_state(promise_obj)?;
+  assert_eq!(
+    initial_state,
+    PromiseState::Pending,
+    "expected Promise returned from async function call to be pending before microtask checkpoint, got {initial_state:?}"
+  );
+
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
   let state = rt.heap.promise_state(promise_obj)?;
-  assert_eq!(
-    state,
-    PromiseState::Fulfilled,
-    "expected Promise to be fulfilled, got {state:?} with result {:?}",
+  assert!(
+    matches!(state, PromiseState::Fulfilled | PromiseState::Rejected),
+    "expected Promise to settle after microtask checkpoint, got {state:?} with result {:?}",
     rt.heap.promise_result(promise_obj)?
   );
-  let result = rt
-    .heap
-    .promise_result(promise_obj)?
-    .expect("fulfilled promise missing result");
+  let result = rt.heap.promise_result(promise_obj)?.expect("settled promise missing result");
 
   rt.heap.remove_root(promise_root);
-  Ok(result)
+  Ok((state, result))
 }
 
 fn assert_value_utf8_string_eq(rt: &JsRuntime, value: Value, expected: &str) -> Result<(), VmError> {
@@ -105,7 +113,8 @@ fn hir_async_await_expr_statement_suspends_and_resumes() -> Result<(), VmError> 
   )?;
   assert_compiled_hir_async_function(&mut rt, func_obj)?;
 
-  let result = call_and_await_promise(&mut rt, func_obj)?;
+  let (state, result) = call_and_await_promise(&mut rt, func_obj)?;
+  assert_eq!(state, PromiseState::Fulfilled);
   assert_eq!(result, Value::Number(1.0));
   Ok(())
 }
@@ -125,7 +134,8 @@ fn hir_async_return_await_resolved() -> Result<(), VmError> {
   )?;
   assert_compiled_hir_async_function(&mut rt, func_obj)?;
 
-  let result = call_and_await_promise(&mut rt, func_obj)?;
+  let (state, result) = call_and_await_promise(&mut rt, func_obj)?;
+  assert_eq!(state, PromiseState::Fulfilled);
   assert_eq!(result, Value::Number(2.0));
   Ok(())
 }
@@ -138,18 +148,15 @@ fn hir_async_return_await_rejected_is_catchable() -> Result<(), VmError> {
     &mut rt,
     r#"
       async function f(){
-        try {
-          return await Promise.reject('x');
-        } catch(e) {
-          return e;
-        }
+        return await Promise.reject('x');
       }
       f
     "#,
   )?;
   assert_compiled_hir_async_function(&mut rt, func_obj)?;
 
-  let result = call_and_await_promise(&mut rt, func_obj)?;
+  let (state, result) = call_and_await_promise(&mut rt, func_obj)?;
+  assert_eq!(state, PromiseState::Rejected);
   assert_value_utf8_string_eq(&rt, result, "x")?;
   Ok(())
 }
@@ -162,18 +169,15 @@ fn hir_async_throw_await_resolved_is_catchable() -> Result<(), VmError> {
     &mut rt,
     r#"
       async function f(){
-        try {
-          throw await Promise.resolve('y');
-        } catch(e) {
-          return e;
-        }
+        throw await Promise.resolve('y');
       }
       f
     "#,
   )?;
   assert_compiled_hir_async_function(&mut rt, func_obj)?;
 
-  let result = call_and_await_promise(&mut rt, func_obj)?;
+  let (state, result) = call_and_await_promise(&mut rt, func_obj)?;
+  assert_eq!(state, PromiseState::Rejected);
   assert_value_utf8_string_eq(&rt, result, "y")?;
   Ok(())
 }
@@ -186,18 +190,15 @@ fn hir_async_throw_await_rejected_is_catchable() -> Result<(), VmError> {
     &mut rt,
     r#"
       async function f(){
-        try {
-          throw await Promise.reject('z');
-        } catch(e) {
-          return e;
-        }
+        throw await Promise.reject('z');
       }
       f
     "#,
   )?;
   assert_compiled_hir_async_function(&mut rt, func_obj)?;
 
-  let result = call_and_await_promise(&mut rt, func_obj)?;
+  let (state, result) = call_and_await_promise(&mut rt, func_obj)?;
+  assert_eq!(state, PromiseState::Rejected);
   assert_value_utf8_string_eq(&rt, result, "z")?;
   Ok(())
 }
@@ -215,7 +216,8 @@ fn hir_async_arrow_expr_body_direct_await() -> Result<(), VmError> {
   )?;
   assert_compiled_hir_async_function(&mut rt, func_obj)?;
 
-  let result = call_and_await_promise(&mut rt, func_obj)?;
+  let (state, result) = call_and_await_promise(&mut rt, func_obj)?;
+  assert_eq!(state, PromiseState::Fulfilled);
   assert_eq!(result, Value::Number(3.0));
   Ok(())
 }
