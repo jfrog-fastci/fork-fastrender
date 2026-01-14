@@ -249,7 +249,7 @@ pub struct Painter {
   /// sheets referenced by `<use href="#...">`) while preserving `currentColor` semantics.
   svg_id_defs_raw: Option<Arc<HashMap<String, String>>>,
   /// Cache of shaped runs keyed by style and text to avoid reshaping identical content during paint
-  text_shape_cache: Arc<Mutex<HashMap<TextCacheKey, Vec<ShapedRun>>>>,
+  text_shape_cache: Arc<Mutex<HashMap<TextCacheKey, Arc<Vec<ShapedRun>>>>>,
   /// Optional trace collector for Chrome trace output.
   trace: TraceHandle,
   /// Scroll offsets for viewport and element scroll containers.
@@ -3211,9 +3211,8 @@ impl Painter {
         let shaped_runs: Option<Arc<Vec<ShapedRun>>> = runs.clone().or_else(|| {
           self
             .shaper
-            .shape(text, style, &self.font_ctx)
+            .shape_arc(text, style, &self.font_ctx)
             .ok()
-            .map(Arc::new)
         });
         let shape_ms = shape_start
           .map(|start| start.elapsed().as_secs_f64() * 1000.0)
@@ -4447,9 +4446,8 @@ impl Painter {
             let shaped_runs: Option<Arc<Vec<ShapedRun>>> = runs.clone().or_else(|| {
               painter
                 .shaper
-                .shape(text, style, &painter.font_ctx)
+                .shape_arc(text, style, &painter.font_ctx)
                 .ok()
-                .map(Arc::new)
             });
             let Some(shaped_runs) = shaped_runs else {
               continue;
@@ -8337,18 +8335,21 @@ impl Painter {
     let style_ptr = style_for_shaping.as_ref() as *const ComputedStyle as usize;
     let key = TextCacheKey::new(style_ptr, style_for_shaping.font_size, text);
 
-    let shaped_runs = if let Ok(cache) = self.text_shape_cache.lock() {
+    let shaped_runs: Arc<Vec<ShapedRun>> = if let Ok(cache) = self.text_shape_cache.lock() {
       cache.get(&key).cloned()
     } else {
       None
     }
     .unwrap_or_else(|| {
-      let runs = match self.shaper.shape(text, &style_for_shaping, &self.font_ctx) {
+      let runs = match self
+        .shaper
+        .shape_arc(text, &style_for_shaping, &self.font_ctx)
+      {
         Ok(runs) => runs,
-        Err(_) => return Vec::new(),
+        Err(_) => return Arc::new(Vec::new()),
       };
       if let Ok(mut cache) = self.text_shape_cache.lock() {
-        cache.insert(key, runs.clone());
+        cache.insert(key, Arc::clone(&runs));
       }
       runs
     });
@@ -8357,7 +8358,7 @@ impl Painter {
       return Ok(());
     }
 
-    self.paint_shaped_runs(&shaped_runs, x, baseline_y, color, style, None);
+    self.paint_shaped_runs(shaped_runs.as_ref(), x, baseline_y, color, style, None);
     Ok(())
   }
 
