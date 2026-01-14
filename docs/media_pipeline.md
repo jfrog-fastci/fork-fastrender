@@ -4,8 +4,13 @@ This document tracks the **current in-tree media pipeline** (under `src/media/`)
 direction for `<video>/<audio>` playback.
 
 FastRender currently treats `<video>` as a *replaced element* for layout/intrinsic sizing purposes
-(see `docs/conformance.md`). Full playback requires a demux/decode stack plus a concrete
-`MediaFrameProvider` implementation to feed decoded frames into paint.
+(see `docs/conformance.md`). Full playback requires:
+
+- a demux/decode stack (containers + codecs), and
+- a concrete `MediaFrameProvider` implementation to feed decoded frames into paint.
+
+Most building blocks exist (demuxers, codec decoders, decode pipeline, frame provider), but the
+DOM/`HTMLMediaElement` playback loop is still being wired up.
 
 For the intended clocking model (audio as master clock; UI ticks are wake-ups only), see
 `docs/media_clocking.md`.
@@ -16,29 +21,36 @@ Legend: ✅ implemented, ⚠️ partial, 🚧 planned, ❌ missing.
 
 | Area | Status | Notes / code |
 | --- | --- | --- |
-| Common types (`MediaTrackInfo`, `MediaPacket`, `MediaData`, `Decoded*`) | ✅ | `src/media/mod.rs`, `src/media/packet.rs` |
-| WebM demux (`WebmDemuxer`) | ✅ | `src/media/demux/webm.rs` (VP9+Opus packets; seek; optional inter-track ordering; track selection/filtering) |
-| MP4 demux + packetizer (`Mp4PacketDemuxer`) | ⚠️ | `src/media/demuxer.rs` (H.264+AAC; best-effort VP9 track detection via `mp4parse`; `dts_ns≈pts_ns`, `duration_ns=0`; seek is not keyframe-aware) |
-| MP4 seek index helper (`Mp4SeekIndex`) | ✅ | `src/media/mp4.rs::Mp4SeekIndex` (PTS→sample index; used by `Mp4PacketDemuxer::open(path)` when available) |
-| AAC decoder | ✅ | `src/media/codecs/aac.rs` (symphonia AAC → `DecodedAudioChunk`) |
-| Opus decoder | ✅ | `src/media/codecs/opus.rs` (`audiopus_sys`/libopus; mapping family 0 mono/stereo only) |
-| H.264 decoder | ✅ | `src/media/decoder.rs` (OpenH264; MP4 length-prefixed NALs → Annex B) |
-| VP9 decode (libvpx) | ✅ | `src/media/decoder.rs::create_video_decoder` (VP9 path) → `src/media/codecs/vp9.rs` → `crates/libvpx-sys-bundled` (feature: `codec_vp9_libvpx` or `media`) |
-| Media backends (`MediaBackend`) | ✅ | `src/media/backends/native.rs`; optional `src/media/backends/ffmpeg_cli.rs` behind `media_ffmpeg_cli` |
-| A/V sync helper | ✅ | `src/media/av_sync.rs` (+ env overrides) |
-| Audio output plumbing | ✅ | `src/media/audio/*` (real output via `audio_cpal`; null backend is default) |
-| `<video>` paint hook + frame caching | ⚠️ | Paint can query a `MediaFrameProvider`; `SizeHintMediaFrameProvider` exists (`src/media/frame_provider.rs`) but no full HTMLMediaElement playback loop is wired yet |
+| Common types (`MediaTrackInfo`, `MediaPacket`, `MediaData`, `Decoded*`) | ✅ | [`src/media/mod.rs`](../src/media/mod.rs), [`src/media/packet.rs`](../src/media/packet.rs) |
+| Decode pipeline (`MediaDecodePipeline`) | ✅ | [`src/media/pipeline.rs`](../src/media/pipeline.rs) (demux→decode wiring; yields `DecodedItem`) |
+| WebM demux (`WebmDemuxer`) | ✅ | [`src/media/demux/webm.rs`](../src/media/demux/webm.rs) (feature: `media_webm`/`media`; VP9+Opus; track selection/filtering; codec delay; seek; optional inter-track ordering) |
+| MP4 demux + packetizer (`Mp4PacketDemuxer`) | ⚠️ | [`src/media/demuxer.rs`](../src/media/demuxer.rs) (feature: `media_mp4`/`media`; H.264+AAC; best-effort VP9 detection via `mp4parse`; mp4parse-derived DTS/PTS/duration + keyframe seek when sample tables are available; falls back to mp4-crate timestamps when not) |
+| MP4 sample-table utilities (`Mp4Demuxer`, `Mp4SeekIndex`) | ✅ | [`src/media/mp4.rs`](../src/media/mp4.rs) (feature: `media_mp4`/`media`; `ctts`-aware PTS/DTS computation; currently separate from `Mp4PacketDemuxer`) |
+| AAC decoder | ✅ | [`src/media/codecs/aac.rs`](../src/media/codecs/aac.rs) (feature: `codec_aac`/`media`; Symphonia → `DecodedAudioChunk`) |
+| Opus decoder | ✅ | [`src/media/codecs/opus.rs`](../src/media/codecs/opus.rs) (feature: `codec_opus`/`media`; `opus` crate / libopus; mapping family 0 mono/stereo only today) |
+| H.264 decoder | ✅ | [`src/media/decoder.rs`](../src/media/decoder.rs) (feature: `codec_h264_openh264`/`media`; OpenH264; MP4 length-prefixed NALs → Annex B) |
+| VP9 decode (libvpx) | ✅ | [`src/media/decoder.rs`](../src/media/decoder.rs) (feature: `codec_vp9_libvpx`/`media`) → [`src/media/codecs/vp9.rs`](../src/media/codecs/vp9.rs) → [`crates/libvpx-sys-bundled`](../crates/libvpx-sys-bundled) |
+| Media backends (`MediaBackend`) | ✅ | Native: [`src/media/backends/native.rs`](../src/media/backends/native.rs); optional CLI fallback: [`src/media/backends/ffmpeg_cli.rs`](../src/media/backends/ffmpeg_cli.rs) behind `media_ffmpeg_cli` |
+| `<video>` paint hook + frame caching | ⚠️ | Paint can query a `MediaFrameProvider` (`src/paint/display_list_builder.rs`); `SizeHintMediaFrameProvider` exists ([`src/media/frame_provider.rs`](../src/media/frame_provider.rs)), but no full HTMLMediaElement playback loop is wired yet |
+| A/V sync helper | ✅ | [`src/media/av_sync.rs`](../src/media/av_sync.rs) (+ env overrides) |
+| Audio output plumbing | ✅ (not wired to HTMLMediaElement yet) | [`src/media/audio/`](../src/media/audio/) (real output via `audio_cpal`; null backend is default) |
 
 ## Design goals / constraints (current)
 
 - **MSRV**: Rust **1.70** (`Cargo.toml:6`).
+- **Feature-gated media stack**:
+  - Media support is intentionally behind `--features media` (or sub-features like `media_mp4`,
+    `codec_vp9_libvpx`, etc) to keep default builds lean.
+  - The windowed browser UI enables `media` via `browser_ui_base` (`Cargo.toml`).
 - **CI-friendly by default**:
-  - Core media plumbing is in-process (no system FFmpeg dependency).
+  - Native playback avoids *system* FFmpeg/GStreamer dependencies.
+  - Codec/container features pull in C build dependencies (OpenH264/libvpx/libopus); optional
+    `media_ffmpeg_cli` can be used as a fallback if native codecs are unavailable.
   - Optional features may require extra dependencies:
     - `browser_ui` (windowed browser): GUI dev packages on Linux (see `docs/browser_ui.md`).
     - `audio_cpal`: real audio output; may require ALSA headers on Linux.
     - `media_ffmpeg_cli`: requires `ffmpeg`/`ffprobe` binaries on PATH.
-- **No required assembler in the default build**:
+- **No required assembler in the default media build**:
   - VP9 decode uses `crates/libvpx-sys-bundled`, which aims to avoid `nasm`/`yasm` by forcing a
     portable C-only build. See `crates/libvpx-sys-bundled/README.md` for platform caveats.
 
@@ -52,9 +64,11 @@ bytes (file/http/memory)
   ↓
 MediaBackend (native / optional ffmpeg CLI)
   ↓
-container demux (native backend)
+MediaSession (today: MediaDecodePipeline)
+  ↓
+container demux
   - WebM: WebmDemuxer        ✅
-  - MP4:  Mp4PacketDemuxer   ⚠️ (timestamp/keyframe gaps; see below)
+  - MP4:  Mp4PacketDemuxer   ⚠️ (best-effort sample tables; see below)
   ↓
 MediaPacket {
   track_id,
@@ -84,7 +98,8 @@ Notes on timestamps:
 
 ### WebM / Matroska: `WebmDemuxer` (implemented)
 
-Implementation: `src/media/demux/webm.rs` using [`matroska-demuxer`](https://crates.io/crates/matroska-demuxer).
+Implementation: [`src/media/demux/webm.rs`](../src/media/demux/webm.rs) using
+[`matroska-demuxer`](https://crates.io/crates/matroska-demuxer).
 
 Current behavior:
 
@@ -94,34 +109,42 @@ Current behavior:
   - VP9 (`codec_id = "V_VP9"`)
   - Opus (`codec_id = "A_OPUS"`)
 - Track selection/filtering:
-  - Track metadata is used to pick “primary” audio/video tracks (see `src/media/track_selection.rs`).
+  - Track metadata is used to pick “primary” audio/video tracks (see
+    [`src/media/track_selection.rs`](../src/media/track_selection.rs)).
   - `WebmDemuxerOptions.track_filter` controls whether packets are emitted for only the primary
     tracks or for all supported tracks.
 - Timestamp normalization:
   - Uses `Info.TimecodeScale` (nanoseconds per tick) to compute `pts_ns`.
   - Subtracts Matroska `TrackEntry.codec_delay` from timestamps (per spec).
+  - `dts_ns` is currently set equal to `pts_ns` on this path.
 - Optional inter-track ordering:
   - When enabled (`WebmDemuxerOptions.inter_track_reordering = true`), `next_packet()` yields
     non-decreasing PTS across tracks using a small bounded queue per track.
 - Seeking:
-  - `WebmDemuxer::seek(time_ns)` uses `MatroskaFile::seek(...)`.
+  - `WebmDemuxer::seek(time_ns)` uses `MatroskaFile::seek(...)` and compensates for codec delay.
   - In damaged/unindexed files, seeking may return
     `MediaError::Unsupported("Matroska seek unsupported (no cluster index)")`.
 
-### MP4 / ISO-BMFF: `Mp4PacketDemuxer` (implemented; known timestamp/seek gaps)
+### MP4 / ISO-BMFF: `Mp4PacketDemuxer` (implemented; best-effort sample tables)
 
-Implementation: `src/media/demuxer.rs::Mp4PacketDemuxer` (built on the `mp4` crate).
+Implementation: [`src/media/demuxer.rs`](../src/media/demuxer.rs) (`Mp4PacketDemuxer`), built on the
+[`mp4`](https://crates.io/crates/mp4) crate plus `mp4parse` metadata.
 
 Current behavior:
 
-- Opens any `R: Read + Seek + Send` (or via the convenience `Mp4PacketDemuxer::open(path)`).
-- Enumerates tracks as `MediaTrackInfo` and emits `MediaPacket`s in timestamp order across tracks
-  (it peeks the next sample from each active track and returns the smallest `pts_ns`).
+- Opens MP4 either from a file (`Mp4PacketDemuxer::open(path)`) or in-memory bytes
+  (`Mp4PacketDemuxer::from_bytes(Arc<[u8]>)`).
 - Track detection:
   - H.264 (`mp4::MediaType::H264`) → emits packets
   - AAC (`mp4::MediaType::AAC`) → emits packets
-  - VP9: detected by parsing `stsd` via `mp4parse` (because `mp4` does not currently expose VP9 via
-    `Mp4Track::media_type()`), then emits packets.
+  - VP9: best-effort detection by parsing `stsd` via `mp4parse` (because `mp4` does not currently
+    expose VP9 via `Mp4Track::media_type()`), then emits packets.
+- Timestamping:
+  - When mp4parse sample tables are available, the demuxer attaches `dts_ns`, `pts_ns`, and
+    `duration_ns` (including `ctts` reordering), and uses `dts_ns` to pick the next packet across
+    tracks.
+  - When sample tables are not available (e.g. skipped due to caps), it falls back to
+    `mp4::Sample.start_time` for `pts_ns` (with `dts_ns == pts_ns` and `duration_ns == 0`).
 
 Codec-private (`MediaTrackInfo.codec_private`) formats produced today:
 
@@ -135,44 +158,32 @@ Codec-private (`MediaTrackInfo.codec_private`) formats produced today:
   [pps_count] { u16be len, [len] bytes }
   ```
 
-- **AAC**: a synthesized **AAC-LC** `AudioSpecificConfig` (ASC) derived from the MP4 track sample
-  rate + channel count.
+- **AAC**:
+  - Prefer `esds`/decoder-specific bytes extracted via mp4parse (an `AudioSpecificConfig` blob).
+  - Fall back to synthesizing a minimal **AAC-LC** `AudioSpecificConfig` when mp4parse data is
+    unavailable.
 - **VP9**: a compact subset of `vpcC` (bit depth / primaries / subsampling + `codec_init` bytes).
 
 Seeking:
 
-- `Mp4PacketDemuxer::open(path)` makes a best-effort attempt to build an `Mp4SeekIndex` by reading
-  the `moov` box once and calling `src/media/mp4.rs::Mp4SeekIndex::from_bytes(...)`. When present,
-  `seek(time_ns)` becomes O(log n) per track without scanning packets.
-  - The index build is intentionally capped (see `MAX_BOX_BYTES_FOR_INDEX` in `demuxer.rs`) so we
-    don’t allocate attacker-controlled huge `moov` boxes.
-- When the index is unavailable (e.g. demuxer constructed from a generic reader / bytes), seek falls
-  back to a linear scan.
+- With mp4parse sample tables:
+  - `seek(time_ns)` finds the first sample with `pts_ns >= time_ns`.
+  - For video tracks, it backs up to a sync sample at-or-before that point (best-effort keyframe seek).
+- Without sample tables: falls back to a linear scan.
 
 Known limitations / gaps:
 
-- **Timestamp correctness**: the `mp4` crate does not currently expose composition timestamps, so we
-  currently treat `sample.start_time` as both `dts_ns` and `pts_ns` (`dts_ns == pts_ns`). This is
-  wrong for streams with `ctts` / B-frame reordering.
-- **Duration**: `MediaPacket.duration_ns` is currently set to `0`.
-- **Keyframe-aware seek**: seek does **not** back up to the previous sync sample (`is_keyframe`); it
-  seeks to the first sample with `pts_ns >= time_ns`, which can land in the middle of a GOP.
-- **Fragmented MP4** (`moof`/`mdat`) is not supported by this demuxer.
-
-Related utilities:
-
-- `src/media/mp4.rs` contains a separate “sample table” parser (`Mp4Demuxer`) plus the
-  `Mp4SeekIndex` helper used above. This code is useful when we need exact `stts`/`ctts`-derived
-  PTS/DTS in the future.
+- MP4 sample-table construction is intentionally capped (see `MAX_SAMPLES_PER_TRACK` /
+  `MAX_TOTAL_SAMPLES` in `src/media/demuxer.rs`) so corrupted files can’t force unbounded allocations.
+  When caps are hit, the demuxer falls back to the mp4-crate timestamp path (reduced timestamp/seek
+  fidelity).
+- Fragmented MP4 (`moof`/`mdat`) is not supported by this demuxer.
 
 ## Codec decode backends
 
 ### AAC (implemented): `AacDecoder` (symphonia)
 
-Implementation: `src/media/codecs/aac.rs` using:
-
-- `symphonia-core`
-- `symphonia-codec-aac`
+Implementation: [`src/media/codecs/aac.rs`](../src/media/codecs/aac.rs) (feature: `codec_aac`).
 
 Input contract:
 
@@ -184,11 +195,11 @@ Output:
 
 - `DecodedAudioChunk` with interleaved `f32` samples in `[-1.0, 1.0]`, plus `pts_ns`/`duration_ns`.
 
-### Opus (implemented): `OpusDecoder` (libopus via `audiopus_sys`)
+### Opus (implemented): `OpusDecoder` (libopus via the `opus` crate)
 
-Implementation: `src/media/codecs/opus.rs`.
+Implementation: [`src/media/codecs/opus.rs`](../src/media/codecs/opus.rs) (feature: `codec_opus`).
 
-- Uses the `audiopus_sys` FFI bindings (libopus).
+- Uses the `opus` crate (libopus).
 - Expects Matroska/WebM `codec_private` bytes to start with an `OpusHead` header (RFC7845).
 - Applies `pre_skip` trimming so initial decoder priming samples are dropped.
 - Output is always **48 kHz** (Opus internal sample clock).
@@ -200,7 +211,7 @@ Current limitations:
 
 ### H.264 / AVC (implemented): `H264Decoder` (OpenH264)
 
-Implementation: `src/media/decoder.rs` (`H264Decoder`).
+Implementation: [`src/media/decoder.rs`](../src/media/decoder.rs) (feature: `codec_h264_openh264`).
 
 Input contract:
 
@@ -217,14 +228,16 @@ Output:
 
 Implementation lives in:
 
-- Workspace crate: `crates/libvpx-sys-bundled` (vendored libvpx build + wrapper)
-- Media wrapper: `src/media/codecs/vp9.rs` (`codecs::vp9::Vp9Decoder` → RGBA8 frames)
+- Workspace crate: [`crates/libvpx-sys-bundled`](../crates/libvpx-sys-bundled) (vendored libvpx build
+  + wrapper)
+- Media wrapper: [`src/media/codecs/vp9.rs`](../src/media/codecs/vp9.rs) (`codecs::vp9::Vp9Decoder`
+  → RGBA8 frames)
 
 Current status:
 
 - `WebmDemuxer` can emit VP9 packets.
 - `MediaDecodePipeline` uses `src/media/decoder.rs::create_video_decoder` to construct a libvpx-backed
-  `codecs::vp9::Vp9Decoder` (requires `codec_vp9_libvpx` or `media`).
+  `codecs::vp9::Vp9Decoder` (feature: `codec_vp9_libvpx` or `media`).
 - `src/media/player.rs` also uses `codecs::vp9` directly for a minimal WebM/VP9 playback loop.
 
 Build notes:
@@ -242,9 +255,12 @@ Current implementations:
 - **WebM** (`WebmDemuxer`):
   - `pts_ns = frame.timestamp * Info.TimecodeScale`
   - subtracts `TrackEntry.codec_delay`
+  - currently `dts_ns == pts_ns`
 - **MP4** (`Mp4PacketDemuxer`):
-  - `pts_ns` is derived from `mp4::Sample.start_time` and `mdhd.timescale`.
-  - Currently `dts_ns == pts_ns` and `duration_ns == 0` (see limitations above).
+  - Best-effort: uses mp4parse sample tables (`create_sample_table`) when available, including `ctts`
+    reordering and per-sample duration.
+  - Fallback: uses `mp4::Sample.start_time` as both PTS+DTS (`dts_ns == pts_ns`) and sets
+    `duration_ns == 0`.
 
 Clocking/scheduling code uses `Duration` (`src/media/clock.rs`, `src/media/av_sync.rs`) but the unit
 is still nanoseconds.
@@ -253,17 +269,18 @@ is still nanoseconds.
 
 - **WebM**: `WebmDemuxer::seek(time_ns)` seeks to the first frame at/after the target (after
   compensating for codec delay).
-- **MP4**: `Mp4PacketDemuxer::seek(time_ns)` seeks each track to the first sample with
-  `pts_ns >= time_ns`. When a prebuilt `Mp4SeekIndex` is available, it uses binary search;
-  otherwise it falls back to a linear scan. It does not yet back up to a sync sample/keyframe.
+- **MP4**:
+  - With mp4parse sample tables, `Mp4PacketDemuxer::seek(time_ns)` seeks each track to the first
+    sample with `pts_ns >= time_ns` and (for video) backs up to a sync sample at-or-before.
+  - Without sample tables, seeking falls back to a linear scan.
 
 ## How to manually test (fixtures)
 
 The repo contains tiny, offline MP4/WebM fixtures and matching HTML pages:
 
-- Raw media assets: `tests/fixtures/media/`
-- Playback pages + assets: `tests/pages/fixtures/media_playback/` (assets live in
-  `tests/pages/fixtures/media_playback/assets/`)
+- Raw media assets: [`tests/fixtures/media/`](../tests/fixtures/media/)
+- Playback pages + assets: [`tests/pages/fixtures/media_playback/`](../tests/pages/fixtures/media_playback/)
+  (assets live in `tests/pages/fixtures/media_playback/assets/`)
 - Legacy “single page” fixtures: `tests/pages/fixtures/media_mp4_basic/`,
   `tests/pages/fixtures/media_webm_basic/`
 
@@ -282,6 +299,11 @@ bash scripts/run_limited.sh --as 64G -- \
 Then open these fixture pages:
 
 ```bash
+# Index page (links to the rest):
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- \
+    "file://$PWD/tests/pages/fixtures/media_playback/index.html"
+
 # MP4 (H.264 + AAC):
 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- \
@@ -296,6 +318,11 @@ bash scripts/run_limited.sh --as 64G -- \
 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- \
     "file://$PWD/tests/pages/fixtures/media_playback/basic_audio.html"
+
+# JS controls + event logging:
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- \
+    "file://$PWD/tests/pages/fixtures/media_playback/js_controls.html"
 ```
 
 Useful runtime toggles while debugging:
@@ -307,25 +334,28 @@ Useful runtime toggles while debugging:
   - `FASTR_AV_SYNC_MAX_LATE_MS`
   - `FASTR_AV_SYNC_MAX_EARLY_MS`
 
-Note: full end-to-end decode→paint→DOM integration is still in progress; today these pages are
-primarily a smoke test for `<video>` layout and for future playback wiring.
+Note: full end-to-end decode→paint→DOM integration is still in progress. Today these pages are
+primarily a smoke test for `<video>/<audio>` layout and for future playback wiring.
 
 ## Known limitations / TODOs (explicit)
 
-- There is no end-to-end HTMLMediaElement playback engine yet (DOM events/state machine, decode
-  scheduling threads, audio output as master clock, etc). Paint can display frames if an app supplies
-  a `MediaFrameProvider`, but nothing in-tree wires `MediaDecodePipeline`/`MediaPlayer` to the DOM.
+- There is no end-to-end `HTMLMediaElement` playback engine yet (DOM events/state machine, decode
+  scheduling threads, audio output as master clock, etc).
+  - Paint *can* display frames if an app supplies a `MediaFrameProvider`, but nothing in-tree wires
+    `MediaDecodePipeline`/`MediaPlayer` to the DOM yet.
+  - `MediaFrameProvider::audio_frame` is still a stub (`src/media/mod.rs`).
 - MP4 (`Mp4PacketDemuxer`):
-  - `dts_ns`/`pts_ns` are currently treated as equal; streams with `ctts`/B-frames need proper
-    DTS/PTS handling.
-  - `MediaPacket.duration_ns` is currently `0`.
-  - Seeking is not keyframe-aware (does not seek to previous sync sample).
+  - Sample-table timing/seek is best-effort and can fall back when caps are hit (reduced
+    timestamp/seek fidelity).
   - Fragmented MP4 is unsupported.
 - WebM (`WebmDemuxer`):
   - Seek is best-effort and currently does not account for Matroska `SeekPreRoll` (some codecs may
     require decode before the target PTS after seeking).
 - Opus:
   - Only mapping family 0 mono/stereo is supported today (no multichannel mapping tables).
+- Audio output:
+  - Real audio output is feature-gated (`audio_cpal`) and not yet routed from the media decode
+    pipeline into the audio engine/backends.
 
 ## Extending the pipeline
 
@@ -340,3 +370,4 @@ The codebase provides a small “narrow waist”:
 When adding new pieces, keep them deterministic and avoid introducing hard system dependencies into
 the default build; prefer optional feature gates when platform libs or external binaries are
 required.
+
