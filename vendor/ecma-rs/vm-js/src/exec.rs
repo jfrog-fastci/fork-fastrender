@@ -29045,9 +29045,25 @@ fn async_yield_star_begin(
     }
 
     YieldStarStep::Yield(value) => {
+      // `yield*` in async generators must not `await` values produced by the delegate iterator.
+      //
+      // In particular, if the delegate yields a Promise object as its `.value`, the outer generator
+      // must yield that Promise object unchanged (test262:
+      // `test/language/statements/async-generator/yield-star-promise-not-unwrapped.js`).
+      //
+      // vm-js models this by yielding an *iterator result object* directly to the consumer.
+      let iter_result =
+        match async_generator_create_iterator_result_object(evaluator.vm, &mut scope, value, false) {
+          Ok(v) => v,
+          Err(err) => {
+            scope.heap_mut().remove_root(iterator_root);
+            scope.heap_mut().remove_root(next_method_root);
+            return Err(err);
+          }
+        };
       let mut suspend = AsyncSuspend {
-        kind: AsyncSuspendKind::Yield,
-        await_value: value,
+        kind: AsyncSuspendKind::YieldIteratorResult,
+        await_value: iter_result,
         frames: VecDeque::new(),
       };
       if let Err(_) = async_frames_push(
@@ -35175,9 +35191,18 @@ fn async_resume_from_frames(
                 return Err(VmError::OutOfMemory);
               }
               async_frames_try_append(scope.heap_mut(), &mut out_frames, &mut frames)?;
+              let iter_result =
+                match async_generator_create_iterator_result_object(evaluator.vm, scope, value, false) {
+                  Ok(v) => v,
+                  Err(err) => {
+                    scope.heap_mut().remove_root(iterator_root);
+                    scope.heap_mut().remove_root(next_method_root);
+                    return Err(err);
+                  }
+                };
               return Ok(AsyncBodyResult::Await {
-                kind: AsyncSuspendKind::Yield,
-                await_value: value,
+                kind: AsyncSuspendKind::YieldIteratorResult,
+                await_value: iter_result,
                 frames: out_frames,
               });
             }
