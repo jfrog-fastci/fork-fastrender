@@ -1480,14 +1480,18 @@ where
         });
 
         if did_panic && !clock_updated && channels != 0 {
-          let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
-          last_callback_frames.store(frames_u32, Ordering::Relaxed);
-          clock.on_callback_end_at(Instant::now(), frames_u32, None);
+          // This is part of the RT output callback; never let panics unwind across the boundary,
+          // even in this best-effort post-panic clock update.
+          let _ = catch_unwind(AssertUnwindSafe(|| {
+            let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
+            last_callback_frames.store(frames_u32, Ordering::Relaxed);
+            clock.on_callback_end_at(Instant::now(), frames_u32, None);
 
-          if fixed_callback_frames.is_none() {
-            let latency = frames_to_duration(sample_rate_hz, frames);
-            estimated_latency_nanos.store(duration_to_nanos_u64(latency), Ordering::Relaxed);
-          }
+            if fixed_callback_frames.is_none() {
+              let latency = frames_to_duration(sample_rate_hz, frames);
+              estimated_latency_nanos.store(duration_to_nanos_u64(latency), Ordering::Relaxed);
+            }
+          }));
         }
       },
       err_cb,
