@@ -48,7 +48,6 @@ use url::Url;
 
 /// Canonical scheme name for `chrome-action:` URLs.
 pub const CHROME_ACTION_SCHEME: &str = "chrome-action";
-
 /// A parsed `chrome-action:` URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChromeActionUrl {
@@ -135,9 +134,6 @@ pub enum ChromeActionUrl {
   OpenHomeUrlDialog,
   ToggleDownloadsPanel,
 }
-
-/// Historical name for the chrome URL scheme (kept for compatibility with older UI code).
-pub const CHROME_ACTION_SCHEME: &str = ChromeActionUrl::SCHEME;
 
 impl ChromeActionUrl {
   pub const SCHEME: &'static str = "chrome-action";
@@ -633,12 +629,6 @@ impl ChromeActionUrl {
     })
   }
 }
-
-/// `chrome-action` URL scheme string.
-///
-/// Prefer [`ChromeActionUrl::SCHEME`] when possible; this constant exists for backwards-compatible
-/// call sites that imported `CHROME_ACTION_SCHEME` from `crate::ui`.
-pub const CHROME_ACTION_SCHEME: &str = ChromeActionUrl::SCHEME;
 
 impl std::fmt::Display for ChromeActionUrl {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
