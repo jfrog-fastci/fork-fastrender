@@ -309,6 +309,11 @@ impl<'a> Parser<'a> {
   /// `arguments` is a syntax error unless it is *shadowed* by an inner non-arrow function (which
   /// provides its own `arguments` binding).
   pub fn with_disallow_arguments_in_class_init<R, F: FnOnce(&mut Self) -> R>(&mut self, f: F) -> R {
+    // Only enforce this early error in strict ECMAScript parsing mode (Dialect::Ecma). Other
+    // dialects use recovery and accept a broader syntax surface.
+    if !self.is_strict_ecmascript() {
+      return f(self);
+    }
     let prev_disallow = self.disallow_arguments_in_class_init;
     let prev_arguments_allowed = self.arguments_allowed;
     self.disallow_arguments_in_class_init = prev_disallow.saturating_add(1);
@@ -327,6 +332,9 @@ impl<'a> Parser<'a> {
     loc: Loc,
     raw_name: &str,
   ) -> SyntaxResult<()> {
+    if !self.is_strict_ecmascript() {
+      return Ok(());
+    }
     if self.disallow_arguments_in_class_init == 0 {
       return Ok(());
     }
