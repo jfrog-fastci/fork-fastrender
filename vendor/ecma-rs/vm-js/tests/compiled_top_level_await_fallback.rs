@@ -640,3 +640,66 @@ fn compiled_script_top_level_await_member_assignment_suspends_and_resumes() -> R
   rt.heap_mut().remove_root(completion_root);
   Ok(())
 }
+
+#[test]
+fn compiled_script_top_level_await_assignment_evaluates_lhs_before_await_rhs() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "compiled_top_level_await_assignment_eval_order.js",
+    r#"
+      var log = [];
+      var obj = { set x(v) { log.push("set:" + v); } };
+      function getObj() { log.push("target"); return obj; }
+      log.push("before");
+      getObj().x = await Promise.resolve((log.push("rhs"), "ok"));
+      log.push("after");
+      log.join(",")
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "assignment-await should be supported by the HIR async classic-script executor"
+  );
+  assert!(
+    !script.requires_ast_fallback,
+    "assignment-await should not trigger a full AST fallback"
+  );
+
+  let completion = rt.exec_compiled_script(script)?;
+  let completion_root = rt.heap_mut().add_root(completion)?;
+
+  let Value::Object(promise_obj) = completion else {
+    panic!("expected Promise object from top-level await script, got {completion:?}");
+  };
+  assert!(rt.heap().is_promise_object(promise_obj));
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
+
+  // The assignment should have evaluated the LHS reference (`getObj().x`) and the RHS promise
+  // expression, but not have executed `PutValue` or subsequent statements yet.
+  let log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_string(&rt, log), "before,target,rhs");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let result = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  assert_eq!(
+    value_to_string(&rt, result),
+    "before,target,rhs,set:ok,after"
+  );
+
+  let log = rt.exec_script("log.join(',')")?;
+  assert_eq!(
+    value_to_string(&rt, log),
+    "before,target,rhs,set:ok,after"
+  );
+
+  rt.heap_mut().remove_root(completion_root);
+  Ok(())
+}
