@@ -153,7 +153,7 @@ pub fn run_test262_negative_parse(args: Test262NegativeParseArgs) -> Result<()> 
 
   // 4) Rebuild test262-semantic before running the suite.
   //
-  // We execute the binary directly (faster than `cargo run`), so we must ensure it's rebuilt on
+  // We execute the binary directly (faster than going through Cargo's `run` subcommand), so we must ensure it's rebuilt on
   // every invocation to avoid stale-binary false negatives (where a previously-built runner is
   // executed after the JS engine has changed).
   println!();

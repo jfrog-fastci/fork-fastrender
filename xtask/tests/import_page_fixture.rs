@@ -1,8 +1,10 @@
 use fastrender::{FastRender, RenderOptions};
+use fastrender::resource::HttpFetcher;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Arc;
 use tempfile::tempdir;
 use url::Url;
 
@@ -94,6 +96,7 @@ fn imports_bundle_into_fixture() {
     .to_string();
   let mut renderer = FastRender::builder()
     .base_url(base_url)
+    .fetcher(Arc::new(HttpFetcher::new()))
     .build()
     .expect("build renderer");
   let pixmap = renderer

@@ -609,6 +609,8 @@ impl WindowRealmUserData {
     &mut self,
     key: DomNodeKey,
   ) -> &mut crate::js::window_media::MediaElementState {
+    // Clone the concrete `Arc<MasterClock>` first, then coerce to `Arc<dyn MediaClock>`.
+    // (`Arc::clone` cannot directly unsize `&Arc<T>` to `&Arc<dyn Trait>`.)
     let master: Arc<dyn crate::media::clock::MediaClock> = self.media_master_clock.clone();
     self
       .media_element_state_registry

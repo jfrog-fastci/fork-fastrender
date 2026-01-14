@@ -25,12 +25,6 @@ const CHILD_ENV: &str = "FASTR_TEST_SANDBOX_SMOKE_RENDER_CHILD";
 fn sandbox_smoke_render_completes_after_sandboxing() {
   let is_child = std::env::var_os(CHILD_ENV).is_some();
   if is_child {
-    // Keep this render hermetic/deterministic even if other subsystems consult the default
-    // FontConfig (e.g. SVG helpers). Also keep the Rayon global thread pool tiny so we don't stress
-    // CI thread limits while sandboxed.
-    std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
-    std::env::set_var("RAYON_NUM_THREADS", "1");
-
     apply_renderer_sandbox().expect("apply renderer sandbox");
 
     // Sanity check that the sandbox is active (and that we're not accidentally running without

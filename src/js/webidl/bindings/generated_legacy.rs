@@ -2,6 +2,7 @@
 //
 // Source inputs:
 // - src/webidl/generated/mod.rs (committed snapshot; produced by `bash scripts/cargo_agent.sh xtask webidl`)
+// - tools/webidl/local/chrome.idl (FastRender-local chrome bridge APIs)
 
 use super::host::{binding_value_to_js, BindingValue, WebHostBindings};
 
@@ -201,6 +202,36 @@ pub mod window {
           ty: IdlType::Boolean,
           default: Some(DefaultValue::Boolean(false)),
         }],
+      });
+      ctx.add_dictionary(DictionarySchema {
+        name: "FastRenderTabInfo".to_string(),
+        inherits: None,
+        members: vec![
+          DictionaryMemberSchema {
+            name: "id".to_string(),
+            required: false,
+            ty: IdlType::Numeric(NumericType::UnsignedLongLong),
+            default: None,
+          },
+          DictionaryMemberSchema {
+            name: "url".to_string(),
+            required: false,
+            ty: IdlType::String(StringType::DomString),
+            default: None,
+          },
+          DictionaryMemberSchema {
+            name: "title".to_string(),
+            required: false,
+            ty: IdlType::String(StringType::DomString),
+            default: None,
+          },
+          DictionaryMemberSchema {
+            name: "active".to_string(),
+            required: false,
+            ty: IdlType::Boolean,
+            default: None,
+          },
+        ],
       });
       ctx
     })
@@ -1159,6 +1190,81 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn document_create_node_iterator<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![
+        ArgumentSchema {
+          name: "root",
+          ty: IdlType::Named(NamedType {
+            name: "Node".to_string(),
+            kind: NamedTypeKind::Interface,
+          }),
+          optional: false,
+          variadic: false,
+          default: None,
+        },
+        ArgumentSchema {
+          name: "whatToShow",
+          ty: IdlType::Numeric(NumericType::UnsignedLong),
+          optional: true,
+          variadic: false,
+          default: Some(DefaultValue::Number(NumericLiteral::Integer(
+            "0xFFFFFFFF".to_string(),
+          ))),
+        },
+        ArgumentSchema {
+          name: "filter",
+          ty: IdlType::Nullable(Box::new(IdlType::Named(NamedType {
+            name: "NodeFilter".to_string(),
+            kind: NamedTypeKind::CallbackInterface,
+          }))),
+          optional: true,
+          variadic: false,
+          default: Some(DefaultValue::Null),
+        },
+      ]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Document",
+      "createNodeIterator",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
   fn document_create_text_node<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -1203,6 +1309,81 @@ pub mod window {
       Some(this),
       "Document",
       "createTextNode",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn document_create_tree_walker<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![
+        ArgumentSchema {
+          name: "root",
+          ty: IdlType::Named(NamedType {
+            name: "Node".to_string(),
+            kind: NamedTypeKind::Interface,
+          }),
+          optional: false,
+          variadic: false,
+          default: None,
+        },
+        ArgumentSchema {
+          name: "whatToShow",
+          ty: IdlType::Numeric(NumericType::UnsignedLong),
+          optional: true,
+          variadic: false,
+          default: Some(DefaultValue::Number(NumericLiteral::Integer(
+            "0xFFFFFFFF".to_string(),
+          ))),
+        },
+        ArgumentSchema {
+          name: "filter",
+          ty: IdlType::Nullable(Box::new(IdlType::Named(NamedType {
+            name: "NodeFilter".to_string(),
+            kind: NamedTypeKind::CallbackInterface,
+          }))),
+          optional: true,
+          variadic: false,
+          default: Some(DefaultValue::Null),
+        },
+      ]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Document",
+      "createTreeWalker",
       overload_index,
       converted_binding_args,
     )?;
@@ -3657,6 +3838,418 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn fast_render_chrome_get_attribute_navigation<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "FastRenderChrome", "navigation")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_chrome_get_attribute_tabs<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "FastRenderChrome", "tabs")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_navigation_back<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "FastRenderNavigation",
+      "back",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_navigation_forward<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "FastRenderNavigation",
+      "forward",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_navigation_navigate<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![ArgumentSchema {
+        name: "url",
+        ty: IdlType::String(StringType::DomString),
+        optional: false,
+        variadic: false,
+        default: None,
+      }]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "FastRenderNavigation",
+      "navigate",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_navigation_reload<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "FastRenderNavigation",
+      "reload",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_tabs_activate_tab<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![ArgumentSchema {
+        name: "id",
+        ty: IdlType::Numeric(NumericType::UnsignedLongLong),
+        optional: false,
+        variadic: false,
+        default: None,
+      }]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "FastRenderTabs",
+      "activateTab",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_tabs_close_tab<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![ArgumentSchema {
+        name: "id",
+        ty: IdlType::Numeric(NumericType::UnsignedLongLong),
+        optional: false,
+        variadic: false,
+        default: None,
+      }]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "FastRenderTabs",
+      "closeTab",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_tabs_list<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "FastRenderTabs",
+      "list",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn fast_render_tabs_new_tab<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![ArgumentSchema {
+        name: "url",
+        ty: IdlType::String(StringType::DomString),
+        optional: true,
+        variadic: false,
+        default: None,
+      }]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "FastRenderTabs",
+      "newTab",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
   fn h_t_m_l_collection_item<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -3941,6 +4534,60 @@ pub mod window {
       Some(this),
       "Node",
       "insertBefore",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn node_is_equal_node<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![ArgumentSchema {
+        name: "otherNode",
+        ty: IdlType::Nullable(Box::new(IdlType::Named(NamedType {
+          name: "Node".to_string(),
+          kind: NamedTypeKind::Interface,
+        }))),
+        optional: false,
+        variadic: false,
+        default: None,
+      }]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "Node",
+      "isEqualNode",
       overload_index,
       converted_binding_args,
     )?;
@@ -4288,6 +4935,226 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn node_iterator_detach<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "NodeIterator",
+      "detach",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn node_iterator_next_node<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "NodeIterator",
+      "nextNode",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn node_iterator_previous_node<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "NodeIterator",
+      "previousNode",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn node_iterator_get_attribute_filter<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "NodeIterator", "filter")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn node_iterator_get_attribute_pointer_before_reference_node<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result =
+      host.get_attribute(rt, Some(this), "NodeIterator", "pointerBeforeReferenceNode")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn node_iterator_get_attribute_reference_node<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "NodeIterator", "referenceNode")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn node_iterator_get_attribute_root<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "NodeIterator", "root")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn node_iterator_get_attribute_what_to_show<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "NodeIterator", "whatToShow")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
   fn node_list_entries<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -4542,6 +5409,422 @@ pub mod window {
       return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
     }
     let result = host.get_attribute(rt, Some(this), "NodeList", "length")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_first_child<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "TreeWalker",
+      "firstChild",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_last_child<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "TreeWalker",
+      "lastChild",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_next_node<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "TreeWalker",
+      "nextNode",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_next_sibling<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "TreeWalker",
+      "nextSibling",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_parent_node<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "TreeWalker",
+      "parentNode",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_previous_node<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "TreeWalker",
+      "previousNode",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_previous_sibling<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| vec![vec![]]);
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      Some(this),
+      "TreeWalker",
+      "previousSibling",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_get_attribute_current_node<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "TreeWalker", "currentNode")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_set_attribute_current_node<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static SCHEMAS: OnceLock<Vec<ArgumentSchema>> = OnceLock::new();
+    let schemas = SCHEMAS.get_or_init(|| {
+      vec![ArgumentSchema {
+        name: "value",
+        ty: IdlType::Named(NamedType {
+          name: "Node".to_string(),
+          kind: NamedTypeKind::Interface,
+        }),
+        optional: false,
+        variadic: false,
+        default: None,
+      }]
+    });
+    let ctx = type_context();
+    let converted = convert_arguments(rt, args, schemas, ctx)?;
+    let value = converted
+      .into_iter()
+      .next()
+      .unwrap_or(ConvertedValue::Undefined);
+    let converted = converted_value_to_binding_value::<Host, R>(rt, ctx, &schemas[0].ty, value)?;
+    host.set_attribute(rt, Some(this), "TreeWalker", "currentNode", converted)?;
+    Ok(rt_js_undefined::<Host, R>(rt))
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_get_attribute_filter<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "TreeWalker", "filter")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_get_attribute_root<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "TreeWalker", "root")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn tree_walker_get_attribute_what_to_show<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "TreeWalker", "whatToShow")?;
     binding_value_to_js::<Host, R>(rt, result)
   }
 
@@ -5870,10 +7153,16 @@ pub mod window {
     let proto_element = rt.create_object()?;
     let proto_event = rt.create_object()?;
     let proto_event_target = rt.create_object()?;
+    let proto_fast_render_chrome = rt.create_object()?;
+    let proto_fast_render_navigation = rt.create_object()?;
+    let proto_fast_render_tabs = rt.create_object()?;
     let proto_h_t_m_l_collection = rt.create_object()?;
     let proto_node = rt.create_object()?;
+    let proto_node_filter = rt.create_object()?;
+    let proto_node_iterator = rt.create_object()?;
     let proto_node_list = rt.create_object()?;
     let proto_text = rt.create_object()?;
+    let proto_tree_walker = rt.create_object()?;
     let proto_u_r_l = rt.create_object()?;
     let proto_u_r_l_search_params = rt.create_object()?;
     rt.set_prototype(proto_character_data, Some(proto_node))?;
@@ -5946,8 +7235,20 @@ pub mod window {
     rt.define_method(proto_document, "createDocumentFragment", func)?;
     let func = rt.create_function("createElement", 1, document_create_element::<Host, R>)?;
     rt.define_method(proto_document, "createElement", func)?;
+    let func = rt.create_function(
+      "createNodeIterator",
+      1,
+      document_create_node_iterator::<Host, R>,
+    )?;
+    rt.define_method(proto_document, "createNodeIterator", func)?;
     let func = rt.create_function("createTextNode", 1, document_create_text_node::<Host, R>)?;
     rt.define_method(proto_document, "createTextNode", func)?;
+    let func = rt.create_function(
+      "createTreeWalker",
+      1,
+      document_create_tree_walker::<Host, R>,
+    )?;
+    rt.define_method(proto_document, "createTreeWalker", func)?;
     let func = rt.create_function("getElementById", 1, document_get_element_by_id::<Host, R>)?;
     rt.define_method(proto_document, "getElementById", func)?;
     let func = rt.create_function(
@@ -6276,6 +7577,36 @@ pub mod window {
       event_target_constructor::<Host, R>,
     )?;
     rt.define_constructor(global, "EventTarget", ctor_event_target, proto_event_target)?;
+    let get = rt.create_function(
+      "get navigation",
+      0,
+      fast_render_chrome_get_attribute_navigation::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_fast_render_chrome, "navigation", get, set)?;
+    let get = rt.create_function(
+      "get tabs",
+      0,
+      fast_render_chrome_get_attribute_tabs::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_fast_render_chrome, "tabs", get, set)?;
+    let func = rt.create_function("back", 0, fast_render_navigation_back::<Host, R>)?;
+    rt.define_method(proto_fast_render_navigation, "back", func)?;
+    let func = rt.create_function("forward", 0, fast_render_navigation_forward::<Host, R>)?;
+    rt.define_method(proto_fast_render_navigation, "forward", func)?;
+    let func = rt.create_function("navigate", 1, fast_render_navigation_navigate::<Host, R>)?;
+    rt.define_method(proto_fast_render_navigation, "navigate", func)?;
+    let func = rt.create_function("reload", 0, fast_render_navigation_reload::<Host, R>)?;
+    rt.define_method(proto_fast_render_navigation, "reload", func)?;
+    let func = rt.create_function("activateTab", 1, fast_render_tabs_activate_tab::<Host, R>)?;
+    rt.define_method(proto_fast_render_tabs, "activateTab", func)?;
+    let func = rt.create_function("closeTab", 1, fast_render_tabs_close_tab::<Host, R>)?;
+    rt.define_method(proto_fast_render_tabs, "closeTab", func)?;
+    let func = rt.create_function("list", 0, fast_render_tabs_list::<Host, R>)?;
+    rt.define_method(proto_fast_render_tabs, "list", func)?;
+    let func = rt.create_function("newTab", 0, fast_render_tabs_new_tab::<Host, R>)?;
+    rt.define_method(proto_fast_render_tabs, "newTab", func)?;
     let func = rt.create_function("item", 1, h_t_m_l_collection_item::<Host, R>)?;
     rt.define_method(proto_h_t_m_l_collection, "item", func)?;
     let func = rt.create_function("namedItem", 1, h_t_m_l_collection_named_item::<Host, R>)?;
@@ -6293,6 +7624,8 @@ pub mod window {
     rt.define_method(proto_node, "cloneNode", func)?;
     let func = rt.create_function("insertBefore", 2, node_insert_before::<Host, R>)?;
     rt.define_method(proto_node, "insertBefore", func)?;
+    let func = rt.create_function("isEqualNode", 1, node_is_equal_node::<Host, R>)?;
+    rt.define_method(proto_node, "isEqualNode", func)?;
     let func = rt.create_function("removeChild", 1, node_remove_child::<Host, R>)?;
     rt.define_method(proto_node, "removeChild", func)?;
     let func = rt.create_function("replaceChild", 2, node_replace_child::<Host, R>)?;
@@ -6510,6 +7843,210 @@ pub mod window {
     )?;
     rt.define_constant(ctor_node, "TEXT_NODE", rt_js_number::<Host, R>(rt, 3.0))?;
     rt.define_constant(proto_node, "TEXT_NODE", rt_js_number::<Host, R>(rt, 3.0))?;
+    let ctor_node_filter = rt.create_constructor(
+      "NodeFilter",
+      0,
+      illegal_constructor::<Host, R>,
+      illegal_constructor::<Host, R>,
+    )?;
+    rt.define_constructor(global, "NodeFilter", ctor_node_filter, proto_node_filter)?;
+    rt.define_constant(
+      ctor_node_filter,
+      "FILTER_ACCEPT",
+      rt_js_number::<Host, R>(rt, 1.0),
+    )?;
+    rt.define_constant(
+      proto_node_filter,
+      "FILTER_ACCEPT",
+      rt_js_number::<Host, R>(rt, 1.0),
+    )?;
+    rt.define_constant(
+      ctor_node_filter,
+      "FILTER_REJECT",
+      rt_js_number::<Host, R>(rt, 2.0),
+    )?;
+    rt.define_constant(
+      proto_node_filter,
+      "FILTER_REJECT",
+      rt_js_number::<Host, R>(rt, 2.0),
+    )?;
+    rt.define_constant(
+      ctor_node_filter,
+      "FILTER_SKIP",
+      rt_js_number::<Host, R>(rt, 3.0),
+    )?;
+    rt.define_constant(
+      proto_node_filter,
+      "FILTER_SKIP",
+      rt_js_number::<Host, R>(rt, 3.0),
+    )?;
+    rt.define_constant(
+      ctor_node_filter,
+      "SHOW_ALL",
+      rt_js_number::<Host, R>(rt, 4294967295.0),
+    )?;
+    rt.define_constant(
+      proto_node_filter,
+      "SHOW_ALL",
+      rt_js_number::<Host, R>(rt, 4294967295.0),
+    )?;
+    rt.define_constant(
+      ctor_node_filter,
+      "SHOW_ATTRIBUTE",
+      rt_js_number::<Host, R>(rt, 2.0),
+    )?;
+    rt.define_constant(
+      proto_node_filter,
+      "SHOW_ATTRIBUTE",
+      rt_js_number::<Host, R>(rt, 2.0),
+    )?;
+    rt.define_constant(
+      ctor_node_filter,
+      "SHOW_CDATA_SECTION",
+      rt_js_number::<Host, R>(rt, 8.0),
+    )?;
+    rt.define_constant(
+      proto_node_filter,
+      "SHOW_CDATA_SECTION",
+      rt_js_number::<Host, R>(rt, 8.0),
+    )?;
+    rt.define_constant(
+      ctor_node_filter,
+      "SHOW_COMMENT",
+      rt_js_number::<Host, R>(rt, 128.0),
+    )?;
+    rt.define_constant(
+      proto_node_filter,
+      "SHOW_COMMENT",
+      rt_js_number::<Host, R>(rt, 128.0),
+    )?;
+    rt.define_constant(
+      ctor_node_filter,
+      "SHOW_DOCUMENT",
+      rt_js_number::<Host, R>(rt, 256.0),
+    )?;
+    rt.define_constant(
+      proto_node_filter,
+      "SHOW_DOCUMENT",
+      rt_js_number::<Host, R>(rt, 256.0),
+    )?;
+    rt.define_constant(
+      ctor_node_filter,
+      "SHOW_DOCUMENT_FRAGMENT",
+      rt_js_number::<Host, R>(rt, 1024.0),
+    )?;
+    rt.define_constant(
+      proto_node_filter,
+      "SHOW_DOCUMENT_FRAGMENT",
+      rt_js_number::<Host, R>(rt, 1024.0),
+    )?;
+    rt.define_constant(
+      ctor_node_filter,
+      "SHOW_DOCUMENT_TYPE",
+      rt_js_number::<Host, R>(rt, 512.0),
+    )?;
+    rt.define_constant(
+      proto_node_filter,
+      "SHOW_DOCUMENT_TYPE",
+      rt_js_number::<Host, R>(rt, 512.0),
+    )?;
+    rt.define_constant(
+      ctor_node_filter,
+      "SHOW_ELEMENT",
+      rt_js_number::<Host, R>(rt, 1.0),
+    )?;
+    rt.define_constant(
+      proto_node_filter,
+      "SHOW_ELEMENT",
+      rt_js_number::<Host, R>(rt, 1.0),
+    )?;
+    rt.define_constant(
+      ctor_node_filter,
+      "SHOW_ENTITY",
+      rt_js_number::<Host, R>(rt, 32.0),
+    )?;
+    rt.define_constant(
+      proto_node_filter,
+      "SHOW_ENTITY",
+      rt_js_number::<Host, R>(rt, 32.0),
+    )?;
+    rt.define_constant(
+      ctor_node_filter,
+      "SHOW_ENTITY_REFERENCE",
+      rt_js_number::<Host, R>(rt, 16.0),
+    )?;
+    rt.define_constant(
+      proto_node_filter,
+      "SHOW_ENTITY_REFERENCE",
+      rt_js_number::<Host, R>(rt, 16.0),
+    )?;
+    rt.define_constant(
+      ctor_node_filter,
+      "SHOW_NOTATION",
+      rt_js_number::<Host, R>(rt, 2048.0),
+    )?;
+    rt.define_constant(
+      proto_node_filter,
+      "SHOW_NOTATION",
+      rt_js_number::<Host, R>(rt, 2048.0),
+    )?;
+    rt.define_constant(
+      ctor_node_filter,
+      "SHOW_PROCESSING_INSTRUCTION",
+      rt_js_number::<Host, R>(rt, 64.0),
+    )?;
+    rt.define_constant(
+      proto_node_filter,
+      "SHOW_PROCESSING_INSTRUCTION",
+      rt_js_number::<Host, R>(rt, 64.0),
+    )?;
+    rt.define_constant(
+      ctor_node_filter,
+      "SHOW_TEXT",
+      rt_js_number::<Host, R>(rt, 4.0),
+    )?;
+    rt.define_constant(
+      proto_node_filter,
+      "SHOW_TEXT",
+      rt_js_number::<Host, R>(rt, 4.0),
+    )?;
+    let func = rt.create_function("detach", 0, node_iterator_detach::<Host, R>)?;
+    rt.define_method(proto_node_iterator, "detach", func)?;
+    let func = rt.create_function("nextNode", 0, node_iterator_next_node::<Host, R>)?;
+    rt.define_method(proto_node_iterator, "nextNode", func)?;
+    let func = rt.create_function("previousNode", 0, node_iterator_previous_node::<Host, R>)?;
+    rt.define_method(proto_node_iterator, "previousNode", func)?;
+    let get = rt.create_function(
+      "get filter",
+      0,
+      node_iterator_get_attribute_filter::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_node_iterator, "filter", get, set)?;
+    let get = rt.create_function(
+      "get pointerBeforeReferenceNode",
+      0,
+      node_iterator_get_attribute_pointer_before_reference_node::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_node_iterator, "pointerBeforeReferenceNode", get, set)?;
+    let get = rt.create_function(
+      "get referenceNode",
+      0,
+      node_iterator_get_attribute_reference_node::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_node_iterator, "referenceNode", get, set)?;
+    let get = rt.create_function("get root", 0, node_iterator_get_attribute_root::<Host, R>)?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_node_iterator, "root", get, set)?;
+    let get = rt.create_function(
+      "get whatToShow",
+      0,
+      node_iterator_get_attribute_what_to_show::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_node_iterator, "whatToShow", get, set)?;
     let func = rt.create_function("entries", 0, node_list_entries::<Host, R>)?;
     rt.define_method(proto_node_list, "entries", func)?;
     let func = rt.create_function("forEach", 1, node_list_for_each::<Host, R>)?;
@@ -6531,6 +8068,48 @@ pub mod window {
     let get = rt.create_function("get length", 0, node_list_get_attribute_length::<Host, R>)?;
     let set = rt_js_undefined::<Host, R>(rt);
     rt.define_attribute_accessor(proto_node_list, "length", get, set)?;
+    let func = rt.create_function("firstChild", 0, tree_walker_first_child::<Host, R>)?;
+    rt.define_method(proto_tree_walker, "firstChild", func)?;
+    let func = rt.create_function("lastChild", 0, tree_walker_last_child::<Host, R>)?;
+    rt.define_method(proto_tree_walker, "lastChild", func)?;
+    let func = rt.create_function("nextNode", 0, tree_walker_next_node::<Host, R>)?;
+    rt.define_method(proto_tree_walker, "nextNode", func)?;
+    let func = rt.create_function("nextSibling", 0, tree_walker_next_sibling::<Host, R>)?;
+    rt.define_method(proto_tree_walker, "nextSibling", func)?;
+    let func = rt.create_function("parentNode", 0, tree_walker_parent_node::<Host, R>)?;
+    rt.define_method(proto_tree_walker, "parentNode", func)?;
+    let func = rt.create_function("previousNode", 0, tree_walker_previous_node::<Host, R>)?;
+    rt.define_method(proto_tree_walker, "previousNode", func)?;
+    let func = rt.create_function(
+      "previousSibling",
+      0,
+      tree_walker_previous_sibling::<Host, R>,
+    )?;
+    rt.define_method(proto_tree_walker, "previousSibling", func)?;
+    let get = rt.create_function(
+      "get currentNode",
+      0,
+      tree_walker_get_attribute_current_node::<Host, R>,
+    )?;
+    let set = rt.create_function(
+      "set currentNode",
+      1,
+      tree_walker_set_attribute_current_node::<Host, R>,
+    )?;
+    rt.define_attribute_accessor(proto_tree_walker, "currentNode", get, set)?;
+    let get = rt.create_function("get filter", 0, tree_walker_get_attribute_filter::<Host, R>)?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_tree_walker, "filter", get, set)?;
+    let get = rt.create_function("get root", 0, tree_walker_get_attribute_root::<Host, R>)?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_tree_walker, "root", get, set)?;
+    let get = rt.create_function(
+      "get whatToShow",
+      0,
+      tree_walker_get_attribute_what_to_show::<Host, R>,
+    )?;
+    let set = rt_js_undefined::<Host, R>(rt);
+    rt.define_attribute_accessor(proto_tree_walker, "whatToShow", get, set)?;
     let func = rt.create_function("toJSON", 0, u_r_l_to_j_s_o_n::<Host, R>)?;
     rt.define_method(proto_u_r_l, "toJSON", func)?;
     let get = rt.create_function("get href", 0, u_r_l_get_attribute_href::<Host, R>)?;

@@ -7228,10 +7228,7 @@ impl BrowserRuntime {
           Some(hit) => (Some(hit.dom_node_id), hit.element_id),
           None => (None, None),
         };
-        (
-          changed,
-          (changed, target_id, target_element_id),
-        )
+        (changed, (changed, target_id, target_element_id))
       }) {
         Ok(result) => result,
         Err(_) => return,

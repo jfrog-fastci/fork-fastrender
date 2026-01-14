@@ -922,12 +922,17 @@ fi
 # Some non-Linux environments ship a `flock` binary that doesn't support locking inherited file
 # descriptors. Probe it once so we don't deadlock in the retry loop below.
 #
+# IMPORTANT: Use a per-process probe lockfile to avoid false negatives when multiple `cargo_agent.sh`
+# instances start concurrently. A shared `.flock_probe.lock` can be contended briefly, causing
+# `flock -n` to fail even though `flock` works correctly.
+#
 # IMPORTANT: `exec` redirections persist for the rest of the shell process. Do **not** attach
 # `2>/dev/null` directly to `exec` here, or we'd permanently silence stderr for the remainder of this
 # script (including cargo diagnostics).
+probe_lockfile="${lock_dir}/.flock_probe.$$.$RANDOM.lock"
 exec 198>&2
 exec 2>/dev/null
-if ! exec 199>"${lock_dir}/.flock_probe.lock"; then
+if ! exec 199>"${probe_lockfile}"; then
   exec 2>&198
   exec 198>&-
   echo "warning: unable to open flock probe lock; running cargo without slot throttling" >&2
@@ -939,10 +944,12 @@ exec 198>&-
 if ! flock -n 199 >/dev/null 2>&1; then
   echo "warning: flock appears unusable; running cargo without slot throttling" >&2
   exec 199>&- || true
+  rm -f "${probe_lockfile}" 2>/dev/null || true
   run_cargo "$@"
   exit $?
 fi
 exec 199>&-
+rm -f "${probe_lockfile}" 2>/dev/null || true
 
 acquire_slot() {
   local i k start lockfile fd

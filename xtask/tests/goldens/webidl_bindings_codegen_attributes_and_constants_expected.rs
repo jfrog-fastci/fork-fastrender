@@ -2,6 +2,7 @@
 //
 // Source inputs:
 // - src/webidl/generated/mod.rs (committed snapshot; produced by `bash scripts/cargo_agent.sh xtask webidl`)
+// - tools/webidl/local/chrome.idl (FastRender-local chrome bridge APIs)
 
 use super::host::{binding_value_to_js, BindingValue, WebHostBindings};
 

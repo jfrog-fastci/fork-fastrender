@@ -119,9 +119,10 @@ fn js_help_lists_subcommands() {
   let stdout = String::from_utf8_lossy(&output.stdout);
   assert!(
     stdout.contains("\n  test262 ")
+      && stdout.contains("test262-negative-parse")
       && stdout.contains("test262-parser")
       && stdout.contains("wpt-dom"),
-    "help output should list test262, test262-parser, and wpt-dom; got:\n{stdout}"
+    "help output should list test262, test262-negative-parse, test262-parser, and wpt-dom; got:\n{stdout}"
   );
 }
 
@@ -148,6 +149,30 @@ fn js_test262_help_mentions_flags() {
       && stdout.contains("--report")
       && stdout.contains("--filter")
       && stdout.contains("--harness"),
+    "help output should mention key flags; got:\n{stdout}"
+  );
+}
+
+#[test]
+fn js_test262_negative_parse_help_mentions_flags() {
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .args(["js", "test262-negative-parse", "--help"])
+    .output()
+    .expect("run xtask js test262-negative-parse --help");
+
+  assert!(
+    output.status.success(),
+    "js test262-negative-parse help should exit successfully"
+  );
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  assert!(
+    stdout.contains("--suite")
+      && stdout.contains("--test262-dir")
+      && stdout.contains("--manifest")
+      && stdout.contains("--out-suite")
+      && stdout.contains("--report")
+      && stdout.contains("--timeout-secs"),
     "help output should mention key flags; got:\n{stdout}"
   );
 }
