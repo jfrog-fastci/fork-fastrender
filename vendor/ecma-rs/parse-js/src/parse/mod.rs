@@ -178,7 +178,6 @@ pub struct Parser<'a> {
   in_iteration: u32,
   in_switch: u32,
   labels: Vec<LabelInfo>,
-  arguments_disallowed_in_class_init: Vec<u32>,
   cancel: Option<Arc<AtomicBool>>,
   cancel_check: Option<Box<dyn FnMut() -> bool + 'a>>,
 }
@@ -218,7 +217,6 @@ impl<'a> Parser<'a> {
       in_iteration: 0,
       in_switch: 0,
       labels: Vec::new(),
-      arguments_disallowed_in_class_init: Vec::new(),
       cancel,
       cancel_check: None,
     }
@@ -247,7 +245,6 @@ impl<'a> Parser<'a> {
       in_iteration: 0,
       in_switch: 0,
       labels: Vec::new(),
-      arguments_disallowed_in_class_init: Vec::new(),
       cancel: None,
       cancel_check: Some(cancel_check),
     }
@@ -484,57 +481,6 @@ impl<'a> Parser<'a> {
       }
       _ => Ok(()),
     }
-  }
-
-  fn validate_arguments_not_disallowed_in_class_init(&self, loc: Loc, name: &str) -> SyntaxResult<()> {
-    if !self.is_strict_ecmascript() {
-      return Ok(());
-    }
-    if name == "arguments"
-      && self
-        .arguments_disallowed_in_class_init
-        .last()
-        .is_some_and(|function_depth| *function_depth == 0)
-    {
-      return Err(loc.error(
-        SyntaxErrorType::ExpectedSyntax(
-          "'arguments' is not allowed in class field initializer or static initialization block",
-        ),
-        None,
-      ));
-    }
-    Ok(())
-  }
-
-  pub(crate) fn with_disallow_arguments_in_class_init<R>(
-    &mut self,
-    f: impl FnOnce(&mut Self) -> SyntaxResult<R>,
-  ) -> SyntaxResult<R> {
-    if !self.is_strict_ecmascript() {
-      return f(self);
-    }
-    self.arguments_disallowed_in_class_init.push(0);
-    let res = f(self);
-    self.arguments_disallowed_in_class_init.pop();
-    res
-  }
-
-  pub(crate) fn with_arguments_bound_in_class_init<R>(
-    &mut self,
-    f: impl FnOnce(&mut Self) -> SyntaxResult<R>,
-  ) -> SyntaxResult<R> {
-    if !self.is_strict_ecmascript() || self.arguments_disallowed_in_class_init.is_empty() {
-      return f(self);
-    }
-    for depth in self.arguments_disallowed_in_class_init.iter_mut() {
-      *depth += 1;
-    }
-    let res = f(self);
-    for depth in self.arguments_disallowed_in_class_init.iter_mut() {
-      debug_assert!(*depth > 0);
-      *depth -= 1;
-    }
-    res
   }
 
   /// Validate an *assignable reference* (simple assignment target), as required by update

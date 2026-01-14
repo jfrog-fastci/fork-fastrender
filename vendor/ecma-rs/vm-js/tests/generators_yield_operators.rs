@@ -383,3 +383,51 @@ fn generators_yield_in_template_literals() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generators_yield_in_array_literals() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        // [(yield 1)]
+        function* single_elem() { return [(yield 1)]; }
+        const it1 = single_elem();
+        const a1 = it1.next();
+        const a2 = it1.next(10);
+        const ok1 =
+          a1.value === 1 && a1.done === false &&
+          Array.isArray(a2.value) && a2.value.length === 1 && a2.value[0] === 10 && a2.done === true;
+
+        // [...(yield [1,2]),] (yield inside spread + trailing comma)
+        function* spread_elem() { return [...(yield [1, 2]),]; }
+        const it2 = spread_elem();
+        const b1 = it2.next();
+        const b2 = it2.next([10, 20]);
+        const ok2 =
+          Array.isArray(b1.value) && b1.value.length === 2 && b1.value[0] === 1 && b1.value[1] === 2 && b1.done === false &&
+          Array.isArray(b2.value) && b2.value.length === 2 && b2.value[0] === 10 && b2.value[1] === 20 && b2.done === true;
+
+        // Elisions + multiple yields (including inside spread).
+        function* holes_and_order() { return [,(yield 1), ...(yield [2]), (yield 3),]; }
+        const it3 = holes_and_order();
+        const c1 = it3.next();
+        const c2 = it3.next(10);
+        const c3 = it3.next([20]);
+        const c4 = it3.next(30);
+        const arr = c4.value;
+        const ok3 =
+          c1.value === 1 && c1.done === false &&
+          Array.isArray(c2.value) && c2.value.length === 1 && c2.value[0] === 2 && c2.done === false &&
+          c3.value === 3 && c3.done === false &&
+          c4.done === true &&
+          Array.isArray(arr) && arr.length === 4 &&
+          (0 in arr) === false && arr[0] === undefined &&
+          arr[1] === 10 && arr[2] === 20 && arr[3] === 30;
+
+        ok1 && ok2 && ok3
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
