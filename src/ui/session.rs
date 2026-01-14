@@ -1903,8 +1903,11 @@ mod tests {
           pinned: false,
           group: None,
         }],
+        downloads: Vec::new(),
         tab_groups: Vec::new(),
+        closed_tabs: Vec::new(),
         active_tab_index: 0,
+        bookmarks_bar_visible: false,
         show_menu_bar: default_show_menu_bar(),
         window_state: Some(BrowserWindowState {
           x: Some(4000),
@@ -1917,6 +1920,7 @@ mod tests {
       active_window_index: 0,
       appearance: AppearanceSettings::default(),
       did_exit_cleanly: true,
+      unclean_exit_streak: 0,
       ui_scale: None,
     }
     .sanitized();
