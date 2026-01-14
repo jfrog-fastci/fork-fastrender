@@ -1,3 +1,5 @@
+#![cfg(feature = "audio_wav")]
+
 use fastrender::media::audio::{
   duration_to_frames_floor, AudioBackend, AudioStreamConfig, WavAudioBackend,
 };
@@ -70,4 +72,3 @@ fn wav_audio_backend_writes_valid_header_and_length() {
     "unexpected file size"
   );
 }
-

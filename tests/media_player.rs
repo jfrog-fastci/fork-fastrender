@@ -1,3 +1,5 @@
+#![cfg(all(feature = "media_webm", feature = "codec_vp9_libvpx"))]
+
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::Cursor;
@@ -86,4 +88,3 @@ fn webm_vp9_player_frames_change() {
 
   panic!("expected frame to change within 2s");
 }
-
