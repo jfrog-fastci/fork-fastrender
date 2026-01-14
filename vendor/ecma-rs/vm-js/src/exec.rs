@@ -35751,15 +35751,29 @@ fn gen_new_continue_args(
     ));
   }
 
+  // Root `callee`/`args` across argument evaluation in case evaluating later arguments allocates
+  // and triggers GC. The callee and early arguments can be ephemeral and are otherwise only held in
+  // Rust locals.
+  let mut new_scope = scope.reborrow();
+  new_scope.push_root(callee_value)?;
+  if !args.is_empty() {
+    new_scope.push_roots(&args)?;
+  }
+
   for (idx, arg) in call.stx.arguments.iter().enumerate().skip(start_index) {
-    match gen_eval_expr(evaluator, scope, &arg.stx.value)? {
+    match gen_eval_expr(evaluator, &mut new_scope, &arg.stx.value)? {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => {
           let value = v.unwrap_or(Value::Undefined);
-          if let Err(err) =
-            gen_call_store_arg_value(evaluator, scope, arg.stx.spread, value, &mut args)
-          {
-            let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+          let args_len_before = args.len();
+          if let Err(err) = gen_call_store_arg_value(
+            evaluator,
+            &mut new_scope,
+            arg.stx.spread,
+            value,
+            &mut args,
+          ) {
+            let err = coerce_error_to_throw_for_async(evaluator.vm, &mut new_scope, err);
             match err {
               VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
                 return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
@@ -35767,11 +35781,17 @@ fn gen_new_continue_args(
               other => return Err(other),
             }
           }
+
+          // Root newly appended argument values so they survive across later argument evaluation.
+          if args.len() > args_len_before {
+            new_scope.push_roots(&args[args_len_before..])?;
+          }
         }
         abrupt => return Ok(GenEval::Complete(abrupt)),
       },
       GenEval::Suspend(mut suspend) => {
         // Root the callee/args so they survive until the next yield boundary.
+        drop(new_scope);
         let mut roots: Vec<Value> = Vec::new();
         roots
           .try_reserve_exact(args.len().saturating_add(1))
@@ -35793,15 +35813,6 @@ fn gen_new_continue_args(
       }
     }
   }
-
-  let mut new_scope = scope.reborrow();
-  let mut roots: Vec<Value> = Vec::new();
-  roots
-    .try_reserve_exact(args.len().saturating_add(1))
-    .map_err(|_| VmError::OutOfMemory)?;
-  roots.push(callee_value);
-  roots.extend_from_slice(&args);
-  new_scope.push_roots(&roots)?;
 
   let res = evaluator.vm.construct_with_host_and_hooks(
     &mut *evaluator.host,
@@ -37601,15 +37612,29 @@ fn gen_call_continue_args(
   mut args: Vec<Value>,
   start_index: usize,
 ) -> Result<GenEval<Completion>, VmError> {
+  // Root `callee`/`this`/`args` across argument evaluation in case evaluating later arguments
+  // allocates and triggers GC. These values can be ephemeral (e.g. `({ m() {} }).m(...)`) and are
+  // otherwise only held in Rust locals.
+  let mut call_scope = scope.reborrow();
+  call_scope.push_roots(&[callee_value, this_value])?;
+  if !args.is_empty() {
+    call_scope.push_roots(&args)?;
+  }
+
   for (idx, arg) in call.arguments.iter().enumerate().skip(start_index) {
-    match gen_eval_expr(evaluator, scope, &arg.stx.value)? {
+    match gen_eval_expr(evaluator, &mut call_scope, &arg.stx.value)? {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => {
           let value = v.unwrap_or(Value::Undefined);
-          if let Err(err) =
-            gen_call_store_arg_value(evaluator, scope, arg.stx.spread, value, &mut args)
-          {
-            let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+          let args_len_before = args.len();
+          if let Err(err) = gen_call_store_arg_value(
+            evaluator,
+            &mut call_scope,
+            arg.stx.spread,
+            value,
+            &mut args,
+          ) {
+            let err = coerce_error_to_throw_for_async(evaluator.vm, &mut call_scope, err);
             match err {
               VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
                 return Ok(GenEval::Complete(completion_from_expr_result(Err(err))?));
@@ -37617,11 +37642,17 @@ fn gen_call_continue_args(
               other => return Err(other),
             }
           }
+
+          // Root newly appended argument values so they survive across later argument evaluation.
+          if args.len() > args_len_before {
+            call_scope.push_roots(&args[args_len_before..])?;
+          }
         }
         abrupt => return Ok(GenEval::Complete(abrupt)),
       },
       GenEval::Suspend(mut suspend) => {
         // Root the callee/this/args so they survive until the next yield boundary.
+        drop(call_scope);
         let mut roots: Vec<Value> = Vec::new();
         roots
           .try_reserve_exact(args.len().saturating_add(2))
@@ -37666,24 +37697,24 @@ fn gen_call_continue_args(
     if callee_value == Value::Object(intr.eval()) {
       let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
       let res = match arg0 {
-        Value::String(s) => evaluator.eval_direct_eval_string(scope, s),
+        Value::String(s) => evaluator.eval_direct_eval_string(&mut call_scope, s),
         other => Ok(other),
       };
       return match res {
         Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
         Err(err) => {
-          let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+          let err = coerce_error_to_throw_for_async(evaluator.vm, &mut call_scope, err);
           Ok(GenEval::Complete(completion_from_expr_result(Err(err))?))
         }
       };
     }
   }
 
-  let res = evaluator.call(scope, callee_value, this_value, &args);
+  let res = evaluator.call(&mut call_scope, callee_value, this_value, &args);
   match res {
     Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
     Err(err) => {
-      let err = coerce_error_to_throw_for_async(evaluator.vm, scope, err);
+      let err = coerce_error_to_throw_for_async(evaluator.vm, &mut call_scope, err);
       Ok(GenEval::Complete(completion_from_expr_result(Err(err))?))
     }
   }
@@ -37715,6 +37746,9 @@ fn gen_call_store_arg_value(
       &mut iter,
     )? {
       evaluator.tick()?;
+      // Root each expanded element across subsequent `IteratorStepValue` calls, which can allocate
+      // and trigger GC.
+      iter_scope.push_root(v)?;
       args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
       args.push(v);
     }
