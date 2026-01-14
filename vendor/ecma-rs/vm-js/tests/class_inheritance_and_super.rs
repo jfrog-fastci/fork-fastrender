@@ -272,7 +272,8 @@ fn derived_ctor_return_override_object_and_primitive() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = rt.exec_script(
     r#"
-      class B { constructor() { this.b = 1; } }
+      var side = 0;
+      class B { constructor() { side++; this.b = 1; } }
       class DObj extends B {
         constructor() { super(); return { ok: true }; }
       }
@@ -280,9 +281,10 @@ fn derived_ctor_return_override_object_and_primitive() -> Result<(), VmError> {
         constructor() { super(); return 123; }
       }
       var o = new DObj();
-      var p = new DPrim();
+      var out = "";
+      try { new DPrim(); out = "no"; } catch (e) { out = e.name; }
       o.ok === true && o.b === undefined && (o instanceof DObj) === false &&
-        p.b === 1 && (p instanceof DPrim) === true
+        out === "TypeError" && side === 2
     "#,
   )?;
   assert_eq!(value, Value::Bool(true));
@@ -295,7 +297,8 @@ fn derived_ctor_return_override_object_and_primitive_compiled() -> Result<(), Vm
   let Some(value) = exec_compiled_or_skip_class_inheritance(
     &mut rt,
     r#"
-      class B { constructor() { this.b = 1; } }
+      var side = 0;
+      class B { constructor() { side++; this.b = 1; } }
       class DObj extends B {
         constructor() { super(); return { ok: true }; }
       }
@@ -303,9 +306,10 @@ fn derived_ctor_return_override_object_and_primitive_compiled() -> Result<(), Vm
         constructor() { super(); return 123; }
       }
       var o = new DObj();
-      var p = new DPrim();
+      var out = "";
+      try { new DPrim(); out = "no"; } catch (e) { out = e.name; }
       o.ok === true && o.b === undefined && (o instanceof DObj) === false &&
-        p.b === 1 && (p instanceof DPrim) === true
+        out === "TypeError" && side === 2
     "#,
   )?
   else {
@@ -363,7 +367,7 @@ fn derived_ctor_can_return_object_without_calling_super_compiled() -> Result<(),
 }
 
 #[test]
-fn derived_ctor_returning_primitive_without_super_throws_reference_error() -> Result<(), VmError> {
+fn derived_ctor_returning_primitive_without_super_throws_type_error() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = rt.exec_script(
     r#"
@@ -372,12 +376,12 @@ fn derived_ctor_returning_primitive_without_super_throws_reference_error() -> Re
       try { new D(); "no"; } catch (e) { e.name; }
     "#,
   )?;
-  assert_eq!(value_to_string(&rt, value), "ReferenceError");
+  assert_eq!(value_to_string(&rt, value), "TypeError");
   Ok(())
 }
 
 #[test]
-fn derived_ctor_returning_primitive_without_super_throws_reference_error_compiled() -> Result<(), VmError> {
+fn derived_ctor_returning_primitive_without_super_throws_type_error_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = match exec_compiled(
     &mut rt,
@@ -391,7 +395,7 @@ fn derived_ctor_returning_primitive_without_super_throws_reference_error_compile
     Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
     Err(err) => return Err(err),
   };
-  assert_eq!(value_to_string(&rt, value), "ReferenceError");
+  assert_eq!(value_to_string(&rt, value), "TypeError");
   Ok(())
 }
 
