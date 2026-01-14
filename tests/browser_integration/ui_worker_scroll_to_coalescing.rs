@@ -34,7 +34,7 @@ fn scroll_to_burst_applies_last_position() {
   .expect("initial FrameReady");
   // The worker does not guarantee a `ScrollStateUpdated` after navigation; drain follow-up messages
   // instead of waiting for one so subsequent assertions are deterministic.
-  let _ = drain_for(&ui_rx, Duration::from_millis(200));
+  let _ = drain_for(&ui_rx, Duration::from_millis(300));
 
   // Fire a burst of ScrollTo messages and ensure the last position wins.
   let last_y = 1234.0_f32;
@@ -94,7 +94,7 @@ fn scroll_to_burst_produces_single_frame_under_slow_render() {
   .expect("initial FrameReady");
   // The worker does not guarantee a `ScrollStateUpdated` after navigation; drain follow-up messages
   // instead of waiting for one.
-  let _ = drain_for(&ui_rx, Duration::from_millis(200));
+  let _ = drain_for(&ui_rx, Duration::from_millis(300));
 
   // Trigger a paint job and wait until it begins so our ScrollTo burst is guaranteed to arrive
   // while the worker is busy rendering.

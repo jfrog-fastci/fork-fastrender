@@ -395,7 +395,7 @@ fn js_timer_dom_mutation_affects_rendered_pixels() {
   // The worker no longer guarantees a standalone `ScrollStateUpdated` after every `FrameReady`, so
   // avoid waiting for it with a long timeout. A short bounded drain keeps the test deterministic
   // without introducing multi-second delays.
-  let _ = support::drain_for(&handle.ui_rx, Duration::from_millis(200));
+  let _ = support::drain_for(&handle.ui_rx, Duration::from_millis(300));
   while handle.ui_rx.try_recv().is_ok() {}
 
   let mut last_sample = baseline;
