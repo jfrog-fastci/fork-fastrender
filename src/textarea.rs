@@ -75,7 +75,10 @@ pub(crate) fn textarea_chars_per_line(style: &ComputedStyle, available_width: f3
   }
 }
 
-pub(crate) fn build_textarea_visual_lines(value: &str, chars_per_line: usize) -> TextareaVisualLines {
+pub(crate) fn build_textarea_visual_lines(
+  value: &str,
+  chars_per_line: usize,
+) -> TextareaVisualLines {
   let chars_per_line = chars_per_line.max(1);
   let boundaries = char_boundary_bytes(value);
   let grapheme_boundaries = grapheme_cluster_boundaries_char_idx(value, &boundaries);
@@ -218,4 +221,24 @@ pub(crate) fn textarea_visual_line_index_for_caret(
   }
 
   lines.len().saturating_sub(1)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn wrapping_does_not_split_grapheme_clusters() {
+    let emoji = "👨‍👩‍👧‍👦";
+    let value = format!("012345678{emoji}X");
+    let layout = build_textarea_visual_lines(&value, 10);
+
+    assert_eq!(
+      layout.lines.len(),
+      2,
+      "expected 11 grapheme clusters (10 per line) to wrap into 2 visual lines"
+    );
+    assert_eq!(layout.lines[0].text(&value), format!("012345678{emoji}"));
+    assert_eq!(layout.lines[1].text(&value), "X");
+  }
 }
