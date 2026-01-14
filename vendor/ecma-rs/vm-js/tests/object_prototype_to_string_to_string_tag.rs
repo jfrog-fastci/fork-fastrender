@@ -56,11 +56,10 @@ fn object_prototype_to_string_symbol_tag_generators_builtin() -> Result<(), VmEr
 fn object_prototype_to_string_error_instance_to_string_tag_override() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
-  // `Error.prototype` is an ordinary object without [[ErrorData]], so the builtinTag is "Object".
-  // Per ECMA-262, the spec does not define `Error.prototype[@@toStringTag]`, which would otherwise
-  // prevent `err[Symbol.toStringTag] = ...` from creating an own property in strict mode.
+  // `Error.prototype` is an ordinary object without [[ErrorData]], but still tags as `"Error"` via
+  // `Error.prototype[@@toStringTag]`.
   let value = rt.exec_script("Object.prototype.toString.call(Error.prototype)")?;
-  assert_eq!(value_to_utf8(&rt, value), "[object Object]");
+  assert_eq!(value_to_utf8(&rt, value), "[object Error]");
 
   // Instance overrides via assignment must work even in strict mode.
   let value = rt.exec_script(

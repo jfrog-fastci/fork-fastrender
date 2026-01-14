@@ -922,9 +922,10 @@ impl Intrinsics {
     // Array / Function / Date / Error / RegExp). Those do not need an intrinsic `@@toStringTag`
     // property.
     //
-    // In particular, do not define a non-writable `@@toStringTag` for `%Error.prototype%` /
-    // `%RegExp.prototype%`: that would prevent `obj[Symbol.toStringTag] = "..."` from creating an
-    // own override (test262 `built-ins/Object/prototype/toString/symbol-tag-override-instances.js`).
+    // In particular, `%Error.prototype%` and `%RegExp.prototype%` use a *writable* `@@toStringTag`
+    // so instance overrides via assignment can create an own property (test262
+    // `built-ins/Object/prototype/toString/symbol-tag-override-instances.js`).
+    install_to_string_tag_writable(scope, regexp_prototype, well_known_symbols.to_string_tag, "RegExp")?;
     install_to_string_tag(scope, bigint_prototype, well_known_symbols.to_string_tag, "BigInt")?;
     install_to_string_tag(scope, symbol_prototype, well_known_symbols.to_string_tag, "Symbol")?;
     install_to_string_tag(
@@ -7970,6 +7971,11 @@ impl Intrinsics {
       "Error",
       1,
     )?;
+
+    // `%Error.prototype%[@@toStringTag]` is used by `Object.prototype.toString` when operating on
+    // Proxy-wrapped errors. It is writable so `err[Symbol.toStringTag] = "..."` can create an own
+    // property override (per test262 `symbol-tag-override-instances.js`).
+    install_to_string_tag_writable(scope, error_prototype, well_known_symbols.to_string_tag, "Error")?;
 
     // Error.prototype.message
     //

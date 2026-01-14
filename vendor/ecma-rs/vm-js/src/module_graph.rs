@@ -363,6 +363,35 @@ struct PendingDynamicImportEvaluation {
 }
 
 impl ModuleGraph {
+  fn has_persistent_roots(&self) -> bool {
+    if self.module_graph_ptr_refcount != 0 {
+      return true;
+    }
+    if !self.pending_dynamic_import_evaluations.is_empty() {
+      return true;
+    }
+    if self.tla_states.iter().any(|s| s.is_some()) {
+      return true;
+    }
+    for module in &self.modules {
+      if module.namespace.is_some()
+        || module.environment.is_some()
+        || module.import_meta.is_some()
+        || module.error.is_some()
+        || module.top_level_capability.is_some()
+        || module.evaluation_error.is_some()
+        || module.async_continuation_id.is_some()
+      {
+        return true;
+      }
+    }
+    false
+  }
+
+  fn recompute_torn_down(&mut self) {
+    self.torn_down = !self.has_persistent_roots();
+  }
+
   pub fn new() -> Self {
     Self::default()
   }
@@ -1321,6 +1350,7 @@ impl ModuleGraph {
         // Avoid leaving the graph in a partially-cached state.
         scope.heap_mut().remove_root(root);
         self.modules[idx].namespace = None;
+        self.recompute_torn_down();
         Err(err)
       }
     }

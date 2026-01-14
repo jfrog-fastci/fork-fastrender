@@ -238,9 +238,10 @@ fn object_prototype_to_string_tags() -> Result<(), VmError> {
   assert_eq!(expect_string(&rt, out), "[object Object]");
 
   // Typed arrays are not part of the legacy builtinTag table; removing `@@toStringTag` falls back
-  // to "Object".
+  // to "Object". The `@@toStringTag` getter lives on `%TypedArray%.prototype`, not on the
+  // concrete typed array prototypes.
   let out = rt.exec_script(
-    "delete Uint8Array.prototype[Symbol.toStringTag]; Object.prototype.toString.call(new Uint8Array(0))",
+    "delete Object.getPrototypeOf(Uint8Array.prototype)[Symbol.toStringTag]; Object.prototype.toString.call(new Uint8Array(0))",
   )?;
   assert_eq!(expect_string(&rt, out), "[object Object]");
 
