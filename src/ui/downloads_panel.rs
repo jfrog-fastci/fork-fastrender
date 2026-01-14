@@ -202,6 +202,12 @@ pub fn downloads_panel_ui(
   download_dir: &Path,
 ) -> DownloadsPanelOutput {
   let mut out = DownloadsPanelOutput::default();
+  let can_clear_completed = downloads.iter().any(|d| {
+    matches!(
+      d.status,
+      DownloadStatus::Completed | DownloadStatus::Cancelled | DownloadStatus::Failed { .. }
+    )
+  });
 
   fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t)
@@ -235,10 +241,6 @@ pub fn downloads_panel_ui(
 
   let motion = UiMotion::from_ctx(ctx);
 
-  let has_completed_downloads = downloads
-    .iter()
-    .any(|entry| matches!(&entry.status, DownloadStatus::Completed));
-
   egui::SidePanel::right("downloads_panel")
     .resizable(true)
     .default_width(360.0)
@@ -267,7 +269,7 @@ pub fn downloads_panel_ui(
           }
 
           let clear_button = egui::Button::new(egui::RichText::new("Clear completed").small());
-          let clear_resp = ui.add_enabled(has_completed_downloads, clear_button);
+          let clear_resp = ui.add_enabled(can_clear_completed, clear_button);
           clear_resp.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, "Clear completed downloads")
           });

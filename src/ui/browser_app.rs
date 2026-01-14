@@ -403,15 +403,14 @@ impl DownloadsState {
       .count()
   }
 
-  /// Remove downloads that have completed successfully.
+  /// Remove downloads that are no longer in progress (completed/cancelled/failed).
   ///
-  /// This keeps in-progress, cancelled, and failed downloads intact so the UI can continue to show
-  /// progress and allow retry.
+  /// Returns the number of entries removed.
   pub fn clear_completed(&mut self) -> usize {
     let before = self.downloads.len();
     self
       .downloads
-      .retain(|entry| !matches!(&entry.status, DownloadStatus::Completed));
+      .retain(|entry| matches!(entry.status, DownloadStatus::InProgress { .. }));
     before.saturating_sub(self.downloads.len())
   }
 
@@ -587,6 +586,69 @@ impl DownloadsState {
       }
       _ => false,
     }
+  }
+}
+
+#[cfg(test)]
+mod downloads_state_tests {
+  use super::{DownloadEntry, DownloadId, DownloadStatus, DownloadsState, TabId};
+
+  fn entry(id: u64, status: DownloadStatus) -> DownloadEntry {
+    let path = std::path::PathBuf::from(format!("file{id}.txt"));
+    let path_display = path.display().to_string();
+    DownloadEntry {
+      download_id: DownloadId(id),
+      tab_id: TabId(1),
+      url: format!("https://example.com/{id}"),
+      file_name: format!("file{id}.txt"),
+      path,
+      path_display,
+      status,
+      started_at_ms: None,
+      finished_at_ms: None,
+    }
+  }
+
+  #[test]
+  fn clear_completed_removes_finished_entries() {
+    let mut state = DownloadsState {
+      downloads: vec![
+        entry(1, DownloadStatus::Completed),
+        entry(
+          2,
+          DownloadStatus::InProgress {
+            received_bytes: 123,
+            total_bytes: Some(456),
+          },
+        ),
+        entry(3, DownloadStatus::Cancelled),
+        entry(
+          4,
+          DownloadStatus::Failed {
+            error: "oops".to_string(),
+          },
+        ),
+        entry(
+          5,
+          DownloadStatus::InProgress {
+            received_bytes: 42,
+            total_bytes: None,
+          },
+        ),
+      ],
+    };
+
+    let removed = state.clear_completed();
+    assert!(removed > 0, "expected state to change");
+    let ids = state.downloads.iter().map(|d| d.download_id.0).collect::<Vec<_>>();
+    assert_eq!(ids, vec![2, 5], "in-progress downloads should be retained");
+    assert!(
+      state
+        .downloads
+        .iter()
+        .all(|d| matches!(d.status, DownloadStatus::InProgress { .. })),
+      "expected all remaining downloads to be in-progress",
+    );
   }
 }
 

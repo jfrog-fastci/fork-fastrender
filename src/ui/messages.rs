@@ -1365,28 +1365,26 @@ impl WorkerToUi {
       WorkerToUi::PageAccessKitSubtree { tab_id, .. }
       | WorkerToUi::PageAccessKitState { tab_id, .. } => *tab_id,
       WorkerToUi::Stage { tab_id, .. }
-      | WorkerToUi::RequestWakeAfter { tab_id, .. }
       | WorkerToUi::Favicon { tab_id, .. }
       | WorkerToUi::FrameReady { tab_id, .. }
       | WorkerToUi::TickHint { tab_id, .. }
       | WorkerToUi::PageAccessibility { tab_id, .. }
+      | WorkerToUi::RequestWakeAfter { tab_id, .. }
       | WorkerToUi::OpenSelectDropdown { tab_id, .. }
+      | WorkerToUi::SelectDropdownOpened { tab_id, .. }
+      | WorkerToUi::SelectDropdownClosed { tab_id }
       | WorkerToUi::DatalistOpened { tab_id, .. }
-      | WorkerToUi::DatalistClosed { tab_id, .. }
+      | WorkerToUi::DatalistClosed { tab_id }
       | WorkerToUi::NavigationStarted { tab_id, .. }
       | WorkerToUi::NavigationCommitted { tab_id, .. }
       | WorkerToUi::NavigationFailed { tab_id, .. }
       | WorkerToUi::RequestOpenInNewTab { tab_id, .. }
       | WorkerToUi::RequestOpenInNewWindow { tab_id, .. }
       | WorkerToUi::RequestOpenInNewTabRequest { tab_id, .. }
-      | WorkerToUi::RequestWakeAfter { tab_id, .. }
       | WorkerToUi::ScrollStateUpdated { tab_id, .. }
       | WorkerToUi::LoadingState { tab_id, .. }
-      | WorkerToUi::RequestWakeAfter { tab_id, .. }
       | WorkerToUi::Warning { tab_id, .. }
       | WorkerToUi::DebugLog { tab_id, .. }
-      | WorkerToUi::SelectDropdownOpened { tab_id, .. }
-      | WorkerToUi::SelectDropdownClosed { tab_id }
       | WorkerToUi::DateTimePickerOpened { tab_id, .. }
       | WorkerToUi::DateTimePickerClosed { tab_id }
       | WorkerToUi::ColorPickerOpened { tab_id, .. }
@@ -1398,16 +1396,10 @@ impl WorkerToUi {
       | WorkerToUi::ContextMenu { tab_id, .. }
       | WorkerToUi::HoverChanged { tab_id, .. }
       | WorkerToUi::FindResult { tab_id, .. }
-      | WorkerToUi::MediaControlsOpened { tab_id, .. }
-      | WorkerToUi::MediaControlsClosed { tab_id, .. }
       | WorkerToUi::SetClipboardText { tab_id, .. }
-      | WorkerToUi::MediaControlsOpened { tab_id, .. }
-      | WorkerToUi::MediaControlsClosed { tab_id }
       | WorkerToUi::DownloadStarted { tab_id, .. }
       | WorkerToUi::DownloadProgress { tab_id, .. }
       | WorkerToUi::DownloadFinished { tab_id, .. }
-      | WorkerToUi::DatalistOpened { tab_id, .. }
-      | WorkerToUi::DatalistClosed { tab_id }
       | WorkerToUi::PageExportFinished { tab_id, .. } => *tab_id,
     }
   }
