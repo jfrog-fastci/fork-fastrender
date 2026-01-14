@@ -4165,7 +4165,7 @@ impl BrowserRuntime {
               &scroll_snapshot,
             );
             let engine = &mut tab.interaction;
-            if let Ok(step_result) =
+            if let Ok(Some(step_result)) =
               doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
                 let fragment_tree = hit_tree.as_deref().unwrap_or(fragment_tree);
                 let step_result = engine.wheel_step_number_input(

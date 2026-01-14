@@ -4,7 +4,7 @@
 //! - individual encoded samples are capped at [`MAX_MP4_SAMPLE_BYTES`], and
 //! - per-track and total sample table sizes are capped at [`MAX_MP4_SAMPLES_PER_TRACK`] and
 //!   [`MAX_MP4_TOTAL_SAMPLES`].
-
+use crate::error::RenderStage;
 use crate::media::track_selection::{
   select_primary_audio_track_id, select_primary_video_track_id, TrackCandidate, TrackFilterMode,
   TrackSelectionPolicy,
@@ -13,10 +13,17 @@ use crate::media::{
   MediaAudioInfo, MediaCodec, MediaError, MediaPacket, MediaResult, MediaTrackInfo, MediaTrackType,
   MediaVideoInfo,
 };
+use crate::render_control::{check_root, check_root_periodic};
 use std::io::{Read, Seek, SeekFrom};
 
+const MP4PARSE_DEMUX_DEADLINE_STRIDE: usize = 1024;
+/// Hard cap on encoded sample size to avoid unbounded memory usage on corrupted/adversarial MP4
+/// files.
 const MAX_MP4_SAMPLE_BYTES: usize = 64 * 1024 * 1024;
+/// Hard cap on per-track sample tables (per-sample `Vec`s) to avoid attacker-controlled huge
+/// allocations.
 const MAX_MP4_SAMPLES_PER_TRACK: usize = 2_000_000;
+/// Hard cap on the total number of samples across all active tracks.
 const MAX_MP4_TOTAL_SAMPLES: usize = 4_000_000;
 
 fn mp4_sample_too_large_error(track_id: u32, len: usize) -> MediaError {
@@ -65,7 +72,6 @@ fn mp4parse_track_sample_count(track: &mp4parse::Track) -> Option<usize> {
     usize::try_from(total).ok()
   })
 }
-
 #[derive(Debug, Clone, Copy)]
 pub struct Mp4ParseDemuxerOptions {
   pub track_selection_policy: TrackSelectionPolicy,
@@ -210,6 +216,8 @@ pub struct Mp4ParseDemuxer<R: Read + Seek> {
   primary_video_track_id: Option<u32>,
   primary_audio_track_id: Option<u32>,
   active_tracks: Vec<ActiveTrack>,
+  min_pts_ns: u64,
+  last_emitted_pts_ns: u64,
 }
 
 impl<R: Read + Seek> Mp4ParseDemuxer<R> {
@@ -218,13 +226,22 @@ impl<R: Read + Seek> Mp4ParseDemuxer<R> {
   }
 
   pub fn open_with_options(mut reader: R, options: Mp4ParseDemuxerOptions) -> MediaResult<Self> {
+    check_root(RenderStage::Paint).map_err(MediaError::from)?;
     let ctx = read_mp4_context(&mut reader)?;
     reject_encrypted_tracks(&ctx)?;
 
     let mut selection_infos = Vec::new();
     let mut tracks = Vec::new();
+    let mut deadline_counter = 0usize;
 
     for track in &ctx.tracks {
+      check_root_periodic(
+        &mut deadline_counter,
+        MP4PARSE_DEMUX_DEADLINE_STRIDE,
+        RenderStage::Paint,
+      )
+      .map_err(MediaError::from)?;
+
       let Some(id) = track.track_id else {
         // mp4parse 0.17 represents missing `tkhd.track_id` as `None`.
         // Skip these tracks rather than panicking or synthesizing IDs.
@@ -310,7 +327,7 @@ impl<R: Read + Seek> Mp4ParseDemuxer<R> {
     active_track_ids.sort_unstable();
 
     let mut active_tracks = Vec::new();
-    let mut total_samples = 0_usize;
+    let mut total_samples = 0usize;
     for id in active_track_ids {
       let Some(track) = ctx.tracks.iter().find(|t| t.track_id == Some(id)) else {
         continue;
@@ -341,6 +358,8 @@ impl<R: Read + Seek> Mp4ParseDemuxer<R> {
       primary_video_track_id,
       primary_audio_track_id,
       active_tracks,
+      min_pts_ns: 0,
+      last_emitted_pts_ns: 0,
     })
   }
 
@@ -357,63 +376,89 @@ impl<R: Read + Seek> Mp4ParseDemuxer<R> {
   }
 
   pub fn next_packet(&mut self) -> MediaResult<Option<MediaPacket>> {
-    let mut best_track_idx: Option<usize> = None;
-    let mut best_dts_ns: u64 = 0;
-    let mut best_track_id: u32 = 0;
+    check_root(RenderStage::Paint).map_err(MediaError::from)?;
 
-    for (idx, t) in self.active_tracks.iter().enumerate() {
-      let Some(sample) = t.samples.get(t.next_sample) else {
-        continue;
-      };
+    loop {
+      // Pick the track whose next sample has the smallest PTS.
+      let mut best: Option<(usize, u64, u32)> = None; // (track_idx, pts, track_id)
 
-      match best_track_idx {
-        None => {
-          best_track_idx = Some(idx);
-          best_dts_ns = sample.dts_ns;
-          best_track_id = t.id;
+      for track_idx in 0..self.active_tracks.len() {
+        let track = &mut self.active_tracks[track_idx];
+
+        // After seeking, we must not emit packets earlier than the seek target. Skip any samples
+        // with PTS < `min_pts_ns`.
+        while track.next_sample < track.samples.len()
+          && track.samples[track.next_sample].pts_ns < self.min_pts_ns
+        {
+          track.next_sample += 1;
         }
-        Some(_) => {
-          if sample.dts_ns < best_dts_ns || (sample.dts_ns == best_dts_ns && t.id < best_track_id) {
-            best_track_idx = Some(idx);
-            best_dts_ns = sample.dts_ns;
-            best_track_id = t.id;
+
+        if track.next_sample >= track.samples.len() {
+          continue;
+        }
+
+        let pts = track.samples[track.next_sample].pts_ns;
+        let id = track.id;
+        match best {
+          None => best = Some((track_idx, pts, id)),
+          Some((_, best_pts, best_id)) => {
+            if pts < best_pts || (pts == best_pts && id < best_id) {
+              best = Some((track_idx, pts, id));
+            }
           }
         }
       }
+
+      let Some((track_idx, _pts, _id)) = best else {
+        return Ok(None);
+      };
+
+      let track = &mut self.active_tracks[track_idx];
+      let sample = match track.samples.get(track.next_sample) {
+        Some(s) => s.clone(),
+        None => continue,
+      };
+      track.next_sample += 1;
+
+      let size_usize = usize::try_from(sample.size)
+        .map_err(|_| MediaError::Demux("sample size overflows usize".to_string()))?;
+      check_mp4_sample_size(track.id, size_usize)?;
+
+      let mut data = vec![0u8; size_usize];
+      self
+        .reader
+        .seek(SeekFrom::Start(sample.offset))
+        .map_err(MediaError::Io)?;
+      self.reader.read_exact(&mut data).map_err(MediaError::Io)?;
+
+      let mut pts_ns = sample.pts_ns;
+      if pts_ns < self.last_emitted_pts_ns {
+        // Best-effort monotonicity guard for PTS. MP4 `ctts` can express composition-time
+        // reordering (e.g. B-frames), which may yield non-monotonic PTS.
+        pts_ns = self.last_emitted_pts_ns;
+      }
+      if pts_ns < self.min_pts_ns {
+        pts_ns = self.min_pts_ns;
+      }
+      self.last_emitted_pts_ns = pts_ns;
+
+      return Ok(Some(MediaPacket {
+        track_id: u64::from(track.id),
+        dts_ns: sample.dts_ns,
+        pts_ns,
+        duration_ns: sample.duration_ns,
+        data: data.into(),
+        is_keyframe: sample.is_sync,
+      }));
     }
-
-    let Some(track_idx) = best_track_idx else {
-      return Ok(None);
-    };
-
-    let track = &mut self.active_tracks[track_idx];
-    let Some(sample) = track.samples.get(track.next_sample) else {
-      debug_assert!(false, "mp4parse: selected track index should have a next sample");
-      return Err(MediaError::Demux("mp4parse: missing sample for selected track".to_string()));
-    };
-    track.next_sample += 1;
-
-    let size_usize = usize::try_from(sample.size)
-      .map_err(|_| MediaError::Demux("sample size overflows usize".to_string()))?;
-    check_mp4_sample_size(track.id, size_usize)?;
-    let mut data = vec![0u8; size_usize];
-    self
-      .reader
-      .seek(SeekFrom::Start(sample.offset))
-      .map_err(MediaError::Io)?;
-    self.reader.read_exact(&mut data).map_err(MediaError::Io)?;
-
-    Ok(Some(MediaPacket {
-      track_id: u64::from(track.id),
-      dts_ns: sample.dts_ns,
-      pts_ns: sample.pts_ns,
-      duration_ns: sample.duration_ns,
-      data: data.into(),
-      is_keyframe: sample.is_sync,
-    }))
   }
 
   pub fn seek(&mut self, time_ns: u64) -> MediaResult<()> {
+    check_root(RenderStage::Paint).map_err(MediaError::from)?;
+
+    self.min_pts_ns = time_ns;
+    self.last_emitted_pts_ns = time_ns;
+
     for track in &mut self.active_tracks {
       track.seek(time_ns);
     }
@@ -814,16 +859,27 @@ fn build_sample_list_from_table(
   table: &[mp4parse::unstable::Indice],
   timescale: u64,
 ) -> MediaResult<Vec<Mp4SampleInfo>> {
-  // MP4 `ctts` offsets can be negative (version 1), producing negative composition times (PTS).
-  // `MediaPacket` stores timestamps as `u64` nanoseconds, so preserve distinct negative timestamps
-  // by shifting the entire track so the minimum PTS becomes 0.
+  // MP4 timestamps can be negative (e.g. DTS shifted earlier so CTTS offsets are non-negative in
+  // version-0 `ctts`, or negative CTTS v1 offsets producing negative composition times). Our
+  // pipeline uses unsigned nanosecond timestamps, so shift each timeline independently so the first
+  // DTS/PTS starts at 0 (while preserving relative deltas).
+  let mut min_dts_ticks: i64 = i64::MAX;
   let mut min_pts_ticks: i64 = i64::MAX;
   for s in table.iter() {
+    min_dts_ticks = min_dts_ticks.min(s.start_decode.0);
     min_pts_ticks = min_pts_ticks.min(s.start_composition.0);
+  }
+  if min_dts_ticks == i64::MAX {
+    min_dts_ticks = 0;
   }
   if min_pts_ticks == i64::MAX {
     min_pts_ticks = 0;
   }
+  let dts_offset_ticks: i128 = if min_dts_ticks < 0 {
+    -(min_dts_ticks as i128)
+  } else {
+    0
+  };
   let pts_offset_ticks: i128 = if min_pts_ticks < 0 {
     -(min_pts_ticks as i128)
   } else {
@@ -834,10 +890,15 @@ fn build_sample_list_from_table(
   for s in table.iter() {
     let offset = s.start_offset.0;
     let size_u64 = s.end_offset.0.saturating_sub(s.start_offset.0);
+    if size_u64 > MAX_MP4_SAMPLE_BYTES as u64 {
+      return Err(MediaError::Demux(format!(
+        "MP4 sample too large (size {size_u64} bytes, cap {MAX_MP4_SAMPLE_BYTES} bytes)"
+      )));
+    }
     let size =
       u32::try_from(size_u64).map_err(|_| MediaError::Demux("sample too large".to_string()))?;
 
-    let dts_ticks = non_negative_i64_to_u64(s.start_decode.0);
+    let dts_ticks = shift_ticks_to_non_negative_u64(s.start_decode.0, dts_offset_ticks);
     let pts_ticks = shift_ticks_to_non_negative_u64(s.start_composition.0, pts_offset_ticks);
     let duration_ticks_i64 = s.end_composition.0.saturating_sub(s.start_composition.0);
     let duration_ticks = non_negative_i64_to_u64(duration_ticks_i64);
