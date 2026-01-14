@@ -5207,6 +5207,36 @@ mod tests {
     Ok(())
   }
 
+  #[test]
+  fn hidden_input_value_mutation_does_not_invalidate_renderer() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = "<!doctype html><html><body>\
+      <input id=\"h\" TYPE=\"HIDDEN\" value=\"initial\">\
+    </body></html>";
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(128, 64))?;
+    doc.render_frame()?;
+    assert!(
+      doc.render_if_needed()?.is_none(),
+      "expected document to be clean after initial render"
+    );
+
+    let hidden = doc.dom().get_element_by_id("h").expect("<input id=h>");
+    let changed = doc.mutate_dom(|dom| {
+      dom
+        .set_input_value(hidden, "updated")
+        .expect("set hidden input value");
+      true
+    });
+    assert!(changed);
+
+    assert!(
+      doc.render_if_needed()?.is_none(),
+      "hidden input value changes should not invalidate rendering"
+    );
+    Ok(())
+  }
+
   fn first_child_text_node_id(
     doc: &crate::dom2::Document,
     parent: crate::dom2::NodeId,
