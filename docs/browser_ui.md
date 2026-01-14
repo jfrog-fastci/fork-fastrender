@@ -256,7 +256,7 @@ Note: startup/session restore:
     - The windowed UI also shows a “Safe mode: …” toast.
     - Use `--restore` to force restoring anyway.
 - When run **with** a URL, it opens that URL and does not restore tabs unless `--restore` is
-  provided (which restores the previous session instead).
+  provided (which tries restoring the previous session even when a URL is provided).
 - `--no-restore` disables tab/session restore even when no URL is provided.
 - Even when tabs are not restored (CLI URL, `--no-restore`, or safe mode after a restore crash
   loop), the browser may still reuse persisted **configuration** from the previous session
