@@ -25,6 +25,21 @@ use crate::media::audio_engine::{
 };
 use cpal::traits::{HostTrait, StreamTrait};
 
+const AUDIO_TRACE_SAMPLE_N_ENV: &str = "FASTR_AUDIO_TRACE_SAMPLE_N";
+
+fn audio_trace_sample_n_from_env() -> u64 {
+  let Some(raw) = std::env::var_os(AUDIO_TRACE_SAMPLE_N_ENV) else {
+    return 1;
+  };
+  let raw = raw.to_string_lossy();
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return 1;
+  }
+  let parsed: u64 = trimmed.parse().unwrap_or(1);
+  parsed.max(1)
+}
+
 fn device_name_best_effort(device: &cpal::Device) -> String {
   use cpal::traits::DeviceTrait;
   device
@@ -144,9 +159,9 @@ impl AudioStreamFactory for CpalStreamFactory {
       // If the user-selected device disappears (hotplug), try to keep the browser usable by
       // switching to the host's default output device instead of immediately failing back to
       // silence.
-      Err(AudioError::OutputDeviceNotFound { .. } | AudioError::OutputDeviceEnumerationFailed { .. })
-        if matches!(&self.selector, DeviceSelector::Device(_)) =>
-      {
+      Err(
+        AudioError::OutputDeviceNotFound { .. } | AudioError::OutputDeviceEnumerationFailed { .. },
+      ) if matches!(&self.selector, DeviceSelector::Device(_)) => {
         let device = host
           .default_output_device()
           .ok_or(AudioError::NoOutputDevice)?;
@@ -1720,6 +1735,8 @@ where
   let mut playback_origin_offset = Duration::ZERO;
   let sample_rate_hz = mixer.config.sample_rate_hz;
   let trace_enabled = trace.is_enabled();
+  let trace_sample_n = audio_trace_sample_n_from_env();
+  let mut trace_seq: u64 = 0;
   let mut last_dropped_samples_total: u64 = 0;
 
   let err_cb = {
@@ -1780,7 +1797,10 @@ where
             return;
           }
 
-          let mut callback_span = if trace_enabled {
+          let record_trace = trace_enabled && trace_seq % trace_sample_n == 0;
+          trace_seq = trace_seq.wrapping_add(1);
+
+          let mut callback_span = if record_trace {
             trace.try_span("audio.callback", "audio")
           } else {
             None
@@ -1826,7 +1846,7 @@ where
               // CPAL can (rarely) provide variable callback buffer sizes. Never resize or allocate
               // in the callback; instead, process in bounded chunks using the preallocated mix
               // buffer.
-              let mix_span = if trace_enabled {
+              let mix_span = if callback_span.is_some() {
                 trace.try_span("audio.mix", "audio")
               } else {
                 None

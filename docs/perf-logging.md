@@ -21,6 +21,8 @@ When using `render_pages`/`fetch_and_render`, per-page logs are written to `fetc
     - `audio.mix` (mixing)
     - `audio.resample` (decoder-side resampling)
     - `audio.sink.drop` (decoder-side pushes where the sink drops samples)
+  - `FASTR_AUDIO_TRACE_SAMPLE_N=<n>` can be used to record only every Nth audio callback/mix span to
+    reduce trace volume/overhead (default 1; only applies to the CPAL backend).
   - Tip: to quickly validate that audio spans are showing up in the trace, run the browser with `FASTR_AUDIO_TEST_TONE=1` (plays a short startup tone; requires the `audio_cpal` build).
   - Open it in Perfetto by visiting <https://ui.perfetto.dev> and using "Open trace file", or in Chromium via `chrome://tracing`.
 

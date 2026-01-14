@@ -358,6 +358,8 @@ see
     `audio.callback` (output callback CPU time), `audio.mix` (mixing), `audio.resample`
     (decoder-side resampling), and `audio.sink.drop` (decoder-side pushes where the sink drops
     samples).
+  - `FASTR_AUDIO_TRACE_SAMPLE_N=<n>` – record only every Nth `audio.callback` / `audio.mix` span to
+    reduce trace volume/overhead (default 1; only applies to the CPAL backend).
   - Tip: to smoke-test audio tracing in the browser UI, set `FASTR_AUDIO_TEST_TONE=1` (plays a short
     startup tone; requires the `audio_cpal` build).
   - Legacy alias: `FASTR_PERF_TRACE_OUT=/path/to/trace.json`.
