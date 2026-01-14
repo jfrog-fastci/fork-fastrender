@@ -20258,6 +20258,49 @@ mod dynamic_import {
   }
 
   #[test]
+  fn resolves_relative_dynamic_import_in_external_classic_script_against_script_url() -> Result<()> {
+    let mut tab = make_vmjs_tab()?;
+
+    let doc_url = "https://example.invalid/page.html";
+    tab.register_script_source(
+      "https://example.invalid/scripts/main.js",
+      r#"
+        import("./rel.js")
+          .then(m => { document.body.setAttribute("data-url", String(m.default)); })
+          .catch(e => { document.body.setAttribute("data-err-name", String(e && e.name || "")); });
+      "#,
+    );
+    tab.register_script_source(
+      "https://example.invalid/scripts/rel.js",
+      "export default import.meta.url;",
+    );
+    // Register a fallback at the document-base location so incorrect resolution is observable.
+    tab.register_script_source(
+      "https://example.invalid/doc/rel.js",
+      "export default import.meta.url;",
+    );
+
+    tab.register_html_source(
+      doc_url,
+      r#"<!doctype html><head>
+        <base href="https://example.invalid/doc/">
+      </head><body>
+        <script src="https://example.invalid/scripts/main.js"></script>
+      </body>"#,
+    );
+
+    tab.navigate_to_url(doc_url, RenderOptions::default())?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    assert_eq!(assert_body_attr(&tab, "data-err-name"), None);
+    assert_eq!(
+      assert_body_attr(&tab, "data-url").as_deref(),
+      Some("https://example.invalid/scripts/rel.js")
+    );
+    Ok(())
+  }
+
+  #[test]
   fn dynamic_import_applies_import_map_in_classic_script() -> Result<()> {
     let mut tab = make_vmjs_tab()?;
     let doc_url = "https://example.invalid/page.html";
