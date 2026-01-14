@@ -7890,8 +7890,11 @@ impl InlineFormattingContext {
       if !matches!(get_general_category(ch), GeneralCategory::OpenPunctuation) {
         return false;
       }
+      // Approximate East Asian Fullwidth forms with the FF01..FF60 range, which covers the
+      // Fullwidth forms portion of the Halfwidth and Fullwidth Forms block (excluding the
+      // Halfwidth punctuation/kana ranges starting at FF61).
       let cp = ch as u32;
-      (0x3000..=0x303f).contains(&cp) || (0xff00..=0xffef).contains(&cp)
+      (0x3000..=0x303f).contains(&cp) || (0xff01..=0xff60).contains(&cp)
     }
 
     fn is_fullwidth_closing_punctuation(ch: char) -> bool {
@@ -7919,7 +7922,7 @@ impl InlineFormattingContext {
         return false;
       }
       let cp = ch as u32;
-      (0x3000..=0x303f).contains(&cp) || (0xff00..=0xffef).contains(&cp)
+      (0x3000..=0x303f).contains(&cp) || (0xff01..=0xff60).contains(&cp)
     }
 
     fn is_fullwidth_middle_dot_punctuation(ch: char) -> bool {

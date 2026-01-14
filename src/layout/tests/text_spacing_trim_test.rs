@@ -634,3 +634,30 @@ fn text_spacing_trim_respects_hanging_punctuation_first() {
     "expected trimmed/hung punctuation not to extend past the container start edge, got x={trim_x:.3}"
   );
 }
+
+#[test]
+fn text_spacing_trim_does_not_trim_halfwidth_punctuation() {
+  // Halfwidth punctuation (e.g. U+FF62 HALFWIDTH LEFT CORNER BRACKET) is not part of the
+  // fullwidth punctuation classes targeted by `text-spacing-trim`, and should not be reduced to
+  // "quarter width" by our half-width trimming heuristics.
+  let space_all = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: space-all;",
+    "｢H",
+  );
+  let trim_start = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-spacing-trim: trim-start;",
+    "｢H",
+  );
+
+  let space_x = first_text_x_in_line(&space_all[0]).expect("first text x (space-all)");
+  let trim_x = first_text_x_in_line(&trim_start[0]).expect("first text x (trim-start)");
+
+  assert!(
+    (trim_x - space_x).abs() < 0.01,
+    "expected trim-start not to affect halfwidth punctuation (space-all x={space_x:.3} trim-start x={trim_x:.3})"
+  );
+  assert!(
+    trim_x >= -0.01,
+    "expected halfwidth punctuation not to hang into the start edge, got x={trim_x:.3}"
+  );
+}
