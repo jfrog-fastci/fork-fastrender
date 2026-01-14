@@ -6,6 +6,8 @@
 //! capture user intent. Side effects (worker messages, OS open/reveal) are performed by the caller
 //! (typically `src/bin/browser.rs`).
 
+use smallvec::SmallVec;
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use super::{
@@ -109,12 +111,14 @@ pub fn download_matches_query(entry: &DownloadEntry, query: &str) -> bool {
     return true;
   }
 
-  let query_lower = query.to_ascii_lowercase();
-  let tokens: Vec<&str> = query_lower
-    .split_whitespace()
-    .filter(|t| !t.is_empty())
-    .collect();
-  download_matches_tokens(entry, &tokens)
+  // Most queries are already lowercase; avoid allocating unless needed.
+  let query_lower: Cow<'_, str> = if query.as_bytes().iter().any(|b| b.is_ascii_uppercase()) {
+    Cow::Owned(query.to_ascii_lowercase())
+  } else {
+    Cow::Borrowed(query)
+  };
+  let tokens: SmallVec<[&str; 4]> = query_lower.split_whitespace().collect();
+  download_matches_tokens(entry, tokens.as_slice())
 }
 
 #[derive(Debug, Default)]
@@ -300,11 +304,13 @@ pub fn downloads_panel_ui(
       let row_total_h = row_content_h + row_gap;
 
       let query = search_query.trim();
-      let query_lower = query.to_ascii_lowercase();
-      let tokens: Vec<&str> = query_lower
-        .split_whitespace()
-        .filter(|t| !t.is_empty())
-        .collect();
+      // Most queries are already lowercase; avoid allocating unless needed.
+      let query_lower: Cow<'_, str> = if query.as_bytes().iter().any(|b| b.is_ascii_uppercase()) {
+        Cow::Owned(query.to_ascii_lowercase())
+      } else {
+        Cow::Borrowed(query)
+      };
+      let tokens: SmallVec<[&str; 4]> = query_lower.split_whitespace().collect();
       let has_query = !tokens.is_empty();
 
       let filtered_count = if !has_query {
