@@ -286,8 +286,11 @@ impl<'a> Parser<'a> {
                 await_expr_allowed,
                 yield_expr_allowed: false,
               });
-              let body =
+              let prev_in_class_static_block = p.in_class_static_block;
+              p.in_class_static_block = prev_in_class_static_block.saturating_add(1);
+              let body_res =
                 p.with_disallow_arguments_in_class_init(|p| p.stmts(block_ctx, TT::BraceClose));
+              p.in_class_static_block = prev_in_class_static_block;
               p.in_iteration = prev_in_iteration;
               p.in_switch = prev_in_switch;
               p.in_function = prev_in_function;
@@ -295,7 +298,7 @@ impl<'a> Parser<'a> {
               p.super_prop_allowed = prev_super_prop_allowed;
               p.super_call_allowed = prev_super_call_allowed;
               p.labels = prev_labels;
-              let body = match body {
+              let body = match body_res {
                 Ok(body) => body,
                 Err(err)
                   if !block_ctx.rules.await_expr_allowed

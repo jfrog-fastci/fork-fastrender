@@ -182,6 +182,11 @@ pub struct Parser<'a> {
   /// Depth of "class initialization" parsing contexts where identifier reference to `arguments` is
   /// disallowed (class field initializers and `static {}` blocks).
   disallow_arguments_in_class_init: u32,
+  /// Depth of class static initialization blocks currently being parsed.
+  ///
+  /// This is used only to provide a more precise early-error message for `arguments` in `static {}`
+  /// blocks vs class field initializers.
+  in_class_static_block: u32,
   cancel: Option<Arc<AtomicBool>>,
   cancel_check: Option<Box<dyn FnMut() -> bool + 'a>>,
 }
@@ -222,6 +227,7 @@ impl<'a> Parser<'a> {
       labels: Vec::new(),
       arguments_allowed: 0,
       disallow_arguments_in_class_init: 0,
+      in_class_static_block: 0,
       cancel,
       cancel_check: None,
     }
@@ -251,6 +257,7 @@ impl<'a> Parser<'a> {
       labels: Vec::new(),
       arguments_allowed: 0,
       disallow_arguments_in_class_init: 0,
+      in_class_static_block: 0,
       cancel: None,
       cancel_check: Some(cancel_check),
     }
@@ -302,6 +309,7 @@ impl<'a> Parser<'a> {
   pub fn set_allow_top_level_yield(&mut self, allow: bool) {
     self.allow_top_level_yield = allow;
   }
+
   pub fn options(&self) -> ParseOptions {
     self.options
   }
@@ -489,15 +497,15 @@ impl<'a> Parser<'a> {
       // error to avoid silently accepting malformed escape sequences.
       return Err(loc.error(SyntaxErrorType::ExpectedSyntax("identifier"), None));
     };
-    if string_value.as_ref() == "arguments" {
-      return Err(loc.error(
-        SyntaxErrorType::ExpectedSyntax(
-          "`arguments` is not allowed in class field initializers or class static initialization blocks",
-        ),
-        None,
-      ));
+    if string_value.as_ref() != "arguments" {
+      return Ok(());
     }
-    Ok(())
+    let message = if self.in_class_static_block > 0 {
+      "`arguments` is not allowed in class field initializers or class static initialization blocks"
+    } else {
+      "`arguments` is not allowed in class field initializers or static initialization blocks"
+    };
+    Err(loc.error(SyntaxErrorType::ExpectedSyntax(message), None))
   }
   pub(crate) fn with_arguments_bound_in_class_init<R>(
     &mut self,

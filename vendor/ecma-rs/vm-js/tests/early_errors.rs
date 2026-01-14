@@ -294,30 +294,22 @@ fn await_expression_in_class_static_block_in_non_async_function_is_syntax_error(
 }
 
 #[test]
-fn await_expression_in_class_static_block_in_async_function_is_syntax_error() {
+fn await_expression_in_class_static_block_in_async_function_is_allowed() {
   let mut rt = new_runtime();
-  let diags = assert_syntax_error(
-    rt
-      .exec_script("async function f(){ class C { static { await 0; } } }")
-      .unwrap_err(),
-  );
-  assert!(
-    diags.iter().any(|d| d.code.as_str() == "VMJS0004"),
-    "expected VMJS0004 early error, got {diags:?}"
-  );
+  rt
+    .exec_script("async function f(){ class C { static { await 0; } } }")
+    .unwrap();
 }
 
 #[test]
-fn await_expression_in_class_static_block_in_module_is_syntax_error() {
+fn await_expression_in_class_static_block_in_module_is_allowed() {
   let mut rt = new_runtime();
-  let diags = assert_syntax_error(
-    SourceTextModuleRecord::parse(&mut rt.heap, "class C { static { await 0; } } export {};")
-      .unwrap_err(),
-  );
-  assert!(
-    diags.iter().any(|d| d.code.as_str() == "VMJS0004"),
-    "expected VMJS0004 early error, got {diags:?}"
-  );
+  let record = SourceTextModuleRecord::parse(
+    &mut rt.heap,
+    "class C { static { await 0; } } export {};",
+  )
+  .unwrap();
+  assert!(record.has_tla);
 }
 
 #[test]
@@ -330,33 +322,22 @@ fn for_await_of_in_class_static_block_in_non_async_function_is_syntax_error() {
 }
 
 #[test]
-fn for_await_of_in_class_static_block_in_async_function_is_syntax_error() {
+fn for_await_of_in_class_static_block_in_async_function_is_allowed() {
   let mut rt = new_runtime();
-  let diags = assert_syntax_error(
-    rt
-      .exec_script("async function f(){ class C { static { for await (const x of []) {} } } }")
-      .unwrap_err(),
-  );
-  assert!(
-    diags.iter().any(|d| d.code.as_str() == "VMJS0004"),
-    "expected VMJS0004 early error, got {diags:?}"
-  );
+  rt
+    .exec_script("async function f(){ class C { static { for await (const x of []) {} } } }")
+    .unwrap();
 }
 
 #[test]
-fn for_await_of_in_class_static_block_in_module_is_syntax_error() {
+fn for_await_of_in_class_static_block_in_module_is_allowed() {
   let mut rt = new_runtime();
-  let diags = assert_syntax_error(
-    SourceTextModuleRecord::parse(
-      &mut rt.heap,
-      "class C { static { for await (const x of []) {} } } export {};",
-    )
-    .unwrap_err(),
-  );
-  assert!(
-    diags.iter().any(|d| d.code.as_str() == "VMJS0004"),
-    "expected VMJS0004 early error, got {diags:?}"
-  );
+  let record = SourceTextModuleRecord::parse(
+    &mut rt.heap,
+    "class C { static { for await (const x of []) {} } } export {};",
+  )
+  .unwrap();
+  assert!(record.has_tla);
 }
 
 #[test]

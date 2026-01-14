@@ -683,7 +683,7 @@ fn for_await_of_is_allowed_in_static_block_inside_async_function() {
 #[test]
 fn for_await_of_is_allowed_in_static_block_in_module() {
   let src = r#"
-    class C {
+     class C {
       static {
         for await (const x of []) {}
       }
