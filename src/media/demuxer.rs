@@ -62,6 +62,19 @@ struct Mp4TrackCursor {
   track_type: MediaTrackType,
 }
 
+#[cfg(feature = "media_mp4")]
+const MAX_MP4_PACKET_BYTES: usize = 64 * 1024 * 1024;
+
+#[cfg(feature = "media_mp4")]
+fn check_mp4_packet_size(track_id: u32, len: usize) -> MediaResult<()> {
+  if len > MAX_MP4_PACKET_BYTES {
+    return Err(MediaError::Demux(format!(
+      "MP4 packet too large (track {track_id}, size {len} bytes, cap {MAX_MP4_PACKET_BYTES} bytes)"
+    )));
+  }
+  Ok(())
+}
+
 /// Simple MP4 packet demuxer that yields common video+audio packets in demux order.
 ///
 /// Note: the existing `crate::media::mp4` module focuses on sample tables and efficient seeking,
@@ -882,8 +895,33 @@ mod tests {
 mod mp4_timestamp_tests {
   use super::MediaDemuxer;
   use super::Mp4PacketDemuxer;
+  use crate::media::MediaError;
   use crate::media::MediaCodec;
   use std::sync::Arc;
+
+  #[test]
+  fn rejects_oversized_mp4_packet_bytes() {
+    super::check_mp4_packet_size(7, super::MAX_MP4_PACKET_BYTES)
+      .expect("cap-sized packet should be allowed");
+
+    let len = super::MAX_MP4_PACKET_BYTES + 1;
+    let err = super::check_mp4_packet_size(7, len).expect_err("expected packet cap error");
+    let MediaError::Demux(msg) = err else {
+      panic!("expected demux error, got {err:?}");
+    };
+    assert!(
+      msg.contains("track 7"),
+      "expected error mentioning track id, got {msg:?}"
+    );
+    assert!(
+      msg.contains(&format!("size {len} bytes")),
+      "expected error mentioning size, got {msg:?}"
+    );
+    assert!(
+      msg.contains(&format!("cap {} bytes", super::MAX_MP4_PACKET_BYTES)),
+      "expected error mentioning cap, got {msg:?}"
+    );
+  }
 
   #[test]
   fn mp4_packets_have_non_zero_duration() {
@@ -1098,6 +1136,12 @@ fn mp4_fill_peeked<R: Read + Seek>(
     else {
       continue;
     };
+
+    // Hard cap encoded bytes to avoid unbounded allocations/copies on corrupted/adversarial files.
+    // Note: the `mp4` crate may still allocate the `sample.bytes` buffer before we can check its
+    // length. This check still prevents a second attacker-controlled allocation when converting to
+    // our owned `Vec<u8>`.
+    check_mp4_packet_size(cursor.id, sample.bytes.len())?;
 
     let timing = sample_tables
       .get(&cursor.id)

@@ -385,6 +385,8 @@ primarily a smoke test for `<video>/<audio>` layout and for future playback wiri
     can force large allocations.
 - MP4 (mp4-crate path, `Mp4PacketDemuxer`):
   - Still in-tree (not used by `NativeBackend`), with sample-table caps + best-effort keyframe seek.
+  - The `mp4` crate may allocate large sample buffers before FastRender can enforce a hard cap; a
+    zero-copy demux path and/or pre-size checks are likely needed for full robustness.
   - Fragmented MP4 is unsupported on this path.
 - WebM (`WebmDemuxer`):
   - Seek is best-effort but does account for Matroska `SeekPreRoll`; callers should expect preroll
