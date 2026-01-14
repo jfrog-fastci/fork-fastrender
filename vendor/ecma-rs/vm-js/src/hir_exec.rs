@@ -1265,6 +1265,15 @@ impl<'vm> HirEvaluator<'vm> {
           )
         }
 
+        fn logical_assign_op_supported(op: hir_js::AssignOp) -> bool {
+          matches!(
+            op,
+            hir_js::AssignOp::LogicalAndAssign
+              | hir_js::AssignOp::LogicalOrAssign
+              | hir_js::AssignOp::NullishAssign
+          )
+        }
+
         fn assignment_target_is_supported<'a>(
           evaluator: &mut HirEvaluator<'a>,
           body: &hir_js::Body,
@@ -1485,14 +1494,15 @@ impl<'vm> HirEvaluator<'vm> {
             return direct_await_operand_has_no_await(evaluator, script, body, awaited_expr, steps);
           }
           if allow_assignment_await {
-            if let hir_js::ExprKind::Assignment {
-              op: hir_js::AssignOp::Assign,
-              target,
-              value,
-            } = &expr.kind
-            {
+            if let hir_js::ExprKind::Assignment { op, target, value } = &expr.kind {
               let rhs = evaluator.get_expr(body, *value)?;
               if let hir_js::ExprKind::Await { expr: awaited_expr } = rhs.kind {
+                if *op != hir_js::AssignOp::Assign
+                  && !compound_assign_op_supported(*op)
+                  && !logical_assign_op_supported(*op)
+                {
+                  return Ok(false);
+                }
                 if !assignment_target_is_supported(evaluator, body, *target)? {
                   return Ok(false);
                 }
@@ -1533,6 +1543,7 @@ impl<'vm> HirEvaluator<'vm> {
               // Support assignment expression statements with a direct `await` RHS:
               // - `x = await expr;`
               // - `x <op>= await expr;` (supported compound ops only)
+              // - `x &&= await expr;` / `x ||= await expr;` / `x ??= await expr;`
               //
               // Ensure:
               // - assignment target contains no await, and
@@ -1540,7 +1551,10 @@ impl<'vm> HirEvaluator<'vm> {
               if let hir_js::ExprKind::Assignment { op, target, value } = &expr.kind {
                 let rhs = self.get_expr(body, *value)?;
                 if let hir_js::ExprKind::Await { expr: awaited_expr } = rhs.kind {
-                  if *op == hir_js::AssignOp::Assign || compound_assign_op_supported(*op) {
+                  if *op == hir_js::AssignOp::Assign
+                    || compound_assign_op_supported(*op)
+                    || logical_assign_op_supported(*op)
+                  {
                     if !assignment_target_is_supported(self, body, *target)? {
                       return Ok(false);
                     }
@@ -20796,6 +20810,139 @@ mod async_function_hir_exec_tests {
     assert_eq!(
       rt.heap.promise_result(promise_obj)?,
       Some(Value::Number(7.0))
+    );
+    rt.heap.remove_root(promise_root);
+    Ok(())
+  }
+
+  #[test]
+  fn compiled_async_function_logical_assignment_stmt_direct_await_executes_via_hir() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    // Async functions allocate Promise/job machinery; use a slightly larger heap to avoid spurious
+    // OOMs as builtin surface area grows.
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let script = CompiledScript::compile_script(
+      &mut rt.heap,
+      "<inline>",
+      r#"
+        async function f() {
+          let x = 0;
+          x ||= await Promise.resolve(2);
+          x &&= await Promise.resolve(3);
+          // Should short-circuit (x is non-nullish) and must not evaluate the awaited operand.
+          x ??= await (x = 999, Promise.resolve(4));
+          return x;
+        }
+        f;
+      "#,
+    )?;
+    assert!(script.contains_async_functions);
+    assert!(
+      !script.requires_ast_fallback,
+      "compiled scripts should only require full AST fallback for generators or top-level await"
+    );
+
+    let result = rt.exec_compiled_script(script)?;
+    let Value::Object(func_obj) = result else {
+      panic!("expected async function object, got {result:?}");
+    };
+
+    let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+    assert!(
+      matches!(call_handler, CallHandler::User(_)),
+      "expected async function to be allocated as a compiled user function, got {call_handler:?}"
+    );
+
+    let func_data = rt.heap.get_function_data(func_obj)?;
+    assert!(
+      matches!(func_data, FunctionData::None),
+      "expected logical assignment await to execute via HIR (no per-function AST fallback), got {func_data:?}"
+    );
+
+    let promise = {
+      let mut scope = rt.heap.scope();
+      rt.vm
+        .call_without_host(&mut scope, Value::Object(func_obj), Value::Undefined, &[])?
+    };
+    let promise_root = rt.heap.add_root(promise)?;
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+      panic!("expected async function call to return a Promise object");
+    };
+    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+    assert_eq!(
+      rt.heap.promise_result(promise_obj)?,
+      Some(Value::Number(3.0))
+    );
+    rt.heap.remove_root(promise_root);
+    Ok(())
+  }
+
+  #[test]
+  fn compiled_async_function_for_triple_init_logical_assignment_direct_await_executes_via_hir() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    // Async functions allocate Promise/job machinery; use a slightly larger heap to avoid spurious
+    // OOMs as builtin surface area grows.
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let script = CompiledScript::compile_script(
+      &mut rt.heap,
+      "<inline>",
+      r#"
+        async function f() {
+          let x = 0;
+          for (x ||= await Promise.resolve(2); x < 3; x++) {
+            break;
+          }
+          return x;
+        }
+        f;
+      "#,
+    )?;
+    assert!(script.contains_async_functions);
+    assert!(
+      !script.requires_ast_fallback,
+      "compiled scripts should only require full AST fallback for generators or top-level await"
+    );
+
+    let result = rt.exec_compiled_script(script)?;
+    let Value::Object(func_obj) = result else {
+      panic!("expected async function object, got {result:?}");
+    };
+
+    let call_handler = rt.heap.get_function_call_handler(func_obj)?;
+    assert!(
+      matches!(call_handler, CallHandler::User(_)),
+      "expected async function to be allocated as a compiled user function, got {call_handler:?}"
+    );
+
+    let func_data = rt.heap.get_function_data(func_obj)?;
+    assert!(
+      matches!(func_data, FunctionData::None),
+      "expected logical assignment await in for-loop head to execute via HIR (no per-function AST fallback), got {func_data:?}"
+    );
+
+    let promise = {
+      let mut scope = rt.heap.scope();
+      rt.vm
+        .call_without_host(&mut scope, Value::Object(func_obj), Value::Undefined, &[])?
+    };
+    let promise_root = rt.heap.add_root(promise)?;
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let Some(Value::Object(promise_obj)) = rt.heap.get_root(promise_root) else {
+      panic!("expected async function call to return a Promise object");
+    };
+    assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+    assert_eq!(
+      rt.heap.promise_result(promise_obj)?,
+      Some(Value::Number(2.0))
     );
     rt.heap.remove_root(promise_root);
     Ok(())
