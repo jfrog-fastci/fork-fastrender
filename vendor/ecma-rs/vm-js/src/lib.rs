@@ -240,6 +240,18 @@ mod compound_assignment_bitwise_shift_tests;
 mod compiled_module_graph_tests;
 
 #[cfg(test)]
+#[path = "../tests/dynamic_import_module.rs"]
+mod dynamic_import_module_tests;
+
+#[cfg(test)]
+#[path = "../tests/compiled_module_decl_execution_context.rs"]
+mod compiled_module_decl_execution_context_tests;
+
+#[cfg(test)]
+#[path = "../tests/compiled_module_async_generators_fallback.rs"]
+mod compiled_module_async_generators_fallback_tests;
+
+#[cfg(test)]
 #[path = "../tests/compound_assignment_arithmetic.rs"]
 mod compound_assignment_arithmetic_tests;
 
