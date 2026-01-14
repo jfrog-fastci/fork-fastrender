@@ -396,3 +396,91 @@ fn compiled_logical_assignment_super_computed_key_to_property_key_is_evaluated_o
   assert_eq!(rt.exec_compiled_script(script)?, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn logical_assignment_super_computed_getsuperbase_is_observed_before_topropertykey() -> Result<(), VmError>
+{
+  let mut rt = new_runtime();
+
+  assert_eq!(
+    rt.exec_script(
+      r#"
+        (() => {
+          const proto1 = { p: 1 };
+          const proto2 = { p: 0 };
+
+          const obj = {
+            __proto__: proto1,
+            p: 10,
+            m() {
+              // Per test262 `prop-expr-getsuperbase-before-topropertykey-*`: `GetSuperBase` must be
+              // observed before `ToPropertyKey`, so prototype mutation during key coercion does not
+              // affect the resolved super base. If `GetSuperBase` happened *after* `toString`, the
+              // LHS would be 0 and the `&&=` would short-circuit.
+              return super[key] &&= 2;
+            }
+          };
+
+          const key = {
+            toString() {
+              Object.setPrototypeOf(obj, proto2);
+              return "p";
+            }
+          };
+
+          const r = obj.m();
+          return r === 2 && obj.p === 2 && Object.getPrototypeOf(obj) === proto2;
+        })()
+      "#,
+    )?,
+    Value::Bool(true)
+  );
+
+  Ok(())
+}
+
+#[test]
+fn compiled_logical_assignment_super_computed_getsuperbase_is_observed_before_topropertykey(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "<inline>",
+    r#"
+      (() => {
+        const proto1 = { p: 1 };
+        const proto2 = { p: 0 };
+
+        const obj = {
+          __proto__: proto1,
+          p: 10,
+          m() {
+            // Per test262 `prop-expr-getsuperbase-before-topropertykey-*`: `GetSuperBase` must be
+            // observed before `ToPropertyKey`, so prototype mutation during key coercion does not
+            // affect the resolved super base. If `GetSuperBase` happened *after* `toString`, the LHS
+            // would be 0 and the `&&=` would short-circuit.
+            return super[key] &&= 2;
+          }
+        };
+
+        const key = {
+          toString() {
+            Object.setPrototypeOf(obj, proto2);
+            return "p";
+          }
+        };
+
+        const r = obj.m();
+        return r === 2 && obj.p === 2 && Object.getPrototypeOf(obj) === proto2;
+      })()
+    "#,
+  )?;
+  assert!(
+    !script.requires_ast_fallback,
+    "script should execute via compiled (HIR) path"
+  );
+
+  assert_eq!(rt.exec_compiled_script(script)?, Value::Bool(true));
+  Ok(())
+}
