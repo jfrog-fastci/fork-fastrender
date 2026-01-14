@@ -89,6 +89,51 @@ fn direct_eval_allows_super_in_arrow_within_instance_field_initializer_compiled(
 }
 
 #[test]
+fn direct_eval_rejects_super_in_nested_plain_function_within_instance_field_initializer() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class B { get x() { return 1; } }
+        class A extends B {
+          y = (() => {
+            function f() { return eval("super.x"); }
+            try { f(); return "no"; } catch (e) { return e.name; }
+          })();
+        }
+        (new A()).y
+      "#,
+    )
+    .unwrap();
+  let Value::String(s) = value else {
+    panic!("expected string from caught error name");
+  };
+  assert_eq!(rt.heap().get_string(s).unwrap().to_utf8_lossy(), "SyntaxError");
+}
+
+#[test]
+fn direct_eval_rejects_super_in_nested_plain_function_within_instance_field_initializer_compiled() {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class B { get x() { return 1; } }
+      class A extends B {
+        y = (() => {
+          function f() { return eval("super.x"); }
+          try { f(); return "no"; } catch (e) { return e.name; }
+        })();
+      }
+      (new A()).y
+    "#,
+  );
+  let Value::String(s) = value else {
+    panic!("expected string from caught error name");
+  };
+  assert_eq!(rt.heap().get_string(s).unwrap().to_utf8_lossy(), "SyntaxError");
+}
+
+#[test]
 fn direct_eval_allows_super_set_in_instance_field_initializer() {
   let mut rt = new_runtime();
   let value = rt
@@ -394,6 +439,51 @@ fn direct_eval_allows_super_in_arrow_within_static_field_initializer_compiled() 
     "#,
   );
   assert_eq!(value, Value::Number(888.0));
+}
+
+#[test]
+fn direct_eval_rejects_super_in_nested_plain_function_within_static_field_initializer() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class B { static get x() { return 1; } }
+        class A extends B {
+          static y = (() => {
+            function f() { return eval("super.x"); }
+            try { f(); return "no"; } catch (e) { return e.name; }
+          })();
+        }
+        A.y
+      "#,
+    )
+    .unwrap();
+  let Value::String(s) = value else {
+    panic!("expected string from caught error name");
+  };
+  assert_eq!(rt.heap().get_string(s).unwrap().to_utf8_lossy(), "SyntaxError");
+}
+
+#[test]
+fn direct_eval_rejects_super_in_nested_plain_function_within_static_field_initializer_compiled() {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class B { static get x() { return 1; } }
+      class A extends B {
+        static y = (() => {
+          function f() { return eval("super.x"); }
+          try { f(); return "no"; } catch (e) { return e.name; }
+        })();
+      }
+      A.y
+    "#,
+  );
+  let Value::String(s) = value else {
+    panic!("expected string from caught error name");
+  };
+  assert_eq!(rt.heap().get_string(s).unwrap().to_utf8_lossy(), "SyntaxError");
 }
 
 #[test]
