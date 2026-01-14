@@ -395,6 +395,10 @@ Legacy env vars (still supported):
 * `FASTR_AV_SYNC_MAX_LATE_MS` — drop threshold (`now - video_pts > max_late` ⇒ drop)
 * `FASTR_AV_SYNC_MAX_EARLY_MS` — hold threshold (`video_pts - now > max_early` ⇒ hold + wake later)
 
+Note: the legacy `FASTR_AV_SYNC_*` vars flow through the `RuntimeToggles` mechanism (which only
+captures `FASTR_*` keys), but the `FASTRENDER_AVSYNC_*` vars are read directly from the process
+environment in `src/media/av_sync.rs`.
+
 Defaults are 20ms / 80ms / 40ms respectively (see `src/media/av_sync.rs`).
 
 ---

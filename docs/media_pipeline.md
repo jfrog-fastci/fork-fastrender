@@ -372,6 +372,8 @@ Useful runtime toggles while debugging:
     - `FASTR_AV_SYNC_TOLERANCE_MS`
     - `FASTR_AV_SYNC_MAX_LATE_MS`
     - `FASTR_AV_SYNC_MAX_EARLY_MS`
+  - Note: the legacy `FASTR_AV_SYNC_*` vars flow through the `RuntimeToggles` mechanism, but the
+    `FASTRENDER_AVSYNC_*` vars are read directly from the process environment.
 
 Note: full end-to-end decode→paint→DOM integration is still in progress. Today these pages are
 primarily a smoke test for `<video>/<audio>` layout and for future playback wiring.
