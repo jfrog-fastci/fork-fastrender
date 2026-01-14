@@ -121,6 +121,9 @@ jobs:
           assert summary.get("timed_out", 0) == 0, summary
           results = data.get("results", [])
           assert results, "expected at least one result entry"
+          assert summary.get("total") == len(results), summary
+          assert all(r.get("id") == "language/expressions/comma/tco-final.js" for r in results), results
+          assert all(r.get("outcome") != "timed_out" for r in results), results
           outcome = results[0].get("outcome")
           if outcome != "passed":
             err = (results[0].get("error") or "").lower()
