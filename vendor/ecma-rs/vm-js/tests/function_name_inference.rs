@@ -7,16 +7,24 @@ fn new_runtime() -> JsRuntime {
 }
 
 #[test]
-fn let_initializer_only_infers_name_for_anonymous_function_definitions() {
+fn var_decl_name_inference_respects_anonymous_function_definition_syntax() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
       r#"
-        (() => {
-          let cover = (function () {});
-          let xCover = (0, function () {});
-          return cover.name === "cover" && xCover.name !== "xCover";
-        })()
+        var xCover = (0, function() {});
+        var cover = (function() {});
+        var desc = Object.getOwnPropertyDescriptor(cover, 'name');
+        var desc2 = Object.getOwnPropertyDescriptor(xCover, 'name');
+        xCover.name !== 'xCover'
+          && desc.value === 'cover'
+          && desc.writable === false
+          && desc.enumerable === false
+          && desc.configurable === true
+          && desc2.value === ''
+          && desc2.writable === false
+          && desc2.enumerable === false
+          && desc2.configurable === true
       "#,
     )
     .unwrap();
@@ -24,17 +32,17 @@ fn let_initializer_only_infers_name_for_anonymous_function_definitions() {
 }
 
 #[test]
-fn let_initializer_does_not_override_class_static_name_method() {
+fn var_decl_does_not_overwrite_class_static_name_method() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
       r#"
-        (() => {
-          let cls = class {};
-          let xCls = class X {};
-          let xCls2 = class { static name() {} };
-          return cls.name === "cls" && xCls.name !== "xCls" && typeof xCls2.name === "function";
-        })()
+        var cls = class {};
+        var xCls = class X {};
+        var xCls2 = class { static name() {} };
+        cls.name === 'cls'
+          && xCls.name === 'X'
+          && typeof xCls2.name === 'function'
       "#,
     )
     .unwrap();
@@ -42,15 +50,115 @@ fn let_initializer_does_not_override_class_static_name_method() {
 }
 
 #[test]
-fn destructuring_default_infers_name_only_for_anonymous_function_definitions() {
+fn destructuring_default_initializer_infers_name_like_spec() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
       r#"
-        (() => {
-          let [cover = (function () {}), xCover = (0, function () {})] = [];
-          return cover.name === "cover" && xCover.name !== "xCover";
-        })()
+        var { xCover = (0, function() {}) } = {};
+        var { cover = (function() {}) } = {};
+        xCover.name !== 'xCover' && cover.name === 'cover'
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn parameter_default_initializer_infers_function_name() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function f(x = function() {}) {
+          return x.name;
+        }
+        f() === 'x'
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn assignment_does_not_infer_name_for_parenthesized_identifier_lhs() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var fn;
+        (fn) = function() {};
+        var desc = Object.getOwnPropertyDescriptor(fn, 'name');
+        desc.value === '' && desc.writable === false && desc.enumerable === false && desc.configurable === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn assignment_does_not_infer_name_for_member_expression_lhs() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var o = {};
+        o.attr = function() {};
+        var desc = Object.getOwnPropertyDescriptor(o.attr, 'name');
+        desc.value === '' && desc.writable === false && desc.enumerable === false && desc.configurable === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn destructuring_assignment_does_not_infer_name_for_parenthesized_identifier_target() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var fn;
+        ({ x: (fn) = function() {} } = {});
+        var desc = Object.getOwnPropertyDescriptor(fn, 'name');
+        desc.value === '' && desc.writable === false && desc.enumerable === false && desc.configurable === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn destructuring_assignment_does_not_infer_name_for_member_expression_target() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var o = {};
+        ({ x: o.attr = function() {} } = {});
+        var desc = Object.getOwnPropertyDescriptor(o.attr, 'name');
+        desc.value === '' && desc.writable === false && desc.enumerable === false && desc.configurable === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_destructuring_default_initializer_infers_after_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          var fn;
+          ({ [yield 'k']: fn = function() {} } = {});
+          return fn.name;
+        }
+        var it = g();
+        var first = it.next();
+        var second = it.next('x');
+        first.value === 'k' && second.value === 'fn'
       "#,
     )
     .unwrap();

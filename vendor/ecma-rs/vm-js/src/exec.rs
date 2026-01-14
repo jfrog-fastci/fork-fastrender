@@ -59,6 +59,65 @@ fn is_hard_stop_error(err: &VmError) -> bool {
   matches!(err, VmError::Termination(_) | VmError::OutOfMemory)
 }
 
+/// ECMA-262 `IsIdentifierRef` (subset).
+///
+/// `parse-js` preserves parentheses via the [`ParenthesizedExpr`] association marker; a
+/// parenthesized identifier (e.g. `(x)`) is *not* an IdentifierReference for name inference.
+#[inline]
+fn is_identifier_ref(expr: &Node<Expr>) -> bool {
+  let is_parenthesized = expr.assoc.get::<ParenthesizedExpr>().is_some()
+    || match &*expr.stx {
+      // Note: for assignment targets `parse-js` may rewrite `Expr::Id` into `Expr::IdPat` while
+      // moving the `ParenthesizedExpr` marker onto the inner `IdPat` node.
+      Expr::Id(id) => id.assoc.get::<ParenthesizedExpr>().is_some(),
+      Expr::IdPat(id) => id.assoc.get::<ParenthesizedExpr>().is_some(),
+      _ => false,
+    };
+  !is_parenthesized && matches!(&*expr.stx, Expr::Id(_) | Expr::IdPat(_))
+}
+
+fn maybe_set_name_for_destructuring_default(
+  scope: &mut Scope<'_>,
+  kind: BindingKind,
+  target: &Node<Pat>,
+  default_expr: &Node<Expr>,
+  value: Value,
+) -> Result<(), VmError> {
+  // Name inference only applies when the initializer expression is *syntactically* an anonymous
+  // function definition (not based on the runtime value).
+  if !is_anonymous_function_definition(default_expr) {
+    return Ok(());
+  }
+
+  let inferred_name = if matches!(kind, BindingKind::Assignment) {
+    match &*target.stx {
+      Pat::Id(id) => Some(id.stx.name.as_str()),
+      Pat::AssignTarget(target) => {
+        if is_identifier_ref(target) {
+          match &*target.stx {
+            Expr::Id(id) => Some(id.stx.name.as_str()),
+            Expr::IdPat(id) => Some(id.stx.name.as_str()),
+            _ => None,
+          }
+        } else {
+          None
+        }
+      }
+      _ => None,
+    }
+  } else {
+    match &*target.stx {
+      Pat::Id(id) => Some(id.stx.name.as_str()),
+      _ => None,
+    }
+  };
+
+  if let Some(inferred_name) = inferred_name {
+    maybe_set_anonymous_function_name(scope, value, inferred_name)?;
+  }
+  Ok(())
+}
+
 /// A `throw` completion value paired with a captured stack trace.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Thrown {
@@ -12280,57 +12339,27 @@ impl<'a> Evaluator<'a> {
   fn maybe_set_anonymous_function_name_for_assignment(
     &mut self,
     scope: &mut Scope<'_>,
+    left: &Node<Expr>,
+    right: &Node<Expr>,
     reference: &Reference<'_>,
     value: Value,
   ) -> Result<(), VmError> {
-    let Value::Object(func_obj) = value else {
-      return Ok(());
-    };
-
-    // `SetFunctionName` only applies to actual Function objects. Callable Proxies are callable, but
-    // are not function objects and should not have their `name` mutated.
-    let (current_name, is_native_non_constructable) = match scope.heap().get_function(func_obj) {
-      Ok(f) => (
-        f.name,
-        matches!(f.call, crate::function::CallHandler::Native(_)) && f.construct.is_none(),
-      ),
-      Err(VmError::NotCallable) => return Ok(()),
-      Err(err) => return Err(err),
-    };
-    // Name inference only applies to "anonymous function definitions" (ECMA-262), which excludes
-    // anonymous built-in/native functions such as Promise combinator element callbacks.
+    // Spec: https://tc39.es/ecma262/#sec-assignment-operators-runtime-semantics-evaluation
     //
-    // `vm-js` represents user-defined class constructors as native functions (so they can throw
-    // when called without `new`), so keep name inference enabled for constructable native
-    // functions.
-    if is_native_non_constructable {
+    // AssignmentExpression : LeftHandSideExpression = AssignmentExpression
+    //
+    // Perform anonymous function/class name inference only when:
+    // - RHS is syntactically an anonymous function definition, and
+    // - LHS is an IdentifierReference (not parenthesized).
+    if !is_anonymous_function_definition(right) || !is_identifier_ref(left) {
       return Ok(());
     }
-    if !scope
-      .heap()
-      .get_string(current_name)?
-      .as_code_units()
-      .is_empty()
-    {
+    let Reference::Binding(name) = *reference else {
+      // `IsIdentifierRef` implies the LHS is an identifier, so other reference types should not be
+      // observable here.
       return Ok(());
-    }
-
-    let key = match *reference {
-      Reference::Binding(name) => {
-        // Root the allocated key string: `set_function_name` may allocate and trigger GC while
-        // pushing its own roots.
-        let name_s = scope.alloc_string(name)?;
-        scope.push_root(Value::String(name_s))?;
-        PropertyKey::String(name_s)
-      }
-      Reference::Property { key, .. } => key,
-      Reference::SuperProperty { key, .. } => key,
-      // Private field assignment does not participate in anonymous function name inference.
-      Reference::Private { .. } => return Ok(()),
     };
-
-    crate::function_properties::set_function_name(scope, func_obj, key, None)?;
-    Ok(())
+    maybe_set_anonymous_function_name(scope, value, name)
   }
 
   fn eval_func_expr(
@@ -14992,6 +15021,8 @@ impl<'a> Evaluator<'a> {
             rhs_scope.push_root(value)?;
             self.maybe_set_anonymous_function_name_for_assignment(
               &mut rhs_scope,
+              &expr.left,
+              &expr.right,
               &reference,
               value,
             )?;
@@ -15353,6 +15384,8 @@ impl<'a> Evaluator<'a> {
           op_scope.push_root(right)?;
           self.maybe_set_anonymous_function_name_for_assignment(
             &mut op_scope,
+            &expr.left,
+            &expr.right,
             &reference,
             right,
           )?;
@@ -17493,7 +17526,10 @@ pub(crate) enum GenFrame {
   PrivateInAfterRight { expr: *const BinaryExpr },
 
   /// Continue a simple assignment after evaluating the RHS (binding target).
-  AssignAfterRhsBinding { name: *const String },
+  AssignAfterRhsBinding {
+    expr: *const BinaryExpr,
+    name: *const String,
+  },
   /// Continue a destructuring assignment after evaluating the RHS.
   AssignAfterRhsPattern { expr: *const BinaryExpr },
 
@@ -29446,7 +29482,13 @@ fn async_eval_assignment_to_binding(
     AsyncEval::Complete(value) => {
       rhs_scope.push_root(value)?;
       evaluator
-        .maybe_set_anonymous_function_name_for_assignment(&mut rhs_scope, &reference, value)
+        .maybe_set_anonymous_function_name_for_assignment(
+          &mut rhs_scope,
+          &expr.left,
+          &expr.right,
+          &reference,
+          value,
+        )
         .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut rhs_scope, err))?;
       evaluator
         .put_value_to_reference(&mut rhs_scope, &reference, value)
@@ -29731,7 +29773,13 @@ fn async_eval_assignment_apply_reference(
         AsyncEval::Complete(value) => {
           rhs_scope.push_root(value)?;
           evaluator
-            .maybe_set_anonymous_function_name_for_assignment(&mut rhs_scope, &reference, value)
+            .maybe_set_anonymous_function_name_for_assignment(
+              &mut rhs_scope,
+              &expr.left,
+              &expr.right,
+              &reference,
+              value,
+            )
             .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut rhs_scope, err))?;
           evaluator
             .put_value_to_reference(&mut rhs_scope, &reference, value)
@@ -30122,7 +30170,13 @@ fn async_eval_assignment_apply_reference(
           // Root `value` across anonymous function name inference + `PutValue`.
           op_scope.push_root(value)?;
           evaluator
-            .maybe_set_anonymous_function_name_for_assignment(&mut op_scope, &reference, value)
+            .maybe_set_anonymous_function_name_for_assignment(
+              &mut op_scope,
+              &expr.left,
+              &expr.right,
+              &reference,
+              value,
+            )
             .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
           evaluator
             .put_value_to_reference(&mut op_scope, &reference, value)
@@ -36078,12 +36132,12 @@ fn async_resume_from_frames(
                 evaluator
                   .maybe_set_anonymous_function_name_for_assignment(
                     &mut put_scope,
+                    &expr.left,
+                    &expr.right,
                     &reference,
                     value,
                   )
-                  .map_err(|err| {
-                    coerce_error_to_throw_for_async(evaluator.vm, &mut put_scope, err)
-                  })?;
+                  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut put_scope, err))?;
                 evaluator
                   .put_value_to_reference(&mut put_scope, &reference, value)
                   .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut put_scope, err))
@@ -46149,6 +46203,8 @@ fn gen_eval_assignment_to_binding(
         rhs_scope.push_root(value)?;
         evaluator.maybe_set_anonymous_function_name_for_assignment(
           &mut rhs_scope,
+          &expr.left,
+          &expr.right,
           &reference,
           value,
         )?;
@@ -46161,6 +46217,7 @@ fn gen_eval_assignment_to_binding(
       gen_frames_push(
         &mut suspend.frames,
         GenFrame::AssignAfterRhsBinding {
+          expr: expr as *const BinaryExpr,
           name: name as *const String,
         },
       )?;
@@ -46598,7 +46655,13 @@ fn gen_eval_assignment_apply_reference(
             let value = v.unwrap_or(Value::Undefined);
             rhs_scope.push_root(value)?;
             evaluator
-              .maybe_set_anonymous_function_name_for_assignment(&mut rhs_scope, &reference, value)
+              .maybe_set_anonymous_function_name_for_assignment(
+                &mut rhs_scope,
+                &expr.left,
+                &expr.right,
+                &reference,
+                value,
+              )
               .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut rhs_scope, err))?;
             evaluator
               .put_value_to_reference(&mut rhs_scope, &reference, value)
@@ -46854,7 +46917,13 @@ fn gen_eval_assignment_apply_reference(
             let value = v.unwrap_or(Value::Undefined);
             op_scope.push_root(value)?;
             evaluator
-              .maybe_set_anonymous_function_name_for_assignment(&mut op_scope, &reference, value)
+              .maybe_set_anonymous_function_name_for_assignment(
+                &mut op_scope,
+                &expr.left,
+                &expr.right,
+                &reference,
+                value,
+              )
               .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
             evaluator
               .put_value_to_reference(&mut op_scope, &reference, value)
@@ -48446,7 +48515,6 @@ fn gen_bind_assignment_target_to_member(
 
     let assign_result = (|| -> Result<(), VmError> {
       evaluator.root_reference(&mut super_scope, &reference)?;
-      evaluator.maybe_set_anonymous_function_name_for_assignment(&mut super_scope, &reference, value)?;
       evaluator.put_value_to_reference(&mut super_scope, &reference, value)
     })();
     return match assign_result {
@@ -48515,7 +48583,6 @@ fn gen_bind_assignment_target_to_member_after_base(
 
   let assign_result = (|| -> Result<(), VmError> {
     evaluator.root_reference(&mut assign_scope, &reference)?;
-    evaluator.maybe_set_anonymous_function_name_for_assignment(&mut assign_scope, &reference, value)?;
     evaluator.put_value_to_reference(&mut assign_scope, &reference, value)
   })();
 
@@ -48678,7 +48745,6 @@ fn gen_bind_assignment_target_to_computed_member_after_member(
 
   let assign_result = (|| -> Result<(), VmError> {
     evaluator.root_reference(&mut assign_scope, &reference)?;
-    evaluator.maybe_set_anonymous_function_name_for_assignment(&mut assign_scope, &reference, value)?;
     evaluator.put_value_to_reference(&mut assign_scope, &reference, value)
   })();
 
@@ -48710,7 +48776,6 @@ fn gen_bind_assignment_target_to_super_computed_member_after_member(
 
   let assign_result = (|| -> Result<(), VmError> {
     evaluator.root_reference(&mut assign_scope, &reference)?;
-    evaluator.maybe_set_anonymous_function_name_for_assignment(&mut assign_scope, &reference, value)?;
     evaluator.put_value_to_reference(&mut assign_scope, &reference, value)
   })();
 
@@ -49196,7 +49261,22 @@ fn gen_bind_object_pattern_from(
       if let Some(default_expr) = &prop.default_value {
         match gen_eval_expr(evaluator, &mut prop_scope, default_expr)? {
           GenEval::Complete(c) => match c {
-            Completion::Normal(v) => prop_value = v.unwrap_or(Value::Undefined),
+            Completion::Normal(v) => {
+              prop_value = v.unwrap_or(Value::Undefined);
+              if let Err(err) = maybe_set_name_for_destructuring_default(
+                &mut prop_scope,
+                kind,
+                &prop.target,
+                default_expr,
+                prop_value,
+              ) {
+                return Ok(GenEval::Complete(gen_error_to_completion(
+                  evaluator,
+                  &mut prop_scope,
+                  err,
+                )?));
+              }
+            }
             abrupt => return Ok(GenEval::Complete(abrupt)),
           },
           GenEval::Suspend(mut suspend) => {
@@ -49643,7 +49723,20 @@ fn gen_bind_object_pattern_prop_after_assign_target(
     if let Some(default_expr) = &prop.default_value {
       match gen_eval_expr(evaluator, &mut scope, default_expr)? {
         GenEval::Complete(c) => match c {
-          Completion::Normal(v) => prop_value = v.unwrap_or(Value::Undefined),
+          Completion::Normal(v) => {
+            prop_value = v.unwrap_or(Value::Undefined);
+            if let Err(err) = maybe_set_name_for_destructuring_default(
+              &mut scope,
+              kind,
+              &prop.target,
+              default_expr,
+              prop_value,
+            ) {
+              return Ok(GenEval::Complete(gen_error_to_completion(
+                evaluator, &mut scope, err,
+              )?));
+            }
+          }
           abrupt => return Ok(GenEval::Complete(abrupt)),
         },
         GenEval::Suspend(mut suspend) => {
@@ -49885,7 +49978,7 @@ fn gen_assign_target_put_value(
 ) -> Result<(), VmError> {
   match target {
     GenAssignTarget::Binding(binding) => {
-      let (resolved, name) = match binding {
+      let (resolved, _name) = match binding {
         GenResolvedBinding::Declarative { env, name } => {
           let name = unsafe { &*name };
           (
@@ -49929,14 +50022,8 @@ fn gen_assign_target_put_value(
         }
       };
 
-      let reference = Reference::Binding(name);
       let mut assign_scope = scope.reborrow();
       assign_scope.push_root(value)?;
-      evaluator.maybe_set_anonymous_function_name_for_assignment(
-        &mut assign_scope,
-        &reference,
-        value,
-      )?;
       evaluator.env.set_resolved_binding(
         evaluator.vm,
         &mut *evaluator.host,
@@ -49970,11 +50057,6 @@ fn gen_assign_target_put_value(
       };
       evaluator.root_reference(&mut assign_scope, &reference)?;
       assign_scope.push_root(value)?;
-      evaluator.maybe_set_anonymous_function_name_for_assignment(
-        &mut assign_scope,
-        &reference,
-        value,
-      )?;
       evaluator.put_value_to_reference(&mut assign_scope, &reference, value)
     }
     GenAssignTarget::ComputedMember { base, key_value } => {
@@ -49990,11 +50072,6 @@ fn gen_assign_target_put_value(
       };
       evaluator.root_reference(&mut assign_scope, &reference)?;
       assign_scope.push_root(value)?;
-      evaluator.maybe_set_anonymous_function_name_for_assignment(
-        &mut assign_scope,
-        &reference,
-        value,
-      )?;
       evaluator.put_value_to_reference(&mut assign_scope, &reference, value)
     }
     GenAssignTarget::SuperMember {
@@ -50021,11 +50098,6 @@ fn gen_assign_target_put_value(
       };
       evaluator.root_reference(&mut assign_scope, &reference)?;
       assign_scope.push_root(value)?;
-      evaluator.maybe_set_anonymous_function_name_for_assignment(
-        &mut assign_scope,
-        &reference,
-        value,
-      )?;
       evaluator.put_value_to_reference(&mut assign_scope, &reference, value)
     }
     GenAssignTarget::SuperComputedMember {
@@ -50041,11 +50113,6 @@ fn gen_assign_target_put_value(
       let reference = Reference::SuperProperty { base, key, receiver };
       evaluator.root_reference(&mut assign_scope, &reference)?;
       assign_scope.push_root(value)?;
-      evaluator.maybe_set_anonymous_function_name_for_assignment(
-        &mut assign_scope,
-        &reference,
-        value,
-      )?;
       evaluator.put_value_to_reference(&mut assign_scope, &reference, value)
     }
   }
@@ -50571,7 +50638,23 @@ fn gen_bind_array_pattern_from(
       if let Some(default_expr) = &elem.default_value {
         match gen_eval_expr(evaluator, &mut elem_scope, default_expr)? {
           GenEval::Complete(c) => match c {
-            Completion::Normal(v) => item = v.unwrap_or(Value::Undefined),
+            Completion::Normal(v) => {
+              item = v.unwrap_or(Value::Undefined);
+              if let Err(err) = maybe_set_name_for_destructuring_default(
+                &mut elem_scope,
+                kind,
+                &elem.target,
+                default_expr,
+                item,
+              ) {
+                let err = evaluator.iterator_close_on_error(&mut elem_scope, &iterator_record, err);
+                return Ok(GenEval::Complete(gen_error_to_completion(
+                  evaluator,
+                  &mut elem_scope,
+                  err,
+                )?));
+              }
+            }
             abrupt => {
               let completion = match evaluator.iterator_close_on_completion(
                 &mut elem_scope,
@@ -52051,8 +52134,9 @@ fn gen_resume_from_frames(
         abrupt => state = abrupt,
       },
 
-      GenFrame::AssignAfterRhsBinding { name } => match state {
+      GenFrame::AssignAfterRhsBinding { expr, name } => match state {
         Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
           let name = unsafe { &*name };
           let value = v.unwrap_or(Value::Undefined);
           let reference = Reference::Binding(name.as_str());
@@ -52062,6 +52146,8 @@ fn gen_resume_from_frames(
             rhs_scope.push_root(value)?;
             match evaluator.maybe_set_anonymous_function_name_for_assignment(
               &mut rhs_scope,
+              &expr.left,
+              &expr.right,
               &reference,
               value,
             ) {
@@ -52558,7 +52644,19 @@ fn gen_resume_from_frames(
             if let Some(default_expr) = &prop.default_value {
               match gen_eval_expr(evaluator, &mut obj_scope, default_expr)? {
                 GenEval::Complete(c) => match c {
-                  Completion::Normal(v) => prop_value = v.unwrap_or(Value::Undefined),
+                  Completion::Normal(v) => {
+                    prop_value = v.unwrap_or(Value::Undefined);
+                    if let Err(err) = maybe_set_name_for_destructuring_default(
+                      &mut obj_scope,
+                      kind,
+                      &prop.target,
+                      default_expr,
+                      prop_value,
+                    ) {
+                      state = gen_error_to_completion(evaluator, &mut obj_scope, err)?;
+                      continue;
+                    }
+                  }
                   abrupt => {
                     state = abrupt;
                     continue;
@@ -52658,6 +52756,19 @@ fn gen_resume_from_frames(
               "generator object pattern continuation out of bounds",
             ))?;
           let prop = &prop.stx;
+
+          if let Some(default_expr) = &prop.default_value {
+            if let Err(err) = maybe_set_name_for_destructuring_default(
+              scope,
+              kind,
+              &prop.target,
+              default_expr,
+              default_value,
+            ) {
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+          }
 
           if let Some(target) = assign_target {
             if let Err(err) = gen_assign_target_put_value(evaluator, scope, target, default_value) {
@@ -53489,6 +53600,20 @@ fn gen_resume_from_frames(
               "generator array pattern continuation out of bounds",
             ))?;
 
+          if let Some(default_expr) = &elem.default_value {
+            if let Err(err) = maybe_set_name_for_destructuring_default(
+              scope,
+              kind,
+              &elem.target,
+              default_expr,
+              default_value,
+            ) {
+              let err = evaluator.iterator_close_on_error(scope, &iterator_record, err);
+              state = gen_error_to_completion(evaluator, scope, err)?;
+              continue;
+            }
+          }
+
           if let Some(target) = assign_target {
             match gen_assign_target_put_value(evaluator, scope, target, default_value) {
               Ok(()) => {}
@@ -53830,12 +53955,12 @@ fn gen_resume_from_frames(
             evaluator
               .maybe_set_anonymous_function_name_for_assignment(
                 &mut assign_scope,
+                &expr.left,
+                &expr.right,
                 &reference,
                 value,
               )
-              .map_err(|err| {
-                coerce_error_to_throw_for_async(evaluator.vm, &mut assign_scope, err)
-              })?;
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut assign_scope, err))?;
             evaluator
               .put_value_to_reference(&mut assign_scope, &reference, value)
               .map_err(|err| {

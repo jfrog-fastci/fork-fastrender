@@ -31,6 +31,12 @@ pub fn lit_to_pat(node: Node<Expr>) -> SyntaxResult<Node<Pat>> {
 
 pub(crate) fn lit_to_pat_with_recover(node: Node<Expr>, recover: bool) -> SyntaxResult<Node<Pat>> {
   let loc = node.loc;
+  // Preserve whether the expression was parenthesized so downstream consumers can implement
+  // syntax-sensitive behaviors (e.g. function `name` inference's `IsIdentifierRef` check).
+  //
+  // Note: `Node::into_wrapped` intentionally does **not** preserve `assoc` data on the wrapper
+  // node, so for converted patterns we forward the marker onto the inner pattern node instead.
+  let is_parenthesized = node.assoc.get::<ParenthesizedExpr>().is_some();
 
   // TypeScript: Accept member expressions for error recovery, even with optional chaining.
   // Check for member expressions first (without moving the value).
@@ -240,18 +246,24 @@ pub(crate) fn lit_to_pat_with_recover(node: Node<Expr>, recover: bool) -> Syntax
       if !recover && n.stx.name.starts_with('#') {
         return Err(n.error(SyntaxErrorType::InvalidAssigmentTarget));
       }
-      Ok(
-        Node::new(
-          loc,
-          IdPat {
-            name: n.stx.name.clone(),
-          },
-        )
-        .into_wrapped(),
-      )
+      let mut id = Node::new(
+        loc,
+        IdPat {
+          name: n.stx.name.clone(),
+        },
+      );
+      if is_parenthesized {
+        id.assoc.set(ParenthesizedExpr);
+      }
+      Ok(id.into_wrapped())
     }
     // It's possible to encounter patterns already parsed e.g. `{a: [b] = 1}`, where `[b]` was already converted to a pattern.
-    Expr::IdPat(n) => Ok(n.into_wrapped()),
+    Expr::IdPat(mut n) => {
+      if is_parenthesized {
+        n.assoc.set(ParenthesizedExpr);
+      }
+      Ok(n.into_wrapped())
+    }
     Expr::ArrPat(n) => Ok(n.into_wrapped()),
     Expr::ObjPat(n) => Ok(n.into_wrapped()),
     // TypeScript: For any other expression type, wrap it as an assignment target for error recovery

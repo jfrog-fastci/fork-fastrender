@@ -1,11 +1,11 @@
 use crate::exec::{eval_expr, eval_expr_named, ResolvedBinding, RuntimeEnv};
 use crate::function::CallHandler;
-use crate::property::{PropertyKey, PropertyKind};
+use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
 use crate::{GcObject, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 use parse_js::ast::class_or_object::ClassOrObjKey;
 use parse_js::ast::expr::pat::{ArrPat, ObjPat, Pat};
 use parse_js::ast::expr::{ComputedMemberExpr, Expr, MemberExpr};
-use parse_js::ast::node::{literal_string_code_units, Node};
+use parse_js::ast::node::{literal_string_code_units, Node, ParenthesizedExpr};
 use parse_js::token::TT;
 
 fn throw_type_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmError, VmError> {
@@ -382,6 +382,23 @@ pub(crate) fn is_anonymous_function_definition(expr: &Node<Expr>) -> bool {
   }
 }
 
+/// ECMA-262 `IsIdentifierRef` (subset).
+///
+/// `parse-js` preserves parentheses via the [`ParenthesizedExpr`] association marker; a
+/// parenthesized identifier (e.g. `(x)`) is *not* an IdentifierReference for name inference.
+#[inline]
+fn is_identifier_ref(expr: &Node<Expr>) -> bool {
+  let is_parenthesized = expr.assoc.get::<ParenthesizedExpr>().is_some()
+    || match &*expr.stx {
+      // Note: for assignment targets `parse-js` may rewrite `Expr::Id` into `Expr::IdPat` while
+      // moving the `ParenthesizedExpr` marker onto the inner `IdPat` node.
+      Expr::Id(id) => id.assoc.get::<ParenthesizedExpr>().is_some(),
+      Expr::IdPat(id) => id.assoc.get::<ParenthesizedExpr>().is_some(),
+      _ => false,
+    };
+  !is_parenthesized && matches!(&*expr.stx, Expr::Id(_) | Expr::IdPat(_))
+}
+
 pub(crate) fn maybe_set_anonymous_function_name(
   scope: &mut Scope<'_>,
   value: Value,
@@ -407,88 +424,42 @@ pub(crate) fn maybe_set_anonymous_function_name(
     return Ok(());
   }
 
-  // Root the function object while probing/modifying its `name` property: key allocation and
-  // `set_function_name` can trigger GC.
+  // Root the function object and `"name"` key across `HasOwnProperty` + `SetFunctionName`, both of
+  // which can allocate.
   let mut scope = scope.reborrow();
   scope.push_root(Value::Object(func_obj))?;
-
-  // In spec terms, this is the `HasOwnProperty(F, "name")` check. `vm-js` eagerly defines
-  // `F.name` at function allocation, so we approximate the spec by treating an **empty string**
-  // `name` data property as "missing" (and therefore eligible for inference), while avoiding
-  // clobbering a `static name() {}` method (where `name` is a function object).
   let name_key_s = scope.common_key_name()?;
   scope.push_root(Value::String(name_key_s))?;
-  let existing = scope
+  // Spec-ish gating: only overwrite the default empty `"name"` property. If user code has already
+  // installed an own `"name"` (e.g. `class { static name() {} }`), preserve it.
+  if let Some(existing) = scope
     .heap()
-    .get_own_property(func_obj, PropertyKey::String(name_key_s))?;
-  let should_set = match existing {
-    None => true,
-    Some(desc) => match desc.kind {
-      PropertyKind::Data {
-        value: Value::String(s),
-        ..
+    .object_get_own_property(func_obj, &PropertyKey::String(name_key_s))?
+  {
+    let is_default_empty_name = match existing {
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::String(s),
+          writable: false,
+        },
       } => scope.heap().get_string(s)?.as_code_units().is_empty(),
       _ => false,
-    },
-  };
-  if !should_set {
-    return Ok(());
-  }
-
-  let name_s = scope.alloc_string(name)?;
-  crate::function_properties::set_function_name(&mut scope, func_obj, PropertyKey::String(name_s), None)?;
-  Ok(())
-}
-
-fn maybe_set_anonymous_function_name_for_assignment_key(
-  scope: &mut Scope<'_>,
-  value: Value,
-  key: PropertyKey,
-) -> Result<(), VmError> {
-  let Value::Object(func_obj) = value else {
-    return Ok(());
-  };
-
-  // `SetFunctionName` only applies to actual Function objects. Callable Proxies are callable, but
-  // they are not function objects and should not have their `name` mutated.
-  let (current_name, is_native_non_constructable) = match scope.heap().get_function(func_obj) {
-    Ok(f) => (
-      f.name,
-      matches!(f.call, CallHandler::Native(_)) && f.construct.is_none(),
-    ),
-    Err(VmError::NotCallable) => return Ok(()),
-    Err(err) => return Err(err),
-  };
-  // Name inference only applies to "anonymous function definitions" (ECMA-262) which excludes
-  // anonymous built-in/native functions like Promise combinator element callbacks.
-  //
-  // `vm-js` represents user-defined class constructors as native functions (so they can throw when
-  // called without `new`), so keep name inference enabled for constructable native functions.
-  if is_native_non_constructable {
-    return Ok(());
-  }
-  if !scope
-    .heap()
-    .get_string(current_name)?
-    .as_code_units()
-    .is_empty()
-  {
-    return Ok(());
-  }
-
-  // Root the function object + key across any allocations while defining `name`.
-  let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(func_obj))?;
-  match key {
-    PropertyKey::String(s) => {
-      scope.push_root(Value::String(s))?;
-      crate::function_properties::set_function_name(&mut scope, func_obj, PropertyKey::String(s), None)?;
-    }
-    PropertyKey::Symbol(sym) => {
-      scope.push_root(Value::Symbol(sym))?;
-      crate::function_properties::set_function_name(&mut scope, func_obj, PropertyKey::Symbol(sym), None)?;
+    };
+    if !is_default_empty_name {
+      return Ok(());
     }
   }
+
+  let inferred_name_s = scope.alloc_string(name)?;
+  scope.push_root(Value::String(inferred_name_s))?;
+  crate::function_properties::set_function_name(
+    &mut scope,
+    func_obj,
+    PropertyKey::String(inferred_name_s),
+    None,
+  )?;
   Ok(())
 }
 
@@ -734,8 +705,7 @@ fn bind_object_pattern(
       }
     }
 
-    let mut prop_value =
-      prop_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, src_value)?;
+    let mut prop_value = prop_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, src_value)?;
     if matches!(prop_value, Value::Undefined) {
       if let Some(default_expr) = &prop.stx.default_value {
         prop_value = if matches!(kind, BindingKind::Param) {
@@ -789,20 +759,40 @@ fn bind_object_pattern(
           )?
         };
 
-        // `SingleNameBinding` name inference (`IsAnonymousFunctionDefinition` / `SetFunctionName`).
-        //
-        // Important: only apply this when the *default initializer* is actually evaluated (i.e.
-        // when the property value is `undefined`).
+        // Function/class `name` inference for destructuring default initializers:
+        // - only when the initializer is syntactically an anonymous function definition, and
+        // - only for identifier targets (single-name binding / identifier reference).
         if is_anonymous_function_definition(default_expr) {
-          // Binding patterns (let/const/var/params): infer from the binding identifier.
-          if !matches!(kind, BindingKind::Assignment) {
-            if let Pat::Id(id) = &*prop.stx.target.stx {
-              maybe_set_anonymous_function_name(&mut prop_scope, prop_value, id.stx.name.as_str())?;
+          let inferred_name = if matches!(kind, BindingKind::Assignment) {
+            match &*prop.stx.target.stx {
+              Pat::Id(id) => {
+                if id.assoc.get::<ParenthesizedExpr>().is_some() {
+                  None
+                } else {
+                  Some(id.stx.name.as_str())
+                }
+              }
+              Pat::AssignTarget(target) => {
+                if is_identifier_ref(target) {
+                  match &*target.stx {
+                    Expr::Id(id) => Some(id.stx.name.as_str()),
+                    Expr::IdPat(id) => Some(id.stx.name.as_str()),
+                    _ => None,
+                  }
+                } else {
+                  None
+                }
+              }
+              _ => None,
             }
-          } else if let Some(PropertyAssignmentTarget::Binding(binding)) = assignment_target.as_ref()
-          {
-            // Destructuring assignment: infer from the identifier reference name.
-            maybe_set_anonymous_function_name(&mut prop_scope, prop_value, binding.name())?;
+          } else {
+            match &*prop.stx.target.stx {
+              Pat::Id(id) => Some(id.stx.name.as_str()),
+              _ => None,
+            }
+          };
+          if let Some(inferred_name) = inferred_name {
+            maybe_set_anonymous_function_name(&mut prop_scope, prop_value, inferred_name)?;
           }
         }
       }
@@ -1490,23 +1480,42 @@ fn bind_array_pattern(
           }
         };
 
-        // `SingleNameBinding` name inference (`IsAnonymousFunctionDefinition` / `SetFunctionName`).
-        //
-        // Important: only apply this when the *default initializer* is actually evaluated (i.e.
-        // when the iterator value is `undefined`).
+        // Function/class `name` inference for destructuring default initializers:
+        // - only when the initializer is syntactically an anonymous function definition, and
+        // - only for identifier targets (single-name binding / identifier reference).
         if is_anonymous_function_definition(default_expr) {
-          // Binding patterns (let/const/var/params): infer from the binding identifier.
-          if !matches!(kind, BindingKind::Assignment) {
-            if let Pat::Id(id) = &*elem.target.stx {
-              if let Err(err) =
-                maybe_set_anonymous_function_name(&mut elem_scope, item, id.stx.name.as_str())
-              {
-                return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err);
+          let inferred_name = if matches!(kind, BindingKind::Assignment) {
+            match &*elem.target.stx {
+              Pat::Id(id) => {
+                if id.assoc.get::<ParenthesizedExpr>().is_some() {
+                  None
+                } else {
+                  Some(id.stx.name.as_str())
+                }
               }
+              Pat::AssignTarget(target) => {
+                if is_identifier_ref(target) {
+                  match &*target.stx {
+                    Expr::Id(id) => Some(id.stx.name.as_str()),
+                    Expr::IdPat(id) => Some(id.stx.name.as_str()),
+                    _ => None,
+                  }
+                } else {
+                  None
+                }
+              }
+              _ => None,
             }
-          } else if let Some(ElementAssignmentTarget::Binding(binding)) = assignment_target.as_ref()
-          {
-            if let Err(err) = maybe_set_anonymous_function_name(&mut elem_scope, item, binding.name()) {
+          } else {
+            match &*elem.target.stx {
+              Pat::Id(id) => Some(id.stx.name.as_str()),
+              _ => None,
+            }
+          };
+          if let Some(inferred_name) = inferred_name {
+            if let Err(err) =
+              maybe_set_anonymous_function_name(&mut elem_scope, item, inferred_name)
+            {
               return iterator_close_on_err(vm, host, hooks, &mut elem_scope, &iterator_record, err);
             }
           }
@@ -2024,7 +2033,6 @@ fn assign_to_property_key(
   };
   let roots = [base, key_root, value];
   set_scope.push_roots(&roots)?;
-  maybe_set_anonymous_function_name_for_assignment_key(&mut set_scope, value, key)?;
 
   // `PutValue` for property references uses `ToObject(base)` for the target object, but uses the
   // original base value (which may be a primitive) as the receiver.
@@ -2082,7 +2090,6 @@ fn assign_to_super_member(
   let key_s = set_scope.alloc_string(key)?;
   set_scope.push_root(Value::String(key_s))?;
   let key = PropertyKey::from_string(key_s);
-  maybe_set_anonymous_function_name_for_assignment_key(&mut set_scope, value, key)?;
 
   let Some(base_obj) = super_base else {
     // Mirror `PutValue` null/undefined base behaviour by using `ToObject(null)` for the error.
@@ -2142,7 +2149,6 @@ fn assign_to_super_computed_member(
     Err(err) => return Err(err),
   };
   root_property_key(&mut set_scope, key)?;
-  maybe_set_anonymous_function_name_for_assignment_key(&mut set_scope, value, key)?;
 
   let Some(base_obj) = super_base else {
     // Ensure `ToPropertyKey` happens before throwing for a `null` super base.
