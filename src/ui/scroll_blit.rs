@@ -148,8 +148,14 @@ fn fragment_tree_has_fixed_or_sticky(tree: &FragmentTree) -> bool {
       continue;
     };
 
-    // Sticky positioning is scroll-dependent; always treat as unsupported.
-    if matches!(style.position, Position::Sticky) {
+    // Sticky positioning is scroll-dependent when it has at least one inset constraint; if all
+    // insets are `auto`, it behaves like `position: relative` and remains a pure translation.
+    if matches!(style.position, Position::Sticky)
+      && !(style.top.is_auto()
+        && style.right.is_auto()
+        && style.bottom.is_auto()
+        && style.left.is_auto())
+    {
       return true;
     }
 
@@ -159,11 +165,11 @@ fn fragment_tree_has_fixed_or_sticky(tree: &FragmentTree) -> bool {
       return true;
     }
 
-    // `background-attachment: fixed` keeps the background anchored to the viewport.
-    if style
-      .background_layers
-      .iter()
-      .any(|layer| matches!(layer.attachment, BackgroundAttachment::Fixed))
+    // `background-attachment: fixed` keeps background *images* anchored to the viewport.
+    // (It has no effect when there is no background image.)
+    if style.background_layers.iter().any(|layer| {
+      layer.image.is_some() && matches!(layer.attachment, BackgroundAttachment::Fixed)
+    })
     {
       return true;
     }
@@ -554,6 +560,62 @@ mod tests {
   }
 
   #[test]
+  fn scroll_blit_allows_sticky_without_constraints() {
+    // Sticky positioning only affects scrolling when at least one inset is non-auto.
+    let _guard = test_guard();
+    with_default_toggles(|| {
+      reset_scroll_blit_fallback_reason_for_test();
+      let html = r#"
+        <style>
+          html, body { margin: 0; }
+          #sticky {
+            position: sticky;
+            width: 10px;
+            height: 10px;
+            background: red;
+          }
+        </style>
+        <div id="sticky"></div>
+        <div style="height: 500px"></div>
+      "#;
+      let prepared = prepare_for_html(html, 1.0);
+
+      let prev = ScrollState::with_viewport(Point::new(0.0, 0.0));
+      let next = ScrollState::with_viewport(Point::new(0.0, 10.0));
+      let plan = scroll_blit_plan(&prepared, &prev, &next).expect("expected scroll blit plan");
+      assert_eq!(plan.delta_device_px, (0, 10));
+    });
+  }
+
+  #[test]
+  fn scroll_blit_fallback_reason_sticky_with_constraints() {
+    let _guard = test_guard();
+    with_default_toggles(|| {
+      reset_scroll_blit_fallback_reason_for_test();
+      let html = r#"
+        <style>
+          html, body { margin: 0; }
+          #sticky {
+            position: sticky;
+            top: 0;
+            width: 10px;
+            height: 10px;
+            background: red;
+          }
+        </style>
+        <div id="sticky"></div>
+        <div style="height: 500px"></div>
+      "#;
+      let prepared = prepare_for_html(html, 1.0);
+
+      let prev = ScrollState::with_viewport(Point::new(0.0, 0.0));
+      let next = ScrollState::with_viewport(Point::new(0.0, 10.0));
+      let err = scroll_blit_plan(&prepared, &prev, &next).unwrap_err();
+      assert_eq!(err, ScrollBlitFallbackReason::FixedOrStickyPresent);
+    });
+  }
+
+  #[test]
   fn scroll_blit_allows_fixed_inside_fixed_containing_block() {
     let _guard = test_guard();
     with_default_toggles(|| {
@@ -565,6 +627,29 @@ mod tests {
           #fixed { position: fixed; top: 0; left: 0; width: 10px; height: 10px; background: red; }
         </style>
         <div id="cb"><div id="fixed"></div></div>
+        <div style="height: 500px"></div>
+      "#;
+      let prepared = prepare_for_html(html, 1.0);
+
+      let prev = ScrollState::with_viewport(Point::new(0.0, 0.0));
+      let next = ScrollState::with_viewport(Point::new(0.0, 10.0));
+      let plan = scroll_blit_plan(&prepared, &prev, &next).expect("expected scroll blit plan");
+      assert_eq!(plan.delta_device_px, (0, 10));
+    });
+  }
+
+  #[test]
+  fn scroll_blit_allows_background_attachment_fixed_without_image() {
+    // `background-attachment` only affects background images, so a fixed attachment with the
+    // default `background-image: none` should not disable scroll blitting.
+    let _guard = test_guard();
+    with_default_toggles(|| {
+      reset_scroll_blit_fallback_reason_for_test();
+      let html = r#"
+        <style>
+          html, body { margin: 0; }
+          body { background-attachment: fixed; }
+        </style>
         <div style="height: 500px"></div>
       "#;
       let prepared = prepare_for_html(html, 1.0);

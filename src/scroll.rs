@@ -1978,8 +1978,14 @@ pub(crate) fn scroll_blit_supported(tree: &FragmentTree) -> bool {
       return false;
     }
 
-    // Sticky positioning is scroll-dependent; treat any sticky as unsupported for now.
-    if matches!(style.position, Position::Sticky) {
+    // Sticky positioning is scroll-dependent when it has at least one inset constraint; if all
+    // insets are `auto`, it behaves like `position: relative` and remains a pure translation.
+    if matches!(style.position, Position::Sticky)
+      && !(style.top.is_auto()
+        && style.right.is_auto()
+        && style.bottom.is_auto()
+        && style.left.is_auto())
+    {
       return false;
     }
 
@@ -1989,11 +1995,11 @@ pub(crate) fn scroll_blit_supported(tree: &FragmentTree) -> bool {
       return false;
     }
 
-    // `background-attachment: fixed` keeps the background anchored to the viewport.
-    if style
-      .background_layers
-      .iter()
-      .any(|layer| matches!(layer.attachment, BackgroundAttachment::Fixed))
+    // `background-attachment: fixed` keeps background *images* anchored to the viewport.
+    // (It has no effect when there is no background image.)
+    if style.background_layers.iter().any(|layer| {
+      layer.image.is_some() && matches!(layer.attachment, BackgroundAttachment::Fixed)
+    })
     {
       return false;
     }

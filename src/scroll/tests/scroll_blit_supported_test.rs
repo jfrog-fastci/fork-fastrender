@@ -1,7 +1,7 @@
 use crate::css::types::Transform;
 use crate::geometry::{Rect, Size};
 use crate::style::position::Position;
-use crate::style::types::AnimationTimeline;
+use crate::style::types::{AnimationTimeline, BackgroundAttachment, InsetValue};
 use crate::style::values::Length;
 use crate::tree::fragment_tree::{FragmentNode, FragmentTree};
 use crate::ComputedStyle;
@@ -61,6 +61,7 @@ fn sticky_element_disables_scroll_blit() {
 
   let mut sticky_style = ComputedStyle::default();
   sticky_style.position = Position::Sticky;
+  sticky_style.top = InsetValue::Length(Length::px(0.0));
   let sticky_style = Arc::new(sticky_style);
 
   let sticky =
@@ -75,6 +76,46 @@ fn sticky_element_disables_scroll_blit() {
   assert!(
     !crate::scroll::scroll_blit_supported(&tree),
     "expected sticky element to disable scroll blit"
+  );
+}
+
+#[test]
+fn sticky_without_constraints_does_not_disable_scroll_blit() {
+  let root_style = Arc::new(ComputedStyle::default());
+
+  let mut sticky_style = ComputedStyle::default();
+  sticky_style.position = Position::Sticky;
+  // All insets remain `auto`, so sticky behaves like `position: relative`.
+  let sticky_style = Arc::new(sticky_style);
+
+  let sticky =
+    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 1.0, 1.0), vec![], sticky_style);
+  let root = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+    vec![sticky],
+    root_style,
+  );
+  let tree = FragmentTree::with_viewport(root, Size::new(10.0, 10.0));
+
+  assert!(
+    crate::scroll::scroll_blit_supported(&tree),
+    "expected sticky without inset constraints to allow scroll blit"
+  );
+}
+
+#[test]
+fn background_attachment_fixed_without_image_does_not_disable_scroll_blit() {
+  let mut style = ComputedStyle::default();
+  style.background_layers[0].attachment = BackgroundAttachment::Fixed;
+  style.background_attachments = vec![BackgroundAttachment::Fixed].into();
+  let style = Arc::new(style);
+
+  let root = FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), vec![], style);
+  let tree = FragmentTree::with_viewport(root, Size::new(10.0, 10.0));
+
+  assert!(
+    crate::scroll::scroll_blit_supported(&tree),
+    "expected background-attachment: fixed without a background image to allow scroll blit"
   );
 }
 

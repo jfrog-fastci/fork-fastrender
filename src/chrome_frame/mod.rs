@@ -1233,11 +1233,14 @@ pub fn sync_browser_state_to_chrome_frame(app: &mut BrowserAppState, chrome: &mu
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::js::VirtualClock;
   use crate::text::font_db::FontConfig;
   use crate::ui::messages::CursorKind;
   use crate::ui::{BrowserTabState, OmniboxAction, OmniboxSuggestionSource, OmniboxUrlSource, TabId};
   use std::collections::hash_map::DefaultHasher;
   use std::hash::{Hash, Hasher};
+  use std::sync::Arc;
+  use std::time::Duration;
 
   fn pixmap_hash(pixmap: &Pixmap) -> u64 {
     let mut hasher = DefaultHasher::new();
