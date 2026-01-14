@@ -14727,8 +14727,8 @@ mod scroll_state_updated_tests {
         assert_eq!(got, tab_id);
         assert_eq!(scroll, tab.scroll_state);
       }
-      other => panic!("unexpected worker msg: {other:?}"),
-      other => panic!("unexpected worker msg: {other:?}"),
+      WorkerToUiMsg::Single(other) => panic!("unexpected worker msg: {other:?}"),
+      WorkerToUiMsg::Batch(msgs) => panic!("unexpected worker msg batch: {msgs:?}"),
     }
   }
 }
