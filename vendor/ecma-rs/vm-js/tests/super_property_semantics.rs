@@ -418,3 +418,166 @@ fn super_property_computed_key_error_propagation_compiled() -> Result<(), VmErro
   Ok(())
 }
 
+const VALUE_LOOKUP: &str = r#"
+  var A = { fromA: "a", fromB: "a" };
+  var B = { fromB: "b" };
+  Object.setPrototypeOf(B, A);
+
+  var obj = {
+    fromA: "c",
+    fromB: "c",
+    method() {
+      return [
+        super.fromA,
+        super.fromB,
+        super["fromA"],
+        super["fromB"],
+      ].join(",");
+    }
+  };
+  Object.setPrototypeOf(obj, B);
+  var objRes = obj.method();
+
+  class CA {}
+  class CB extends CA {}
+  class CC extends CB {
+    method() {
+      return [
+        super.fromA,
+        super.fromB,
+        super["fromA"],
+        super["fromB"],
+      ].join(",");
+    }
+  }
+  CA.prototype.fromA = "a";
+  CA.prototype.fromB = "a";
+  CB.prototype.fromB = "b";
+  CC.prototype.fromA = "c";
+  CC.prototype.fromB = "c";
+  var clsRes = CC.prototype.method();
+
+  class SA {}
+  class SB extends SA {}
+  class SC extends SB {
+    static method() {
+      return [
+        super.fromA,
+        super.fromB,
+        super["fromA"],
+        super["fromB"],
+      ].join(",");
+    }
+  }
+  SA.fromA = "a";
+  SA.fromB = "a";
+  SB.fromB = "b";
+  SC.fromA = "c";
+  SC.fromB = "c";
+  var staticRes = SC.method();
+
+  objRes + ";" + clsRes + ";" + staticRes
+"#;
+
+#[test]
+fn super_property_value_lookup() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(VALUE_LOOKUP)?;
+  assert_value_is_utf8(&rt, value, "a,b,a,b;a,b,a,b;a,b,a,b");
+  Ok(())
+}
+
+#[test]
+fn super_property_value_lookup_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(&mut rt, VALUE_LOOKUP)?;
+  assert_value_is_utf8(&rt, value, "a,b,a,b;a,b,a,b;a,b,a,b");
+  Ok(())
+}
+
+const THIS_UNINITIALIZED: &str = r#"
+  var dotErr;
+  class Dot extends Object {
+    constructor() {
+      try { super.x; } catch (e) { dotErr = e.name; }
+    }
+  }
+  try { new Dot(); } catch (_) {}
+
+  var exprErr;
+  var side = 0;
+  class Expr extends Object {
+    constructor() {
+      try { super[(side = 1, "x")]; } catch (e) { exprErr = e.name; }
+    }
+  }
+  try { new Expr(); } catch (_) {}
+
+  dotErr + ";" + exprErr + ":" + side
+"#;
+
+#[test]
+fn super_property_uninitialized_this_throws_reference_error_before_key_eval() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(THIS_UNINITIALIZED)?;
+  assert_value_is_utf8(&rt, value, "ReferenceError;ReferenceError:0");
+  Ok(())
+}
+
+#[test]
+fn super_property_uninitialized_this_throws_reference_error_before_key_eval_compiled(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(&mut rt, THIS_UNINITIALIZED)?;
+  assert_value_is_utf8(&rt, value, "ReferenceError;ReferenceError:0");
+  Ok(())
+}
+
+const GETSUPERBASE_BEFORE_TOPROPERTYKEY: &str = r#"
+  var proto = { p: "ok" };
+  var proto2 = { p: "bad" };
+  var obj = {
+    __proto__: proto,
+    m() { return super[key]; }
+  };
+  var key = {
+    toString() {
+      Object.setPrototypeOf(obj, proto2);
+      return "p";
+    }
+  };
+  var getValueRes = obj.m();
+
+  var putValueRes = "unset";
+  var proto3 = { set p(v) { putValueRes = "ok"; } };
+  var proto4 = { set p(v) { putValueRes = "bad"; } };
+  var obj2 = {
+    __proto__: proto3,
+    m() { super[key2] = 10; }
+  };
+  var key2 = {
+    toString() {
+      Object.setPrototypeOf(obj2, proto4);
+      return "p";
+    }
+  };
+  obj2.m();
+
+  getValueRes + ";" + putValueRes
+"#;
+
+#[test]
+fn super_property_getsuperbase_before_topropertykey() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(GETSUPERBASE_BEFORE_TOPROPERTYKEY)?;
+  assert_value_is_utf8(&rt, value, "ok;ok");
+  Ok(())
+}
+
+#[test]
+fn super_property_getsuperbase_before_topropertykey_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(&mut rt, GETSUPERBASE_BEFORE_TOPROPERTYKEY)?;
+  assert_value_is_utf8(&rt, value, "ok;ok");
+  Ok(())
+}
