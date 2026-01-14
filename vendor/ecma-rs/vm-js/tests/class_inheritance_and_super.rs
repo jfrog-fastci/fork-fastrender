@@ -565,6 +565,49 @@ fn super_property_reference_semantics_in_base_class_compiled_path() -> Result<()
 }
 
 #[test]
+fn super_property_reference_semantics_in_base_static_method_compiled_path() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = match exec_compiled(
+    &mut rt,
+    r#"
+      Object.defineProperty(Function.prototype, "__g", {
+        get() { return this.__x + 1; },
+        set(v) { this.__x = v * 2; },
+        configurable: true,
+      });
+      Function.prototype.__m = function () { return this.__x; };
+      Function.prototype.__data = 1;
+
+      class C {
+        static test() {
+          this.__x = 10;
+          const r1 = super.__g;
+          super.__g = 7;
+          const r2 = this.__x;
+          const r3 = super.__m();
+
+          super.__data = 5;
+          const r4 = this.__data === 5 &&
+            Function.prototype.__data === 1 &&
+            Object.prototype.hasOwnProperty.call(this, "__data");
+          const r5 = super.__data === 1;
+
+          return r1 === 11 && r2 === 14 && r3 === 14 && r4 && r5;
+        }
+      }
+
+      C.test()
+    "#,
+  ) {
+    Ok(v) => v,
+    Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
+    Err(err) => return Err(err),
+  };
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn super_property_reference_semantics_in_instance_field_initializer() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = match rt.exec_script(
@@ -973,6 +1016,42 @@ fn direct_eval_super_property_reference_in_field_initializer() -> Result<(), VmE
     Ok(v) => v,
     // Class fields are not parsed on all execution modes yet; keep this test as a lock-in.
     Err(VmError::Syntax(_)) => return Ok(()),
+    Err(err) => return Err(err),
+  };
+
+  match value {
+    Value::Number(n) => assert_eq!(n, 42.0),
+    Value::String(_) => {
+      let name = value_to_string(&rt, value);
+      if name == "SyntaxError" {
+        return Ok(());
+      }
+      panic!("expected 42 or SyntaxError, got {name:?}");
+    }
+    other => panic!("expected number or string, got {other:?}"),
+  }
+  Ok(())
+}
+
+#[test]
+fn direct_eval_super_property_reference_in_field_initializer_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = match exec_compiled(
+    &mut rt,
+    r#"
+      // Avoid class inheritance on the compiled path: base class super resolves to Object.prototype.
+      Object.prototype.x = 42;
+      class C { y = eval("super.x"); }
+      var out;
+      try { out = new C().y; }
+      catch (e) { out = e.name; }
+      out
+    "#,
+  ) {
+    Ok(v) => v,
+    // Class fields are not parsed/compiled on all execution modes yet; keep this test as a lock-in.
+    Err(VmError::Syntax(_)) => return Ok(()),
+    Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
     Err(err) => return Err(err),
   };
 
