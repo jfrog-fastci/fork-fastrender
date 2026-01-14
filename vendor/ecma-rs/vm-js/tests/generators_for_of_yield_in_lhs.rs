@@ -506,6 +506,60 @@ fn generator_for_of_yield_in_object_pattern_rest_assignment_target_computed_memb
 }
 
 #[test]
+fn generator_for_of_yield_in_object_pattern_rest_assignment_target_computed_member_multiple_iterations() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          var obj = {};
+          var out = [];
+          for ({...obj[yield 1]} of ["a", "bb"]) {
+            out.push(obj.k[0] + (obj.k[1] || ""));
+          }
+          return out.join(",");
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next("k");
+        var r3 = it.next("k");
+        r1.done === false && r1.value === 1 &&
+        r2.done === false && r2.value === 1 &&
+        r3.done === true && r3.value === "a,bb"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_for_of_yield_in_array_pattern_rest_assignment_target_computed_member_multiple_iterations() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g() {
+          var obj = {};
+          var out = [];
+          for ([...obj[yield 1]] of ["a", "bb"]) {
+            out.push(obj.k.join(""));
+          }
+          return out.join(",");
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next("k");
+        var r3 = it.next("k");
+        r1.done === false && r1.value === 1 &&
+        r2.done === false && r2.value === 1 &&
+        r3.done === true && r3.value === "a,bb"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_for_of_let_default_initializer_has_tdz_across_yield() {
   let mut rt = new_runtime();
   let value = rt
