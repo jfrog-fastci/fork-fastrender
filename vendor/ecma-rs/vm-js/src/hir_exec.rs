@@ -16088,6 +16088,31 @@ impl HirAsyncState {
                 other => return Err(other),
               }
             }
+            // Explicit Resource Management: `using` / `await using` declarations must throw a
+            // TypeError if the initializer value is not an object, `null`, or `undefined`.
+            if matches!(
+              var_decl.kind,
+              hir_js::VarDeclKind::Using | hir_js::VarDeclKind::AwaitUsing
+            ) {
+              match resumed_value {
+                Value::Null | Value::Undefined | Value::Object(_) => {}
+                _ => {
+                  let err = finalize_throw_with_stack_at_source_offset(
+                    &*evaluator.vm,
+                    scope,
+                    evaluator.script.source.as_ref(),
+                    stmt_offset,
+                    VmError::TypeError("Using declaration initializer must be an object"),
+                  );
+                  match err {
+                    VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+                      return Ok(HirAsyncResult::CompleteThrow(value))
+                    }
+                    other => return Err(other),
+                  }
+                }
+              }
+            }
 
             // Explicit Resource Management: `using` and `await using` initializers must be objects,
             // `null`, or `undefined` (mirror `HirEvaluator::eval_var_decl`).
@@ -16204,7 +16229,6 @@ impl HirAsyncState {
                   other => return Err(other),
                 }
               }
-
               // Explicit Resource Management: `using` and `await using` initializers must be objects,
               // `null`, or `undefined` (mirror `HirEvaluator::eval_var_decl`).
               if matches!(
@@ -16948,7 +16972,6 @@ impl HirAsyncState {
               other => Err(other),
             };
           }
-
           // Explicit Resource Management: `using` and `await using` initializers must be objects,
           // `null`, or `undefined` (mirror `HirEvaluator::eval_var_decl`).
           if matches!(
@@ -17981,7 +18004,8 @@ pub(crate) fn start_compiled_module_tla_evaluation(
                 })
               }
               crate::exec::AsyncSuspendKind::AwaitResolved => Ok(await_value),
-              crate::exec::AsyncSuspendKind::Yield => Err(VmError::InvariantViolation(
+              crate::exec::AsyncSuspendKind::Yield
+              | crate::exec::AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
                 "unexpected async generator yield suspension in compiled module TLA",
               )),
               crate::exec::AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(

@@ -264,3 +264,119 @@ fn compiled_module_await_using_initializer_must_be_object() -> Result<(), VmErro
   hooks.teardown(&mut rt);
   result
 }
+
+#[test]
+fn compiled_module_tla_using_initializer_must_be_object() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+
+  let result = (|| -> Result<(), VmError> {
+    let compiled = CompiledScript::compile_module(
+      rt.heap_mut(),
+      "m.js",
+      r#"
+        await 0;
+        using x = 1;
+        export const out = 1;
+      "#,
+    )?;
+    assert!(
+      compiled.contains_top_level_await,
+      "module should contain top-level await"
+    );
+    assert!(
+      !compiled.top_level_await_requires_ast_fallback,
+      "simple top-level await should be supported by the compiled module TLA executor"
+    );
+
+    let mut record = SourceTextModuleRecord::parse_source(rt.heap_mut(), compiled.source.clone())?;
+    record.compiled = Some(compiled);
+    // Force ModuleGraph to use the compiled-module (HIR) instantiation + execution path.
+    record.clear_ast();
+
+    let global_object = rt.realm().global_object();
+    let realm_id = rt.realm().id();
+
+    let promise_obj = {
+      let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
+      let m = modules.add_module_with_specifier("m", record)?;
+      modules.link_all_by_specifier();
+      let promise = match modules.evaluate(
+        vm,
+        heap,
+        global_object,
+        realm_id,
+        m,
+        &mut host,
+        &mut hooks,
+      ) {
+        Ok(p) => p,
+        Err(VmError::Unimplemented(msg)) if msg.contains("module AST missing") => return Ok(()),
+        Err(e) => return Err(e),
+      };
+
+      let Value::Object(promise_obj) = promise else {
+        panic!("ModuleGraph::evaluate should return a Promise object");
+      };
+
+      let mut scope = heap.scope();
+      scope.push_root(promise)?;
+      if promise_rejection_message_contains(
+        vm,
+        &mut host,
+        &mut hooks,
+        &mut scope,
+        promise_obj,
+        "module AST missing",
+      )? {
+        // Compiled module execution is not supported in this configuration.
+        return Ok(());
+      }
+
+      promise_obj
+    };
+
+    // `await 0` suspends/resumes in a Promise job; drain microtasks so module evaluation completes.
+    let errors = hooks.perform_microtask_checkpoint(&mut rt);
+    assert!(errors.is_empty());
+
+    {
+      let (vm, _modules, heap) = rt.vm_modules_and_heap_mut();
+      let promise = Value::Object(promise_obj);
+      let mut scope = heap.scope();
+      scope.push_root(promise)?;
+
+      if promise_rejection_message_contains(
+        vm,
+        &mut host,
+        &mut hooks,
+        &mut scope,
+        promise_obj,
+        "module AST missing",
+      )? {
+        // Compiled module execution is not supported in this configuration.
+        return Ok(());
+      }
+
+      assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Rejected);
+      assert!(
+        promise_rejection_message_contains(
+          vm,
+          &mut host,
+          &mut hooks,
+          &mut scope,
+          promise_obj,
+          "Using declaration initializer must be an object",
+        )?,
+        "expected rejected promise message to mention invalid using initializer"
+      );
+    }
+
+    Ok(())
+  })();
+
+  // Ensure any queued jobs are discarded so they do not leak persistent roots.
+  hooks.teardown(&mut rt);
+  result
+}
