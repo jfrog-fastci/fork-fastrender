@@ -107,6 +107,7 @@ jobs:
               --test262-dir "${repo_root}/vendor/ecma-rs/test262-semantic/data" \
               --harness test262 \
               --manifest "${repo_root}/tests/js/test262_manifest.toml" \
+              --timeout-secs 30 \
               --filter language/expressions/comma/tco-final.js \
               --fail-on none \
               --report-path "${report}"
