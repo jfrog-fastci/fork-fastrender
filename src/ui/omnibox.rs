@@ -396,9 +396,7 @@ impl OmniboxProvider for BookmarksProvider {
       let url_owned = url.to_string();
       out.push(OmniboxSuggestion {
         action: OmniboxAction::NavigateToUrl,
-        title: title
-          .map(|t| t.to_string())
-          .or_else(|| Some(url_owned.clone())),
+        title: title.map(|t| t.to_string()),
         url: Some(url_owned),
         source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark),
       });
@@ -1905,6 +1903,35 @@ mod tests {
           && matches!(s.action, OmniboxAction::NavigateToUrl)
       }),
       "expected bookmark suggestion, got {suggestions:?}"
+    );
+  }
+
+  #[test]
+  fn bookmarks_without_title_do_not_duplicate_url_as_title() {
+    let open_tabs = Vec::new();
+    let closed_tabs = Vec::new();
+    let visited = VisitedUrlStore::new();
+    let mut bookmarks = BookmarkStore::default();
+    bookmarks
+      .add("https://example.com/bookmark".to_string(), None, None)
+      .expect("add bookmark");
+    let ctx = OmniboxContext {
+      open_tabs: &open_tabs,
+      closed_tabs: &closed_tabs,
+      visited: &visited,
+      active_tab_id: None,
+      bookmarks: Some(&bookmarks),
+      remote_search_suggest: None,
+    };
+
+    let suggestions = build_omnibox_suggestions_default_limit(&ctx, "exam");
+    let bookmark = suggestions
+      .iter()
+      .find(|s| s.url.as_deref() == Some("https://example.com/bookmark"))
+      .expect("expected bookmark suggestion");
+    assert!(
+      bookmark.title.is_none(),
+      "expected untitled bookmark suggestion to have no title so the UI doesn't render the URL twice"
     );
   }
 
