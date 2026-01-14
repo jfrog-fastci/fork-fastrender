@@ -8,6 +8,7 @@ use clap::{ArgAction, Parser};
 use fastrender::browser_perf_log::{
   BrowserPerfLogEvent, BrowserPerfLogEventV1, BrowserPerfLogEventV2, InputKind,
 };
+use fastrender::memory::BYTES_PER_MIB;
 use serde::Serialize;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
@@ -186,6 +187,7 @@ struct Summary {
   coalesced_frames: ScalarStats,
   cpu_percent: ScalarStats,
   rss_bytes: RssStats,
+  rss_mb: ScalarStats,
 }
 
 #[derive(Serialize)]
@@ -359,6 +361,14 @@ fn print_table(summary: &Summary) {
     fmt_opt_u64(summary.rss_bytes.min),
     fmt_opt_f64(summary.rss_bytes.mean, 2),
     fmt_opt_u64(summary.rss_bytes.max),
+  );
+  println!(
+    "{:<22} {:>7} {:>12} {:>12} {:>12}",
+    "rss_mb",
+    summary.rss_mb.count,
+    fmt_opt_f64(summary.rss_mb.min, 2),
+    fmt_opt_f64(summary.rss_mb.mean, 2),
+    fmt_opt_f64(summary.rss_mb.max, 2),
   );
 
   println!();
@@ -569,6 +579,15 @@ fn run(cli: Cli) -> Result<(), String> {
     }
   }
 
+  let rss_bytes = rss_stats(&mut samples.rss_bytes);
+  // Derive RSS stats in MiB from the byte stats so humans don't need to do mental math.
+  let rss_mb = ScalarStats {
+    count: rss_bytes.count,
+    min: rss_bytes.min.map(|bytes| bytes as f64 / BYTES_PER_MIB as f64),
+    max: rss_bytes.max.map(|bytes| bytes as f64 / BYTES_PER_MIB as f64),
+    mean: rss_bytes.mean.map(|bytes| bytes / BYTES_PER_MIB as f64),
+  };
+
   let summary = Summary {
     meta: MetaSummary {
       lines_total,
@@ -586,7 +605,8 @@ fn run(cli: Cli) -> Result<(), String> {
     upload_last_ms: time_stats(&mut samples.upload_last_ms),
     coalesced_frames: scalar_stats(&mut samples.coalesced_frames),
     cpu_percent: scalar_stats(&mut samples.cpu_percent),
-    rss_bytes: rss_stats(&mut samples.rss_bytes),
+    rss_bytes,
+    rss_mb,
   };
 
   if cli.json {
