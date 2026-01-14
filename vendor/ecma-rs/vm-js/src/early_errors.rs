@@ -2786,11 +2786,17 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     loc: Loc,
     expr: &MemberExpr,
   ) -> Result<(), VmError> {
-    if expr.optional_chaining && matches!(&*expr.left.stx, Expr::Super(_)) {
-      self.push_error(loc, "optional chaining cannot be used on super")?;
-    }
-    if matches!(&*expr.left.stx, Expr::Super(_)) && !ctx.super_property_allowed {
-      self.push_error(loc, "super property access is only valid in methods and class initializers")?;
+    let is_super = matches!(&*expr.left.stx, Expr::Super(_));
+    if is_super {
+      if expr.optional_chaining {
+        self.push_error(loc, "optional chaining cannot be used on super")?;
+      }
+      if !ctx.super_property_allowed {
+        self.push_error(
+          loc,
+          "super property access is only valid in methods and class initializers",
+        )?;
+      }
     }
     self.visit_expr(ctx, &expr.left)?;
     if expr.right.starts_with('#') {
@@ -2809,11 +2815,17 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     loc: Loc,
     expr: &ComputedMemberExpr,
   ) -> Result<(), VmError> {
-    if expr.optional_chaining && matches!(&*expr.object.stx, Expr::Super(_)) {
-      self.push_error(loc, "optional chaining cannot be used on super")?;
-    }
-    if matches!(&*expr.object.stx, Expr::Super(_)) && !ctx.super_property_allowed {
-      self.push_error(loc, "super property access is only valid in methods and class initializers")?;
+    let is_super = matches!(&*expr.object.stx, Expr::Super(_));
+    if is_super {
+      if expr.optional_chaining {
+        self.push_error(loc, "optional chaining cannot be used on super")?;
+      }
+      if !ctx.super_property_allowed {
+        self.push_error(
+          loc,
+          "super property access is only valid in methods and class initializers",
+        )?;
+      }
     }
     self.visit_expr(ctx, &expr.object)?;
     self.visit_expr(ctx, &expr.member)

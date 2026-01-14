@@ -754,6 +754,101 @@ fn duplicate_generator_function_decl_in_sloppy_block_is_syntax_error() {
 }
 
 #[test]
+fn super_property_in_plain_function_is_syntax_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var ok = false;
+      try {
+        eval("function f(){ super.x; }");
+      } catch (e) {
+        ok = e && e.name === "SyntaxError";
+      }
+      ok
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn super_property_in_object_function_is_syntax_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var ok = false;
+      try {
+        eval("({ f: function(){ super.x; } })");
+      } catch (e) {
+        ok = e && e.name === "SyntaxError";
+      }
+      ok
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn super_property_at_script_top_level_is_syntax_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var ok = false;
+      try {
+        eval("super.x");
+      } catch (e) {
+        ok = e && e.name === "SyntaxError";
+      }
+      ok
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn super_property_in_class_method_is_ok() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var ok = true;
+      try {
+        eval("class A { m(){ super.x; } }");
+      } catch (e) {
+        ok = false;
+      }
+      ok
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn super_property_in_class_static_block_is_ok() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var ok = true;
+      try {
+        eval("class A {} class B extends A { static { super.x; } }");
+      } catch (e) {
+        ok = false;
+      }
+      ok
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn duplicate_parameter_names_in_strict_mode_are_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
