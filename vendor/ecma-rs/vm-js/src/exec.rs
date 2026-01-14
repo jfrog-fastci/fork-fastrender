@@ -48783,6 +48783,7 @@ mod oom_arc_tests {
 mod oom_async_frame_merge_tests {
   use super::*;
   use crate::test_alloc::FailAllocsGuard;
+  use crate::test_alloc::FailNextMatchingAllocGuard;
   use crate::HeapLimits;
 
   #[test]
@@ -48824,6 +48825,102 @@ mod oom_async_frame_merge_tests {
       roots_before,
       "expected OOM merge failure to tear down all frame-owned roots"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn async_frame_merge_oom_during_resume_tears_down_continuation_roots() -> Result<(), VmError> {
+    use crate::VmOptions;
+
+    let vm = Vm::new(VmOptions::default());
+    // Use a slightly larger heap: the test intentionally builds a deep async frame stack.
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let roots_before = rt.heap.persistent_root_count();
+
+    // Build a nested binary expression:
+    //   (await a) + (await b) + 1 + 1 + ... (+ 1)
+    //
+    // This ensures that on the first resumption (after `await a`), evaluating `await b` suspends
+    // again with an *empty* inner frame stack, forcing a merge/append of a large outer frame stack
+    // into that empty deque.
+    // Keep this modest to avoid stack overflows in the recursive expression evaluator.
+    const TAIL_ADDITIONS: usize = 128;
+    let mut source = String::from(
+      "async function f() { return (await Promise.resolve(1)) + (await Promise.resolve(2))",
+    );
+    for _ in 0..TAIL_ADDITIONS {
+      source.push_str(" + 1");
+    }
+    source.push_str("; }\n f();");
+
+    let res = rt.exec_script(&source)?;
+    assert!(
+      matches!(res, Value::Object(_)),
+      "expected async function call to return a Promise"
+    );
+
+    assert!(
+      rt.heap.persistent_root_count() > roots_before,
+      "expected async continuation to register persistent roots"
+    );
+
+    // Compute the allocation layout used by `VecDeque<AsyncFrame>::try_reserve(src.len())` when
+    // merging the remaining outer frames into the (initially tiny) inner suspend frame stack.
+    //
+    // We derive `src.len()` from the actual stored continuation: on the first resumption we
+    // immediately evaluate `await b` and suspend again while processing the first frame, so the
+    // outer frame stack length at the merge point is `cont.frames.len() - 1`.
+    assert_eq!(
+      rt.vm.async_continuation_count(),
+      1,
+      "expected exactly one async continuation after first await suspension"
+    );
+    let mut outer_frames_len: Option<usize> = None;
+    for id in 0..16u32 {
+      if let Some(cont) = rt.vm.take_async_continuation(id) {
+        outer_frames_len = Some(cont.frames.len().saturating_sub(1));
+        rt.vm.replace_async_continuation(id, cont)?;
+        break;
+      }
+    }
+    let expected_outer_frames = outer_frames_len.ok_or(VmError::InvariantViolation(
+      "failed to locate async continuation for OOM test",
+    ))?;
+    // The merge target (`suspend.frames`) already contains the `BinaryAfterRight` frame for
+    // `(<await a>) + (<await b>)`, so model that initial element when computing the allocation
+    // layout for `try_reserve(src.len())`.
+    let mut probe: VecDeque<AsyncFrame> = VecDeque::new();
+    probe.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+    probe.push_back(AsyncFrame::RootBlockBody);
+    probe
+      .try_reserve(expected_outer_frames)
+      .map_err(|_| VmError::OutOfMemory)?;
+    let cap = probe.capacity();
+    drop(probe);
+
+    let size = cap
+      .checked_mul(std::mem::size_of::<AsyncFrame>())
+      .ok_or(VmError::OutOfMemory)?;
+    let align = std::mem::align_of::<AsyncFrame>();
+
+    let _guard = FailNextMatchingAllocGuard::new(size, align);
+    let err = rt
+      .vm
+      .perform_microtask_checkpoint(&mut rt.heap)
+      .expect_err("expected OOM during async frame merge");
+    assert!(matches!(err, VmError::OutOfMemory));
+
+    assert_eq!(
+      rt.heap.persistent_root_count(),
+      roots_before,
+      "expected OOM during async resumption to tear down all continuation roots"
+    );
+
+    // The VM should remain reusable once the allocation failure guard has been dropped.
+    let value = rt.exec_script("1")?;
+    assert_eq!(value, Value::Number(1.0));
     Ok(())
   }
 }
