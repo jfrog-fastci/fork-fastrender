@@ -293,6 +293,40 @@ fn escaped_arguments_identifier_reference_is_syntax_error_in_object_shorthand_in
 }
 
 #[test]
+fn arguments_identifier_reference_is_syntax_error_in_computed_method_name_in_nested_class_in_class_field_initializer(
+) {
+  let src = r#"
+    class C {
+      x = (class { [arguments]() {} });
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let res = parser.parse_top_level();
+  assert!(res.is_err(), "parse unexpectedly succeeded: {res:?}");
+}
+
+#[test]
+fn escaped_arguments_identifier_reference_is_syntax_error_in_computed_method_name_in_nested_class_in_class_field_initializer(
+) {
+  let src = r#"
+    class C {
+      x = (class { [argument\u0073]() {} });
+    }
+  "#;
+  let opts = ParseOptions {
+    dialect: Dialect::Ecma,
+    source_type: SourceType::Script,
+  };
+  let mut parser = Parser::new(Lexer::new(src), opts);
+  let res = parser.parse_top_level();
+  assert!(res.is_err(), "parse unexpectedly succeeded: {res:?}");
+}
+
+#[test]
 fn await_expression_is_syntax_error_in_class_field_initializer_in_module() {
   let src = r#"
     class C {
