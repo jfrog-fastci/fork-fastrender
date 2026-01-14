@@ -3194,7 +3194,7 @@ mod tests {
     // early error validation rather than relying exclusively on parse-time keyword classification.
     let program = parse_js::parse(source).expect("parse source");
     let mut tick = || Ok(());
-    let res = validate_top_level(&program.stx.body, opts, &mut tick);
+    let res = validate_top_level(&program.stx.body, opts, Some(source), &mut tick);
     match res {
       Err(VmError::Syntax(diags)) => {
         assert!(
