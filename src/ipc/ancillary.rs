@@ -152,7 +152,6 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
     if err.raw_os_error() == Some(libc::EINVAL) && (recv_flags & libc::MSG_CMSG_CLOEXEC) != 0 {
       need_manual_cloexec = true;
       recv_flags &= !libc::MSG_CMSG_CLOEXEC;
-      recv_flags &= !libc::MSG_CMSG_CLOEXEC;
       continue 'recvmsg;
     } else {
       return Err(err);

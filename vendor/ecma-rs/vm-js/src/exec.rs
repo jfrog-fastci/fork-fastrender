@@ -3371,6 +3371,7 @@ impl JsRuntime {
     result
   }
 
+
   /// Parse and execute a classic script (ECMAScript dialect, `SourceType::Script`) using an explicit
   /// embedder host context and host hook implementation.
   pub fn exec_script_source_with_host_and_hooks(

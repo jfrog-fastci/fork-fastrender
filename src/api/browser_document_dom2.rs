@@ -2651,7 +2651,6 @@ impl BrowserDocumentDom2 {
         self.dirty_text_nodes.insert(node);
       }
     }
-
     for parent in mutations.child_list_changed {
       if self.dom.is_connected_for_scripting(parent) {
         render_affecting = true;
