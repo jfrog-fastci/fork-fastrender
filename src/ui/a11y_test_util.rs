@@ -919,6 +919,28 @@ pub fn accesskit_node_by_name<'a>(
   None
 }
 
+pub fn expect_accesskit_node_by_name<'a>(
+  update: &'a accesskit::TreeUpdate,
+  name: &str,
+) -> (accesskit::NodeId, &'a accesskit::Node) {
+  accesskit_node_by_name(update, name).unwrap_or_else(|| {
+    let needle = name.trim();
+    let mut seen: Vec<String> = update
+      .nodes
+      .iter()
+      .filter_map(|(id, node)| {
+        let node_name = node.name().unwrap_or("").trim();
+        if node_name.is_empty() {
+          return None;
+        }
+        Some(format!("{} ({:?}): {}", id.0.get(), node.role(), node_name))
+      })
+      .collect();
+    seen.sort();
+    panic!("expected AccessKit node named {needle:?}, got named nodes={seen:#?}");
+  })
+}
+
 /// Find the first AccessKit node with the given role and accessible name.
 ///
 /// Returns `None` when no matching node is present. Panics if more than one node matches the given
@@ -962,6 +984,34 @@ pub fn accesskit_node_by_role_and_name<'a>(
   None
 }
 
+pub fn expect_accesskit_node_by_role_and_name<'a>(
+  update: &'a accesskit::TreeUpdate,
+  role: accesskit::Role,
+  name: &str,
+) -> (accesskit::NodeId, &'a accesskit::Node) {
+  accesskit_node_by_role_and_name(update, role, name).unwrap_or_else(|| {
+    let needle = name.trim();
+    let mut seen: Vec<String> = update
+      .nodes
+      .iter()
+      .filter_map(|(id, node)| {
+        if node.role() != role {
+          return None;
+        }
+        let node_name = node.name().unwrap_or("").trim();
+        if node_name.is_empty() {
+          return None;
+        }
+        Some(format!("{} ({:?}): {}", id.0.get(), node.role(), node_name))
+      })
+      .collect();
+    seen.sort();
+    panic!(
+      "expected AccessKit node with role={role:?} name {needle:?}, got matching nodes={seen:#?}"
+    );
+  })
+}
+
 pub fn accesskit_node_by_name_from_platform_output<'a>(
   output: &'a egui::PlatformOutput,
   name: &str,
@@ -970,11 +1020,26 @@ pub fn accesskit_node_by_name_from_platform_output<'a>(
   accesskit_node_by_name(update, name)
 }
 
+pub fn expect_accesskit_node_by_name_from_platform_output<'a>(
+  output: &'a egui::PlatformOutput,
+  name: &str,
+) -> (accesskit::NodeId, &'a accesskit::Node) {
+  let update = accesskit_update_from_platform_output(output);
+  expect_accesskit_node_by_name(update, name)
+}
+
 pub fn accesskit_node_by_name_from_full_output<'a>(
   output: &'a egui::FullOutput,
   name: &str,
 ) -> Option<(accesskit::NodeId, &'a accesskit::Node)> {
   accesskit_node_by_name_from_platform_output(&output.platform_output, name)
+}
+
+pub fn expect_accesskit_node_by_name_from_full_output<'a>(
+  output: &'a egui::FullOutput,
+  name: &str,
+) -> (accesskit::NodeId, &'a accesskit::Node) {
+  expect_accesskit_node_by_name_from_platform_output(&output.platform_output, name)
 }
 
 pub fn accesskit_node_by_role_and_name_from_platform_output<'a>(
@@ -986,12 +1051,29 @@ pub fn accesskit_node_by_role_and_name_from_platform_output<'a>(
   accesskit_node_by_role_and_name(update, role, name)
 }
 
+pub fn expect_accesskit_node_by_role_and_name_from_platform_output<'a>(
+  output: &'a egui::PlatformOutput,
+  role: accesskit::Role,
+  name: &str,
+) -> (accesskit::NodeId, &'a accesskit::Node) {
+  let update = accesskit_update_from_platform_output(output);
+  expect_accesskit_node_by_role_and_name(update, role, name)
+}
+
 pub fn accesskit_node_by_role_and_name_from_full_output<'a>(
   output: &'a egui::FullOutput,
   role: accesskit::Role,
   name: &str,
 ) -> Option<(accesskit::NodeId, &'a accesskit::Node)> {
   accesskit_node_by_role_and_name_from_platform_output(&output.platform_output, role, name)
+}
+
+pub fn expect_accesskit_node_by_role_and_name_from_full_output<'a>(
+  output: &'a egui::FullOutput,
+  role: accesskit::Role,
+  name: &str,
+) -> (accesskit::NodeId, &'a accesskit::Node) {
+  expect_accesskit_node_by_role_and_name_from_platform_output(&output.platform_output, role, name)
 }
 
 /// Resolve the AccessKit focus id into the focused node's accessible name.
@@ -1346,10 +1428,19 @@ mod tests {
       accesskit_node_by_name(&update, "Focus target").expect("expected node by name");
     assert_eq!(found_id, id(2));
     assert_eq!(found_node.name().unwrap_or("").trim(), "Focus target");
+    assert_eq!(
+      expect_accesskit_node_by_name(&update, "Focus target").0,
+      id(2),
+      "expect_* helper should return the same node"
+    );
     assert_eq!(accesskit_focus_name(&update), Some("Focus target".to_string()));
     assert_eq!(
       accesskit_node_by_role_and_name(&update, Role::Button, "Focus target").map(|(id, _node)| id),
       Some(id(2))
+    );
+    assert_eq!(
+      expect_accesskit_node_by_role_and_name(&update, Role::Button, "Focus target").0,
+      id(2)
     );
     assert!(
       accesskit_node_by_role_and_name(&update, Role::Window, "Focus target").is_none(),
@@ -1363,6 +1454,10 @@ mod tests {
         .expect("expected node by name");
     assert_eq!(found_id, id(2));
     assert_eq!(found_node.name().unwrap_or("").trim(), "Focus target");
+    assert_eq!(
+      expect_accesskit_node_by_name_from_platform_output(&platform_output, "Focus target").0,
+      id(2)
+    );
 
     assert_eq!(
       accesskit_focus_name_from_platform_output(&platform_output),
@@ -1373,6 +1468,11 @@ mod tests {
       accesskit_node_by_role_and_name_from_platform_output(&platform_output, Role::Button, "Focus target")
         .map(|(id, _node)| id),
       Some(id(2))
+    );
+    assert_eq!(
+      expect_accesskit_node_by_role_and_name_from_platform_output(&platform_output, Role::Button, "Focus target")
+        .0,
+      id(2)
     );
   }
 
