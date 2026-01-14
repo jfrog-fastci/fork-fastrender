@@ -18736,7 +18736,7 @@ fn async_handle_body_result(
           "unexpected async generator yield suspension in async continuation",
         )),
         AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
-          "unexpected async generator yield* iterator result suspension in async continuation",
+          "unexpected async generator yield* suspension in async continuation",
         )),
       };
 
@@ -55801,7 +55801,7 @@ pub(crate) fn run_ecma_function(
             "unexpected async generator yield suspension in async function start",
           )),
           AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
-            "unexpected async generator yield* iterator result suspension in async function start",
+            "unexpected async generator yield* suspension in async function start",
           )),
         };
 
@@ -56770,7 +56770,7 @@ pub(crate) fn resume_module_tla_evaluation(
               "unexpected async generator yield suspension in module evaluation",
             )),
             AsyncSuspendKind::YieldIteratorResult => Err(VmError::InvariantViolation(
-              "unexpected async generator yield* iterator result suspension in module evaluation",
+              "unexpected async generator yield* suspension in module evaluation",
             )),
           };
           match awaited_promise_res {

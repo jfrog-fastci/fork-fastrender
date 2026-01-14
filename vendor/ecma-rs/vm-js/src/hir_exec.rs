@@ -13079,13 +13079,13 @@ enum AsyncObjectPatternBindingAwait {
 #[derive(Debug)]
 enum AsyncObjectPatternBindingPoll {
   Complete,
-  Await { await_value: Value },
+  Await { await_value: Value, await_offset: u32 },
 }
 
 #[derive(Debug)]
 enum AsyncObjectPatternBindingStep {
   Complete,
-  Await { await_value: Value },
+  Await { await_value: Value, await_offset: u32 },
 }
 
 /// Async-aware binding initialization for a single object destructuring pattern.
@@ -13175,8 +13175,14 @@ impl AsyncObjectPatternBindingState {
             AsyncObjectPatternBindingStep::Complete => {
               self.prop_index = self.prop_index.saturating_add(1);
             }
-            AsyncObjectPatternBindingStep::Await { await_value } => {
-              return Ok(AsyncObjectPatternBindingPoll::Await { await_value });
+            AsyncObjectPatternBindingStep::Await {
+              await_value,
+              await_offset,
+            } => {
+              return Ok(AsyncObjectPatternBindingPoll::Await {
+                await_value,
+                await_offset,
+              });
             }
           }
         }
@@ -13225,7 +13231,10 @@ impl AsyncObjectPatternBindingState {
             evaluator.vm.tick()?;
             let await_value = evaluator.eval_expr(scope, body, awaited_expr)?;
             self.awaiting = Some(AsyncObjectPatternBindingAwait::ComputedKey);
-            return Ok(AsyncObjectPatternBindingPoll::Await { await_value });
+            return Ok(AsyncObjectPatternBindingPoll::Await {
+              await_value,
+              await_offset: expr.span.start,
+            });
           }
           evaluator.eval_object_key(scope, body, &prop.key)?
         }
@@ -13241,8 +13250,14 @@ impl AsyncObjectPatternBindingState {
         AsyncObjectPatternBindingStep::Complete => {
           self.prop_index = self.prop_index.saturating_add(1);
         }
-        AsyncObjectPatternBindingStep::Await { await_value } => {
-          return Ok(AsyncObjectPatternBindingPoll::Await { await_value });
+        AsyncObjectPatternBindingStep::Await {
+          await_value,
+          await_offset,
+        } => {
+          return Ok(AsyncObjectPatternBindingPoll::Await {
+            await_value,
+            await_offset,
+          });
         }
       }
     }
@@ -13304,7 +13319,10 @@ impl AsyncObjectPatternBindingState {
           evaluator.vm.tick()?;
           let await_value = evaluator.eval_expr(scope, body, awaited_expr)?;
           self.awaiting = Some(AsyncObjectPatternBindingAwait::DefaultValue { value_pat: prop.value });
-          return Ok(AsyncObjectPatternBindingStep::Await { await_value });
+          return Ok(AsyncObjectPatternBindingStep::Await {
+            await_value,
+            await_offset: default_node.span.start,
+          });
         }
         prop_value = evaluator.eval_expr(scope, body, default_expr)?;
       }
@@ -13344,6 +13362,11 @@ enum ForAwaitOfPoll {
   Await {
     kind: crate::exec::AsyncSuspendKind,
     await_value: Value,
+    /// Best-effort source offset for the `await` site that produced this suspension.
+    ///
+    /// If no explicit await site exists (e.g. implicit await of `iterator.next()`), this may be 0
+    /// and the caller should fall back to the surrounding statement offset.
+    await_offset: u32,
   },
 }
 
@@ -13413,6 +13436,7 @@ impl ForAwaitOfState {
     Ok(ForAwaitOfPoll::Await {
       kind: crate::exec::AsyncSuspendKind::Await,
       await_value: next_value,
+      await_offset: 0,
     })
   }
 
@@ -13573,6 +13597,7 @@ impl ForAwaitOfState {
           return Ok(ForAwaitOfPoll::Await {
             kind: crate::exec::AsyncSuspendKind::Await,
             await_value,
+            await_offset: rhs.span.start,
           });
         }
 
@@ -13748,12 +13773,16 @@ impl ForAwaitOfState {
                   Ok(AsyncObjectPatternBindingPoll::Complete) => {
                     bound = true;
                   }
-                  Ok(AsyncObjectPatternBindingPoll::Await { await_value }) => {
+                  Ok(AsyncObjectPatternBindingPoll::Await {
+                    await_value,
+                    await_offset,
+                  }) => {
                     self.head_binding_state = Some(bind_state);
                     self.stage = ForAwaitOfStage::AwaitHeadBind { iter_env_created };
                     return Ok(ForAwaitOfPoll::Await {
                       kind: crate::exec::AsyncSuspendKind::Await,
                       await_value,
+                      await_offset,
                     });
                   }
                   Err(err) => {
@@ -13846,6 +13875,7 @@ impl ForAwaitOfState {
           return Ok(ForAwaitOfPoll::Await {
             kind: crate::exec::AsyncSuspendKind::Await,
             await_value: next_value,
+            await_offset: 0,
           });
         }
 
@@ -13973,16 +14003,21 @@ impl ForAwaitOfState {
               return Ok(ForAwaitOfPoll::Await {
                 kind: crate::exec::AsyncSuspendKind::Await,
                 await_value: next_value,
+                await_offset: 0,
               });
             }
  
             unreachable!("match body_flow should either return or continue loop");
           }
-          Ok(AsyncObjectPatternBindingPoll::Await { await_value }) => {
+          Ok(AsyncObjectPatternBindingPoll::Await {
+            await_value,
+            await_offset,
+          }) => {
             self.head_binding_state = Some(bind_state);
             return Ok(ForAwaitOfPoll::Await {
               kind: crate::exec::AsyncSuspendKind::Await,
               await_value,
+              await_offset,
             });
           }
           Err(err) => {
@@ -14205,6 +14240,7 @@ impl ForAwaitOfState {
     Ok(ForAwaitOfPoll::Await {
       kind: crate::exec::AsyncSuspendKind::AwaitResolved,
       await_value: close_value,
+      await_offset: 0,
     })
   }
 }
@@ -14235,7 +14271,7 @@ struct ForOfState {
 #[derive(Debug)]
 enum ForOfPoll {
   Complete(Flow),
-  Await { await_value: Value },
+  Await { await_value: Value, await_offset: u32 },
 }
 
 impl ForOfState {
@@ -14478,10 +14514,16 @@ impl ForOfState {
                     Ok(AsyncObjectPatternBindingPoll::Complete) => {
                       bound = true;
                     }
-                    Ok(AsyncObjectPatternBindingPoll::Await { await_value }) => {
+                    Ok(AsyncObjectPatternBindingPoll::Await {
+                      await_value,
+                      await_offset,
+                    }) => {
                       self.head_binding_state = Some(bind_state);
                       self.stage = ForOfStage::AwaitHeadBind { iter_env_created };
-                      return Ok(ForOfPoll::Await { await_value });
+                      return Ok(ForOfPoll::Await {
+                        await_value,
+                        await_offset,
+                      });
                     }
                     Err(err) => {
                       bind_state.teardown(iter_scope.heap_mut());
@@ -14724,9 +14766,15 @@ impl ForOfState {
             Ok(AsyncObjectPatternBindingPoll::Complete) => {
               // Continue to body evaluation below.
             }
-            Ok(AsyncObjectPatternBindingPoll::Await { await_value }) => {
+            Ok(AsyncObjectPatternBindingPoll::Await {
+              await_value,
+              await_offset,
+            }) => {
               self.head_binding_state = Some(bind_state);
-              return Ok(ForOfPoll::Await { await_value });
+              return Ok(ForOfPoll::Await {
+                await_value,
+                await_offset,
+              });
             }
             Err(err) => {
               bind_state.teardown(scope.heap_mut());
@@ -14973,6 +15021,11 @@ enum ForTripleAwaitPoll {
   Await {
     kind: crate::exec::AsyncSuspendKind,
     await_value: Value,
+    /// Best-effort source offset for the `await` site that produced this suspension.
+    ///
+    /// If no explicit await site exists, callers should fall back to the surrounding statement
+    /// offset.
+    await_offset: u32,
   },
 }
 
@@ -15130,6 +15183,7 @@ impl ForTripleAwaitState {
                       return Ok(ForTripleAwaitPoll::Await {
                         kind: crate::exec::AsyncSuspendKind::Await,
                         await_value,
+                        await_offset: expr.span.start,
                       });
                     }
                     hir_js::ExprKind::Assignment { op, target, value } => {
@@ -15271,6 +15325,7 @@ impl ForTripleAwaitState {
                           return Ok(ForTripleAwaitPoll::Await {
                             kind: crate::exec::AsyncSuspendKind::Await,
                             await_value,
+                            await_offset: rhs.span.start,
                           });
                         }
                       }
@@ -15399,6 +15454,7 @@ impl ForTripleAwaitState {
                 return Ok(ForTripleAwaitPoll::Await {
                   kind: crate::exec::AsyncSuspendKind::Await,
                   await_value,
+                  await_offset: test_expr.span.start,
                 });
               }
 
@@ -15537,6 +15593,7 @@ impl ForTripleAwaitState {
                   return Ok(ForTripleAwaitPoll::Await {
                     kind: crate::exec::AsyncSuspendKind::Await,
                     await_value,
+                    await_offset: update_expr.span.start,
                   });
                 }
                 hir_js::ExprKind::Assignment { op, target, value } => {
@@ -15677,6 +15734,7 @@ impl ForTripleAwaitState {
                       return Ok(ForTripleAwaitPoll::Await {
                         kind: crate::exec::AsyncSuspendKind::Await,
                         await_value,
+                        await_offset: rhs.span.start,
                       });
                     }
                   }
@@ -15830,7 +15888,7 @@ enum AsyncDestructuringAssignAwait {
 #[derive(Debug)]
 enum AsyncDestructuringAssignPoll {
   Complete,
-  Await { await_value: Value },
+  Await { await_value: Value, await_offset: u32 },
 }
 
 #[derive(Debug)]
@@ -15915,8 +15973,14 @@ impl AsyncDestructuringAssignState {
             AsyncDestructuringAssignPoll::Complete => {
               self.prop_index = self.prop_index.saturating_add(1);
             }
-            AsyncDestructuringAssignPoll::Await { await_value } => {
-              return Ok(AsyncDestructuringAssignPoll::Await { await_value });
+            AsyncDestructuringAssignPoll::Await {
+              await_value,
+              await_offset,
+            } => {
+              return Ok(AsyncDestructuringAssignPoll::Await {
+                await_value,
+                await_offset,
+              });
             }
           }
         }
@@ -15973,7 +16037,10 @@ impl AsyncDestructuringAssignState {
             evaluator.vm.tick()?;
             let await_value = evaluator.eval_expr(scope, body, awaited_expr)?;
             self.awaiting = Some(AsyncDestructuringAssignAwait::ComputedKey);
-            return Ok(AsyncDestructuringAssignPoll::Await { await_value });
+            return Ok(AsyncDestructuringAssignPoll::Await {
+              await_value,
+              await_offset: expr.span.start,
+            });
           }
           evaluator.eval_object_key(scope, body, &prop.key)?
         }
@@ -15986,8 +16053,14 @@ impl AsyncDestructuringAssignState {
         AsyncDestructuringAssignPoll::Complete => {
           self.prop_index = self.prop_index.saturating_add(1);
         }
-        AsyncDestructuringAssignPoll::Await { await_value } => {
-          return Ok(AsyncDestructuringAssignPoll::Await { await_value });
+        AsyncDestructuringAssignPoll::Await {
+          await_value,
+          await_offset,
+        } => {
+          return Ok(AsyncDestructuringAssignPoll::Await {
+            await_value,
+            await_offset,
+          });
         }
       }
     }
@@ -16087,7 +16160,10 @@ impl AsyncDestructuringAssignState {
           }
 
           self.awaiting = Some(AsyncDestructuringAssignAwait::DefaultValue { target: reference });
-          return Ok(AsyncDestructuringAssignPoll::Await { await_value });
+          return Ok(AsyncDestructuringAssignPoll::Await {
+            await_value,
+            await_offset: default_node.span.start,
+          });
         }
         prop_value = evaluator.eval_expr(scope, body, default_expr)?;
       }
@@ -16107,6 +16183,11 @@ enum TryForAwaitOfCatchPoll {
   Await {
     kind: crate::exec::AsyncSuspendKind,
     await_value: Value,
+    /// Best-effort source offset for the `await` site that produced this suspension.
+    ///
+    /// If no explicit await site exists (e.g. implicit await of `iterator.next()`), this may be 0
+    /// and the caller should fall back to the surrounding statement offset.
+    await_offset: u32,
   },
 }
 
@@ -16153,7 +16234,15 @@ impl TryForAwaitOfCatchState {
     resume_value: Option<Result<Value, VmError>>,
   ) -> Result<TryForAwaitOfCatchPoll, VmError> {
     match self.for_await.poll(evaluator, scope, body, resume_value) {
-      Ok(ForAwaitOfPoll::Await { kind, await_value }) => Ok(TryForAwaitOfCatchPoll::Await { kind, await_value }),
+      Ok(ForAwaitOfPoll::Await {
+        kind,
+        await_value,
+        await_offset,
+      }) => Ok(TryForAwaitOfCatchPoll::Await {
+        kind,
+        await_value,
+        await_offset,
+      }),
       Ok(ForAwaitOfPoll::Complete(flow)) => {
         // `ForAwaitOfState::poll` is expected to have cleaned up its persistent roots before
         // returning `Complete`, but call `teardown` defensively so future changes cannot leak roots.
@@ -16641,7 +16730,13 @@ impl TryStmtState {
 
           let poll = state.poll(evaluator, scope, body, resume_value.take());
           match poll {
-            Ok(ForAwaitOfPoll::Await { kind, await_value }) => {
+            Ok(ForAwaitOfPoll::Await {
+              kind,
+              await_value,
+              await_offset,
+            }) => {
+              let await_stmt_offset =
+                if await_offset != 0 { await_offset } else { await_stmt_offset };
               return Ok(TryStmtPoll::Await {
                 kind,
                 await_value,
@@ -16724,6 +16819,11 @@ enum TryPoll {
   Await {
     kind: crate::exec::AsyncSuspendKind,
     await_value: Value,
+    /// Best-effort source offset for the `await` site that produced this suspension.
+    ///
+    /// If no explicit await site exists (e.g. implicit await of `iterator.next()`), this may be 0
+    /// and the caller should fall back to the surrounding statement offset.
+    await_offset: u32,
   },
 }
 
@@ -16768,7 +16868,15 @@ impl TryState {
     resume_value: Option<Result<Value, VmError>>,
   ) -> Result<TryPoll, VmError> {
     match self.for_state.poll(evaluator, scope, body, resume_value) {
-      Ok(ForAwaitOfPoll::Await { kind, await_value }) => Ok(TryPoll::Await { kind, await_value }),
+      Ok(ForAwaitOfPoll::Await {
+        kind,
+        await_value,
+        await_offset,
+      }) => Ok(TryPoll::Await {
+        kind,
+        await_value,
+        await_offset,
+      }),
       Ok(ForAwaitOfPoll::Complete(flow)) => Ok(TryPoll::Complete(flow)),
       Err(err) => {
         // Ensure iterator roots are always cleaned up before potentially running catch code.
@@ -17026,6 +17134,25 @@ impl HirAsyncState {
     home_object: Option<GcObject>,
     resume_value: Result<Value, VmError>,
   ) -> Result<HirAsyncResult, VmError> {
+    // When resuming from an `await` suspension, a promise rejection becomes a throw completion at
+    // the await site. Patch the stack trace *before* we re-enter the evaluator so:
+    // - user `try/catch` blocks can observe a non-empty `.stack`, and
+    // - the stack top frame points at the await expression (rather than internal Promise machinery).
+    //
+    // This is best-effort: stack capture and `Error.stack` attachment must not turn a catchable
+    // throw into a fatal VM error under allocator pressure.
+    let resume_value = match resume_value {
+      Ok(v) => Ok(v),
+      Err(err) if err.is_throw_completion() => Err(finalize_throw_with_stack_at_source_offset(
+        &*vm,
+        scope,
+        self.script.source.as_ref(),
+        self.await_stmt_offset,
+        err,
+      )),
+      Err(err) => Err(err),
+    };
+
     let mut evaluator = HirEvaluator {
       vm,
       host,
@@ -17231,7 +17358,11 @@ impl HirAsyncState {
           HirAsyncActive::TryForAwaitOfCatch(state) => {
             let poll = state.poll(evaluator, scope, body, resume_value.take());
             match poll {
-              Ok(TryForAwaitOfCatchPoll::Await { kind, await_value }) => {
+              Ok(TryForAwaitOfCatchPoll::Await {
+                kind,
+                await_value,
+                await_offset,
+              }) => {
                 let stmt_offset = match &self.body_kind {
                   HirAsyncBodyKind::Block { stmts } => stmts
                     .get(self.next_stmt_index)
@@ -17240,7 +17371,7 @@ impl HirAsyncState {
                     .unwrap_or(0),
                   HirAsyncBodyKind::Expr { .. } => 0,
                 };
-                self.await_stmt_offset = stmt_offset;
+                self.await_stmt_offset = if await_offset != 0 { await_offset } else { stmt_offset };
                 return Ok(HirAsyncResult::Await { kind, await_value });
               }
               Ok(TryForAwaitOfCatchPoll::Complete(flow)) => {
@@ -17288,20 +17419,24 @@ impl HirAsyncState {
             }
           }
           HirAsyncActive::ForAwaitOf(state) => {
-            let poll = state.poll(evaluator, scope, body, resume_value.take());
-            match poll {
-              Ok(ForAwaitOfPoll::Await { kind, await_value }) => {
-                let stmt_offset = match &self.body_kind {
-                  HirAsyncBodyKind::Block { stmts } => stmts
-                    .get(self.next_stmt_index)
-                    .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
-                    .map(|stmt| stmt.span.start)
-                    .unwrap_or(0),
-                  HirAsyncBodyKind::Expr { .. } => 0,
-                };
-                self.await_stmt_offset = stmt_offset;
-                return Ok(HirAsyncResult::Await { kind, await_value });
-              }
+              let poll = state.poll(evaluator, scope, body, resume_value.take());
+              match poll {
+                Ok(ForAwaitOfPoll::Await {
+                  kind,
+                  await_value,
+                  await_offset,
+                }) => {
+                  let stmt_offset = match &self.body_kind {
+                    HirAsyncBodyKind::Block { stmts } => stmts
+                      .get(self.next_stmt_index)
+                      .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
+                      .map(|stmt| stmt.span.start)
+                      .unwrap_or(0),
+                    HirAsyncBodyKind::Expr { .. } => 0,
+                  };
+                  self.await_stmt_offset = if await_offset != 0 { await_offset } else { stmt_offset };
+                  return Ok(HirAsyncResult::Await { kind, await_value });
+                }
               Ok(ForAwaitOfPoll::Complete(flow)) => {
                 // `ForAwaitOfState::poll` is expected to have cleaned up its persistent roots before
                 // returning `Complete`, but call `teardown` defensively so future changes to the
@@ -17363,7 +17498,11 @@ impl HirAsyncState {
           HirAsyncActive::Try(state) => {
             let poll = state.poll(evaluator, scope, body, resume_value.take());
             match poll {
-              Ok(TryPoll::Await { kind, await_value }) => {
+              Ok(TryPoll::Await {
+                kind,
+                await_value,
+                await_offset,
+              }) => {
                 let stmt_offset = match &self.body_kind {
                   HirAsyncBodyKind::Block { stmts } => stmts
                     .get(self.next_stmt_index)
@@ -17372,7 +17511,7 @@ impl HirAsyncState {
                     .unwrap_or(0),
                   HirAsyncBodyKind::Expr { .. } => 0,
                 };
-                self.await_stmt_offset = stmt_offset;
+                self.await_stmt_offset = if await_offset != 0 { await_offset } else { stmt_offset };
                 return Ok(HirAsyncResult::Await { kind, await_value });
               }
               Ok(TryPoll::Complete(flow)) => {
@@ -17430,7 +17569,11 @@ impl HirAsyncState {
           HirAsyncActive::ForTriple(state) => {
             let poll = state.poll(evaluator, scope, body, resume_value.take());
             match poll {
-              Ok(ForTripleAwaitPoll::Await { kind, await_value }) => {
+              Ok(ForTripleAwaitPoll::Await {
+                kind,
+                await_value,
+                await_offset,
+              }) => {
                 let stmt_offset = match &self.body_kind {
                   HirAsyncBodyKind::Block { stmts } => stmts
                     .get(self.next_stmt_index)
@@ -17439,7 +17582,7 @@ impl HirAsyncState {
                     .unwrap_or(0),
                   HirAsyncBodyKind::Expr { .. } => 0,
                 };
-                self.await_stmt_offset = stmt_offset;
+                self.await_stmt_offset = if await_offset != 0 { await_offset } else { stmt_offset };
                 return Ok(HirAsyncResult::Await { kind, await_value });
               }
               Ok(ForTripleAwaitPoll::Complete(flow)) => {
@@ -17498,7 +17641,19 @@ impl HirAsyncState {
           HirAsyncActive::ForOf(state) => {
             let poll = state.poll(evaluator, scope, body, resume_value.take());
             match poll {
-              Ok(ForOfPoll::Await { await_value }) => {
+              Ok(ForOfPoll::Await {
+                await_value,
+                await_offset,
+              }) => {
+                let stmt_offset = match &self.body_kind {
+                  HirAsyncBodyKind::Block { stmts } => stmts
+                    .get(self.next_stmt_index)
+                    .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
+                    .map(|stmt| stmt.span.start)
+                    .unwrap_or(0),
+                  HirAsyncBodyKind::Expr { .. } => 0,
+                };
+                self.await_stmt_offset = if await_offset != 0 { await_offset } else { stmt_offset };
                 return Ok(HirAsyncResult::Await {
                   kind: crate::exec::AsyncSuspendKind::Await,
                   await_value,
@@ -17621,7 +17776,19 @@ impl HirAsyncState {
                 self.next_stmt_index = self.next_stmt_index.saturating_add(1);
                 continue;
               }
-              Ok(AsyncDestructuringAssignPoll::Await { await_value }) => {
+              Ok(AsyncDestructuringAssignPoll::Await {
+                await_value,
+                await_offset,
+              }) => {
+                let stmt_offset = match &self.body_kind {
+                  HirAsyncBodyKind::Block { stmts } => stmts
+                    .get(self.next_stmt_index)
+                    .and_then(|stmt_id| evaluator.get_stmt(body, *stmt_id).ok())
+                    .map(|stmt| stmt.span.start)
+                    .unwrap_or(0),
+                  HirAsyncBodyKind::Expr { .. } => 0,
+                };
+                self.await_stmt_offset = if await_offset != 0 { await_offset } else { stmt_offset };
                 return Ok(HirAsyncResult::Await {
                   kind: crate::exec::AsyncSuspendKind::Await,
                   await_value,
@@ -18142,6 +18309,7 @@ impl HirAsyncState {
               if let Some(init) = declarator.init {
                 let init_expr = evaluator.get_expr(body, init)?;
                 if let hir_js::ExprKind::Await { expr: awaited_expr } = init_expr.kind {
+                  let await_offset = init_expr.span.start;
                   // Budget once for the await expression itself, matching synchronous evaluation.
                   evaluator.vm.tick()?;
                   let await_value = match evaluator.eval_expr(scope, body, awaited_expr) {
@@ -18167,7 +18335,7 @@ impl HirAsyncState {
                     declarator_index: j,
                   });
                   self.next_stmt_index = stmt_index;
-                  self.await_stmt_offset = init_expr.span.start;
+                  self.await_stmt_offset = await_offset;
                   return Ok(HirAsyncResult::Await {
                     kind: crate::exec::AsyncSuspendKind::Await,
                     await_value,
@@ -18884,6 +19052,7 @@ impl HirAsyncState {
           if *op == hir_js::AssignOp::Assign || compound_op || logical_op {
             let rhs = evaluator.get_expr(body, *value)?;
             if let hir_js::ExprKind::Await { expr: awaited_expr } = &rhs.kind {
+              let await_offset = rhs.span.start;
               for _ in 0..label_tick_count {
                 evaluator.vm.tick()?;
               }
@@ -18930,7 +19099,7 @@ impl HirAsyncState {
                   next_stmt_index: self.next_stmt_index.saturating_add(1),
                   pat_id: *target,
                 });
-                self.await_stmt_offset = rhs.span.start;
+                self.await_stmt_offset = await_offset;
                 return Ok(HirAsyncResult::Await {
                   kind: crate::exec::AsyncSuspendKind::Await,
                   await_value,
@@ -19120,7 +19289,7 @@ impl HirAsyncState {
                 next_stmt_index: self.next_stmt_index.saturating_add(1),
                 pending_assign: Some(pending),
               });
-              self.await_stmt_offset = rhs.span.start;
+              self.await_stmt_offset = await_offset;
               return Ok(HirAsyncResult::Await {
                 kind: crate::exec::AsyncSuspendKind::Await,
                 await_value,
@@ -19134,6 +19303,7 @@ impl HirAsyncState {
       if let hir_js::StmtKind::Return(Some(expr_id)) = &stmt.kind {
         let expr = evaluator.get_expr(body, *expr_id)?;
         if let hir_js::ExprKind::Await { expr: awaited_expr } = &expr.kind {
+          let await_offset = expr.span.start;
           for _ in 0..label_tick_count {
             evaluator.vm.tick()?;
           }
@@ -19158,7 +19328,7 @@ impl HirAsyncState {
             }
           };
           self.active = Some(HirAsyncActive::AwaitReturn);
-          self.await_stmt_offset = expr.span.start;
+          self.await_stmt_offset = await_offset;
           return Ok(HirAsyncResult::Await {
             kind: crate::exec::AsyncSuspendKind::Await,
             await_value,
@@ -19170,6 +19340,7 @@ impl HirAsyncState {
       if let hir_js::StmtKind::Throw(expr_id) = &stmt.kind {
         let expr = evaluator.get_expr(body, *expr_id)?;
         if let hir_js::ExprKind::Await { expr: awaited_expr } = &expr.kind {
+          let await_offset = expr.span.start;
           for _ in 0..label_tick_count {
             evaluator.vm.tick()?;
           }
@@ -19194,7 +19365,7 @@ impl HirAsyncState {
             }
           };
           self.active = Some(HirAsyncActive::AwaitThrow);
-          self.await_stmt_offset = expr.span.start;
+          self.await_stmt_offset = await_offset;
           return Ok(HirAsyncResult::Await {
             kind: crate::exec::AsyncSuspendKind::Await,
             await_value,
@@ -19219,6 +19390,7 @@ impl HirAsyncState {
           if let Some(init) = declarator.init {
             let init_expr = evaluator.get_expr(body, init)?;
             if let hir_js::ExprKind::Await { expr: awaited_expr } = &init_expr.kind {
+              let await_offset = init_expr.span.start;
               // Budget once for the await expression itself.
               evaluator.vm.tick()?;
               let await_value = match evaluator.eval_expr(scope, body, *awaited_expr) {
@@ -19243,7 +19415,7 @@ impl HirAsyncState {
                 stmt_index: self.next_stmt_index,
                 declarator_index: j,
               });
-              self.await_stmt_offset = init_expr.span.start;
+              self.await_stmt_offset = await_offset;
               return Ok(HirAsyncResult::Await {
                 kind: crate::exec::AsyncSuspendKind::Await,
                 await_value,
@@ -24138,7 +24310,11 @@ fn hir_eval_stmt_list_until_await(
 
         let mut state = ForAwaitOfState::new(left.clone(), *right, *inner, label_set.as_slice())?;
         match state.poll(evaluator, scope, body, None) {
-          Ok(ForAwaitOfPoll::Await { kind, await_value }) => {
+          Ok(ForAwaitOfPoll::Await {
+            kind,
+            await_value,
+            await_offset: _,
+          }) => {
             return Ok(HirAsyncEvalResult::Await {
               kind,
               await_value,
@@ -24244,7 +24420,11 @@ fn hir_eval_stmt_list_until_await(
             label_set.as_slice(),
           )?;
           match state.poll(evaluator, scope, body, None) {
-            Ok(ForTripleAwaitPoll::Await { kind, await_value }) => {
+            Ok(ForTripleAwaitPoll::Await {
+              kind,
+              await_value,
+              await_offset: _,
+            }) => {
               return Ok(HirAsyncEvalResult::Await {
                 kind,
                 await_value,
@@ -24321,7 +24501,11 @@ fn hir_eval_stmt_list_until_await(
       evaluator.vm.tick()?;
       let mut state = ForAwaitOfState::new(left.clone(), *right, *inner, &[])?;
       match state.poll(evaluator, scope, body, None) {
-        Ok(ForAwaitOfPoll::Await { kind, await_value }) => {
+        Ok(ForAwaitOfPoll::Await {
+          kind,
+          await_value,
+          await_offset: _,
+        }) => {
           return Ok(HirAsyncEvalResult::Await {
             kind,
             await_value,
@@ -24399,7 +24583,11 @@ fn hir_eval_stmt_list_until_await(
       if for_triple_head_has_await(evaluator, body, init, test, update)? {
         let mut state = ForTripleAwaitState::new(init.clone(), *test, *update, *inner, &[])?;
         match state.poll(evaluator, scope, body, None) {
-          Ok(ForTripleAwaitPoll::Await { kind, await_value }) => {
+          Ok(ForTripleAwaitPoll::Await {
+            kind,
+            await_value,
+            await_offset: _,
+          }) => {
             return Ok(HirAsyncEvalResult::Await {
               kind,
               await_value,
@@ -25688,7 +25876,11 @@ pub(crate) fn hir_async_resume_continuation(
             "hir async for-await-of resume missing state machine",
           ))?;
           match state.poll(&mut evaluator, scope, body, Some(resume_value)) {
-            Ok(ForAwaitOfPoll::Await { kind, await_value }) => Ok(HirAsyncEvalResult::Await {
+            Ok(ForAwaitOfPoll::Await {
+              kind,
+              await_value,
+              await_offset: _,
+            }) => Ok(HirAsyncEvalResult::Await {
               kind,
               await_value,
               resume: HirAsyncResumePoint::ForAwaitOf {
@@ -25785,7 +25977,11 @@ pub(crate) fn hir_async_resume_continuation(
             "hir async for-triple resume missing state machine",
           ))?;
           match state.poll(&mut evaluator, scope, body, Some(resume_value)) {
-            Ok(ForTripleAwaitPoll::Await { kind, await_value }) => Ok(HirAsyncEvalResult::Await {
+            Ok(ForTripleAwaitPoll::Await {
+              kind,
+              await_value,
+              await_offset: _,
+            }) => Ok(HirAsyncEvalResult::Await {
               kind,
               await_value,
               resume: HirAsyncResumePoint::ForTriple {

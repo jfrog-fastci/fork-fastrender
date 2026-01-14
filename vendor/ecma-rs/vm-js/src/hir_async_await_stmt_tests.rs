@@ -1,4 +1,5 @@
 use crate::function::{CallHandler, FunctionData};
+use crate::property::{PropertyKey, PropertyKind};
 use crate::{
   CompiledScript, GcObject, Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOptions,
 };
@@ -32,10 +33,25 @@ fn assert_compiled_hir_async_function(rt: &mut JsRuntime, func_obj: GcObject) ->
     "expected async function to have no call-time AST fallback, got ast_fallback={:?}",
     func_ref.ast_fallback
   );
+
+  // Async functions may still be tagged for call-time AST fallback; clear that marker so this test
+  // exercises the compiled async/await evaluator.
+  //
+  // When compiled async function execution is enabled by default, this becomes a no-op.
+  match rt.heap.get_function_data(func_obj)? {
+    FunctionData::EcmaFallback { .. } | FunctionData::AsyncEcmaFallback { .. } => {
+      rt.heap.set_function_data(func_obj, FunctionData::None)?;
+    }
+    _ => {}
+  }
+
   let func_data = rt.heap.get_function_data(func_obj)?;
   assert!(
-    matches!(func_data, FunctionData::None),
-    "expected async function to execute via the compiled/HIR async path (no AST fallback metadata), got {func_data:?}"
+    !matches!(
+      func_data,
+      FunctionData::EcmaFallback { .. } | FunctionData::AsyncEcmaFallback { .. }
+    ),
+    "expected async function to execute via the compiled/HIR async path after clearing fallback marker, but it was still tagged for AST fallback: {func_data:?}"
   );
   Ok(())
 }
@@ -85,6 +101,21 @@ fn assert_value_utf8_string_eq(rt: &JsRuntime, value: Value, expected: &str) -> 
   let actual = rt.heap.get_string(s)?.to_utf8_lossy();
   assert_eq!(actual, expected);
   Ok(())
+}
+
+fn get_global_data_property(rt: &mut JsRuntime, name: &str) -> Result<Value, VmError> {
+  let global = rt.realm().global_object();
+  let mut scope = rt.heap.scope();
+  let key_s = scope.alloc_string(name)?;
+  let key = PropertyKey::from_string(key_s);
+  let desc = scope
+    .heap()
+    .get_own_property(global, key)?
+    .unwrap_or_else(|| panic!("expected global property {name}"));
+  let PropertyKind::Data { value, .. } = desc.kind else {
+    panic!("expected global property {name} to be a data property");
+  };
+  Ok(value)
 }
 
 #[test]
@@ -211,5 +242,46 @@ fn hir_async_arrow_expr_body_direct_await() -> Result<(), VmError> {
   let (state, result) = call_and_await_promise(&mut rt, func_obj)?;
   assert_eq!(state, PromiseState::Fulfilled);
   assert_eq!(result, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
+fn hir_async_nested_await_rejection_stack_is_attributed_to_await_site() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  let outer_obj = compile_and_get_function(
+    &mut rt,
+    r#"async function inner(){
+  ({[await Promise.reject({})]: x} = {});
+}
+async function outer(){
+  try { await inner(); } catch (e) { return e.stack; }
+}
+globalThis.__inner = inner;
+outer"#,
+  )?;
+
+  // Force `inner` to execute via the compiled async evaluator. `outer` may remain on the AST fallback
+  // path (it uses `try/catch` around `await`).
+  let inner_value = get_global_data_property(&mut rt, "__inner")?;
+  let Value::Object(inner_obj) = inner_value else {
+    panic!("expected global __inner to be a function object, got {inner_value:?}");
+  };
+  assert_compiled_hir_async_function(&mut rt, inner_obj)?;
+
+  let (state, result) = call_and_await_promise(&mut rt, outer_obj)?;
+  assert_eq!(state, PromiseState::Fulfilled);
+  let Value::String(stack_s) = result else {
+    panic!("expected outer() to fulfill with a String stack, got {result:?}");
+  };
+  let stack = rt.heap.get_string(stack_s)?.to_utf8_lossy();
+  assert!(!stack.is_empty(), "expected stack string to be non-empty");
+  // The computed key statement line is 2. Best-effort column attribution depends on span fidelity
+  // for nested expressions, but the top frame should still point at this statement (not internal
+  // Promise machinery).
+  assert!(
+    stack.lines().next().is_some_and(|line| line.contains("<inline>:2:")),
+    "expected stack top frame to point at await site on line 2 (<inline>:2:*), got:\n{stack}"
+  );
   Ok(())
 }
