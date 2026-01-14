@@ -384,3 +384,117 @@ fn async_generator_super_computed_member_assignment_yield_star_in_key_and_yield_
   assert_eq!(rt.exec_script("out")?, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn async_generator_optional_super_property_call_binds_this_across_yield_star_in_arg(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = false;
+
+      async function* inner() { yield 0; return 1; }
+
+      let inst;
+      class B { m(x) { return this === inst && x === 1; } }
+      class D extends B {
+        async *gen() {
+          return super.m?.(yield* inner());
+        }
+      }
+
+      async function f() {
+        inst = new D();
+        const it = inst.gen();
+        const r0 = await it.next();
+        const r1 = await it.next();
+        return (
+          r0.value === 0 && r0.done === false &&
+          r1.value === true && r1.done === true
+        );
+      }
+
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  assert_eq!(rt.exec_script("out")?, Value::Bool(false));
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  assert_eq!(rt.exec_script("out")?, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn async_generator_optional_super_property_call_short_circuits_and_skips_yield_star_in_arg(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = false;
+      var side = 0;
+
+      async function* inner() { side++; yield "should-not-yield"; return 0; }
+
+      class B {}
+      class D extends B {
+        async *gen() {
+          return super.missing?.(yield* inner());
+        }
+      }
+
+      async function f() {
+        const it = (new D()).gen();
+        const r = await it.next();
+        return r.value === undefined && r.done === true && side === 0;
+      }
+
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  assert_eq!(rt.exec_script("out")?, Value::Bool(false));
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  assert_eq!(rt.exec_script("out")?, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn async_generator_optional_super_computed_member_call_short_circuits_and_skips_yield_star_in_arg(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = false;
+
+      async function* key() { yield "key"; return "missing"; }
+      async function* arg() { yield "should-not-yield"; return 0; }
+
+      class B {}
+      class D extends B {
+        async *gen() {
+          return super[yield* key()]?.(yield* arg());
+        }
+      }
+
+      async function f() {
+        const it = (new D()).gen();
+        const r0 = await it.next();
+        const r1 = await it.next();
+        return (
+          r0.value === "key" && r0.done === false &&
+          r1.value === undefined && r1.done === true
+        );
+      }
+
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  assert_eq!(rt.exec_script("out")?, Value::Bool(false));
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+  assert_eq!(rt.exec_script("out")?, Value::Bool(true));
+  Ok(())
+}
