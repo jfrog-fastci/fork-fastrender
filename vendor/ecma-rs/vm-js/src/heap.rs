@@ -5338,6 +5338,16 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
   ///
   /// This is the engine-side equivalent of `Array.isArray` (without consulting prototypes).
   pub fn object_is_array(&self, obj: GcObject) -> Result<bool, VmError> {
+    // Proxies are not Array exotic objects from the engine's perspective (they have no ordinary
+    // property storage and all indexed access must go through Proxy internal methods so traps are
+    // observable). Treat them as non-Arrays here so callers like `CreateListFromArrayLike` do not
+    // incorrectly bypass `Get` traps.
+    //
+    // Note: `Array.isArray(proxy_to_array)` is implemented elsewhere (`IsArray`), which *does*
+    // follow Proxy targets per spec.
+    if matches!(self.get_heap_object(obj.0)?, HeapObject::Proxy(_)) {
+      return Ok(false);
+    }
     Ok(self.get_object_base(obj)?.array_length().is_some())
   }
 

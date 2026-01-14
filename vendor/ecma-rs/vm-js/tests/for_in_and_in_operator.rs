@@ -151,7 +151,7 @@ fn for_in_restores_lexical_env_on_uncatchable_error() {
   rt.register_global_native_function("__test_uncatchable_error", test_uncatchable_error, 0)
     .unwrap();
   let err = rt
-    // Trigger an uncatchable VM error inside the loop body so we can assert the loop restores its
+    // Trigger an abrupt error inside the loop body so we can assert the loop restores its
     // per-iteration lexical environment before unwinding.
     .exec_script(r#"for (let k in {a:1}) { __test_uncatchable_error(); }"#)
     .unwrap_err();

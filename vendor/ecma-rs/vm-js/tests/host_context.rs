@@ -202,13 +202,13 @@ fn exec_script_with_hooks_passes_dummy_vmhost_context_for_native_calls() -> Resu
   let err = rt
     .exec_script_with_hooks(&mut hooks, "inc();")
     .expect_err("expected dummy host context to fail Host downcast");
-  assert!(matches!(err, VmError::Unimplemented(_)));
+  assert!(matches!(err, VmError::Throw(_) | VmError::ThrowWithStack { .. }));
 
   let source = SourceText::new_charged_arc(&mut rt.heap, "<inline>", "inc();")?;
   let err = rt
     .exec_script_source_with_hooks(&mut hooks, source)
     .expect_err("expected dummy host context to fail Host downcast");
-  assert!(matches!(err, VmError::Unimplemented(_)));
+  assert!(matches!(err, VmError::Throw(_) | VmError::ThrowWithStack { .. }));
   Ok(())
 }
 

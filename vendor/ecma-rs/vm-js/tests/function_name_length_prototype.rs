@@ -120,7 +120,7 @@ fn constructible_native_function_gets_prototype_and_constructor_properties() -> 
 }
 
 #[test]
-fn intrinsic_error_constructor_prototype_property_is_writable() -> Result<(), VmError> {
+fn intrinsic_error_constructor_prototype_property_is_non_writable() -> Result<(), VmError> {
   let mut vm = Vm::new(VmOptions::default());
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut realm = Realm::new(&mut vm, &mut heap)?;
@@ -142,7 +142,7 @@ fn intrinsic_error_constructor_prototype_property_is_writable() -> Result<(), Vm
     let PropertyKind::Data { value, writable } = desc.kind else {
       panic!("prototype should be a data property");
     };
-    assert!(writable);
+    assert!(!writable);
     assert_eq!(value, Value::Object(error_prototype));
 
     // %Error.prototype%.constructor

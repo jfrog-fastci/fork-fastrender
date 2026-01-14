@@ -1192,6 +1192,8 @@ impl Intrinsics {
       vm.register_native_call(builtins::number_prototype_to_precision)?;
     let number_prototype_to_locale_string =
       vm.register_native_call(builtins::number_prototype_to_locale_string)?;
+    let number_prototype_to_primitive =
+      vm.register_native_call(builtins::number_prototype_to_primitive)?;
     let boolean_prototype_value_of = vm.register_native_call(builtins::boolean_prototype_value_of)?;
     let boolean_prototype_to_string = vm.register_native_call(builtins::boolean_prototype_to_string)?;
     let boolean_prototype_to_primitive =
@@ -2083,15 +2085,15 @@ impl Intrinsics {
 
     // `%GeneratorPrototype%`
     let generator_prototype = alloc_rooted_object(scope, roots)?;
-    scope
-      .heap_mut()
-      .object_set_prototype(generator_prototype, Some(iterator_prototype))?;
     install_to_string_tag(
       scope,
       generator_prototype,
       well_known_symbols.to_string_tag,
       "Generator",
     )?;
+    scope
+      .heap_mut()
+      .object_set_prototype(generator_prototype, Some(iterator_prototype))?;
 
     // `%GeneratorFunction%`
     let generator_function_name = scope.alloc_string("GeneratorFunction")?;
@@ -4430,6 +4432,24 @@ impl Intrinsics {
         number_prototype,
         key,
         data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
+    // Number.prototype[Symbol.toPrimitive]
+    {
+      let to_prim_s = scope.alloc_string("[Symbol.toPrimitive]")?;
+      scope.push_root(Value::String(to_prim_s))?;
+      let to_prim_fn =
+        scope.alloc_native_function(number_prototype_to_primitive, None, to_prim_s, 1)?;
+      scope.push_root(Value::Object(to_prim_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(to_prim_fn, Some(function_prototype))?;
+      scope.define_property(
+        number_prototype,
+        PropertyKey::Symbol(well_known_symbols.to_primitive),
+        // Per ECMA-262, `Number.prototype[@@toPrimitive]` is non-writable.
+        data_desc(Value::Object(to_prim_fn), false, false, true),
       )?;
     }
 

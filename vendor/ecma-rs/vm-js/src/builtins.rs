@@ -23748,6 +23748,67 @@ pub fn number_prototype_to_locale_string(
   number_prototype_to_string(vm, scope, host, hooks, callee, this, &[])
 }
 
+/// `Number.prototype[Symbol.toPrimitive]`.
+pub fn number_prototype_to_primitive(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let n = this_number_value(
+    &mut scope,
+    this,
+    "Number.prototype[Symbol.toPrimitive] called on incompatible receiver",
+  )?;
+
+  let hint = match args.get(0).copied() {
+    Some(Value::String(s)) => s,
+    _ => return Err(VmError::TypeError("Invalid hint")),
+  };
+
+  let units = scope.heap().get_string(hint)?.as_code_units();
+  let is_default_hint = units
+    == [
+      b'd' as u16,
+      b'e' as u16,
+      b'f' as u16,
+      b'a' as u16,
+      b'u' as u16,
+      b'l' as u16,
+      b't' as u16,
+    ];
+  let is_string_hint = units
+    == [
+      b's' as u16,
+      b't' as u16,
+      b'r' as u16,
+      b'i' as u16,
+      b'n' as u16,
+      b'g' as u16,
+    ];
+  let is_number_hint = units
+    == [
+      b'n' as u16,
+      b'u' as u16,
+      b'm' as u16,
+      b'b' as u16,
+      b'e' as u16,
+      b'r' as u16,
+    ];
+  if is_string_hint {
+    Ok(Value::String(scope.heap_mut().to_string(Value::Number(n))?))
+  } else if is_number_hint || is_default_hint {
+    Ok(Value::Number(n))
+  } else {
+    Err(VmError::TypeError("Invalid hint"))
+  }
+}
+
 /// `Boolean` constructor called as a function.
 pub fn boolean_constructor_call(
   _vm: &mut Vm,

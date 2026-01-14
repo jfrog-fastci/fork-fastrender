@@ -104,14 +104,15 @@ fn number_formatting_builtins_do_not_panic_on_allocator_oom() -> Result<(), VmEr
   let to_exp = rt.exec_script("__to_exp")?;
   let to_prec = rt.exec_script("__to_prec")?;
 
-  // These sizes correspond to the pre-reserved `String` capacity bounds in the builtin
-  // implementations:
-  // - toFixed(100): 1 sign + 22 int digits + '.' + 100 fraction digits = 124
-  // - toExponential(100): 1 sign + "d." + 100 digits + "e±ddd" = 108
-  // - toPrecision(100): exp buf for 99 fraction digits + "e±ddd" = 106
-  assert_call_oom(&mut rt, to_fixed, 124)?;
-  assert_call_oom(&mut rt, to_exp, 108)?;
-  assert_call_oom(&mut rt, to_prec, 106)?;
+  // These sizes correspond to the `String::try_reserve_exact` bounds in the Number formatting
+  // builtins for the specific inputs used above.
+  //
+  // - (-0).toFixed(100): "0." + 100 digits = 102
+  // - (1.23).toExponential(100): "d." + 100 digits + "e±d" = 105
+  // - (1.23).toPrecision(100): "d." + 99 digits = 101
+  assert_call_oom(&mut rt, to_fixed, 102)?;
+  assert_call_oom(&mut rt, to_exp, 105)?;
+  assert_call_oom(&mut rt, to_prec, 101)?;
 
   Ok(())
 }

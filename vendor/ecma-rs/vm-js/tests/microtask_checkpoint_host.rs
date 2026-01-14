@@ -77,17 +77,27 @@ fn microtask_checkpoint_without_host_uses_dummy_host_context() -> Result<(), VmE
 
   let mut host = Host::default();
 
-  // Schedule a Promise job that will call into the native `inc` binding.
-  rt.exec_script_with_host(&mut host, "Promise.resolve().then(inc);")?;
+  // Schedule a Promise job that will call into the native `inc` binding and record whether the
+  // handler ran successfully.
+  rt.exec_script_with_host(
+    &mut host,
+    r#"
+      var ok = false;
+      var failed = false;
+      Promise.resolve().then(inc).then(
+        () => { ok = true; },
+        () => { failed = true; }
+      );
+    "#,
+  )?;
   assert_eq!(host.counter, 0);
 
-  // The legacy checkpoint API uses a dummy host context (`()`), so `inc` should fail to downcast
-  // and the microtask checkpoint should surface that error.
-  let err = rt.vm.perform_microtask_checkpoint(&mut rt.heap).unwrap_err();
-  assert!(matches!(
-    err,
-    VmError::Unimplemented("inc_host_counter expected Host")
-  ));
+  // The legacy checkpoint API uses a dummy host context (`()`), so `inc` should fail to downcast,
+  // causing the Promise chain to reject (and `failed` to become true).
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("failed && !ok")?;
+  assert_eq!(value, Value::Bool(true));
 
   assert_eq!(host.counter, 0);
   Ok(())

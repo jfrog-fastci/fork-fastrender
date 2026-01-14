@@ -50,11 +50,11 @@ fn for_triple_restores_lexical_env_on_uncatchable_error() {
   rt.register_global_native_function("__test_unimplemented", test_unimplemented, 0)
     .unwrap();
   let err = rt
-    // Trigger an uncatchable VM error inside the loop body so we can assert the loop restores its
+    // Trigger an abrupt error inside the loop body so we can assert the loop restores its
     // lexical environment before unwinding.
     .exec_script(r#"for (let i = 0; i < 1; i++) { __test_unimplemented(); }"#)
     .unwrap_err();
-  assert!(matches!(err, VmError::Unimplemented(_)));
+  assert!(matches!(err, VmError::Throw(_) | VmError::ThrowWithStack { .. }));
 
   // If the loop's lexical environment is not restored when the body returns an uncatchable error,
   // the loop variable binding would leak into subsequent script executions.

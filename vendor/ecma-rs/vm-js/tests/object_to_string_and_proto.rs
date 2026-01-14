@@ -194,7 +194,16 @@ fn object_prototype_to_string_tags_and_proto_accessors() -> Result<(), VmError> 
   assert_eq!(
     agent.run_script(
       "proto_set_non_extensible.js",
-      "(() => { const o = {}; Object.preventExtensions(o); o.__proto__ = null; return Object.getPrototypeOf(o) === Object.prototype; })()",
+      r#"(() => {
+        const o = {};
+        Object.preventExtensions(o);
+        try {
+          o.__proto__ = null;
+        } catch (e) {
+          return e instanceof TypeError && Object.getPrototypeOf(o) === Object.prototype;
+        }
+        return false;
+      })()"#,
       Budget::unlimited(1),
       None,
     )?,

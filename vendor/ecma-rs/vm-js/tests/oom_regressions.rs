@@ -117,10 +117,10 @@ fn array_map_large_length_does_not_abort_on_oom() {
   //
   // Use a slightly larger length to reduce total runtime: a larger backing string leaves less
   // headroom under RLIMIT_AS, so the per-iteration key allocations hit OOM sooner.
-  // Keep this below the input-string allocation failure threshold (observed at ~29M code units
+  // Keep this below the input-string allocation failure threshold (observed at ~26M code units
   // with the current RLIMIT_AS and filler settings) so the harness can reliably allocate the
   // initial `S` string before the actual test loop runs.
-  run_oom_harness("arrayMap", 26_000_000);
+  run_oom_harness("arrayMap", 25_000_000);
 }
 
 #[test]
