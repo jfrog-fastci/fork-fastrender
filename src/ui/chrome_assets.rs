@@ -374,6 +374,16 @@ mod tests {
   }
 
   #[test]
+  fn fetch_chrome_js_canonicalizes_scheme_and_host_case() {
+    let fetcher = ChromeAssetsFetcher::new();
+    let res = fetcher
+      .fetch("CHROME://SCRIPTS/chrome.js")
+      .expect("fetch chrome.js with mixed-case URL");
+    assert_eq!(res.content_type.as_deref(), Some("text/javascript"));
+    assert_eq!(res.final_url.as_deref(), Some("chrome://scripts/chrome.js"));
+  }
+
+  #[test]
   fn fetch_allowlisted_about_css() {
     let fetcher = ChromeAssetsFetcher::new();
     let url = "chrome://styles/about.css";
@@ -432,6 +442,16 @@ mod tests {
     );
     assert_eq!(res.content_type.as_deref(), Some(SVG_MIME));
     assert_eq!(res.final_url.as_deref(), Some(url));
+  }
+
+  #[test]
+  fn fetch_chrome_icon_canonicalizes_scheme_and_host_case() {
+    let fetcher = ChromeAssetsFetcher::new();
+    let res = fetcher
+      .fetch("CHROME://ICONS/back.svg")
+      .expect("fetch chrome icon with mixed-case URL");
+    assert_eq!(res.content_type.as_deref(), Some(SVG_MIME));
+    assert_eq!(res.final_url.as_deref(), Some("chrome://icons/back.svg"));
   }
 
   #[test]
