@@ -1138,8 +1138,28 @@ pub fn accesskit_node_expanded(node: &accesskit::Node) -> Option<bool> {
   node.is_expanded()
 }
 
+pub fn expect_accesskit_node_expanded(node: &accesskit::Node) -> bool {
+  node.is_expanded().unwrap_or_else(|| {
+    panic!(
+      "expected AccessKit node role={:?} name={:?} to expose expanded/collapsed state",
+      node.role(),
+      node.name().unwrap_or("").trim()
+    )
+  })
+}
+
 pub fn accesskit_node_selected(node: &accesskit::Node) -> Option<bool> {
   node.is_selected()
+}
+
+pub fn expect_accesskit_node_selected(node: &accesskit::Node) -> bool {
+  node.is_selected().unwrap_or_else(|| {
+    panic!(
+      "expected AccessKit node role={:?} name={:?} to expose selected state",
+      node.role(),
+      node.name().unwrap_or("").trim()
+    )
+  })
 }
 
 /// AccessKit 0.11 exposes "checked"/"toggled"/"pressed" semantics via a single `CheckedState` value.
@@ -1155,6 +1175,16 @@ pub fn accesskit_node_checked(node: &accesskit::Node) -> Option<accesskit::Check
   node.checked_state()
 }
 
+pub fn expect_accesskit_node_checked(node: &accesskit::Node) -> accesskit::CheckedState {
+  accesskit_node_checked(node).unwrap_or_else(|| {
+    panic!(
+      "expected AccessKit node role={:?} name={:?} to expose checked state (checked_state)",
+      node.role(),
+      node.name().unwrap_or("").trim()
+    )
+  })
+}
+
 pub fn accesskit_node_toggled(node: &accesskit::Node) -> Option<accesskit::CheckedState> {
   if !matches!(node.role(), accesskit::Role::Switch) {
     return None;
@@ -1162,11 +1192,31 @@ pub fn accesskit_node_toggled(node: &accesskit::Node) -> Option<accesskit::Check
   node.checked_state()
 }
 
+pub fn expect_accesskit_node_toggled(node: &accesskit::Node) -> accesskit::CheckedState {
+  accesskit_node_toggled(node).unwrap_or_else(|| {
+    panic!(
+      "expected AccessKit node role={:?} name={:?} to expose toggled state (checked_state for Role::Switch)",
+      node.role(),
+      node.name().unwrap_or("").trim()
+    )
+  })
+}
+
 pub fn accesskit_node_pressed(node: &accesskit::Node) -> Option<accesskit::CheckedState> {
   if !matches!(node.role(), accesskit::Role::ToggleButton) {
     return None;
   }
   node.checked_state()
+}
+
+pub fn expect_accesskit_node_pressed(node: &accesskit::Node) -> accesskit::CheckedState {
+  accesskit_node_pressed(node).unwrap_or_else(|| {
+    panic!(
+      "expected AccessKit node role={:?} name={:?} to expose pressed state (checked_state for Role::ToggleButton)",
+      node.role(),
+      node.name().unwrap_or("").trim()
+    )
+  })
 }
 
 pub fn accesskit_node_supports_action(node: &accesskit::Node, action: accesskit::Action) -> bool {
@@ -1606,13 +1656,19 @@ mod tests {
     let switch = switch.build(&mut classes);
 
     assert_eq!(accesskit_node_expanded(&group), Some(true));
+    assert_eq!(expect_accesskit_node_expanded(&group), true);
     assert!(accesskit_node_supports_action(&group, Action::Expand));
 
     assert_eq!(accesskit_node_selected(&tab), Some(true));
+    assert_eq!(expect_accesskit_node_selected(&tab), true);
 
     assert_eq!(
       accesskit_node_checked(&checkbox),
       Some(accesskit::CheckedState::True)
+    );
+    assert_eq!(
+      expect_accesskit_node_checked(&checkbox),
+      accesskit::CheckedState::True
     );
 
     assert_eq!(
@@ -1620,8 +1676,27 @@ mod tests {
       Some(accesskit::CheckedState::True)
     );
     assert_eq!(
+      expect_accesskit_node_pressed(&toggle),
+      accesskit::CheckedState::True
+    );
+    assert_eq!(
       accesskit_node_toggled(&switch),
       Some(accesskit::CheckedState::False)
     );
+    assert_eq!(
+      expect_accesskit_node_toggled(&switch),
+      accesskit::CheckedState::False
+    );
+  }
+
+  #[test]
+  #[should_panic(expected = "to expose checked state")]
+  fn expect_checked_panics_for_wrong_role() {
+    let mut classes = NodeClassSet::new();
+    let mut toggle = NodeBuilder::new(Role::ToggleButton);
+    toggle.set_name("Toggle");
+    toggle.set_checked_state(accesskit::CheckedState::True);
+    let node = toggle.build(&mut classes);
+    let _ = expect_accesskit_node_checked(&node);
   }
 }
