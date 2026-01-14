@@ -88,20 +88,28 @@ bash scripts/run_limited.sh --as 64G -- \
 
 ## Global findings (applies to all 3 fixtures)
 
-### 1) Live-sample iframes do not load any live-sample content
+### 1) Live-sample iframes exist (local `assets/*.html`), but are **offscreen** in the default page-loop viewport
 
-All three MDN pages include a top-of-page “Try it” iframe with `class="sample-code-frame"`, but in the rendered fragment tree it remains:
+All three MDN pages include one (or more) `iframe.sample-code-frame` “live sample” embeds. In these fixtures, they already point at **local bundled HTML**:
 
-* `src: about:blank`
+* `src: assets/<hash>.html`
 * `srcdoc: null`
 
-So the vertical writing demos / `text-orientation` / `text-combine-upright` examples that MDN normally injects into that iframe are **not present** in either renderer output (Chrome baseline runs with JS disabled by the harness).
+However, in the default `xtask page-loop` configuration (`viewport 1040x1240`, screenshot of the *top* of the page), these iframes are **far below the fold** and therefore do not appear in the baseline screenshots/diffs.
+
+Concrete absolute positions (summing fragment ancestry offsets from `inspect/fragment_tree.json`):
+
+* `writing-mode`: iframe y≈**7078px** and y≈**10125px**
+* `text-orientation`: iframe y≈**3690px**
+* `text-combine-upright`: iframe y≈**3774px**
+
+So the page-loop diffs for these fixtures are not exercising vertical writing / text-orientation / text-combine correctness yet.
 
 **Relevant implementation notes / entrypoints:**
 
-* JS is disabled for page-loop Chrome baselines (and the FastRender side is patched to match) by `src/cli_utils/fixture_html_patch.rs` injecting a CSP meta tag with `script-src 'none'`. This prevents MDN’s JS live-sample bootstrapping from running.
-* There is an existing DOM “compat” mutation for iframes that can lift a placeholder `src` from `data-src`/`data-live-path` (`src/dom.rs:4878-4902`), but MDN uses `data-live-path` + `data-live-id` (and `data-live-path` is *not* a local file URL in these fixtures).
-* Follow-up direction: add an MDN-specific compat path that synthesizes an iframe `srcdoc` (or rewrites to a local generated HTML file) from the surrounding `<pre class="… live-sample---<id>">` code blocks, keyed by `data-live-id`.
+* JS is disabled for page-loop Chrome baselines (and the FastRender side is patched to match) by `src/cli_utils/fixture_html_patch.rs` injecting a CSP meta tag with `script-src 'none'`. This likely prevents MDN’s `<interactive-example>` custom element from hydrating, but the `iframe.sample-code-frame` elements in these fixtures do **not** rely on JS (they already have a real `src`).
+* There is an existing DOM “compat” mutation for iframes that can lift a placeholder `src` from `data-src`/`data-live-path` (`src/dom.rs:4886-4945`). These fixtures already have non-placeholder `src`, so that compat block is not needed here (but may matter for other MDN captures).
+* To actually test vertical-writing behavior via these MDN pages, we likely need either a “scroll-to-sample” baseline mode or separate fixtures for the sample iframe HTML files.
 
 ### 2) All three diffs look like “generic MDN layout” diffs, not vertical-writing feature diffs
 
@@ -115,7 +123,7 @@ That strongly suggests the current diffs are dominated by:
 
 …rather than `writing-mode`/`text-orientation`/`text-combine-upright` rendering correctness.
 
-**Vertical-writing-related code that is *not meaningfully exercised* until live samples render:**
+**Vertical-writing-related code that is *not meaningfully exercised* until the live-sample iframe content is in-view (i.e. captured by page-loop):**
 
 * Writing mode axis mapping / flow-relative coordinates:
   * `src/layout/axis.rs`, `src/layout/engine.rs`, `src/style/types.rs` (`WritingMode`)
@@ -141,16 +149,16 @@ Diff metrics (from `report.json`):
 
 ### Live-sample iframe status
 
-Iframe nodes (from `inspect/styled.json` + `inspect/fragment_tree.json`):
+Iframe nodes (from `inspect/dom.json` + `inspect/fragment_tree.json`):
 
 * `iframe#frame_using_multiple_writing_modes.sample-code-frame`
-  * bounds: `(x=1.0,y=50.6,w=432.0,h=732.0)`
-  * `src=about:blank`, `srcdoc=null`
+  * `src=assets/6cb36740d41f266bc9b10239b3566fce.html`, `srcdoc=null`
+  * absolute bounds in document: `(x≈273.0,y≈7077.9,w=432.0,h=732.0)`
 * `iframe#frame_using_writing-mode_with_transforms.sample-code-frame`
-  * bounds: `(x=1.0,y=50.6,w=432.0,h=232.0)`
-  * `src=about:blank`, `srcdoc=null`
+  * `src=assets/25d003c583ed8f42996d3c0fd953a75a.html`, `srcdoc=null`
+  * absolute bounds in document: `(x≈273.0,y≈10125.4,w=432.0,h=232.0)`
 
-Observation: both sample iframes show up at the same `y=50.6` in the fragment tree (overlapping bounds). Since both are `about:blank`, this overlap does not surface as “vertical writing” content; it *may* still affect downstream flow/layout spacing.
+Note: the raw `bounds` stored on the iframe fragments are relative to their local fragment ancestry. When summing ancestry offsets, these iframes land thousands of pixels down the page, so they do not appear in the default page-loop viewport screenshot.
 
 ### Top 5 diff clusters (coarse 20×20px tile clustering)
 
@@ -199,8 +207,10 @@ Diff metrics:
 ### Live-sample iframe status
 
 * `iframe#frame_examples.sample-code-frame`
-  * bounds: `(x=1.0,y=50.6,w=332.0,h=182.0)`
-  * `src=about:blank`, `srcdoc=null`
+  * `src=assets/bbdc8f8a42d1b5971ca198c5d62428f0.html`, `srcdoc=null`
+  * absolute bounds in document: `(x≈273.0,y≈3689.9,w=332.0,h=182.0)`
+
+Note: this iframe is also offscreen in the default page-loop viewport.
 
 ### Top 5 diff clusters (coarse 20×20px tile clustering)
 
@@ -245,8 +255,10 @@ Diff metrics:
 ### Live-sample iframe status
 
 * `iframe#frame_example_using_all.sample-code-frame`
-  * bounds: `(x=1.0,y=50.6,w=282.0,h=232.0)`
-  * `src=about:blank`, `srcdoc=null`
+  * `src=assets/489b0c9653c1ac283ee32072caaf5ec2.html`, `srcdoc=null`
+  * absolute bounds in document: `(x≈273.0,y≈3774.5,w=282.0,h=232.0)`
+
+Note: this iframe is also offscreen in the default page-loop viewport.
 
 ### Top 5 diff clusters (coarse 20×20px tile clustering)
 
@@ -276,14 +288,13 @@ Diff metrics:
 
 ## Actionable follow-up checklist
 
-1. **Make MDN live samples actually render (unblocks vertical writing triage).**
-   * Option A: Extend DOM compatibility mode to synthesize `iframe.srcdoc` for MDN’s `sample-code-frame` from nearby `live-sample---*` code blocks (keyed by `data-live-id`).
-     * start at: `src/dom.rs` iframe compat block (`data-live-path` exists today, but MDN needs `data-live-id` too).
-   * Option B: Extend fixture capture/rewriting to replace `src=about:blank` with a local sample HTML file and ensure it’s included in the fixture bundle.
-     * relevant plumbing: `src/html/asset_discovery.rs` (embedded documents) + fixture bundling tools.
-2. If enabling JS in Chrome baselines is desired for MDN, `xtask fixture-chrome-diff` already supports `--js on` (`xtask/src/fixture_chrome_diff.rs`), but `xtask page-loop` does not currently forward a JS mode to `chrome-baseline-fixtures` (`xtask/src/page_loop.rs:build_chrome_baseline_command`).
-3. Once live samples render, re-run these fixtures and expect diffs to start exercising:
-   * vertical writing-mode layout axes (`src/layout/axis.rs`),
-   * vertical glyph orientation (`src/text/pipeline.rs`),
-   * text combine grouping (`src/layout/contexts/inline/mod.rs`).
-
+1. **Make the vertical-writing samples visible in the page-loop viewport.**
+   * Option A (simplest): add dedicated fixtures that render the iframe `assets/*.html` directly, e.g.:
+     * `tests/pages/fixtures/developer.mozilla.org_en-US_docs_Web_CSS_writing-mode/assets/6cb36740d41f266bc9b10239b3566fce.html` (writing-mode table)
+     * `tests/pages/fixtures/developer.mozilla.org_en-US_docs_Web_CSS_text-orientation/assets/bbdc8f8a42d1b5971ca198c5d62428f0.html` (vertical-rl + text-orientation)
+     * `tests/pages/fixtures/developer.mozilla.org_en-US_docs_Web_CSS_text-combine-upright/assets/489b0c9653c1ac283ee32072caaf5ec2.html` (vertical-rl + text-combine-upright)
+   * Option B: extend `xtask page-loop` + the Chrome baseline harness to scroll to a fragment anchor (e.g. `index.html#examples`) or to render a full-page screenshot (fit canvas to content).
+2. Once the sample content is in-view, re-run these fixtures and expect diffs to start exercising:
+    * vertical writing-mode layout axes (`src/layout/axis.rs`),
+    * vertical glyph orientation (`src/text/pipeline.rs`),
+    * text combine grouping (`src/layout/contexts/inline/mod.rs`).
