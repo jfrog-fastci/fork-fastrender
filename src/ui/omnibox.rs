@@ -853,11 +853,14 @@ fn match_score_url(
   raw: &str,
   needle_lower: &str,
 ) -> Option<i64> {
-  let raw_score = match_score(raw, needle_lower);
-
   let Some(url) = parsed else {
-    return raw_score;
+    return match_score(raw, needle_lower);
   };
+  let prefix_score = raw
+    .as_bytes()
+    .get(..needle_lower.len())
+    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(needle_lower.as_bytes()))
+    .then_some(1_200);
   let host_score = match_score_http_host(url.host, needle_lower);
 
   // Score path + query, but keep it lower than host matches.
@@ -865,7 +868,14 @@ fn match_score_url(
   let query_score = url.query.and_then(|q| match_score_pathish(q, needle_lower));
   let path_query_score = path_score.max(query_score);
 
-  raw_score.max(host_score).max(path_query_score)
+  let best_structured = host_score.max(path_query_score).max(prefix_score);
+  // If we have any structured/prefix match >= 199, a non-prefix raw match cannot beat it:
+  // `match_score` without the prefix bonus is at most `200 - 1 = 199`.
+  if matches!(best_structured, Some(score) if score >= 199) {
+    return best_structured;
+  }
+
+  best_structured.max(match_score(raw, needle_lower))
 }
 
 fn match_score_http_host(host: &str, needle_lower: &str) -> Option<i64> {
