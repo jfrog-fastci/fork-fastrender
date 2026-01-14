@@ -304,7 +304,7 @@ fn format_history_timestamp_ms_cached(ctx: &egui::Context, visited_at_ms: u64) -
 #[cfg(all(test, feature = "browser_ui"))]
 mod tests {
   use super::history_panel_ui;
-  use crate::ui::{a11y_labels, a11y_test_util, GlobalHistoryStore};
+  use crate::ui::{a11y_labels, a11y_test_util, GlobalHistorySearcher, GlobalHistoryStore};
 
   fn begin_frame_with_events(ctx: &egui::Context, events: Vec<egui::Event>) {
     let mut raw = egui::RawInput::default();
@@ -353,6 +353,7 @@ mod tests {
   #[test]
   fn history_panel_accesskit_node_ids_stable_across_reorder() {
     let mut history = GlobalHistoryStore::with_capacity(10);
+    let mut searcher = GlobalHistorySearcher::new();
     let url_a = "https://example.com/a".to_string();
     let url_b = "https://example.com/b".to_string();
     history.record(url_a.clone(), None);
@@ -414,6 +415,7 @@ mod tests {
   fn escape_clears_search_then_requests_close() {
     let ctx = egui::Context::default();
     let history = GlobalHistoryStore::default();
+    let mut searcher = GlobalHistorySearcher::new();
 
     let mut searcher = crate::ui::GlobalHistorySearcher::new();
     let mut search_text = String::new();
