@@ -690,6 +690,126 @@ fn compiled_script_top_level_await_member_assignment_on_primitive_base_strict_mo
 }
 
 #[test]
+fn compiled_script_top_level_await_member_assignment_to_read_only_property_sloppy_mode_does_not_put_value(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var log = [];
+      var obj = {};
+      Object.defineProperty(obj, "x", { value: 1, writable: false });
+      obj.x = await Promise.resolve((log.push("rhs"), 2));
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await assignment should be supported by the HIR async classic-script executor"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let result_root = rt.heap_mut().add_root(result)?;
+
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(
+    rt.heap().is_promise_object(promise_obj),
+    "expected Promise return value from async classic script"
+  );
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
+
+  // The await argument should have been evaluated, but the PutValue step should not have happened yet.
+  let log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, log), "rhs");
+  let x = rt.exec_script("obj.x")?;
+  assert_eq!(value_to_number(x), 1.0);
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  // Sloppy-mode assignment to a non-writable property fails silently, but the assignment expression
+  // still evaluates to the RHS value.
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let promise_result = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  assert_eq!(value_to_number(promise_result), 2.0);
+
+  let x = rt.exec_script("obj.x")?;
+  assert_eq!(value_to_number(x), 1.0);
+
+  rt.heap_mut().remove_root(result_root);
+  Ok(())
+}
+
+#[test]
+fn compiled_script_top_level_await_member_assignment_to_read_only_property_strict_mode_throws_after_await(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      "use strict";
+      var log = [];
+      var obj = {};
+      Object.defineProperty(obj, "x", { value: 1, writable: false });
+      Promise.resolve().then(() => { log.push("mt"); });
+      obj.x = await Promise.resolve((log.push("rhs"), 2));
+      log.push("after");
+      obj.x
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await assignment should be supported by the HIR async classic-script executor"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let result_root = rt.heap_mut().add_root(result)?;
+
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(
+    rt.heap().is_promise_object(promise_obj),
+    "expected Promise return value from async classic script"
+  );
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
+
+  let log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, log), "rhs");
+  let x = rt.exec_script("obj.x")?;
+  assert_eq!(value_to_number(x), 1.0);
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  // Strict-mode assignment to a non-writable property throws TypeError at PutValue time.
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Rejected);
+  let reason = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("rejected promise should have a reason");
+  assert_eq!(error_name(&mut rt, reason)?, "TypeError");
+
+  // The pre-scheduled microtask runs before await resumption; ensure it ran and that the statement
+  // after the failing assignment did not.
+  let log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, log), "rhs,mt");
+  let x = rt.exec_script("obj.x")?;
+  assert_eq!(value_to_number(x), 1.0);
+
+  rt.heap_mut().remove_root(result_root);
+  Ok(())
+}
+
+#[test]
 fn compiled_script_top_level_await_assignment_rejection_does_not_put_value() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
@@ -1089,6 +1209,69 @@ fn compiled_script_top_level_await_global_property_binding_assignment_strict_mod
 }
 
 #[test]
+fn compiled_script_top_level_await_global_property_binding_compound_assignment_strict_mode_succeeds_even_if_deleted_while_suspended(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      "use strict";
+      Object.defineProperty(globalThis, "x", { value: 1, writable: true, configurable: true });
+      var log = [];
+      Promise.resolve().then(() => { delete globalThis.x; log.push("mt"); });
+      x += await Promise.resolve((log.push("rhs"), 2));
+      log.push("after");
+      globalThis.x
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await compound assignment should be supported by the HIR async classic-script executor"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let result_root = rt.heap_mut().add_root(result)?;
+
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(
+    rt.heap().is_promise_object(promise_obj),
+    "expected Promise return value from async classic script"
+  );
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
+
+  // The await argument should have been evaluated, but microtasks should not have executed yet.
+  let log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, log), "rhs");
+  let x = rt.exec_script("globalThis.x")?;
+  assert_eq!(value_to_number(x), 1.0);
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let promise_result = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+
+  // The global property is deleted by a microtask before resumption, but compound assignment should
+  // still succeed using the original LHS value (1) and recreate the property.
+  assert_eq!(value_to_number(promise_result), 3.0);
+
+  let log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, log), "rhs,mt,after");
+  let x = rt.exec_script("globalThis.x")?;
+  assert_eq!(value_to_number(x), 3.0);
+
+  rt.heap_mut().remove_root(result_root);
+  Ok(())
+}
+
+#[test]
 fn compiled_script_top_level_await_unresolvable_binding_assignment_sloppy_mode_puts_value_after_await() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
@@ -1421,6 +1604,76 @@ fn compiled_script_top_level_await_in_computed_member_compound_assignment_reads_
     value_to_utf8(&rt, log),
     "key,get,rhs,set:100,set:3,after"
   );
+
+  rt.heap_mut().remove_root(result_root);
+  Ok(())
+}
+
+#[test]
+fn compiled_script_top_level_await_in_computed_member_compound_assignment_to_property_key_is_not_recomputed_after_await(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var log = [];
+      var store = 1;
+      var obj = {};
+      Object.defineProperty(obj, "k", {
+        get() { log.push("get"); return store; },
+        set(v) { log.push("set:" + v); store = v; }
+      });
+      var key = { toString() { log.push("toString"); return "k"; } };
+      Promise.resolve().then(() => {
+        key.toString = function() { log.push("toString2"); return "x"; };
+        log.push("mt");
+      });
+      obj[key] += await Promise.resolve((log.push("rhs"), 2));
+      log.push("after");
+      log.join(",")
+    "#,
+  )?;
+  assert!(script.contains_top_level_await);
+  assert!(
+    !script.top_level_await_requires_ast_fallback,
+    "top-level await in a computed member compound assignment should be supported by the HIR async classic-script executor"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let result_root = rt.heap_mut().add_root(result)?;
+
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(
+    rt.heap().is_promise_object(promise_obj),
+    "expected Promise return value from async classic script"
+  );
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
+
+  // `ToPropertyKey(key)` must happen before evaluating the await operand and must not be repeated
+  // after resumption.
+  let log = rt.exec_script("log.join(',')")?;
+  assert_eq!(value_to_utf8(&rt, log), "toString,get,rhs");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let promise_result = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  assert_eq!(
+    value_to_utf8(&rt, promise_result),
+    "toString,get,rhs,mt,set:3,after"
+  );
+
+  let store = rt.exec_script("store")?;
+  assert_eq!(value_to_number(store), 3.0);
+  let v = rt.exec_script("obj.k")?;
+  assert_eq!(value_to_number(v), 3.0);
 
   rt.heap_mut().remove_root(result_root);
   Ok(())
