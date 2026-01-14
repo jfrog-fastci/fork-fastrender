@@ -6574,9 +6574,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   // is created, so avoid even formatting the user-facing messages.
   let record_startup_profile_notifications = !cli.exit_immediately
     && !cli.headless_smoke
+    && !cli.headless_download_smoke
     && !cli.headless_crash_smoke
     && std::env::var_os("FASTR_TEST_BROWSER_EXIT_IMMEDIATELY").is_none()
     && std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_SMOKE").is_none()
+    && std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_DOWNLOAD_SMOKE").is_none()
     && std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_CRASH_SMOKE").is_none();
 
   let mut startup_profile_notifications: Vec<String> = Vec::new();
