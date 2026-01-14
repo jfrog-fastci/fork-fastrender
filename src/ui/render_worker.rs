@@ -8688,7 +8688,7 @@ impl BrowserRuntime {
       pos
     };
 
-    self.handle_context_menu_request(tab_id, pos_css, crate::ui::PointerModifiers::NONE);
+    self.handle_context_menu_request(tab_id, pos_css, crate::ui::PointerModifiers::default());
   }
 
   fn handle_select_dropdown_choose(
