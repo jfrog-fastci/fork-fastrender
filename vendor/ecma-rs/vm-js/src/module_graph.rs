@@ -3201,14 +3201,9 @@ impl ModuleGraph {
       graph_guard.disarm();
     }
 
-    // Ensure host-visible failures never leak internal helper errors (TypeError, NotCallable, etc.)
-    // when intrinsics are available.
-    //
-    // Preserve `VmError::Unimplemented` as-is so embeddings using the sync API can reliably detect
-    // unsupported language features (e.g. top-level await) without having to decode thrown Error
-    // objects.
+    // Ensure host-visible failures never leak internal helper errors (TypeError, NotCallable,
+    // Unimplemented, etc.) when intrinsics are available.
     match result {
-      Err(err @ VmError::Unimplemented(_)) => Err(err),
       Err(err) if err.is_throw_completion() => Err(crate::vm::coerce_error_to_throw_with_stack(
         &*vm,
         scope,
