@@ -1,6 +1,7 @@
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::resource::ResourcePolicy;
-use fastrender::{FastRender, FontConfig, LayoutParallelism, PaintParallelism, RenderOptions};
+use fastrender::scroll::ScrollState;
+use fastrender::{BoxType, FastRender, FontConfig, LayoutParallelism, PaintParallelism, Point, Rgba, RenderOptions};
 use std::collections::HashMap;
 use std::sync::Once;
 
@@ -63,6 +64,27 @@ fn count_vertical_bands(row_counts: &[u32], min_row_ink: u32) -> u32 {
     }
   }
   bands
+}
+
+fn first_form_control_box_id(root: &fastrender::BoxNode) -> Option<usize> {
+  let mut stack: Vec<&fastrender::BoxNode> = vec![root];
+  while let Some(node) = stack.pop() {
+    if let BoxType::Replaced(replaced) = &node.box_type {
+      if matches!(
+        replaced.replaced_type,
+        fastrender::tree::box_tree::ReplacedType::FormControl(_)
+      ) {
+        return Some(node.id);
+      }
+    }
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+  None
 }
 
 #[test]
@@ -203,5 +225,76 @@ fn legacy_text_input_forces_single_line_placeholder_no_wrap() {
   assert!(
     ink_height < 30,
     "expected `<input>` placeholder to paint as a single line in legacy backend; ink height={ink_height} (y={min_y}..={max_y})"
+  );
+}
+
+#[test]
+fn legacy_text_input_scroll_x_is_clamped_when_focused() {
+  ensure_test_env();
+
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "legacy".to_string(),
+  )]));
+
+  let mut renderer = FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .runtime_toggles(toggles.clone())
+    .resource_policy(
+      ResourcePolicy::default()
+        .allow_http(false)
+        .allow_https(false),
+    )
+    .paint_parallelism(PaintParallelism::disabled())
+    .layout_parallelism(LayoutParallelism::disabled())
+    .build()
+    .expect("renderer");
+
+  // Use autofocus so the input is focused and we exercise the scroll_x clamping logic (which lives
+  // on the focused path).
+  let html = r#"
+    <!doctype html>
+    <style>
+      html, body { margin: 0; background: white; }
+      input {
+        width: 30px;
+        height: 80px;
+        padding: 0;
+        border: none;
+        background: transparent;
+        font-family: "Noto Sans", sans-serif;
+        /* Wrapping-friendly authored styles; the painter must still force nowrap. */
+        white-space: pre-wrap;
+        text-wrap: wrap;
+        font-size: 16px;
+        color: black;
+      }
+    </style>
+    <input type="text" autofocus value="MMMM MMMM MMMM MMMM MMMM MMMM MMMM MMMM" />
+  "#;
+
+  let options = RenderOptions::new()
+    .with_viewport(120, 120)
+    .with_runtime_toggles(toggles);
+  let prepared = renderer.prepare_html(html, options).expect("prepare html");
+
+  let input_box_id =
+    first_form_control_box_id(&prepared.box_tree().root).expect("find input box_id");
+
+  // Provide an absurd scroll offset; the paint path should clamp it to the max scroll range rather
+  // than scrolling the text completely out of view.
+  let mut element_offsets = HashMap::new();
+  element_offsets.insert(input_box_id, Point::new(10_000.0, 0.0));
+  let scroll_state = ScrollState::from_parts(Point::ZERO, element_offsets);
+
+  let pixmap = prepared
+    .paint_with_scroll_state(scroll_state, Some((120, 120)), Some(Rgba::WHITE), None)
+    .expect("paint");
+
+  let row_counts = ink_row_counts(&pixmap);
+  let ink_bands = count_vertical_bands(&row_counts, 5);
+  assert_eq!(
+    ink_bands, 1,
+    "expected scrolled `<input>` value to still paint as a single line; bands={ink_bands}"
   );
 }
