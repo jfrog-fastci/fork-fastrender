@@ -15988,7 +15988,28 @@ impl HirAsyncClassStaticBlockState {
         .set_meta_property_context(MetaPropertyContext::METHOD);
 
       let var_env = block_scope.env_create(Some(saved_lex))?;
+      // Mark the static-block var environment as a "this environment" so arrow functions created in
+      // the block resolve their lexical `this` / `new.target` to the class constructor object.
+      //
+      // `vm-js` models arrow lexical `this` by walking the environment chain to the nearest
+      // declarative environment record with `new_target: Some(..)` (`Heap::resolve_this_env`).
+      block_scope
+        .heap_mut()
+        .env_set_this_value(var_env, Some(Value::Object(receiver)))?;
+      block_scope
+        .heap_mut()
+        .env_set_new_target(var_env, Some(Value::Undefined))?;
       let body_lex = block_scope.env_create(Some(var_env))?;
+      // Mark the static block lexical environment as a "this environment" as well, mirroring
+      // `HirEvaluator::eval_class_static_block_hir` and the AST evaluator (`exec.rs`), so any arrow
+      // functions created in the block can later resolve lexical `this` correctly even after the
+      // outer async class evaluation resumes.
+      block_scope
+        .heap_mut()
+        .env_set_this_value(body_lex, Some(Value::Object(receiver)))?;
+      block_scope
+        .heap_mut()
+        .env_set_new_target(body_lex, Some(Value::Undefined))?;
       evaluator.env.set_var_env(VarEnv::Env(var_env));
       evaluator.env.set_lexical_env(block_scope.heap_mut(), body_lex);
 

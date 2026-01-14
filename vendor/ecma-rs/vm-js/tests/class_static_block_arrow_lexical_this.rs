@@ -87,9 +87,9 @@ fn arrow_this_in_async_class_static_block_uses_class_constructor_ast() -> Result
       async function f() {
         class C {
           static {
-            await Promise.resolve(0);
             this.f = () => this;
           }
+          [(await Promise.resolve("m"))]() {}
         }
         return C.f() === C;
       }
