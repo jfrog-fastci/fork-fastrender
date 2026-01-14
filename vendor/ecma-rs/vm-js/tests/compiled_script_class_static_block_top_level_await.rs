@@ -4,12 +4,10 @@ use vm_js::{CompiledScript, Heap, HeapLimits, VmError};
 fn compiled_script_rejects_await_in_class_expression_static_block() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
 
-  // `vm-js` retries classic scripts with top-level `await` enabled ("async classic scripts"), so
-  // parsing can succeed here. However, `await` expressions are still an early error in class static
-  // blocks, so compilation must fail with a syntax error.
+  // `vm-js` retries classic scripts with top-level await enabled ("async classic scripts"), but
+  // class static blocks are parsed in a `~Await` context, so `await` is still a syntax error.
   //
-  // Use a class *expression* (not a declaration) to ensure early errors are still detected when
-  // the class appears in expression position.
+  // Use a class *expression* so we cover that path as well as the class-declaration case.
   let err = CompiledScript::compile_script(
     &mut heap,
     "script.js",
@@ -26,6 +24,5 @@ fn compiled_script_rejects_await_in_class_expression_static_block() -> Result<()
     VmError::Syntax(diags) => assert!(!diags.is_empty()),
     other => panic!("expected VmError::Syntax, got {other:?}"),
   }
-
   Ok(())
 }

@@ -89,9 +89,9 @@ pub struct CompiledScript {
   ///   body contain no other `await`, and the RHS contains no `await` other than an optional
   ///   outer `await <expr>` (with no nested `await` inside `<expr>`)
   ///
-  /// Any other top-level await usage (e.g. `await` inside nested blocks like `class static {}`, or
-  /// nested `await` inside the awaited subexpression, or additional `await` inside a `for
-  /// await..of` loop body) must be executed via the AST evaluator to avoid partially executing
+  /// Any other top-level await usage (e.g. `await` inside nested blocks, nested `await` inside the
+  /// awaited subexpression, or additional `await` inside a `for await..of` loop body) must be
+  /// executed via the AST evaluator to avoid partially executing
   /// compiled HIR before discovering an unsupported construct.
   ///
   /// This flag allows callers (notably [`crate::JsRuntime::exec_compiled_script`] for classic
@@ -183,8 +183,8 @@ impl CompiledScript {
     // merely define/call generators can still run via the compiled executor.
     //
     // Fall back to the AST interpreter when the script uses unsupported top-level await forms (for
-    // example `await` nested inside class static blocks, or `for await..of` bodies that themselves
-    // contain `await`).
+    // example `await` inside nested blocks, or `for await..of` bodies that themselves contain
+    // `await`).
     let requires_ast_fallback =
       contains_private_names || top_level_await_requires_ast_fallback;
 
@@ -658,9 +658,9 @@ fn expr_contains_await(expr: &Node<Expr>) -> bool {
             return true;
           }
           match &member.stx.val {
-            // Class static blocks execute during class evaluation, so any `await` they contain
-            // contributes to async script/module evaluation.
-            ClassOrObjVal::StaticBlock(block) => block.stx.body.iter().any(stmt_contains_await),
+            // Class static blocks are parsed in a `~Await` context, so `await` expressions are not
+            // permitted.
+            ClassOrObjVal::StaticBlock(_) => false,
             _ => false,
           }
         })
@@ -1077,8 +1077,9 @@ fn stmt_contains_await(stmt: &Node<Stmt>) -> bool {
             return true;
           }
           match &member.stx.val {
-            // Static blocks execute during class evaluation, and can suspend with `await`.
-            ClassOrObjVal::StaticBlock(block) => block.stx.body.iter().any(stmt_contains_await),
+            // Class static blocks are parsed in a `~Await` context, so `await` expressions are not
+            // permitted.
+            ClassOrObjVal::StaticBlock(_) => false,
             _ => false,
           }
         })
@@ -1514,9 +1515,8 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
       // Reject class fields: `AsyncClassDeclState` does not support them in the async path.
       match &member.stx.val {
         ClassOrObjVal::Prop(_) | ClassOrObjVal::IndexSignature(_) => return false,
-        // The compiled async class evaluator does not currently support `await` inside static
-        // blocks. Those awaits are nested under the class body and require additional state-machine
-        // support.
+        // Class static blocks are parsed in a `~Await` context, so `await` should not appear here.
+        // Treat it as unsupported for the compiled async class evaluator to be safe.
         ClassOrObjVal::StaticBlock(block) => {
           if block.stx.body.iter().any(stmt_contains_await) {
             return false;
@@ -1536,8 +1536,7 @@ fn top_level_await_requires_ast_fallback(stmts: &[Node<Stmt>]) -> bool {
     }
 
     // Require an actual `await` in supported class positions. This avoids accidentally accepting a
-    // class declaration whose only `await` appears in an unsupported nested position (e.g. inside a
-    // static block).
+    // class declaration whose only `await` appears in an unsupported nested position.
     has_supported_await
   }
 
