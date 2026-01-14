@@ -12675,6 +12675,10 @@ pub(crate) fn hir_async_resume_call(
     let body = hir
       .body(hir.root_body())
       .ok_or(VmError::InvariantViolation("compiled script root body not found"))?;
+    // Avoid borrowing `evaluator` immutably across `eval_expr` calls: we need mutable access to the
+    // evaluator while executing.
+    let source = evaluator.script.source.clone();
+
       let eval: Result<HirAsyncEvalResult, VmError> = (|| {
         match cont.resume {
           HirAsyncResumePoint::ExprStmt { next_stmt_index } => {
@@ -12704,6 +12708,7 @@ pub(crate) fn hir_async_resume_call(
               "hir async var decl resume stmt index out of bounds",
             ))?;
           let stmt = evaluator.get_stmt(body, stmt_id)?;
+          let stmt_offset = stmt.span.start;
           let hir_js::StmtKind::Var(var_decl) = &stmt.kind else {
             return Err(VmError::InvariantViolation(
               "hir async var decl resume target is not a var declaration",
@@ -12717,14 +12722,22 @@ pub(crate) fn hir_async_resume_call(
             ))?;
 
           // Initialize the awaited declarator binding with the resumed value.
-          evaluator.bind_var_decl_pat(
+          if let Err(err) = evaluator.bind_var_decl_pat(
             scope,
             body,
             declarator.pat,
             var_decl.kind,
             /* init_missing */ false,
             arg0,
-          )?;
+          ) {
+            return Err(finalize_throw_with_stack_at_source_offset(
+              &*evaluator.vm,
+              scope,
+              source.as_ref(),
+              stmt_offset,
+              err,
+            ));
+          }
 
           // Continue evaluating subsequent declarators in the same declaration.
           for (j, declarator) in var_decl
@@ -12739,7 +12752,18 @@ pub(crate) fn hir_async_resume_call(
               let init_expr = evaluator.get_expr(body, init)?;
               if let hir_js::ExprKind::Await { expr: awaited_expr } = init_expr.kind {
                 evaluator.vm.tick()?;
-                let await_value = evaluator.eval_expr(scope, body, awaited_expr)?;
+                let await_value = match evaluator.eval_expr(scope, body, awaited_expr) {
+                  Ok(v) => v,
+                  Err(err) => {
+                    return Err(finalize_throw_with_stack_at_source_offset(
+                      &*evaluator.vm,
+                      scope,
+                      source.as_ref(),
+                      stmt_offset,
+                      err,
+                    ))
+                  }
+                };
                 return Ok(HirAsyncEvalResult::Await {
                   await_value,
                   resume: HirAsyncResumePoint::VarDecl {
@@ -12751,17 +12775,36 @@ pub(crate) fn hir_async_resume_call(
               }
             }
             let value = match declarator.init {
-              Some(init) => evaluator.eval_expr(scope, body, init)?,
+              Some(init) => match evaluator.eval_expr(scope, body, init) {
+                Ok(v) => v,
+                Err(err) => {
+                  return Err(finalize_throw_with_stack_at_source_offset(
+                    &*evaluator.vm,
+                    scope,
+                    source.as_ref(),
+                    stmt_offset,
+                    err,
+                  ))
+                }
+              },
               None => Value::Undefined,
             };
-            evaluator.bind_var_decl_pat(
+            if let Err(err) = evaluator.bind_var_decl_pat(
               scope,
               body,
               declarator.pat,
               var_decl.kind,
               init_missing,
               value,
-            )?;
+            ) {
+              return Err(finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                scope,
+                source.as_ref(),
+                stmt_offset,
+                err,
+              ));
+            }
           }
 
           // The variable statement completes with an empty value; continue with the next root stmt.
@@ -12777,6 +12820,18 @@ pub(crate) fn hir_async_resume_call(
           }
           HirAsyncResumePoint::Assignment { next_stmt_index } => {
             // Complete the suspended assignment expression statement (`x = await <expr>;`).
+            let stmt_index = next_stmt_index.checked_sub(1).ok_or(VmError::InvariantViolation(
+              "hir async assignment resume missing statement index",
+            ))?;
+            let stmt_id = *body
+              .root_stmts
+              .get(stmt_index)
+              .ok_or(VmError::InvariantViolation(
+                "hir async assignment resume stmt index out of bounds",
+              ))?;
+            let stmt = evaluator.get_stmt(body, stmt_id)?;
+            let stmt_offset = stmt.span.start;
+
             let reference = cont.assign_reference.take().ok_or(VmError::InvariantViolation(
               "hir async assignment resume missing assignment reference",
             ))?;
@@ -12784,8 +12839,26 @@ pub(crate) fn hir_async_resume_call(
               let mut assign_scope = scope.reborrow();
               // Root the resumed value across anonymous function naming + PutValue operations.
               assign_scope.push_root(arg0)?;
-              evaluator.maybe_set_anonymous_function_name_for_assignment(&mut assign_scope, &reference, arg0)?;
-              evaluator.put_value_to_assignment_reference(&mut assign_scope, &reference, arg0)?;
+              if let Err(err) =
+                evaluator.maybe_set_anonymous_function_name_for_assignment(&mut assign_scope, &reference, arg0)
+              {
+                return Err(finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  &mut assign_scope,
+                  source.as_ref(),
+                  stmt_offset,
+                  err,
+                ));
+              }
+              if let Err(err) = evaluator.put_value_to_assignment_reference(&mut assign_scope, &reference, arg0) {
+                return Err(finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  &mut assign_scope,
+                  source.as_ref(),
+                  stmt_offset,
+                  err,
+                ));
+              }
             }
 
             // The assignment expression evaluates to the assigned value and becomes the statement-list

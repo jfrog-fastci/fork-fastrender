@@ -236,3 +236,136 @@ fn compiled_top_level_await_implicit_throw_has_error_stack() -> Result<(), VmErr
   rt.heap_mut().remove_root(completion_root);
   Ok(())
 }
+
+#[test]
+fn compiled_top_level_await_destructure_throw_after_resume_has_error_stack() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  // Top-level await allocates Promise/job machinery; use a larger heap to avoid spurious OOMs.
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // Destructuring happens *after* the await resumes, so this exercises async-script resume logic.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    "const { x } = await Promise.resolve(null);",
+  )?;
+
+  let completion = rt.exec_compiled_script(script)?;
+  let completion_root = rt.heap_mut().add_root(completion)?;
+
+  let Value::Object(promise_obj) = completion else {
+    panic!("expected Promise object, got {completion:?}");
+  };
+  assert!(rt.heap().is_promise_object(promise_obj));
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Rejected);
+  let reason = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("rejected promise should have a result");
+  let Value::Object(reason_obj) = reason else {
+    panic!("expected rejected promise reason to be an object, got {reason:?}");
+  };
+
+  let stack = {
+    let mut scope = rt.heap_mut().scope();
+    scope.push_root(Value::Object(reason_obj))?;
+
+    let stack_key_s = scope.alloc_string("stack")?;
+    scope.push_root(Value::String(stack_key_s))?;
+    let stack_key = PropertyKey::from_string(stack_key_s);
+
+    let stack_v = scope
+      .heap()
+      .object_get_own_data_property_value(reason_obj, &stack_key)?
+      .unwrap_or(Value::Undefined);
+    let Value::String(stack_s) = stack_v else {
+      panic!("expected stack string, got {stack_v:?}");
+    };
+    scope.heap().get_string(stack_s)?.to_utf8_lossy()
+  };
+
+  assert!(!stack.is_empty(), "expected non-empty stack string");
+  assert!(
+    stack.contains("TypeError"),
+    "expected stack string to contain error name, got {stack:?}"
+  );
+  assert!(
+    stack.contains("at ") && stack.contains("test.js:1:1"),
+    "expected stack string to contain stack frames, got {stack:?}"
+  );
+
+  rt.heap_mut().remove_root(completion_root);
+  Ok(())
+}
+
+#[test]
+fn compiled_top_level_await_assignment_throw_after_resume_has_error_stack() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  // Top-level await allocates Promise/job machinery; use a larger heap to avoid spurious OOMs.
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // Unresolvable assignment in strict mode throws on PutValue, which happens *after* the await
+  // resumes.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    "\"use strict\";\nx = await Promise.resolve(0);",
+  )?;
+
+  let completion = rt.exec_compiled_script(script)?;
+  let completion_root = rt.heap_mut().add_root(completion)?;
+
+  let Value::Object(promise_obj) = completion else {
+    panic!("expected Promise object, got {completion:?}");
+  };
+  assert!(rt.heap().is_promise_object(promise_obj));
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Pending);
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Rejected);
+  let reason = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("rejected promise should have a result");
+  let Value::Object(reason_obj) = reason else {
+    panic!("expected rejected promise reason to be an object, got {reason:?}");
+  };
+
+  let stack = {
+    let mut scope = rt.heap_mut().scope();
+    scope.push_root(Value::Object(reason_obj))?;
+
+    let stack_key_s = scope.alloc_string("stack")?;
+    scope.push_root(Value::String(stack_key_s))?;
+    let stack_key = PropertyKey::from_string(stack_key_s);
+
+    let stack_v = scope
+      .heap()
+      .object_get_own_data_property_value(reason_obj, &stack_key)?
+      .unwrap_or(Value::Undefined);
+    let Value::String(stack_s) = stack_v else {
+      panic!("expected stack string, got {stack_v:?}");
+    };
+    scope.heap().get_string(stack_s)?.to_utf8_lossy()
+  };
+
+  assert!(!stack.is_empty(), "expected non-empty stack string");
+  assert!(
+    stack.contains("ReferenceError"),
+    "expected stack string to contain error name, got {stack:?}"
+  );
+  assert!(
+    stack.contains("at ") && stack.contains("test.js:2:1"),
+    "expected stack string to contain stack frames, got {stack:?}"
+  );
+
+  rt.heap_mut().remove_root(completion_root);
+  Ok(())
+}
