@@ -1194,25 +1194,7 @@ status = "xfail"
 reason = "vm-js does not yet implement RegExp literals (test uses `/a/g`)."
 
 [[expectations]]
-glob = "built-ins/Symbol/for/**"
-status = "pass"
-
-[[expectations]]
-id = "built-ins/Symbol/for/cross-realm.js"
-status = "xfail"
-reason = "vm-js does not yet expose the test262 $262 host realm API (createRealm)."
-
-[[expectations]]
-glob = "built-ins/Symbol/keyFor/**"
-status = "pass"
-
-[[expectations]]
-id = "built-ins/Symbol/keyFor/cross-realm.js"
-status = "xfail"
-reason = "vm-js does not yet expose the test262 $262 host realm API (createRealm)."
-
-[[expectations]]
-glob = "built-ins/Symbol/prototype/description/**"
+glob = "built-ins/Symbol/**"
 status = "pass"
 
 [[expectations]]
@@ -2212,11 +2194,6 @@ reason = "vm-js: built-in coverage is still incomplete; tracked via curated test
 
 [[expectations]]
 glob = "built-ins/Boolean/**"
-status = "xfail"
-reason = "vm-js: built-in coverage is still incomplete; tracked via curated test262 progress."
-
-[[expectations]]
-glob = "built-ins/Symbol/**"
 status = "xfail"
 reason = "vm-js: built-in coverage is still incomplete; tracked via curated test262 progress."
 
