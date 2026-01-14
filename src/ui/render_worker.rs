@@ -4277,7 +4277,6 @@ impl BrowserRuntime {
           if let Some(pointer_css) = pointer_pos_css {
             // Give a focused `<input type=number>` under the pointer a chance to consume the wheel
             // gesture for numeric stepping (instead of scrolling the page).
-            // gesture for numeric stepping (instead of scrolling the page).
             let scroll_snapshot = tab.scroll_state.clone();
             let hit_tree = hit_test_fragment_tree_for_scroll_cached(
               &mut tab.hit_test_fragment_tree_cache,
