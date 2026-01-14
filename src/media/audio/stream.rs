@@ -13,10 +13,11 @@
 //! This is *not* time-stretching: pitch changes with speed. The resampler is intentionally simple
 //! (linear interpolation) for an MVP.
 
-use super::resample::resample_interleaved_f32_linear_with_playback_rate;
+use super::resample::resample_interleaved_f32_linear_with_playback_rate_into;
 use super::{AudioSink, AudioStreamConfig};
 use crate::debug::trace::TraceHandle;
 use crate::media::clock::{AudioDeviceClock, AudioStreamClock, MediaClock};
+use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -55,6 +56,7 @@ struct AudioStreamInner {
   playback_rate_bits: AtomicU64,
   clock: AudioStreamClock,
   trace: TraceHandle,
+  resample_scratch: Mutex<Vec<f32>>,
 }
 
 impl AudioStreamHandle {
@@ -110,6 +112,7 @@ impl AudioStreamHandle {
         playback_rate_bits: AtomicU64::new(1.0_f64.to_bits()),
         clock,
         trace,
+        resample_scratch: Mutex::new(Vec::new()),
       }),
     })
   }
@@ -220,7 +223,11 @@ impl AudioStreamHandle {
       None
     };
 
-    let out = resample_interleaved_f32_linear_with_playback_rate(
+    // Avoid allocating a new output buffer on every call by reusing a per-stream scratch buffer.
+    // Resampling is driven by the decoder thread (not RT callback), so a mutex is acceptable here.
+    let mut out = std::mem::take(&mut *self.inner.resample_scratch.lock());
+    resample_interleaved_f32_linear_with_playback_rate_into(
+      &mut out,
       decoded_samples,
       channels,
       in_rate_hz,
@@ -236,6 +243,7 @@ impl AudioStreamHandle {
       span.arg_u64("dropped_samples", out.len().saturating_sub(accepted) as u64);
     }
     drop(resample_span);
+    *self.inner.resample_scratch.lock() = out;
 
     Ok(accepted)
   }
