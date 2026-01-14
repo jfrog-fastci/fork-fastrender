@@ -54,6 +54,51 @@ fn generator_delete_optional_chain_computed_member_does_not_evaluate_key_when_nu
 }
 
 #[test]
+fn generator_delete_optional_chain_computed_member_skips_yield_in_key_when_nullish_after_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        var o = (yield null);
+        return delete o?.[(yield "should-not-yield")];
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(null);
+      r1.value === null && r1.done === false &&
+      r2.value === true && r2.done === true
+    "#,
+    )
+    .unwrap();
+
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_delete_optional_chain_computed_member_evaluates_yield_in_key_when_not_nullish() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        var o = { a: 1 };
+        var r = delete o?.[(yield "yielded")];
+        return r === true && !("a" in o);
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next("a");
+      r1.value === "yielded" && r1.done === false &&
+      r2.value === true && r2.done === true
+    "#,
+    )
+    .unwrap();
+
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_delete_super_computed_member_evaluates_key_and_to_property_key_before_reference_error() {
   let mut rt = new_runtime();
   let value = rt
@@ -83,4 +128,3 @@ fn generator_delete_super_computed_member_evaluates_key_and_to_property_key_befo
 
   assert_eq!(value, Value::Bool(true));
 }
-
