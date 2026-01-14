@@ -11153,8 +11153,8 @@ impl InteractionEngine {
           | KeyAction::ArrowDown
           | KeyAction::WordLeft
           | KeyAction::WordRight
-          | KeyAction::WordSelectLeft
-          | KeyAction::WordSelectRight
+          | KeyAction::ShiftWordLeft
+          | KeyAction::ShiftWordRight
           | KeyAction::Home
           | KeyAction::End
           | KeyAction::ShiftHome

@@ -1386,8 +1386,8 @@ impl Painter {
         if let Some(poster) = poster {
           if let Ok(img) = self.image_cache.load_with_crossorigin_and_referrer_policy(
             &poster,
-            *crossorigin,
-            *referrer_policy,
+            crossorigin,
+            referrer_policy,
           ) {
             let orientation = style.image_orientation.resolve(img.orientation, false);
             if let Some((w, h)) =

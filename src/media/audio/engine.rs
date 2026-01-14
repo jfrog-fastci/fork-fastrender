@@ -14,6 +14,12 @@ struct BackendMediaClock {
   backend: Arc<dyn AudioBackend>,
 }
 
+impl std::fmt::Debug for BackendMediaClock {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("BackendMediaClock").finish_non_exhaustive()
+  }
+}
+
 impl MediaClock for BackendMediaClock {
   fn now(&self) -> std::time::Duration {
     self.backend.clock().now()
