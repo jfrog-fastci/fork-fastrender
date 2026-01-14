@@ -277,6 +277,111 @@ fn text_decoration_skip_spaces_start_maps_to_physical_start_in_vertical_writing(
 }
 
 #[test]
+fn text_decoration_skip_spaces_start_clips_physical_end_in_vertical_writing_when_direction_rtl() {
+  crate::testing::init_rayon_for_tests(2);
+
+  let html = r#"<!doctype html><html><head><style>
+    body { margin: 0; }
+    .sample {
+      font-family: "DejaVu Sans";
+      font-size: 20px;
+      writing-mode: vertical-rl;
+      direction: rtl;
+      white-space: pre;
+      text-decoration: underline overline;
+      text-decoration-skip-ink: none;
+      text-decoration-skip-spaces: start;
+    }
+  </style></head><body><div class="sample">  hi  </div></body></html>"#;
+
+  let tree = render_fragment_tree(html, 240, 240);
+  let font_ctx = FontContext::with_config(FontConfig::bundled_only());
+
+  let mut text_frags = Vec::new();
+  collect_text_fragments(&tree.root, crate::geometry::Point::ZERO, &mut text_frags);
+  let (text_frag, text_rect) = text_frags
+    .into_iter()
+    .find(|(node, _)| match &node.content {
+      FragmentContent::Text { text, .. } => text.contains("hi"),
+      _ => false,
+    })
+    .expect("expected text fragment containing 'hi'");
+
+  let runs = shaped_runs_for_fragment(text_frag, &font_ctx);
+  assert!(
+    !runs.is_empty(),
+    "expected shaped runs for vertical-rl direction:rtl fragment"
+  );
+
+  // With equal leading+trailing spaces, the spacer advance should be identical on both edges. This
+  // keeps the expected clipped length stable without depending on which edge the shaping backend
+  // considers the run start.
+  let expected_skip = spacer_advance_in_runs(&runs, SpacerEdge::Start, true);
+  let expected_skip_end = spacer_advance_in_runs(&runs, SpacerEdge::End, true);
+  assert!(
+    expected_skip > 0.0,
+    "expected non-zero spacer advance at logical start in vertical-rl direction:rtl"
+  );
+  assert!(
+    (expected_skip - expected_skip_end).abs() < 0.05,
+    "expected equal spacer advances at both edges for symmetric space padding: start={expected_skip} end={expected_skip_end}"
+  );
+
+  let list = DisplayListBuilder::new()
+    .with_font_context(font_ctx)
+    .build_tree(&tree);
+
+  let deco_item = list
+    .items()
+    .iter()
+    .filter_map(|item| match item {
+      DisplayItem::TextDecoration(deco) if deco.inline_vertical => Some(deco),
+      _ => None,
+    })
+    .find(|deco| {
+      (deco.line_start - text_rect.y()).abs() < 0.5
+        && (deco.line_width - text_rect.height()).abs() < 0.5
+    })
+    .expect("expected vertical TextDecorationItem for sample");
+
+  let expected_end = deco_item.line_width - expected_skip;
+
+  let segments = underline_segments(deco_item);
+  assert_eq!(
+    segments.len(),
+    1,
+    "expected exactly one underline segment after skip-spaces clipping, got {segments:?}"
+  );
+  let (start, end) = segments[0];
+  assert!(
+    start.abs() < 0.05,
+    "expected skip-spaces:start not to clip the physical start when direction:rtl maps start->physical end: start={start} segments={segments:?}"
+  );
+  assert!(
+    (end - expected_end).abs() < 0.05,
+    "expected skip-spaces:start to clip physical end when direction:rtl: end={end} expected_end={expected_end} line_width={} skip={expected_skip} segments={segments:?}",
+    deco_item.line_width
+  );
+
+  let segments = overline_segments(deco_item);
+  assert_eq!(
+    segments.len(),
+    1,
+    "expected exactly one overline segment after skip-spaces clipping, got {segments:?}"
+  );
+  let (start, end) = segments[0];
+  assert!(
+    start.abs() < 0.05,
+    "expected skip-spaces:start not to clip the physical start of overline when direction:rtl maps start->physical end: start={start} segments={segments:?}"
+  );
+  assert!(
+    (end - expected_end).abs() < 0.05,
+    "expected skip-spaces:start to clip physical end of overline when direction:rtl: end={end} expected_end={expected_end} line_width={} skip={expected_skip} segments={segments:?}",
+    deco_item.line_width
+  );
+}
+
+#[test]
 fn text_decoration_skip_spaces_end_clips_physical_end_after_bidi_reordering() {
   crate::testing::init_rayon_for_tests(2);
 
