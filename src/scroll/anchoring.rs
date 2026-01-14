@@ -1199,6 +1199,57 @@ fn find_fragment_rect_for_box_id_in_scrollport(
   best.map(|(rect, _)| rect)
 }
 
+fn find_fragment_rect_for_box_id_closest_to_point(
+  tree: &FragmentTree,
+  box_id: usize,
+  point: Point,
+  include_additional_roots: bool,
+) -> Option<Rect> {
+  if !point_is_finite(point) {
+    return None;
+  }
+
+  let mut stack: Vec<(&FragmentNode, Point)> = Vec::new();
+  if point_is_finite(tree.root.bounds.origin) {
+    stack.push((&tree.root, tree.root.bounds.origin));
+  }
+  if include_additional_roots {
+    for root in &tree.additional_fragments {
+      if point_is_finite(root.bounds.origin) {
+        stack.push((root, root.bounds.origin));
+      }
+    }
+  }
+
+  let mut best: Option<(Rect, f32)> = None;
+
+  while let Some((node, origin)) = stack.pop() {
+    if node.box_id() == Some(box_id) && !fragment_excludes_scroll_anchoring(node) {
+      if let Some(rect) = checked_rect_for_node(origin, node) {
+        let score = score_origin_relative_to_point(origin, rect, point);
+        let replace = match best {
+          None => true,
+          Some((_, best_score)) => score < best_score,
+        };
+        if replace {
+          best = Some((rect, score));
+        }
+      }
+    }
+
+    for child in node.children.iter().rev() {
+      let Some(child_origin) =
+        checked_translate(origin, Point::new(child.bounds.x(), child.bounds.y()))
+      else {
+        continue;
+      };
+      stack.push((child, child_origin));
+    }
+  }
+
+  best.map(|(rect, _)| rect)
+}
+
 fn anchor_relative_position(anchor: Rect, scrollport: Rect) -> Option<Point> {
   let anchor_min = Point::new(anchor.min_x(), anchor.min_y());
   let scrollport_min = Point::new(scrollport.min_x(), scrollport.min_y());
@@ -1296,9 +1347,16 @@ pub fn apply_scroll_anchoring_between_trees(
     let Some(scrollport_new) = scrollport_rect_in_page(&next_scrolled, &state, viewport, container) else {
       continue;
     };
-    let Some(anchor_new) =
-      find_fragment_rect_for_box_id_in_scrollport(&next_scrolled, anchor_id, scrollport_new)
-    else {
+    let Some(expected_anchor_min) = checked_point_add(scrollport_new.origin, old_rel) else {
+      continue;
+    };
+    let include_additional_roots = !matches!(container, ScrollAnchorContainer::Viewport);
+    let Some(anchor_new) = find_fragment_rect_for_box_id_closest_to_point(
+      &next_scrolled,
+      anchor_id,
+      expected_anchor_min,
+      include_additional_roots,
+    ) else {
       continue;
     };
     let Some(new_rel) = anchor_relative_position(anchor_new, scrollport_new) else {
