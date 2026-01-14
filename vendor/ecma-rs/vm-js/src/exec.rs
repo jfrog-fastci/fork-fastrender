@@ -16822,7 +16822,7 @@ pub(crate) enum GenFrame {
     args: Vec<Value>,
     arg_index: usize,
   },
-
+ 
   /// Continue evaluating an array literal after a single element expression completes.
   LitArrAfterSingle {
     expr: *const LitArrExpr,
@@ -16865,6 +16865,14 @@ pub(crate) enum GenFrame {
     expr: *const LitTemplateExpr,
     next_part_index: usize,
     units: Vec<u16>,
+  },
+
+  /// Continue a dynamic `import()` expression after evaluating the specifier expression.
+  ImportAfterSpecifier { expr: *const ImportExpr },
+  /// Continue a dynamic `import()` expression after evaluating the options expression.
+  ImportAfterOptions {
+    expr: *const ImportExpr,
+    specifier: Value,
   },
 }
 
@@ -17012,7 +17020,10 @@ impl Trace for GenFrame {
           PropertyKey::Symbol(s) => tracer.trace_value(Value::Symbol(*s)),
         }
       }
-      GenFrame::YieldStar { iterator_record, .. } => {
+      GenFrame::ImportAfterOptions { specifier, .. } => tracer.trace_value(*specifier),
+      GenFrame::YieldStar {
+        iterator_record, ..
+      } => {
         tracer.trace_value(iterator_record.iterator);
         tracer.trace_value(iterator_record.next_method);
       }
@@ -37603,6 +37614,7 @@ fn gen_eval_expr_chain(
       }
     },
     Expr::Call(call) => gen_eval_call(evaluator, scope, &call.stx),
+    Expr::Import(import) => gen_eval_import_expr(evaluator, scope, &import.stx),
     Expr::Cond(cond) => match gen_eval_expr(evaluator, scope, &cond.stx.test)? {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => {
@@ -40265,6 +40277,119 @@ fn gen_eval_call(
         Ok(GenEval::Suspend(suspend))
       }
     },
+  }
+}
+
+fn gen_eval_import_expr(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &ImportExpr,
+) -> Result<GenEval<Completion>, VmError> {
+  match gen_eval_expr(evaluator, scope, &expr.module)? {
+    GenEval::Complete(c) => match c {
+      Completion::Normal(v) => {
+        gen_eval_import_after_specifier(evaluator, scope, expr, v.unwrap_or(Value::Undefined))
+      }
+      abrupt => Ok(GenEval::Complete(abrupt)),
+    },
+    GenEval::Suspend(mut suspend) => {
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::ImportAfterSpecifier {
+          expr: expr as *const ImportExpr,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_eval_import_after_specifier(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &ImportExpr,
+  specifier: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  if let Some(options_expr) = expr.attributes.as_ref() {
+    // Root the specifier across evaluation of the options argument, which may allocate and GC.
+    //
+    // Evaluate in a nested scope so we can drop it before rooting `specifier` on the outer scope in
+    // the suspension path (borrow-checker: `Scope::reborrow` is an exclusive borrow).
+    let options_eval = {
+      let mut opts_scope = scope.reborrow();
+      opts_scope.push_root(specifier)?;
+      gen_eval_expr(evaluator, &mut opts_scope, options_expr)
+    }?;
+
+    match options_eval {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(v) => gen_eval_import_finish(
+          evaluator,
+          scope,
+          expr,
+          specifier,
+          v.unwrap_or(Value::Undefined),
+        ),
+        abrupt => Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        // Root the specifier until the next yield boundary so it remains GC-safe while we store the
+        // continuation.
+        scope.push_root(specifier)?;
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::ImportAfterOptions {
+            expr: expr as *const ImportExpr,
+            specifier,
+          },
+        )?;
+        Ok(GenEval::Suspend(suspend))
+      }
+    }
+  } else {
+    gen_eval_import_finish(evaluator, scope, expr, specifier, Value::Undefined)
+  }
+}
+
+fn gen_eval_import_finish(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  _expr: &ImportExpr,
+  specifier: Value,
+  options: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  let mut import_scope = scope.reborrow();
+  import_scope.push_roots(&[specifier, options])?;
+
+  let modules_ptr = evaluator
+    .vm
+    .module_graph_ptr()
+    .ok_or(VmError::Unimplemented(
+      "dynamic import requires a module graph",
+    ))?;
+  // Safety: `Vm::module_graph_ptr` is only set by embeddings that ensure the graph outlives the VM.
+  let modules = unsafe { &mut *modules_ptr };
+
+  match crate::start_dynamic_import_with_host_and_hooks(
+    evaluator.vm,
+    &mut import_scope,
+    modules,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    evaluator.env.global_object(),
+    specifier,
+    options,
+  ) {
+    Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
+    Err(err) => {
+      let err = coerce_error_to_throw_for_async(evaluator.vm, &mut import_scope, err);
+      match err {
+        VmError::Throw(_) | VmError::ThrowWithStack { .. } => {
+          Ok(GenEval::Complete(completion_from_expr_result(Err(err))?))
+        }
+        other => Err(other),
+      }
+    }
   }
 }
 
@@ -43269,6 +43394,47 @@ fn gen_resume_from_frames(
         abrupt => state = abrupt,
       },
 
+      GenFrame::ImportAfterSpecifier { expr } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          match gen_eval_import_after_specifier(
+            evaluator,
+            scope,
+            expr,
+            v.unwrap_or(Value::Undefined),
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::ImportAfterOptions { expr, specifier } => match state {
+        Completion::Normal(v) => {
+          let expr = unsafe { &*expr };
+          match gen_eval_import_finish(
+            evaluator,
+            scope,
+            expr,
+            specifier,
+            v.unwrap_or(Value::Undefined),
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
       GenFrame::StmtList {
         stmts,
         next_index,
@@ -44007,6 +44173,9 @@ fn gen_root_values_for_continuation(
       GenFrame::LitObjAfterPropValue { .. } => {
         needed = needed.saturating_add(2);
       }
+      GenFrame::ImportAfterOptions { .. } => {
+        needed = needed.saturating_add(1);
+      }
       GenFrame::AssignAfterRhs {
         base,
         key,
@@ -44173,6 +44342,7 @@ fn gen_root_values_for_continuation(
           PropertyKey::Symbol(s) => Value::Symbol(*s),
         });
       }
+      GenFrame::ImportAfterOptions { specifier, .. } => values.push(*specifier),
       _ => {}
     }
   }
