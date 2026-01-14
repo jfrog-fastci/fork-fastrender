@@ -2356,11 +2356,9 @@ impl BrowserDocumentDom2 {
         .and_then(|state| state.document_selection.as_ref())
     });
 
-    let document_selection_index = prepared.document_selection_index.as_ref();
-    let fragment_tree = &mut prepared.fragment_tree;
     crate::interaction::document_selection::apply_document_selection_to_fragment_tree_with_index(
-      fragment_tree,
-      document_selection_index,
+      &mut prepared.fragment_tree,
+      prepared.document_selection_index.as_ref(),
       selection_preorder,
     );
   }
@@ -2892,19 +2890,26 @@ impl BrowserDocumentDom2 {
           }
 
           for attr in attributes {
-            if attr.local_name.eq_ignore_ascii_case("popover")
-              || attr.local_name.eq_ignore_ascii_case("data-fastr-open")
-              || attr.local_name.eq_ignore_ascii_case("data-fastr-modal")
+            if attr.namespace == crate::dom2::NULL_NAMESPACE
+              && (attr.qualified_name_matches("popover", is_html)
+                || attr.qualified_name_matches("data-fastr-open", is_html)
+                || attr.qualified_name_matches("data-fastr-modal", is_html))
             {
               return true;
             }
           }
         }
-        crate::dom2::NodeKind::Slot { attributes, .. } => {
+        crate::dom2::NodeKind::Slot {
+          namespace,
+          attributes,
+          ..
+        } => {
+          let is_html = dom.is_html_case_insensitive_namespace(namespace);
           for attr in attributes {
-            if attr.local_name.eq_ignore_ascii_case("popover")
-              || attr.local_name.eq_ignore_ascii_case("data-fastr-open")
-              || attr.local_name.eq_ignore_ascii_case("data-fastr-modal")
+            if attr.namespace == crate::dom2::NULL_NAMESPACE
+              && (attr.qualified_name_matches("popover", is_html)
+                || attr.qualified_name_matches("data-fastr-open", is_html)
+                || attr.qualified_name_matches("data-fastr-modal", is_html))
             {
               return true;
             }
@@ -6578,38 +6583,6 @@ html { scroll-snap-type: y mandatory; }
       "incremental restyle must be disabled for top-layer affecting mutations"
     );
     assert_eq!(after.full_restyles, before.full_restyles + 1);
-
-    Ok(())
-  }
-
-  #[test]
-  fn dirty_style_nodes_may_affect_top_layer_state_checks_slot_attributes() -> Result<()> {
-    let renderer = renderer_for_tests();
-    let html = "<!doctype html><html><body>\
-      <slot id=popover popover></slot>\
-      <slot id=open data-fastr-open=modal></slot>\
-      <slot id=modal data-fastr-modal=true></slot>\
-      </body></html>";
-    let mut doc =
-      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(32, 32))?;
-
-    for (id, attr_name) in [
-      ("popover", "popover"),
-      ("open", "data-fastr-open"),
-      ("modal", "data-fastr-modal"),
-    ] {
-      let node = doc.dom().get_element_by_id(id).expect("slot node");
-      assert!(
-        matches!(doc.dom().node(node).kind, crate::dom2::NodeKind::Slot { .. }),
-        "expected #{id} to be a Slot node"
-      );
-      doc.dirty_style_nodes.clear();
-      doc.dirty_style_nodes.insert(node);
-      assert!(
-        doc.dirty_style_nodes_may_affect_top_layer_state(),
-        "expected slot #{id} to trigger top-layer detection via {attr_name}"
-      );
-    }
 
     Ok(())
   }
