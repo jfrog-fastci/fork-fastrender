@@ -971,14 +971,17 @@ fn save_session_with_quarantine_if_needed(
   status: &SessionAutosaveStatusShared,
   save_fn: &SaveSessionFn,
 ) -> Result<(), String> {
-  let mut quarantined = false;
+  // If we're about to overwrite a session file that we couldn't read on startup, first move it
+  // aside so the original bytes are preserved for manual recovery/bug reports.
+  //
+  // We only want the quarantine file to "stick" once we have successfully written a replacement
+  // session. If the write fails, we best-effort restore the original file so the caller doesn't
+  // end up with *no* `session.json`.
+  let mut quarantined_path: Option<PathBuf> = None;
 
   if *needs_quarantine {
     match quarantine_corrupt_session_file(path) {
-      Ok(Some(_quarantined_path)) => {
-        quarantined = true;
-        *needs_quarantine = false;
-      }
+      Ok(Some(path)) => quarantined_path = Some(path),
       Ok(None) => {
         // File already missing, nothing left to quarantine.
         *needs_quarantine = false;
@@ -991,11 +994,45 @@ fn save_session_with_quarantine_if_needed(
 
   let result = save_fn(path, session);
 
-  if result.is_ok() || quarantined {
-    // Either we successfully wrote a replacement session (so the corrupt bytes are gone anyway), or
-    // we successfully moved the corrupt file aside. In both cases, do not attempt to quarantine on
-    // subsequent writes.
+  if result.is_ok() {
+    // New session successfully written: no need to quarantine on subsequent writes.
     *needs_quarantine = false;
+    return result;
+  }
+
+  // Save failed: if we quarantined the original file, try to restore it so we only quarantine on a
+  // successful overwrite.
+  if let Some(quarantined_path) = quarantined_path {
+    match path.try_exists() {
+      Ok(true) => {
+        // Something now exists at `path` despite the error (e.g. a non-atomic save_fn). Keep the
+        // quarantined copy; do not attempt to quarantine again.
+        *needs_quarantine = false;
+      }
+      Ok(false) => match std::fs::rename(&quarantined_path, path) {
+        Ok(()) => {
+          // Restored: keep the quarantine flag so we try again on the next write attempt.
+          *needs_quarantine = true;
+        }
+        Err(err) => {
+          status.record_warning(format!(
+            "failed to restore corrupt session file {} from quarantine {} after save failure: {err}",
+            path.display(),
+            quarantined_path.display()
+          ));
+          // The file is still quarantined, so don't attempt to quarantine again.
+          *needs_quarantine = false;
+        }
+      },
+      Err(err) => {
+        status.record_warning(format!(
+          "failed to check whether session file {} exists after save failure (quarantine {}): {err}",
+          path.display(),
+          quarantined_path.display()
+        ));
+        *needs_quarantine = false;
+      }
+    }
   }
 
   result
