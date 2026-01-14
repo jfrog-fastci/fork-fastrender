@@ -95,3 +95,65 @@ fn async_generators_yield_in_object_literals() -> Result<(), VmError> {
   Ok(())
 }
 
+#[test]
+fn async_generators_yield_in_object_literals_proto_setter_and_super() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  if !_async_generator_support::supports_async_generators(&mut rt)? {
+    return Ok(());
+  }
+
+  let value = rt.exec_script(
+    r#"
+      var actual = [];
+      const proto = { get x() { return this.y + 1; } };
+
+      async function* g() {
+        const o = {
+          __proto__: (yield "proto"),
+          y: 41,
+          m() { return super.x; },
+        };
+        return o;
+      }
+
+      var it = g();
+      var p1 = it.next();
+      actual.push(p1 instanceof Promise);
+
+      (async function run() {
+        var r1 = await p1;
+        actual.push([r1.value, r1.done]);
+
+        var r2 = await it.next(proto);
+        var o = r2.value;
+        var proto_ok = Object.getPrototypeOf(o) === proto;
+        var desc = Object.getOwnPropertyDescriptor(o, "__proto__");
+        var desc_ok = desc === undefined;
+        var m_res;
+        var m_ok = false;
+        try {
+          m_res = o.m();
+          m_ok = m_res === 42;
+        } catch (e) {
+          m_res = String(e && e.message !== undefined ? e.message : e);
+        }
+        var ok = r2.done === true && proto_ok && desc_ok && m_ok;
+        actual.push([r2.done, ok]);
+      })();
+
+      JSON.stringify(actual)
+    "#,
+  )?;
+
+  assert_eq!(value_to_utf8(&rt, value), r#"[true]"#);
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("JSON.stringify(actual)")?;
+  assert_eq!(
+    value_to_utf8(&rt, value),
+    r#"[true,["proto",false],[true,true]]"#
+  );
+
+  Ok(())
+}

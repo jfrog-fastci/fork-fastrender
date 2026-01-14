@@ -27772,14 +27772,43 @@ fn async_eval_lit_obj_apply_valued_member(
 
   match val {
     ClassOrObjVal::Prop(Some(value_expr)) => {
+      // Legacy `__proto__` data property in object literals acts as a prototype setter (Annex B.3.1).
+      //
+      // This only applies to *direct* property names (not computed keys) and only for
+      // `__proto__: <expr>` data properties (not methods/getters/setters/shorthand).
+      let is_proto_setter = match expr.members.get(member_index) {
+        Some(member_node) => matches!(
+          &member_node.stx.typ,
+          ObjMemberType::Valued {
+            key: ClassOrObjKey::Direct(direct),
+            val: ClassOrObjVal::Prop(Some(_)),
+          } if direct.stx.key == "__proto__"
+        ),
+        None => false,
+      };
+
       match async_eval_expr(evaluator, &mut member_scope, value_expr)? {
         AsyncEval::Complete(value) => {
           member_scope.push_root(value)?;
-          let ok = member_scope
-            .create_data_property(obj, key, value)
-            .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut member_scope, err))?;
-          if !ok {
-            return Err(VmError::Unimplemented("CreateDataProperty returned false"));
+          if is_proto_setter {
+            match value {
+              Value::Object(proto) => {
+                member_scope
+                  .heap_mut()
+                  .object_set_prototype(obj, Some(proto))?;
+              }
+              Value::Null => {
+                member_scope.heap_mut().object_set_prototype(obj, None)?;
+              }
+              _ => {}
+            }
+          } else {
+            let ok = member_scope.create_data_property(obj, key, value).map_err(|err| {
+              coerce_error_to_throw_for_async(evaluator.vm, &mut member_scope, err)
+            })?;
+            if !ok {
+              return Err(VmError::Unimplemented("CreateDataProperty returned false"));
+            }
           }
           Ok(AsyncEval::Complete(()))
         }
@@ -34171,18 +34200,40 @@ fn async_resume_from_frames(
             }
           };
 
+          let member_index = next_member_index.saturating_sub(1);
+          let is_proto_setter = match expr.members.get(member_index) {
+            Some(member_node) => matches!(
+              &member_node.stx.typ,
+              ObjMemberType::Valued {
+                key: ClassOrObjKey::Direct(direct),
+                val: ClassOrObjVal::Prop(Some(_)),
+              } if direct.stx.key == "__proto__"
+            ),
+            None => false,
+          };
+
           match prop_res {
             Ok(value) => {
               let define_res = (|| -> Result<(), VmError> {
                 let mut prop_scope = scope.reborrow();
                 prop_scope.push_roots(&[Value::Object(obj), key_value, value])?;
-                let ok = prop_scope
-                  .create_data_property(obj, key, value)
-                  .map_err(|err| {
-                    coerce_error_to_throw_for_async(evaluator.vm, &mut prop_scope, err)
-                  })?;
-                if !ok {
-                  return Err(VmError::Unimplemented("CreateDataProperty returned false"));
+                if is_proto_setter {
+                  match value {
+                    Value::Object(proto) => prop_scope
+                      .heap_mut()
+                      .object_set_prototype(obj, Some(proto))?,
+                    Value::Null => prop_scope.heap_mut().object_set_prototype(obj, None)?,
+                    _ => {}
+                  }
+                } else {
+                  let ok = prop_scope
+                    .create_data_property(obj, key, value)
+                    .map_err(|err| {
+                      coerce_error_to_throw_for_async(evaluator.vm, &mut prop_scope, err)
+                    })?;
+                  if !ok {
+                    return Err(VmError::Unimplemented("CreateDataProperty returned false"));
+                  }
                 }
                 Ok(())
               })();
