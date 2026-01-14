@@ -900,7 +900,7 @@ fn format_status(status: ScenarioStatus) -> &'static str {
   }
 }
 
-fn run_warmup(tx: &Sender<UiToWorker>, rx: &Receiver<WorkerToUi>, verbose: bool) {
+fn run_warmup(tx: &Sender<UiToWorker>, rx: &WorkerToUiInbox, verbose: bool) {
   // Best-effort warmup: load a minimal internal page so the UI worker initializes fonts/caches
   // before we start measuring scenarios. Failures here should not abort the run.
   let tab_id = TabId::new();

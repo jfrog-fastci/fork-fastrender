@@ -290,9 +290,13 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
     }
 
     match event {
-      perf_log::PerfEvent::Frame { ui_frame_ms, fps, .. } => {
+      perf_log::PerfEvent::Frame {
+        ui_frame_ms,
+        fps: frame_fps,
+        ..
+      } => {
         frame_ms.push(ui_frame_ms);
-        if let Some(fps_value) = fps {
+        if let Some(fps_value) = frame_fps {
           fps.push(fps_value);
         } else if ui_frame_ms.is_finite() && ui_frame_ms > 0.0 {
           // Legacy fallback: older logs did not include an explicit FPS measurement, so estimate it
