@@ -20754,29 +20754,43 @@ impl App {
       // Note: download-directory changes apply only to this window/worker. Newly created windows
       // inherit the download directory of the window that spawned them (see `RequestNewWindow`
       // handlers in the winit event loop).
-      let picked = std::panic::catch_unwind(|| {
+      let selection = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         rfd::FileDialog::new()
           .set_directory(&self.download_dir)
           .pick_folder()
-      })
-      .ok()
-      .flatten();
-
-      if let Some(path) = picked {
-        if apply_download_dir_change_state(
-          &mut self.download_dir,
-          &mut self.download_dir_allowlist,
-          path,
-        ) {
-          fastrender::ui::about_pages::sync_about_page_snapshot_download_dir(Some(
-            self.download_dir.display().to_string(),
-          ));
-          let _ = self.send_worker_msg(UiToWorker::SetDownloadDirectory {
-            path: self.download_dir.clone(),
-          });
-          self.window.request_redraw();
+      }));
+      match selection {
+        Ok(Some(path)) => {
+          if apply_download_dir_change_state(
+            &mut self.download_dir,
+            &mut self.download_dir_allowlist,
+            path,
+          ) {
+            fastrender::ui::about_pages::sync_about_page_snapshot_download_dir(Some(
+              self.download_dir.display().to_string(),
+            ));
+            let _ = self.send_worker_msg(UiToWorker::SetDownloadDirectory {
+              path: self.download_dir.clone(),
+            });
+            self.window.request_redraw();
+          }
         }
-      }
+        Ok(None) => {}
+        Err(panic_payload) => {
+          let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+            (*s).to_string()
+          } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+            s.clone()
+          } else {
+            "unknown panic".to_string()
+          };
+          eprintln!("rfd download folder picker panicked: {msg}");
+          self.show_chrome_toast_kind(
+            fastrender::ui::ToastKind::Error,
+            "Failed to open native file dialog",
+          );
+        }
+      };
     }
   }
 
