@@ -7,110 +7,99 @@
 //! This module generates contextual labels that incorporate the relevant entry title/URL/file name
 //! so each action is uniquely understandable.
 
-fn normalize_context_title_or_url(title: Option<&str>, url: &str) -> String {
-  let title = title.unwrap_or("").trim();
-  let url = url.trim();
-
-  let raw = if !title.is_empty() { title } else { url };
-
+fn append_normalized_whitespace(out: &mut String, raw: &str) {
   // Fast path: the common case is an ASCII URL with no whitespace. Avoid split/loop overhead.
   if raw
     .as_bytes()
     .iter()
     .all(|&b| b.is_ascii() && !b.is_ascii_whitespace())
   {
-    return raw.to_string();
+    out.push_str(raw);
+    return;
   }
 
   // Strip newlines/tabs and collapse whitespace so screen readers get a concise name.
-  let mut out = String::with_capacity(raw.len());
-  for (idx, part) in raw.split_whitespace().enumerate() {
-    if idx > 0 {
+  let mut first = true;
+  for part in raw.split_whitespace() {
+    if first {
+      first = false;
+    } else {
       out.push(' ');
     }
     out.push_str(part);
   }
+}
+
+fn context_title_or_url_raw<'a>(title: Option<&'a str>, url: &'a str) -> &'a str {
+  let title = title.unwrap_or("").trim();
+  let url = url.trim();
+
+  if !title.is_empty() { title } else { url }
+}
+
+fn build_context_label(prefix: &str, title: Option<&str>, url: &str) -> String {
+  let raw = context_title_or_url_raw(title, url);
+  let mut out = String::with_capacity(prefix.len() + raw.len());
+  out.push_str(prefix);
+  append_normalized_whitespace(&mut out, raw);
   out
 }
 
-fn normalize_file_name(file_name: &str) -> String {
+fn build_file_label(prefix: &str, file_name: &str, suffix: &str) -> String {
   let raw = file_name.trim();
-  // Fast path: most file names are ASCII and whitespace-free.
-  if raw
-    .as_bytes()
-    .iter()
-    .all(|&b| b.is_ascii() && !b.is_ascii_whitespace())
-  {
-    return raw.to_string();
-  }
-  let mut out = String::with_capacity(raw.len());
-  for (idx, part) in raw.split_whitespace().enumerate() {
-    if idx > 0 {
-      out.push(' ');
-    }
-    out.push_str(part);
-  }
+  let mut out = String::with_capacity(prefix.len() + raw.len() + suffix.len());
+  out.push_str(prefix);
+  append_normalized_whitespace(&mut out, raw);
+  out.push_str(suffix);
   out
 }
 
 pub fn history_open_label(title: Option<&str>, url: &str) -> String {
-  let ctx = normalize_context_title_or_url(title, url);
-  format!("Open history entry: {ctx}")
+  build_context_label("Open history entry: ", title, url)
 }
 
 pub fn history_open_in_new_tab_label(title: Option<&str>, url: &str) -> String {
-  let ctx = normalize_context_title_or_url(title, url);
-  format!("Open history entry in new tab: {ctx}")
+  build_context_label("Open history entry in new tab: ", title, url)
 }
 
 pub fn history_delete_label(title: Option<&str>, url: &str) -> String {
-  let ctx = normalize_context_title_or_url(title, url);
-  format!("Delete history entry: {ctx}")
+  build_context_label("Delete history entry: ", title, url)
 }
 
 pub fn download_cancel_label(file_name: &str) -> String {
-  let file_name = normalize_file_name(file_name);
-  format!("Cancel download: {file_name}")
+  build_file_label("Cancel download: ", file_name, "")
 }
 
 pub fn download_open_label(file_name: &str) -> String {
-  let file_name = normalize_file_name(file_name);
-  format!("Open downloaded file: {file_name}")
+  build_file_label("Open downloaded file: ", file_name, "")
 }
 
 pub fn download_show_in_folder_label(file_name: &str) -> String {
-  let file_name = normalize_file_name(file_name);
-  format!("Show {file_name} in folder")
+  build_file_label("Show ", file_name, " in folder")
 }
 
 pub fn download_retry_label(file_name: &str) -> String {
-  let file_name = normalize_file_name(file_name);
-  format!("Retry download: {file_name}")
+  build_file_label("Retry download: ", file_name, "")
 }
 
 pub fn download_copy_link_label(file_name: &str) -> String {
-  let file_name = normalize_file_name(file_name);
-  format!("Copy download link: {file_name}")
+  build_file_label("Copy download link: ", file_name, "")
 }
 
 pub fn download_copy_path_label(file_name: &str) -> String {
-  let file_name = normalize_file_name(file_name);
-  format!("Copy download file path: {file_name}")
+  build_file_label("Copy download file path: ", file_name, "")
 }
 
 pub fn bookmark_open_in_new_tab_label(title: Option<&str>, url: &str) -> String {
-  let ctx = normalize_context_title_or_url(title, url);
-  format!("Open bookmark in new tab: {ctx}")
+  build_context_label("Open bookmark in new tab: ", title, url)
 }
 
 pub fn bookmark_edit_label(title: Option<&str>, url: &str) -> String {
-  let ctx = normalize_context_title_or_url(title, url);
-  format!("Edit bookmark: {ctx}")
+  build_context_label("Edit bookmark: ", title, url)
 }
 
 pub fn bookmark_delete_label(title: Option<&str>, url: &str) -> String {
-  let ctx = normalize_context_title_or_url(title, url);
-  format!("Delete bookmark: {ctx}")
+  build_context_label("Delete bookmark: ", title, url)
 }
 
 #[cfg(test)]
@@ -120,24 +109,24 @@ mod tests {
   #[test]
   fn normalize_context_prefers_title() {
     assert_eq!(
-      normalize_context_title_or_url(Some(" Example title "), "https://example.com"),
-      "Example title"
+      history_open_label(Some(" Example title "), "https://example.com"),
+      "Open history entry: Example title"
     );
   }
 
   #[test]
   fn normalize_context_falls_back_to_url_when_title_missing() {
     assert_eq!(
-      normalize_context_title_or_url(Some("   "), " https://example.com/test "),
-      "https://example.com/test"
+      history_open_label(Some("   "), " https://example.com/test "),
+      "Open history entry: https://example.com/test"
     );
   }
 
   #[test]
   fn normalize_context_collapses_whitespace() {
     assert_eq!(
-      normalize_context_title_or_url(Some("Hello\nworld\t!"), "https://example.com"),
-      "Hello world !"
+      history_open_label(Some("Hello\nworld\t!"), "https://example.com"),
+      "Open history entry: Hello world !"
     );
   }
 
