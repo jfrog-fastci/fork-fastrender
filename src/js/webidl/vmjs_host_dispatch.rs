@@ -5952,7 +5952,8 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         Ok(Value::Null)
       }
 
-      ("TreeWalker", "firstChild", 0) | ("TreeWalker", "lastChild", 0) => {
+      ("TreeWalker", "firstChild", 0)
+      | ("TreeWalker", "lastChild", 0) => {
         let _ = args;
         let dom_exception = self.dom_exception_class_for_realm(vm, scope)?;
         let walker_obj = require_tree_walker_receiver(scope, receiver)?;
@@ -6073,7 +6074,8 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         Ok(Value::Null)
       }
 
-      ("TreeWalker", "nextSibling", 0) | ("TreeWalker", "previousSibling", 0) => {
+      ("TreeWalker", "nextSibling", 0)
+      | ("TreeWalker", "previousSibling", 0) => {
         let _ = args;
         let dom_exception = self.dom_exception_class_for_realm(vm, scope)?;
         let walker_obj = require_tree_walker_receiver(scope, receiver)?;
@@ -9812,7 +9814,9 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         }
       }
 
-      (interface @ ("Element" | "Document" | "DocumentFragment"), op @ ("append" | "prepend"), 0) => {
+      ("Element", op @ ("append" | "prepend"), 0)
+      | ("Document", op @ ("append" | "prepend"), 0)
+      | ("DocumentFragment", op @ ("append" | "prepend"), 0) => {
         let prepend = op == "prepend";
         let (parent_id, wrapper_obj, document_id) = match interface {
           "Element" => {
@@ -10519,7 +10523,14 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         }
       }
 
-      ("Range", "isPointInRange", 0) | ("Range", "comparePoint", 0) => {
+      ("Range", "detach", 0) => {
+        // Range.detach() is a legacy no-op, but still performs the WebIDL brand check.
+        let _ = require_range_receiver(vm, scope, receiver)?;
+        Ok(Value::Undefined)
+      }
+
+      ("Range", "isPointInRange", 0)
+      | ("Range", "comparePoint", 0) => {
         let (range_id, document_id) = require_range_receiver(vm, scope, receiver)?;
 
         let node_val = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -11518,11 +11529,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         }
       }
 
-      (
-        "AbstractRange",
-        op @ ("startContainer" | "startOffset" | "endContainer" | "endOffset" | "collapsed"),
-        0,
-      ) => {
+      ("AbstractRange", op @ ("startContainer" | "startOffset" | "endContainer" | "endOffset" | "collapsed"), 0) => {
         let range_obj = Self::require_receiver_object(receiver)?;
         scope.push_root(Value::Object(range_obj))?;
 

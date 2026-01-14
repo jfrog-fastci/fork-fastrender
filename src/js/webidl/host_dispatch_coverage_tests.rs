@@ -224,18 +224,6 @@ fn allowlisted_missing_sites() -> BTreeSet<CallOperationSite> {
   // When a missing operation is implemented in `VmJsWebIdlBindingsHostDispatch`, remove it from
   // this allowlist.
   [
-    // TODO(js_dom): DOM traversal helpers.
-    CallOperationSite::new("Document", "getElementsByClassName", 0),
-    CallOperationSite::new("Document", "getElementsByName", 0),
-    CallOperationSite::new("Document", "getElementsByTagName", 0),
-    CallOperationSite::new("Document", "getElementsByTagNameNS", 0),
-    CallOperationSite::new("Element", "getElementsByClassName", 0),
-    CallOperationSite::new("Element", "getElementsByTagName", 0),
-    CallOperationSite::new("Element", "getElementsByTagNameNS", 0),
-    // TODO(js_dom): HTMLCollection support.
-    CallOperationSite::new("HTMLCollection", "item", 0),
-    CallOperationSite::new("HTMLCollection", "length", 0),
-    CallOperationSite::new("HTMLCollection", "namedItem", 0),
     // TODO(browser_ui): JS API for controlling the native browser chrome is generated but not yet
     // supported by the default vm-js host dispatch.
     CallOperationSite::new("FastRenderChrome", "navigation", 0),
