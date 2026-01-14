@@ -2,6 +2,7 @@ use parse_js::ast::stmt::Stmt;
 use parse_js::error::SyntaxErrorType;
 use parse_js::operator::OperatorName;
 use parse_js::parse_with_options;
+use parse_js::ast::func::FuncBody;
 use parse_js::{Dialect, ParseOptions, SourceType};
 
 fn ecma_script_opts() -> ParseOptions {
@@ -93,6 +94,73 @@ fn let_in_for_body_allows_asi_split() {
     Stmt::Expr(_)
   ));
   assert!(matches!(parsed.stx.body[1].stx.as_ref(), Stmt::Expr(_)));
+}
+
+#[test]
+fn using_in_statement_position_allows_asi_split_before_identifier() {
+  // `using` is contextual: it can start a `using` declaration or be an IdentifierReference.
+  // In statement positions, declarations are not permitted, but ASI can still split:
+  // `if (false) using // ASI\nx = 1;` => `if (false) using; x = 1;`
+  let parsed =
+    parse_with_options("if (false) using // ASI\nx = 1;", ecma_script_opts()).expect("parse ok");
+  assert_eq!(parsed.stx.body.len(), 2);
+
+  let Stmt::If(if_stmt) = parsed.stx.body[0].stx.as_ref() else {
+    panic!("expected if statement");
+  };
+  assert!(matches!(if_stmt.stx.consequent.stx.as_ref(), Stmt::Expr(_)));
+  assert!(matches!(parsed.stx.body[1].stx.as_ref(), Stmt::Expr(_)));
+}
+
+#[test]
+fn using_in_for_body_allows_asi_split() {
+  // `for` loop bodies use the same `stmt_in_statement_position` parsing as
+  // `if` statements, but do not permit legacy function declarations. Ensure the
+  // `using`/ASI disambiguation works in both codepaths.
+  let parsed = parse_with_options(
+    "for (; false; ) using // ASI\nx = 1;",
+    ecma_script_opts(),
+  )
+  .expect("parse ok");
+  assert_eq!(parsed.stx.body.len(), 2);
+
+  let Stmt::ForTriple(for_stmt) = parsed.stx.body[0].stx.as_ref() else {
+    panic!("expected for statement");
+  };
+  assert_eq!(for_stmt.stx.body.stx.body.len(), 1);
+  assert!(matches!(
+    for_stmt.stx.body.stx.body[0].stx.as_ref(),
+    Stmt::Expr(_)
+  ));
+  assert!(matches!(parsed.stx.body[1].stx.as_ref(), Stmt::Expr(_)));
+}
+
+#[test]
+fn await_using_in_statement_position_allows_asi_split_before_identifier() {
+  // `await using` is contextual: it can start an `await using` declaration, or
+  // be an `await` expression whose operand is an IdentifierReference named `using`.
+  // Like `using`, statement positions disallow declarations, but ASI can still split:
+  // `if (false) await using // ASI\nx = 1;` => `if (false) await using; x = 1;`
+  let parsed = parse_with_options(
+    "async function f() { if (false) await using // ASI\nx = 1; }",
+    ecma_script_opts(),
+  )
+  .expect("parse ok");
+  assert_eq!(parsed.stx.body.len(), 1);
+
+  let Stmt::FunctionDecl(func_decl) = parsed.stx.body[0].stx.as_ref() else {
+    panic!("expected function declaration");
+  };
+  let Some(FuncBody::Block(body)) = &func_decl.stx.function.stx.body else {
+    panic!("expected function body block");
+  };
+  assert_eq!(body.len(), 2);
+
+  let Stmt::If(if_stmt) = body[0].stx.as_ref() else {
+    panic!("expected if statement");
+  };
+  assert!(matches!(if_stmt.stx.consequent.stx.as_ref(), Stmt::Expr(_)));
+  assert!(matches!(body[1].stx.as_ref(), Stmt::Expr(_)));
 }
 
 #[test]
