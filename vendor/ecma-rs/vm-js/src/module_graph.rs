@@ -3252,11 +3252,7 @@ impl ModuleGraph {
     // Ensure host-visible failures never leak internal helper errors (TypeError, NotCallable,
     // Unimplemented, etc.) when intrinsics are available.
     match result {
-      Err(err) if err.is_throw_completion() => Err(crate::vm::coerce_error_to_throw_with_stack(
-        &*vm,
-        scope,
-        err,
-      )),
+      Err(err) => Err(crate::vm::coerce_error_to_throw_with_stack(&*vm, scope, err)),
       other => other,
     }
   }
