@@ -21,6 +21,10 @@ const DOM_SHIM: &str = r##"
   var STYLE_CACHE = new WeakMap(); // HTMLElement -> CSSStyleDeclaration
   var COLLECTION_GET_IDS = Symbol("fastrender_collection_get_ids");
   var NODELIST_ITEMS = Symbol("fastrender_nodelist_items");
+  var SHADOW_ROOT_IDS = new Set(); // node id (DocumentFragment) -> is a ShadowRoot wrapper
+  var SHADOW_ROOT_BY_HOST = new WeakMap(); // Element -> ShadowRoot
+  var SLOT_MANUAL_ASSIGNMENTS = new WeakMap(); // HTMLSlotElement -> Node[]
+  var NODE_MANUAL_ASSIGNED_SLOT = new WeakMap(); // Node -> HTMLSlotElement
 
   function illegal() {
     throw new TypeError("Illegal constructor");
@@ -231,6 +235,7 @@ const DOM_SHIM: &str = r##"
   function Node() { illegal(); }
   function Document() { illegal(); }
   function DocumentFragment() { illegal(); }
+  function ShadowRoot() { illegal(); }
   function Element() { illegal(); }
   function HTMLElement() { illegal(); }
   function HTMLDivElement() { illegal(); }
@@ -239,6 +244,7 @@ const DOM_SHIM: &str = r##"
   function HTMLSelectElement() { illegal(); }
   function HTMLFormElement() { illegal(); }
   function HTMLOptionElement() { illegal(); }
+  function HTMLSlotElement() { illegal(); }
   function Text() { illegal(); }
   function Comment() { illegal(); }
   function NodeList() { illegal(); }
@@ -288,6 +294,7 @@ const DOM_SHIM: &str = r##"
   Object.setPrototypeOf(Node.prototype, EventTarget.prototype);
   Object.setPrototypeOf(Document.prototype, Node.prototype);
   Object.setPrototypeOf(DocumentFragment.prototype, Node.prototype);
+  Object.setPrototypeOf(ShadowRoot.prototype, DocumentFragment.prototype);
   Object.setPrototypeOf(Element.prototype, Node.prototype);
   Object.setPrototypeOf(HTMLElement.prototype, Element.prototype);
   Object.setPrototypeOf(HTMLDivElement.prototype, HTMLElement.prototype);
@@ -296,6 +303,7 @@ const DOM_SHIM: &str = r##"
   Object.setPrototypeOf(HTMLSelectElement.prototype, HTMLElement.prototype);
   Object.setPrototypeOf(HTMLFormElement.prototype, HTMLElement.prototype);
   Object.setPrototypeOf(HTMLOptionElement.prototype, HTMLElement.prototype);
+  Object.setPrototypeOf(HTMLSlotElement.prototype, HTMLElement.prototype);
   Object.setPrototypeOf(Text.prototype, Node.prototype);
   Object.setPrototypeOf(Comment.prototype, Node.prototype);
   // Make NodeList-backed collections usable as arrays in the QuickJS shim (so `childNodes` can be
@@ -634,6 +642,8 @@ const DOM_SHIM: &str = r##"
         return HTMLFormElement.prototype;
       case "option":
         return HTMLOptionElement.prototype;
+      case "slot":
+        return HTMLSlotElement.prototype;
       default:
         return HTMLElement.prototype;
     }
@@ -653,7 +663,10 @@ const DOM_SHIM: &str = r##"
     if (t === Node.ELEMENT_NODE) return elementFromId(id);
     if (t === Node.TEXT_NODE) return makeNode(Text.prototype, id);
     if (t === Node.COMMENT_NODE) return makeNode(Comment.prototype, id);
-    if (t === Node.DOCUMENT_FRAGMENT_NODE) return makeNode(DocumentFragment.prototype, id);
+    if (t === Node.DOCUMENT_FRAGMENT_NODE) {
+      if (SHADOW_ROOT_IDS.has(id)) return makeNode(ShadowRoot.prototype, id);
+      return makeNode(DocumentFragment.prototype, id);
+    }
     if (t === Node.DOCUMENT_NODE) return g.document;
     return makeNode(Node.prototype, id);
   }
@@ -982,6 +995,50 @@ const DOM_SHIM: &str = r##"
     var id = g.__fastrender_dom_create_document_fragment();
     return makeNode(DocumentFragment.prototype, id);
   };
+
+  Element.prototype.attachShadow = function (init) {
+    nodeIdFromThis(this);
+    if (!(this instanceof Element)) throw new TypeError("Illegal invocation");
+    if (typeof init !== "object" || init === null) {
+      throw new TypeError(
+        "Failed to execute 'attachShadow' on 'Element': parameter 1 is not of type 'ShadowRootInit'."
+      );
+    }
+    var mode = String(init.mode);
+    if (mode !== "open" && mode !== "closed") {
+      throw new TypeError(
+        "Failed to execute 'attachShadow' on 'Element': 'mode' must be either 'open' or 'closed'."
+      );
+    }
+    var existing = SHADOW_ROOT_BY_HOST.get(this);
+    if (existing) {
+      // DOMException NotSupportedError; WPT does not assert the name yet, so keep it simple.
+      throw new Error("NotSupportedError");
+    }
+
+    var slotAssignment = init.slotAssignment === undefined ? "named" : String(init.slotAssignment);
+    if (slotAssignment !== "manual" && slotAssignment !== "named") slotAssignment = "named";
+
+    // Model a ShadowRoot as a detached DocumentFragment with a ShadowRoot prototype.
+    var root = g.document.createDocumentFragment();
+    Object.setPrototypeOf(root, ShadowRoot.prototype);
+    root.host = this;
+    root.mode = mode;
+    root.slotAssignment = slotAssignment;
+    SHADOW_ROOT_BY_HOST.set(this, root);
+    SHADOW_ROOT_IDS.add(nodeIdFromThis(root));
+    return root;
+  };
+
+  Object.defineProperty(Element.prototype, "shadowRoot", {
+    get: function () {
+      nodeIdFromThis(this);
+      var root = SHADOW_ROOT_BY_HOST.get(this) || null;
+      if (!root) return null;
+      return root.mode === "open" ? root : null;
+    },
+    configurable: true,
+  });
 
   Document.prototype.createTextNode = function (data) {
     var id = g.__fastrender_dom_create_text_node(String(data));
@@ -1405,6 +1462,133 @@ const DOM_SHIM: &str = r##"
     configurable: true,
   });
 
+  var DOCUMENT_FRAGMENT_CHILDREN_CACHE = new WeakMap();
+  Object.defineProperty(DocumentFragment.prototype, "children", {
+    get: function () {
+      nodeIdFromThis(this);
+      var cached = DOCUMENT_FRAGMENT_CHILDREN_CACHE.get(this);
+      if (cached) return cached;
+      var self = this;
+      var collection = makeLiveElementCollection(function () {
+        var ids = [];
+        var nodes = self.childNodes || [];
+        for (var i = 0; i < nodes.length; i++) {
+          var n = nodes[i];
+          if (n instanceof Element) ids.push(nodeIdFromThis(n));
+        }
+        return ids;
+      });
+      DOCUMENT_FRAGMENT_CHILDREN_CACHE.set(this, collection);
+      return collection;
+    },
+    configurable: true,
+  });
+
+  function childElementCountForParentNode(parent) {
+    var nodes = parent.childNodes || [];
+    var count = 0;
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i] instanceof Element) count++;
+    }
+    return count;
+  }
+
+  function firstElementChildForParentNode(parent) {
+    var nodes = parent.childNodes || [];
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      if (n instanceof Element) return n;
+    }
+    return null;
+  }
+
+  function lastElementChildForParentNode(parent) {
+    var nodes = parent.childNodes || [];
+    for (var i = nodes.length - 1; i >= 0; i--) {
+      var n = nodes[i];
+      if (n instanceof Element) return n;
+    }
+    return null;
+  }
+
+  Object.defineProperty(Element.prototype, "childElementCount", {
+    get: function () {
+      nodeIdFromThis(this);
+      return childElementCountForParentNode(this);
+    },
+    configurable: true,
+  });
+  Object.defineProperty(DocumentFragment.prototype, "childElementCount", {
+    get: function () {
+      nodeIdFromThis(this);
+      return childElementCountForParentNode(this);
+    },
+    configurable: true,
+  });
+
+  Object.defineProperty(Element.prototype, "firstElementChild", {
+    get: function () {
+      nodeIdFromThis(this);
+      return firstElementChildForParentNode(this);
+    },
+    configurable: true,
+  });
+  Object.defineProperty(DocumentFragment.prototype, "firstElementChild", {
+    get: function () {
+      nodeIdFromThis(this);
+      return firstElementChildForParentNode(this);
+    },
+    configurable: true,
+  });
+
+  Object.defineProperty(Element.prototype, "lastElementChild", {
+    get: function () {
+      nodeIdFromThis(this);
+      return lastElementChildForParentNode(this);
+    },
+    configurable: true,
+  });
+  Object.defineProperty(DocumentFragment.prototype, "lastElementChild", {
+    get: function () {
+      nodeIdFromThis(this);
+      return lastElementChildForParentNode(this);
+    },
+    configurable: true,
+  });
+
+  function nextElementSiblingForElement(el, dir) {
+    var parent = el.parentNode;
+    if (!parent) return null;
+    var nodes = parent.childNodes || [];
+    var idx = nodes.indexOf(el);
+    if (idx < 0) return null;
+    if (dir > 0) {
+      for (var i = idx + 1; i < nodes.length; i++) {
+        if (nodes[i] instanceof Element) return nodes[i];
+      }
+    } else {
+      for (var i = idx - 1; i >= 0; i--) {
+        if (nodes[i] instanceof Element) return nodes[i];
+      }
+    }
+    return null;
+  }
+
+  Object.defineProperty(Element.prototype, "nextElementSibling", {
+    get: function () {
+      nodeIdFromThis(this);
+      return nextElementSiblingForElement(this, 1);
+    },
+    configurable: true,
+  });
+  Object.defineProperty(Element.prototype, "previousElementSibling", {
+    get: function () {
+      nodeIdFromThis(this);
+      return nextElementSiblingForElement(this, -1);
+    },
+    configurable: true,
+  });
+
   function cssStyleFromThis(self) {
     if (typeof self !== "object" || self === null) {
       throw new TypeError("Illegal invocation");
@@ -1646,6 +1830,198 @@ const DOM_SHIM: &str = r##"
     },
     set: function (value) {
       this.setAttribute("class", value);
+    },
+    configurable: true,
+  });
+
+  // --- Shadow DOM slotting (minimal; enough for curated WPT corpus) ---
+  Object.defineProperty(Element.prototype, "slot", {
+    get: function () {
+      nodeIdFromThis(this);
+      var v = this.getAttribute("slot");
+      return v === null ? "" : String(v);
+    },
+    set: function (value) {
+      nodeIdFromThis(this);
+      var v = String(value);
+      if (v === "") {
+        this.removeAttribute("slot");
+      } else {
+        this.setAttribute("slot", v);
+      }
+    },
+    configurable: true,
+  });
+
+  function shadowRootForSlotElement(slotEl) {
+    var cur = slotEl;
+    while (cur) {
+      if (cur instanceof ShadowRoot) return cur;
+      cur = cur.parentNode;
+    }
+    return null;
+  }
+
+  function firstSlotInShadowRoot(root, name) {
+    var needle = String(name || "");
+    var found = null;
+    traverseElementSubtree(root, function (el) {
+      if (found) return;
+      if (!(el instanceof HTMLSlotElement)) return;
+      var n = el.getAttribute("name");
+      var slotName = n === null ? "" : String(n);
+      if (slotName === needle) found = el;
+    });
+    return found;
+  }
+
+  function assignedNodesForSlot(slotEl) {
+    var root = shadowRootForSlotElement(slotEl);
+    if (!root) return [];
+
+    var slotAssignment = String(root.slotAssignment || "named");
+    if (slotAssignment === "manual") {
+      var manual = SLOT_MANUAL_ASSIGNMENTS.get(slotEl);
+      if (manual !== undefined) return manual.slice();
+      return (slotEl.childNodes || []).slice();
+    }
+
+    var nameAttr = slotEl.getAttribute("name");
+    var name = nameAttr === null ? "" : String(nameAttr);
+
+    // Only the first slot with a given name participates in distribution.
+    var first = firstSlotInShadowRoot(root, name);
+    if (first && first !== slotEl) return (slotEl.childNodes || []).slice();
+
+    var host = root.host;
+    if (!(host instanceof Element)) return (slotEl.childNodes || []).slice();
+
+    var out = [];
+    var nodes = host.childNodes || [];
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      if (!(n instanceof Element)) continue;
+      if (n.slot === name) out.push(n);
+    }
+    if (out.length) return out;
+    return (slotEl.childNodes || []).slice();
+  }
+
+  function assignedNodesFlattened(slotEl, visited) {
+    var base = assignedNodesForSlot(slotEl);
+    if (!visited) visited = new Set();
+    var out = [];
+    for (var i = 0; i < base.length; i++) {
+      var n = base[i];
+      if (n instanceof HTMLSlotElement) {
+        if (visited.has(n)) continue;
+        visited.add(n);
+        var inner = assignedNodesFlattened(n, visited);
+        for (var j = 0; j < inner.length; j++) out.push(inner[j]);
+      } else {
+        out.push(n);
+      }
+    }
+    return out;
+  }
+
+  function normalizeAssignedNodesOptions(options, methodName) {
+    if (options === undefined || options === null) return { flatten: false };
+    if (typeof options !== "object") {
+      throw new TypeError(
+        "Failed to execute '" + methodName + "' on 'HTMLSlotElement': parameter 1 is not of type 'AssignedNodesOptions'."
+      );
+    }
+    return { flatten: !!options.flatten };
+  }
+
+  HTMLSlotElement.prototype.assign = function () {
+    nodeIdFromThis(this);
+    if (!(this instanceof HTMLSlotElement)) throw new TypeError("Illegal invocation");
+
+    var nodes = [];
+    for (var i = 0; i < arguments.length; i++) {
+      var n = arguments[i];
+      if (typeof n !== "object" || n === null || typeof n[NODE_ID] !== "number") {
+        throw new TypeError(
+          "Failed to execute 'assign' on 'HTMLSlotElement': parameter " +
+            (i + 1) +
+            " is not of type 'Node'."
+        );
+      }
+      nodes.push(n);
+    }
+
+    // Clear prior assignments from this slot.
+    var prev = SLOT_MANUAL_ASSIGNMENTS.get(this);
+    if (prev !== undefined) {
+      for (var i = 0; i < prev.length; i++) {
+        if (NODE_MANUAL_ASSIGNED_SLOT.get(prev[i]) === this) {
+          NODE_MANUAL_ASSIGNED_SLOT.delete(prev[i]);
+        }
+      }
+    }
+
+    // Move nodes from any previous slot assignment into this one.
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      var oldSlot = NODE_MANUAL_ASSIGNED_SLOT.get(n);
+      if (oldSlot && oldSlot !== this) {
+        var oldList = SLOT_MANUAL_ASSIGNMENTS.get(oldSlot);
+        if (oldList !== undefined) {
+          var filtered = [];
+          for (var j = 0; j < oldList.length; j++) {
+            if (oldList[j] !== n) filtered.push(oldList[j]);
+          }
+          SLOT_MANUAL_ASSIGNMENTS.set(oldSlot, filtered);
+        }
+      }
+      NODE_MANUAL_ASSIGNED_SLOT.set(n, this);
+    }
+
+    SLOT_MANUAL_ASSIGNMENTS.set(this, nodes.slice());
+  };
+
+  HTMLSlotElement.prototype.assignedNodes = function (options) {
+    nodeIdFromThis(this);
+    if (!(this instanceof HTMLSlotElement)) throw new TypeError("Illegal invocation");
+    var opts = normalizeAssignedNodesOptions(options, "assignedNodes");
+    if (opts.flatten) return assignedNodesFlattened(this);
+    return assignedNodesForSlot(this);
+  };
+
+  HTMLSlotElement.prototype.assignedElements = function (options) {
+    nodeIdFromThis(this);
+    if (!(this instanceof HTMLSlotElement)) throw new TypeError("Illegal invocation");
+    var opts = normalizeAssignedNodesOptions(options, "assignedElements");
+    var nodes = opts.flatten ? assignedNodesFlattened(this) : assignedNodesForSlot(this);
+    var out = [];
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i] instanceof Element) out.push(nodes[i]);
+    }
+    return out;
+  };
+
+  Object.defineProperty(Element.prototype, "assignedSlot", {
+    get: function () {
+      nodeIdFromThis(this);
+      var parent = this.parentNode;
+      if (!(parent instanceof Element)) return null;
+      var root = SHADOW_ROOT_BY_HOST.get(parent);
+      if (!root) return null;
+      // `assignedSlot` uses the "open" find-a-slot variant.
+      if (String(root.mode) !== "open") return null;
+
+      var slotAssignment = String(root.slotAssignment || "named");
+      if (slotAssignment === "manual") {
+        var slot = NODE_MANUAL_ASSIGNED_SLOT.get(this) || null;
+        if (slot && shadowRootForSlotElement(slot) === root) return slot;
+        return null;
+      }
+
+      var name = this.slot;
+      var slot = firstSlotInShadowRoot(root, name);
+      return slot || null;
     },
     configurable: true,
   });
@@ -2047,6 +2423,11 @@ const DOM_SHIM: &str = r##"
     return makeStaticNodeList(out);
   };
 
+  // ShadowRoot inherits DocumentFragment, but WPT expects querySelector(All) to be own-properties on
+  // ShadowRoot.prototype (not inherited from DocumentFragment.prototype).
+  ShadowRoot.prototype.querySelector = DocumentFragment.prototype.querySelector;
+  ShadowRoot.prototype.querySelectorAll = DocumentFragment.prototype.querySelectorAll;
+
   Node.prototype.appendChild = function (child) {
     var parentId = nodeIdFromThis(this);
     if (typeof child !== "object" || child === null) {
@@ -2437,8 +2818,10 @@ const DOM_SHIM: &str = r##"
   Object.defineProperty(g, "Range", { value: Range, configurable: true, writable: true });
   Object.defineProperty(g, "Document", { value: Document, configurable: true, writable: true });
   Object.defineProperty(g, "DocumentFragment", { value: DocumentFragment, configurable: true, writable: true });
+  Object.defineProperty(g, "ShadowRoot", { value: ShadowRoot, configurable: true, writable: true });
   Object.defineProperty(g, "Element", { value: Element, configurable: true, writable: true });
   Object.defineProperty(g, "HTMLElement", { value: HTMLElement, configurable: true, writable: true });
+  Object.defineProperty(g, "HTMLSlotElement", { value: HTMLSlotElement, configurable: true, writable: true });
   Object.defineProperty(g, "HTMLDivElement", { value: HTMLDivElement, configurable: true, writable: true });
   Object.defineProperty(g, "HTMLInputElement", { value: HTMLInputElement, configurable: true, writable: true });
   Object.defineProperty(g, "HTMLTextAreaElement", { value: HTMLTextAreaElement, configurable: true, writable: true });

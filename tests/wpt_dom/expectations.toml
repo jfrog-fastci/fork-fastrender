@@ -134,12 +134,6 @@ status = "skip"
 reason = "Deterministic virtual time (Date.now/performance.now) is vm-js-only; QuickJS timers are wall-clock based."
 
 [[expectations]]
-id = "dom/collections/htmlcollection-children.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend uses minimal DOM shims; Element.children and element-sibling traversal are not implemented."
-
-[[expectations]]
 id = "dom/treewalker_navigation.window.js"
 backend = "quickjs"
 status = "xfail"
@@ -252,12 +246,6 @@ regex = "(?i)^events/(event|eventtarget).*?(strict|webidl|constructor|brand|inva
 backend = "quickjs"
 status = "skip"
 reason = "QuickJS backend uses minimal Event/EventTarget shims; strict WebIDL/brand/InvalidStateError tests are vm-js-only."
-
-[[expectations]]
-id = "dom/shadow_dom_traversal_iterators.window.js"
-backend = "quickjs"
-status = "xfail"
-reason = "QuickJS backend does not implement shadow DOM traversal with NodeIterator/TreeWalker yet."
 
 [[expectations]]
 glob = "dom/ranges/tentative/FormControlRange-*.html"
