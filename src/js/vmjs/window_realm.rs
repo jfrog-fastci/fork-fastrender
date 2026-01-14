@@ -33208,120 +33208,9 @@ fn node_compare_document_position_native(
     return Ok(Value::Number(make_disconnected(node1, node2) as f64));
   }
 
-  fn parent_for_compare(dom: &dom2::Document, node: NodeId) -> Option<NodeId> {
-    if node.index() >= dom.nodes_len() {
-      return None;
-    }
-    if matches!(dom.node(node).kind, NodeKind::ShadowRoot { .. }) {
-      // ShadowRoot is a root boundary for tree order comparisons.
-      return None;
-    }
-    dom.parent_node(node)
-  }
-
-  fn tree_root(dom: &dom2::Document, mut node: NodeId) -> NodeId {
-    let mut remaining = dom.nodes_len().saturating_add(1);
-    while remaining > 0 {
-      remaining -= 1;
-      let Some(parent) = parent_for_compare(dom, node) else {
-        break;
-      };
-      node = parent;
-    }
-    node
-  }
-
-  let root1 = tree_root(dom, node1.node_id);
-  let root2 = tree_root(dom, node2.node_id);
-  if root1 != root2 {
-    return Ok(Value::Number(make_disconnected(node1, node2) as f64));
-  }
-
-  fn is_ancestor(dom: &dom2::Document, ancestor: NodeId, node: NodeId) -> bool {
-    let mut current = parent_for_compare(dom, node);
-    let mut remaining = dom.nodes_len().saturating_add(1);
-    while remaining > 0 {
-      remaining -= 1;
-      let Some(id) = current else {
-        break;
-      };
-      if id == ancestor {
-        return true;
-      }
-      current = parent_for_compare(dom, id);
-    }
-    false
-  }
-
-  // If node1 is an ancestor of node2, other contains this.
-  if is_ancestor(dom, node1.node_id, node2.node_id) {
-    let mask = DOCUMENT_POSITION_CONTAINED_BY | DOCUMENT_POSITION_PRECEDING;
-    return Ok(Value::Number(mask as f64));
-  }
-  // If node1 is a descendant of node2, other is contained by this.
-  if is_ancestor(dom, node2.node_id, node1.node_id) {
-    let mask = DOCUMENT_POSITION_CONTAINS | DOCUMENT_POSITION_FOLLOWING;
-    return Ok(Value::Number(mask as f64));
-  }
-
-  fn compare_tree_order(dom: &dom2::Document, a: NodeId, b: NodeId) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    if a == b {
-      return Ordering::Equal;
-    }
-
-    fn path_to_root(dom: &dom2::Document, node: NodeId) -> Vec<NodeId> {
-      let mut out: Vec<NodeId> = Vec::new();
-      let mut current = Some(node);
-      let mut remaining = dom.nodes_len().saturating_add(1);
-      while remaining > 0 {
-        remaining -= 1;
-        let Some(id) = current else {
-          break;
-        };
-        out.push(id);
-        current = parent_for_compare(dom, id);
-      }
-      out.reverse();
-      out
-    }
-
-    let path_a = path_to_root(dom, a);
-    let path_b = path_to_root(dom, b);
-
-    let mut i = 0usize;
-    let min_len = path_a.len().min(path_b.len());
-    while i < min_len && path_a[i] == path_b[i] {
-      i += 1;
-    }
-
-    if i == path_a.len() {
-      // a is an ancestor of b, so it precedes b in tree order.
-      return Ordering::Less;
-    }
-    if i == path_b.len() {
-      return Ordering::Greater;
-    }
-
-    let common = path_a[i - 1];
-    let child_a = path_a[i];
-    let child_b = path_b[i];
-
-    let idx_a = dom.node(common).children.iter().position(|&c| c == child_a);
-    let idx_b = dom.node(common).children.iter().position(|&c| c == child_b);
-
-    match (idx_a, idx_b) {
-      (Some(a), Some(b)) => a.cmp(&b),
-      _ => child_a.index().cmp(&child_b.index()),
-    }
-  }
-
-  let order = compare_tree_order(dom, node1.node_id, node2.node_id);
-  let mask = match order {
-    std::cmp::Ordering::Less => DOCUMENT_POSITION_PRECEDING,
-    std::cmp::Ordering::Equal => 0,
-    std::cmp::Ordering::Greater => DOCUMENT_POSITION_FOLLOWING,
-  };
+  // Delegate within-document comparisons to the dom2 implementation, which already handles shadow
+  // root boundaries and is covered by unit tests.
+  let mask = dom.compare_document_position(node2.node_id, node1.node_id);
   Ok(Value::Number(mask as f64))
 }
 
@@ -38033,13 +37922,12 @@ fn range_is_point_in_range_native(
     node_obj,
     "Range.isPointInRange requires a node argument",
   )?;
-  if node_handle.document_id != handle.document_id {
-    return Ok(Value::Bool(false));
-  }
-
   let offset_value = args.get(1).copied().unwrap_or(Value::Undefined);
   let offset = webidl_to_uint32(vm, &mut scope, host, hooks, offset_value)? as usize;
 
+  if node_handle.document_id != handle.document_id {
+    return Ok(Value::Bool(false));
+  }
   let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
     .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
@@ -38078,6 +37966,10 @@ fn range_compare_point_native(
     node_obj,
     "Range.comparePoint requires a node argument",
   )?;
+
+  let offset_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let offset = webidl_to_uint32(vm, &mut scope, host, hooks, offset_value)? as usize;
+
   if node_handle.document_id != handle.document_id {
     return Err(VmError::Throw(make_dom_exception(
       vm,
@@ -38086,9 +37978,6 @@ fn range_compare_point_native(
       "",
     )?));
   }
-
-  let offset_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let offset = webidl_to_uint32(vm, &mut scope, host, hooks, offset_value)? as usize;
 
   let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
     .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;

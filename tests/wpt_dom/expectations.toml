@@ -404,14 +404,14 @@ reason = "Range WPT `dom/common.js` harness setup is not fully supported yet (te
 [[expectations]]
 id = "dom/ranges/Range-comparePoint-2.html"
 backend = ["vmjs", "vmjs-rendered"]
-status = "xfail"
-reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+status = "pass"
+reason = "Range.comparePoint implemented (vm-js bindings backed by dom2)."
 
 [[expectations]]
 id = "dom/ranges/Range-comparePoint.html"
 backend = ["vmjs", "vmjs-rendered"]
 status = "xfail"
-reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+reason = "Range.comparePoint is implemented, but this upstream WPT is too slow in the vm-js runner (deadline exceeded)."
 
 [[expectations]]
 id = "dom/ranges/Range-deleteContents.html"
@@ -433,27 +433,39 @@ reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up wo
 
 [[expectations]]
 id = "dom/ranges/Range-intersectsNode-2.html"
-backend = ["vmjs", "vmjs-rendered"]
+backend = "vmjs"
+status = "pass"
+reason = "Range.intersectsNode implemented (vm-js bindings backed by dom2)."
+
+[[expectations]]
+id = "dom/ranges/Range-intersectsNode-2.html"
+backend = "vmjs-rendered"
 status = "xfail"
-reason = "Range.intersectsNode is not callable in the current HTML-test runner (Range prototype wiring for `new Range()` is incomplete)."
+reason = "vmjs-rendered HTML runner does not currently parse the test's markup (relies on DOM from the HTML body)."
+
+[[expectations]]
+id = "dom/ranges/Range-intersectsNode-binding.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "pass"
+reason = "Range.intersectsNode implemented (vm-js bindings backed by dom2)."
 
 [[expectations]]
 id = "dom/ranges/Range-intersectsNode-shadow.html"
 backend = ["vmjs", "vmjs-rendered"]
 status = "xfail"
-reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+reason = "Range.intersectsNode is implemented, but this test currently depends on additional Range APIs (e.g. selectNode) not yet exposed in vm-js."
 
 [[expectations]]
 id = "dom/ranges/Range-intersectsNode.html"
 backend = ["vmjs", "vmjs-rendered"]
 status = "xfail"
-reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+reason = "Range.intersectsNode is implemented, but this upstream WPT is too slow in the vm-js runner (deadline exceeded)."
 
 [[expectations]]
 id = "dom/ranges/Range-isPointInRange.html"
 backend = ["vmjs", "vmjs-rendered"]
 status = "xfail"
-reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+reason = "Range.isPointInRange is implemented, but this upstream WPT is too slow in the vm-js runner (deadline exceeded)."
 
 [[expectations]]
 id = "dom/ranges/Range-mutations-appendChild.html"
