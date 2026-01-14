@@ -552,6 +552,27 @@ fn escaped_await_as_import_binding_identifier_is_syntax_error() {
 }
 
 #[test]
+fn escaped_await_as_default_import_binding_identifier_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = SourceTextModuleRecord::parse(&mut rt.heap, r#"import \u0061wait from "m";"#).unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn escaped_await_as_namespace_import_binding_identifier_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = SourceTextModuleRecord::parse(&mut rt.heap, r#"import * as \u0061wait from "m";"#).unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn escaped_yield_as_import_binding_identifier_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = SourceTextModuleRecord::parse(&mut rt.heap, r#"import { \u0079ield } from "m";"#).unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn escaped_eval_as_import_binding_identifier_is_syntax_error() {
   let mut rt = new_runtime();
   let err = SourceTextModuleRecord::parse(&mut rt.heap, r#"import { \u0065val } from "m";"#).unwrap_err();
