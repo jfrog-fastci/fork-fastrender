@@ -4270,7 +4270,15 @@ struct BrowserRuntime {
           let prev_viewport = tab.viewport_css;
           let prev_dpr = tab.dpr;
           let clamp = self.limits.clamp_viewport_and_dpr(viewport_css, dpr);
-          let resized = clamp.viewport_css != prev_viewport || clamp.dpr != prev_dpr;
+          let viewport_changed = clamp.viewport_css != prev_viewport;
+          let dpr_changed = (clamp.dpr - prev_dpr).abs() >= 1e-6;
+          if !viewport_changed && !dpr_changed {
+            // No-op when the *effective* (clamped) viewport and DPR are unchanged. This avoids
+            // redundant layout/paint work and prevents warning spam when the UI keeps sending an
+            // oversized viewport that clamps to the same values.
+            return;
+          }
+          let resized = viewport_changed || dpr_changed;
           tab.viewport_css = clamp.viewport_css;
           tab.dpr = clamp.dpr;
           if let Some(text) = clamp.warning_text(&self.limits) {
@@ -15031,6 +15039,166 @@ mod drain_messages_viewport_coalescing_tests {
     let tab = runtime.tabs.get(&tab_id).expect("tab state");
     assert_eq!(tab.viewport_css, (300, 240));
     assert!((tab.dpr - 2.0).abs() < 1e-6);
+
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod viewport_changed_dedup_tests {
+  use super::*;
+
+  #[test]
+  fn viewport_changed_is_noop_when_effective_values_unchanged() -> crate::Result<()> {
+    let (ui_tx, ui_rx) = std::sync::mpsc::channel::<UiToWorker>();
+    let (worker_tx, _worker_rx) = std::sync::mpsc::channel::<WorkerToUiMsg>();
+
+    let factory = default_ui_worker_factory()?;
+    let downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>> =
+      Arc::new(Mutex::new(HashMap::new()));
+    let ui_tx_out = WorkerToUiSender::new(worker_tx, None);
+    let mut runtime = BrowserRuntime::new(ui_rx, ui_tx_out, factory, downloads);
+
+    let tab_id = TabId::new();
+    ui_tx
+      .send(UiToWorker::CreateTab {
+        tab_id,
+        initial_url: None,
+        cancel: CancelGens::new(),
+      })
+      .unwrap();
+    runtime.drain_messages();
+
+    {
+      let tab = runtime.tabs.get_mut(&tab_id).expect("tab state");
+      tab.viewport_css = (100, 80);
+      tab.dpr = 1.0;
+      tab.needs_repaint = false;
+      tab.force_repaint = false;
+      tab.document = Some(BrowserDocument::from_html(
+        "<!doctype html><html><body>ok</body></html>",
+        RenderOptions::default()
+          .with_viewport(100, 80)
+          .with_device_pixel_ratio(1.0),
+      )?);
+    }
+
+    let snapshot = runtime
+      .tabs
+      .get(&tab_id)
+      .expect("tab state")
+      .cancel
+      .snapshot_paint();
+
+    ui_tx
+      .send(UiToWorker::ViewportChanged {
+        tab_id,
+        viewport_css: (100, 80),
+        dpr: 1.0,
+      })
+      .unwrap();
+    runtime.drain_messages();
+
+    let tab = runtime.tabs.get(&tab_id).expect("tab state");
+    assert!(
+      snapshot.is_still_current_for_paint(&tab.cancel),
+      "expected redundant ViewportChanged not to bump paint cancel gens"
+    );
+    assert!(
+      !tab.needs_repaint && !tab.force_repaint,
+      "expected redundant ViewportChanged not to schedule repaints"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn viewport_changed_does_not_spam_warnings_when_clamped_values_are_unchanged() -> crate::Result<()> {
+    let (ui_tx, ui_rx) = std::sync::mpsc::channel::<UiToWorker>();
+    let (worker_tx, worker_rx) = std::sync::mpsc::channel::<WorkerToUiMsg>();
+
+    let factory = default_ui_worker_factory()?;
+    let downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>> =
+      Arc::new(Mutex::new(HashMap::new()));
+    let ui_tx_out = WorkerToUiSender::new(worker_tx, None);
+    let mut runtime = BrowserRuntime::new(ui_rx, ui_tx_out, factory, downloads);
+
+    let tab_id = TabId::new();
+    ui_tx
+      .send(UiToWorker::CreateTab {
+        tab_id,
+        initial_url: None,
+        cancel: CancelGens::new(),
+      })
+      .unwrap();
+    runtime.drain_messages();
+
+    // Ensure the first ViewportChanged triggers clamping (and thus a warning).
+    let viewport_in = (u32::MAX, u32::MAX);
+    let dpr_in = 1000.0;
+    let clamp = runtime.limits.clamp_viewport_and_dpr(viewport_in, dpr_in);
+    assert!(
+      clamp.warning_text(&runtime.limits).is_some(),
+      "expected clamp warning for oversized viewport/DPR"
+    );
+
+    // Drain any messages emitted by CreateTab.
+    while worker_rx.try_recv().is_ok() {}
+
+    // First oversized viewport should warn.
+    ui_tx
+      .send(UiToWorker::ViewportChanged {
+        tab_id,
+        viewport_css: viewport_in,
+        dpr: dpr_in,
+      })
+      .unwrap();
+    runtime.drain_messages();
+
+    let mut warnings = 0;
+    while let Ok(msg) = worker_rx.try_recv() {
+      match msg {
+        WorkerToUiMsg::Single(WorkerToUi::Warning { tab_id: got, .. }) => {
+          assert_eq!(got, tab_id);
+          warnings += 1;
+        }
+        WorkerToUiMsg::Batch(msgs) => {
+          for msg in msgs {
+            if let WorkerToUi::Warning { tab_id: got, .. } = msg {
+              assert_eq!(got, tab_id);
+              warnings += 1;
+            }
+          }
+        }
+        _ => {}
+      }
+    }
+    assert_eq!(warnings, 1, "expected a single clamp warning");
+
+    // Sending the same oversized viewport again should be a no-op (no warning spam).
+    ui_tx
+      .send(UiToWorker::ViewportChanged {
+        tab_id,
+        viewport_css: viewport_in,
+        dpr: dpr_in,
+      })
+      .unwrap();
+    runtime.drain_messages();
+
+    let mut warnings = 0;
+    while let Ok(msg) = worker_rx.try_recv() {
+      match msg {
+        WorkerToUiMsg::Single(WorkerToUi::Warning { .. }) => warnings += 1,
+        WorkerToUiMsg::Batch(msgs) => {
+          warnings += msgs
+            .into_iter()
+            .filter(|msg| matches!(msg, WorkerToUi::Warning { .. }))
+            .count();
+        }
+        _ => {}
+      }
+    }
+    assert_eq!(warnings, 0, "expected redundant clamp warning to be suppressed");
 
     Ok(())
   }
