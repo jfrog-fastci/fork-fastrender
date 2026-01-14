@@ -6,7 +6,7 @@ use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, 
 use crate::regexp::{
   advance_string_index, compile_regexp_with_budget, RegExpCompileError, RegExpExecMemoryBudget, RegExpFlags,
 };
-use crate::string::{utf16_to_utf8_lossy_with_tick, JsString};
+use crate::string::{normalize_utf16_to_utf16_with_tick, utf16_to_utf8_lossy_with_tick, JsString, NormalizationForm};
 use crate::{
   heap::TypedArrayKind,
   ExternalMemoryToken, GcObject, GcString, Job, JobKind, PromiseCapability, PromiseHandle,
@@ -18,6 +18,7 @@ use parse_js::ast::func::FuncBody;
 use parse_js::ast::node::{Node, ParenthesizedExpr};
 use parse_js::ast::stmt::Stmt;
 use parse_js::{Dialect, ParseOptions, SourceType};
+use icu_properties::CodePointSetData;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use crate::tick;
@@ -21189,8 +21190,30 @@ pub fn string_prototype_last_index_of(
 
   let len = scope.heap().get_string(s)?.len_code_units();
 
-  // `position` is clamped to [0, len] (negative -> 0).
-  let pos = string_position_from_value(vm, &mut scope, host, hooks, position, len, len)?;
+  // Spec: https://tc39.es/ecma262/#sec-string.prototype.lastindexof
+  //
+  // Note: Unlike other string position helpers (`includes`, `startsWith`, ...),
+  // `String.prototype.lastIndexOf` treats `NaN` as `+∞` (clamps to `len`), per test262.
+  let pos = if matches!(position, Value::Undefined) {
+    len
+  } else {
+    let mut n = scope.to_number(vm, host, hooks, position)?;
+    if n.is_nan() {
+      n = len as f64;
+    }
+    if !n.is_finite() {
+      if n.is_sign_negative() { 0usize } else { len }
+    } else {
+      n = n.trunc();
+      if n <= 0.0 {
+        0usize
+      } else if n >= len as f64 {
+        len
+      } else {
+        n as usize
+      }
+    }
+  };
 
   // Borrow code unit slices for the search. Avoid allocating intermediate vectors: these inputs
   // can be attacker-controlled.
@@ -22607,6 +22630,178 @@ pub fn string_prototype_repeat(
   Ok(Value::String(out))
 }
 
+fn is_string_well_formed_unicode_with_tick(
+  units: &[u16],
+  mut tick: impl FnMut() -> Result<(), VmError>,
+) -> Result<bool, VmError> {
+  const TICK_EVERY: usize = 1024;
+
+  let mut i = 0usize;
+  while i < units.len() {
+    if i % TICK_EVERY == 0 {
+      tick()?;
+    }
+
+    let u = units[i];
+    if (0xD800..=0xDBFF).contains(&u) {
+      // High surrogate: must be followed by a low surrogate.
+      if i + 1 >= units.len() || !(0xDC00..=0xDFFF).contains(&units[i + 1]) {
+        return Ok(false);
+      }
+      i += 2;
+      continue;
+    }
+    if (0xDC00..=0xDFFF).contains(&u) {
+      // Unpaired low surrogate.
+      return Ok(false);
+    }
+
+    i += 1;
+  }
+
+  Ok(true)
+}
+
+/// `String.prototype.isWellFormed` (ECMA-262).
+pub fn string_prototype_is_well_formed(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-string.prototype.iswellformed
+  let mut scope = scope.reborrow();
+  let o = crate::spec_ops::require_object_coercible(this)?;
+  scope.push_root(o)?;
+
+  let s = scope.to_string(vm, host, hooks, o)?;
+  scope.push_root(Value::String(s))?;
+
+  let units = { scope.heap().get_string(s)?.as_code_units() };
+  let well_formed = is_string_well_formed_unicode_with_tick(units, || vm.tick())?;
+  Ok(Value::Bool(well_formed))
+}
+
+/// `String.prototype.toWellFormed` (ECMA-262).
+pub fn string_prototype_to_well_formed(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-string.prototype.towellformed
+  let mut scope = scope.reborrow();
+  let o = crate::spec_ops::require_object_coercible(this)?;
+  scope.push_root(o)?;
+
+  let s = scope.to_string(vm, host, hooks, o)?;
+  scope.push_root(Value::String(s))?;
+
+  // Fast path: already well-formed.
+  {
+    let units = scope.heap().get_string(s)?.as_code_units();
+    if is_string_well_formed_unicode_with_tick(units, || vm.tick())? {
+      return Ok(Value::String(s));
+    }
+  }
+
+  let len = scope.heap().get_string(s)?.len_code_units();
+  scope.ensure_can_alloc_string_units(len)?;
+
+  let out_units = {
+    let units = scope.heap().get_string(s)?.as_code_units();
+    let mut out: Vec<u16> = Vec::new();
+    out.try_reserve_exact(len).map_err(|_| VmError::OutOfMemory)?;
+
+    let mut i = 0usize;
+    while i < units.len() {
+      if i % 1024 == 0 {
+        vm.tick()?;
+      }
+
+      let u = units[i];
+      if (0xD800..=0xDBFF).contains(&u)
+        && i + 1 < units.len()
+        && (0xDC00..=0xDFFF).contains(&units[i + 1])
+      {
+        out.push(u);
+        out.push(units[i + 1]);
+        i += 2;
+      } else if (0xD800..=0xDFFF).contains(&u) {
+        // Unpaired surrogate: replace with U+FFFD.
+        out.push(0xFFFD);
+        i += 1;
+      } else {
+        out.push(u);
+        i += 1;
+      }
+    }
+
+    out
+  };
+
+  let out = scope.alloc_string_from_u16_vec(out_units)?;
+  Ok(Value::String(out))
+}
+
+/// `String.prototype.normalize` (ECMA-262).
+pub fn string_prototype_normalize(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-string.prototype.normalize
+  let mut scope = scope.reborrow();
+  let o = crate::spec_ops::require_object_coercible(this)?;
+
+  let form_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  scope.push_roots(&[o, form_val])?;
+
+  let s = scope.to_string(vm, host, hooks, o)?;
+  scope.push_root(Value::String(s))?;
+
+  // 4. If form is not provided or form is undefined, let form be "NFC".
+  // 5. Let f be ? ToString(form).
+  let form = if matches!(form_val, Value::Undefined) {
+    NormalizationForm::Nfc
+  } else {
+    let f = scope.to_string(vm, host, hooks, form_val)?;
+    scope.push_root(Value::String(f))?;
+    let units = scope.heap().get_string(f)?.as_code_units();
+    if units == [b'N' as u16, b'F' as u16, b'C' as u16] {
+      NormalizationForm::Nfc
+    } else if units == [b'N' as u16, b'F' as u16, b'D' as u16] {
+      NormalizationForm::Nfd
+    } else if units == [b'N' as u16, b'F' as u16, b'K' as u16, b'C' as u16] {
+      NormalizationForm::Nfkc
+    } else if units == [b'N' as u16, b'F' as u16, b'K' as u16, b'D' as u16] {
+      NormalizationForm::Nfkd
+    } else {
+      let intr = require_intrinsics(vm)?;
+      let err = crate::new_range_error(&mut scope, intr, "Invalid normalization form")?;
+      return Err(VmError::Throw(err));
+    }
+  };
+
+  let out_units = {
+    let units = scope.heap().get_string(s)?.as_code_units();
+    normalize_utf16_to_utf16_with_tick(units, form, || vm.tick())?
+  };
+
+  let out = scope.alloc_string_from_u16_vec(out_units)?;
+  Ok(Value::String(out))
+}
+
 /// `String.prototype.toLowerCase` (ECMA-262) (minimal).
 pub fn string_prototype_to_lower_case(
   vm: &mut Vm,
@@ -22634,8 +22829,9 @@ pub fn string_prototype_to_lower_case(
     js.as_code_units()
   };
 
-  let mut out: Vec<u16> = Vec::new();
-  out
+  // Decode UTF-16 into code points, keeping unpaired surrogates as standalone code points.
+  let mut code_points: Vec<u32> = Vec::new();
+  code_points
     .try_reserve_exact(units.len())
     .map_err(|_| VmError::OutOfMemory)?;
 
@@ -22646,36 +22842,95 @@ pub fn string_prototype_to_lower_case(
     }
 
     let u = units[i];
-    let (ch, consumed) = if (0xD800..=0xDBFF).contains(&u)
+    if (0xD800..=0xDBFF).contains(&u)
       && i + 1 < units.len()
       && (0xDC00..=0xDFFF).contains(&units[i + 1])
     {
       let high = (u as u32) - 0xD800;
       let low = (units[i + 1] as u32) - 0xDC00;
-      let cp = 0x10000 + ((high << 10) | low);
-      (char::from_u32(cp).ok_or(VmError::InvariantViolation("invalid surrogate pair"))?, 2usize)
-    } else if (0xD800..=0xDFFF).contains(&u) {
-      // Unpaired surrogate: case conversion leaves it unchanged.
-      out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
-      out.push(u);
-      i += 1;
-      continue;
+      code_points.push(0x10000 + ((high << 10) | low));
+      i += 2;
     } else {
-      (
-        char::from_u32(u as u32).ok_or(VmError::InvariantViolation("invalid utf-16 code unit"))?,
-        1usize,
-      )
+      code_points.push(u as u32);
+      i += 1;
+    }
+  }
+
+  // Implement Unicode SpecialCasing for FINAL SIGMA:
+  // Σ maps to ς at the end of a word, after skipping case-ignorable code points.
+  let case_ignorable = CodePointSetData::new::<icu_properties::props::CaseIgnorable>();
+  let cased = CodePointSetData::new::<icu_properties::props::Cased>();
+
+  let mut preceded_by_cased: Vec<bool> = Vec::new();
+  preceded_by_cased
+    .try_reserve_exact(code_points.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  preceded_by_cased.resize(code_points.len(), false);
+
+  let mut last_non_ignorable_is_cased = false;
+  for (idx, &cp) in code_points.iter().enumerate() {
+    if idx % 1024 == 0 {
+      vm.tick()?;
+    }
+    preceded_by_cased[idx] = last_non_ignorable_is_cased;
+    if !case_ignorable.contains32(cp) {
+      last_non_ignorable_is_cased = cased.contains32(cp);
+    }
+  }
+
+  let mut followed_by_cased: Vec<bool> = Vec::new();
+  followed_by_cased
+    .try_reserve_exact(code_points.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  followed_by_cased.resize(code_points.len(), false);
+
+  let mut next_non_ignorable_is_cased = false;
+  for idx in (0..code_points.len()).rev() {
+    if idx % 1024 == 0 {
+      vm.tick()?;
+    }
+    followed_by_cased[idx] = next_non_ignorable_is_cased;
+    let cp = code_points[idx];
+    if !case_ignorable.contains32(cp) {
+      next_non_ignorable_is_cased = cased.contains32(cp);
+    }
+  }
+
+  let mut out: Vec<u16> = Vec::new();
+  out
+    .try_reserve_exact(units.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  for (idx, &cp) in code_points.iter().enumerate() {
+    if idx % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    if (0xD800..=0xDFFF).contains(&cp) {
+      // Unpaired surrogate: case conversion leaves it unchanged.
+      if out.capacity().saturating_sub(out.len()) < 1 {
+        out.try_reserve(1024).map_err(|_| VmError::OutOfMemory)?;
+      }
+      out.push(cp as u16);
+      continue;
+    }
+
+    let mapped: char = if cp == 0x03A3 {
+      // Greek capital sigma with FINAL SIGMA special-casing.
+      let is_final = preceded_by_cased[idx] && !followed_by_cased[idx];
+      if is_final { '\u{03C2}' } else { '\u{03C3}' }
+    } else {
+      char::from_u32(cp).ok_or(VmError::InvariantViolation("invalid unicode code point"))?
     };
 
-    for mapped in ch.to_lowercase() {
+    for lower in mapped.to_lowercase() {
       let mut buf = [0u16; 2];
-      let encoded = mapped.encode_utf16(&mut buf);
+      let encoded = lower.encode_utf16(&mut buf);
       out
         .try_reserve(encoded.len())
         .map_err(|_| VmError::OutOfMemory)?;
       out.extend_from_slice(encoded);
     }
-    i += consumed;
   }
 
   let out = scope.alloc_string_from_u16_vec(out)?;
@@ -22818,24 +23073,40 @@ pub fn string_prototype_locale_compare(
   let b = scope.to_string(vm, host, hooks, that)?;
   scope.push_root(Value::String(b))?;
 
-  let a_units = { scope.heap().get_string(a)?.as_code_units() };
-  let b_units = { scope.heap().get_string(b)?.as_code_units() };
+  // Fast path: code-unit equality.
+  let (a_units, b_units) = {
+    let a_units = scope.heap().get_string(a)?.as_code_units();
+    let b_units = scope.heap().get_string(b)?.as_code_units();
+    (a_units, b_units)
+  };
+  if a_units == b_units {
+    return Ok(Value::Number(0.0));
+  }
 
-  let min_len = a_units.len().min(b_units.len());
+  // ECMA-262 requires `localeCompare` to treat canonically equivalent strings as equal.
+  // We approximate locale-sensitive collation with an NFC-normalize + lexicographic compare.
+  let a_norm = normalize_utf16_to_utf16_with_tick(a_units, NormalizationForm::Nfc, || vm.tick())?;
+  let b_norm = normalize_utf16_to_utf16_with_tick(b_units, NormalizationForm::Nfc, || vm.tick())?;
+
+  if a_norm == b_norm {
+    return Ok(Value::Number(0.0));
+  }
+
+  let min_len = a_norm.len().min(b_norm.len());
   for i in 0..min_len {
     if i % 1024 == 0 {
       vm.tick()?;
     }
-    match a_units[i].cmp(&b_units[i]) {
+    match a_norm[i].cmp(&b_norm[i]) {
       core::cmp::Ordering::Less => return Ok(Value::Number(-1.0)),
       core::cmp::Ordering::Greater => return Ok(Value::Number(1.0)),
       core::cmp::Ordering::Equal => {}
     }
   }
 
-  if a_units.len() < b_units.len() {
+  if a_norm.len() < b_norm.len() {
     Ok(Value::Number(-1.0))
-  } else if a_units.len() > b_units.len() {
+  } else if a_norm.len() > b_norm.len() {
     Ok(Value::Number(1.0))
   } else {
     Ok(Value::Number(0.0))

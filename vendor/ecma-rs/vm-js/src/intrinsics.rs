@@ -1127,6 +1127,11 @@ impl Intrinsics {
       vm.register_native_call(builtins::string_prototype_replace_all)?;
     let string_prototype_split = vm.register_native_call(builtins::string_prototype_split)?;
     let string_prototype_repeat = vm.register_native_call(builtins::string_prototype_repeat)?;
+    let string_prototype_is_well_formed =
+      vm.register_native_call(builtins::string_prototype_is_well_formed)?;
+    let string_prototype_to_well_formed =
+      vm.register_native_call(builtins::string_prototype_to_well_formed)?;
+    let string_prototype_normalize = vm.register_native_call(builtins::string_prototype_normalize)?;
     let string_prototype_code_point_at =
       vm.register_native_call(builtins::string_prototype_code_point_at)?;
     let string_prototype_at = vm.register_native_call(builtins::string_prototype_at)?;
@@ -3374,6 +3379,57 @@ impl Intrinsics {
         scope.push_root(Value::String(repeat_s))?;
         let key = PropertyKey::from_string(repeat_s);
         let func = scope.alloc_native_function(string_prototype_repeat, None, repeat_s, 1)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.prototype.normalize
+      {
+        let normalize_s = scope.alloc_string("normalize")?;
+        scope.push_root(Value::String(normalize_s))?;
+        let key = PropertyKey::from_string(normalize_s);
+        let func = scope.alloc_native_function(string_prototype_normalize, None, normalize_s, 0)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.prototype.isWellFormed
+      {
+        let is_well_formed_s = scope.alloc_string("isWellFormed")?;
+        scope.push_root(Value::String(is_well_formed_s))?;
+        let key = PropertyKey::from_string(is_well_formed_s);
+        let func = scope.alloc_native_function(string_prototype_is_well_formed, None, is_well_formed_s, 0)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.prototype.toWellFormed
+      {
+        let to_well_formed_s = scope.alloc_string("toWellFormed")?;
+        scope.push_root(Value::String(to_well_formed_s))?;
+        let key = PropertyKey::from_string(to_well_formed_s);
+        let func = scope.alloc_native_function(string_prototype_to_well_formed, None, to_well_formed_s, 0)?;
         scope.push_root(Value::Object(func))?;
         scope
           .heap_mut()

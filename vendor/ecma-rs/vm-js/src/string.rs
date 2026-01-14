@@ -4,6 +4,8 @@ use std::hash::{Hash, Hasher};
 use std::mem;
 use std::slice;
 
+use unicode_normalization::UnicodeNormalization;
+
 use crate::VmError;
 
 /// A JavaScript String value.
@@ -238,6 +240,113 @@ pub(crate) fn utf16_to_utf8_lossy_with_tick(
     }
     out.push_str(encoded);
   }
+
+  Ok(out)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NormalizationForm {
+  Nfc,
+  Nfd,
+  Nfkc,
+  Nfkd,
+}
+
+pub(crate) fn normalize_utf16_to_utf16_with_tick(
+  units: &[u16],
+  form: NormalizationForm,
+  mut tick: impl FnMut() -> Result<(), VmError>,
+) -> Result<Vec<u16>, VmError> {
+  const TICK_EVERY: usize = 1024;
+  const RESERVE_CHUNK: usize = 8 * 1024;
+
+  fn normalize_segment(
+    units: &[u16],
+    form: NormalizationForm,
+    out: &mut Vec<u16>,
+    tick: &mut impl FnMut() -> Result<(), VmError>,
+  ) -> Result<(), VmError> {
+    if units.is_empty() {
+      return Ok(());
+    }
+
+    let utf8 = utf16_to_utf8_lossy_with_tick(units, || tick())?;
+
+    macro_rules! normalize_iter {
+      ($iter:expr) => {
+        for (idx, ch) in ($iter).enumerate() {
+          if idx % TICK_EVERY == 0 {
+            tick()?;
+          }
+
+          let mut buf = [0u16; 2];
+          let encoded = ch.encode_utf16(&mut buf);
+          let needed = encoded.len();
+
+          if out.capacity().saturating_sub(out.len()) < needed {
+            out
+              .try_reserve(RESERVE_CHUNK.max(needed))
+              .map_err(|_| VmError::OutOfMemory)?;
+          }
+          out.extend_from_slice(encoded);
+        }
+      };
+    }
+
+    match form {
+      NormalizationForm::Nfc => normalize_iter!(utf8.nfc()),
+      NormalizationForm::Nfd => normalize_iter!(utf8.nfd()),
+      NormalizationForm::Nfkc => normalize_iter!(utf8.nfkc()),
+      NormalizationForm::Nfkd => normalize_iter!(utf8.nfkd()),
+    }
+
+    Ok(())
+  }
+
+  // Start with a conservative reservation: normalization can expand the string.
+  let mut out: Vec<u16> = Vec::new();
+  out.try_reserve_exact(units.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  // Normalize only scalar-value segments. Unpaired surrogate code points are left unchanged.
+  let mut seg_start = 0usize;
+  let mut i = 0usize;
+  while i < units.len() {
+    if i % TICK_EVERY == 0 {
+      tick()?;
+    }
+
+    let u = units[i];
+
+    // Surrogates: keep well-formed pairs inside the segment; flush on unpaired surrogate code points.
+    let is_unpaired_surrogate = if (0xD800..=0xDBFF).contains(&u) {
+      // High surrogate.
+      if i + 1 < units.len() && (0xDC00..=0xDFFF).contains(&units[i + 1]) {
+        i += 2;
+        continue;
+      }
+      true
+    } else if (0xDC00..=0xDFFF).contains(&u) {
+      // Low surrogate without a preceding high surrogate.
+      true
+    } else {
+      false
+    };
+
+    if is_unpaired_surrogate {
+      normalize_segment(&units[seg_start..i], form, &mut out, &mut tick)?;
+      // Preserve the unpaired surrogate code unit unchanged.
+      if out.capacity().saturating_sub(out.len()) < 1 {
+        out.try_reserve(RESERVE_CHUNK).map_err(|_| VmError::OutOfMemory)?;
+      }
+      out.push(u);
+      i += 1;
+      seg_start = i;
+    } else {
+      i += 1;
+    }
+  }
+  normalize_segment(&units[seg_start..], form, &mut out, &mut tick)?;
 
   Ok(out)
 }

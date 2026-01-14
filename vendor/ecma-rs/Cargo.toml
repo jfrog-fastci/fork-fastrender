@@ -160,6 +160,7 @@ tower-http = { version = "0.6.2", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3.19", default-features = false }
 unicode-ident = "1.0"
+unicode-normalization = "0.1.22"
 walkdir = "2.5"
 sha2 = "0.10"
 wait-timeout = "0.2"
