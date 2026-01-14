@@ -199,6 +199,8 @@ binary)”). Notably:
   [`docs/perf-logging.md#browser-responsiveness`](perf-logging.md#browser-responsiveness).
 - `FASTR_PERF_LOG_OUT=/path/to/log.jsonl` / `browser --perf-log-out <path>` – write the responsiveness
   JSONL log to a file (instead of stdout).
+- `FASTR_BROWSER_TRACE_OUT=/path/to/trace.json` / `browser --trace-out <path>` – write a Perfetto/Chrome
+  trace of the windowed browser UI event loop (written when the browser process exits).
 
 When running against arbitrary real-world pages, consider using the repo’s resource limit wrapper
 (see [browser_ui.md](browser_ui.md)).

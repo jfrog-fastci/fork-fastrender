@@ -18,7 +18,9 @@ pub const FASTR_PERF_LOG_ENV: &str = "FASTR_PERF_LOG";
 /// When unset/empty, logs are written to stdout so they can be piped/tee'd.
 pub const FASTR_PERF_LOG_OUT_ENV: &str = "FASTR_PERF_LOG_OUT";
 
-/// Environment variable used to write a Chrome trace of the windowed browser event loop.
+/// Legacy env var used to write a Chrome trace of the windowed browser event loop.
+///
+/// Preferred: pass `browser --trace-out <path>`.
 pub const FASTR_BROWSER_TRACE_OUT_ENV: &str = "FASTR_BROWSER_TRACE_OUT";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
