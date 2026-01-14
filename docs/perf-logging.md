@@ -130,6 +130,15 @@ Filtering options (see `browser_perf_log_summary --help`):
 - `--only-event frame|input|scroll|resize|ttfp|idle_sample|cpu_summary|memory_summary|frame_upload`: summarize a single event type.
   (`idle_summary` is accepted as a legacy alias.)
 
+To focus specifically on RSS over a windowed interaction, combine the event filter and time window:
+
+```bash
+timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- \
+  --input target/browser_perf.jsonl --only-event memory_summary --from-ms 0 --to-ms 60000
+```
+
+The summary output includes both `rss_bytes` and a convenience `rss_mb` row.
+
 ### Headless benchmark harness: `ui_perf_smoke`
 
 For automated/regression-friendly measurements, use the headless harness `ui_perf_smoke`. It runs a
