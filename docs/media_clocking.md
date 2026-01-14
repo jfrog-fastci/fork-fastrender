@@ -383,6 +383,14 @@ cap/floor so behavior stays predictable.
 The A/V sync thresholds can be overridden at runtime via environment variables (values are integer
 milliseconds; underscores are allowed):
 
+Preferred env vars:
+
+* `FASTRENDER_AVSYNC_IN_SYNC_MS` — in-sync window (`|video_pts - now| <= tolerance` ⇒ present)
+* `FASTRENDER_AVSYNC_DROP_LATE_MS` — drop threshold (`now - video_pts > max_late` ⇒ drop)
+* `FASTRENDER_AVSYNC_DELAY_EARLY_MS` — hold threshold (`video_pts - now > max_early` ⇒ hold + wake later)
+
+Legacy env vars (still supported):
+
 * `FASTR_AV_SYNC_TOLERANCE_MS` — in-sync window (`|video_pts - now| <= tolerance` ⇒ present)
 * `FASTR_AV_SYNC_MAX_LATE_MS` — drop threshold (`now - video_pts > max_late` ⇒ drop)
 * `FASTR_AV_SYNC_MAX_EARLY_MS` — hold threshold (`video_pts - now > max_early` ⇒ hold + wake later)
