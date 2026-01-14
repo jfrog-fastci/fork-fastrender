@@ -574,6 +574,76 @@ fn live_range_pre_insert_shifts_boundary_points_by_fragment_child_count() {
 }
 
 #[test]
+fn live_range_pre_insert_translates_raw_index_when_parent_has_shadow_root_pseudo_child() {
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<div id=host>",
+    "<template shadowrootmode=open></template>",
+    "<p id=a></p>",
+    "<p id=b></p>",
+    "</div>",
+    "</body></html>",
+  );
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let host = doc.get_element_by_id("host").expect("host node not found");
+  let a = doc.get_element_by_id("a").expect("a node not found");
+  let b = doc.get_element_by_id("b").expect("b node not found");
+
+  // dom2 stores the attached shadow root as a child of the host at index 0 for renderer traversal.
+  let shadow_root = doc.node(host).children[0];
+  assert!(
+    matches!(doc.node(shadow_root).kind, NodeKind::ShadowRoot { .. }),
+    "expected host to have an attached ShadowRoot"
+  );
+  assert_eq!(
+    doc.node(host).children[1],
+    a,
+    "expected light DOM child to remain as a host child after ShadowRoot promotion"
+  );
+
+  // A range at the insertion point (between #a and #b).
+  let r_at_insertion_point = doc.create_range();
+  doc
+    .range_set_start(r_at_insertion_point, host, 1)
+    .unwrap();
+  doc.range_set_end(r_at_insertion_point, host, 1).unwrap();
+
+  // A range after all light DOM children.
+  let r_after_all_children = doc.create_range();
+  doc.range_set_start(r_after_all_children, host, 2).unwrap();
+  doc.range_set_end(r_after_all_children, host, 2).unwrap();
+
+  // A range inside a light-DOM child should not be affected.
+  let r_inside_child = doc.create_range();
+  doc.range_set_start(r_inside_child, a, 0).unwrap();
+  doc.range_set_end(r_inside_child, a, 0).unwrap();
+
+  let inserted = doc.create_element("i", "");
+  assert!(doc.insert_before(host, inserted, Some(b)).unwrap());
+
+  // Inserting at the boundary point should not move the boundary.
+  assert_eq!(
+    doc.range_start_offset(r_at_insertion_point).unwrap(),
+    1
+  );
+  assert_eq!(doc.range_end_offset(r_at_insertion_point).unwrap(), 1);
+
+  // Inserting before tree index 1 shifts boundary points after it. This must ignore the ShadowRoot
+  // pseudo-child stored at raw index 0.
+  assert_eq!(doc.range_start_container(r_after_all_children).unwrap(), host);
+  assert_eq!(doc.range_start_offset(r_after_all_children).unwrap(), 3);
+  assert_eq!(doc.range_end_container(r_after_all_children).unwrap(), host);
+  assert_eq!(doc.range_end_offset(r_after_all_children).unwrap(), 3);
+
+  assert_eq!(doc.range_start_container(r_inside_child).unwrap(), a);
+  assert_eq!(doc.range_start_offset(r_inside_child).unwrap(), 0);
+  assert_eq!(doc.range_end_container(r_inside_child).unwrap(), a);
+  assert_eq!(doc.range_end_offset(r_inside_child).unwrap(), 0);
+}
+
+#[test]
 fn range_offsets_ignore_shadow_root_pseudo_child() {
   let html = concat!(
     "<!doctype html>",
