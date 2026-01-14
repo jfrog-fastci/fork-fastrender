@@ -168,7 +168,8 @@ pub struct Parser<'a> {
   /// Disallow `arguments` identifier references in class field initializers and static blocks.
   ///
   /// This implements the `ContainsArguments` early error from ECMA-262 for class initialization
-  /// code, preventing class initialization expressions from capturing an outer `arguments` binding.
+  /// code, preventing class initialization expressions from capturing an outer `arguments` binding
+  /// (including via arrow functions).
   ///
   /// Note: this is a counter so nested class init contexts compose naturally.
   disallow_arguments_in_class_init: u32,

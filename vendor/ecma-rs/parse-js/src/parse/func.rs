@@ -32,6 +32,13 @@ impl<'a> Parser<'a> {
     ctx: ParseCtx,
     introduces_new_target: bool,
   ) -> SyntaxResult<Vec<Node<ParamDecl>>> {
+    // Non-arrow functions introduce their own `arguments` binding, so class initializer
+    // `ContainsArguments` early errors do not apply inside their parameter lists.
+    let prev_disallow_arguments_in_class_init = self.disallow_arguments_in_class_init;
+    if introduces_new_target {
+      self.disallow_arguments_in_class_init = 0;
+    }
+
     // `new.target` is syntactically allowed inside parameter initializers when a `new.target`
     // binding exists (functions and class elements).
     let prev_new_target_allowed = self.new_target_allowed;
@@ -211,6 +218,7 @@ impl<'a> Parser<'a> {
       Ok(parameters)
     })();
     self.new_target_allowed = prev_new_target_allowed;
+    self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
     res
   }
 

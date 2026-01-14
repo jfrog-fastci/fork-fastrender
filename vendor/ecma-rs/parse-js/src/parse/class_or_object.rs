@@ -1240,6 +1240,12 @@ impl<'a> Parser<'a> {
             .error(SyntaxErrorType::RequiredTokenNotFound(TT::ParenthesisOpen)),
         );
       }
+
+      // Setters introduce their own `arguments` binding, so class initializer `ContainsArguments`
+      // early errors do not apply within the setter's parameter list or body.
+      let prev_disallow_arguments_in_class_init = p.disallow_arguments_in_class_init;
+      p.disallow_arguments_in_class_init = 0;
+
       let prev_new_target_allowed = p.new_target_allowed;
       let prev_super_prop_allowed = p.super_prop_allowed;
       let prev_super_call_allowed = p.super_call_allowed;
@@ -1403,6 +1409,7 @@ impl<'a> Parser<'a> {
       p.new_target_allowed = prev_new_target_allowed;
       p.super_prop_allowed = prev_super_prop_allowed;
       p.super_call_allowed = prev_super_call_allowed;
+      p.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
       res
     })?;
     let val = func.wrap(|func| ClassOrObjSetter { func });
@@ -1454,11 +1461,13 @@ impl<'a> Parser<'a> {
             await_expr_allowed: false,
             yield_expr_allowed: false,
           });
-          let expr = self.expr_with_asi(
-            init_ctx,
-            [statement_delimiter, TT::BraceClose],
-            property_initialiser_asi,
-          );
+          let expr = self.with_disallow_arguments_in_class_init(|p| {
+            p.expr_with_asi(
+              init_ctx,
+              [statement_delimiter, TT::BraceClose],
+              property_initialiser_asi,
+            )
+          });
           self.new_target_allowed = prev_new_target_allowed;
           self.super_prop_allowed = prev_super_prop_allowed;
           self.super_call_allowed = prev_super_call_allowed;
