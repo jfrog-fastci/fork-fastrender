@@ -1152,10 +1152,11 @@ impl WindowHostState {
     let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_host(self)?;
     hooks.set_event_loop(event_loop);
     let (vm_host, window) = self.vm_host_and_window_realm()?;
-    let source = match vm_js::SourceText::new_charged(window.heap_mut(), source_name, source_text) {
-      Ok(source) => Arc::new(source),
+    let source =
+      match vm_js::SourceText::new_charged_arc(window.heap_mut(), source_name, source_text) {
+        Ok(source) => source,
       Err(err) => return Err(vm_error_format::vm_error_to_error(window.heap_mut(), err)),
-    };
+      };
     let result = window.exec_script_source_with_host_and_hooks(vm_host, &mut hooks, source);
 
     if let Some(err) = hooks.finish(window.heap_mut()) {

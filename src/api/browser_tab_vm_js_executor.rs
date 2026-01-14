@@ -654,8 +654,8 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     realm.set_base_url(spec.base_url.clone());
     realm.reset_interrupt();
 
-    let source = match SourceText::new_charged(realm.heap_mut(), name, script_text) {
-      Ok(source) => Arc::new(source),
+    let source = match SourceText::new_charged_arc(realm.heap_mut(), name, script_text) {
+      Ok(source) => source,
       Err(err) => {
         if let Some(diag) = diagnostics.as_ref() {
           diag.record_js_vm_error(&err);
@@ -1251,17 +1251,17 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
              webidl_bindings_host,
            );
            hooks.set_event_loop(event_loop);
-           let source_text = match SourceText::new_charged(
-             realm.heap_mut(),
-             "<importmap error>",
-             source,
-           ) {
-             Ok(source_text) => Arc::new(source_text),
-             Err(err) => {
-               if let Some(diag) = self.diagnostics.as_ref() {
-                 diag.record_js_vm_error(&err);
-               }
-               return Ok(());
+           let source_text = match SourceText::new_charged_arc(
+              realm.heap_mut(),
+              "<importmap error>",
+              source,
+            ) {
+              Ok(source_text) => source_text,
+              Err(err) => {
+                if let Some(diag) = self.diagnostics.as_ref() {
+                  diag.record_js_vm_error(&err);
+                }
+                return Ok(());
              }
            };
            let result = realm.exec_script_source_with_host_and_hooks(document, &mut hooks, source_text);
@@ -1493,9 +1493,9 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       webidl_bindings_host,
     );
     hooks.set_event_loop(event_loop);
-    let source_text = match SourceText::new_charged(realm.heap_mut(), "<beforeunload>", source)
+    let source_text = match SourceText::new_charged_arc(realm.heap_mut(), "<beforeunload>", source)
     {
-      Ok(source_text) => Arc::new(source_text),
+      Ok(source_text) => source_text,
       Err(err) => return Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err)),
     };
     let result = realm.exec_script_source_with_host_and_hooks(document, &mut hooks, source_text);
@@ -1615,9 +1615,9 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       webidl_bindings_host,
     );
     hooks.set_event_loop(event_loop);
-    let source_text = match SourceText::new_charged(realm.heap_mut(), "<lifecycle>", source)
+    let source_text = match SourceText::new_charged_arc(realm.heap_mut(), "<lifecycle>", source)
     {
-      Ok(source_text) => Arc::new(source_text),
+      Ok(source_text) => source_text,
       Err(err) => return Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err)),
     };
     let result = realm.exec_script_source_with_host_and_hooks(document, &mut hooks, source_text);

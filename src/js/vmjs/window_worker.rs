@@ -604,8 +604,9 @@ fn ensure_worker_runtime_started(
   {
     let budget = host.js_execution_options().vm_js_budget_now();
     runtime.vm.set_budget(budget);
-    let source_text = match SourceText::new_charged(&mut runtime.heap, script_url.clone(), source) {
-      Ok(source_text) => Arc::new(source_text),
+    let source_text =
+      match SourceText::new_charged_arc(&mut runtime.heap, script_url.clone(), source) {
+        Ok(source_text) => source_text,
       Err(err) => {
         dispatch_worker_error(Rc::clone(worker), event_loop, err.to_string())?;
         let mut inner = worker.borrow_mut();
@@ -613,7 +614,7 @@ fn ensure_worker_runtime_started(
         inner.terminate_with_window_heap(window.heap_mut());
         return Ok(());
       }
-    };
+      };
     let result = runtime.exec_script_source(source_text);
     if let Err(err) = result {
       dispatch_worker_error(Rc::clone(worker), event_loop, err.to_string())?;
