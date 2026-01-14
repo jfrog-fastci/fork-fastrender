@@ -477,6 +477,14 @@ impl AudioSink for AudioEngineSink {
     self.inner.apply_effective_volume();
   }
 
+  fn set_paused(&self, paused: bool) {
+    self.inner.backend_sink.set_paused(paused);
+  }
+
+  fn flush(&self) {
+    self.inner.backend_sink.flush();
+  }
+
   fn notify_discontinuity(&self) {
     self.inner.backend_sink.notify_discontinuity();
   }

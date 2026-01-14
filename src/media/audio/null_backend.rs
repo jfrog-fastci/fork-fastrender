@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -435,6 +435,7 @@ struct SinkState {
   capacity_samples: usize,
   queue: Mutex<VecDeque<f32>>,
   volume_bits: AtomicU32,
+  paused: AtomicBool,
   dropped_samples: AtomicU64,
   underrun_samples: AtomicU64,
   total_dropped_samples: Arc<AtomicU64>,
@@ -480,6 +481,7 @@ impl SinkState {
       capacity_samples,
       queue: Mutex::new(VecDeque::with_capacity(capacity_samples)),
       volume_bits: AtomicU32::new(1.0f32.to_bits()),
+      paused: AtomicBool::new(false),
       dropped_samples: AtomicU64::new(0),
       underrun_samples: AtomicU64::new(0),
       total_dropped_samples,
@@ -498,6 +500,14 @@ impl SinkState {
       0.0
     };
     self.volume_bits.store(volume.to_bits(), Ordering::Relaxed);
+  }
+
+  fn set_paused(&self, paused: bool) {
+    self.paused.store(paused, Ordering::Relaxed);
+  }
+
+  fn flush(&self) {
+    self.queue.lock().clear();
   }
 
   fn push(&self, samples: &[f32]) -> usize {
@@ -533,6 +543,10 @@ impl SinkState {
 
   fn consume(&self, samples_requested: usize, out: Option<&mut [f32]>) {
     if samples_requested == 0 {
+      return;
+    }
+
+    if self.paused.load(Ordering::Relaxed) {
       return;
     }
 
@@ -594,6 +608,14 @@ impl AudioSink for NullAudioSink {
 
   fn set_volume(&self, volume: f32) {
     self.state.set_volume(volume);
+  }
+
+  fn set_paused(&self, paused: bool) {
+    self.state.set_paused(paused);
+  }
+
+  fn flush(&self) {
+    self.state.flush();
   }
 }
 

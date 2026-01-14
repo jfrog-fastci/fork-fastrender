@@ -18,7 +18,7 @@ use super::{AudioSink, AudioStreamConfig};
 use crate::debug::trace::TraceHandle;
 use crate::media::clock::{AudioDeviceClock, AudioStreamClock, MediaClock};
 use parking_lot::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -54,6 +54,7 @@ struct AudioStreamInner {
   decoded_config: AudioStreamConfig,
   sink: Arc<dyn AudioSink>,
   playback_rate_bits: AtomicU64,
+  paused: AtomicBool,
   clock: AudioStreamClock,
   trace: TraceHandle,
   resample_scratch: Mutex<Vec<f32>>,
@@ -110,6 +111,7 @@ impl AudioStreamHandle {
         decoded_config,
         sink,
         playback_rate_bits: AtomicU64::new(1.0_f64.to_bits()),
+        paused: AtomicBool::new(false),
         clock,
         trace,
         resample_scratch: Mutex::new(Vec::new()),
@@ -132,14 +134,53 @@ impl AudioStreamHandle {
     f64::from_bits(self.inner.playback_rate_bits.load(Ordering::Relaxed))
   }
 
+  #[must_use]
+  pub fn is_paused(&self) -> bool {
+    self.inner.paused.load(Ordering::Relaxed)
+  }
+
+  /// Resume playback.
+  ///
+  /// This is idempotent.
+  pub fn play(&self) {
+    if !self.inner.paused.swap(false, Ordering::Relaxed) {
+      return;
+    }
+    self.inner.sink.set_paused(false);
+    self.inner.clock.set_rate(self.playback_rate());
+  }
+
+  /// Pause playback.
+  ///
+  /// While paused, the sink should output silence without draining queued audio and the stream clock
+  /// should stop advancing.
+  ///
+  /// This is idempotent.
+  pub fn pause(&self) {
+    if self.inner.paused.swap(true, Ordering::Relaxed) {
+      return;
+    }
+    self.inner.sink.set_paused(true);
+    self.inner.clock.set_rate(0.0);
+  }
+
   /// Sets the playback rate for both the resampler and the stream clock.
+  ///
+  /// If the stream is currently paused, the rate is stored for later but the clock remains frozen.
   pub fn set_playback_rate(&self, rate: f64) {
     let rate = sanitize_playback_rate(rate);
     self
       .inner
       .playback_rate_bits
       .store(rate.to_bits(), Ordering::Relaxed);
-    self.inner.clock.set_rate(rate);
+    if !self.is_paused() {
+      self.inner.clock.set_rate(rate);
+    }
+  }
+
+  /// Drops any queued samples from the underlying sink without resetting the stream clock mapping.
+  pub fn flush(&self) {
+    self.inner.sink.flush();
   }
 
   /// Resets the stream clock mapping.
@@ -147,6 +188,7 @@ impl AudioStreamHandle {
   /// Note: this handle is stateless (per-call resampling), so there is no interpolation state to
   /// flush beyond updating the clock.
   pub fn seek(&self, new_media_time: Duration) {
+    self.inner.sink.flush();
     self.inner.sink.notify_discontinuity();
     self.inner.clock.seek(new_media_time);
   }
@@ -252,6 +294,8 @@ impl AudioStreamHandle {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::js::clock::VirtualClock;
+  use crate::media::audio::{AudioBackend, NullAudioBackend};
   use parking_lot::Mutex;
   use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -510,5 +554,117 @@ mod tests {
 
     stream.seek(Duration::from_secs(1));
     assert_eq!(discontinuities.load(Ordering::Relaxed), 2);
+  }
+
+  #[test]
+  fn audio_stream_seek_flushes_buffered_audio() {
+    let clock = Arc::new(VirtualClock::new());
+    let backend = NullAudioBackend::new_with_clock(clock, AudioStreamConfig::new(10, 1));
+    let sink: Arc<dyn AudioSink> = Arc::from(backend.create_sink());
+    let device_clock: Arc<AudioDeviceClock> = Arc::new(backend.clock());
+
+    let decoded_cfg = AudioStreamConfig::new(10, 1);
+    let stream =
+      AudioStreamHandle::new(decoded_cfg, sink, device_clock, Duration::ZERO).expect("stream");
+
+    stream
+      .push_interleaved_f32(&[1.0, 2.0, 3.0])
+      .expect("push");
+
+    stream.seek(Duration::from_secs(1));
+    assert_eq!(stream.current_time(), Duration::from_secs(1));
+
+    // If the seek didn't flush, the pre-seek samples would be played.
+    let out = backend.render(3);
+    assert_eq!(out, vec![0.0, 0.0, 0.0]);
+    assert_eq!(
+      stream.current_time(),
+      Duration::from_secs(1) + Duration::from_millis(300)
+    );
+  }
+
+  #[test]
+  fn audio_stream_flush_drops_buffered_audio_without_resetting_clock() {
+    let clock = Arc::new(VirtualClock::new());
+    let backend = NullAudioBackend::new_with_clock(clock, AudioStreamConfig::new(10, 1));
+    let sink: Arc<dyn AudioSink> = Arc::from(backend.create_sink());
+    let device_clock: Arc<AudioDeviceClock> = Arc::new(backend.clock());
+
+    let decoded_cfg = AudioStreamConfig::new(10, 1);
+    let stream = AudioStreamHandle::new(
+      decoded_cfg,
+      sink,
+      device_clock,
+      Duration::from_secs(5),
+    )
+    .expect("stream");
+
+    // Advance the device clock so we can detect accidental clock resets.
+    backend.render(2); // 200ms at 10Hz.
+    let t0 = stream.current_time();
+    assert_eq!(t0, Duration::from_secs(5) + Duration::from_millis(200));
+
+    stream.push_interleaved_f32(&[1.0, 2.0]).expect("push");
+    stream.flush();
+
+    // `flush` should not change the clock mapping (no jump).
+    assert_eq!(stream.current_time(), t0);
+
+    // Queued audio should have been dropped.
+    let out = backend.render(2);
+    assert_eq!(out, vec![0.0, 0.0]);
+  }
+
+  #[test]
+  fn audio_stream_pause_stops_draining_and_freezes_clock() {
+    let clock = Arc::new(VirtualClock::new());
+    let backend = NullAudioBackend::new_with_clock(clock, AudioStreamConfig::new(10, 1));
+    let sink: Arc<dyn AudioSink> = Arc::from(backend.create_sink());
+    let device_clock: Arc<AudioDeviceClock> = Arc::new(backend.clock());
+
+    let decoded_cfg = AudioStreamConfig::new(10, 1);
+    let stream =
+      AudioStreamHandle::new(decoded_cfg, sink, device_clock, Duration::ZERO).expect("stream");
+
+    stream
+      .push_interleaved_f32(&[1.0, 2.0, 3.0])
+      .expect("push");
+
+    stream.pause();
+    let t0 = stream.current_time();
+    assert_eq!(t0, Duration::ZERO);
+
+    // While paused, the backend should render silence but keep the queued samples.
+    let out_paused = backend.render(3);
+    assert_eq!(out_paused, vec![0.0, 0.0, 0.0]);
+    assert_eq!(stream.current_time(), t0);
+
+    stream.play();
+    let out_playing = backend.render(3);
+    assert_eq!(out_playing, vec![1.0, 2.0, 3.0]);
+    assert_eq!(stream.current_time(), Duration::from_millis(300));
+  }
+
+  #[test]
+  fn audio_stream_set_playback_rate_while_paused_does_not_resume_clock() {
+    let clock = Arc::new(VirtualClock::new());
+    let backend = NullAudioBackend::new_with_clock(clock, AudioStreamConfig::new(10, 1));
+    let sink: Arc<dyn AudioSink> = Arc::from(backend.create_sink());
+    let device_clock: Arc<AudioDeviceClock> = Arc::new(backend.clock());
+
+    let decoded_cfg = AudioStreamConfig::new(10, 1);
+    let stream =
+      AudioStreamHandle::new(decoded_cfg, sink, device_clock, Duration::ZERO).expect("stream");
+
+    stream.pause();
+    stream.set_playback_rate(2.0);
+
+    // Advance the device clock by 1s.
+    backend.render(10);
+    assert_eq!(stream.current_time(), Duration::ZERO);
+
+    stream.play();
+    backend.render(10);
+    assert_eq!(stream.current_time(), Duration::from_secs(2));
   }
 }

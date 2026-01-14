@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::{self, Seek, SeekFrom, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -237,6 +237,9 @@ impl MixerState {
       let Some(sink) = weak.upgrade() else {
         continue;
       };
+      if sink.paused.load(Ordering::Relaxed) {
+        continue;
+      }
       let gain_bits = sink.volume_bits.load(Ordering::Relaxed);
       let gain = f32::from_bits(gain_bits);
       sink.buffer.pop_add_into(dst, gain);
@@ -253,6 +256,7 @@ struct SinkState {
   config: AudioStreamConfig,
   buffer: AudioRingBuffer,
   volume_bits: AtomicU32,
+  paused: AtomicBool,
 }
 
 impl SinkState {
@@ -266,6 +270,7 @@ impl SinkState {
       config,
       buffer: AudioRingBuffer::new(capacity),
       volume_bits: AtomicU32::new(1.0f32.to_bits()),
+      paused: AtomicBool::new(false),
     }
   }
 
@@ -276,6 +281,14 @@ impl SinkState {
       0.0
     };
     self.volume_bits.store(volume.to_bits(), Ordering::Relaxed);
+  }
+
+  fn set_paused(&self, paused: bool) {
+    self.paused.store(paused, Ordering::Relaxed);
+  }
+
+  fn flush(&self) {
+    self.buffer.pop_discard(usize::MAX);
   }
 }
 
@@ -296,6 +309,14 @@ impl AudioSink for WavAudioSink {
 
   fn set_volume(&self, volume: f32) {
     self.state.set_volume(volume);
+  }
+
+  fn set_paused(&self, paused: bool) {
+    self.state.set_paused(paused);
+  }
+
+  fn flush(&self) {
+    self.state.flush();
   }
 }
 

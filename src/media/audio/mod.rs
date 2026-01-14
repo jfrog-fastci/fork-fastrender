@@ -593,6 +593,23 @@ pub trait AudioSink: Send + Sync {
   /// an explicit pause should stop draining.
   fn set_volume(&self, volume: f32);
 
+  /// Pauses/unpauses the sink.
+  ///
+  /// While paused, the sink must contribute silence **without draining** its internal buffer. This
+  /// allows higher layers to implement `HTMLMediaElement.pause()` semantics without dropping
+  /// buffered audio.
+  ///
+  /// This is distinct from `set_volume(0.0)`, which represents muting and must still drain queued
+  /// audio.
+  fn set_paused(&self, _paused: bool) {}
+
+  /// Drops all queued samples immediately.
+  ///
+  /// This does **not** reset any associated media clock mapping. Callers that need to jump the
+  /// timeline (e.g. seeks) should update their own clocks separately (see `AudioStreamHandle::seek`
+  /// and `AudioStreamClock::seek`).
+  fn flush(&self) {}
+
   /// Notifies the sink that the queued audio stream experienced a discontinuity (seek/flush/etc).
   ///
   /// Implementations may apply a short fade to avoid audible clicks when playback resumes.

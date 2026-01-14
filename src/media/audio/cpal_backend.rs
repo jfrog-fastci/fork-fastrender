@@ -825,6 +825,10 @@ impl MixerState {
       };
       has_sinks = true;
 
+      if sink.is_paused() {
+        continue;
+      }
+
       // Fully muted sinks never make the output audible; skip them for the decision. They'll be
       // drained in `mix_into` (mixing path) or via `pop_discard` (silence path).
       if sink.is_fully_muted() {
@@ -848,7 +852,7 @@ impl MixerState {
             continue;
           };
 
-          if sink.is_fully_muted() {
+          if !sink.is_paused() && sink.is_fully_muted() {
             sink.buffer.pop_discard(output_samples);
             sink.maybe_audible.store(false, Ordering::Relaxed);
             if sink.buffer.is_empty() {
@@ -878,6 +882,10 @@ impl MixerState {
       let Some(sink) = weak.upgrade() else {
         continue;
       };
+
+      if sink.is_paused() {
+        continue;
+      }
 
       if sink.is_fully_muted() {
         sink.buffer.pop_discard(to_drain);
@@ -920,6 +928,10 @@ impl MixerState {
         continue;
       };
 
+      if sink.is_paused() {
+        continue;
+      }
+
       sink.buffer.pop_discard(to_drain);
       sink.maybe_audible.store(false, Ordering::Relaxed);
       if sink.buffer.is_empty() {
@@ -954,7 +966,7 @@ impl MixerState {
 
       // Only consider non-muted sinks that currently have buffered audio for underrun + buffer stats.
       // This keeps the trace signal meaningful when many sinks exist but are idle/paused/muted.
-      if sink.is_fully_muted() || !sink.maybe_audible.load(Ordering::Relaxed) {
+      if sink.is_paused() || sink.is_fully_muted() || !sink.maybe_audible.load(Ordering::Relaxed) {
         continue;
       }
 
@@ -987,6 +999,7 @@ struct SinkState {
   dropped_samples: AtomicU64,
   activity: IdleStreamHandle<CpalStreamControlBackend>,
   volume_target_bits: AtomicU32,
+  paused: AtomicBool,
   discontinuity_state: AtomicU32,
   ramp_target_bits: AtomicU32,
   ramp_current_bits: AtomicU32,
@@ -1013,6 +1026,7 @@ impl SinkState {
       dropped_samples: AtomicU64::new(0),
       activity,
       volume_target_bits: AtomicU32::new(1.0f32.to_bits()),
+      paused: AtomicBool::new(false),
       discontinuity_state: AtomicU32::new(DISC_STATE_NONE),
       ramp_target_bits: AtomicU32::new(1.0f32.to_bits()),
       ramp_current_bits: AtomicU32::new(1.0f32.to_bits()),
@@ -1056,6 +1070,51 @@ impl SinkState {
     } else {
       self.maybe_audible.store(false, Ordering::Relaxed);
     }
+  }
+
+  #[inline]
+  fn is_paused(&self) -> bool {
+    self.paused.load(Ordering::Relaxed)
+  }
+
+  fn set_paused(&self, paused: bool) {
+    let prev = self.paused.swap(paused, Ordering::Relaxed);
+    if prev == paused {
+      return;
+    }
+
+    if paused {
+      self.maybe_audible.store(false, Ordering::Relaxed);
+      // Best-effort: if the engine is already torn down, ignore.
+      let _ = self.activity.set_active(false);
+      return;
+    }
+
+    // Resuming: if we still have buffered audio, re-activate the output stream so the samples can
+    // play out (or drain if muted). Restore the `maybe_audible` hint based on the current volume.
+    if self.buffer.has_data() {
+      let volume_bits = self.volume_target_bits.load(Ordering::Relaxed);
+      let volume = f32::from_bits(volume_bits);
+      let volume = if volume.is_finite() { volume } else { 0.0 };
+      if self.gain_nonzero_for_hint(volume) {
+        self.maybe_audible.store(true, Ordering::Relaxed);
+      } else {
+        self.maybe_audible.store(false, Ordering::Relaxed);
+      }
+      // Best-effort: if the engine is already torn down, ignore.
+      let _ = self.activity.set_active(true);
+    }
+  }
+
+  fn flush(&self) {
+    self.buffer.pop_discard(usize::MAX);
+    // Treat flush like a discontinuity boundary: ensure the next non-empty buffer fades in from 0
+    // and doesn't inherit any in-progress fade-out state.
+    self.discontinuity_state.store(DISC_STATE_WAIT_DATA, Ordering::Relaxed);
+    self.force_ramp_to_zero();
+    self.maybe_audible.store(false, Ordering::Relaxed);
+    // Best-effort: if the engine is already torn down, ignore.
+    let _ = self.activity.set_active(false);
   }
 
   fn notify_discontinuity(&self) {
@@ -1231,13 +1290,17 @@ impl AudioSink for CpalAudioSink {
       return 0;
     }
 
-    // If the sink may produce audible output, set the hint before publishing samples so the
-    // callback can avoid racing between the ring-buffer write becoming visible and the hint update.
-    let volume_bits = self.state.volume_target_bits.load(Ordering::Relaxed);
-    let volume = f32::from_bits(volume_bits);
-    let volume = if volume.is_finite() { volume } else { 0.0 };
-    if self.state.gain_nonzero_for_hint(volume) {
-      self.state.maybe_audible.store(true, Ordering::Relaxed);
+    let paused = self.state.is_paused();
+
+    if !paused {
+      // If the sink may produce audible output, set the hint before publishing samples so the
+      // callback can avoid racing between the ring-buffer write becoming visible and the hint update.
+      let volume_bits = self.state.volume_target_bits.load(Ordering::Relaxed);
+      let volume = f32::from_bits(volume_bits);
+      let volume = if volume.is_finite() { volume } else { 0.0 };
+      if self.state.gain_nonzero_for_hint(volume) {
+        self.state.maybe_audible.store(true, Ordering::Relaxed);
+      }
     }
 
     let written = self.state.buffer.push(&samples[..capped_len]);
@@ -1251,7 +1314,7 @@ impl AudioSink for CpalAudioSink {
     }
 
     // Re-assert after the write so a concurrent callback maintenance pass can't clobber us.
-    if written != 0 {
+    if written != 0 && !paused {
       let volume_bits = self.state.volume_target_bits.load(Ordering::Relaxed);
       let volume = f32::from_bits(volume_bits);
       let volume = if volume.is_finite() { volume } else { 0.0 };
@@ -1268,6 +1331,14 @@ impl AudioSink for CpalAudioSink {
 
   fn set_volume(&self, volume: f32) {
     self.state.set_volume(volume);
+  }
+
+  fn set_paused(&self, paused: bool) {
+    self.state.set_paused(paused);
+  }
+
+  fn flush(&self) {
+    self.state.flush();
   }
 
   fn notify_discontinuity(&self) {
