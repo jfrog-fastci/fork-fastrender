@@ -2082,6 +2082,7 @@ mod tests {
   use crate::VmHostHooks;
   use crate::VmJobContext;
   use crate::VmOptions;
+  use crate::function::CallHandler;
 
   #[repr(C)]
   struct TestRcBox<T> {
@@ -2650,23 +2651,37 @@ mod tests {
       drop(scope);
 
       // Find the dynamic import internal reaction callbacks recorded via `HostMakeJobCallback`.
-      let mut matches = Vec::<GcObject>::new();
+      //
+      // Identify them by their native call handler ids rather than by name so the test remains
+      // stable even if function names change.
+      let on_fulfilled_call = vm.dynamic_import_eval_on_fulfilled_call_id().unwrap();
+      let on_rejected_call = vm.dynamic_import_eval_on_rejected_call_id().unwrap();
+      let mut on_fulfilled_obj: Option<GcObject> = None;
+      let mut on_rejected_obj: Option<GcObject> = None;
       for cb in &host.callbacks {
-        let name = heap
-          .get_string(heap.get_function_name(*cb).unwrap())
-          .unwrap()
-          .to_utf8_lossy();
-        if name == "dynamicImportEvalOnFulfilled" || name == "dynamicImportEvalOnRejected" {
-          matches.push(*cb);
+        match heap.get_function_call_handler(*cb).unwrap() {
+          CallHandler::Native(id) if id == on_fulfilled_call => {
+            assert!(
+              on_fulfilled_obj.replace(*cb).is_none(),
+              "expected a single dynamicImportEvalOnFulfilled callback"
+            );
+          }
+          CallHandler::Native(id) if id == on_rejected_call => {
+            assert!(
+              on_rejected_obj.replace(*cb).is_none(),
+              "expected a single dynamicImportEvalOnRejected callback"
+            );
+          }
+          _ => {}
         }
       }
-      assert_eq!(
-        matches.len(),
-        2,
-        "expected both dynamicImportEvalOnFulfilled and dynamicImportEvalOnRejected callbacks"
-      );
 
-      for cb in matches {
+      let on_fulfilled_obj =
+        on_fulfilled_obj.expect("expected dynamicImportEvalOnFulfilled callback to be captured");
+      let on_rejected_obj =
+        on_rejected_obj.expect("expected dynamicImportEvalOnRejected callback to be captured");
+
+      for cb in [on_fulfilled_obj, on_rejected_obj] {
         assert_eq!(heap.get_function_job_realm(cb), Some(realm.id()));
         assert_eq!(heap.get_function_realm(cb).unwrap(), Some(global_object));
         let token = heap.get_function_script_or_module_token(cb);
