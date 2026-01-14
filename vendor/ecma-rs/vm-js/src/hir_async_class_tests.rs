@@ -87,8 +87,8 @@ fn hir_async_class_static_block_runs_after_class_level_await() -> Result<(), VmE
     "#,
   ) {
     Ok(func_obj) => func_obj,
-    // Until async evaluation lands for scripts/class static blocks, `await` is rejected as a syntax
-    // error. Treat that as "not supported yet" for this future-facing test.
+    // Until async evaluation lands for scripts/class static blocks, `await` may be rejected as a
+    // syntax error. Treat that as "not supported yet" for this future-facing test.
     Err(VmError::Syntax(diags))
       if diags.iter().any(|d| {
         d.code.as_str() == "VMJS0004"

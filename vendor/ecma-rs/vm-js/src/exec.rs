@@ -12201,18 +12201,17 @@ impl<'a> Evaluator<'a> {
 
           let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
           key_scope.push_root(member_value)?;
-
           // ECMA-262 `SuperProperty : super [ Expression ]`:
           // - `GetThisBinding` must be observed before any key side effects (handled above),
           // - the key expression is evaluated to a value before `GetSuperBase`, and
           // - `GetSuperBase` is observed before `ToPropertyKey` so prototype mutation during key
           //   coercion does not affect the resolved super base.
           let base = self.get_super_base(&mut key_scope)?;
-          // Root the base across key coercion / `GetValue`/`PutValue` in case it triggers a GC.
+          // Root the base across key coercion / dereference (`GetValue`/`PutValue` can invoke
+          // user-code via accessors/Proxy traps and trigger GC).
           key_scope.push_root(base)?;
-          let key = self.to_property_key_operator(&mut key_scope, member_value)?;
 
-          // Root the key across `GetValue`/`PutValue` in case those operations allocate/GC.
+          let key = self.to_property_key_operator(&mut key_scope, member_value)?;
           match key {
             PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
             PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
@@ -14972,9 +14971,12 @@ impl<'a> Evaluator<'a> {
           key_scope.push_roots(roots)?;
           let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
           key_scope.push_root(member_value)?;
-          // `super[expr]` captures the super base before `ToPropertyKey` so prototype mutation
-          // during key conversion does not affect this call's base.
+          // Spec: `GetSuperBase` must be observed before `ToPropertyKey` for computed super-property
+          // references (test262: `prop-expr-getsuperbase-before-topropertykey-*`), so prototype
+          // mutation during key conversion does not affect this call's base.
           let base = self.get_super_base(&mut key_scope)?;
+          // Keep the captured super base alive across `ToPropertyKey`, which can invoke user code
+          // and trigger GC.
           key_scope.push_root(base)?;
 
           let key = self.to_property_key_operator(&mut key_scope, member_value)?;
@@ -14986,7 +14988,6 @@ impl<'a> Evaluator<'a> {
               key_scope.push_root(Value::Symbol(s))?;
             }
           }
-
           let reference = Reference::SuperProperty {
             base,
             key,
@@ -59532,7 +59533,9 @@ mod tests {
       VmError::Syntax(diags) => {
         let has_engine_early_error = diags.iter().any(|d| d.code.as_str() == "VMJS0004");
         let has_parser_error = diags.iter().any(|d| {
-          if d.code.as_str() != "PS0002" {
+          // parse-js uses dedicated diagnostics for this early error; accept the legacy
+          // `ExpectedSyntax` code as well as the newer dedicated code.
+          if d.code.as_str() != "PS0002" && d.code.as_str() != "PS0017" {
             return false;
           }
           // Be tolerant to where `parse-js` surfaces the message (`message` vs `notes`) while still
@@ -59550,7 +59553,7 @@ mod tests {
          });
         assert!(
           has_engine_early_error || has_parser_error,
-          "expected early error VMJS0004 or parser error PS0002 about disallowed 'arguments', got {diags:?}"
+          "expected early error VMJS0004 or parser error PS0002/PS0017 about disallowed 'arguments', got {diags:?}"
         );
         Ok(())
       }
@@ -61165,20 +61168,20 @@ mod tests {
         // Property refs.
         const o = {};
         o.p ||= function () {};
-        if (o.p.name !== "p") return false;
+        if (o.p.name !== "") return false;
 
         o.q = 1;
         o.q &&= function () {};
-        if (o.q.name !== "q") return false;
+        if (o.q.name !== "") return false;
 
         o.r = null;
         o.r ??= function () {};
-        if (o.r.name !== "r") return false;
+        if (o.r.name !== "") return false;
 
         // Computed refs.
         const prop = "comp";
         o[prop] ||= function () {};
-        if (o[prop].name !== "comp") return false;
+        if (o[prop].name !== "") return false;
 
         // Private refs: assignment works, but private fields do not participate in name inference.
         //

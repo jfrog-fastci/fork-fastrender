@@ -12232,6 +12232,8 @@ impl<'vm> HirEvaluator<'vm> {
           // - then perform `ToPropertyKey` (test262:
           //   `prop-expr-getsuperbase-before-topropertykey-*`),
           // - and finally `[[Get]]` the callee from the captured base with `receiver = this`.
+          //
+          // Key conversion side effects must not affect the captured base for the current call.
           let (key, obj) = match &member.property {
             hir_js::ObjectKey::Computed(expr_id) => {
               let key_value = self.eval_expr(&mut scope, body, *expr_id)?;
@@ -25369,6 +25371,7 @@ mod async_for_await_of_async_iterator_close_tests {
       "expected async function to be a compiled user function, got {call_handler:?}"
     );
 
+    // Force compiled async/await execution (see above).
     if matches!(
       rt.heap.get_function_data(func_obj)?,
       FunctionData::AsyncEcmaFallback { .. }

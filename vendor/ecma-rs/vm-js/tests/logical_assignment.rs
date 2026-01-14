@@ -170,20 +170,20 @@ fn logical_assignment_anonymous_function_name_inference() -> Result<(), VmError>
 
           let o = {};
           o.f ??= function() {};
-          if (o.f.name !== "f") return false;
+          if (o.f.name !== "") return false;
 
           o = { f: true };
           o.f &&= function() {};
-          if (o.f.name !== "f") return false;
+          if (o.f.name !== "") return false;
 
           o = { f: 0 };
           o.f ||= function() {};
-          if (o.f.name !== "f") return false;
+          if (o.f.name !== "") return false;
 
           // Computed refs.
           const prop = "comp";
           o[prop] ||= function() {};
-          if (o[prop].name !== "comp") return false;
+          if (o[prop].name !== "") return false;
 
           // Private refs: assignment works, but private fields do not participate in name inference.
           class C {

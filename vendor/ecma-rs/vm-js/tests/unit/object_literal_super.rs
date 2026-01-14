@@ -328,7 +328,7 @@ fn super_computed_getsuperbase_before_topropertykey_putvalue_compound_assign() -
         toString() {
           Object.setPrototypeOf(obj, proto2);
            return "p";
-          }
+         }
         };
 
       obj.m() === 2 &&
@@ -359,7 +359,7 @@ fn super_computed_getsuperbase_before_topropertykey_putvalue_increment() -> Resu
         toString() {
           Object.setPrototypeOf(obj, proto2);
            return "p";
-          }
+         }
         };
 
       obj.m() === 2 &&
