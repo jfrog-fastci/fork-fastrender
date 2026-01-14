@@ -33538,6 +33538,7 @@ fn async_resume_from_frames(
           | AsyncFrame::RestoreStrict { .. }
           | AsyncFrame::WhileAfterBody { .. }
           | AsyncFrame::DoWhileAfterBody { .. }
+          | AsyncFrame::ForTripleAfterInit { .. }
           | AsyncFrame::ForTripleAfterBody { .. }
           | AsyncFrame::ForInAfterBody { .. }
           | AsyncFrame::ForOfAfterBody { .. }
