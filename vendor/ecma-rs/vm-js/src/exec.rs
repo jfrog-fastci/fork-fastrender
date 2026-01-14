@@ -13009,9 +13009,9 @@ impl<'a> Evaluator<'a> {
     }
 
     // Evaluate the callee and compute the `this` value for the call.
-    let (callee_value, this_value) = match &*expr.callee.stx {
-      // `super.method()` call in methods/getters/setters.
-      Expr::Member(member) if matches!(&*member.stx.left.stx, Expr::Super(_)) => {
+      let (callee_value, this_value) = match &*expr.callee.stx {
+        // `super.method()` call in methods/getters/setters.
+        Expr::Member(member) if matches!(&*member.stx.left.stx, Expr::Super(_)) => {
         if member.stx.optional_chaining {
           return Err(VmError::InvariantViolation(
             "optional chaining cannot be used on super",
@@ -13020,27 +13020,23 @@ impl<'a> Evaluator<'a> {
         if member.stx.right.starts_with('#') {
           return Err(VmError::Unimplemented("super private member access"));
         }
-        // Evaluating a super property reference requires an initialized `this` binding. In derived
-        // constructors, `this` is uninitialized until `super()` returns.
-        if self.derived_constructor && !self.this_initialized {
-          return Err(throw_reference_error(
-            self.vm,
-            scope,
-            "Must call super constructor in derived class before accessing 'this'",
-          )?);
-        }
+        // `super` property references use `GetThisBinding` as the receiver. This must throw before
+        // any user-observable work when `this` is uninitialized in derived constructors (including
+        // when the `this` binding is represented via a shared `DerivedConstructorState` cell for
+        // nested arrow functions / eval).
+        let receiver = self.get_this_binding(scope)?;
 
         let home_object = self.home_object.ok_or(VmError::InvariantViolation(
           "super property access missing [[HomeObject]]",
         ))?;
         let mut key_scope = scope.reborrow();
-        // Root `this` + home object across property-key string allocation and the `[[Get]]`.
-        key_scope.push_roots(&[self.this, Value::Object(home_object)])?;
+        // Root receiver + home object across property-key string allocation and the `[[Get]]`.
+        key_scope.push_roots(&[receiver, Value::Object(home_object)])?;
         let key_s = key_scope.alloc_string(&member.stx.right)?;
         let key = PropertyKey::from_string(key_s);
 
-        let callee_value = self.eval_super_property_get(&mut key_scope, key)?;
-        (callee_value, self.this)
+        let callee_value = self.eval_super_property_get(&mut key_scope, receiver, key)?;
+        (callee_value, receiver)
       }
       // `super[expr](...)` call in methods/getters/setters.
       Expr::ComputedMember(member) if matches!(&*member.stx.object.stx, Expr::Super(_)) => {
@@ -13049,29 +13045,22 @@ impl<'a> Evaluator<'a> {
             "optional chaining cannot be used on super",
           ));
         }
-        // Evaluating a super property reference requires an initialized `this` binding. In derived
-        // constructors, `this` is uninitialized until `super()` returns.
-        if self.derived_constructor && !self.this_initialized {
-          return Err(throw_reference_error(
-            self.vm,
-            scope,
-            "Must call super constructor in derived class before accessing 'this'",
-          )?);
-        }
+        // `GetThisBinding` must be observed before evaluating the computed key expression.
+        let receiver = self.get_this_binding(scope)?;
 
         let home_object = self.home_object.ok_or(VmError::InvariantViolation(
           "super property access missing [[HomeObject]]",
         ))?;
 
-        // Root `this` + home object across evaluation of the computed key and `[[Get]]`.
+        // Root receiver + home object across evaluation of the computed key and `[[Get]]`.
         let mut key_scope = scope.reborrow();
-        key_scope.push_roots(&[self.this, Value::Object(home_object)])?;
+        key_scope.push_roots(&[receiver, Value::Object(home_object)])?;
         let member_value = self.eval_expr(&mut key_scope, &member.stx.member)?;
         key_scope.push_root(member_value)?;
         let key = self.to_property_key_operator(&mut key_scope, member_value)?;
 
-        let callee_value = self.eval_super_property_get(&mut key_scope, key)?;
-        (callee_value, self.this)
+        let callee_value = self.eval_super_property_get(&mut key_scope, receiver, key)?;
+        (callee_value, receiver)
       }
       // Optional member call (e.g. `obj?.method()`): only applies when the optional-chain member
       // expression is directly in the call callee position (i.e. not parenthesized).
