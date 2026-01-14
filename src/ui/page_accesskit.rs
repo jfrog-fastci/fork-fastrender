@@ -150,6 +150,42 @@ mod tests {
   }
 
   #[test]
+  fn action_request_to_ui_message_click_maps_to_activate_node() {
+    let tab_id = TabId(1);
+    let target = crate::ui::encode_page_node_id(tab_id, 1, 99);
+    let req = accesskit::ActionRequest {
+      action: accesskit::Action::Click,
+      target,
+      data: None,
+    };
+    assert!(matches!(
+      action_request_to_ui_message(&req),
+      Some(UiToWorker::A11yActivate {
+        tab_id: got_tab,
+        node_id: 99
+      }) if got_tab == tab_id
+    ));
+  }
+
+  #[test]
+  fn action_request_to_ui_message_show_context_menu_maps_to_message() {
+    let tab_id = TabId(10);
+    let target = crate::ui::encode_page_node_id(tab_id, 1, 123);
+    let req = accesskit::ActionRequest {
+      action: accesskit::Action::ShowContextMenu,
+      target,
+      data: None,
+    };
+    assert!(matches!(
+      action_request_to_ui_message(&req),
+      Some(UiToWorker::A11yShowContextMenu {
+        tab_id: got_tab,
+        node_id: Some(123)
+      }) if got_tab == tab_id
+    ));
+  }
+
+  #[test]
   fn action_request_to_ui_message_scroll_into_view_maps_to_scroll_into_view() {
     let tab_id = TabId(3);
     let target = crate::ui::encode_page_node_id(tab_id, 1, 123);
@@ -213,6 +249,28 @@ mod tests {
   }
 
   #[test]
+  fn action_request_to_ui_message_set_selection_rejects_mismatched_nodes() {
+    let tab_id = TabId(2);
+    let target = crate::ui::encode_page_node_id(tab_id, 1, 11);
+    let other = crate::ui::encode_page_node_id(tab_id, 1, 12);
+    let req = accesskit::ActionRequest {
+      action: accesskit::Action::SetTextSelection,
+      target,
+      data: Some(accesskit::ActionData::SetTextSelection(accesskit::TextSelection {
+        anchor: accesskit::TextPosition {
+          node: other,
+          character_index: 1,
+        },
+        focus: accesskit::TextPosition {
+          node: target,
+          character_index: 4,
+        },
+      })),
+    };
+    assert!(action_request_to_ui_message(&req).is_none());
+  }
+
+  #[test]
   fn action_request_to_ui_message_ignores_non_page_node_ids() {
     let target = accesskit::NodeId(std::num::NonZeroU128::new(123).unwrap());
     let req = accesskit::ActionRequest {
@@ -221,6 +279,24 @@ mod tests {
       data: None,
     };
     assert!(action_request_to_ui_message(&req).is_none());
+  }
+
+  #[test]
+  fn action_request_to_ui_message_accepts_tag_bit_page_ids() {
+    let tab_id = TabId(7);
+    let target = page_accesskit_ids::page_node_id(tab_id, 55);
+    let req = accesskit::ActionRequest {
+      action: accesskit::Action::Focus,
+      target,
+      data: None,
+    };
+    assert!(matches!(
+      action_request_to_ui_message(&req),
+      Some(UiToWorker::A11ySetFocus {
+        tab_id: got_tab,
+        node_id: 55
+      }) if got_tab == tab_id
+    ));
   }
 
   #[test]
