@@ -174,6 +174,16 @@ mod tests {
   }
 
   #[test]
+  fn does_not_open_when_other_popup_open() {
+    let mut input = base_input();
+    input.other_popup_open = true;
+    input.history_panel_open = true;
+
+    let out = on_download_started(input);
+    assert_eq!(out, DownloadsPanelPolicyOutput::same_as_input(input));
+  }
+
+  #[test]
   fn should_auto_open_downloads_panel_policy_matches_expected_conditions() {
     // Busy typing in a chrome input: do not request focus.
     assert!(!should_auto_open_downloads_panel(
@@ -186,6 +196,10 @@ mod tests {
     // Modal open: do not request focus (and the caller should not auto-open at all).
     assert!(!should_auto_open_downloads_panel(
       false, false, true, false
+    ));
+    // Other popup open: do not request focus (and the caller should not auto-open at all).
+    assert!(!should_auto_open_downloads_panel(
+      false, false, false, true
     ));
     // Idle: ok to request focus.
     assert!(should_auto_open_downloads_panel(
