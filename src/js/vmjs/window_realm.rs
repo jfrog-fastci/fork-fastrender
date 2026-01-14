@@ -62328,7 +62328,8 @@ mod tests {
 
         // Store in the realm registry keyed by `DocumentId` so dataset exotic hooks can resolve it
         // by wrapper identity.
-        let mut dom2_box = Box::new(dom2);
+        // Avoid `Box::new`, which can abort the process on allocator OOM.
+        let mut dom2_box = box_try_new_vm(dom2)?;
         let dom2_ptr = NonNull::from(dom2_box.as_mut());
         data
           .owned_dom2_documents
@@ -68539,7 +68540,8 @@ mod tests {
       // Keep the node detached; observing + mutating should still queue records.
 
       let document_id = gc_object_id(document_obj);
-      let mut boxed = Box::new(dom2);
+      // Avoid `Box::new`, which can abort the process on allocator OOM.
+      let mut boxed = box_try_new_vm(dom2)?;
       let dom2_ptr = NonNull::from(boxed.as_mut());
       vm
         .user_data_mut::<WindowRealmUserData>()
@@ -69789,7 +69791,8 @@ mod tests {
         let data = vm
           .user_data_mut::<WindowRealmUserData>()
           .expect("expected WindowRealmUserData");
-        let mut boxed = Box::new(detached_dom);
+        // Avoid `Box::new`, which can abort the process on allocator OOM.
+        let mut boxed = box_try_new_vm(detached_dom)?;
         let dom_ptr = NonNull::from(boxed.as_mut());
         data
           .owned_dom2_documents
@@ -72906,7 +72909,8 @@ mod tests {
       let node2_id = dom2.create_element("x", "");
       dom2.append_child(doc2_root, node2_id).unwrap();
 
-      let mut dom2_box = Box::new(dom2);
+      // Avoid `Box::new`, which can abort the process on allocator OOM.
+      let mut dom2_box = box_try_new_vm(dom2)?;
       let dom2_ptr = NonNull::from(dom2_box.as_mut());
 
       let doc2_id = gc_object_id(doc2_obj);
