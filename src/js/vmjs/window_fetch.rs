@@ -9682,6 +9682,20 @@ mod tests {
     fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>) {
       self.jobs.push_back((job, realm));
     }
+
+    fn host_enqueue_promise_job_fallible(
+      &mut self,
+      ctx: &mut dyn vm_js::VmJobContext,
+      job: Job,
+      realm: Option<RealmId>,
+    ) -> Result<(), VmError> {
+      if self.jobs.try_reserve(1).is_err() {
+        job.discard(ctx);
+        return Err(VmError::OutOfMemory);
+      }
+      self.jobs.push_back((job, realm));
+      Ok(())
+    }
   }
 
   fn get_global_prop(host: &mut WindowHost, name: &str) -> Value {

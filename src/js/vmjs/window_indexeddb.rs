@@ -217,6 +217,19 @@ mod tests {
       // (stack-scoped to a single dispatch call).
       unsafe { (&mut *self.microtasks).enqueue_promise_job(job, realm) };
     }
+
+    fn host_enqueue_promise_job_fallible(
+      &mut self,
+      ctx: &mut dyn vm_js::VmJobContext,
+      job: vm_js::Job,
+      realm: Option<vm_js::RealmId>,
+    ) -> Result<(), VmError> {
+      // SAFETY: `microtasks` points into the same VM used for dispatch and outlives this hook
+      // (stack-scoped to a single dispatch call).
+      unsafe {
+        vm_js::VmHostHooks::host_enqueue_promise_job_fallible(&mut *self.microtasks, ctx, job, realm)
+      }
+    }
   }
 
   #[test]
