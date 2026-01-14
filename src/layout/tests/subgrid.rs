@@ -2119,10 +2119,11 @@ fn column_subgrid_with_mismatched_writing_mode_transposes_tracks() {
   let subgrid_fragment = &fragment.children[0];
   let first = &subgrid_fragment.children[0];
   let second = &subgrid_fragment.children[1];
+  let expected_x = subgrid_fragment.bounds.width() - first.bounds.width();
   assert_approx(
     first.bounds.x(),
-    0.0,
-    "first row origin maps to the x-axis after transpose",
+    expected_x,
+    "row aligns to block-start (right) in vertical-rl after transpose",
   );
   assert_approx(first.bounds.width(), 6.0, "row height becomes item width");
   assert_approx(first.bounds.y(), 0.0, "first column starts at origin");
@@ -2694,10 +2695,11 @@ fn subgrid_tracks_transpose_when_writing_mode_differs() {
     .expect("layout succeeds");
 
   let subgrid_fragment = &fragment.children[0];
+  let expected_x = subgrid_fragment.bounds.width() - subgrid_fragment.children[0].bounds.width();
   assert_approx(
     subgrid_fragment.children[0].bounds.x(),
-    0.0,
-    "transposed row maps to x origin",
+    expected_x,
+    "row aligns to block-start (right) in vertical-rl after transpose",
   );
   assert_approx(
     subgrid_fragment.children[0].bounds.width(),
