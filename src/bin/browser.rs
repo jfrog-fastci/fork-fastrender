@@ -24041,6 +24041,21 @@ impl App {
           }
         }
 
+        // Override egui's cursor output with renderer-chrome hover semantics so the OS cursor
+        // matches what users expect when moving between the page content and the chrome HTML (e.g.
+        // text caret over the address bar, pointing hand over links/buttons).
+        if response.hovered() {
+          use fastrender::ui::CursorKind;
+
+          let kind = doc.hover_state().cursor;
+          let icon = match kind {
+            CursorKind::Pointer => egui::CursorIcon::PointingHand,
+            CursorKind::Text => egui::CursorIcon::Text,
+            _ => egui::CursorIcon::Default,
+          };
+          ui.output_mut(|o| o.cursor_icon = icon);
+        }
+
         // While a drag is active, keep repainting so pointer motion can reorder continuously even
         // when egui doesn't consider the chrome image "animated".
         if doc.has_active_drag() {
