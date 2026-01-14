@@ -8754,9 +8754,10 @@ impl BrowserRuntime {
       return;
     };
 
+    let geom_tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
     let Some(anchor_css) = styled_node_anchor_css(
       prepared.box_tree(),
-      prepared.fragment_tree(),
+      &geom_tree,
       &tab.scroll_state,
       popup.input_node_id,
     )
@@ -8996,9 +8997,10 @@ impl BrowserRuntime {
       let anchor_css = doc
         .prepared()
         .and_then(|prepared| {
+          let geom_tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
           styled_node_anchor_css(
             prepared.box_tree(),
-            prepared.fragment_tree(),
+            &geom_tree,
             &tab.scroll_state,
             input_node_id,
           )
