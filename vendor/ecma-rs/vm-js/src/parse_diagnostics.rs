@@ -6,16 +6,20 @@ const EARLY_ERROR_CODE: &str = "VMJS0004";
 // `parse-js` may tweak the wording of these early errors. Match on key phrases rather than exact
 // strings so VM-level diagnostic codes remain stable.
 fn is_arguments_disallowed_in_class_init_message(message: &str) -> bool {
+  let message = message.to_ascii_lowercase();
   message.contains("arguments")
-    && message.contains("not allowed")
-    && (message.contains("class field") || message.contains("static"))
+    && message.contains("class")
+    && (message.contains("field")
+      || message.contains("static")
+      || message.contains("initializer"))
 }
 
 fn is_await_disallowed_in_class_static_block_message(message: &str) -> bool {
+  let message = message.to_ascii_lowercase();
   message.contains("await")
-    && message.contains("not allowed")
     && message.contains("class")
     && message.contains("static")
+    && message.contains("block")
 }
 
 fn parse_js_error_is_vmjs_early_error(typ: SyntaxErrorType) -> bool {
