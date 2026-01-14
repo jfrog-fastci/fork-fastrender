@@ -12966,6 +12966,11 @@ enum HirAsyncResumePoint {
   /// Resume an assignment expression statement whose RHS was a direct `await` expression
   /// (`x = await <expr>;`).
   Assignment { next_stmt_index: usize },
+  /// Resume a top-level `for await..of` statement.
+  ///
+  /// The continuation stores a `ForAwaitOfState` state machine that drives the loop across
+  /// suspensions. When the loop completes, evaluation continues from `next_stmt_index`.
+  ForAwaitOf { next_stmt_index: usize },
 }
 
 #[derive(Debug)]
@@ -12981,6 +12986,7 @@ pub(crate) struct HirAsyncContinuation {
   reject_root: RootId,
   awaited_promise_root: Option<RootId>,
   resume: HirAsyncResumePoint,
+  for_await_of_state: Option<ForAwaitOfState>,
   /// Assignment reference captured when suspending on `x = await <expr>;`.
   assign_reference: Option<AssignmentReference>,
   /// Persistent root for the assignment reference base value (member/super assignments).
@@ -12993,6 +12999,9 @@ pub(crate) struct HirAsyncContinuation {
 }
 
 pub(crate) fn hir_async_teardown_continuation(scope: &mut Scope<'_>, mut cont: HirAsyncContinuation) {
+  if let Some(mut state) = cont.for_await_of_state.take() {
+    state.teardown(scope.heap_mut());
+  }
   cont.env.teardown(scope.heap_mut());
   scope.heap_mut().remove_root(cont.this_root);
   scope.heap_mut().remove_root(cont.new_target_root);
@@ -13011,13 +13020,14 @@ pub(crate) fn hir_async_teardown_continuation(scope: &mut Scope<'_>, mut cont: H
   }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum HirAsyncEvalResult {
   Complete,
   Await {
     await_value: Value,
     resume: HirAsyncResumePoint,
     assign_reference: Option<AssignmentReference>,
+    for_await_of_state: Option<ForAwaitOfState>,
   },
 }
 
@@ -13063,6 +13073,7 @@ fn hir_eval_stmt_list_until_await(
             next_stmt_index: i.saturating_add(1),
           },
           assign_reference: None,
+          for_await_of_state: None,
         });
       }
 
@@ -13125,6 +13136,7 @@ fn hir_eval_stmt_list_until_await(
               next_stmt_index: i.saturating_add(1),
             },
             assign_reference: Some(reference),
+            for_await_of_state: None,
           });
         }
       }
@@ -13163,6 +13175,7 @@ fn hir_eval_stmt_list_until_await(
                 declarator_index: j,
               },
               assign_reference: None,
+              for_await_of_state: None,
             });
           }
         }
@@ -13196,6 +13209,64 @@ fn hir_eval_stmt_list_until_await(
             stmt_offset,
             err,
           ));
+        }
+      }
+      continue;
+    }
+
+    // Top-level `for await..of` evaluation is driven by `ForAwaitOfState` so we can suspend on the
+    // implicit iterator `await`s without running the synchronous HIR evaluator (which does not yet
+    // support `await_` loop heads).
+    if let hir_js::StmtKind::ForIn {
+      left,
+      right,
+      body: inner,
+      is_for_of: true,
+      await_: true,
+    } = &stmt.kind
+    {
+      // Budget once for the statement itself, matching `eval_stmt`.
+      evaluator.vm.tick()?;
+      let mut state = ForAwaitOfState::new(left.clone(), *right, *inner, &[])?;
+      match state.poll(evaluator, scope, body, None) {
+        Ok(ForAwaitOfPoll::Await { await_value, .. }) => {
+          return Ok(HirAsyncEvalResult::Await {
+            await_value,
+            resume: HirAsyncResumePoint::ForAwaitOf {
+              next_stmt_index: i.saturating_add(1),
+            },
+            assign_reference: None,
+            for_await_of_state: Some(state),
+          });
+        }
+        Ok(ForAwaitOfPoll::Complete(flow)) => match flow {
+          Flow::Normal(v) => {
+            if let Some(v) = v {
+              *last_value_is_set = true;
+              scope.heap_mut().set_root(last_value_root, v);
+            }
+          }
+          Flow::Return(_) => {
+            return Err(VmError::InvariantViolation(
+              "script evaluation produced Return flow (early errors should prevent this)",
+            ))
+          }
+          Flow::Break(..) => {
+            return Err(VmError::InvariantViolation(
+              "script evaluation produced Break flow (early errors should prevent this)",
+            ))
+          }
+          Flow::Continue(..) => {
+            return Err(VmError::InvariantViolation(
+              "script evaluation produced Continue flow (early errors should prevent this)",
+            ))
+          }
+        },
+        Err(err) => {
+          // Ensure persistent roots held by the for-await-of state machine do not leak when
+          // evaluation fails before we store the state in a continuation.
+          state.teardown(scope.heap_mut());
+          return Err(err);
         }
       }
       continue;
@@ -13354,7 +13425,9 @@ fn run_compiled_script_async(
       await_value,
       resume,
       assign_reference,
+      for_await_of_state,
     }) => {
+      let mut for_await_of_state = for_await_of_state;
       // Root all captured values while we create persistent roots and schedule the resumption.
       let mut root_scope = scope.reborrow();
       let push_res = match assign_reference.as_ref() {
@@ -13397,6 +13470,9 @@ fn run_compiled_script_async(
         _ => root_scope.push_roots(&[promise, cap.resolve, cap.reject, global_this, await_value]),
       };
       if let Err(err) = push_res {
+        if let Some(mut state) = for_await_of_state.take() {
+          state.teardown(root_scope.heap_mut());
+        }
         root_scope.heap_mut().remove_root(last_value_root);
         env.teardown(root_scope.heap_mut());
         return Err(err);
@@ -13419,6 +13495,9 @@ fn run_compiled_script_async(
             VmError::Throw(reason) => reason,
             VmError::ThrowWithStack { value: reason, .. } => reason,
             other => {
+              if let Some(mut state) = for_await_of_state.take() {
+                state.teardown(root_scope.heap_mut());
+              }
               root_scope.heap_mut().remove_root(last_value_root);
               env.teardown(root_scope.heap_mut());
               return Err(other);
@@ -13426,17 +13505,26 @@ fn run_compiled_script_async(
           };
           let mut call_scope = root_scope.reborrow();
           if let Err(err) = call_scope.push_roots(&[cap.reject, reason]) {
+            if let Some(mut state) = for_await_of_state.take() {
+              state.teardown(call_scope.heap_mut());
+            }
             call_scope.heap_mut().remove_root(last_value_root);
             env.teardown(call_scope.heap_mut());
             return Err(err);
           }
           let res =
             vm.call_with_host_and_hooks(host, &mut call_scope, hooks, cap.reject, Value::Undefined, &[reason]);
+          if let Some(mut state) = for_await_of_state.take() {
+            state.teardown(call_scope.heap_mut());
+          }
           call_scope.heap_mut().remove_root(last_value_root);
           env.teardown(call_scope.heap_mut());
           return res.map(|_| promise);
         }
         Err(err) => {
+          if let Some(mut state) = for_await_of_state.take() {
+            state.teardown(root_scope.heap_mut());
+          }
           root_scope.heap_mut().remove_root(last_value_root);
           env.teardown(root_scope.heap_mut());
           return Err(err);
@@ -13444,6 +13532,9 @@ fn run_compiled_script_async(
       };
 
       if let Err(err) = root_scope.push_root(awaited_promise) {
+        if let Some(mut state) = for_await_of_state.take() {
+          state.teardown(root_scope.heap_mut());
+        }
         root_scope.heap_mut().remove_root(last_value_root);
         env.teardown(root_scope.heap_mut());
         return Err(err);
@@ -13460,6 +13551,9 @@ fn run_compiled_script_async(
       ];
       let mut roots: Vec<RootId> = Vec::new();
       if roots.try_reserve_exact(values.len()).is_err() {
+        if let Some(mut state) = for_await_of_state.take() {
+          state.teardown(root_scope.heap_mut());
+        }
         root_scope.heap_mut().remove_root(last_value_root);
         env.teardown(root_scope.heap_mut());
         return Err(VmError::OutOfMemory);
@@ -13470,6 +13564,9 @@ fn run_compiled_script_async(
           Err(err) => {
             for id in roots.drain(..) {
               root_scope.heap_mut().remove_root(id);
+            }
+            if let Some(mut state) = for_await_of_state.take() {
+              state.teardown(root_scope.heap_mut());
             }
             root_scope.heap_mut().remove_root(last_value_root);
             env.teardown(root_scope.heap_mut());
@@ -13503,6 +13600,9 @@ fn run_compiled_script_async(
                 for id in roots.drain(..) {
                   root_scope.heap_mut().remove_root(id);
                 }
+                if let Some(mut state) = for_await_of_state.take() {
+                  state.teardown(root_scope.heap_mut());
+                }
                 root_scope.heap_mut().remove_root(last_value_root);
                 env.teardown(root_scope.heap_mut());
                 return Err(err);
@@ -13514,6 +13614,9 @@ fn run_compiled_script_async(
                 root_scope.heap_mut().remove_root(base_root);
                 for id in roots.drain(..) {
                   root_scope.heap_mut().remove_root(id);
+                }
+                if let Some(mut state) = for_await_of_state.take() {
+                  state.teardown(root_scope.heap_mut());
                 }
                 root_scope.heap_mut().remove_root(last_value_root);
                 env.teardown(root_scope.heap_mut());
@@ -13566,6 +13669,9 @@ fn run_compiled_script_async(
         for id in roots.drain(..) {
           root_scope.heap_mut().remove_root(id);
         }
+        if let Some(mut state) = for_await_of_state.take() {
+          state.teardown(root_scope.heap_mut());
+        }
         root_scope.heap_mut().remove_root(last_value_root);
         env.teardown(root_scope.heap_mut());
         return Err(err);
@@ -13583,6 +13689,7 @@ fn run_compiled_script_async(
         reject_root,
         awaited_promise_root: Some(awaited_root),
         resume,
+        for_await_of_state,
         assign_reference,
         assign_base_root,
         assign_key_root,
@@ -13748,20 +13855,14 @@ pub(crate) fn hir_async_resume_call(
                         hooks: &mut dyn VmHostHooks,
                         mut cont: HirAsyncContinuation|
    -> Result<Value, VmError> {
-    let global_object = cont.env.global_object();
-
-    // Rejection from the awaited promise becomes a script evaluation throw.
-    if is_reject {
-      let reason = arg0;
-      let mut call_scope = scope.reborrow();
-      if let Err(err) = call_scope.push_roots(&[reject, reason]) {
-        hir_async_teardown_continuation(&mut call_scope, cont);
-        return Err(err);
-      }
-      let res = vm.call_with_host_and_hooks(host, &mut call_scope, hooks, reject, Value::Undefined, &[reason]);
-      hir_async_teardown_continuation(&mut call_scope, cont);
-      return res.map(|_| Value::Undefined);
-    }
+      let global_object = cont.env.global_object();
+      // Convert promise rejection into a throw completion so loop machinery (notably
+      // `AsyncIteratorClose` in `for await..of`) can observe error-precedence semantics.
+      let resume_value: Result<Value, VmError> = if is_reject {
+        Err(VmError::Throw(arg0))
+      } else {
+        Ok(arg0)
+      };
 
     let mut evaluator = HirEvaluator {
       vm,
@@ -13788,13 +13889,14 @@ pub(crate) fn hir_async_resume_call(
     // evaluator while executing.
     let source = evaluator.script.source.clone();
 
-      let eval: Result<HirAsyncEvalResult, VmError> = (|| {
-        match cont.resume {
-          HirAsyncResumePoint::ExprStmt { next_stmt_index } => {
+    let eval: Result<HirAsyncEvalResult, VmError> = (|resume_value: Result<Value, VmError>| {
+      match cont.resume {
+        HirAsyncResumePoint::ExprStmt { next_stmt_index } => {
+          let resumed = resume_value?;
           // Complete the suspended `await` expression statement: its value becomes the statement-list
           // completion value.
           cont.last_value_is_set = true;
-          scope.heap_mut().set_root(cont.last_value_root, arg0);
+          scope.heap_mut().set_root(cont.last_value_root, resumed);
           hir_eval_stmt_list_until_await(
             &mut evaluator,
             scope,
@@ -13805,10 +13907,11 @@ pub(crate) fn hir_async_resume_call(
             &mut cont.last_value_is_set,
           )
         }
-          HirAsyncResumePoint::VarDecl {
-            stmt_index,
-            declarator_index,
-          } => {
+        HirAsyncResumePoint::VarDecl {
+          stmt_index,
+          declarator_index,
+        } => {
+          let resumed = resume_value?;
           // Resume a variable declaration where the initializer was `await <expr>`.
           let stmt_id = *body
             .root_stmts
@@ -13837,7 +13940,7 @@ pub(crate) fn hir_async_resume_call(
             declarator.pat,
             var_decl.kind,
             /* init_missing */ false,
-            arg0,
+            resumed,
           ) {
             return Err(finalize_throw_with_stack_at_source_offset(
               &*evaluator.vm,
@@ -13880,6 +13983,7 @@ pub(crate) fn hir_async_resume_call(
                     declarator_index: j,
                   },
                   assign_reference: None,
+                  for_await_of_state: None,
                 });
               }
             }
@@ -13917,84 +14021,156 @@ pub(crate) fn hir_async_resume_call(
           }
 
           // The variable statement completes with an empty value; continue with the next root stmt.
-            hir_eval_stmt_list_until_await(
-              &mut evaluator,
-              scope,
-              body,
-              body.root_stmts.as_slice(),
-              stmt_index.saturating_add(1),
-              cont.last_value_root,
-              &mut cont.last_value_is_set,
-            )
-          }
-          HirAsyncResumePoint::Assignment { next_stmt_index } => {
-            // Complete the suspended assignment expression statement (`x = await <expr>;`).
-            let stmt_index = next_stmt_index.checked_sub(1).ok_or(VmError::InvariantViolation(
-              "hir async assignment resume missing statement index",
+          hir_eval_stmt_list_until_await(
+            &mut evaluator,
+            scope,
+            body,
+            body.root_stmts.as_slice(),
+            stmt_index.saturating_add(1),
+            cont.last_value_root,
+            &mut cont.last_value_is_set,
+          )
+        }
+        HirAsyncResumePoint::Assignment { next_stmt_index } => {
+          let resumed = resume_value?;
+          // Complete the suspended assignment expression statement (`x = await <expr>;`).
+          let stmt_index = next_stmt_index.checked_sub(1).ok_or(VmError::InvariantViolation(
+            "hir async assignment resume missing statement index",
+          ))?;
+          let stmt_id = *body
+            .root_stmts
+            .get(stmt_index)
+            .ok_or(VmError::InvariantViolation(
+              "hir async assignment resume stmt index out of bounds",
             ))?;
-            let stmt_id = *body
-              .root_stmts
-              .get(stmt_index)
-              .ok_or(VmError::InvariantViolation(
-                "hir async assignment resume stmt index out of bounds",
-              ))?;
-            let stmt = evaluator.get_stmt(body, stmt_id)?;
-            let stmt_offset = stmt.span.start;
+          let stmt = evaluator.get_stmt(body, stmt_id)?;
+          let stmt_offset = stmt.span.start;
 
-            let reference = cont.assign_reference.take().ok_or(VmError::InvariantViolation(
-              "hir async assignment resume missing assignment reference",
-            ))?;
+          let reference = cont.assign_reference.take().ok_or(VmError::InvariantViolation(
+            "hir async assignment resume missing assignment reference",
+          ))?;
+          {
+            let mut assign_scope = scope.reborrow();
+            // Root the resumed value across anonymous function naming + PutValue operations.
+            assign_scope.push_root(resumed)?;
+            if let Err(err) =
+              evaluator.maybe_set_anonymous_function_name_for_assignment(&mut assign_scope, &reference, resumed)
             {
-              let mut assign_scope = scope.reborrow();
-              // Root the resumed value across anonymous function naming + PutValue operations.
-              assign_scope.push_root(arg0)?;
-              if let Err(err) =
-                evaluator.maybe_set_anonymous_function_name_for_assignment(&mut assign_scope, &reference, arg0)
-              {
-                return Err(finalize_throw_with_stack_at_source_offset(
-                  &*evaluator.vm,
-                  &mut assign_scope,
-                  source.as_ref(),
-                  stmt_offset,
-                  err,
-                ));
+              return Err(finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                &mut assign_scope,
+                source.as_ref(),
+                stmt_offset,
+                err,
+              ));
+            }
+            if let Err(err) = evaluator.put_value_to_assignment_reference(&mut assign_scope, &reference, resumed) {
+              return Err(finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                &mut assign_scope,
+                source.as_ref(),
+                stmt_offset,
+                err,
+              ));
+            }
+          }
+
+          // The assignment expression evaluates to the assigned value and becomes the statement-list
+          // completion value.
+          cont.last_value_is_set = true;
+          scope.heap_mut().set_root(cont.last_value_root, resumed);
+
+          // The captured assignment base/key roots are no longer needed after PutValue completes.
+          if let Some(root) = cont.assign_base_root.take() {
+            scope.heap_mut().remove_root(root);
+          }
+          if let Some(root) = cont.assign_key_root.take() {
+            scope.heap_mut().remove_root(root);
+          }
+
+          hir_eval_stmt_list_until_await(
+            &mut evaluator,
+            scope,
+            body,
+            body.root_stmts.as_slice(),
+            next_stmt_index,
+            cont.last_value_root,
+            &mut cont.last_value_is_set,
+          )
+        }
+        HirAsyncResumePoint::ForAwaitOf { next_stmt_index } => {
+          // Attach any throw stack to the `for await..of` statement span.
+          let stmt_index = next_stmt_index.checked_sub(1).ok_or(VmError::InvariantViolation(
+            "hir async for-await-of resume missing statement index",
+          ))?;
+          let stmt_id = *body
+            .root_stmts
+            .get(stmt_index)
+            .ok_or(VmError::InvariantViolation(
+              "hir async for-await-of resume stmt index out of bounds",
+            ))?;
+          let stmt = evaluator.get_stmt(body, stmt_id)?;
+          let stmt_offset = stmt.span.start;
+
+          let mut state = cont.for_await_of_state.take().ok_or(VmError::InvariantViolation(
+            "hir async for-await-of resume missing state machine",
+          ))?;
+          match state.poll(&mut evaluator, scope, body, Some(resume_value)) {
+            Ok(ForAwaitOfPoll::Await { await_value, .. }) => Ok(HirAsyncEvalResult::Await {
+              await_value,
+              resume: HirAsyncResumePoint::ForAwaitOf { next_stmt_index },
+              assign_reference: None,
+              for_await_of_state: Some(state),
+            }),
+            Ok(ForAwaitOfPoll::Complete(flow)) => {
+              match flow {
+                Flow::Normal(v) => {
+                  if let Some(v) = v {
+                    cont.last_value_is_set = true;
+                    scope.heap_mut().set_root(cont.last_value_root, v);
+                  }
+                }
+                Flow::Return(_) => {
+                  return Err(VmError::InvariantViolation(
+                    "script evaluation produced Return flow (early errors should prevent this)",
+                  ))
+                }
+                Flow::Break(..) => {
+                  return Err(VmError::InvariantViolation(
+                    "script evaluation produced Break flow (early errors should prevent this)",
+                  ))
+                }
+                Flow::Continue(..) => {
+                  return Err(VmError::InvariantViolation(
+                    "script evaluation produced Continue flow (early errors should prevent this)",
+                  ))
+                }
               }
-              if let Err(err) = evaluator.put_value_to_assignment_reference(&mut assign_scope, &reference, arg0) {
-                return Err(finalize_throw_with_stack_at_source_offset(
-                  &*evaluator.vm,
-                  &mut assign_scope,
-                  source.as_ref(),
-                  stmt_offset,
-                  err,
-                ));
-              }
-            }
 
-            // The assignment expression evaluates to the assigned value and becomes the statement-list
-            // completion value.
-            cont.last_value_is_set = true;
-            scope.heap_mut().set_root(cont.last_value_root, arg0);
-
-            // The captured assignment base/key roots are no longer needed after PutValue completes.
-            if let Some(root) = cont.assign_base_root.take() {
-              scope.heap_mut().remove_root(root);
+              hir_eval_stmt_list_until_await(
+                &mut evaluator,
+                scope,
+                body,
+                body.root_stmts.as_slice(),
+                next_stmt_index,
+                cont.last_value_root,
+                &mut cont.last_value_is_set,
+              )
             }
-            if let Some(root) = cont.assign_key_root.take() {
-              scope.heap_mut().remove_root(root);
+            Err(err) => {
+              state.teardown(scope.heap_mut());
+              Err(finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                scope,
+                source.as_ref(),
+                stmt_offset,
+                err,
+              ))
             }
-
-            hir_eval_stmt_list_until_await(
-              &mut evaluator,
-              scope,
-              body,
-              body.root_stmts.as_slice(),
-              next_stmt_index,
-              cont.last_value_root,
-              &mut cont.last_value_is_set,
-            )
           }
         }
-      })();
+      }
+    })(resume_value);
 
     match eval {
       Ok(HirAsyncEvalResult::Complete) => {
@@ -14020,9 +14196,14 @@ pub(crate) fn hir_async_resume_call(
         await_value,
         resume,
         assign_reference,
+        for_await_of_state,
       }) => {
         cont.resume = resume;
         cont.assign_reference = assign_reference;
+        if let Some(mut state) = cont.for_await_of_state.take() {
+          state.teardown(scope.heap_mut());
+        }
+        cont.for_await_of_state = for_await_of_state;
 
         // Drop any stale assignment roots before installing new ones.
         if let Some(root) = cont.assign_base_root.take() {
