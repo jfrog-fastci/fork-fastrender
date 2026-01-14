@@ -16008,6 +16008,8 @@ fn hir_eval_stmt_list_until_await(
                 break_label: Some(*label),
               },
               assign_reference: None,
+              assign_op: None,
+              assign_left_value: None,
               for_await_of_state: Some(state),
             });
           }
