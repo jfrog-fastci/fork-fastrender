@@ -12443,6 +12443,7 @@ fn debug_expected_is_object(obj: &HeapObject) -> bool {
   matches!(
     obj,
     HeapObject::Object(_)
+      | HeapObject::DerivedConstructorState(_)
       | HeapObject::StackTrace(_)
       | HeapObject::ArrayBuffer(_)
       | HeapObject::TypedArray(_)
