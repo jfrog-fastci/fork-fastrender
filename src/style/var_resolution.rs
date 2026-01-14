@@ -3417,13 +3417,21 @@ mod tests {
   fn resolves_deep_non_cyclic_custom_property_chain() {
     // Regression test: frameworks like Tailwind can generate long `--a: var(--b)` chains. We must
     // resolve chains deeper than the historical recursion cap (10) as long as they are acyclic.
+    const CHAIN_LEN: usize = 40;
+    assert!(
+      MAX_RECURSION_DEPTH >= CHAIN_LEN,
+      "test assumes MAX_RECURSION_DEPTH >= {CHAIN_LEN}, got {MAX_RECURSION_DEPTH}"
+    );
     let mut store = CustomPropertyStore::default();
-    for i in 1..20 {
+    for i in 1..CHAIN_LEN {
       let name = format!("--a{i}");
       let value = format!("var(--a{})", i + 1);
       store.insert(name.into(), CustomPropertyValue::new(value, None));
     }
-    store.insert("--a20".into(), CustomPropertyValue::new("10px", None));
+    store.insert(
+      format!("--a{CHAIN_LEN}").into(),
+      CustomPropertyValue::new("10px", None),
+    );
 
     let value = PropertyValue::Keyword("var(--a1)".to_string());
     let resolved = resolve_var_for_property(&value, &store, "width");
