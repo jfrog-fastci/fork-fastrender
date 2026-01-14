@@ -7175,10 +7175,22 @@ fn prepare_fragment_tree_paint_state(
                   fallback_advance = 0.0;
                 }
 
-                let mut shaped_runs: Option<Vec<crate::text::pipeline::ShapedRun>> = None;
+                let mut shaped_runs: Option<Arc<Vec<crate::text::pipeline::ShapedRun>>> = None;
                 let mut total_advance = fallback_advance;
                 if !display_text.is_empty() {
-                  if let Ok(mut runs) = crate::interaction::shaping_pipeline_for_interaction()
+                  if style.letter_spacing == 0.0 && style.word_spacing == 0.0 {
+                    if let Ok(runs) = crate::interaction::shaping_pipeline_for_interaction()
+                      .shape_arc(display_text, style, font_context)
+                    {
+                      if !runs.is_empty() {
+                        let adv: f32 = runs.iter().map(|run| run.advance).sum();
+                        if adv.is_finite() {
+                          total_advance = adv.max(0.0);
+                        }
+                        shaped_runs = Some(runs);
+                      }
+                    }
+                  } else if let Ok(mut runs) = crate::interaction::shaping_pipeline_for_interaction()
                     .shape(display_text, style, font_context)
                   {
                     if !runs.is_empty() {
@@ -7192,7 +7204,7 @@ fn prepare_fragment_tree_paint_state(
                       if adv.is_finite() {
                         total_advance = adv.max(0.0);
                       }
-                      shaped_runs = Some(runs);
+                      shaped_runs = Some(Arc::new(runs));
                     }
                   }
                 }
@@ -8019,16 +8031,25 @@ fn paint_fragment_tree_into_rgba_with_state(
                   value.as_str()
                 };
 
-                let mut runs = shaper
-                  .shape(display_text, style, font_context)
-                  .ok()
-                  .unwrap_or_default();
-                TextItem::apply_spacing_to_runs(
-                  &mut runs,
-                  display_text,
-                  style.letter_spacing,
-                  style.word_spacing,
-                );
+                let runs: Arc<Vec<crate::text::pipeline::ShapedRun>> =
+                  if style.letter_spacing == 0.0 && style.word_spacing == 0.0 {
+                    shaper
+                      .shape_arc(display_text, style, font_context)
+                      .ok()
+                      .unwrap_or_else(|| Arc::new(Vec::new()))
+                  } else {
+                    let mut runs = shaper
+                      .shape(display_text, style, font_context)
+                      .ok()
+                      .unwrap_or_default();
+                    TextItem::apply_spacing_to_runs(
+                      &mut runs,
+                      display_text,
+                      style.letter_spacing,
+                      style.word_spacing,
+                    );
+                    Arc::new(runs)
+                  };
                 let fallback_advance =
                   display_text.chars().count() as f32 * style.font_size * 0.6;
                 let total_advance: f32 = if !runs.is_empty() {
@@ -8071,8 +8092,11 @@ fn paint_fragment_tree_into_rgba_with_state(
                   } else {
                     *caret_affinity
                   };
-                  let caret_stops =
-                    crate::text::caret::caret_stops_for_runs(display_text, &runs, total_advance);
+                  let caret_stops = crate::text::caret::caret_stops_for_runs(
+                    display_text,
+                    runs.as_ref(),
+                    total_advance,
+                  );
                   let caret_x = crate::text::caret::caret_x_for_position(
                     &caret_stops,
                     caret_idx,
