@@ -218,18 +218,6 @@ fn fragment_tree_has_scroll_driven_animations(tree: &FragmentTree) -> bool {
   false
 }
 
-fn effective_scroll_state_for_paint_like_scroll_blit(
-  mut tree: FragmentTree,
-  scroll_state: ScrollState,
-  scrollport_viewport: Size,
-) -> ScrollState {
-  crate::scroll::resolve_effective_scroll_state_for_paint_mut(
-    &mut tree,
-    scroll_state,
-    scrollport_viewport,
-  )
-}
-
 /// Computes a scroll-blit plan, or returns a structured reason why the fast-path is unavailable.
 pub(crate) fn scroll_blit_plan(
   prepared: &PreparedDocument,
@@ -237,6 +225,8 @@ pub(crate) fn scroll_blit_plan(
   next_scroll: &ScrollState,
 ) -> std::result::Result<ScrollBlitPlan, ScrollBlitFallbackReason> {
   scroll_blit_gate()?;
+
+  let tree = prepared.fragment_tree();
 
   let dpr = prepared.device_pixel_ratio();
   let delta_css = Point::new(
@@ -250,26 +240,50 @@ pub(crate) fn scroll_blit_plan(
   let dy =
     approx_integer(delta_device.y).ok_or(ScrollBlitFallbackReason::NonIntegerDevicePixelDelta)?;
 
-  if fragment_tree_has_fixed_or_sticky(prepared.fragment_tree()) {
+  if fragment_tree_has_fixed_or_sticky(tree) {
     return Err(ScrollBlitFallbackReason::FixedOrStickyPresent);
   }
 
   // Scroll snap can adjust the effective scroll position, which invalidates a simple blit. Compute
   // the paint-time effective scroll for the *new* state and check if it differs.
   let scrollport_viewport = prepared.layout_viewport();
-  let effective = effective_scroll_state_for_paint_like_scroll_blit(
-    prepared.fragment_tree().clone(),
-    next_scroll.clone(),
-    scrollport_viewport,
-  );
+  // This path runs on high-frequency scroll input, so avoid cloning the full fragment tree.
+  let effective_viewport = match tree.scroll_metadata.as_ref() {
+    Some(metadata) => {
+      let mut state = crate::scroll::apply_scroll_snap_from_metadata(metadata, next_scroll).state;
+      state.viewport = Point::new(
+        if state.viewport.x.is_finite() {
+          state.viewport.x
+        } else {
+          0.0
+        },
+        if state.viewport.y.is_finite() {
+          state.viewport.y
+        } else {
+          0.0
+        },
+      );
+      crate::scroll::viewport_scroll_bounds(&tree.root, scrollport_viewport).clamp(state.viewport)
+    }
+    None => {
+      // Prepared documents should have scroll metadata populated by layout. If it is missing, fall
+      // back to the legacy behaviour (clone + ensure metadata) so semantics remain correct.
+      crate::scroll::resolve_effective_scroll_state_for_paint(
+        tree,
+        next_scroll.clone(),
+        scrollport_viewport,
+      )
+      .viewport
+    }
+  };
   let requested = next_scroll.viewport;
-  if (effective.viewport.x - requested.x).abs() > 1e-3
-    || (effective.viewport.y - requested.y).abs() > 1e-3
+  if (effective_viewport.x - requested.x).abs() > 1e-3
+    || (effective_viewport.y - requested.y).abs() > 1e-3
   {
     return Err(ScrollBlitFallbackReason::ScrollSnapAdjustedEffectiveScroll);
   }
 
-  if fragment_tree_has_scroll_driven_animations(prepared.fragment_tree()) {
+  if fragment_tree_has_scroll_driven_animations(tree) {
     return Err(ScrollBlitFallbackReason::ScrollDrivenAnimationsPresent);
   }
 
