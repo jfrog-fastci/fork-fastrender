@@ -120,6 +120,8 @@ impl OpusDecoder {
     let channels = self.channels as usize;
     let mut pcm = vec![0.0f32; MAX_FRAME_SIZE_SAMPLES_PER_CHANNEL * channels];
 
+    // `MediaPacket.data` is `MediaData` (Owned/Shared); always decode from a slice view so we
+    // support both storage modes without needing raw pointers.
     let bytes = packet.data.as_slice();
     let decoded = self
       .decoder
@@ -241,6 +243,62 @@ mod tests {
   }
 
   #[test]
+  fn opus_decodes_packet_backed_by_shared_media_data() {
+    use crate::media::MediaData;
+    use std::sync::Arc;
+
+    // 20ms @ 48kHz.
+    let samples_per_channel = 960usize;
+    let packet_data = encode_silence_packet(samples_per_channel, 1);
+
+    let opus_head = OpusHead::parse(&build_opus_head(1, 0)).expect("parse OpusHead");
+    let mut decoder = OpusDecoder::new(&opus_head).expect("create decoder");
+
+    // Ensure the packet bytes are a sub-range within a larger shared buffer (as MP4 demuxing does).
+    let prefix_len = 3usize;
+    let mut backing = vec![0u8; prefix_len];
+    backing.extend_from_slice(&packet_data);
+    backing.extend_from_slice(&[0u8; 2]);
+
+    let bytes: Arc<[u8]> = Arc::from(backing.into_boxed_slice());
+    let range = prefix_len..(prefix_len + packet_data.len());
+
+    let packet = MediaPacket {
+      track_id: 1,
+      dts_ns: 0,
+      pts_ns: 0,
+      duration_ns: 0,
+      data: MediaData::Shared { bytes, range },
+      is_keyframe: false,
+    };
+
+    let chunk = decoder
+      .decode(&packet)
+      .expect("decode")
+      .expect("decoded audio");
+
+    let frames = chunk.samples.len() / chunk.channels as usize;
+    assert_eq!(frames, samples_per_channel);
+  }
+
+  #[test]
+  fn opus_decoder_accepts_empty_packet() {
+    let opus_head = OpusHead::parse(&build_opus_head(1, 0)).expect("parse OpusHead");
+    let mut decoder = OpusDecoder::new(&opus_head).expect("create decoder");
+
+    let packet = MediaPacket {
+      track_id: 1,
+      dts_ns: 0,
+      pts_ns: 0,
+      duration_ns: 0,
+      data: Vec::<u8>::new().into(),
+      is_keyframe: false,
+    };
+
+    let _ = decoder.decode(&packet).expect("decode empty packet");
+  }
+
+  #[test]
   fn opus_preskip_trimming_updates_duration() {
     let samples_per_channel = 960usize;
     let pre_skip = 312u16;
@@ -271,7 +329,6 @@ mod tests {
       (expected_frames as u64 * 1_000_000_000u64) / OPUS_SAMPLE_RATE_HZ as u64
     );
   }
-
   #[cfg(feature = "media_webm")]
   #[test]
   fn decode_first_opus_frame_from_webm_fixture() {
