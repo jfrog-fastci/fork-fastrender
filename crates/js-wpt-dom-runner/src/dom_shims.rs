@@ -259,6 +259,7 @@ const DOM_SHIM: &str = r##"
   function CSSStyleDeclaration() { illegal(); }
   function HTMLOptionsCollection() { illegal(); }
   function HTMLFormControlsCollection() { illegal(); }
+  function NodeFilter() { illegal(); }
 
   Object.setPrototypeOf(Node.prototype, EventTarget.prototype);
   Object.setPrototypeOf(Document.prototype, Node.prototype);
@@ -286,6 +287,17 @@ const DOM_SHIM: &str = r##"
   Node.DOCUMENT_NODE = 9;
   Node.DOCUMENT_TYPE_NODE = 10;
   Node.DOCUMENT_FRAGMENT_NODE = 11;
+
+  // NodeFilter constants.
+  NodeFilter.FILTER_ACCEPT = 1;
+  NodeFilter.FILTER_REJECT = 2;
+  NodeFilter.FILTER_SKIP = 3;
+  NodeFilter.SHOW_ALL = 0xFFFFFFFF;
+  NodeFilter.SHOW_ELEMENT = 0x1;
+  NodeFilter.SHOW_TEXT = 0x4;
+  NodeFilter.SHOW_COMMENT = 0x80;
+  NodeFilter.SHOW_DOCUMENT = 0x100;
+  NodeFilter.SHOW_DOCUMENT_FRAGMENT = 0x400;
 
   // Attach the existing `document` object (created by Rust) to `Document.prototype`.
   if (typeof g.document !== "object" || g.document === null) {
@@ -900,6 +912,317 @@ const DOM_SHIM: &str = r##"
   Document.prototype.createTextNode = function (data) {
     var id = g.__fastrender_dom_create_text_node(String(data));
     return makeNode(Text.prototype, id);
+  };
+
+  // ----------------------------------------------------------------------------
+  // Traversal: NodeIterator / TreeWalker / NodeFilter
+  // ----------------------------------------------------------------------------
+  //
+  // The QuickJS backend relies on this JS DOM shim, so we implement a small but spec-aligned
+  // subset of the DOM traversal APIs sufficient for the curated WPT cases in `tests/dom/`.
+  var NODE_ITERATORS = new Set();
+  var NODE_ITERATOR_STATE = new WeakMap();
+  var TREE_WALKER_STATE = new WeakMap();
+
+  function invalidStateError() {
+    var e = new Error("InvalidStateError");
+    e.name = "InvalidStateError";
+    return e;
+  }
+
+  function nodeTypeShowBit(node) {
+    var t = node.nodeType;
+    if (t === Node.ELEMENT_NODE) return NodeFilter.SHOW_ELEMENT;
+    if (t === Node.TEXT_NODE) return NodeFilter.SHOW_TEXT;
+    if (t === Node.COMMENT_NODE) return NodeFilter.SHOW_COMMENT;
+    if (t === Node.DOCUMENT_NODE) return NodeFilter.SHOW_DOCUMENT;
+    if (t === Node.DOCUMENT_FRAGMENT_NODE) return NodeFilter.SHOW_DOCUMENT_FRAGMENT;
+    return 0;
+  }
+
+  function runNodeFilter(filter, node) {
+    if (filter === null || filter === undefined) return NodeFilter.FILTER_ACCEPT;
+    if (typeof filter === "function") return Number(filter(node));
+    if (typeof filter === "object" && typeof filter.acceptNode === "function") {
+      return Number(filter.acceptNode.call(filter, node));
+    }
+    return NodeFilter.FILTER_ACCEPT;
+  }
+
+  function acceptNodeWithWhatToShow(whatToShow, filter, node) {
+    // Apply whatToShow first; do not invoke the filter for excluded nodes.
+    var show = nodeTypeShowBit(node);
+    if (((whatToShow >>> 0) & show) === 0) return NodeFilter.FILTER_SKIP;
+    var res = runNodeFilter(filter, node);
+    if (res === NodeFilter.FILTER_REJECT) return NodeFilter.FILTER_REJECT;
+    if (res === NodeFilter.FILTER_SKIP) return NodeFilter.FILTER_SKIP;
+    return NodeFilter.FILTER_ACCEPT;
+  }
+
+  function treeOrderNext(root, node) {
+    if (!node) return null;
+    if (node.firstChild) return node.firstChild;
+    while (node && node !== root) {
+      if (node.nextSibling) return node.nextSibling;
+      node = node.parentNode;
+    }
+    return null;
+  }
+
+  function treeOrderNextSkippingChildren(root, node) {
+    // Like `treeOrderNext`, but treats `node` as having no children (used for pruning).
+    while (node && node !== root) {
+      if (node.nextSibling) return node.nextSibling;
+      node = node.parentNode;
+    }
+    return null;
+  }
+
+  function treeOrderPrevious(root, node) {
+    if (!node || node === root) return null;
+    var prev = node.previousSibling;
+    if (prev) {
+      while (prev.lastChild) prev = prev.lastChild;
+      return prev;
+    }
+    return node.parentNode;
+  }
+
+  function lastInclusiveDescendant(node) {
+    var n = node;
+    while (n && n.lastChild) n = n.lastChild;
+    return n;
+  }
+
+  function isInclusiveAncestor(ancestor, node) {
+    for (var cur = node; cur; cur = cur.parentNode) {
+      if (cur === ancestor) return true;
+    }
+    return false;
+  }
+
+  function nodeIteratorStateFromThis(self) {
+    if (typeof self !== "object" || self === null) throw new TypeError("Illegal invocation");
+    var st = NODE_ITERATOR_STATE.get(self);
+    if (!st) throw new TypeError("Illegal invocation");
+    return st;
+  }
+
+  function runNodeIteratorPreRemoveSteps(toBeRemovedNode) {
+    NODE_ITERATORS.forEach(function (it) {
+      var st = NODE_ITERATOR_STATE.get(it);
+      if (!st) return;
+      if (toBeRemovedNode === st.root) return;
+      if (!isInclusiveAncestor(toBeRemovedNode, st.referenceNode)) return;
+
+      if (st.pointerBeforeReferenceNode) {
+        var next = treeOrderNextSkippingChildren(st.root, toBeRemovedNode);
+        if (next) {
+          st.referenceNode = next;
+          st.pointerBeforeReferenceNode = true;
+          return;
+        }
+
+        st.pointerBeforeReferenceNode = false;
+        var prev = toBeRemovedNode.previousSibling;
+        if (prev) {
+          st.referenceNode = lastInclusiveDescendant(prev);
+        } else {
+          st.referenceNode = toBeRemovedNode.parentNode;
+        }
+        return;
+      }
+
+      var prev = toBeRemovedNode.previousSibling;
+      if (prev) {
+        st.referenceNode = lastInclusiveDescendant(prev);
+      } else {
+        st.referenceNode = toBeRemovedNode.parentNode;
+      }
+      st.pointerBeforeReferenceNode = false;
+    });
+  }
+
+  function NodeIteratorImpl() { illegal(); }
+  Object.defineProperty(NodeIteratorImpl.prototype, "root", {
+    get: function () { return nodeIteratorStateFromThis(this).root; },
+    configurable: true,
+  });
+  Object.defineProperty(NodeIteratorImpl.prototype, "referenceNode", {
+    get: function () { return nodeIteratorStateFromThis(this).referenceNode; },
+    configurable: true,
+  });
+  Object.defineProperty(NodeIteratorImpl.prototype, "pointerBeforeReferenceNode", {
+    get: function () { return nodeIteratorStateFromThis(this).pointerBeforeReferenceNode; },
+    configurable: true,
+  });
+  Object.defineProperty(NodeIteratorImpl.prototype, "whatToShow", {
+    get: function () { return nodeIteratorStateFromThis(this).whatToShow; },
+    configurable: true,
+  });
+  Object.defineProperty(NodeIteratorImpl.prototype, "filter", {
+    get: function () { return nodeIteratorStateFromThis(this).filter; },
+    configurable: true,
+  });
+
+  NodeIteratorImpl.prototype.nextNode = function () {
+    var st = nodeIteratorStateFromThis(this);
+    if (st.active) throw invalidStateError();
+    st.active = true;
+    try {
+      var node = st.referenceNode;
+      var before = st.pointerBeforeReferenceNode;
+      while (true) {
+        if (before) {
+          before = false;
+        } else {
+          node = treeOrderNext(st.root, node);
+          if (!node) {
+            st.pointerBeforeReferenceNode = false;
+            return null;
+          }
+        }
+
+        var res = acceptNodeWithWhatToShow(st.whatToShow, st.filter, node);
+        if (res === NodeFilter.FILTER_ACCEPT) {
+          st.referenceNode = node;
+          st.pointerBeforeReferenceNode = false;
+          return node;
+        }
+        // NodeIterator does not prune; treat non-ACCEPT as skip and continue.
+      }
+    } finally {
+      st.active = false;
+    }
+  };
+
+  NodeIteratorImpl.prototype.previousNode = function () {
+    var st = nodeIteratorStateFromThis(this);
+    if (st.active) throw invalidStateError();
+    st.active = true;
+    try {
+      var node;
+      if (!st.pointerBeforeReferenceNode) {
+        st.pointerBeforeReferenceNode = true;
+        node = st.referenceNode;
+      } else {
+        node = treeOrderPrevious(st.root, st.referenceNode);
+      }
+
+      while (node) {
+        var res = acceptNodeWithWhatToShow(st.whatToShow, st.filter, node);
+        if (res === NodeFilter.FILTER_ACCEPT) {
+          st.referenceNode = node;
+          st.pointerBeforeReferenceNode = true;
+          return node;
+        }
+        node = treeOrderPrevious(st.root, node);
+      }
+
+      return null;
+    } finally {
+      st.active = false;
+    }
+  };
+
+  Document.prototype.createNodeIterator = function (root, whatToShow, filter) {
+    nodeIdFromThis(this);
+    if (typeof root !== "object" || root === null || typeof root[NODE_ID] !== "number") {
+      throw new TypeError(
+        "Failed to execute 'createNodeIterator' on 'Document': parameter 1 is not of type 'Node'."
+      );
+    }
+
+    var it = Object.create(NodeIteratorImpl.prototype);
+    var w = (whatToShow === undefined ? NodeFilter.SHOW_ALL : Number(whatToShow)) >>> 0;
+    var f = (filter === undefined ? null : filter);
+    NODE_ITERATOR_STATE.set(it, {
+      root: root,
+      referenceNode: root,
+      pointerBeforeReferenceNode: true,
+      whatToShow: w,
+      filter: f,
+      active: false,
+    });
+    NODE_ITERATORS.add(it);
+    return it;
+  };
+
+  function treeWalkerStateFromThis(self) {
+    if (typeof self !== "object" || self === null) throw new TypeError("Illegal invocation");
+    var st = TREE_WALKER_STATE.get(self);
+    if (!st) throw new TypeError("Illegal invocation");
+    return st;
+  }
+
+  function TreeWalkerImpl() { illegal(); }
+  Object.defineProperty(TreeWalkerImpl.prototype, "root", {
+    get: function () { return treeWalkerStateFromThis(this).root; },
+    configurable: true,
+  });
+  Object.defineProperty(TreeWalkerImpl.prototype, "currentNode", {
+    get: function () { return treeWalkerStateFromThis(this).currentNode; },
+    set: function (node) {
+      var st = treeWalkerStateFromThis(this);
+      if (typeof node !== "object" || node === null || typeof node[NODE_ID] !== "number") {
+        throw new TypeError(
+          "Failed to set the 'currentNode' property on 'TreeWalker': The provided value is not of type 'Node'."
+        );
+      }
+      // Only allow nodes within the root subtree.
+      if (!isInclusiveAncestor(st.root, node)) {
+        throw new TypeError("TreeWalker currentNode must be a descendant of root");
+      }
+      st.currentNode = node;
+    },
+    configurable: true,
+  });
+  Object.defineProperty(TreeWalkerImpl.prototype, "whatToShow", {
+    get: function () { return treeWalkerStateFromThis(this).whatToShow; },
+    configurable: true,
+  });
+  Object.defineProperty(TreeWalkerImpl.prototype, "filter", {
+    get: function () { return treeWalkerStateFromThis(this).filter; },
+    configurable: true,
+  });
+
+  TreeWalkerImpl.prototype.nextNode = function () {
+    var st = treeWalkerStateFromThis(this);
+    var node = st.currentNode;
+    var skipChildren = false;
+    while (true) {
+      node = skipChildren ? treeOrderNextSkippingChildren(st.root, node) : treeOrderNext(st.root, node);
+      if (!node) return null;
+
+      var res = acceptNodeWithWhatToShow(st.whatToShow, st.filter, node);
+      if (res === NodeFilter.FILTER_ACCEPT) {
+        st.currentNode = node;
+        return node;
+      }
+
+      // FILTER_SKIP: traverse into children.
+      // FILTER_REJECT: skip this node's subtree.
+      skipChildren = (res === NodeFilter.FILTER_REJECT);
+    }
+  };
+
+  Document.prototype.createTreeWalker = function (root, whatToShow, filter) {
+    nodeIdFromThis(this);
+    if (typeof root !== "object" || root === null || typeof root[NODE_ID] !== "number") {
+      throw new TypeError(
+        "Failed to execute 'createTreeWalker' on 'Document': parameter 1 is not of type 'Node'."
+      );
+    }
+    var tw = Object.create(TreeWalkerImpl.prototype);
+    var w = (whatToShow === undefined ? NodeFilter.SHOW_ALL : Number(whatToShow)) >>> 0;
+    var f = (filter === undefined ? null : filter);
+    TREE_WALKER_STATE.set(tw, {
+      root: root,
+      currentNode: root,
+      whatToShow: w,
+      filter: f,
+    });
+    return tw;
   };
 
   Document.prototype.getElementById = function (elementId) {
@@ -1680,6 +2003,7 @@ const DOM_SHIM: &str = r##"
     if (child === oldChild) return oldChild;
 
     g.__fastrender_dom_replace_child(parentId, childId, oldId);
+    runNodeIteratorPreRemoveSteps(oldChild);
 
     var parentNodes = ensureArray(this, "childNodes");
     var idx = parentNodes.indexOf(oldChild);
@@ -1720,6 +2044,7 @@ const DOM_SHIM: &str = r##"
       throw new TypeError("Failed to execute 'removeChild' on 'Node': parameter 1 is not of type 'Node'.");
     }
     g.__fastrender_dom_remove_child(parentId, childId);
+    runNodeIteratorPreRemoveSteps(child);
     detachFromParent(child);
     queueChildListMutation(this, [], [child]);
     return child;
@@ -1933,6 +2258,7 @@ const DOM_SHIM: &str = r##"
   };
 
   Object.defineProperty(g, "Node", { value: Node, configurable: true, writable: true });
+  Object.defineProperty(g, "NodeFilter", { value: NodeFilter, configurable: true, writable: true });
   Object.defineProperty(g, "Document", { value: Document, configurable: true, writable: true });
   Object.defineProperty(g, "DocumentFragment", { value: DocumentFragment, configurable: true, writable: true });
   Object.defineProperty(g, "Element", { value: Element, configurable: true, writable: true });
