@@ -2551,7 +2551,7 @@ impl JsRuntime {
               &top.stx.body,
               crate::early_errors::EarlyErrorOptions {
                 strict,
-                allow_top_level_await: false,
+                allow_top_level_await: has_await,
                 is_module: false,
                 allow_super_call: false,
               },
@@ -3094,7 +3094,7 @@ impl JsRuntime {
             &top.stx.body,
             crate::early_errors::EarlyErrorOptions {
               strict,
-              allow_top_level_await: false,
+              allow_top_level_await: has_await,
               is_module: false,
               allow_super_call: false,
             },
@@ -34720,13 +34720,17 @@ fn gen_eval_update_expression(
   match &*argument.stx {
     Expr::Id(id) => {
       let reference = Reference::Binding(&id.stx.name);
-      let value = gen_apply_update_to_reference(evaluator, scope, &reference, delta, prefix)?;
-      Ok(GenEval::Complete(Completion::normal(value)))
+      match gen_apply_update_to_reference(evaluator, scope, &reference, delta, prefix) {
+        Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
+        Err(err) => Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?)),
+      }
     }
     Expr::IdPat(id) => {
       let reference = Reference::Binding(&id.stx.name);
-      let value = gen_apply_update_to_reference(evaluator, scope, &reference, delta, prefix)?;
-      Ok(GenEval::Complete(Completion::normal(value)))
+      match gen_apply_update_to_reference(evaluator, scope, &reference, delta, prefix) {
+        Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
+        Err(err) => Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?)),
+      }
     }
     Expr::Member(member) => {
       let member = &member.stx;
@@ -34740,9 +34744,13 @@ fn gen_eval_update_expression(
         GenEval::Complete(c) => match c {
           Completion::Normal(v) => {
             let base = v.unwrap_or(Value::Undefined);
-            let reference = gen_reference_from_member(evaluator, scope, member, base)?;
-            let value = gen_apply_update_to_reference(evaluator, scope, &reference, delta, prefix)?;
-            Ok(GenEval::Complete(Completion::normal(value)))
+            match (|| -> Result<Value, VmError> {
+              let reference = gen_reference_from_member(evaluator, scope, member, base)?;
+              gen_apply_update_to_reference(evaluator, scope, &reference, delta, prefix)
+            })() {
+              Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
+              Err(err) => Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?)),
+            }
           }
           abrupt => Ok(GenEval::Complete(abrupt)),
         },
@@ -34856,10 +34864,14 @@ fn gen_update_computed_member_after_base(
     GenEval::Complete(c) => match c {
       Completion::Normal(v) => {
         let member_value = v.unwrap_or(Value::Undefined);
-        let reference =
-          gen_reference_from_computed_member(evaluator, scope, member, base, member_value)?;
-        let value = gen_apply_update_to_reference(evaluator, scope, &reference, delta, prefix)?;
-        Ok(GenEval::Complete(Completion::normal(value)))
+        match (|| -> Result<Value, VmError> {
+          let reference =
+            gen_reference_from_computed_member(evaluator, scope, member, base, member_value)?;
+          gen_apply_update_to_reference(evaluator, scope, &reference, delta, prefix)
+        })() {
+          Ok(v) => Ok(GenEval::Complete(Completion::normal(v))),
+          Err(err) => Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?)),
+        }
       }
       abrupt => Ok(GenEval::Complete(abrupt)),
     },
