@@ -2064,10 +2064,10 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       // Explicit Resource Management early error:
       // `await using` declarations are only valid inside async functions and in Module code.
       //
-      // Note: `vm-js` supports "async classic scripts" (top-level await) by parsing scripts with the
-      // module grammar when `await` appears in the statement list. Even in that mode, `await using`
-      // remains invalid in scripts; unlike a module, a script has no module-level async disposal
-      // semantics.
+      // Note: `vm-js` supports "async classic scripts" (top-level await in scripts) as an
+      // extension. Even when a script is treated as async, `await using` remains invalid because
+      // it is not part of Script goal syntax (and scripts have no module-level async disposal
+      // semantics).
       let await_using_allowed = ctx.await_allowed && (ctx.is_module || ctx.return_allowed);
       if !await_using_allowed {
         if let Some(first) = decl.declarators.first() {

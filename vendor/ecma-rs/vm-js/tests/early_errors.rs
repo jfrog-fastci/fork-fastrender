@@ -1587,6 +1587,15 @@ fn await_using_declaration_in_script_block_is_syntax_error() {
 }
 
 #[test]
+fn await_using_declaration_in_async_script_block_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("await 0; { await using x = null; }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn await_using_declaration_in_sync_function_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt.exec_script("function f() { await using x = null; }").unwrap_err();
