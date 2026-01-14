@@ -12729,7 +12729,9 @@ impl<'a> Evaluator<'a> {
       //   coercion does not affect the resolved super base (test262:
       //   `prop-expr-getsuperbase-before-topropertykey-*`).
       let super_base = self.super_base(&mut key_scope)?;
-      // Root the base across key coercion / `GetValue` in case they allocate/GC.
+      // Root the captured super base across `ToPropertyKey` / `GetValue`:
+      // - key conversion can invoke user code and mutate the home object's prototype,
+      // - key conversion and `GetValue` can allocate/trigger GC.
       key_scope.push_root(super_base)?;
       let key = self.to_property_key_operator(&mut key_scope, member_value)?;
       // Root the key across `GetValue` in case it allocates/GCs.
@@ -12986,8 +12988,10 @@ impl<'a> Evaluator<'a> {
           //   coercion does not affect the resolved super base (test262:
           //   `prop-expr-getsuperbase-before-topropertykey-*`).
           let base = self.get_super_base(&mut key_scope)?;
-          // Root the base across key coercion / dereference (`GetValue`/`PutValue` can invoke
-          // user-code via accessors/Proxy traps and trigger GC).
+          // Root the captured super base across `ToPropertyKey` and subsequent dereference:
+          // - key conversion can invoke user code / trigger GC, and may mutate the home object's
+          //   prototype (potentially making the original base unreachable),
+          // - `GetValue`/`PutValue` can invoke accessors/Proxy traps and trigger GC.
           key_scope.push_root(base)?;
 
           let key = self.to_property_key_operator(&mut key_scope, member_value)?;
@@ -13316,22 +13320,68 @@ impl<'a> Evaluator<'a> {
     reference: &Reference<'_>,
     value: Value,
   ) -> Result<(), VmError> {
-    // Spec: https://tc39.es/ecma262/#sec-assignment-operators-runtime-semantics-evaluation
-    //
-    // AssignmentExpression : LeftHandSideExpression = AssignmentExpression
-    //
-    // Perform anonymous function/class name inference only when:
-    // - RHS is syntactically an anonymous function definition, and
-    // - LHS is an IdentifierReference (not parenthesized).
-    if !is_anonymous_function_definition(right) || !is_identifier_ref(left) {
+    // Name inference only applies when the initializer expression is *syntactically* an anonymous
+    // function/class definition (not based on the runtime value).
+    if !is_anonymous_function_definition(right) {
       return Ok(());
     }
-    let Reference::Binding(name) = *reference else {
-      // `IsIdentifierRef` implies the LHS is an identifier, so other reference types should not be
-      // observable here.
+
+    let Value::Object(func_obj) = value else {
       return Ok(());
     };
-    maybe_set_anonymous_function_name(scope, value, name)
+
+    // `SetFunctionName` only applies to actual Function objects. Callable Proxies are callable, but
+    // are not function objects and should not have their `name` mutated.
+    let (current_name, is_native_non_constructable) = match scope.heap().get_function(func_obj) {
+      Ok(f) => (
+        f.name,
+        matches!(f.call, crate::function::CallHandler::Native(_)) && f.construct.is_none(),
+      ),
+      Err(VmError::NotCallable) => return Ok(()),
+      Err(err) => return Err(err),
+    };
+
+    // Name inference does not apply to anonymous built-in/native functions. `vm-js` represents
+    // user-defined class constructors as native functions (so they can throw when called without
+    // `new`), so keep name inference enabled for constructable native functions.
+    if is_native_non_constructable {
+      return Ok(());
+    }
+    if !scope
+      .heap()
+      .get_string(current_name)?
+      .as_code_units()
+      .is_empty()
+    {
+      return Ok(());
+    }
+
+    let key = match *reference {
+      Reference::Binding(name) => {
+        // For binding assignments, ECMAScript `IsIdentifierRef` excludes parenthesized identifiers
+        // from name inference.
+        if !is_identifier_ref(left) {
+          return Ok(());
+        }
+        let name_s = scope.alloc_string(name)?;
+        // Root the allocated key string across `set_function_name`, which can allocate/GC.
+        scope.push_root(Value::String(name_s))?;
+        PropertyKey::String(name_s)
+      }
+      Reference::Property { key, .. } | Reference::SuperProperty { key, .. } => {
+        // Root the key across `set_function_name`, which can allocate/GC.
+        scope.push_root(match key {
+          PropertyKey::String(s) => Value::String(s),
+          PropertyKey::Symbol(s) => Value::Symbol(s),
+        })?;
+        key
+      }
+      // Private-name references never participate in function name inference.
+      Reference::Private { .. } => return Ok(()),
+    };
+
+    crate::function_properties::set_function_name(scope, func_obj, key, None)?;
+    Ok(())
   }
 
   fn eval_func_expr(
@@ -61089,10 +61139,9 @@ mod tests {
       VmError::Syntax(diags) => {
         let has_engine_early_error = diags.iter().any(|d| d.code.as_str() == "VMJS0004");
         let has_parser_error = diags.iter().any(|d| {
-          // `parse-js` uses dedicated diagnostics for this early error; accept the legacy
-          // `ExpectedSyntax` code as well as newer dedicated codes.
-          let code = d.code.as_str();
-          if code != "PS0002" && code != "PS0017" {
+          // `parse-js` can surface this early error as either a generic PS0002 parser diagnostic or a
+          // dedicated PS0017 `ArgumentsNotAllowedInClassInit` diagnostic.
+          if !matches!(d.code.as_str(), "PS0002" | "PS0017") {
             return false;
           }
           // Be tolerant to where `parse-js` surfaces the message (`message` vs `notes`) while still
@@ -61110,7 +61159,7 @@ mod tests {
          });
         assert!(
           has_engine_early_error || has_parser_error,
-          "expected early error VMJS0004 or parser error PS0002/PS0017 about disallowed 'arguments', got {diags:?}"
+          "expected early error VMJS0004 or parse-js error PS0002/PS0017 about disallowed 'arguments', got {diags:?}"
         );
         Ok(())
       }

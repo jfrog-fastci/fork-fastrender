@@ -34652,8 +34652,8 @@ mod object_builtins_regression_tests {
           const toString = Object.prototype.toString;
           const failures = [];
 
-           // Iterator: removing %ArrayIteratorPrototype%[@@toStringTag] should fall back to
-           // %IteratorPrototype%[@@toStringTag] ("Iterator"). Non-string tags still fall back to the
+           // Iterator: removing @@toStringTag from %ArrayIteratorPrototype% should fall back to the
+           // inherited tag from %IteratorPrototype% ("Iterator"). Non-string tags still fall back to
            // builtinTag ("Object").
            const arrIter = [][Symbol.iterator]();
            const arrIterProto = Object.getPrototypeOf(arrIter);
