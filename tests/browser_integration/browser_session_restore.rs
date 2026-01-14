@@ -9,6 +9,12 @@ fn run_browser_headless_smoke(
   extra_env: &[(&str, &str)],
 ) -> (ExitStatus, String, String) {
   let run_limited = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/run_limited.sh");
+  let profile_dir = session_path
+    .parent()
+    .filter(|p| !p.as_os_str().is_empty())
+    .unwrap_or_else(|| Path::new("."));
+  let downloads_dir = profile_dir.join("downloads");
+  let _ = std::fs::create_dir_all(&downloads_dir);
   let mut cmd = Command::new("bash");
   cmd
     .arg(run_limited)
@@ -17,7 +23,21 @@ fn run_browser_headless_smoke(
     .args(args)
     .env("RAYON_NUM_THREADS", "1")
     .env("FASTR_TEST_BROWSER_HEADLESS_SMOKE", "1")
-    .env("FASTR_BROWSER_SESSION_PATH", session_path);
+    .env("FASTR_BROWSER_SESSION_PATH", session_path)
+    // Keep the smoke harness hermetic: do not read/write the user's actual profile data.
+    .env(
+      "FASTR_BROWSER_BOOKMARKS_PATH",
+      profile_dir.join("bookmarks.json"),
+    )
+    .env(
+      "FASTR_BROWSER_HISTORY_PATH",
+      profile_dir.join("history.json"),
+    )
+    .env("FASTR_BROWSER_DOWNLOAD_DIR", &downloads_dir)
+    // Avoid inherited hooks interfering with this test (it intentionally toggles the session JSON
+    // override env var across runs).
+    .env_remove("FASTR_TEST_BROWSER_EXIT_IMMEDIATELY")
+    .env_remove("FASTR_TEST_BROWSER_HEADLESS_CRASH_SMOKE");
   for (k, v) in extra_env {
     cmd.env(k, v);
   }
