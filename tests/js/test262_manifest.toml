@@ -543,6 +543,348 @@ glob = "language/directive-prologue/**"
 status = "xfail"
 reason = "vm-js: directive prologue / strict mode semantics are still incomplete; tracked via curated test262 progress."
 
+# --- ES modules (incremental enablement) ---
+#
+# The curated suites still exclude module tests by default, but module-heavy suites (e.g.
+# `modules_smoke`) include tests from these directories. Keep broad xfail buckets so `--fail-on new`
+# stays usable when running those suites, and carve out known-green cases with exact `pass` entries
+# so regressions are not masked.
+
+[[expectations]]
+id = "language/export/escaped-as-export-specifier.js"
+status = "pass"
+
+[[expectations]]
+id = "language/export/escaped-default.js"
+status = "pass"
+
+[[expectations]]
+id = "language/export/escaped-from.js"
+status = "pass"
+
+[[expectations]]
+id = "language/import/dup-bound-names.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/ambiguous-export-bindings/error-export-from-named-as.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/ambiguous-export-bindings/error-export-from-named.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/ambiguous-export-bindings/error-import-named-as.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/ambiguous-export-bindings/error-import-named.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/ambiguous-export-bindings/import-and-export-propagates-binding.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/ambiguous-export-bindings/namespace-unambiguous-if-export-star-as-from-and-import-star-as-and-export.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/ambiguous-export-bindings/namespace-unambiguous-if-export-star-as-from.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/ambiguous-export-bindings/namespace-unambiguous-if-import-star-as-and-export.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/ambiguous-export-bindings/omitted-from-namespace.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/comment-multi-line-html-close.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/comment-single-line-html-close.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/comment-single-line-html-open.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-dup-export-as-star-as.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-dup-export-decl.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-dup-export-dflt-id.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-dup-export-dflt.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-dup-export-id-as.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-dup-export-id.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-dup-export-star-as-dflt.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-dup-lables.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-dup-lex.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-dup-top-function-async-generator.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-dup-top-function-async.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-dup-top-function-generator.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-dup-top-function.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-export-global.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-export-ill-formed-string.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-export-unresolvable.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-import-arguments.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-import-as-arguments.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-import-as-eval.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-import-eval.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-lex-and-var.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-new-target.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-strict-mode.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-super.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-undef-break.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/early-undef-continue.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/export-default-asyncfunction-declaration-binding-exists.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/export-default-asyncfunction-declaration-binding.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/export-default-asyncgenerator-declaration-binding-exists.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/export-default-asyncgenerator-declaration-binding.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/export-default-function-declaration-binding-exists.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/export-default-function-declaration-binding.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/export-default-generator-declaration-binding-exists.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/export-default-generator-declaration-binding.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/export-expname-binding-index.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/export-expname-binding-string.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/export-expname-from-as-unpaired-surrogate.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/export-expname-from-binding-string.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/export-expname-from-star-string.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/export-expname-from-star-unpaired-surrogate.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/export-expname-from-star.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/export-expname-from-string-binding.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/export-expname-from-string-string.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/export-expname-from-string.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/export-expname-from-unpaired-surrogate.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/export-expname-import-string-binding.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/export-expname-import-unpaired-surrogate.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/export-expname-string-binding.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/export-expname-unpaired-surrogate.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/instn-local-bndng-cls.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/instn-local-bndng-const.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/instn-local-bndng-export-cls.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/instn-local-bndng-export-const.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/instn-local-bndng-export-fun.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/instn-local-bndng-export-gen.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/instn-local-bndng-export-let.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/instn-local-bndng-export-var.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/instn-local-bndng-for-dup.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/instn-local-bndng-for.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/instn-local-bndng-fun.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/instn-local-bndng-gen.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/instn-local-bndng-let.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/instn-local-bndng-var-dup.js"
+status = "pass"
+
+[[expectations]]
+id = "language/module-code/instn-local-bndng-var.js"
+status = "pass"
+
+[[expectations]]
+glob = "language/import/**"
+status = "xfail"
+reason = "vm-js: ES module import semantics are still incomplete; keep module-heavy suites runnable under `--fail-on new`."
+
+[[expectations]]
+glob = "language/export/**"
+status = "xfail"
+reason = "vm-js: ES module export semantics are still incomplete; keep module-heavy suites runnable under `--fail-on new`."
+
+[[expectations]]
+glob = "language/module-code/**"
+status = "xfail"
+reason = "vm-js: module code parsing/instantiation/evaluation semantics are still incomplete; keep module-heavy suites runnable under `--fail-on new`."
+
 # --- Built-ins: newly-green areas ---
 [[expectations]]
 glob = "built-ins/String/fromCharCode/**"
