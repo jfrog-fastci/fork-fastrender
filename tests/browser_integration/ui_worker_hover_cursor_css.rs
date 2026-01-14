@@ -172,12 +172,14 @@ fn hover_changed_reports_expanded_css_cursor_kinds() {
             #abbr { position: absolute; top: 10px; left: 10px; display: block; width: 140px; height: 24px; background: rgb(220, 220, 0); }
             #zoom { position: absolute; top: 50px; left: 10px; width: 140px; height: 24px; background: rgb(0, 220, 220); cursor: zoom-in; }
             #ew { position: absolute; top: 90px; left: 10px; width: 140px; height: 24px; background: rgb(220, 0, 220); cursor: ew-resize; }
+            #n { position: absolute; top: 130px; left: 10px; width: 140px; height: 24px; background: rgb(0, 220, 0); cursor: n-resize; }
           </style>
         </head>
         <body>
           <abbr id="abbr" title="Abbreviation title">Abbr</abbr>
           <div id="zoom"></div>
           <div id="ew"></div>
+          <div id="n"></div>
         </body>
       </html>
     "##,
@@ -191,7 +193,7 @@ fn hover_changed_reports_expanded_css_cursor_kinds() {
     .unwrap();
   worker
     .ui_tx
-    .send(support::viewport_changed_msg(tab_id, (256, 140), 1.0))
+    .send(support::viewport_changed_msg(tab_id, (256, 180), 1.0))
     .unwrap();
   worker
     .ui_tx
@@ -241,6 +243,19 @@ fn hover_changed_reports_expanded_css_cursor_kinds() {
     .unwrap();
   let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
   assert_eq!(cursor, CursorKind::EwResize);
+  assert_eq!(hovered_url, None);
+
+  // Author CSS cursor: n-resize (mapped onto `NsResize`).
+  worker
+    .ui_tx
+    .send(support::pointer_move(
+      tab_id,
+      (15.0, 140.0),
+      PointerButton::None,
+    ))
+    .unwrap();
+  let (hovered_url, cursor) = next_hover_changed(&worker.ui_rx, tab_id);
+  assert_eq!(cursor, CursorKind::NsResize);
   assert_eq!(hovered_url, None);
 
   worker.join().unwrap();

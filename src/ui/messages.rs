@@ -305,6 +305,8 @@ impl CursorKind {
       CursorKeyword::Copy | CursorKeyword::Alias => Some(CursorKind::Copy),
       CursorKeyword::ZoomIn => Some(CursorKind::ZoomIn),
       CursorKeyword::ZoomOut => Some(CursorKind::ZoomOut),
+      CursorKeyword::NResize | CursorKeyword::SResize => Some(CursorKind::NsResize),
+      CursorKeyword::EResize | CursorKeyword::WResize => Some(CursorKind::EwResize),
       CursorKeyword::EwResize | CursorKeyword::ColResize => Some(CursorKind::EwResize),
       CursorKeyword::NsResize | CursorKeyword::RowResize => Some(CursorKind::NsResize),
       // Degrade gracefully for cursor keywords that do not have a dedicated `CursorKind` variant.
