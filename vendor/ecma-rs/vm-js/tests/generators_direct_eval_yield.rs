@@ -432,3 +432,28 @@ fn generator_indirect_eval_var_decl_does_not_conflict_with_outer_let_across_yiel
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_direct_eval_with_multiple_yield_arguments_is_direct() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          var x = 2;
+          function* g(){ let x = 1; return eval(yield 0, yield 1); }
+          var it = g();
+          var r1 = it.next();
+          var r2 = it.next("x");
+          var r3 = it.next("ignored");
+          ok = r1.done === false && r1.value === 0 &&
+               r2.done === false && r2.value === 1 &&
+               r3.done === true && r3.value === 1;
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

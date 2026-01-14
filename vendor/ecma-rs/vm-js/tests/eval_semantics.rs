@@ -526,3 +526,27 @@ fn indirect_eval_var_decl_does_not_conflict_with_outer_let_across_await() -> Res
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn direct_eval_with_multiple_awaited_arguments_is_direct() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = 0;
+      async function f() {
+        let x = 1;
+        return eval(await "x", await "ignored");
+      }
+      f().then(function (v) { out = v; }, function () { out = -1; });
+      out
+    "#,
+  )?;
+  assert_eq!(value, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value, Value::Number(1.0));
+  Ok(())
+}
