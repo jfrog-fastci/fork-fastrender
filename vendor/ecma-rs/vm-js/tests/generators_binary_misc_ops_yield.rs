@@ -422,6 +422,27 @@ fn bigint_bitwise_or_mixing_error_is_catchable_under_yield() {
 }
 
 #[test]
+fn bitwise_or_bigint_rhs_mixing_error_is_catchable_under_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){
+          try { return 1 | (yield 0); }
+          catch (e) { return e && e.name === "TypeError"; }
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(1n);
+        r1.value === 0 && r1.done === false &&
+        r2.done === true && r2.value === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn bigint_left_shift_mixing_error_is_catchable_under_yield() {
   let mut rt = new_runtime();
   let value = rt
@@ -434,6 +455,27 @@ fn bigint_left_shift_mixing_error_is_catchable_under_yield() {
         var it = g();
         var r1 = it.next();
         var r2 = it.next(1); // shift count is a Number -> mixing error
+        r1.value === 0 && r1.done === false &&
+        r2.done === true && r2.value === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn left_shift_bigint_rhs_mixing_error_is_catchable_under_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){
+          try { return 1 << (yield 0); }
+          catch (e) { return e && e.name === "TypeError"; }
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(1n);
         r1.value === 0 && r1.done === false &&
         r2.done === true && r2.value === true
       "#,
@@ -527,6 +569,27 @@ fn bigint_mixing_error_is_catchable_under_yield() {
 }
 
 #[test]
+fn bigint_rhs_mixing_error_is_catchable_under_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){
+          try { return 1 + (yield 0); }
+          catch (e) { return e && e.name === 'TypeError'; }
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(1n);
+        r1.value === 0 && r1.done === false &&
+        r2.done === true && r2.value === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn bigint_unsigned_right_shift_throws_type_error_under_yield() {
   let mut rt = new_runtime();
   let value = rt
@@ -539,6 +602,27 @@ fn bigint_unsigned_right_shift_throws_type_error_under_yield() {
         var it = g();
         var r1 = it.next();
         var r2 = it.next(1n);
+        r1.value === 0 && r1.done === false &&
+        r2.done === true && r2.value === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn unsigned_right_shift_bigint_rhs_mixing_error_is_catchable_under_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){
+          try { return 1 >>> (yield 0); }
+          catch (e) { return e && e.name === 'TypeError'; }
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(0n);
         r1.value === 0 && r1.done === false &&
         r2.done === true && r2.value === true
       "#,
