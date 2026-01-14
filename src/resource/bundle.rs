@@ -340,7 +340,7 @@ impl BundledResource {
     end: u64,
     max_bytes: usize,
   ) -> Result<FetchedResource> {
-    let total_len = self.bytes.len() as u64;
+    let total_len = u64::try_from(self.bytes.len()).unwrap_or(u64::MAX);
     let bytes =
       clone_bytes_range_fallible(url, &self.bytes, start, end, max_bytes, "bundle resource bytes")?;
     let mut res = FetchedResource::with_final_url(
@@ -362,9 +362,11 @@ impl BundledResource {
       .and_then(ReferrerPolicy::parse_value_list);
     res.response_headers = self.info.response_headers.clone();
     res.access_control_allow_credentials = self.info.access_control_allow_credentials;
-    if total_len != 0 && start < total_len {
-      let actual_end = end.min(total_len.saturating_sub(1));
-      super::apply_range_metadata(&mut res, start, actual_end, total_len);
+    if !res.bytes.is_empty() {
+      let end = start
+        .saturating_add(res.bytes.len() as u64)
+        .saturating_sub(1);
+      super::apply_range_metadata(url, &mut res, start, end, total_len);
     }
     Ok(res)
   }
@@ -1483,7 +1485,7 @@ impl ResourceFetcher for BundledFetcher {
 
     if doc_matches {
       let (doc_meta, bytes) = self.bundle.document();
-      let total_len = bytes.len() as u64;
+      let total_len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
       let bytes = clone_bytes_range_fallible(
         req.url,
         &bytes,
@@ -1509,10 +1511,6 @@ impl ResourceFetcher for BundledFetcher {
         .as_deref()
         .and_then(ReferrerPolicy::parse_value_list);
       res.response_headers = doc_meta.response_headers.clone();
-      if total_len != 0 && start < total_len {
-        let actual_end = capped_end.min(total_len.saturating_sub(1));
-        super::apply_range_metadata(&mut res, start, actual_end, total_len);
-      }
       if let Some(vary) = res.vary.as_deref() {
         if super::vary_contains_star(vary)
           || (!super::allow_unhandled_vary_env()
@@ -1523,6 +1521,12 @@ impl ResourceFetcher for BundledFetcher {
             doc_meta.final_url
           )));
         }
+      }
+      if !res.bytes.is_empty() {
+        let end = start
+          .saturating_add(res.bytes.len() as u64)
+          .saturating_sub(1);
+        super::apply_range_metadata(req.url, &mut res, start, end, total_len);
       }
       super::reserve_policy_bytes(&self.policy, &res)?;
       return Ok(res);
@@ -2328,7 +2332,7 @@ mod tests {
           etag: None,
           last_modified: None,
           response_referrer_policy: None,
-          response_headers: None,
+          response_headers: Some(vec![("Content-Length".to_string(), size.to_string())]),
           vary: None,
           access_control_allow_origin: None,
           timing_allow_origin: None,
@@ -2354,6 +2358,15 @@ mod tests {
       )
       .expect("fetch range");
     assert_eq!(&range_res.bytes, &data[100..=200]);
+    assert_eq!(range_res.status, Some(206));
+    assert_eq!(
+      range_res.header_get_joined("content-range").as_deref(),
+      Some("bytes 100-200/1048576")
+    );
+    assert_eq!(
+      range_res.header_get_joined("content-length").as_deref(),
+      Some("101")
+    );
     assert!(
       range_res.bytes.capacity() < 8 * 1024,
       "expected range fetch to only allocate the requested slice, got capacity={}",
@@ -2369,6 +2382,15 @@ mod tests {
       .expect("fetch capped range");
     assert_eq!(&capped_res.bytes, &data[100..=109]);
     assert_eq!(capped_res.bytes.len(), 10);
+    assert_eq!(capped_res.status, Some(206));
+    assert_eq!(
+      capped_res.header_get_joined("content-range").as_deref(),
+      Some("bytes 100-109/1048576")
+    );
+    assert_eq!(
+      capped_res.header_get_joined("content-length").as_deref(),
+      Some("10")
+    );
   }
 
   #[test]

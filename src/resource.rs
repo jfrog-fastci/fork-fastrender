@@ -3170,18 +3170,23 @@ impl FetchedResource {
 /// This is primarily used when serving `Range`/partial responses from cached full bytes (memory
 /// cache, disk cache, offline bundles) so downstream code that expects HTTP semantics can rely on
 /// consistent `206` / `Content-Range` / `Content-Length` metadata even without a real network hop.
-fn apply_range_metadata(res: &mut FetchedResource, start: u64, end: u64, total_len: u64) {
+///
+/// Per HTTP semantics, this metadata is only synthesized for HTTP(S) URLs.
+fn apply_range_metadata(url: &str, res: &mut FetchedResource, start: u64, end: u64, total_len: u64) {
+  if !matches!(classify_scheme(url), ResourceScheme::Http | ResourceScheme::Https) {
+    return;
+  }
   res.status = Some(206);
-
-  let content_length = end.saturating_sub(start).saturating_add(1);
-  let content_range = format!("bytes {start}-{end}/{total_len}");
 
   let headers = res.response_headers.get_or_insert_with(Vec::new);
   headers.retain(|(name, _)| {
     !(name.eq_ignore_ascii_case("content-range") || name.eq_ignore_ascii_case("content-length"))
   });
-  headers.push(("Content-Range".to_string(), content_range));
-  headers.push(("Content-Length".to_string(), content_length.to_string()));
+  headers.push((
+    "Content-Range".to_string(),
+    format!("bytes {start}-{end}/{total_len}"),
+  ));
+  headers.push(("Content-Length".to_string(), res.bytes.len().to_string()));
 }
 
 // ============================================================================
@@ -4158,8 +4163,15 @@ pub trait ResourceFetcher: Send + Sync {
 
         // If the server ignored the range and returned a full 200 response, slice when possible.
         if res.status == Some(200) {
+          let full_len = u64::try_from(res.bytes.len()).unwrap_or(u64::MAX);
           let sliced = slice_bytes_for_fetch_range(req.url, &res.bytes, start..=capped_end, max_bytes)?;
           res.bytes = sliced;
+          if !res.bytes.is_empty() {
+            let end = start
+              .saturating_add(res.bytes.len() as u64)
+              .saturating_sub(1);
+            apply_range_metadata(req.url, &mut res, start, end, full_len);
+          }
           return Ok(res);
         }
 
@@ -10370,7 +10382,14 @@ impl ResourceFetcher for HttpFetcher {
 
         // If the server ignored the range and returned a full 200 response, slice when possible.
         if res.status == Some(200) {
+          let full_len = u64::try_from(res.bytes.len()).unwrap_or(u64::MAX);
           res.bytes = slice_bytes_for_fetch_range(url, &res.bytes, start..=capped_end, max_bytes)?;
+          if !res.bytes.is_empty() {
+            let end = start
+              .saturating_add(res.bytes.len() as u64)
+              .saturating_sub(1);
+            apply_range_metadata(url, &mut res, start, end, full_len);
+          }
           return Ok(res);
         }
 
@@ -12420,9 +12439,6 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
     max_bytes: usize,
   ) -> Option<Result<FetchedResource>> {
     let start = *range.start();
-    let end = *range.end();
-    let capped_end = capped_range_end(start, end, max_bytes);
-
     if let Some(result) = self.with_cached_resource(key, request, |res| {
       let total_len = u64::try_from(res.bytes.len()).unwrap_or(u64::MAX);
       let bytes = slice_bytes_for_fetch_range(&key.url, &res.bytes, range, max_bytes)?;
@@ -12443,8 +12459,12 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
         cache_policy: res.cache_policy.clone(),
         response_headers: res.response_headers.clone(),
       };
-      let actual_end = capped_end.min(total_len.saturating_sub(1));
-      apply_range_metadata(&mut out, start, actual_end, total_len);
+      if !out.bytes.is_empty() {
+        let end = start
+          .saturating_add(out.bytes.len() as u64)
+          .saturating_sub(1);
+        apply_range_metadata(&key.url, &mut out, start, end, total_len);
+      }
       Ok(out)
     }) {
       return Some(result);
@@ -13478,18 +13498,18 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
       CacheCredentialsPartition::for_request(&req),
     );
 
-    if let Some(result) = self.with_cached_resource(
-      &key,
-      Some(req),
-      |cached| -> Result<FetchedResource> {
-        let bytes = slice_bytes_for_fetch_range(url, &cached.bytes, range.clone(), max_bytes)?;
-        let mut out = clone_fetched_resource_with_bytes(cached, bytes);
+    if let Some(result) = self.with_cached_resource(&key, Some(req), |cached| -> Result<FetchedResource> {
+      let bytes = slice_bytes_for_fetch_range(url, &cached.bytes, range.clone(), max_bytes)?;
+      let mut out = clone_fetched_resource_with_bytes(cached, bytes);
+      if !out.bytes.is_empty() {
         let total_len = u64::try_from(cached.bytes.len()).unwrap_or(u64::MAX);
-        let actual_end = (*range.end()).min(total_len.saturating_sub(1));
-        apply_range_metadata(&mut out, start, actual_end, total_len);
-        Ok(out)
-      },
-    ) {
+        let end = start
+          .saturating_add(out.bytes.len() as u64)
+          .saturating_sub(1);
+        apply_range_metadata(url, &mut out, start, end, total_len);
+      }
+      Ok(out)
+    }) {
       let res = result?;
       record_cache_fresh_hit();
       record_resource_cache_bytes(res.bytes.len());
@@ -25507,6 +25527,10 @@ mod tests {
         res.status = Some(200);
         res.etag = Some("test-etag".to_string());
         res.final_url = Some(req.url.to_string());
+        res.response_headers = Some(vec![(
+          "Content-Length".to_string(),
+          (1024 * 1024).to_string(),
+        )]);
         Ok(res)
       }
 

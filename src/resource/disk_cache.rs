@@ -2367,16 +2367,13 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       })
     });
 
-    let total_len = meta.len as u64;
-    if total_len != 0 && start < total_len {
-      let capped_end = if max_bytes == 0 {
-        start
-      } else {
-        let cap_end = start.saturating_add((max_bytes as u64).saturating_sub(1));
-        end.min(cap_end)
-      };
-      let actual_end = capped_end.min(total_len.saturating_sub(1));
-      super::apply_range_metadata(&mut resource, start, actual_end, total_len);
+    if !resource.bytes.is_empty() {
+      let total_len = u64::try_from(meta.len).unwrap_or(u64::MAX);
+      let start = *range.start();
+      let end = start
+        .saturating_add(resource.bytes.len() as u64)
+        .saturating_sub(1);
+      super::apply_range_metadata(url, &mut resource, start, end, total_len);
     }
 
     SnapshotRangeRead::Hit(resource)
@@ -5377,7 +5374,9 @@ mod tests {
         bytes[i as usize] = i;
       }
       let mut res = FetchedResource::new(bytes, Some("application/octet-stream".to_string()));
+      res.status = Some(200);
       res.final_url = Some(url.to_string());
+      res.response_headers = Some(vec![("Content-Length".to_string(), size.to_string())]);
       Ok(res)
     }
   }
@@ -5480,7 +5479,7 @@ mod tests {
 
     let req = FetchRequest::new(url, FetchDestination::Other);
     let res = disk
-      .fetch_range_with_request(req, 128, 16)
+      .fetch_range_with_request(req, 128..=143, 16)
       .expect("range fetch");
     assert_eq!(res.bytes.len(), 16);
     assert_eq!(res.bytes, (128u8..144).collect::<Vec<_>>());
@@ -5488,6 +5487,15 @@ mod tests {
       res.bytes.capacity() <= 64,
       "expected range memory hit to allocate a small Vec; got capacity {}",
       res.bytes.capacity()
+    );
+    assert_eq!(res.status, Some(206));
+    assert_eq!(
+      res.header_get_joined("content-range").as_deref(),
+      Some("bytes 128-143/1048576")
+    );
+    assert_eq!(
+      res.header_get_joined("content-length").as_deref(),
+      Some("16")
     );
     assert_eq!(
       calls.load(Ordering::SeqCst),
@@ -9794,6 +9802,7 @@ mod tests {
         let mut res = FetchedResource::new(b"abcdefghij".to_vec(), Some("application/octet-stream".to_string()));
         res.status = Some(200);
         res.final_url = Some(url.to_string());
+        res.response_headers = Some(vec![("Content-Length".to_string(), "10".to_string())]);
         Ok(res)
       }
     }
@@ -9813,6 +9822,15 @@ mod tests {
       .fetch_range_with_request(req, 3..=6, 4)
       .expect("range fetch");
     assert_eq!(fetched.bytes, b"defg");
+    assert_eq!(fetched.status, Some(206));
+    assert_eq!(
+      fetched.header_get_joined("content-range").as_deref(),
+      Some("bytes 3-6/10")
+    );
+    assert_eq!(
+      fetched.header_get_joined("content-length").as_deref(),
+      Some("4")
+    );
   }
 
   #[test]
