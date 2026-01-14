@@ -220,15 +220,15 @@ fn compiled_logical_assignment_anonymous_function_name_inference() -> Result<(),
 
         const o = {};
         o.f ??= function() {};
-        if (o.f.name !== "f") return false;
+        if (o.f.name !== "") return false;
 
         o.g = true;
         o.g &&= function() {};
-        if (o.g.name !== "g") return false;
+        if (o.g.name !== "") return false;
 
         const prop = "comp";
         o[prop] ||= function() {};
-        if (o[prop].name !== "comp") return false;
+        if (o[prop].name !== "") return false;
 
         return true;
       })()

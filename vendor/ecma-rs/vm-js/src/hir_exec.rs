@@ -9179,15 +9179,12 @@ impl<'vm> HirEvaluator<'vm> {
             let mut scope = scope.reborrow();
             self.root_assignment_reference(&mut scope, &reference)?;
 
-            let v = match &reference {
-              // Note: `PatKind::AssignTarget(Ident)` represents a parenthesized identifier (e.g.
-              // `(x) = function() {}`), which must not infer names.
-              AssignmentReference::Property { key, .. }
-              | AssignmentReference::SuperProperty { key, .. } => {
-                self.eval_expr_named(&mut scope, body, value, *key)?
-              }
-              _ => self.eval_expr(&mut scope, body, value)?,
-            };
+            // `PatKind::AssignTarget` represents either:
+            // - a member assignment target (`obj.x = rhs`), or
+            // - a parenthesized identifier (`(x) = rhs`).
+            //
+            // Neither participates in `NamedEvaluation` / `SetFunctionName` inference.
+            let v = self.eval_expr(&mut scope, body, value)?;
             scope.push_root(v)?;
             self.put_value_to_assignment_reference(&mut scope, &reference, v)?;
             Ok(v)
@@ -9985,7 +9982,7 @@ impl<'vm> HirEvaluator<'vm> {
               }
 
               scope.push_root(left)?;
-              let right = self.eval_expr_named(&mut scope, body, value, key)?;
+              let right = self.eval_expr(&mut scope, body, value)?;
               scope.push_root(right)?;
 
               let ok = crate::spec_ops::internal_set_with_host_and_hooks(
@@ -10029,7 +10026,7 @@ impl<'vm> HirEvaluator<'vm> {
             }
 
             scope.push_root(left)?;
-            let right = self.eval_expr_named(&mut scope, body, value, key)?;
+            let right = self.eval_expr(&mut scope, body, value)?;
             scope.push_root(right)?;
 
             let ok = crate::spec_ops::internal_set_with_host_and_hooks(
@@ -21099,7 +21096,6 @@ impl AsyncClassStaticBlockState {
           self.saved_meta_property_context = evaluator.env.meta_property_context();
 
           self.apply_running_context(evaluator);
-
           let saved_lex = self.saved_lex.ok_or(VmError::InvariantViolation(
             "missing async class static block saved env",
           ))?;

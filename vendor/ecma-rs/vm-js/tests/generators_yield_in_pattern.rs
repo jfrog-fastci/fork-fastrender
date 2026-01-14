@@ -143,6 +143,94 @@ fn generator_catch_parameter_pattern_can_yield() {
 }
 
 #[test]
+fn generator_binding_object_pattern_default_can_yield_with_rest() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(o) {
+        let { a: x = (yield 1), ...rest } = o;
+        return x === 7 && rest.b === 2 && !Object.prototype.hasOwnProperty.call(rest, "a");
+      }
+      var it = g({ b: 2 });
+      var r1 = it.next();
+      var r2 = it.next(7);
+      r1.done === false && r1.value === 1 && r2.done === true && r2.value === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_binding_object_pattern_computed_key_can_yield_with_rest_and_captures_rhs() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var o1 = { a: 1, b: 2 };
+      var o2 = { a: 9, b: 99 };
+      var o = o1;
+      function* g() {
+        let { [yield 'k']: x, ...rest } = o;
+        return x === 1 && rest.b === 2 && !Object.prototype.hasOwnProperty.call(rest, "a");
+      }
+      var it = g();
+      var r1 = it.next();
+      o = o2;
+      var r2 = it.next("a");
+      r1.done === false && r1.value === "k" && r2.done === true && r2.value === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_binding_array_pattern_default_can_yield_with_rest_and_captures_iterator_state() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var a1 = [undefined, 2, 3];
+      var a2 = [undefined, 99, 100];
+      var a = a1;
+      function* g() {
+        let [x = (yield 1), ...rest] = a;
+        return x === 7 && rest.length === 2 && rest[0] === 2 && rest[1] === 3;
+      }
+      var it = g();
+      var r1 = it.next();
+      a = a2;
+      var r2 = it.next(7);
+      r1.done === false && r1.value === 1 && r2.done === true && r2.value === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_catch_parameter_pattern_default_can_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() {
+        try { throw {}; }
+        catch ({ a: x = (yield 1) }) { return x; }
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(5);
+      r1.done === false && r1.value === 1 && r2.done === true && r2.value === 5
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_binding_array_rest_pattern_default_can_yield() {
   let mut rt = new_runtime();
   let value = rt
