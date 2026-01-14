@@ -46,9 +46,7 @@ fn arguments_identifier_reference_is_syntax_error_in_class_static_block_label_ec
     .expect_err("parse unexpectedly succeeded");
   assert_eq!(
     err.typ,
-    SyntaxErrorType::ExpectedSyntax(
-      "`arguments` is not allowed in class field initializers or class static initialization blocks"
-    )
+    SyntaxErrorType::ArgumentsNotAllowedInClassInit
   );
   assert_eq!(err.actual_token, None);
 }
@@ -72,9 +70,7 @@ fn arguments_identifier_reference_is_syntax_error_in_class_static_block_object_s
     .expect_err("parse unexpectedly succeeded");
   assert_eq!(
     err.typ,
-    SyntaxErrorType::ExpectedSyntax(
-      "`arguments` is not allowed in class field initializers or class static initialization blocks"
-    )
+    SyntaxErrorType::ArgumentsNotAllowedInClassInit
   );
   assert_eq!(err.actual_token, None);
 }
