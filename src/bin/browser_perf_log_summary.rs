@@ -102,7 +102,9 @@ fn f64_timestamp_ms_to_u64(ts_ms: Option<f64>) -> Option<u64> {
 fn event_timestamp_ms(event: &BrowserPerfLogEvent) -> Option<u64> {
   match event {
     BrowserPerfLogEvent::V2(event) => match event {
-      BrowserPerfLogEventV2::Frame { t_ms, ts_ms, .. }
+      BrowserPerfLogEventV2::RunStart { t_ms, ts_ms, .. }
+      | BrowserPerfLogEventV2::RunEnd { t_ms, ts_ms, .. }
+      | BrowserPerfLogEventV2::Frame { t_ms, ts_ms, .. }
       | BrowserPerfLogEventV2::Input { t_ms, ts_ms, .. }
       | BrowserPerfLogEventV2::TabSwitch { t_ms, ts_ms, .. }
       | BrowserPerfLogEventV2::Resize { t_ms, ts_ms, .. }
@@ -127,6 +129,7 @@ fn event_timestamp_ms(event: &BrowserPerfLogEvent) -> Option<u64> {
 fn matches_event_filter(event: &BrowserPerfLogEvent, filter: EventFilter) -> bool {
   match event {
     BrowserPerfLogEvent::V2(event) => match event {
+      BrowserPerfLogEventV2::RunStart { .. } | BrowserPerfLogEventV2::RunEnd { .. } => false,
       BrowserPerfLogEventV2::Frame { .. } => filter == EventFilter::Frame,
       BrowserPerfLogEventV2::Input { input_kind, .. } => match filter {
         EventFilter::Input => true,
@@ -492,6 +495,7 @@ fn run(cli: Cli) -> Result<(), String> {
 
         match event {
           BrowserPerfLogEvent::V2(event) => match event {
+            BrowserPerfLogEventV2::RunStart { .. } | BrowserPerfLogEventV2::RunEnd { .. } => {}
             BrowserPerfLogEventV2::Frame { ui_frame_ms, .. } => {
               if let Some(ms) = ui_frame_ms.filter(f64::is_finite) {
                 samples.ui_frame_time_ms.push(ms);
