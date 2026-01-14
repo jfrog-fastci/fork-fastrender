@@ -12,6 +12,7 @@ use super::{
 };
 
 use lru::LruCache;
+use rustc_hash::FxHashMap;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -33,6 +34,10 @@ pub fn history_panel_ui(
   request_focus_search: &mut bool,
 ) -> HistoryPanelOutput {
   let mut out = HistoryPanelOutput::default();
+  let history_revision = history.revision();
+  let mut cache: HistoryPanelCache = ctx.data_mut(|d| {
+    std::mem::take(d.get_temp_mut_or_default::<HistoryPanelCache>(history_panel_cache_id()))
+  });
 
   egui::SidePanel::right("fastr_history_panel")
     .resizable(true)
@@ -173,17 +178,19 @@ pub fn history_panel_ui(
               .filter(|t| !t.is_empty())
               .unwrap_or(entry.url.as_str());
             let url = &entry.url;
-            // Only allocate a combined `title (url)` label when the title differs from the URL.
-            // When the title is missing (common), we can pass `None` to a11y label helpers so they
-            // fall back to the URL without extra allocations.
-            let entry_label = (title != url.as_str()).then(|| format!("{title} ({url})"));
-            let entry_label_title = entry_label.as_deref();
 
-            let ts = format_history_timestamp_ms_cached(ctx, entry.visited_at_ms);
+            let ts = cache.format_history_timestamp_ms_cached(entry.visited_at_ms);
             let ts_text: egui::WidgetText = match ts.as_deref() {
               Some(ts) => ts.into(),
               None => "Unknown time".into(),
             };
+
+            let HistoryRowA11yLabels {
+              open: open_a11y_label,
+              open_in_new_tab: open_in_new_tab_a11y_label,
+              delete: delete_a11y_label,
+            } = cache.history_row_a11y_labels(history_revision, title, url.as_str());
+
             let mut action_clicked = false;
             let row_resp = panel_list_row(
               ui,
@@ -195,8 +202,8 @@ pub fn history_panel_ui(
               |ui| {
                 let delete_resp = icon_button(ui, BrowserIcon::Trash, "Delete", true);
                 delete_resp.widget_info({
-                  let label = a11y_labels::history_delete_label(entry_label_title, url.as_str());
-                  move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+                  let label = delete_a11y_label;
+                  move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.as_ref())
                 });
                 if delete_resp.clicked() {
                   out.delete_index = Some(idx);
@@ -206,9 +213,8 @@ pub fn history_panel_ui(
                 let new_tab_resp =
                   icon_button(ui, BrowserIcon::OpenInNewTab, "Open in new tab", true);
                 new_tab_resp.widget_info({
-                  let label =
-                    a11y_labels::history_open_in_new_tab_label(entry_label_title, url.as_str());
-                  move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+                  let label = open_in_new_tab_a11y_label;
+                  move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.as_ref())
                 });
                 if new_tab_resp.clicked() {
                   out.open_in_new_tab = Some(url.clone());
@@ -218,8 +224,8 @@ pub fn history_panel_ui(
             );
 
             row_resp.response.widget_info({
-              let label = a11y_labels::history_open_label(entry_label_title, url.as_str());
-              move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+              let label = open_a11y_label;
+              move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.as_ref())
             });
 
             if row_resp.response.clicked() && !action_clicked {
@@ -231,6 +237,10 @@ pub fn history_panel_ui(
           }
         });
     });
+
+  ctx.data_mut(|d| {
+    d.insert_temp(history_panel_cache_id(), cache);
+  });
 
   out
 }
@@ -250,6 +260,8 @@ struct HistoryPanelCache {
   // Keyed by unix-epoch minute; the UI output format does not include seconds, so all instants
   // within the same minute map to the same display string.
   timestamps_by_minute: LruCache<u64, Arc<str>>,
+  a11y_label_revision: u64,
+  a11y_labels_by_url: FxHashMap<String, HistoryRowA11yLabels>,
 }
 
 impl Default for HistoryPanelCache {
@@ -258,43 +270,80 @@ impl Default for HistoryPanelCache {
       timestamps_by_minute: LruCache::new(
         NonZeroUsize::new(HISTORY_TIMESTAMP_CACHE_CAPACITY).unwrap_or(NonZeroUsize::MIN),
       ),
+      a11y_label_revision: 0,
+      a11y_labels_by_url: FxHashMap::default(),
     }
+  }
+}
+
+#[derive(Debug, Clone)]
+struct HistoryRowA11yLabels {
+  open: Arc<str>,
+  open_in_new_tab: Arc<str>,
+  delete: Arc<str>,
+}
+
+impl HistoryPanelCache {
+  fn format_history_timestamp_ms_cached(&mut self, visited_at_ms: u64) -> Option<Arc<str>> {
+    if visited_at_ms == 0 {
+      return None;
+    }
+
+    // Since we only show minutes, use the epoch minute as a stable cache key to maximize hits.
+    let minute_key = visited_at_ms / 60_000;
+    if let Some(cached) = self.timestamps_by_minute.get(&minute_key) {
+      return Some(Arc::clone(cached));
+    }
+
+    let formatted = history_timestamp::format_history_timestamp_ms(visited_at_ms)?;
+    let arc: Arc<str> = Arc::from(formatted);
+    self.timestamps_by_minute.put(minute_key, arc.clone());
+    Some(arc)
+  }
+
+  fn history_row_a11y_labels(
+    &mut self,
+    history_revision: u64,
+    title: &str,
+    url: &str,
+  ) -> HistoryRowA11yLabels {
+    if self.a11y_label_revision != history_revision {
+      self.a11y_label_revision = history_revision;
+      self.a11y_labels_by_url.clear();
+    }
+
+    if let Some(cached) = self.a11y_labels_by_url.get(url) {
+      return cached.clone();
+    }
+
+    // Only allocate a combined `title (url)` label when the title differs from the URL.
+    // When the title is missing (common), pass `None` so a11y label helpers can fall back to the
+    // URL without extra allocations.
+    let combined = (title != url).then(|| {
+      let mut out = String::with_capacity(title.len() + url.len() + 3);
+      out.push_str(title);
+      out.push_str(" (");
+      out.push_str(url);
+      out.push(')');
+      out
+    });
+    let title_for_a11y = combined.as_deref();
+
+    let labels = HistoryRowA11yLabels {
+      open: Arc::from(a11y_labels::history_open_label(title_for_a11y, url)),
+      open_in_new_tab: Arc::from(a11y_labels::history_open_in_new_tab_label(title_for_a11y, url)),
+      delete: Arc::from(a11y_labels::history_delete_label(title_for_a11y, url)),
+    };
+
+    self
+      .a11y_labels_by_url
+      .insert(url.to_string(), labels.clone());
+    labels
   }
 }
 
 fn history_panel_cache_id() -> egui::Id {
   egui::Id::new("fastr_history_panel_cache")
-}
-
-fn lookup_cached_timestamp(ctx: &egui::Context, minute_key: u64) -> Option<Arc<str>> {
-  ctx.data_mut(|d| {
-    let cache = d.get_temp_mut_or_default::<HistoryPanelCache>(history_panel_cache_id());
-    cache.timestamps_by_minute.get(&minute_key).cloned()
-  })
-}
-
-fn insert_cached_timestamp(ctx: &egui::Context, minute_key: u64, value: Arc<str>) {
-  ctx.data_mut(|d| {
-    let cache = d.get_temp_mut_or_default::<HistoryPanelCache>(history_panel_cache_id());
-    cache.timestamps_by_minute.put(minute_key, value);
-  });
-}
-
-fn format_history_timestamp_ms_cached(ctx: &egui::Context, visited_at_ms: u64) -> Option<Arc<str>> {
-  if visited_at_ms == 0 {
-    return None;
-  }
-
-  // Since we only show minutes, use the epoch minute as a stable cache key to maximize hits.
-  let minute_key = visited_at_ms / 60_000;
-  if let Some(cached) = lookup_cached_timestamp(ctx, minute_key) {
-    return Some(cached);
-  }
-
-  let formatted = history_timestamp::format_history_timestamp_ms(visited_at_ms)?;
-  let arc: Arc<str> = Arc::from(formatted);
-  insert_cached_timestamp(ctx, minute_key, arc.clone());
-  Some(arc)
 }
 
 // -----------------------------------------------------------------------------
