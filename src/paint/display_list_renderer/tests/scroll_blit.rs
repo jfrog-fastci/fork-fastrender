@@ -1,7 +1,12 @@
 use crate::paint::display_list::{DisplayItem, DisplayList, FillRectItem};
+use crate::paint::display_list_builder::DisplayListBuilder;
 use crate::paint::display_list_renderer::{DisplayListRenderer, PaintParallelism};
+use crate::style::types::AnimationTimeline;
+use crate::style::ComputedStyle;
 use crate::text::font_loader::FontContext;
+use crate::tree::fragment_tree::FragmentNode;
 use crate::{Point, Rect, Rgba};
+use std::sync::Arc;
 
 const VIEWPORT_W: u32 = 64;
 const VIEWPORT_H: u32 = 64;
@@ -121,3 +126,47 @@ fn scroll_blit_diagonal_negative_delta_matches_full() {
   assert_scroll_blit_matches_full(Point::new(9.0, 9.0), Point::new(0.0, 0.0));
 }
 
+#[test]
+fn scroll_blit_falls_back_for_scroll_linked_animation_timeline() {
+  let style = ComputedStyle {
+    background_color: Rgba::WHITE,
+    animation_names: vec![Some("a".into())],
+    animation_timelines: vec![AnimationTimeline::Scroll(Default::default())],
+    ..ComputedStyle::default()
+  };
+  let root = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, VIEWPORT_W as f32, VIEWPORT_H as f32),
+    vec![],
+    Arc::new(style),
+  );
+  let list = DisplayListBuilder::new().build(&root);
+
+  assert!(
+    list.has_scroll_linked_animations(),
+    "expected DisplayListBuilder to mark scroll-linked timelines"
+  );
+
+  let pixmap_a = render_full(&list);
+  let report = {
+    let mut renderer =
+      DisplayListRenderer::new_from_existing_pixmap(pixmap_a, Rgba::BLACK, FontContext::new())
+        .expect("renderer");
+    renderer.paint_parallelism = PaintParallelism::disabled();
+    renderer
+      .render_scroll_blit_with_report(&list, Point::new(0.0, 1.0))
+      .expect("scroll blit render")
+  };
+
+  assert!(
+    !report.scroll_blit_used,
+    "expected scroll blit to fall back, got scroll_blit_used=true"
+  );
+  assert!(
+    !report.partial_repaint_used,
+    "expected exposed-strip repaint to not be used when scroll blit falls back"
+  );
+  assert_eq!(
+    report.fallback_reason.as_deref(),
+    Some("scroll-linked animation timeline present; full repaint")
+  );
+}
