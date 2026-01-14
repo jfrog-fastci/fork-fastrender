@@ -689,6 +689,7 @@ mod tests {
     assert_eq!(entry.url, "https://example.com/");
     assert_eq!(entry.file_name, "a.bin");
     assert_eq!(entry.path, PathBuf::from("/tmp/a.bin"));
+    assert_eq!(entry.path_display, entry.path.display().to_string());
     assert!(matches!(entry.status, DownloadStatus::Completed));
     assert_eq!(entry.started_at_ms, Some(1));
     assert_eq!(entry.finished_at_ms, Some(2));

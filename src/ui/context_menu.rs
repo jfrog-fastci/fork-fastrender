@@ -486,20 +486,19 @@ mod entry_label_tests {
     let link_url = "https://example.com/link";
 
     let mut bookmarks = BookmarkStore::default();
-    let input = |bookmarks: &BookmarkStore| PageContextMenuBuildInput {
+
+    let entries = build_page_context_menu_entries(PageContextMenuBuildInput {
       link_url: Some(link_url),
       image_url: None,
       page_url: Some(page_url),
-      bookmarks,
+      bookmarks: &bookmarks,
       history_panel_open: false,
       bookmarks_panel_open: false,
       can_copy: false,
       can_cut: false,
       can_paste: false,
       can_select_all: false,
-    };
-
-    let entries = build_page_context_menu_entries(input(&bookmarks));
+    });
     let page_label = entries.iter().find_map(|entry| match entry {
       PageContextMenuEntry::Action(item)
         if matches!(item.action, PageContextMenuAction::BookmarkPage(_)) =>
@@ -523,7 +522,18 @@ mod entry_label_tests {
     bookmarks.toggle(page_url, None);
     bookmarks.toggle(link_url, None);
 
-    let entries = build_page_context_menu_entries(input(&bookmarks));
+    let entries = build_page_context_menu_entries(PageContextMenuBuildInput {
+      link_url: Some(link_url),
+      image_url: None,
+      page_url: Some(page_url),
+      bookmarks: &bookmarks,
+      history_panel_open: false,
+      bookmarks_panel_open: false,
+      can_copy: false,
+      can_cut: false,
+      can_paste: false,
+      can_select_all: false,
+    });
     let page_label = entries.iter().find_map(|entry| match entry {
       PageContextMenuEntry::Action(item)
         if matches!(item.action, PageContextMenuAction::BookmarkPage(_)) =>
