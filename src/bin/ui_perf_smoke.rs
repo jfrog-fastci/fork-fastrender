@@ -158,6 +158,9 @@ struct ScenarioSummary {
   rss_bytes_end: Option<u64>,
   #[serde(default)]
   rss_bytes_peak: Option<u64>,
+  /// Convenience alias for `rss_bytes_end` (RSS observed immediately after the scenario).
+  #[serde(default)]
+  rss_after_bytes: Option<u64>,
   #[serde(default)]
   status: ScenarioStatus,
   #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1039,6 +1042,7 @@ fn run_named_scenario(
       rss_bytes_start: None,
       rss_bytes_end: None,
       rss_bytes_peak: None,
+      rss_after_bytes: None,
       status: ScenarioStatus::Error,
       error: Some(format!("unsupported scenario {other:?}")),
       samples_ms: Vec::new(),
@@ -1054,6 +1058,7 @@ fn run_named_scenario(
   summary.rss_bytes_start = rss_bytes_start;
   summary.rss_bytes_end = rss_bytes_end;
   summary.rss_bytes_peak = rss_bytes_peak;
+  summary.rss_after_bytes = rss_bytes_end;
   summary
 }
 
@@ -1077,6 +1082,7 @@ fn run_ttfp_newtab(
     rss_bytes_start: None,
     rss_bytes_end: None,
     rss_bytes_peak: None,
+    rss_after_bytes: None,
     status: ScenarioStatus::Ok,
     error: None,
     samples_ms: Vec::new(),
@@ -1148,6 +1154,7 @@ fn run_scroll_fixture(
     rss_bytes_start: None,
     rss_bytes_end: None,
     rss_bytes_peak: None,
+    rss_after_bytes: None,
     status: ScenarioStatus::Ok,
     error: None,
     samples_ms: Vec::new(),
@@ -1273,6 +1280,7 @@ fn run_resize_fixture(
     rss_bytes_start: None,
     rss_bytes_end: None,
     rss_bytes_peak: None,
+    rss_after_bytes: None,
     status: ScenarioStatus::Ok,
     error: None,
     samples_ms: Vec::new(),
@@ -1362,6 +1370,7 @@ fn run_input_text_fixture(
         rss_bytes_start: None,
         rss_bytes_end: None,
         rss_bytes_peak: None,
+        rss_after_bytes: None,
         status: ScenarioStatus::Error,
         error: Some(err.to_string()),
         samples_ms: Vec::new(),
@@ -1382,6 +1391,7 @@ fn run_input_text_fixture(
     rss_bytes_start: None,
     rss_bytes_end: None,
     rss_bytes_peak: None,
+    rss_after_bytes: None,
     status: ScenarioStatus::Ok,
     error: None,
     samples_ms: Vec::new(),
@@ -1539,6 +1549,7 @@ fn run_tab_switch(
     rss_bytes_start: None,
     rss_bytes_end: None,
     rss_bytes_peak: None,
+    rss_after_bytes: None,
     status: ScenarioStatus::Ok,
     error: None,
     samples_ms: Vec::new(),
@@ -1650,6 +1661,10 @@ fn run_network_denied(
     url: target_url.clone(),
     viewport_css,
     dpr,
+    rss_bytes_start: None,
+    rss_bytes_end: None,
+    rss_bytes_peak: None,
+    rss_after_bytes: None,
     status: ScenarioStatus::Ok,
     error: None,
     samples_ms: Vec::new(),
@@ -1961,6 +1976,8 @@ mod tests {
         effective_rayon_threads: 1,
         ..RunConfig::default()
       },
+      rss_start_bytes: None,
+      rss_after_warmup_bytes: None,
       scenarios: Vec::new(),
     };
 
@@ -2003,6 +2020,8 @@ mod tests {
         resource_policy: ResourcePolicySummary::from(&policy),
         iterations: args.iterations,
       },
+      rss_start_bytes: None,
+      rss_after_warmup_bytes: None,
       scenarios: Vec::new(),
     };
 
@@ -2068,6 +2087,7 @@ mod tests {
       rss_bytes_start: None,
       rss_bytes_end: None,
       rss_bytes_peak: None,
+      rss_after_bytes: None,
       status: ScenarioStatus::Ok,
       error: None,
       samples_ms: Vec::new(),
@@ -2077,6 +2097,8 @@ mod tests {
     let summary = UiPerfSmokeSummary {
       schema_version: UI_PERF_SMOKE_SCHEMA_VERSION,
       run_config: RunConfig::default(),
+      rss_start_bytes: None,
+      rss_after_warmup_bytes: None,
       scenarios: vec![scenario],
     };
 
@@ -2088,5 +2110,7 @@ mod tests {
     assert!(scenario_value["rss_bytes_end"].is_null());
     assert!(scenario_value.get("rss_bytes_peak").is_some());
     assert!(scenario_value["rss_bytes_peak"].is_null());
+    assert!(scenario_value.get("rss_after_bytes").is_some());
+    assert!(scenario_value["rss_after_bytes"].is_null());
   }
 }

@@ -91,7 +91,7 @@ fn ui_perf_smoke_emits_tab_switch_scenario_summary() {
     "scenario name should match"
   );
 
-  for key in ["rss_bytes_start", "rss_bytes_end", "rss_bytes_peak"] {
+  for key in ["rss_bytes_start", "rss_bytes_end", "rss_bytes_peak", "rss_after_bytes"] {
     assert!(
       scenario.get(key).is_some(),
       "scenario should include {key} (null when unsupported)"
