@@ -113,7 +113,7 @@ fn tab_strip_perf_enabled() -> bool {
   *ENABLED.get_or_init(|| std::env::var_os("FASTR_TAB_STRIP_PERF").is_some())
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct GroupChipWidthCache {
   /// Cache invalidation: group chip widths depend on the button font. If egui style changes the
   /// resolved `TextStyle::Button` font, recompute all cached widths.
