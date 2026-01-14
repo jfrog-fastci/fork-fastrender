@@ -231,7 +231,7 @@ fn delete_super_property_computed_member_evaluates_key_expression_compiled() -> 
 }
 
 #[test]
-fn delete_super_property_computed_member_propagates_to_property_key_errors() -> Result<(), VmError> {
+fn delete_super_property_computed_member_does_not_perform_to_property_key() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = rt.exec_script(
     r#"
@@ -241,7 +241,7 @@ fn delete_super_property_computed_member_propagates_to_property_key_errors() -> 
           delete super[{ toString() { throw "x"; } }];
           return "no";
         } catch (e) {
-          return e;
+          return e.name;
         }
       }
     }
@@ -249,12 +249,13 @@ fn delete_super_property_computed_member_propagates_to_property_key_errors() -> 
     "#,
   )?;
 
-  assert_value_is_utf8(&rt, value, "x");
+  assert_value_is_utf8(&rt, value, "ReferenceError");
   Ok(())
 }
 
 #[test]
-fn delete_super_property_computed_member_propagates_to_property_key_errors_compiled() -> Result<(), VmError> {
+fn delete_super_property_computed_member_does_not_perform_to_property_key_compiled() -> Result<(), VmError>
+{
   let mut rt = new_runtime();
   let value = exec_compiled(
     &mut rt,
@@ -265,7 +266,7 @@ fn delete_super_property_computed_member_propagates_to_property_key_errors_compi
           delete super[{ toString() { throw "x"; } }];
           return "no";
         } catch (e) {
-          return e;
+          return e.name;
         }
       }
     }
@@ -273,7 +274,7 @@ fn delete_super_property_computed_member_propagates_to_property_key_errors_compi
     "#,
   )?;
 
-  assert_value_is_utf8(&rt, value, "x");
+  assert_value_is_utf8(&rt, value, "ReferenceError");
   Ok(())
 }
 

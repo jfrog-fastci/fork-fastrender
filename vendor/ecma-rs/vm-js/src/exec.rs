@@ -14662,12 +14662,13 @@ impl<'a> Evaluator<'a> {
           // computed key expression.
           let _ = self.get_this_binding(scope)?;
 
-          // Ensure the computed key expression is evaluated (including `ToPropertyKey`
-          // coercion) before throwing, per `super[expr]` evaluation semantics.
+          // Ensure the computed key expression is evaluated before throwing.
+          //
+          // Note: `delete super[expr]` does **not** apply `ToPropertyKey(expr)` (test262:
+          // `super-property-topropertykey.js`). The result is always a `ReferenceError`, but
+          // evaluating `expr` itself is observable for side effects once `this` is initialized.
           let mut del_scope = scope.reborrow();
-          let member_value = self.eval_expr(&mut del_scope, &member.stx.member)?;
-          del_scope.push_root(member_value)?;
-          let _ = self.to_property_key_operator(&mut del_scope, member_value)?;
+          let _ = self.eval_expr(&mut del_scope, &member.stx.member)?;
           Err(throw_reference_error(
             self.vm,
             &mut del_scope,

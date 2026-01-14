@@ -7748,8 +7748,9 @@ impl<'vm> HirEvaluator<'vm> {
             // derived constructors before `super()`, that evaluation throws first and must not be
             // masked by the delete semantics.
             //
-            // For computed super property references, the key expression (including `ToPropertyKey`)
-            // is evaluated before throwing *only after* `this` is initialized.
+            // For computed super property references, the key expression is evaluated before
+            // throwing *only after* `this` is initialized. (`delete super[expr]` does not apply
+            // `ToPropertyKey(expr)`.)
             let object_expr = self.get_expr(body, member.object)?;
             if matches!(object_expr.kind, hir_js::ExprKind::Super) {
               // Evaluating a `super` property reference requires an initialized `this` binding.
@@ -7757,11 +7758,7 @@ impl<'vm> HirEvaluator<'vm> {
               // throw before any of the `delete`-specific semantics apply.
               let _ = self.resolve_this_binding(scope)?;
               if let hir_js::ObjectKey::Computed(expr_id) = &member.property {
-                let member_value = self.eval_expr(scope, body, *expr_id)?;
-                let mut key_scope = scope.reborrow();
-                key_scope.push_root(member_value)?;
-                let _ =
-                  key_scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, member_value)?;
+                let _ = self.eval_expr(scope, body, *expr_id)?;
               }
               return Err(throw_reference_error(
                 self.vm,
