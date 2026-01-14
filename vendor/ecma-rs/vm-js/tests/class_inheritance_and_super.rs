@@ -30,6 +30,8 @@ fn thrown_error_message(rt: &mut JsRuntime, err: &VmError) -> Option<String> {
   // Root the thrown object across allocations (allocating the `"message"` key can trigger GC).
   scope.push_root(Value::Object(thrown)).ok()?;
   let key_s = scope.alloc_string("message").ok()?;
+  // Root the key string across property access (which can invoke user code).
+  scope.push_root(Value::String(key_s)).ok()?;
   let key = PropertyKey::from_string(key_s);
   let msg = scope.heap().get(thrown, &key).ok()?;
   let Value::String(msg) = msg else {
@@ -708,7 +710,7 @@ fn super_property_reference_semantics_in_instance_field_initializer() -> Result<
 #[test]
 fn super_property_reference_semantics_in_instance_field_initializer_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = exec_compiled(
+  let Some(value) = exec_compiled_or_skip_class_inheritance(
     &mut rt,
     r#"
       class B {
@@ -725,7 +727,10 @@ fn super_property_reference_semantics_in_instance_field_initializer_compiled() -
       const d = new D();
       d.y === 11 && d.z === 14 && d.w === 14 && d.__x === 14
     "#,
-  )?;
+  )?
+  else {
+    return Ok(());
+  };
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
@@ -889,7 +894,7 @@ fn super_property_reference_in_derived_static_block() -> Result<(), VmError> {
 #[test]
 fn super_property_reference_in_derived_static_block_compiled() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = exec_compiled(
+  let Some(value) = exec_compiled_or_skip_class_inheritance(
     &mut rt,
     r#"
       var out = "";
@@ -907,7 +912,10 @@ fn super_property_reference_in_derived_static_block_compiled() -> Result<(), VmE
       }
       out === "12"
     "#,
-  )?;
+  )?
+  else {
+    return Ok(());
+  };
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }

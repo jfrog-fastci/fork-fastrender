@@ -28770,6 +28770,12 @@ fn async_call_computed_member_after_base(
     )?));
   }
 
+  if matches!(&*member.object.stx, Expr::Super(_)) {
+    // `GetThisBinding` must run before evaluating the computed key expression so derived
+    // constructors throw before any `await` in the key can suspend.
+    let _ = async_get_super_receiver(evaluator, scope)?;
+  }
+
   // Root the base across evaluation of the computed key expression in case it allocates/GCs.
   let member_eval = {
     let mut member_scope = scope.reborrow();
