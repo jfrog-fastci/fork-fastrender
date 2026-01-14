@@ -62,6 +62,34 @@ fn generator_direct_eval_with_yield_argument_sees_catch_binding() {
 }
 
 #[test]
+fn generator_direct_eval_with_yield_argument_sees_with_binding() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          // Direct eval inside a `with` statement must resolve through the object environment
+          // record, even after yielding while evaluating its argument.
+          var x = 2;
+          function* g() {
+            with ({x: 3}) {
+              return eval(yield 0);
+            }
+          }
+          var it = g();
+          it.next();
+          var r = it.next("x");
+          ok = r.done === true && r.value === 3;
+        } catch (err) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_direct_eval_with_yield_argument_assigns_to_local_var() {
   let mut rt = new_runtime();
   let value = rt

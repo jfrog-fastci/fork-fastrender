@@ -15809,6 +15809,13 @@ pub(crate) enum GenFrame {
   /// Restore the outer lexical environment after finishing a block/catch/finally body.
   RestoreLexEnv { outer: GcEnv },
 
+  /// Continue a `with` statement after evaluating its object expression.
+  WithAfterObject {
+    stmt: *const WithStmt,
+    label_set: Vec<String>,
+    outer: GcEnv,
+  },
+
   /// Finish a return statement after its value expression is evaluated.
   Return,
 
@@ -16095,7 +16102,9 @@ impl Trace for GenFrame {
           tracer.trace_value(*v);
         }
       }
-      GenFrame::RestoreLexEnv { outer } => tracer.trace_env(*outer),
+      GenFrame::RestoreLexEnv { outer } | GenFrame::WithAfterObject { outer, .. } => {
+        tracer.trace_env(*outer)
+      }
       GenFrame::WhileAfterTest { v, .. }
       | GenFrame::WhileAfterBody { v, .. }
       | GenFrame::DoWhileAfterBody { v, .. }
@@ -17529,6 +17538,9 @@ fn stmt_contains_yield(stmt: &Node<Stmt>) -> bool {
           .finally
           .as_ref()
           .is_some_and(|f| f.stx.body.iter().any(stmt_contains_yield))
+    }
+    Stmt::With(with_stmt) => {
+      expr_contains_yield(&with_stmt.stx.object) || stmt_contains_yield(&with_stmt.stx.body)
     }
     Stmt::While(while_stmt) => {
       expr_contains_yield(&while_stmt.stx.condition) || stmt_contains_yield(&while_stmt.stx.body)
@@ -34183,6 +34195,109 @@ fn gen_try_after_catch(
   }
 }
 
+fn gen_eval_with(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &WithStmt,
+  label_set: &[String],
+) -> Result<GenEval<Completion>, VmError> {
+  match gen_eval_expr(evaluator, scope, &stmt.object)? {
+    GenEval::Complete(c) => match c {
+      Completion::Normal(v) => {
+        let outer = evaluator.env.lexical_env;
+        gen_with_after_object(
+          evaluator,
+          scope,
+          stmt,
+          label_set,
+          outer,
+          v.unwrap_or(Value::Undefined),
+        )
+      }
+      abrupt => Ok(GenEval::Complete(abrupt)),
+    },
+    GenEval::Suspend(mut suspend) => {
+      let outer = evaluator.env.lexical_env;
+
+      let mut label_vec: Vec<String> = Vec::new();
+      label_vec
+        .try_reserve_exact(label_set.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      label_vec.extend_from_slice(label_set);
+
+      gen_frames_push(
+        &mut suspend.frames,
+        GenFrame::WithAfterObject {
+          stmt: stmt as *const WithStmt,
+          label_set: label_vec,
+          outer,
+        },
+      )?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
+fn gen_with_after_object(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  stmt: &WithStmt,
+  label_set: &[String],
+  outer: GcEnv,
+  object_value: Value,
+) -> Result<GenEval<Completion>, VmError> {
+  // Minimal ECMA-262 `WithStatement` evaluation (mirroring `Evaluator::eval_with` and
+  // `async_with_after_object`):
+  //
+  // - Evaluate the object expression, then `ToObject` it.
+  // - Create an ObjectEnvironmentRecord with `with_environment = true`.
+  // - Evaluate the body with that env record as the current lexical environment.
+  //
+  // This helper assumes the object expression has already been evaluated (possibly after a yield
+  // resumption) and handles the remaining environment setup + body evaluation.
+  {
+    // Root the object value across `ToObject` and env allocation in case they trigger GC.
+    let mut with_scope = scope.reborrow();
+    with_scope.push_root(object_value)?;
+
+    let binding_object = match with_scope.to_object(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      object_value,
+    ) {
+      Ok(obj) => obj,
+      Err(err) => {
+        return Ok(GenEval::Complete(gen_error_to_completion(
+          evaluator,
+          &mut with_scope,
+          err,
+        )?));
+      }
+    };
+    with_scope.push_root(Value::Object(binding_object))?;
+
+    let with_env = with_scope.alloc_object_env_record(binding_object, Some(outer), true)?;
+    evaluator
+      .env
+      .set_lexical_env(with_scope.heap_mut(), with_env);
+  }
+
+  match gen_eval_stmt_labelled(evaluator, scope, &stmt.body, label_set)? {
+    GenEval::Complete(c) => {
+      evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+      Ok(GenEval::Complete(c))
+    }
+    GenEval::Suspend(mut suspend) => {
+      if let Err(err) = gen_frames_push(&mut suspend.frames, GenFrame::RestoreLexEnv { outer }) {
+        evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+        return Err(err);
+      }
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
+}
+
 fn gen_eval_var_decl(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -35120,6 +35235,7 @@ fn gen_eval_stmt_labelled(
       }
     },
     Stmt::Try(try_stmt) => gen_eval_try(evaluator, scope, &try_stmt.stx),
+    Stmt::With(with_stmt) => gen_eval_with(evaluator, scope, &with_stmt.stx, label_set),
     Stmt::While(while_stmt) => gen_eval_while(evaluator, scope, &while_stmt.stx, label_set),
     Stmt::DoWhile(do_while) => gen_eval_do_while(evaluator, scope, &do_while.stx, label_set),
     Stmt::ForOf(for_of) => gen_eval_for_of(evaluator, scope, &for_of.stx, label_set),
@@ -39747,6 +39863,32 @@ fn gen_resume_from_frames(
               vecdeque_try_append(&mut suspend.frames, &mut frames)?;
               return Ok(GenEval::Suspend(suspend));
             }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::WithAfterObject {
+        stmt,
+        label_set,
+        outer,
+      } => match state {
+        Completion::Normal(v) => {
+          let stmt = unsafe { &*stmt };
+          match gen_with_after_object(
+            evaluator,
+            scope,
+            stmt,
+            &label_set,
+            outer,
+            v.unwrap_or(Value::Undefined),
+          ) {
+            Ok(GenEval::Complete(c)) => state = c,
+            Ok(GenEval::Suspend(mut suspend)) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
           }
         }
         abrupt => state = abrupt,
