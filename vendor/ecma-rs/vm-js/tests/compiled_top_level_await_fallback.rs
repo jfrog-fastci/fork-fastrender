@@ -64,14 +64,14 @@ fn compiled_script_falls_back_for_top_level_await() -> Result<(), VmError> {
 }
 
 #[test]
-fn compiled_script_falls_back_for_top_level_for_await_of() -> Result<(), VmError> {
+fn compiled_script_falls_back_for_top_level_for_await_of_with_nested_await() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   // Use a manual async iterator (no `async function` / generators) so this tests the top-level
   // await fallback rather than the async-function AST fallback.
   let script = CompiledScript::compile_script(
     rt.heap_mut(),
-    "compiled_top_level_for_await_of_fallback.js",
+    "compiled_top_level_for_await_of_nested_await_fallback.js",
     r#"
       var out = "";
       var iter = {

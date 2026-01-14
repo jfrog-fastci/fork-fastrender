@@ -13897,7 +13897,25 @@ fn run_compiled_script_async(
         awaited_promise,
       ];
       let mut roots: Vec<RootId> = Vec::new();
-      if roots.try_reserve_exact(values.len()).is_err() {
+      // `roots` is also used to track any additional assignment-reference roots so they can be
+      // removed on early errors without relying on infallible `Vec` growth (which could abort on
+      // allocator OOM).
+      let extra_root_count = match assign_reference.as_ref() {
+        Some(AssignmentReference::Property { .. } | AssignmentReference::SuperProperty { .. }) => 2,
+        _ => 0,
+      };
+      let required_capacity = match values.len().checked_add(extra_root_count) {
+        Some(n) => n,
+        None => {
+          if let Some(mut state) = for_await_of_state.take() {
+            state.teardown(root_scope.heap_mut());
+          }
+          root_scope.heap_mut().remove_root(last_value_root);
+          env.teardown(root_scope.heap_mut());
+          return Err(VmError::OutOfMemory);
+        }
+      };
+      if roots.try_reserve_exact(required_capacity).is_err() {
         if let Some(mut state) = for_await_of_state.take() {
           state.teardown(root_scope.heap_mut());
         }
