@@ -63,3 +63,35 @@ fn for_triple_restores_lexical_env_on_uncatchable_error() {
     .unwrap();
   assert_value_is_utf8(&rt, value, "ok");
 }
+
+#[test]
+fn for_of_let_default_initializer_has_tdz() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var a = 99;
+        var threw = false;
+        try { for (let [a = a] of [[undefined]]) {} } catch (e) { threw = e && e.name === "ReferenceError"; }
+        threw
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn for_in_let_default_initializer_has_tdz() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var a = 99;
+        var threw = false;
+        try { for (let [a = a] in {"": 0}) {} } catch (e) { threw = e && e.name === "ReferenceError"; }
+        threw
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
