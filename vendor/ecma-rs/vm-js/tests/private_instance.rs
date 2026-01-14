@@ -320,6 +320,27 @@ fn optional_chaining_private_instance_accessor_get_short_circuits_on_nullish_bas
 }
 
 #[test]
+fn private_instance_accessor_get_without_getter_throws_type_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      let side = 0;
+      class C {
+        set #x(v) { side++; }
+        getAccess() { return this.#x; }
+      }
+      const c = new C();
+      let threw = false;
+      try { c.getAccess(); } catch (e) { threw = e instanceof TypeError; }
+      threw && side === 0
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn optional_chaining_private_field_after_optional_chain_short_circuits_on_nullish_base() {
   let mut rt = new_runtime();
   let value = rt

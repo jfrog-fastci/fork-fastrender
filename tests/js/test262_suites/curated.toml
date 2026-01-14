@@ -108,6 +108,11 @@ include = [
   "language/statements/class/elements/derived-cls-direct-eval-err-contains-supercall.js",
   "language/statements/class/elements/arrow-body-derived-cls-direct-eval-err-contains-supercall.js",
   "language/statements/class/elements/privatefieldget-typeerror-4.js",
+  # Private accessors without the corresponding getter/setter must throw TypeError.
+  "language/statements/class/elements/get-access-of-missing-private-getter.js",
+  "language/statements/class/elements/get-access-of-missing-private-static-getter.js",
+  "language/statements/class/elements/set-access-of-missing-private-setter.js",
+  "language/statements/class/elements/set-access-of-missing-private-static-setter.js",
   # Private member access/brand checks must bypass Proxy traps, but still work on Proxy *instances*
   # (i.e. when `super()` returns a Proxy that is then initialized with private elements).
   "language/statements/class/elements/privatefield-on-proxy.js",

@@ -11899,7 +11899,11 @@ impl<'a> Evaluator<'a> {
       PropertyKind::Data { value, .. } => Ok(value),
       PropertyKind::Accessor { get, .. } => {
         if get == Value::Undefined {
-          return Ok(Value::Undefined);
+          return Err(throw_type_error(
+            self.vm,
+            scope,
+            "Cannot get private member (no getter)",
+          )?);
         }
         let mut call_scope = scope.reborrow();
         call_scope.push_roots(&[get, base])?;

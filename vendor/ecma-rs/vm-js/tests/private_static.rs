@@ -62,6 +62,26 @@ fn private_static_accessor_get_set() {
 }
 
 #[test]
+fn private_static_accessor_get_without_getter_throws_type_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      let side = 0;
+      class C {
+        static set #x(v) { side++; }
+        static getAccess() { return this.#x; }
+      }
+      let threw = false;
+      try { C.getAccess(); } catch (e) { threw = e instanceof TypeError; }
+      threw && side === 0
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn private_static_elements_are_not_exposed_via_symbol_introspection() {
   let mut rt = new_runtime();
   let value = rt
