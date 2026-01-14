@@ -436,3 +436,213 @@ fn generator_yield_star_in_add_assignment_rhs_captures_property_reference_and_ol
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_yield_star_in_add_assignment_rhs_captures_base_key_and_old_value_for_computed_member() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var o1 = { a: 5, b: 10 };
+        var o2 = { a: 100, b: 1000 };
+        var o = o1;
+        var k = "a";
+
+        function* rhs() {
+          yield "rhs1";
+          yield "rhs2";
+          return 7;
+        }
+
+        function* g() { return o[k] += (yield* rhs()); }
+        var it = g();
+        var r1 = it.next();
+
+        // Mutate the original target and also rebind the base/key after the first delegated yield.
+        o1.a = 50;
+        o = o2;
+        k = "b";
+
+        var r2 = it.next();
+
+        // Mutate again after the second delegated yield.
+        o1.a = 500;
+        o = o2;
+        k = "b";
+
+        var r3 = it.next();
+
+        r1.value === "rhs1" && r1.done === false &&
+        r2.value === "rhs2" && r2.done === false &&
+        r3.value === 12 && r3.done === true &&
+        // Must still target the original base/key pair and use the pre-yield old value (5).
+        o1.a === 12 && o1.b === 10 &&
+        o2.a === 100 && o2.b === 1000
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_yield_star_in_add_assignment_rhs_captures_super_base_and_old_value() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        const log = [];
+
+        function* rhs() {
+          yield "rhs1";
+          yield "rhs2";
+          return 7;
+        }
+
+        class B1 {
+          get x(){ log.push("get1"); return this._x; }
+          set x(v){ log.push("set1:" + v); this._x = v; }
+        }
+        class B2 {
+          get x(){ log.push("get2"); return this._x; }
+          set x(v){ log.push("set2:" + v); this._x = v; }
+        }
+
+        class D extends B1 {
+          constructor(){ super(); this._x = 5; }
+          *gen() {
+            const r = (super.x += (yield* rhs()));
+            return r === 12 && this._x === 12 && log.join(",") === "get1,set1:12";
+          }
+        }
+
+        const d = new D();
+        const it = d.gen();
+        const r1 = it.next();
+
+        // Mutate the old value and super base after the first delegated yield but before resuming.
+        d._x = 50;
+        Object.setPrototypeOf(D.prototype, B2.prototype);
+
+        const r2 = it.next();
+
+        // Mutate again after the second delegated yield.
+        d._x = 500;
+        Object.setPrototypeOf(D.prototype, B2.prototype);
+
+        const r3 = it.next();
+
+        r1.value === "rhs1" && r1.done === false &&
+        r2.value === "rhs2" && r2.done === false &&
+        r3.value === true && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_yield_star_in_add_assignment_rhs_captures_super_base_key_and_old_value() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        const log = [];
+
+        function* rhs() {
+          yield "rhs1";
+          yield "rhs2";
+          return 7;
+        }
+
+        var k = "x";
+
+        class B1 {
+          get x(){ log.push("get1x"); return this._x; }
+          set x(v){ log.push("set1x:" + v); this._x = v; }
+          get y(){ log.push("get1y"); return this._y; }
+          set y(v){ log.push("set1y:" + v); this._y = v; }
+        }
+        class B2 {
+          get x(){ log.push("get2x"); return this._x; }
+          set x(v){ log.push("set2x:" + v); this._x = v; }
+          get y(){ log.push("get2y"); return this._y; }
+          set y(v){ log.push("set2y:" + v); this._y = v; }
+        }
+
+        class D extends B1 {
+          constructor(){ super(); this._x = 5; this._y = 10; }
+          *gen() {
+            const r = (super[k] += (yield* rhs()));
+            return r === 12 && this._x === 12 && this._y === 10 && log.join(",") === "get1x,set1x:12";
+          }
+        }
+
+        const d = new D();
+        const it = d.gen();
+        const r1 = it.next();
+
+        // Mutate the old value, key, and super base after the first delegated yield.
+        d._x = 50;
+        k = "y";
+        Object.setPrototypeOf(D.prototype, B2.prototype);
+
+        const r2 = it.next();
+
+        // Mutate again after the second delegated yield.
+        d._x = 500;
+
+        const r3 = it.next();
+
+        r1.value === "rhs1" && r1.done === false &&
+        r2.value === "rhs2" && r2.done === false &&
+        r3.value === true && r3.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_yield_star_in_add_assignment_rhs_captures_private_field_old_value() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* rhs() {
+          yield "rhs1";
+          yield "rhs2";
+          return 7;
+        }
+
+        class C {
+          static #x = 5;
+          static getX(){ return this.#x; }
+          static setX(v){ this.#x = v; }
+          static *g(){
+            const r = (this.#x += (yield* rhs()));
+            return r === 12 && this.#x === 12;
+          }
+        }
+
+        const it = C.g();
+        const r1 = it.next();
+
+        // Mutate after the first delegated yield.
+        C.setX(50);
+
+        const r2 = it.next();
+
+        // Mutate again after the second delegated yield.
+        C.setX(500);
+
+        const r3 = it.next();
+
+        r1.done === false && r1.value === "rhs1" &&
+        r2.done === false && r2.value === "rhs2" &&
+        r3.done === true && r3.value === true &&
+        C.getX() === 12
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
