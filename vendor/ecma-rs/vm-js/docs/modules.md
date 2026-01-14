@@ -26,6 +26,13 @@ Important properties:
 - It caches several JS values via **persistent roots** (module environments, module namespaces,
   cached `import.meta`, error values, evaluation promise capabilities, …). If you reuse a heap
   across many graphs, call [`ModuleGraph::teardown`](crate::ModuleGraph::teardown) when done.
+- It also maintains spec `[[LoadedModules]]` memoization for **Script** and **Realm** referrers
+  (used by `FinishLoadingImportedModule` for dynamic `import()` initiated from classic scripts or
+  host callbacks). These per-script/per-realm caches are cleared by `teardown`. If your embedding
+  can determine that a `ScriptId` / `RealmId` will never be used again, you can proactively drop
+  those caches via:
+  - [`ModuleGraph::clear_loaded_modules_for_script`](crate::ModuleGraph::clear_loaded_modules_for_script)
+  - [`ModuleGraph::clear_loaded_modules_for_realm`](crate::ModuleGraph::clear_loaded_modules_for_realm)
 
 ### `SourceTextModuleRecord`
 
