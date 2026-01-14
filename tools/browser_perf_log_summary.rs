@@ -697,6 +697,32 @@ mod tests {
   }
 
   #[test]
+  fn summarize_schema_v2_ignores_stage_events() {
+    let log = r#"
+{"schema_version":2,"event":"stage","t_ms":5,"window_id":"WindowId(1)","tab_id":1,"stage":"layout","hotspot":"layout"}
+{"event":"worker_wake_summary","t_ms":7,"window_id":"process","wake_count":1}
+{"schema_version":2,"event":"frame","t_ms":10,"window_id":"WindowId(1)","ui_frame_ms":10}
+{"schema_version":2,"event":"frame","t_ms":16,"window_id":"WindowId(1)","ui_frame_ms":20}
+"#;
+
+    let summary = summarize_reader(
+      BufReader::new(log.as_bytes()),
+      WindowFilter {
+        from_ms: None,
+        to_ms: None,
+        only_event: None,
+      },
+    )
+    .expect("summary should succeed");
+
+    assert_eq!(summary.source_schema_version, 2);
+
+    let frames = summary.frames.expect("expected frame stats");
+    assert_eq!(frames.ui_frame_ms.count, 2);
+    assert_eq!(frames.ui_frame_ms.mean, 15.0);
+  }
+
+  #[test]
   fn summarize_with_time_window_filter() {
     let log = r#"
 {"schema_version":1,"event":"frame","t_ms":0,"ui_frame_ms":10}

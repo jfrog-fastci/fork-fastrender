@@ -1109,6 +1109,8 @@ per-thread stage listener and forwards these as `WorkerToUi::Stage { tab_id, sta
 Tips:
 
 - The windowed UI already surfaces a condensed stage string in its chrome (e.g. `Loading… layout`).
+- If you have `FASTR_PERF_LOG=1` enabled, the windowed UI also records these stage heartbeats as JSONL
+  perf-log events (`event=stage`) alongside frame-time and input/resize latency samples.
 - When debugging hangs/blank frames, it’s often useful to **log every stage message** received on
   the UI thread (including `tab_id`) to see where time is spent.
 - If you implement a custom worker loop, make sure you install a stage listener around both
