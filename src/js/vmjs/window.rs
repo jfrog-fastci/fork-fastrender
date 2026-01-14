@@ -3011,6 +3011,30 @@ mod tests {
 
     let got = {
       let (host_state, event_loop) = (&mut host.host, &mut host.event_loop);
+      host_state.exec_script_in_event_loop(
+        event_loop,
+        r#"(() => {
+          try { new URLSearchParams([['a']]); return false; }
+          catch (e) { return e && e.name === 'TypeError'; }
+        })()"#,
+      )?
+    };
+    assert_eq!(got, Value::Bool(true));
+
+    let got = {
+      let (host_state, event_loop) = (&mut host.host, &mut host.event_loop);
+      host_state.exec_script_in_event_loop(
+        event_loop,
+        r#"(() => {
+          try { new URLSearchParams([['a','b','c']]); return false; }
+          catch (e) { return e && e.name === 'TypeError'; }
+        })()"#,
+      )?
+    };
+    assert_eq!(got, Value::Bool(true));
+
+    let got = {
+      let (host_state, event_loop) = (&mut host.host, &mut host.event_loop);
       host_state.exec_script_in_event_loop(event_loop, "new URLSearchParams({a:'1'}).get('a')")?
     };
     assert_eq!(value_to_string(&host, got), "1");
