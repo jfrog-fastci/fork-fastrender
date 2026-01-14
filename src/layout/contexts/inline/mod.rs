@@ -8864,8 +8864,10 @@ impl InlineFormattingContext {
           let sign = marker_inline_start_sign(text.style.writing_mode, text.style.direction);
           let split_offset = first_char.len_utf8();
           if split_offset >= text.text.len() {
+            let hang_advance = text.advance_for_layout.min(text.advance);
             text.advance_for_layout = 0.0;
-            text.paint_offset = sign * text.advance;
+            text.paint_offset = sign * hang_advance;
+            text.layout_shift = 0.0;
             return (true, None);
           }
 
@@ -8874,8 +8876,10 @@ impl InlineFormattingContext {
           else {
             return (false, None);
           };
+          let hang_advance = before.advance_for_layout.min(before.advance);
           before.advance_for_layout = 0.0;
-          before.paint_offset = sign * before.advance;
+          before.paint_offset = sign * hang_advance;
+          before.layout_shift = 0.0;
           *item = InlineItem::Text(before);
           (true, Some(InlineItem::Text(after)))
         }

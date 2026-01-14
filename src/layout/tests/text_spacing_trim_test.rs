@@ -522,3 +522,32 @@ fn text_spacing_trim_does_not_shift_inline_box_fragment() {
     "expected trimmed punctuation to hang outside the inline box fragment (span x={trim_span_x:.3} punct x={trim_punct_x:.3})"
   );
 }
+
+#[test]
+fn text_spacing_trim_respects_hanging_punctuation_first() {
+  // When `hanging-punctuation: first` excludes the opening punctuation from layout (advance_for_layout=0),
+  // any earlier `text-spacing-trim` shift should not double-count and hang the glyph too far.
+  //
+  // In particular, `text-spacing-trim: trim-start` should reduce the amount the punctuation hangs
+  // into the indent (half-width), not increase it.
+  let no_trim = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-indent: 24px; hanging-punctuation: first; text-spacing-trim: space-all;",
+    "「H",
+  );
+  let trim_start = layout_lines_with_box_style(
+    "width: 300px; white-space: nowrap; text-align: left; text-indent: 24px; hanging-punctuation: first; text-spacing-trim: trim-start;",
+    "「H",
+  );
+
+  let no_trim_x = text_x_in_line(&no_trim[0], "「").expect("x for opening punct (space-all)");
+  let trim_x = text_x_in_line(&trim_start[0], "「").expect("x for opening punct (trim-start)");
+
+  assert!(
+    trim_x > no_trim_x + 5.0,
+    "expected trim-start to hang opening punctuation less far than space-all when combined with hanging-punctuation:first (space-all x={no_trim_x:.3} trim-start x={trim_x:.3})"
+  );
+  assert!(
+    trim_x >= -0.01,
+    "expected trimmed/hung punctuation not to extend past the container start edge, got x={trim_x:.3}"
+  );
+}
