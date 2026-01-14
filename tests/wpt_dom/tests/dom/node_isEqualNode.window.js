@@ -63,3 +63,20 @@ test(() => {
     "changing a descendant should make fragments compare unequal",
   );
 }, "Node.isEqualNode works across documents and ignores attribute order");
+
+test(() => {
+  const a = document.createComment("hello");
+  const b = document.createComment("hello");
+  assert_true(a.isEqualNode(b), "equivalent comments should be equal");
+  b.data = "world";
+  assert_false(a.isEqualNode(b), "comment data mismatch should compare unequal");
+}, "Node.isEqualNode compares Comment.data");
+
+test(() => {
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  const a = document.createElementNS(SVG_NS, "svg:svg");
+  const b = document.createElementNS(SVG_NS, "svg:svg");
+  assert_true(a.isEqualNode(b), "equivalent namespaced elements should be equal");
+  const c = document.createElementNS(SVG_NS, "svg");
+  assert_false(a.isEqualNode(c), "prefix mismatch should compare unequal");
+}, "Node.isEqualNode compares element namespaces and prefixes");
