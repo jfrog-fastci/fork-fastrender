@@ -199,7 +199,6 @@ pub mod clock;
 pub mod compat;
 pub mod error;
 pub mod geometry;
-pub mod media;
 pub(crate) mod document_ticks;
 
 // ============================================================================
