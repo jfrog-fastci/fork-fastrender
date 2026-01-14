@@ -1,10 +1,12 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
+use fastrender::render_control::StageHeartbeat;
 use fastrender::scroll::ScrollState;
+use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{NavigationReason, RenderedFrame, TabId, UiToWorker, WorkerToUi};
-use fastrender::ui::spawn_ui_worker;
-use std::time::Duration;
+use fastrender::ui::{spawn_ui_worker, spawn_ui_worker_for_test};
+use std::time::{Duration, Instant};
 
 // These tests spawn a full UI worker (prepare + paint); keep the timeout generous to avoid flakes
 // on contended CI hosts.
@@ -219,6 +221,146 @@ fn ui_worker_applies_a11y_actions_to_page_content() {
     .find_map(|(k, v)| (k == "q").then_some(v.to_string()))
     .unwrap_or_default();
   assert_eq!(q, "hello world", "committed URL was {committed:?}");
+
+  drop(ui_tx);
+  join.join().expect("join ui worker");
+}
+
+#[test]
+fn ui_worker_does_not_emit_redundant_scroll_updates_for_a11y_scroll_after_paint_cancel() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let page_html = r#"<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      html, body { margin: 0; padding: 0; }
+      /* Force a scrollable document so ScrollIntoView can be asserted. */
+      #spacer { position: absolute; left: 0; top: 0; width: 1px; height: 2200px; }
+      #go { position: absolute; left: 0; top: 2000px; width: 120px; height: 40px; }
+    </style>
+  </head>
+  <body>
+    <div id="spacer"></div>
+    <button id="go" type="button">Go</button>
+  </body>
+</html>
+"#;
+  let page_url = site.write("page.html", page_html);
+
+  let mut parsed_dom = fastrender::dom::parse_html(page_html).expect("parse html");
+  let button_node_id = preorder_id_for_html_id(&parsed_dom, "go");
+  drop(parsed_dom);
+
+  // Make paints slow so we can deterministically cancel the repaint triggered by A11yScrollIntoView.
+  let cancel_gens = CancelGens::new();
+  let (ui_tx, ui_rx, join) = spawn_ui_worker_for_test("fastr-ui-worker-a11y-scroll-dedup", Some(50))
+    .expect("spawn ui worker")
+    .split();
+
+  let tab_id = TabId::new();
+  ui_tx
+    .send(support::create_tab_with_cancel(tab_id, None, cancel_gens.clone()))
+    .expect("create tab");
+  ui_tx
+    .send(support::viewport_changed_msg(tab_id, (320, 240), 1.0))
+    .expect("viewport");
+  ui_tx
+    .send(UiToWorker::SetActiveTab { tab_id })
+    .expect("active tab");
+
+  ui_tx
+    .send(UiToWorker::Navigate {
+      tab_id,
+      url: page_url.clone(),
+      reason: NavigationReason::TypedUrl,
+    })
+    .expect("navigate");
+  assert_eq!(wait_for_navigation_committed(&ui_rx, tab_id), page_url);
+  wait_for_frame(&ui_rx, tab_id);
+
+  // Ensure the channel is quiet before issuing the a11y scroll request.
+  for _ in ui_rx.try_iter() {}
+
+  ui_tx
+    .send(UiToWorker::A11yScrollIntoView {
+      tab_id,
+      node_id: button_node_id,
+    })
+    .expect("a11y scroll into view");
+
+  let mut first_scroll: Option<ScrollState> = None;
+  let mut matching_scroll_updates = 0usize;
+  let mut canceled_paint = false;
+  let mut cancel_instant: Option<Instant> = None;
+
+  let start = Instant::now();
+  while start.elapsed() < TIMEOUT {
+    match ui_rx.recv_timeout(Duration::from_millis(50)) {
+      Ok(msg) => match msg {
+        WorkerToUi::ScrollStateUpdated { tab_id: got, scroll } if got == tab_id => {
+          // Ignore any stray scroll updates from earlier stages (should be none after the drain
+          // above) until we see the A11yScrollIntoView scroll down.
+          if scroll.viewport.y <= 0.0 {
+            continue;
+          }
+          if first_scroll.is_none() {
+            first_scroll = Some(scroll.clone());
+          }
+          if first_scroll
+            .as_ref()
+            .is_some_and(|s| s.viewport == scroll.viewport)
+          {
+            matching_scroll_updates += 1;
+          }
+        }
+        WorkerToUi::Stage { tab_id: got, stage } if got == tab_id => {
+          if !canceled_paint
+            && matches!(stage, StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize)
+          {
+            cancel_gens.bump_paint();
+            canceled_paint = true;
+            cancel_instant = Some(Instant::now());
+          }
+        }
+        // Once we've canceled the in-flight paint, allow a short follow-up window to observe any
+        // redundant ScrollStateUpdated emissions caused by the stale output.
+        WorkerToUi::FrameReady { tab_id: got, .. } if got == tab_id => {
+          if canceled_paint {
+            break;
+          }
+        }
+        WorkerToUi::NavigationFailed { url, error, .. } => {
+          panic!("navigation failed for {url}: {error}")
+        }
+        _ => {}
+      },
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+        if canceled_paint
+          && cancel_instant
+            .is_some_and(|t| t.elapsed() > Duration::from_secs(2))
+        {
+          break;
+        }
+      }
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+    }
+  }
+
+  assert!(canceled_paint, "expected to observe paint stage heartbeats to cancel in-flight paint");
+  let first_scroll = first_scroll.expect("expected A11yScrollIntoView to emit ScrollStateUpdated");
+  assert!(
+    first_scroll.viewport.y > 0.0,
+    "expected A11yScrollIntoView to scroll down; got {:?}",
+    first_scroll.viewport
+  );
+  assert_eq!(
+    matching_scroll_updates, 1,
+    "expected exactly one ScrollStateUpdated for unchanged scroll state after cancel; got {matching_scroll_updates}"
+  );
 
   drop(ui_tx);
   join.join().expect("join ui worker");

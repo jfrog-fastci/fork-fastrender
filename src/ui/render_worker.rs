@@ -2975,6 +2975,14 @@ struct BrowserRuntime {
 }
 
 impl BrowserRuntime {
+  // Intentionally a helper (no `&self`) so it can be called while holding `tab: &mut TabState`
+  // borrowed from `self.tabs` without triggering borrow-checker errors (E0502).
+  fn emit_scroll_state_updated(ui_tx: &Sender<WorkerToUiMsg>, tab_id: TabId, tab: &mut TabState) {
+    let scroll = tab.scroll_state.clone();
+    tab.last_reported_scroll_state = scroll.clone();
+    let _ = ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated { tab_id, scroll }));
+  }
+
   fn compute_effective_scroll_state_from_prepared(
     prepared: &crate::api::PreparedDocument,
     scroll_state: &ScrollState,
@@ -3204,13 +3212,7 @@ impl BrowserRuntime {
         if matches!(output.snapshot_kind, SnapshotKind::Paint) {
           if let Some(tab) = self.tabs.get_mut(&output.tab_id) {
             if tab.scroll_state != tab.last_reported_scroll_state {
-              tab.last_reported_scroll_state = tab.scroll_state.clone();
-              let _ = self
-                .ui_tx
-                .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
-                  tab_id: output.tab_id,
-                  scroll: tab.scroll_state.clone(),
-                }));
+              Self::emit_scroll_state_updated(&self.ui_tx, output.tab_id, tab);
             }
           }
         }
@@ -4154,12 +4156,7 @@ impl BrowserRuntime {
                   .history
                   .update_scroll_state(&tab.scroll_state);
               }
-              let _ = self
-                .ui_tx
-                .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
-                  tab_id,
-                  scroll: tab.scroll_state.clone(),
-                }));
+              Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
             }
             return;
           };
@@ -4355,13 +4352,7 @@ impl BrowserRuntime {
             if scroll_changed && emit_scroll_state_updated {
               // Emit an early scroll-state update so UIs can async-scroll the last painted texture
               // while waiting for the repaint.
-              let _ = self
-                .ui_tx
-                .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
-                  tab_id,
-                  scroll: tab.scroll_state.clone(),
-                }));
-              tab.last_reported_scroll_state = tab.scroll_state.clone();
+              Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
             }
             tab.cancel.bump_paint();
             tab.needs_repaint = true;
@@ -4414,13 +4405,7 @@ impl BrowserRuntime {
               tab.scroll_state = effective;
               viewport_scrolled = tab.scroll_state.viewport != current.viewport;
               TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
-              let _ = self
-                .ui_tx
-                .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
-                  tab_id,
-                  scroll: tab.scroll_state.clone(),
-                }));
-              tab.last_reported_scroll_state = tab.scroll_state.clone();
+              Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
               if !tab.needs_repaint || tab.next_paint_is_scroll {
                 tab.next_paint_is_scroll = true;
               }
@@ -6229,11 +6214,7 @@ impl BrowserRuntime {
       tab
         .history
         .update_scroll_state(&tab.scroll_state);
-      let _ = ui_tx.send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
-        tab_id,
-        scroll: tab.scroll_state.clone(),
-      }));
-      tab.last_reported_scroll_state = tab.scroll_state.clone();
+      Self::emit_scroll_state_updated(ui_tx, tab_id, tab);
     }
   }
 
@@ -6676,13 +6657,7 @@ impl BrowserRuntime {
         tab.scroll_state = next_scroll;
         TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
         tab.history.update_scroll_state(&tab.scroll_state);
-        let _ = self
-          .ui_tx
-          .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
-            tab_id,
-            scroll: tab.scroll_state.clone(),
-          }));
-        tab.last_reported_scroll_state = tab.scroll_state.clone();
+        Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
         scroll_changed = true;
       }
     }
@@ -6714,13 +6689,7 @@ impl BrowserRuntime {
         tab.scroll_state = next;
         tab.sync_js_scroll_state();
         tab.history.update_scroll_state(&tab.scroll_state);
-        let _ = self
-          .ui_tx
-          .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
-            tab_id,
-            scroll: tab.scroll_state.clone(),
-          }));
-        tab.last_reported_scroll_state = tab.scroll_state.clone();
+        Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
         scroll_changed = true;
       }
     }
@@ -7557,13 +7526,7 @@ impl BrowserRuntime {
         doc.set_scroll_state(tab.scroll_state.clone());
         TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
         scroll_changed = true;
-        let _ = self
-          .ui_tx
-          .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
-            tab_id,
-            scroll: tab.scroll_state.clone(),
-          }));
-        tab.last_reported_scroll_state = tab.scroll_state.clone();
+        Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
       }
 
       (
@@ -9197,12 +9160,7 @@ impl BrowserRuntime {
         tab.scroll_state = next_state;
         doc.set_scroll_state(tab.scroll_state.clone());
         scroll_changed = true;
-        let _ = self
-          .ui_tx
-          .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
-            tab_id,
-            scroll: tab.scroll_state.clone(),
-          }));
+        Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
       }
     }
 
@@ -9398,12 +9356,7 @@ impl BrowserRuntime {
         tab.scroll_state = next_state;
         doc.set_scroll_state(tab.scroll_state.clone());
         scroll_changed = true;
-        let _ = self
-          .ui_tx
-          .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
-            tab_id,
-            scroll: tab.scroll_state.clone(),
-          }));
+        Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
       }
     }
 
@@ -9488,12 +9441,7 @@ impl BrowserRuntime {
         tab.scroll_state = next_state;
         doc.set_scroll_state(tab.scroll_state.clone());
         scroll_changed = true;
-        let _ = self
-          .ui_tx
-          .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
-            tab_id,
-            scroll: tab.scroll_state.clone(),
-          }));
+        Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
       }
     }
 
@@ -9599,12 +9547,7 @@ impl BrowserRuntime {
         tab.scroll_state = next_state;
         doc.set_scroll_state(tab.scroll_state.clone());
         scroll_changed = true;
-        let _ = self
-          .ui_tx
-          .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
-            tab_id,
-            scroll: tab.scroll_state.clone(),
-          }));
+        Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
       }
     }
 
@@ -9673,12 +9616,7 @@ impl BrowserRuntime {
         tab.scroll_state = next_state;
         doc.set_scroll_state(tab.scroll_state.clone());
         scroll_changed = true;
-        let _ = self
-          .ui_tx
-          .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
-            tab_id,
-            scroll: tab.scroll_state.clone(),
-          }));
+        Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
       }
     }
 
@@ -9758,13 +9696,7 @@ impl BrowserRuntime {
         doc.set_scroll_state(tab.scroll_state.clone());
         TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
         scroll_changed = true;
-        let _ = self
-          .ui_tx
-          .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
-            tab_id,
-            scroll: tab.scroll_state.clone(),
-          }));
-        tab.last_reported_scroll_state = tab.scroll_state.clone();
+        Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
       }
     }
 
@@ -9812,13 +9744,7 @@ impl BrowserRuntime {
         tab.scroll_state = next;
         doc.set_scroll_state(tab.scroll_state.clone());
         TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
-        let _ = self
-          .ui_tx
-          .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
-            tab_id,
-            scroll: tab.scroll_state.clone(),
-          }));
-        tab.last_reported_scroll_state = tab.scroll_state.clone();
+        Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
         tab.cancel.bump_paint();
         tab.needs_repaint = true;
         tab.scroll_coalesce = true;
@@ -10047,13 +9973,7 @@ impl BrowserRuntime {
         doc.set_scroll_state(tab.scroll_state.clone());
         TabState::sync_js_scroll_state_for(&mut tab.js_tab, &tab.scroll_state);
         scroll_changed = true;
-        let _ = self
-          .ui_tx
-          .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
-            tab_id,
-            scroll: tab.scroll_state.clone(),
-          }));
-        tab.last_reported_scroll_state = tab.scroll_state.clone();
+        Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
       }
       if let Some((textarea_box_id, next_y)) = caret_scroll {
         let mut next_state = tab.scroll_state.clone();
@@ -10068,12 +9988,7 @@ impl BrowserRuntime {
           tab.scroll_state = next_state;
           doc.set_scroll_state(tab.scroll_state.clone());
           scroll_changed = true;
-          let _ = self
-            .ui_tx
-            .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
-              tab_id,
-              scroll: tab.scroll_state.clone(),
-            }));
+          Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
         }
       }
 
@@ -10956,13 +10871,7 @@ impl BrowserRuntime {
                         scroll_changed = true;
                         tab.scroll_coalesce = true;
                         tab.next_paint_is_scroll = true;
-                        let _ = self
-                          .ui_tx
-                          .send(WorkerToUiMsg::Single(WorkerToUi::ScrollStateUpdated {
-                            tab_id,
-                            scroll: tab.scroll_state.clone(),
-                          }));
-                        tab.last_reported_scroll_state = tab.scroll_state.clone();
+                        Self::emit_scroll_state_updated(&self.ui_tx, tab_id, tab);
                         keyboard_scroll_hover_update_pos_css = tab.last_pointer_pos_css;
 
                         if tab.scroll_state.viewport != current_scroll.viewport {
