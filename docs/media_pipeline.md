@@ -186,9 +186,10 @@ Seeking:
 Known limitations / gaps (current):
 
 - Seek is not currently keyframe-aware: it does not backtrack to sync samples for video.
-- MP4 currently has no encoded packet/sample size cap (unlike WebM's `MAX_WEBM_PACKET_BYTES`), and
-  `Mp4ParseDemuxer` builds full sample lists without explicit caps; corrupted/adversarial MP4s can
-  force large allocations.
+- MP4 sample payloads are capped (see `MAX_MP4_SAMPLE_BYTES` in `src/media/demux/mp4parse.rs`) to
+  avoid unbounded memory usage on corrupted/adversarial files.
+- `Mp4ParseDemuxer` still builds full sample lists without explicit caps; corrupted/adversarial MP4s
+  can force large allocations.
 
 Other MP4 demuxers in-tree (not currently used by `NativeBackend`):
 

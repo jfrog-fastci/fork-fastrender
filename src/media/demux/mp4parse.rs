@@ -8,6 +8,21 @@ use crate::media::{
 };
 use std::io::{Read, Seek, SeekFrom};
 
+const MAX_MP4_SAMPLE_BYTES: usize = 64 * 1024 * 1024;
+
+fn mp4_sample_too_large_error(track_id: u32, len: usize) -> MediaError {
+  MediaError::Demux(format!(
+    "MP4 sample too large (track {track_id}, size {len} bytes, cap {MAX_MP4_SAMPLE_BYTES} bytes)"
+  ))
+}
+
+fn check_mp4_sample_size(track_id: u32, len: usize) -> MediaResult<()> {
+  if len > MAX_MP4_SAMPLE_BYTES {
+    return Err(mp4_sample_too_large_error(track_id, len));
+  }
+  Ok(())
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Mp4ParseDemuxerOptions {
   pub track_selection_policy: TrackSelectionPolicy,
@@ -327,6 +342,7 @@ impl<R: Read + Seek> Mp4ParseDemuxer<R> {
 
     let size_usize = usize::try_from(sample.size)
       .map_err(|_| MediaError::Demux("sample size overflows usize".to_string()))?;
+    check_mp4_sample_size(track.id, size_usize)?;
     let mut data = vec![0u8; size_usize];
     self
       .reader
@@ -857,6 +873,29 @@ mod tests {
 
     let (_, audio) = select_primary_track_ids(&tracks, policy);
     assert_eq!(audio, Some(2));
+  }
+
+  #[test]
+  fn rejects_oversized_mp4_sample() {
+    check_mp4_sample_size(7, MAX_MP4_SAMPLE_BYTES).expect("cap-sized sample should be allowed");
+
+    let len = MAX_MP4_SAMPLE_BYTES + 1;
+    let err = check_mp4_sample_size(7, len).expect_err("expected sample cap error");
+    let MediaError::Demux(msg) = err else {
+      panic!("expected demux error, got {err:?}");
+    };
+    assert!(
+      msg.contains("track 7"),
+      "expected error mentioning track id, got {msg:?}"
+    );
+    assert!(
+      msg.contains(&format!("size {len} bytes")),
+      "expected error mentioning size, got {msg:?}"
+    );
+    assert!(
+      msg.contains(&format!("cap {MAX_MP4_SAMPLE_BYTES} bytes")),
+      "expected error mentioning cap, got {msg:?}"
+    );
   }
 
   #[test]
