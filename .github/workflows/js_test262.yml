@@ -128,6 +128,7 @@ jobs:
           assert summary.get("total") == len(results), summary
           assert all(r.get("id") == "language/expressions/comma/tco-final.js" for r in results), results
           assert all(r.get("outcome") != "timed_out" for r in results), results
+          assert all(r.get("expectation", {}).get("from_manifest") for r in results), results
           outcome = results[0].get("outcome")
           if outcome != "passed":
             err = (results[0].get("error") or "").lower()
