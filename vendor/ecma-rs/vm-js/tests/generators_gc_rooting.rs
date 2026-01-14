@@ -576,6 +576,44 @@ fn generator_resume_roots_object_literal_after_prop_value_yield() {
 }
 
 #[test]
+fn generator_resume_roots_object_literal_after_spread_yield() {
+  let mut rt = new_runtime_gc();
+  rt
+    .exec_script(&format!(
+      r#"
+        function* g() {{
+          var o = {{ ...(yield 1), x: 40 }};
+          return o.x + 2;
+        }}
+        {init_args}
+        var spread_src = {{ y: 1 }};
+        var it = g.apply(null, args);
+        var r1 = it.next();
+      "#,
+      init_args = init_args_script(),
+    ))
+    .unwrap();
+
+  let gc_before = rt.heap.gc_runs();
+  let value = rt
+    .exec_script(
+      r#"
+        var r2 = it.next(spread_src);
+        r1.value === 1 && r1.done === false &&
+        r2.value === 42 && r2.done === true
+      "#,
+    )
+    .unwrap();
+  let gc_after = rt.heap.gc_runs();
+
+  assert_eq!(value, Value::Bool(true));
+  assert!(
+    gc_after > gc_before,
+    "expected generator resumption to trigger at least one GC cycle"
+  );
+}
+
+#[test]
 fn generator_resume_roots_object_destructuring_computed_key_yield() {
   let mut rt = new_runtime_gc();
   rt
@@ -599,6 +637,82 @@ fn generator_resume_roots_object_destructuring_computed_key_yield() {
     .exec_script(
       r#"
         var r2 = it.next(0);
+        r1.value === 1 && r1.done === false &&
+        r2.value === 42 && r2.done === true
+      "#,
+    )
+    .unwrap();
+  let gc_after = rt.heap.gc_runs();
+
+  assert_eq!(value, Value::Bool(true));
+  assert!(
+    gc_after > gc_before,
+    "expected generator resumption to trigger at least one GC cycle"
+  );
+}
+
+#[test]
+fn generator_resume_roots_object_destructuring_default_value_yield() {
+  let mut rt = new_runtime_gc();
+  rt
+    .exec_script(&format!(
+      r#"
+        function* g() {{
+          var x, rest;
+          ({{ a: x = (yield 1), ...rest }} = {{ a: undefined, b: 2 }});
+          return (("a" in rest) ? 100 : 0) + x + rest.b;
+        }}
+        {init_args}
+        var it = g.apply(null, args);
+        var r1 = it.next();
+      "#,
+      init_args = init_args_script(),
+    ))
+    .unwrap();
+
+  let gc_before = rt.heap.gc_runs();
+  let value = rt
+    .exec_script(
+      r#"
+        var r2 = it.next(40);
+        r1.value === 1 && r1.done === false &&
+        r2.value === 42 && r2.done === true
+      "#,
+    )
+    .unwrap();
+  let gc_after = rt.heap.gc_runs();
+
+  assert_eq!(value, Value::Bool(true));
+  assert!(
+    gc_after > gc_before,
+    "expected generator resumption to trigger at least one GC cycle"
+  );
+}
+
+#[test]
+fn generator_resume_roots_array_destructuring_default_value_yield() {
+  let mut rt = new_runtime_gc();
+  rt
+    .exec_script(&format!(
+      r#"
+        function* g() {{
+          var x, rest;
+          ([x = (yield 1), ...rest] = [undefined, 2]);
+          return x + rest[0];
+        }}
+        {init_args}
+        var it = g.apply(null, args);
+        var r1 = it.next();
+      "#,
+      init_args = init_args_script(),
+    ))
+    .unwrap();
+
+  let gc_before = rt.heap.gc_runs();
+  let value = rt
+    .exec_script(
+      r#"
+        var r2 = it.next(40);
         r1.value === 1 && r1.done === false &&
         r2.value === 42 && r2.done === true
       "#,
