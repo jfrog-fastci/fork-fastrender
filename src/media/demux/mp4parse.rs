@@ -133,6 +133,8 @@ impl<R: Read + Seek> Mp4ParseDemuxer<R> {
 
     for track in &ctx.tracks {
       let Some(id) = track.track_id else {
+        // mp4parse 0.17 represents missing `tkhd.track_id` as `None`.
+        // Skip these tracks rather than panicking or synthesizing IDs.
         continue;
       };
       let kind = mp4_track_kind(&track.track_type);
@@ -355,7 +357,7 @@ fn track_codec_and_extradata(track: &mp4parse::Track) -> (MediaCodec, Vec<u8>) {
 
   match entry {
     mp4parse::SampleEntry::Audio(audio) => {
-      let name = format!("{:?}", audio.codec_type);
+      let name = codec_type_name(&audio.codec_type);
       let lower = name.to_ascii_lowercase();
       codec = if lower.contains("mp4a") || lower.contains("aac") {
         MediaCodec::Aac
@@ -366,7 +368,7 @@ fn track_codec_and_extradata(track: &mp4parse::Track) -> (MediaCodec, Vec<u8>) {
       };
     }
     mp4parse::SampleEntry::Video(video) => {
-      let name = format!("{:?}", video.codec_type);
+      let name = codec_type_name(&video.codec_type);
       let lower = name.to_ascii_lowercase();
       codec = if lower.contains("avc1") || lower.contains("avc3") || lower.contains("h264") {
         MediaCodec::H264
@@ -631,5 +633,37 @@ mod tests {
     assert_eq!(samples.len(), 2);
     assert_eq!(samples[0].pts_ns, 0);
     assert_eq!(samples[1].pts_ns, 1_000_000_000);
+  }
+
+  #[test]
+  fn mp4parse_demuxer_opens_fixture_and_exposes_nonzero_track_ids() {
+    use std::fs::File;
+    use std::io::BufReader;
+    use std::path::PathBuf;
+
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+      .join("tests")
+      .join("fixtures")
+      .join("media")
+      .join("test_h264_aac.mp4");
+
+    let file = File::open(&path).expect("fixture should exist");
+    let reader = BufReader::new(file);
+    let demuxer = Mp4ParseDemuxer::open(reader).expect("mp4parse demuxer should open fixture");
+    let tracks = demuxer.tracks();
+
+    assert!(
+      tracks.iter().all(|t| t.id > 0),
+      "expected all track ids to be non-zero: {tracks:?}"
+    );
+
+    assert!(
+      tracks.iter().any(|t| t.track_type == MediaTrackType::Video && t.codec == MediaCodec::H264),
+      "expected at least one H264 video track: {tracks:?}"
+    );
+    assert!(
+      tracks.iter().any(|t| t.track_type == MediaTrackType::Audio && t.codec == MediaCodec::Aac),
+      "expected at least one AAC audio track: {tracks:?}"
+    );
   }
 }
