@@ -319,12 +319,16 @@ fn paint_tab_status_badges(
 
   // Overlay small status dots on the favicon rect so error/warning states are discoverable even for
   // background tabs (without stealing horizontal space from titles).
-  let mut colors = Vec::new();
+  // Avoid per-frame allocations: this is called for every tab every frame.
+  let mut colors = [Color32::TRANSPARENT; 2];
+  let mut color_count = 0usize;
   if error_t > 0.0 {
-    colors.push(with_alpha(visuals.error_fg_color, error_t));
+    colors[color_count] = with_alpha(visuals.error_fg_color, error_t);
+    color_count += 1;
   }
   if warning_t > 0.0 {
-    colors.push(with_alpha(visuals.warn_fg_color, warning_t));
+    colors[color_count] = with_alpha(visuals.warn_fg_color, warning_t);
+    color_count += 1;
   }
 
   let radius = 3.0;
@@ -337,7 +341,7 @@ fn paint_tab_status_badges(
     1.0,
     with_alpha(visuals.widgets.inactive.bg_stroke.color, stroke_t),
   );
-  for color in colors {
+  for &color in colors[..color_count].iter() {
     let center = Pos2::new(x, y);
     painter.circle_filled(center, radius, color);
     painter.circle_stroke(center, radius, stroke);
