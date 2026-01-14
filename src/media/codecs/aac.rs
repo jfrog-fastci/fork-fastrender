@@ -119,7 +119,6 @@ fn channels_for_count(channels: u16) -> Option<Channels> {
 #[cfg(test)]
 mod tests {
   use super::*;
-
   use symphonia_core::formats::{FormatOptions, FormatReader};
   use symphonia_core::io::{MediaSourceStream, MediaSourceStreamOptions};
   use symphonia_format_isomp4::IsoMp4Reader;

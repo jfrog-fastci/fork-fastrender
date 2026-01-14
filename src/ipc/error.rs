@@ -40,7 +40,6 @@ pub enum IpcError {
 
   #[error("IPC protocol error: frame length {len} exceeds maximum {max}")]
   FrameTooLarge { len: usize, max: usize },
-
   // ==========================================================================
   // Protocol validation errors (renderer → browser)
   // ==========================================================================

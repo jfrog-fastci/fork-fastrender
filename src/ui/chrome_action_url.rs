@@ -143,16 +143,7 @@ pub enum ChromeActionUrl {
 pub const CHROME_ACTION_SCHEME: &str = ChromeActionUrl::SCHEME;
 
 impl ChromeActionUrl {
-<<<<<<< HEAD
-  pub const SCHEME: &'static str = CHROME_ACTION_SCHEME;
-
-  pub fn parse_url(url: &Url) -> Result<Self, String> {
-    Self::parse(url.as_str())
-  }
-=======
   pub const SCHEME: &'static str = "chrome-action";
->>>>>>> 32fb975cc (fix: restore build and refresh browser UI a11y docs)
-
   /// Parse a `chrome-action:` URL string.
   ///
   /// Invariants:
@@ -178,6 +169,7 @@ impl ChromeActionUrl {
         url.scheme()
       ));
     }
+
     if !url.cannot_be_a_base() {
       return Err("chrome-action URLs must use the opaque form `chrome-action:<action>` (no `//`)".to_string());
     }

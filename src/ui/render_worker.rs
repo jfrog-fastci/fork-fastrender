@@ -11123,7 +11123,7 @@ struct BrowserRuntime {
               select_node_id,
               control,
               anchor_css,
-           }));
+            }));
           if changed {
             tab.cancel.bump_paint();
             tab.needs_repaint = true;
