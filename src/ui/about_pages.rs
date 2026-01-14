@@ -1240,7 +1240,7 @@ fn best_effort_site_for_url(url: &str) -> String {
     .split(|c| matches!(c, '?' | '#'))
     .next()
     .unwrap_or(trimmed);
-  if about_id.to_ascii_lowercase().starts_with("about:") {
+  if is_about_url(about_id) {
     return about_id.to_string();
   }
 
