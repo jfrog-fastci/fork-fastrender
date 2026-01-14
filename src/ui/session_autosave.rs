@@ -11,7 +11,9 @@
 //! This module is behind the `browser_ui` feature gate so core renderer builds remain lean.
 
 use crate::ui::about_pages;
-use crate::ui::session::{load_session, save_session_atomic, BrowserSession};
+use crate::ui::session::{
+  load_session, load_session_outcome, save_session_atomic, BrowserSession, SessionLoadSource,
+};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -1252,8 +1254,9 @@ fn session_startup_unclean_marker(
   // This ensures early crashes (before the UI's first autosave tick) still leave a correct session
   // snapshot for recovery.
   //
-  // If the on-disk session cannot be parsed, do **not** overwrite it with a blank default session:
-  // leave the file untouched and wait for the first explicit Save request from the UI.
+  // If the on-disk session cannot be read/parsed and there is no usable backup, do **not**
+  // overwrite it with a blank default session: leave the file untouched and wait for the first
+  // explicit Save request from the UI.
   match initial_session {
     Some(mut session) => {
       // Crash-loop tracking: bump the unclean-exit streak when we mark the session as running.
@@ -1261,12 +1264,28 @@ fn session_startup_unclean_marker(
       // When an initial in-memory snapshot is supplied, it does not contain the previous-run crash
       // marker. Best-effort read the on-disk marker to determine whether the previous run exited
       // cleanly.
-      let (prev_clean, prev_streak, can_overwrite_on_startup) = match load_session(path) {
-        Ok(Some(prev)) => (prev.did_exit_cleanly, prev.unclean_exit_streak, true),
-        Ok(None) => (true, 0, true),
-        // If the session file exists but can't be read/parsed (e.g. JSON corruption), preserve it
-        // until the UI makes an explicit save request.
-        Err(_) => (true, 0, false),
+      let mut needs_corrupt_quarantine = false;
+      let (prev_clean, prev_streak, can_overwrite_on_startup) = match load_session_outcome(path) {
+        Ok(outcome) => match outcome.source {
+          SessionLoadSource::Primary | SessionLoadSource::Backup => {
+            if outcome.source == SessionLoadSource::Backup {
+              needs_corrupt_quarantine = true;
+            }
+            if let Some(prev) = outcome.session {
+              (prev.did_exit_cleanly, prev.unclean_exit_streak, true)
+            } else {
+              // Defensive fallback: treat as a missing session file.
+              (true, 0, true)
+            }
+          }
+          SessionLoadSource::None => (true, 0, true),
+        },
+        // If the session file exists but can't be read/parsed (e.g. JSON corruption) and there is no
+        // usable backup, preserve it until the UI makes an explicit save request.
+        Err(_) => {
+          needs_corrupt_quarantine = true;
+          (true, 0, false)
+        }
       };
       session.unclean_exit_streak = if prev_clean {
         1
@@ -1280,40 +1299,69 @@ fn session_startup_unclean_marker(
         // our fallback session.
         (session, Ok(()), true)
       } else {
-        let result = save_fn(path, &session);
+        let result = save_session_with_quarantine_if_needed(
+          path,
+          &session,
+          &mut needs_corrupt_quarantine,
+          status,
+          save_fn,
+        );
         status.record_attempt(&result, Instant::now());
         if result.is_ok() {
           write_count.fetch_add(1, Ordering::Relaxed);
         }
-        (session, result, false)
+        (session, result, needs_corrupt_quarantine)
       }
     }
-    None => match load_session(path) {
-      Ok(Some(mut session)) => {
-        session.unclean_exit_streak = if session.did_exit_cleanly {
-          1
-        } else {
-          session.unclean_exit_streak.saturating_add(1)
-        };
-        session.did_exit_cleanly = false;
-        let result = save_fn(path, &session);
-        status.record_attempt(&result, Instant::now());
-        if result.is_ok() {
-          write_count.fetch_add(1, Ordering::Relaxed);
+    None => match load_session_outcome(path) {
+      Ok(outcome) => match outcome.source {
+        SessionLoadSource::Primary | SessionLoadSource::Backup => {
+          let Some(mut session) = outcome.session else {
+            // Defensive fallback: treat as missing.
+            let mut session = BrowserSession::single(about_pages::ABOUT_NEWTAB.to_string());
+            session.did_exit_cleanly = false;
+            session.unclean_exit_streak = 1;
+            let result = save_fn(path, &session);
+            status.record_attempt(&result, Instant::now());
+            if result.is_ok() {
+              write_count.fetch_add(1, Ordering::Relaxed);
+            }
+            return (session, result, false);
+          };
+
+          session.unclean_exit_streak = if session.did_exit_cleanly {
+            1
+          } else {
+            session.unclean_exit_streak.saturating_add(1)
+          };
+          session.did_exit_cleanly = false;
+
+          let mut needs_corrupt_quarantine = outcome.source == SessionLoadSource::Backup;
+          let result = save_session_with_quarantine_if_needed(
+            path,
+            &session,
+            &mut needs_corrupt_quarantine,
+            status,
+            save_fn,
+          );
+          status.record_attempt(&result, Instant::now());
+          if result.is_ok() {
+            write_count.fetch_add(1, Ordering::Relaxed);
+          }
+          (session, result, needs_corrupt_quarantine)
         }
-        (session, result, false)
-      }
-      Ok(None) => {
-        let mut session = BrowserSession::single(about_pages::ABOUT_NEWTAB.to_string());
-        session.did_exit_cleanly = false;
-        session.unclean_exit_streak = 1;
-        let result = save_fn(path, &session);
-        status.record_attempt(&result, Instant::now());
-        if result.is_ok() {
-          write_count.fetch_add(1, Ordering::Relaxed);
+        SessionLoadSource::None => {
+          let mut session = BrowserSession::single(about_pages::ABOUT_NEWTAB.to_string());
+          session.did_exit_cleanly = false;
+          session.unclean_exit_streak = 1;
+          let result = save_fn(path, &session);
+          status.record_attempt(&result, Instant::now());
+          if result.is_ok() {
+            write_count.fetch_add(1, Ordering::Relaxed);
+          }
+          (session, result, false)
         }
-        (session, result, false)
-      }
+      },
       Err(_) => {
         let mut session = BrowserSession::single(about_pages::ABOUT_NEWTAB.to_string());
         session.did_exit_cleanly = false;
@@ -1398,6 +1446,44 @@ mod tests {
     assert_eq!(session.windows[0].tabs.len(), 1);
     assert_eq!(session.windows[0].tabs[0].url, about_pages::ABOUT_NEWTAB);
     assert_eq!(session.windows[0].active_tab_index, 0);
+  }
+
+  #[test]
+  fn startup_quarantines_corrupted_primary_session_file_when_recovering_from_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+    let backup_path = dir.path().join("session.json.bak");
+
+    let corrupted = b"this is not valid JSON\n";
+    std::fs::write(&path, corrupted).unwrap();
+
+    let mut backup = BrowserSession::single("about:blank".to_string());
+    backup.did_exit_cleanly = true;
+    backup.unclean_exit_streak = 0;
+    save_session_atomic(&backup_path, &backup).unwrap();
+
+    let autosave = SessionAutosave::new_with_debounce(path.clone(), Duration::from_millis(10));
+    autosave.flush(Duration::from_secs(2)).unwrap();
+
+    // Startup should have written the crash marker using the backup session, but first quarantined
+    // the unreadable primary session file.
+    let session = load_session(&path).unwrap().unwrap();
+    assert_eq!(session.windows[0].tabs[0].url, "about:blank");
+    assert!(!session.did_exit_cleanly);
+    assert_eq!(session.unclean_exit_streak, 1);
+
+    let quarantined_path = std::fs::read_dir(dir.path())
+      .unwrap()
+      .filter_map(|entry| entry.ok())
+      .map(|entry| entry.path())
+      .find(|p| {
+        p.file_name()
+          .and_then(|name| name.to_str())
+          .is_some_and(|name| name.starts_with("session.json.corrupt."))
+      })
+      .expect("expected quarantined session.json.corrupt.* to exist");
+    let quarantined_bytes = std::fs::read(&quarantined_path).unwrap();
+    assert_eq!(quarantined_bytes, corrupted);
   }
 
   #[test]
