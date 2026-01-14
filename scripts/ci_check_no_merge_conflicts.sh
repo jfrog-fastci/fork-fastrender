@@ -109,9 +109,12 @@ elif [[ "${have_rg}" -eq 1 ]]; then
       --glob '!.git/**' \
       --glob '!vendor/ecma-rs/parse-js/tests/TypeScript/**' \
       --glob '!specs/**' \
-      --glob '!tests/wpt/**' \
-      --glob '!tests/wpt_dom/**' \
-      --glob '!tests/wpt_suites/**' \
+      --glob '!tests/wpt/_import_testdata/**' \
+      --glob '!tests/wpt/_offline_validator_testdata/**' \
+      --glob '!tests/wpt/expected/**' \
+      --glob '!tests/wpt/tests/**' \
+      --glob '!tests/wpt_dom/resources/**' \
+      --glob '!tests/wpt_dom/tests/**' \
       --glob '!vendor/ecma-rs/test262/data/**' \
       --glob '!vendor/ecma-rs/test262-semantic/data/**' \
       -- "${scan_root}"
@@ -147,9 +150,12 @@ skip_prefixes = [
     "tmp",
     "vendor/ecma-rs/parse-js/tests/TypeScript",
     "specs",
-    "tests/wpt",
-    "tests/wpt_dom",
-    "tests/wpt_suites",
+    "tests/wpt/_import_testdata",
+    "tests/wpt/_offline_validator_testdata",
+    "tests/wpt/expected",
+    "tests/wpt/tests",
+    "tests/wpt_dom/resources",
+    "tests/wpt_dom/tests",
     "vendor/ecma-rs/test262/data",
     "vendor/ecma-rs/test262-semantic/data",
 ]
