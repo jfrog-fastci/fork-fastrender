@@ -784,3 +784,45 @@ fn derived_ctor_param_super_property_before_super_throws_reference_error_compile
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn derived_ctor_param_eval_super_initializes_this_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var ok = false;
+      class B {}
+      class D extends B {
+        constructor(x = eval("super()"), y = this) {
+          ok = x === this && y === this && this instanceof D;
+        }
+      }
+      new D();
+      ok
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn derived_ctor_param_eval_super_only_once_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var ok = false;
+      class B {}
+      class D extends B {
+        constructor(x = eval("super()")) {
+          try { eval("super()"); } catch (e) { ok = e instanceof ReferenceError; }
+        }
+      }
+      new D();
+      ok
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
