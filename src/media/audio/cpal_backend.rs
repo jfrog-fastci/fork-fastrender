@@ -1477,6 +1477,10 @@ where
     }
   };
 
+  // If the output callback panics, record a stream error so the management thread can attempt a
+  // restart (best-effort).
+  let errors_for_panic = errors.clone();
+
   let stream = device
     .build_output_stream(
       config,
@@ -1598,6 +1602,10 @@ where
             }
           }
         });
+
+        if did_panic {
+          errors_for_panic.record();
+        }
 
         if did_panic && !clock_updated && channels != 0 {
           // This is part of the RT output callback; never let panics unwind across the boundary,
