@@ -3385,9 +3385,9 @@ mod tests {
 
     let expected = {
       let mut tree_clone = tree.clone();
-      apply_scroll_snap(&mut tree_clone, &state).state
+      apply_scroll_snap(&mut tree_clone, &state)
     };
-    let actual = apply_scroll_snap_from_metadata(metadata, &state).state;
+    let actual = apply_scroll_snap_from_metadata(metadata, &state);
 
     assert_eq!(actual, expected);
   }
