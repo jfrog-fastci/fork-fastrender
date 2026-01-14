@@ -516,15 +516,57 @@ fn generator_comma_operator_with_yield_star_on_both_sides() {
   let value = rt
     .exec_script(
       r#"
-      function* g(){ return (yield* [1], yield* [2]); }
-      var it = g();
-      var r1 = it.next();
-      var r2 = it.next();
-      var r3 = it.next();
-      r1.done === false && r1.value === 1 &&
-      r2.done === false && r2.value === 2 &&
-      r3.done === true && r3.value === undefined
-    "#,
+       function* g(){ return (yield* [1], yield* [2]); }
+       var it = g();
+       var r1 = it.next();
+       var r2 = it.next();
+       var r3 = it.next();
+       r1.done === false && r1.value === 1 &&
+       r2.done === false && r2.value === 2 &&
+       r3.done === true && r3.value === undefined
+     "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_comma_operator_multiple_operands_with_yields() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){ return (yield 1, yield 2, yield 3); }
+        var it = g();
+        var r1 = it.next();       // yields 1
+        var r2 = it.next(10);     // yields 2
+        var r3 = it.next(20);     // yields 3
+        var r4 = it.next(30);     // resumes yield 3 => 30
+        r1.done === false && r1.value === 1 &&
+        r2.done === false && r2.value === 2 &&
+        r3.done === false && r3.value === 3 &&
+        r4.done === true && r4.value === 30
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_comma_operator_multiple_operands_final_value_ignores_yield_results() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){ return (yield 1, yield 2, 3); }
+        var it = g();
+        var r1 = it.next();        // yields 1
+        var r2 = it.next(10);      // yields 2
+        var r3 = it.next(20);      // resumes yield 2, then returns 3
+        r1.done === false && r1.value === 1 &&
+        r2.done === false && r2.value === 2 &&
+        r3.done === true && r3.value === 3
+      "#,
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
