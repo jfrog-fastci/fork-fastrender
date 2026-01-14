@@ -723,6 +723,67 @@ fn super_property_uninitialized_this_getvalue_does_not_evaluate_super_call_compi
   Ok(())
 }
 
+const ACCESSORS_SEE_SUPER: &str = r#"
+  class Base {
+    method() { return this.marker; }
+    get x() { return this.marker; }
+    static method() { return this.marker; }
+    static get x() { return this.marker; }
+  }
+
+  class Derived extends Base {
+    get y() {
+      return [super.method(), super.x, super["method"](), super["x"]].join(",");
+    }
+    set y(v) {
+      this.out = [super.method(), super.x, super["method"](), super["x"], v].join(",");
+    }
+    static get y() {
+      return [super.method(), super.x, super["method"](), super["x"]].join(",");
+    }
+    static set y(v) {
+      this.out = [super.method(), super.x, super["method"](), super["x"], v].join(",");
+    }
+  }
+
+  var inst = new Derived();
+  inst.marker = "inst";
+  var instGet = inst.y;
+  inst.y = "v";
+  var instSet = inst.out;
+
+  Derived.marker = "stat";
+  var statGet = Derived.y;
+  Derived.y = "w";
+  var statSet = Derived.out;
+
+  instGet + ";" + instSet + ";" + statGet + ";" + statSet
+"#;
+
+#[test]
+fn super_property_in_accessors() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(ACCESSORS_SEE_SUPER)?;
+  assert_value_is_utf8(
+    &rt,
+    value,
+    "inst,inst,inst,inst;inst,inst,inst,inst,v;stat,stat,stat,stat;stat,stat,stat,stat,w",
+  );
+  Ok(())
+}
+
+#[test]
+fn super_property_in_accessors_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(&mut rt, ACCESSORS_SEE_SUPER)?;
+  assert_value_is_utf8(
+    &rt,
+    value,
+    "inst,inst,inst,inst;inst,inst,inst,inst,v;stat,stat,stat,stat;stat,stat,stat,stat,w",
+  );
+  Ok(())
+}
+
 #[test]
 fn super_property_uninitialized_this_putvalue_does_not_evaluate_expr() -> Result<(), VmError> {
   let mut rt = new_runtime();
