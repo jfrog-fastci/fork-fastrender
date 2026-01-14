@@ -165,3 +165,30 @@ fn generator_array_literal_yield_return_aborts_remaining_spread() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_array_literal_yield_in_spread_non_iterable_throws_type_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g() { return [ ...(yield 1) ]; }
+      var it = g();
+      var r1 = it.next();
+      var threw = false;
+      var name;
+      try {
+        it.next(123); // not iterable
+      } catch (e) {
+        threw = true;
+        name = e && e.name;
+      }
+      var r2 = it.next();
+      r1.value === 1 && r1.done === false &&
+      threw === true && name === 'TypeError' &&
+      r2.done === true && r2.value === undefined
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
