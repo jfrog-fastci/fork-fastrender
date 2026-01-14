@@ -404,6 +404,7 @@ impl CpalAudioBackend {
         initial_backoff: STREAM_RESTART_INITIAL_BACKOFF,
         max_backoff: STREAM_RESTART_MAX_BACKOFF,
       };
+      let trace_for_events = trace.clone();
       let factory = CpalStreamFactory {
         selector,
         expected: config,
@@ -509,9 +510,13 @@ impl CpalAudioBackend {
               consecutive_unhealthy_restarts =
                 consecutive_unhealthy_restarts.saturating_add(1);
               if consecutive_unhealthy_restarts >= STREAM_RESTART_MAX_ATTEMPTS {
+                let mut span = trace_for_events.span("audio.stream.fallback.unhealthy", "audio");
+                span.arg_u64("restart_count", consecutive_unhealthy_restarts as u64);
                 enter_fallback(now);
                 break;
               }
+              let mut span = trace_for_events.span("audio.stream.restart.stall", "audio");
+              span.arg_u64("restart_count", consecutive_unhealthy_restarts as u64);
               manager.request_restart(now);
               last_progress_at = now;
             }
@@ -526,21 +531,28 @@ impl CpalAudioBackend {
           consecutive_unhealthy_restarts =
             consecutive_unhealthy_restarts.saturating_add(1);
           if consecutive_unhealthy_restarts >= STREAM_RESTART_MAX_ATTEMPTS {
+            let mut span = trace_for_events.span("audio.stream.fallback.unhealthy", "audio");
+            span.arg_u64("restart_count", consecutive_unhealthy_restarts as u64);
             enter_fallback(now);
             break;
           }
+          let mut span = trace_for_events.span("audio.stream.restart.error", "audio");
+          span.arg_u64("restart_count", consecutive_unhealthy_restarts as u64);
           manager.request_restart(now);
           last_progress_at = now;
         }
 
         let out = manager.tick(now);
         if out.opened_stream {
+          let _span = trace_for_events.span("audio.stream.opened", "audio");
           // Give the new stream time to start invoking callbacks before the stall watchdog kicks in.
           last_progress_at = now;
           last_frames_written = clock_for_fallback.frames_written();
           awaiting_first_callback = true;
         }
         if out.entered_fallback {
+          let mut span = trace_for_events.span("audio.stream.fallback.open_failed", "audio");
+          span.arg_bool("ok", false);
           enter_fallback(now);
           break;
         }
