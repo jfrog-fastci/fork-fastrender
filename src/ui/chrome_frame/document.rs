@@ -7,6 +7,8 @@
 use crate::error::Result;
 use crate::geometry::Rect;
 use crate::ui::{BrowserAppState, ChromeActionUrl, OmniboxAction, PointerButton, TabId};
+use crate::chrome_frame::ChromeHoverState;
+use crate::interaction::{cursor_kind_for_hit, resolve_url, HitTestKind};
 use crate::{BrowserDocumentDom2, FastRender, RenderOptions};
 
 use std::collections::hash_map::DefaultHasher;
@@ -59,6 +61,7 @@ pub struct ChromeFrameDocument {
   state_sig: u64,
   drag: Option<TabDragState>,
   click: Option<ClickState>,
+  hover_state: ChromeHoverState,
 }
 
 impl ChromeFrameDocument {
@@ -104,6 +107,7 @@ impl ChromeFrameDocument {
       state_sig: 0,
       drag: None,
       click: None,
+      hover_state: ChromeHoverState::default(),
     })
   }
 
@@ -119,6 +123,11 @@ impl ChromeFrameDocument {
       self.dpr = dpr;
       self.doc.set_device_pixel_ratio(dpr);
     }
+  }
+
+  /// Returns the most recently computed hover/cursor state.
+  pub fn hover_state(&self) -> ChromeHoverState {
+    self.hover_state.clone()
   }
 
   /// Synchronize the chrome document with the provided browser state.
@@ -191,6 +200,29 @@ impl ChromeFrameDocument {
     self.drag = None;
   }
 
+  fn update_hover_state(&mut self, pos_css: (f32, f32)) {
+    const BASE_URL: &str = "chrome://chrome-frame/";
+
+    if !pos_css.0.is_finite() || !pos_css.1.is_finite() || pos_css.0 < 0.0 || pos_css.1 < 0.0 {
+      self.hover_state = ChromeHoverState::default();
+      return;
+    }
+
+    let hit = self.doc.hit_test_viewport_point(pos_css.0, pos_css.1).ok().flatten();
+    let hit_meta = hit.as_ref().map(|hit| &hit.hit);
+
+    self.hover_state = ChromeHoverState {
+      cursor: cursor_kind_for_hit(hit_meta),
+      hovered_url: match hit_meta {
+        Some(hit) if matches!(hit.kind, HitTestKind::Link) => hit
+          .href
+          .as_deref()
+          .and_then(|href| resolve_url(BASE_URL, href)),
+        _ => None,
+      },
+    };
+  }
+
   pub fn pointer_down(
     &mut self,
     button: PointerButton,
@@ -240,6 +272,8 @@ impl ChromeFrameDocument {
 
   pub fn pointer_move(&mut self, pos_css: (f32, f32)) -> Vec<ChromeFrameOutput> {
     const DRAG_THRESHOLD_CSS_PX: f32 = 6.0;
+
+    self.update_hover_state(pos_css);
 
     // Cancel pending click if the pointer moved beyond the slop threshold.
     if let Some(click) = self.click.as_ref() {
@@ -487,6 +521,7 @@ mod tests {
   use crate::ui::BrowserTabState;
   use crate::ui::chrome_assets::ChromeAssetsFetcher;
   use crate::ui::chrome_dynamic_asset_fetcher::ChromeDynamicAssetFetcher;
+  use crate::ui::CursorKind;
   use crate::ui::{OmniboxSuggestion, OmniboxSuggestionSource, OmniboxUrlSource};
   use crate::FontConfig;
   use std::collections::hash_map::DefaultHasher;
@@ -608,6 +643,66 @@ mod tests {
       first_hash, second_hash,
       "expected keyframes animation sampling to change rendered output between two times"
     );
+
+    Ok(())
+  }
+
+  #[test]
+  fn chrome_frame_pointer_move_updates_hover_state() -> Result<()> {
+    let _lock = crate::testing::global_test_lock();
+
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()?;
+
+    let mut chrome = ChromeFrameDocument::new_with_renderer(renderer, (160, 80), 1.0)?;
+    let html = r#"<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #link {
+        position: absolute;
+        left: 0;
+        top: 0;
+        display: block;
+        width: 100px;
+        height: 30px;
+        background: rgb(0, 0, 0);
+      }
+      #input {
+        position: absolute;
+        left: 0;
+        top: 40px;
+        width: 120px;
+        height: 30px;
+      }
+    </style>
+  </head>
+  <body>
+    <a id="link" href="chrome-action:test">Link</a>
+    <input id="input" type="text" value="" />
+  </body>
+</html>"#;
+
+    let options = chrome.doc.options().clone();
+    chrome.doc.reset_with_html(html, options)?;
+    let _ = chrome.render_if_needed()?;
+
+    chrome.pointer_move((10.0, 10.0));
+    assert_eq!(chrome.hover_state().cursor, CursorKind::Pointer);
+    assert_eq!(
+      chrome.hover_state().hovered_url.as_deref(),
+      Some("chrome-action:test")
+    );
+
+    chrome.pointer_move((10.0, 50.0));
+    assert_eq!(chrome.hover_state().cursor, CursorKind::Text);
+    assert_eq!(chrome.hover_state().hovered_url, None);
+
+    chrome.pointer_move((-1.0, -1.0));
+    assert_eq!(chrome.hover_state(), ChromeHoverState::default());
 
     Ok(())
   }
