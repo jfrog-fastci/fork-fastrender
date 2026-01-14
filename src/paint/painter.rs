@@ -10337,6 +10337,16 @@ impl Painter {
       if text.is_empty() {
         return 0.0;
       }
+
+      if style.letter_spacing == 0.0 && style.word_spacing == 0.0 {
+        if let Ok(runs) = painter.shaper.shape_arc(text, style, &painter.font_ctx) {
+          if !runs.is_empty() {
+            return runs.iter().map(|run| run.advance).sum();
+          }
+        }
+        return text.chars().count() as f32 * style.font_size * 0.6;
+      }
+
       let Ok(mut runs) = painter.shaper.shape(text, style, &painter.font_ctx) else {
         return text.chars().count() as f32 * style.font_size * 0.6;
       };
@@ -14337,8 +14347,14 @@ impl Painter {
     if text.is_empty() {
       return None;
     }
-    let mut runs = self.shaper.shape(text, style, &self.font_ctx).ok()?;
-    TextItem::apply_spacing_to_runs(&mut runs, text, style.letter_spacing, style.word_spacing);
+    let width: f32 = if style.letter_spacing == 0.0 && style.word_spacing == 0.0 {
+      let runs = self.shaper.shape_arc(text, style, &self.font_ctx).ok()?;
+      runs.iter().map(|r| r.advance).sum()
+    } else {
+      let mut runs = self.shaper.shape(text, style, &self.font_ctx).ok()?;
+      TextItem::apply_spacing_to_runs(&mut runs, text, style.letter_spacing, style.word_spacing);
+      runs.iter().map(|r| r.advance).sum()
+    };
     let metrics_scaled = Self::resolve_scaled_metrics_static(style, &self.font_ctx);
     let line_height = compute_line_height_with_metrics_viewport(
       style,
@@ -14346,7 +14362,6 @@ impl Painter {
       Some(Size::new(self.css_width, self.css_height)),
       self.font_ctx.root_font_metrics(),
     );
-    let width: f32 = runs.iter().map(|r| r.advance).sum();
     Some(Size::new(width, line_height))
   }
 
