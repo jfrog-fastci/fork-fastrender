@@ -16631,7 +16631,13 @@ fn hir_eval_stmt_list_until_await(
           }
           Err(err) => {
             state.teardown(scope.heap_mut());
-            return Err(err);
+            return Err(finalize_throw_with_stack_at_source_offset(
+              &*evaluator.vm,
+              scope,
+              source.as_ref(),
+              inner_stmt.span.start,
+              err,
+            ));
           }
         }
       }
@@ -16696,7 +16702,13 @@ fn hir_eval_stmt_list_until_await(
           // Ensure persistent roots held by the for-await-of state machine do not leak when
           // evaluation fails before we store the state in a continuation.
           state.teardown(scope.heap_mut());
-          return Err(err);
+          return Err(finalize_throw_with_stack_at_source_offset(
+            &*evaluator.vm,
+            scope,
+            source.as_ref(),
+            stmt_offset,
+            err,
+          ));
         }
       }
       continue;

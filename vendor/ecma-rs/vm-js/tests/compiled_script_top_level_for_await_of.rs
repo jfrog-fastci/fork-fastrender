@@ -1,5 +1,6 @@
 use vm_js::{
-  CompiledScript, Heap, HeapLimits, JsRuntime, PromiseState, Value, Vm, VmError, VmOptions,
+  CompiledScript, Heap, HeapLimits, JsRuntime, PromiseState, PropertyDescriptor, PropertyKey,
+  PropertyKind, Value, Vm, VmError, VmOptions,
 };
 
 fn new_runtime() -> JsRuntime {
@@ -14,6 +15,30 @@ fn value_to_utf8(rt: &JsRuntime, value: Value) -> String {
     panic!("expected string, got {value:?}");
   };
   rt.heap.get_string(s).unwrap().to_utf8_lossy()
+}
+
+fn define_global(rt: &mut JsRuntime, name: &str, value: Value) -> Result<(), VmError> {
+  let global = rt.realm().global_object();
+  let mut scope = rt.heap_mut().scope();
+  scope.push_root(Value::Object(global))?;
+  scope.push_root(value)?;
+
+  let key_s = scope.alloc_string(name)?;
+  scope.push_root(Value::String(key_s))?;
+  let key = PropertyKey::from_string(key_s);
+  scope.define_property(
+    global,
+    key,
+    PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value,
+        writable: true,
+      },
+    },
+  )?;
+  Ok(())
 }
 
 #[test]
@@ -231,7 +256,6 @@ fn compiled_script_top_level_for_await_of_async_iterator_close_only_observes_pro
 #[test]
 fn compiled_script_top_level_labeled_for_await_of_break_label_executes_and_closes_iterator() -> Result<(), VmError> {
   let mut rt = new_runtime();
-
   let script = CompiledScript::compile_script(
     rt.heap_mut(),
     "test.js",
@@ -284,5 +308,49 @@ fn compiled_script_top_level_labeled_for_await_of_break_label_executes_and_close
   assert_eq!(value_to_utf8(&rt, after), "adone");
   let return_calls = rt.exec_script("returnCalls")?;
   assert_eq!(return_calls, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_script_top_level_for_await_of_rhs_type_error_rejects_promise_with_stack(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  // Trigger a TypeError during evaluation of the RHS expression (before the iterator is acquired).
+  // This must reject the async classic-script completion promise with a *real* Error object (not
+  // surface as an internal invariant violation).
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      for await (const x of (null).prop) {}
+    "#,
+  )?;
+  assert!(
+    !script.requires_ast_fallback,
+    "simple top-level for-await-of loops should execute via the compiled (HIR) async script path"
+  );
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::Object(promise_obj) = result else {
+    panic!("expected Promise object, got {result:?}");
+  };
+  assert!(rt.heap().is_promise_object(promise_obj));
+
+  // Rejecting the completion promise can happen synchronously (before the first await suspension),
+  // but ensure all promise jobs have run before asserting on the settled state.
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(rt.heap().promise_state(promise_obj)?, PromiseState::Rejected);
+  let reason = rt
+    .heap()
+    .promise_result(promise_obj)?
+    .expect("rejected promise should have a reason");
+
+  define_global(&mut rt, "__err", reason)?;
+  let has_stack = rt.exec_script(
+    r#"typeof __err.stack === "string" && __err.stack.includes("TypeError") && __err.stack.includes("at ")"#,
+  )?;
+  assert_eq!(has_stack, Value::Bool(true));
   Ok(())
 }
