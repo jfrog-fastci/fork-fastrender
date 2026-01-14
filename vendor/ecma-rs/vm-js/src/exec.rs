@@ -40094,7 +40094,30 @@ fn gen_eval_lit_obj(
     .heap_mut()
     .object_set_prototype(obj, Some(intr.object_prototype()))?;
 
-  gen_eval_lit_obj_from(evaluator, &mut obj_scope, expr, obj, 0)
+  match gen_eval_lit_obj_from(evaluator, &mut obj_scope, expr, obj, 0)? {
+    GenEval::Complete(c) => Ok(GenEval::Complete(c)),
+    GenEval::Suspend(suspend) => {
+      // Root the partially-constructed object so it survives until the next yield boundary.
+      //
+      // When `obj_scope` is dropped, `obj` would otherwise only be held by the continuation frames
+      // (Rust locals), which are not traced by the GC.
+      //
+      // If we suspended while evaluating a property value expression, the property key may also be
+      // ephemeral (not yet stored on the object) and must be rooted as well.
+      drop(obj_scope);
+      let mut roots = [Value::Object(obj), Value::Undefined];
+      let mut root_count = 1;
+      if let Some(GenFrame::LitObjAfterPropValue { key, .. }) = suspend.frames.back() {
+        roots[1] = match key {
+          PropertyKey::String(s) => Value::String(*s),
+          PropertyKey::Symbol(sym) => Value::Symbol(*sym),
+        };
+        root_count = 2;
+      }
+      scope.push_roots(&roots[..root_count])?;
+      Ok(GenEval::Suspend(suspend))
+    }
+  }
 }
 
 fn gen_eval_lit_obj_from(
