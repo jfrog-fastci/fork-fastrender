@@ -81,8 +81,8 @@ use crate::render_control::{
 use crate::style::display::Display;
 use crate::style::display::FormattingContextType;
 use crate::style::types::Direction;
-use crate::style::types::FootnoteDisplay;
 use crate::style::types::FontStyle;
+use crate::style::types::FootnoteDisplay;
 use crate::style::types::HyphensMode;
 use crate::style::types::LineBreak;
 use crate::style::types::LineClampSource;
@@ -7968,18 +7968,19 @@ impl InlineFormattingContext {
     // line building, so it affects alignment/justification and glyph positioning but does not
     // perturb earlier line-breaking decisions.
     fn split_text_item_on_punctuation(
-      item: &TextItem,
+      item: TextItem,
       shaper: &ShapingPipeline,
       font_context: &FontContext,
       reshape_cache: &mut ReshapeCache,
-    ) -> Option<Vec<TextItem>> {
-      let len = item.text.len();
+    ) -> Result<Vec<TextItem>, TextItem> {
+      let original = item;
+      let len = original.text.len();
       if len <= 1 {
-        return None;
+        return Err(original);
       }
 
       let mut split_points: Vec<usize> = Vec::new();
-      for (off, ch) in item.text.char_indices() {
+      for (off, ch) in original.text.char_indices() {
         if is_fullwidth_opening_punctuation(ch)
           || is_fullwidth_closing_punctuation(ch)
           || is_fullwidth_middle_dot_punctuation(ch)
@@ -7987,10 +7988,10 @@ impl InlineFormattingContext {
           // If the glyph advance is already narrow/proportional, treat it as both fullwidth and
           // halfwidth and do not split (preserves shaping/kerning across the boundary).
           let end = off.saturating_add(ch.len_utf8());
-          let start_adv = item.advance_at_offset(off);
-          let end_adv = item.advance_at_offset(end);
+          let start_adv = original.advance_at_offset(off);
+          let end_adv = original.advance_at_offset(end);
           let adv = (end_adv - start_adv).max(0.0);
-          if !is_trimmable_fullwidth_punctuation_advance(adv, item.style.font_size) {
+          if !is_trimmable_fullwidth_punctuation_advance(adv, original.style.font_size) {
             continue;
           }
           split_points.push(off);
@@ -8001,32 +8002,43 @@ impl InlineFormattingContext {
       split_points.dedup();
       split_points.retain(|o| *o > 0 && *o < len);
       if split_points.is_empty() {
-        return None;
+        return Err(original);
       }
 
       let mut segments: Vec<TextItem> = Vec::new();
-      let mut remaining = item.clone();
+      let mut remaining: Option<TextItem> = None;
       let mut consumed = 0usize;
       for point in split_points {
         if point <= consumed || point >= len {
           continue;
         }
         let local = point - consumed;
-        let Some((before, after)) =
-          remaining.split_at(local, false, shaper, font_context, reshape_cache)
-        else {
-          return None;
+        let (before, after) = if let Some(item) = remaining.take() {
+          let Some(result) = item.split_at(local, false, shaper, font_context, reshape_cache)
+          else {
+            return Err(original);
+          };
+          result
+        } else {
+          let Some(result) = original.split_at(local, false, shaper, font_context, reshape_cache)
+          else {
+            return Err(original);
+          };
+          result
         };
         segments.push(before);
-        remaining = after;
+        remaining = Some(after);
         consumed = point;
       }
+      let Some(remaining) = remaining else {
+        return Err(original);
+      };
       segments.push(remaining);
 
       if segments.len() <= 1 {
-        return None;
+        return Err(original);
       }
-      Some(segments)
+      Ok(segments)
     }
 
     fn split_inline_items_on_punctuation(
@@ -8052,21 +8064,34 @@ impl InlineFormattingContext {
           continue;
         }
 
-        let InlineItem::Text(original_text) = items[idx].clone() else {
+        let original = std::mem::replace(&mut items[idx], InlineItem::SoftBreak);
+        let InlineItem::Text(original_text) = original else {
+          items[idx] = original;
           idx += 1;
           continue;
         };
 
-        let Some(segments) =
-          split_text_item_on_punctuation(&original_text, shaper, font_context, reshape_cache)
-        else {
-          idx += 1;
-          continue;
+        let segments = match split_text_item_on_punctuation(
+          original_text,
+          shaper,
+          font_context,
+          reshape_cache,
+        ) {
+          Ok(segments) => segments,
+          Err(original_text) => {
+            items[idx] = InlineItem::Text(original_text);
+            idx += 1;
+            continue;
+          }
         };
 
-        items[idx] = InlineItem::Text(segments[0].clone());
+        let mut segment_iter = segments.into_iter();
+        let first = segment_iter
+          .next()
+          .expect("split_text_item_on_punctuation must return at least one segment");
+        items[idx] = InlineItem::Text(first);
         let mut insert_at = idx + 1;
-        for seg in segments.into_iter().skip(1) {
+        for seg in segment_iter {
           if seg.text.is_empty() {
             continue;
           }
@@ -8083,7 +8108,12 @@ impl InlineFormattingContext {
         // Split punctuation inside inline boxes as well, so adjacent-pairs trimming can work
         // within styled spans.
         if let InlineItem::InlineBox(b) = &mut items[idx].item {
-          split_inline_items_on_punctuation(&mut b.children, &self.pipeline, &self.font_context, &mut reshape_cache);
+          split_inline_items_on_punctuation(
+            &mut b.children,
+            &self.pipeline,
+            &self.font_context,
+            &mut reshape_cache,
+          );
         }
 
         let baseline_offset = items[idx].baseline_offset;
@@ -8098,24 +8128,34 @@ impl InlineFormattingContext {
           continue;
         }
 
-        let InlineItem::Text(original_text) = items[idx].item.clone() else {
+        let original = std::mem::replace(&mut items[idx].item, InlineItem::SoftBreak);
+        let InlineItem::Text(original_text) = original else {
+          items[idx].item = original;
           idx += 1;
           continue;
         };
 
-        let Some(segments) = split_text_item_on_punctuation(
-          &original_text,
+        let segments = match split_text_item_on_punctuation(
+          original_text,
           &self.pipeline,
           &self.font_context,
           &mut reshape_cache,
-        ) else {
-          idx += 1;
-          continue;
+        ) {
+          Ok(segments) => segments,
+          Err(original_text) => {
+            items[idx].item = InlineItem::Text(original_text);
+            idx += 1;
+            continue;
+          }
         };
 
-        items[idx].item = InlineItem::Text(segments[0].clone());
+        let mut segment_iter = segments.into_iter();
+        let first = segment_iter
+          .next()
+          .expect("split_text_item_on_punctuation must return at least one segment");
+        items[idx].item = InlineItem::Text(first);
         let mut insert_at = idx + 1;
-        for seg in segments.into_iter().skip(1) {
+        for seg in segment_iter {
           if seg.text.is_empty() {
             continue;
           }
@@ -8538,18 +8578,19 @@ impl InlineFormattingContext {
       let mut start_trimmed_idx: Option<usize> = None;
 
       // Apply line-start trimming first so the end-of-line overflow check accounts for it.
-      let start_info: Option<(usize, f32)> = items
-        .iter()
-        .enumerate()
-        .find_map(|(idx, positioned)| match &positioned.item {
-          InlineItem::StaticPositionAnchor(_) => None,
-          _ => start_hang_in_item(
-            &positioned.item,
-            is_first_formatted_line,
-            starts_after_forced_break,
-          )
-          .map(|hang| (idx, hang)),
-        });
+      let start_info: Option<(usize, f32)> =
+        items
+          .iter()
+          .enumerate()
+          .find_map(|(idx, positioned)| match &positioned.item {
+            InlineItem::StaticPositionAnchor(_) => None,
+            _ => start_hang_in_item(
+              &positioned.item,
+              is_first_formatted_line,
+              starts_after_forced_break,
+            )
+            .map(|hang| (idx, hang)),
+          });
 
       if let Some((idx, hang)) = start_info {
         start_trimmed_idx = Some(idx);
@@ -8577,7 +8618,10 @@ impl InlineFormattingContext {
           if prev_ch == '\u{3000}'
             || is_fullwidth_opening_punctuation(prev_ch)
             || is_fullwidth_middle_dot_punctuation(prev_ch)
-            || matches!(get_general_category(prev_ch), GeneralCategory::OpenPunctuation)
+            || matches!(
+              get_general_category(prev_ch),
+              GeneralCategory::OpenPunctuation
+            )
           {
             return true;
           }
@@ -8599,7 +8643,10 @@ impl InlineFormattingContext {
           if next_ch == '\u{3000}'
             || is_fullwidth_closing_punctuation(next_ch)
             || is_fullwidth_middle_dot_punctuation(next_ch)
-            || matches!(get_general_category(next_ch), GeneralCategory::ClosePunctuation)
+            || matches!(
+              get_general_category(next_ch),
+              GeneralCategory::ClosePunctuation
+            )
           {
             return true;
           }
@@ -8702,10 +8749,7 @@ impl InlineFormattingContext {
           }
         }
 
-        fn apply_inline_box_children(
-          children: &mut Vec<InlineItem>,
-          rtl: bool,
-        ) {
+        fn apply_inline_box_children(children: &mut Vec<InlineItem>, rtl: bool) {
           // Recurse first so nested inline boxes have their punctuation split/trimmed before we
           // apply adjacency rules at this level.
           for child in children.iter_mut() {
@@ -8836,7 +8880,11 @@ impl InlineFormattingContext {
           InlineItem::Text(t) => {
             if t.is_marker
               || !wants_trim_end(t.style.text_spacing_trim, end_overflow)
-              || !t.text.chars().next_back().is_some_and(is_fullwidth_closing_punctuation)
+              || !t
+                .text
+                .chars()
+                .next_back()
+                .is_some_and(is_fullwidth_closing_punctuation)
             {
               return false;
             }
@@ -8867,14 +8915,15 @@ impl InlineFormattingContext {
         }
       }
 
-      let end_info: Option<(usize, f32)> = items
-        .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(idx, positioned)| match &positioned.item {
-          InlineItem::StaticPositionAnchor(_) => None,
-          _ => end_hang_in_item(&positioned.item, end_overflow).map(|hang| (idx, hang)),
-        });
+      let end_info: Option<(usize, f32)> =
+        items
+          .iter()
+          .enumerate()
+          .rev()
+          .find_map(|(idx, positioned)| match &positioned.item {
+            InlineItem::StaticPositionAnchor(_) => None,
+            _ => end_hang_in_item(&positioned.item, end_overflow).map(|hang| (idx, hang)),
+          });
 
       if let Some((idx, hang)) = end_info {
         if let Some(positioned) = items.get_mut(idx) {
@@ -8906,7 +8955,8 @@ impl InlineFormattingContext {
     fn is_stop_or_comma(ch: char) -> bool {
       matches!(
         ch,
-        ',' | '.'
+        ','
+          | '.'
           | '\u{060C}'
           | '\u{06D4}'
           | '\u{3001}'
@@ -9038,8 +9088,14 @@ impl InlineFormattingContext {
           idx_opt = idx.checked_sub(1);
           continue;
         }
-        let (applied, extra) =
-          hang_end_in_item(&mut items[idx], shaper, font_context, reshape_cache, true, allow_end_overflow);
+        let (applied, extra) = hang_end_in_item(
+          &mut items[idx],
+          shaper,
+          font_context,
+          reshape_cache,
+          true,
+          allow_end_overflow,
+        );
         if let Some(extra_item) = extra {
           items.insert(idx + 1, extra_item);
         }
@@ -9124,8 +9180,13 @@ impl InlineFormattingContext {
           continue;
         }
         let baseline_offset = items[idx].baseline_offset;
-        let (applied, extra) =
-          hang_first_in_item(&mut items[idx].item, &self.pipeline, &self.font_context, &mut reshape_cache, true);
+        let (applied, extra) = hang_first_in_item(
+          &mut items[idx].item,
+          &self.pipeline,
+          &self.font_context,
+          &mut reshape_cache,
+          true,
+        );
         if let Some(extra_item) = extra {
           items.insert(
             idx + 1,
@@ -14569,21 +14630,14 @@ impl InlineFormattingContext {
       let end_side = style
         .text_overflow
         .end_for_direction(line.resolved_direction);
-      let mut adjusted = match self.apply_text_overflow_to_line(
-        &line,
+      let mut adjusted = self.apply_text_overflow_to_line(
+        line,
         start_side,
         end_side,
         style,
         strut_metrics,
         usable_limit,
-      )? {
-        Some(line) => line,
-        None => {
-          let mut clipped = line.clone();
-          clipped.width = usable_limit.max(0.0).min(clipped.width);
-          clipped
-        }
-      };
+      )?;
       if adjusted.available_width.is_finite() {
         adjusted.width = adjusted.width.min(usable_limit.max(0.0));
       }
@@ -14642,16 +14696,16 @@ impl InlineFormattingContext {
     };
 
     if usable_limit.is_finite() && usable_limit > 0.0 {
-      if let Some(rebuilt) = self.apply_text_overflow_to_line(
-        last_line,
+      let line = std::mem::take(last_line);
+      let rebuilt = self.apply_text_overflow_to_line(
+        line,
         start_side,
         end_side,
         style,
         strut_metrics,
         usable_limit,
-      )? {
-        *last_line = rebuilt;
-      }
+      )?;
+      *last_line = rebuilt;
       return Ok(lines);
     }
 
@@ -14660,7 +14714,8 @@ impl InlineFormattingContext {
     else {
       return Ok(lines);
     };
-    let mut items: Vec<InlineItem> = last_line.items.iter().map(|p| p.item.clone()).collect();
+    let positioned = std::mem::take(&mut last_line.items);
+    let mut items: Vec<InlineItem> = positioned.into_iter().map(|p| p.item).collect();
     match last_line.resolved_direction {
       Direction::Ltr => items.push(marker),
       Direction::Rtl => items.insert(0, marker),
@@ -14672,15 +14727,15 @@ impl InlineFormattingContext {
 
   fn apply_text_overflow_to_line(
     &self,
-    line: &Line,
+    line: Line,
     start_side: &crate::style::types::TextOverflowSide,
     end_side: &crate::style::types::TextOverflowSide,
     style: &Arc<ComputedStyle>,
     strut_metrics: &BaselineMetrics,
     usable_limit: f32,
-  ) -> Result<Option<Line>, LayoutError> {
+  ) -> Result<Line, LayoutError> {
     if !usable_limit.is_finite() || usable_limit <= 0.0 {
-      return Ok(None);
+      return Ok(line);
     }
 
     // `text-overflow` is only observable when it produces a marker (`ellipsis`/string). The default
@@ -14692,7 +14747,7 @@ impl InlineFormattingContext {
     if matches!(start_side, crate::style::types::TextOverflowSide::Clip)
       && matches!(end_side, crate::style::types::TextOverflowSide::Clip)
     {
-      return Ok(None);
+      return Ok(line);
     }
 
     let start_marker =
@@ -14700,8 +14755,6 @@ impl InlineFormattingContext {
     let end_marker = self.build_overflow_marker_item(end_side, style, line.resolved_direction)?;
     let start_width = start_marker.as_ref().map(|m| m.width()).unwrap_or(0.0);
     let end_width = end_marker.as_ref().map(|m| m.width()).unwrap_or(0.0);
-
-    let mut items: Vec<InlineItem> = line.items.iter().map(|p| p.item.clone()).collect();
     let markers_total = start_width + end_width;
 
     if crate::debug::runtime::runtime_toggles().truthy("FASTR_LOG_OVERFLOW_TEST") {
@@ -14721,11 +14774,15 @@ impl InlineFormattingContext {
         single = start_marker;
       }
       if let Some(marker) = single {
-        let rebuilt = self.rebuild_line_with_items(vec![marker], line, strut_metrics);
-        return Ok(Some(rebuilt));
+        let rebuilt = self.rebuild_line_with_items(vec![marker], &line, strut_metrics);
+        return Ok(rebuilt);
       }
-      return Ok(None);
+      return Ok(line);
     }
+
+    let mut template = line;
+    let positioned = std::mem::take(&mut template.items);
+    let mut items: Vec<InlineItem> = positioned.into_iter().map(|p| p.item).collect();
 
     let mut budget = (usable_limit - markers_total).max(0.0);
     if start_marker.is_some() {
@@ -14750,8 +14807,8 @@ impl InlineFormattingContext {
       items.push(marker);
     }
 
-    let rebuilt = self.rebuild_line_with_items(items, line, strut_metrics);
-    Ok(Some(rebuilt))
+    let rebuilt = self.rebuild_line_with_items(items, &template, strut_metrics);
+    Ok(rebuilt)
   }
 
   fn build_overflow_marker_item(
