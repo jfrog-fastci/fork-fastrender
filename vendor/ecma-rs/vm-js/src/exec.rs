@@ -18989,13 +18989,13 @@ fn async_generator_handle_execution_result(
         )?;
         return Ok(false);
       }
+
       AsyncBodyResult::Await {
         kind: AsyncSuspendKind::AwaitResolved,
         await_value: awaited_promise,
         frames,
       } => {
         state.frames = frames;
-        state.awaited_promise_root = None;
 
         // The awaited value is already the Promise produced by `PromiseResolve(%Promise%, value)`.
         // Do not `PromiseResolve` it again: that would observe `promise.constructor` twice.
@@ -19010,7 +19010,9 @@ fn async_generator_handle_execution_result(
             "AwaitResolved suspension must carry a Promise object",
           ));
         }
-
+        if let Some(root) = state.awaited_promise_root.take() {
+          scope.heap_mut().remove_root(root);
+        }
         cont.env.teardown(scope.heap_mut());
         scope
           .heap_mut()
@@ -55442,6 +55444,54 @@ mod tests {
         o.v.marker === 1 &&
         o.errName === 'ReferenceError' &&
         o.errMsg === "Must call super constructor in derived class before accessing 'this'"
+    "#;
+
+    assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
+    assert_eq!(eval_script_compiled(source)?, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn arrow_this_in_derived_constructor_super_returns_object_super_property_get_uses_returned_object_as_receiver(
+  ) -> Result<(), VmError> {
+    let source = r#"
+      let log = [];
+      let returned;
+      class B {
+        constructor() {
+          returned = { marker: 1 };
+          return returned;
+        }
+        get x() {
+          log.push('get:' + (this === returned) + ':' + (this instanceof D));
+          return this.marker;
+        }
+      }
+      class D extends B {
+        constructor() {
+          let f = () => super.x;
+          let errName;
+          let errMsg;
+          try { f(); } catch (e) { errName = e.name; errMsg = e.message; }
+
+          super();
+          this.v = f();
+          this.errName = errName;
+          this.errMsg = errMsg;
+          this.log = log.join(',');
+          this.isReturned = (this === returned);
+          this.isInstance = (this instanceof D);
+        }
+      }
+
+      let d = new D();
+      d === returned &&
+        d.isReturned === true &&
+        d.isInstance === false &&
+        d.v === 1 &&
+        d.errName === 'ReferenceError' &&
+        d.errMsg === "Must call super constructor in derived class before accessing 'this'" &&
+        d.log === 'get:true:false'
     "#;
 
     assert_eq!(eval_script_interpreter(source)?, Value::Bool(true));
