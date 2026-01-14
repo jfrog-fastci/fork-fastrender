@@ -1067,6 +1067,39 @@ fn generators_yield_in_object_literals_spread_does_not_trigger_proto_setter() {
 }
 
 #[test]
+fn generators_yield_in_object_literals_proto_setter_and_proto_named_method() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        // A prototype setter `__proto__:` property should not affect a *method named* `__proto__`.
+        // The method must be defined as an own property and remain callable after resumption.
+        const proto = { marker: 1 };
+
+        function* g() {
+          const o = {
+            __proto__: (yield "proto"),
+            __proto__() { return 3; },
+          };
+          const desc = Object.getOwnPropertyDescriptor(o, "__proto__");
+          return Object.getPrototypeOf(o) === proto &&
+            desc !== undefined &&
+            typeof desc.value === "function" &&
+            o.__proto__() === 3;
+        }
+
+        const it = g();
+        const r1 = it.next();
+        const r2 = it.next(proto);
+        r1.value === "proto" && r1.done === false &&
+          r2.value === true && r2.done === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generators_yield_in_object_literals_computed_method_symbol_key() {
   let mut rt = new_runtime();
   let value = rt
