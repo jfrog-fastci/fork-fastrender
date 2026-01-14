@@ -10348,7 +10348,9 @@ impl ForAwaitOfState {
         .map_err(|err| crate::vm::coerce_error_to_throw(&*evaluator.vm, &mut close_scope, err))?;
 
       close_scope.push_root(return_result)?;
-      let awaited = crate::promise_ops::promise_resolve_with_host_and_hooks(
+      // Await the `return` result using the shared await Promise resolution helper so `AsyncIteratorClose`
+      // does not trigger Promise species side effects when the iterator returns a Promise object.
+      let awaited = crate::promise_ops::promise_resolve_for_await_with_host_and_hooks(
         evaluator.vm,
         &mut close_scope,
         &mut *evaluator.host,
@@ -10722,29 +10724,10 @@ fn run_compiled_async_function(
         return Err(err);
       }
 
-      // Implement `Await`: PromiseResolve(%Promise%, value) with fast path for intrinsic Promises.
-      let resolve_res: Result<Value, VmError> = (|| {
-        if let Value::Object(obj) = await_value {
-          if root_scope.heap().is_promise_object(obj) {
-            let ctor_key_s = root_scope.alloc_string("constructor")?;
-            root_scope.push_root(Value::String(ctor_key_s))?;
-            let ctor_key = PropertyKey::from_string(ctor_key_s);
-            let _ = root_scope.ordinary_get_with_host_and_hooks(
-              vm,
-              &mut *host,
-              &mut *hooks,
-              obj,
-              ctor_key,
-              Value::Object(obj),
-            )?;
-            Ok(await_value)
-          } else {
-            crate::promise_ops::promise_resolve_with_host_and_hooks(vm, &mut root_scope, host, hooks, await_value)
-          }
-        } else {
-          crate::promise_ops::promise_resolve_with_host_and_hooks(vm, &mut root_scope, host, hooks, await_value)
-        }
-      })();
+      // Implement `Await`: PromiseResolve(%Promise%, value) while avoiding Promise species side effects
+      // for Promise objects (see `promise_resolve_for_await_with_host_and_hooks`).
+      let resolve_res =
+        crate::promise_ops::promise_resolve_for_await_with_host_and_hooks(vm, &mut root_scope, host, hooks, await_value);
       let resolve_res = resolve_res.map_err(|err| crate::vm::coerce_error_to_throw(&*vm, &mut root_scope, err));
 
       let awaited_promise = match resolve_res {
