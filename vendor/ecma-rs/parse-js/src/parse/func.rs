@@ -16,10 +16,7 @@ use std::collections::HashSet;
 impl<'a> Parser<'a> {
   // `scope` should be a newly created closure scope for this function.
   pub fn func_params(&mut self, ctx: ParseCtx) -> SyntaxResult<Vec<Node<ParamDecl>>> {
-    // Non-arrow functions introduce their own `arguments` binding. When parsing class field
-    // initializers / static blocks, `arguments` is an early error *unless* it appears within a
-    // nested non-arrow function (including within parameter default expressions).
-    self.with_arguments_bound_in_class_init(|p| p.func_params_impl(ctx, true))
+    self.func_params_impl(ctx, true)
   }
 
   /// Parse arrow function parameter lists.
