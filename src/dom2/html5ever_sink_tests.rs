@@ -69,6 +69,128 @@ fn dom2_html5ever_sink_snapshot_matches_legacy_parser_with_declarative_shadow_do
 }
 
 #[test]
+fn dom2_html5ever_sink_declarative_shadow_root_mode_and_reparent_children() {
+  use html5ever::tendril::StrTendril;
+  use html5ever::tokenizer::{BufferQueue, Tokenizer};
+  use html5ever::tree_builder::{TreeBuilder, TreeBuilderOpts, TreeSink};
+  use html5ever::TokenizerResult;
+
+  let html = concat!(
+    "<!doctype html>",
+    "<div id=host>",
+    "<template shadowrootmode=open><span>shadow</span></template>",
+    "a",
+    "</div>",
+  );
+
+  let opts = ParseOpts {
+    tree_builder: TreeBuilderOpts {
+      scripting_enabled: true,
+      ..Default::default()
+    },
+    ..Default::default()
+  };
+
+  let sink = Dom2TreeSink::new(None);
+  let tb = TreeBuilder::new(sink, opts.tree_builder);
+  let mut tokenizer = Tokenizer::new(tb, opts.tokenizer);
+  let mut input = BufferQueue::default();
+  input.push_back(StrTendril::from(html));
+  loop {
+    match tokenizer.feed(&mut input) {
+      TokenizerResult::Done => break,
+      TokenizerResult::Script(_) => {}
+    }
+  }
+  tokenizer.end();
+
+  let sink = &tokenizer.sink.sink;
+
+  let (host, shadow_root, existing_text) = {
+    let doc = sink.document();
+    let host = doc.get_element_by_id("host").expect("host element not found");
+    let shadow_root = doc
+      .node(host)
+      .children
+      .iter()
+      .copied()
+      .find(|&child| matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. }))
+      .expect("expected declarative ShadowRoot child on host");
+    assert_eq!(
+      doc.node(host).children.first().copied(),
+      Some(shadow_root),
+      "shadow root should be inserted at index 0"
+    );
+
+    assert!(
+      doc
+        .node(shadow_root)
+        .children
+        .iter()
+        .any(|&child| matches!(
+          &doc.node(child).kind,
+          NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("span")
+        )),
+      "expected shadow root to contain parsed template contents"
+    );
+
+    let existing_text = doc
+      .node(host)
+      .children
+      .iter()
+      .rev()
+      .copied()
+      .find(|&child| matches!(&doc.node(child).kind, NodeKind::Text { content } if content == "a"))
+      .expect("expected trailing light DOM text node");
+
+    (host, shadow_root, existing_text)
+  };
+
+  let (fragment, moved_text) = {
+    let mut doc = sink.document_mut();
+    let fragment = doc.push_node(NodeKind::DocumentFragment, None, /* inert_subtree */ false);
+    let moved_text = doc.push_node(
+      NodeKind::Text {
+        content: "b".to_string(),
+      },
+      Some(fragment),
+      /* inert_subtree */ false,
+    );
+    (fragment, moved_text)
+  };
+
+  // Move fragment children into the host. Since the host already ends with a light-DOM text node
+  // ("a"), this should merge the boundary text nodes into a single node ("ab").
+  TreeSink::reparent_children(sink, &fragment, &host);
+
+  let doc = sink.document();
+  assert!(
+    doc.node(fragment).children.is_empty(),
+    "expected fragment to be emptied after reparent_children"
+  );
+  match &doc.node(existing_text).kind {
+    NodeKind::Text { content } => assert_eq!(content, "ab"),
+    other => panic!(
+      "expected existing text node to remain a Text node after merge, got {other:?}"
+    ),
+  }
+  assert_eq!(
+    doc.node(moved_text).parent,
+    None,
+    "expected moved boundary text node to be detached after merge"
+  );
+  assert!(
+    !doc.node(host).children.contains(&moved_text),
+    "expected moved boundary text node to be removed from host children"
+  );
+  assert_eq!(
+    doc.node(host).children.first().copied(),
+    Some(shadow_root),
+    "expected shadow root to remain the first child of the host"
+  );
+}
+
+#[test]
 fn template_contents_are_present_but_inert_for_scripting() {
   let html = concat!(
     "<!doctype html>",

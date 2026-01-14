@@ -775,24 +775,25 @@ impl TreeSink for Dom2TreeSink {
     });
 
     let mut doc = self.document.borrow_mut();
-    let is_valid_shadow_host = match &doc.node(*location).kind {
+    let (location_tag_name, location_namespace) = match &doc.node(*location).kind {
       NodeKind::Element {
         tag_name,
         namespace,
         ..
-      } => doc.is_html_case_insensitive_namespace(namespace) && is_valid_shadow_host_name(tag_name),
+      } => (tag_name.clone(), namespace.clone()),
       NodeKind::Slot { namespace, .. } => {
         // `attachShadow()` is not permitted on `<slot>`; keep this branch for completeness.
-        doc.is_html_case_insensitive_namespace(namespace) && is_valid_shadow_host_name("slot")
+        ("slot".to_string(), namespace.clone())
       }
-      _ => false,
+      _ => return false,
     };
+    let is_valid_shadow_host = doc.is_html_case_insensitive_namespace(location_namespace.as_str())
+      && is_valid_shadow_host_name(location_tag_name.as_str());
     if !is_valid_shadow_host {
       return false;
     }
-    if doc
-      .node(*location)
-      .children
+    let location_children = doc.node(*location).children.clone();
+    if location_children
       .iter()
       .any(|&child| matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. }))
     {
@@ -811,9 +812,9 @@ impl TreeSink for Dom2TreeSink {
       None,
       /* inert_subtree */ false,
     );
-    doc.live_mutation.pre_insert(*location, 0, 1);
     let range_child_index = doc.tree_child_index_from_raw_index_for_range(*location, 0);
     let inserted_count = doc.inserted_tree_children_count_for_range(*location, &[shadow_root_id]);
+    doc.live_mutation.pre_insert(*location, 0, 1);
     doc.live_range_pre_insert_steps(*location, range_child_index, inserted_count);
     doc.node_mut(*location).children.insert(0, shadow_root_id);
     doc.node_mut(shadow_root_id).parent = Some(*location);
@@ -1091,9 +1092,13 @@ impl TreeSink for Dom2TreeSink {
     if node.index() >= doc.nodes_len() || new_parent.index() >= doc.nodes_len() {
       return;
     }
-    let old_len = doc.node(*new_parent).children.len();
-    let moved_children_snapshot = doc.node(*node).children.clone();
-    if !moved_children_snapshot.is_empty() {
+    let (old_len, moved_children_snapshot) = {
+      let old_len = doc.node(*new_parent).children.len();
+      let moved_children_snapshot = doc.node(*node).children.clone();
+      (old_len, moved_children_snapshot)
+    };
+    let moved_children_len = moved_children_snapshot.len();
+    if moved_children_len != 0 {
       // Run pre-remove steps in reverse so offsets are updated as though children were removed from
       // the end towards the start. This matches a sequence of individual removals without requiring
       // us to mutate the children list itself until we `take()` it below.
@@ -1107,12 +1112,12 @@ impl TreeSink for Dom2TreeSink {
         doc.live_range_pre_remove_steps(child, *node, idx);
         doc.node_mut(child).parent = None;
       }
-      doc
-        .live_mutation
-        .pre_insert(*new_parent, old_len, moved_children_snapshot.len());
       let range_child_index = doc.tree_child_index_from_raw_index_for_range(*new_parent, old_len);
       let inserted_count =
         doc.inserted_tree_children_count_for_range(*new_parent, &moved_children_snapshot);
+      doc
+        .live_mutation
+        .pre_insert(*new_parent, old_len, moved_children_len);
       doc.live_range_pre_insert_steps(
         *new_parent,
         range_child_index,
