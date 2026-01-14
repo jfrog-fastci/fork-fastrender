@@ -424,3 +424,115 @@ fn compiled_module_requires_ast_fallback_is_respected_for_compiled_importers_in_
 
   result
 }
+
+#[test]
+fn compiled_module_requires_ast_fallback_is_respected_for_compiled_importers_in_evaluate_sync(
+) -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut host = ();
+  let mut hooks = MicrotaskQueue::new();
+  let mut graph = ModuleGraph::new();
+
+  let result = (|| -> Result<(), VmError> {
+    // Dependency module (A): compiled record that requires AST fallback due to private names.
+    // Drop its AST + source so ModuleGraph must parse from `compiled.source`.
+    let src_a = SourceText::new_charged_arc(
+      &mut heap,
+      "a.js",
+      r#"
+        globalThis.__compiled_module_requires_ast_fallback_count =
+          (globalThis.__compiled_module_requires_ast_fallback_count || 0) + 1;
+        class C {
+          #x = 1;
+          getX() { return this.#x; }
+        }
+        export const v = (new C()).getX();
+      "#,
+    )?;
+    let mut rec_a = SourceTextModuleRecord::compile_source(&mut heap, src_a)?;
+    assert!(
+      rec_a
+        .compiled
+        .as_ref()
+        .is_some_and(|c| c.requires_ast_fallback),
+      "expected private-name module to require AST fallback"
+    );
+    rec_a.ast = None;
+    rec_a.source = None;
+    let a = graph.add_module_with_specifier("a.js", rec_a)?;
+
+    // Importer module (B): compiled record that is safe to execute via HIR.
+    // Drop its AST + source so ModuleGraph must use the compiled module path for it.
+    let src_b = SourceText::new_charged_arc(
+      &mut heap,
+      "b.js",
+      r#"
+        import { v } from "a.js";
+        export const out = v + 1;
+        export const c = globalThis.__compiled_module_requires_ast_fallback_count;
+      "#,
+    )?;
+    let mut rec_b = SourceTextModuleRecord::compile_source(&mut heap, src_b)?;
+    assert!(
+      rec_b
+        .compiled
+        .as_ref()
+        .is_some_and(|c| !c.requires_ast_fallback && !c.contains_async_generators),
+      "expected importer module to be executable via the compiled HIR path"
+    );
+    rec_b.ast = None;
+    rec_b.source = None;
+    let b = graph.add_module_with_specifier("b.js", rec_b)?;
+
+    graph.link_all_by_specifier();
+
+    // Link first so we can assert A parsed an AST while B remained AST-less.
+    graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), b)?;
+    assert!(
+      graph.module(a).ast.is_some(),
+      "expected dependency module to parse/retain an AST during linking"
+    );
+    assert!(
+      graph.module(b).ast.is_none(),
+      "expected compiled importer module to avoid AST parsing during linking"
+    );
+
+    // Evaluate via the synchronous module evaluator API (eval_inner). This should execute B via the
+    // compiled executor while executing A via the AST interpreter.
+    graph.evaluate_sync(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      b,
+      &mut host,
+      &mut hooks,
+    )?;
+
+    let mut scope = heap.scope();
+    let ns_b = graph.get_module_namespace(b, &mut vm, &mut scope)?;
+    assert_eq!(
+      ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "out")?,
+      Value::Number(2.0)
+    );
+    assert_eq!(
+      ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "c")?,
+      Value::Number(1.0),
+      "module should not be evaluated twice (no partial HIR execution before AST fallback)"
+    );
+    drop(scope);
+
+    Ok(())
+  })();
+
+  graph.teardown(&mut vm, &mut heap);
+  let mut ctx = MicrotaskCtx {
+    vm: &mut vm,
+    heap: &mut heap,
+    host: &mut host,
+  };
+  hooks.teardown(&mut ctx);
+  realm.teardown(&mut heap);
+
+  result
+}
