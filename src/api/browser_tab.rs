@@ -4253,9 +4253,9 @@ impl BrowserTabHost {
         .or_else(|| spec.base_url.as_deref().and_then(origin_from_url));
 
       let mut blocked: bool = false;
-      let mut blocked_kind: &str = "";
+      let mut blocked_kind: &'static str = "";
       let mut blocked_url: Option<String> = None;
-      let mut blocked_reason: Option<&str> = None;
+      let mut blocked_reason: Option<&'static str> = None;
 
       if spec.src_attr_present {
         if let Some(src) = spec.src.as_deref().filter(|s| !s.is_empty()) {
@@ -4283,12 +4283,12 @@ impl BrowserTabHost {
       if blocked {
         let mut span = self.trace.span("js.script.csp_block", "js");
         span.arg_u64("node_id", entry.node_id.index() as u64);
-        span.arg_str("kind", blocked_kind);
+        span.arg_static_str("kind", blocked_kind);
         if let Some(url) = blocked_url.as_deref() {
           span.arg_str("url", url);
         }
         if let Some(reason) = blocked_reason {
-          span.arg_str("reason", reason);
+          span.arg_static_str("reason", reason);
         }
         if let Some(nonce) = nonce_attr.as_deref() {
           span.arg_str("nonce", nonce);
