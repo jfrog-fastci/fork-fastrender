@@ -89,6 +89,41 @@ fn direct_eval_allows_super_in_arrow_within_instance_field_initializer_compiled(
 }
 
 #[test]
+fn direct_eval_allows_super_in_arrow_returned_from_eval_in_instance_field_initializer() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class B { get x() { return this.marker; } }
+        class A extends B {
+          marker = 999;
+          y = eval("() => super.x");
+        }
+        (new A()).y()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Number(999.0));
+}
+
+#[test]
+fn direct_eval_allows_super_in_arrow_returned_from_eval_in_instance_field_initializer_compiled() {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class B { get x() { return this.marker; } }
+      class A extends B {
+        marker = 999;
+        y = eval("() => super.x");
+      }
+      (new A()).y()
+    "#,
+  );
+  assert_eq!(value, Value::Number(999.0));
+}
+
+#[test]
 fn direct_eval_rejects_super_in_nested_plain_function_within_instance_field_initializer() {
   let mut rt = new_runtime();
   let value = rt
@@ -311,6 +346,51 @@ fn indirect_eval_rejects_super_computed_member_without_running_key_side_effects_
 }
 
 #[test]
+fn indirect_eval_rejects_super_via_comma_operator_without_running_side_effects() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var executed = false;
+        class A {}
+        class C extends A {
+          x = (0, eval)("executed = true; super.x;");
+        }
+        try {
+          new C();
+          false
+        } catch (err) {
+          err.name === "SyntaxError" && executed === false
+        }
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn indirect_eval_rejects_super_via_comma_operator_without_running_side_effects_compiled() {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      var executed = false;
+      class A {}
+      class C extends A {
+        x = (0, eval)("executed = true; super.x;");
+      }
+      try {
+        new C();
+        false
+      } catch (err) {
+        err.name === "SyntaxError" && executed === false
+      }
+    "#,
+  );
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn indirect_eval_rejects_super_computed_member_via_parenthesized_eval_without_running_key_side_effects(
 ) {
   let mut rt = new_runtime();
@@ -432,6 +512,25 @@ fn direct_eval_allows_super_in_private_instance_field_initializer() {
 }
 
 #[test]
+fn direct_eval_allows_super_in_arrow_returned_from_eval_in_private_instance_field_initializer() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class B { get x() { return this.marker; } }
+        class A extends B {
+          marker = 1234;
+          #y = eval("() => super.x");
+          get y() { return this.#y(); }
+        }
+        (new A()).y
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Number(1234.0));
+}
+
+#[test]
 fn direct_eval_allows_super_in_static_field_initializer() {
   let mut rt = new_runtime();
   let value = rt
@@ -543,6 +642,41 @@ fn direct_eval_allows_super_in_arrow_within_static_field_initializer_compiled() 
 }
 
 #[test]
+fn direct_eval_allows_super_in_arrow_returned_from_eval_in_static_field_initializer() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class B { static get x() { return this.marker; } }
+        class A extends B {
+          static marker = 4321;
+          static y = eval("() => super.x");
+        }
+        A.y()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Number(4321.0));
+}
+
+#[test]
+fn direct_eval_allows_super_in_arrow_returned_from_eval_in_static_field_initializer_compiled() {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      class B { static get x() { return this.marker; } }
+      class A extends B {
+        static marker = 4321;
+        static y = eval("() => super.x");
+      }
+      A.y()
+    "#,
+  );
+  assert_eq!(value, Value::Number(4321.0));
+}
+
+#[test]
 fn direct_eval_rejects_super_in_nested_plain_function_within_static_field_initializer() {
   let mut rt = new_runtime();
   let value = rt
@@ -640,6 +774,25 @@ fn direct_eval_allows_super_in_private_static_field_initializer() {
     )
     .unwrap();
   assert_eq!(value, Value::Number(999.0));
+}
+
+#[test]
+fn direct_eval_allows_super_in_arrow_returned_from_eval_in_private_static_field_initializer() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        class B { static get x() { return this.marker; } }
+        class A extends B {
+          static marker = 2468;
+          static #y = eval("() => super.x");
+          static get y() { return this.#y(); }
+        }
+        A.y
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Number(2468.0));
 }
 
 #[test]
