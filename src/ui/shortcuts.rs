@@ -336,10 +336,6 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
     {
       Some(ShortcutAction::ShowHistory)
     }
-    // Firefox macOS shortcut for showing History (keep both).
-    (Key::H, Modifiers { shift: true, .. }) if primary_cmd && matches!(platform, Platform::Mac) => {
-      Some(ShortcutAction::ShowHistory)
-    }
     (Key::O, Modifiers { shift: true, .. }) if primary_cmd => {
       Some(ShortcutAction::ShowBookmarksManager)
     }
