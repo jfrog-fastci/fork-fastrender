@@ -4306,6 +4306,59 @@ const HOVER_STATUS_OVERLAY_SLIDE_PX: f32 = 6.0;
 const HOVER_STATUS_OVERLAY_PADDING_X: f32 = 10.0;
 const HOVER_STATUS_OVERLAY_PADDING_Y: f32 = 6.0;
 
+#[derive(Debug, Default)]
+struct HoverStatusOverlayCache {
+  cached_url: Option<Arc<str>>,
+  text_width_font_id: Option<egui::FontId>,
+  text_width_url: Option<Arc<str>>,
+  text_width: f32,
+  a11y_label_cache: crate::ui::tab_accessible_label::TitlePrefixedLabelCache,
+}
+
+impl HoverStatusOverlayCache {
+  fn update_cached_url(&mut self, hovered_url_now: Option<&str>) {
+    let Some(url_now) = hovered_url_now else {
+      return;
+    };
+    if self.cached_url.as_deref() == Some(url_now) {
+      return;
+    }
+    self.cached_url = Some(Arc::from(url_now));
+  }
+
+  fn cached_url(&self) -> Option<Arc<str>> {
+    self.cached_url.as_ref().map(Arc::clone)
+  }
+
+  fn url_text_width(&mut self, ui: &egui::Ui, url: &Arc<str>, font_id: &egui::FontId) -> f32 {
+    if self.text_width_font_id.as_ref() == Some(font_id)
+      && self.text_width_url.as_ref().is_some_and(|u| u.as_ref() == url.as_ref())
+    {
+      return self.text_width;
+    }
+
+    self.text_width_font_id = Some(font_id.clone());
+    self.text_width_url = Some(Arc::clone(url));
+    self.text_width = ui
+      .fonts(|f| {
+        f.layout_no_wrap(
+          url.as_ref().to_owned(),
+          font_id.clone(),
+          ui.visuals().text_color(),
+        )
+      })
+      .size()
+      .x;
+    self.text_width
+  }
+
+  fn hovered_link_a11y_label(&mut self, url: &Arc<str>) -> Arc<str> {
+    self
+      .a11y_label_cache
+      .get_or_update("Hovered link", url.as_ref())
+  }
+}
+
 fn hover_status_overlay_anchor_offset(
   screen_rect: egui::Rect,
   content_rect: egui::Rect,
@@ -4352,24 +4405,24 @@ pub fn hover_status_overlay_ui(
     return;
   }
 
-  // Cache the last hovered URL so fade-out stays readable even after hover clears.
-  let cached_url_id = overlay_id.with("cached_url");
-  if let Some(url) = hovered_url_now {
-    ctx.data_mut(|d| {
-      d.insert_temp(cached_url_id, url.to_string());
-    });
-  }
-  let url = hovered_url_now
-    .map(str::to_string)
-    .or_else(|| ctx.data(|d| d.get_temp::<String>(cached_url_id)))
-    .unwrap_or_default();
+  let cache_id = overlay_id.with("cache");
+  let mut cache: HoverStatusOverlayCache = ctx.data_mut(|d| {
+    std::mem::take(d.get_temp_mut_or_default::<HoverStatusOverlayCache>(cache_id))
+  });
+  cache.update_cached_url(hovered_url_now);
+  let Some(url) = cache.cached_url() else {
+    ctx.data_mut(|d| d.insert_temp(cache_id, cache));
+    return;
+  };
   if url.trim().is_empty() {
+    ctx.data_mut(|d| d.insert_temp(cache_id, cache));
     return;
   }
 
   let margin = HOVER_STATUS_OVERLAY_MARGIN;
   let max_width = hover_status_overlay_max_width(content_rect_points, margin);
   if max_width <= 0.0 {
+    ctx.data_mut(|d| d.insert_temp(cache_id, cache));
     return;
   }
 
@@ -4396,13 +4449,9 @@ pub fn hover_status_overlay_ui(
       let visuals = ui.visuals().clone();
 
       // Prefer a "bubble" that hugs the URL text instead of spanning the max width.
-      let desired_outer_width = ui
-        .fonts(|f| {
-          let font_id = egui::TextStyle::Small.resolve(ui.style());
-          f.layout_no_wrap(url.clone(), font_id, ui.visuals().text_color())
-        })
-        .size()
-        .x
+      let font_id = egui::TextStyle::Small.resolve(ui.style());
+      let url_text_width = cache.url_text_width(ui, &url, &font_id);
+      let desired_outer_width = url_text_width
         .min((max_width - HOVER_STATUS_OVERLAY_PADDING_X * 2.0).max(0.0))
         + HOVER_STATUS_OVERLAY_PADDING_X * 2.0;
       ui.set_max_width(desired_outer_width.min(max_width));
@@ -4444,17 +4493,20 @@ pub fn hover_status_overlay_ui(
       }
 
       frame.show(ui, |ui| {
+        let a11y_label = cache.hovered_link_a11y_label(&url);
         let resp = ui.add(
-          egui::Label::new(egui::RichText::new(url.as_str()).small())
+          egui::Label::new(egui::RichText::new(url.as_ref()).small())
             .wrap(false)
             .truncate(true),
         );
         resp.widget_info({
-          let label = format!("Hovered link: {url}");
+          let label = a11y_label.clone();
           move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
         });
       });
     });
+
+  ctx.data_mut(|d| d.insert_temp(cache_id, cache));
 }
 
 #[cfg(test)]
