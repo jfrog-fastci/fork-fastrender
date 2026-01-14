@@ -793,7 +793,12 @@ impl ModuleGraph {
       state.async_parent_modules.clear();
     }
 
-    let mut visited = vec![false; self.modules.len()];
+    let module_count = self.modules.len();
+    let mut visited: Vec<bool> = Vec::new();
+    visited
+      .try_reserve_exact(module_count)
+      .map_err(|_| VmError::OutOfMemory)?;
+    visited.resize(module_count, false);
     self.inner_module_evaluation_dfs(vm, module, &mut visited)
   }
 
@@ -813,15 +818,15 @@ impl ModuleGraph {
     visited[idx] = true;
 
     // Recurse into requested modules first (left-to-right).
-    let requests = self.modules[idx].requested_modules.clone();
     let mut deps: Vec<ModuleId> = Vec::new();
     deps
-      .try_reserve_exact(requests.len())
+      .try_reserve_exact(self.modules[idx].requested_modules.len())
       .map_err(|_| VmError::OutOfMemory)?;
-    for request in &requests {
-      if let Some(dep) = self.get_imported_module(module, request) {
-        deps.push(dep);
-      }
+    for request in &self.modules[idx].requested_modules {
+      let Some(dep) = self.get_imported_module(module, request) else {
+        continue;
+      };
+      deps.push(dep);
     }
     for &dep in &deps {
       self.inner_module_evaluation_dfs(vm, dep, visited)?;
@@ -928,7 +933,7 @@ impl ModuleGraph {
     let mut exec_list: Vec<ModuleId> = Vec::new();
     self.gather_available_ancestors(module, &mut exec_list)?;
 
-    exec_list.sort_by(|a, b| {
+    exec_list.sort_unstable_by(|a, b| {
       let a_order = self
         .async_eval_states
         .get(module_index(*a))
@@ -1322,10 +1327,57 @@ impl ModuleGraph {
   /// Populates each module's `[[LoadedModules]]` mapping using the host resolution map and the
   /// module's `[[RequestedModules]]` list.
   pub fn link_all_by_specifier(&mut self) {
+    fn try_clone_js_string(value: &crate::JsString) -> Result<crate::JsString, VmError> {
+      // Avoid `JsString::clone`, which allocates infallibly and can abort on allocator OOM.
+      crate::JsString::from_code_units(value.as_code_units())
+    }
+
+    fn try_clone_import_attribute(
+      value: &crate::ImportAttribute,
+    ) -> Result<crate::ImportAttribute, VmError> {
+      Ok(crate::ImportAttribute::new(
+        try_clone_js_string(&value.key)?,
+        try_clone_js_string(&value.value)?,
+      ))
+    }
+
+    fn try_clone_module_request(value: &ModuleRequest) -> Result<ModuleRequest, VmError> {
+      let specifier = crate::JsString::from_code_units(value.specifier.as_code_units())?;
+      let mut attributes: Vec<crate::ImportAttribute> = Vec::new();
+      attributes
+        .try_reserve_exact(value.attributes.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      for attr in &value.attributes {
+        attributes.push(try_clone_import_attribute(attr)?);
+      }
+      Ok(ModuleRequest::new(specifier, attributes))
+    }
+
     for referrer_idx in 0..self.modules.len() {
-      let requests = self.modules[referrer_idx].requested_modules.clone();
-      for request in requests {
-        if let Some(imported) = self.resolve_host_module(&request) {
+      let requested_len = self.modules[referrer_idx].requested_modules.len();
+      // Best-effort preallocation: `link_all_by_specifier` is a test convenience API. If we cannot
+      // reserve space for all edges, stop linking rather than aborting the process.
+      if self.modules[referrer_idx]
+        .loaded_modules
+        .try_reserve(requested_len)
+        .is_err()
+      {
+        return;
+      }
+
+      for i in 0..requested_len {
+        let imported = {
+          let request = &self.modules[referrer_idx].requested_modules[i];
+          self.resolve_host_module(request)
+        };
+        if let Some(imported) = imported {
+          let request =
+            match try_clone_module_request(&self.modules[referrer_idx].requested_modules[i]) {
+              Ok(r) => r,
+              Err(_) => return,
+            };
+          // `loaded_modules` capacity was reserved above, and the request has been cloned
+          // successfully, so this push is now infallible.
           self.modules[referrer_idx]
             .loaded_modules
             .push(LoadedModuleRequest::new(request, imported));
@@ -1335,7 +1387,7 @@ impl ModuleGraph {
           debug_assert!(
             false,
             "ModuleGraph::link_all_by_specifier: no module registered for specifier {:?}",
-            request.specifier
+            self.modules[referrer_idx].requested_modules[i].specifier
           );
         }
       }
@@ -2122,15 +2174,25 @@ impl ModuleGraph {
     for slot in &mut self.scc_parents {
       slot.clear();
     }
-    if self.scc_members.len() != module_count {
-      self.scc_members.resize_with(module_count, Vec::new);
+    fn ensure_outer_len<T>(
+      v: &mut Vec<Vec<T>>,
+      len: usize,
+    ) -> Result<(), VmError> {
+      if v.len() < len {
+        v.try_reserve_exact(len - v.len())
+          .map_err(|_| VmError::OutOfMemory)?;
+        while v.len() < len {
+          v.push(Vec::new());
+        }
+      } else if v.len() > len {
+        v.truncate(len);
+      }
+      Ok(())
     }
-    if self.scc_deps.len() != module_count {
-      self.scc_deps.resize_with(module_count, Vec::new);
-    }
-    if self.scc_parents.len() != module_count {
-      self.scc_parents.resize_with(module_count, Vec::new);
-    }
+
+    ensure_outer_len(&mut self.scc_members, module_count)?;
+    ensure_outer_len(&mut self.scc_deps, module_count)?;
+    ensure_outer_len(&mut self.scc_parents, module_count)?;
 
     for module in &mut self.modules {
       module.cycle_root = None;
@@ -2140,10 +2202,31 @@ impl ModuleGraph {
     let graph: &ModuleGraph = &*self;
     let mut index: usize = 0;
     let mut stack: Vec<usize> = Vec::new();
-    let mut on_stack = vec![false; module_count];
-    let mut indices: Vec<Option<usize>> = vec![None; module_count];
-    let mut lowlink: Vec<usize> = vec![0; module_count];
+    stack
+      .try_reserve_exact(module_count)
+      .map_err(|_| VmError::OutOfMemory)?;
+
+    let mut on_stack: Vec<bool> = Vec::new();
+    on_stack
+      .try_reserve_exact(module_count)
+      .map_err(|_| VmError::OutOfMemory)?;
+    on_stack.resize(module_count, false);
+
+    let mut indices: Vec<Option<usize>> = Vec::new();
+    indices
+      .try_reserve_exact(module_count)
+      .map_err(|_| VmError::OutOfMemory)?;
+    indices.resize(module_count, None);
+
+    let mut lowlink: Vec<usize> = Vec::new();
+    lowlink
+      .try_reserve_exact(module_count)
+      .map_err(|_| VmError::OutOfMemory)?;
+    lowlink.resize(module_count, 0);
     let mut sccs: Vec<Vec<usize>> = Vec::new();
+    sccs
+      .try_reserve_exact(module_count)
+      .map_err(|_| VmError::OutOfMemory)?;
 
     fn strongconnect(
       v: usize,
@@ -2195,6 +2278,7 @@ impl ModuleGraph {
             return Err(VmError::InvariantViolation("SCC stack underflow"));
           };
           on_stack[w] = false;
+          scc.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
           scc.push(w);
           if w == v {
             break;
@@ -2245,7 +2329,7 @@ impl ModuleGraph {
       // ReferenceError.
 
       // Record the SCC membership on the cycle root.
-      self.scc_members[root_idx] = members.clone();
+      self.scc_members[root_idx] = members;
 
       // Assign the canonical cycle root to each member.
       for &idx in &scc {
@@ -2271,8 +2355,13 @@ impl ModuleGraph {
           vm.tick()?;
         }
         let member_idx = module_index(member);
-        let requests = self.modules[member_idx].requested_modules.clone();
-        for (ri, request) in requests.iter().enumerate() {
+        let requests_len = self.modules[member_idx].requested_modules.len();
+        for (ri, request) in self.modules[member_idx]
+          .requested_modules
+          .iter()
+          .take(requests_len)
+          .enumerate()
+        {
           if ri % 64 == 0 && ri != 0 {
             vm.tick()?;
           }
@@ -2291,9 +2380,7 @@ impl ModuleGraph {
         }
       }
 
-      self.scc_deps[root_idx] = deps.clone();
-
-      for dep_root in deps {
+      for dep_root in deps.iter().copied() {
         let dep_idx = module_index(dep_root);
         let parents = &mut self.scc_parents[dep_idx];
         if !parents.contains(&root) {
@@ -2301,6 +2388,8 @@ impl ModuleGraph {
           parents.push(root);
         }
       }
+
+      self.scc_deps[root_idx] = deps;
     }
 
     self.scc_dirty = false;
@@ -3050,9 +3139,16 @@ impl ModuleGraph {
     }
 
     let mut stack: Vec<ModuleId> = Vec::new();
+    stack
+      .try_reserve_exact(module_count)
+      .map_err(|_| VmError::OutOfMemory)?;
     stack.push(module);
 
-    let mut visited = vec![false; module_count];
+    let mut visited: Vec<bool> = Vec::new();
+    visited
+      .try_reserve_exact(module_count)
+      .map_err(|_| VmError::OutOfMemory)?;
+    visited.resize(module_count, false);
 
     const MODULE_TICK_EVERY: usize = 32;
     const EDGE_TICK_EVERY: usize = 32;
@@ -3155,15 +3251,27 @@ impl ModuleGraph {
     self.modules[idx].status = ModuleStatus::Evaluating;
 
     let eval_result = (|| -> Result<(), VmError> {
-      let requested_modules = self.modules[idx].requested_modules.clone();
       const EVAL_TICK_EVERY: usize = 32;
-      for (i, request) in requested_modules.into_iter().enumerate() {
+      // Compute dependency list first to avoid cloning attacker-controlled module requests (which
+      // can abort on allocator OOM) and to avoid borrow conflicts while recursively evaluating.
+      let requested_len = self.modules[idx].requested_modules.len();
+      let mut deps: Vec<ModuleId> = Vec::new();
+      deps
+        .try_reserve_exact(requested_len)
+        .map_err(|_| VmError::OutOfMemory)?;
+      for i in 0..requested_len {
         if i % EVAL_TICK_EVERY == 0 && i != 0 {
           vm.tick()?;
         }
-        let imported = self
-          .get_imported_module(module, &request)
-          .ok_or(VmError::Unimplemented("unlinked module request"))?;
+        let imported = {
+          let request = &self.modules[idx].requested_modules[i];
+          self
+            .get_imported_module(module, request)
+            .ok_or(VmError::Unimplemented("unlinked module request"))?
+        };
+        deps.push(imported);
+      }
+      for imported in deps {
         self.eval_inner(vm, scope, global_object, realm_id, imported, host, hooks)?;
       }
 
@@ -3273,15 +3381,27 @@ impl ModuleGraph {
 
     let eval_result = (|| -> Result<ModuleTlaStepResult, VmError> {
       // Evaluate dependencies synchronously (top-level await in dependencies remains unsupported).
-      let requested_modules = self.modules[idx].requested_modules.clone();
       const EVAL_TICK_EVERY: usize = 32;
-      for (i, request) in requested_modules.into_iter().enumerate() {
+      // Compute dependency list first to avoid cloning attacker-controlled module requests (which
+      // can abort on allocator OOM) and to avoid borrow conflicts while recursively evaluating.
+      let requested_len = self.modules[idx].requested_modules.len();
+      let mut deps: Vec<ModuleId> = Vec::new();
+      deps
+        .try_reserve_exact(requested_len)
+        .map_err(|_| VmError::OutOfMemory)?;
+      for i in 0..requested_len {
         if i % EVAL_TICK_EVERY == 0 && i != 0 {
           vm.tick()?;
         }
-        let imported = self
-          .get_imported_module(module, &request)
-          .ok_or(VmError::Unimplemented("unlinked module request"))?;
+        let imported = {
+          let request = &self.modules[idx].requested_modules[i];
+          self
+            .get_imported_module(module, request)
+            .ok_or(VmError::Unimplemented("unlinked module request"))?
+        };
+        deps.push(imported);
+      }
+      for imported in deps {
         self.eval_inner(vm, scope, global_object, realm_id, imported, host, hooks)?;
       }
 
@@ -3927,6 +4047,7 @@ pub(crate) fn module_namespace_getter(
 mod tests {
   use super::*;
   use crate::microtasks::MicrotaskQueue;
+  use crate::test_alloc::FailAllocsGuard;
   use crate::{HeapLimits, Realm, VmOptions};
 
   #[test]
@@ -4101,6 +4222,22 @@ mod tests {
 
     heap.remove_root(awaited_promise_root);
     realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn ensure_scc_info_returns_out_of_memory_on_alloc_failure() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut vm = Vm::new(VmOptions::default());
+
+    let mut graph = ModuleGraph::new();
+    let _module = graph.add_module(SourceTextModuleRecord::parse(&mut heap, "export const x = 1;")?)?;
+
+    // Simulate global allocator OOM and ensure SCC computation reports `VmError::OutOfMemory`
+    // instead of aborting the process (e.g. via infallible `vec![..; module_count]`).
+    let _guard = FailAllocsGuard::new();
+    let err = graph.ensure_scc_info(&mut vm).expect_err("expected OOM");
+    assert!(matches!(err, VmError::OutOfMemory));
     Ok(())
   }
 }
