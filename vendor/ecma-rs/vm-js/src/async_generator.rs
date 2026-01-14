@@ -7,11 +7,11 @@ use crate::{GcObject, Job, JobKind, PromiseCapability, RootId, Scope, Value, Vm,
 pub(crate) enum YieldStarStep {
   /// Await the provided promise and resume the yield* state machine with the promise settlement.
   Await(Value),
-  /// Yield a value from the delegate iterator to the async generator consumer.
+  /// Yield the delegate iterator *result object* to the async generator consumer.
   ///
-  /// This corresponds to `IteratorValue(iterResult)` / `AsyncGeneratorYield(value)` in ECMA-262:
-  /// when the delegate iterator result's `done` is `false`, the `yield*` expression yields the
-  /// extracted `value` to the consumer.
+  /// vm-js intentionally yields the iterator result object directly (preserving any extra
+  /// properties and avoiding eager access to `.value`) rather than extracting the `.value`
+  /// property as in the spec.
   Yield(Value),
   /// Delegation completed (`done: true`) and the outer generator should resume with this value as
   /// the result of the `yield*` expression.
@@ -233,14 +233,12 @@ impl AsyncYieldStar {
           });
         }
 
-        // `done: false`: yield the iterator value to the consumer.
-        let value = iterator::iterator_value(vm, host, hooks, scope, iter_result)
-          .map_err(|err| coerce_throw(vm, scope, err))?;
-
+        // `done: false`: yield the iterator result object to the consumer, deferring access to its
+        // `.value` property until user code consumes it.
         if matches!(op, DelegateOpKind::Return) {
           self.returning = true;
         }
-        Ok(YieldStarStep::Yield(value))
+        Ok(YieldStarStep::Yield(iter_result))
       }
 
       YieldStarPending::AwaitingClose {

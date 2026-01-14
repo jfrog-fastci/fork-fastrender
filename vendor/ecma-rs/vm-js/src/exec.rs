@@ -20831,37 +20831,6 @@ fn async_generator_handle_execution_result(
       }
 
       AsyncBodyResult::Await {
-        kind: AsyncSuspendKind::AwaitResolved,
-        await_value: awaited_promise,
-        frames,
-      } => {
-        state.frames = frames;
-
-        // `AwaitResolved` means the internal `PromiseResolve` step has already been performed by an
-        // internal algorithm (e.g. `AsyncIteratorClose`). Avoid calling `PromiseResolve` again so we
-        // do not observe `promise.constructor` twice.
-        let mut await_scope = scope.reborrow();
-        await_scope.push_root(awaited_promise)?;
-
-        cont.env.teardown(await_scope.heap_mut());
-        await_scope
-          .heap_mut()
-          .async_generator_set_continuation(gen_obj, Some(cont))?;
-
-        async_generator_schedule_await(
-          vm,
-          &mut await_scope,
-          host,
-          hooks,
-          gen_obj,
-          awaited_promise,
-          AsyncGeneratorResumeKind::Await,
-          state,
-        )?;
-        return Ok(false);
-      }
-
-      AsyncBodyResult::Await {
         kind: AsyncSuspendKind::Yield,
         await_value,
         frames,
@@ -28969,23 +28938,9 @@ fn async_yield_star_begin(
       Ok(AsyncEval::Suspend(suspend))
     }
 
-    YieldStarStep::Yield(value) => {
-      // `yield*` in async generators must not `await` values produced by the delegate iterator.
-      //
-      // In particular, if the delegate yields a Promise object as its `.value`, the outer generator
-      // must yield that Promise object unchanged (test262:
-      // `test/language/statements/async-generator/yield-star-promise-not-unwrapped.js`).
-      //
-      // vm-js models this by yielding an *iterator result object* directly to the consumer.
-      let iter_result =
-        match async_generator_create_iterator_result_object(evaluator.vm, &mut scope, value, false) {
-          Ok(v) => v,
-          Err(err) => {
-            scope.heap_mut().remove_root(iterator_root);
-            scope.heap_mut().remove_root(next_method_root);
-            return Err(err);
-          }
-        };
+    YieldStarStep::Yield(iter_result) => {
+      // `yield*` in async generators yields the delegate iterator *result object* directly,
+      // preserving any extra properties and deferring access to its `.value` property.
       let mut suspend = AsyncSuspend {
         kind: AsyncSuspendKind::YieldIteratorResult,
         await_value: iter_result,
@@ -35102,7 +35057,7 @@ fn async_resume_from_frames(
                 frames: out_frames,
               });
             }
-            YieldStarStep::Yield(value) => {
+            YieldStarStep::Yield(iter_result) => {
               let mut out_frames: VecDeque<AsyncFrame> = VecDeque::new();
               if let Err(_) = async_frames_push(
                 &mut out_frames,
@@ -35117,15 +35072,6 @@ fn async_resume_from_frames(
                 return Err(VmError::OutOfMemory);
               }
               async_frames_try_append(scope.heap_mut(), &mut out_frames, &mut frames)?;
-              let iter_result =
-                match async_generator_create_iterator_result_object(evaluator.vm, scope, value, false) {
-                  Ok(v) => v,
-                  Err(err) => {
-                    scope.heap_mut().remove_root(iterator_root);
-                    scope.heap_mut().remove_root(next_method_root);
-                    return Err(err);
-                  }
-                };
               return Ok(AsyncBodyResult::Await {
                 kind: AsyncSuspendKind::YieldIteratorResult,
                 await_value: iter_result,
