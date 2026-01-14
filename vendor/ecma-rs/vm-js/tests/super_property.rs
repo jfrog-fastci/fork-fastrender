@@ -47,6 +47,64 @@ fn super_property_in_base_class_static_method_reads_from_function_prototype() {
 }
 
 #[test]
+fn super_in_arrow_closure_observes_dynamic_home_object_prototype() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var proto1 = {
+          get x() { return this.tag + ":p1"; }
+        };
+        var proto2 = {
+          get x() { return this.tag + ":p2"; }
+        };
+
+        class C {
+          constructor() { this.tag = "t"; }
+          m() { return () => super.x; }
+        }
+
+        Object.setPrototypeOf(C.prototype, proto1);
+        var f = new C().m();
+        Object.setPrototypeOf(C.prototype, proto2);
+
+        f() === "t:p2"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn super_in_static_arrow_closure_observes_dynamic_home_object_prototype() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var proto1 = {
+          get x() { return this.tag + ":p1"; }
+        };
+        var proto2 = {
+          get x() { return this.tag + ":p2"; }
+        };
+
+        class C {
+          static m() { return () => super.x; }
+        }
+        C.tag = "t";
+
+        Object.setPrototypeOf(C, proto1);
+        var f = C.m();
+        Object.setPrototypeOf(C, proto2);
+
+        f() === "t:p2"
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn super_method_call_uses_this_binding_as_receiver() {
   let mut rt = new_runtime();
   let value = rt
