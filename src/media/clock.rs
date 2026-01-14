@@ -329,6 +329,11 @@ pub enum PlaybackState {
 ///
 /// Note: `playbackRate` of 0 is treated as a valid value (the timeline simply does not advance while
 /// `playing` remains `true`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackState {
+  Playing,
+  Paused,
+}
 
 pub struct PlaybackClock {
   master_clock: Arc<dyn MediaClock>,
@@ -497,14 +502,6 @@ impl PlaybackClock {
   /// Returns the current media timeline time.
   pub fn now(&self) -> Duration {
     Duration::from_nanos(self.compute_now_nanos())
-  }
-
-  pub fn state(&self) -> PlaybackState {
-    if self.playing.load(Ordering::Relaxed) {
-      PlaybackState::Playing
-    } else {
-      PlaybackState::Paused
-    }
   }
 }
 
