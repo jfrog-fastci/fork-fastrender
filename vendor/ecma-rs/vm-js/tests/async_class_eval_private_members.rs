@@ -126,3 +126,62 @@ fn async_class_evaluation_supports_private_methods_in_static_blocks_that_await()
   assert_eq!(value_to_number(rt.exec_script("out")?), 11.0);
   Ok(())
 }
+
+#[test]
+fn async_class_evaluation_supports_private_instance_methods() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = 0;
+      async function f() {
+        class C {
+          #m() { return 4; }
+          [(await Promise.resolve("call"))]() { return this.#m(); }
+        }
+        return (new C()).call();
+      }
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  assert_eq!(value_to_number(rt.exec_script("out")?), 0.0);
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(value_to_number(rt.exec_script("out")?), 4.0);
+  Ok(())
+}
+
+#[test]
+fn async_class_evaluation_supports_private_instance_accessors() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = 0;
+      var side = 0;
+      async function f() {
+        class C {
+          get #x() { return 2; }
+          set #x(v) { side = v; }
+          [(await Promise.resolve("call"))]() {
+            this.#x = 5;
+            return this.#x;
+          }
+        }
+        return (new C()).call();
+      }
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  assert_eq!(value_to_number(rt.exec_script("out")?), 0.0);
+  assert_eq!(value_to_number(rt.exec_script("side")?), 0.0);
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  assert_eq!(value_to_number(rt.exec_script("out")?), 2.0);
+  assert_eq!(value_to_number(rt.exec_script("side")?), 5.0);
+  Ok(())
+}
