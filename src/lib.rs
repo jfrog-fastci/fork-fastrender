@@ -197,10 +197,10 @@ pub mod animation;
 pub mod api;
 pub mod clock;
 pub mod compat;
-pub(crate) mod document_ticks;
 pub mod error;
 pub mod geometry;
 pub mod media;
+pub(crate) mod document_ticks;
 
 // ============================================================================
 // Pipeline Modules
@@ -216,11 +216,11 @@ pub mod math;
 pub mod paint;
 pub mod render_control;
 pub mod scroll;
-pub mod security;
 pub mod style;
 pub mod text;
 mod textarea;
 pub mod tree;
+pub mod security;
 
 // AccessKit integration helpers (used by the windowed browser UI and renderer-chrome experiments).
 //
@@ -234,11 +234,10 @@ pub mod accessibility_accesskit;
 // ============================================================================
 
 pub mod bench;
+pub mod cli_utils;
+pub mod browser_perf_log;
 #[doc(hidden)]
 pub mod bench_utils;
-pub mod browser_perf_log;
-pub mod cli_utils;
-pub mod cpu;
 pub mod css;
 pub mod debug;
 pub mod dom;
@@ -250,6 +249,8 @@ pub mod image_compare;
 pub mod image_loader;
 pub mod image_output;
 pub mod ipc;
+#[cfg(test)]
+pub(crate) mod testing;
 pub mod js;
 pub mod memory;
 pub mod perf_log;
@@ -260,31 +261,30 @@ pub mod network_process;
 pub mod pageset;
 pub mod process_limits;
 pub mod process_supervision;
+pub mod sandbox;
+pub mod site_isolation;
+pub mod shm;
 pub(crate) mod rayon_global;
 pub mod resource;
-pub mod sandbox;
 #[cfg(target_os = "macos")]
 pub mod sandbox_exec;
+pub mod cpu;
 #[path = "ui/select_dropdown.rs"]
 pub mod select_dropdown;
-pub mod shm;
-pub mod site_isolation;
-pub(crate) mod string_match;
 pub mod svg;
 pub(crate) mod svg_path;
+pub(crate) mod xml;
 pub mod system;
-#[cfg(test)]
-pub(crate) mod testing;
 pub(crate) mod thread_pool_cache;
 pub(crate) mod url_normalize;
+pub(crate) mod string_match;
 pub mod web;
 pub mod webidl;
-pub(crate) mod xml;
 
+pub mod ui;
 pub mod chrome_frame;
 #[cfg(feature = "a11y_accesskit")]
 pub mod renderer_chrome;
-pub mod ui;
 // ============================================================================
 // Public API
 // ============================================================================
@@ -294,15 +294,17 @@ pub use api::BrowserDocument;
 pub use api::BrowserDocument2;
 pub use api::BrowserDocumentDom2;
 pub use api::BrowserDocumentJs;
+pub use api::ChromeFrameDocument;
 pub use api::BrowserTab;
 pub use api::BrowserTabHost;
 pub use api::BrowserTabJsExecutor;
+pub use api::Dom2HitTestResult;
+pub use api::ModuleScriptExecutionStatus;
+pub use api::SelectionAction;
 pub use api::CascadeDiagnostics;
-pub use api::ChromeFrameDocument;
 pub use api::ConsoleMessage;
 pub use api::ConsoleMessageLevel;
 pub use api::DiagnosticsLevel;
-pub use api::Dom2HitTestResult;
 pub use api::FastRender;
 pub use api::FastRenderBuilder;
 pub use api::FastRenderConfig;
@@ -310,14 +312,13 @@ pub use api::FastRenderPool;
 pub use api::FastRenderPoolConfig;
 pub use api::FontCacheConfig;
 pub use api::ImageCacheConfig;
-pub use api::IncrementalPaintDisabledReason;
-pub use api::IncrementalPaintReport;
 pub use api::JsException;
 pub use api::LayoutArtifacts;
 pub use api::LayoutDiagnostics;
-pub use api::ModuleScriptExecutionStatus;
 pub use api::PaintDiagnostics;
 pub use api::PaintedFrame;
+pub use api::IncrementalPaintDisabledReason;
+pub use api::IncrementalPaintReport;
 pub use api::Pixmap;
 pub use api::PreparedDocument;
 pub use api::PreparedDocumentReport;
@@ -336,7 +337,6 @@ pub use api::ResourceFetchError;
 pub use api::ResourceKind;
 pub use api::RunUntilStableOutcome;
 pub use api::RunUntilStableStopReason;
-pub use api::SelectionAction;
 pub use api::VmJsBrowserTabExecutor;
 pub use compat::CompatProfile;
 pub use debug::inspect::{InspectQuery, InspectionSnapshot};

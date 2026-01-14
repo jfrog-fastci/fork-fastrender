@@ -37411,6 +37411,26 @@ fn range_start_container_get_native(
   get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), node_id)
 }
 
+fn range_common_ancestor_container_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = range_handle_from_this(vm, scope, this, ILLEGAL_INVOCATION_ERROR)?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let node_id = dom
+    .range_common_ancestor_container(handle.range_id)
+    .map_err(|_| VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
+  get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), node_id)
+}
+
 fn range_start_offset_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -37448,26 +37468,6 @@ fn range_end_container_get_native(
   let node_id = dom
     .range_end_container(handle.range_id)
     .map_err(|_| VmError::TypeError("Illegal invocation"))?;
-  get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), node_id)
-}
-
-fn range_common_ancestor_container_get_native(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
-  let handle = range_handle_from_this(vm, scope, this, ILLEGAL_INVOCATION_ERROR)?;
-  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
-    .ok_or(VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
-  // SAFETY: `dom_ptr` is valid for the duration of this native call.
-  let dom = unsafe { dom_ptr.as_ref() };
-  let node_id = dom
-    .range_common_ancestor_container(handle.range_id)
-    .map_err(|_| VmError::TypeError(ILLEGAL_INVOCATION_ERROR))?;
   get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), node_id)
 }
 
