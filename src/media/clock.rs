@@ -8,6 +8,7 @@
 //!
 //! For the full intended clocking model and drift-bug checklist, see `docs/media_clocking.md`.
 
+use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -49,8 +50,8 @@ pub struct ClockMediaClock {
   clock: Arc<dyn Clock>,
 }
 
-impl std::fmt::Debug for ClockMediaClock {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for ClockMediaClock {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.debug_struct("ClockMediaClock")
       .field("clock", &"<dyn Clock>")
       .finish()
