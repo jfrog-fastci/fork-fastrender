@@ -100,7 +100,7 @@ fn async_class_evaluation_supports_private_methods_when_heritage_suspends() -> R
 }
 
 #[test]
-fn async_class_evaluation_supports_private_methods_in_static_blocks_that_await() -> Result<(), VmError> {
+fn class_static_block_can_access_private_methods() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   rt.exec_script(
@@ -110,19 +110,12 @@ fn async_class_evaluation_supports_private_methods_in_static_blocks_that_await()
         static #m() { return 1; }
         static {
           out = out * 10 + this.#m();
-          await Promise.resolve(0);
           out = out * 10 + this.#m();
         }
       }
     "#,
   )?;
 
-  // The static block should have run up to the first `await`.
-  assert_eq!(value_to_number(rt.exec_script("out")?), 1.0);
-
-  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
-
-  // After resuming, the block should complete and be able to resolve the private name again.
   assert_eq!(value_to_number(rt.exec_script("out")?), 11.0);
   Ok(())
 }

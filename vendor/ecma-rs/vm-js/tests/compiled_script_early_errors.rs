@@ -165,13 +165,10 @@ fn compiled_module_with_budget_rejects_duplicate_exported_name_default_vs_named(
 }
 
 #[test]
-fn compiled_script_allows_await_in_class_static_block_when_script_is_async() -> Result<(), VmError> {
+fn compiled_script_rejects_await_in_class_static_block() {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
 
-  // `CompiledScript` enables top-level await for classic scripts when they contain any await
-  // expression. Await in class static blocks should count, since the block executes during class
-  // evaluation.
-  CompiledScript::compile_script(
+  let err = CompiledScript::compile_script(
     &mut heap,
     "test.js",
     r#"
@@ -181,17 +178,17 @@ fn compiled_script_allows_await_in_class_static_block_when_script_is_async() -> 
         }
       }
     "#,
-  )?;
-  Ok(())
+  )
+  .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
 }
 
 #[test]
-fn compiled_script_with_budget_allows_await_in_class_static_block_when_script_is_async(
-) -> Result<(), VmError> {
+fn compiled_script_with_budget_rejects_await_in_class_static_block() {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut vm = Vm::new(VmOptions::default());
 
-  CompiledScript::compile_script_with_budget(
+  let err = CompiledScript::compile_script_with_budget(
     &mut heap,
     &mut vm,
     "test.js",
@@ -202,6 +199,7 @@ fn compiled_script_with_budget_allows_await_in_class_static_block_when_script_is
         }
       }
     "#,
-  )?;
-  Ok(())
+  )
+  .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
 }
