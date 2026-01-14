@@ -5,6 +5,118 @@ use fastrender::media::{DecodedItem, MediaDecodePipeline, MediaError, MediaResul
 use std::fs::File;
 use std::io::BufReader;
 
+#[derive(Debug, Clone, Copy)]
+struct RgbaStats {
+  avg_r: f64,
+  avg_g: f64,
+  avg_b: f64,
+  avg_a: f64,
+  center: [u8; 4],
+}
+
+fn rgba_stats(pixels: &[u8], width: usize, height: usize) -> RgbaStats {
+  assert_eq!(
+    pixels.len(),
+    width * height * 4,
+    "expected raw RGBA buffer length to match {}×{}×4, got {} bytes",
+    width,
+    height,
+    pixels.len()
+  );
+
+  let mut sum_r: u64 = 0;
+  let mut sum_g: u64 = 0;
+  let mut sum_b: u64 = 0;
+  let mut sum_a: u64 = 0;
+  for px in pixels.chunks_exact(4) {
+    sum_r += px[0] as u64;
+    sum_g += px[1] as u64;
+    sum_b += px[2] as u64;
+    sum_a += px[3] as u64;
+  }
+
+  let denom = (width * height) as f64;
+  let avg_r = sum_r as f64 / denom;
+  let avg_g = sum_g as f64 / denom;
+  let avg_b = sum_b as f64 / denom;
+  let avg_a = sum_a as f64 / denom;
+
+  let cx = width / 2;
+  let cy = height / 2;
+  let idx = (cy * width + cx) * 4;
+  let center = [pixels[idx], pixels[idx + 1], pixels[idx + 2], pixels[idx + 3]];
+
+  RgbaStats {
+    avg_r,
+    avg_g,
+    avg_b,
+    avg_a,
+    center,
+  }
+}
+
+fn assert_mostly_red(label: &str, stats: RgbaStats) {
+  assert!(
+    stats.avg_r > 180.0,
+    "{label}: expected avg R to be high, got {:.2} (avg G={:.2}, avg B={:.2}, avg A={:.2}, center={:?})",
+    stats.avg_r,
+    stats.avg_g,
+    stats.avg_b,
+    stats.avg_a,
+    stats.center
+  );
+  assert!(
+    stats.avg_g < 80.0,
+    "{label}: expected avg G to be low, got {:.2} (avg R={:.2}, avg B={:.2}, avg A={:.2}, center={:?})",
+    stats.avg_g,
+    stats.avg_r,
+    stats.avg_b,
+    stats.avg_a,
+    stats.center
+  );
+  assert!(
+    stats.avg_b < 80.0,
+    "{label}: expected avg B to be low, got {:.2} (avg R={:.2}, avg G={:.2}, avg A={:.2}, center={:?})",
+    stats.avg_b,
+    stats.avg_r,
+    stats.avg_g,
+    stats.avg_a,
+    stats.center
+  );
+  assert!(
+    stats.avg_a > 250.0,
+    "{label}: expected avg A to be ~255, got {:.2} (avg R={:.2}, avg G={:.2}, avg B={:.2}, center={:?})",
+    stats.avg_a,
+    stats.avg_r,
+    stats.avg_g,
+    stats.avg_b,
+    stats.center
+  );
+
+  // Dominance (helps catch channel swaps).
+  assert!(
+    stats.avg_r > stats.avg_g + 100.0,
+    "{label}: expected avg R to dominate avg G, got avg R={:.2} avg G={:.2}",
+    stats.avg_r,
+    stats.avg_g
+  );
+  assert!(
+    stats.avg_r > stats.avg_b + 100.0,
+    "{label}: expected avg R to dominate avg B, got avg R={:.2} avg B={:.2}",
+    stats.avg_r,
+    stats.avg_b
+  );
+
+  assert!(
+    stats.center[0] > 180
+      && stats.center[1] < 80
+      && stats.center[2] < 80
+      && stats.center[3] > 250,
+    "{label}: expected center pixel to be red-dominant, got {:?}",
+    stats.center
+  );
+}
+
 #[test]
 fn mp4_h264_aac_decodes_first_video_and_audio() -> MediaResult<()> {
   let demuxer = Mp4PacketDemuxer::open("tests/fixtures/media/test_h264_aac.mp4")?;
@@ -22,10 +134,8 @@ fn mp4_h264_aac_decodes_first_video_and_audio() -> MediaResult<()> {
       DecodedItem::Video(frame) => {
         assert_eq!((frame.width, frame.height), (64, 64));
         assert_eq!(frame.rgba.len(), (frame.width * frame.height * 4) as usize);
-        assert!(
-          frame.rgba.iter().any(|&b| b != 0),
-          "expected decoded H264 frame to contain non-zero pixel data"
-        );
+        let stats = rgba_stats(&frame.rgba, frame.width as usize, frame.height as usize);
+        assert_mostly_red("mp4/h264 first frame (test_h264_aac.mp4)", stats);
         got_video = true;
       }
       DecodedItem::Audio(chunk) => {
@@ -87,10 +197,8 @@ fn webm_vp9_opus_decodes_first_video_and_audio() -> MediaResult<()> {
       DecodedItem::Video(frame) => {
         assert_eq!((frame.width, frame.height), (64, 64));
         assert_eq!(frame.rgba.len(), (frame.width * frame.height * 4) as usize);
-        assert!(
-          frame.rgba.iter().any(|&b| b != 0),
-          "expected decoded VP9 frame to contain non-zero pixel data"
-        );
+        let stats = rgba_stats(&frame.rgba, frame.width as usize, frame.height as usize);
+        assert_mostly_red("webm/vp9 first frame (test_vp9_opus.webm)", stats);
         got_video = true;
       }
       DecodedItem::Audio(chunk) => {
@@ -127,10 +235,8 @@ fn mp4_vp9_decodes_first_video() -> MediaResult<()> {
 
     assert_eq!((frame.width, frame.height), (16, 16));
     assert_eq!(frame.rgba.len(), (frame.width * frame.height * 4) as usize);
-    assert!(
-      frame.rgba.iter().any(|&b| b != 0),
-      "expected decoded VP9-in-MP4 frame to contain non-zero pixel data"
-    );
+    let stats = rgba_stats(&frame.rgba, frame.width as usize, frame.height as usize);
+    assert_mostly_red("mp4/vp9 first frame (vp9_in_mp4.mp4)", stats);
     return Ok(());
   }
 
