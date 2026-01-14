@@ -509,37 +509,6 @@ impl<'a> Parser<'a> {
     self.disallow_arguments_in_class_init = prev_disallow_arguments_in_class_init;
     res
   }
-
-  pub(crate) fn with_disallow_arguments_in_class_init<R>(
-    &mut self,
-    f: impl FnOnce(&mut Self) -> SyntaxResult<R>,
-  ) -> SyntaxResult<R> {
-    if !self.is_strict_ecmascript() {
-      return f(self);
-    }
-    let prev = self.disallow_arguments_in_class_init;
-    self.disallow_arguments_in_class_init = prev.saturating_add(1);
-    let res = f(self);
-    self.disallow_arguments_in_class_init = prev;
-    res
-  }
-
-  pub(crate) fn validate_arguments_not_disallowed_in_class_init(
-    &self,
-    loc: Loc,
-    name: &str,
-  ) -> SyntaxResult<()> {
-    if !self.is_strict_ecmascript() || self.disallow_arguments_in_class_init == 0 {
-      return Ok(());
-    }
-    let Some(string_value) = self.identifier_name_string_value(name) else {
-      return Err(loc.error(SyntaxErrorType::ExpectedSyntax("identifier"), None));
-    };
-    if string_value.as_ref() == "arguments" {
-      return Err(loc.error(SyntaxErrorType::ExpectedSyntax("identifier"), None));
-    }
-    Ok(())
-  }
   /// Validate an *assignable reference* (simple assignment target), as required by update
   /// expressions (`++x`, `x--`, etc.).
   ///
