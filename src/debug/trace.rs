@@ -4,8 +4,10 @@ use std::borrow::Cow;
 use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
+
+use parking_lot::Mutex;
 
 const DEFAULT_MAX_TRACE_EVENTS: usize = 200_000;
 const TRACE_MAX_EVENTS_ENV: &str = "FASTR_TRACE_MAX_EVENTS";
@@ -216,10 +218,7 @@ impl TraceHandle {
     // Avoid holding the event mutex while serializing potentially large trace JSON. This lets hot
     // paths (including audio callbacks) keep recording events without blocking on file IO.
     let events_snapshot = {
-      let events = match state.events.lock() {
-        Ok(events) => events,
-        Err(err) => err.into_inner(),
-      };
+      let events = state.events.lock();
       events.clone()
     };
 
@@ -288,13 +287,9 @@ impl TraceState {
     let tid = current_thread_numeric_id();
     // This is called from `TraceSpan::drop`, which can run in hot paths (including audio
     // callbacks). Never block on a contended lock; drop the event instead.
-    let mut events = match self.events.try_lock() {
-      Ok(events) => events,
-      Err(std::sync::TryLockError::Poisoned(err)) => err.into_inner(),
-      Err(std::sync::TryLockError::WouldBlock) => {
-        self.dropped_events.fetch_add(1, Ordering::Relaxed);
-        return;
-      }
+    let Some(mut events) = self.events.try_lock() else {
+      self.dropped_events.fetch_add(1, Ordering::Relaxed);
+      return;
     };
     if events.len() >= self.max_events {
       self.dropped_events.fetch_add(1, Ordering::Relaxed);
@@ -457,10 +452,7 @@ mod tests {
     }
 
     let state = handle.inner.as_ref().expect("trace enabled");
-    let events = match state.events.lock() {
-      Ok(events) => events,
-      Err(err) => err.into_inner(),
-    };
+    let events = state.events.lock();
     assert_eq!(events.len(), max_events);
     drop(events);
     assert_eq!(
