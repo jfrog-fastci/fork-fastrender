@@ -13,6 +13,16 @@ fn assert_syntax_error(err: VmError) -> Vec<diagnostics::Diagnostic> {
   }
 }
 
+fn assert_syntax_error_code(err: VmError, allowed_codes: &[&str]) {
+  let diags = assert_syntax_error(err);
+  assert!(!diags.is_empty(), "expected at least one diagnostic");
+  let codes: Vec<_> = diags.iter().map(|d| d.code.as_str()).collect();
+  assert!(
+    codes.iter().any(|code| allowed_codes.contains(code)),
+    "expected syntax diagnostic code in {allowed_codes:?}, got {codes:?}"
+  );
+}
+
 #[test]
 fn return_outside_function_is_syntax_error() {
   let mut rt = new_runtime();
@@ -299,7 +309,7 @@ fn await_expression_in_class_static_block_in_async_function_is_syntax_error() {
   let err = rt
     .exec_script("async function f(){ class C { static { await 0; } } }")
     .unwrap_err();
-  assert!(matches!(err, VmError::Syntax(_)));
+  assert_syntax_error_code(err, &["PS0002", "VMJS0004"]);
 }
 
 #[test]
@@ -310,7 +320,7 @@ fn await_expression_in_class_static_block_in_module_is_syntax_error() {
     "class C { static { await 0; } } export {};",
   )
   .unwrap_err();
-  assert!(matches!(err, VmError::Syntax(_)));
+  assert_syntax_error_code(err, &["PS0002", "VMJS0004"]);
 }
 
 #[test]
@@ -328,7 +338,7 @@ fn for_await_of_in_class_static_block_in_async_function_is_syntax_error() {
   let err = rt
     .exec_script("async function f(){ class C { static { for await (const x of []) {} } } }")
     .unwrap_err();
-  assert!(matches!(err, VmError::Syntax(_)));
+  assert_syntax_error_code(err, &["PS0002", "VMJS0004"]);
 }
 
 #[test]
@@ -339,7 +349,7 @@ fn for_await_of_in_class_static_block_in_module_is_syntax_error() {
     "class C { static { for await (const x of []) {} } } export {};",
   )
   .unwrap_err();
-  assert!(matches!(err, VmError::Syntax(_)));
+  assert_syntax_error_code(err, &["PS0002", "VMJS0004"]);
 }
 
 #[test]
