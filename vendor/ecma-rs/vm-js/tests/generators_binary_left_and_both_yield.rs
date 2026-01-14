@@ -125,6 +125,29 @@ fn generator_binary_bigint_division_yield_on_both_sides() {
 }
 
 #[test]
+fn generator_binary_bigint_mixing_error_is_catchable_after_both_yields() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(){
+        try { return (yield 1n) + (yield 2); }
+        catch (e) { return e && e.name === 'TypeError'; }
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(1n);
+      var r3 = it.next(1);
+      r1.value === 1n && r1.done === false &&
+      r2.value === 2 && r2.done === false &&
+      r3.done === true && r3.value === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_binary_remainder_yield_on_both_sides() {
   let mut rt = new_runtime();
   let value = rt
@@ -409,6 +432,29 @@ fn generator_binary_bigint_exponentiation_is_right_associative_under_yield() {
       r2.value === 2n && r2.done === false &&
       r3.value === 3n && r3.done === false &&
       r4.done === true && r4.value === 512n
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_binary_bigint_negative_exponent_throws_range_error_after_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g(){
+        try { return (yield 1n) ** (yield 2n); }
+        catch (e) { return e && e.name === 'RangeError'; }
+      }
+      var it = g();
+      var r1 = it.next();
+      var r2 = it.next(2n);
+      var r3 = it.next(-1n);
+      r1.value === 1n && r1.done === false &&
+      r2.value === 2n && r2.done === false &&
+      r3.done === true && r3.value === true
     "#,
     )
     .unwrap();
