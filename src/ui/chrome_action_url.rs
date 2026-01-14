@@ -400,6 +400,16 @@ impl ChromeActionUrl {
     }
   }
 
+  fn parse_url(url: &Url) -> Result<Self, String> {
+    // `Url::parse` accepts both `chrome-action:foo` and `chrome-action:/foo`. The latter does not
+    // match our strict `chrome-action:<action>` grammar, so reject it explicitly.
+    let action = url.path();
+    if action.is_empty() || action.starts_with('/') {
+      return Err("chrome-action URL missing action".to_string());
+    }
+    Self::parse(url.as_str())
+  }
+
   /// Format this action into a canonical `chrome-action:` URL string.
   pub fn format(&self) -> String {
     let mut out = String::from(Self::SCHEME);
@@ -616,6 +626,8 @@ impl ChromeActionUrl {
     })
   }
 }
+
+pub const CHROME_ACTION_SCHEME: &str = ChromeActionUrl::SCHEME;
 
 impl std::fmt::Display for ChromeActionUrl {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
