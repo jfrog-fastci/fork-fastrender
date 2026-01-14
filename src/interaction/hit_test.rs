@@ -791,6 +791,7 @@ pub fn resolve_label_associated_control(dom: &DomNode, label_node_id: usize) -> 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::interaction::cursor::cursor_kind_for_hit;
   use crate::geometry::Point;
 
   fn find_element_node_id(dom: &DomNode, tag: &str) -> usize {
@@ -873,6 +874,89 @@ mod tests {
     assert_eq!(cursor_for_form_control(node), CursorKind::Default);
   }
 
+  #[test]
+  fn cursor_kind_for_hit_none_is_default() {
+    assert_eq!(cursor_kind_for_hit(None), CursorKind::Default);
+  }
+
+  #[test]
+  fn cursor_kind_for_hit_link_is_pointer() {
+    let dom =
+      crate::dom::parse_html("<html><body><a href=\"x\">Link</a></body></html>").expect("parse");
+    let a_id = find_element_node_id(&dom, "a");
+    let hit = HitTestResult {
+      box_id: 1,
+      css_cursor: CursorKeyword::Auto,
+      is_selectable_text: false,
+      element_id: None,
+      is_editable_text_drop_target_candidate: false,
+      form_control_cursor: CursorKind::Default,
+      styled_node_id: a_id,
+      dom_node_id: a_id,
+      kind: HitTestKind::Link,
+      href: Some("x".to_string()),
+    };
+    assert_eq!(cursor_kind_for_hit(Some(&hit)), CursorKind::Pointer);
+  }
+
+  #[test]
+  fn cursor_kind_for_hit_text_input_is_text() {
+    let dom = crate::dom::parse_html("<html><body><input></body></html>").expect("parse");
+    let input_id = find_element_node_id(&dom, "input");
+    let hit = HitTestResult {
+      box_id: 1,
+      css_cursor: CursorKeyword::Auto,
+      is_selectable_text: false,
+      element_id: None,
+      is_editable_text_drop_target_candidate: false,
+      form_control_cursor: CursorKind::Text,
+      styled_node_id: input_id,
+      dom_node_id: input_id,
+      kind: HitTestKind::FormControl,
+      href: None,
+    };
+    assert_eq!(cursor_kind_for_hit(Some(&hit)), CursorKind::Text);
+  }
+
+  #[test]
+  fn cursor_kind_for_hit_checkbox_input_is_default() {
+    let dom =
+      crate::dom::parse_html("<html><body><input type=\"checkbox\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&dom, "input");
+    let hit = HitTestResult {
+      box_id: 1,
+      css_cursor: CursorKeyword::Auto,
+      is_selectable_text: false,
+      element_id: None,
+      is_editable_text_drop_target_candidate: false,
+      form_control_cursor: CursorKind::Default,
+      styled_node_id: input_id,
+      dom_node_id: input_id,
+      kind: HitTestKind::FormControl,
+      href: None,
+    };
+    assert_eq!(cursor_kind_for_hit(Some(&hit)), CursorKind::Default);
+  }
+
+  #[test]
+  fn cursor_kind_for_hit_textarea_is_text() {
+    let dom =
+      crate::dom::parse_html("<html><body><textarea>hi</textarea></body></html>").expect("parse");
+    let textarea_id = find_element_node_id(&dom, "textarea");
+    let hit = HitTestResult {
+      box_id: 1,
+      css_cursor: CursorKeyword::Auto,
+      is_selectable_text: false,
+      element_id: None,
+      is_editable_text_drop_target_candidate: false,
+      form_control_cursor: CursorKind::Text,
+      styled_node_id: textarea_id,
+      dom_node_id: textarea_id,
+      kind: HitTestKind::FormControl,
+      href: None,
+    };
+    assert_eq!(cursor_kind_for_hit(Some(&hit)), CursorKind::Text);
+  }
   fn prepare_for_hit_testing(html: &str) -> crate::api::PreparedDocument {
     let mut renderer = crate::api::FastRender::new().expect("renderer");
     let options = crate::api::RenderOptions::new().with_viewport(256, 128);
