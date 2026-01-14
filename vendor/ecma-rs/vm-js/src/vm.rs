@@ -4677,7 +4677,7 @@ impl Vm {
           ))?;
           Ok(Value::Object(this_obj))
         }
-      }
+      },
 
       // Derived constructors may only return an object or `undefined`. Any other explicit non-object
       // return value must throw a TypeError.
@@ -4793,7 +4793,13 @@ impl Vm {
     // - If they return any other non-object value (including `null`), it is a TypeError.
     if is_derived_class_ctor_body {
       match return_value {
+        // ECMA-262: if the constructor explicitly returns an object, that becomes the result of
+        // construction (regardless of whether `this` was initialized).
         Value::Object(o) => Ok(Value::Object(o)),
+        // `return;` / no explicit return.
+        //
+        // Per ECMA-262, constructors yield `this` when returning `undefined`. Derived constructors
+        // are special in that `this` is uninitialized until `super()` returns.
         Value::Undefined => match final_this {
           Value::Object(o) => Ok(Value::Object(o)),
           _ => {
@@ -4808,6 +4814,7 @@ impl Vm {
             Err(VmError::Throw(err))
           }
         },
+        // Derived constructors are not allowed to return non-object, non-undefined values.
         _ => Err(VmError::TypeError(
           "Derived constructors may only return an object or undefined",
         )),

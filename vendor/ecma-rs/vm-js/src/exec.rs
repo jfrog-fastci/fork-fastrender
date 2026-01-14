@@ -25875,6 +25875,12 @@ fn async_eval_assignment_to_computed_member(
     if let Some(home) = evaluator.home_object {
       member_scope.push_root(Value::Object(home))?;
     }
+    // `GetThisBinding` for Super References must throw before evaluating the computed key
+    // expression (and therefore before any potential `await` / thenable side effects).
+    //
+    // This also ensures arrow/eval code in derived constructors observes `this` initialization
+    // correctly when `evaluator.this` is a `DerivedConstructorState` cell.
+    async_get_super_receiver(evaluator, &mut member_scope)?;
     match async_eval_expr(evaluator, &mut member_scope, &member.member)? {
       AsyncEval::Complete(member_value) => {
         let mut key_scope = member_scope.reborrow();
@@ -26648,6 +26654,9 @@ fn async_eval_update_expression(
         if let Some(home) = evaluator.home_object {
           member_scope.push_root(Value::Object(home))?;
         }
+        // `GetThisBinding` for Super References must throw before evaluating the computed key
+        // expression.
+        async_get_super_receiver(evaluator, &mut member_scope)?;
         match async_eval_expr(evaluator, &mut member_scope, &member.member)? {
           AsyncEval::Complete(member_value) => {
             let mut key_scope = member_scope.reborrow();
@@ -26669,7 +26678,8 @@ fn async_eval_update_expression(
               .get_super_base(&mut key_scope)
               .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
             let reference = Reference::SuperProperty { base, key, receiver };
-            let value = async_apply_update_to_reference(evaluator, &mut key_scope, &reference, delta, prefix)?;
+            let value =
+              async_apply_update_to_reference(evaluator, &mut key_scope, &reference, delta, prefix)?;
             Ok(AsyncEval::Complete(value))
           }
           AsyncEval::Suspend(mut suspend) => {
@@ -26685,7 +26695,6 @@ fn async_eval_update_expression(
           }
         }
       } else {
-
         match async_eval_expr(evaluator, scope, &member.object)? {
           AsyncEval::Complete(base) => {
             async_update_computed_member_after_base(evaluator, scope, member, base, delta, prefix)
@@ -26804,6 +26813,30 @@ fn async_reference_from_computed_member(
     ));
   }
 
+  // `super[expr]` computed member access is a Super Reference, not a normal property reference. Do
+  // not attempt to use the (synthetic) `super` base value.
+  if matches!(&*member.object.stx, Expr::Super(_)) {
+    let mut key_scope = scope.reborrow();
+    key_scope.push_root(member_value)?;
+    let key = evaluator
+      .to_property_key_operator(&mut key_scope, member_value)
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+ 
+    let receiver = async_get_super_receiver(evaluator, &mut key_scope)?;
+ 
+    // Root receiver + key across `GetSuperBase()` and any proxy traps.
+    key_scope.push_root(receiver)?;
+    match key {
+      PropertyKey::String(s) => key_scope.push_root(Value::String(s))?,
+      PropertyKey::Symbol(s) => key_scope.push_root(Value::Symbol(s))?,
+    };
+ 
+    let base = evaluator
+      .get_super_base(&mut key_scope)
+      .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err))?;
+    return Ok(Reference::SuperProperty { base, key, receiver });
+  }
+ 
   let mut key_scope = scope.reborrow();
   key_scope.push_roots(&[base, member_value])?;
   let key = evaluator
@@ -32135,6 +32168,7 @@ fn async_resume_from_frames(
                     "optional chaining used in update target",
                   ));
                 }
+
                 let mut key_scope = scope.reborrow();
                 key_scope.push_root(member_value)?;
 

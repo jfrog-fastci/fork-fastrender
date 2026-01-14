@@ -138,6 +138,50 @@ fn async_super_computed_member_update_expressions_across_await() -> Result<(), V
 
   let out = rt.exec_script("out")?;
   assert_eq!(value_to_string(&rt, out), "1,3,3");
+  assert_eq!(value_to_string(&rt, out), "1,3,3");
+
+  Ok(())
+}
+
+#[test]
+fn async_super_property_in_derived_constructor_async_arrow_before_super_throws_reference_error_before_evaluating_key_or_rhs(
+) -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = '';
+      var side = 0;
+
+      class B { set x(v) { this._x = v; } }
+      class D extends B {
+        constructor() {
+          const f = async () => {
+            // `GetThisBinding` for the super reference must throw *before* evaluating the computed
+            // key or RHS (both of which have observable side effects here).
+            super[(side++, await Promise.resolve("x"))] = (side++, await Promise.resolve(1));
+          };
+          f().catch(e => out = e.name);
+          super();
+        }
+      }
+
+      new D();
+    "#,
+  )?;
+
+  // No microtasks run yet.
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+  let side = rt.exec_script("side")?;
+  assert_eq!(side, Value::Number(0.0));
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "ReferenceError");
+  let side = rt.exec_script("side")?;
+  assert_eq!(side, Value::Number(0.0));
 
   Ok(())
 }
