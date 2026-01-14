@@ -5,7 +5,9 @@ use super::support::{
 };
 use super::worker_harness::{WorkerHarness, WorkerToUiEvent};
 use fastrender::render_control::StageHeartbeat;
-use fastrender::ui::messages::{NavigationReason, RepaintReason, TabId, UiToWorker};
+use fastrender::ui::messages::{
+  NavigationReason, PointerButton, PointerModifiers, RepaintReason, TabId, UiToWorker,
+};
 use fastrender::ui::render_worker::{
   disable_tick_stats_for_test, reset_tick_stats_for_test, tick_delta_total_for_test,
   tick_handle_count_for_test,
@@ -174,4 +176,113 @@ fn tick_delta_is_clamped_in_worker() {
 
   assert_eq!(tick_handle_count_for_test(tab_id), 1);
   assert_eq!(tick_delta_total_for_test(tab_id), expected);
+}
+
+#[test]
+fn tick_burst_does_not_coalesce_across_barrier_message() {
+  let _lock = super::stage_listener_test_lock();
+
+  reset_tick_stats_for_test();
+  let _tick_stats_guard = TickStatsGuard;
+
+  // Slow down paints so we can enqueue the tick+barrier+tick sequence behind an in-flight paint.
+  let h = WorkerHarness::spawn_with_test_render_delay(Some(50));
+
+  let tab_id = TabId::new();
+  h.send(create_tab_msg(tab_id, None));
+  h.send(viewport_changed_msg(tab_id, (64, 64), 1.0));
+
+  let site = TempSite::new();
+  let url = site.write(
+    "anim.html",
+    r#"<!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            html, body { margin: 0; padding: 0; }
+            #box {
+              width: 64px;
+              height: 64px;
+              background: rgb(255, 0, 0);
+              animation: fade 100ms linear infinite;
+            }
+            @keyframes fade {
+              from { opacity: 0; }
+              to { opacity: 1; }
+            }
+          </style>
+        </head>
+        <body><div id="box"></div></body>
+      </html>"#,
+  );
+
+  h.send(navigate_msg(tab_id, url, NavigationReason::TypedUrl));
+  h.wait_for_event(DEFAULT_TIMEOUT, |ev| {
+    matches!(
+      ev,
+      WorkerToUiEvent::NavigationCommitted { tab_id: id, .. } if *id == tab_id
+    )
+  });
+  let (frame, _events) = h.wait_for_frame(tab_id, DEFAULT_TIMEOUT);
+  assert!(frame.next_tick.is_some(), "expected animation fixture to request ticks");
+
+  // Ensure the worker is in the middle of a paint so the messages below backlog into the runtime
+  // queue and must be drained/coalesced by `BrowserRuntime::drain_messages`.
+  h.send(request_repaint(tab_id, RepaintReason::Explicit));
+  h.wait_for_event(DEFAULT_TIMEOUT, |ev| {
+    matches!(
+      ev,
+      WorkerToUiEvent::Stage { tab_id: id, stage }
+        if *id == tab_id
+          && matches!(stage, StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize)
+    )
+  });
+
+  // Space messages just beyond the router coalescing window (4ms) so the runtime receives the
+  // precise tick/barrier/tick sequence (the barrier must not be skipped by the router coalescer).
+  let tick_delta = Duration::from_millis(16);
+
+  h.send(UiToWorker::Tick {
+    tab_id,
+    delta: tick_delta,
+  });
+  std::thread::sleep(Duration::from_millis(5));
+
+  h.send(UiToWorker::PointerMove {
+    tab_id,
+    pos_css: (1.0, 1.0),
+    button: PointerButton::None,
+    modifiers: PointerModifiers::NONE,
+  });
+  std::thread::sleep(Duration::from_millis(5));
+
+  h.send(UiToWorker::Tick {
+    tab_id,
+    delta: tick_delta,
+  });
+
+  let expected_total = Duration::from_millis(32);
+  let deadline = Instant::now() + DEFAULT_TIMEOUT;
+  loop {
+    let got = tick_delta_total_for_test(tab_id);
+    if got >= expected_total {
+      break;
+    }
+    if Instant::now() >= deadline {
+      panic!(
+        "timed out waiting for worker to process tick burst; expected {:?}, got {:?}",
+        expected_total, got
+      );
+    }
+    std::thread::sleep(Duration::from_millis(10));
+  }
+
+  assert_eq!(tick_delta_total_for_test(tab_id), expected_total);
+
+  let handle_count = tick_handle_count_for_test(tab_id);
+  assert_eq!(
+    handle_count, 2,
+    "expected barrier message to prevent tick coalescing across it"
+  );
 }
