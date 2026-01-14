@@ -33,12 +33,17 @@ fn derived_constructor_state_is_rooted_across_nested_class_static_block_gc() -> 
   // - The derived-state cell must remain rooted across any allocations/GC triggered by static
   //   initialization.
   //
-  // We trigger a GC from inside a nested `static {}` block and then access `this` (which should
-  // throw a ReferenceError, not crash or report an internal InvalidHandle).
+  // We trigger a GC from inside a nested `static {}` block and then create an arrow function that
+  // captures the derived constructor's `this` binding *after* that GC but still before `super()`.
+  //
+  // If the derived-constructor state cell was incorrectly unrooted during static block evaluation,
+  // the arrow will capture a stale handle and later `getThis().x` will hit `VmError::InvalidHandle`
+  // instead of observing the initialized `this` after `super()` returns.
   let value = rt.exec_script(
     r#"
       let ran = false;
       let ok = false;
+      let arrowOk = false;
 
       class Base {}
       class Derived extends Base {
@@ -50,17 +55,21 @@ fn derived_constructor_state_is_rooted_across_nested_class_static_block_gc() -> 
             }
           }
 
+          const getThis = () => this;
+
           try { this; } catch (e) { ok = e instanceof ReferenceError; }
           super();
+
+          this.x = 123;
+          arrowOk = getThis().x === 123;
         }
       }
 
       new Derived();
-      ran && ok;
+      ran && ok && arrowOk;
     "#,
   )?;
 
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
-
