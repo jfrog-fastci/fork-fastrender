@@ -33,6 +33,12 @@ pub const PAGE_NODE_ID_TAG: u128 = 1u128 << 127;
 const TAB_ID_MASK_63: u128 = (1u128 << 63) - 1;
 const DOM_NODE_ID_MASK_64: u128 = (1u128 << 64) - 1;
 
+// FastRender's preferred AccessKit `NodeId` encoding (see `crate::accessibility::accesskit_ids`)
+// reserves the top 8 bits as a fixed marker (`0xFA`). Since this tag-bit scheme also sets bit 127,
+// we must explicitly exclude ids that use the marker+namespace format; otherwise, those canonical
+// ids would be misclassified as "tagged page ids" and decoded incorrectly.
+const FASTR_ACCESSKIT_MARKER: u8 = 0xFA;
+
 /// Build an AccessKit `NodeId` for a page accessibility node.
 ///
 /// The returned ID is guaranteed non-zero and will always satisfy [`is_page_node_id`].
@@ -47,15 +53,20 @@ pub fn page_node_id(tab_id: TabId, dom_node_id: usize) -> accesskit::NodeId {
 
 /// Returns true if `id` is in the page node ID namespace.
 pub fn is_page_node_id(id: accesskit::NodeId) -> bool {
-  (id.0.get() & PAGE_NODE_ID_TAG) != 0
+  let raw = id.0.get();
+  if (raw & PAGE_NODE_ID_TAG) == 0 {
+    return false;
+  }
+  // Exclude FastRender's marker+namespace scheme (`0xFAxx…`), which also sets the high bit.
+  (raw >> 120) as u8 != FASTR_ACCESSKIT_MARKER
 }
 
 /// Decode a page `NodeId` back into `(TabId, dom_node_id)` if it matches the page namespace.
 pub fn decode_page_node_id(id: accesskit::NodeId) -> Option<(TabId, usize)> {
-  let raw = id.0.get();
-  if (raw & PAGE_NODE_ID_TAG) == 0 {
+  if !is_page_node_id(id) {
     return None;
   }
+  let raw = id.0.get();
 
   let tab_bits = (raw >> 64) & TAB_ID_MASK_63;
   let dom_bits = raw & DOM_NODE_ID_MASK_64;
@@ -80,6 +91,16 @@ mod tests {
 
     let non_page = accesskit::NodeId(NonZeroU128::new(1).unwrap());
     assert!(!is_page_node_id(non_page));
+  }
+
+  #[test]
+  fn fastrender_namespaced_ids_are_not_mistaken_for_tagged_ids() {
+    // FastRender's marker+namespace encoding uses `0xFA` in the top byte, which also sets the high
+    // bit. These must *not* be treated as legacy tag-bit ids.
+    let raw = ((FASTR_ACCESSKIT_MARKER as u128) << 120) | 123;
+    let id = accesskit::NodeId(NonZeroU128::new(raw).unwrap());
+    assert!(!is_page_node_id(id));
+    assert_eq!(decode_page_node_id(id), None);
   }
 
   #[test]
