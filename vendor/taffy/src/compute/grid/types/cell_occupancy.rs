@@ -192,6 +192,7 @@ impl CellOccupancyMatrix {
         for row in 0..old_row_count {
           check_layout_abort();
           for col in 0..old_col_count {
+            check_layout_abort();
             let kind = *grid.get(row, col).unwrap();
             if kind == CellOccupancyState::Unoccupied {
               continue;

@@ -83,7 +83,9 @@ fn upsert_line_name_map<S: CheapCloneStr>(
   key: S,
   value: u16,
 ) {
-  let value = value.min(MAX_EXPLICIT_LINE_INDEX);
+  // Line indices are in the 1-indexed CSS grid line coordinate space. Clamp to keep them
+  // representable and avoid inserting invalid 0 line indices for malformed inputs.
+  let value = value.max(1).min(MAX_EXPLICIT_LINE_INDEX);
   map
     .entry(StrHasher(key))
     .and_modify(|lines| lines.push(value))
