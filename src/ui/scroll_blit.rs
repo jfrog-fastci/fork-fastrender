@@ -15,7 +15,6 @@ use crate::tree::fragment_tree::{FragmentNode, FragmentTree};
 use crate::{PreparedDocument, Size};
 
 use crate::style::position::Position;
-use crate::style::types::AnimationTimeline;
 
 /// Reasons why the scroll blit fast-path could not be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,15 +104,16 @@ fn fragment_tree_has_scroll_driven_animations(tree: &FragmentTree) -> bool {
     stack.push(root);
   }
   while let Some(node) = stack.pop() {
-    if let Some(style) = node.style.as_deref() {
-      if style.animation_timelines.iter().any(|timeline| {
-        matches!(
-          timeline,
-          AnimationTimeline::Scroll(_) | AnimationTimeline::View(_) | AnimationTimeline::Named(_)
-        )
-      }) {
-        return true;
-      }
+    if node
+      .style
+      .as_deref()
+      .is_some_and(crate::paint::scroll_blit::style_uses_scroll_linked_timelines)
+      || node
+        .starting_style
+        .as_deref()
+        .is_some_and(crate::paint::scroll_blit::style_uses_scroll_linked_timelines)
+    {
+      return true;
     }
     for child in node.children.iter() {
       stack.push(child);
@@ -367,5 +367,33 @@ mod tests {
       last_scroll_blit_fallback_reason_for_test(),
       Some(ScrollBlitFallbackReason::ScrollDrivenAnimationsPresent)
     );
+  }
+
+  #[test]
+  fn scroll_blit_allows_scroll_timeline_value_when_no_animation_name() {
+    // `animation-timeline` alone does not create an active animation when `animation-name` is the
+    // initial `none` value. Scroll blit should remain eligible in that case.
+    let _guard = test_guard();
+    reset_scroll_blit_fallback_reason_for_test();
+    let html = r#"
+      <style>
+        html, body { margin: 0; }
+        #box {
+          width: 10px;
+          height: 10px;
+          background: red;
+          animation-timeline: scroll(root);
+        }
+      </style>
+      <div id="box"></div>
+      <div style="height: 500px"></div>
+    "#;
+    let prepared = prepare_for_html(html, 1.0);
+
+    let prev = ScrollState::with_viewport(Point::new(0.0, 0.0));
+    let next = ScrollState::with_viewport(Point::new(0.0, 10.0));
+    let plan = scroll_blit_plan(&prepared, &prev, &next).expect("expected scroll blit plan");
+    assert_eq!(plan.delta_device_px, (0, 10));
+    assert_eq!(last_scroll_blit_fallback_reason_for_test(), None);
   }
 }
