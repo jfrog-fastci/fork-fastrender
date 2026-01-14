@@ -2822,6 +2822,33 @@ mod tests {
   }
 
   #[test]
+  fn user_facing_about_pages_includes_all_non_test_about_pages() {
+    use std::collections::HashSet;
+
+    let mut user_urls = HashSet::<&'static str>::new();
+    for (url, title) in user_facing_about_pages() {
+      assert!(
+        user_urls.insert(*url),
+        "user_facing_about_pages returned duplicate url {url}"
+      );
+      assert!(
+        !title.trim().is_empty(),
+        "user_facing_about_pages returned empty title for {url}"
+      );
+    }
+
+    for &url in ABOUT_PAGE_URLS {
+      if url == ABOUT_BLANK || url == ABOUT_ERROR || url.starts_with("about:test-") {
+        continue;
+      }
+      assert!(
+        user_urls.contains(url),
+        "expected user_facing_about_pages to include non-test about page {url}"
+      );
+    }
+  }
+
+  #[test]
   fn about_help_and_settings_link_to_settings_and_processes() {
     for page in [ABOUT_HELP, ABOUT_SETTINGS] {
       let html = html_for_about_url(page).unwrap();
