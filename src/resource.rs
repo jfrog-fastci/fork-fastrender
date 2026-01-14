@@ -22659,7 +22659,7 @@ mod tests {
 
       let body = b"body { color: red; }";
       let headers = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
       );
       stream.write_all(headers.as_bytes()).unwrap();

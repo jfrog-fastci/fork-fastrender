@@ -87,9 +87,9 @@ fn channels_for_count(channels: u16) -> Option<Channels> {
   }
 }
 
-  #[cfg(test)]
-  mod tests {
-    use super::*;
+#[cfg(test)]
+mod tests {
+  use super::*;
 
   use symphonia_core::formats::{FormatOptions, FormatReader};
   use symphonia_core::io::{MediaSourceStream, MediaSourceStreamOptions};
@@ -114,6 +114,7 @@ fn channels_for_count(channels: u16) -> Option<Channels> {
         .iter()
         .find(|t| t.codec_params.codec == CODEC_TYPE_AAC)
         .expect("aac track");
+
       let asc = track
         .codec_params
         .extra_data
@@ -126,6 +127,7 @@ fn channels_for_count(channels: u16) -> Option<Channels> {
         .channels
         .expect("channels")
         .count() as u16;
+
       (track.id, asc, sample_rate, channels)
     };
 

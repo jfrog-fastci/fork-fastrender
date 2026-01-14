@@ -5577,85 +5577,69 @@ mod tests {
     let captured = Arc::new(Mutex::new(Vec::<String>::new()));
     let captured_req = Arc::clone(&captured);
     let handle = thread::spawn(move || {
-      listener.set_nonblocking(true).unwrap();
-      let start = Instant::now();
-      let mut last_connection: Option<Instant> = None;
-      let mut connection_count: usize = 0;
-      while start.elapsed() < Duration::from_secs(2) {
-        match listener.accept() {
-          Ok((mut stream, _)) => {
-            connection_count += 1;
-            last_connection = Some(Instant::now());
-            stream
-              .set_read_timeout(Some(Duration::from_millis(500)))
-              .unwrap();
-            let (headers, _body) = read_http_request(&mut stream);
-            captured_req.lock().unwrap().push(headers.clone());
-            let line = headers.lines().next().unwrap_or_default();
-            let method = line.split_whitespace().next().unwrap_or_default();
-            if method.eq_ignore_ascii_case("OPTIONS") {
-              let request_method = headers
-                .lines()
-                .find_map(|line| {
-                  let (name, value) = line.split_once(':')?;
-                  if name
-                    .trim()
-                    .eq_ignore_ascii_case("access-control-request-method")
-                  {
-                    Some(value.trim().to_string())
-                  } else {
-                    None
-                  }
-                })
-                .unwrap_or_default();
-              if request_method.eq_ignore_ascii_case("PUT") {
-                let response = concat!(
-                  "HTTP/1.1 204 No Content\r\n",
-                  "Access-Control-Allow-Origin: https://client.example\r\n",
-                  "Access-Control-Allow-Credentials: true\r\n",
-                  "Access-Control-Allow-Methods: *, PUT\r\n",
-                  "Access-Control-Allow-Headers: *, x-test\r\n",
-                  "Access-Control-Max-Age: 600\r\n",
-                  "Content-Length: 0\r\n",
-                  "Connection: close\r\n",
-                  "\r\n"
-                );
-                stream.write_all(response.as_bytes()).unwrap();
-              } else if request_method.eq_ignore_ascii_case("DELETE") {
-                let response = concat!(
-                  "HTTP/1.1 204 No Content\r\n",
-                  "Access-Control-Allow-Origin: https://client.example\r\n",
-                  "Access-Control-Allow-Credentials: true\r\n",
-                  "Access-Control-Allow-Methods: DELETE\r\n",
-                  "Access-Control-Max-Age: 600\r\n",
-                  "Content-Length: 0\r\n",
-                  "Connection: close\r\n",
-                  "\r\n"
-                );
-                stream.write_all(response.as_bytes()).unwrap();
+      for _ in 0..4 {
+        let mut stream = accept_http_stream(
+          &listener,
+          "cors_preflight_cache_wildcard_entries_do_not_match_credentialed_request",
+        );
+        stream
+          .set_read_timeout(Some(Duration::from_millis(500)))
+          .unwrap();
+        let (headers, _body) = read_http_request(&mut stream);
+        captured_req.lock().unwrap().push(headers.clone());
+        let line = headers.lines().next().unwrap_or_default();
+        let method = line.split_whitespace().next().unwrap_or_default();
+        if method.eq_ignore_ascii_case("OPTIONS") {
+          let request_method = headers
+            .lines()
+            .find_map(|line| {
+              let (name, value) = line.split_once(':')?;
+              if name
+                .trim()
+                .eq_ignore_ascii_case("access-control-request-method")
+              {
+                Some(value.trim().to_string())
               } else {
-                panic!("unexpected Access-Control-Request-Method: {request_method:?}");
+                None
               }
-            } else {
-              let body = b"ok";
-              let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: https://client.example\r\nAccess-Control-Allow-Credentials: true\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-              );
-              stream.write_all(response.as_bytes()).unwrap();
-              stream.write_all(body).unwrap();
-            }
-            if connection_count >= 4 {
-              break;
-            }
+            })
+            .unwrap_or_default();
+          if request_method.eq_ignore_ascii_case("PUT") {
+            let response = concat!(
+              "HTTP/1.1 204 No Content\r\n",
+              "Access-Control-Allow-Origin: https://client.example\r\n",
+              "Access-Control-Allow-Credentials: true\r\n",
+              "Access-Control-Allow-Methods: *, PUT\r\n",
+              "Access-Control-Allow-Headers: *, x-test\r\n",
+              "Access-Control-Max-Age: 600\r\n",
+              "Content-Length: 0\r\n",
+              "Connection: close\r\n",
+              "\r\n"
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+          } else if request_method.eq_ignore_ascii_case("DELETE") {
+            let response = concat!(
+              "HTTP/1.1 204 No Content\r\n",
+              "Access-Control-Allow-Origin: https://client.example\r\n",
+              "Access-Control-Allow-Credentials: true\r\n",
+              "Access-Control-Allow-Methods: DELETE\r\n",
+              "Access-Control-Max-Age: 600\r\n",
+              "Content-Length: 0\r\n",
+              "Connection: close\r\n",
+              "\r\n"
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+          } else {
+            panic!("unexpected Access-Control-Request-Method: {request_method:?}");
           }
-          Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-            if last_connection.is_some_and(|last| last.elapsed() > Duration::from_millis(200)) {
-              break;
-            }
-            thread::sleep(Duration::from_millis(5));
-          }
-          Err(err) => panic!("accept: {err}"),
+        } else {
+          let body = b"ok";
+          let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: https://client.example\r\nAccess-Control-Allow-Credentials: true\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+          );
+          stream.write_all(response.as_bytes()).unwrap();
+          stream.write_all(body).unwrap();
         }
       }
     });

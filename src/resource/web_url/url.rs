@@ -255,10 +255,12 @@ impl WebUrl {
     let Some(host) = inner.url.host_str() else {
       return Ok(String::new());
     };
-    // WHATWG host serialization requires IPv6 addresses to be enclosed in square brackets. The
-    // `url` crate's `host_str()` intentionally omits these brackets, so we need to re-add them to
-    // match browser / spec behavior.
-    let bracket_ipv6 = matches!(inner.url.host(), Some(::url::Host::Ipv6(_)));
+    // WHATWG host serialization requires IPv6 addresses to be enclosed in square brackets.
+    //
+    // `url::Url::host_str()` has varied across crate versions (some return the bracketed form for
+    // IPv6, some return the bare address). Ensure we emit exactly one pair of brackets.
+    let host_is_bracketed = host.starts_with('[') && host.ends_with(']');
+    let bracket_ipv6 = matches!(inner.url.host(), Some(::url::Host::Ipv6(_))) && !host_is_bracketed;
 
     let port = inner.url.port();
     let mut out = String::new();
@@ -339,7 +341,8 @@ impl WebUrl {
     let Some(host) = inner.url.host_str() else {
       return Ok(String::new());
     };
-    if matches!(inner.url.host(), Some(::url::Host::Ipv6(_))) {
+    let host_is_bracketed = host.starts_with('[') && host.ends_with(']');
+    if matches!(inner.url.host(), Some(::url::Host::Ipv6(_))) && !host_is_bracketed {
       let mut out = String::new();
       out.try_reserve_exact(host.len().saturating_add(2))?;
       out.push('[');
