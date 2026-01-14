@@ -1198,3 +1198,258 @@ fn string_slice_roots_end_across_gc_in_tonumber() -> Result<(), VmError> {
 
   Ok(())
 }
+
+#[test]
+fn string_concat_roots_later_args_across_gc_in_tostring() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const thisVal = "a";
+      const b = { toString() { ({});
+        return "b";
+      }};
+      const c = { toString() { return "c"; } };
+      return [thisVal, b, c];
+    })()"#,
+  )?;
+
+  let [this_val, b_val, c_val] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.string_constructor();
+  let args = [b_val, c_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::string_prototype_concat(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    this_val,
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected String.prototype.concat to trigger GC under tiny heap limits"
+  );
+
+  let Value::String(out_s) = out else {
+    return Err(VmError::InvariantViolation(
+      "String.prototype.concat returned non-string",
+    ));
+  };
+  let out_utf8 = scope.heap().get_string(out_s)?.to_utf8_lossy();
+  assert_eq!(out_utf8, "abc");
+
+  Ok(())
+}
+
+#[test]
+fn string_index_of_roots_position_across_gc_in_search_tostring() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const s = "abcd";
+      const search = { toString() { ({});
+        return "bc";
+      }};
+      const position = { valueOf() { return 0; } };
+      return [s, search, position];
+    })()"#,
+  )?;
+
+  let [s_val, search_val, position_val] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.string_constructor();
+  let args = [search_val, position_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::string_prototype_index_of(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    s_val,
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected String.prototype.indexOf to trigger GC under tiny heap limits"
+  );
+  assert_eq!(out, Value::Number(1.0));
+
+  Ok(())
+}
+
+#[test]
+fn string_pad_start_roots_fill_across_gc_in_max_length_coercion() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const s = "a";
+      const maxLength = { valueOf() { ({});
+        return 3;
+      }};
+      const fill = { toString() { return "x"; } };
+      return [s, maxLength, fill];
+    })()"#,
+  )?;
+
+  let [s_val, max_len_val, fill_val] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.string_constructor();
+  let args = [max_len_val, fill_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::string_prototype_pad_start(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    s_val,
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected String.prototype.padStart to trigger GC under tiny heap limits"
+  );
+
+  let Value::String(out_s) = out else {
+    return Err(VmError::InvariantViolation(
+      "String.prototype.padStart returned non-string",
+    ));
+  };
+  let out_utf8 = scope.heap().get_string(out_s)?.to_utf8_lossy();
+  assert_eq!(out_utf8, "xxa");
+
+  Ok(())
+}
+
+#[test]
+fn string_substring_roots_end_across_gc_in_start_coercion() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const s = "abcd";
+      const start = { valueOf() { ({});
+        return 1;
+      }};
+      const end = { valueOf() { return 3; } };
+      return [s, start, end];
+    })()"#,
+  )?;
+
+  let [s_val, start_val, end_val] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.string_constructor();
+  let args = [start_val, end_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::string_prototype_substring(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    s_val,
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected String.prototype.substring to trigger GC under tiny heap limits"
+  );
+
+  let Value::String(out_s) = out else {
+    return Err(VmError::InvariantViolation(
+      "String.prototype.substring returned non-string",
+    ));
+  };
+  let out_utf8 = scope.heap().get_string(out_s)?.to_utf8_lossy();
+  assert_eq!(out_utf8, "bc");
+
+  Ok(())
+}
+
+#[test]
+fn string_locale_compare_roots_arg_across_gc_in_this_tostring() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const thisVal = { toString() { ({});
+        return "a";
+      }};
+      const that = "b";
+      return [thisVal, that, undefined];
+    })()"#,
+  )?;
+
+  let [this_val, that_val, _] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.string_constructor();
+  let args = [that_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::string_prototype_locale_compare(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    this_val,
+    &args,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected String.prototype.localeCompare to trigger GC under tiny heap limits"
+  );
+  assert_eq!(out, Value::Number(-1.0));
+
+  Ok(())
+}

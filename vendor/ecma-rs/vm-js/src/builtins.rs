@@ -18592,6 +18592,11 @@ pub fn string_prototype_concat(
     return Err(VmError::TypeError("Cannot convert undefined or null to object"));
   }
 
+  // Root `this` + all arguments up-front so a GC during `ToString(this)` or per-argument coercion
+  // cannot invalidate later arguments when this builtin is invoked directly from a host context.
+  scope.push_roots_with_extra_roots(args, &[this], &[])?;
+  scope.push_root(this)?;
+
   // Convert `this` and all arguments to strings first so we can compute the final UTF-16 length and
   // preflight heap limits before allocating the output buffer.
   let base = {
@@ -18663,10 +18668,14 @@ pub fn string_prototype_char_code_at(
   // Spec: https://tc39.es/ecma262/#sec-string.prototype.charcodeat
   let mut scope = scope.reborrow();
   let o = crate::spec_ops::require_object_coercible(this)?;
+
+  // Root `pos` across `ToString(this)` which can invoke user code and trigger GC.
+  let pos_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  scope.push_roots(&[o, pos_value])?;
+
   let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
-  let pos_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let pos = scope.to_integer_or_infinity(vm, host, hooks, pos_value)?;
   if !pos.is_finite() {
     return Ok(Value::Number(f64::NAN));
@@ -18697,10 +18706,14 @@ pub fn string_prototype_code_point_at(
   // Spec: https://tc39.es/ecma262/#sec-string.prototype.codepointat
   let mut scope = scope.reborrow();
   let o = crate::spec_ops::require_object_coercible(this)?;
+
+  // Root `pos` across `ToString(this)` which can invoke user code and trigger GC.
+  let pos_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  scope.push_roots(&[o, pos_val])?;
+
   let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
-  let pos_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let pos = scope.to_integer_or_infinity(vm, host, hooks, pos_val)?;
   if !pos.is_finite() {
     return Ok(Value::Undefined);
@@ -18749,10 +18762,14 @@ pub fn string_prototype_char_at(
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
   let o = crate::spec_ops::require_object_coercible(this)?;
+
+  // Root `pos` across `ToString(this)` which can invoke user code and trigger GC.
+  let pos_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  scope.push_roots(&[o, pos_value])?;
+
   let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
-  let pos_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let mut n = if matches!(pos_value, Value::Undefined) {
     0.0
   } else {
@@ -18801,10 +18818,14 @@ pub fn string_prototype_at(
   // Spec: https://tc39.es/ecma262/#sec-string.prototype.at
   let mut scope = scope.reborrow();
   let o = crate::spec_ops::require_object_coercible(this)?;
+
+  // Root `pos` across `ToString(this)` which can invoke user code and trigger GC.
+  let pos_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  scope.push_roots(&[o, pos_val])?;
+
   let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
-  let pos_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let relative = scope.to_integer_or_infinity(vm, host, hooks, pos_val)?;
   if !relative.is_finite() {
     return Ok(Value::Undefined);
@@ -18865,10 +18886,16 @@ fn string_pad_impl(
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
   let o = crate::spec_ops::require_object_coercible(this)?;
+
+  // Root `maxLength`/`fillString` across `ToString(this)` and `ToLength(maxLength)` coercions, both
+  // of which can invoke user code and trigger GC.
+  let max_len_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let fill_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope.push_roots(&[o, max_len_val, fill_val])?;
+
   let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
-  let max_len_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let max_len = scope.to_length(vm, host, hooks, max_len_val)?;
 
   let s_len = {
@@ -18879,7 +18906,6 @@ fn string_pad_impl(
     return Ok(Value::String(s));
   }
 
-  let fill_val = args.get(1).copied().unwrap_or(Value::Undefined);
   let fill = if matches!(fill_val, Value::Undefined) {
     scope.alloc_string(" ")?
   } else {
@@ -19021,10 +19047,16 @@ pub fn string_prototype_index_of(
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
   let o = crate::spec_ops::require_object_coercible(this)?;
+
+  let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let position = args.get(1).copied().unwrap_or(Value::Undefined);
+  // Root arguments across `ToString(this)` and `ToString(searchValue)`, both of which can invoke
+  // user code and trigger GC.
+  scope.push_roots(&[o, search_value, position])?;
+
   let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
-  let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let search = scope.to_string(vm, host, hooks, search_value)?;
   scope.push_root(Value::String(search))?;
 
@@ -19033,7 +19065,6 @@ pub fn string_prototype_index_of(
     let js = scope.heap().get_string(s)?;
     js.len_code_units()
   };
-  let position = args.get(1).copied().unwrap_or(Value::Undefined);
   let pos = if matches!(position, Value::Undefined) {
     0usize
   } else {
@@ -19098,17 +19129,20 @@ pub fn string_prototype_last_index_of(
   let mut scope = scope.reborrow();
   let o = crate::spec_ops::require_object_coercible(this)?;
 
+  let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let position = args.get(1).copied().unwrap_or(Value::Undefined);
+  // Root arguments across `ToString(this)` and `ToString(searchValue)` coercions.
+  scope.push_roots(&[o, search_value, position])?;
+
   let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
-  let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let search = scope.to_string(vm, host, hooks, search_value)?;
   scope.push_root(Value::String(search))?;
 
   let len = scope.heap().get_string(s)?.len_code_units();
 
   // `position` is clamped to [0, len] (negative -> 0).
-  let position = args.get(1).copied().unwrap_or(Value::Undefined);
   let pos = string_position_from_value(vm, &mut scope, host, hooks, position, len, len)?;
 
   // Borrow code unit slices for the search. Avoid allocating intermediate vectors: these inputs
@@ -19154,10 +19188,15 @@ pub fn string_prototype_includes(
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
   let o = crate::spec_ops::require_object_coercible(this)?;
+
+  let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let position = args.get(1).copied().unwrap_or(Value::Undefined);
+  // Root arguments across `ToString(this)` and `IsRegExp`/`ToString(searchValue)` checks.
+  scope.push_roots(&[o, search_value, position])?;
+
   let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
-  let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let is_regexp =
     crate::spec_ops::is_regexp_with_host_and_hooks(vm, &mut scope, host, hooks, search_value)?;
   if is_regexp {
@@ -19172,7 +19211,6 @@ pub fn string_prototype_includes(
     let js = scope.heap().get_string(s)?;
     js.len_code_units()
   };
-  let position = args.get(1).copied().unwrap_or(Value::Undefined);
   let pos = string_position_from_value(vm, &mut scope, host, hooks, position, len, 0)?;
 
   let (haystack, needle) = {
@@ -19216,10 +19254,15 @@ pub fn string_prototype_starts_with(
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
   let o = crate::spec_ops::require_object_coercible(this)?;
+
+  let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let position = args.get(1).copied().unwrap_or(Value::Undefined);
+  // Root arguments across `ToString(this)` and `IsRegExp`/`ToString(searchValue)` checks.
+  scope.push_roots(&[o, search_value, position])?;
+
   let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
-  let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let is_regexp =
     crate::spec_ops::is_regexp_with_host_and_hooks(vm, &mut scope, host, hooks, search_value)?;
   if is_regexp {
@@ -19234,7 +19277,6 @@ pub fn string_prototype_starts_with(
     let js = scope.heap().get_string(s)?;
     js.len_code_units()
   };
-  let position = args.get(1).copied().unwrap_or(Value::Undefined);
   let pos = string_position_from_value(vm, &mut scope, host, hooks, position, len, 0)?;
 
   let (haystack, needle) = {
@@ -19263,10 +19305,15 @@ pub fn string_prototype_ends_with(
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
   let o = crate::spec_ops::require_object_coercible(this)?;
+
+  let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let end_position = args.get(1).copied().unwrap_or(Value::Undefined);
+  // Root arguments across `ToString(this)` and `IsRegExp`/`ToString(searchValue)` checks.
+  scope.push_roots(&[o, search_value, end_position])?;
+
   let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
-  let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let is_regexp =
     crate::spec_ops::is_regexp_with_host_and_hooks(vm, &mut scope, host, hooks, search_value)?;
   if is_regexp {
@@ -19281,7 +19328,6 @@ pub fn string_prototype_ends_with(
     let js = scope.heap().get_string(s)?;
     js.len_code_units()
   };
-  let end_position = args.get(1).copied().unwrap_or(Value::Undefined);
   let end = string_position_from_value(vm, &mut scope, host, hooks, end_position, len, len)?;
 
   let (haystack, needle) = {
@@ -19476,6 +19522,12 @@ pub fn string_prototype_substring(
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
   let o = crate::spec_ops::require_object_coercible(this)?;
+
+  let start_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let end_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+  // Root arguments across `ToString(this)` and index coercion.
+  scope.push_roots(&[o, start_arg, end_arg])?;
+
   let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
@@ -19483,9 +19535,6 @@ pub fn string_prototype_substring(
     let js = scope.heap().get_string(s)?;
     js.len_code_units()
   };
-
-  let start_arg = args.get(0).copied().unwrap_or(Value::Undefined);
-  let end_arg = args.get(1).copied().unwrap_or(Value::Undefined);
 
   let start = string_position_from_value(vm, &mut scope, host, hooks, start_arg, len, 0)?;
   let end = string_position_from_value(vm, &mut scope, host, hooks, end_arg, len, len)?;
@@ -19518,6 +19567,12 @@ pub fn string_prototype_substr(
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
   let o = crate::spec_ops::require_object_coercible(this)?;
+
+  let start_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+  let length_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+  // Root arguments across `ToString(this)` and index coercion.
+  scope.push_roots(&[o, start_arg, length_arg])?;
+
   let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
@@ -19526,10 +19581,8 @@ pub fn string_prototype_substr(
     js.len_code_units()
   };
 
-  let start_arg = args.get(0).copied().unwrap_or(Value::Undefined);
   let start = slice_index_from_value(vm, &mut scope, host, hooks, start_arg, len, 0)?;
 
-  let length_arg = args.get(1).copied().unwrap_or(Value::Undefined);
   let end = if matches!(length_arg, Value::Undefined) {
     len
   } else {
@@ -19590,6 +19643,9 @@ pub fn string_prototype_match(
   let o = crate::spec_ops::require_object_coercible(this)?;
 
   let regexp = args.get(0).copied().unwrap_or(Value::Undefined);
+  // Root `O`/`regexp` across `@@match` dispatch checks, which can invoke user code and trigger GC.
+  scope.push_roots(&[o, regexp])?;
+
   // Spec: only attempt `@@match` dispatch when `Type(regexp) is Object` (do not box primitives).
   if let Value::Object(regexp_obj) = regexp {
     let method = crate::spec_ops::get_method_with_host_and_hooks(
@@ -19649,10 +19705,8 @@ pub fn string_prototype_match_all(
   // dispatch are observable before `ToString(this)` (and must bypass it when a custom `@@matchAll`
   // method is present).
   let o = crate::spec_ops::require_object_coercible(this)?;
-  scope.push_root(o)?;
-
   let regexp = args.get(0).copied().unwrap_or(Value::Undefined);
-  scope.push_root(regexp)?;
+  scope.push_roots(&[o, regexp])?;
 
   // 2. If regexp is neither undefined nor null, then:
   if !matches!(regexp, Value::Undefined | Value::Null) {
@@ -19766,6 +19820,9 @@ pub fn string_prototype_search(
   let o = crate::spec_ops::require_object_coercible(this)?;
 
   let regexp = args.get(0).copied().unwrap_or(Value::Undefined);
+  // Root `O`/`regexp` across `@@search` dispatch checks, which can invoke user code and trigger GC.
+  scope.push_roots(&[o, regexp])?;
+
   // Spec: only attempt `@@search` dispatch when `Type(regexp) is Object` (do not box primitives).
   if let Value::Object(regexp_obj) = regexp {
     let method = crate::spec_ops::get_method_with_host_and_hooks(
@@ -19826,10 +19883,10 @@ pub fn string_prototype_replace(
   // 4. For string-search fallback, `ToString(replaceValue)` (when non-callable) must happen
   //    *before* searching for the match, even when there is no match.
   let o = crate::spec_ops::require_object_coercible(this)?;
-  scope.push_root(o)?;
-
   let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let replace_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  // Root `O` and both arguments across `@@replace` dispatch checks and subsequent coercions.
+  scope.push_roots(&[o, search_value, replace_value])?;
 
   if !matches!(search_value, Value::Undefined | Value::Null) {
     // Per spec, primitives must skip the `GetMethod(searchValue, @@replace)` path (avoid boxing and
@@ -19966,13 +20023,12 @@ pub fn string_prototype_replace_all(
   // Important: do *not* call `ToString(O)` yet. `searchValue` (flags / @@replace) is observable
   // before `ToString(this)` per ECMA-262 and test262.
   let o = crate::spec_ops::require_object_coercible(this)?;
-  scope.push_root(o)?;
-
   let intr = require_intrinsics(vm)?;
 
   let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let replace_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  scope.push_roots(&[search_value, replace_value])?;
+  // Root `O` and both arguments across `IsRegExp` / `@@replace` checks and subsequent coercions.
+  scope.push_roots(&[o, search_value, replace_value])?;
 
   // 2. If searchValue is an Object, then:
   //
@@ -20427,10 +20483,14 @@ pub fn string_prototype_repeat(
   let mut scope = scope.reborrow();
 
   let o = crate::spec_ops::require_object_coercible(this)?;
+
+  let count_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  // Root `count` across `ToString(this)` which can invoke user code and trigger GC.
+  scope.push_roots(&[o, count_val])?;
+
   let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
-  let count_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let mut n = scope.to_number(vm, host, hooks, count_val)?;
   if n.is_nan() {
     n = 0.0;
@@ -20700,10 +20760,14 @@ pub fn string_prototype_locale_compare(
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
   let o = crate::spec_ops::require_object_coercible(this)?;
+
+  let that = args.get(0).copied().unwrap_or(Value::Undefined);
+  // Root the argument across `ToString(this)` which can invoke user code and trigger GC.
+  scope.push_roots(&[o, that])?;
+
   let a = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(a))?;
 
-  let that = args.get(0).copied().unwrap_or(Value::Undefined);
   let b = scope.to_string(vm, host, hooks, that)?;
   scope.push_root(Value::String(b))?;
 
