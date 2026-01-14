@@ -244,9 +244,7 @@ impl BrowserToRenderer {
       }
 
       BrowserToRenderer::FrameAck { .. } => Ok(()),
-
       BrowserToRenderer::ReleaseFrameBuffer { .. } => Ok(()),
-      BrowserToRenderer::FrameAck { .. } => Ok(()),
 
       BrowserToRenderer::Shutdown { reason } => {
         if let Some(reason) = reason {
