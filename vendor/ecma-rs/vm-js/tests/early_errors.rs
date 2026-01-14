@@ -666,6 +666,20 @@ fn strict_mode_postfix_increment_eval_is_syntax_error() {
 }
 
 #[test]
+fn strict_mode_prefix_increment_eval_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script(r#""use strict"; ++eval;"#).unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn strict_mode_postfix_increment_arguments_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script(r#""use strict"; arguments++;"#).unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn duplicate_class_constructors_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
