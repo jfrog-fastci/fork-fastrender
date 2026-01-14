@@ -17899,6 +17899,7 @@ pub(crate) enum AsyncFrame {
     saved_this_root: RootId,
     saved_new_target_root: RootId,
     saved_home_object_root: RootId,
+    saved_this_initialized: bool,
     saved_lex: GcEnv,
     saved_var_env: VarEnv,
     saved_meta_property_context: MetaPropertyContext,
@@ -18493,6 +18494,7 @@ pub(crate) enum GenFrame {
     static_inits: Vec<GenClassStaticInit>,
     next_init_index: usize,
     saved_this: Value,
+    saved_this_initialized: bool,
     saved_new_target: Value,
     saved_home_object_value: Value,
     saved_lex: GcEnv,
@@ -25162,6 +25164,7 @@ fn async_eval_class_static_init_from(
         block_scope.push_root(Value::Object(func_obj))?;
 
         let saved_this = evaluator.this;
+        let saved_this_initialized = evaluator.this_initialized;
         let saved_new_target = evaluator.new_target;
         let saved_home_object_value = evaluator
           .home_object
@@ -25203,6 +25206,10 @@ fn async_eval_class_static_init_from(
         // and allocated persistent roots.
         let eval_res: Result<AsyncEval<Completion>, VmError> = (|| {
           evaluator.this = Value::Object(func_obj);
+          // Static blocks have their own initialized `this` binding (the class constructor), even if
+          // the surrounding code is executing with an uninitialized `this` binding (e.g. arrow/eval
+          // nested within a derived constructor before `super()`).
+          evaluator.this_initialized = true;
           evaluator.new_target = Value::Undefined;
           evaluator.home_object = Some(func_obj);
           evaluator
@@ -25250,6 +25257,7 @@ fn async_eval_class_static_init_from(
               .env
               .set_meta_property_context(saved_meta_property_context);
             evaluator.this = saved_this;
+            evaluator.this_initialized = saved_this_initialized;
             evaluator.new_target = saved_new_target;
             evaluator.home_object = match saved_home_object_value {
               Value::Object(o) => Some(o),
@@ -25296,6 +25304,7 @@ fn async_eval_class_static_init_from(
                 saved_this_root,
                 saved_new_target_root,
                 saved_home_object_root,
+                saved_this_initialized,
                 saved_lex,
                 saved_var_env,
                 saved_meta_property_context,
@@ -25315,6 +25324,7 @@ fn async_eval_class_static_init_from(
                 .env
                 .set_meta_property_context(saved_meta_property_context);
               evaluator.this = saved_this;
+              evaluator.this_initialized = saved_this_initialized;
               evaluator.new_target = saved_new_target;
               evaluator.home_object = match saved_home_object_value {
                 Value::Object(o) => Some(o),
@@ -25337,6 +25347,7 @@ fn async_eval_class_static_init_from(
               .env
               .set_meta_property_context(saved_meta_property_context);
             evaluator.this = saved_this;
+            evaluator.this_initialized = saved_this_initialized;
             evaluator.new_target = saved_new_target;
             evaluator.home_object = match saved_home_object_value {
               Value::Object(o) => Some(o),
@@ -35598,6 +35609,7 @@ fn async_resume_from_frames(
         saved_this_root,
         saved_new_target_root,
         saved_home_object_root,
+        saved_this_initialized,
         saved_lex,
         saved_var_env,
         saved_meta_property_context,
@@ -35649,6 +35661,7 @@ fn async_resume_from_frames(
             .env
             .set_meta_property_context(saved_meta_property_context);
           evaluator.this = saved_this;
+          evaluator.this_initialized = saved_this_initialized;
           evaluator.new_target = saved_new_target;
           evaluator.home_object = match saved_home_object_value {
             Value::Object(o) => Some(o),
@@ -44947,6 +44960,7 @@ fn gen_eval_class_static_inits_from(
         block_scope.push_root(Value::Object(func_obj))?;
 
         let saved_this = evaluator.this;
+        let saved_this_initialized = evaluator.this_initialized;
         let saved_new_target = evaluator.new_target;
         let saved_home_object_value = evaluator
           .home_object
@@ -44984,6 +44998,15 @@ fn gen_eval_class_static_inits_from(
           .env_set_new_target(body_lex, Some(Value::Undefined))?;
         evaluator.env.set_var_env(VarEnv::Env(var_env));
         evaluator.env.set_lexical_env(block_scope.heap_mut(), body_lex);
+        // Mark the static block lexical environment as a "this environment" so arrow functions
+        // created inside the block capture the correct lexical `this`/`new.target` (the class
+        // constructor / `undefined`).
+        block_scope
+          .heap_mut()
+          .env_set_new_target(body_lex, Some(Value::Undefined))?;
+        block_scope
+          .heap_mut()
+          .env_set_this_value(body_lex, Some(Value::Object(func_obj)))?;
 
         let eval_res: Result<GenEval<Completion>, VmError> = (|| {
           evaluator.instantiate_stmt_list(&mut block_scope, stmts)?;
@@ -45006,6 +45029,7 @@ fn gen_eval_class_static_inits_from(
                 saved_lex,
                 saved_var_env,
                 saved_meta_property_context,
+                saved_this_initialized,
               },
             )?;
             return Ok(GenEval::Suspend(suspend));
@@ -45018,6 +45042,7 @@ fn gen_eval_class_static_inits_from(
               .env
               .set_meta_property_context(saved_meta_property_context);
             evaluator.this = saved_this;
+            evaluator.this_initialized = saved_this_initialized;
             evaluator.new_target = saved_new_target;
             evaluator.home_object = match saved_home_object_value {
               Value::Object(o) => Some(o),
@@ -45058,6 +45083,7 @@ fn gen_eval_class_static_inits_from(
               .env
               .set_meta_property_context(saved_meta_property_context);
             evaluator.this = saved_this;
+            evaluator.this_initialized = saved_this_initialized;
             evaluator.new_target = saved_new_target;
             evaluator.home_object = match saved_home_object_value {
               Value::Object(o) => Some(o),
@@ -53658,6 +53684,7 @@ fn gen_resume_from_frames(
         static_inits,
         next_init_index,
         saved_this,
+        saved_this_initialized,
         saved_new_target,
         saved_home_object_value,
         saved_lex,
@@ -53677,6 +53704,7 @@ fn gen_resume_from_frames(
           .env
           .set_meta_property_context(saved_meta_property_context);
         evaluator.this = saved_this;
+        evaluator.this_initialized = saved_this_initialized;
         evaluator.new_target = saved_new_target;
         evaluator.home_object = match saved_home_object_value {
           Value::Object(o) => Some(o),

@@ -13291,6 +13291,15 @@ impl<'vm> HirEvaluator<'vm> {
         .env_set_new_target(body_lex, Some(Value::Undefined))?;
       self.env.set_var_env(VarEnv::Env(var_env));
       self.env.set_lexical_env(block_scope.heap_mut(), body_lex);
+      // Mark the static block lexical environment as a "this environment" so arrow functions created
+      // inside the block resolve their lexical `this`/`new.target` bindings to the class constructor
+      // (ECMA-262 `GetThisEnvironment`).
+      block_scope
+        .heap_mut()
+        .env_set_new_target(body_lex, Some(Value::Undefined))?;
+      block_scope
+        .heap_mut()
+        .env_set_this_value(body_lex, Some(Value::Object(receiver)))?;
 
       // Some early errors are still checked at runtime during instantiation so invalid declarations
       // do not partially pollute the static block environments.
@@ -20963,6 +20972,15 @@ impl AsyncClassStaticBlockState {
             .env_set_this_value(body_lex, Some(Value::Object(self.receiver)))?;
           evaluator.env.set_var_env(VarEnv::Env(var_env));
           evaluator.env.set_lexical_env(block_scope.heap_mut(), body_lex);
+          // Mark the static block lexical environment as a "this environment" so arrow functions
+          // created inside the block resolve their lexical `this`/`new.target` bindings to the class
+          // constructor.
+          block_scope
+            .heap_mut()
+            .env_set_new_target(body_lex, Some(Value::Undefined))?;
+          block_scope
+            .heap_mut()
+            .env_set_this_value(body_lex, Some(Value::Object(self.receiver)))?;
 
           // Match `eval_class_static_block_hir`'s instantiation phase.
           evaluator.early_error_missing_initializers_in_stmt_list(
