@@ -519,6 +519,10 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
 
 ## Keyboard / mouse shortcuts
 
+For cross-platform manual chrome QA, see:
+[`docs/chrome_test_matrix.md`](chrome_test_matrix.md) (quick) and
+[`docs/browser_chrome_manual_test_matrix.md`](browser_chrome_manual_test_matrix.md) (full).
+
 | Shortcut | Action |
 |---|---|
 | Ctrl/Cmd+L | Focus address bar (select all) |
@@ -595,13 +599,6 @@ Notes:
 - Shift+F10 opens the context menu for the currently focused surface:
   - page focus → page context menu
   - focused tab group chip → tab group context menu (rename/color/ungroup)
-
-For a cross-platform **quick manual smoke matrix** (shortcuts + UX parity), see
-[`docs/chrome_test_matrix.md`](chrome_test_matrix.md).
-
-For a cross-platform, end-to-end **manual regression checklist** (address bar, tabs, downloads,
-menus, session restore, accessibility), see
-[`docs/browser_chrome_manual_test_matrix.md`](browser_chrome_manual_test_matrix.md).
 
 ## Menu bar
 
