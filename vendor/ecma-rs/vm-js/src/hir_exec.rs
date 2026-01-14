@@ -20918,6 +20918,15 @@ impl AsyncClassStaticBlockState {
             .heap_mut()
             .env_set_new_target(var_env, Some(Value::Undefined))?;
           let body_lex = block_scope.env_create(Some(var_env))?;
+          // Async class evaluation can suspend/resume around `await` in static blocks. The block
+          // environment itself must still be treated as a "this environment" so arrow functions
+          // created within it capture the class constructor as their lexical `this`.
+          block_scope
+            .heap_mut()
+            .env_set_new_target(body_lex, Some(Value::Undefined))?;
+          block_scope
+            .heap_mut()
+            .env_set_this_value(body_lex, Some(Value::Object(self.receiver)))?;
           evaluator.env.set_var_env(VarEnv::Env(var_env));
           evaluator.env.set_lexical_env(block_scope.heap_mut(), body_lex);
 
