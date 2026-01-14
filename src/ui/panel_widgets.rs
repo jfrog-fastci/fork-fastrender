@@ -57,11 +57,8 @@ pub fn panel_header_with_actions(
     ui.heading(title);
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
       let resp = icon_button(ui, BrowserIcon::Close, "Close", true);
-      let mut label = String::with_capacity("Close ".len() + title.len());
-      label.push_str("Close ");
-      label.push_str(title);
       resp.widget_info(move || {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, format_args!("Close {title}"))
       });
       if resp.clicked() {
         on_close();
@@ -190,10 +187,7 @@ pub fn panel_search_field(
           .desired_width(f32::INFINITY)
           .frame(false),
       );
-      let label = a11y_label.to_string();
-      resp.widget_info(move || {
-        egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, label.clone())
-      });
+      resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, a11y_label));
 
       output.response = resp;
 
@@ -515,8 +509,7 @@ pub fn danger_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     }
   }
 
-  let label = label.to_string();
-  response.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone()));
+  response.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label));
   response
 }
 
