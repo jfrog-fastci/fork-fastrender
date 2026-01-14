@@ -10309,6 +10309,9 @@ impl BrowserRuntime {
         if next_state != tab.scroll_state {
           tab.scroll_state = next_state;
           doc.set_scroll_state(tab.scroll_state.clone());
+          if let Some(js_tab) = tab.js_tab.as_mut() {
+            js_tab.set_scroll_state(tab.scroll_state.clone());
+          }
           scroll_changed = true;
           Self::emit_scroll_state_updated(
             &self.ui_tx,
