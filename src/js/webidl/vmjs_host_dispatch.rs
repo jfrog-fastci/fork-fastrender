@@ -4695,7 +4695,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           Some(v) => Some(platform.require_node_id(scope.heap(), v)?),
         };
 
-        let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let result: Result<Option<NodeId>, DomError> = self.with_dom_host(vm, |host| {
           Ok(host.mutate_dom(|dom| {
             let old_parent = match dom.parent(child_id) {
               Ok(v) => v,
@@ -4756,7 +4756,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             }
 
             self.sync_live_html_collections(vm, scope)?;
-            let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            let primary = self.with_dom_host(vm, |host| {
               Ok(host.with_dom(|dom| {
                 if child_id.index() >= dom.nodes_len() {
                   DomInterface::Node
@@ -4846,7 +4846,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let old_child_value = args.get(1).copied().unwrap_or(Value::Undefined);
         let old_child_id = platform.require_node_id(scope.heap(), old_child_value)?;
 
-        let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let result: Result<Option<NodeId>, DomError> = self.with_dom_host(vm, |host| {
           Ok(host.mutate_dom(|dom| {
             let old_parent = match dom.parent(new_child_id) {
               Ok(v) => v,
@@ -4907,7 +4907,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             }
 
             self.sync_live_html_collections(vm, scope)?;
-            let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            let primary = self.with_dom_host(vm, |host| {
               Ok(host.with_dom(|dom| {
                 if old_child_id.index() >= dom.nodes_len() {
                   DomInterface::Node
@@ -4932,7 +4932,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let deep = args.get(0).copied().unwrap_or(Value::Bool(false));
         let deep = scope.heap().to_boolean(deep)?;
 
-        let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let result: Result<NodeId, DomError> = self.with_dom_host(vm, |host| {
           Ok(host.mutate_dom(|dom| match dom.clone_node(node_id, deep) {
             Ok(cloned) => (Ok(cloned), false),
             Err(err) => (Err(err), false),
@@ -4940,7 +4940,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         })?;
         match result {
           Ok(cloned_id) => {
-            let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+            let primary = self.with_dom_host(vm, |host| {
               Ok(host.with_dom(|dom| {
                 if cloned_id.index() >= dom.nodes_len() {
                   DomInterface::Node
@@ -4967,7 +4967,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let node_id = handle.node_id;
         let document_id = handle.document_id;
 
-        let result: Result<Option<NodeId>, DomError> = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+        let result: Result<Option<NodeId>, DomError> = self.with_dom_host(vm, |host| {
           Ok(host.mutate_dom(|dom| {
             if node_id.index() < dom.nodes_len()
               && matches!(dom.node(node_id).kind, NodeKind::ShadowRoot { .. })
@@ -5000,6 +5000,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
                 document_id,
               )?;
             }
+            self.sync_live_html_collections(vm, scope)?;
             Ok(Value::Undefined)
           }
           Ok(None) => Ok(Value::Undefined),
