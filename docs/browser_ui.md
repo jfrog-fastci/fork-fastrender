@@ -382,9 +382,10 @@ persisted configuration fields from the last session.
 Sidecar files:
 
 - **Lock file:** to avoid corrupting the session file, the `browser` process also acquires a lock
-  file for the session path. If another `browser` process is already running with the same session
-  path, a second instance will refuse to start. Use `--session-path` (or `FASTR_BROWSER_SESSION_PATH`)
-  to run multiple isolated instances.
+  file for the session path (for example `fastrender_session.lock` next to
+  `fastrender_session.json`). If another `browser` process is already running with the same session
+  path, a second instance will refuse to start. Use `--session-path` (or
+  `FASTR_BROWSER_SESSION_PATH`) to run multiple isolated instances.
 - **Backup file (`*.bak`):** the browser retains a last-known-good backup of the session file
   (for example `fastrender_session.json.bak` next to `fastrender_session.json`). If the primary
   session file is unreadable/corrupted/unparseable (or exceeds size limits), the backup can be used
