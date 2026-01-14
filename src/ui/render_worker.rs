@@ -436,7 +436,7 @@ mod scroll_paint_backoff_gate_tests {
           "expected non-scroll invalidation to schedule a non-scroll paint"
         );
       }
-      other => panic!("expected paint job, got {other:?}"),
+      _other => panic!("expected paint job"),
     }
   }
 }
