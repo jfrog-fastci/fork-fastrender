@@ -9233,25 +9233,68 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let where_ =
           js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
         let new_element_val = args.get(1).copied().unwrap_or(Value::Undefined);
-        let new_element_id =
-          require_dom_platform_mut(vm)?.require_element_id(scope.heap(), new_element_val)?;
+        let new_element_handle =
+          require_dom_platform_mut(vm)?.require_element_handle(scope.heap(), new_element_val)?;
+        let new_element_id = new_element_handle.node_id;
+        let new_element_document_id = new_element_handle.document_id;
 
         let where_lower = where_.to_ascii_lowercase();
-        let (target_parent, old_parent) = self.with_dom_host(vm, |host| {
+        let (target_parent, old_parent): (Option<DomNodeKey>, Option<DomNodeKey>) = self.with_dom_host(vm, |host| {
           Ok(host.with_dom(|dom| {
             let target_parent = match where_lower.as_str() {
-              "afterbegin" | "beforeend" => Some(element_id),
-              "beforebegin" | "afterend" => dom.parent_node(element_id),
+              "afterbegin" | "beforeend" => Some(DomNodeKey::new(document_id, element_id)),
+              "beforebegin" | "afterend" => dom
+                .parent_node(element_id)
+                .map(|parent| DomNodeKey::new(document_id, parent)),
               _ => None,
             };
             let old_parent = if new_element_id.index() >= dom.nodes_len() {
               None
             } else {
-              dom.parent_node(new_element_id)
+              dom
+                .parent_node(new_element_id)
+                .map(|parent| DomNodeKey::new(new_element_document_id, parent))
             };
             (target_parent, old_parent)
           }))
         })?;
+
+        // Snapshot subtree mappings for adoption. Apply wrapper remaps only after the DOM mutation
+        // succeeds so failed insertions don't corrupt wrapper identity / `ownerDocument`.
+        let mut adopt_mappings: Vec<(DocumentId, HashMap<NodeId, NodeId>)> = Vec::new();
+        if new_element_document_id != document_id {
+          let root_id = new_element_id;
+          let mapping: HashMap<NodeId, NodeId> = self.with_dom_host(vm, |host| {
+            Ok(host.with_dom(|dom| {
+              let mut mapping: HashMap<NodeId, NodeId> = HashMap::new();
+              let mut stack: Vec<NodeId> = vec![root_id];
+              let mut remaining = dom.nodes_len() + 1;
+              while let Some(id) = stack.pop() {
+                if remaining == 0 {
+                  break;
+                }
+                remaining -= 1;
+
+                if id.index() >= dom.nodes_len() {
+                  continue;
+                }
+                mapping.insert(id, id);
+                let n = dom.node(id);
+                for &child in n.children.iter().rev() {
+                  if child.index() >= dom.nodes_len() {
+                    continue;
+                  }
+                  if dom.node(child).parent != Some(id) {
+                    continue;
+                  }
+                  stack.push(child);
+                }
+              }
+              mapping
+            }))
+          })?;
+          adopt_mappings.push((new_element_document_id, mapping));
+        }
 
         let result: Result<Option<NodeId>, DomError> = self.with_dom_host(vm, |host| {
           Ok(host.mutate_dom(|dom| {
@@ -9264,33 +9307,42 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         match result {
           Ok(Some(_)) => {
+            for (old_document_id, mapping) in adopt_mappings {
+              require_dom_platform_mut(vm)?.remap_node_ids_between_documents(
+                scope.heap_mut(),
+                old_document_id,
+                document_id,
+                &mapping,
+              )?;
+            }
+
             // Keep cached `childNodes` live NodeLists updated.
             if let Some(parent_id) = target_parent {
-              if parent_id == element_id {
+              if parent_id.document_id == document_id && parent_id.node_id == element_id {
                 self.sync_cached_child_nodes_for_wrapper(vm, scope, obj, element_id, document_id)?;
               } else if let Some(parent_wrapper) = require_dom_platform_mut(vm)?
-                .get_existing_wrapper_for_document_id(scope.heap(), document_id, parent_id)
+                .get_existing_wrapper_for_document_id(scope.heap(), parent_id.document_id, parent_id.node_id)
               {
                 self.sync_cached_child_nodes_for_wrapper(
                   vm,
                   scope,
                   parent_wrapper,
-                  parent_id,
-                  document_id,
+                  parent_id.node_id,
+                  parent_id.document_id,
                 )?;
               }
             }
             if let Some(old_parent) = old_parent {
               if Some(old_parent) != target_parent {
                 if let Some(old_parent_wrapper) = require_dom_platform_mut(vm)?
-                  .get_existing_wrapper_for_document_id(scope.heap(), document_id, old_parent)
+                  .get_existing_wrapper_for_document_id(scope.heap(), old_parent.document_id, old_parent.node_id)
                 {
                   self.sync_cached_child_nodes_for_wrapper(
                     vm,
                     scope,
                     old_parent_wrapper,
-                    old_parent,
-                    document_id,
+                    old_parent.node_id,
+                    old_parent.document_id,
                   )?;
                 }
               }
@@ -12880,6 +12932,43 @@ mod element_dispatch_tests {
           && frag.ownerDocument === doc2\
           && frag.childNodes.length === 0\
           && list.length === 0;\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn element_insert_adjacent_element_adopts_foreign_nodes_in_webidl_dom_backend() -> Result<(), VmError> {
+    let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>").expect("parse_html");
+    let mut doc_host = DocumentHostState::new(dom);
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let global = realm.global_object();
+
+    let mut host_dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(global);
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut doc_host,
+      &mut realm,
+      Some(&mut host_dispatch),
+    );
+
+    let out = realm.exec_script_with_host_and_hooks(
+      &mut doc_host,
+      &mut hooks,
+      "(() => {\
+        const host = document.createElement('div');\
+        const doc2 = new DOMParser().parseFromString('<!doctype html><p>hi</p>', 'text/html');\
+        const foreign = doc2.createElement('p');\
+        foreign.appendChild(doc2.createTextNode('hello'));\
+        if (foreign.ownerDocument !== doc2) return false;\
+        const out = host.insertAdjacentElement('beforeend', foreign);\
+        if (out !== foreign) return false;\
+        return foreign.parentNode === host\
+          && foreign.ownerDocument === document\
+          && foreign.firstChild.ownerDocument === document;\
       })()",
     )?;
     assert_eq!(out, Value::Bool(true));
