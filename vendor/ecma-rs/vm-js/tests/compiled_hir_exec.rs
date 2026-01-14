@@ -13005,14 +13005,14 @@ fn compiled_import_meta_in_module_returns_cached_object() -> Result<(), VmError>
   {
     let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
 
-    let source = Arc::new(vm_js::SourceText::new_charged(
+    let source = vm_js::SourceText::new_charged_arc(
       heap,
       "test.js",
       r#"
         export const m1 = import.meta;
         export const m2 = import.meta;
       "#,
-    )?);
+    )?;
     let record = vm_js::SourceTextModuleRecord::compile_source(heap, source)?;
     let module = modules.add_module(record)?;
 
@@ -13088,11 +13088,11 @@ fn compiled_module_throw_stack_has_statement_location() -> Result<(), VmError> {
   let err = {
     let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
 
-    let source = Arc::new(vm_js::SourceText::new_charged(
+    let source = vm_js::SourceText::new_charged_arc(
       heap,
       "test.js",
       "function f() {\n  1;\n  throw \"x\";\n}\nf();\n",
-    )?);
+    )?;
     let record = vm_js::SourceTextModuleRecord::compile_source(heap, source)?;
     let module = modules.add_module(record)?;
 
