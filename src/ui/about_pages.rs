@@ -2849,6 +2849,10 @@ mod tests {
 
     for &url in ABOUT_PAGE_URLS {
       if url == ABOUT_BLANK || url == ABOUT_ERROR || url.starts_with("about:test-") {
+        assert!(
+          !user_urls.contains(url),
+          "expected user_facing_about_pages to exclude internal/test about page {url}"
+        );
         continue;
       }
       assert!(
@@ -2859,15 +2863,34 @@ mod tests {
   }
 
   #[test]
-  fn about_help_and_settings_link_to_settings_and_processes() {
-    for page in [ABOUT_HELP, ABOUT_SETTINGS] {
-      let html = html_for_about_url(page).unwrap();
-      for target in [ABOUT_SETTINGS, ABOUT_PROCESSES] {
-        assert!(
-          html.contains(&format!("href=\"{target}\"")),
-          "expected {page} HTML to contain a link to {target}, got: {html}"
-        );
-      }
+  fn about_help_and_settings_built_in_page_lists_include_all_user_facing_pages() {
+    fn slice_between<'a>(haystack: &'a str, start: &str, end: &str) -> Option<&'a str> {
+      let start_idx = haystack.find(start)? + start.len();
+      let end_idx = haystack[start_idx..].find(end)? + start_idx;
+      Some(&haystack[start_idx..end_idx])
+    }
+
+    let help_html = html_for_about_url(ABOUT_HELP).unwrap();
+    let help_builtin_section = slice_between(
+      &help_html,
+      "<h2>Built-in pages</h2>",
+      "<h2>Test pages</h2>",
+    )
+    .expect("expected about:help HTML to contain Built-in pages and Test pages headings");
+
+    for (url, _) in user_facing_about_pages() {
+      assert!(
+        help_builtin_section.contains(&format!("href=\"{url}\"")),
+        "expected about:help built-in pages section to link to {url}, got: {help_html}"
+      );
+    }
+
+    let settings_html = html_for_about_url(ABOUT_SETTINGS).unwrap();
+    for (url, _) in user_facing_about_pages() {
+      assert!(
+        settings_html.contains(&format!("class=\"about-tile\" href=\"{url}\"")),
+        "expected about:settings built-in pages tiles to include link to {url}, got: {settings_html}"
+      );
     }
   }
 
