@@ -46,6 +46,9 @@ run_vm_js_test() {
 run_vm_js_test generators_yield_operators
 run_vm_js_test generators_delete_yield
 run_vm_js_test generators_destructuring_assignment_yield
+run_vm_js_test generators_assignment_exponentiation_yield
+run_vm_js_test generators_assignment_other_ops_yield
+run_vm_js_test generators_assignment_update_yield_in_base
 
 # Keep the test target name stable: CI relies on this exact integration test name.
 run_vm_js_test generators_binary_ops_yield
