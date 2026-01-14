@@ -1982,7 +1982,7 @@ pub fn chrome_ui_with_bookmarks(
                 })
                 .response;
               if let Some(warn) = warn_msg {
-                let _ = resp.on_hover_text(warn);
+                show_tooltip_on_hover_or_focus(ui, &resp, warn);
               }
             }
 
@@ -2024,7 +2024,7 @@ pub fn chrome_ui_with_bookmarks(
                 })
                 .response;
               if let Some(err) = err_msg {
-                let _ = resp.on_hover_text(err);
+                show_tooltip_on_hover_or_focus(ui, &resp, err);
               }
             }
 
