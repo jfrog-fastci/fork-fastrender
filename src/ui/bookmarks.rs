@@ -804,7 +804,6 @@ impl BookmarkStore {
         }
       }
     }
-    self.repair_next_id();
     if removed_is_folder {
       self.touch_folders();
     } else {
