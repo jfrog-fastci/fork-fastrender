@@ -120,6 +120,7 @@ impl Runner {
   fn run_html_test_in_window(&self, test: &TestCase) -> RunResultResult {
     let html_source = self.fs.read_to_string(&test.path)?;
     let parsed = parse_html_test(&html_source)?;
+    let uses_testharness = html_uses_testharness(&parsed);
 
     let timeout = match parsed.timeout {
       Some(HtmlTimeout::Long) => self.config.long_timeout,
@@ -138,7 +139,7 @@ impl Runner {
       BackendKind::VmJs => {
         #[cfg(feature = "vmjs")]
         {
-          self.run_html_test_in_browser_tab(test, &html_source, timeout)
+          self.run_html_test_in_browser_tab(test, &html_source, uses_testharness, timeout)
         }
         #[cfg(not(feature = "vmjs"))]
         {
@@ -152,17 +153,21 @@ impl Runner {
         {
           let base_dir = id_dir(&test.id);
 
-          let mut scripts = Vec::new();
-          push_testharness_bootstrap(&mut scripts);
-          for script in parsed.scripts {
-            match script {
-              ScriptToEval::Url(url) if is_required_harness_script(&url) => continue,
-              ScriptToEval::Url(url) if is_testharnessreport(&url) => continue,
-              other => scripts.push(other),
+          if uses_testharness {
+            let mut scripts = Vec::new();
+            push_testharness_bootstrap(&mut scripts);
+            for script in parsed.scripts {
+              match script {
+                ScriptToEval::Url(url) if is_required_harness_script(&url) => continue,
+                ScriptToEval::Url(url) if is_testharnessreport(&url) => continue,
+                other => scripts.push(other),
+              }
             }
-          }
 
-          self.run_scripts_in_window(test, &base_dir, scripts, timeout)
+            self.run_scripts_in_window(test, &base_dir, scripts, timeout)
+          } else {
+            self.run_support_html_in_window(test, &base_dir, parsed.scripts, timeout)
+          }
         }
         #[cfg(not(feature = "vmjs"))]
         {
@@ -174,17 +179,21 @@ impl Runner {
       BackendKind::QuickJs => {
         let base_dir = id_dir(&test.id);
 
-        let mut scripts = Vec::new();
-        push_testharness_bootstrap(&mut scripts);
-        for script in parsed.scripts {
-          match script {
-            ScriptToEval::Url(url) if is_required_harness_script(&url) => continue,
-            ScriptToEval::Url(url) if is_testharnessreport(&url) => continue,
-            other => scripts.push(other),
+        if uses_testharness {
+          let mut scripts = Vec::new();
+          push_testharness_bootstrap(&mut scripts);
+          for script in parsed.scripts {
+            match script {
+              ScriptToEval::Url(url) if is_required_harness_script(&url) => continue,
+              ScriptToEval::Url(url) if is_testharnessreport(&url) => continue,
+              other => scripts.push(other),
+            }
           }
-        }
 
-        self.run_scripts_in_window(test, &base_dir, scripts, timeout)
+          self.run_scripts_in_window(test, &base_dir, scripts, timeout)
+        } else {
+          self.run_support_html_in_window(test, &base_dir, parsed.scripts, timeout)
+        }
       }
     }
   }
@@ -331,8 +340,131 @@ impl Runner {
     })
   }
 
+  #[cfg(any(feature = "vmjs", feature = "quickjs"))]
+  fn run_support_html_in_window(
+    &self,
+    test: &TestCase,
+    base_dir: &str,
+    scripts: Vec<ScriptToEval>,
+    timeout: Duration,
+  ) -> RunResultResult {
+    let test_url = test.url();
+
+    let backend_kind = resolve_backend_kind(self.config.backend)?;
+    if !backend_kind.is_available() {
+      return Err(RunError::Js(format!(
+        "selected backend `{backend_kind}` is not available in this build"
+      )));
+    }
+
+    let mut backend: Box<dyn Backend> = match backend_kind {
+      BackendKind::QuickJs => {
+        #[cfg(feature = "quickjs")]
+        {
+          Box::new(crate::engine::quickjs::QuickJsBackend::new())
+        }
+        #[cfg(not(feature = "quickjs"))]
+        {
+          return Err(RunError::Js(
+            "selected backend `quickjs` is not available in this build".to_string(),
+          ));
+        }
+      }
+      BackendKind::VmJs => {
+        #[cfg(feature = "vmjs")]
+        {
+          Box::new(crate::backend_vmjs::VmJsBackend::new(self.fs.clone()))
+        }
+        #[cfg(not(feature = "vmjs"))]
+        {
+          return Err(RunError::Js(
+            "selected backend `vmjs` is not available in this build".to_string(),
+          ));
+        }
+      }
+      BackendKind::VmJsRendered => {
+        #[cfg(feature = "vmjs")]
+        {
+          Box::new(crate::backend_vmjs_rendered::VmJsRenderedBackend::new(
+            self.fs.clone(),
+          ))
+        }
+        #[cfg(not(feature = "vmjs"))]
+        {
+          return Err(RunError::Js(
+            "selected backend `vmjs-rendered` is not available in this build".to_string(),
+          ));
+        }
+      }
+    };
+
+    if let Err(err) = backend.init_realm(
+      BackendInit {
+        test_url: test_url.clone(),
+        fs: self.fs.clone(),
+        timeout,
+        max_tasks: self.config.max_tasks,
+        max_microtasks: self.config.max_microtasks,
+      },
+      None,
+    ) {
+      return Ok(RunResult {
+        outcome: map_backend_error(err)?,
+        wpt_report: None,
+      });
+    }
+
+    for script in scripts {
+      let (src, name) = match script {
+        ScriptToEval::Url(url) => {
+          let path = self.fs.resolve_url(base_dir, &url)?;
+          (self.fs.read_to_string(&path)?, url)
+        }
+        ScriptToEval::Inline(src) => (src, test_url.clone()),
+      };
+
+      if let Err(err) = backend.eval_script(&src, &name) {
+        match err {
+          RunError::Js(msg) if is_interrupt_error(&msg) => {
+            return Ok(RunResult {
+              outcome: RunOutcome::Timeout,
+              wpt_report: None,
+            })
+          }
+          RunError::Js(msg) => {
+            return Ok(RunResult {
+              outcome: RunOutcome::Error(msg),
+              wpt_report: None,
+            })
+          }
+          other => return Err(other),
+        }
+      }
+    }
+
+    let outcome = drive_backend_until_idle(&mut *backend)?;
+    Ok(RunResult {
+      outcome,
+      wpt_report: None,
+    })
+  }
+
   #[cfg(not(any(feature = "vmjs", feature = "quickjs")))]
   fn run_scripts_in_window(
+    &self,
+    _test: &TestCase,
+    _base_dir: &str,
+    _scripts: Vec<ScriptToEval>,
+    _timeout: Duration,
+  ) -> RunResultResult {
+    Err(RunError::Js(
+      "js-wpt-dom-runner was built without any JS backends; enable `vmjs` (recommended) or `quickjs`"
+        .to_string(),
+    ))
+  }
+
+  #[cfg(not(any(feature = "vmjs", feature = "quickjs")))]
+  fn run_support_html_in_window(
     &self,
     _test: &TestCase,
     _base_dir: &str,
@@ -362,6 +494,7 @@ impl Runner {
     &self,
     test: &TestCase,
     html_source: &str,
+    uses_testharness: bool,
     timeout: Duration,
   ) -> RunResultResult {
     use fastrender::api::{BrowserTab, DiagnosticsLevel, RenderOptions};
@@ -384,7 +517,10 @@ impl Runner {
     // but the offline runner relies on `/resources/fastrender_testharness_report.js` to emit a
     // machine-readable payload. When the test file does not include it, inject it immediately after
     // the harness script.
-    fn patch_html_source(html: &str) -> String {
+    fn patch_html_source(html: &str, uses_testharness: bool) -> String {
+      if !uses_testharness {
+        return html.to_string();
+      }
       if html.contains("fastrender_testharness_report.js") {
         return html.to_string();
       }
@@ -408,19 +544,13 @@ impl Runner {
         }
       }
 
-      // Fallback: prepend both harness and reporter.
-      let harness_tag = format!(r#"<script src="{TESTHARNESS_JS}"></script>"#);
-      let mut out = String::with_capacity(html.len() + harness_tag.len() + reporter_tag.len() + 8);
-      out.push_str(&harness_tag);
-      out.push('\n');
-      out.push_str(&reporter_tag);
-      out.push('\n');
-      out.push_str(html);
-      out
+      // If we failed to inject the deterministic report hook, fall back to the original HTML. The
+      // runner will treat missing report payloads as a harness-level error.
+      html.to_string()
     }
 
     let test_url = test.url();
-    let patched_html = patch_html_source(html_source);
+    let patched_html = patch_html_source(html_source, uses_testharness);
     let fetcher: Arc<dyn fastrender::resource::ResourceFetcher> =
       Arc::new(WptResourceFetcher::from_wpt_fs(&self.fs));
 
@@ -469,13 +599,15 @@ impl Runner {
     // FastRender's `BrowserTab` does not block on async work (networking, iframe loads, etc). A test
     // may become temporarily idle while async operations are in flight, then resume later when those
     // operations enqueue tasks from other threads. Keep driving the event loop until:
-    // - the WPT report payload appears,
+    // - the WPT report payload appears (testharness tests), or the document becomes stably idle
+    //   (helper HTML pages),
     // - we hit the overall wall-clock timeout.
     let deadline = std::time::Instant::now()
       .checked_add(timeout)
       .unwrap_or_else(std::time::Instant::now);
 
     let mut last_outcome: Option<RunUntilIdleOutcome> = None;
+    let mut idle_streak: u8 = 0;
     loop {
       if let Some(payload) = take_report_from_dom(&tab) {
         let report = parse_report_from_payload(&payload)?;
@@ -515,25 +647,59 @@ impl Runner {
       };
       last_outcome = Some(outcome);
 
-      // If we ran out of wall-clock time while executing tasks, stop immediately so we don't spin
-      // until the outer `deadline` check.
-      if matches!(
-        outcome,
-        RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::WallTime { .. })
-      ) {
-        return Ok(RunResult {
-          outcome: RunOutcome::Timeout,
-          wpt_report: None,
-        });
-      }
+      match outcome {
+        RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::WallTime { .. }) => {
+          return Ok(RunResult {
+            outcome: RunOutcome::Timeout,
+            wpt_report: None,
+          });
+        }
 
-      // If the document is idle but has not produced a report, give any async tasks a chance to
-      // enqueue more work, then retry until the overall deadline.
-      if matches!(outcome, RunUntilIdleOutcome::Idle) {
-        std::thread::sleep(Duration::from_millis(1));
-      } else {
-        // Other stop reasons (max tasks/microtasks) are treated as harness errors below.
-        break;
+        RunUntilIdleOutcome::Idle => {
+          if uses_testharness {
+            // For testharness HTML tests, "idle but no report" can happen while async operations are
+            // in flight. Keep retrying until the overall deadline.
+            std::thread::sleep(Duration::from_millis(1));
+            continue;
+          }
+
+          // Helper HTML pages don't produce a report payload. Treat "stably idle" as PASS
+          // (best-effort) assuming no JS exceptions were thrown.
+          idle_streak = idle_streak.saturating_add(1);
+          if idle_streak >= 2 {
+            if let Some(diag) = tab.diagnostics_snapshot() {
+              if !diag.js_exceptions.is_empty() {
+                return Ok(RunResult {
+                  outcome: RunOutcome::Error(format!(
+                    "HTML helper produced JS exceptions: {:?}",
+                    diag.js_exceptions
+                  )),
+                  wpt_report: None,
+                });
+              }
+            }
+            return Ok(RunResult {
+              outcome: RunOutcome::Pass,
+              wpt_report: None,
+            });
+          }
+
+          std::thread::sleep(Duration::from_millis(1));
+        }
+
+        RunUntilIdleOutcome::Stopped(_) => {
+          idle_streak = 0;
+          if uses_testharness {
+            // Harness tests: surface as a harness-level error below (missing report payload).
+            break;
+          }
+
+          // Helper pages: treat as a timeout (hit max tasks/microtasks before becoming idle).
+          return Ok(RunResult {
+            outcome: RunOutcome::Timeout,
+            wpt_report: None,
+          });
+        }
       }
     }
 
@@ -638,6 +804,13 @@ fn parse_html_test(source: &str) -> Result<HtmlTestParseResult, RunError> {
   };
   collect_html_metadata(dom.document, &mut out);
   Ok(out)
+}
+
+fn html_uses_testharness(parsed: &HtmlTestParseResult) -> bool {
+  parsed.scripts.iter().any(|script| match script {
+    ScriptToEval::Url(url) => is_equivalent_wpt_url(url, TESTHARNESS_JS),
+    ScriptToEval::Inline(_) => false,
+  })
 }
 
 fn collect_html_metadata(handle: Handle, out: &mut HtmlTestParseResult) {
@@ -778,6 +951,35 @@ fn drive_backend_until_report(
 
     if !did_work {
       backend.idle_wait();
+    }
+  }
+}
+
+fn drive_backend_until_idle(backend: &mut dyn Backend) -> Result<RunOutcome, RunError> {
+  loop {
+    if backend.is_timed_out() {
+      return Ok(RunOutcome::Timeout);
+    }
+
+    if let Err(err) = backend.drain_microtasks() {
+      return Ok(map_backend_error(err)?);
+    }
+
+    if backend.is_timed_out() {
+      return Ok(RunOutcome::Timeout);
+    }
+
+    let did_work = match backend.poll_event_loop() {
+      Ok(v) => v,
+      Err(err) => return Ok(map_backend_error(err)?),
+    };
+
+    if backend.is_timed_out() {
+      return Ok(RunOutcome::Timeout);
+    }
+
+    if !did_work {
+      return Ok(RunOutcome::Pass);
     }
   }
 }

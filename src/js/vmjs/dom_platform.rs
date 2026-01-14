@@ -82,6 +82,7 @@ pub enum DomInterface {
   HTMLImageElement,
   HTMLLinkElement,
   HTMLScriptElement,
+  HTMLIFrameElement,
   Document,
   DocumentFragment,
   ShadowRoot,
@@ -154,6 +155,9 @@ impl DomInterface {
         if tag_name.eq_ignore_ascii_case("script") {
           return Self::HTMLScriptElement;
         }
+        if tag_name.eq_ignore_ascii_case("iframe") {
+          return Self::HTMLIFrameElement;
+        }
         if tag_name.eq_ignore_ascii_case("video") {
           return Self::HTMLVideoElement;
         }
@@ -195,7 +199,8 @@ impl DomInterface {
       | Self::HTMLAnchorElement
       | Self::HTMLImageElement
       | Self::HTMLLinkElement
-      | Self::HTMLScriptElement => Some(Self::HTMLElement),
+      | Self::HTMLScriptElement
+      | Self::HTMLIFrameElement => Some(Self::HTMLElement),
     }
   }
 
@@ -244,6 +249,7 @@ pub struct DomPlatformPrototypes {
   pub html_image_element: GcObject,
   pub html_link_element: GcObject,
   pub html_script_element: GcObject,
+  pub html_iframe_element: GcObject,
   pub document: GcObject,
   pub document_fragment: GcObject,
   pub shadow_root: GcObject,
@@ -329,7 +335,7 @@ impl DomPlatform {
     // Root each object immediately after acquiring it. Under a tight heap limit, subsequent
     // allocations can trigger GC, and unrooted prototypes would be collected (turning their
     // handles into stale values).
-    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(26);
+    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(27);
     for proto in [
       prototypes.event_target,
       prototypes.node,
@@ -354,6 +360,7 @@ impl DomPlatform {
       prototypes.html_image_element,
       prototypes.html_link_element,
       prototypes.html_script_element,
+      prototypes.html_iframe_element,
       prototypes.document,
       prototypes.document_fragment,
       prototypes.shadow_root,
@@ -398,7 +405,7 @@ impl DomPlatform {
     // Root each object immediately after lookup. Under a tight heap limit, subsequent allocations
     // can trigger GC, and unrooted prototypes would be collected (turning their handles into stale
     // values).
-    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(26);
+    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(27);
 
     macro_rules! lookup_proto {
       ($name:literal) => {{
@@ -440,6 +447,7 @@ impl DomPlatform {
     let proto_html_image_element = lookup_proto!("HTMLImageElement");
     let proto_html_link_element = lookup_proto!("HTMLLinkElement");
     let proto_html_script_element = lookup_proto!("HTMLScriptElement");
+    let proto_html_iframe_element = lookup_proto!("HTMLIFrameElement");
     let proto_document = lookup_proto!("Document");
     let proto_document_fragment = lookup_proto!("DocumentFragment");
     let proto_shadow_root = lookup_proto!("ShadowRoot");
@@ -482,6 +490,7 @@ impl DomPlatform {
         html_image_element: proto_html_image_element,
         html_link_element: proto_html_link_element,
         html_script_element: proto_html_script_element,
+        html_iframe_element: proto_html_iframe_element,
         document: proto_document,
         document_fragment: proto_document_fragment,
         shadow_root: proto_shadow_root,
@@ -501,7 +510,7 @@ impl DomPlatform {
     // Root each object immediately after allocation. Under a tight heap limit, subsequent
     // allocations can trigger GC, and unrooted prototypes would be collected (turning their
     // handles into stale values).
-    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(26);
+    let mut prototype_roots: Vec<RootId> = Vec::with_capacity(27);
 
     // Prototype objects.
     let proto_event_target = scope.alloc_object()?;
@@ -554,6 +563,8 @@ impl DomPlatform {
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_link_element))?);
     let proto_html_script_element = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_script_element))?);
+    let proto_html_iframe_element = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_html_iframe_element))?);
     let proto_document = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_document))?);
     let proto_document_fragment = scope.alloc_object()?;
@@ -628,6 +639,7 @@ impl DomPlatform {
       proto_html_image_element,
       proto_html_link_element,
       proto_html_script_element,
+      proto_html_iframe_element,
     ] {
       scope
         .heap_mut()
@@ -669,6 +681,7 @@ impl DomPlatform {
         html_image_element: proto_html_image_element,
         html_link_element: proto_html_link_element,
         html_script_element: proto_html_script_element,
+        html_iframe_element: proto_html_iframe_element,
         document: proto_document,
         document_fragment: proto_document_fragment,
         shadow_root: proto_shadow_root,
@@ -816,6 +829,8 @@ impl DomPlatform {
     scope.push_root(Value::Object(proto_html_link_element))?;
     let proto_html_script_element = scope.alloc_object()?;
     scope.push_root(Value::Object(proto_html_script_element))?;
+    let proto_html_iframe_element = scope.alloc_object()?;
+    scope.push_root(Value::Object(proto_html_iframe_element))?;
 
     for proto in [
       proto_html_media_element,
@@ -831,6 +846,7 @@ impl DomPlatform {
       proto_html_image_element,
       proto_html_link_element,
       proto_html_script_element,
+      proto_html_iframe_element,
     ] {
       scope
         .heap_mut()
@@ -882,6 +898,7 @@ impl DomPlatform {
         html_image_element: proto_html_image_element,
         html_link_element: proto_html_link_element,
         html_script_element: proto_html_script_element,
+        html_iframe_element: proto_html_iframe_element,
         document: proto_document,
         document_fragment: proto_document_fragment,
         shadow_root: proto_shadow_root,
@@ -925,6 +942,7 @@ impl DomPlatform {
       DomInterface::HTMLImageElement => self.prototypes.html_image_element,
       DomInterface::HTMLLinkElement => self.prototypes.html_link_element,
       DomInterface::HTMLScriptElement => self.prototypes.html_script_element,
+      DomInterface::HTMLIFrameElement => self.prototypes.html_iframe_element,
       DomInterface::Document => self.prototypes.document,
       DomInterface::DocumentFragment => self.prototypes.document_fragment,
       DomInterface::ShadowRoot => self.prototypes.shadow_root,

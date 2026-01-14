@@ -450,6 +450,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
     let mut realm = WindowRealm::new_with_js_execution_options(config, js_execution_options)
       .map_err(|err| Error::Other(err.to_string()))?;
     realm.set_cookie_fetcher(Arc::clone(&fetcher));
+    realm.set_resource_fetcher(Arc::clone(&fetcher));
     if js_execution_options.supports_module_scripts {
       let document_origin = origin_from_url(url);
       realm

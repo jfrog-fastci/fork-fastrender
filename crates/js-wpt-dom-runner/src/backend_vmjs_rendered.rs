@@ -256,6 +256,7 @@ impl Backend for VmJsRenderedBackend {
     )
     .map_err(|err| RunError::Js(err.to_string()))?;
     realm.set_cookie_fetcher(fetcher.clone());
+    realm.set_resource_fetcher(fetcher.clone());
     if realm.js_execution_options().supports_module_scripts {
       let origin = origin_from_url(&init.test_url);
       realm

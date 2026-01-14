@@ -337,8 +337,9 @@ reason = "Times out in the offline runner (requires ShadowRoot + window load eve
 
 [[expectations]]
 id = "dom/ranges/Range-test-iframe.html"
-status = "skip"
-reason = "Support iframe for Range tests (not a testharness entrypoint)."
+backend = ["vmjs", "vmjs-rendered"]
+status = "pass"
+reason = "Helper file for the Range suite; should load cleanly (iframe support implemented)."
 
 [[expectations]]
 id = "dom/ranges/Range-compareBoundaryPoints-crash.html"

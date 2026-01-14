@@ -803,6 +803,7 @@ impl WindowHostState {
     )
     .map_err(|err| Error::Other(err.to_string()))?;
     window.set_cookie_fetcher(fetcher.clone());
+    window.set_resource_fetcher(fetcher.clone());
     if js_execution_options.supports_module_scripts {
       let document_origin = origin_from_url(&document_url);
       if let Err(err) = window.enable_module_loader(fetcher.clone(), document_origin) {

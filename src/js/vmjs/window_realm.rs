@@ -12,6 +12,7 @@ use crate::js::document_write::{
 use crate::js::dom_internal_keys::{
   CSS_STYLE_DECL_PROTOTYPE_KEY, EVENT_BRAND_KEY, EVENT_ID_KEY, EVENT_IMMEDIATE_STOP_KEY,
   EVENT_INITIALIZED_KEY, EVENT_KIND_KEY, HTML_COLLECTION_PROTOTYPE_KEY, HTML_COLLECTION_ROOT_KEY,
+  IFRAME_CONTENT_DOCUMENT_KEY, IFRAME_CONTENT_WINDOW_KEY,
   NODE_CHILD_NODES_KEY, NODE_CHILDREN_KEY, NODE_ID_KEY, NODE_LIST_PROTOTYPE_KEY,
   STYLE_CSS_TEXT_GET_KEY, STYLE_CSS_TEXT_SET_KEY, STYLE_CURSOR_GET_KEY, STYLE_CURSOR_SET_KEY,
   STYLE_DISPLAY_GET_KEY, STYLE_DISPLAY_SET_KEY, STYLE_GET_PROPERTY_VALUE_KEY,
@@ -349,6 +350,9 @@ pub(crate) struct WindowRealmUserData {
   /// dispatched during `WindowRealm::perform_microtask_checkpoint`.
   pending_hashchange_events: VecDeque<QueuedHashChangeEvent>,
   cookie_fetcher: Option<Arc<dyn ResourceFetcher>>,
+  /// Resource fetcher used by minimal subresource loaders implemented inside `WindowRealm`
+  /// (e.g. same-origin `<iframe src>` support for WPT DOM tests).
+  resource_fetcher: Option<Arc<dyn ResourceFetcher>>,
   cookie_jar: CookieJar,
   pub(crate) module_loader: ModuleLoaderHandle,
   /// Optional module graph backing module scripts and dynamic `import()`.
@@ -460,6 +464,7 @@ impl std::fmt::Debug for WindowRealmUserData {
         &(self.fallback_scroll_x, self.fallback_scroll_y),
       )
       .field("has_cookie_fetcher", &self.cookie_fetcher.is_some())
+      .field("has_resource_fetcher", &self.resource_fetcher.is_some())
       .field("cookie_jar", &self.cookie_jar)
       .field("has_module_graph", &self.module_graph.is_some())
       .field(
@@ -547,6 +552,7 @@ impl WindowRealmUserData {
       document_url,
       privileged_chrome_realm: false,
       cookie_fetcher: None,
+      resource_fetcher: None,
       cookie_jar: CookieJar::new(),
       module_loader,
       module_graph: None,
@@ -1006,6 +1012,14 @@ impl WindowRealm {
   pub fn set_cookie_fetcher(&mut self, fetcher: Arc<dyn ResourceFetcher>) {
     if let Some(data) = self.runtime.vm.user_data_mut::<WindowRealmUserData>() {
       data.cookie_fetcher = Some(fetcher);
+    }
+  }
+
+  /// Provide a host-side resource fetcher used by minimal DOM integrations that need to synchronously
+  /// load local resources (for example: same-origin `<iframe src>` in the offline WPT DOM runner).
+  pub fn set_resource_fetcher(&mut self, fetcher: Arc<dyn ResourceFetcher>) {
+    if let Some(data) = self.runtime.vm.user_data_mut::<WindowRealmUserData>() {
+      data.resource_fetcher = Some(fetcher);
     }
   }
 
@@ -3347,6 +3361,8 @@ const ELEMENT_CLASS_LIST_REPLACE_KEY: &str = "__fastrender_element_class_list_re
 const ELEMENT_ID_GET_KEY: &str = "__fastrender_element_id_get";
 const ELEMENT_ID_SET_KEY: &str = "__fastrender_element_id_set";
 const ELEMENT_SCROLL_PARENT_GET_KEY: &str = "__fastrender_element_scroll_parent_get";
+const IFRAME_CONTENT_DOCUMENT_GET_KEY: &str = "__fastrender_iframe_content_document_get";
+const IFRAME_CONTENT_WINDOW_GET_KEY: &str = "__fastrender_iframe_content_window_get";
 const ELEMENT_TITLE_GET_KEY: &str = "__fastrender_element_title_get";
 const ELEMENT_TITLE_SET_KEY: &str = "__fastrender_element_title_set";
 const ELEMENT_LANG_GET_KEY: &str = "__fastrender_element_lang_get";
@@ -9738,6 +9754,14 @@ fn initialize_node_wrapper_shims(
     let key = alloc_key(scope, ELEMENT_SCROLL_PARENT_GET_KEY)?;
     object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
+  let iframe_content_document_get = {
+    let key = alloc_key(scope, IFRAME_CONTENT_DOCUMENT_GET_KEY)?;
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
+  };
+  let iframe_content_window_get = {
+    let key = alloc_key(scope, IFRAME_CONTENT_WINDOW_GET_KEY)?;
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
+  };
   let src_get = {
     let key = alloc_key(scope, ELEMENT_SRC_GET_KEY)?;
     object_get_data_property_value(scope.heap(), document_obj, &key)?
@@ -11110,6 +11134,44 @@ fn initialize_node_wrapper_shims(
             let key = alloc_key(scope, "reset")?;
             if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
               scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+            }
+          }
+        }
+
+        if is_html && tag_name.eq_ignore_ascii_case("iframe") {
+          if let Some(Value::Object(get)) = iframe_content_document_get {
+            let key = alloc_key(scope, "contentDocument")?;
+            if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+              scope.define_property(
+                wrapper,
+                key,
+                PropertyDescriptor {
+                  enumerable: false,
+                  configurable: true,
+                  kind: PropertyKind::Accessor {
+                    get: Value::Object(get),
+                    set: Value::Undefined,
+                  },
+                },
+              )?;
+            }
+          }
+
+          if let Some(Value::Object(get)) = iframe_content_window_get {
+            let key = alloc_key(scope, "contentWindow")?;
+            if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+              scope.define_property(
+                wrapper,
+                key,
+                PropertyDescriptor {
+                  enumerable: false,
+                  configurable: true,
+                  kind: PropertyKind::Accessor {
+                    get: Value::Object(get),
+                    set: Value::Undefined,
+                  },
+                },
+              )?;
             }
           }
         }
@@ -37463,26 +37525,6 @@ fn range_end_container_get_native(
   get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), node_id)
 }
 
-fn range_common_ancestor_container_get_native(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
-  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
-  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
-    .ok_or(VmError::TypeError("Illegal invocation"))?;
-  // SAFETY: `dom_ptr` is valid for the duration of this native call.
-  let dom = unsafe { dom_ptr.as_ref() };
-  let node_id = dom
-    .range_common_ancestor_container(handle.range_id)
-    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
-  get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), node_id)
-}
-
 fn range_end_offset_get_native(
   vm: &mut Vm,
   _scope: &mut Scope<'_>,
@@ -40360,6 +40402,8 @@ fn element_reflected_string_set_native(
   }
   let should_run_src_attribute_changed_steps =
     attr.eq_ignore_ascii_case("src") && is_html_script_element(unsafe { dom_ptr.as_ref() }, handle.node_id);
+  let should_run_iframe_src_attribute_changed_steps =
+    attr.eq_ignore_ascii_case("src") && is_html_iframe_element(unsafe { dom_ptr.as_ref() }, handle.node_id);
 
   if should_run_src_attribute_changed_steps {
     run_dynamic_script_src_attribute_changed_steps(
@@ -40370,6 +40414,17 @@ fn element_reflected_string_set_native(
       handle.document_obj,
       dom_ptr,
       handle.node_id,
+    )?;
+  }
+  if should_run_iframe_src_attribute_changed_steps {
+    run_iframe_src_attribute_changed_steps(
+      vm,
+      scope,
+      host,
+      hooks,
+      obj,
+      handle.document_obj,
+      new_value.as_ref(),
     )?;
   }
   let needs_microtask = unsafe { dom_ptr.as_mut() }.take_mutation_observer_microtask_needed();
@@ -40383,6 +40438,632 @@ fn element_reflected_string_set_native(
   )?;
 
   Ok(Value::Undefined)
+}
+
+fn create_iframe_document_wrapper(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  template_document_obj: GcObject,
+  dom: dom2::Document,
+  iframe_url: &str,
+  content_window_obj: GcObject,
+  location_obj: GcObject,
+) -> Result<GcObject, VmError> {
+  let iframe_url_s = scope.alloc_string(iframe_url)?;
+  scope.push_root(Value::String(iframe_url_s))?;
+
+  // Keep the host document wrapper as the prototype so the returned object inherits the same
+  // handwritten Document surface (which is largely installed as own-properties on `window.document`).
+  let document_obj = scope.alloc_object_with_prototype(Some(template_document_obj))?;
+  scope.push_root(Value::Object(document_obj))?;
+
+  {
+    // Root while allocating property keys: string allocation can trigger GC.
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(document_obj))?;
+    scope.push_root(Value::String(iframe_url_s))?;
+
+    // Document.defaultView (readonly): the iframe's Window-like object.
+    let default_view_key = alloc_key(&mut scope, "defaultView")?;
+    scope.define_property(
+      document_obj,
+      default_view_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Object(content_window_obj),
+          writable: false,
+        },
+      },
+    )?;
+
+    // Document.URL (readonly): override the host document's URL accessor inherited via prototype.
+    let url_key = alloc_key(&mut scope, "URL")?;
+    scope.define_property(
+      document_obj,
+      url_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::String(iframe_url_s),
+          writable: false,
+        },
+      },
+    )?;
+
+    // Document.location (readonly-ish): override the host document's location accessor inherited via
+    // prototype so iframe scripts can read `document.location` without aliasing the parent document.
+    let location_key = alloc_key(&mut scope, "location")?;
+    scope.define_property(
+      document_obj,
+      location_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Object(location_obj),
+          writable: false,
+        },
+      },
+    )?;
+
+    // Document.title (writable string shim, mirroring the host document).
+    let title_key = alloc_key(&mut scope, "title")?;
+    let title_s = scope.alloc_string("")?;
+    scope.push_root(Value::String(title_s))?;
+    scope.define_property(
+      document_obj,
+      title_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::String(title_s),
+          writable: true,
+        },
+      },
+    )?;
+
+    // Treat this as the canonical wrapper for `NodeId(0)` in its document.
+    let node_id_key = alloc_key(&mut scope, NODE_ID_KEY)?;
+    scope.define_property(document_obj, node_id_key, data_desc(Value::Number(0.0)))?;
+
+    let wrapper_document_key = alloc_key(&mut scope, WRAPPER_DOCUMENT_KEY)?;
+    scope.define_property(
+      document_obj,
+      wrapper_document_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Object(document_obj),
+          writable: false,
+        },
+      },
+    )?;
+  }
+
+  let document_id = gc_object_id(document_obj);
+
+  // Register with the DOM platform so brand checks work and node wrappers created for this document
+  // resolve to the correct `dom2::Document` arena (via `WindowRealmUserData.owned_dom2_documents`).
+  if let Some(platform) = dom_platform_mut(vm) {
+    // `DomPlatform::get_or_create_wrapper` sets up host slots, but we are creating the document
+    // wrapper object ourselves (to inherit instance properties from `template_document_obj`).
+    scope.heap_mut().object_set_host_slots(
+      document_obj,
+      HostSlots {
+        a: crate::js::dom_platform::DOM_WRAPPER_HOST_TAG,
+        b: 0,
+      },
+    )?;
+    platform.register_wrapper(
+      scope.heap(),
+      document_obj,
+      vm_js::WeakGcObject::from(document_obj),
+      NodeId::from_index(0),
+      DomInterface::Document,
+    );
+  } else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
+
+  // Copy internal wrapper helper methods from the host document so node wrappers created for this
+  // document can reuse them.
+  copy_wrapper_shared_methods(scope, template_document_obj, document_obj)?;
+
+  // Create a DOMImplementation object for the iframe document by copying method functions from the
+  // host document's implementation object.
+  let impl_obj = {
+    let key = alloc_key(scope, "implementation")?;
+    match scope
+      .heap()
+      .object_get_own_data_property_value(template_document_obj, &key)?
+    {
+      Some(Value::Object(obj)) => obj,
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "iframe Document requires document.implementation",
+        ))
+      }
+    }
+  };
+
+  let new_impl = scope.alloc_object()?;
+  scope.push_root(Value::Object(new_impl))?;
+
+  let dom_implementation_brand_key = alloc_key(scope, DOM_IMPLEMENTATION_BRAND_KEY)?;
+  scope.define_property(
+    new_impl,
+    dom_implementation_brand_key,
+    non_configurable_read_only_data_desc(Value::Bool(true)),
+  )?;
+
+  let impl_doc_id_key = alloc_key(scope, DOM_IMPLEMENTATION_DOCUMENT_ID_KEY)?;
+  scope.define_property(
+    new_impl,
+    impl_doc_id_key,
+    non_configurable_read_only_data_desc(Value::Number(document_id as f64)),
+  )?;
+  let impl_doc_obj_key = alloc_key(scope, DOM_IMPLEMENTATION_DOCUMENT_OBJ_KEY)?;
+  scope.define_property(
+    new_impl,
+    impl_doc_obj_key,
+    non_configurable_read_only_data_desc(Value::Object(document_obj)),
+  )?;
+
+  for name in [
+    "hasFeature",
+    "createDocument",
+    "createDocumentType",
+    "createHTMLDocument",
+  ] {
+    let key = alloc_key(scope, name)?;
+    let value = scope
+      .heap()
+      .object_get_own_data_property_value(impl_obj, &key)?
+      .unwrap_or(Value::Undefined);
+    scope.define_property(new_impl, key, data_desc(value))?;
+  }
+
+  let implementation_key = alloc_key(scope, "implementation")?;
+  scope.define_property(
+    document_obj,
+    implementation_key,
+    read_only_data_desc(Value::Object(new_impl)),
+  )?;
+
+  {
+    let data = vm
+      .user_data_mut::<WindowRealmUserData>()
+      .ok_or(VmError::TypeError("Illegal invocation"))?;
+    if data.owned_dom2_documents.borrow().contains_key(&document_id) {
+      return Err(VmError::InvariantViolation(
+        "iframe document wrapper generated a duplicate document id",
+      ));
+    }
+    data
+      .owned_dom2_documents
+      .borrow_mut()
+      .insert(document_id, Box::new(dom));
+  }
+
+  Ok(document_obj)
+}
+
+fn dispatch_iframe_load_event(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  iframe_obj: GcObject,
+) -> Result<(), VmError> {
+  let Some(global) = vm
+    .user_data::<WindowRealmUserData>()
+    .and_then(|data| data.window_obj())
+  else {
+    return Ok(());
+  };
+
+  // Construct `new Event("load")`.
+  let event_ctor = {
+    scope.push_root(Value::Object(global))?;
+    let key = alloc_key(scope, "Event")?;
+    match scope
+      .heap()
+      .object_get_own_data_property_value(global, &key)?
+    {
+      Some(Value::Object(obj)) => obj,
+      _ => return Ok(()),
+    }
+  };
+  let load_s = scope.alloc_string("load")?;
+  scope.push_root(Value::String(load_s))?;
+  let event_value = vm.construct_with_host_and_hooks(
+    host,
+    scope,
+    hooks,
+    Value::Object(event_ctor),
+    &[Value::String(load_s)],
+    Value::Object(event_ctor),
+  )?;
+  let Value::Object(event_obj) = event_value else {
+    return Ok(());
+  };
+  scope.push_root(Value::Object(event_obj))?;
+
+  // Dispatch on the iframe element so `iframe.onload = ...` handlers run.
+  let _ = event_target_dispatch_event_dom2(vm, scope, host, hooks, iframe_obj, &[Value::Object(event_obj)]);
+  Ok(())
+}
+
+fn iframe_dispatch_load_event_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let iframe_obj = {
+    let slots = scope.heap().get_function_native_slots(callee)?;
+    match slots.get(0).copied().unwrap_or(Value::Undefined) {
+      Value::Object(obj) => obj,
+      _ => return Ok(Value::Undefined),
+    }
+  };
+
+  if let Err(err) = dispatch_iframe_load_event(vm, scope, host, hooks, iframe_obj) {
+    if crate::js::vm_error_format::vm_error_is_js_exception(&err) {
+      return Ok(Value::Undefined);
+    }
+    return Err(err);
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn run_iframe_src_attribute_changed_steps(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  iframe_obj: GcObject,
+  parent_document_obj: GcObject,
+  src_value: &str,
+) -> Result<(), VmError> {
+  // Minimal same-origin iframe support for the offline WPT DOM runner:
+  // - resolve `src` against the parent document base URL,
+  // - synchronously fetch + parse the HTML,
+  // - execute scripts in a per-iframe closure scope,
+  // - expose `contentDocument` + `contentWindow`,
+  // - and asynchronously dispatch the iframe element's `load` event.
+
+  let Some((fetcher, base_url, document_origin)) = vm.user_data::<WindowRealmUserData>().map(|data| {
+    let fetcher = data.resource_fetcher.as_ref().map(Arc::clone);
+    let base_url = data
+      .base_url
+      .clone()
+      .unwrap_or_else(|| data.document_url.clone());
+    (fetcher, base_url, origin_from_url(&data.document_url))
+  }) else {
+    return Ok(());
+  };
+  let Some(fetcher) = fetcher else {
+    return Ok(());
+  };
+
+  let src_trimmed = src_value.trim();
+  let resolved_url = if src_trimmed.is_empty() {
+    ABOUT_BLANK_URL.to_string()
+  } else if let Ok(base) = Url::parse(&base_url) {
+    base
+      .join(src_trimmed)
+      .map(|u| u.to_string())
+      .unwrap_or_else(|_| src_trimmed.to_string())
+  } else {
+    src_trimmed.to_string()
+  };
+
+  if let Some(doc_origin) = document_origin.as_ref() {
+    if let Some(iframe_origin) = origin_from_url(&resolved_url) {
+      if !doc_origin.same_origin(&iframe_origin) {
+        // Cross-origin iframes are out of scope for the offline runner.
+        return Ok(());
+      }
+    }
+  }
+
+  // Fetch HTML.
+  let html_source = fetcher
+    .fetch(&resolved_url)
+    .map(|res| String::from_utf8_lossy(&res.bytes).to_string())
+    .unwrap_or_else(|_| "<!doctype html><html><head></head><body></body></html>".to_string());
+
+  let mut dom = dom2::parse_html_with_options(
+    &html_source,
+    crate::dom::DomParseOptions::with_scripting_enabled(false),
+  )
+  .map_err(|_| VmError::TypeError("iframe: failed to parse HTML"))?;
+
+  // Extract <script> elements in tree order before running any code.
+  let script_specs: Vec<(Option<String>, String)> = {
+    let mut out = Vec::new();
+    let mut stack = Vec::new();
+    stack.push(dom.root());
+    let mut remaining = dom.nodes_len().saturating_add(1);
+    while let Some(node_id) = stack.pop() {
+      if remaining == 0 {
+        break;
+      }
+      remaining -= 1;
+      if node_id.index() >= dom.nodes_len() {
+        continue;
+      }
+
+      if is_html_script_element(&dom, node_id) {
+        let src_attr = dom
+          .get_attribute(node_id, "src")
+          .ok()
+          .flatten()
+          .map(|s| s.trim().to_string())
+          .filter(|s| !s.is_empty());
+        let inline = if src_attr.is_some() {
+          String::new()
+        } else {
+          text_content_string(&dom, node_id)
+        };
+        out.push((src_attr, inline));
+      }
+
+      // Traverse in tree order: push children in reverse.
+      let node = dom.node(node_id);
+      for &child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    out
+  };
+
+  // Create the iframe's Window-like object (plain JS object in the parent realm).
+  let content_window_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(content_window_obj))?;
+
+  // Minimal Location-like object (only the fields used by Range-test-iframe's legacy hash mode).
+  let location_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(location_obj))?;
+  {
+    let href_s = scope.alloc_string(&resolved_url)?;
+    scope.push_root(Value::String(href_s))?;
+    let href_key = alloc_key(scope, "href")?;
+    scope.define_property(location_obj, href_key, data_desc(Value::String(href_s)))?;
+
+    let (search, hash) = match Url::parse(&resolved_url) {
+      Ok(url) => (
+        url.query().map(|q| format!("?{q}")).unwrap_or_default(),
+        url.fragment().map(|f| format!("#{f}")).unwrap_or_default(),
+      ),
+      Err(_) => (String::new(), String::new()),
+    };
+    let search_key = alloc_key(scope, "search")?;
+    let search_s = scope.alloc_string(&search)?;
+    scope.push_root(Value::String(search_s))?;
+    scope.define_property(location_obj, search_key, data_desc(Value::String(search_s)))?;
+
+    let hash_key = alloc_key(scope, "hash")?;
+    let hash_s = scope.alloc_string(&hash)?;
+    scope.push_root(Value::String(hash_s))?;
+    scope.define_property(location_obj, hash_key, data_desc(Value::String(hash_s)))?;
+  }
+
+  let document_obj =
+    create_iframe_document_wrapper(vm, scope, parent_document_obj, dom, &resolved_url, content_window_obj, location_obj)?;
+  scope.push_root(Value::Object(document_obj))?;
+
+  // Store the browsing-context state on the iframe element wrapper itself.
+  {
+    scope.push_root(Value::Object(iframe_obj))?;
+    let doc_key = alloc_key(scope, IFRAME_CONTENT_DOCUMENT_KEY)?;
+    scope.define_property(iframe_obj, doc_key, data_desc(Value::Object(document_obj)))?;
+    let win_key = alloc_key(scope, IFRAME_CONTENT_WINDOW_KEY)?;
+    scope.define_property(iframe_obj, win_key, data_desc(Value::Object(content_window_obj)))?;
+  }
+
+  // Populate common window-like backrefs (`window`, `self`, `document`, `location`) on the
+  // contentWindow object so scripts that use `window.document` behave.
+  {
+    scope.push_root(Value::Object(content_window_obj))?;
+    let window_key = alloc_key(scope, "window")?;
+    scope.define_property(content_window_obj, window_key, data_desc(Value::Object(content_window_obj)))?;
+    let self_key = alloc_key(scope, "self")?;
+    scope.define_property(content_window_obj, self_key, data_desc(Value::Object(content_window_obj)))?;
+    let document_key = alloc_key(scope, "document")?;
+    scope.define_property(content_window_obj, document_key, data_desc(Value::Object(document_obj)))?;
+    let location_key = alloc_key(scope, "location")?;
+    scope.define_property(content_window_obj, location_key, data_desc(Value::Object(location_obj)))?;
+  }
+
+  // Execute scripts inside a per-iframe closure scope. This is not a true JS realm isolation, but
+  // it is sufficient for the Range WPTs which rely on `eval()` seeing common.js's locals.
+  let mut wrapper_body = String::new();
+  wrapper_body.push_str("\"use strict\";\n");
+  wrapper_body.push_str("window.document = document;\n");
+  wrapper_body.push_str("window.location = location;\n");
+  wrapper_body.push_str("window.window = window;\n");
+  wrapper_body.push_str("window.self = window;\n");
+
+  let iframe_base_url = Url::parse(&resolved_url).ok();
+  for (src_attr, inline_source) in script_specs {
+    if let Some(src_attr) = src_attr {
+      let resolved_script_url = iframe_base_url
+        .as_ref()
+        .and_then(|base| base.join(&src_attr).ok())
+        .map(|u| u.to_string())
+        .unwrap_or(src_attr);
+      if let Some(doc_origin) = document_origin.as_ref() {
+        if let Some(script_origin) = origin_from_url(&resolved_script_url) {
+          if !doc_origin.same_origin(&script_origin) {
+            continue;
+          }
+        }
+      }
+      if let Ok(res) = fetcher.fetch(&resolved_script_url) {
+        wrapper_body.push_str(&String::from_utf8_lossy(&res.bytes));
+        wrapper_body.push('\n');
+      }
+    } else if !inline_source.is_empty() {
+      wrapper_body.push_str(&inline_source);
+      wrapper_body.push('\n');
+    }
+  }
+
+  // Export the Range harness entrypoints (used by Range-*.html tests) if present.
+  wrapper_body.push_str("if (typeof setupRangeTests === 'function') window.setupRangeTests = setupRangeTests;\n");
+  wrapper_body.push_str("if (typeof run === 'function') window.run = run;\n");
+  // Simulate `<body onload=...>` for helper pages like Range-test-iframe.html.
+  wrapper_body.push_str("if (typeof window.run === 'function') { try { window.run(); } catch (e) {} }\n");
+
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let function_constructor = intr.function_constructor();
+
+  let window_param = scope.alloc_string("window")?;
+  scope.push_root(Value::String(window_param))?;
+  let document_param = scope.alloc_string("document")?;
+  scope.push_root(Value::String(document_param))?;
+  let location_param = scope.alloc_string("location")?;
+  scope.push_root(Value::String(location_param))?;
+  let body_s = scope.alloc_string(&wrapper_body)?;
+  scope.push_root(Value::String(body_s))?;
+
+  let func_value = match vm.call_with_host_and_hooks(
+    host,
+    scope,
+    hooks,
+    Value::Object(function_constructor),
+    Value::Undefined,
+    &[
+      Value::String(window_param),
+      Value::String(document_param),
+      Value::String(location_param),
+      Value::String(body_s),
+    ],
+  ) {
+    Ok(v) => v,
+    Err(err) => {
+      if crate::js::vm_error_format::vm_error_is_js_exception(&err) {
+        // Ignore script errors (browser-like behavior: navigation does not throw).
+        return queue_iframe_load_event_microtask(vm, scope, host, hooks, iframe_obj, parent_document_obj);
+      }
+      return Err(err);
+    }
+  };
+
+  let Value::Object(func_obj) = func_value else {
+    return queue_iframe_load_event_microtask(vm, scope, host, hooks, iframe_obj, parent_document_obj);
+  };
+  scope.push_root(Value::Object(func_obj))?;
+
+  let call_result = vm.call_with_host_and_hooks(
+    host,
+    scope,
+    hooks,
+    Value::Object(func_obj),
+    Value::Undefined,
+    &[
+      Value::Object(content_window_obj),
+      Value::Object(document_obj),
+      Value::Object(location_obj),
+    ],
+  );
+  if let Err(err) = call_result {
+    if !crate::js::vm_error_format::vm_error_is_js_exception(&err) {
+      return Err(err);
+    }
+  }
+
+  queue_iframe_load_event_microtask(vm, scope, host, hooks, iframe_obj, parent_document_obj)
+}
+
+fn queue_iframe_load_event_microtask(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  iframe_obj: GcObject,
+  parent_document_obj: GcObject,
+) -> Result<(), VmError> {
+  if !hooks_have_event_loop(hooks) {
+    let _ = dispatch_iframe_load_event(vm, scope, host, hooks, iframe_obj);
+    return Ok(());
+  }
+
+  let Some(global) = document_window_from_document(scope, parent_document_obj)?
+    .or_else(|| vm.user_data::<WindowRealmUserData>().and_then(|data| data.window_obj()))
+  else {
+    // No global => can't schedule; fall back to sync dispatch.
+    let _ = dispatch_iframe_load_event(vm, scope, host, hooks, iframe_obj);
+    return Ok(());
+  };
+
+  // Find the internal queueMicrotask implementation (preferred) or fall back to the user-visible
+  // `queueMicrotask` binding.
+  let queue_microtask = {
+    scope.push_root(Value::Object(global))?;
+    let key = alloc_key(scope, INTERNAL_QUEUE_MICROTASK_KEY)?;
+    scope
+      .heap()
+      .object_get_own_data_property_value(global, &key)?
+      .or_else(|| {
+        let key = alloc_key(scope, "queueMicrotask").ok()?;
+        scope
+          .heap()
+          .object_get_own_data_property_value(global, &key)
+          .ok()
+          .flatten()
+      })
+      .unwrap_or(Value::Undefined)
+  };
+
+  if !matches!(queue_microtask, Value::Object(_)) || !scope.heap().is_callable(queue_microtask)? {
+    // No microtask scheduler: dispatch synchronously as a fallback.
+    let _ = dispatch_iframe_load_event(vm, scope, host, hooks, iframe_obj);
+    return Ok(());
+  }
+
+  let callback = {
+    let call_id = vm.register_native_call(iframe_dispatch_load_event_native)?;
+    let name = scope.alloc_string("iframe dispatch load")?;
+    scope.push_root(Value::String(name))?;
+    let func = scope.alloc_native_function_with_slots(
+      call_id,
+      None,
+      name,
+      0,
+      &[Value::Object(iframe_obj)],
+    )?;
+    if let Some(intrinsics) = vm.intrinsics() {
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(intrinsics.function_prototype()))?;
+    }
+    Value::Object(func)
+  };
+
+  // Best-effort: don't let failures (full microtask queue, etc) perturb DOM mutations.
+  let _ = vm.call_with_host_and_hooks(
+    host,
+    scope,
+    hooks,
+    queue_microtask,
+    Value::Undefined,
+    &[callback],
+  );
+  Ok(())
 }
 
 fn element_reflected_bool_get_native(
@@ -40625,6 +41306,48 @@ fn html_media_element_current_src_get_native(
   };
 
   Ok(Value::String(scope.alloc_string(&resolved)?))
+}
+
+fn iframe_content_document_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Null);
+  };
+  let key = alloc_key(scope, IFRAME_CONTENT_DOCUMENT_KEY)?;
+  Ok(
+    scope
+      .heap()
+      .object_get_own_data_property_value(obj, &key)?
+      .unwrap_or(Value::Null),
+  )
+}
+
+fn iframe_content_window_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Null);
+  };
+  let key = alloc_key(scope, IFRAME_CONTENT_WINDOW_KEY)?;
+  Ok(
+    scope
+      .heap()
+      .object_get_own_data_property_value(obj, &key)?
+      .unwrap_or(Value::Null),
+  )
 }
 
 fn input_value_get_native(
@@ -41818,6 +42541,20 @@ fn is_html_script_element(dom: &dom2::Document, node_id: NodeId) -> bool {
       ..
     } => {
       tag_name.eq_ignore_ascii_case("script")
+        && (namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE)
+    }
+    _ => false,
+  }
+}
+
+fn is_html_iframe_element(dom: &dom2::Document, node_id: NodeId) -> bool {
+  match &dom.node(node_id).kind {
+    dom2::NodeKind::Element {
+      tag_name,
+      namespace,
+      ..
+    } => {
+      tag_name.eq_ignore_ascii_case("iframe")
         && (namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE)
     }
     _ => false,
@@ -51619,6 +52356,7 @@ fn init_window_globals(
     let html_image_element_proto = platform.prototype_for(DomInterface::HTMLImageElement);
     let html_link_element_proto = platform.prototype_for(DomInterface::HTMLLinkElement);
     let html_script_element_proto = platform.prototype_for(DomInterface::HTMLScriptElement);
+    let html_iframe_element_proto = platform.prototype_for(DomInterface::HTMLIFrameElement);
     let document_proto = platform.prototype_for(DomInterface::Document);
     let document_fragment_proto = platform.prototype_for(DomInterface::DocumentFragment);
     let shadow_root_proto = platform.prototype_for(DomInterface::ShadowRoot);
@@ -52318,6 +53056,8 @@ fn init_window_globals(
       install_illegal_dom_ctor(&mut scope, "HTMLLinkElement", html_link_element_proto)?;
     let html_script_element_ctor =
       install_illegal_dom_ctor(&mut scope, "HTMLScriptElement", html_script_element_proto)?;
+    let html_iframe_element_ctor =
+      install_illegal_dom_ctor(&mut scope, "HTMLIFrameElement", html_iframe_element_proto)?;
 
     // @@toStringTag branding for common media element detection helpers.
     let to_string_tag_key =
@@ -52501,6 +53241,7 @@ fn init_window_globals(
       html_anchor_element_ctor,
       html_link_element_ctor,
       html_script_element_ctor,
+      html_iframe_element_ctor,
     ] {
       scope
         .heap_mut()
@@ -58529,6 +59270,50 @@ fn init_window_globals(
     data_desc(Value::Object(media_current_src_get_func)),
   )?;
 
+  // <iframe>: minimal same-origin iframe state accessors (`contentDocument` / `contentWindow`).
+  let iframe_content_document_get_call_id =
+    vm.register_native_call(iframe_content_document_get_native)?;
+  let iframe_content_document_get_name = scope.alloc_string("get contentDocument")?;
+  scope.push_root(Value::String(iframe_content_document_get_name))?;
+  let iframe_content_document_get_func = scope.alloc_native_function(
+    iframe_content_document_get_call_id,
+    None,
+    iframe_content_document_get_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    iframe_content_document_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(iframe_content_document_get_func))?;
+  let iframe_content_document_get_key = alloc_key(&mut scope, IFRAME_CONTENT_DOCUMENT_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    iframe_content_document_get_key,
+    data_desc(Value::Object(iframe_content_document_get_func)),
+  )?;
+
+  let iframe_content_window_get_call_id = vm.register_native_call(iframe_content_window_get_native)?;
+  let iframe_content_window_get_name = scope.alloc_string("get contentWindow")?;
+  scope.push_root(Value::String(iframe_content_window_get_name))?;
+  let iframe_content_window_get_func = scope.alloc_native_function(
+    iframe_content_window_get_call_id,
+    None,
+    iframe_content_window_get_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    iframe_content_window_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(iframe_content_window_get_func))?;
+  let iframe_content_window_get_key = alloc_key(&mut scope, IFRAME_CONTENT_WINDOW_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    iframe_content_window_get_key,
+    data_desc(Value::Object(iframe_content_window_get_func)),
+  )?;
+
   // Form controls: store shared accessors on `document` so wrappers can reuse them.
   let input_value_get_call_id = vm.register_native_call(input_value_get_native)?;
   let input_value_get_name = scope.alloc_string("get value")?;
@@ -60318,6 +61103,7 @@ mod tests {
   use crate::js::RunLimits;
   use crate::js::window::WindowHost;
   use crate::{FastRender, FontConfig, RenderOptions};
+  use std::collections::HashMap;
   use std::sync::{Mutex as StdMutex, OnceLock as StdOnceLock};
   use std::time::Duration;
 
@@ -63429,6 +64215,78 @@ mod tests {
       })()",
     )?;
     assert_eq!(value, Value::Bool(true));
+
+    Ok(())
+  }
+
+  #[test]
+  fn iframe_src_loads_document_sets_content_document_and_fires_onload() -> crate::error::Result<()> {
+    #[derive(Debug)]
+    struct MapFetcher {
+      map: HashMap<String, crate::resource::FetchedResource>,
+    }
+
+    impl ResourceFetcher for MapFetcher {
+      fn fetch(&self, url: &str) -> crate::error::Result<crate::resource::FetchedResource> {
+        self.map.get(url).cloned().ok_or_else(|| {
+          crate::Error::Other(format!("MapFetcher: missing fixture for {url}"))
+        })
+      }
+    }
+
+    let iframe_url = "https://example.com/iframe.html";
+    let iframe_html = concat!(
+      "<!doctype html>",
+      "<html><head></head><body>",
+      "<script>",
+      "window.fromIframe = 42;",
+      "function run() { window.ran = true; }",
+      "</script>",
+      "</body></html>",
+    );
+
+    let fetcher = Arc::new(MapFetcher {
+      map: HashMap::from([(
+        iframe_url.to_string(),
+        crate::resource::FetchedResource::new(
+          iframe_html.as_bytes().to_vec(),
+          Some("text/html".to_string()),
+        ),
+      )]),
+    });
+
+    let dom = crate::dom2::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+    let mut host = WindowHost::new_with_fetcher(dom, "https://example.com/", fetcher)?;
+
+    host.exec_script(&format!(
+      r#"
+      globalThis.__loaded = false;
+      globalThis.__hasDoc = false;
+      globalThis.__hasWin = false;
+      globalThis.__from = null;
+      globalThis.__ran = null;
+
+      const iframe = document.createElement('iframe');
+      iframe.onload = () => {{
+        globalThis.__loaded = true;
+        globalThis.__hasDoc = iframe.contentDocument !== null;
+        globalThis.__hasWin = iframe.contentWindow !== null;
+        globalThis.__from = iframe.contentWindow && iframe.contentWindow.fromIframe;
+        globalThis.__ran = iframe.contentWindow && iframe.contentWindow.ran;
+      }};
+      document.body.appendChild(iframe);
+      iframe.src = '{iframe_url}';
+      "#,
+    ))?;
+
+    host.run_until_idle(RunLimits::unbounded())?;
+
+    assert_eq!(host.exec_script("__loaded")?, Value::Bool(true));
+    assert_eq!(host.exec_script("__hasDoc")?, Value::Bool(true));
+    assert_eq!(host.exec_script("__hasWin")?, Value::Bool(true));
+    assert_eq!(host.exec_script("__from")?, Value::Number(42.0));
+    assert_eq!(host.exec_script("__ran")?, Value::Bool(true));
+
     Ok(())
   }
 

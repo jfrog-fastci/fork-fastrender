@@ -45,3 +45,10 @@ pub(crate) const STYLE_HEIGHT_GET_KEY: &str = "__fastrender_style_height_get";
 pub(crate) const STYLE_HEIGHT_SET_KEY: &str = "__fastrender_style_height_set";
 pub(crate) const STYLE_WIDTH_GET_KEY: &str = "__fastrender_style_width_get";
 pub(crate) const STYLE_WIDTH_SET_KEY: &str = "__fastrender_style_width_set";
+
+// --- <iframe> / nested browsing context shims ---
+//
+// These keys store the minimal same-origin iframe state (Window-like object + Document wrapper)
+// on the iframe element wrapper itself.
+pub(crate) const IFRAME_CONTENT_DOCUMENT_KEY: &str = "__fastrender_iframe_content_document";
+pub(crate) const IFRAME_CONTENT_WINDOW_KEY: &str = "__fastrender_iframe_content_window";
