@@ -5177,7 +5177,7 @@ mod tests {
         source: OmniboxSuggestionSource::Primary,
       },
       OmniboxSuggestion {
-        action: OmniboxAction::NavigateToUrl("https://example.com".to_string()),
+        action: OmniboxAction::NavigateToUrl,
         title: Some("Example".to_string()),
         url: Some("https://example.com".to_string()),
         source: OmniboxSuggestionSource::Primary,
