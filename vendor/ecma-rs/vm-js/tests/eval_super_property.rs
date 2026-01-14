@@ -130,3 +130,80 @@ fn indirect_eval_rejects_super_property_even_inside_method() {
   assert_eq!(value, Value::Bool(true));
 }
 
+#[test]
+fn direct_eval_allows_super_method_call_in_class_method() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      class A { m() { return 1; } }
+      class B extends A {
+        m() { return eval('super.m()'); }
+      }
+      (new B()).m() === 1
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn direct_eval_rejects_super_property_at_script_top_level() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var caught;
+      try {
+        eval('super.x');
+      } catch (err) {
+        caught = err;
+      }
+      caught && caught.name === 'SyntaxError'
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn indirect_eval_rejects_super_property_when_called_via_alias() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      class A { m() { return 1; } }
+      class B extends A {
+        m() {
+          let e = eval;
+          try { e('super.m()'); } catch (err) { return err.name; }
+        }
+      }
+      (new B()).m() === 'SyntaxError'
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn indirect_eval_rejects_super_computed_property_without_evaluating_expression() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var evaluated = false;
+      class A { m() { return 1; } }
+      class B extends A {
+        m() {
+          let e = eval;
+          try { e('super[evaluated = true];'); } catch (err) { return err.name; }
+        }
+      }
+      var name = (new B()).m();
+      name === 'SyntaxError' && evaluated === false
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
