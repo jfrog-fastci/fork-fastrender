@@ -390,6 +390,62 @@ fn throw_type_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmE
   Ok(VmError::Throw(value))
 }
 
+#[inline]
+fn patch_stack_top_frame_best_effort(
+  stack: &mut Vec<StackFrame>,
+  source: Arc<str>,
+  line: u32,
+  col: u32,
+) {
+  if let Some(top) = stack.first_mut() {
+    top.source = source;
+    top.line = line;
+    top.col = col;
+    return;
+  }
+
+  // Avoid aborting the process on allocator OOM: reserve fallibly.
+  if stack.try_reserve(1).is_ok() {
+    stack.push(StackFrame {
+      function: None,
+      source,
+      line,
+      col,
+    });
+  }
+}
+
+fn finalize_throw_with_stack_at_source_offset(
+  vm: &Vm,
+  scope: &mut Scope<'_>,
+  source: &crate::SourceText,
+  offset: u32,
+  err: VmError,
+) -> VmError {
+  if !err.is_throw_completion() {
+    return err;
+  }
+
+  let (line, col) = source.line_col(offset);
+  let err = crate::vm::coerce_error_to_throw(vm, scope, err);
+  match err {
+    VmError::Throw(value) => {
+      let mut stack = vm.capture_stack();
+      patch_stack_top_frame_best_effort(&mut stack, source.name.clone(), line, col);
+      crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+      VmError::ThrowWithStack { value, stack }
+    }
+    VmError::ThrowWithStack { value, mut stack } => {
+      if stack.first().is_none() || stack.first().is_some_and(|top| top.line == 0) {
+        patch_stack_top_frame_best_effort(&mut stack, source.name.clone(), line, col);
+      }
+      crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+      VmError::ThrowWithStack { value, stack }
+    }
+    other => other,
+  }
+}
+
 fn root_property_key(scope: &mut Scope<'_>, key: PropertyKey) -> Result<(), VmError> {
   match key {
     PropertyKey::String(s) => {
@@ -10635,43 +10691,20 @@ impl HirAsyncState {
           return Err(VmError::InvariantViolation("missing compiled async body kind"));
         };
         let expr_span_start = evaluator.get_expr(body, *expr)?.span.start;
-        let (source_name, line, col) = {
-          let source = evaluator.script.source.as_ref();
-          let (line, col) = source.line_col(expr_span_start);
-          (source.name.clone(), line, col)
-        };
-        let update_top_frame = |stack: &mut Vec<StackFrame>| {
-          if let Some(top) = stack.first_mut() {
-            top.source = source_name.clone();
-            top.line = line;
-            top.col = col;
-          } else {
-            stack.push(StackFrame {
-              function: None,
-              source: source_name.clone(),
-              line,
-              col,
-            });
-          }
-        };
 
         let expr_res = evaluator.eval_expr(scope, body, *expr);
         return match expr_res {
           Ok(v) => Ok(HirAsyncResult::CompleteOk(v)),
           Err(err) => {
-            let err = crate::vm::coerce_error_to_throw(&*evaluator.vm, scope, err);
+            let err = finalize_throw_with_stack_at_source_offset(
+              &*evaluator.vm,
+              scope,
+              evaluator.script.source.as_ref(),
+              expr_span_start,
+              err,
+            );
             match err {
-              VmError::Throw(value) => {
-                let mut stack = evaluator.vm.capture_stack();
-                update_top_frame(&mut stack);
-                crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
-                Ok(HirAsyncResult::CompleteThrow(value))
-              }
-              VmError::ThrowWithStack { value, mut stack } => {
-                if stack.first().is_none() || stack.first().is_some_and(|top| top.line == 0) {
-                  update_top_frame(&mut stack);
-                }
-                crate::error_object::attach_stack_property_for_throw(scope, value, &stack);
+              VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
                 Ok(HirAsyncResult::CompleteThrow(value))
               }
               other => Err(other),
@@ -11549,17 +11582,33 @@ fn hir_eval_stmt_list_until_await(
   last_value_root: RootId,
   last_value_is_set: &mut bool,
 ) -> Result<HirAsyncEvalResult, VmError> {
+  // Avoid borrowing `evaluator` immutably across `eval_expr` calls: we need mutable access to the
+  // evaluator while executing.
+  let source = evaluator.script.source.clone();
+
   for (i, stmt_id) in stmts.iter().enumerate().skip(start_index) {
     // Fast-path top-level `await` expression statements without touching the normal compiled
     // evaluator (which does not yet support `ExprKind::Await`).
     let stmt = evaluator.get_stmt(body, *stmt_id)?;
+    let stmt_offset = stmt.span.start;
     if let hir_js::StmtKind::Expr(expr_id) = stmt.kind {
       let expr = evaluator.get_expr(body, expr_id)?;
       if let hir_js::ExprKind::Await { expr: awaited_expr } = expr.kind {
         // Budget once for the statement and once for the await expression itself.
         evaluator.vm.tick()?;
         evaluator.vm.tick()?;
-        let await_value = evaluator.eval_expr(scope, body, awaited_expr)?;
+        let await_value = match evaluator.eval_expr(scope, body, awaited_expr) {
+          Ok(v) => v,
+          Err(err) => {
+            return Err(finalize_throw_with_stack_at_source_offset(
+              &*evaluator.vm,
+              scope,
+              source.as_ref(),
+              stmt_offset,
+              err,
+            ))
+          }
+        };
         return Ok(HirAsyncEvalResult::Await {
           await_value,
           resume: HirAsyncResumePoint::ExprStmt {
@@ -11587,11 +11636,41 @@ fn hir_eval_stmt_list_until_await(
 
           // Evaluate the assignment reference (including computed keys) before evaluating the await
           // argument value, matching `eval_assignment` ordering.
-          let reference = evaluator.eval_assignment_reference(scope, body, *target)?;
+          let reference = match evaluator.eval_assignment_reference(scope, body, *target) {
+            Ok(r) => r,
+            Err(err) => {
+              return Err(finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                scope,
+                source.as_ref(),
+                stmt_offset,
+                err,
+              ))
+            }
+          };
 
           let mut scope = scope.reborrow();
-          evaluator.root_assignment_reference(&mut scope, &reference)?;
-          let await_value = evaluator.eval_expr(&mut scope, body, awaited_expr)?;
+          if let Err(err) = evaluator.root_assignment_reference(&mut scope, &reference) {
+            return Err(finalize_throw_with_stack_at_source_offset(
+              &*evaluator.vm,
+              &mut scope,
+              source.as_ref(),
+              stmt_offset,
+              err,
+            ));
+          }
+          let await_value = match evaluator.eval_expr(&mut scope, body, awaited_expr) {
+            Ok(v) => v,
+            Err(err) => {
+              return Err(finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                &mut scope,
+                source.as_ref(),
+                stmt_offset,
+                err,
+              ))
+            }
+          };
           return Ok(HirAsyncEvalResult::Await {
             await_value,
             resume: HirAsyncResumePoint::Assignment {
@@ -11617,7 +11696,18 @@ fn hir_eval_stmt_list_until_await(
           if let hir_js::ExprKind::Await { expr: awaited_expr } = init_expr.kind {
             // Budget once for the await expression itself.
             evaluator.vm.tick()?;
-            let await_value = evaluator.eval_expr(scope, body, awaited_expr)?;
+            let await_value = match evaluator.eval_expr(scope, body, awaited_expr) {
+              Ok(v) => v,
+              Err(err) => {
+                return Err(finalize_throw_with_stack_at_source_offset(
+                  &*evaluator.vm,
+                  scope,
+                  source.as_ref(),
+                  stmt_offset,
+                  err,
+                ))
+              }
+            };
             return Ok(HirAsyncEvalResult::Await {
               await_value,
               resume: HirAsyncResumePoint::VarDecl {
@@ -11629,17 +11719,36 @@ fn hir_eval_stmt_list_until_await(
           }
         }
         let value = match declarator.init {
-          Some(init) => evaluator.eval_expr(scope, body, init)?,
+          Some(init) => match evaluator.eval_expr(scope, body, init) {
+            Ok(v) => v,
+            Err(err) => {
+              return Err(finalize_throw_with_stack_at_source_offset(
+                &*evaluator.vm,
+                scope,
+                source.as_ref(),
+                stmt_offset,
+                err,
+              ))
+            }
+          },
           None => Value::Undefined,
         };
-        evaluator.bind_var_decl_pat(
+        if let Err(err) = evaluator.bind_var_decl_pat(
           scope,
           body,
           declarator.pat,
           var_decl.kind,
           init_missing,
           value,
-        )?;
+        ) {
+          return Err(finalize_throw_with_stack_at_source_offset(
+            &*evaluator.vm,
+            scope,
+            source.as_ref(),
+            stmt_offset,
+            err,
+          ));
+        }
       }
       continue;
     }
