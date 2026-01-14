@@ -614,6 +614,12 @@ pub fn resolve_omnibox_search_query(input: &str) -> Option<&str> {
     return None;
   }
 
+  // Fast path: any ASCII whitespace makes this a search query (see `omnibox_input_looks_like_url`),
+  // so we can avoid more expensive URL heuristics.
+  if input.as_bytes().iter().any(|b| b.is_ascii_whitespace()) {
+    return Some(input);
+  }
+
   if has_explicit_scheme(input) {
     return None;
   }
