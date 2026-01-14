@@ -1683,11 +1683,13 @@ impl<'a> Parser<'a> {
               await_expr_allowed: false,
               yield_expr_allowed: false,
             });
-            let expr = self.expr_with_asi(
-              init_ctx,
-              [statement_delimiter, TT::BraceClose],
-              property_initialiser_asi,
-            );
+            let expr = self.with_disallow_arguments_in_class_init(|p| {
+              p.expr_with_asi(
+                init_ctx,
+                [statement_delimiter, TT::BraceClose],
+                property_initialiser_asi,
+              )
+            });
             self.new_target_allowed = prev_new_target_allowed;
             self.super_prop_allowed = prev_super_prop_allowed;
             self.super_call_allowed = prev_super_call_allowed;
