@@ -23,8 +23,10 @@ Legend: ✅ implemented, ⚠️ partial, 🚧 planned, ❌ missing.
 | --- | --- | --- |
 | Common types (`MediaTrackInfo`, `MediaPacket`, `MediaData`, `Decoded*`) | ✅ | [`src/media/mod.rs`](../src/media/mod.rs), [`src/media/packet.rs`](../src/media/packet.rs) |
 | Decode pipeline (`MediaDecodePipeline`) | ✅ | [`src/media/pipeline.rs`](../src/media/pipeline.rs) (demux→decode wiring; yields `DecodedItem`) |
-| WebM demux (`WebmDemuxer`) | ✅ | [`src/media/demux/webm.rs`](../src/media/demux/webm.rs) (feature: `media_webm`/`media`; VP9+Opus; track selection/filtering; codec delay; seek; optional inter-track ordering) |
-| MP4 demux + packetizer (`Mp4PacketDemuxer`) | ⚠️ | [`src/media/demuxer.rs`](../src/media/demuxer.rs) (feature: `media_mp4`/`media`; H.264+AAC; best-effort VP9 detection via `mp4parse`; mp4parse-derived DTS/PTS/duration + keyframe seek when sample tables are available; falls back to mp4-crate timestamps when not) |
+| WebM demux (`WebmDemuxer`) | ✅ | [`src/media/demux/webm.rs`](../src/media/demux/webm.rs) (feature: `media_webm`/`media`; VP9+Opus; track selection/filtering; codec delay; seek; optional inter-track ordering; rejects encrypted/compressed `ContentEncodings`) |
+| MP4 demux + packetizer (`Mp4PacketDemuxer`) | ⚠️ | [`src/media/demuxer.rs`](../src/media/demuxer.rs) (feature: `media_mp4`/`media`; H.264+AAC; best-effort VP9 detection via `mp4parse`; rejects encrypted/protected tracks; best-effort mp4parse-derived DTS/PTS/duration + keyframe seek; falls back to mp4-crate timestamps when sample tables are unavailable) |
+| MP4 demux (pure-Rust box parser): `demux::mp4::Mp4Demuxer` | ✅ | [`src/media/demux/mp4.rs`](../src/media/demux/mp4.rs) (in-memory; produces `MediaData::Shared`; parses `avcC`→H.264 extradata + `esds`→AAC ASC; not currently wired into `MediaDecodePipeline` via `MediaDemuxer`) |
+| MP4 demux (mp4parse sample-table): `demux::mp4parse::Mp4ParseDemuxer` | ⚠️ | [`src/media/demux/mp4parse.rs`](../src/media/demux/mp4parse.rs) (reader-based sample-table demux; timestamping works; codec `codec_private` extraction is currently incomplete) |
 | MP4 sample-table utilities (`Mp4Demuxer`, `Mp4SeekIndex`) | ✅ | [`src/media/mp4.rs`](../src/media/mp4.rs) (feature: `media_mp4`/`media`; `ctts`-aware PTS/DTS computation; currently separate from `Mp4PacketDemuxer`) |
 | AAC decoder | ✅ | [`src/media/codecs/aac.rs`](../src/media/codecs/aac.rs) (feature: `codec_aac`/`media`; Symphonia → `DecodedAudioChunk`) |
 | Opus decoder | ✅ | [`src/media/codecs/opus.rs`](../src/media/codecs/opus.rs) (feature: `codec_opus`/`media`; `opus` crate / libopus; mapping family 0 mono/stereo only today) |
@@ -105,6 +107,8 @@ Current behavior:
 
 - Opens any `R: Read + Seek`.
 - Enumerates tracks as `MediaTrackInfo` (codec + codec_private bytes + codec_delay_ns).
+- Rejects unsupported Matroska `ContentEncodings` (encryption/compression) up-front with an explicit
+  `MediaError::Unsupported` (no DRM/EME and no Matroska content compression support today).
 - Emits `MediaPacket` **only** for:
   - VP9 (`codec_id = "V_VP9"`)
   - Opus (`codec_id = "A_OPUS"`)
@@ -137,6 +141,7 @@ Current behavior:
 
 - Opens MP4 either from a file (`Mp4PacketDemuxer::open(path)`) or in-memory bytes
   (`Mp4PacketDemuxer::from_bytes(Arc<[u8]>)`).
+- Rejects encrypted/protected tracks up-front using mp4parse metadata (no DRM/EME support today).
 - Track detection:
   - H.264 (`mp4::MediaType::H264`) → emits packets
   - AAC (`mp4::MediaType::AAC`) → emits packets
@@ -185,6 +190,18 @@ Known limitations / gaps:
   requires a zero-copy demux path and/or pre-size checks (tracked as part of broader MP4 correctness
   work).
 - Fragmented MP4 (`moof`/`mdat`) is not supported by this demuxer.
+
+Other MP4 demuxers in-tree (not currently used by `NativeBackend`/`MediaDecodePipeline`):
+
+- [`src/media/demux/mp4.rs`](../src/media/demux/mp4.rs): a pure-Rust MP4 box parser/demuxer that:
+  - reads the full file into an `Arc<[u8]>`,
+  - emits `MediaPacket` with `MediaData::Shared` ranges,
+  - computes both `dts_ns` and `pts_ns` (including `ctts`) and a non-monotonic-PTS seek index, and
+  - parses `avcC` into the custom H.264 extradata format expected by `decoder::H264Decoder`, plus
+    `esds`→AAC `AudioSpecificConfig`.
+- [`src/media/demux/mp4parse.rs`](../src/media/demux/mp4parse.rs): a demuxer built on mp4parse sample
+  tables that can read sample bytes from a `Read+Seek` source, but is still missing full codec
+  config (`codec_private`) extraction for the decode pipeline.
 
 ## Codec decode backends
 
