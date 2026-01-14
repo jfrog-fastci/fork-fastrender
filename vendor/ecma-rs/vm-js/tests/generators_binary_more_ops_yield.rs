@@ -113,3 +113,165 @@ fn relational_greater_than_or_equal_with_yield_in_both_operands() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn exponentiation_with_yield_in_both_operands() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){ return (yield 1) ** (yield 2); }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(2);
+        var r3 = it.next(3);
+        r1.value === 1 && r2.value === 2 && r3.done === true && r3.value === 8
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn bitwise_or_with_yield_in_both_operands() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){ return (yield 1) | (yield 2); }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(5);
+        var r3 = it.next(2);
+        r1.value === 1 && r2.value === 2 && r3.done === true && r3.value === 7
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn bitwise_and_with_yield_in_both_operands() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){ return (yield 1) & (yield 2); }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(6);
+        var r3 = it.next(3);
+        r1.value === 1 && r2.value === 2 && r3.done === true && r3.value === 2
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn bitwise_xor_with_yield_in_both_operands() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){ return (yield 1) ^ (yield 2); }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(5);
+        var r3 = it.next(3);
+        r1.value === 1 && r2.value === 2 && r3.done === true && r3.value === 6
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn shift_left_with_yield_in_both_operands() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){ return (yield 1) << (yield 2); }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(5);
+        var r3 = it.next(1);
+        r1.value === 1 && r2.value === 2 && r3.done === true && r3.value === 10
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn shift_right_with_yield_in_both_operands() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){ return (yield 1) >> (yield 2); }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(10);
+        var r3 = it.next(1);
+        r1.value === 1 && r2.value === 2 && r3.done === true && r3.value === 5
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn unsigned_shift_right_with_yield_in_both_operands() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){ return (yield 1) >>> (yield 2); }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(10);
+        var r3 = it.next(1);
+        r1.value === 1 && r2.value === 2 && r3.done === true && r3.value === 5
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn in_operator_with_yield_in_both_operands() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){ return (yield 1) in (yield 2); }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next("a");
+        var r3 = it.next({a: 1});
+        r1.value === 1 && r2.value === 2 && r3.done === true && r3.value === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn instanceof_operator_with_yield_in_both_operands() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){ return (yield 1) instanceof (yield 2); }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next({});
+        var r3 = it.next(Object);
+        r1.value === 1 && r2.value === 2 && r3.done === true && r3.value === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}

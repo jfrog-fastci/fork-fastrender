@@ -49,3 +49,4 @@ run_vm_js_test generators_destructuring_assignment_yield
 
 # Keep the test target name stable: CI relies on this exact integration test name.
 run_vm_js_test generators_binary_ops_yield
+run_vm_js_test generators_binary_more_ops_yield

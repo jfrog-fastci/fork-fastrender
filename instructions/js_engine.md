@@ -33,6 +33,7 @@ This executes (at minimum):
 - `generators_yield_operators`
 - `generators_delete_yield`
 - `generators_binary_ops_yield`
+- `generators_binary_more_ops_yield`
 - `generators_destructuring_assignment_yield`
 
 ### Build speed matters
