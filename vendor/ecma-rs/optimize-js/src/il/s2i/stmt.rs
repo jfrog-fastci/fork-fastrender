@@ -1240,6 +1240,10 @@ impl<'p> HirSourceToInst<'p> {
         self.compile_expr(*expr)?;
         Ok(())
       }
+      StmtKind::ExportDefaultExpr(expr) => {
+        self.compile_expr(*expr)?;
+        Ok(())
+      }
       StmtKind::For {
         init,
         test,

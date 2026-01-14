@@ -999,6 +999,9 @@ fn lower_root_body(
     // Most import/export declarations are tracked separately as module items and emitted via
     // `HirFile::{imports,exports}`; they do not execute at runtime and should not be lowered into
     // the executable root body.
+    //
+    // Note: `export default <expr>` and TS `export = <expr>` have runtime semantics, so they are
+    // not skipped here.
     match &*stmt.stx {
       AstStmt::Import(_)
       | AstStmt::ExportList(_)
@@ -1006,9 +1009,6 @@ fn lower_root_body(
       | AstStmt::ExportTypeDecl(_)
       | AstStmt::ExportAsNamespaceDecl(_)
       | AstStmt::ImportEqualsDecl(_) => continue,
-      // Note: `export default <expr>` and TS `export = <expr>` have runtime semantics, so they are
-      // still lowered into the executable statement list (as synthetic declarations) to preserve
-      // evaluation order.
       _ => {}
     }
     let stmt_id = lower_stmt(stmt, &mut builder, ctx);
@@ -1729,6 +1729,10 @@ fn lower_stmt(
       let expr_id = lower_expr(&expr_stmt.stx.expr, builder, ctx);
       StmtKind::Expr(expr_id)
     }
+    AstStmt::ExportDefaultExpr(default_expr) => {
+      let expr_id = lower_expr(&default_expr.stx.expression, builder, ctx);
+      StmtKind::ExportDefaultExpr(expr_id)
+    }
     AstStmt::Return(ret) => {
       let value = ret.stx.value.as_ref().map(|v| lower_expr(v, builder, ctx));
       StmtKind::Return(value)
@@ -1896,16 +1900,6 @@ fn lower_stmt(
     }
     AstStmt::ClassDecl(class_decl) => {
       if let Some(def_id) = builder.def_lookup.def_for_node(class_decl) {
-        StmtKind::Decl(def_id)
-      } else {
-        StmtKind::Empty
-      }
-    }
-    AstStmt::ExportDefaultExpr(expr) => {
-      // `export default <expr>` has runtime semantics (it evaluates the expression and initializes
-      // the module's `*default*` binding). Lower it as a synthetic "declaration" so the VM can
-      // evaluate it in statement order.
-      if let Some(def_id) = builder.def_lookup.def_for_node(expr) {
         StmtKind::Decl(def_id)
       } else {
         StmtKind::Empty

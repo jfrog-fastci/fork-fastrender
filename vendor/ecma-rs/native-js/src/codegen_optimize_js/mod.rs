@@ -1036,6 +1036,12 @@ runtime-native shape descriptors can currently only express flat pointer maps",
             .build_conditional_branch(cond_v, blocks[&t], blocks[&f])
             .expect("condbr");
         }
+        optimize_js::cfg::cfg::Terminator::Invoke { .. } => {
+          return Err(vec![codes::OPTIMIZE_JS_UNSUPPORTED_IL.error(
+            "unsupported invoke terminator in optimize-js backend",
+            Span::new(self.entry_file, TextRange::new(0, 0)),
+          )]);
+        }
         optimize_js::cfg::cfg::Terminator::Multi { .. } => {
           return Err(vec![codes::OPTIMIZE_JS_UNSUPPORTED_IL.error(
             "unsupported multi-way branch in optimize-js backend",

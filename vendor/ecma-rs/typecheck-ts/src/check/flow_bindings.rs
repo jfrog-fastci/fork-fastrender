@@ -315,6 +315,7 @@ impl<'a> FlowBindingsBuilder<'a> {
     let stmt = &self.body.stmts[stmt_id.0 as usize];
     match &stmt.kind {
       StmtKind::Expr(expr) => self.process_expr(*expr, lexical_scopes),
+      StmtKind::ExportDefaultExpr(expr) => self.process_expr(*expr, lexical_scopes),
       StmtKind::Return(expr) => {
         if let Some(expr) = expr {
           self.process_expr(*expr, lexical_scopes);

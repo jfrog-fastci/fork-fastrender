@@ -410,6 +410,10 @@ impl<'p> Evaluator<'p> {
         let _ = self.eval_expr(file, body, *expr, frames)?;
         Ok(None)
       }
+      StmtKind::ExportDefaultExpr(expr) => {
+        let _ = self.eval_expr(file, body, *expr, frames)?;
+        Ok(None)
+      }
       StmtKind::Return(expr) => {
         let value = if let Some(expr) = expr {
           self.eval_expr(file, body, *expr, frames)?

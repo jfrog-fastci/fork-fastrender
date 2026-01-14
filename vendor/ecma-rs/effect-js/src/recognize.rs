@@ -604,6 +604,7 @@ fn collect_reachable_exprs(body: &hir_js::Body) -> std::collections::HashSet<Exp
     };
     match &stmt.kind {
       StmtKind::Expr(expr) => visit_expr(body, *expr, reachable),
+      StmtKind::ExportDefaultExpr(expr) => visit_expr(body, *expr, reachable),
       StmtKind::Decl(_) => {}
       StmtKind::Return(expr) => {
         if let Some(expr) = expr {

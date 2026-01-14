@@ -361,6 +361,10 @@ impl<'a, 'ctx> FunctionCodegen<'a, 'ctx> {
         self.codegen_expr(*expr);
         false
       }
+      StmtKind::ExportDefaultExpr(expr) => {
+        self.codegen_expr(*expr);
+        false
+      }
       StmtKind::Block(stmts) => self.codegen_block(stmts, ret_kind),
       StmtKind::Var(var_decl) => {
         self.codegen_var_decl(var_decl);

@@ -1138,6 +1138,11 @@ pub struct Stmt {
 #[derive(Debug, Clone, PartialEq)]
 pub enum StmtKind {
   Expr(ExprId),
+  /// `export default <expr>;` (executable module statement).
+  ///
+  /// This must evaluate the expression at runtime and initialize the module's
+  /// internal `*default*` binding.
+  ExportDefaultExpr(ExprId),
   Decl(DefId),
   Return(Option<ExprId>),
   Block(Vec<StmtId>),

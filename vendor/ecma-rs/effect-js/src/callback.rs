@@ -828,6 +828,7 @@ impl<'a, 'db> CallbackAnalyzer<'a, 'db> {
 
     match &stmt.kind {
       StmtKind::Expr(expr) => self.visit_expr(body, *expr),
+      StmtKind::ExportDefaultExpr(expr) => self.visit_expr(body, *expr),
       StmtKind::Decl(_) => {
         // Declaring a function/class creates a runtime value, but the body is
         // not executed here.

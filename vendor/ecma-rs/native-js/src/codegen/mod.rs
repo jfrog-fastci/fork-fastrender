@@ -2391,6 +2391,13 @@ impl<'ctx, 'p, 'a> FnCodegen<'ctx, 'p, 'a> {
         let _ = self.codegen_expr(expr)?;
         Ok(true)
       }
+      StmtKind::ExportDefaultExpr(expr) => {
+        if self.codegen_print_stmt(expr)? {
+          return Ok(true);
+        }
+        let _ = self.codegen_expr(expr)?;
+        Ok(true)
+      }
       StmtKind::Return(Some(expr)) => {
         let value = self.codegen_expr(expr)?;
         match (self.return_kind, value) {

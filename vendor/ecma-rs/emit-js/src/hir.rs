@@ -102,6 +102,16 @@ fn emit_hir_file_with_ctx(em: &mut Emitter, ctx: &HirContext<'_>) -> EmitResult 
     .body(ctx.lowered.root_body())
     .ok_or_else(|| EmitError::unsupported("missing root body for emission"))?;
 
+  // Since `export default <expr>` is executable, the HIR lowering records it in the root statement
+  // list as `StmtKind::ExportDefaultExpr` so compiled execution can evaluate it in source order.
+  //
+  // When emitting source, avoid also emitting the corresponding `ExportDefaultValue::Expr` entry
+  // from `HirFile::exports` (that would duplicate output).
+  let has_default_export_expr_stmt = root_body
+    .root_stmts
+    .iter()
+    .any(|stmt_id| matches!(ctx.stmt(root_body, *stmt_id).kind, StmtKind::ExportDefaultExpr(_)));
+
   enum ModuleItem<'a> {
     Import(&'a Import),
     Export(&'a Export),
@@ -147,6 +157,11 @@ fn emit_hir_file_with_ctx(em: &mut Emitter, ctx: &HirContext<'_>) -> EmitResult 
         if ctx.def(def_id).is_some_and(|def| def.is_default_export) {
           continue;
         }
+      }
+
+      // `export default <expr>` is emitted from the corresponding root-body statement.
+      if has_default_export_expr_stmt && matches!(default.value, ExportDefaultValue::Expr { .. }) {
+        continue;
       }
     }
 
@@ -1192,6 +1207,19 @@ fn emit_stmt(em: &mut Emitter, ctx: &HirContext<'_>, body: &Body, stmt_id: StmtI
   let stmt = ctx.stmt(body, stmt_id);
   match &stmt.kind {
     StmtKind::Expr(expr) => {
+      let needs_parens = expr_stmt_needs_parens(ctx, body, *expr);
+      if needs_parens {
+        em.write_punct("(");
+      }
+      emit_expr_with_min_prec(em, ctx, body, *expr, Prec::LOWEST)?;
+      if needs_parens {
+        em.write_punct(")");
+      }
+      em.write_semicolon();
+    }
+    StmtKind::ExportDefaultExpr(expr) => {
+      em.write_keyword("export");
+      em.write_keyword("default");
       let needs_parens = expr_stmt_needs_parens(ctx, body, *expr);
       if needs_parens {
         em.write_punct("(");

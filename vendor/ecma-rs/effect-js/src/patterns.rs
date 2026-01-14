@@ -341,6 +341,7 @@ impl PatternRecognizer<'_> {
         self.visit_stmt(*body);
       }
       StmtKind::Expr(_)
+      | StmtKind::ExportDefaultExpr(_)
       | StmtKind::Decl(_)
       | StmtKind::Return(_)
       | StmtKind::Throw(_)

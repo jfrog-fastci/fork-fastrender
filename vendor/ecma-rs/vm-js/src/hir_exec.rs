@@ -995,6 +995,11 @@ impl<'vm> HirEvaluator<'vm> {
             return Ok(true);
           }
         }
+        hir_js::StmtKind::ExportDefaultExpr(expr_id) => {
+          if self.hir_expr_contains_await_for_async_analysis(script, body, *expr_id, steps)? {
+            return Ok(true);
+          }
+        }
         hir_js::StmtKind::Return(Some(expr_id)) => {
           if self.hir_expr_contains_await_for_async_analysis(script, body, *expr_id, steps)? {
             return Ok(true);
@@ -1609,6 +1614,9 @@ impl<'vm> HirEvaluator<'vm> {
     let stmt = self.get_stmt(body, stmt_id)?;
     match &stmt.kind {
       hir_js::StmtKind::Expr(expr_id) => self.hir_expr_has_await_suspension(body, *expr_id, visited),
+      hir_js::StmtKind::ExportDefaultExpr(expr_id) => {
+        self.hir_expr_has_await_suspension(body, *expr_id, visited)
+      }
       hir_js::StmtKind::Decl(def_id) => {
         let def = self
           .hir()
@@ -3838,6 +3846,30 @@ impl<'vm> HirEvaluator<'vm> {
       hir_js::StmtKind::Expr(expr_id) => {
         let v = self.eval_expr(scope, body, *expr_id)?;
         Ok(Flow::normal(v))
+      }
+      hir_js::StmtKind::ExportDefaultExpr(expr_id) => {
+        // `export default <expr>;` is executable in modules:
+        // - it evaluates `<expr>` at runtime (preserving side effects / source order), and
+        // - it initializes the module's internal `*default*` binding (used by default imports).
+        //
+        // Unlike bindings like `const x = <expr>`, the inferred name for syntactic anonymous
+        // function/class definitions must be `"default"`, not `"*default*"`.
+        let mut scope = scope.reborrow();
+        let name_key = PropertyKey::from_string(scope.alloc_string("default")?);
+        let v = self.eval_expr_named(&mut scope, body, *expr_id, name_key)?;
+        scope.push_root(v)?;
+
+        let binding_name = "*default*";
+        let env = self.env.lexical_env();
+        if !scope.heap().env_has_binding(env, binding_name)? {
+          return Err(VmError::InvariantViolation(
+            "export default expression missing *default* binding",
+          ));
+        }
+        scope
+          .heap_mut()
+          .env_initialize_binding(env, binding_name, v)?;
+        Ok(Flow::empty())
       }
       hir_js::StmtKind::Return(expr) => {
         let v = match expr {

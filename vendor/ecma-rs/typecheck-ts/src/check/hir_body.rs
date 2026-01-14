@@ -12887,6 +12887,7 @@ impl<'a> BindingCollector<'a> {
     let stmt = &self.body.stmts[stmt_id.0 as usize];
     match &stmt.kind {
       StmtKind::Expr(expr) => self.visit_expr(*expr),
+      StmtKind::ExportDefaultExpr(expr) => self.visit_expr(*expr),
       StmtKind::Decl(_) => {}
       StmtKind::Return(expr) => {
         if let Some(expr) = expr {
@@ -13633,6 +13634,10 @@ impl<'a> FlowBodyChecker<'a> {
       let stmt = &self.body.stmts[stmt_id.0 as usize];
       match &stmt.kind {
         StmtKind::Expr(expr) => {
+          let (_, facts) = self.eval_expr(*expr, &mut env);
+          env.apply_map(&facts.assertions);
+        }
+        StmtKind::ExportDefaultExpr(expr) => {
           let (_, facts) = self.eval_expr(*expr, &mut env);
           env.apply_map(&facts.assertions);
         }

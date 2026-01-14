@@ -1754,6 +1754,9 @@ impl<'a, 'b, 'p> SyntaxState<'a, 'b, 'p> {
       StmtKind::Expr(expr) => {
         self.maybe_allow_intrinsic_call_stmt(*expr);
       }
+      StmtKind::ExportDefaultExpr(expr) => {
+        self.maybe_allow_intrinsic_call_stmt(*expr);
+      }
       StmtKind::Return(_) => {}
       StmtKind::Block(stmts) => {
         for &s in stmts {

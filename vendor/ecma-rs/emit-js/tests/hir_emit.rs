@@ -281,6 +281,7 @@ fn visit_stmt(body: &Body, stmt_id: hir_js::StmtId, visited: &mut HashSet<hir_js
   let stmt = &body.stmts[stmt_id.0 as usize];
   match &stmt.kind {
     StmtKind::Expr(expr) => visit_expr(body, *expr, visited),
+    StmtKind::ExportDefaultExpr(expr) => visit_expr(body, *expr, visited),
     StmtKind::Return(expr) => {
       if let Some(expr) = expr {
         visit_expr(body, *expr, visited);

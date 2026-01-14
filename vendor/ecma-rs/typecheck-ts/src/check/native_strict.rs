@@ -1520,6 +1520,7 @@ pub fn validate_native_strict_body(
       };
       match &stmt.kind {
         StmtKind::Expr(expr) => self.visit_expr(*expr),
+        StmtKind::ExportDefaultExpr(expr) => self.visit_expr(*expr),
         StmtKind::Decl(_) => {}
         StmtKind::Return(expr) => {
           if let Some(expr) = expr {

@@ -326,6 +326,7 @@ impl<'a> CfgBuilder<'a> {
       StmtKind::Var(_)
       | StmtKind::Decl(_)
       | StmtKind::Expr(_)
+      | StmtKind::ExportDefaultExpr(_)
       | StmtKind::Debugger
       | StmtKind::Empty => {
         let block = self.add_stmt_block(stmt_id);

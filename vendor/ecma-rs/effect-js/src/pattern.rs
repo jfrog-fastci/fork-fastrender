@@ -103,6 +103,7 @@ fn visit_stmt(
   };
   match &stmt.kind {
     StmtKind::Expr(expr) => visit_expr(lowered, names, body_id, body, *expr, out),
+    StmtKind::ExportDefaultExpr(expr) => visit_expr(lowered, names, body_id, body, *expr, out),
     StmtKind::Return(expr) => {
       if let Some(expr) = expr {
         visit_expr(lowered, names, body_id, body, *expr, out);
